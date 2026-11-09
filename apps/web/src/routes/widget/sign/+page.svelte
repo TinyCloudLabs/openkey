@@ -23,6 +23,7 @@
     type CapabilityReviewModel,
     type DeclaredAppScope,
     checkSiweOrigin,
+    isSiweShaped,
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
@@ -46,10 +47,17 @@
   // and /authorize-sign cannot swap hosts.
   let messageHost = $state<string>('');
   let keyId = $state<string | null>(null);
+  // The key the request named; null when the app named none and the account's keys decide.
+  let requestedKeyId: string | null = null;
   let key = $state<EthereumKey | null>(null);
   let keyChoices = $state<EthereumKey[]>([]);
-  let keyChoicesLoaded = false;
+  let keyChoicesLoaded = $state(false);
   let keyChoicesSessionId: string | undefined;
+  // Why no key could be used. 'missing': no key of this account fits (Sign out lets another account continue; the
+  // app is told NO_KEY). 'transient': the key, key list or session could not be read (Try again; the app is told
+  // USER_CANCELLED, so it keeps its connection).
+  let keyProblem = $state<'missing' | 'transient' | null>(null);
+  let keyReadGeneration = 0;
   const expectedAddress = $derived(parseSIWE(message)?.message.address.toLowerCase() ?? null);
   let loading = $state(true);
   let signing = $state(false);
@@ -227,6 +235,7 @@
     messageJwk = (data.jwk as Record<string, unknown>) ?? null;
     messageHost = typeof data.host === 'string' ? data.host : '';
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
+    requestedKeyId = keyId;
     // Sol MAJOR-3 (continuation): capture the externalSign flag from the
     // sign request. The widget renders the SAME SigningApproval UI in
     // both modes; only the "approve" behaviour differs.
@@ -274,31 +283,60 @@
 
   // Reactively fetch key when session becomes available and we have a keyId
   let keyFetched = $state(false);
+  // The session the loaded key was read with: a key never outlives it (as the iframe's keyOwnerSessionId).
+  let keySessionId: string | undefined;
   $effect(() => {
     if ($session.data && keyId && !keyFetched && !key) {
       keyFetched = true;
-      api.getKey(keyId).then(result => {
+      const selectedId = keyId;
+      const sessionId = $session.data.session?.id;
+      const generation = ++keyReadGeneration;
+      api.getKey(selectedId).then(result => {
+        if (generation !== keyReadGeneration) return;
+        if ($session.data?.session?.id !== sessionId) {
+          error = 'Signing session changed. Reconnect to choose a key.';
+          dropPreviewContext();
+          keyProblem = 'transient';
+          return;
+        }
         if (result.key.archivedAt) {
           error = ARCHIVED_KEY_MESSAGE;
+          keyProblem = 'missing';
           key = null;
           return;
         }
         key = result.key;
-      }).catch(() => {
+        keySessionId = sessionId;
+      }).catch((failure: unknown) => {
+        if (generation !== keyReadGeneration) return;
         error = 'Selected key could not be loaded. Reconnect to choose a key.';
+        keyProblem = keyNotInAccount(failure) ? 'missing' : 'transient';
       });
     }
+  });
+
+  // Another account signed in while a key was loaded (or the session ended): drop the key before it can sign.
+  $effect(() => {
+    if (!key || $session.data?.session?.id === keySessionId) return;
+    keyReadGeneration++;
+    key = null;
+    untrack(dropPreviewContext);
+    error = 'Signing session changed. Reconnect to choose a key.';
+    keyProblem = 'transient';
   });
 
   function chooseSigningKey(selected: EthereumKey) {
     if ($session.data?.session?.id !== keyChoicesSessionId) {
       error = 'Signing session changed. Reconnect to choose a key.';
+      dropPreviewContext();
+      keyProblem = 'transient';
       keyChoices = [];
       return;
     }
     keyFetched = true;
     keyId = selected.id;
     key = selected;
+    keySessionId = keyChoicesSessionId;
   }
 
   $effect(() => {
@@ -307,24 +345,68 @@
     loading = true;
     const sessionId = $session.data.session?.id;
     const address = expectedAddress;
+    const requestMessage = message;
     const keyType = externalSignMode ? 'EXTERNAL' : 'MANAGED';
+    const generation = ++keyReadGeneration;
     api.listKeys().then(({ keys }) => {
+      if (generation !== keyReadGeneration) return;
       if ($session.data?.session?.id !== sessionId) {
         error = 'Signing session changed. Reconnect to choose a key.';
+        dropPreviewContext();
+        keyProblem = 'transient';
         return;
       }
       keyChoicesSessionId = sessionId;
-      keyChoices = signingKeyChoices(keys, address, keyType);
+      // A SIWE names its signer; one whose address cannot be read fits no key rather than any key.
+      keyChoices = !address && isSiweShaped(requestMessage) ? [] : signingKeyChoices(keys, address, keyType);
       if (!keyChoices.length) {
         error = 'Requested signing key is not available. Reconnect to choose a key.';
+        keyProblem = 'missing';
         return;
       }
       const selected = autoSelectKey(keyChoices, address);
       if (selected) chooseSigningKey(selected);
     }).catch(() => {
+      if (generation !== keyReadGeneration) return;
       error = 'Signing keys could not be loaded. Reconnect to choose a key.';
-    }).finally(() => { loading = false; });
+      keyProblem = 'transient';
+    }).finally(() => { if (generation === keyReadGeneration) loading = false; });
   });
+
+  /** A key read the server refused (404/403): the key is not this account's, so reading again cannot help. */
+  function keyNotInAccount(failure: unknown): boolean {
+    return failure instanceof Error && 'status' in failure && (failure.status === 404 || failure.status === 403);
+  }
+
+  // A preview context is issued to the account that was signed in: a key or session reset discards it, as a new request
+  // does, so the next preview is prepared for the account now signed in.
+  function dropPreviewContext() {
+    heldPreview = null;
+    previewToken = null;
+    contextDeadline = 0;
+    previewRevision++;
+  }
+
+  /** Read again from the start of key selection: the named key, or the account's keys when the request named none. */
+  function retryKey() {
+    keyReadGeneration++;
+    key = null;
+    dropPreviewContext();
+    error = '';
+    keyProblem = null;
+    keyChoices = [];
+    keyId = requestedKeyId;
+    keyFetched = false;
+    keyChoicesLoaded = false;
+    loading = false;
+  }
+
+  // Same as the connect widget's Sign out; Sign In then returns to this page, and the SDK sends the request again.
+  // The session ends before key selection restarts, so nothing is read with the old one.
+  async function signOutForKey() {
+    await authClient.signOut();
+    retryKey();
+  }
 
   async function handleMessage(event: MessageEvent) {
     // Sol continuation contract: versioned messages are handled by the
@@ -370,6 +452,7 @@
       messageJwk = event.data.jwk ?? null;
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
+      requestedKeyId = keyId;
       // Legacy path: envelope forwarding. The legacy path has weaker
       // origin/version guarantees, so we only accept `presentation` as
       // display-only and never upgrade trust off of it — the server
@@ -395,9 +478,9 @@
   // reflects the real key rather than a zero-address placeholder.
   $effect(() => {
     if (!message || !key) {
-      // Do not construct a model with a placeholder key. Legacy fallback
-      // rendering will show a spinner or "Please connect" until the key
-      // loads and this effect fires again.
+      // Do not construct a model with a placeholder key. The no-key
+      // branches show loading, a key choice, or a key refusal until the
+      // key loads and this effect fires again.
       reviewModel = null;
       return;
     }
@@ -1020,7 +1103,8 @@
       sendResponse({
         type: 'openkey:sign:response',
         success: false,
-        error: { code: 'NO_KEY', message: `${error} ${reconnectHint}` },
+        // Only a key this account lacks drops the app's connection (NO_KEY); a read that may work later does not.
+        error: { code: keyProblem === 'missing' ? 'NO_KEY' : 'USER_CANCELLED', message: `${error} ${reconnectHint}` },
       });
     }
     sendClose();
@@ -1031,7 +1115,7 @@
       sendResponse({
         type: 'openkey:sign:response',
         success: false,
-        error: !key && error
+        error: !key && keyProblem === 'missing'
           ? { code: 'NO_KEY', message: error }
           : { code: 'USER_CANCELLED', message: 'User cancelled' },
       });
@@ -1156,10 +1240,16 @@
     />
     <Button variant="secondary" class="mt-4" onclick={cancel}>Cancel</Button>
   {:else if !key && error}
-    <SigningKeyRefusal message={error} {requester} onreconnect={reconnect} />
+    <SigningKeyRefusal
+      message={error}
+      {requester}
+      onreconnect={reconnect}
+      onsignout={keyProblem === 'missing' ? signOutForKey : undefined}
+      onretry={keyProblem === 'transient' ? retryKey : undefined}
+    />
   {:else if !key}
-    <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
-      <p role={error ? 'alert' : undefined}>{error || 'Please connect first to sign messages.'}</p>
+    <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400" data-testid="signing-key-loading">
+      <p>Loading...</p>
       <Button variant="secondary" class="mt-4" onclick={cancel}>Cancel</Button>
     </div>
   {:else if reviewModel}

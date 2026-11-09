@@ -22,16 +22,16 @@ test('failed selected-key read shows a stable cancellable error in the v2 iframe
   });
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string; requestId?: string }> }).received.some(m => m.type === 'openkey:ready' && m.requestId === 'phase-1'))).toBe(true);
   const frame = page.frameLocator('#sign-v2');
-  await expect(frame.getByText('Selected key could not be loaded.')).toBeVisible();
+  await expect(frame.getByTestId('signing-key-refusal')).toBeVisible();
   await page.evaluate(([address, host, origin]) => {
     document.querySelector<HTMLIFrameElement>('#sign-v2')?.contentWindow?.postMessage({
       type: 'openkey:sign:request', requestId: 'phase-1', protocolVersion: 2, keyId: 'selected-key',
       message: `${host} wants you to sign in with your Ethereum account:\n${address}\n\nSign in\n\nURI: ${origin}\nVersion: 1\nChain ID: 1\nNonce: 12345678\nIssued At: 2026-10-15T00:00:00.000Z`,
     }, location.origin);
   }, [address, HOST, ORIGIN]);
-  await expect(frame.getByRole('button', { name: 'Back to app' })).toBeVisible();
+  await expect(frame.getByTestId('signing-key-back')).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string }> }).received.some(m => m.type === 'openkey:resize'))).toBe(true);
-  await frame.getByRole('button', { name: 'Back to app' }).click();
+  await frame.getByTestId('signing-key-back').click();
   await expect.poll(() => page.evaluate(() => (window as unknown as Window & { received: Array<{ type: string; success?: boolean }> }).received.some(m => m.type === 'openkey:sign:response' && m.success === false))).toBe(true);
 });
 
