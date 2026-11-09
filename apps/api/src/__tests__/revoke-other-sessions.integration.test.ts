@@ -80,6 +80,11 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
       await prisma.session.createMany({
         data: tokens.map((token) => ({ id: randomUUID(), userId, token, expiresAt: new Date(Date.now() + 7 * 86_400_000) })),
       });
+      const otherUserId = `revoke-other-user-${count}`;
+      await prisma.user.create({ data: { id: otherUserId, email: `${otherUserId}@example.test`, name: otherUserId, emailVerified: true } });
+      await prisma.session.create({ data: {
+        id: randomUUID(), userId: otherUserId, token: randomUUID(), expiresAt: new Date(Date.now() + 7 * 86_400_000),
+      } });
       const cookie = (await serializeSignedCookie(cookieName, tokens[0]!, secret)).split(';')[0]!;
       const call = (path: string, method: 'GET' | 'POST') => app.fetch(new Request(`https://api.openkey.test/api/auth${path}`, {
         method, headers: { cookie, origin: 'https://openkey.test' },
@@ -91,6 +96,8 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
       const listed = await call('/list-sessions', 'GET');
       expect(listed.status).toBe(200);
       const sessions = await listed.json() as Array<unknown>;
+      expect(await prisma.session.count({ where: { userId, token: tokens[0] } })).toBe(1);
+      expect(await prisma.session.count({ where: { userId: otherUserId } })).toBe(1);
       remaining.push(sessions.length);
       console.log(`N=${count} remaining=${sessions.length}`);
     }

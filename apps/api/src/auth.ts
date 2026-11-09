@@ -211,7 +211,7 @@ export const auth = betterAuth({
   baseURL,
   basePath: '/api/auth',
   secret: process.env.BETTER_AUTH_SECRET,
-  disabledPaths: ['/token'], // Avoid conflicts with the OAuth token endpoint
+  disabledPaths: ['/token'], // Avoid conflicts with OAuth token endpoint
   logger: {
     level: 'debug',
     disableColors: true,
@@ -240,6 +240,7 @@ export const auth = betterAuth({
       endpoints: {
         revokeOtherSessions: createAuthEndpoint('/revoke-other-sessions', {
           method: 'POST',
+          requireHeaders: true,
           use: [sensitiveSessionMiddleware],
         }, async (ctx) => {
           const session = ctx.context.session;
