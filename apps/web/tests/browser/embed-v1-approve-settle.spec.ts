@@ -150,7 +150,7 @@ test('v2 is unchanged: still gated by its own layout-ready handshake, not by the
 async function approvalRequests(page: Page) {
   const seen: string[] = [];
   page.on('request', (request) => {
-    if (request.url().includes('/api/delegate/authorize-sign')) seen.push(request.url());
+    if (new URL(request.url()).pathname === '/api/delegate/authorize-sign') seen.push(request.url());
   });
   return seen;
 }
@@ -178,10 +178,17 @@ test('a v1 frame that is still moving: a click made by a script does nothing, an
   await openEmbed(page, 'sdk-modal');
   await reviewShown(page);
   // At first display the frame is still animating: Approve is disabled.
-  expect((await samples(page)).find((s) => s.enabled !== null)!.enabled).toBe(false);
   const approvalCount = approvals.length;
+  const disabledAfterClick = await approveFrame(page).evaluate(() => {
+    const button = document.querySelector('button.approve') as HTMLButtonElement;
+    const disabled = button.disabled;
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return disabled;
+  });
+  expect(disabledAfterClick).toBe(true);
+  await page.waitForTimeout(250);
+  expect(approvals).toHaveLength(approvalCount);
   await expect.poll(async () => enabledAt(await samples(page)), { timeout: 10_000 }).toBeDefined();
-  await page.waitForTimeout(300);
   expect(approvals).toHaveLength(approvalCount);
   await scriptClicks(page);
   await expect.poll(() => approvals.length).toBeGreaterThan(approvalCount);
