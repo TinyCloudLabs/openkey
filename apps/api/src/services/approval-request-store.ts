@@ -1,5 +1,7 @@
 import type { PrismaClient } from '@openkey/db';
-import { ApprovalResultError, type ApprovalRequestRecord, type ApprovalRequestStore } from './approval-results';
+import { APPROVAL_CLAIM_LEASE_MS, ApprovalResultError, type ApprovalRequestRecord, type ApprovalRequestStore } from './approval-results';
+
+const leaseStart = (now: Date) => new Date(now.getTime() - APPROVAL_CLAIM_LEASE_MS);
 
 export function createPrismaApprovalRequestStore(database: PrismaClient): ApprovalRequestStore {
   return {
@@ -16,9 +18,17 @@ export function createPrismaApprovalRequestStore(database: PrismaClient): Approv
     async findByResultRef(resultRef) {
       return await database.approvalRequest.findUnique({ where: { resultRef } }) as unknown as ApprovalRequestRecord | null;
     },
-    async approve(id, result, now) {
+    async admit(id, now) {
       const saved = await database.approvalRequest.updateMany({
-        where: { id, resultRef: null, deniedAt: null, expiresAt: { gt: now } }, data: result,
+        where: { id, resultRef: null, deniedAt: null, expiresAt: { gt: now }, OR: [{ approvingAt: null }, { approvingAt: { lte: leaseStart(now) } }] },
+        data: { approvingAt: now },
+      });
+      return saved.count === 1;
+    },
+    async approve(id, result, now) {
+      // One conditional write settles it: an admitted request is saved whatever the clock says; an unadmitted one must still be unexpired.
+      const saved = await database.approvalRequest.updateMany({
+        where: { id, resultRef: null, deniedAt: null, OR: [{ approvingAt: { not: null } }, { expiresAt: { gt: now } }] }, data: result,
       });
       return saved.count === 1;
     },
@@ -34,7 +44,7 @@ export function createPrismaApprovalRequestStore(database: PrismaClient): Approv
     },
     async deny(id, now) {
       const saved = await database.approvalRequest.updateMany({
-        where: { id, resultRef: null, deniedAt: null, expiresAt: { gt: now } }, data: { deniedAt: now },
+        where: { id, resultRef: null, deniedAt: null, expiresAt: { gt: now }, OR: [{ approvingAt: null }, { approvingAt: { lte: leaseStart(now) } }] }, data: { deniedAt: now },
       });
       return saved.count === 1;
     },

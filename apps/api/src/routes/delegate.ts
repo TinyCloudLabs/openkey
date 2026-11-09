@@ -125,7 +125,7 @@ import { PreparedHandoffError } from '../services/prepared-handoff';
 import { preparedHandoffService } from './prepared-handoffs';
 import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
-import { checkApprovalDelegation, saveApprovalDelegation } from './approval-requests';
+import { admitApprovalDelegation, checkApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
@@ -1592,6 +1592,8 @@ delegateRouter.post('/', async (c) => {
       return c.json({ error: consumed.message, code: consumed.error }, 400);
     }
 
+    await admitApprovalDelegation(body);
+
     // Sign the STORED originalSiwe verbatim. This is the entire point of
     // Blocker 1: never regenerate the SIWE at approval time.
     const signature = await signManagedKey(key, key.sealedBlob, bound.originalSiwe);
@@ -2285,6 +2287,8 @@ delegateRouter.post('/complete', async (c) => {
       return c.json({ error: consumed.message, code: consumed.error }, 400);
     }
   }
+
+  await admitApprovalDelegation(body);
 
   const address = preparedAddress;
   const chainId = signedFields.chainId;

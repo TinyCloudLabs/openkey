@@ -142,6 +142,12 @@ export async function checkApprovalDelegation(body: { approvalRequestId?: unknow
   await approvalResultService().assertDelegationWindow(body.approvalRequestId, { ...body, permissions: body.permissions, ...input });
 }
 
+/** Admits the approval right before signing starts: expiry is decided here and deny is held off until it is saved. */
+export async function admitApprovalDelegation(body: { approvalRequestId?: unknown }): Promise<void> {
+  if (body.approvalRequestId === undefined) return;
+  await approvalResultService().admit(String(body.approvalRequestId));
+}
+
 export async function saveApprovalDelegation<T extends Record<string, unknown>>(body: { approvalRequestId?: unknown; jwk: unknown; host: unknown; permissions?: unknown }, userId: string, delegation: T): Promise<T> {
   if (body.approvalRequestId !== undefined) {
     await approvalResultService().approve(String(body.approvalRequestId), userId, { ...body, permissions: body.permissions }, delegation);

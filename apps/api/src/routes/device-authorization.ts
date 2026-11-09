@@ -84,6 +84,15 @@ export function createDeviceAuthorizationRouter(input: {
     }
   });
 
+  // Declining is a signed-in user action, like approving. The device's poll then answers access_denied.
+  router.post('/:transactionId/deny', requireOpenKeyOriginForBearer as any, input.sessionMiddleware ?? requireSession as any, async (c) => {
+    try {
+      return c.json(await input.service.deny(c.req.param('transactionId')));
+    } catch (error) {
+      return routeError(c, error);
+    }
+  });
+
   return router;
 }
 

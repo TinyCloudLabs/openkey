@@ -21,17 +21,27 @@ export interface ApprovalRequestRecord {
   ackId?: string | null;
   acknowledgedAt?: Date | null;
   deniedAt?: Date | null;
+  approvingAt?: Date | null;
 }
 
 export interface ApprovalRequestStore {
   register(record: ApprovalRequestRecord): Promise<ApprovalRequestRecord>;
   findById(id: string): Promise<ApprovalRequestRecord | null>;
   findByResultRef(ref: string): Promise<ApprovalRequestRecord | null>;
+  /**
+   * Admits an approval: sets the `approving` marker on a pending, unexpired request with no live marker.
+   * False when the request is approved, denied, expired, unknown or already being approved.
+   */
+  admit(id: string, now: Date): Promise<boolean>;
+  /** Saves the result. With the marker it does not look at expiry again; without it the request must be unexpired. */
   approve(id: string, result: { resultRef: string; approvedByUserId: string; ownerDid: string; encryptedResult: string; delegationExpiresAt: Date; resultExpiresAt: Date }, now: Date): Promise<boolean>;
   acknowledge(ref: string, ackId: string, now: Date): Promise<ApprovalRequestRecord | null>;
-  /** Marks a pending, unexpired request denied. False when it is approved, denied, expired or unknown. */
+  /** Marks a pending, unexpired request denied. False when it is approved, denied, expired, unknown or being approved. */
   deny(id: string, now: Date): Promise<boolean>;
 }
+
+/** How long an `approving` marker holds off deny and other approvals, so an abandoned one cannot block a request for good. */
+export const APPROVAL_CLAIM_LEASE_MS = 30_000;
 
 export class ApprovalResultError extends Error {
   /** `extra` is merged into the JSON error body next to `error` and `code`. */
@@ -52,6 +62,11 @@ function deniedError(deniedAt: Date): ApprovalResultError {
 /** Declining needs the complete approval link. The same answer for every way of not having it, and it never names the link. */
 export function linkRequiredError(): ApprovalResultError {
   return new ApprovalResultError('link_required', 'Declining needs the complete approval link', 403);
+}
+
+/** True while an admitted approval's lease is running. */
+export function isApproving(record: Pick<ApprovalRequestRecord, 'approvingAt'>, now: Date): boolean {
+  return !!record.approvingAt && record.approvingAt.getTime() > now.getTime() - APPROVAL_CLAIM_LEASE_MS;
 }
 
 /** Plain JSON canonicalization is only for comparison; never a replacement for the sealed-byte CID. */
@@ -142,6 +157,22 @@ export class ApprovalResultService {
     }
   }
 
+  /**
+   * Admission: called after the delegation checks and before signing starts. Expiry is decided here, once;
+   * a request admitted in time is saved even if its deadline passes while it is signed. Only one approval
+   * is admitted at a time, and deny is refused while it is in flight.
+   */
+  async admit(id: string): Promise<void> {
+    const now = this.options.now?.() ?? new Date();
+    if (await this.store.admit(id, now)) return;
+    const record = await this.store.findById(id);
+    if (record?.deniedAt) throw deniedError(record.deniedAt);
+    if (record && !record.resultRef && record.expiresAt > now && isApproving(record, now)) {
+      throw new ApprovalResultError('approval_in_progress', 'Approval request is already being approved', 409);
+    }
+    throw new ApprovalResultError('expired_request', 'Approval request is no longer pending', 410);
+  }
+
   private authenticate(record: ApprovalRequestRecord, action: 'discover' | 'fetch' | 'ack', proof: string | undefined, ref = '', ackId = ''): void {
     const jwk = record.request.targetPublicJwk;
     const jkt = createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x: jwk.x })).digest('base64url');
@@ -181,6 +212,7 @@ export class ApprovalResultService {
       if (!record) throw new ApprovalResultError('not_found', 'Approval request not found', 404);
       if (record.deniedAt) return { status: 'denied' };
       if (record.resultRef) throw new ApprovalResultError('already_approved', 'Approval request was already approved', 409);
+      if (record.expiresAt > now && isApproving(record, now)) throw new ApprovalResultError('approval_in_progress', 'Approval request is being approved', 409);
       throw new ApprovalResultError('expired_request', 'Approval request expired', 410);
     };
     if (!await this.store.deny(id, now)) return settled();
