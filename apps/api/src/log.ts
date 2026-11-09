@@ -54,7 +54,7 @@ const EVENTS = {
   delegate_origin_bind_failed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true, key_quote_failed: true,
   native_consent_peer_lookup_failed: true, native_consent_key_unseal_failed: true,
   native_consent_activation_after_host_setup_failed: true, native_consent_host_delegation_rejected: true,
-  native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true,
+  native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true, native_consent_stale_session_revoke_failed: true,
   oauth_client_create_failed: true, oauth_client_delete_failed: true, oauth_client_update_failed: true,
   session_cap_unapplied: true,
   resource_introspect_failed: true, resource_introspect_rate_limited: true, mcp_userinfo_guard_failed: true,

@@ -793,6 +793,7 @@ if (!backend) {
     const space = `tinycloud:pkh:eip155:1:${key.address}:applications`;
     let peerCalls = 0;
     let delegateCalls = 0;
+    const revokes: { method?: string; hasAuth: boolean }[] = [];
     globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith('https://tee.node.tinycloud.xyz/peer/generate/')) {
@@ -804,6 +805,10 @@ if (!backend) {
         // 1: stale-cache approval, space unhosted. 2: approval after the restart, unhosted. 3: host delegation. 4: re-activation.
         return Promise.resolve(Response.json(delegateCalls <= 2 ? { skipped: [space] }
           : delegateCalls === 4 ? { activated: [], skipped: [] } : { activated: [space] }));
+      }
+      if (url === 'https://tee.node.tinycloud.xyz/revoke') {
+        revokes.push({ method: init?.method, hasAuth: Boolean(new Headers(init?.headers).get('authorization')) });
+        return Promise.resolve(Response.json({ revoked: true, cid: 'x' }));
       }
       return originalFetch(input, init);
     }) as typeof fetch;
@@ -828,6 +833,8 @@ if (!backend) {
       expect(reopened.hostSignedAt).toBeNull();
       expect((await prisma.tinyCloudBootstrapState.findFirstOrThrow({ where: { keyId: key.id } })).status).not.toBe('complete');
 
+      // The heal revokes the stale session delegation once, signed, with a bounded request.
+      expect(revokes).toEqual([{ method: 'POST', hasAuth: true }]);
       // A replayed approval of the refused revision is superseded; it neither reverts nor approves again.
       const replay = await nativeConsent(id, 'approve', { revision: first.revision, digest: first.digest, sessionSiwe: first.sessionSiwe });
       expect(replay.status).toBe(409);
@@ -845,6 +852,7 @@ if (!backend) {
       expect(approved.status, await approved.clone().text()).toBe(200);
       expect((await approved.json() as { hosting: string }).hosting).toBe('created');
       expect(delegateCalls).toBe(4);
+      expect(revokes.length).toBe(1);
       expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).hostSignedAt).not.toBeNull();
     } finally { globalThis.fetch = originalFetch; }
   }, 120_000);
@@ -854,6 +862,7 @@ if (!backend) {
     const originalFetch = globalThis.fetch;
     const space = `tinycloud:pkh:eip155:1:${key.address}:applications`;
     let delegateCalls = 0;
+    let revokeCalls = 0;
     globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.startsWith('https://tee.node.tinycloud.xyz/peer/generate/')) {
@@ -864,6 +873,7 @@ if (!backend) {
         // The node never hosts the space: every activation is skipped and the host delegation is rejected.
         return Promise.resolve(delegateCalls === 3 ? new Response('rejected', { status: 400 }) : Response.json({ skipped: [space] }));
       }
+      if (url === 'https://tee.node.tinycloud.xyz/revoke') { revokeCalls++; return Promise.resolve(Response.json({ revoked: true, cid: 'x' })); }
       return originalFetch(input, init);
     }) as typeof fetch;
     try {
@@ -880,6 +890,90 @@ if (!backend) {
       expect((await approved.json() as { hosting: string }).hosting).toBe('failed');
       expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).status).toBe('APPROVED');
       expect(delegateCalls).toBe(3);
+      expect(revokeCalls).toBe(1);
+    } finally { globalThis.fetch = originalFetch; }
+  }, 120_000);
+
+  for (const failure of ['throws', 'http 500'] as const) {
+    test(`a failed stale-session revoke (${failure}) still restarts consent and logs once (${backend})`, async () => {
+      const key = await ensureNativeKey();
+      const originalFetch = globalThis.fetch;
+      const originalWrite = process.stdout.write;
+      const space = `tinycloud:pkh:eip155:1:${key.address}:applications`;
+      let revokeCalls = 0;
+      const warns: string[] = [];
+      process.stdout.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+        const line = String(chunk);
+        if (line.includes('native_consent_stale_session_revoke_failed')) warns.push(line);
+        return (originalWrite as (...args: unknown[]) => boolean).call(process.stdout, chunk, ...rest);
+      }) as typeof process.stdout.write;
+      globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.startsWith('https://tee.node.tinycloud.xyz/peer/generate/')) return Promise.resolve(new Response('did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK'));
+        if (url === 'https://tee.node.tinycloud.xyz/delegate') return Promise.resolve(Response.json({ skipped: [space] }));
+        if (url === 'https://tee.node.tinycloud.xyz/revoke') {
+          revokeCalls++;
+          return failure === 'throws' ? Promise.reject(new Error('socket hang up')) : Promise.resolve(new Response('boom', { status: 500 }));
+        }
+        return originalFetch(input, init);
+      }) as typeof fetch;
+      try {
+        await prisma.tinyCloudBootstrapState.deleteMany({ where: { keyId: key.id } });
+        await prisma.tinyCloudBootstrapState.create({ data: { userId: alice, keyId: key.id, address: key.address, chainId: 1,
+          tinycloudHost: 'https://tee.node.tinycloud.xyz', bootstrapVersion: 'test', status: 'complete', checkedAt: new Date(), completedAt: new Date() } });
+        const { id } = await nativePar();
+        const first = await (await nativeConsent(id, 'prepare')).json() as { revision: number; digest: string; sessionSiwe: string };
+        const refused = await nativeConsent(id, 'approve', { revision: first.revision, digest: first.digest, sessionSiwe: first.sessionSiwe });
+        expect(refused.status).toBe(409);
+        expect((await refused.json() as { error: string }).error).toBe('preparation_superseded');
+        expect(revokeCalls).toBe(1);
+        expect(warns.length).toBe(1);
+        expect(warns[0]).not.toContain('did:');
+        expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).status).toBe('RESOLVED');
+        expect((await prisma.tinyCloudBootstrapState.findFirstOrThrow({ where: { keyId: key.id } })).status).not.toBe('complete');
+      } finally { globalThis.fetch = originalFetch; process.stdout.write = originalWrite; }
+    }, 120_000);
+  }
+
+  test(`no stale-session revoke for a hosted user or a planned hosting approval (${backend})`, async () => {
+    const key = await ensureNativeKey();
+    const originalFetch = globalThis.fetch;
+    const space = `tinycloud:pkh:eip155:1:${key.address}:applications`;
+    let revokeCalls = 0;
+    let peerCalls = 0;
+    let delegateCalls = 0;
+    let hosted = true;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('https://tee.node.tinycloud.xyz/peer/generate/')) { peerCalls++; return Promise.resolve(new Response('did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK')); }
+      if (url === 'https://tee.node.tinycloud.xyz/delegate') {
+        delegateCalls++;
+        return Promise.resolve(Response.json(hosted || delegateCalls === 2 ? { activated: [space] } : delegateCalls === 3 ? { activated: [], skipped: [] } : { skipped: [space] }));
+      }
+      if (url === 'https://tee.node.tinycloud.xyz/revoke') { revokeCalls++; return Promise.resolve(Response.json({ revoked: true, cid: 'x' })); }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+    try {
+      await prisma.tinyCloudBootstrapState.deleteMany({ where: { keyId: key.id } });
+      await prisma.tinyCloudBootstrapState.create({ data: { userId: alice, keyId: key.id, address: key.address, chainId: 1,
+        tinycloudHost: 'https://tee.node.tinycloud.xyz', bootstrapVersion: 'test', status: 'complete', checkedAt: new Date(), completedAt: new Date() } });
+      // Hosted user with a cached complete row: no plan, no peer lookup, no revoke.
+      const a = await nativePar();
+      const pa = await (await nativeConsent(a.id, 'prepare')).json() as { revision: number; digest: string; sessionSiwe: string; hostPlan: unknown };
+      expect(pa.hostPlan).toBeNull();
+      const approvedA = await nativeConsent(a.id, 'approve', { revision: pa.revision, digest: pa.digest, sessionSiwe: pa.sessionSiwe });
+      expect((await approvedA.json() as { hosting: string }).hosting).toBe('existing');
+      expect(peerCalls).toBe(0);
+      expect(revokeCalls).toBe(0);
+      // No cached row, unhosted space: the planned hosting is signed and nothing is revoked.
+      await prisma.tinyCloudBootstrapState.deleteMany({ where: { keyId: key.id } });
+      hosted = false;
+      delegateCalls = 0;
+      const b = await nativePar();
+      const pb = await (await nativeConsent(b.id, 'prepare')).json() as { revision: number; digest: string; sessionSiwe: string; hostPlan: { hostSiwe: string } };
+      const approvedB = await nativeConsent(b.id, 'approve', { revision: pb.revision, digest: pb.digest, sessionSiwe: pb.sessionSiwe, hostSiwe: pb.hostPlan.hostSiwe });
+      expect((await approvedB.json() as { hosting: string }).hosting).toBe('created');
+      expect(revokeCalls).toBe(0);
     } finally { globalThis.fetch = originalFetch; }
   }, 120_000);
 
