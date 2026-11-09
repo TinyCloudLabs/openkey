@@ -3,6 +3,7 @@ import { SiweMessage } from 'siwe';
 import { verifyMessage } from 'ethers';
 import type { OpenKeyApprovalRequestV1 } from '@tinycloud/share-envelope/links';
 import { strictSessionDid, type DeviceRelayEnvelope } from './device-authorization';
+import { hasPrivateJwkMember } from './authorization-signing';
 import { verifySessionProofClaims } from './native-delegation/session-proof';
 
 export interface ApprovalRequestRecord {
@@ -103,7 +104,7 @@ export class ApprovalResultService {
     if (!record || (!admitted && record.expiresAt <= now) || record.resultRef) throw new ApprovalResultError('expired_request', 'Approval request is no longer pending', 410);
     const request = record.request;
     const jwk = input.jwk as JsonWebKey | null;
-    if (!jwk || jwk.kty !== 'OKP' || jwk.crv !== 'Ed25519' || jwk.x !== request.targetPublicJwk.x || 'd' in jwk ||
+    if (!jwk || jwk.kty !== 'OKP' || jwk.crv !== 'Ed25519' || jwk.x !== request.targetPublicJwk.x || hasPrivateJwkMember(jwk) ||
       input.host !== request.nodeOrigin || !sameJson(input.permissions, request.permissions)) {
       throw new ApprovalResultError('request_binding', 'Delegation binding does not match the immutable approval request', 400);
     }

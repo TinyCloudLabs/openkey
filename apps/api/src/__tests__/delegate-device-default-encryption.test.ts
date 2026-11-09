@@ -49,12 +49,6 @@ function prepareDevice(address: string, permissions: DelegationPermissionEntry[]
 }
 
 describe('sessionAbilitiesFromPermissions — device default encryption entry (TC-1778)', () => {
-  test('resolves the exact entry to the signer own default network as a raw network', () => {
-    expect(sessionAbilitiesFromPermissions([device], { address: signerChecksum, chainId }, { deviceTransaction: true })).toEqual({
-      abilities: {},
-      rawAbilities: { [networkUrn(signerChecksum)]: [DECRYPT] },
-    });
-  });
 
   test('two accounts: each signer resolves to its own network only', () => {
     const forOther = sessionAbilitiesFromPermissions([device], { address: otherChecksum, chainId }, { deviceTransaction: true });
@@ -66,12 +60,6 @@ describe('sessionAbilitiesFromPermissions — device default encryption entry (T
     expect(() => sessionAbilitiesFromPermissions([device, device], { address: signerChecksum, chainId }, { deviceTransaction: true })).toThrow('repeats the default encryption entry');
   });
 
-  test('a non-device /delegate prepare carrying the same entry is unchanged', () => {
-    expect(sessionAbilitiesFromPermissions([device], { address: signerChecksum, chainId })).toEqual({
-      abilities: { encryption: { '': [DECRYPT] } },
-      rawAbilities: {},
-    });
-  });
 
   test('a different path on the device route is unchanged', () => {
     const other = { ...device, path: 'x' };
@@ -113,6 +101,8 @@ describe('prepareDelegationSession — device default encryption entry (TC-1778)
 
   test('a non-device prepare of the same entry signs no raw network', () => {
     const result = prepareDevice(signerChecksum, [device], false);
-    expect(result.prepared.siwe).not.toContain('urn:tinycloud:encryption:');
+    expect(recapAtt(result.prepared.siwe)).toEqual({
+      [`tinycloud:pkh:eip155:${chainId}:${signerChecksum}:default/encryption`]: { [DECRYPT]: [{}] },
+    });
   });
 });

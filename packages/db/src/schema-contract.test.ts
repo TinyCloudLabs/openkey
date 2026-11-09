@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
-import { readdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   checkRuntimeSchemaContract,
@@ -84,4 +85,12 @@ test('covers every committed post-baseline migration except the explicit TC-488 
     .sort();
 
   expect([...requiredRuntimeMigrationChecksums.keys()].sort()).toEqual(committed);
+});
+
+test('pins the SHA-256 of each committed migration file', async () => {
+  const migrationDirectory = join(import.meta.dir, '../prisma/migrations');
+  for (const [name, checksum] of requiredRuntimeMigrationChecksums) {
+    const sql = await readFile(join(migrationDirectory, name, 'migration.sql'));
+    expect({ name, checksum: createHash('sha256').update(sql).digest('hex') }).toEqual({ name, checksum });
+  }
 });

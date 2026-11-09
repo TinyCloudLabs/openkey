@@ -95,6 +95,19 @@ describe('social popup sign-in', () => {
     }
   });
 
+  test('explicit linking starts in the same first-party popup and returns the session', async () => {
+    const harness = popupHarness();
+    const completion = signInWithSocialPopup('google', harness.dependencies, 'link');
+    expect(harness.openedURL()).toBe('https://openkey.test/auth/social/callback?provider=google&action=link');
+    harness.listener()({
+      origin: 'https://openkey.test',
+      source: harness.popup,
+      data: { type: 'openkey:social:complete', sessionToken: 'linked-session' },
+    });
+    expect(await completion).toBe('linked-session');
+    expect(harness.persisted()).toBe('linked-session');
+  });
+
   test('reports provider popup cancellation and removes listeners', async () => {
     const harness = popupHarness();
     const completion = signInWithSocialPopup('apple', harness.dependencies);
