@@ -467,7 +467,7 @@ older revision is never changed.
   "tinycloudHost": "https://tee.node.tinycloud.xyz",
   "ttlSeconds": 3600,
   "grantLifetimeSeconds": 2592000,
-  "hostPlan": null
+  "hostPlan": { "host": "https://tee.node.tinycloud.xyz", "spaceId": "…", "peerId": "did:key:…", "hostSiwe": "<exact SIWE bytes>" }
 }
 ```
 
@@ -573,8 +573,9 @@ SIWE, and it is limited as follows:
 - **Host:** always the ceiling's `tinycloudHost`, which must be in
   `TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS`. Neither the app nor the request can
   name a host.
-- **When planned:** at prepare, unless `TinyCloudBootstrapState` already
-  records completion for this key and host.
+- **When planned:** at prepare, on every prepare. A cached `TinyCloudBootstrapState`
+  `complete` row does not skip it; the node's activation at approval decides
+  whether the space is hosted, as it does for `/delegate`.
 - **Contents:** `{host, spaceId, peerId, hostSiwe}`, where
   `peerId = fetchPeerId(host, spaceId)` and `hostSiwe` comes from
   `generateHostSIWEMessage`. The plan is included in the preparation digest,

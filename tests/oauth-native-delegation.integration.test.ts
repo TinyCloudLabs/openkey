@@ -773,17 +773,51 @@ if (!backend) {
       const prepared = await nativeConsent(second.id, 'prepare');
       expect(prepared.status).toBe(200);
       const existing = await prepared.json() as typeof preview;
-      expect(existing.hostPlan).toBeNull();
-      expect(peerCalls).toBe(1);
+      // A cached complete row still plans hosting; the node's activation decides at approval.
+      expect(existing.hostPlan.spaceId).toBe(space);
+      expect(peerCalls).toBe(2);
       await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: { ...ceiling, tinycloudHost: 'http://127.0.0.1:18081' } } });
-      const movedExisting = await nativeConsent(second.id, 'approve', { revision: existing.revision, digest: existing.digest, sessionSiwe: existing.sessionSiwe });
+      const movedExisting = await nativeConsent(second.id, 'approve', { revision: existing.revision, digest: existing.digest, sessionSiwe: existing.sessionSiwe, hostSiwe: existing.hostPlan.hostSiwe });
       expect(movedExisting.status).toBe(409);
       expect((await movedExisting.json() as { error: string }).error).toBe('preparation_superseded');
       await prisma.oauthClient.update({ where: { clientId: nativeClient }, data: { tinycloudNativeDelegation: ceiling } });
-      const approvedExisting = await nativeConsent(second.id, 'approve', { revision: existing.revision, digest: existing.digest, sessionSiwe: existing.sessionSiwe });
+      const approvedExisting = await nativeConsent(second.id, 'approve', { revision: existing.revision, digest: existing.digest, sessionSiwe: existing.sessionSiwe, hostSiwe: existing.hostPlan.hostSiwe });
       expect(approvedExisting.status).toBe(200);
       expect((await approvedExisting.json() as { hosting: string }).hosting).toBe('existing');
       expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: second.id } })).hostSignedAt).toBeNull();
+    } finally { globalThis.fetch = originalFetch; }
+  }, 120_000);
+
+  test(`a cached complete bootstrap row with an unhosted space still plans and signs hosting (${backend})`, async () => {
+    const key = await ensureNativeKey();
+    const originalFetch = globalThis.fetch;
+    const space = `tinycloud:pkh:eip155:1:${key.address}:applications`;
+    let delegateCalls = 0;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('https://tee.node.tinycloud.xyz/peer/generate/')) {
+        return Promise.resolve(new Response('did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK'));
+      }
+      if (url === 'https://tee.node.tinycloud.xyz/delegate') {
+        delegateCalls++;
+        return Promise.resolve(Response.json(delegateCalls === 1 ? { skipped: [space] }
+          : delegateCalls === 3 ? { activated: [], skipped: [] } : { activated: [space] }));
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+    try {
+      await prisma.tinyCloudBootstrapState.deleteMany({ where: { keyId: key.id } });
+      await prisma.tinyCloudBootstrapState.create({ data: { userId: alice, keyId: key.id, address: key.address, chainId: 1,
+        tinycloudHost: 'https://tee.node.tinycloud.xyz', bootstrapVersion: 'test', status: 'complete', checkedAt: new Date(), completedAt: new Date() } });
+      const { id } = await nativePar();
+      const prepare = await nativeConsent(id, 'prepare');
+      expect(prepare.status, await prepare.clone().text()).toBe(200);
+      const preview = await prepare.json() as { revision: number; digest: string; sessionSiwe: string; hostPlan: { spaceId: string; hostSiwe: string } | null };
+      expect(preview.hostPlan?.spaceId).toBe(space);
+      const approved = await nativeConsent(id, 'approve', { revision: preview.revision, digest: preview.digest, sessionSiwe: preview.sessionSiwe, hostSiwe: preview.hostPlan!.hostSiwe });
+      expect(approved.status, await approved.clone().text()).toBe(200);
+      expect((await approved.json() as { hosting: string }).hosting).toBe('created');
+      expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).hostSignedAt).not.toBeNull();
     } finally { globalThis.fetch = originalFetch; }
   }, 120_000);
 
