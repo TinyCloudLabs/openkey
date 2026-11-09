@@ -1,7 +1,7 @@
 // OpenKey API - better-auth configuration
 // Auth flow: email OTP by default, with optional passkey enrollment and sign-in.
 import { betterAuth, type BetterAuthPlugin } from 'better-auth';
-import { APIError } from 'better-auth/api';
+import { APIError, createAuthEndpoint, sensitiveSessionMiddleware } from 'better-auth/api';
 import type { AuthMiddleware } from '@better-auth/core/api';
 import { defineRequestState, getCurrentAuthContext, getCurrentAuthContextAsyncLocalStorage } from '@better-auth/core/context';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
@@ -211,7 +211,7 @@ export const auth = betterAuth({
   baseURL,
   basePath: '/api/auth',
   secret: process.env.BETTER_AUTH_SECRET,
-  disabledPaths: ['/token'], // Avoid conflicts with OAuth token endpoint
+  disabledPaths: ['/token'], // Avoid conflicts with the OAuth token endpoint
   logger: {
     level: 'debug',
     disableColors: true,
@@ -235,6 +235,19 @@ export const auth = betterAuth({
   },
 
   plugins: [
+    {
+      id: 'revoke-other-sessions',
+      endpoints: {
+        revokeOtherSessions: createAuthEndpoint('/revoke-other-sessions', {
+          method: 'POST',
+          use: [sensitiveSessionMiddleware],
+        }, async (ctx) => {
+          const session = ctx.context.session;
+          await prisma.session.deleteMany({ where: { userId: session.user.id, token: { not: session.session.token } } });
+          return ctx.json({ status: true });
+        }),
+      },
+    },
     passkeyFreshnessPlugin,
     // Passkeys are an encouraged optional sign-in and step-up method.
     passkey({
