@@ -142,15 +142,25 @@ export async function checkApprovalDelegation(body: { approvalRequestId?: unknow
   await approvalResultService().assertDelegationWindow(body.approvalRequestId, { ...body, permissions: body.permissions, ...input });
 }
 
+const admissions = new WeakMap<object, Date>();
+
 /** Admits the approval right before signing starts: expiry is decided here and deny is held off until it is saved. */
 export async function admitApprovalDelegation(body: { approvalRequestId?: unknown }): Promise<void> {
   if (body.approvalRequestId === undefined) return;
-  await approvalResultService().admit(String(body.approvalRequestId));
+  admissions.set(body, await approvalResultService().admit(String(body.approvalRequestId)));
+}
+
+/** After a failed attempt: gives the admission back so deny and a retry need not wait. Never throws. */
+export async function releaseApprovalDelegation(body: { approvalRequestId?: unknown }): Promise<void> {
+  const marker = admissions.get(body);
+  if (!marker) return;
+  admissions.delete(body);
+  await approvalResultService().release(String(body.approvalRequestId), marker).catch(() => undefined);
 }
 
 export async function saveApprovalDelegation<T extends Record<string, unknown>>(body: { approvalRequestId?: unknown; jwk: unknown; host: unknown; permissions?: unknown }, userId: string, delegation: T): Promise<T> {
   if (body.approvalRequestId !== undefined) {
-    await approvalResultService().approve(String(body.approvalRequestId), userId, { ...body, permissions: body.permissions }, delegation);
+    await approvalResultService().approve(String(body.approvalRequestId), userId, { ...body, permissions: body.permissions }, delegation, admissions.get(body));
   }
   return delegation;
 }

@@ -29,12 +29,17 @@ export interface ApprovalRequestStore {
   findById(id: string): Promise<ApprovalRequestRecord | null>;
   findByResultRef(ref: string): Promise<ApprovalRequestRecord | null>;
   /**
-   * Admits an approval: sets the `approving` marker on a pending, unexpired request with no live marker.
-   * False when the request is approved, denied, expired, unknown or already being approved.
+   * Admits an approval: sets the `approving` marker on a pending, unexpired request with no live marker, and
+   * returns the marker it wrote. Null when the request is approved, denied, expired, unknown or already being approved.
    */
-  admit(id: string, now: Date): Promise<boolean>;
-  /** Saves the result. With the marker it does not look at expiry again; without it the request must be unexpired. */
-  approve(id: string, result: { resultRef: string; approvedByUserId: string; ownerDid: string; encryptedResult: string; delegationExpiresAt: Date; resultExpiresAt: Date }, now: Date): Promise<boolean>;
+  admit(id: string, now: Date): Promise<Date | null>;
+  /** Clears the marker, only if it is still this one. */
+  release(id: string, marker: Date): Promise<void>;
+  /**
+   * Saves the result. With the marker from `admit` the save needs that exact marker, still within its lease,
+   * and a request that expired no more than one lease ago. Without it the request must be unexpired and have no live marker.
+   */
+  approve(id: string, result: { resultRef: string; approvedByUserId: string; ownerDid: string; encryptedResult: string; delegationExpiresAt: Date; resultExpiresAt: Date }, now: Date, marker?: Date): Promise<boolean>;
   acknowledge(ref: string, ackId: string, now: Date): Promise<ApprovalRequestRecord | null>;
   /** Marks a pending, unexpired request denied. False when it is approved, denied, expired, unknown or being approved. */
   deny(id: string, now: Date): Promise<boolean>;
@@ -90,11 +95,12 @@ export class ApprovalResultService {
     if (new URL(options.apiOrigin).origin !== options.apiOrigin) throw new Error('Approval API origin must be canonical');
   }
 
-  async assertDelegationWindow(id: unknown, input: { jwk: unknown; host: unknown; permissions: unknown; expiryMs?: number; signedSiwe?: string }): Promise<ApprovalRequestRecord> {
+  /** `admitted`: the request was admitted in time, so its own deadline is not looked at again; everything else is. */
+  async assertDelegationWindow(id: unknown, input: { jwk: unknown; host: unknown; permissions: unknown; expiryMs?: number; signedSiwe?: string }, admitted = false): Promise<ApprovalRequestRecord> {
     const record = typeof id === 'string' ? await this.store.findById(id) : null;
     const now = this.options.now?.() ?? new Date();
     if (record?.deniedAt) throw deniedError(record.deniedAt);
-    if (!record || record.expiresAt <= now || record.resultRef) throw new ApprovalResultError('expired_request', 'Approval request is no longer pending', 410);
+    if (!record || (!admitted && record.expiresAt <= now) || record.resultRef) throw new ApprovalResultError('expired_request', 'Approval request is no longer pending', 410);
     const request = record.request;
     const jwk = input.jwk as JsonWebKey | null;
     if (!jwk || jwk.kty !== 'OKP' || jwk.crv !== 'Ed25519' || jwk.x !== request.targetPublicJwk.x || 'd' in jwk ||
@@ -118,10 +124,10 @@ export class ApprovalResultService {
   }
 
   /** Called only by the existing authenticated delegate completion handlers. */
-  async approve(id: string, userId: string, body: { jwk: unknown; host: unknown; permissions: unknown }, delegation: Record<string, unknown>): Promise<void> {
+  async approve(id: string, userId: string, body: { jwk: unknown; host: unknown; permissions: unknown }, delegation: Record<string, unknown>, marker?: Date): Promise<void> {
     const signedSiwe = delegation.siwe ?? delegation.signedMessage;
     if (typeof signedSiwe !== 'string' || typeof delegation.signature !== 'string') throw new ApprovalResultError('invalid_delegation', 'Signed delegation proof is required', 400);
-    const record = await this.assertDelegationWindow(id, { ...body, signedSiwe });
+    const record = await this.assertDelegationWindow(id, { ...body, signedSiwe }, marker !== undefined);
     const siwe = new SiweMessage(signedSiwe);
     const ownerDid = `did:pkh:eip155:${siwe.chainId}:${siwe.address}`;
     const jwk = delegation.jwk;
@@ -152,7 +158,7 @@ export class ApprovalResultService {
     const nonce = crypto.getRandomValues(new Uint8Array(12));
     const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: context }, key, new TextEncoder().encode(JSON.stringify(payload)));
     const envelope: DeviceRelayEnvelope = { version: 1, algorithm: 'ECDH-P256-A256GCM', ephemeralPublicJwk: await crypto.subtle.exportKey('jwk', ephemeral.publicKey) as DeviceRelayEnvelope['ephemeralPublicJwk'], nonce: Buffer.from(nonce).toString('base64url'), ciphertext: Buffer.from(ciphertext).toString('base64url') };
-    if (!await this.store.approve(id, { resultRef: randomBytes(24).toString('base64url'), approvedByUserId: userId, ownerDid, encryptedResult: JSON.stringify(envelope), delegationExpiresAt, resultExpiresAt }, this.options.now?.() ?? new Date())) {
+    if (!await this.store.approve(id, { resultRef: randomBytes(24).toString('base64url'), approvedByUserId: userId, ownerDid, encryptedResult: JSON.stringify(envelope), delegationExpiresAt, resultExpiresAt }, this.options.now?.() ?? new Date(), marker)) {
       throw new ApprovalResultError('expired_request', 'Approval request expired or was already approved', 410);
     }
   }
@@ -162,15 +168,21 @@ export class ApprovalResultService {
    * a request admitted in time is saved even if its deadline passes while it is signed. Only one approval
    * is admitted at a time, and deny is refused while it is in flight.
    */
-  async admit(id: string): Promise<void> {
+  async admit(id: string): Promise<Date> {
     const now = this.options.now?.() ?? new Date();
-    if (await this.store.admit(id, now)) return;
+    const marker = await this.store.admit(id, now);
+    if (marker) return marker;
     const record = await this.store.findById(id);
     if (record?.deniedAt) throw deniedError(record.deniedAt);
     if (record && !record.resultRef && record.expiresAt > now && isApproving(record, now)) {
       throw new ApprovalResultError('approval_in_progress', 'Approval request is already being approved', 409);
     }
     throw new ApprovalResultError('expired_request', 'Approval request is no longer pending', 410);
+  }
+
+  /** Gives the admission back after a failed attempt, so deny and a retry need not wait for the lease. */
+  async release(id: string, marker: Date): Promise<void> {
+    await this.store.release(id, marker);
   }
 
   private authenticate(record: ApprovalRequestRecord, action: 'discover' | 'fetch' | 'ack', proof: string | undefined, ref = '', ackId = ''): void {

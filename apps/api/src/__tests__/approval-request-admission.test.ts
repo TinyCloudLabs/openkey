@@ -62,11 +62,48 @@ describe('admitting an approval request', () => {
     await expect(service().admit(ID)).rejects.toMatchObject({ code: 'approval_in_progress', status: 409 });
   });
 
-  test('a request that expires while it is being signed can still be saved by the admitted approval', async () => {
-    await registered(MINUTE);
+  test('a request that expires while it is being signed is still saved by the admitted approval', async () => {
+    await registered(10_000);
+    const marker = await service().admit(ID);
+    advance(20_000);
+    expect(await store().approve(ID, result(), clock, marker)).toBe(true);
+  });
+
+  test('a lapsed marker cannot save', async () => {
+    await registered();
+    const marker = await service().admit(ID);
+    advance(APPROVAL_CLAIM_LEASE_MS + 1);
+    expect(await store().approve(ID, result(), clock, marker)).toBe(false);
+  });
+
+  test('a marker that is not the one on the request cannot save', async () => {
+    await registered();
     await service().admit(ID);
-    advance(2 * MINUTE);
-    expect(await store().approve(ID, result(), clock)).toBe(true);
+    expect(await store().approve(ID, result(), clock, new Date(clock.getTime() - 1))).toBe(false);
+    expect(await store().approve(ID, result(), clock, new Date(clock.getTime() + 1))).toBe(false);
+  });
+
+  test('an unmarked save is refused while another approval is in flight', async () => {
+    await registered();
+    await service().admit(ID);
+    expect(await store().approve(ID, result(), clock)).toBe(false);
+  });
+
+  test('releasing the marker lets deny and a new admission proceed at once', async () => {
+    await registered();
+    const marker = await service().admit(ID);
+    await service().release(ID, marker);
+    await service().admit(ID);
+    const second = (await client.approvalRequest.findUniqueOrThrow({ where: { id: ID } })).approvingAt!;
+    await service().release(ID, second);
+    await expect(service().deny(ID, LINK)).resolves.toEqual({ status: 'denied' });
+  });
+
+  test('releasing with a marker that is not current changes nothing', async () => {
+    await registered();
+    const marker = await service().admit(ID);
+    await service().release(ID, new Date(marker.getTime() - 1));
+    await expect(service().deny(ID, LINK)).rejects.toMatchObject({ code: 'approval_in_progress' });
   });
 
   test('an unadmitted save still needs an unexpired request', async () => {
@@ -97,9 +134,9 @@ describe('admitting an approval request', () => {
 describe('settling an approval request exactly once', () => {
   test('deny is refused while an approval is in flight, and the approval then saves', async () => {
     await registered();
-    await service().admit(ID);
+    const marker = await service().admit(ID);
     await expect(service().deny(ID, LINK)).rejects.toMatchObject({ code: 'approval_in_progress', status: 409 });
-    expect(await store().approve(ID, result(), clock)).toBe(true);
+    expect(await store().approve(ID, result(), clock, marker)).toBe(true);
     expect((await client.approvalRequest.findUniqueOrThrow({ where: { id: ID } })).deniedAt).toBeNull();
   });
 
@@ -124,9 +161,9 @@ describe('settling an approval request exactly once', () => {
 
   test('two approvals: only the first saves a result', async () => {
     await registered();
-    await service().admit(ID);
-    expect(await store().approve(ID, result('first'), clock)).toBe(true);
-    expect(await store().approve(ID, result('second'), clock)).toBe(false);
+    const marker = await service().admit(ID);
+    expect(await store().approve(ID, result('first'), clock, marker)).toBe(true);
+    expect(await store().approve(ID, result('second'), clock, marker)).toBe(false);
     expect((await client.approvalRequest.findUniqueOrThrow({ where: { id: ID } })).resultRef).toBe('first');
   });
 });

@@ -23,12 +23,20 @@ export function createPrismaApprovalRequestStore(database: PrismaClient): Approv
         where: { id, resultRef: null, deniedAt: null, expiresAt: { gt: now }, OR: [{ approvingAt: null }, { approvingAt: { lte: leaseStart(now) } }] },
         data: { approvingAt: now },
       });
-      return saved.count === 1;
+      return saved.count === 1 ? now : null;
     },
-    async approve(id, result, now) {
-      // One conditional write settles it: an admitted request is saved whatever the clock says; an unadmitted one must still be unexpired.
+    async release(id, marker) {
+      await database.approvalRequest.updateMany({ where: { id, resultRef: null, approvingAt: marker }, data: { approvingAt: null } });
+    },
+    async approve(id, result, now, marker) {
+      // One conditional write settles it. Admitted: this exact marker, within its lease, on a request no more than one lease past its deadline.
+      // Not admitted: the request must be unexpired and no other approval live.
+      if (marker && marker.getTime() <= leaseStart(now).getTime()) return false;
       const saved = await database.approvalRequest.updateMany({
-        where: { id, resultRef: null, deniedAt: null, OR: [{ approvingAt: { not: null } }, { expiresAt: { gt: now } }] }, data: result,
+        where: marker
+          ? { id, resultRef: null, deniedAt: null, approvingAt: marker, expiresAt: { gt: leaseStart(now) } }
+          : { id, resultRef: null, deniedAt: null, expiresAt: { gt: now }, OR: [{ approvingAt: null }, { approvingAt: { lte: leaseStart(now) } }] },
+        data: result,
       });
       return saved.count === 1;
     },
