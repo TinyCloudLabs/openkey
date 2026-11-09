@@ -98,7 +98,7 @@
   let codeDeadline = $state<number | null>(null);
   let codeCountdown = $state<CodeCountdownSnapshot | null>(null);
   let codeAnnouncement = $state('');
-  let delegationPayload = $state<any>(null);
+  let delegationPayload = $state.raw<any>(null);
   let codeRenewing = $state(false);
   let codeRenewError = $state('');
   let approvalExpiryNow = $state(Date.now());
@@ -123,9 +123,10 @@
 
   $effect(() => {
     if (!codeCountdown?.expired) return;
-    approvalExpiryNow = Date.now();
-    if (!Number.isFinite(delegationExpiry) || delegationExpiry <= approvalExpiryNow) return;
-    const timer = setTimeout(() => { approvalExpiryNow = Date.now(); }, delegationExpiry - approvalExpiryNow);
+    const now = Date.now();
+    approvalExpiryNow = now;
+    if (!Number.isFinite(delegationExpiry) || delegationExpiry <= now) return;
+    const timer = setTimeout(() => { approvalExpiryNow = Date.now(); }, Math.min(delegationExpiry - now, 2_147_483_647));
     return () => clearTimeout(timer);
   });
 
@@ -1341,7 +1342,7 @@
   }
 
   async function getNewCode() {
-    if (codeRenewing || delegationExpired || !delegationPayload) return;
+    if (!codeCountdown?.expired || codeRenewing || delegationExpired || !delegationPayload) return;
     codeRenewing = true;
     try {
       await mintShortCode(delegationPayload, true);
@@ -1423,7 +1424,7 @@
     }
 
     pasteCode = delegationPasteCode(payload);
-    delegationPayload = payload;
+    delegationPayload = Object.freeze(payload);
     await mintShortCode(payload);
     done = true;
     step = 'done';

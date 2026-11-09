@@ -136,6 +136,7 @@ test('an expired short code can be re-minted for the same approval', async ({ pa
   };
   const delegationCalls: unknown[] = [];
   const codeCalls: unknown[] = [];
+  const codeBodies: string[] = [];
   const codeGets: string[] = [];
   let minted = 0;
   await page.route('**/api/delegate', (route) => {
@@ -149,6 +150,7 @@ test('an expired short code can be re-minted for the same approval', async ({ pa
       return json(route, 404, { error: 'not found' });
     }
     codeCalls.push(route.request().postDataJSON());
+    codeBodies.push(route.request().postData() ?? '');
     minted += 1;
     if (minted === 2) {
       const { promise, resolve } = Promise.withResolvers<void>();
@@ -194,6 +196,7 @@ test('an expired short code can be re-minted for the same approval', async ({ pa
   await expect(page.getByRole('timer')).toContainText('Code valid for');
   expect(codeCalls).toHaveLength(2);
   expect(codeCalls[1]).toEqual(codeCalls[0]);
+  expect(codeBodies[1]).toBe(codeBodies[0]);
   expect(delegationCalls).toHaveLength(1);
   expect(codeCalls[0]).toEqual({ delegation });
   expect(codeGets).toEqual([]);
@@ -287,6 +290,53 @@ test('a missing or invalid server date uses the five-minute receipt deadline', a
   await expect(page.getByRole('button', { name: 'Get a new code' })).toHaveCount(0);
   await page.clock.fastForward(300_001);
   await expect(page.getByRole('button', { name: 'Get a new code', exact: true })).toBeVisible();
+});
+
+test('does not loop the approval-expiry timer for a 30-day delegation', async ({ page }) => {
+  const receivedAt = new Date('2026-11-09T09:00:00.000Z');
+  await page.clock.install({ time: receivedAt });
+  await mock(page);
+  const delegation = {
+    delegationHeader: { Authorization: 'Bearer signed' },
+    delegationCid: 'bafy-signed',
+    spaceId: space,
+    verificationMethod: 'did:key:z6Mk',
+    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+    expirationTime: new Date(receivedAt.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    hostActivated: true,
+  };
+  await page.route('**/api/delegate', (route) => json(route, 200, delegation));
+  await page.route('**/api/delegation-codes', (route) => route.fulfill({
+    status: 201,
+    contentType: 'application/json',
+    headers: { date: receivedAt.toUTCString() },
+    body: JSON.stringify({ code: 'AAAA-BBBB', expiresAt: new Date(receivedAt.getTime() + 300_000).toISOString() }),
+  }));
+  await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect(page.getByText('AAAA-BBBB')).toBeVisible();
+  await page.evaluate(() => {
+    let calls = 0;
+    document.documentElement.dataset.timeoutCalls = '0';
+    Object.defineProperty(window, 'setTimeout', {
+      configurable: true,
+      value: new Proxy(window.setTimeout.bind(window), {
+        apply(target, thisArg, args) {
+          calls += 1;
+          document.documentElement.dataset.timeoutCalls = String(calls);
+          return Reflect.apply(target, thisArg, args);
+        },
+      }),
+    });
+  });
+
+  await page.clock.fastForward(300_001);
+  await expect(page.getByRole('timer')).toContainText('Code expired');
+  const callsAtExpiry = await page.evaluate(() => Number(document.documentElement.dataset.timeoutCalls));
+  await page.clock.runFor(100);
+  const callsAfter100Ms = await page.evaluate(() => Number(document.documentElement.dataset.timeoutCalls));
+  expect(callsAfter100Ms - callsAtExpiry).toBeLessThan(10);
+
 });
 
 test.describe('TC-660 /device prefilled code', () => {
