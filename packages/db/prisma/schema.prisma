@@ -131,6 +131,8 @@ model ApprovalRequest {
   acknowledgedAt        DateTime?
   // Set when the owner refuses the request. Terminal: a denied request is never approved.
   deniedAt              DateTime?
+  // Set when an approval is admitted, before signing starts; counts for a short lease. Deny is refused meanwhile.
+  approvingAt           DateTime?
 
   @@index([expiresAt])
   @@index([resultExpiresAt])

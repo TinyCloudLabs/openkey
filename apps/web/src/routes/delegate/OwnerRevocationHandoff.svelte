@@ -8,6 +8,7 @@
   import { ownerRevocationCopy as text } from '$lib/owner-revocation-copy';
   import { deliverOwnerRevocation } from '$lib/owner-revocation-response';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
+  import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import { ownerRevocationAddress, parseOwnerRevocationRequest, renderSiweLiteral, type OwnerRevocationRequest } from '@openkey/capability-review';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
@@ -98,7 +99,7 @@
     const data: unknown = await response.json().catch(() => null);
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('OpenKey returned an unreadable response.');
     const result = data as Record<string, unknown>;
-    if (!response.ok) throw new Error(typeof result.error === 'string' ? result.error : `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(apiBusyOrEndedMessage(response.status, 'revoke') ?? (typeof result.error === 'string' ? result.error : `HTTP ${response.status}`));
     return result;
   }
 

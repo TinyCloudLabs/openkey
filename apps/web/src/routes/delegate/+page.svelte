@@ -6,6 +6,7 @@
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
+  import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
@@ -725,7 +726,7 @@
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(body.error || `HTTP ${res.status}`);
+      throw new Error(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`));
     }
 
     return res.json();
@@ -1150,7 +1151,7 @@
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(body.error || `HTTP ${res.status}`);
+        throw new Error(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`));
       }
 
       const data = await res.json();
@@ -1282,7 +1283,7 @@
 
       if (!compRes.ok) {
         const body = await compRes.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(body.error || `HTTP ${compRes.status}`);
+        throw new Error(apiBusyOrEndedMessage(compRes.status) ?? (body.error || `HTTP ${compRes.status}`));
       }
 
       const data = await compRes.json();
