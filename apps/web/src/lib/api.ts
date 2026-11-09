@@ -35,7 +35,7 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly =
     const message = typeof detail === 'string' ? detail : detail?.message;
     const failure = new Error(message || `HTTP ${res.status}`);
     Object.assign(failure, {
-      code: detail?.code,
+      code: detail?.code ?? (typeof error?.code === 'string' ? error.code : undefined),
       status: res.status,
       policyEpoch: typeof error?.policyEpoch === 'number' ? error.policyEpoch : undefined,
     });

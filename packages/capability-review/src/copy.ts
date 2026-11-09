@@ -57,6 +57,13 @@ export const DELEGATION_LIST_LABEL = "Who can access your data";
 /** The consent sentence for the same grant. */
 export const DELEGATION_LIST_STATEMENT = "See who has access to your data";
 
+/**
+ * Title and consent sentence of a `tinycloud.delegation/revoke` grant on the
+ * signer's own space. It lets the requester end access the signer gave; the
+ * resource names the space, not the app or link, so the row cannot name one.
+ */
+export const DELEGATION_REVOKE_LABEL = "Remove access you gave";
+
 /** Named-key verbs that carry consent copy. */
 export type NamedKeyVerb = "create" | "decrypt" | "block" | "unblock" | "delete";
 
@@ -98,7 +105,14 @@ export const NAMED_KEY_STATEMENTS: Record<
 export const OWN_KEY_PREFIX_STATEMENTS = {
   create: "Create your own encryption keys in `{path}`",
   decrypt: "Decrypt data locked with your keys in `{path}`",
+  shareDecrypt: "Open all your shared files, including ones you share later.",
 } as const;
+
+/**
+ * The owner's default-network `share/` prefix holds the keys for files the
+ * owner shares, so its create row says that instead of naming the path.
+ */
+export const SHARE_KEY_PREFIX_CREATE_STATEMENT = "Create keys for files you share";
 
 /**
  * Escape controls, markup and non-ASCII characters as `\uXXXX`, so

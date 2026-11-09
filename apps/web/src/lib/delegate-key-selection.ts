@@ -1,8 +1,26 @@
 import type { EthereumKey } from './api';
 
+export const ARCHIVED_KEY_MESSAGE = 'This key was archived. Reconnect to choose a key.';
+
+export function activeKeys(keys: EthereumKey[]): EthereumKey[] {
+  return keys.filter((key) => !key.archivedAt);
+}
+
+/** Keys that can sign this request without changing its named owner. */
+export function signingKeyChoices(
+  keys: EthereumKey[],
+  expectedAddress: string | null,
+  keyType: EthereumKey['keyType'],
+): EthereumKey[] {
+  return keys.filter((key) =>
+    !key.archivedAt && key.keyType === keyType &&
+    (!expectedAddress || key.address.toLowerCase() === expectedAddress),
+  );
+}
+
 /** The user's primary key, when `keys` holds one. */
 export function primaryKey(keys: EthereumKey[]): EthereumKey | null {
-  return keys.find((key) => key.isPrimary === true) ?? null;
+  return keys.find((key) => !key.archivedAt && key.isPrimary === true) ?? null;
 }
 
 /**
@@ -13,6 +31,7 @@ export function primaryKey(keys: EthereumKey[]): EthereumKey | null {
  * when the user must choose.
  */
 export function autoSelectKey(keys: EthereumKey[], expectedAddress: string | null): EthereumKey | null {
+  keys = activeKeys(keys);
   if (expectedAddress) {
     return keys.find((key) => key.address.toLowerCase() === expectedAddress) ?? null;
   }
@@ -31,6 +50,7 @@ export type KeyPickerLayout =
   | { kind: 'list'; keys: EthereumKey[] };
 
 export function keyPickerLayout(keys: EthereumKey[], expectedAddress: string | null): KeyPickerLayout {
+  keys = activeKeys(keys);
   const primary = expectedAddress ? null : primaryKey(keys);
   if (!primary) return { kind: 'list', keys };
   return { kind: 'primary', primary, others: keys.filter((key) => key !== primary) };

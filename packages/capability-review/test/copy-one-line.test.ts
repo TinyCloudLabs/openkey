@@ -44,7 +44,12 @@ const PLACEHOLDER_CHARS = 8;
  * Descriptors allowed a second line: exact source text (placeholders as in
  * the source) to a one-line reason. Keep this list short.
  */
-const TWO_LINE_EXCEPTIONS: Record<string, string> = {};
+const TWO_LINE_EXCEPTIONS: Record<string, string> = {
+  "Open all your shared files, including ones you share later.":
+    "Sam approved this exact future-share explanation on 2026-10-31 (ask/openkey-388-share-approval).",
+  "Read, change or delete any row in the ${} database":
+    "states whole-database authority; Sam approved the wording 2026-11-03 15:04Z",
+};
 
 const COPY_SOURCES = ["copy.ts", "statements.ts", "core-operations.ts", "classify.ts", "plain-words.ts"];
 
@@ -275,6 +280,22 @@ function overLimit(descriptors: Descriptor[]): string[] {
     .map((d) => `${d.where} (${d.length} chars): ${d.text}`);
 }
 
+function renderedExceptionMatches(text: string): boolean {
+  return Object.keys(TWO_LINE_EXCEPTIONS).some((key) => {
+    const pattern = key
+      .split("${}")
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join(".+");
+    return new RegExp(`^${pattern}$`).test(text);
+  });
+}
+
+function renderedOverLimit(descriptors: Descriptor[]): string[] {
+  return descriptors
+    .filter((d) => !d.raw && d.length > (renderedExceptionMatches(d.text) ? TWO_LINE_LIMIT : LINE_LIMIT))
+    .map((d) => `${d.where} (${d.length} chars): ${d.text}`);
+}
+
 describe("permission copy is one line", () => {
   const source = sourceDescriptors();
 
@@ -290,7 +311,17 @@ describe("permission copy is one line", () => {
   it(`every row and label rendered for any mix of registry abilities fits ${LINE_LIMIT} characters`, () => {
     const rendered = renderedDescriptors();
     expect(rendered.filter((d) => d.raw).map((d) => `${d.where}: ${d.text}`)).toEqual([]);
-    expect(overLimit(rendered)).toEqual([]);
+    expect(renderedOverLimit(rendered)).toEqual([]);
+  });
+
+  it("keeps the line limit for non-exempt and overlong rendered text", () => {
+    const otherLine = { where: "synthetic", text: "x".repeat(52), length: 52 };
+    const overlongException = {
+      where: "synthetic exception",
+      text: `Read, change or delete any row in the ${"x".repeat(100)} database`,
+      length: 145,
+    };
+    expect(renderedOverLimit([otherLine, overlongException])).toHaveLength(2);
   });
 
   it("a row or composed title never loses deletion, decryption, key, sharing or another user's data", () => {

@@ -168,6 +168,32 @@ external signature), the route atomically compares and consumes both
 tokens: a concurrent loser and a replay cannot sign. A managed signing
 failure after consumption still requires a fresh approval.
 
+The popup and embedded sign pages obtain the preview automatically when the
+current permission selection or chosen expiry changes. Approve is enabled
+only with a current, unexpired preview; selection remains editable while
+the preview is being fetched. An edit discards the held preview, and an
+expired preview is fetched again (with a fresh context when necessary).
+One Approve action submits the captured preview token and its selection.
+The raw candidate remains in Advanced details. External wallets receive
+the same preview payload through the existing SDK handoff.
+
+The ordinary request-type introduction stays the same while the preview is
+loading and after it is ready. TinyCloud capability requests retain
+`Review the access this app is asking for.`; the introduction does not add
+a technical preview message or change height when the preview arrives.
+
+These page changes retain the three API endpoints, both single-use tokens,
+and the server's selection and exact-byte checks. Details: TC-2198.
+
+While a preview is loading, the disabled action reads `Getting ready...`.
+After a recoverable preview or signing error, `Try again` requests a fresh
+preview only when the owner chooses it; it does not sign or repeat on a
+timer. Existing unreadable-reply refusals still end the caller's request.
+Ordinary held-preview expiry refreshes automatically. If a newly returned
+preview is already too old to use, including a context that expires while
+the response is in flight, the page shows `OpenKey's check timed out.
+Try again.` and leaves approval disabled until an owner-initiated retry.
+
 An expired authorization context returns `context-expired` on
 `/authorize-sign`, `/authorize-sign-preview`, the managed approval, and
 versioned `/complete` only while its record remains stored. Issuing a new

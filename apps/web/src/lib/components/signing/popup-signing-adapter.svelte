@@ -4,7 +4,7 @@
   //
   // This adapter owns:
   //   - the review selection and editing state,
-  //   - the onApprove decision (preview vs exact-byte fallthrough),
+  //   - the onApprove readiness check,
   //   - the onCancel wiring (widget cancel response + close),
   //   - the invalidatePreview call when the selection changes.
   //
@@ -79,12 +79,7 @@
   }
 
   function onApprove() {
-    // First approval prepares server-authoritative bytes. The second
-    // approval consumes the preview while staying in this same shared
-    // content view. Legacy requests sign their original exact bytes.
-    if (transport.canUseAuthorizeSign && !transport.previewReady) {
-      void transport.requestPreview();
-    } else {
+    if (!transport.canUseAuthorizeSign || transport.previewReady) {
       void transport.approveAndSign();
     }
   }
@@ -100,12 +95,14 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
-  finalPreview={transport.previewReady}
+  refused={transport.refused ?? false}
+  previewPending={transport.canUseAuthorizeSign && !transport.previewReady}
   {peerRecognition}
   expiryMs={transport.expiry?.chosenMs ?? null}
   onExpiryChange={transport.expiry?.onChange}
   {onApprove}
   {onCancel}
+  onRetry={transport.retryPreview}
   {onSelectionChange}
   {onEditingChange}
 />

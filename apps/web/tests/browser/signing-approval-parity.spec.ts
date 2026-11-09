@@ -28,7 +28,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 import { parseCapabilityReview } from '../../../../packages/capability-review/src/index';
-import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
+import { EXPLORER_PERMISSION_POPUP_REQUEST, makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
 
 type Surface = 'cli' | 'popup' | 'iframe';
 
@@ -156,6 +156,28 @@ function encryptionFixtureModel() {
   return model;
 }
 
+function shareKeyFixtureModel() {
+  const base = benignFixtureModel();
+  const network = `urn:tinycloud:encryption:did:pkh:eip155:1:${base.signer.address}:default`;
+  const space = `tinycloud:pkh:eip155:1:${base.signer.address}`;
+  const grants = {
+    [network]: ['tinycloud.encryption/network.create', 'tinycloud.encryption/decrypt'],
+    [`${network}/share/`]: ['tinycloud.encryption/key.create', 'tinycloud.encryption/decrypt'],
+    [`${space}:files/kv/files-for-you/v1/`]: ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/put'],
+    [`${space}:default/capabilities`]: ['tinycloud.capabilities/read'],
+  };
+  return parseCapabilityReview({
+    message: siweWithResources([makeRecapResource(Object.fromEntries(
+      Object.entries(grants).map(([resource, abilities]) => [resource, Object.fromEntries(abilities.map(ability => [ability, [{}]]))]),
+    ))]),
+    signer: base.signer,
+    requester: base.requester,
+    reason: base.reason,
+    metadataTrust: base.metadataTrust,
+    editable: true,
+  });
+}
+
 function sqlSchemaFixtureModel() {
   const model = benignFixtureModel();
   const space = 'tinycloud:pkh:eip155:1:0x1111111111111111111111111111111111111111:applications';
@@ -253,7 +275,7 @@ async function loadHarness(page: Page, cfg: HarnessConfig) {
       model: cfg.model,
       initialSelection: cfg.initialSelection,
       canUseAuthorizeSign: cfg.canUseAuthorizeSign ?? true,
-      previewReady: cfg.previewReady ?? false,
+      previewReady: cfg.previewReady ?? true,
       approving: cfg.approving ?? false,
       error: cfg.error ?? null,
       calls: [],
@@ -291,6 +313,17 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(dialog).toHaveAttribute('aria-modal', 'true');
     });
 
+    test(`[${surface}] Share keeps key creation unbadged and three Sensitive rows`, async ({ page }) => {
+      const model = shareKeyFixtureModel();
+      await loadHarness(page, { surface, model, initialSelection: fixtureInitialSelection(model) });
+      const summary = page.locator('.summary');
+      const create = summary.locator('.summary-statement').filter({ hasText: 'Create keys for files you share' });
+      await expect(create.locator('.summary-sensitive-pill')).toHaveCount(0);
+      await expect(create).toHaveAttribute('data-severity', 'attention');
+      await expect(summary.locator('.summary-sensitive-pill')).toHaveCount(3);
+      await expect(page.locator('.sensitive-callout')).toHaveText(/^\s*3\b/);
+    });
+
     test(`[${surface}] mixed SQL read+schema grant renders schema in its own row`, async ({ page }) => {
       const model = sqlSchemaFixtureModel();
       await loadHarness(page, {
@@ -325,7 +358,8 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(dialog).toBeVisible();
       await expect(dialog).toContainText('Authorize capabilities');
       await expect(dialog).toContainText('Manage your TinyCloud account');
-      await expect(dialog).toContainText('Read and update application data');
+      // The SQL write grant states its row-level reach (TC-2453); the sentence itself is not pinned here.
+      await expect(dialog).toContainText(/\brows?\b/);
       await expect(dialog).toContainText('Check your TinyCloud permissions');
       const summary = page.locator('[data-parity-harness] .summary');
       await expect(summary.locator('.summary-statement')).toHaveCount(12);
@@ -355,7 +389,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
         'View your secret names and details',
         'Read secret values',
         'Edit and delete tables in your TinyCloud account',
-        'Read and update application data',
+        /\brows?\b/,
         'Read application data',
         "Edit and delete this app's tables",
         'View your secret catalog',
@@ -463,18 +497,19 @@ test.describe('signing-approval browser parity — production adapters', () => {
             tag: el.tagName.toLowerCase(),
             text: (el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 40),
             type: el.getAttribute('type') ?? '',
+            testid: el.getAttribute('data-testid') ?? '',
           };
         });
         if (!info) break;
-        signature.push(`${info.tag}[type=${info.type}][text=${info.text}]`);
+        signature.push(`${info.tag}[type=${info.type}][testid=${info.testid}][text=${info.text}]`);
       }
-      // The Approve and Cancel buttons MUST both appear in the focus
+      // The Approve and dismiss buttons MUST both appear in the focus
       // sequence — proving the browser's tab manager reaches them.
       expect(signature.join(' | ')).toContain('button[type=');
       const hasApprove = signature.some((s) => s.includes('Approve'));
-      const hasCancel = signature.some((s) => s.includes('Cancel'));
+      const hasDismiss = signature.some((s) => s.includes('[testid=signing-dismiss]'));
       expect(hasApprove).toBe(true);
-      expect(hasCancel).toBe(true);
+      expect(hasDismiss).toBe(true);
     });
 
     test(`[${surface}] Enter on Approve routes to the ADAPTER approve wiring`, async ({ page }) => {
@@ -496,7 +531,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       if (surface === 'cli') {
         expect(names).toEqual(['approveDelegate']);
       } else {
-        expect(names).toEqual(['requestPreview']);
+        expect(names).toEqual(['approveAndSign']);
       }
     });
 
@@ -517,17 +552,17 @@ test.describe('signing-approval browser parity — production adapters', () => {
       if (surface === 'cli') {
         expect(names).toContain('approveDelegate');
       } else {
-        expect(names).toContain('requestPreview');
+        expect(names).toContain('approveAndSign');
       }
     });
 
-    test(`[${surface}] Enter on Cancel routes to the ADAPTER cancel wiring`, async ({ page }) => {
+    test(`[${surface}] Enter on the dismiss control routes to the ADAPTER cancel wiring`, async ({ page }) => {
       await loadHarness(page, {
         surface,
         model: benignFixtureModel(),
         initialSelection: fixtureInitialSelection(benignFixtureModel()),
       });
-      const cancel = page.locator('[data-parity-harness] button', { hasText: 'Cancel' }).first();
+      const cancel = page.locator('[data-parity-harness] [data-testid="signing-dismiss"]').first();
       await cancel.focus();
       await page.keyboard.press('Enter');
       const calls = await readCalls(page);
@@ -673,6 +708,34 @@ test.describe('signing-approval browser parity — production adapters', () => {
     await expect(page.getByRole('button', { name: 'Copy text' })).toHaveText('Copied');
   });
 
+  test('pending widget previews disable approval while permissions stay editable', async ({ page }) => {
+    for (const surface of ['popup', 'iframe'] as const) {
+      const model = benignFixtureModel();
+      await loadHarness(page, {
+        surface,
+        model,
+        initialSelection: fixtureInitialSelection(model),
+        canUseAuthorizeSign: true,
+        previewReady: false,
+      });
+      await expect(page.locator('button.approve')).toBeDisabled();
+      await page.locator('details.advanced-details > summary').click();
+      await page.getByRole('button', { name: 'Edit', exact: true }).click();
+      await page.locator('details.severity-bucket:not([open]) > summary').first().click();
+      const checkbox = page.locator('input[type="checkbox"]:not(:disabled)').first();
+      await expect(checkbox).toBeChecked();
+      await checkbox.focus();
+      await page.keyboard.press('Space');
+      await expect(checkbox).not.toBeChecked();
+      await expect(page.locator('button.approve')).toBeDisabled();
+      expect((await readCalls(page)).map((call) => call.name))
+        .toEqual(['onSelectionEdited', 'invalidatePreview']);
+      await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+      expect((await readCalls(page)).map((call) => call.name))
+        .toEqual(['onSelectionEdited', 'invalidatePreview', 'cancel']);
+    }
+  });
+
   test('widget approve routes to exact-byte path when canUseAuthorizeSign=false', async ({ page }) => {
     for (const surface of ['popup', 'iframe'] as const) {
       await loadHarness(page, {
@@ -708,7 +771,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(page.getByRole('button', { name: 'Copy text' })).toBeVisible();
       await expect(page.getByText('server-prepared-exact-bytes')).toBeVisible();
 
-      const approve = page.getByRole('button', { name: 'Approve exact bytes' });
+      const approve = page.getByRole('button', { name: 'Approve', exact: true });
       await approve.focus();
       await page.keyboard.press('Enter');
       const names = (await readCalls(page)).map((call) => call.name);
@@ -730,8 +793,9 @@ test.describe('signing-approval browser parity — production adapters', () => {
       const summary = page.locator('.summary');
       await expect(summary).toContainText('Set up encryption');
       await expect(summary).not.toContainText('decrypt protected data');
+      // TC-1424: keep the row's badge, but omit a redundant banner when every row is Sensitive.
+      await expect(page.locator('.summary-statement .summary-sensitive-pill')).toHaveCount(1);
       await expect(page.locator('.sensitive-callout')).toHaveCount(0);
-      await expect(page.getByRole('button', { name: 'Approve exact bytes' })).toBeVisible();
     }
   });
 

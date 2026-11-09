@@ -68,6 +68,7 @@ const EVENTS = {
   native_par_request_cleanup_failed: true, native_session_proof_cleanup_failed: true,
   scoreboard_protocol_users_call: true, app_sign_in_record_failed: true, permission_entry_unknown_field: true,
   third_party_console: true, uncaught_exception: true, unhandled_rejection: true, config_invalid: true,
+  sign_origin_refused: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;
 type EventName = keyof typeof EVENTS;
@@ -132,6 +133,11 @@ export function logMetric(
   fields: { status?: number; count?: number },
 ): void {
   emit(level, event, { status: fields.status, count: fields.count });
+}
+
+/** One line on a refused managed-key signing request: route template and why, never the origin value. */
+export function logSignOriginRefused(route: string | undefined, reason: 'missing' | 'foreign'): void {
+  emit('warn', 'sign_origin_refused', { route: routeTemplate(route), reason });
 }
 
 const PERMISSION_FIELD_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
