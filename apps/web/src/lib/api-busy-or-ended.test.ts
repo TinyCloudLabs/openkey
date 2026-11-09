@@ -10,8 +10,13 @@ describe('apiBusyOrEndedMessage', () => {
     expect(apiBusyOrEndedMessage(409)).toBe('This request is already being approved. Wait a moment.');
   });
 
-  test('a 410 on a sign path means the request was answered or ended', () => {
+  test('the revocation page names its own action for a 409', () => {
+    expect(apiBusyOrEndedMessage(409, 'revoke')).toBe('This permission is already being revoked. Wait a moment.');
+  });
+
+  test('a 410 says the same on every surface', () => {
     expect(apiBusyOrEndedMessage(410)).toBe('This request has already been answered or has ended.');
+    expect(apiBusyOrEndedMessage(410, 'revoke')).toBe('This request has already been answered or has ended.');
   });
 
   test('every other status keeps the server text', () => {

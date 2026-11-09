@@ -115,7 +115,7 @@ test('the owner revocation page shows the busy wording on a 409', async ({ page 
   });
   const request = { kind: 'owner-revocation', ownerDid: `did:pkh:eip155:1:${address}`, cid: 'bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgzz7nazxe', nonce: '0123456789abcdef0123456789abcdef', expiresAt: new Date(Date.now() + 590_000).toISOString() };
   await page.goto(`/delegate#tv2=${Buffer.from(JSON.stringify({ transportVersion: 2, request, delivery: { handoffId, state, cancelSecret } })).toString('base64url')}`);
-  await expect(page.getByRole('alert')).toHaveText(BUSY);
+  await expect(page.getByRole('alert')).toHaveText('This permission is already being revoked. Wait a moment.');
   await expect(page.getByText('Handoff is being signed')).toHaveCount(0);
   const shots = process.env.SHOT_DIR;
   if (shots) await page.screenshot({ path: `${shots}/revoke-busy-390.png`, fullPage: false });

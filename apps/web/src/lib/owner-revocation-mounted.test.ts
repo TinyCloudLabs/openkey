@@ -151,7 +151,7 @@ test('owner review exposes the entire copyable permission ID for CLI comparison'
   }
 });
 
-test('owner review shows the busy wording when the request is already being approved', async () => {
+test('owner review shows the revoke wording when the permission is already being revoked', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const path = String(input);
@@ -165,7 +165,7 @@ test('owner review shows the busy wording when the request is already being appr
   const app = mount(Subject, { target, props: { encoded, onClear: () => {} } });
   try {
     await until(() => !!target.querySelector('[role="alert"]'), 'busy wording');
-    expect(target.querySelector('[role="alert"]')?.textContent).toBe('This request is already being approved. Wait a moment.');
+    expect(target.querySelector('[role="alert"]')?.textContent).toBe('This permission is already being revoked. Wait a moment.');
     expect(target.textContent).not.toContain('Handoff is being signed');
   } finally {
     unmount(app);
