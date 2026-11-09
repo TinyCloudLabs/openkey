@@ -64,7 +64,7 @@ function deviceSignedSubsetRefusal(record: DeviceAuthorizationRecord, signedSiwe
       // wallet-signed /complete may not pick another requester or re-root the
       // device's spaces on another chain.
       chainId: 1,
-      prefix: '',
+      prefix: 'default',
       // publicSessionJwk() validated this at start: exactly { kty: 'OKP', crv: 'Ed25519', x }.
       jwk: record.publicJwk as unknown as DelegationJwk,
       permissions: record.permissions,

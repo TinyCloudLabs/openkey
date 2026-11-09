@@ -261,7 +261,7 @@ describe('device delegation window on /api/delegate', () => {
       // (every short-named space re-rooted there) or for another domain. The control is the same
       // construction with the values the device routes write, which completes.
       const build = (chainId: number, domain?: string) => prepareDelegationSession({
-        address: account.address, chainId, prefix: '', jwk, permissions: requested, deviceTransaction: true,
+        address: account.address, chainId, prefix: 'default', jwk, permissions: requested, deviceTransaction: true,
         expiryMs: 3_600_000, ...(domain ? { domain } : {}),
       }).prepared;
       const complete = async (prepared: ReturnType<typeof build>) => post('/complete', {
