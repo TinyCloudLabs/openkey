@@ -789,12 +789,13 @@ export class DeviceAuthorizationService {
    * SIWE exists, from the canonical SIWE that is (or was) actually signed,
    * which also supplies the expiry; they must agree. Checked before signing
    * and before any host activation, so a delegation outside the transaction
-   * never exists.
+   * never exists. Returns the pending record so the caller can hold the
+   * signed capabilities to its requested permissions.
    */
   async assertDelegationWindow(
     transactionId: unknown,
     input: { nodeOrigin: unknown; jwk: unknown } & ({ signedSiwe: string } | { expiresAt: Date }),
-  ): Promise<void> {
+  ): Promise<DeviceAuthorizationRecord> {
     const record = typeof transactionId === 'string' ? await this.store.findById(transactionId) : null;
     const now = this.now();
     if (!record || record.status !== 'pending' || record.transactionExpiresAt <= now) {
@@ -823,6 +824,7 @@ export class DeviceAuthorizationService {
     ) {
       throw new DeviceAuthorizationError('invalid_request', 'delegation lifetime exceeds the device request', 400);
     }
+    return record;
   }
 
   async lookup(userCode: string): Promise<(Omit<DeviceAuthorizationRecord, 'deviceSecretHash' | 'codeChallenge' | 'requestIpHash' | 'encryptedResult'> & {
