@@ -202,6 +202,7 @@ test('an expired short code can be re-minted for the same approval', async ({ pa
 test('a failed re-mint keeps the expired code and allows retry', async ({ page }) => {
   const receivedAt = new Date('2026-11-09T09:00:00.000Z');
   await page.clock.install({ time: receivedAt });
+  await page.setViewportSize({ width: 390, height: 844 });
   await mock(page);
   const delegation = {
     delegationHeader: { Authorization: 'Bearer signed' },
@@ -230,6 +231,7 @@ test('a failed re-mint keeps the expired code and allows retry', async ({ page }
   await expect(page.getByRole('button', { name: 'Get a new code', exact: true })).toBeVisible();
   await expect(page.getByText('AAAA-BBBB')).toHaveClass(/line-through/);
   await expect(page.getByText("Couldn't get a new code. Try again, or start again in the CLI.", { exact: true })).toBeVisible();
+  await expect(showAgain).toBeEnabled();
   await showAgain.click();
   await expect(page.getByText("Couldn't get a new code. Try again, or start again in the CLI.", { exact: true })).toBeVisible();
   await expect(showAgain).toBeEnabled();
