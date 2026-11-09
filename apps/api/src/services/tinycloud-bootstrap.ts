@@ -87,8 +87,8 @@ export interface EnsureTinyCloudBootstrapInputCore {
   /** Resolved inside the lock, so a sweep claim that loses never unseals the key. */
   privateKey: string | (() => Promise<string>);
   host?: string;
-  /** The space this run is for: hosted first, inside the lock, and reported as soon as the node confirms it. */
-  requestedSpace?: TinyCloudBootstrapRequestedSpace;
+  /** Spaces this run is for: hosted first inside the lock, then reported together after node confirmation. */
+  requestedSpaces?: TinyCloudBootstrapRequestedSpaces;
   /** Set by the background sweep: the lock is taken only if the row still matches what it observed. */
   sweepClaim?: TinyCloudBootstrapSweepClaim;
 }
@@ -154,20 +154,20 @@ export interface TinyCloudBootstrapRequestedSpaceFailure {
 export type TinyCloudBootstrapRequestedSpaceReport = { status: 'hosted' } | TinyCloudBootstrapRequestedSpaceFailure;
 
 /**
- * The space the client's approval is for. The run hosts it first, inside its own lock,
- * before the remaining spaces and the seeding (TC-1608).
+ * The spaces the client's approval is for. The run hosts all of them first, inside its own lock,
+ * before the remaining spaces and the seeding (TC-2490).
  */
-export interface TinyCloudBootstrapRequestedSpace {
-  /** Canonical bootstrap space name, already checked against the approved space id. */
-  space: BootstrapSpaceName;
-  /** An earlier attempt of this approval already had the node confirm the space: do not host it again. */
-  alreadyHosted?: boolean;
+export interface TinyCloudBootstrapRequestedSpaces {
+  /** Canonical bootstrap space names, already checked against the approved space ids. */
+  spaces: readonly BootstrapSpaceName[];
+  /** An earlier attempt of this approval had the node confirm every space: do not host them again. */
+  alreadyHosted: boolean;
   /**
-   * The node, answering this approval's fresh activation, listed the space as not hosted. A row
-   * that is already `complete` does not answer for the node: the run is claimed and hosts the space.
+   * The node, answering this approval's fresh activation, listed at least one space as not hosted. A row
+   * that is already `complete` does not answer for the node: the run is claimed and hosts the requested spaces.
    */
   nodeReportedUnhosted?: boolean;
-  /** Called once per attempt that hosts the space: the node confirmed it, or hosting it failed. */
+  /** Called once per hosting attempt: every space was node-confirmed, or at least one failed. */
   report: (report: TinyCloudBootstrapRequestedSpaceReport) => void;
 }
 
@@ -414,7 +414,7 @@ export async function ensureTinyCloudBootstrap(
     where: { keyId_chainId_tinycloudHost_bootstrapVersion: cacheKey },
   });
   // An approval for which the node just listed the space as skipped is fresher than a cached `complete`.
-  if (state?.status === 'complete' && !input.requestedSpace?.nodeReportedUnhosted) {
+  if (state?.status === 'complete' && !input.requestedSpaces?.nodeReportedUnhosted) {
     return { status: 'complete' };
   }
 
@@ -466,11 +466,11 @@ export async function ensureTinyCloudBootstrap(
         privateKey,
         tinycloudHost,
       };
-      const requested = input.requestedSpace;
+      const requested = input.requestedSpaces;
       if (requested) {
-        // Before the probe and the other spaces: the client waits for this space only.
-        if (!requested.alreadyHosted) await hostRequestedSpaceFirst(runInput, requested);
-        runInput.skipHostSpaces = [requested.space];
+        // Before the probe and the other spaces: readiness requires every requested space.
+        if (!requested.alreadyHosted) await hostRequestedSpacesFirst(runInput, requested);
+        runInput.skipHostSpaces = [...new Set(requested.spaces)];
       }
 
       await bootstrapProbe(runInput);
@@ -786,29 +786,31 @@ async function runTinyCloudBootstrap(input: TinyCloudBootstrapRunInput): Promise
 }
 
 /**
- * Host the space the client asked for, before anything else in the run: peer id, the host SIWE
+ * Host every space the client asked for, before anything else in the run: peer id, the host SIWE
  * signed by the managed key (the same createHostDelegation the full run uses), then submit it.
  * The node confirms by listing the space under `activated` in its response to that host
  * delegation. (Re-sending the client's session delegation would not confirm anything: a
  * delegation the node already holds is answered with an empty `skipped`.) No other signature and
- * no other ability is involved. Reports once.
+ * no other ability is involved. Reports once after every requested space is confirmed.
  */
-async function hostRequestedSpaceFirst(
+async function hostRequestedSpacesFirst(
   input: TinyCloudBootstrapRunInput,
-  requested: TinyCloudBootstrapRequestedSpace,
+  requested: TinyCloudBootstrapRequestedSpaces,
 ): Promise<void> {
   try {
-    const step = bootstrapSteps(input.address, input.chainId)
-      .find((candidate): candidate is BootstrapSpaceStep => candidate.kind === 'host' && candidate.space === requested.space);
-    if (!step) {
-      throw new Error(`TinyCloud bootstrap host policy for ${requested.space} is missing`);
-    }
-    const activated = await submitRequiredHostDelegation(input.tinycloudHost, await createHostDelegation(input, step));
-    if (!activated?.includes(step.spaceId)) {
-      throw new TinyCloudBootstrapError(
-        `TinyCloud node accepted the host delegation for ${requested.space} but did not report the space as hosted.`,
-        'tinycloud_bootstrap_space_not_hosted',
-      );
+    const steps = bootstrapSteps(input.address, input.chainId);
+    for (const space of new Set(requested.spaces)) {
+      const step = steps.find((candidate): candidate is BootstrapSpaceStep => candidate.kind === 'host' && candidate.space === space);
+      if (!step) {
+        throw new Error(`TinyCloud bootstrap host policy for ${space} is missing`);
+      }
+      const activated = await submitRequiredHostDelegation(input.tinycloudHost, await createHostDelegation(input, step));
+      if (!activated?.includes(step.spaceId)) {
+        throw new TinyCloudBootstrapError(
+          `TinyCloud node accepted the host delegation for ${space} but did not report the space as hosted.`,
+          'tinycloud_bootstrap_space_not_hosted',
+        );
+      }
     }
   } catch (error) {
     requested.report({

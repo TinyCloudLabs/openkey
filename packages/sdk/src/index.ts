@@ -1902,7 +1902,7 @@ export class OpenKey {
           // Consent is gated in the widget; do not discard an authorized
           // result merely because its "Signing…" state invalidated geometry.
           if (action === 'sign' && modal?.isVersionedPhase() &&
-              !modal.hasDisplayedCurrentPhase() && this.isResponseForAction(action, data)) return;
+              !modal.hasDisplayedCurrentPhase() && this.isResponseForAction(action, data) && data.success === true) return;
           if (this.isResponseForAction(action, data)) {
             settle(() => {
               cleanup();
@@ -1931,7 +1931,7 @@ export class OpenKey {
                   } as T);
                 }
               } else {
-                reject(data.error);
+                reject(this.handleWidgetError(data.error));
               }
             });
           }
@@ -2250,7 +2250,7 @@ export class OpenKey {
             } as T);
           }
           } else {
-            reject(data.error);
+            reject(this.handleWidgetError(data.error));
           }
         });
       }
@@ -2264,6 +2264,13 @@ export class OpenKey {
       });
     };
     this.activeFlowCancellations.add(cancel);
+  }
+
+  private handleWidgetError(error: OpenKeyError): OpenKeyError {
+    // A validated widget response can report that the cached key no longer
+    // exists. Drop the selection; only an explicit connect chooses a new key.
+    if (error?.code === 'NO_KEY') this.lastAuth = null;
+    return error;
   }
 
   private cancelActiveFlows() {

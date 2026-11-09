@@ -95,6 +95,7 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
+  refused={transport.refused ?? false}
   previewPending={transport.canUseAuthorizeSign && !transport.previewReady}
   {peerRecognition}
   expiryMs={transport.expiry?.chosenMs ?? null}

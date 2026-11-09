@@ -23,6 +23,7 @@ import {
   APP_KEY_ABILITIES,
   DELETE_REFUSED_TEMPLATE,
   DELEGATION_LIST_STATEMENT,
+  DELEGATION_REVOKE_LABEL,
   LITERAL_TRUNCATE_CHARS,
   NAMED_KEY_STATEMENTS,
   OWN_KEY_PREFIX_STATEMENTS,
@@ -389,6 +390,10 @@ const RECOGNIZED_DELEGATION_ACTIONS = new Set([
   "delegation/list",
   "tinycloud.delegation/status",
   "delegation/status",
+]);
+const REVOKE_DELEGATION_ACTIONS = new Set([
+  "tinycloud.delegation/revoke",
+  "delegation/revoke",
 ]);
 
 function spaceNameOf(space: string): string | null {
@@ -943,6 +948,18 @@ export function buildStatements(input: CapabilityGrant): StatementEntry[] {
 }
 
 /**
+ * `tinycloud.sql/write` reaches every row of the database it names (read, insert, update, delete) but not its tables
+ * (`schema` is separate). The database is named by the app id, the first path segment. A grant with no app id in its
+ * path (the whole applications space) reaches every app database, so it must not say "this app".
+ */
+function sqlWriteStatementText(path: string): string {
+  const appId = path.split("/")[0] ?? "";
+  return /^[a-z0-9][a-z0-9.-]*$/i.test(appId)
+    ? `Read, change or delete any row in the ${appId} database`
+    : "Read, change or delete rows in all app databases";
+}
+
+/**
  * Compute the deterministic statement for a grant. Match order:
  *   1. Encryption create + decrypt combined form (bundle across grants must
  *      be handled by the caller — here we only produce the single-grant
@@ -1228,7 +1245,13 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       resource,
     };
   }
-  if (grant.ownedBySelf === false && DELEGATION_SERVICES.has(service)) {
+  // The sentence says "View", so it is only for a grant that only reads. A
+  // revoke on another user's space has no sentence and stays literal.
+  if (
+    grant.ownedBySelf === false &&
+    DELEGATION_SERVICES.has(service) &&
+    grant.actions.every((a) => RECOGNIZED_DELEGATION_ACTIONS.has(a.ability))
+  ) {
     return {
       primaryText: "View another user's connected access",
       service,
@@ -1367,6 +1390,9 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     grant.family === "own-app-data" &&
     (KV_SERVICES.has(service) || SQL_SERVICES.has(service))
   ) {
+    if (SQL_SERVICES.has(service) && verbs.hasWrite) {
+      return { primaryText: sqlWriteStatementText(grant.path), service, resource };
+    }
     if (verbs.hasRead && verbs.hasWrite) {
       return {
         primaryText: "Read and update application data",
@@ -1444,6 +1470,9 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       return fallbackStatement(grant);
     }
     const noun = "application data";
+    if (SQL_SERVICES.has(service) && verbs.hasWrite) {
+      return { primaryText: sqlWriteStatementText(grant.path), service, resource };
+    }
     let primaryText: string;
     if (verbs.hasRead && verbs.hasWrite) {
       primaryText = `Read and update ${noun}`;
@@ -1538,6 +1567,16 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
   }
 
   if (DELEGATION_SERVICES.has(service)) {
+    // Ending access the signer gave: only when it is the signer's own space and
+    // nothing else rides along. The title says the same; the resource names a
+    // space, not the app or link, so there is no target to name.
+    if (
+      grant.ownedBySelf === true &&
+      abilityStrings.length > 0 &&
+      abilityStrings.every((ability) => REVOKE_DELEGATION_ACTIONS.has(ability))
+    ) {
+      return { primaryText: DELEGATION_REVOKE_LABEL, service, resource };
+    }
     const allActionsRecognized =
       abilityStrings.length > 0 &&
       abilityStrings.every((ability) =>

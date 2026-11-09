@@ -101,7 +101,7 @@ describe('POST /api/keys/:keyId/sign', () => {
     const { keysRouter } = await import('../routes/keys?app-key-refusal-keys' as string);
     return keysRouter.request('/key_1/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ requestOrigin: ORIGIN, ...body }),
     });
   }

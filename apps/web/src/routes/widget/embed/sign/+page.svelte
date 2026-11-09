@@ -3,7 +3,11 @@
   import { tick, untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { getSessionToken, isEmbedContext, withSessionCredential } from '$lib/embed-passkey';
+  import { ARCHIVED_KEY_MESSAGE, autoSelectKey, signingKeyChoices } from '$lib/delegate-key-selection';
+  import { parseSIWE } from '$lib/siwe-parser';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
+  import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
+  import { clearSessionToken, getSessionToken, isEmbedContext, withSessionCredential } from '$lib/embed-passkey';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
@@ -20,10 +24,11 @@
     type CapabilityReviewModel,
     type DeclaredAppScope,
     checkSiweOrigin,
+    isSiweShaped,
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
-  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR } from '$lib/server-reply';
+  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
   import { createFrameSettleGate, type FrameSettleGate } from '$lib/frame-settle-gate';
   import {
     createIframeLayoutGate,
@@ -44,7 +49,12 @@
   // so /authorize-sign cannot swap hosts.
   let messageHost = $state<string>('');
   let keyId = $state<string | null>(null);
+  // The key the request named; null when the app named none and the account's keys decide.
+  let requestedKeyId: string | null = null;
   let key = $state<EthereumKey | null>(null);
+  let keyChoices = $state<EthereumKey[]>([]);
+  let keyChoicesLoaded = $state(false);
+  const expectedAddress = $derived(parseSIWE(message)?.message.address.toLowerCase() ?? null);
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
@@ -54,6 +64,10 @@
   let initialized = $state(false);
   let keyFetched = $state(false);
   let keyError = $state('');
+  // Why no key could be used. 'missing': no key of this account fits (Sign out continues the request in another
+  // account; the app is told NO_KEY). 'transient': the key, key list or session could not be read (Try again; the app
+  // is told USER_CANCELLED, so it keeps its connection).
+  let keyProblem = $state<'missing' | 'transient' | null>(null);
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
   let reviewModel = $state<CapabilityReviewModel | null>(null);
@@ -118,6 +132,8 @@
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
   const origin = $page.url.searchParams.get('origin') || '*';
+  const requester = originAuthority(origin);
+  const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const v2 = $page.url.searchParams.get('protocolVersion') === '2';
   const frameResized = () => frameSettle?.resized();
   if (!v2 && typeof window !== 'undefined') {
@@ -134,7 +150,8 @@
   // Start waiting once the review is actually rendered (the template's own conditions: not while signing in, loading or
   // reading the key), so the clock cannot run out behind a sign-in screen (the first call only).
   $effect(() => {
-    if (!v2 && reviewModel && !siweRefusal && replyFailureStatus === null && isAuthenticated && !loading && key) frameSettle?.show();
+    if (!v2 && !siweRefusal && replyFailureStatus === null && isAuthenticated && !loading &&
+        ((reviewModel && key) || keyChoices.length > 1)) frameSettle?.show();
   });
   const phaseRequestId = v2 ? $page.url.searchParams.get('requestId') : null;
   const phaseKeyId = v2 ? $page.url.searchParams.get('keyId') : null;
@@ -283,6 +300,7 @@
     messageJwk = (data.jwk as Record<string, unknown>) ?? null;
     messageHost = typeof data.host === 'string' ? data.host : '';
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
+    requestedKeyId = keyId;
     // Sol MAJOR-3 (continuation): capture the externalSign flag.
     externalSignMode = data.externalSign === true;
     // TC-2272: only an SDK that accepts a different signed expiry sends this; without it the
@@ -426,6 +444,14 @@
         found.id !== selectedId
       ) {
         keyError = 'Selected key could not be loaded for this session.';
+        dropPreviewContext();
+        keyProblem = 'transient';
+        return;
+      }
+      if (found.archivedAt) {
+        key = null;
+        keyError = ARCHIVED_KEY_MESSAGE;
+        keyProblem = 'missing';
         return;
       }
       // Detail endpoint is owner-scoped and selects only public columns.
@@ -436,10 +462,106 @@
       };
       keyOwnerToken = token;
       keyOwnerSessionId = sessionId ?? undefined;
-    }).catch(() => {
-      if (generation === keyReadGeneration && getSessionToken() === token) keyError = 'Selected key could not be loaded.';
+    }).catch((failure: unknown) => {
+      if (generation !== keyReadGeneration || getSessionToken() !== token) return;
+      keyError = 'Selected key could not be loaded.';
+      keyProblem = keyNotInAccount(failure) ? 'missing' : 'transient';
     });
   });
+
+  function chooseSigningKey(selected: EthereumKey) {
+    if (getSessionToken() !== keyReadToken ||
+        (inIframe ? null : $session.data?.session?.id) !== keyReadSessionId) {
+      keyError = 'Signing session changed. Reconnect to choose a key.';
+      dropPreviewContext();
+      keyProblem = 'transient';
+      keyChoices = [];
+      return;
+    }
+    keyFetched = true;
+    keyId = selected.id;
+    key = selected;
+    keyOwnerToken = keyReadToken;
+    keyOwnerSessionId = keyReadSessionId ?? undefined;
+  }
+
+  $effect(() => {
+    if (!isAuthenticated || !requestSealed || keyId || phaseKeyId || keyChoicesLoaded) return;
+    keyChoicesLoaded = true;
+    loading = true;
+    const token = getSessionToken();
+    const sessionId = inIframe ? null : $session.data?.session?.id;
+    const address = expectedAddress;
+    const requestMessage = message;
+    const keyType = externalSignMode ? 'EXTERNAL' : 'MANAGED';
+    const generation = ++keyReadGeneration;
+    api.listKeys().then(({ keys }) => {
+      if (generation !== keyReadGeneration) return;
+      if (getSessionToken() !== token || (inIframe ? null : $session.data?.session?.id) !== sessionId) {
+        keyError = 'Signing session changed. Reconnect to choose a key.';
+        dropPreviewContext();
+        keyProblem = 'transient';
+        return;
+      }
+      keyReadToken = token;
+      keyReadSessionId = sessionId;
+      // A SIWE names its signer; one whose address cannot be read fits no key rather than any key.
+      keyChoices = !address && isSiweShaped(requestMessage) ? [] : signingKeyChoices(keys, address, keyType);
+      if (!keyChoices.length) {
+        keyError = 'Requested signing key is not available. Reconnect to choose a key.';
+        keyProblem = 'missing';
+        return;
+      }
+      const selected = autoSelectKey(keyChoices, address);
+      if (selected) chooseSigningKey(selected);
+    }).catch(() => {
+      if (generation !== keyReadGeneration) return;
+      keyError = 'Signing keys could not be loaded. Reconnect to choose a key.';
+      keyProblem = 'transient';
+    }).finally(() => { if (generation === keyReadGeneration) loading = false; });
+  });
+
+  /** A key read the server refused (404/403): the key is not this account's, so reading again cannot help. */
+  function keyNotInAccount(failure: unknown): boolean {
+    return failure instanceof Error && 'status' in failure && (failure.status === 404 || failure.status === 403);
+  }
+
+  // A preview context is issued to the account that was signed in: a key or session reset discards it, as a new request
+  // does, so the next preview is prepared for the account now signed in.
+  function dropPreviewContext() {
+    heldPreview = null;
+    previewToken = null;
+    contextDeadline = 0;
+    previewRevision++;
+  }
+
+  /** Read again from the start of key selection: the named key, or the account's keys when the request named none. */
+  function retryKey() {
+    keyReadGeneration++;
+    key = null;
+    dropPreviewContext();
+    keyOwnerToken = null;
+    keyOwnerSessionId = undefined;
+    keyError = '';
+    keyProblem = null;
+    keyChoices = [];
+    keyId = requestedKeyId;
+    keyFetched = false;
+    keyChoicesLoaded = false;
+    loading = false;
+  }
+
+  // Same as the connect widget's Sign out: the frame forgets its session and shows sign-in for this same request.
+  // The session ends before key selection restarts, so nothing is read with the old one.
+  async function signOutForKey() {
+    if (inIframe) {
+      clearSessionToken();
+      embedAuthenticated = false;
+    } else {
+      await authClient.signOut();
+    }
+    retryKey();
+  }
 
   function handleMessage(event: MessageEvent) {
     if (v2) return;
@@ -482,6 +604,7 @@
       messageJwk = event.data.jwk ?? null;
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
+      requestedKeyId = keyId;
       requestPresentation =
         event.data.presentation && typeof event.data.presentation === 'object'
           ? event.data.presentation
@@ -703,7 +826,9 @@
     ) return true;
     keyReadGeneration++;
     key = null;
+    dropPreviewContext();
     keyError = 'Signing session changed. Cancel and try again.';
+    keyProblem = 'transient';
     layoutGate?.changed();
     error = 'Signing session changed. Cancel and try again.';
     return false;
@@ -711,6 +836,7 @@
 
   // Previewing does not need a layout ACK; only the final approval can sign.
   async function requestPreview(input: string, revision: number): Promise<void> {
+    if (refused) return;
     if (!key || !message) return;
     if (siweRefusal) return;
     if (!canUseAuthorizeSignFn()) return;
@@ -879,7 +1005,7 @@
     } catch (e: any) {
       if (!isCurrent()) return;
       if (e instanceof ServerReplyError) unreadableReply(e.status);
-      else error = e.message || 'Preview failed';
+      else if (!refuse(e)) error = e.message || 'Preview failed';
       previewToken = null;
       heldPreview = null;
       contextDeadline = 0;
@@ -889,6 +1015,7 @@
   }
 
   async function approveAndSign() {
+    if (refused) return;
     if (!key || !message) return;
     if (signing || previewStopped) return;
     if (siweRefusal) {
@@ -994,7 +1121,7 @@
       sendClose();
     } catch (e: any) {
       if (e instanceof ServerReplyError) unreadableReply(e.status);
-      else error = e.message || 'Signing failed';
+      else if (!refuse(e)) error = e.message || 'Signing failed';
     } finally {
       signing = false;
       if (approved && !previewStopped) {
@@ -1043,17 +1170,54 @@
     sendResponse({ type: 'openkey:sign:response', success: false, error: SERVER_REPLY_ERROR });
   }
 
+  // TC-2457: a refusal the server decides from the request itself cannot change on retry. Show the reason, keep
+  // Approve disabled, and tell the host once so the app that asked does not wait for ever. Nothing else is sent: the
+  // identifier carries no server text.
+  let refused = $state(false);
+  let refusalSent = false;
+  function refuse(failure: unknown): boolean {
+    const terminal = terminalRefusal(failure);
+    if (!terminal) return false;
+    refused = true;
+    error = terminal.text;
+    previewToken = null;
+    heldPreview = null;
+    contextDeadline = 0;
+    if (!refusalSent) {
+      refusalSent = true;
+      sendResponse({ type: 'openkey:sign:response', success: false, error: { code: 'UNKNOWN', message: terminal.hostMessage } });
+    }
+    return true;
+  }
+
   function closeRefused() {
+    sendClose();
+  }
+
+  function reconnect() {
+    keyReadGeneration++;
+    if (!refusalSent) {
+      sendResponse({
+        type: 'openkey:sign:response',
+        success: false,
+        // Only a key this account lacks drops the app's connection (NO_KEY); a read that may work later does not.
+        error: { code: keyProblem === 'missing' ? 'NO_KEY' : 'USER_CANCELLED', message: `${keyError} ${reconnectHint}` },
+      });
+    }
     sendClose();
   }
 
   function cancel() {
     keyReadGeneration++;
-    sendResponse({
-      type: 'openkey:sign:response',
-      success: false,
-      error: { code: 'USER_CANCELLED', message: 'User cancelled' },
-    });
+    if (!refusalSent) {
+      sendResponse({
+        type: 'openkey:sign:response',
+        success: false,
+        error: !key && keyProblem === 'missing'
+          ? { code: 'NO_KEY', message: keyError }
+          : { code: 'USER_CANCELLED', message: 'User cancelled' },
+      });
+    }
     sendClose();
   }
 
@@ -1150,9 +1314,31 @@
         </svg>
         <span class="text-sm text-surface-500">Loading...</span>
       </div>
+    {:else if !key && keyChoices.length > 1}
+      <KeyPicker
+        keys={keyChoices}
+        {expectedAddress}
+        compact
+        onselect={chooseSigningKey}
+        listHeading="Select a key to sign:"
+        primaryHeading="Sign with your primary key:"
+      />
+      <Button variant="secondary" class="mt-4 w-full" onclick={cancel}>Cancel</Button>
+    {:else if !key && keyError}
+      <SigningKeyRefusal
+        message={keyError}
+        {requester}
+        onreconnect={reconnect}
+        onsignout={keyProblem === 'missing' ? signOutForKey : undefined}
+        onretry={keyProblem === 'transient' ? retryKey : undefined}
+      />
     {:else if !key}
-      <div class="flex flex-col items-center justify-center text-center text-surface-500 py-4">
-        <p class="text-sm">{keyError || (requestSealed && keyFetched ? 'Loading selected key...' : 'Please connect first to sign messages.')}</p>
+      <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6" data-testid="signing-key-loading">
+        <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+        <span class="text-sm text-surface-500 mb-3">Loading...</span>
         <Button variant="secondary" size="sm" class="rounded-xl" onclick={cancel}>Cancel</Button>
       </div>
     {:else if reviewModel}
@@ -1173,9 +1359,10 @@
           approving: signing,
           host: messageHost,
           error: error || layoutError,
+          refused,
           canUseAuthorizeSign: canUseAuthorizeSignFn(),
           previewReady: currentPreview() !== null,
-          retryPreview: canUseAuthorizeSignFn() && error && !signing && !previewing && !heldPreview ? retryPreview : undefined,
+          retryPreview: canUseAuthorizeSignFn() && error && !refused && !signing && !previewing && !heldPreview ? retryPreview : undefined,
           approveAndSign,
           cancel,
           onSelectionEdited: (next) => {
