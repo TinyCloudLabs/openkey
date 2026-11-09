@@ -124,7 +124,7 @@ describe('keysRouter managed signing', () => {
 
     const response = await router.request('/key_1/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ message }),
     });
 
@@ -151,7 +151,7 @@ describe('keysRouter managed signing', () => {
 
     const response = await router.request('/key_1/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ message: 'hello' }),
     });
 
@@ -169,7 +169,7 @@ describe('keysRouter managed signing', () => {
 
     const response = await router.request('/key_1/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ message: 'hello', deviceTransactionId: 'unknown-transaction' }),
     });
 
@@ -185,7 +185,7 @@ describe('keysRouter managed signing', () => {
 
     const response = await router.request('/key_1/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ message: 'hello' }),
     });
 
@@ -202,7 +202,7 @@ describe('keysRouter managed signing', () => {
 
     const response = await router.request('/key_1/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ message }),
     });
 
@@ -228,7 +228,7 @@ describe('keysRouter managed signing', () => {
 
     const response = await router.request('/key_1/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ message: 'hello' }),
     });
 
@@ -254,7 +254,7 @@ describe('keysRouter managed signing', () => {
     const router = await keysRouter();
     const response = await router.request('/key_1/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ message: 'hello' }),
     });
     expect(response.status).toBe(200);
@@ -283,7 +283,7 @@ describe('keysRouter managed signing', () => {
       const router = await keysRouter();
       const response = await router.request('/key_1/sign', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
         body: JSON.stringify({ message: 'hello' }),
       });
       expect(response.status).toBe(200);
@@ -320,7 +320,7 @@ describe('keysRouter managed signing', () => {
       const timer = spyOn(globalThis, 'setTimeout');
       const request = router.request('/key_1/sign', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
         body: JSON.stringify({ message: 'hello' }),
       });
       try {
@@ -351,7 +351,7 @@ describe('keysRouter managed signing', () => {
 
     const response = await router.request('/key_1/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ message: 'hello' }),
     });
 
@@ -375,7 +375,7 @@ describe('keysRouter managed signing', () => {
     const startedAt = Date.now();
     const response = await router.request('/key_1/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ message: 'hello' }),
     });
     const elapsed = Date.now() - startedAt;
@@ -411,7 +411,7 @@ describe('keysRouter managed signing', () => {
       const router = await keysRouter();
       return router.request('/key_1/sign', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
         body: JSON.stringify(body),
       });
     }
@@ -518,7 +518,7 @@ describe('keysRouter managed signing', () => {
     });
     const signTyped = async (body: unknown) => (await keysRouter()).request('/key_1/sign-typed-data', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify(body),
     });
 

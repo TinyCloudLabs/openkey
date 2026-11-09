@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import type { SessionContext } from './session';
 import { TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_SESSION_SCOPE } from '../oauth-config';
+import { rejectNonOpenKeySignRequest } from './browser-control';
 
 export type DelegateSignerPrincipal =
   | { kind: 'session'; userId: string }
@@ -159,6 +160,11 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
 
   if (parsed.kind === 'missing') {
     if (await resolveSession(c)) {
+      // A cookie session may sign only from an OpenKey web origin, checked
+      // only now that a session exists: a request with no credentials at all
+      // must still reach the audited missing_authorization denial below.
+      const originRefusal = rejectNonOpenKeySignRequest(c);
+      if (originRefusal) return originRefusal;
       c.set('delegateSignerPrincipal', { kind: 'session', userId: c.get('user').id });
     } else {
       c.set('delegateSignerAuthFailure', {
