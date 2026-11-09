@@ -136,7 +136,7 @@ const APPS_PREFIX = { [urn('/apps/xyz.tinycloud.listen/')]: ['tinycloud.encrypti
 function post(path: string, body: unknown) {
   return router.request(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
     body: JSON.stringify(body),
   });
 }
