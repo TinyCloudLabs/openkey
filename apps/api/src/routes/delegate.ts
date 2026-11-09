@@ -223,7 +223,8 @@ async function finishManagedSpaceOnboarding(input: {
         host: setup.bootstrapHost,
         chainId: input.chainId,
         // Hosts only this space before responding; the other spaces and the seeding follow in the background run.
-        requestedSpace: { space: setup.space, alreadyHosted, report },
+        // This function runs only when the node's fresh activation listed the space as skipped, which a cached `complete` row must not override.
+        requestedSpace: { space: setup.space, alreadyHosted, nodeReportedUnhosted: true, report },
       });
     });
     switch (result.status) {
@@ -309,6 +310,8 @@ async function assertHandoffContext(ticket: string | null, userId: string, token
 // and accepts a bearer session token only from an OpenKey web origin (TC-688).
 delegateRouter.use('*', async (c, next) => {
   if (c.req.path.endsWith('/sign')) {
+    // The cookie-session origin check runs inside the signer middleware once
+    // a session resolves; OAuth bearers stay open to any origin.
     return activeDelegateSignerAuth(c, next);
   }
   // The refusals are returned, not awaited: this router has its own onError, so

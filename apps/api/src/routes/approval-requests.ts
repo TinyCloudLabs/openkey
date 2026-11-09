@@ -1,7 +1,9 @@
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { parseLink, resolveLink, parseApprovalRequest, validateLinkHeader, verifyHeader, linkIssuerPublicKey } from '@tinycloud/share-envelope/links';
-import { ApprovalResultError, ApprovalResultService } from '../services/approval-results';
+import { ApprovalResultError, ApprovalResultService, linkRequiredError } from '../services/approval-results';
+import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { requireSession } from '../middleware/session';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
 import { verifySessionProofClaims } from '../services/native-delegation/session-proof';
 import { createHash } from 'node:crypto';
@@ -41,7 +43,7 @@ async function fetchLink(input: Parameters<typeof fetch>[0], init?: Parameters<t
 export const approvalRequestRouter = new Hono();
 approvalRequestRouter.use('*', async (c, next) => { c.header('Cache-Control', 'no-store'); await next(); });
 approvalRequestRouter.onError((error, c) => {
-  if (error instanceof ApprovalResultError) return c.json({ error: error.message, code: error.code }, error.status);
+  if (error instanceof ApprovalResultError) return c.json({ error: error.message, code: error.code, ...error.extra }, error.status);
   // Decoder failures deliberately do not reflect a URL/key/plaintext in logs.
   if (error && 'code' in error) return c.json({ error: 'Approval request could not be verified', code: String(error.code) }, 400);
   throw error;
@@ -62,7 +64,8 @@ approvalRequestRouter.post('/approval-requests/:id/load', async (c) => {
   if (opened.type !== 'openkey-approval-request') throw new ApprovalResultError('invalid_request', 'Not an approval request', 400);
   const request = parseApprovalRequest(opened.value, { issuer: opened.header.issuer });
   const record = await store.register({ id, bodyCid: opened.header.bodyCid, issuer: opened.header.issuer, request, expiresAt: new Date(opened.header.expiresAt), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null });
-  return c.json({ request: record.request, requestId: id, bodyCid: record.bodyCid, expiresAt: record.expiresAt.toISOString(), approved: !!record.resultRef });
+  // `denied` is additive (TC-2459): a reopened declined link can say so. `approved` keeps its meaning.
+  return c.json({ request: record.request, requestId: id, bodyCid: record.bodyCid, expiresAt: record.expiresAt.toISOString(), approved: !!record.resultRef, denied: !!record.deniedAt });
 });
 
 approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
@@ -96,6 +99,43 @@ approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
 
 approvalRequestRouter.post('/approval-results/:ref/fetch', async (c) => c.json(await approvalResultService().fetch(c.req.param('ref'), await c.req.json(), c.req.header('OpenKey-Session-Proof'))));
 approvalRequestRouter.post('/approval-results/:ref/ack', async (c) => c.json(await approvalResultService().acknowledge(c.req.param('ref'), await c.req.json(), c.req.header('OpenKey-Session-Proof'))));
+
+/**
+ * Declining. Requests carry no owner account, so the capability is the same as for approving: the complete
+ * approval link. The body must hold the `reference` that /load takes (path and key fragment); it is
+ * re-resolved here with its key, so a signed-in caller who only knows the request id is refused (403
+ * `link_required`) and the request stays open. The reference is never logged or echoed.
+ */
+approvalRequestRouter.post('/approval-requests/:id/deny', requireOpenKeyOriginForBearer, requireSession, async (c) => {
+  const id = c.req.param('id');
+  const service = approvalResultService();
+  const body: unknown = await c.req.json().catch(() => null);
+  const reference = body && typeof body === 'object' && 'reference' in body ? body.reference : undefined;
+  if (typeof reference !== 'string') throw linkRequiredError();
+  let header: { bodyCid: string; issuer: string };
+  try {
+    const link = viewerOrigin + reference;
+    const parsed = parseLink(link, { trustedOrigins: [viewerOrigin] });
+    if (parsed.form !== 'short' || parsed.pathType !== 'openkey-approval-request' || parsed.id !== id) throw linkRequiredError();
+    const opened = await resolveLink(link, { trustedOrigins: [viewerOrigin], apiOrigin: linksOrigin, fetch: Object.assign(fetchLink, { preconnect: fetch.preconnect }) });
+    if (opened.type !== 'openkey-approval-request') throw linkRequiredError();
+    header = opened.header;
+  } catch (error) {
+    // A link that does not parse or open is not a link the caller holds, except where the links service
+    // is the problem (503, nothing was refused) or the link is over (410, as for an expired request).
+    if (error instanceof ApprovalResultError) throw error;
+    if (error && typeof error === 'object' && 'code' in error) {
+      const status = 'status' in error && typeof error.status === 'number' ? error.status : 0;
+      if (error.code === 'service_unavailable' || (error.code === 'service_refused' && status >= 500)) {
+        throw new ApprovalResultError('service_unavailable', 'The approval link service is unavailable. Try again.', 503);
+      }
+      if (error.code === 'expired' || error.code === 'gone') throw new ApprovalResultError('expired_request', 'Approval request expired', 410);
+      throw linkRequiredError();
+    }
+    throw error;
+  }
+  return c.json(await service.deny(id, header));
+});
 
 /** Rechecked immediately before signing, not only when the browser loads. */
 export async function checkApprovalDelegation(body: { approvalRequestId?: unknown; jwk: unknown; host: unknown; permissions?: unknown }, input: { expiryMs?: number; signedSiwe?: string }): Promise<void> {

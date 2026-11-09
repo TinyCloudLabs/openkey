@@ -2,9 +2,11 @@ import { describe, expect, it } from "bun:test";
 import {
   buildStatement,
   buildStatements,
+  parseCapabilityReview,
   type CapabilityAction,
   type CapabilityGrant,
 } from "../src/index.js";
+import { FIXTURE_META, makeRecapResource, siweWithResources } from "./fixtures/index.js";
 
 function grant(
   family: CapabilityGrant["family"],
@@ -84,14 +86,52 @@ function sqlGrant(abilities: string[]): CapabilityGrant {
   return { ...grant("own-app-data", abilities), service: "tinycloud.sql" };
 }
 
+function parsedSqlGrant(abilities: string[]): CapabilityGrant {
+  const address = FIXTURE_META.address;
+  const space = `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${address}:applications`;
+  const resource = `${space}/sql/xyz.tinycloud.sample.healthlog/healthlog`;
+  const model = parseCapabilityReview({
+    message: siweWithResources([makeRecapResource({
+      [resource]: Object.fromEntries(abilities.map((ability) => [ability, [{}]])),
+    })]),
+    signer: { label: "Test signer", address, chainId: FIXTURE_META.chainId, provenance: "managed" },
+    editable: true,
+    metadataTrust: { status: "unsigned", reason: "no manifest" },
+    reason: { text: "", source: "none" },
+    requester: {
+      displayName: "test.tinycloud.xyz", verifiedOrigin: "https://test.tinycloud.xyz",
+      appId: null, manifestName: null, manifestNameProvenance: "none", manifestId: null,
+      manifestIdProvenance: "none", manifestDigest: null, domainWarning: false, originWarning: false,
+    },
+  });
+  const result = model.permissions[0];
+  if (!result) throw new Error("SQL grant did not parse");
+  return result;
+}
+
 describe("buildStatements — schema gets its own row", () => {
   it("splits read/write/schema into the read-update row and a schema row", () => {
     const rows = buildStatements(
-      sqlGrant(["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/schema"]),
+      parsedSqlGrant(["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/schema"]),
     );
-    expect(rows.map((row) => row.primaryText)).toEqual([
-      "Read and update application data",
-      "Edit and delete this app's tables",
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.primaryText).not.toBe(buildStatement(grant("own-app-data", ["tinycloud.kv/put"])).primaryText);
+    expect(rows[0]!.primaryText).toContain("xyz.tinycloud.sample.healthlog");
+    expect(rows[1]!.primaryText).toBe("Edit and delete this app's tables");
+  });
+
+  it("a SQL write with no app id in its path does not claim to be one app's database", () => {
+    const named = buildStatements(parsedSqlGrant(["tinycloud.sql/write"]))[0]!.primaryText;
+    const wholeSpace = buildStatements({ ...parsedSqlGrant(["tinycloud.sql/write"]), path: "/" })[0]!.primaryText;
+    expect(wholeSpace).not.toBe(named);
+    expect(wholeSpace).not.toContain("xyz.tinycloud.sample.healthlog");
+    expect(wholeSpace).not.toMatch(/\bthis app\b/i);
+    expect(wholeSpace.length).toBeLessThanOrEqual(50);
+  });
+
+  it("keeps SQL read-only copy unchanged", () => {
+    expect(buildStatements(parsedSqlGrant(["tinycloud.sql/read"])).map((row) => row.primaryText)).toEqual([
+      "Read application data",
     ]);
   });
 

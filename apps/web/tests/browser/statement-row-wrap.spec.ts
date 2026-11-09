@@ -50,9 +50,10 @@ test('a 32-hex key id in an approval row wraps: no sideways scroll, the Sensitiv
     );
   }, siwe);
   const frame = page.frameLocator('#sign');
-  const row = frame.locator('.summary-statement', { hasText: shareId }).first(); // layout only: no row wording pinned
+  const row = frame.locator('.summary-statement', { hasText: shareId }).first(); // creation still names the long key without a Sensitive badge
   await expect(row).toBeVisible();
-  await expect(row.locator('.summary-sensitive-pill')).toBeVisible();
+  await expect(row.locator('.summary-sensitive-pill')).toHaveCount(0);
+  await expect(frame.locator('.summary-sensitive-pill')).toBeVisible(); // decrypt stays Sensitive
   await expect.poll(() => frame.locator('body').evaluate(() => ({
     sideways: document.documentElement.scrollWidth > document.documentElement.clientWidth,
     badgeRightOfView: [...document.querySelectorAll('.summary-sensitive-pill')].some((pill) => pill.getBoundingClientRect().right > document.documentElement.clientWidth),

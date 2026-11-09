@@ -1,7 +1,12 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import { ARCHIVED_KEY_MESSAGE, autoSelectKey, signingKeyChoices } from '$lib/delegate-key-selection';
+  import { parseSIWE } from '$lib/siwe-parser';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
+  import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
@@ -9,6 +14,7 @@
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import { expiryAt, siweExpiration } from '$lib/approval-expiry';
+  import { PREVIEW_EXPIRED_MESSAGE, signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
   import {
     parseCapabilityReview,
     parseSiweChainId,
@@ -17,10 +23,11 @@
     type CapabilityReviewModel,
     type DeclaredAppScope,
     checkSiweOrigin,
+    isSiweShaped,
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
-  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR } from '$lib/server-reply';
+  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
   import {
     createWidgetTransport,
     type WidgetRequest,
@@ -40,7 +47,18 @@
   // and /authorize-sign cannot swap hosts.
   let messageHost = $state<string>('');
   let keyId = $state<string | null>(null);
+  // The key the request named; null when the app named none and the account's keys decide.
+  let requestedKeyId: string | null = null;
   let key = $state<EthereumKey | null>(null);
+  let keyChoices = $state<EthereumKey[]>([]);
+  let keyChoicesLoaded = $state(false);
+  let keyChoicesSessionId: string | undefined;
+  // Why no key could be used. 'missing': no key of this account fits (Sign out lets another account continue; the
+  // app is told NO_KEY). 'transient': the key, key list or session could not be read (Try again; the app is told
+  // USER_CANCELLED, so it keeps its connection).
+  let keyProblem = $state<'missing' | 'transient' | null>(null);
+  let keyReadGeneration = 0;
+  const expectedAddress = $derived(parseSIWE(message)?.message.address.toLowerCase() ?? null);
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
@@ -59,22 +77,16 @@
   // requests are refused server-side by our own state machine so the
   // response cannot escape to the wrong parent.
   let requestSealed = $state(false);
-  // Sol CRITICAL-1 (distinct final approval): the popup MUST call
-  // /authorize-sign-preview so the user sees the EXACT bytes the server
-  // would sign, then approves again before /authorize-sign consumes the
-  // token. `previewSignedMessage` holds the server-returned candidate;
-  // `previewToken` is the opaque authorization-context token bound at
-  // /authorize-sign-prepare time. Both are cleared when the user edits
-  // the selection so the flow returns to preview+approve.
-  let previewSignedMessage = $state<string | null>(null);
+  // Background previews seal the current selection and exact bytes before Approve is enabled.
+  let heldPreview = $state<SigningPreview | null>(null);
+  const previewSignedMessage = $derived(heldPreview?.signedMessage ?? null);
   let previewToken = $state<string | null>(null);
-  // Sol CRITICAL-1: preview-approval token that seals the exact
-  // (selection, signedMessage) pair. /authorize-sign requires this token.
-  let previewApprovalToken = $state<string | null>(null);
+  let contextDeadline = 0;
+  let previewRevision = $state(0);
+  let previewStopped = false;
   let previewing = $state(false);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
-  let previewApproved = $state(false);
   // Sol MAJOR-3 (continuation): when the SDK passes `externalSign: true`
   // on the sign request, the widget MUST NOT call /authorize-sign at
   // approval time. Instead it emits an `openkey:externalSign:approve`
@@ -126,6 +138,8 @@
   // path (Sol MAJOR-4). Versioned callers (protocolVersion >= 1) MUST use
   // a real origin — '*' is refused for editing/rewriting flows.
   const origin = $page.url.searchParams.get('origin') || '*';
+  const requester = originAuthority(origin);
+  const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
   // Use $effect instead of onMount for Svelte 5 compatibility with SSR disabled
@@ -180,6 +194,7 @@
   // Cleanup transport when the component unmounts.
   $effect(() => {
     return () => {
+      previewStopped = true;
       transport?.destroy();
       transport = null;
     };
@@ -220,6 +235,7 @@
     messageJwk = (data.jwk as Record<string, unknown>) ?? null;
     messageHost = typeof data.host === 'string' ? data.host : '';
     keyId = typeof data.keyId === 'string' ? data.keyId : null;
+    requestedKeyId = keyId;
     // Sol MAJOR-3 (continuation): capture the externalSign flag from the
     // sign request. The widget renders the SAME SigningApproval UI in
     // both modes; only the "approve" behaviour differs.
@@ -245,12 +261,10 @@
     reviewSourceMessage = null;
     reviewSelection = new Set();
     keyFetched = false;
-    // Reset preview state — a new request always starts with no bound
-    // preview. Editing selection also clears these fields.
-    previewSignedMessage = null;
+    heldPreview = null;
     previewToken = null;
-    previewApprovalToken = null;
-    previewApproved = false;
+    contextDeadline = 0;
+    previewRevision++;
     requestSealed = true;
   }
 
@@ -269,16 +283,130 @@
 
   // Reactively fetch key when session becomes available and we have a keyId
   let keyFetched = $state(false);
+  // The session the loaded key was read with: a key never outlives it (as the iframe's keyOwnerSessionId).
+  let keySessionId: string | undefined;
   $effect(() => {
     if ($session.data && keyId && !keyFetched && !key) {
       keyFetched = true;
-      api.getKey(keyId).then(result => {
+      const selectedId = keyId;
+      const sessionId = $session.data.session?.id;
+      const generation = ++keyReadGeneration;
+      api.getKey(selectedId).then(result => {
+        if (generation !== keyReadGeneration) return;
+        if ($session.data?.session?.id !== sessionId) {
+          error = 'Signing session changed. Reconnect to choose a key.';
+          dropPreviewContext();
+          keyProblem = 'transient';
+          return;
+        }
+        if (result.key.archivedAt) {
+          error = ARCHIVED_KEY_MESSAGE;
+          keyProblem = 'missing';
+          key = null;
+          return;
+        }
         key = result.key;
-      }).catch(() => {
-        // Key not found
+        keySessionId = sessionId;
+      }).catch((failure: unknown) => {
+        if (generation !== keyReadGeneration) return;
+        error = 'Selected key could not be loaded. Reconnect to choose a key.';
+        keyProblem = keyNotInAccount(failure) ? 'missing' : 'transient';
       });
     }
   });
+
+  // Another account signed in while a key was loaded (or the session ended): drop the key before it can sign.
+  $effect(() => {
+    if (!key || $session.data?.session?.id === keySessionId) return;
+    keyReadGeneration++;
+    key = null;
+    untrack(dropPreviewContext);
+    error = 'Signing session changed. Reconnect to choose a key.';
+    keyProblem = 'transient';
+  });
+
+  function chooseSigningKey(selected: EthereumKey) {
+    if ($session.data?.session?.id !== keyChoicesSessionId) {
+      error = 'Signing session changed. Reconnect to choose a key.';
+      dropPreviewContext();
+      keyProblem = 'transient';
+      keyChoices = [];
+      return;
+    }
+    keyFetched = true;
+    keyId = selected.id;
+    key = selected;
+    keySessionId = keyChoicesSessionId;
+  }
+
+  $effect(() => {
+    if (!$session.data || !requestSealed || keyId || keyChoicesLoaded) return;
+    keyChoicesLoaded = true;
+    loading = true;
+    const sessionId = $session.data.session?.id;
+    const address = expectedAddress;
+    const requestMessage = message;
+    const keyType = externalSignMode ? 'EXTERNAL' : 'MANAGED';
+    const generation = ++keyReadGeneration;
+    api.listKeys().then(({ keys }) => {
+      if (generation !== keyReadGeneration) return;
+      if ($session.data?.session?.id !== sessionId) {
+        error = 'Signing session changed. Reconnect to choose a key.';
+        dropPreviewContext();
+        keyProblem = 'transient';
+        return;
+      }
+      keyChoicesSessionId = sessionId;
+      // A SIWE names its signer; one whose address cannot be read fits no key rather than any key.
+      keyChoices = !address && isSiweShaped(requestMessage) ? [] : signingKeyChoices(keys, address, keyType);
+      if (!keyChoices.length) {
+        error = 'Requested signing key is not available. Reconnect to choose a key.';
+        keyProblem = 'missing';
+        return;
+      }
+      const selected = autoSelectKey(keyChoices, address);
+      if (selected) chooseSigningKey(selected);
+    }).catch(() => {
+      if (generation !== keyReadGeneration) return;
+      error = 'Signing keys could not be loaded. Reconnect to choose a key.';
+      keyProblem = 'transient';
+    }).finally(() => { if (generation === keyReadGeneration) loading = false; });
+  });
+
+  /** A key read the server refused (404/403): the key is not this account's, so reading again cannot help. */
+  function keyNotInAccount(failure: unknown): boolean {
+    return failure instanceof Error && 'status' in failure && (failure.status === 404 || failure.status === 403);
+  }
+
+  // A preview context is issued to the account that was signed in: a key or session reset discards it, as a new request
+  // does, so the next preview is prepared for the account now signed in.
+  function dropPreviewContext() {
+    heldPreview = null;
+    previewToken = null;
+    contextDeadline = 0;
+    previewRevision++;
+  }
+
+  /** Read again from the start of key selection: the named key, or the account's keys when the request named none. */
+  function retryKey() {
+    keyReadGeneration++;
+    key = null;
+    dropPreviewContext();
+    error = '';
+    keyProblem = null;
+    keyChoices = [];
+    keyId = requestedKeyId;
+    keyFetched = false;
+    keyChoicesLoaded = false;
+    loading = false;
+  }
+
+  // Same as the connect widget's Sign out; Sign In then returns to this page, and the SDK sends the request again.
+  // The session ends before key selection restarts, so nothing is read with the old one.
+  async function signOutForKey() {
+    await authClient.signOut();
+    retryKey();
+  }
 
   async function handleMessage(event: MessageEvent) {
     // Sol continuation contract: versioned messages are handled by the
@@ -324,6 +452,7 @@
       messageJwk = event.data.jwk ?? null;
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
+      requestedKeyId = keyId;
       // Legacy path: envelope forwarding. The legacy path has weaker
       // origin/version guarantees, so we only accept `presentation` as
       // display-only and never upgrade trust off of it — the server
@@ -337,16 +466,6 @@
       keyFetched = false; // Reset so effect can run
       requestSealed = true;
 
-      // Try immediately if session is already available
-      if (keyId && $session.data) {
-        try {
-          const result = await api.getKey(keyId);
-          key = result.key;
-          keyFetched = true;
-        } catch {
-          // Key not found, will prompt user to select
-        }
-      }
       // The reviewModel is built by a $effect below that reacts to
       // `message` AND `key` — this fixes the Sol MAJOR-8 bug where the
       // model was created with a placeholder zero-address before the key
@@ -359,9 +478,9 @@
   // reflects the real key rather than a zero-address placeholder.
   $effect(() => {
     if (!message || !key) {
-      // Do not construct a model with a placeholder key. Legacy fallback
-      // rendering will show a spinner or "Please connect" until the key
-      // loads and this effect fires again.
+      // Do not construct a model with a placeholder key. The no-key
+      // branches show loading, a key choice, or a key refusal until the
+      // key loads and this effect fires again.
       reviewModel = null;
       return;
     }
@@ -564,24 +683,54 @@
     return requestedActionIds(reviewModel, reviewSelection);
   }
 
-  // Sol CRITICAL-1: preview step. Issues (or re-uses) an authorization
-  // context via /authorize-sign-prepare, then calls
-  // /authorize-sign-preview to obtain the EXACT bytes the server would
-  // sign for the current selection. The user must approve the preview
-  // before /authorize-sign consumes the token.
-  async function requestPreview(): Promise<void> {
+  // A stable value avoids refetching when display-only metadata rebuilds the review model.
+  const previewInput = $derived.by(() =>
+    key && canUseAuthorizeSignFn() && !siweRefusal
+      ? JSON.stringify([currentRequestId, key.id, message,
+          [...currentSelectedActionIds()].sort(), expiryChoiceMs])
+      : null,
+  );
+
+  $effect(() => {
+    const input = previewInput;
+    const revision = previewRevision;
+    if (input !== null) untrack(() => { void requestPreview(input, revision); });
+  });
+
+  $effect(() => {
+    const preview = heldPreview;
+    if (!preview) return;
+    const timer = setTimeout(() => {
+      if (heldPreview === preview && !signing && !previewStopped) invalidatePreviewForSelectionEdit();
+    }, Math.max(0, preview.deadline - performance.now()));
+    return () => clearTimeout(timer);
+  });
+
+  function currentPreview(): SigningPreview | null {
+    const preview = heldPreview;
+    return !previewStopped && !signing && !previewing && preview &&
+      preview.input === previewInput && preview.revision === previewRevision &&
+      performance.now() < preview.deadline ? preview : null;
+  }
+
+  // Prepare the current selection in the background; only Approve consumes its sealed token.
+  async function requestPreview(input: string, revision: number): Promise<void> {
+    if (refused) return;
     if (!key || !message) return;
     if (siweRefusal) return;
     if (!canUseAuthorizeSignFn()) return;
+    if (signing || previewStopped) return;
+    const isCurrent = () => !previewStopped && revision === previewRevision && input === previewInput;
+    const selectedIds = currentSelectedActionIds();
+    const requestedExpiry = expiryChoiceMs === null ? null : expiryAt(expiryChoiceMs);
     previewing = true;
     error = '';
-    previewApproved = false;
     try {
       // Issue a bound context if we don't have one yet. We keep the same
       // token across selection edits until the user approves — token TTL
       // is 5 minutes, so a fresh /authorize-sign-prepare per selection
       // change would burn tokens without benefit.
-      let token = previewToken;
+      let token = performance.now() < contextDeadline ? previewToken : null;
       if (!token) {
         // Envelope + reported-origin forwarding. `origin` is the widget's
         // configured parent origin — the server treats it as advisory
@@ -590,6 +739,7 @@
         // wildcard origin skips the origin-bind attempt server-side.
         const reportedOriginForPrepare =
           origin && origin !== '*' && origin.startsWith('https://') ? origin : undefined;
+        const prepareStarted = performance.now();
         const prepareRes = await fetch(
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-prepare`,
           {
@@ -614,6 +764,8 @@
           (body) => hasText(body, 'authorizationContextToken'),
           'authorize-sign-prepare failed',
         );
+        if (!isCurrent()) return;
+        contextDeadline = signingPreviewDeadline(prepareResult.expiresAt, prepareRes.headers.get('Date'), prepareStarted);
         token = typeof prepareResult.authorizationContextToken === 'string'
           ? prepareResult.authorizationContextToken
           : null;
@@ -706,7 +858,8 @@
           };
         }
       }
-      const selectedIds = currentSelectedActionIds();
+      if (!isCurrent()) return;
+      const previewStarted = performance.now();
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
         {
@@ -717,7 +870,7 @@
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
             // TC-2272: only when the user changed it; the app's own expiry stays the default.
-            ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAt(expiryChoiceMs) }),
+            ...(requestedExpiry === null ? {} : { expirationTime: requestedExpiry }),
           }),
         },
       );
@@ -726,6 +879,7 @@
         (body) => hasText(body, 'signedMessage', 'previewApprovalToken'),
         'authorize-sign-preview failed',
       );
+      if (!isCurrent()) return;
       if (typeof previewResult.signedMessage !== 'string' || !previewResult.signedMessage) {
         throw new Error('authorize-sign-preview did not return signedMessage');
       }
@@ -734,29 +888,35 @@
       if (typeof previewResult.previewApprovalToken !== 'string' || !previewResult.previewApprovalToken) {
         throw new Error('authorize-sign-preview did not return a previewApprovalToken — server is out of date');
       }
-      reviewSelection = selectionFromPreview(previewResult, selectedIds);
-      previewSignedMessage = previewResult.signedMessage;
-      previewApprovalToken = previewResult.previewApprovalToken;
+      selectionFromPreview(previewResult, selectedIds);
+      const deadline = Math.min(contextDeadline,
+        signingPreviewDeadline(previewResult.previewApprovalExpiresAt, previewRes.headers.get('Date'), previewStarted));
+      if (deadline <= performance.now()) throw new Error(PREVIEW_EXPIRED_MESSAGE);
+      heldPreview = {
+        input, revision, authorizationContextToken: token,
+        previewApprovalToken: previewResult.previewApprovalToken,
+        signedMessage: previewResult.signedMessage, selectedActionIds: selectedIds, deadline,
+      };
     } catch (e: any) {
+      if (!isCurrent()) return;
       if (e instanceof ServerReplyError) unreadableReply(e.status);
-      else error = e.message || 'Preview failed';
+      else if (!refuse(e)) error = e.message || 'Preview failed';
       // On failure, invalidate any stored token so the next attempt gets
       // a fresh one — the server may have expired the token or rejected
       // the immutable-fields digest.
       previewToken = null;
-      previewSignedMessage = null;
-      previewApprovalToken = null;
+      heldPreview = null;
+      contextDeadline = 0;
     } finally {
-      previewing = false;
+      if (isCurrent()) previewing = false;
     }
   }
 
-  // Sol CRITICAL-1: distinct final approval. The preview bytes are what
-  // gets signed; the token binding + preview digest are the sole
-  // authorities. This is the ONLY function that calls /authorize-sign
-  // and consumes the token.
+  // The click captures one current preview; later state changes cannot replace its bytes or token.
   async function approveAndSign() {
+    if (refused) return;
     if (!key || !message) return;
+    if (signing || previewStopped) return;
     if (siweRefusal) {
       error = siweRefusal.message;
       return;
@@ -767,14 +927,17 @@
         'Refusing to sign: this SIWE carries a capability payload that could not be decoded. The signer would otherwise silently drop the caller’s ReCap.';
       return;
     }
+    const approved = canUseAuthorizeSignFn() ? currentPreview() : null;
+    if (canUseAuthorizeSignFn() && !approved) {
+      if (!previewing) invalidatePreviewForSelectionEdit();
+      return;
+    }
     signing = true;
     error = '';
     try {
-      if (canUseAuthorizeSignFn()) {
-        if (!previewToken || !previewSignedMessage || !previewApprovalToken) {
-          throw new Error('Preview required before approval — call requestPreview() first');
-        }
-        const selectedActionIds = currentSelectedActionIds();
+      if (approved) {
+        const { authorizationContextToken, previewApprovalToken, signedMessage } = approved;
+        const selectedActionIds = [...approved.selectedActionIds];
         // Sol MAJOR-3 (continuation): external-key mode. The wallet lives
         // in the parent frame, not here. Hand back the preview payload
         // and let the SDK invoke the wallet + call /authorize-sign.
@@ -782,9 +945,9 @@
           sendResponse({
             type: 'openkey:externalSign:approve',
             success: true,
-            authorizationContextToken: previewToken,
+            authorizationContextToken,
             previewApprovalToken,
-            signedMessage: previewSignedMessage,
+            signedMessage,
             selectedActionIds,
             address: key.address,
           });
@@ -798,7 +961,7 @@
             credentials: 'include',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              authorizationContextToken: previewToken,
+              authorizationContextToken,
               // Sol CRITICAL-1: the sealed preview-approval token is
               // required so /authorize-sign cannot independently accept
               // a different selection or sign different bytes.
@@ -816,7 +979,7 @@
         // Defence in depth: the server must have signed the exact bytes
         // the user approved. If /authorize-sign returned different bytes
         // than the preview showed, refuse.
-        if (authorizeResult.signedMessage !== previewSignedMessage) {
+        if (authorizeResult.signedMessage !== signedMessage) {
           throw new Error(
             'Server signed bytes differ from the previewed bytes — refusing to accept',
           );
@@ -860,23 +1023,25 @@
       sendClose();
     } catch (e: any) {
       if (e instanceof ServerReplyError) unreadableReply(e.status);
-      else error = e.message || 'Signing failed';
+      else if (!refuse(e)) error = e.message || 'Signing failed';
     } finally {
       signing = false;
+      if (approved && !previewStopped) {
+        previewToken = null;
+        contextDeadline = 0;
+        heldPreview = null;
+      }
     }
   }
 
-  // Called by SigningApproval when the selection changes. Clears any
-  // approved preview so the user must review + approve the new bytes.
   function invalidatePreviewForSelectionEdit() {
-    previewSignedMessage = null;
-    // Also invalidate the preview-approval token: it was bound to the
-    // old (selection, bytes) pair. A new preview call must issue a
-    // fresh one for the new selection.
-    previewApprovalToken = null;
-    // Keep the context token: the /authorize-sign-preview call handles a
-    // stale selection safely (it re-derives the SIWE without consuming).
-    previewApproved = false;
+    heldPreview = null;
+    previewRevision++;
+  }
+
+  function retryPreview() {
+    if (!canUseAuthorizeSignFn() || signing || previewing || heldPreview || previewStopped || !error) return;
+    invalidatePreviewForSelectionEdit();
   }
 
   // TC-1486: a SIWE-shaped message that does not name the verified requesting
@@ -909,16 +1074,52 @@
     sendResponse({ type: 'openkey:sign:response', success: false, error: SERVER_REPLY_ERROR });
   }
 
+  // TC-2457: a refusal the server decides from the request itself cannot change on retry. Show the reason, keep
+  // Approve disabled, and tell the host once so the app that asked does not wait for ever. Nothing else is sent: the
+  // identifier carries no server text.
+  let refused = $state(false);
+  let refusalSent = false;
+  function refuse(failure: unknown): boolean {
+    const terminal = terminalRefusal(failure);
+    if (!terminal) return false;
+    refused = true;
+    error = terminal.text;
+    previewToken = null;
+    heldPreview = null;
+    contextDeadline = 0;
+    if (!refusalSent) {
+      refusalSent = true;
+      sendResponse({ type: 'openkey:sign:response', success: false, error: { code: 'UNKNOWN', message: terminal.hostMessage } });
+    }
+    return true;
+  }
+
   function closeRefused() {
     sendClose();
   }
 
+  function reconnect() {
+    if (!refusalSent) {
+      sendResponse({
+        type: 'openkey:sign:response',
+        success: false,
+        // Only a key this account lacks drops the app's connection (NO_KEY); a read that may work later does not.
+        error: { code: keyProblem === 'missing' ? 'NO_KEY' : 'USER_CANCELLED', message: `${error} ${reconnectHint}` },
+      });
+    }
+    sendClose();
+  }
+
   function cancel() {
-    sendResponse({
-      type: 'openkey:sign:response',
-      success: false,
-      error: { code: 'USER_CANCELLED', message: 'User cancelled' },
-    });
+    if (!refusalSent) {
+      sendResponse({
+        type: 'openkey:sign:response',
+        success: false,
+        error: !key && keyProblem === 'missing'
+          ? { code: 'NO_KEY', message: error }
+          : { code: 'USER_CANCELLED', message: 'User cancelled' },
+      });
+    }
     sendClose();
   }
 
@@ -985,6 +1186,8 @@
   }
 
   function sendClose() {
+    previewStopped = true;
+    heldPreview = null;
     // Sol MAJOR-4 (continuation): correlate close messages to the active
     // request so the SDK doesn't tear down a subsequent request when a
     // stale close arrives late.
@@ -1005,9 +1208,9 @@
 
 <div class="flex-1 flex flex-col">
   <header class="flex justify-between items-center mb-6">
-    <h1 class="text-xl font-semibold text-surface-50">Sign Message</h1>
+    <h1 class="text-xl font-semibold text-surface-900">Sign Message</h1>
     <button
-      class="bg-transparent border-none text-surface-400 text-2xl cursor-pointer p-0 leading-none hover:text-surface-50 transition-colors"
+      class="bg-transparent border-none text-surface-600 text-2xl cursor-pointer p-0 leading-none hover:text-surface-900 transition-colors"
       onclick={cancel}
     >
       &times;
@@ -1027,9 +1230,27 @@
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       Loading...
     </div>
+  {:else if !key && keyChoices.length > 1}
+    <KeyPicker
+      keys={keyChoices}
+      {expectedAddress}
+      onselect={chooseSigningKey}
+      listHeading="Select a key to sign:"
+      primaryHeading="Sign with your primary key:"
+    />
+    <Button variant="secondary" class="mt-4" onclick={cancel}>Cancel</Button>
+  {:else if !key && error}
+    <SigningKeyRefusal
+      message={error}
+      {requester}
+      onreconnect={reconnect}
+      onsignout={keyProblem === 'missing' ? signOutForKey : undefined}
+      onretry={keyProblem === 'transient' ? retryKey : undefined}
+    />
   {:else if !key}
-    <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
-      <p>Please connect first to sign messages.</p>
+    <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400" data-testid="signing-key-loading">
+      <p>Loading...</p>
+      <Button variant="secondary" class="mt-4" onclick={cancel}>Cancel</Button>
     </div>
   {:else if reviewModel}
     <!--
@@ -1051,12 +1272,13 @@
       model={reviewModel}
       initialSelection={reviewSelection}
       transport={{
-        approving: signing || previewing,
+        approving: signing,
         host: messageHost,
         error,
+        refused,
         canUseAuthorizeSign: canUseAuthorizeSignFn(),
-        previewReady: Boolean(previewToken && previewSignedMessage && previewApprovalToken),
-        requestPreview,
+        previewReady: currentPreview() !== null,
+        retryPreview: canUseAuthorizeSignFn() && error && !refused && !signing && !previewing && !heldPreview ? retryPreview : undefined,
         approveAndSign,
         cancel,
         onSelectionEdited: (next) => {

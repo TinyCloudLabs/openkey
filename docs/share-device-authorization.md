@@ -103,8 +103,14 @@ The ordinary manual handoff is separate from device authorization. After the
 delegation is signed, the authenticated page posts the public delegation to
 `POST /api/delegation-codes`; the response contains eight random base32
 characters formatted `xxxx-xxxx`. `GET /api/delegation-codes/:code` is public
-and returns that delegation for ten minutes (including repeat lookups), then
-404. Expired rows are removed on subsequent publishes. Publishing requires a
+and valid for five minutes. Without a claim, the first lookup returns the
+delegation and spends the code. A client that sends a 128-bit-minimum
+`OpenKey-Delegation-Claim` header (base64url, chosen by the client) binds the
+code to that claim instead: the same claim can fetch again, after a lost
+response, until it acknowledges with `POST /api/delegation-codes/:code/ack`
+and the same header (repeatable, clears the delegation) or five minutes after
+redeeming; any other claim, or none, gets the same 404 as an unknown code.
+Expired rows are removed on subsequent publishes. Publishing requires a
 session and accepts only expected delegation fields and public JWK parameters;
 it does not store the CLI signing key. A broker failure leaves the full paste
 code available on the page. This endpoint is not the
@@ -161,6 +167,32 @@ correction. Immediately before managed signing (or returning a verified
 external signature), the route atomically compares and consumes both
 tokens: a concurrent loser and a replay cannot sign. A managed signing
 failure after consumption still requires a fresh approval.
+
+The popup and embedded sign pages obtain the preview automatically when the
+current permission selection or chosen expiry changes. Approve is enabled
+only with a current, unexpired preview; selection remains editable while
+the preview is being fetched. An edit discards the held preview, and an
+expired preview is fetched again (with a fresh context when necessary).
+One Approve action submits the captured preview token and its selection.
+The raw candidate remains in Advanced details. External wallets receive
+the same preview payload through the existing SDK handoff.
+
+The ordinary request-type introduction stays the same while the preview is
+loading and after it is ready. TinyCloud capability requests retain
+`Review the access this app is asking for.`; the introduction does not add
+a technical preview message or change height when the preview arrives.
+
+These page changes retain the three API endpoints, both single-use tokens,
+and the server's selection and exact-byte checks. Details: TC-2198.
+
+While a preview is loading, the disabled action reads `Getting ready...`.
+After a recoverable preview or signing error, `Try again` requests a fresh
+preview only when the owner chooses it; it does not sign or repeat on a
+timer. Existing unreadable-reply refusals still end the caller's request.
+Ordinary held-preview expiry refreshes automatically. If a newly returned
+preview is already too old to use, including a context that expires while
+the response is in flight, the page shows `OpenKey's check timed out.
+Try again.` and leaves approval disabled until an owner-initiated retry.
 
 An expired authorization context returns `context-expired` on
 `/authorize-sign`, `/authorize-sign-preview`, the managed approval, and
@@ -430,9 +462,11 @@ the new API, above), and roll both back together:
 - Creation and polling are rate-limited. Transactions expire after ten minutes.
 - The browser derives an ECDH/HKDF key from the CLI relay public key and
   encrypts the approved delegation with AES-256-GCM before sending it to the
-  device API. The relay stores only that opaque envelope and consumes it once
-  with an atomic status transition; neither the relay nor its rows receive a
-  plaintext delegation or CLI private key.
+  device API. The relay stores only that opaque envelope. Polling returns it
+  again until the CLI acknowledges with `POST /api/device-authorizations/:id/ack`
+  (device secret and PKCE verifier, repeatable; an atomic status transition
+  that clears the envelope) or ten minutes after approval. Neither the relay
+  nor its rows receive a plaintext delegation or CLI private key.
 - Share object retention remains seven days.
 
 The production database change is

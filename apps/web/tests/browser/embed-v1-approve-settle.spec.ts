@@ -19,7 +19,20 @@ async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDela
     await route.fulfill({ json: { key: { id: 'selected-key', address, publicKey: '0x02', keyIndex: 0, label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z' } } });
   });
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
-  await page.route('**/api/delegate/authorize-sign-prepare', (route) => route.fulfill({ json: { authorizationContextToken: 'context-token' } }));
+  await page.route('**/api/delegate/authorize-sign-prepare', (route) => route.fulfill({ json: {
+    authorizationContextToken: 'context-token', expiresAt: new Date(Date.now() + 300_000).toISOString(),
+  } }));
+  await page.route('**/api/delegate/authorize-sign-preview', (route) => {
+    const ids = route.request().postDataJSON().selectedActionIds as string[];
+    return route.fulfill({ json: {
+      authorizationContextToken: 'context-token', previewApprovalToken: 'preview-token',
+      previewApprovalExpiresAt: new Date(Date.now() + 60_000).toISOString(), signedMessage: siwe,
+      selectedActionKeys: ids, permissions: ids.map(id => {
+        const [service, space, path, ability] = id.split('\0');
+        return { service, space, path, actions: [ability] };
+      }),
+    } });
+  });
   await page.goto('/__parity_harness');
   await page.evaluate(([mode, protocol, message]) => {
     const w = window as unknown as Window & { frameLog: Array<{ t: number; top: number; enabled: boolean | null }>; resizeCount: number; sampleTimer: number };
@@ -129,4 +142,65 @@ test('v2 is unchanged: still gated by its own layout-ready handshake, not by the
   // Nothing acks the layout (the harness is not a v2 host), so a v2 Approve stays blocked far past the v1 ceiling.
   await page.waitForTimeout(2200);
   expect((await samples(page)).some((s) => s.enabled === true)).toBe(false);
+});
+
+// TC-2310: a click made by a script inside the frame (a shared-note flow does this) is no longer dropped for not coming
+// from the browser. What still stops a click that should not count is that Approve is not armed: while the frame is
+// moving (v1 settle gate) or before the host has acknowledged the layout (v2), the button is disabled and nothing is sent.
+async function approvalRequests(page: Page) {
+  const seen: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/delegate/authorize-sign') seen.push(request.url());
+  });
+  return seen;
+}
+const approveFrame = (page: Page) => page.frames().find((entry) => entry !== page.mainFrame() && entry.url().includes('/widget/embed/sign'))!;
+// A script-made click, two ways: the click() method, and a dispatched click event.
+const scriptClicks = (page: Page) => approveFrame(page).evaluate(() => {
+  const button = document.querySelector('button.approve') as HTMLButtonElement;
+  button.click();
+  button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+});
+
+test('a v1 frame that has settled: a click made by a script approves', async ({ page }) => {
+  const approvals = await approvalRequests(page);
+  await openEmbed(page, 'never-resizes');
+  await reviewShown(page);
+  await expect.poll(async () => enabledAt(await samples(page)), { timeout: 6000 }).toBeDefined();
+  await page.waitForTimeout(300);
+  const approvalCount = approvals.length;
+  await scriptClicks(page);
+  await expect.poll(() => approvals.length).toBeGreaterThan(approvalCount);
+});
+
+test('a v1 frame that is still moving: a click made by a script does nothing, and approves once it has settled', async ({ page }) => {
+  const approvals = await approvalRequests(page);
+  await openEmbed(page, 'sdk-modal');
+  await reviewShown(page);
+  // At first display the frame is still animating: Approve is disabled.
+  const approvalCount = approvals.length;
+  const disabledAfterClick = await approveFrame(page).evaluate(() => {
+    const button = document.querySelector('button.approve') as HTMLButtonElement;
+    const disabled = button.disabled;
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return disabled;
+  });
+  expect(disabledAfterClick).toBe(true);
+  await page.waitForTimeout(250);
+  expect(approvals).toHaveLength(approvalCount);
+  await expect.poll(async () => enabledAt(await samples(page)), { timeout: 10_000 }).toBeDefined();
+  expect(approvals).toHaveLength(approvalCount);
+  await scriptClicks(page);
+  await expect.poll(() => approvals.length).toBeGreaterThan(approvalCount);
+});
+
+test('a v2 frame the host has not acknowledged: a click made by a script does nothing', async ({ page }) => {
+  const approvals = await approvalRequests(page);
+  await openEmbed(page, 'sdk-modal', 2);
+  await reviewShown(page);
+  await page.waitForTimeout(1500);
+  const approvalCount = approvals.length;
+  await scriptClicks(page);
+  await page.waitForTimeout(500);
+  expect(approvals).toHaveLength(approvalCount);
 });

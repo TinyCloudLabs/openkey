@@ -13,7 +13,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { createRequire } from 'node:module';
 import { Window } from 'happy-dom';
 import { compile } from 'svelte/compiler';
-import { parseCapabilityReview } from '../../../../packages/capability-review/src/index';
+import { OWN_KEY_PREFIX_STATEMENTS, SHARE_KEY_PREFIX_CREATE_STATEMENT, parseCapabilityReview } from '../../../../packages/capability-review/src/index';
 import type { CapabilityReviewModel } from '../../../../packages/capability-review/src/index';
 import {
   FIXTURE_META,
@@ -256,5 +256,88 @@ describe('approval view for app keys', () => {
     expect(target.querySelector('.summary-not-granted')).toBeNull();
     expect(target.querySelectorAll('.summary-statement code').length).toBe(0);
     cleanup();
+  });
+});
+
+// TC-1424: the Share sign-in keeps key creation visible without a Sensitive badge.
+describe('approval view for the Share sign-in', () => {
+  const SHARE_SPACE = `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}:default`;
+  const shareModel = () =>
+    appKeyModel({
+      [urn('')]: [`${E}decrypt`, `${E}network.create`],
+      [urn('/share/')]: [`${E}key.create`, `${E}decrypt`],
+      [`${SHARE_SPACE.replace(/:default$/, ":files")}/kv/files-for-you/v1/`]: ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/put'],
+      [`${SHARE_SPACE}/capabilities`]: ['tinycloud.capabilities/read'],
+    });
+
+  test('the header counts three Sensitive rows without marking key creation', () => {
+    const { target, cleanup } = render(shareModel());
+    try {
+      const rows = [...target.querySelectorAll('.summary-statement')];
+      const create = rows.find(row => row.textContent?.includes(SHARE_KEY_PREFIX_CREATE_STATEMENT))!;
+      expect(create.querySelectorAll('.summary-sensitive-pill').length).toBe(0);
+      expect(create.getAttribute('data-severity')).toBe('attention');
+      const marked = target.querySelectorAll('.summary-statement .summary-sensitive-pill').length;
+      expect(marked).toBe(3);
+      expect(target.querySelectorAll('.sensitive-callout')).toHaveLength(1);
+      expect(target.querySelector('.sensitive-callout')!.textContent).toMatch(new RegExp(`^\\s*${marked}\\b`));
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('share action rows are plain words with no raw backquote or code-style path', () => {
+    const { target, cleanup } = render(shareModel());
+    expect(target.querySelectorAll('.summary-statement code.mono')).toHaveLength(0);
+    expect(target.querySelector('.summary')!.textContent).not.toContain('`');
+    expect(statementTexts(target)).toContain(OWN_KEY_PREFIX_STATEMENTS.shareDecrypt);
+    cleanup();
+  });
+});
+
+describe('Sensitive banner visibility', () => {
+  test('omits the redundant banner when the only listed row is decrypt', () => {
+    const { target, cleanup } = render(appKeyModel({ [urn('/share/')]: [`${E}decrypt`] }));
+    try {
+      expect(target.querySelectorAll('.summary-statement .summary-sensitive-pill').length).toBe(1);
+      expect(target.querySelectorAll('.sensitive-callout').length).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('shows one Sensitive row when decrypt is mixed with key creation', () => {
+    const { target, cleanup } = render(appKeyModel({ [urn('/share/')]: [`${E}key.create`, `${E}decrypt`] }));
+    try {
+      expect(target.querySelectorAll('.summary-statement .summary-sensitive-pill').length).toBe(1);
+      expect(target.querySelector('.sensitive-callout')!.textContent).toMatch(/^\s*1\b/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('omits the banner when no listed row is Sensitive', () => {
+    const space = `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}:account`;
+    const { target, cleanup } = render(appKeyModel({ [`${space}/capabilities`]: ['tinycloud.capabilities/read'] }));
+    try {
+      expect(target.querySelector('.summary-statement')?.getAttribute('data-severity')).toBe('standard');
+      expect(target.querySelectorAll('.summary-sensitive-pill').length).toBe(0);
+      expect(target.querySelectorAll('.sensitive-callout').length).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('keeps the banner when a listed not-granted row has no Sensitive badge', () => {
+    const { target, cleanup } = render(appKeyModel({
+      [urn('/apps/xyz.tinycloud.share/session')]: [`${E}decrypt`, `${E}key.delete`],
+    }));
+    try {
+      expect(target.querySelectorAll('.summary-not-granted .summary-statement').length).toBe(1);
+      expect(target.querySelectorAll('.summary-sensitive-pill').length).toBe(1);
+      expect(target.querySelectorAll('.sensitive-callout').length).toBe(1);
+    } finally {
+      cleanup();
+    }
   });
 });

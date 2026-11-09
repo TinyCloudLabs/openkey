@@ -101,7 +101,7 @@ async function adapterBlock(page: Page, surface: 'cli' | 'popup' | 'iframe', raw
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.addInitScript(({ surface, model, initialSelection }) => {
     (window as unknown as PageGlobals).__openkeyParityHarness = {
-      surface, model, initialSelection, canUseAuthorizeSign: true, previewReady: false, approving: false, error: null, calls: [],
+      surface, model, initialSelection, canUseAuthorizeSign: true, previewReady: true, approving: false, error: null, calls: [],
     };
   }, { surface, model, initialSelection });
   await page.goto('/__parity_harness');

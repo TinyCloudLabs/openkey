@@ -58,16 +58,18 @@ const EVENTS = {
   native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true,
   oauth_client_create_failed: true, oauth_client_delete_failed: true, oauth_client_update_failed: true,
   session_cap_unapplied: true,
-  resource_introspect_failed: true, resource_introspect_rate_limited: true,
+  resource_introspect_failed: true, resource_introspect_rate_limited: true, mcp_userinfo_guard_failed: true,
   revoked_token_record_failed: true, revoked_token_sweep_failed: true,
   tinycloud_bootstrap_background_failed: true, tinycloud_bootstrap_background_completed: true,
   tinycloud_bootstrap_sweep_tick: true, tinycloud_bootstrap_sweep_healed: true,
   tinycloud_bootstrap_sweep_still_failed: true, tinycloud_bootstrap_sweep_exhausted: true,
+  tinycloud_bootstrap_sweep_reaped: true,
   tinycloud_bootstrap_sweep_failed: true,
   tinycloud_bootstrap_space_registry_completed: true, native_par_valid_request_volume_threshold_reached: true,
   native_par_request_cleanup_failed: true, native_session_proof_cleanup_failed: true,
   scoreboard_protocol_users_call: true, app_sign_in_record_failed: true, permission_entry_unknown_field: true,
   third_party_console: true, uncaught_exception: true, unhandled_rejection: true, config_invalid: true,
+  sign_origin_refused: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;
 type EventName = keyof typeof EVENTS;
@@ -76,6 +78,7 @@ const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,
   tinycloud_bootstrap_node_timeout: true, tinycloud_bootstrap_space_not_hosted: true,
+  tinycloud_bootstrap_deadline: true, tinycloud_bootstrap_lease_expired: true, tinycloud_bootstrap_reclaim_failed: true,
   tinycloud_bootstrap_expired_request: true, BETTER_AUTH_URL: true, signup_token_invalid: true,
   signup_account_exists: true, quote_report_data_mismatch: true, quote_key_custody_mismatch: true,
   quote_format_invalid: true,
@@ -133,6 +136,11 @@ export function logMetric(
   emit(level, event, { status: fields.status, count: fields.count });
 }
 
+/** One line on a refused managed-key signing request: route template and why, never the origin value. */
+export function logSignOriginRefused(route: string | undefined, reason: 'missing' | 'foreign'): void {
+  emit('warn', 'sign_origin_refused', { route: routeTemplate(route), reason });
+}
+
 const PERMISSION_FIELD_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
 /** Distinct valid field names logged per request; further names are counted into one `other` line. */
 const PERMISSION_FIELD_NAME_CAP = 8;
@@ -184,7 +192,8 @@ export type TinyCloudBootstrapSweepEvent =
   | 'tinycloud_bootstrap_sweep_tick'
   | 'tinycloud_bootstrap_sweep_healed'
   | 'tinycloud_bootstrap_sweep_still_failed'
-  | 'tinycloud_bootstrap_sweep_exhausted';
+  | 'tinycloud_bootstrap_sweep_exhausted'
+  | 'tinycloud_bootstrap_sweep_reaped';
 
 /**
  * Background sweep outcome: counts, attempt numbers, durations and allow-listed codes only. Never a
@@ -201,6 +210,7 @@ export function logTinyCloudBootstrapSweep(
     healed?: number;
     stillFailed?: number;
     skipped?: number;
+    reaped?: number;
   },
 ): void {
   const level: LogLevel =
@@ -216,6 +226,7 @@ export function logTinyCloudBootstrapSweep(
     healed: fields.healed,
     still_failed: fields.stillFailed,
     skipped: fields.skipped,
+    reaped: fields.reaped,
   });
 }
 
