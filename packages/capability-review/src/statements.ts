@@ -433,6 +433,9 @@ function isSenderHistoryGrant(
   spaceName: string | null,
 ): boolean {
   return (
+    KV_SERVICES.has(grant.service) &&
+    grant.serviceMismatch !== true &&
+    grant.actions.every((action) => KV_RECOGNIZED_ABILITIES.has(action.ability)) &&
     spaceName === "applications" &&
     grant.ownedBySelf !== false &&
     grant.path.startsWith(SENDER_HISTORY_PREFIX) &&
@@ -449,6 +452,9 @@ function isFilesForYouGrant(
   spaceName: string | null,
 ): boolean {
   return (
+    KV_SERVICES.has(grant.service) &&
+    grant.serviceMismatch !== true &&
+    grant.actions.every((action) => KV_RECOGNIZED_ABILITIES.has(action.ability)) &&
     spaceName === "files-for-you" &&
     grant.ownedBySelf !== false &&
     grant.path === FILES_FOR_YOU_PATH &&
@@ -469,6 +475,9 @@ function isFilesForYouGrant(
  */
 function appFolderOf(grant: CapabilityGrant, spaceName: string | null): string | null {
   if (
+    !KV_SERVICES.has(grant.service) ||
+    grant.serviceMismatch === true ||
+    !grant.actions.every((action) => KV_RECOGNIZED_ABILITIES.has(action.ability)) ||
     spaceName !== "applications" ||
     grant.family !== "own-app-data" ||
     grant.ownedBySelf === false

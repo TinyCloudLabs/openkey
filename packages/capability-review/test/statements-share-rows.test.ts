@@ -278,3 +278,67 @@ describe("the Share request as a whole", () => {
     expect(byText.get(appFolderDeleteStatement("xyz.tinycloud.share"))).toBe("standard");
   });
 });
+
+describe("non-KV services do not inherit Share KV rows", () => {
+  const folder = "xyz.tinycloud.share";
+  const folderResource = `${APPLICATIONS}/kv/${folder}/`;
+
+  it.each([
+    [
+      SENDER_HISTORY,
+      "tinycloud.capabilities",
+      ["get", "list", "put", "del"],
+      SENDER_HISTORY_STATEMENT,
+    ],
+    [
+      SENDER_HISTORY,
+      "tinycloud.sql",
+      ["get", "list", "put", "del"],
+      SENDER_HISTORY_STATEMENT,
+    ],
+    [
+      MAILBOX,
+      "tinycloud.capabilities",
+      ["get", "list", "put"],
+      FILES_FOR_YOU_STATEMENT,
+    ],
+    [
+      MAILBOX,
+      "tinycloud.sql",
+      ["get", "list", "put"],
+      FILES_FOR_YOU_STATEMENT,
+    ],
+  ])(
+    "does not apply the KV row for %s with %s abilities",
+    (resource, service, verbs, friendlyRow) => {
+      const grant = grantFor({
+        [resource]: verbs.map((verb) => `${service}/${verb}`),
+      });
+      expect(grant.family).toBe("unknown");
+      expect(grant.severity).toBe("sensitive");
+      expect(grant.displayLabel).not.toBe(friendlyRow);
+      const rows = buildStatements({ ...grant, serviceMismatch: false });
+      expect(rows.some((row) => row.primaryText === friendlyRow)).toBe(false);
+      expect(rows.every((row) => row.literalEscaped === true)).toBe(true);
+    },
+
+  );
+
+  it.each(["tinycloud.capabilities", "tinycloud.sql"])(
+    "does not render a folder-delete row for %s del",
+    (service) => {
+      const grant = grantFor({
+        [folderResource]: [`${service}/del`],
+      });
+      const rows = buildStatements({
+        ...grant,
+        family: "own-app-data",
+        serviceMismatch: false,
+      });
+      expect(
+        rows.every((row) => row.primaryText !== appFolderDeleteStatement(folder)),
+      ).toBe(true);
+      expect(rows.every((row) => row.codeSpans !== true)).toBe(true);
+    },
+  );
+});
