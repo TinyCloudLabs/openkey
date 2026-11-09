@@ -589,6 +589,13 @@ SIWE, and it is limited as follows:
   - If activation is `skipped`, sign the approved `hostSiwe` bytes exactly
     once (recording `hostSignedAt`), submit the hosting delegation, and
     activate again. `hosting` is then `created`, or `failed` if that fails.
+- **Stale cache:** a cached `complete` row means prepare plans no hosting. If
+  the approval's activation then lists the space as `skipped` and no plan was
+  shown, the host SIWE is never signed. Approve marks the bootstrap row
+  not-complete, returns the request to `RESOLVED` and answers 409
+  `preparation_superseded`; the consent page prepares again, and that prepare
+  carries a hosting plan. Because the row is no longer `complete`, the second
+  approval is never refused this way.
 - **Freshness:** if the node's staged `peerId` can expire before approval,
   prepare refreshes a plan older than the observed lifetime, and approve
   returns 409 `preparation_superseded`.

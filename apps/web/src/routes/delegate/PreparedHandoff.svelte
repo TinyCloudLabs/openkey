@@ -11,6 +11,7 @@
   import { timeUntilExpiry } from '$lib/siwe-parser';
   import { SERVER_REPLY_BODY, SERVER_REPLY_TITLE, ServerReplyError, hasSignResult, hasText } from '$lib/server-reply';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
+  import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import { EXPIRY_PRESETS, LONG_EXPIRY_MS, LONG_EXPIRY_WARNING, expiryAtCapped, expiryLimitNote, formatExpiry, parseExpiry, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
@@ -185,7 +186,7 @@
     if (path === 'handoffs/claim' && response.status === 404 && record.error === 'Not found') {
       throw new Error('Prepared CLI sign-in is not available yet. Restart the CLI command after OpenKey is updated.');
     }
-    if (!response.ok) throw new Error(typeof record.error === 'string' ? record.error : `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(apiBusyOrEndedMessage(response.status) ?? (typeof record.error === 'string' ? record.error : `HTTP ${response.status}`));
     return record;
   }
 

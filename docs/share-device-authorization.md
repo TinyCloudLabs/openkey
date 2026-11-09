@@ -155,6 +155,50 @@ wallet completion returns the same session proof as a managed approval:
 lets the CLI perform its field gate and cryptographic proof verification
 offline.
 
+### Multi-space permission requests
+
+`permissions[]` may name several logical spaces. Each logical name resolves
+against the selected signing account; an owner-qualified space URI must name
+that same account and chain. The signed ReCap and permission edits retain
+each `(space, service, path, action)` independently, including identical
+service/path pairs in different spaces.
+
+`/api/delegate/prepare`, managed `/api/delegate`, and wallet
+`/api/delegate/complete` return:
+
+```ts
+requestedSpaces: Array<{
+  space: string;       // logical name
+  spaceId: string;     // resolved owner-qualified URI
+  spaceReady: boolean | null;
+  spacePending?: true;
+  spaceError?: string;
+}>;
+```
+
+The list preserves the full request baseline in request order, even if the
+owner removes all grants in a space. Preparation reports `null` readiness.
+Completion reports an entirely deselected space as `false`, without a signed
+grant for that space. For granted spaces, `true` requires a positive node
+activation result or managed hosting confirmation; `false` denotes an
+explicit skipped/unavailable space, and `null` denotes unconfirmed readiness.
+An already-known delegation's empty activation receipt is not hosting proof.
+Top-level `spaceReady` is `true` only when every listed space is ready.
+Clients can probe unconfirmed spaces using the permissions actually granted.
+
+Singular `spaceId` remains a routing default, not the full permission scope:
+`applications` when requested, otherwise the first requested space. The
+`spaceSetup` preparation notice still describes only that primary space and
+does not assert readiness of any space. Managed automatic setup confirms all
+granted requested spaces before reporting them ready. Existing account-wide
+bootstrap still hosts all six canonical managed-account spaces in the
+background, independent of the CLI grant; hosting gives the CLI no permission.
+Remaining account seeding continues under the bootstrap lock and bounded retry.
+
+The authorization context binds the complete per-space baseline, exact
+selection, session key, signing owner, host and lifetime. Response metadata
+never substitutes for verification of the signed SIWE and its permissions.
+
 For the widget's `/api/delegate/authorize-sign-prepare` →
 `/api/delegate/authorize-sign-preview` → `/api/delegate/authorize-sign`
 flow, the final signing request checks the bound user, key, session JWK,
