@@ -444,6 +444,7 @@
         found.id !== selectedId
       ) {
         keyError = 'Selected key could not be loaded for this session.';
+        dropPreviewContext();
         keyProblem = 'transient';
         return;
       }
@@ -472,6 +473,7 @@
     if (getSessionToken() !== keyReadToken ||
         (inIframe ? null : $session.data?.session?.id) !== keyReadSessionId) {
       keyError = 'Signing session changed. Reconnect to choose a key.';
+      dropPreviewContext();
       keyProblem = 'transient';
       keyChoices = [];
       return;
@@ -497,6 +499,7 @@
       if (generation !== keyReadGeneration) return;
       if (getSessionToken() !== token || (inIframe ? null : $session.data?.session?.id) !== sessionId) {
         keyError = 'Signing session changed. Reconnect to choose a key.';
+        dropPreviewContext();
         keyProblem = 'transient';
         return;
       }
@@ -523,10 +526,20 @@
     return failure instanceof Error && 'status' in failure && (failure.status === 404 || failure.status === 403);
   }
 
+  // A preview context is issued to the account that was signed in: a key or session reset discards it, as a new request
+  // does, so the next preview is prepared for the account now signed in.
+  function dropPreviewContext() {
+    heldPreview = null;
+    previewToken = null;
+    contextDeadline = 0;
+    previewRevision++;
+  }
+
   /** Read again from the start of key selection: the named key, or the account's keys when the request named none. */
   function retryKey() {
     keyReadGeneration++;
     key = null;
+    dropPreviewContext();
     keyOwnerToken = null;
     keyOwnerSessionId = undefined;
     keyError = '';
@@ -813,6 +826,7 @@
     ) return true;
     keyReadGeneration++;
     key = null;
+    dropPreviewContext();
     keyError = 'Signing session changed. Cancel and try again.';
     keyProblem = 'transient';
     layoutGate?.changed();

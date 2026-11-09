@@ -295,6 +295,7 @@
         if (generation !== keyReadGeneration) return;
         if ($session.data?.session?.id !== sessionId) {
           error = 'Signing session changed. Reconnect to choose a key.';
+          dropPreviewContext();
           keyProblem = 'transient';
           return;
         }
@@ -319,6 +320,7 @@
     if (!key || $session.data?.session?.id === keySessionId) return;
     keyReadGeneration++;
     key = null;
+    untrack(dropPreviewContext);
     error = 'Signing session changed. Reconnect to choose a key.';
     keyProblem = 'transient';
   });
@@ -326,6 +328,7 @@
   function chooseSigningKey(selected: EthereumKey) {
     if ($session.data?.session?.id !== keyChoicesSessionId) {
       error = 'Signing session changed. Reconnect to choose a key.';
+      dropPreviewContext();
       keyProblem = 'transient';
       keyChoices = [];
       return;
@@ -349,6 +352,7 @@
       if (generation !== keyReadGeneration) return;
       if ($session.data?.session?.id !== sessionId) {
         error = 'Signing session changed. Reconnect to choose a key.';
+        dropPreviewContext();
         keyProblem = 'transient';
         return;
       }
@@ -374,10 +378,20 @@
     return failure instanceof Error && 'status' in failure && (failure.status === 404 || failure.status === 403);
   }
 
+  // A preview context is issued to the account that was signed in: a key or session reset discards it, as a new request
+  // does, so the next preview is prepared for the account now signed in.
+  function dropPreviewContext() {
+    heldPreview = null;
+    previewToken = null;
+    contextDeadline = 0;
+    previewRevision++;
+  }
+
   /** Read again from the start of key selection: the named key, or the account's keys when the request named none. */
   function retryKey() {
     keyReadGeneration++;
     key = null;
+    dropPreviewContext();
     error = '';
     keyProblem = null;
     keyChoices = [];
