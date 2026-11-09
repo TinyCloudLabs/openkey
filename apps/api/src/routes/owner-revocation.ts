@@ -85,7 +85,7 @@ export function createOwnerRevocationRouter(service: PreparedHandoffService, dep
         signature = await dependencies.signManaged(key, key.sealedBlob, siwe);
       } catch (cause) {
         await service.releaseSigning(body.ticket, c.get('user').id, body.authorizationContextToken, key.id);
-        throw cause;
+        return c.json({ error: cause instanceof Error ? cause.message : 'Signing failed', code: 'sign_failed' }, 500);
       }
     }
     try {

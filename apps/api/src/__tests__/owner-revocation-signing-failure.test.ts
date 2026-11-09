@@ -34,8 +34,9 @@ describe('owner revocation handoff when managed signing fails', () => {
       if (failures-- > 0) throw new Error('TEE unavailable');
       return account.signMessage({ message });
     });
-    // The router has no handler of its own for this; the app turns it into a 500.
-    await expect(sign()).rejects.toThrow('TEE unavailable');
+    const failed = await sign();
+    expect(failed.status).toBe(500);
+    expect(await failed.json()).toEqual({ error: 'TEE unavailable', code: 'sign_failed' });
     const retry = await sign();
     expect(retry.status).toBe(200);
     const result = await retry.json() as { signature: string };
