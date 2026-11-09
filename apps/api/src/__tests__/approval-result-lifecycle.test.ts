@@ -19,6 +19,8 @@ function fixture() {
     async register() { return record; },
     async findById(id) { return id === record.id ? record : null; },
     async findByResultRef(ref) { return ref === record.resultRef ? record : null; },
+    async admit() { throw new Error('not used in read/ACK regression'); },
+    async release() { throw new Error('not used in read/ACK regression'); },
     async approve() { throw new Error('not used in read/ACK regression'); },
     async acknowledge(ref, ackId, now) {
       if (ref !== record.resultRef || record.resultExpiresAt! <= now || (record.ackId && record.ackId !== ackId)) return null;
