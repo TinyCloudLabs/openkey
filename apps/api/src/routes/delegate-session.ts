@@ -14,6 +14,7 @@ import {
 } from '@tinycloud/node-sdk-wasm';
 import { CAPABILITIES, ENCRYPTION, KV, SQL } from '@tinycloud/bootstrap';
 import { getAddress } from 'viem';
+import { parseEncryptionResource } from '@openkey/capability-review';
 import {
   DelegateRequestError,
   shortServiceName,
@@ -415,9 +416,9 @@ const SHARE_KEY_FOLDER_SUFFIX = '/share/';
 /**
  * A raw encryption entry carries no space (`space` absent or `encryption`),
  * grants only `tinycloud.encryption/decrypt`, and names a network the signer
- * owns, or exactly that network's `share/` folder: the URN's owner DID must be
- * the signer's `did:pkh:eip155:<chainId>:<address>` (address case-insensitive)
- * and the network name must follow the SDK's naming rule.
+ * owns, that network's `share/` folder, or one exact `default/share/<id>` key.
+ * Bare networks retain their case-insensitive owner check. Named resources
+ * require canonical owner bytes and a network name of at most 64 characters.
  */
 function assertRawEncryptionPermission(
   entry: DelegationPermissionEntry,
@@ -475,11 +476,31 @@ function assertRawEncryptionPermission(
       }],
     );
   }
-  // The name part: the whole tail, or the tail without the one allowed folder suffix. Anything else
-  // (`a/b`, `share`, `share/x/`, `..`, a per-share folder) stays a name that fails the rule below.
   const tail = network[3]!;
-  const networkName = tail.endsWith(SHARE_KEY_FOLDER_SUFFIX) ? tail.slice(0, -SHARE_KEY_FOLDER_SUFFIX.length) : tail;
-  if (!ENCRYPTION_NETWORK_NAME.test(networkName)) {
+  const isShareFolder = tail.endsWith(SHARE_KEY_FOLDER_SUFFIX);
+  const networkName = isShareFolder ? tail.slice(0, -SHARE_KEY_FOLDER_SUFFIX.length) : tail;
+  const key = !isShareFolder && tail.includes('/') ? parseEncryptionResource(entry.path) : null;
+  const isShareLeaf = key !== null && key.kind === 'key' && key.network === 'default' &&
+    /^share\/[^/]+$/.test(key.keyPath) &&
+    entry.path === `${RAW_ENCRYPTION_PREFIX}${key.ownerDid}:default/${key.keyPath}`;
+  if (isShareFolder || isShareLeaf) {
+    if (network[2] !== getAddress(signer.address)) {
+      throw new DelegateRequestError(
+        'invalid_permissions',
+        `permissions[${index}].path must use the canonical owner DID for a named encryption resource`,
+        [{ path: `permissions[${index}].path`, message: 'Expected the canonical signing account DID', value: entry.path }],
+      );
+    }
+    const namedNetwork = isShareLeaf ? key!.network : networkName;
+    if (namedNetwork.length > 64) {
+      throw new DelegateRequestError(
+        'invalid_permissions',
+        `permissions[${index}].path names an encryption network longer than 64 characters`,
+        [{ path: `permissions[${index}].path`, message: 'Named encryption networks have at most 64 characters', value: entry.path }],
+      );
+    }
+  }
+  if (!ENCRYPTION_NETWORK_NAME.test(networkName) && !isShareLeaf) {
     throw new DelegateRequestError(
       'invalid_permissions',
       `permissions[${index}].path names an invalid encryption network; the name must match ${ENCRYPTION_NETWORK_NAME.source}`,
