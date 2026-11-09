@@ -3,8 +3,8 @@
   // embedded iframe (`/widget/embed/sign`) surface.
   //
   // Popup and iframe surfaces run the same completion logic (both are
-  // widget flows that either fetch a server-signed preview or fall
-  // through to exact-byte signing). This adapter therefore mirrors the
+  // widget flows that consume a ready preview or sign original bytes).
+  // This adapter therefore mirrors the
   // popup adapter one-for-one — the parity test asserts that with the
   // same model, initialSelection, and transport shape, both adapters
   // render byte-identical DOM and invoke the same transport calls in
@@ -65,9 +65,7 @@
   }
 
   function onApprove() {
-    if (transport.canUseAuthorizeSign && !transport.previewReady) {
-      void transport.requestPreview();
-    } else {
+    if (!transport.canUseAuthorizeSign || transport.previewReady) {
       void transport.approveAndSign();
     }
   }
@@ -83,14 +81,16 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
+  refused={transport.refused ?? false}
   {layoutBlocked}
   stickyActions
-  finalPreview={transport.previewReady}
+  previewPending={transport.canUseAuthorizeSign && !transport.previewReady}
   {peerRecognition}
   expiryMs={transport.expiry?.chosenMs ?? null}
   onExpiryChange={transport.expiry?.onChange}
   {onApprove}
   {onCancel}
+  onRetry={transport.retryPreview}
   {onSelectionChange}
   {onEditingChange}
 />

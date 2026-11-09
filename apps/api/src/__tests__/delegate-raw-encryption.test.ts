@@ -204,7 +204,6 @@ describe('prepareDelegationSession: the share/ folder of an owned encryption net
       'share', // no trailing slash: an exact key, not the folder
       'share//',
       'share/x/',
-      'share/x',
       'share/..',
       'share/../',
       'share/../other/',

@@ -76,6 +76,10 @@
   function onCancel() {
     transport.goBack();
   }
+
+  function onDecline() {
+    void transport.decline?.();
+  }
 </script>
 
 <SigningApproval
@@ -93,6 +97,9 @@
   {showSigner}
   {onApprove}
   {onCancel}
+  cancelText={transport.decline ? "Back" : undefined}
+  onDecline={transport.decline ? onDecline : undefined}
+  declining={transport.declining ?? false}
   {onSelectionChange}
   {onEditingChange}
 />

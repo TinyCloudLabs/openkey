@@ -46,6 +46,24 @@ export const hasSignResult = (body: ReplyBody): boolean =>
   Array.isArray(body.permissions) && body.permissions.every(isGrant);
 
 /**
+ * Refusals the server decides from the request itself (the website does not list the key, the key-delete rule, an
+ * unreadable ReCap): asking again returns the same answer. Each maps to the identifier the widget reports to the host.
+ */
+const TERMINAL_REFUSALS: Readonly<Record<string, string>> = {
+  app_key_grant_refused: 'APP_KEY_GRANT_REFUSED',
+  key_delete_not_grantable: 'KEY_DELETE_NOT_GRANTABLE',
+  invalid_siwe_recap: 'INVALID_SIWE_RECAP',
+};
+
+/** The server's text and the host identifier when `error` is a terminal refusal; otherwise null. */
+export function terminalRefusal(error: unknown): { text: string; hostMessage: string } | null {
+  if (!(error instanceof Error) || error instanceof ServerReplyError || !('code' in error)) return null;
+  const { code } = error;
+  if (typeof code !== 'string' || !Object.hasOwn(TERMINAL_REFUSALS, code)) return null;
+  return { text: error.message, hostMessage: TERMINAL_REFUSALS[code]! };
+}
+
+/**
  * Read one reply. A non-2xx answer keeps the server's own error text, or
  * `<fallback>` when it has none. A 2xx answer must be a JSON object that
  * satisfies `valid`; otherwise this throws `ServerReplyError` with the status.
@@ -61,7 +79,10 @@ export async function readReply(
       failure !== null && typeof failure === 'object' && 'error' in failure && typeof failure.error === 'string' && failure.error
         ? failure.error
         : `HTTP ${response.status}`;
-    throw new Error(text);
+    // The server's `code` rides along so a refusal that cannot change on retry can be told from a temporary failure.
+    const code =
+      failure !== null && typeof failure === 'object' && 'code' in failure && typeof failure.code === 'string' ? failure.code : undefined;
+    throw Object.assign(new Error(text), { status: response.status, code });
   }
   let parsed: unknown;
   try {

@@ -6,8 +6,8 @@
   //   1. Default view is small, deterministic, and derived from the actual
   //      SIWE/ReCap request PLUS explicitly provenance-labelled manifest
   //      data. It surfaces the requester, a short list of understandable
-  //      statements (from statements.ts), and a pinned sensitive callout
-  //      when any grant reaches secret data or decryption.
+  //      statements (from statements.ts), and a sensitive count when the
+  //      listed rows mix Sensitive badges with unbadged rows.
   //   2. A single top-level `<details>` labelled `Advanced details` contains:
   //      requester, verified browser origin, manifest name/appId/digest with
   //      HONEST trust/provenance label, reason (only when present), signing
@@ -54,13 +54,13 @@
     FAMILY_LABEL,
     appKeyNotGrantableStatements,
     buildRenderPlan,
-    buildStatements,
+    buildSummaryStatements,
     grantIsAppKeyDecrypt,
-    grantReachesSecretDataOrDecryption,
+    sensitiveSummaryCount,
     grantHeading,
     PROTOCOL_HEADLINE,
     PROTOCOL_HINT,
-    sensitiveCallout,
+    sensitiveRowsCallout,
     abbreviateDid,
     abbreviateSpaceId,
     readSpaceHostFacts,
@@ -86,9 +86,20 @@
     /** Disable Approve while an embedding host is applying the review layout. */
     layoutBlocked?: boolean;
     stickyActions?: boolean;
-    finalPreview?: boolean;
+    /** The server refused in a way a retry cannot change: Approve stays disabled (Cancel still works). */
+    refused?: boolean;
+    /** Disable only Approve while the route prepares the current preview. */
+    previewPending?: boolean;
     approveText?: string;
     cancelText?: string;
+    /**
+     * Offered only on the approval-request review (TC-2459): a Decline button left of Approve, and the dismiss
+     * control becomes a text link above the pair. Widget surfaces leave it unset and keep their Cancel button.
+     */
+    onDecline?: () => void;
+    declineText?: string;
+    /** A decline is being sent: Decline, Approve and the dismiss control are off, so it cannot go twice. */
+    declining?: boolean;
     /** Surface-specific context rendered in a fixed slot under the header. */
     context?: Snippet;
     /** Show which key signs; for users who chose one of several keys. */
@@ -116,6 +127,7 @@
     expiryMaxMs?: number | null;
     onApprove: () => void;
     onCancel: () => void;
+    onRetry?: () => void;
     onSelectionChange: (next: Set<string>) => void;
     onEditingChange: (next: boolean) => void;
   }
@@ -129,9 +141,13 @@
     approveBlockedReason = null,
     layoutBlocked = false,
     stickyActions = false,
-    finalPreview = false,
+    refused = false,
+    previewPending = false,
     approveText = "Approve",
     cancelText = "Cancel",
+    onDecline,
+    declineText = "Decline",
+    declining = false,
     context,
     showSigner = false,
     peerRecognition = null,
@@ -141,6 +157,7 @@
     expiryMaxMs = null,
     onApprove,
     onCancel,
+    onRetry,
     onSelectionChange,
     onEditingChange,
   }: Props = $props();
@@ -189,11 +206,7 @@
   );
   const isMalformedRecap = $derived(model.protocol === "malformed-recap");
   const headline = $derived(PROTOCOL_HEADLINE[model.protocol]);
-  const hint = $derived(
-    finalPreview && model.protocol === "tinycloud-siwe-recap"
-      ? "Review the server-prepared request. Approving signs the exact bytes shown in Advanced details."
-      : PROTOCOL_HINT[model.protocol],
-  );
+  const hint = $derived(PROTOCOL_HINT[model.protocol]);
 
   // Summary copy and the sensitive count describe only actions the user is
   // currently approving. Advanced details deliberately retains the baseline
@@ -206,56 +219,11 @@
     }),
   );
 
-  // Statements for the summary view. Group by primary text so repeated
-  // statements collapse into one visible row while preserving the strongest
-  // severity. Counts, services, resources, and requester provenance belong in
-  // Advanced details; the approval view stays understandable at a glance.
-  const summaryStatements = $derived.by(() => {
-    const severityRank: Record<CapabilityGrant["severity"], number> = {
-      standard: 0,
-      attention: 1,
-      sensitive: 2,
-    };
-
-    const grouped = new Map<
-      string,
-      {
-        key: string;
-        primaryText: string;
-        severity: CapabilityGrant["severity"];
-        unmapped: boolean;
-        codeSpans: boolean;
-      }
-    >();
-
-    for (const grant of selectedGrants) {
-      for (const statement of buildStatements(grant)) {
-        const existing = grouped.get(statement.primaryText);
-        const rowSeverity = statement.severity ?? grant.severity;
-        if (existing) {
-          if (severityRank[rowSeverity] > severityRank[existing.severity]) {
-            existing.severity = rowSeverity;
-          }
-        } else {
-          grouped.set(statement.primaryText, {
-            key: statement.primaryText,
-            primaryText: statement.primaryText,
-            severity: rowSeverity,
-            unmapped: statement.literalEscaped === true,
-            codeSpans: statement.codeSpans === true,
-          });
-        }
-      }
-    }
-
-    return [...grouped.values()].sort(
-      (left, right) => Number(left.unmapped) - Number(right.unmapped),
-    );
-  });
-
-  const sensitiveCount = $derived(
-    selectedGrants.filter(grantReachesSecretDataOrDecryption).length,
-  );
+  // Statements for the summary view. The rows, and the count in the Sensitive
+  // header, come from one function so the header always counts the rows marked
+  // Sensitive below it (capability-review `buildSummaryStatements`).
+  const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
+  const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
 
   // App keys: the standing-access line follows the decrypt statements, and a
   // `key.delete` action is listed even though it is never selected.
@@ -508,27 +476,26 @@
     }, 2000);
   }
 
-  function handleApproveClick(event: MouseEvent) {
-    try {
-      if (window.self !== window.top && !event.isTrusted) return;
-    } catch {
-      if (!event.isTrusted) return;
-    }
+  // Approve is armed only when its button is enabled (settled layout, node checked, nothing blocking). A browser
+  // already ignores a click on a disabled button; this also refuses one that reaches the handler anyway, such as after
+  // a script clears the `disabled` attribute.
+  function handleApproveClick() {
+    if (approveButtonDisabled) return;
     onApprove();
   }
 
   const nodeChecking = $derived(peerRecognition?.state === "checking");
   const approveDisabled = $derived(approving || isMalformedRecap);
   const approveButtonDisabled = $derived(
-    layoutBlocked || approveDisabled || Boolean(approveBlockedReason) || nodeChecking,
+    previewPending || layoutBlocked || refused || approveDisabled || Boolean(approveBlockedReason) || nodeChecking || declining,
   );
   const approveLabel = $derived(
     isMalformedRecap
       ? "Cannot approve"
       : approving
         ? "Signing…"
-        : finalPreview
-          ? "Approve exact bytes"
+        : previewPending && !onRetry && !refused
+          ? "Getting ready..."
           : approveText,
   );
 </script>
@@ -589,12 +556,12 @@
   {/if}
 
   <!--
-    Sensitive callout pinned at the top. Exact copy from the contract.
-    Rendered only when at least one grant reaches secret data or decryption.
+    Count the badged rows only when mixed with unbadged rows. Not-granted
+    informational rows are also unbadged; the individual badges always remain.
   -->
-  {#if sensitiveCount > 0}
+  {#if sensitiveCount > 0 && sensitiveCount < summaryStatements.length + notGrantableStatements.length}
     <p class="sensitive-callout" role="status" aria-live="polite">
-      {sensitiveCallout(sensitiveCount)}
+      {sensitiveRowsCallout(sensitiveCount)}
     </p>
   {/if}
 
@@ -1021,6 +988,9 @@
     </section>
   </details>
 
+  <!-- The message and the buttons travel together: with sticky actions the message is pinned just above them, so a
+       refusal is never left below the fold of a short frame while the buttons look unchanged. -->
+  <div class="action-region">
   {#if error}
     <p class="error" role="alert" aria-live="polite">{error}</p>
   {/if}
@@ -1028,15 +998,43 @@
     <p class="approve-blocked" role="status" aria-live="polite">{approveBlockedReason}</p>
   {/if}
 
-  <footer class="actions">
+  {#if onDecline}
+    <!-- With Decline offered, going back is a quiet link above the Decline / Approve pair. -->
     <button
       type="button"
-      class="cancel"
+      class="dismiss-link"
+      data-testid="signing-dismiss"
       onclick={onCancel}
-      disabled={approving}
+      disabled={approving || declining}
     >
       {cancelText}
     </button>
+  {/if}
+  <footer class="actions">
+    {#if onDecline}
+      <button
+        type="button"
+        class="cancel decline"
+        data-testid="signing-decline"
+        onclick={onDecline}
+        disabled={approving || declining}
+      >
+        {declineText}
+      </button>
+    {:else}
+      <button
+        type="button"
+        class="cancel"
+        data-testid="signing-dismiss"
+        onclick={onCancel}
+        disabled={approving}
+      >
+        {cancelText}
+      </button>
+    {/if}
+    {#if onRetry}
+      <button type="button" class="cancel" onclick={onRetry} disabled={approving}>Try again</button>
+    {/if}
     <button
       type="button"
       class="approve"
@@ -1048,6 +1046,7 @@
       {approveLabel}
     </button>
   </footer>
+  </div>
 </div>
 
 <style>
@@ -1134,6 +1133,7 @@
   .reason .reason-body {
     font-size: 13px;
     color: #0f172a;
+    overflow-wrap: anywhere;
   }
   .signer-line {
     display: flex;
@@ -1307,11 +1307,12 @@
     border-radius: 14px;
     padding: 12px 14px;
     font-size: 13px;
+    display: block;
+  }
+  .advanced-details[open] {
     display: flex;
     flex-direction: column;
     gap: 10px;
-  }
-  .advanced-details[open] {
     background: #fbfdff;
     border-color: #cfd8e3;
   }
@@ -1323,8 +1324,11 @@
     cursor: pointer;
     font-weight: 700;
     color: #0f172a;
-    padding: 2px 0 6px;
+    padding: 2px 0;
     list-style: none;
+  }
+  .advanced-details[open] > .advanced-summary {
+    padding-bottom: 6px;
   }
   .advanced-summary::-webkit-details-marker {
     display: none;
@@ -1449,6 +1453,7 @@
   .metadata-reason,
   .reason-body,
   .reason-untrusted {
+    overflow-wrap: anywhere;
     margin: 4px 0 0;
     font-size: 12px;
     line-height: 1.45;
@@ -1728,10 +1733,16 @@
     display: flex;
     gap: 10px;
   }
-  .sticky-actions .actions {
+  .action-region {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .sticky-actions .action-region {
     position: sticky;
     bottom: 0;
     z-index: 1;
+    gap: 8px;
     padding: 10px 0;
     background: #fff;
     box-shadow: 0 -8px 16px rgb(255 255 255 / 90%);
@@ -1760,6 +1771,24 @@
   .cancel:hover {
     background: #f8fafc;
   }
+  .dismiss-link {
+    align-self: flex-start;
+    padding: 4px 2px;
+    background: none;
+    border: 0;
+    color: #475569;
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .dismiss-link:hover {
+    color: #0f172a;
+  }
+  .dismiss-link:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
   .approve:hover {
     background: #111827;
   }
@@ -1770,6 +1799,7 @@
   }
   @media (max-width: 520px) {
     .signing-approval {
+      width: calc(100% - 24px);
       padding: 14px;
       border-radius: 14px;
     }
