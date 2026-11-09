@@ -103,8 +103,14 @@ The ordinary manual handoff is separate from device authorization. After the
 delegation is signed, the authenticated page posts the public delegation to
 `POST /api/delegation-codes`; the response contains eight random base32
 characters formatted `xxxx-xxxx`. `GET /api/delegation-codes/:code` is public
-and returns that delegation for ten minutes (including repeat lookups), then
-404. Expired rows are removed on subsequent publishes. Publishing requires a
+and valid for five minutes. Without a claim, the first lookup returns the
+delegation and spends the code. A client that sends a 128-bit-minimum
+`OpenKey-Delegation-Claim` header (base64url, chosen by the client) binds the
+code to that claim instead: the same claim can fetch again, after a lost
+response, until it acknowledges with `POST /api/delegation-codes/:code/ack`
+and the same header (repeatable, clears the delegation) or five minutes after
+redeeming; any other claim, or none, gets the same 404 as an unknown code.
+Expired rows are removed on subsequent publishes. Publishing requires a
 session and accepts only expected delegation fields and public JWK parameters;
 it does not store the CLI signing key. A broker failure leaves the full paste
 code available on the page. This endpoint is not the
@@ -149,6 +155,50 @@ wallet completion returns the same session proof as a managed approval:
 lets the CLI perform its field gate and cryptographic proof verification
 offline.
 
+### Multi-space permission requests
+
+`permissions[]` may name several logical spaces. Each logical name resolves
+against the selected signing account; an owner-qualified space URI must name
+that same account and chain. The signed ReCap and permission edits retain
+each `(space, service, path, action)` independently, including identical
+service/path pairs in different spaces.
+
+`/api/delegate/prepare`, managed `/api/delegate`, and wallet
+`/api/delegate/complete` return:
+
+```ts
+requestedSpaces: Array<{
+  space: string;       // logical name
+  spaceId: string;     // resolved owner-qualified URI
+  spaceReady: boolean | null;
+  spacePending?: true;
+  spaceError?: string;
+}>;
+```
+
+The list preserves the full request baseline in request order, even if the
+owner removes all grants in a space. Preparation reports `null` readiness.
+Completion reports an entirely deselected space as `false`, without a signed
+grant for that space. For granted spaces, `true` requires a positive node
+activation result or managed hosting confirmation; `false` denotes an
+explicit skipped/unavailable space, and `null` denotes unconfirmed readiness.
+An already-known delegation's empty activation receipt is not hosting proof.
+Top-level `spaceReady` is `true` only when every listed space is ready.
+Clients can probe unconfirmed spaces using the permissions actually granted.
+
+Singular `spaceId` remains a routing default, not the full permission scope:
+`applications` when requested, otherwise the first requested space. The
+`spaceSetup` preparation notice still describes only that primary space and
+does not assert readiness of any space. Managed automatic setup confirms all
+granted requested spaces before reporting them ready. Existing account-wide
+bootstrap still hosts all six canonical managed-account spaces in the
+background, independent of the CLI grant; hosting gives the CLI no permission.
+Remaining account seeding continues under the bootstrap lock and bounded retry.
+
+The authorization context binds the complete per-space baseline, exact
+selection, session key, signing owner, host and lifetime. Response metadata
+never substitutes for verification of the signed SIWE and its permissions.
+
 For the widget's `/api/delegate/authorize-sign-prepare` →
 `/api/delegate/authorize-sign-preview` → `/api/delegate/authorize-sign`
 flow, the final signing request checks the bound user, key, session JWK,
@@ -161,6 +211,32 @@ correction. Immediately before managed signing (or returning a verified
 external signature), the route atomically compares and consumes both
 tokens: a concurrent loser and a replay cannot sign. A managed signing
 failure after consumption still requires a fresh approval.
+
+The popup and embedded sign pages obtain the preview automatically when the
+current permission selection or chosen expiry changes. Approve is enabled
+only with a current, unexpired preview; selection remains editable while
+the preview is being fetched. An edit discards the held preview, and an
+expired preview is fetched again (with a fresh context when necessary).
+One Approve action submits the captured preview token and its selection.
+The raw candidate remains in Advanced details. External wallets receive
+the same preview payload through the existing SDK handoff.
+
+The ordinary request-type introduction stays the same while the preview is
+loading and after it is ready. TinyCloud capability requests retain
+`Review the access this app is asking for.`; the introduction does not add
+a technical preview message or change height when the preview arrives.
+
+These page changes retain the three API endpoints, both single-use tokens,
+and the server's selection and exact-byte checks. Details: TC-2198.
+
+While a preview is loading, the disabled action reads `Getting ready...`.
+After a recoverable preview or signing error, `Try again` requests a fresh
+preview only when the owner chooses it; it does not sign or repeat on a
+timer. Existing unreadable-reply refusals still end the caller's request.
+Ordinary held-preview expiry refreshes automatically. If a newly returned
+preview is already too old to use, including a context that expires while
+the response is in flight, the page shows `OpenKey's check timed out.
+Try again.` and leaves approval disabled until an owner-initiated retry.
 
 An expired authorization context returns `context-expired` on
 `/authorize-sign`, `/authorize-sign-preview`, the managed approval, and
@@ -430,9 +506,11 @@ the new API, above), and roll both back together:
 - Creation and polling are rate-limited. Transactions expire after ten minutes.
 - The browser derives an ECDH/HKDF key from the CLI relay public key and
   encrypts the approved delegation with AES-256-GCM before sending it to the
-  device API. The relay stores only that opaque envelope and consumes it once
-  with an atomic status transition; neither the relay nor its rows receive a
-  plaintext delegation or CLI private key.
+  device API. The relay stores only that opaque envelope. Polling returns it
+  again until the CLI acknowledges with `POST /api/device-authorizations/:id/ack`
+  (device secret and PKCE verifier, repeatable; an atomic status transition
+  that clears the envelope) or ten minutes after approval. Neither the relay
+  nor its rows receive a plaintext delegation or CLI private key.
 - Share object retention remains seven days.
 
 The production database change is

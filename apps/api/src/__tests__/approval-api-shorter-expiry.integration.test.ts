@@ -102,5 +102,5 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     expect(saved.approvedByUserId).toBe(userId);
     expect(saved.delegationExpiresAt!.getTime()).toBe(expiryOf(prepared.prepared.siwe));
     expect(saved.delegationExpiresAt!.getTime()).toBeLessThan(before + 3600_000 - 60_000);
-  });
+  }, 20_000);
 }

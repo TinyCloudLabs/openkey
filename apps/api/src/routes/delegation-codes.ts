@@ -1,6 +1,6 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Hono, type MiddlewareHandler } from 'hono';
-import { createPrismaClient, type PrismaClient } from '@openkey/db';
+import { createPrismaClient, Prisma, type PrismaClient } from '@openkey/db';
 
 // Codes are stored and looked up in lower case, the form every CLI since the
 // broker shipped lower-cases to before its GET, so codes issued before codes
@@ -8,6 +8,11 @@ import { createPrismaClient, type PrismaClient } from '@openkey/db';
 const CODE_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
 // Five minutes, the same as the CLI's sign-in wait.
 const CODE_TTL_MS = 5 * 60 * 1000;
+// A client that redeems with a claim may fetch again, and acknowledge, for this long after redeeming.
+const CLAIM_RETENTION_MS = 5 * 60 * 1000;
+// A client-chosen secret of at least 128 bits, base64url. It binds a redeemed code to the redeemer.
+const CLAIM_HEADER = 'OpenKey-Delegation-Claim';
+const CLAIM_PATTERN = /^[A-Za-z0-9_-]{22,128}$/;
 const PUBLIC_DELEGATION_FIELDS: Record<string, true> = {
   delegationHeader: true,
   delegationCid: true,
@@ -38,6 +43,11 @@ export interface DelegationCodeStore {
   create(code: string, delegation: unknown, expiresAt: Date): Promise<boolean>;
   // Removes the code and returns it. Must be atomic: at most one caller gets a record for a given code.
   consume(code: string): Promise<{ delegation: unknown; expiresAt: Date } | null>;
+  // Redeems for the holder of `claimHash`: the first call takes the code (atomic, one winner); the same
+  // claim gets the delegation again until it is acknowledged or its retention ends. Anyone else gets null.
+  claim(code: string, claimHash: string, now: Date): Promise<{ delegation: unknown } | null>;
+  // Clears the delegation for the claim holder. Repeating it succeeds; any other claim gets false.
+  acknowledge(code: string, claimHash: string, now: Date): Promise<boolean>;
   deleteExpired(before: Date): Promise<void>;
 }
 
@@ -68,6 +78,13 @@ export function createDelegationCodeRouter(input: {
   const router = new Hono();
   const now = input.now ?? (() => new Date());
   const takeLookupSlot = createGlobalLookupLimiter(now);
+  const takeAckSlot = createGlobalLookupLimiter(now);
+
+  // undefined: no claim header (the original redeem-once behaviour); null: header present but malformed.
+  const readClaimHash = (header: string | undefined): string | null | undefined => {
+    if (header === undefined) return undefined;
+    return CLAIM_PATTERN.test(header) ? createHash('sha256').update(header).digest('base64url') : null;
+  };
 
   router.post('/', input.sessionMiddleware, async (c) => {
     const body = await c.req.json().catch(() => null);
@@ -117,7 +134,16 @@ export function createDelegationCodeRouter(input: {
     if (!/^[a-z2-7]{4}-[a-z2-7]{4}$/.test(code)) {
       return c.json({ error: 'Not found' }, 404);
     }
-    // Redeeming removes the code: a second redeem, an expired code and an unknown code all get the same 404.
+    const claimHash = readClaimHash(c.req.header(CLAIM_HEADER));
+    if (claimHash === null) return c.json({ error: 'Invalid claim' }, 400);
+    if (claimHash !== undefined) {
+      // The claim holder keeps the delegation until it acknowledges, so a lost response can be fetched again.
+      // Anyone else, an expired code and an unknown code all get the same 404.
+      const claimed = await input.store.claim(code, claimHash, now());
+      if (!claimed) return c.json({ error: 'Not found' }, 404);
+      return c.json({ delegation: claimed.delegation });
+    }
+    // Without a claim, redeeming removes the code: a second redeem, an expired code and an unknown code all get the same 404.
     const record = await input.store.consume(code);
     if (!record || record.expiresAt <= now()) {
       return c.json({ error: 'Not found' }, 404);
@@ -125,7 +151,31 @@ export function createDelegationCodeRouter(input: {
     return c.json({ delegation: record.delegation });
   });
 
+  router.post('/:code/ack', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const retryAfter = takeAckSlot();
+    if (retryAfter > 0) {
+      c.header('Retry-After', String(retryAfter));
+      return c.json({ error: 'Rate limit exceeded' }, 429);
+    }
+    const claimHash = readClaimHash(c.req.header(CLAIM_HEADER));
+    if (!claimHash) return c.json({ error: 'Invalid claim' }, 400);
+    const code = c.req.param('code').toLowerCase();
+    // A wrong claim, an unclaimed code and an unknown code all get the same 404.
+    if (!/^[a-z2-7]{4}-[a-z2-7]{4}$/.test(code) || !await input.store.acknowledge(code, claimHash, now())) {
+      return c.json({ error: 'Not found' }, 404);
+    }
+    return c.json({ status: 'acknowledged' });
+  });
+
   return router;
+}
+
+// Claim hashes are compared in constant time, in the application and not in a SQL equality.
+function sameClaim(stored: string, given: string): boolean {
+  const left = Buffer.from(stored);
+  const right = Buffer.from(given);
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 export function createPrismaDelegationCodeStore(prisma: PrismaClient = createPrismaClient()): DelegationCodeStore {
@@ -147,8 +197,34 @@ export function createPrismaDelegationCodeStore(prisma: PrismaClient = createPri
         throw error;
       }
     },
+    async claim(code, claimHash, now) {
+      return prisma.$transaction(async (tx) => {
+        const held = await tx.delegationCodeClaim.findUnique({ where: { code } });
+        if (held?.delegation && !held.acknowledgedAt && held.redeemedAt.getTime() > now.getTime() - CLAIM_RETENTION_MS && sameClaim(held.claimHash, claimHash)) {
+          return { delegation: held.delegation };
+        }
+        const row = await tx.delegationCode.findFirst({ where: { code, expiresAt: { gt: now } } });
+        if (!row) return null;
+        // Of concurrent redeems only the one that deletes the row takes the code.
+        if ((await tx.delegationCode.deleteMany({ where: { code } })).count !== 1) return null;
+        const claim = { claimHash, delegation: row.delegation as object, redeemedAt: now, acknowledgedAt: null };
+        await tx.delegationCodeClaim.upsert({ where: { code }, create: { code, ...claim }, update: claim });
+        return { delegation: row.delegation };
+      });
+    },
+    async acknowledge(code, claimHash, now) {
+      const held = await prisma.delegationCodeClaim.findUnique({ where: { code } });
+      if (!held || !sameClaim(held.claimHash, claimHash)) return false;
+      // Idempotent: a repeat finds nothing left to clear and still succeeds for the same claim.
+      await prisma.delegationCodeClaim.updateMany({
+        where: { code, claimHash: held.claimHash, acknowledgedAt: null },
+        data: { acknowledgedAt: now, delegation: Prisma.DbNull },
+      });
+      return true;
+    },
     async deleteExpired(before) {
       await prisma.delegationCode.deleteMany({ where: { expiresAt: { lte: before } } });
+      await prisma.delegationCodeClaim.deleteMany({ where: { redeemedAt: { lte: new Date(before.getTime() - CLAIM_RETENTION_MS) } } });
     },
   };
 }

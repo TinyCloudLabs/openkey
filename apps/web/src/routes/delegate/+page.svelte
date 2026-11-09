@@ -26,7 +26,7 @@
   } from '$lib/delegate-link-policy';
   import { preparedMatchesSelection, reviewSelectionToActionKeys } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
-  import { autoSelectKey } from '$lib/delegate-key-selection';
+  import { activeKeys, autoSelectKey } from '$lib/delegate-key-selection';
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
@@ -152,6 +152,11 @@
   // Parse query params
   let approvalRequestLoading = $state(approvalRequestMode);
   let approvalRequestLoaded = $state(false);
+  // The owner declined this request (TC-2459): from the Decline button, or the link was declined before.
+  let declined = $state(false);
+  let declining = $state(false);
+  // The complete link, in memory only (the page scrubs it from the URL); Decline sends it in the body, never a URL.
+  let approvalReference = '';
   const preparedTransport = !approvalRequestMode && $page.url.searchParams.has('transportVersion');
   let preparedStorageError = $state(!approvalRequestMode && $page.url.searchParams.get('transportVersion') === 'storage-error');
   let dispatchReady = $state(false);
@@ -293,6 +298,7 @@
       // Will show error in UI
     }
   }
+  const incompleteLegacyRequest = $derived(!approvalRequestMode && !deviceTransactionId && !jwk);
 
   let relayPublicJwk: JsonWebKey | null = null;
   if (relayJwkB64 && !approvalRequestMode) {
@@ -467,24 +473,58 @@
 
   async function loadApprovalRequest() {
     try {
-      if (location.search) throw new Error('Open the original approval link.');
-      const storageKey = `openkey.approval.${approvalRequestId}`;
-      const fragment = location.hash || sessionStorage.getItem(storageKey) || '';
-      if (!fragment) throw new Error('Open the complete approval link.');
-      // Keep the key in this tab, never in an auth return query or server log.
-      sessionStorage.setItem(storageKey, fragment);
+      let fragment = location.hash;
+      const hasQuery = !!location.search;
+      // Scrub even when storage is blocked or the reference is malformed.
       history.replaceState(history.state, '', location.pathname);
+      if (hasQuery || !/^[a-z2-7]{26}$/.test(approvalRequestId)) {
+        throw new Error('This approval link is malformed. Ask the requesting app or person for a new complete link, sent on its own line.');
+      }
+      const storageKey = `openkey.approval.${approvalRequestId}`;
+      try {
+        if (document.documentElement.dataset.approvalStorageError === '1') throw new Error();
+        fragment ||= sessionStorage.getItem(storageKey) || '';
+        if (fragment) sessionStorage.setItem(storageKey, fragment);
+      } catch {
+        throw new Error('This browser could not keep the approval link for sign-in. Open the original complete link in Safari or Chrome with site storage enabled, not a private chat preview.');
+      }
+      if (!fragment) {
+        throw new Error('This approval link is incomplete or belongs to another browser tab. Reopen the original complete link from the message, including everything after #. If it was cut off, ask for a new link sent on its own line.');
+      }
       const reference = location.pathname + fragment;
+      approvalReference = reference;
       const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/approval-requests/${approvalRequestId}/load`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'omit',
+        redirect: 'error',
+        cache: 'no-store',
+        referrerPolicy: 'no-referrer',
         body: JSON.stringify({ reference }),
       });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'This approval link is invalid.');
+      const result = await response.json().catch(() => null);
+      if (!response.ok) {
+        if (response.status === 410 || ['expired', 'expired_request'].includes(result?.code)) {
+          sessionStorage.removeItem(storageKey);
+          throw new Error('This approval request has expired. Return to the requesting app or command and create a new approval link.');
+        }
+        if (response.status === 404 || ['not_found', 'gone'].includes(result?.code)) {
+          throw new Error('This approval request is unavailable or has expired. Ask the requesting app or person for a new approval link.');
+        }
+        if (response.status >= 500) {
+          throw new Error('OpenKey could not load this request right now. Reopen the original complete link shortly. If it still fails, return to the requesting app or command.');
+        }
+        throw new Error('This approval link could not be verified. Do not edit it or approve a different request. Ask the requesting app or person for a new complete link sent on its own line.');
+      }
       if (result.approved) {
         done = true;
         step = 'done';
+      }
+      if (result.denied === true) {
+        // Older API responses carry no `denied`; they read as an open request, as before.
+        declined = true;
+        done = true;
+        sessionStorage.removeItem(storageKey);
       }
       const request = result.request;
       did = request.targetDid;
@@ -497,7 +537,9 @@
       expiryParam = `${request.suggestedLifetimeSeconds ?? request.grantLifetimeSeconds}s`;
       approvalRequestLoaded = true;
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not open this approval link.';
+      error = cause instanceof TypeError
+        ? 'Could not reach OpenKey. Check your connection and reopen the original complete approval link in your browser.'
+        : cause instanceof Error ? cause.message : 'Could not open this approval link. Return to the requesting app or command for a new link.';
     } finally {
       approvalRequestLoading = false;
     }
@@ -567,7 +609,7 @@
 
   // Reactively load keys when session becomes available
   $effect(() => {
-    if (dispatchReady && (!approvalRequestMode || approvalRequestLoaded) && !preparedMode && !preparedTransport && !preparedStorageError && $session.data && !keysLoaded) {
+    if (dispatchReady && (!approvalRequestMode || approvalRequestLoaded) && !declined && !incompleteLegacyRequest && !preparedMode && !preparedTransport && !preparedStorageError && $session.data && !keysLoaded) {
       keysLoaded = true;
       loadKeys();
     }
@@ -577,7 +619,7 @@
     loading = true;
     try {
       const result = await api.listKeys();
-      keys = result.keys;
+      keys = activeKeys(result.keys);
     } catch (e: any) {
       error = e.message;
     } finally {
@@ -585,12 +627,12 @@
     }
   }
 
-  // Auto-select the CLI-requested wallet, else the primary key, else the
-  // user's only key, once keys are loaded. Only runs on the initial
-  // 'select-key' step so revisiting the picker (Back, link-wallet round-trip)
+  // Auto-select the CLI-requested wallet, otherwise the user's only active
+  // key. With several keys the owner chooses, with the primary offered first.
+  // Only runs on the initial 'select-key' step so revisiting the picker
   // doesn't trap the user in an auto-advance loop.
   $effect(() => {
-    if (!dispatchReady || (approvalRequestMode && !approvalRequestLoaded) || preparedMode || preparedTransport || preparedStorageError || loading || preselectAttempted) return;
+    if (!dispatchReady || (approvalRequestMode && !approvalRequestLoaded) || incompleteLegacyRequest || done || preparedMode || preparedTransport || preparedStorageError || loading || preselectAttempted) return;
     if (step !== 'select-key') return;
     preselectAttempted = true;
     const match = autoSelectKey(keys, expectedAddress);
@@ -614,7 +656,7 @@
 
   async function onKeySelect(key: EthereumKey) {
     if (!jwk) {
-      error = 'Missing delegation key. Return to the app or command that requested access and start again.';
+      error = 'This approval link is incomplete. Return to the requesting app or command for a new complete link, sent on its own line.';
       return;
     }
 
@@ -797,6 +839,44 @@
     step = 'select-key';
     error = '';
     resetDelegationState();
+  }
+
+  const DECLINE_FAILED = 'Could not decline right now. Nothing was changed. Try again.';
+  async function declineRequest() {
+    if (declining || declined || !approvalRequestMode || !approvalReference) return;
+    declining = true;
+    error = '';
+    try {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/approval-requests/${approvalRequestId}/deny`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        redirect: 'error',
+        cache: 'no-store',
+        referrerPolicy: 'no-referrer',
+        body: JSON.stringify({ reference: approvalReference }),
+      });
+      if (response.ok) {
+        sessionStorage.removeItem(`openkey.approval.${approvalRequestId}`);
+        approvalReference = '';
+        declined = true;
+        done = true;
+      } else if (response.status === 409) {
+        error = 'This request was already approved, so it cannot be declined.';
+      } else if (response.status === 410) {
+        // Same end as /load answering expired: the request is gone, so the page shows the expired message alone.
+        sessionStorage.removeItem(`openkey.approval.${approvalRequestId}`);
+        approvalReference = '';
+        approvalRequestLoaded = false;
+        error = 'This approval request has expired. Return to the requesting app or command and create a new approval link.';
+      } else {
+        error = DECLINE_FAILED;
+      }
+    } catch {
+      error = DECLINE_FAILED;
+    } finally {
+      declining = false;
+    }
   }
 
   function selectWallet(wallet: EIP6963ProviderDetail) {
@@ -1374,6 +1454,10 @@
   <div role={error ? 'alert' : 'status'} class="min-h-screen flex items-center justify-center px-4 text-center">
     {error || (approvalRequestLoading ? 'Checking request…' : 'This approval link is unavailable.')}
   </div>
+{:else if declined}
+  <div role="status" class="min-h-screen flex items-center justify-center px-4 text-center">
+    Declined. You can close this page.
+  </div>
 {:else if !dispatchReady && !preparedTransport}
   <div role="status" class="min-h-screen flex items-center justify-center">Loading delegation request…</div>
 {:else if preparedStorageError}
@@ -1386,6 +1470,14 @@
   {/if}
 {:else if preparedTransport}
   <div role="alert" class="min-h-screen flex items-center justify-center">Unsupported delegate transport version. Restart the CLI command.</div>
+{:else if incompleteLegacyRequest}
+  <div role="alert" class="min-h-screen flex items-center justify-center px-4 text-center">
+    <div class="max-w-sm space-y-3">
+      <h1 class="text-lg font-semibold">Incomplete approval link</h1>
+      <p>Return to the app or command that requested access and ask for a new complete link, sent on its own line.</p>
+      <p>For TinyCloud CLI, use version 1.5.0 or later and request approval without --paste to get a short link. Open the original link in your browser rather than copying part of it from a chat preview.</p>
+    </div>
+  </div>
 {:else}
 <div class="min-h-screen bg-[#fafafa] flex flex-col items-center justify-center px-4 py-8">
   <div class="w-full max-w-sm flex flex-col items-center gap-6">
@@ -1672,6 +1764,7 @@
                 approveBlockedReason,
                 approveDelegate,
                 goBack,
+                ...(approvalRequestMode ? { decline: declineRequest, declining } : {}),
                 updateSelection: (next) => {
                   reviewSelection = next;
                   const nextServerKeys = mapReviewSelectionToActionKeys(next);
@@ -1761,8 +1854,10 @@
         {#if showScrollToApprove}
           <button
             type="button"
+            data-testid="scroll-to-approve"
+            aria-label="Scroll to approve"
             onclick={scrollToApprove}
-            class="fixed bottom-5 left-1/2 z-40 inline-flex -translate-x-1/2 items-center gap-2 rounded-full bg-surface-900 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-surface-900/15 transition-all hover:bg-surface-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-surface-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white"
+            class="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-[max(1rem,env(safe-area-inset-right))] z-40 inline-flex items-center gap-1.5 rounded-full bg-surface-900 px-3 py-2 text-xs font-medium text-white shadow-lg shadow-surface-900/15 transition-all hover:bg-surface-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-surface-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white"
           >
             <span>Scroll to approve</span>
             <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">

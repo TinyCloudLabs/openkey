@@ -17,6 +17,7 @@ import {
   type UnsignedNostrEvent,
 } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
+import { rejectNonOpenKeySignRequest } from '../middleware/browser-control';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 
 const prisma = createPrismaClient();
@@ -161,6 +162,8 @@ nostrKeysRouter.get('/', async (c) => {
 // trusts the caller's own authenticated session, not any client-supplied
 // identity claim.
 nostrKeysRouter.post('/:keyId/grants', async (c) => {
+  const originRefusal = rejectNonOpenKeySignRequest(c);
+  if (originRefusal) return originRefusal;
   const user = c.get('user');
   const keyId = c.req.param('keyId');
   const body = await c.req.json<{
@@ -220,8 +223,11 @@ nostrKeysRouter.delete('/grants/:grantId', async (c) => {
 
 // Sign an unsigned Nostr event template. Silent iff an active grant covers
 // (userId, keyId, clientOrigin, kind) - and for kind 22242, the exact
-// relayUrl too. Otherwise fails closed with interaction_required.
+// relayUrl too. Otherwise fails closed with interaction_required. Behind the
+// same OpenKey-origin gate as the managed-key signing routes.
 nostrKeysRouter.post('/:keyId/sign-event', async (c) => {
+  const originRefusal = rejectNonOpenKeySignRequest(c);
+  if (originRefusal) return originRefusal;
   const user = c.get('user');
   const keyId = c.req.param('keyId');
   const body = await c.req.json<{ event?: Partial<UnsignedNostrEvent>; clientOrigin?: string }>();

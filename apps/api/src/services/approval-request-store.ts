@@ -18,7 +18,7 @@ export function createPrismaApprovalRequestStore(database: PrismaClient): Approv
     },
     async approve(id, result, now) {
       const saved = await database.approvalRequest.updateMany({
-        where: { id, resultRef: null, expiresAt: { gt: now } }, data: result,
+        where: { id, resultRef: null, deniedAt: null, expiresAt: { gt: now } }, data: result,
       });
       return saved.count === 1;
     },
@@ -31,6 +31,12 @@ export function createPrismaApprovalRequestStore(database: PrismaClient): Approv
         if (saved.count !== 1) return null;
         return await tx.approvalRequest.findUnique({ where: { resultRef } }) as unknown as ApprovalRequestRecord;
       });
+    },
+    async deny(id, now) {
+      const saved = await database.approvalRequest.updateMany({
+        where: { id, resultRef: null, deniedAt: null, expiresAt: { gt: now } }, data: { deniedAt: now },
+      });
+      return saved.count === 1;
     },
   };
 }

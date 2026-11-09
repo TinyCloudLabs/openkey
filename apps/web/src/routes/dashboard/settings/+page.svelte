@@ -7,6 +7,7 @@
   import ConnectedMcpApps from './ConnectedMcpApps.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
+  import LinkedAccounts from '$lib/components/auth/linked-accounts.svelte';
 
   const session = authClient.useSession();
 
@@ -25,7 +26,8 @@
   let error = $state('');
   let addingPasskey = $state(false);
   let restoringKeyId = $state<string | null>(null);
-  let autoSignEnabled = $state(true);
+  let autoSignEnabled = $state(false);
+  let autoSignKnown = $state(false);
   let loadingAutoSign = $state(true);
   let savingAutoSign = $state(false);
   let tinyCloudManageKeyEnabled = $state(true);
@@ -119,6 +121,7 @@
     try {
       const result = await api.getAutoSignPreference();
       autoSignEnabled = result.autoSignEnabled;
+      autoSignKnown = true;
     } catch (e: any) {
       error = e.message || 'Failed to load Auto-Sign preference';
     } finally {
@@ -516,6 +519,8 @@
     {/if}
   </Card>
 
+  <LinkedAccounts />
+
   <Card class="mt-6">
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
       <div class="max-w-xl">
@@ -526,21 +531,24 @@
       </div>
       <div class="flex shrink-0 items-center gap-3">
         <div class="min-w-16 text-right text-sm font-medium {autoSignEnabled ? 'text-surface-900' : 'text-surface-500'}">
-          {loadingAutoSign ? 'Loading' : savingAutoSign ? 'Saving' : autoSignEnabled ? 'Enabled' : 'Disabled'}
+          {loadingAutoSign ? 'Loading' : savingAutoSign ? 'Saving' : !autoSignKnown ? 'Unavailable' : autoSignEnabled ? 'Enabled' : 'Disabled'}
         </div>
         <button
           type="button"
           role="switch"
-          aria-checked={autoSignEnabled}
+          aria-checked={autoSignKnown && autoSignEnabled}
           aria-label="Toggle Auto-Sign"
           onclick={() => setAutoSignPreference(!autoSignEnabled)}
-          disabled={loadingAutoSign || savingAutoSign}
-          class="relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 {autoSignEnabled ? 'bg-surface-900' : 'bg-surface-300'}"
+          disabled={!autoSignKnown || loadingAutoSign || savingAutoSign}
+          class="relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 {autoSignKnown && autoSignEnabled ? 'bg-surface-900' : 'bg-surface-300'}"
         >
           <span
-            class="absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform {autoSignEnabled ? 'translate-x-5' : 'translate-x-0'}"
+            class="absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform {autoSignKnown && autoSignEnabled ? 'translate-x-5' : 'translate-x-0'}"
           ></span>
         </button>
+        {#if !loadingAutoSign && !autoSignKnown}
+          <button type="button" class="text-sm underline" onclick={loadAutoSignPreference}>Try again</button>
+        {/if}
       </div>
     </div>
   </Card>
