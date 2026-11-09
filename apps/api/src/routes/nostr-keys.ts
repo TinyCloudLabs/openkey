@@ -30,7 +30,8 @@ const MAX_TAG_VALUES = 20;
 const MAX_TAG_VALUE_LENGTH = 512;
 const MAX_TIMESTAMP_SKEW_SECONDS = 120;
 const DEFAULT_GRANT_TTL_SECONDS = 60 * 60 * 12; // 12h, local dev slice only
-const MAX_GRANT_TTL_SECONDS = 60 * 60 * 24; // 24h ceiling regardless of requested ttl
+// A grant is silent signing for a client origin, so it stays short. A longer ask is refused, never shortened.
+const MAX_GRANT_TTL_SECONDS = 60 * 60 * 24; // 24h
 
 export const nostrKeysRouter = new Hono<SessionContext>();
 
@@ -187,7 +188,17 @@ nostrKeysRouter.post('/:keyId/grants', async (c) => {
     if (!relayUrl) return c.json({ error: 'relayUrl required and must be ws(s):// when granting kind 22242' }, 400);
   }
 
-  const ttlSeconds = Math.min(Math.max(1, body.ttlSeconds ?? DEFAULT_GRANT_TTL_SECONDS), MAX_GRANT_TTL_SECONDS);
+  const requestedTtl: unknown = body.ttlSeconds === undefined ? DEFAULT_GRANT_TTL_SECONDS : body.ttlSeconds;
+  if (typeof requestedTtl !== 'number' || !Number.isInteger(requestedTtl) || requestedTtl < 1) {
+    return c.json({ error: 'ttlSeconds must be a whole number of seconds, at least 1' }, 400);
+  }
+  if (requestedTtl > MAX_GRANT_TTL_SECONDS) {
+    return c.json(
+      { error: 'A Nostr signing grant lasts at most 24 hours. Ask for 24 hours or less.', maxTtlSeconds: MAX_GRANT_TTL_SECONDS },
+      400,
+    );
+  }
+  const ttlSeconds = requestedTtl;
   const expiresAt = new Date(Date.now() + ttlSeconds * 1000);
 
   const grant = await prisma.nostrSigningGrant.create({
