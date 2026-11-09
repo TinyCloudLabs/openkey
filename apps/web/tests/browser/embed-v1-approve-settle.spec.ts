@@ -143,3 +143,64 @@ test('v2 is unchanged: still gated by its own layout-ready handshake, not by the
   await page.waitForTimeout(2200);
   expect((await samples(page)).some((s) => s.enabled === true)).toBe(false);
 });
+
+// TC-2310: a click made by a script inside the frame (a shared-note flow does this) is no longer dropped for not coming
+// from the browser. What still stops a click that should not count is that Approve is not armed: while the frame is
+// moving (v1 settle gate) or before the host has acknowledged the layout (v2), the button is disabled and nothing is sent.
+async function approvalRequests(page: Page) {
+  const seen: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/delegate/authorize-sign') seen.push(request.url());
+  });
+  return seen;
+}
+const approveFrame = (page: Page) => page.frames().find((entry) => entry !== page.mainFrame() && entry.url().includes('/widget/embed/sign'))!;
+// A script-made click, two ways: the click() method, and a dispatched click event.
+const scriptClicks = (page: Page) => approveFrame(page).evaluate(() => {
+  const button = document.querySelector('button.approve') as HTMLButtonElement;
+  button.click();
+  button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+});
+
+test('a v1 frame that has settled: a click made by a script approves', async ({ page }) => {
+  const approvals = await approvalRequests(page);
+  await openEmbed(page, 'never-resizes');
+  await reviewShown(page);
+  await expect.poll(async () => enabledAt(await samples(page)), { timeout: 6000 }).toBeDefined();
+  await page.waitForTimeout(300);
+  const approvalCount = approvals.length;
+  await scriptClicks(page);
+  await expect.poll(() => approvals.length).toBeGreaterThan(approvalCount);
+});
+
+test('a v1 frame that is still moving: a click made by a script does nothing, and approves once it has settled', async ({ page }) => {
+  const approvals = await approvalRequests(page);
+  await openEmbed(page, 'sdk-modal');
+  await reviewShown(page);
+  // At first display the frame is still animating: Approve is disabled.
+  const approvalCount = approvals.length;
+  const disabledAfterClick = await approveFrame(page).evaluate(() => {
+    const button = document.querySelector('button.approve') as HTMLButtonElement;
+    const disabled = button.disabled;
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return disabled;
+  });
+  expect(disabledAfterClick).toBe(true);
+  await page.waitForTimeout(250);
+  expect(approvals).toHaveLength(approvalCount);
+  await expect.poll(async () => enabledAt(await samples(page)), { timeout: 10_000 }).toBeDefined();
+  expect(approvals).toHaveLength(approvalCount);
+  await scriptClicks(page);
+  await expect.poll(() => approvals.length).toBeGreaterThan(approvalCount);
+});
+
+test('a v2 frame the host has not acknowledged: a click made by a script does nothing', async ({ page }) => {
+  const approvals = await approvalRequests(page);
+  await openEmbed(page, 'sdk-modal', 2);
+  await reviewShown(page);
+  await page.waitForTimeout(1500);
+  const approvalCount = approvals.length;
+  await scriptClicks(page);
+  await page.waitForTimeout(500);
+  expect(approvals).toHaveLength(approvalCount);
+});
