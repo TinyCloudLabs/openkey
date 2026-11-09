@@ -104,7 +104,7 @@ const SIGNATURE = await owner.signMessage({ message: SIWE });
 
 test('a refused signing shows the error, gives Revoke and Cancel back, and the next Revoke signs', async () => {
   const signReplies: Response[] = [
-    Response.json({ error: 'TEE unavailable', code: 'sign_failed' }, { status: 500 }),
+    Response.json({ error: 'Signing failed', code: 'sign_failed' }, { status: 500 }),
     Response.json({ siwe: SIWE, signature: SIGNATURE, deliveryState: delivery.state, selectedKeyId: key.id, protocolVersion: 1 }),
   ];
   const calls: string[] = [];
@@ -127,7 +127,7 @@ test('a refused signing shows the error, gives Revoke and Cancel back, and the n
     await until(() => !!button('Revoke') && !button('Revoke')!.disabled, 'the Revoke button');
     button('Revoke')!.click();
     await until(() => !!target.querySelector('[role="alert"]'), 'the refusal');
-    expect(target.querySelector('[role="alert"]')?.textContent).toContain('TEE unavailable');
+    expect(target.querySelector('[role="alert"]')?.textContent).toContain('Signing failed');
     expect(button('Revoke')!.disabled).toBe(false);
     expect(button('Cancel')!.disabled).toBe(false);
     button('Revoke')!.click();
@@ -149,7 +149,7 @@ test('after a refused signing the owner can cancel', async () => {
     if (path.endsWith('/available')) return Response.json({ transportVersion: 2 });
     if (path.endsWith('/claim')) return Response.json({ ticket: delivery.handoffId, expiresAt: new Date(Date.now() + 300_000).toISOString() });
     if (path.endsWith('/prepare')) return Response.json({ authorizationContextToken: 'token', siwe: SIWE });
-    if (path.endsWith('/owner-revocation/sign')) return Response.json({ error: 'TEE unavailable', code: 'sign_failed' }, { status: 500 });
+    if (path.endsWith('/owner-revocation/sign')) return Response.json({ error: 'Signing failed', code: 'sign_failed' }, { status: 500 });
     if (path.endsWith('/cancel-claimed')) return Response.json({ cancelled: true });
     throw new Error(`Unexpected request ${path}`);
   }) as typeof fetch;

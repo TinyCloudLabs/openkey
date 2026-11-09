@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { verifyMessage } from 'ethers';
 import { buildOwnerRevocationSiwe, ownerRevocationAddress, ownerRevocationResult } from '@openkey/capability-review';
+import { logError } from '../log';
 import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
 import type { SessionContext } from '../middleware/session';
 import { resolveOriginPolicy } from '../origin-policy';
@@ -85,7 +86,8 @@ export function createOwnerRevocationRouter(service: PreparedHandoffService, dep
         signature = await dependencies.signManaged(key, key.sealedBlob, siwe);
       } catch (cause) {
         await service.releaseSigning(body.ticket, c.get('user').id, body.authorizationContextToken, key.id);
-        return c.json({ error: cause instanceof Error ? cause.message : 'Signing failed', code: 'sign_failed' }, 500);
+        logError('error', 'owner_revocation_sign_failed', cause);
+        return c.json({ error: 'Signing failed', code: 'sign_failed' }, 500);
       }
     }
     try {
