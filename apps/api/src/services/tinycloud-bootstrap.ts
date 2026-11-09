@@ -311,7 +311,7 @@ async function hostOwnSpaceBeforeSign(
       ...input,
       host: requested.host,
       chainId: requested.chainId,
-      requestedSpace: { space: requested.space, alreadyHosted, report },
+      requestedSpaces: { spaces: [requested.space], alreadyHosted, report },
     }),
     { retryDelaysMs: [] },
   );

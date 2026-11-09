@@ -206,7 +206,7 @@ async function sign(message: string, extra: Record<string, unknown> = {}) {
   appMessage = message;
   const response = await keysRouter.request('/key_1/sign', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
     body: JSON.stringify({ message, requestOrigin: ORIGIN, ...extra }),
   });
   return { status: response.status, body: (await response.json()) as SignBody };
