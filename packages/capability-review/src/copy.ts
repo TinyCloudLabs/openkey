@@ -57,6 +57,13 @@ export const DELEGATION_LIST_LABEL = "Who can access your data";
 /** The consent sentence for the same grant. */
 export const DELEGATION_LIST_STATEMENT = "See who has access to your data";
 
+/**
+ * Title and consent sentence of a `tinycloud.delegation/revoke` grant on the
+ * signer's own space. It lets the requester end access the signer gave; the
+ * resource names the space, not the app or link, so the row cannot name one.
+ */
+export const DELEGATION_REVOKE_LABEL = "Remove access you gave";
+
 /** Named-key verbs that carry consent copy. */
 export type NamedKeyVerb = "create" | "decrypt" | "block" | "unblock" | "delete";
 

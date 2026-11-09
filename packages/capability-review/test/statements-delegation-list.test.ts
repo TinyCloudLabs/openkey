@@ -1,5 +1,6 @@
 // The consent sentence for a read-only `tinycloud.delegation` grant (`list`, `status`) on the
-// signer's own `account` or `applications` space. Other delegation verbs keep their wording.
+// signer's own `account` or `applications` space. Other delegation verbs keep their wording
+// (the revoke verb has its own file, delegation-revoke.test.ts).
 
 import { describe, expect, it } from "bun:test";
 
@@ -72,7 +73,6 @@ describe("the sentence for listing the account's delegations", () => {
   });
 
   it.each([
-    ["revoke", ["tinycloud.delegation/revoke"]],
     ["create", ["tinycloud.delegation/create"]],
     ["a wildcard", ["tinycloud.delegation/*"]],
     ["list with revoke", ["tinycloud.delegation/list", "tinycloud.delegation/revoke"]],
@@ -89,8 +89,8 @@ describe("the sentence for listing the account's delegations", () => {
 
   it("a grant that is classed as a delegation read but carries another verb still gets the literal wording", () => {
     for (const spaceName of ["account", "applications"]) {
-      const grant = { ...grantFor(space(spaceName), ["tinycloud.delegation/revoke"]), family: "bootstrap-delegation" as const, severity: "standard" as const };
-      expect(buildStatement(grant).primaryText).toBe("Unknown action: tinycloud.delegation/revoke");
+      const grant = { ...grantFor(space(spaceName), ["tinycloud.delegation/create"]), family: "bootstrap-delegation" as const, severity: "standard" as const };
+      expect(buildStatement(grant).primaryText).toBe("Unknown action: tinycloud.delegation/create");
     }
   });
 
