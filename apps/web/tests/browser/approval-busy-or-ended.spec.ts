@@ -1,8 +1,8 @@
 // The approval page's sign path answers 409 or 410 in the owner's words: any
-// 409 says the request is already being approved, a 410 says it has already
-// been answered or has ended, and the server's own text is never shown. Other
-// statuses keep the server text. The screenshots (SHOT_DIR) are the 390px
-// phone width.
+// 409 says the request is already being approved, and a 410 switches to the
+// dedicated expired-request panel (TC-2505). In every case the server's own
+// text is never shown. Other statuses keep the server text. The screenshots
+// (SHOT_DIR) are the 390px phone width.
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
 
@@ -87,10 +87,11 @@ test.describe('Approve on the approval-request review page', () => {
     await expect(page.getByText('Conflict')).toHaveCount(0);
   });
 
-  test('a 410 with expired_request shows the ended wording, not the server text', async ({ page }) => {
+  test('a 410 with expired_request shows the expired-request panel, not the server text', async ({ page }) => {
     await openReview(page, { delegate: { status: 410, body: { code: 'expired_request', error: 'Approval request is no longer pending' } } });
     await approve(page).click();
-    await expect(page.getByRole('alert')).toHaveText(ENDED);
+    await expect(page.locator('section[role="alert"].expired-request')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Request expired' })).toBeVisible();
     await expect(page.getByText('Approval request is no longer pending')).toHaveCount(0);
   });
 
