@@ -36,7 +36,7 @@ export interface ApprovalRequestStore {
   /** Clears the marker, only if it is still this one. */
   release(id: string, marker: Date): Promise<void>;
   /**
-   * Saves the result. With the marker from `admit` the save needs that exact marker, still within its lease,
+   * Saves the result. With the marker from `admit` the save needs that exact marker (a deny or a re-admission replaces it),
    * and a request that expired no more than one lease ago. Without it the request must be unexpired and have no live marker.
    */
   approve(id: string, result: { resultRef: string; approvedByUserId: string; ownerDid: string; encryptedResult: string; delegationExpiresAt: Date; resultExpiresAt: Date }, now: Date, marker?: Date): Promise<boolean>;

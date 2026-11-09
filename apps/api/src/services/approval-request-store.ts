@@ -29,9 +29,8 @@ export function createPrismaApprovalRequestStore(database: PrismaClient): Approv
       await database.approvalRequest.updateMany({ where: { id, resultRef: null, approvingAt: marker }, data: { approvingAt: null } });
     },
     async approve(id, result, now, marker) {
-      // One conditional write settles it. Admitted: this exact marker, within its lease, on a request no more than one lease past its deadline.
+      // One conditional write settles it. Admitted: this exact marker (a deny or a re-admission after a lapse has replaced or voided it), on a request no more than one lease past its deadline.
       // Not admitted: the request must be unexpired and no other approval live.
-      if (marker && marker.getTime() <= leaseStart(now).getTime()) return false;
       const saved = await database.approvalRequest.updateMany({
         where: marker
           ? { id, resultRef: null, deniedAt: null, approvingAt: marker, expiresAt: { gt: leaseStart(now) } }

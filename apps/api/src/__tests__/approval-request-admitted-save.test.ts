@@ -93,17 +93,24 @@ describe('saving an admitted approval through the service', () => {
     expect((await row()).resultRef).toBeNull();
   });
 
-  test('an admitted save still refuses a denied request, a changed binding and a lapsed lease', async () => {
+  test('an admitted save still refuses a denied request and a changed binding', async () => {
     await registered(MINUTE);
     const signed = await delegation();
     const marker = await service().admit(ID);
     await expect(service().approve(ID, 'owner', { ...signed.body, host: 'https://other.example.test' }, signed.delegation, marker))
       .rejects.toMatchObject({ code: 'request_binding', status: 400 });
-    advance(APPROVAL_CLAIM_LEASE_MS + 1);
-    await expect(service().approve(ID, 'owner', signed.body, signed.delegation, marker)).rejects.toMatchObject({ code: 'expired_request' });
     expect((await row()).resultRef).toBeNull();
     await client.approvalRequest.update({ where: { id: ID }, data: { deniedAt: clock, approvingAt: null } });
     await expect(service().approve(ID, 'owner', signed.body, signed.delegation, marker)).rejects.toMatchObject({ code: 'expired_request', extra: { status: 'denied' } });
+  });
+
+  test('an attempt that takes longer than the lease is saved when nothing replaced its marker', async () => {
+    await registered(30 * MINUTE);
+    const signed = await delegation();
+    const marker = await service().admit(ID);
+    advance(APPROVAL_CLAIM_LEASE_MS + 1_000);
+    await service().approve(ID, 'owner', signed.body, signed.delegation, marker);
+    expect((await row()).resultRef).not.toBeNull();
   });
 
   test('after a failed attempt releases the admission, deny and a retry work at once', async () => {

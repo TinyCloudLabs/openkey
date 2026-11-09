@@ -69,10 +69,34 @@ describe('admitting an approval request', () => {
     expect(await store().approve(ID, result(), clock, marker)).toBe(true);
   });
 
-  test('a lapsed marker cannot save', async () => {
+  test('a slow attempt past the lease still saves while nothing replaced its marker', async () => {
     await registered();
     const marker = await service().admit(ID);
-    advance(APPROVAL_CLAIM_LEASE_MS + 1);
+    advance(APPROVAL_CLAIM_LEASE_MS + 1_000);
+    expect(await store().approve(ID, result(), clock, marker)).toBe(true);
+  });
+
+  test('after the lease lapses a deny settles the request and the slow save is refused', async () => {
+    await registered();
+    const marker = await service().admit(ID);
+    advance(APPROVAL_CLAIM_LEASE_MS + 1_000);
+    await expect(service().deny(ID, LINK)).resolves.toEqual({ status: 'denied' });
+    expect(await store().approve(ID, result(), clock, marker)).toBe(false);
+  });
+
+  test('after the lease lapses a re-admission replaces the marker, and the first attempt cannot save', async () => {
+    await registered();
+    const first = await service().admit(ID);
+    advance(APPROVAL_CLAIM_LEASE_MS + 1_000);
+    const second = await service().admit(ID);
+    expect(await store().approve(ID, result('first'), clock, first)).toBe(false);
+    expect(await store().approve(ID, result('second'), clock, second)).toBe(true);
+  });
+
+  test('a marker a day old on a long-expired request cannot save', async () => {
+    await registered(MINUTE);
+    const marker = await service().admit(ID);
+    advance(24 * 60 * MINUTE);
     expect(await store().approve(ID, result(), clock, marker)).toBe(false);
   });
 
