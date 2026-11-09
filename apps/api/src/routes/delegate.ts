@@ -25,6 +25,7 @@ import {
   permissionKey as computePermissionKey,
 } from './delegate-session';
 import { activateSessionWithinTimeout } from '../services/tinycloud-node-timeouts';
+import { ownBootstrapSpaceName } from '../services/tinycloud-siwe';
 import type { SpaceHostResult } from '@tinycloud/sdk-core';
 import { BOOTSTRAP_SPACE_NAMES, CAPABILITIES } from '@tinycloud/bootstrap';
 import {
@@ -153,11 +154,8 @@ async function managedSpaceSetupPlan(input: {
   chainId: number;
   spaceId: string;
 }): Promise<ManagedSpaceSetup | null> {
-  const name = input.spaceId.slice(input.spaceId.lastIndexOf(':') + 1) as BootstrapSpaceName;
-  if (
-    !BOOTSTRAP_SPACE_NAMES.includes(name) ||
-    input.spaceId !== makeSpaceId(input.address, input.chainId, name)
-  ) return null;
+  const name = ownBootstrapSpaceName(input.spaceId, input.address, input.chainId);
+  if (!name) return null;
 
   const { trustedTinyCloudBootstrapHost } = await import('../services/tinycloud-bootstrap');
   // TC-943: Courier and node-sdk send the tee.node alias of the configured node.
