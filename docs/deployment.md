@@ -154,6 +154,10 @@ inspection scripts. `bun install` alone does not generate the gitignored client.
 
 Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 
+The release owner sets `SCOREBOARD_EXCLUSIONS` in the sealed API environment through the
+existing complete-env procedure. `deploy-api.yml` is unchanged. Keep the legacy exclusion
+env alongside it for rollback. Details: TC-1480
+
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
@@ -180,11 +184,38 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `INTERNAL_METRICS_TOKEN` | Bearer token for internal metrics |
 | `OPENKEY_METRICS_READ_TOKEN` | Separate bearer for `/api/internal/scoreboard/*`. Grants **aggregate counts only** (`GET /protocol-users` -> `{count}`, `GET /app-users` -> `{total, active7d}`); neither endpoint takes input, so the token cannot be used to look up addresses or accounts. `/protocol-users` is capped at 30 calls/min per process (429) and audit-logged (status and count only). Unset = 503 |
 | `NODE_STATS_URL` / `NODE_STATS_READ_TOKEN` | Full URL of the node's read-only `GET /admin/stats` (TC-1482) and its read-only bearer. OpenKey fetches the owner addresses from it for `/protocol-users` (owners with data beyond the automatic `account` space; account-only owners are excluded). The URL must be `https:`; the response is capped at 16 MiB and concurrent calls share one node request; unset or failing node = 503, never a partial count. Expected response: `200 {"owners": ["0x<40 hex>", ...]}` |
-| `SCOREBOARD_EXCLUDE_USER_IDS` / `SCOREBOARD_EXCLUDE_CLIENT_IDS` | Comma-separated team/QA/agent user ids and internal OAuth client ids excluded from scoreboard counts |
+| `SCOREBOARD_EXCLUSIONS` | JSON identities derived from the shared `list.csv` by `python3 scripts/scoreboard-exclusions.py /var/tmp/test-identities/list.csv`. Capture stdout privately, never in deploy logs. CSV columns must be exactly `kind,value,evidence`. Kinds: `address`, `did_pkh`, `email`, `did_key`, `email_domain`. Every list row applies; evidence is not a filter. Details: TC-1480 |
+| `SCOREBOARD_EXCLUDE_USER_IDS` | Retain the existing value alongside `SCOREBOARD_EXCLUSIONS` for rollback to an older release. The new resolver does not read it or fall back to it. Both are passed through Compose; rolling back code requires no env change. Details: TC-1480 |
+| `SCOREBOARD_EXCLUDE_CLIENT_IDS` | Comma-separated OAuth client ids omitted from app-user counts. Details: TC-1480 |
 | `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for canonical user-key bootstrap |
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway base domain (e.g. `dstack-pha-prod5.phala.network`); the ingress CNAMEs `api.openkey.so` to `gateway.<base>` (never `_.<base>`, which Android cannot resolve) |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |
+
+The exporter normalizes `did_pkh` rows to their lowercase EVM address, merges them with
+`address` rows, and emits each normalized identity once as compact JSON with only `kind`
+and `value`. Evidence is never exported. Details: TC-1480
+
+Scoreboard exclusions are evaluated inside OpenKey for account, protocol and app-user counts.
+Exact emails, EVM addresses and listed email domains match case-insensitively. Domain
+matching uses the whole domain after `@`, with no subdomain or wildcard matching.
+EVM addresses and `did:pkh:eip155` DIDs
+match all account keys, including archived keys. `did:key` values use existing device approvals,
+approval requests and native request/grant records to identify associated accounts; keys with no
+account mapping do not affect the count. Multiple matches exclude one account once. An empty
+list excludes nobody; invalid rules fail the metrics request rather than returning a partial count.
+The exporter reads only the specified list file. `unsure.csv` is never read or applied.
+`patterns.csv` is advisory and is not exported, applied or counted. Domain rules apply
+only when an `email_domain` row is in the authoritative list; there are no default domains.
+Both prior CSV schemas are rejected. The exporter refuses auxiliary filenames before opening.
+`/api/internal/metrics` keeps `accounts.total` and adds `accounts.real`, `accounts.excluded`,
+`accounts.excludedDomainOnly` and `accounts.exclusionCriteria`. The domain-only count includes
+accounts matched by a listed domain and by no exact email, key or other identity rule; it stays
+in this response only, not Worker/D1/UI. Only aggregates and this criteria text leave OpenKey:
+`Excludes team, QA, agent/service and throwaway-mailbox accounts on the shared test-identity list (v1). Entries marked unsure are kept.`
+The CSV is authoritative; do not maintain a separate identity or domain list. Existing account
+joins already omit node identities without OpenKey accounts. No database migration is needed.
+Details: TC-1480
 
 TC-2212 request IDs, sealed-body digests and request deadlines are bound by
 OpenKey's server-side consent context. The owner's signature covers the canonical
