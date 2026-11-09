@@ -3,6 +3,10 @@
   import { untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import { ARCHIVED_KEY_MESSAGE, autoSelectKey, signingKeyChoices } from '$lib/delegate-key-selection';
+  import { parseSIWE } from '$lib/siwe-parser';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
+  import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
@@ -43,6 +47,10 @@
   let messageHost = $state<string>('');
   let keyId = $state<string | null>(null);
   let key = $state<EthereumKey | null>(null);
+  let keyChoices = $state<EthereumKey[]>([]);
+  let keyChoicesLoaded = false;
+  let keyChoicesSessionId: string | undefined;
+  const expectedAddress = $derived(parseSIWE(message)?.message.address.toLowerCase() ?? null);
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
@@ -122,6 +130,8 @@
   // path (Sol MAJOR-4). Versioned callers (protocolVersion >= 1) MUST use
   // a real origin — '*' is refused for editing/rewriting flows.
   const origin = $page.url.searchParams.get('origin') || '*';
+  const requester = originAuthority(origin);
+  const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
   // Use $effect instead of onMount for Svelte 5 compatibility with SSR disabled
@@ -268,11 +278,52 @@
     if ($session.data && keyId && !keyFetched && !key) {
       keyFetched = true;
       api.getKey(keyId).then(result => {
+        if (result.key.archivedAt) {
+          error = ARCHIVED_KEY_MESSAGE;
+          key = null;
+          return;
+        }
         key = result.key;
       }).catch(() => {
-        // Key not found
+        error = 'Selected key could not be loaded. Reconnect to choose a key.';
       });
     }
+  });
+
+  function chooseSigningKey(selected: EthereumKey) {
+    if ($session.data?.session?.id !== keyChoicesSessionId) {
+      error = 'Signing session changed. Reconnect to choose a key.';
+      keyChoices = [];
+      return;
+    }
+    keyFetched = true;
+    keyId = selected.id;
+    key = selected;
+  }
+
+  $effect(() => {
+    if (!$session.data || !requestSealed || keyId || keyChoicesLoaded) return;
+    keyChoicesLoaded = true;
+    loading = true;
+    const sessionId = $session.data.session?.id;
+    const address = expectedAddress;
+    const keyType = externalSignMode ? 'EXTERNAL' : 'MANAGED';
+    api.listKeys().then(({ keys }) => {
+      if ($session.data?.session?.id !== sessionId) {
+        error = 'Signing session changed. Reconnect to choose a key.';
+        return;
+      }
+      keyChoicesSessionId = sessionId;
+      keyChoices = signingKeyChoices(keys, address, keyType);
+      if (!keyChoices.length) {
+        error = 'Requested signing key is not available. Reconnect to choose a key.';
+        return;
+      }
+      const selected = autoSelectKey(keyChoices, address);
+      if (selected) chooseSigningKey(selected);
+    }).catch(() => {
+      error = 'Signing keys could not be loaded. Reconnect to choose a key.';
+    }).finally(() => { loading = false; });
   });
 
   async function handleMessage(event: MessageEvent) {
@@ -332,16 +383,6 @@
       keyFetched = false; // Reset so effect can run
       requestSealed = true;
 
-      // Try immediately if session is already available
-      if (keyId && $session.data) {
-        try {
-          const result = await api.getKey(keyId);
-          key = result.key;
-          keyFetched = true;
-        } catch {
-          // Key not found, will prompt user to select
-        }
-      }
       // The reviewModel is built by a $effect below that reacts to
       // `message` AND `key` — this fixes the Sol MAJOR-8 bug where the
       // model was created with a placeholder zero-address before the key
@@ -974,12 +1015,25 @@
     sendClose();
   }
 
+  function reconnect() {
+    if (!refusalSent) {
+      sendResponse({
+        type: 'openkey:sign:response',
+        success: false,
+        error: { code: 'NO_KEY', message: `${error} ${reconnectHint}` },
+      });
+    }
+    sendClose();
+  }
+
   function cancel() {
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
         success: false,
-        error: { code: 'USER_CANCELLED', message: 'User cancelled' },
+        error: !key && error
+          ? { code: 'NO_KEY', message: error }
+          : { code: 'USER_CANCELLED', message: 'User cancelled' },
       });
     }
     sendClose();
@@ -1070,9 +1124,9 @@
 
 <div class="flex-1 flex flex-col">
   <header class="flex justify-between items-center mb-6">
-    <h1 class="text-xl font-semibold text-surface-50">Sign Message</h1>
+    <h1 class="text-xl font-semibold text-surface-900">Sign Message</h1>
     <button
-      class="bg-transparent border-none text-surface-400 text-2xl cursor-pointer p-0 leading-none hover:text-surface-50 transition-colors"
+      class="bg-transparent border-none text-surface-600 text-2xl cursor-pointer p-0 leading-none hover:text-surface-900 transition-colors"
       onclick={cancel}
     >
       &times;
@@ -1092,9 +1146,21 @@
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       Loading...
     </div>
+  {:else if !key && keyChoices.length > 1}
+    <KeyPicker
+      keys={keyChoices}
+      {expectedAddress}
+      onselect={chooseSigningKey}
+      listHeading="Select a key to sign:"
+      primaryHeading="Sign with your primary key:"
+    />
+    <Button variant="secondary" class="mt-4" onclick={cancel}>Cancel</Button>
+  {:else if !key && error}
+    <SigningKeyRefusal message={error} {requester} onreconnect={reconnect} />
   {:else if !key}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
-      <p>Please connect first to sign messages.</p>
+      <p role={error ? 'alert' : undefined}>{error || 'Please connect first to sign messages.'}</p>
+      <Button variant="secondary" class="mt-4" onclick={cancel}>Cancel</Button>
     </div>
   {:else if reviewModel}
     <!--

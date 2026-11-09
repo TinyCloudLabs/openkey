@@ -3,6 +3,10 @@
   import { tick, untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import { ARCHIVED_KEY_MESSAGE, autoSelectKey, signingKeyChoices } from '$lib/delegate-key-selection';
+  import { parseSIWE } from '$lib/siwe-parser';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
+  import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
   import { getSessionToken, isEmbedContext, withSessionCredential } from '$lib/embed-passkey';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
@@ -45,6 +49,9 @@
   let messageHost = $state<string>('');
   let keyId = $state<string | null>(null);
   let key = $state<EthereumKey | null>(null);
+  let keyChoices = $state<EthereumKey[]>([]);
+  let keyChoicesLoaded = false;
+  const expectedAddress = $derived(parseSIWE(message)?.message.address.toLowerCase() ?? null);
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
@@ -118,6 +125,8 @@
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
   const origin = $page.url.searchParams.get('origin') || '*';
+  const requester = originAuthority(origin);
+  const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const v2 = $page.url.searchParams.get('protocolVersion') === '2';
   const frameResized = () => frameSettle?.resized();
   if (!v2 && typeof window !== 'undefined') {
@@ -134,7 +143,8 @@
   // Start waiting once the review is actually rendered (the template's own conditions: not while signing in, loading or
   // reading the key), so the clock cannot run out behind a sign-in screen (the first call only).
   $effect(() => {
-    if (!v2 && reviewModel && !siweRefusal && replyFailureStatus === null && isAuthenticated && !loading && key) frameSettle?.show();
+    if (!v2 && !siweRefusal && replyFailureStatus === null && isAuthenticated && !loading &&
+        ((reviewModel && key) || keyChoices.length > 1)) frameSettle?.show();
   });
   const phaseRequestId = v2 ? $page.url.searchParams.get('requestId') : null;
   const phaseKeyId = v2 ? $page.url.searchParams.get('keyId') : null;
@@ -428,6 +438,11 @@
         keyError = 'Selected key could not be loaded for this session.';
         return;
       }
+      if (found.archivedAt) {
+        key = null;
+        keyError = ARCHIVED_KEY_MESSAGE;
+        return;
+      }
       // Detail endpoint is owner-scoped and selects only public columns.
       key = {
         id: found.id, address: found.address, publicKey: found.publicKey,
@@ -439,6 +454,47 @@
     }).catch(() => {
       if (generation === keyReadGeneration && getSessionToken() === token) keyError = 'Selected key could not be loaded.';
     });
+  });
+
+  function chooseSigningKey(selected: EthereumKey) {
+    if (getSessionToken() !== keyReadToken ||
+        (inIframe ? null : $session.data?.session?.id) !== keyReadSessionId) {
+      keyError = 'Signing session changed. Reconnect to choose a key.';
+      keyChoices = [];
+      return;
+    }
+    keyFetched = true;
+    keyId = selected.id;
+    key = selected;
+    keyOwnerToken = keyReadToken;
+    keyOwnerSessionId = keyReadSessionId ?? undefined;
+  }
+
+  $effect(() => {
+    if (!isAuthenticated || !requestSealed || keyId || phaseKeyId || keyChoicesLoaded) return;
+    keyChoicesLoaded = true;
+    loading = true;
+    const token = getSessionToken();
+    const sessionId = inIframe ? null : $session.data?.session?.id;
+    const address = expectedAddress;
+    const keyType = externalSignMode ? 'EXTERNAL' : 'MANAGED';
+    api.listKeys().then(({ keys }) => {
+      if (getSessionToken() !== token || (inIframe ? null : $session.data?.session?.id) !== sessionId) {
+        keyError = 'Signing session changed. Reconnect to choose a key.';
+        return;
+      }
+      keyReadToken = token;
+      keyReadSessionId = sessionId;
+      keyChoices = signingKeyChoices(keys, address, keyType);
+      if (!keyChoices.length) {
+        keyError = 'Requested signing key is not available. Reconnect to choose a key.';
+        return;
+      }
+      const selected = autoSelectKey(keyChoices, address);
+      if (selected) chooseSigningKey(selected);
+    }).catch(() => {
+      keyError = 'Signing keys could not be loaded. Reconnect to choose a key.';
+    }).finally(() => { loading = false; });
   });
 
   function handleMessage(event: MessageEvent) {
@@ -1069,13 +1125,27 @@
     sendClose();
   }
 
+  function reconnect() {
+    keyReadGeneration++;
+    if (!refusalSent) {
+      sendResponse({
+        type: 'openkey:sign:response',
+        success: false,
+        error: { code: 'NO_KEY', message: `${keyError} ${reconnectHint}` },
+      });
+    }
+    sendClose();
+  }
+
   function cancel() {
     keyReadGeneration++;
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
         success: false,
-        error: { code: 'USER_CANCELLED', message: 'User cancelled' },
+        error: !key && keyError
+          ? { code: 'NO_KEY', message: keyError }
+          : { code: 'USER_CANCELLED', message: 'User cancelled' },
       });
     }
     sendClose();
@@ -1174,6 +1244,18 @@
         </svg>
         <span class="text-sm text-surface-500">Loading...</span>
       </div>
+    {:else if !key && keyChoices.length > 1}
+      <KeyPicker
+        keys={keyChoices}
+        {expectedAddress}
+        compact
+        onselect={chooseSigningKey}
+        listHeading="Select a key to sign:"
+        primaryHeading="Sign with your primary key:"
+      />
+      <Button variant="secondary" class="mt-4 w-full" onclick={cancel}>Cancel</Button>
+    {:else if !key && keyError}
+      <SigningKeyRefusal message={keyError} {requester} onreconnect={reconnect} />
     {:else if !key}
       <div class="flex flex-col items-center justify-center text-center text-surface-500 py-4">
         <p class="text-sm">{keyError || (requestSealed && keyFetched ? 'Loading selected key...' : 'Please connect first to sign messages.')}</p>
