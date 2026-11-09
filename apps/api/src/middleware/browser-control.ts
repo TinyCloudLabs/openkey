@@ -1,5 +1,6 @@
 import type { Context } from 'hono';
 import { resolveOriginPolicy } from '../origin-policy';
+import { logSignOriginRefused } from '../log';
 
 /**
  * TinyCloud signing controls (signing mode, per-app grants, the primary key)
@@ -27,7 +28,10 @@ export function rejectNonBrowserControlRequest(c: Context) {
 export function rejectNonOpenKeySignRequest(c: Context) {
   const origin = c.req.header('origin');
   const allowed = resolveOriginPolicy('http://localhost:5173,http://localhost:3000');
-  if (!origin || !allowed.includes(origin)) return c.json({ error: 'Managed-key signing requires an OpenKey browser origin' }, 403);
+  if (!origin || !allowed.includes(origin)) {
+    logSignOriginRefused(c.req.routePath, origin ? 'foreign' : 'missing');
+    return c.json({ error: 'Managed-key signing requires an OpenKey browser origin' }, 403);
+  }
   return null;
 }
 
