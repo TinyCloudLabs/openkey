@@ -1120,7 +1120,7 @@ describe('CoordinationOS OAuth signer route', () => {
 
   test('an OAuth client policy does not affect a real Better Auth session bootstrap', async () => {
     betterAuthSession = true;
-    const response = await sign(bootstrapSigningBody(), null);
+    const response = await sign(bootstrapSigningBody(), null, { origin: 'http://localhost:5173' });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       approved: true,
@@ -1141,7 +1141,7 @@ describe('CoordinationOS OAuth signer route', () => {
   test('Better Auth session signing still honors disabled Auto-Sign', async () => {
     betterAuthSession = true;
     autoSignEnabled = false;
-    const response = await sign(bootstrapSigningBody(), null);
+    const response = await sign(bootstrapSigningBody(), null, { origin: 'http://localhost:5173' });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       approved: false,

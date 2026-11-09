@@ -46,15 +46,18 @@ globalThis.fetch = Object.assign(function fetchWithRequestId(input: Parameters<t
 const EVENTS = {
   better_auth: true, otp_delivery_unconfigured: true, auth_key_generated: true, auth_key_generation_failed: true,
   auth_email_signup_confirmation_required: true, auth_email_signup_confirmed: true, auth_email_signup_refused: true,
+  auth_social_continuation_cleanup_failed: true, auth_social_token_revoke_failed: true, auth_social_signup_confirmed: true,
+  auth_social_notice_failed: true, auth_social_email_review_required: true,
+  auth_social_email_review_refused: true, auth_social_email_review_confirmed: true,
   analytics_token_exchange_failed: true, analytics_unique_user_failed: true, analytics_token_tracking_failed: true,
   analytics_authorization_failed: true, analytics_authorization_tracking_failed: true, oauth_client_scopes_updated: true,
   oauth_client_scopes_update_failed: true, api_starting: true, request: true, api_error: true,
   delegate_session_activation_warning: true, delegate_session_activation_failed: true,
-  delegate_authorization_context_issue_failed: true, owner_revocation_sign_failed: true, delegate_space_setup_notice_failed: true,
+  delegate_authorization_context_issue_failed: true, owner_revocation_sign_failed: true, delegate_space_setup_notice_failed: true, delegate_session_jwk: true,
   delegate_origin_bind_failed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true, key_quote_failed: true,
   native_consent_peer_lookup_failed: true, native_consent_key_unseal_failed: true,
   native_consent_activation_after_host_setup_failed: true, native_consent_host_delegation_rejected: true,
-  native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true,
+  native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true, native_consent_stale_session_revoke_failed: true,
   oauth_client_create_failed: true, oauth_client_delete_failed: true, oauth_client_update_failed: true,
   session_cap_unapplied: true,
   resource_introspect_failed: true, resource_introspect_rate_limited: true, mcp_userinfo_guard_failed: true,
@@ -68,6 +71,7 @@ const EVENTS = {
   native_par_request_cleanup_failed: true, native_session_proof_cleanup_failed: true,
   scoreboard_protocol_users_call: true, app_sign_in_record_failed: true, permission_entry_unknown_field: true,
   third_party_console: true, uncaught_exception: true, unhandled_rejection: true, config_invalid: true,
+  sign_origin_refused: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;
 type EventName = keyof typeof EVENTS;
@@ -132,6 +136,26 @@ export function logMetric(
   fields: { status?: number; count?: number },
 ): void {
   emit(level, event, { status: fields.status, count: fields.count });
+}
+
+/** One line on a refused managed-key signing request: route template and why, never the origin value. */
+export function logSignOriginRefused(route: string | undefined, reason: 'missing' | 'foreign'): void {
+  emit('warn', 'sign_origin_refused', { route: routeTemplate(route), reason });
+}
+
+export type SessionJwkRoute =
+  | '/api/delegate'
+  | '/api/delegate/prepare'
+  | '/api/delegate/complete'
+  | '/api/delegate/authorize-sign-prepare';
+
+/**
+ * One line per delegate request that carries a session JWK: the route and
+ * whether the JWK had a private member. Read to decide when private members
+ * can be refused. Never the key, user, IP or any other request field.
+ */
+export function logSessionJwk(route: SessionJwkRoute, privateMembers: boolean): void {
+  emit('info', 'delegate_session_jwk', { route, private_members: privateMembers === true });
 }
 
 const PERMISSION_FIELD_NAME = /^[A-Za-z0-9_.-]{1,64}$/;

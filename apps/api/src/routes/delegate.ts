@@ -25,6 +25,7 @@ import {
   permissionKey as computePermissionKey,
 } from './delegate-session';
 import { activateSessionWithinTimeout } from '../services/tinycloud-node-timeouts';
+import type { SpaceHostResult } from '@tinycloud/sdk-core';
 import { BOOTSTRAP_SPACE_NAMES, CAPABILITIES } from '@tinycloud/bootstrap';
 import {
   DelegateRequestError,
@@ -33,7 +34,7 @@ import {
   signedSiweExpirationTime,
 } from './delegate-validation';
 import {
-  DEFAULT_SESSION_ABILITIES,
+  defaultSessionAbilities,
   SIWE_DOMAIN,
   sessionAbilitiesFromPermissions,
   validatePermissions,
@@ -46,11 +47,14 @@ import {
   reportedEntry,
   prepareDelegationSession,
   type DelegationJwk,
+  delegationSpaces,
+  primaryRoutingSpace,
+  type RequestedDelegationSpace,
   type DelegationPermissionEntry,
   type RecapEntry,
   type SessionAbilities,
 } from './delegate-session';
-import { log, logError } from '../log';
+import { log, logError, logSessionJwk } from '../log';
 
 // Re-export the pure delegation helpers so existing external test files
 // (e.g. delegate-oauth-route.test.ts) that import them from this module
@@ -58,7 +62,6 @@ import { log, logError } from '../log';
 export {
   prepareDelegationSession,
   assertBaselineSubset,
-  assertDefaultSubset,
   DEFAULT_ABILITIES,
 } from './delegate-session';
 import {
@@ -77,6 +80,8 @@ import {
   issuePreviewApproval,
   peekAuthorizationContext,
   peekPreviewApprovalExpiry,
+  hasPrivateJwkMember,
+  publicJwk,
   type AuthorizationContextToken,
   type AuthorizationContextClaim,
 } from '../services/authorization-signing';
@@ -166,6 +171,31 @@ async function managedSpaceSetupPlan(input: {
   return { space: name, plan: preference?.autoSignEnabled ? 'setup' : 'auto-sign-off', bootstrapHost };
 }
 type SpaceReadiness = { spaceReady: boolean | null; spaceError?: string; spacePending?: true };
+type RequestedSpaceReadiness = RequestedDelegationSpace & SpaceReadiness;
+type DelegationReadiness = SpaceReadiness & { requestedSpaces: RequestedSpaceReadiness[] };
+type SpaceActivation = SpaceHostResult & { hostNotKnown?: true };
+
+function aggregateSpaceReadiness(requestedSpaces: RequestedSpaceReadiness[]): DelegationReadiness {
+  const spaceReady = requestedSpaces.some(space => space.spaceReady === false) ? false
+    : requestedSpaces.some(space => space.spaceReady === null) ? null : true;
+  const error = requestedSpaces.find(space => space.spaceError)?.spaceError;
+  return {
+    requestedSpaces, spaceReady,
+    ...(requestedSpaces.some(space => space.spacePending) ? { spacePending: true as const } : {}),
+    ...(error ? { spaceError: error } : {}),
+  };
+}
+
+/** An empty activation receipt (already-known delegation) is not proof of hosting. */
+function activationReadiness(spaces: RequestedDelegationSpace[], entries: RecapEntry[], activation?: SpaceActivation): DelegationReadiness {
+  const granted = new Set(delegationSpaces(entries).map(space => space.spaceId));
+  return aggregateSpaceReadiness(spaces.map(space => ({
+    ...space,
+    spaceReady: !granted.has(space.spaceId) || activation?.hostNotKnown ? false
+      : activation?.success && activation.activated?.includes(space.spaceId) ? true
+      : activation?.success && activation.skipped?.includes(space.spaceId) ? false : null,
+  })));
+}
 
 /** `spaceError` when the approval's space was still being hosted at the timeout. */
 const REQUESTED_SPACE_TIMEOUT_ERROR = 'tinycloud_requested_space_timeout';
@@ -190,24 +220,33 @@ async function finishManagedSpaceOnboarding(input: {
   host: string;
   address: string;
   chainId: number;
-  spaceId: string;
-  skipped: boolean;
-}): Promise<SpaceReadiness> {
-  if (!input.skipped) return { spaceReady: true };
+  requestedSpaces: RequestedDelegationSpace[];
+  entries: RecapEntry[];
+  activation: SpaceActivation;
+}): Promise<DelegationReadiness> {
+  const initial = activationReadiness(input.requestedSpaces, input.entries, input.activation);
+  const granted = new Set(delegationSpaces(input.entries).map(space => space.spaceId));
+  const awaiting = initial.requestedSpaces.filter(space => granted.has(space.spaceId) && space.spaceReady !== true);
+  if (awaiting.length === 0) return initial;
+  const setupSpaces = new Set<string>();
+  let readiness: SpaceReadiness;
 
   try {
     const { ensureTinyCloudBootstrap } = await import('../services/tinycloud-bootstrap');
-    const setup = await managedSpaceSetupPlan({
-      userId: input.userId,
-      keyType: input.key.keyType,
-      host: input.host,
-      address: input.address,
-      chainId: input.chainId,
-      spaceId: input.spaceId,
-    });
-    if (setup?.plan !== 'setup') return { spaceReady: false };
+    const setups: ManagedSpaceSetup[] = [];
+    for (const space of awaiting) {
+      const setup = await managedSpaceSetupPlan({
+        userId: input.userId, keyType: input.key.keyType, host: input.host,
+        address: input.address, chainId: input.chainId, spaceId: space.spaceId,
+      });
+      if (setup?.plan === 'setup') {
+        setups.push(setup);
+        setupSpaces.add(space.spaceId);
+      }
+    }
+    if (setups.length === 0) return initial;
     if (!input.privateKey && !input.key.sealedBlob) {
-      return { spaceReady: false, spaceError: 'TinyCloud account setup failed: managed key has no sealed key data.' };
+      throw new Error('Managed key has no sealed key data');
     }
     // The first run uses this key and drops it; each background retry unseals again, so the
     // plaintext key is never held across a retry's wait.
@@ -220,36 +259,39 @@ async function finishManagedSpaceOnboarding(input: {
         userId: input.userId,
         key: { id: input.key.id, address: input.key.address, keyType: input.key.keyType },
         privateKey,
-        host: setup.bootstrapHost,
+        host: setups[0]!.bootstrapHost,
         chainId: input.chainId,
-        // Hosts only this space before responding; the other spaces and the seeding follow in the background run.
-        // This function runs only when the node's fresh activation listed the space as skipped, which a cached `complete` row must not override.
-        requestedSpace: { space: setup.space, alreadyHosted, nodeReportedUnhosted: true, report },
+        // Confirm every unresolved requested space before replying. Seeding and other spaces follow.
+        requestedSpaces: { spaces: setups.map(setup => setup.space), alreadyHosted, nodeReportedUnhosted: true, report },
       });
     });
     switch (result.status) {
       case 'hosted':
       case 'complete':
-        return { spaceReady: true };
+        readiness = { spaceReady: true }; break;
       // Another run holds the lock (an approval's or the sweep's) and will host the space: keep waiting.
       case 'pending':
-        return { spaceReady: null, spacePending: true, spaceError: result.errorCode };
+        readiness = { spaceReady: null, spacePending: true, spaceError: result.errorCode }; break;
       case 'timeout':
-        return { spaceReady: null, spacePending: true, spaceError: REQUESTED_SPACE_TIMEOUT_ERROR };
+        readiness = { spaceReady: null, spacePending: true, spaceError: REQUESTED_SPACE_TIMEOUT_ERROR }; break;
       case 'skipped':
-        return { spaceReady: false, spaceError: 'TinyCloud account setup failed.' };
+        readiness = { spaceReady: false, spaceError: 'TinyCloud account setup failed.' }; break;
       // The first run failed and a background retry is scheduled: keep the client waiting with the reason.
       case 'retrying':
-        return { spaceReady: null, spacePending: true, spaceError: setupFailureMessage(result) };
+        readiness = { spaceReady: null, spacePending: true, spaceError: setupFailureMessage(result) }; break;
       case 'failed':
-        return { spaceReady: false, spaceError: setupFailureMessage(result) };
+        readiness = { spaceReady: false, spaceError: setupFailureMessage(result) }; break;
     }
   } catch (error) {
-    return {
+    for (const space of awaiting) setupSpaces.add(space.spaceId);
+    readiness = {
       spaceReady: false,
       spaceError: `TinyCloud account setup failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+  return aggregateSpaceReadiness(initial.requestedSpaces.map(space =>
+    setupSpaces.has(space.spaceId) ? { ...space, ...readiness } : space,
+  ));
 }
 
 async function resolveBetterAuthSession(c: any): Promise<boolean> {
@@ -310,6 +352,8 @@ async function assertHandoffContext(ticket: string | null, userId: string, token
 // and accepts a bearer session token only from an OpenKey web origin (TC-688).
 delegateRouter.use('*', async (c, next) => {
   if (c.req.path.endsWith('/sign')) {
+    // The cookie-session origin check runs inside the signer middleware once
+    // a session resolves; OAuth bearers stay open to any origin.
     return activeDelegateSignerAuth(c, next);
   }
   // The refusals are returned, not awaited: this router has its own onError, so
@@ -586,22 +630,19 @@ function requiredActionIdSet(entries: RecapEntry[]): Set<string> {
  * from the `permissions` they receive and consume refuses a mismatch, so the
  * subset check at completion runs against the request that was prepared.
  * Each resource's actions are sorted and deduplicated first, so the same
- * grants in another order (or split across entries) digest the same. The
- * session space is not part of it; the prepared SIWE binds that. Requests
- * without raw encryption entries digest the space abilities alone.
+ * grants in another order (or split across entries) digest the same.
+ * Each resolved space remains in the digest, independently of routing.
  */
-function digestDelegationBaseline({ abilities, rawAbilities }: SessionAbilities): string {
+function digestDelegationBaseline({ spaceAbilities, rawAbilities }: SessionAbilities): string {
   const canonical = (byResource: Record<string, string[]>) => Object.fromEntries(
     Object.entries(byResource).map(([resource, actions]) => [resource, [...new Set(actions)].sort()]),
   );
-  const canonicalAbilities = Object.fromEntries(
-    Object.entries(abilities).map(([service, byPath]) => [service, canonical(byPath)]),
+  const canonicalSpaces = Object.fromEntries(
+    Object.entries(spaceAbilities).map(([space, abilities]) => [space, Object.fromEntries(
+      Object.entries(abilities).map(([service, byPath]) => [service, canonical(byPath)]),
+    )]),
   );
-  return digestAbilities(
-    Object.keys(rawAbilities).length > 0
-      ? { abilities: canonicalAbilities, rawAbilities: canonical(rawAbilities) }
-      : canonicalAbilities,
-  );
+  return digestAbilities({ spaceAbilities: canonicalSpaces, rawAbilities: canonical(rawAbilities) });
 }
 
 /**
@@ -1318,11 +1359,21 @@ delegateRouter.post('/', async (c) => {
     selectedActionIds?: unknown;
     protocolVersion?: number;
   }>();
+  logSessionJwk('/api/delegate', hasPrivateJwkMember(body.jwk));
+  // Only the session key's public members are used, stored, or returned; a
+  // malformed key counts as missing. A request naming a device transaction
+  // keeps that flow's exact check of the key as sent, and one naming an
+  // approval request of a well-formed key as sent; an empty or false id names
+  // neither and is stripped like any other.
+  const sessionJwk = publicJwk(body.jwk);
+  if (!body.deviceTransactionId && (!sessionJwk || !body.approvalRequestId)) {
+    body.jwk = sessionJwk as DelegationJwk;
+  }
 
   if (!body.keyId || !body.jwk || !body.host) {
     return c.json({ error: 'keyId, jwk, and host are required' }, 400);
   }
-  if (body.approvalRequestId && (body.protocolVersion !== 1 || !body.authorizationContextToken)) {
+  if (body.approvalRequestId !== undefined && (body.protocolVersion !== 1 || !body.authorizationContextToken)) {
     return c.json({ error: 'Approval requests require the consent preview context' }, 400);
   }
 
@@ -1479,7 +1530,7 @@ delegateRouter.post('/', async (c) => {
     try {
       baseline = permissions
         ? sessionAbilitiesFromPermissions(permissions, { address, chainId }, { deviceTransaction: body.deviceTransactionId !== undefined })
-        : DEFAULT_SESSION_ABILITIES;
+        : defaultSessionAbilities(bound.spaceId);
       assertBaselineSubset(preparedEntries, baseline);
       assertRequiredActions(preparedEntries, baseline);
     } catch (e) {
@@ -1611,7 +1662,8 @@ delegateRouter.post('/', async (c) => {
     });
 
     let hostActivated = false;
-    let spaceReadiness: SpaceReadiness = { spaceReady: null };
+    const requestedSpaces = delegationSpaces(preparedEntries, baseline);
+    let spaceReadiness = activationReadiness(requestedSpaces, preparedEntries);
     try {
       const activationResult = await activateSessionWithinTimeout(host, session.delegationHeader);
       hostActivated = activationResult.success;
@@ -1622,13 +1674,14 @@ delegateRouter.post('/', async (c) => {
           host,
           address,
           chainId,
-          spaceId: bound.spaceId,
-          skipped: Boolean(activationResult.skipped?.includes(bound.spaceId)),
+          requestedSpaces,
+          entries: preparedEntries,
+          activation: activationResult,
         });
       }
       if (!hostActivated) {
         log('warn', 'delegate_session_activation_warning');
-        if (activationResult.hostNotKnown) spaceReadiness = { spaceReady: false };
+        spaceReadiness = activationReadiness(requestedSpaces, preparedEntries, activationResult);
       }
     } catch (e) {
       logError('warn', 'delegate_session_activation_failed', e);
@@ -1712,7 +1765,8 @@ delegateRouter.post('/', async (c) => {
   });
 
   let hostActivated = false;
-  let spaceReadiness: SpaceReadiness = { spaceReady: null };
+  const signedEntries = parsePreparedRecap(preparedResult.prepared.siwe);
+  let spaceReadiness = activationReadiness(preparedResult.requestedSpaces, signedEntries);
   try {
     const activationResult = await activateSessionWithinTimeout(host, session.delegationHeader);
     hostActivated = activationResult.success;
@@ -1723,13 +1777,14 @@ delegateRouter.post('/', async (c) => {
         host,
         address,
         chainId,
-        spaceId: preparedResult.spaceId,
-        skipped: Boolean(activationResult.skipped?.includes(preparedResult.spaceId)),
+        requestedSpaces: preparedResult.requestedSpaces,
+        entries: signedEntries,
+        activation: activationResult,
       });
     }
     if (!hostActivated) {
       log('warn', 'delegate_session_activation_warning');
-      if (activationResult.hostNotKnown) spaceReadiness = { spaceReady: false };
+      spaceReadiness = activationReadiness(preparedResult.requestedSpaces, signedEntries, activationResult);
     }
   } catch (e) {
     logError('warn', 'delegate_session_activation_failed', e);
@@ -1810,6 +1865,16 @@ delegateRouter.post('/prepare', async (c) => {
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
   }>();
+  logSessionJwk('/api/delegate/prepare', hasPrivateJwkMember(body.jwk));
+  // Only the session key's public members are used, stored, or returned; a
+  // malformed key counts as missing. A request naming a device transaction
+  // keeps that flow's exact check of the key as sent, and one naming an
+  // approval request of a well-formed key as sent; an empty or false id names
+  // neither and is stripped like any other.
+  const sessionJwk = publicJwk(body.jwk);
+  if (!body.deviceTransactionId && (!sessionJwk || !body.approvalRequestId)) {
+    body.jwk = sessionJwk as DelegationJwk;
+  }
 
   if (!body.keyId || !body.jwk || !body.host) {
     return c.json({ error: 'keyId, jwk, and host are required' }, 400);
@@ -1953,6 +2018,7 @@ delegateRouter.post('/prepare', async (c) => {
   return c.json({
     prepared: preparedData,
     spaceId: preparedResult.spaceId,
+    requestedSpaces: preparedResult.requestedSpaces.map(space => ({ ...space, spaceReady: null })),
     spaceSetup,
     ownerDid,
     address,
@@ -2026,6 +2092,16 @@ delegateRouter.post('/complete', async (c) => {
      */
     selectedActionIds?: unknown;
   }>();
+  logSessionJwk('/api/delegate/complete', hasPrivateJwkMember(body.jwk));
+  // Only the session key's public members are used, stored, or returned; a
+  // malformed key counts as missing. A request naming a device transaction
+  // keeps that flow's exact check of the key as sent, and one naming an
+  // approval request of a well-formed key as sent; an empty or false id names
+  // neither and is stripped like any other.
+  const sessionJwk = publicJwk(body.jwk);
+  if (!body.deviceTransactionId && (!sessionJwk || !body.approvalRequestId)) {
+    body.jwk = sessionJwk as DelegationJwk;
+  }
 
   if (!body.prepared || !body.signature || !body.host || !body.jwk) {
     return c.json({ error: 'prepared, signature, host, and jwk are required' }, 400);
@@ -2084,12 +2160,15 @@ delegateRouter.post('/complete', async (c) => {
   let baseline: SessionAbilities;
   try {
     const entries = parsePreparedRecap(body.prepared.siwe);
+    const preview = typeof body.authorizationContextToken === 'string'
+      ? peekAuthorizationContext(body.authorizationContextToken) : undefined;
+    const defaultSpaceId = preview?.ok ? preview.value.spaceId : preparedSpaceId;
     baseline = baselinePermissions
       ? sessionAbilitiesFromPermissions(baselinePermissions, {
           address: signedFields.address,
           chainId: signedFields.chainId,
         }, { deviceTransaction: body.deviceTransactionId !== undefined })
-      : DEFAULT_SESSION_ABILITIES;
+      : defaultSessionAbilities(defaultSpaceId);
     assertBaselineSubset(entries, baseline);
     assertRequiredActions(entries, baseline);
   } catch (e) {
@@ -2261,7 +2340,7 @@ delegateRouter.post('/complete', async (c) => {
     signedSiwe: String(body.prepared?.siwe ?? ''),
   });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
-  if (body.approvalRequestId && !body.authorizationContextToken) {
+  if (body.approvalRequestId !== undefined && !body.authorizationContextToken) {
     return c.json({ error: 'Approval requests require the consent preview context' }, 400);
   }
   await checkApprovalDelegation(body, { signedSiwe: body.prepared.siwe });
@@ -2290,14 +2369,15 @@ delegateRouter.post('/complete', async (c) => {
   const chainId = signedFields.chainId;
   const spaceId = preparedSpaceId;
   let hostActivated = false;
-  let spaceReady: boolean | null = null;
+  const signedEntries = parsePreparedRecap(body.prepared.siwe);
+  const requestedSpaces = delegationSpaces(signedEntries, baseline);
+  let spaceReadiness = activationReadiness(requestedSpaces, signedEntries);
   try {
     const activationResult = await activateSessionWithinTimeout(body.host, session.delegationHeader);
     hostActivated = activationResult.success;
-    if (hostActivated) spaceReady = !activationResult.skipped?.includes(spaceId);
+    spaceReadiness = activationReadiness(requestedSpaces, signedEntries, activationResult);
     if (!hostActivated) {
       log('warn', 'delegate_session_activation_warning');
-      if (activationResult.hostNotKnown) spaceReady = false;
     }
   } catch (e) {
     logError('warn', 'delegate_session_activation_failed', e);
@@ -2334,7 +2414,7 @@ delegateRouter.post('/complete', async (c) => {
     chainId,
     primary,
     hostActivated,
-    spaceReady,
+    ...spaceReadiness,
     edited: Boolean(body.edited),
     reason,
     expirationTime,
@@ -2436,6 +2516,10 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     callback?: unknown;
     delivery?: unknown;
   }>();
+  logSessionJwk('/api/delegate/authorize-sign-prepare', hasPrivateJwkMember(body.jwk));
+  // Only the session key's public members are used or stored; a malformed
+  // key counts as missing.
+  body.jwk = publicJwk(body.jwk) as DelegationJwk;
   const deviceUnsupported = deviceTransactionUnsupportedError(body);
   if (deviceUnsupported) return c.json(deviceUnsupported, 400);
 
@@ -2560,16 +2644,14 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     );
   }
 
-  // The spaceId sits inside the ReCap block — take it from the first entry.
-  // All entries in a well-formed prepared SIWE reference the same space.
-  const firstEntry = originalEntries[0];
-  if (!firstEntry) {
+  // ReCap resources can cover several spaces; the primary is for routing only.
+  if (originalEntries.length === 0) {
     return c.json(
       { error: 'ReCap has no entries', code: 'empty_recap_entries' },
       400,
     );
   }
-  const spaceId = firstEntry.space;
+  const spaceId = primaryRoutingSpace(delegationSpaces(originalEntries).map(space => space.spaceId), makeSpaceId(keyAddress, chainId, 'default'));
 
   const immutable = extractImmutableSiweFields(body.siwe, {
     address: keyAddress,
