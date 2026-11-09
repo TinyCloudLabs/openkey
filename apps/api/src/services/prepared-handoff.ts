@@ -184,7 +184,7 @@ export class PreparedHandoffService {
     if (record.expiresAt <= this.now()) fail('handoff_expired', 'Handoff expired', 410);
     if (record.status === 'CANCELLED') fail('handoff_cancelled', 'Handoff cancelled', 410);
     if (record.status === 'CONSUMED') fail('handoff_consumed', 'Handoff already signed', 409);
-    if (record.status === 'SIGNING') fail('handoff_signing', 'Handoff is being signed', 409);
+    if (record.status === 'SIGNING') fail('handoff_signing', 'Handoff is already being signed.', 409);
     return record;
   }
   async bindOwnerRevocation(ticket: string, userId: string, keyId: string, contextToken: string): Promise<void> {
