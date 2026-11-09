@@ -3436,10 +3436,16 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // the winner of a concurrent race may proceed to signing.
   // The database CAS is the cross-worker signing gate. No signing or state
   // release can follow a lost race against cancellation or another context.
+  // A prepared handoff is held in SIGNING while the key signs and is spent only
+  // once a signature exists, so the tokens are spent after signing: a signing
+  // that fails releases the handoff and the owner approves again with them.
   if (ticket) await activePreparedHandoffService.reserveSigning(ticket, user.id, body.authorizationContextToken, key.id);
-  const consumed = consumeCheckedAuthorizationContext(check.claim, previewCheck.claim);
-  if (!consumed.ok) {
-    return c.json({ error: consumed.message, code: consumed.error }, 400);
+  const spendTokens = () => consumeCheckedAuthorizationContext(check.claim, previewCheck.claim);
+  if (!ticket) {
+    const consumed = spendTokens();
+    if (!consumed.ok) {
+      return c.json({ error: consumed.message, code: consumed.error }, 400);
+    }
   }
 
   let signature: string;
@@ -3449,10 +3455,19 @@ delegateRouter.post('/authorize-sign', async (c) => {
     try {
       signature = await signManagedKey(key, key.sealedBlob!, signedMessage);
     } catch (e) {
+      if (ticket) await activePreparedHandoffService.releaseSigning(ticket, user.id, body.authorizationContextToken, key.id);
       return c.json(
         { error: e instanceof Error ? e.message : 'Signing failed', code: 'sign_failed' },
         500,
       );
+    }
+  }
+  if (ticket) {
+    const consumed = spendTokens();
+    if (!consumed.ok) {
+      // A signature now exists for this handoff, so it is not released: it stays SIGNING until it
+      // expires, and the signature is discarded. Only a failed signing releases (see releaseSigning).
+      return c.json({ error: consumed.message, code: consumed.error }, 400);
     }
   }
   // Reference computePermissionKey so it doesn't get flagged as unused
