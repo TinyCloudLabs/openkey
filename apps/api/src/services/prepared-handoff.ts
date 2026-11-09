@@ -42,7 +42,7 @@ export interface PreparedHandoffStore {
   bind(ticketHash: string, userId: string, contextTokenHash: string, selectedKeyId: string, now: Date): Promise<boolean>;
   reserve(ticketHash: string, userId: string, contextTokenHash: string, selectedKeyId: string, now: Date): Promise<boolean>;
   // SIGNING -> CONSUMED once the signature exists.
-  complete(ticketHash: string, userId: string, contextTokenHash: string, selectedKeyId: string): Promise<boolean>;
+  complete(ticketHash: string, userId: string, contextTokenHash: string, selectedKeyId: string, now: Date): Promise<boolean>;
   // SIGNING -> PENDING when signing failed.
   release(ticketHash: string, userId: string, contextTokenHash: string, selectedKeyId: string): Promise<boolean>;
   cancel(ticketHash: string, now: Date, ownerId?: string): Promise<boolean>;
@@ -270,9 +270,10 @@ export class PreparedHandoffService {
   async completeSigning(ticket: string, userId: string, contextToken: string, keyId: string) {
     if (!opaque(ticket)) fail('handoff_not_found', 'Handoff not found', 404);
     const record = await this.store.find(digest(ticket));
+    if (record && record.status === 'SIGNING' && record.expiresAt <= this.now()) fail('handoff_expired', 'Handoff expired', 410);
     if (!record || record.status !== 'SIGNING' || record.ownerId !== userId ||
       record.contextTokenHash !== digest(contextToken) || record.selectedKeyId !== keyId ||
-      !await this.store.complete(record.ticketHash, userId, digest(contextToken), keyId)) {
+      !await this.store.complete(record.ticketHash, userId, digest(contextToken), keyId, this.now())) {
       fail('binding_mismatch', 'Handoff signing context is invalid', 403);
     }
     return { deliveryState: record.state, selectedKeyId: keyId };
@@ -334,9 +335,9 @@ export class MemoryPreparedHandoffStore implements PreparedHandoffStore {
     r.status = 'SIGNING';
     return true;
   }
-  async complete(hash: string, userId: string, tokenHash: string, keyId: string) {
+  async complete(hash: string, userId: string, tokenHash: string, keyId: string, now: Date) {
     const r = this.records.get(hash);
-    if (!r || r.status !== 'SIGNING' || r.ownerId !== userId || r.contextTokenHash !== tokenHash || r.selectedKeyId !== keyId) return false;
+    if (!r || r.status !== 'SIGNING' || r.ownerId !== userId || r.contextTokenHash !== tokenHash || r.selectedKeyId !== keyId || r.expiresAt <= now) return false;
     r.status = 'CONSUMED';
     return true;
   }

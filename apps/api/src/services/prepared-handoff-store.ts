@@ -75,9 +75,9 @@ export function createPrismaPreparedHandoffStore(database: PrismaClient): Prepar
       });
       return result.count === 1;
     },
-    async complete(ticketHash, ownerId, contextTokenHash, selectedKeyId) {
+    async complete(ticketHash, ownerId, contextTokenHash, selectedKeyId, now) {
       const result = await database.preparedHandoff.updateMany({
-        where: { ticketHash, ownerId, contextTokenHash, selectedKeyId, status: 'SIGNING' },
+        where: { ticketHash, ownerId, contextTokenHash, selectedKeyId, status: 'SIGNING', expiresAt: { gt: now } },
         data: { status: 'CONSUMED' },
       });
       return result.count === 1;

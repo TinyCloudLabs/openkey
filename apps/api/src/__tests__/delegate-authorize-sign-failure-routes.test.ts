@@ -5,6 +5,7 @@ import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { verifyMessage } from 'ethers';
+import { createHash } from 'node:crypto';
 import { mockModules, replaceModules } from './mock-module';
 import { PreparedHandoffService, MemoryPreparedHandoffStore } from '../services/prepared-handoff';
 import type { setPreparedHandoffServiceForTests } from '../routes/delegate';
@@ -74,8 +75,8 @@ const post = (target: Pick<typeof router, 'request'>, path: string, body: unknow
   target.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
 /** Claim, prepare and preview one handoff; the returned `sign` posts the approval. */
-async function approvedHandoff() {
-  const service = new PreparedHandoffService(new MemoryPreparedHandoffStore());
+async function approvedHandoff(options: { store?: MemoryPreparedHandoffStore; now?: () => number } = {}) {
+  const service = new PreparedHandoffService(options.store ?? new MemoryPreparedHandoffStore(), options.now ? { now: options.now } : {});
   setHandoffService(service);
   // Imported after the route replacements; a static import would load the real session middleware.
   const { createPreparedHandoffRouter } = await import('../routes/prepared-handoffs?authorize-sign-failure-isolated' as string);
@@ -203,5 +204,22 @@ describe('prepared handoff signing in progress', () => {
     const cliCancel = await handoff.cancelAsCli();
     expect(cliCancel.status).toBe(409);
     expect(await cliCancel.json()).toMatchObject({ code: 'handoff_signing' });
+  });
+});
+
+describe('prepared handoff whose signing returns after it expired', () => {
+  test('no signature is delivered and the handoff stays SIGNING', async () => {
+    let clockOffsetMs = 0;
+    const store = new MemoryPreparedHandoffStore();
+    const handoff = await approvedHandoff({ store, now: () => Date.now() + clockOffsetMs });
+    // The key answers only after the handoff's five minutes are over.
+    unseal = async () => { clockOffsetMs = 301_000; return privateKey; };
+    const late = await handoff.sign();
+    expect(late.status).toBe(410);
+    const body = JSON.stringify(await late.json());
+    expect(body).not.toContain(state);
+    expect(body).not.toContain('signature');
+    const record = await store.find(createHash('sha256').update(handoff.ticket).digest('hex'));
+    expect(record?.status).toBe('SIGNING');
   });
 });

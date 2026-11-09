@@ -48,6 +48,7 @@
   let pending = $state<Claim | null>(null);
   let ticket = $state('');
   let initialized = $state(false);
+  let pendingTimeout: ReturnType<typeof setTimeout> | undefined;
   let handoffTimeout: ReturnType<typeof setTimeout> | undefined;
   // When the CLI's prepared request stops being claimable: its issued-at plus five minutes.
   let preparedExpiryMs = NaN;
@@ -120,6 +121,7 @@
     return port >= 1024 && port <= 65535;
   }
   function clearPending(): void {
+    if (pendingTimeout !== undefined) clearTimeout(pendingTimeout);
     try { sessionStorage.removeItem(pendingKey); } catch { /* No persistent fallback for approval material. */ }
     onClear();
     if (routerReady) replaceState(`${location.pathname}?transportVersion=2`, {});
@@ -149,6 +151,12 @@
       preparedExpiryMs = Date.parse(issuedAt ?? '') + 300_000;
       if (!Number.isFinite(preparedExpiryMs)) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
       pending = value;
+      // Bounds how long the unclaimed request stays in this tab: five minutes from mount on a plain timer.
+      pendingTimeout = setTimeout(() => {
+        pending = null;
+        clearPending();
+        error = 'Prepared sign-in request expired. Restart the CLI command.';
+      }, 300_000);
     } catch (cause) {
       clearPending();
       error = cause instanceof Error ? cause.message : 'Invalid prepared sign-in request. Restart the CLI command.';
@@ -156,6 +164,7 @@
       initialized = true;
     }
     return () => {
+      if (pendingTimeout !== undefined) clearTimeout(pendingTimeout);
       if (handoffTimeout !== undefined) clearTimeout(handoffTimeout);
     };
   });
