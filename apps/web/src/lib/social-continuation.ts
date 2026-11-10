@@ -49,7 +49,7 @@ export function relayNotice(continuation: Pick<SocialContinuation, 'provider' | 
 
 /** R3: an existing account is never linked here; the user signs in and links from Settings after an email code. */
 export function accountExistsMessage(provider: SocialProviderId, email: string): string {
-  return `An OpenKey account already uses ${email}. Sign in to it and verify with an email code to add ${socialProviderName(provider)}.`;
+  return `An OpenKey account already uses ${email}. Sign in to it and verify with an email code to add ${socialProviderName(provider)} in Settings.`;
 }
 
 /** Copy for a provider return that failed. `provider` is null when the return did not say. */
@@ -137,7 +137,8 @@ export async function loadSocialContinuation(
   const provider = socialProviderParam(typeof body?.providerId === 'string' ? body.providerId : null);
   if (!body || !provider || body.outcome !== input.outcome || typeof body.email !== 'string' || !body.email
     || (input.provider && provider !== input.provider)) {
-    throw new Error(socialErrorMessage(input.provider ?? provider, 'continuation_expired'));
+    // Not the confirmation this return named: refuse it rather than show it.
+    throw new Error(socialErrorMessage(input.provider ?? provider, null));
   }
   return {
     token: input.token,

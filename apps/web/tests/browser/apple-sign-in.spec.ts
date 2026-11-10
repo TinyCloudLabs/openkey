@@ -36,7 +36,9 @@ interface Stub {
 async function stubApi(page: Page, options: {
   providers?: string[];
   providersDelay?: Promise<void>;
+  /** The query Apple's stub returns with. Native returns go to the start's `errorCallbackURL`. */
   appleReturn?: string;
+  native?: boolean;
   continuation?: Continuation;
   confirm?: (route: Route) => unknown;
   account?: Record<string, unknown>;
@@ -96,19 +98,33 @@ async function stubApi(page: Page, options: {
     }
     if (path.includes('passkey/list-user-passkeys')) return json(route, []);
     if (path === '/api/account/auto-sign') return json(route, { autoSignEnabled: false });
+    if (path.includes('tinycloud') && path.endsWith('/branding')) {
+      return json(route, { clientId: 'exo-native', name: 'TinyCloud Home', icon: null, organization: 'TinyCloud Labs', theme: {} });
+    }
     if (path.includes('tinycloud')) return json(route, { tinyCloudManageKeyEnabled: true, mode: 'APP_MANAGED', policyEpoch: 0, apps: [], activity: [] });
+    if (path === '/api/auth/oauth2/authorize') {
+      return route.fulfill({ status: 200, contentType: 'text/html', body: '<p>authorize</p>' });
+    }
     return json(route, {});
   });
   // Apple's page: the user consents, and the API's callback redirects to the return URL with its answer.
-  await context.route('https://appleid.apple.com/**', (route) => route.fulfill({
-    status: 200,
-    contentType: 'text/html',
-    body: `<!doctype html><title>Apple</title><script>
-      const back = new URL(${JSON.stringify(`${ORIGIN}/auth/social/callback`)});
-      back.search = ${JSON.stringify(options.appleReturn ?? 'via=apple')};
-      location.replace(back.href);
-    </script>`,
-  }));
+  await context.route('https://appleid.apple.com/**', (route) => {
+    const start = calls.findLast((call) => call.path === '/api/auth/sign-in/social' || call.path === '/api/auth/link-social');
+    let back: string;
+    if (options.native) {
+      const errorCallbackURL = String(start?.body?.errorCallbackURL);
+      back = options.appleReturn ? `${errorCallbackURL}&${options.appleReturn}` : String(start?.body?.callbackURL);
+    } else {
+      const url = new URL(`${ORIGIN}/auth/social/callback`);
+      url.search = options.appleReturn ?? 'via=apple';
+      back = url.href;
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      body: `<!doctype html><title>Apple</title><script>location.replace(${JSON.stringify(back)});</script>`,
+    });
+  });
   return { calls, state, count: (path) => calls.filter((call) => call.path === path).length };
 }
 
@@ -222,7 +238,7 @@ test('account exists: nothing is linked; the user signs in and adds Apple after 
   const popup = await openApplePopup(page);
   const step = popup.getByTestId('social-account-exists');
   await expect(step).toContainText(
-    `An OpenKey account already uses ${EMAIL}. Sign in to it and verify with an email code to add Apple.`,
+    `An OpenKey account already uses ${EMAIL}. Sign in to it and verify with an email code to add Apple in Settings.`,
   );
   await expect(step.getByRole('button', { name: 'Create a new account' })).toHaveCount(0);
   await shot(popup, info, '04-account-exists');
@@ -428,4 +444,87 @@ test('embedded sign: Apple is a measured layout change, signs the iframe in, and
   await expect(approve).toBeDisabled();
   await ack((await resizes()).at(-1)!);
   await expect(approve).toBeEnabled();
+});
+
+// Native (TC-1188 §1.2): the sheet returns to /auth/login?<signedQuery>, and the
+// signed authorize query is kept through confirmation and on to /authorize.
+const NATIVE_QUERY = new URLSearchParams({
+  response_type: 'code', client_id: 'exo-native', redirect_uri: 'xyz.tinycloud.exo://openkey/callback', scope: 'openid',
+  state: 'st-1', tinycloud_request: 'req-1', login_method: 'apple', exp: '9999999999', ba_iat: '1', sig: 'signed',
+}).toString();
+// The API's continuation is 32 random bytes, base64url.
+const NATIVE_CONTINUATION = 'A'.repeat(43);
+
+test.describe('native sheet', () => {
+  test('Hide My Email: the sheet asks first, and Create carries the signed query to /authorize', async ({ page }, info) => {
+    const api = await stubApi(page, {
+      native: true,
+      appleReturn: `error=new_account&continuation=${NATIVE_CONTINUATION}`,
+      continuation: { outcome: 'new_account', email: RELAY, isPrivateEmail: true },
+    });
+    await page.goto(`/auth/login?${NATIVE_QUERY}`);
+    await expect.poll(() => api.count('/api/auth/social/continuation')).toBe(1);
+    expect(api.calls.find((call) => call.path === '/api/auth/sign-in/social')!.body).toMatchObject({
+      provider: 'apple',
+      callbackURL: `${ORIGIN}/auth/login?${NATIVE_QUERY}`,
+      errorCallbackURL: `${ORIGIN}/auth/login?${NATIVE_QUERY}&native_social_error=apple`,
+    });
+    const lookup = api.calls.find((call) => call.path === '/api/auth/social/continuation')!.url.searchParams;
+    expect(lookup.get('continuation')).toBe(NATIVE_CONTINUATION);
+    expect(lookup.get('oauthQuery')).toBe(NATIVE_QUERY);
+
+    await expect(page.getByTestId('new-account-notice')).toHaveText(
+      'Apple is hiding your email, so this creates a new OpenKey account. Already have one? Sign in to it and add Apple in Settings.',
+    );
+    await expect(page.getByRole('button', { name: 'Sign in with a passkey' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Recover your account' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Use email instead' })).toBeVisible();
+    expect(api.count('/api/auth/social/confirm')).toBe(0);
+    await shot(page, info, '10-native-hide-my-email');
+
+    await page.getByRole('button', { name: 'Create a new account' }).click();
+    await expect(page).toHaveURL(/\/api\/auth\/oauth2\/authorize\?/);
+    expect(api.calls.find((call) => call.path === '/api/auth/social/confirm')!.body)
+      .toEqual({ continuation: NATIVE_CONTINUATION, oauthQuery: NATIVE_QUERY });
+    expect(new URL(page.url()).search.slice(1)).toBe(NATIVE_QUERY);
+  });
+
+  test('account exists: the sheet signs in to the existing account, then continues the same request', async ({ page }, info) => {
+    const api = await stubApi(page, {
+      native: true,
+      appleReturn: `error=account_exists&continuation=${NATIVE_CONTINUATION}`,
+      continuation: { outcome: 'account_exists', email: EMAIL },
+    });
+    await page.goto(`/auth/login?${NATIVE_QUERY}`);
+    await expect(page.getByTestId('social-account-exists')).toHaveText(
+      `An OpenKey account already uses ${EMAIL}. Sign in to it and verify with an email code to add Apple in Settings.`,
+    );
+    await expect(page.getByRole('button', { name: 'Create a new account' })).toHaveCount(0);
+    await shot(page, info, '11-native-account-exists');
+    await page.getByRole('button', { name: 'Sign in to your account' }).click();
+    await expect(page.locator('#email')).toHaveValue(EMAIL);
+    expect(api.count('/api/auth/social/confirm')).toBe(0);
+    expect(api.count('/api/auth/link-social')).toBe(0);
+    // The page still serves the original signed request.
+    expect(new URL(page.url()).searchParams.get('sig')).toBe('signed');
+  });
+
+  test('apple_email_required: the sheet explains on the email step', async ({ page }, info) => {
+    const api = await stubApi(page, { native: true, appleReturn: 'error=apple_email_required' });
+    await page.goto(`/auth/login?${NATIVE_QUERY}`);
+    await expect(page.getByRole('alert')).toHaveText(
+      "Apple didn't share a verified email, so OpenKey can't create an account from it. Sign in with your email or passkey, then add Apple in Settings.",
+    );
+    await expect(page.locator('#email')).toBeVisible();
+    expect(api.count('/api/auth/social/continuation')).toBe(0);
+    await shot(page, info, '12-native-apple-email-required');
+  });
+
+  test('a continuation the API refuses for this request is not shown', async ({ page }) => {
+    const api = await stubApi(page, { native: true, appleReturn: `error=new_account&continuation=${NATIVE_CONTINUATION}` });
+    await page.goto(`/auth/login?${NATIVE_QUERY}`);
+    await expect(page.getByRole('alert')).toHaveText('This Apple confirmation expired. Start sign-in again.');
+    await expect(page.getByRole('button', { name: 'Create a new account' })).toHaveCount(0);
+    expect(api.count('/api/auth/social/confirm')).toBe(0);
+  });
 });

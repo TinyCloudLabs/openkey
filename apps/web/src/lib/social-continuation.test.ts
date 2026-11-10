@@ -101,7 +101,7 @@ describe('relay copy (R4) and account exists (R3)', () => {
 
   test('account exists names the email and the provider', () => {
     expect(accountExistsMessage('apple', 'sam@example.test')).toBe(
-      'An OpenKey account already uses sam@example.test. Sign in to it and verify with an email code to add Apple.',
+      'An OpenKey account already uses sam@example.test. Sign in to it and verify with an email code to add Apple in Settings.',
     );
   });
 });
@@ -127,15 +127,19 @@ describe('loadSocialContinuation', () => {
     expect((await loadSocialContinuation({ ...input, provider: null }, impl)).isPrivateEmail).toBe(false);
   });
 
-  test.each([
-    ['a refused binding', 400, { message: 'Invalid continuation' }],
-    ['another outcome', 200, { outcome: 'account_exists', providerId: 'apple', email: 'a@example.test' }],
-    ['another provider', 200, { outcome: 'new_account', providerId: 'google', email: 'a@example.test' }],
-    ['an unknown provider', 200, { outcome: 'new_account', providerId: 'facebook', email: 'a@example.test' }],
-    ['no email', 200, { outcome: 'new_account', providerId: 'apple', email: '' }],
-  ])('%s is an expired confirmation', async (_label: string, status: number, body: unknown) => {
-    const { impl } = fetchReturning(status, body);
+  test('a refused binding (another cookie, request or an expired token) is an expired confirmation', async () => {
+    const { impl } = fetchReturning(400, { message: 'Invalid continuation' });
     await expect(loadSocialContinuation(input, impl)).rejects.toThrow('This Apple confirmation expired. Start sign-in again.');
+  });
+
+  test.each([
+    ['another outcome', { outcome: 'account_exists', providerId: 'apple', email: 'a@example.test' }],
+    ['another provider', { outcome: 'new_account', providerId: 'google', email: 'a@example.test' }],
+    ['an unknown provider', { outcome: 'new_account', providerId: 'facebook', email: 'a@example.test' }],
+    ['no email', { outcome: 'new_account', providerId: 'apple', email: '' }],
+  ])('%s is refused, never shown', async (_label: string, body: unknown) => {
+    const { impl } = fetchReturning(200, body);
+    await expect(loadSocialContinuation(input, impl)).rejects.toThrow('Apple could not complete sign-in. Please try again.');
   });
 });
 

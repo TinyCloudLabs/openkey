@@ -20,6 +20,13 @@
     socialProviderLabel,
     type NativeSocialProvider,
   } from '$lib/native-mode';
+  import {
+    accountExistsMessage,
+    confirmSocialContinuation,
+    loadSocialContinuation,
+    relayNotice,
+    type SocialContinuation,
+  } from '$lib/social-continuation';
   import NativeShell from '$lib/components/auth/native-shell.svelte';
   import { api } from '$lib/api';
   import SocialButtons from '$lib/components/auth/social-buttons.svelte';
@@ -84,9 +91,8 @@
   // Proof of the verified code, spent only if the user creates the account.
   let signupToken = $state<string | null>(null);
   let creating = $state(false);
-  let socialContinuation = $state<string | null>(null);
-  let socialEmail = $state('');
-  let socialIsPrivateEmail = $state(false);
+  // A native Google or Apple return that needs a choice (TC-1188 R3/R5).
+  let socialConfirmation = $state<SocialContinuation | null>(null);
   const socialName = $derived(socialProvider ? socialProviderLabel(socialProvider) : null);
 
   function getOAuthQuery(): string | undefined {
@@ -153,27 +159,17 @@
   // so a reload never mails a second code.
   async function startNative(request: NonNullable<typeof native>, providersLoaded: Promise<SocialProviderId[]>) {
     const socialError = request.socialError;
-    if (socialError?.continuation) {
-      const failed = nativeSocialErrorMessage({ ...socialError, code: 'failed' });
+    if (socialError?.continuation && (socialError.code === 'new_account' || socialError.code === 'account_exists')) {
       try {
-        const params = new URLSearchParams({ continuation: socialError.continuation, oauthQuery: request.signedQuery });
-        const response = await fetch(`${API_BASE}/api/auth/social/continuation?${params}`, {
-          credentials: 'include', headers: { Accept: 'application/json' },
+        // Bound to this sheet's cookie and to the signed authorize query it came back with.
+        const loaded = await loadSocialContinuation({
+          token: socialError.continuation, outcome: socialError.code, provider: socialError.provider, oauthQuery: request.signedQuery,
         });
-        if (!response.ok) throw new Error(`This ${socialName ?? 'sign-in'} confirmation expired. Start sign-in again.`);
-        const result = await response.json();
-        if (typeof result.email !== 'string' || result.outcome !== socialError.code
-          || (result.providerId !== 'google' && result.providerId !== 'apple')) {
-          throw new Error(failed);
-        }
-        socialProvider = result.providerId;
-        socialContinuation = socialError.continuation;
-        socialEmail = result.email;
-        socialIsPrivateEmail = result.providerId === 'apple'
-          && (result.isPrivateEmail === true || result.email.toLowerCase().endsWith('@privaterelay.appleid.com'));
-        step = result.outcome === 'new_account' ? 'socialNewAccount' : 'socialAccountExists';
+        socialProvider = loaded.provider;
+        socialConfirmation = loaded;
+        step = loaded.outcome === 'new_account' ? 'socialNewAccount' : 'socialAccountExists';
       } catch (cause) {
-        error = cause instanceof Error ? cause.message : failed;
+        error = cause instanceof Error ? cause.message : nativeSocialErrorMessage({ ...socialError, code: 'failed' });
         step = 'email';
       } finally {
         socialChecking = false;
@@ -332,18 +328,14 @@
   }
 
   async function createSocialAccount() {
-    if (!socialContinuation || !native) return;
+    if (!socialConfirmation || !native) return;
     loading = true;
     creating = true;
     error = '';
     try {
-      const response = await fetch(`${API_BASE}/api/auth/social/confirm`, {
-        method: 'POST', credentials: 'include',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ continuation: socialContinuation, oauthQuery: native.signedQuery }),
+      await confirmSocialContinuation({
+        token: socialConfirmation.token, provider: socialConfirmation.provider, oauthQuery: native.signedQuery,
       });
-      const result = await response.json();
-      if (!response.ok || !result.token) throw new Error(result.message || 'Could not create your account.');
       authClient.$store.notify('$sessionSignal');
       handlePostSignIn();
     } catch (cause) {
@@ -484,11 +476,12 @@
       <div class="nb-error" role="alert">{error}</div>
     {/if}
 
-    {#if step === 'socialNewAccount'}
-      {#if socialIsPrivateEmail}
-        <p class="nb-lede">Apple is hiding your email, so this creates a new OpenKey account. Already have one? Sign in to it and add Apple in Settings.</p>
+    {#if step === 'socialNewAccount' && socialConfirmation}
+      {@const notice = relayNotice(socialConfirmation)}
+      <p class="nb-lede">No OpenKey account for <strong class="break-words">{socialConfirmation.email}</strong>.</p>
+      {#if notice}
+        <p class="nb-lede" data-testid="new-account-notice">{notice}</p>
       {:else}
-        <p class="nb-lede">No OpenKey account for <strong>{socialEmail}</strong>.</p>
         <p class="nb-lede">Create a new account, or use your existing sign-in method?</p>
       {/if}
       <div class="nb-stack">
@@ -499,13 +492,12 @@
           <button type="button" class="nb-button" onclick={signInWithPasskey} disabled={loading}>Sign in with a passkey</button>
           <button type="button" class="nb-button" onclick={recoverAccount} disabled={loading}>Recover your account</button>
         {/if}
-        <button type="button" class="nb-link" onclick={() => { step = 'email'; email = ''; }}>Use a different email</button>
+        <button type="button" class="nb-link" onclick={() => { step = 'email'; email = ''; }} disabled={loading}>Use email instead</button>
       </div>
-    {:else if step === 'socialAccountExists'}
-      <p class="nb-lede">An OpenKey account already uses <strong>{socialEmail}</strong>.</p>
-      <p class="nb-lede">Sign in to it and verify with an email code to add {socialName ?? 'this sign-in method'} in Settings.</p>
+    {:else if step === 'socialAccountExists' && socialConfirmation}
+      <p class="nb-lede" data-testid="social-account-exists">{accountExistsMessage(socialConfirmation.provider, socialConfirmation.email)}</p>
       <div class="nb-stack">
-        <button type="button" class="nb-button nb-primary" onclick={() => { email = socialEmail; step = 'email'; }}>
+        <button type="button" class="nb-button nb-primary" onclick={() => { email = socialConfirmation!.email; step = 'email'; }}>
           Sign in to your account
         </button>
         {#if passkeysSupported}
