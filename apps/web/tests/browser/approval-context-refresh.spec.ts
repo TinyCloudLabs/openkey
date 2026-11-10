@@ -155,7 +155,7 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
         await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);
         expect(flow.counts()).toEqual({ prepares: 2, approvals: 1 });
       } else if (scenario === 'expired-token') {
-        await expect(page.getByRole('alert')).toHaveText('Couldn’t approve this request. Try again. (Error 400 · expired_token)');
+        await expect(page.getByRole('alert')).toHaveText('Couldn\'t approve this request. Try again. (Error 400 · expired_token)');
         await expect(page.getByText('Device request expired')).toHaveCount(0);
         await expect(page.locator('.expired-request')).toHaveCount(0);
         await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);

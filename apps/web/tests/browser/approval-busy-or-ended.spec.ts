@@ -97,7 +97,7 @@ test.describe('Approve on the approval-request review page', () => {
   test('other statuses show the generic line, not the server text', async ({ page }) => {
     await openReview(page, { delegate: { status: 500, body: { error: 'delegation service unavailable' } } });
     await approve(page).click();
-    await expect(page.getByRole('alert')).toHaveText('Couldn’t approve this request. Try again. (Error 500)');
+    await expect(page.getByRole('alert')).toHaveText('Couldn\'t approve this request. Try again. (Error 500)');
     await expect(page.getByText('delegation service unavailable')).toHaveCount(0);
   });
 });

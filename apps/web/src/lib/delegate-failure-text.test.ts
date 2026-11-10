@@ -2,8 +2,8 @@
 import { describe, expect, test } from 'bun:test';
 import { delegateFailureText, shortCodeFailureText } from './delegate-failure-text';
 
-const changedRequest = 'This request changed after you opened it, so OpenKey didn’t approve it. Return to the app or command and start again.';
-const approvalCannotProceed = 'Couldn’t approve this request. Try again.';
+const changedRequest = "This request changed after you opened it, so OpenKey didn't approve it. Return to the app or command and start again.";
+const approvalCannotProceed = "Couldn't approve this request. Try again.";
 
 const mappedCodes: Array<[string, string]> = [
   ['session_required', 'Your OpenKey session ended. Sign in again, then approve the request again.'],
@@ -22,9 +22,9 @@ const mappedCodes: Array<[string, string]> = [
   ].map((code) => [code, changedRequest] as [string, string]),
   ...[
     'app_key_grant_refused', 'key_delete_not_grantable', 'invalid_siwe_recap', 'invalid_permissions',
-  ].map((code) => [code, 'OpenKey can’t approve this kind of access. The app or command needs to ask for something different.'] as [string, string]),
+  ].map((code) => [code, "OpenKey can't approve this kind of access. The app or command needs to ask for something different."] as [string, string]),
   ['rate_limited', 'Too many attempts. Wait five minutes, then try again.'],
-  ...['key_not_found', 'key_state_invalid'].map((code) => [code, 'This key isn’t available on your account. Choose a key you own and try again.'] as [string, string]),
+  ...['key_not_found', 'key_state_invalid'].map((code) => [code, "This key isn't available on your account. Choose a key you own and try again."] as [string, string]),
 ];
 
 const permissionCodes = [
@@ -46,7 +46,7 @@ describe('delegateFailureText code mappings', () => {
   )('maps permission code %s for editable=%s', (code: string, visible: boolean) => {
     expect(delegateFailureText({ status: 400, code }, { permissionsEditable: visible })).toBe(
       visible
-        ? 'These permissions can’t be approved as chosen. Change your selection and approve again.'
+        ? "These permissions can't be approved as chosen. Change your selection and approve again."
         : changedRequest,
     );
   });
@@ -56,8 +56,8 @@ describe('delegateFailureText code mappings', () => {
   )('maps expiry code %s for Change-visible=%s', (code: string, visible: boolean) => {
     expect(delegateFailureText({ status: 400, code }, { expiryChangeable: visible })).toBe(
       visible
-        ? 'This access length can’t be used. Choose a different one, or start again from the app or command.'
-        : 'This access length can’t be used. Start again from the app or command.',
+        ? "This access length can't be used. Choose a different one, or start again from the app or command."
+        : "This access length can't be used. Start again from the app or command.",
     );
   });
 
@@ -100,13 +100,13 @@ describe('delegateFailureText code mappings', () => {
 describe('shortCodeFailureText', () => {
   test('formats coded, status-only, and no-status failures exactly', () => {
     expect(shortCodeFailureText(503, 'some_code')).toBe(
-      'Couldn’t create a short code. Use the full delegation code instead. (Error 503 · some_code)',
+      "Couldn't create a short code. Use the full delegation code instead. (Error 503 · some_code)",
     );
     expect(shortCodeFailureText(500)).toBe(
-      'Couldn’t create a short code. Use the full delegation code instead. (Error 500)',
+      "Couldn't create a short code. Use the full delegation code instead. (Error 500)",
     );
     expect(shortCodeFailureText()).toBe(
-      'Couldn’t create a short code. Use the full delegation code instead.',
+      "Couldn't create a short code. Use the full delegation code instead.",
     );
   });
 });
