@@ -311,7 +311,8 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (body.format === 'raw' && !/^0x(?:[0-9a-fA-F]{2})*$/.test(body.message)) {
     return c.json({ error: 'raw message must be even-length 0x hex' }, 400);
   }
-  const ceiling = assertWithinDelegationCeiling(body.message);
+  const signedMessage = body.format === 'raw' ? Buffer.from(body.message.slice(2), 'hex').toString('utf8') : body.message;
+  const ceiling = assertWithinDelegationCeiling(signedMessage);
   if (ceiling !== 'ok') return c.json({
     error: ceiling === 'missing' ? 'TinyCloud delegation SIWE requires an Expiration Time.' : 'Delegation expiry exceeds the maximum allowed lifetime.',
     code: ceiling === 'missing' ? 'expiry_required' : 'expiry_exceeds_ceiling',

@@ -141,6 +141,23 @@ describe('POST /api/keys/:keyId/sign', () => {
     await expect(response.json()).resolves.toMatchObject({ code: 'invalid_siwe_recap' });
     expect(calls).toEqual([]);
   });
+  test.each([
+    ['missing expiration', siweWith().replace(/^Expiration Time:.*\n/m, ''), 'expiry_required'],
+    (() => {
+      const expiry = new Date();
+      expiry.setUTCFullYear(expiry.getUTCFullYear() + 11);
+      return ['over-ceiling expiration', siweWith().replace(/^Expiration Time:.*$/m, `Expiration Time: ${expiry.toISOString()}`), 'expiry_exceeds_ceiling'];
+    })(),
+  ])('refuses %s when the actual raw signed bytes are a delegation SIWE', async (_name, message, code) => {
+    const response = await sign({ message: hex(message), format: 'raw' });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.code).toBe(code);
+    expect(Object.keys(body).sort()).toEqual(['code', 'error']);
+    expect(calls).toEqual([]);
+    expect(unseal).not.toHaveBeenCalled();
+  });
+
 
   test('still signs a message with no app keys', async () => {
     const response = await sign({ message: siweWith() });
