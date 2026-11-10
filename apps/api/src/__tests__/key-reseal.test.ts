@@ -79,7 +79,9 @@ async function fixture(id: string, kind: KeyResealRow['kind'] = 'ethereum', kid 
 }
 
 async function run(repository: MemoryRepository, cursorStore = new MemoryCursor(), options = {}) {
-  return runKeyReseal({ repository, cursorStore, keyring: testRing(), pageSize: 1, ...options });
+  const { dryRun, ...result } = await runKeyReseal({ repository, cursorStore, keyring: testRing(), pageSize: 1, dryRun: false, ...options });
+  expect(dryRun).toBe(false);
+  return result;
 }
 
 function assertSanitized(value: unknown, rows: KeyResealRow[]) {
@@ -93,11 +95,32 @@ function assertSanitized(value: unknown, rows: KeyResealRow[]) {
   for (const material of [TEST_SECRET, TEST_SECRET.slice(2), TEST_NOSTR_SECRET, ...secretBase64, ...providerKeys, ...rows.map((row) => row.blob)]) {
     expect(text).not.toContain(material);
   }
-  expect(Object.keys(value as object).sort()).toEqual(Object.keys(counts()).sort());
-  expect(Object.values(value as object).every((value) => typeof value === 'number')).toBe(true);
+  if (typeof value !== 'object' || value === null) throw new Error('Invalid maintenance test result');
+  expect(Object.keys(value).filter((key) => key !== 'dryRun').sort()).toEqual(Object.keys(counts()).sort());
+  expect(Object.entries(value).every(([key, field]) => key === 'dryRun' ? typeof field === 'boolean' : typeof field === 'number')).toBe(true);
 }
 
 describe('versioned sealing and re-seal maintenance', () => {
+  test('defaults to verification-only without reaching CAS or cursor persistence', async () => {
+    const rows = [await fixture('a'), await fixture('b', 'nostr', 1)];
+    const repository = new MemoryRepository(rows);
+    const cursorStore = new MemoryCursor();
+    const persisted: KeyResealCursor = { version: 1, writeKid: 99, kind: 'nostr', afterId: 'z', completed: false, counts: counts() };
+    cursorStore.value = structuredClone(persisted);
+    let casCalls = 0;
+    let cursorCalls = 0;
+    repository.compareAndSwap = async () => { casCalls++; throw new Error('Dry run reached CAS'); };
+    cursorStore.load = async () => { cursorCalls++; throw new Error('Dry run reached checkpoint'); };
+    cursorStore.save = async () => { cursorCalls++; throw new Error('Dry run reached checkpoint'); };
+    const before = JSON.stringify(repository.rows);
+    const result = await runKeyReseal({ repository, keyring: testRing(), cursorStore, pageSize: 1 });
+    expect(result).toEqual({ ...counts(), dryRun: true, scanned: 2, alreadyCurrent: 1, remainingOldGeneration: 1 });
+    expect(casCalls).toBe(0);
+    expect(cursorCalls).toBe(0);
+    expect(repository.writes).toBe(0);
+    expect(JSON.stringify(repository.rows) === before).toBe(true);
+    expect(cursorStore.value).toEqual(persisted);
+  });
 
   test('verifies and re-seals ethereum legacy user paths and nostr rows, then audits current rows', async () => {
     const rows = [await fixture('b', 'ethereum', 0, true), await fixture('a', 'ethereum'), await fixture('a', 'nostr')];

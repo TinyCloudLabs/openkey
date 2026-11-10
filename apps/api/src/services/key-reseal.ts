@@ -31,10 +31,16 @@ export interface KeyResealCounts {
   remainingOldGeneration: number;
 }
 
+export interface KeyResealResult extends KeyResealCounts {
+  dryRun: boolean;
+}
+
 export interface KeyResealOptions {
   repository: KeyResealRepository;
   keyring: SealingKeyring;
   cursorStore: KeyResealCursorStore;
+  /** Verification-only unless a caller explicitly requests writes. */
+  dryRun?: boolean;
   pageSize?: number;
   maxRaceRetries?: number;
   oldKid?: number;
@@ -68,7 +74,8 @@ function sameRecord(a: KeyResealRow, b: KeyResealRow): boolean {
  * may replay a committed row; verification then skips its current generation.
  * Run only one maintenance owner per cursor file.
  */
-export async function runKeyReseal(options: KeyResealOptions): Promise<KeyResealCounts> {
+export async function runKeyReseal(options: KeyResealOptions): Promise<KeyResealResult> {
+  const dryRun = options.dryRun !== false;
   let counts = emptyKeyResealCounts();
   try {
     const { repository, keyring, cursorStore } = options;
@@ -77,24 +84,25 @@ export async function runKeyReseal(options: KeyResealOptions): Promise<KeyReseal
     const oldKid = options.oldKid ?? 0;
     if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 10_000
       || !Number.isSafeInteger(maxRaceRetries) || maxRaceRetries < 0 || maxRaceRetries > 100
-      || !Number.isSafeInteger(oldKid) || oldKid < 0 || oldKid > 0xffffffff) {
+      || !Number.isSafeInteger(oldKid) || oldKid < 0 || oldKid > 0xffffffff
+      || (options.dryRun !== undefined && typeof options.dryRun !== 'boolean')) {
       throw new Error('Invalid maintenance configuration');
     }
 
-    const saved = await cursorStore.load();
+    const saved = dryRun ? null : await cursorStore.load();
     if (saved && !saved.completed && saved.writeKid !== keyring.writeKid) {
       throw new Error('Maintenance target differs from checkpoint');
     }
     let cursor = saved && !saved.completed ? saved : initialCursor(keyring.writeKid);
     counts = { ...cursor.counts, failed: 0, remainingOldGeneration: 0 };
-    if (!saved || saved.completed) await cursorStore.save(cursor);
+    if (!dryRun && (!saved || saved.completed)) await cursorStore.save(cursor);
 
     while (true) {
       const rows = await repository.page(cursor.kind, cursor.afterId, pageSize);
       if (rows.length === 0) {
         if (cursor.kind === 'ethereum') {
           cursor = { ...cursor, kind: 'nostr', afterId: null, counts: { ...counts } };
-          await cursorStore.save(cursor);
+          if (!dryRun) await cursorStore.save(cursor);
           continue;
         }
         break;
@@ -113,6 +121,7 @@ export async function runKeyReseal(options: KeyResealOptions): Promise<KeyReseal
             counts.alreadyCurrent++;
             break;
           }
+          if (dryRun) break;
 
           const replacement = await keyring.seal(plaintext, recordSealingBinding(row));
           const changed = await repository.compareAndSwap(row, replacement);
@@ -135,22 +144,22 @@ export async function runKeyReseal(options: KeyResealOptions): Promise<KeyReseal
         }
 
         cursor = { ...cursor, afterId: candidate.id, counts: { ...counts } };
-        await cursorStore.save(cursor);
+        if (!dryRun) await cursorStore.save(cursor);
       }
     }
 
     // This is an independent full keyset scan, not a count of this run's writes.
     counts.remainingOldGeneration = await repository.remaining(oldKid);
-    if (counts.remainingOldGeneration !== 0 && oldKid !== keyring.writeKid) {
+    if (!dryRun && counts.remainingOldGeneration !== 0 && oldKid !== keyring.writeKid) {
       // New old-generation rows can arrive behind a checkpoint. Restart the
       // next verified pass instead of leaving them behind an exhausted cursor.
       await cursorStore.save(initialCursor(keyring.writeKid));
       throw new Error('Maintenance pass has remaining rows');
     }
-    await cursorStore.save({ ...cursor, completed: true, counts: { ...counts } });
-    return counts;
+    if (!dryRun) await cursorStore.save({ ...cursor, completed: true, counts: { ...counts } });
+    return { ...counts, dryRun };
   } catch {
     // No exception text, row identifiers, key material, or envelopes escape.
-    return { ...counts, failed: counts.failed + 1 };
+    return { ...counts, failed: counts.failed + 1, dryRun };
   }
 }

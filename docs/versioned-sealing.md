@@ -70,6 +70,13 @@ and all Nostr rows, including archived/revoked rows. Each table is paged by
 `ORDER BY id ASC`, with `id > lastId`. Legacy user-path rows use their existing
 path. There is no schema migration, HTTP route, timer, or automatic invocation.
 
+The library defaults to `dryRun: true`: verification-only, no sealing, no
+compare-and-swap, no row updates, and no cursor reads or writes. It scans both
+tables from the beginning regardless of an existing checkpoint. Current rows
+are verified and counted; `resealed` remains 0, and a nonzero remaining count
+is a normal dry-run result. Library callers must explicitly pass `dryRun: false`
+to apply writes. Only apply mode uses/resumes persistent checkpoints.
+
 The cursor records the target generation, table, last verified ID, cumulative
 counts, and completion marker. `FileKeyResealCursorStore` requires an explicit
 absolute path on a durable volume, writes a private temporary file, fsyncs it,
@@ -78,7 +85,7 @@ cursor path. A different target cannot resume an incomplete cursor. Completed
 cursors start a fresh verified pass on the next invocation. Losing the cursor
 may repeat verification, but does not double-seal current rows.
 
-For each row the job:
+In apply mode, for each row the job:
 
 1. Opens the row using its header's provider (headerless means 0).
 2. Derives and compares the Ethereum address or Nostr public key to the stored
@@ -94,14 +101,16 @@ verifies/skips the current generation. Any verification failure stops the pass
 immediately, with no later-row writes. Failure output is sanitized; it never
 contains a row ID, exception diagnostic, plaintext, derived key, or blob.
 Only `scanned`, `alreadyCurrent`, `resealed`, `raced`, `failed`, and
-`remainingOldGeneration` counts are returned/emitted. A failed result means the
-pass is not verified, irrespective of its remaining count.
+`remainingOldGeneration` counts and a `dryRun` boolean mode label are
+returned/emitted. A failed result means the pass is not verified, irrespective
+of its remaining count. A successful dry run does not certify completion of
+an apply pass.
 
 `remaining(oldKid)` performs an independent keyset scan of both tables and
-counts actual stored generations, not this pass's updates. Remaining old rows
-force a fresh pass and a failed result when the target differs. Providers must
-remain registered while their data may still be read. A final count is not a
-lock against concurrent inserts.
+counts actual stored generations, not this pass's updates. In apply mode,
+remaining old rows force a fresh pass and a failed result when the target
+differs. Providers must remain registered while their data may still be read.
+A final count is not a lock against concurrent inserts.
 
 For later explicitly configured maintenance, the order is mandatory:
 
@@ -111,9 +120,14 @@ For later explicitly configured maintenance, the order is mandatory:
 2. Keep both providers available while the job completes a full verified pass
    reporting `failed = 0` and `remainingOldGeneration = 0`.
 3. Remove the old generation's reader/provider only after that verified pass
-   and confirmation that no writer can produce it. This prevents an old-format
-   blob being substituted after the transition. The previous release is no
-   longer a valid rollback target once nonzero-generation writes begin.
+   and confirmation that no writer can produce it. For generation 0 this
+   requires removing **both** provider-map entry 0 **and** the separate
+   headerless legacy-reader branch in
+   `apps/api/src/services/key-sealing.ts` (`unsealKeyForRecord`, currently
+   lines 74-75). Removing only the provider is insufficient because that
+   branch calls the legacy primitive directly. Removing both prevents an
+   old-format blob being substituted after the transition. The previous
+   release is no longer a valid rollback target once nonzero writes begin.
 
 Signing does not cache unsealed keys between requests. Each request fetches a
 record and opens it for its operation; maintenance never modifies the plaintext
@@ -126,10 +140,20 @@ an old blob or plaintext across waits.
 
 ## Entry point
 
-`runResealKeys(config)` is callable inside the API/TEE process. The optional CLI
-entry point is `bun run scripts/reseal-keys.ts /absolute/path/to/config.ts`.
-That operator-owned module exports `resealConfig` with an explicitly constructed
-keyring, repository, durable `cursorPath`, and optional batch/retry/count-query
-settings. There are no implicit database or provider defaults. The CLI emits
-only the six counts and exits nonzero on failure. This change does not run
-maintenance or supply a production configuration for a later generation.
+`runResealKeys(config)` is callable inside the API/TEE process and defaults to a
+read-only dry run. Applying requires `runResealKeys(config, { apply: true })`.
+The CLI commands are:
+
+```
+bun run scripts/reseal-keys.ts /absolute/path/to/config.ts
+bun run scripts/reseal-keys.ts /absolute/path/to/config.ts --apply
+```
+
+The first command is verification-only; only the second may write rows or a
+checkpoint. Unknown flags fail closed. Configuration cannot implicitly opt in
+to apply mode. That operator-owned module exports `resealConfig` with an
+explicitly constructed keyring, repository, durable `cursorPath`, and optional
+batch/retry/count-query settings. There are no implicit database or provider
+defaults. The CLI emits only six numeric counts and the `dryRun` mode label,
+and exits nonzero on failure. This change does not run maintenance or supply a
+production configuration for a later generation.
