@@ -70,7 +70,8 @@ function respond(result: Exclude<Result, { needsUnseal: true }>): Response {
 function permissionSubset(requested: NativePermission[], approved: NativePermission[]): boolean {
   return requested.every((entry) => {
     const parent = approved.find((candidate) => candidate.service === entry.service && candidate.space === entry.space &&
-      (candidate.path === entry.path || (candidate.service === 'tinycloud.kv' && candidate.path.endsWith('/') && entry.path.startsWith(candidate.path))));
+      (candidate.path === entry.path || ((candidate.service === 'tinycloud.kv' || candidate.service === 'tinycloud.sql') &&
+        candidate.path.endsWith('/') && entry.path.startsWith(candidate.path))));
     return !!parent && entry.actions.every((action) => parent.actions.includes(action));
   });
 }
