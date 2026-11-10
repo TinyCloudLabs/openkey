@@ -1,8 +1,8 @@
 // The approval page's sign path answers 409 or 410 in the owner's words: any
 // 409 says the request is already being approved, a 410 says it has already
 // been answered or has ended, and the server's own text is never shown. Other
-// statuses keep the server text. The screenshots (SHOT_DIR) are the 390px
-// phone width.
+// statuses use safe status/code fallback text. The screenshots (SHOT_DIR) are
+// the 390px phone width.
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
 
@@ -94,7 +94,7 @@ test.describe('Approve on the approval-request review page', () => {
     await expect(page.getByText('Approval request is no longer pending')).toHaveCount(0);
   });
 
-  test('other statuses show the generic line, not the server text', async ({ page }) => {
+  test('other statuses show the safe fallback line, not the server text', async ({ page }) => {
     await openReview(page, { delegate: { status: 500, body: { error: 'delegation service unavailable' } } });
     await approve(page).click();
     await expect(page.getByRole('alert')).toHaveText('Couldn\'t approve this request. Try again. (Error 500)');
