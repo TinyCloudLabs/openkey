@@ -1,5 +1,16 @@
 import { expect, test } from 'bun:test';
-import { collectNativeRenewalMetrics, type MetricsDatabase } from '../routes/internal-metrics';
+import { createInternalMetricsRouter, collectNativeRenewalMetrics, type MetricsDatabase } from '../routes/internal-metrics';
+
+
+const routeDatabase = {
+  user: { count: async () => 0 },
+  ethereumKey: { count: async () => 0 },
+  tinyCloudManageKeySigningDecision: {
+    count: async () => 0,
+    groupBy: async () => [],
+  },
+  tinyCloudManageKeyAppPreference: { count: async () => 0 },
+} as unknown as MetricsDatabase;
 
 test('native renewal metrics group successful renewal decisions by client and window', async () => {
   const now = new Date('2026-11-09T12:30:00.000Z');
@@ -32,4 +43,20 @@ test('native renewal metrics group successful renewal decisions by client and wi
     { clientId: 'public-client-b', renewals24h: 0, renewals7d: 1, lastRenewalAt: '2026-11-03T13:00:00.000Z' },
   ]);
   expect(Object.keys(result.clients[0]!).sort()).toEqual(['clientId', 'lastRenewalAt', 'renewals24h', 'renewals7d']);
+});
+
+test('native renewal metrics response is not cacheable', async () => {
+  const original = process.env.INTERNAL_METRICS_TOKEN;
+  process.env.INTERNAL_METRICS_TOKEN = 'metrics-test-token';
+  try {
+    const router = createInternalMetricsRouter(() => routeDatabase);
+    const response = await router.request('/native-renewals', {
+      headers: { Authorization: 'Bearer metrics-test-token' },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+  } finally {
+    if (original === undefined) delete process.env.INTERNAL_METRICS_TOKEN;
+    else process.env.INTERNAL_METRICS_TOKEN = original;
+  }
 });

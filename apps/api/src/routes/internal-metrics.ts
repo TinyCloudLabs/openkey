@@ -2,8 +2,6 @@ import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 
-const prisma = createPrismaClient();
-
 type MetricsCounter = { count(options?: Record<string, unknown>): Promise<number> };
 type RenewalGroup = { clientId: string; _count: { _all: number }; _max: { createdAt: Date | null } };
 type RenewalGrouping = { groupBy(options: Record<string, unknown>): Promise<RenewalGroup[]> };
@@ -13,8 +11,6 @@ export type MetricsDatabase = {
   tinyCloudManageKeySigningDecision: MetricsCounter & RenewalGrouping;
   tinyCloudManageKeyAppPreference: MetricsCounter;
 };
-
-export const internalMetricsRouter = new Hono();
 
 function authorized(authHeader: string | undefined): boolean {
   const token = process.env.INTERNAL_METRICS_TOKEN;
@@ -101,20 +97,31 @@ export async function collectNativeRenewalMetrics(database: MetricsDatabase, now
   };
 }
 
-internalMetricsRouter.get('/native-renewals', async (c) => {
-  if (!process.env.INTERNAL_METRICS_TOKEN) return c.json({ error: 'Internal metrics are not configured' }, 503);
-  if (!authorized(c.req.header('Authorization'))) return c.json({ error: 'Unauthorized' }, 401);
-  return c.json(await collectNativeRenewalMetrics(prisma as unknown as MetricsDatabase));
-});
+export function createInternalMetricsRouter(getDatabase: () => MetricsDatabase) {
+  const router = new Hono();
 
-internalMetricsRouter.get('/', async (c) => {
-  if (!process.env.INTERNAL_METRICS_TOKEN) {
-    return c.json({ error: 'Internal metrics are not configured' }, 503);
-  }
+  router.get('/native-renewals', async (c) => {
+    if (!process.env.INTERNAL_METRICS_TOKEN) return c.json({ error: 'Internal metrics are not configured' }, 503);
+    if (!authorized(c.req.header('Authorization'))) return c.json({ error: 'Unauthorized' }, 401);
+    c.header('Cache-Control', 'no-store');
+    return c.json(await collectNativeRenewalMetrics(getDatabase()));
+  });
 
-  if (!authorized(c.req.header('Authorization'))) {
-    return c.json({ error: 'Unauthorized' }, 401);
-  }
+  router.get('/', async (c) => {
+    if (!process.env.INTERNAL_METRICS_TOKEN) {
+      return c.json({ error: 'Internal metrics are not configured' }, 503);
+    }
 
-  return c.json(await collectInternalMetrics(prisma as unknown as MetricsDatabase));
-});
+    if (!authorized(c.req.header('Authorization'))) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    return c.json(await collectInternalMetrics(getDatabase()));
+  });
+
+  return router;
+}
+
+export const internalMetricsRouter = createInternalMetricsRouter(
+  () => createPrismaClient() as unknown as MetricsDatabase,
+);

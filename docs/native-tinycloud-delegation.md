@@ -802,11 +802,14 @@ client_id=exo-native&refresh_token=<current refresh token>[&siwe_nonce=<nonce>][
 Operators can set `OPENKEY_NATIVE_RENEW_DISABLED=true` (case-insensitive) or
 `1` to refuse syntactically valid renewal requests with HTTP 400
 `{"error":"consent_required"}` before proof verification, key unsealing, signing,
-token rotation, grant writes, or decision logging. The check is request-time;
-unset, empty, `false`, `0`, or any other value leaves renewals unchanged.
-Native revoke remains available. Provider `/api/auth/oauth2/token` refresh
-handling is independent. Turning the switch off restores normal renewal; owners
-can re-authorize using the still-current refresh token.
+token rotation, grant writes, or decision logging. The environment is read per
+request; changing it requires recreating the API container with the new value.
+Unset, empty, `false`, `0`, or any other value leaves renewals enabled. Native
+revoke remains available. Provider `/api/auth/oauth2/token` refresh handling
+is independent. In the TinyChat path, the SDK treats `consent_required` as
+terminal and signs out, which revokes the delegation grant; turning the switch
+off later does not restore that grant. The owner must approve a new
+authorization.
 
 `GET /api/internal/metrics/native-renewals` uses the `INTERNAL_METRICS_TOKEN`
 bearer and reports successful renewal counts per public `clientId` for 24 hours

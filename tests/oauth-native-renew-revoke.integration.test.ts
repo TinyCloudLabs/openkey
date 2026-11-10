@@ -186,6 +186,7 @@ if (!backend) {
     const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
     const grantBefore = await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } });
     const original = process.env.OPENKEY_NATIVE_RENEW_DISABLED;
+    const proofJtiCountBefore = await prisma.nativeSessionProofJti.count();
     const sealed = (await prisma.ethereumKey.findUniqueOrThrow({ where: { id: 'o5-key' } })).sealedBlob;
     await prisma.ethereumKey.update({ where: { id: 'o5-key' }, data: { sealedBlob: 'deliberately-invalid-sealed-key' } });
     try {
@@ -199,6 +200,7 @@ if (!backend) {
         });
         expect(await prisma.oauthRefreshToken.count()).toBe(1);
         expect(await prisma.tinyCloudManageKeySigningDecision.count()).toBe(0);
+        expect(await prisma.nativeSessionProofJti.count()).toBe(proofJtiCountBefore);
       }
       await prisma.ethereumKey.update({ where: { id: 'o5-key' }, data: { sealedBlob: sealed } });
       for (const [index, value] of ['', 'false', '0'].entries()) {

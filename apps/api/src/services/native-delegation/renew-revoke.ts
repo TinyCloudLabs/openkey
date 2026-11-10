@@ -76,9 +76,9 @@ function permissionSubset(requested: NativePermission[], approved: NativePermiss
 }
 
 /**
- * Operator switch for native renewals, read at request time so it can be
- * toggled without redeploying. Only `1` and `true` (case-insensitive,
- * surrounding whitespace ignored) enable it; unset or any other value is off.
+ * Read per request; changing the value requires recreating the container with
+ * the new environment. Only `1` and `true` (case-insensitive, whitespace
+ * trimmed) enable the switch; unset or any other value is off.
  */
 function nativeRenewalsDisabled(): boolean {
   const value = process.env.OPENKEY_NATIVE_RENEW_DISABLED?.trim().toLowerCase();
