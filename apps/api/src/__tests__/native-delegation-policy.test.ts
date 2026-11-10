@@ -156,6 +156,7 @@ describe('public protocol paths', () => {
       '/api/auth/oauth2/par',
       '/api/auth/oauth2/tinycloud/renew',
       '/api/auth/oauth2/tinycloud/revoke',
+      '/api/auth/providers',
     ]) {
       expect(isPublicProtocolPath(`https://api.openkey.test${path}`), path).toBe(true);
     }
@@ -169,6 +170,8 @@ describe('public protocol paths', () => {
       '/api/auth/oauth2/token/',
       '/api/auth/oauth2/tinycloud/renew/../../consent',
       '/api/auth/oauth2/%74oken',
+      '/api/auth/providers/',
+      '/api/auth/providers/apple',
     ]) {
       expect(isPublicProtocolPath(`https://api.openkey.test${path}`), path).toBe(false);
     }

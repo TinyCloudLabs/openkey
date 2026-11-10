@@ -1214,7 +1214,13 @@ before the global CORS middleware, and the global middleware skips them:
 /api/auth/oauth2/par
 /api/auth/oauth2/token
 /api/auth/oauth2/tinycloud/*
+/api/auth/providers
 ```
+
+`GET /api/auth/providers` lists the configured social providers (for example
+`{"providers":["google","apple"]}`), so a native app offers a Google or Apple
+button only when OpenKey can complete that sign-in. OpenKey's own web app reads
+it without credentials too.
 
 Policy: `cors({ origin: '*', credentials: false, allowMethods: ['GET', 'POST',
 'OPTIONS'], allowHeaders: ['Content-Type', 'OpenKey-Session-Proof'],
