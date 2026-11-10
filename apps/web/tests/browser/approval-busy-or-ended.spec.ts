@@ -94,10 +94,11 @@ test.describe('Approve on the approval-request review page', () => {
     await expect(page.getByText('Approval request is no longer pending')).toHaveCount(0);
   });
 
-  test('other statuses keep the server text', async ({ page }) => {
+  test('other statuses show the generic line, not the server text', async ({ page }) => {
     await openReview(page, { delegate: { status: 500, body: { error: 'delegation service unavailable' } } });
     await approve(page).click();
-    await expect(page.getByRole('alert')).toContainText('delegation service unavailable');
+    await expect(page.getByRole('alert')).toHaveText('Delegation failed');
+    await expect(page.getByText('delegation service unavailable')).toHaveCount(0);
   });
 });
 

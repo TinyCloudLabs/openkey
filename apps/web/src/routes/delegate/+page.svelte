@@ -6,6 +6,7 @@
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
+  import { classifyDelegateError } from '$lib/delegate-error-classification';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import Card from '$lib/components/ui/card.svelte';
@@ -25,7 +26,7 @@
     isCanonicalHttpsOrigin,
     withConfiguredEntries,
   } from '$lib/delegate-link-policy';
-  import { preparedMatchesSelection, reviewSelectionToActionKeys } from '$lib/delegate-review-selection';
+  import { preparedMatchesSelection, reviewSelectionToActionKeys, selectedServerActionIds } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
   import { activeKeys, autoSelectKey } from '$lib/delegate-key-selection';
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
@@ -71,12 +72,35 @@
     actions: DelegatePermissionAction[];
   }
 
+  class DelegateResponseError extends Error {
+    readonly code: unknown;
+    readonly status: number;
+    constructor(message: string, code: unknown, status: number) {
+      super(message);
+      this.code = code;
+      this.status = status;
+    }
+  }
+  function delegateErrorClassification(cause: unknown, refreshAttempted = false) {
+    return cause instanceof DelegateResponseError
+      ? classifyDelegateError(cause.status, cause.code, refreshAttempted)
+      : 'error';
+  }
+
+  function delegateErrorMessage(cause: unknown) {
+    if (cause instanceof DelegateResponseError) {
+      return apiBusyOrEndedMessage(cause.status) ?? 'Delegation failed';
+    }
+    return cause instanceof Error ? cause.message : 'Delegation failed';
+  }
+
   const session = authClient.useSession();
 
   let keys = $state<EthereumKey[]>([]);
   let loading = $state(true);
   let selectedKey = $state<EthereumKey | null>(null);
   let error = $state('');
+  let requestExpired = $state(false);
   let keysLoaded = $state(false);
   let initialized = $state(false);
   let signingIn = $state(false);
@@ -134,6 +158,7 @@
   // disappear from the review UI. `reviewSelection` is the effective
   // subset the user picked; only that changes when the user narrows.
   let reviewModel = $state<CapabilityReviewModel | null>(null);
+  const expiredRequesterName = $derived(reviewModel?.requester.displayName?.trim() || '');
   let baselineSiweForReview = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
@@ -507,7 +532,8 @@
       if (!response.ok) {
         if (response.status === 410 || ['expired', 'expired_request'].includes(result?.code)) {
           sessionStorage.removeItem(storageKey);
-          throw new Error('This approval request has expired. Return to the requesting app or command and create a new approval link.');
+          requestExpired = true;
+          return;
         }
         if (response.status === 404 || ['not_found', 'gone'].includes(result?.code)) {
           throw new Error('This approval request is unavailable or has expired. Ask the requesting app or person for a new approval link.');
@@ -672,7 +698,10 @@
       editingPermissions = false;
       step = 'consent';
     } catch (e: any) {
-      error = e.message || 'Failed to prepare delegation';
+      const classification = delegateErrorClassification(e);
+      error = classification === 'busy' || classification === 'ended'
+        ? delegateErrorMessage(e)
+        : e instanceof DelegateResponseError ? delegateErrorMessage(e) : e.message || 'Failed to prepare delegation';
       selectedKey = null;
     } finally {
       preparing = false;
@@ -726,7 +755,7 @@
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`));
+      throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status);
     }
 
     return res.json();
@@ -1086,9 +1115,43 @@
     }
   }
 
-  async function doManagedDelegate() {
+  async function refreshAuthorizationContext(key: EthereumKey, actions: string[]) {
+    const data = await prepareDelegation(key, actions);
+    const expected = new Set(actions);
+    if (!reviewModel || !Array.isArray(data.selectedActionKeys) ||
+      data.selectedActionKeys.length !== expected.size ||
+      new Set(data.selectedActionKeys).size !== expected.size ||
+      !data.selectedActionKeys.every((action: unknown) => typeof action === 'string' && expected.has(action)) ||
+      typeof data.authorizationContext?.token !== 'string' || !data.authorizationContext.token ||
+      typeof data.prepared?.siwe !== 'string' || !data.prepared.siwe.trim() ||
+      !Array.isArray(data.permissions) ||
+      !preparedMatchesSelection(reviewModel, data.permissions, reviewSelection, data.selectedActionKeys)) {
+      throw new Error('The request could not be prepared with the approved selection.');
+    }
+    const refreshed = parseCapabilityReview({
+      message: data.prepared.siwe,
+      signer: reviewModel.signer,
+      requester: reviewModel.requester,
+      reason: reviewModel.reason,
+      metadataTrust: reviewModel.metadataTrust,
+      editable: true,
+    });
+    const signedActions = selectedServerActionIds(refreshed,
+      new Set(refreshed.permissions.flatMap(grant => grant.actions.map(action => action.id))));
+    if (refreshed.protocol !== 'tinycloud-siwe-recap' || !refreshed.immutable ||
+      refreshed.parseWarnings.some(warning => warning.code !== 'unknown-service') ||
+      refreshed.immutable.address.toLowerCase() !== key.address.toLowerCase() ||
+      signedActions.length !== expected.size || !signedActions.every(action => expected.has(action))) {
+      throw new Error('The refreshed message does not match the approved selection.');
+    }
+    applyPreparedDelegation(data);
+  }
+
+  async function doManagedDelegate(refreshAttempted = false) {
     delegating = true;
     error = '';
+    const key = selectedKey;
+    const actions = [...selectedActionKeys];
 
     try {
       // Blocker 1: the widget MUST forward the prepared SIWE bytes and the
@@ -1151,7 +1214,7 @@
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`));
+        throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status);
       }
 
       const data = await res.json();
@@ -1159,14 +1222,33 @@
         await activateWithHost(host, data.delegationHeader);
       }
       await finishDelegate(data);
-    } catch (e: any) {
-      error = e.message || 'Delegation failed';
+    } catch (cause) {
+      const classification = delegateErrorClassification(cause, refreshAttempted);
+      if (classification === 'panel-after-failed-refresh') {
+        requestExpired = true;
+      } else if (classification === 'refresh-once') {
+        if (!key) {
+          error = delegateErrorMessage(cause);
+          return;
+        }
+        try {
+          await refreshAuthorizationContext(key, actions);
+        } catch (refreshCause) {
+          const refreshClassification = delegateErrorClassification(refreshCause, true);
+          if (refreshClassification === 'panel-after-failed-refresh') requestExpired = true;
+          else error = delegateErrorMessage(refreshCause);
+          return;
+        }
+        await doManagedDelegate(true);
+      } else {
+        error = delegateErrorMessage(cause);
+      }
     } finally {
       delegating = false;
     }
   }
 
-  async function doExternalDelegate() {
+  async function doExternalDelegate(refreshAttempted = false) {
     if (!preparedData) {
       error = 'No prepared session data. Please go back and try again.';
       return;
@@ -1182,6 +1264,7 @@
     const contextToken = authorizationContextToken;
     const selectedActionIds = [...selectedActionKeys];
     const edited = permissionsEdited;
+    const key = selectedKey;
 
     delegating = true;
     error = '';
@@ -1283,7 +1366,7 @@
 
       if (!compRes.ok) {
         const body = await compRes.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(apiBusyOrEndedMessage(compRes.status) ?? (body.error || `HTTP ${compRes.status}`));
+        throw new DelegateResponseError(apiBusyOrEndedMessage(compRes.status) ?? (body.error || `HTTP ${compRes.status}`), body.code, compRes.status);
       }
 
       const data = await compRes.json();
@@ -1291,11 +1374,29 @@
         await activateWithHost(host, data.delegationHeader);
       }
       await finishDelegate(data);
-    } catch (e: any) {
-      if (e.code === 4001) {
+    } catch (cause) {
+      const classification = delegateErrorClassification(cause, refreshAttempted);
+      if (classification === 'panel-after-failed-refresh') {
+        requestExpired = true;
+      } else if (classification === 'refresh-once') {
+        if (!key) {
+          error = delegateErrorMessage(cause);
+          return;
+        }
+        try {
+          await refreshAuthorizationContext(key, selectedActionIds);
+        } catch (refreshCause) {
+          const refreshClassification = delegateErrorClassification(refreshCause, true);
+          if (refreshClassification === 'panel-after-failed-refresh') requestExpired = true;
+          else error = delegateErrorMessage(refreshCause);
+          return;
+        }
+        // A fresh prepare changes the signed bytes; obtain a fresh wallet signature.
+        await doExternalDelegate(true);
+      } else if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 4001) {
         error = 'Signature was rejected by wallet.';
       } else {
-        error = e.message || 'Delegation failed';
+        error = delegateErrorMessage(cause);
       }
     } finally {
       delegating = false;
@@ -1451,7 +1552,23 @@
   }
 </script>
 
-{#if approvalRequestMode && !approvalRequestLoaded}
+{#if requestExpired}
+  <section role="alert" class="expired-request bg-[#fafafa] flex flex-col items-center px-4 py-8">
+    <div class="w-full max-w-sm flex flex-col items-center gap-6">
+      <div aria-hidden="true" class="w-12 h-12 rounded-xl bg-gradient-to-br from-surface-800 to-surface-900 flex items-center justify-center shadow-sm">
+        <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
+        </svg>
+      </div>
+      <Card class="w-full p-6">
+        <div class="text-center py-4">
+          <h1 class="text-[17px] font-semibold text-surface-900 mb-2">{expiredRequesterName ? `${expiredRequesterName}'s request expired` : 'Request expired'}</h1>
+          <p class="text-[15px] leading-6 text-[#71717a]">Ask your agent for a new link.</p>
+        </div>
+      </Card>
+    </div>
+  </section>
+{:else if approvalRequestMode && !approvalRequestLoaded}
   <div role={error ? 'alert' : 'status'} class="min-h-screen flex items-center justify-center px-4 text-center">
     {error || (approvalRequestLoading ? 'Checking request…' : 'This approval link is unavailable.')}
   </div>
@@ -1957,3 +2074,11 @@
   </div>
 </div>
 {/if}
+
+<style>
+  @media (max-width: 480px) {
+    .expired-request {
+      padding-top: 1rem;
+    }
+  }
+</style>
