@@ -12,8 +12,9 @@ services:
       - WEBAUTHN_ORIGIN=${WEBAUTHN_ORIGIN}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-      # Apple stays off until enrollment and a separate production decision.
-      - APPLE_SIGN_IN_ENABLED=false
+      # Apple web sign-in is on (TC-1188); offered only when the Apple
+      # credentials are set in the encrypted env.
+      - APPLE_SIGN_IN_ENABLED=true
       - APPLE_NATIVE_SIGN_IN_ENABLED=false
       - APPLE_CLIENT_ID=${APPLE_CLIENT_ID}
       - APPLE_TEAM_ID=${APPLE_TEAM_ID}
