@@ -142,12 +142,12 @@ describe('a link-supplied expiry is clamped, a user-picked one is not', () => {
     }
   });
 
-  test('a user pick keeps the one-minute floor and refuses a time no SIWE can hold', async () => {
+  test('a user pick keeps the one-minute floor and refuses a time beyond the ceiling', async () => {
     const short = await prepareWith({ expiry: '5s', expiryChosen: true });
     expect(lifetime(short)).toBeGreaterThan(60_000 - 5_000);
     expect(lifetime(short)).toBeLessThanOrEqual(60_000);
     const absurd = await prepareWith({ expiry: '9999999999999s', expiryChosen: true });
     expect(absurd.status).toBe(400);
-    expect(absurd.body.code).toBe('invalid_expiry');
+    expect(absurd.body.code).toBe('expiry_exceeds_ceiling');
   });
 });
