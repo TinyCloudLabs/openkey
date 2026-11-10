@@ -230,7 +230,9 @@ test('sign-up intent from any opener but /auth/register still asks first (R5)', 
   // Another site opens OpenKey's popup with the register intent on its URL.
   await page.context().route(`${LOOPBACK_ORIGIN}/elsewhere`, (route) => route.fulfill({
     status: 200, contentType: 'text/html',
-    body: `<button onclick="window.open(${JSON.stringify(`${ORIGIN}/auth/social/callback?provider=apple&action=signup`)}, 'x', 'popup')">Sign up</button>`,
+    body: `<button id="go">Sign up</button><script>
+      document.getElementById('go').onclick = () => window.open(${JSON.stringify(`${ORIGIN}/auth/social/callback?provider=apple&action=signup`)}, 'x', 'popup');
+    </script>`,
   }));
   await page.goto(`${LOOPBACK_ORIGIN}/elsewhere`);
   const popup = await openApplePopup(page, page.getByRole('button', { name: 'Sign up' }));
