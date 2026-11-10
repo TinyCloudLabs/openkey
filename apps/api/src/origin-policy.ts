@@ -44,18 +44,16 @@ export function corsOriginPolicy(
 }
 
 /**
- * Managed-key signing excludes the configured console origin unless it is
- * also an account/default origin. CORS and Better Auth keep using the broader
- * shared policy.
+ * Filters a resolved origin list for signing. Malformed allowlist entries are
+ * preserved unchanged; malformed console origins fail closed.
  */
-export function resolveSigningOriginPolicy(
-  defaultOrigin: string,
-  env: OriginPolicyEnvironment = process.env,
+export function filterSigningOrigins(
+  allowlist: string[],
+  accountOrigins: string[],
+  consoleOrigin: string | undefined,
 ): string[] {
-  const consoleOrigin = resolveConsoleOrigin(env);
   let normalizedConsoleOrigin: string | undefined;
-
-  if (consoleOrigin) {
+  if (consoleOrigin !== undefined) {
     try {
       normalizedConsoleOrigin = new URL(consoleOrigin.trim()).origin;
       if (normalizedConsoleOrigin === 'null') throw new Error();
@@ -64,31 +62,47 @@ export function resolveSigningOriginPolicy(
     }
   }
 
-  const accountOrigins = new Set(
-    defaultOrigin.split(',').map((origin) => {
-      try {
-        return new URL(origin.trim()).origin;
-      } catch {
-        return undefined;
-      }
-    }).filter((origin): origin is string => origin !== undefined),
-  );
-  const origins = resolveOriginPolicy(defaultOrigin, env);
-  const filtered = origins.flatMap((origin) => {
+  const normalizedAccountOrigins = new Set<string>();
+  for (const origin of accountOrigins) {
     try {
-      const normalizedOrigin = new URL(origin.trim()).origin;
-      if (normalizedOrigin === 'null') return [origin];
+      const normalized = new URL(origin.trim()).origin;
+      if (normalized !== 'null') normalizedAccountOrigins.add(normalized);
+    } catch {
+      // An invalid account-origin value cannot preserve an allowlist entry.
+    }
+  }
+
+  return allowlist.flatMap((origin) => {
+    if (origin.trim() === 'null') return [];
+    try {
+      const normalized = new URL(origin.trim()).origin;
+      if (normalized === 'null') return [];
       if (
-        normalizedOrigin === normalizedConsoleOrigin
-        && !accountOrigins.has(normalizedOrigin)
+        normalized === normalizedConsoleOrigin
+        && !normalizedAccountOrigins.has(normalized)
       ) return [];
-      return [normalizedOrigin];
+      return [normalized];
     } catch {
       return [origin];
     }
   });
+}
 
-  // If the console was the only configured origin, keep it rather than
-  // accidentally denying every signing request.
-  return filtered.length > 0 || origins.length === 0 ? filtered : [origins[0]!];
+/**
+ * Managed-key signing excludes the configured console origin unless it is
+ * also an account origin. CORS and Better Auth keep using the broader policy.
+ */
+export function resolveSigningOriginPolicy(
+  defaultOrigin: string,
+  env: OriginPolicyEnvironment = process.env,
+): string[] {
+  const accountOrigins = env.WEBAUTHN_ORIGIN ? [env.WEBAUTHN_ORIGIN] : [];
+  if (!isProduction(env)) {
+    accountOrigins.push(...defaultOrigin.split(',').map((origin) => origin.trim()));
+  }
+  return filterSigningOrigins(
+    resolveOriginPolicy(defaultOrigin, env),
+    accountOrigins,
+    resolveConsoleOrigin(env),
+  );
 }

@@ -148,21 +148,30 @@ if (!process.env.TC_SIGN_ORIGIN_CHILD) {
     const consoleTyped = await signTyped(typedData, { cookie, origin: CONSOLE });
     expect(consoleTyped.status).toBe(403);
 
-    // When account and console configuration identify the same host, keep
-    // that shared origin usable for account signing.
     const previousCorsOrigin = process.env.CORS_ORIGIN;
     const previousConsoleOrigin = process.env.CONSOLE_ORIGIN;
+    const previousWebauthnOrigin = process.env.WEBAUTHN_ORIGIN;
+
+    // With no configured account origin, a console-only CORS configuration
+    // must fail closed rather than falling back to the console.
+    process.env.CORS_ORIGIN = CONSOLE;
+    process.env.CONSOLE_ORIGIN = CONSOLE;
+    delete process.env.WEBAUTHN_ORIGIN;
+    const consoleOnlySign = await sign({ message: 'hello' }, { cookie, origin: CONSOLE });
+    expect(consoleOnlySign.status).toBe(403);
+
+    // When the account and console origins coincide, preserve the account.
     process.env.CORS_ORIGIN = OPENKEY;
     process.env.CONSOLE_ORIGIN = OPENKEY;
-    const sharedOriginSign = await sign(
-      { message: 'hello' },
-      { cookie, origin: OPENKEY },
-    );
+    process.env.WEBAUTHN_ORIGIN = OPENKEY;
+    const sharedOriginSign = await sign({ message: 'hello' }, { cookie, origin: OPENKEY });
     expect(sharedOriginSign.status).toBe(200);
     if (previousCorsOrigin === undefined) delete process.env.CORS_ORIGIN;
     else process.env.CORS_ORIGIN = previousCorsOrigin;
     if (previousConsoleOrigin === undefined) delete process.env.CONSOLE_ORIGIN;
     else process.env.CONSOLE_ORIGIN = previousConsoleOrigin;
+    if (previousWebauthnOrigin === undefined) delete process.env.WEBAUTHN_ORIGIN;
+    else process.env.WEBAUTHN_ORIGIN = previousWebauthnOrigin;
 
     // (d) First-party flows still sign.
     const panelSign = await sign({ message: 'hello' }, { cookie, origin: OPENKEY });

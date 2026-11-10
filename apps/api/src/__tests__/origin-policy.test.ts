@@ -7,6 +7,7 @@ import {
   DEFAULT_CONSOLE_ORIGIN,
   resolveOriginPolicy,
   resolveSigningOriginPolicy,
+  filterSigningOrigins,
 } from '../origin-policy';
 
 function credentialedApp(env: Record<string, string | undefined>) {
@@ -184,5 +185,105 @@ describe('signing origin policy', () => {
       CORS_ORIGIN: 'https://openkey.so,not a URL',
       CONSOLE_ORIGIN: 'https://console.openkey.so',
     })).toEqual(['https://openkey.so', 'not a URL']);
+  });
+
+  test('refuses a console-only production allowlist without a known account origin', () => {
+    const env = {
+      CORS_ORIGIN: 'https://console.openkey.so',
+      CONSOLE_ORIGIN: 'https://console.openkey.so',
+      TEE_MODE: 'production',
+    };
+    expect(resolveSigningOriginPolicy('http://localhost:5173,http://localhost:3000', env)).toEqual([]);
+    expect(resolveOriginPolicy('http://localhost:5173,http://localhost:3000', env)).toContain(
+      'https://console.openkey.so',
+    );
+  });
+
+  test('uses WEBAUTHN_ORIGIN to preserve the account when it is also the console', () => {
+    expect(resolveSigningOriginPolicy('http://localhost:5173', {
+      CORS_ORIGIN: 'https://openkey.so,https://staging.openkey.so',
+      CONSOLE_ORIGIN: 'https://openkey.so',
+      WEBAUTHN_ORIGIN: 'https://openkey.so',
+      TEE_MODE: 'production',
+    })).toEqual(['https://openkey.so', 'https://staging.openkey.so']);
+  });
+
+  test('uses WEBAUTHN_ORIGIN to retain the account and exclude the default console', () => {
+    expect(resolveSigningOriginPolicy('http://localhost:5173', {
+      CORS_ORIGIN: 'https://openkey.so,https://console.openkey.so',
+      WEBAUTHN_ORIGIN: 'https://openkey.so',
+      TEE_MODE: 'production',
+    })).toEqual(['https://openkey.so']);
+  });
+});
+
+describe('pure signing origin filter', () => {
+  const account = 'https://openkey.so';
+  const console = 'https://console.openkey.so';
+  const staging = 'https://staging.openkey.so';
+  const allowlists = [
+    [],
+    [account],
+    [console],
+    [account, console],
+    [account, staging, console],
+    [staging, console],
+  ];
+  const accountOriginSets = [
+    [],
+    [account],
+    [console],
+    [account, staging],
+  ];
+  const consoleOrigins = [
+    undefined,
+    console,
+    `${console}:443`,
+    account,
+  ];
+  const rows = allowlists.flatMap((allowlist) =>
+    accountOriginSets.flatMap((accountOrigins) =>
+      consoleOrigins.map((consoleOrigin) => {
+        const expectedConsole = consoleOrigin === undefined
+          ? undefined
+          : consoleOrigin === `${console}:443`
+            ? console
+            : consoleOrigin;
+        const expected = allowlist.filter((origin) =>
+          origin !== 'null'
+          && (
+            expectedConsole === undefined
+            || origin !== expectedConsole
+            || accountOrigins.includes(expectedConsole)
+          ),
+        );
+        return {
+          allowlist,
+          accountOrigins,
+          consoleOrigin,
+          expected,
+        };
+      }),
+    ),
+  );
+
+  test.each(rows)(
+    '$allowlist | accounts=$accountOrigins | console=$consoleOrigin -> $expected',
+    ({ allowlist, accountOrigins, consoleOrigin, expected }) => {
+      expect(filterSigningOrigins(allowlist, accountOrigins, consoleOrigin)).toEqual(expected);
+    },
+  );
+
+  test('drops null origins but keeps malformed non-console entries unchanged', () => {
+    expect(filterSigningOrigins(
+      ['null', 'data:text/plain,opaque', 'not a URL', 'https://console.openkey.so'],
+      [],
+      'https://console.openkey.so',
+    )).toEqual(['not a URL']);
+  });
+
+  test('rejects an unparseable console origin', () => {
+    expect(() => filterSigningOrigins([], [], 'not a URL'))
+      .toThrow('CONSOLE_ORIGIN must be a valid absolute URL');
   });
 });
