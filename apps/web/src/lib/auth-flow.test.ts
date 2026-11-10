@@ -1,8 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { normalizeAuthReturnTo, safeOAuthAuthorizeQuery } from './auth-flow';
-import { normalizeReturnTo } from '../routes/auth/register/+page';
-
+import { normalizeAuthReturnTo, normalizeRegisterReturnTo, safeOAuthAuthorizeQuery } from './auth-flow';
 
 const refusedApprovalReturns = [
   'https://evil.example/a/abc',
@@ -26,13 +24,13 @@ const refusedApprovalReturns = [
 
 describe('approval request auth return URLs', () => {
   test('register accepts only a canonical approval path and preserves legacy targets', () => {
-    expect(normalizeReturnTo('/a/abc_DEF-123', 'https://openkey.so')).toBe('/a/abc_DEF-123');
-    expect(normalizeReturnTo('/a/'.concat('x'.repeat(10000)), 'https://openkey.so')).toBe(`/a/${'x'.repeat(10000)}`);
+    expect(normalizeRegisterReturnTo('/a/abc_DEF-123', 'https://openkey.so')).toBe('/a/abc_DEF-123');
+    expect(normalizeRegisterReturnTo('/a/'.concat('x'.repeat(10000)), 'https://openkey.so')).toBe(`/a/${'x'.repeat(10000)}`);
     for (const value of refusedApprovalReturns) {
-      expect(normalizeReturnTo(value, 'https://openkey.so')).toBeNull();
+      expect(normalizeRegisterReturnTo(value, 'https://openkey.so')).toBeNull();
     }
-    expect(normalizeReturnTo('/delegate?x=1', 'https://openkey.so')).toBe('/delegate?x=1');
-    expect(normalizeReturnTo('/widget/embed/connect', 'https://openkey.so')).toBe('/widget/embed/connect');
+    expect(normalizeRegisterReturnTo('/delegate?x=1', 'https://openkey.so')).toBe('/delegate?x=1');
+    expect(normalizeRegisterReturnTo('/widget/embed/connect', 'https://openkey.so')).toBe('/widget/embed/connect');
   });
 
   test('email sign-in accepts only a canonical approval path and preserves legacy targets', () => {

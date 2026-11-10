@@ -36,6 +36,23 @@ export function isApprovalReturnPath(pathname: string, search: string, hash: str
   return /^\/a\/[A-Za-z0-9_-]+$/.test(pathname) && search === '' && hash === '';
 }
 
+export function normalizeRegisterReturnTo(returnTo: string | null, origin: string): string | null {
+  if (!returnTo) return null;
+
+  try {
+    const url = new URL(returnTo, origin);
+    if (url.origin !== origin) return null;
+    const approvalPath = isApprovalReturnPath(url.pathname, url.search, url.hash);
+    if (approvalPath && (/\s/.test(returnTo) || returnTo.includes('\\'))) return null;
+    if (returnTo.startsWith('/a') && !approvalPath) return null;
+    if (approvalPath) return url.pathname;
+    if (url.pathname !== '/delegate' && !url.pathname.startsWith('/widget/embed/')) return null;
+    return url.pathname + url.search + url.hash;
+  } catch {
+    return null;
+  }
+}
+
 type AuthReturnToOptions = {
   /** The separately hosted admin console is the sole allowed cross-origin return target. */
   consoleOrigin?: string;
