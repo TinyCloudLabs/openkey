@@ -159,6 +159,18 @@ describe('POST /api/keys/:keyId/sign', () => {
     expect(calls).toEqual([]);
   });
   test.each([
+    ['bad header order', siweWith().replace(/Expiration Time: [^\n]+\n/, '').replace(/(Issued At: [^\n]+\n)/, '$1Not Before: 2026-10-30T00:00:00.000Z\nExpiration Time: 2026-11-01T00:00:00.000Z\n')],
+    ['bad timestamp', siweWith().replace(/Expiration Time: [^\n]+/, 'Expiration Time: not-a-date')],
+  ])('uses a generic malformed-SIWE message for %s', async (_name, message) => {
+    const response = await sign({ message });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Malformed SIWE message.',
+      code: 'invalid_siwe_recap',
+    });
+    expect(calls).toEqual([]);
+  });
+  test.each([
     ['missing expiration', siweWith().replace(/^Expiration Time:.*\n/m, ''), 'expiry_required'],
     (() => {
       const expiry = new Date();

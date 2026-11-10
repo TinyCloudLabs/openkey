@@ -315,6 +315,21 @@ describe('POST /complete with a wallet-signed apps/ message', () => {
     expect(signed).toEqual([]);
   });
 });
+  test.each(['\r', '\u2028'])('rejects statement expiry spoofing with %p', async (separator) => {
+    const original = siweWith();
+    const statementStart = original.indexOf('\n\n') + 2;
+    const uriStart = original.indexOf('\nURI: ', statementStart);
+    const siwe = `${original.slice(0, statementStart)}Expiration Time: 2026-07-01T00:00:00Z${separator}statement\n${original.slice(uriStart)}`;
+    const res = await post('/complete', {
+      prepared: { siwe, spaceId: SPACE, chainId: 1 },
+      signature: await account.signMessage({ message: siwe }),
+      host: 'https://node.tinycloud.xyz',
+      jwk,
+    });
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ error: 'Invalid delegation' });
+    expect(signed).toEqual([]);
+  });
 
 describe('permissions that name an apps/ key', () => {
   const permissions = [{ service: 'tinycloud.encryption', space: 'encryption', path: urn('/apps/xyz.tinycloud.listen/k'), actions: ['tinycloud.encryption/decrypt'] }];

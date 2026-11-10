@@ -1,3 +1,5 @@
+import { expirationTimeOf } from '../services/approval-expiry';
+
 export type DelegateErrorCode =
   | 'invalid_permissions'
   | 'invalid_expiry'
@@ -72,6 +74,6 @@ export function normalizeDelegateReason(reason: unknown): string | undefined {
  */
 export function signedSiweExpirationTime(siwe: unknown): string | undefined {
   if (typeof siwe !== 'string') return undefined;
-  const expirationTime = siwe.match(/^Expiration Time:\s*(.+)$/im)?.[1]?.trim();
+  const expirationTime = expirationTimeOf(siwe);
   return expirationTime && !Number.isNaN(Date.parse(expirationTime)) ? expirationTime : undefined;
 }

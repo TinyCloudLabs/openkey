@@ -319,7 +319,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const ceiling = assertWithinDelegationCeiling(signedMessage);
   if (ceiling !== 'ok') return c.json({
     error: ceiling === 'missing' ? 'TinyCloud delegation SIWE requires an Expiration Time.' :
-      ceiling === 'too_long' ? 'Delegation expiry exceeds the maximum allowed lifetime.' : 'Malformed SIWE line separators are not supported.',
+      ceiling === 'too_long' ? 'Delegation expiry exceeds the maximum allowed lifetime.' : 'Malformed SIWE message.',
     code: ceiling === 'missing' ? 'expiry_required' : ceiling === 'too_long' ? 'expiry_exceeds_ceiling' : 'invalid_siwe_recap',
   }, 400);
   const appKeyRefusal = appKeyRefusalForMessage(body.message)

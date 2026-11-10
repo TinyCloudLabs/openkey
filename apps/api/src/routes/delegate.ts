@@ -464,7 +464,7 @@ function delegationCeilingFailure(siwe: string): { body: { error: string; code: 
   const result = assertWithinDelegationCeiling(siwe);
   if (result === 'missing') return { body: { error: 'TinyCloud delegation SIWE requires an Expiration Time.', code: 'expiry_required' } };
   if (result === 'too_long') return { body: { error: 'Delegation expiry exceeds the maximum allowed lifetime.', code: 'expiry_exceeds_ceiling' } };
-  if (result === 'malformed') return { body: { error: 'Malformed SIWE line separators are not supported.', code: 'invalid_siwe_recap' } };
+  if (result === 'malformed') return { body: { error: 'Malformed SIWE message.', code: 'invalid_siwe_recap' } };
   return null;
 }
 
