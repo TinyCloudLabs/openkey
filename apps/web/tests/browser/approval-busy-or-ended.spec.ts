@@ -37,7 +37,7 @@ function prepared() {
 }
 
 const BUSY = 'This request is already being approved. Wait a moment.';
-const ENDED = 'This request has already been answered or has ended.';
+const ENDED = 'This request has already been answered or has ended. Return to the app or command and start a new one.';
 
 /** Answers the page's calls. `delegate` answers the POST /api/delegate (Approve). */
 async function serve(page: Page, options: { delegate?: { status: number; body: unknown } } = {}) {
@@ -97,7 +97,7 @@ test.describe('Approve on the approval-request review page', () => {
   test('other statuses show the generic line, not the server text', async ({ page }) => {
     await openReview(page, { delegate: { status: 500, body: { error: 'delegation service unavailable' } } });
     await approve(page).click();
-    await expect(page.getByRole('alert')).toHaveText('Delegation failed');
+    await expect(page.getByRole('alert')).toHaveText('Couldn’t approve this request. Try again. (Error 500)');
     await expect(page.getByText('delegation service unavailable')).toHaveCount(0);
   });
 });

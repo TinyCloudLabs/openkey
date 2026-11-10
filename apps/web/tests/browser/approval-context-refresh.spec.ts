@@ -146,7 +146,7 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
       if (scenario === 'direct-expired' || scenario === 'expired-link') {
         // A 410 at the sign sites shows the ended wording, not the panel (the
         // server's expired_request also covers answered/unknown requests).
-        await expect(page.getByRole('alert')).toHaveText('This request has already been answered or has ended.');
+        await expect(page.getByRole('alert')).toHaveText('This request has already been answered or has ended. Return to the app or command and start a new one.');
         await expect(page.getByText('Link expired')).toHaveCount(0);
         await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);
       } else if (scenario === 'busy-expired-code' || scenario === 'busy-context-code') {
@@ -155,7 +155,7 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
         await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);
         expect(flow.counts()).toEqual({ prepares: 2, approvals: 1 });
       } else if (scenario === 'expired-token') {
-        await expect(page.getByRole('alert')).toHaveText('Delegation failed');
+        await expect(page.getByRole('alert')).toHaveText('Couldn’t approve this request. Try again. (Error 400 · expired_token)');
         await expect(page.getByText('Device request expired')).toHaveCount(0);
         await expect(page.locator('.expired-request')).toHaveCount(0);
         await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);

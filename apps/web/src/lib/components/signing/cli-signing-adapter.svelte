@@ -39,9 +39,11 @@
     context?: Snippet;
     /** True when the user chose one of several keys. */
     showSigner?: boolean;
+    /** Reports whether editable permission checkboxes are visible. */
+    onEditingStateChange?: (editing: boolean) => void;
   }
 
-  let { model, initialSelection, transport, context, showSigner = false }: Props = $props();
+  let { model, initialSelection, transport, context, showSigner = false, onEditingStateChange }: Props = $props();
 
   // Internal review state. The adapter owns this because it is per-surface
   // presentational state — the route no longer touches it. We intentionally
@@ -62,6 +64,7 @@
 
   function onEditingChange(next: boolean) {
     editing = next;
+    onEditingStateChange?.(next);
   }
 
   function onApprove() {

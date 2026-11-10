@@ -8,6 +8,7 @@
   import Button from '$lib/components/ui/button.svelte';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
   import { delegateFailureText, shortCodeFailureText } from '$lib/delegate-failure-text';
+  import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
@@ -33,7 +34,7 @@
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
   import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
-  import { siweExpiration } from '$lib/approval-expiry';
+  import { requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -88,7 +89,12 @@
   }
 
   function delegateErrorMessage(cause: unknown) {
-    if (cause instanceof DelegateResponseError) return delegateFailureText(cause);
+    if (cause instanceof DelegateResponseError) {
+      return delegateFailureText(cause, {
+        permissionsEditable: reviewEditing,
+        expiryChangeable: expiryChangeControlVisible,
+      });
+    }
     return cause instanceof Error ? delegateFailureText(cause) : 'Delegation failed';
   }
 
@@ -161,6 +167,10 @@
   let baselineSiweForReview = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
+  const expiryChangeControlVisible = $derived(
+    reviewModel?.protocol === 'tinycloud-siwe-recap' &&
+    requestedExpiryMs(reviewModel.immutable?.issuedAt, reviewModel.immutable?.expirationTime) !== null,
+  );
   const approvalRequestMode = $page.route.id === '/a/[id]';
   const approvalRequestId = approvalRequestMode ? $page.params.id || '' : '';
   const delegateReturnTo = $derived(approvalRequestMode ? $page.url.pathname : $page.url.pathname + $page.url.search + $page.url.hash);
@@ -1878,6 +1888,7 @@
               model={reviewModel}
               initialSelection={reviewSelection}
               context={cliContext}
+              onEditingStateChange={(editing) => { reviewEditing = editing; }}
               showSigner={keys.length > 1}
               transport={{
                 approving: delegating || updatingPermissions,

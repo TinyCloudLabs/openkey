@@ -2,6 +2,6 @@
 "@openkey/web": patch
 ---
 
-Approval failures show their HTTP status and safe server code; short-code failures do likewise.
+Approval failures show mapped guidance and safe status/code details; short-code failures use matching status/code text.
 
 Details: TC-2729
