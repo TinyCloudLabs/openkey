@@ -84,19 +84,32 @@ export function validatePermissions(value: unknown, ceiling: NativeDelegationCon
     if (p.service === 'tinycloud.capabilities') {
       if (p.path !== '' || actions.length !== 1 || actions[0] !== 'tinycloud.capabilities/read') invalid('invalid_authorization_details', 'invalid capabilities permission');
     } else if (p.service === 'tinycloud.kv') {
-      if (path.length > TINYCLOUD_DELEGATED_PATH_MAX_LENGTH || !TINYCLOUD_DELEGATED_PATH.test(path) || hasDotSegment(path) ||
+      // `""` is the whole applications-space KV; only a ceiling with `kv.root` admits it.
+      const root = path === '';
+      if ((!root && (path.length > TINYCLOUD_DELEGATED_PATH_MAX_LENGTH || !TINYCLOUD_DELEGATED_PATH.test(path) || hasDotSegment(path))) ||
         actions.some(a => !a.startsWith('tinycloud.kv/') || !['get', 'put', 'list', 'del', 'metadata'].includes(a.slice(13)))) {
         invalid('invalid_authorization_details', 'invalid KV permission');
       }
-      if (!ceiling.kv.paths.some(allowed => allowed.endsWith('/') ? path.startsWith(allowed) : path === allowed) ||
+      if (!(root ? ceiling.kv.root === true : ceiling.kv.paths.some(allowed => allowed.endsWith('/') ? path.startsWith(allowed) : path === allowed)) ||
         actions.some(a => !ceiling.kv.actions.includes(a.slice(13)))) invalid('invalid_authorization_details', 'KV permission exceeds ceiling', 'ceiling');
     } else if (p.service === 'tinycloud.sql') {
       if (path.length > TINYCLOUD_DELEGATED_PATH_MAX_LENGTH || !TINYCLOUD_DELEGATED_PATH.test(path) || hasDotSegment(path) ||
         actions.some(a => !a.startsWith('tinycloud.sql/') || !['read', 'write', 'schema'].includes(a.slice(14)))) {
         invalid('invalid_authorization_details', 'invalid SQL permission');
       }
-      if (!ceiling.sql || !ceiling.sql.databases.includes(path) || actions.some(a => !ceiling.sql!.actions.includes(a.slice(14)))) {
+      const sql = ceiling.sql;
+      if (!sql || !(sql.databases.includes(path) || sql.foreignDatabases?.includes(path) || sql.prefixes?.some(prefix => path.startsWith(prefix))) ||
+        actions.some(a => !sql.actions.includes(a.slice(14)))) {
         invalid('invalid_authorization_details', 'SQL permission exceeds ceiling', 'ceiling');
+      }
+    } else if (p.service === 'tinycloud.hooks') {
+      if (path.length > TINYCLOUD_DELEGATED_PATH_MAX_LENGTH || !TINYCLOUD_DELEGATED_PATH.test(path) || hasDotSegment(path) ||
+        actions.some(a => a !== 'tinycloud.hooks/subscribe')) {
+        invalid('invalid_authorization_details', 'invalid hooks permission');
+      }
+      const hooks = ceiling.hooks;
+      if (!hooks || !hooks.paths.includes(path) || actions.some(a => !hooks.actions.includes(a.slice(16)))) {
+        invalid('invalid_authorization_details', 'hooks permission exceeds ceiling', 'ceiling');
       }
     } else invalid('invalid_authorization_details', 'unsupported service');
     return { service: p.service as string, space: 'applications' as const, path, actions };

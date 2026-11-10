@@ -157,15 +157,31 @@ can set it, and the request can never exceed it.
 | `tinycloudHost` | Must be in `TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS` (`tinycloud-bootstrap.ts`). This is the only node the delegation is activated on and the only host a hosting signature can name. Requests cannot supply a host. |
 | `kv.paths` | Paths under `<appId>/`, using the device-flow path grammar (`[A-Za-z0-9._~@+=,:-]` segments; no `.` or `..` segments; `secrets` and `vault` roots refused). A trailing `/` makes it a prefix grant. |
 | `kv.actions` | A subset of `get`, `put`, `list`, `del`, `metadata`, meaning `tinycloud.kv/<action>`. |
+| `kv.root` | Optional, only `true`. Also admits the whole applications-space KV (path `""`) with `kv.actions`. TinyCloud Home's web sign-in grants it, so its native client does too (TC-2720). |
 | `sql` | `null`, or an object. Validates under the same rules as `kv`: databases confined to `<appId>/`. SQL delegates to the TinyCloud node exactly like KV — isolating databases by full path is the node's job. |
 | `sql.databases` | Exact database identities `<appId>/<name>`, with exactly one segment after the `appId` and no trailing `/`. |
+| `sql.prefixes` | Optional. Database prefixes `<appId>/<name>/` (one segment, trailing `/`): a request path equal to or under one is admitted. |
+| `sql.foreignDatabases` | Optional. Exact databases in another app's folder, `<otherAppId>/<name>`, each named explicitly; never the client's own `appId`, a `secrets` or `vault` root, or a prefix. |
 | `sql.actions` | A subset of `read`, `write`, `schema`, meaning `tinycloud.sql/<action>`. |
+| `hooks` | Optional. `{ "paths": [...], "actions": ["subscribe"] }`. Every path is `sql/<x>` where `<x>` is already in `sql.databases`, `sql.prefixes` or `sql.foreignDatabases`; `subscribe` is the only action. |
 | `maxDelegationTtlSeconds` | 300–86400, default 3600. The lifetime of each signed delegation. |
 | `grantLifetimeSeconds` | 300–2592000, default 2592000 (30 days). The absolute lifetime of a grant, after which a browser sign-in is required. |
 | `siweDomain` | Optional, default `openkey.so`. The SIWE `domain`. |
 
-Exo's ceiling is the one above: the applications-space entries of its
-manifest, without secrets or encryption.
+The example above is the original Exo ceiling. Since TC-2720 the TinyCloud
+Home client (`ok_e1d13d0b220379f37a553aa0391d28a4`) has the applications-space
+entries of Home's served manifest, matching its web sign-in: KV `threads/`,
+`connectors/`, `exo/v1/requests/`, `exo/v1/jobs/` and the whole-space KV
+(`kv.root`); SQL `threads`, `canvas`, `connectors`, `home_feed`, `details`,
+`summaries`, `transcripts`, the `feed/` prefix and the catalog databases
+`xyz.tinycloud.sample.healthlog/healthlog` and
+`xyz.tinycloud.sample.recipes/recipes`; and hook subscriptions on
+`sql/xyz.tinycloud.tinychat/feed/`, `.../home_feed` and `.../threads`. It
+never covers secrets, encryption or `tinycloud.space`.
+
+To replace an existing client's ceiling, run `register-oauth-client.yml` with
+`client_id` and `tinycloud_native_delegation`; the run log prints the ceiling
+before and after.
 
 ## Permissions and the signed session SIWE
 
@@ -177,14 +193,18 @@ fully-qualified abilities:
 ```
 
 - `space` is always `applications`; any other space is refused.
-- `service` is `tinycloud.kv`, `tinycloud.sql` or `tinycloud.capabilities`.
+- `service` is `tinycloud.kv`, `tinycloud.sql`, `tinycloud.hooks` or `tinycloud.capabilities`.
 - Every request includes
   `{"service":"tinycloud.capabilities","space":"applications","path":"","actions":["tinycloud.capabilities/read"]}`.
   The user cannot remove it.
 - A KV entry's path must equal or lie under one of the ceiling's `kv.paths`,
-  and its actions must be in `kv.actions`.
-- A SQL entry's path must equal one of the ceiling's `sql.databases`, and its
+  or be `""` when the ceiling has `kv.root`, and its actions must be in
+  `kv.actions`.
+- A SQL entry's path must equal one of the ceiling's `sql.databases` or
+  `sql.foreignDatabases`, or lie under one of its `sql.prefixes`, and its
   actions must be in `sql.actions`.
+- A hooks entry's path must equal one of the ceiling's `hooks.paths`, and its
+  only action is `tinycloud.hooks/subscribe`.
 - No two entries for the same service may overlap.
 
 OpenKey signs exactly one message: the **session SIWE** (EIP-4361 with an
