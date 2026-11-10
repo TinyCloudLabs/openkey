@@ -93,6 +93,10 @@ async function failure(response: Response, fallback: string): Promise<DeletionEr
   const code = typeof body?.code === 'string' ? body.code : null;
   if (code === PASSKEY_REQUIRED) return new DeletionError('Verify with your passkey to continue.', code, response.status);
   if (code === EMAIL_REQUIRED) return new DeletionError('Verify with a new email code to continue.', code, response.status);
+  // TC-1198: a passkey enrolled without a step-up can sign in but can't confirm account changes.
+  if (code === 'passkey_not_step_up_capable') {
+    return new DeletionError("That passkey can't confirm account deletion. Use another passkey saved for this account.", code, response.status);
+  }
   if (response.status === 503) return new DeletionError('OpenKey is busy right now. Try again in a moment.', null, 503);
   if (response.status === 401) return new DeletionError('Your session ended. Sign in again to delete your account.', null, 401);
   return new DeletionError(fallback, null, response.status);
