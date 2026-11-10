@@ -4,6 +4,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { generateKeyPairSync } from 'node:crypto';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
 const space = `tinycloud:pkh:eip155:1:${address}:default`;
@@ -183,4 +184,107 @@ test.describe('TC-660 /device prefilled code', () => {
     await expect(page.getByText('That code is invalid or expired')).toBeVisible();
     await expect(page.getByRole('textbox', { name: 'Device code' })).toHaveValue('ABCD-EFGH');
   });
+});
+
+async function openDeviceRelayReview(
+  page: Page,
+  options: {
+    relayStatus: number | 'network';
+    relayBody?: unknown;
+    secondDelegateStatus?: number;
+  },
+) {
+  const deviceJwk = { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) };
+  const relayPublicJwk = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ format: 'jwk' });
+  const expiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
+  let delegateCalls = 0;
+
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/auth/get-session') return json(route, 200, { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, user: { id: 'u', email: 'owner@example.test' } });
+    if (url.pathname === '/api/keys') return json(route, 200, { keys: oneKey });
+    if (url.pathname === '/api/device-authorizations/lookup') {
+      return json(route, 200, {
+        id: 'tx_1', userCode: 'ABCDEFGH', sessionDid: 'did:key:z6Mk', publicJwk: deviceJwk, relayPublicJwk,
+        permissions: request, nodeOrigin: 'https://node.tinycloud.xyz', shareOrigin: 'https://share.tinycloud.xyz',
+        delegationExpiresAt: expiresAt, transactionExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+        delegationTtlSeconds: 2_592_000,
+      });
+    }
+    if (url.pathname === '/api/delegate/prepare') return json(route, 200, prepared);
+    if (url.pathname === '/api/delegate' && route.request().method() === 'POST') {
+      delegateCalls += 1;
+      if (delegateCalls > 1 && options.secondDelegateStatus) {
+        return json(route, options.secondDelegateStatus, { error: 'expired_request', code: 'handoff_expired' });
+      }
+      return json(route, 200, {
+        hostActivated: true, delegationHeader: { Authorization: 'Bearer signed' }, delegationCid: 'bafy-signed',
+        spaceId: space, verificationMethod: 'did:key:z6Mk', jwk: deviceJwk, expirationTime: expiresAt,
+        address, chainId: 1, permissions: request,
+      });
+    }
+    if (url.pathname === '/api/device-authorizations/tx_1/approve' && route.request().method() === 'POST') {
+      if (options.relayStatus === 'network') return route.abort('failed');
+      return json(route, options.relayStatus, options.relayBody ?? {});
+    }
+    return json(route, 404, { error: `unmocked ${url.pathname}` });
+  });
+
+  const params = new URLSearchParams({
+    did: 'did:key:z6Mk',
+    jwk: encodeBase64UrlJson(deviceJwk),
+    host: 'https://node.tinycloud.xyz',
+    deviceTransactionId: 'tx_1',
+    deviceShareOrigin: 'https://share.tinycloud.xyz',
+    deviceUserCode: 'ABCDEFGH',
+    relayJwk: encodeBase64UrlJson(relayPublicJwk),
+    expiry: '2592000s',
+    permissions: encodeBase64UrlJson({ permissions: request }),
+  });
+  await page.goto(`/delegate?${params}`);
+  await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+  await page.getByRole('checkbox', { name: 'I started this request myself, on a device I control.' }).check();
+}
+
+test('a prepare fetch failure uses fixed text, not the browser error message', async ({ page }) => {
+  await mock(page);
+  await page.route('**/api/delegate/prepare', (route) => route.abort('failed'));
+  await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}&permissions=${encodeBase64UrlJson({ permissions: request, reason: 'Sync my notes' })}`);
+  const alert = page.getByRole('alert');
+  await expect(alert).toHaveText("Couldn't approve this request. Try again.");
+  await expect(alert).not.toContainText('Failed to fetch');
+});
+
+test('device relay failure shows only safe status and code and keeps Approve available', async ({ page }) => {
+  await openDeviceRelayReview(page, {
+    relayStatus: 503,
+    relayBody: { code: 'some_code', errorDescription: 'private relay detail' },
+  });
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  const alert = page.getByRole('alert');
+  await expect(alert).toHaveText("You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again. (Error 503 · some_code)");
+  await expect(alert).not.toContainText('private relay detail');
+  await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+});
+
+test('device relay uses status only for the API error body and a later 410 uses ended copy', async ({ page }) => {
+  await openDeviceRelayReview(page, {
+    relayStatus: 500,
+    relayBody: { error: 'invalid_result', errorDescription: 'private route message' },
+    secondDelegateStatus: 410,
+  });
+  const approve = page.getByRole('button', { name: 'Approve', exact: true });
+  await approve.click();
+  await expect(page.getByRole('alert')).toHaveText("You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again. (Error 500)");
+  await expect(page.getByRole('alert')).not.toContainText('invalid_result');
+  await expect(page.getByRole('alert')).not.toContainText('private route message');
+  await expect(approve).toBeEnabled();
+  await approve.click();
+  await expect(page.getByRole('alert')).toHaveText('This request has already been answered or has ended. Return to the app or command and start a new one.');
+});
+
+test('device relay network failure has no status suffix', async ({ page }) => {
+  await openDeviceRelayReview(page, { relayStatus: 'network' });
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText("You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again.");
 });

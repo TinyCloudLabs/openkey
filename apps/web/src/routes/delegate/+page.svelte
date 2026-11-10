@@ -7,7 +7,13 @@
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
-  import { delegateFailureText, shortCodeFailureText } from '$lib/delegate-failure-text';
+  import {
+    delegateFailureText,
+    delegateResponseFailureText,
+    deviceRelayFailureText,
+    DeviceRelayDeliveryError,
+    shortCodeFailureText,
+  } from '$lib/delegate-failure-text';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import Card from '$lib/components/ui/card.svelte';
@@ -89,13 +95,22 @@
   }
 
   function delegateErrorMessage(cause: unknown) {
+    if (cause instanceof DeviceRelayDeliveryError) {
+      if (cause.status === 409 || cause.status === 410) {
+        return delegateResponseFailureText(cause.status, cause.code, {
+          permissionsEditable: reviewEditing,
+          expiryChangeable: expiryChangeControlVisible,
+        });
+      }
+      return deviceRelayFailureText(cause.status, cause.code);
+    }
     if (cause instanceof DelegateResponseError) {
-      return delegateFailureText(cause, {
+      return delegateResponseFailureText(cause.status, cause.code, {
         permissionsEditable: reviewEditing,
         expiryChangeable: expiryChangeControlVisible,
       });
     }
-    return cause instanceof Error ? delegateFailureText(cause) : 'Delegation failed';
+    return delegateFailureText(cause);
   }
 
   const session = authClient.useSession();
@@ -313,7 +328,7 @@
       expiryChoiceMs = previous.choice;
       expiryChosen = previous.chosen;
       expiryParam = previous.param;
-      error = e.message || 'Failed to change the expiry';
+      error = delegateErrorMessage(e);
     } finally {
       updatingPermissions = false;
     }
@@ -470,7 +485,7 @@
     requestReason = normalizeReason(deviceRequestReason(record));
     expiryMaxMs = deviceRequestTtlSeconds(record) * 1000;
   })();
-  deviceRequestVerified.catch((cause: Error) => { error = cause.message; });
+  deviceRequestVerified.catch((cause: unknown) => { error = delegateErrorMessage(cause); });
 
   // The wallet the CLI requested: the one owner (chain and address) every
   // requested space and raw encryption network resolves to. Owners that
@@ -573,9 +588,7 @@
       expiryParam = `${request.suggestedLifetimeSeconds ?? request.grantLifetimeSeconds}s`;
       approvalRequestLoaded = true;
     } catch (cause) {
-      error = cause instanceof TypeError
-        ? 'Could not reach OpenKey. Check your connection and reopen the original complete approval link in your browser.'
-        : cause instanceof Error ? cause.message : 'Could not open this approval link. Return to the requesting app or command for a new link.';
+      error = delegateErrorMessage(cause);
     } finally {
       approvalRequestLoading = false;
     }
@@ -657,7 +670,7 @@
       const result = await api.listKeys();
       keys = activeKeys(result.keys);
     } catch (e: any) {
-      error = e.message;
+      error = delegateErrorMessage(e);
     } finally {
       loading = false;
     }
@@ -685,7 +698,7 @@
       loading = false;
       await onKeySelect(key);
     } catch (e: any) {
-      error = e.message;
+      error = delegateErrorMessage(e);
       loading = false;
     }
   }
@@ -707,10 +720,7 @@
       editingPermissions = false;
       step = 'consent';
     } catch (e: any) {
-      const classification = delegateErrorClassification(e);
-      error = classification === 'busy' || classification === 'ended'
-        ? delegateErrorMessage(e)
-        : e instanceof DelegateResponseError ? delegateErrorMessage(e) : e.message || 'Failed to prepare delegation';
+      error = delegateErrorMessage(e);
       selectedKey = null;
     } finally {
       preparing = false;
@@ -965,7 +975,7 @@
       if (e.code === 4001) {
         error = 'Wallet connection was rejected.';
       } else {
-        error = e.message || 'Failed to link wallet';
+        error = delegateErrorMessage(e);
       }
     } finally {
       linking = false;
@@ -1098,7 +1108,7 @@
       applyPreparedDelegation(data);
       editingPermissions = true;
     } catch (e: any) {
-      error = e.message || 'Failed to update permissions';
+      error = delegateErrorMessage(e);
     } finally {
       updatingPermissions = false;
     }
@@ -1118,7 +1128,7 @@
       applyPreparedDelegation(data);
       editingPermissions = false;
     } catch (e: any) {
-      error = e.message || 'Failed to reset permissions';
+      error = delegateErrorMessage(e);
     } finally {
       updatingPermissions = false;
     }
@@ -1435,25 +1445,31 @@
         chainId: payload.chainId,
       });
       const relay = await encryptDeviceRelay({ ...payload, permissions: approvedPermissions });
-      const response = await fetch(`${API_URL}/api/device-authorizations/${encodeURIComponent(deviceTransactionId)}/approve`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          relay,
-          binding: {
-            transactionId: deviceTransactionId,
-            sessionDid: did,
-            nodeOrigin: host,
-            shareOrigin: deviceShareOrigin,
-            permissions: approvedPermissions,
-            delegationExpiresAt,
-          },
-        }),
-      });
+      let response: Response;
+      try {
+        response = await fetch(`${API_URL}/api/device-authorizations/${encodeURIComponent(deviceTransactionId)}/approve`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            relay,
+            binding: {
+              transactionId: deviceTransactionId,
+              sessionDid: did,
+              nodeOrigin: host,
+              shareOrigin: deviceShareOrigin,
+              permissions: approvedPermissions,
+              delegationExpiresAt,
+            },
+          }),
+        });
+      } catch {
+        throw new DeviceRelayDeliveryError(null, undefined);
+      }
       if (!response.ok) {
-        const body = await response.json().catch(() => ({ errorDescription: 'Could not deliver the approved delegation to the CLI.' }));
-        throw new Error(body.errorDescription || 'Could not deliver the approved delegation to the CLI.');
+        const body: unknown = await response.json().catch(() => null);
+        const code = typeof body === 'object' && body !== null && 'code' in body ? body.code : undefined;
+        throw new DeviceRelayDeliveryError(response.status, code);
       }
       done = true;
       step = 'done';
@@ -1525,7 +1541,7 @@
         error = authErrorMessage(result.error, 'Passkey sign-in failed');
       }
     } catch (e: any) {
-      error = e.message || 'Passkey sign-in failed';
+      error = delegateErrorMessage(e);
     } finally {
       signingIn = false;
     }

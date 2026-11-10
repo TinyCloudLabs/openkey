@@ -10,6 +10,7 @@ const SESSION_ENDED_MESSAGE = 'Your OpenKey session ended. Sign in again, then a
 const RATE_LIMITED_MESSAGE = 'Too many attempts. Wait five minutes, then try again.';
 const SHORT_CODE_FAILURE = "Couldn't create a short code. Use the full delegation code instead.";
 const APPROVAL_BUSY_MESSAGE = apiBusyOrEndedMessage(409) ?? 'This request is already being approved. Wait a moment.';
+const APPROVAL_FAILURE_MESSAGE = "Couldn't approve this request. Try again.";
 
 export interface DelegateFailureTextOptions {
   permissionsEditable?: boolean;
@@ -76,28 +77,43 @@ function safeCode(code: unknown): string | null {
   return typeof code === 'string' && SAFE_CODE.test(code) ? code : null;
 }
 
-export function delegateFailureText(
-  cause: unknown,
+export function delegateFailureText(_cause: unknown): string {
+  return APPROVAL_FAILURE_MESSAGE;
+}
+
+export function delegateResponseFailureText(
+  status: number,
+  code: unknown,
   options: DelegateFailureTextOptions = {},
 ): string {
-  if (typeof cause === 'object' && cause !== null && 'status' in cause) {
-    const { status, code } = cause as { status: number; code: unknown };
-    if (status === 409) return APPROVAL_BUSY_MESSAGE;
-    if (status === 410) return ENDED_MESSAGE;
-    if (status === 401) return SESSION_ENDED_MESSAGE;
-    if (status === 429) return RATE_LIMITED_MESSAGE;
+  if (status === 409) return APPROVAL_BUSY_MESSAGE;
+  if (status === 410) return ENDED_MESSAGE;
+  if (status === 401) return SESSION_ENDED_MESSAGE;
+  if (status === 429) return RATE_LIMITED_MESSAGE;
 
-    const codeText = safeCode(code);
-    const mappedMessage = codeText ? CODE_MESSAGES[codeText] : undefined;
-    if (typeof mappedMessage === 'function') return mappedMessage(options);
-    if (mappedMessage) return mappedMessage;
+  const codeText = safeCode(code);
+  const mappedMessage = codeText ? CODE_MESSAGES[codeText] : undefined;
+  if (typeof mappedMessage === 'function') return mappedMessage(options);
+  if (mappedMessage) return mappedMessage;
 
-    return codeText
-      ? `Couldn't approve this request. Try again. (Error ${status} · ${codeText})`
-      : `Couldn't approve this request. Try again. (Error ${status})`;
+  return codeText
+    ? `${APPROVAL_FAILURE_MESSAGE} (Error ${status} · ${codeText})`
+    : `${APPROVAL_FAILURE_MESSAGE} (Error ${status})`;
+}
+
+export class DeviceRelayDeliveryError {
+  readonly code: string | null;
+
+  constructor(readonly status: number | null, code: unknown) {
+    this.code = safeCode(code);
   }
-  if (cause instanceof Error) return cause.message;
-  return 'Delegation failed';
+}
+
+export function deviceRelayFailureText(status: number | null, code?: unknown): string {
+  const prefix = "You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again.";
+  if (status === null) return prefix;
+  const codeText = safeCode(code);
+  return codeText ? `${prefix} (Error ${status} · ${codeText})` : `${prefix} (Error ${status})`;
 }
 
 export function shortCodeFailureText(status?: number, code?: unknown): string {
