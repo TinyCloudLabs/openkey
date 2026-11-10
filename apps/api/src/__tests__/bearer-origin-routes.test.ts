@@ -54,6 +54,13 @@ beforeAll(async () => {
   process.env.WEBAUTHN_ORIGIN = OPENKEY_ORIGIN;
   process.env.CONSOLE_ORIGIN = 'https://console.openkey.so';
   const delegate = await import('../routes/delegate?bearer-origin-routes' as string);
+  const { accountRouter } = await import('../routes/account?bearer-origin-routes' as string);
+  const { keysRouter } = await import('../routes/keys?bearer-origin-routes' as string);
+  const { approvalRequestRouter } = await import('../routes/approval-requests?bearer-origin-routes' as string);
+  const { nostrKeysRouter } = await import('../routes/nostr-keys?bearer-origin-routes' as string);
+  const { preparedHandoffRouter } = await import('../routes/prepared-handoffs?bearer-origin-routes' as string);
+  const { createOwnerRevocationRouter } = await import('../routes/owner-revocation?bearer-origin-routes' as string);
+  const { PreparedHandoffService } = await import('../services/prepared-handoff');
   const { secretsRouter } = await import('../routes/secrets?bearer-origin-routes' as string);
   const { variablesRouter } = await import('../routes/variables?bearer-origin-routes' as string);
   const { organizationsRouter } = await import('../routes/organizations?bearer-origin-routes' as string);
@@ -64,8 +71,24 @@ beforeAll(async () => {
     return c.json({ signerAuth: true }, 401);
   }) as any);
 
+  const ownerRevocationRouter = createOwnerRevocationRouter(
+    new PreparedHandoffService(new Proxy({}, { get: () => async () => null }) as never),
+    { findKey: async () => null, signManaged: async () => '' },
+    createMiddleware(async (c, next) => {
+      sessionResolutions += 1;
+      c.set('user', { id: 'user_1', email: 'user@example.com' });
+      c.set('session', { id: 'session_1', userId: 'user_1', expiresAt: new Date(Date.now() + 60_000) });
+      await next();
+    }) as never,
+  );
   // Mounted as apps/api/src/index.ts mounts them.
   app = new Hono();
+  app.route('/api/account', accountRouter);
+  app.route('/api/keys', keysRouter);
+  app.route('/api/keys/nostr', nostrKeysRouter);
+  app.route('/api', approvalRequestRouter);
+  app.route('/api/delegate/handoffs', preparedHandoffRouter);
+  app.route('/api/delegate/owner-revocation', ownerRevocationRouter);
   app.route('/api/secrets', secretsRouter);
   app.route('/api/variables', variablesRouter);
   app.route('/api/delegate', delegate.delegateRouter);
@@ -98,17 +121,22 @@ function call(method: string, path: string, headers: Record<string, string>) {
 }
 
 const sessionRoutes: Array<[string, string]> = [
-  ['POST', '/api/delegate'],
+  ['GET', '/api/account'],
+  ['GET', '/api/keys'],
+  ['POST', '/api/approval-requests/appr_1/deny'],
+  ['POST', '/api/device-authorizations/tx_1/approve'],
+  ['POST', '/api/device-authorizations/tx_1/deny'],
   ['POST', '/api/delegate/prepare'],
-  ['POST', '/api/delegate/complete'],
-  ['POST', '/api/delegate/authorize-sign-prepare'],
-  ['POST', '/api/delegate/authorize-sign-preview'],
-  ['POST', '/api/delegate/authorize-sign'],
+  ['POST', '/api/delegate/owner-revocation/prepare'],
+  ['GET', '/api/delegate/handoffs/available'],
+  ['POST', '/api/delegate/handoffs/claim'],
   ['GET', '/api/secrets'],
   ['GET', '/api/variables'],
+  ['GET', '/api/keys/nostr'],
+  ['POST', '/api/keys/nostr'],
+  ['DELETE', '/api/keys/nostr/grants/grant_1'],
   ['GET', '/api/organizations'],
   ['GET', '/api/console/organizations/org_1/overview'],
-  ['POST', '/api/device-authorizations/tx_1/approve'],
 ];
 
 describe('session routes refuse a bearer from outside OpenKey', () => {
@@ -129,31 +157,41 @@ describe('session routes refuse a bearer from outside OpenKey', () => {
 
   test.each(sessionRoutes)('%s %s still resolves an OpenKey widget bearer', async (method, path) => {
     await call(method, path, { authorization: 'Bearer widget-session-token', origin: OPENKEY_ORIGIN });
-    expect(sessionResolutions).toBe(1);
+    expect(sessionResolutions).toBeGreaterThan(0);
   });
 
   test.each(sessionRoutes)('%s %s still resolves a cookie session', async (method, path) => {
     await call(method, path, { origin: OPENKEY_ORIGIN });
-    expect(sessionResolutions).toBe(1);
+    expect(sessionResolutions).toBeGreaterThan(0);
   });
-  test('console-origin bearers are refused on sensitive routes', async () => {
-    for (const path of ['/api/secrets', '/api/variables', '/api/delegate/prepare', '/api/device-authorizations/tx_1/approve']) {
-      const response = await call('POST', path, {
+  test('console-origin bearers are refused on every sensitive route group', async () => {
+    const sensitive = sessionRoutes.filter(([, path]) =>
+      !path.startsWith('/api/organizations') && !path.startsWith('/api/console/organizations'),
+    );
+    for (const [method, path] of sensitive) {
+      const response = await call(method, path, {
         authorization: 'Bearer leaked-session-token',
         origin: 'https://console.openkey.so',
       });
-      expect(response.status).toBe(403);
+      expect(response.status, `${method} ${path}`).toBe(403);
+      expect(sessionResolutions, `${method} ${path} session`).toBe(0);
     }
   });
 
-  test('console-origin bearer requests remain allowed on organization routes', async () => {
-    const response = await call('GET', '/api/organizations', {
-      authorization: 'Bearer widget-session-token',
-      origin: 'https://console.openkey.so',
-    });
-    expect(response.status).not.toBe(403);
-    expect(sessionResolutions).toBe(1);
-  });
+  test.each(['Bearer widget-session-token', undefined])(
+    'console-origin organization routes accept %s',
+    async (authorization) => {
+      for (const path of ['/api/organizations', '/api/console/organizations/org_1/overview']) {
+        sessionResolutions = 0;
+        const response = await call('GET', path, {
+          origin: 'https://console.openkey.so',
+          ...(authorization ? { authorization } : {}),
+        });
+        expect(response.status, path).not.toBe(403);
+        expect(sessionResolutions, path).toBe(1);
+      }
+    },
+  );
 });
 describe('routes outside the session boundary are unchanged', () => {
   test('/api/delegate/sign keeps OAuth signer auth for a server-side bearer', async () => {

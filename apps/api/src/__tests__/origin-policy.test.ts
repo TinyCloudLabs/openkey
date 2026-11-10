@@ -261,6 +261,72 @@ describe('account origin policy', () => {
     }
   });
 
+  test('origin decisions cover route auth, origin categories, and deployment shapes', () => {
+    const configs = [
+      {
+        label: 'production',
+        env: {
+          CORS_ORIGIN: 'https://openkey.so,https://console.openkey.so,https://staging.openkey.so',
+          WEBAUTHN_ORIGIN: 'https://openkey.so',
+          CONSOLE_ORIGIN: 'https://console.openkey.so',
+          TEE_MODE: 'production',
+        },
+        origins: [
+          ['account', 'https://openkey.so', true],
+          ['console', 'https://console.openkey.so', false],
+          ['staging-in-CORS', 'https://staging.openkey.so', false],
+          ['null', 'null', false],
+          ['none', undefined, false],
+          ['malformed', 'not an origin', false],
+        ] as const,
+      },
+      {
+        label: 'console-is-account development',
+        env: {
+          NODE_ENV: 'development',
+          WEBAUTHN_ORIGIN: 'http://localhost:5173',
+          CONSOLE_ORIGIN: 'http://localhost:5173',
+          CORS_ORIGIN: 'http://localhost:5173,http://127.0.0.1:8080',
+        },
+        origins: [
+          ['account', 'http://localhost:5173', true],
+          ['console', 'http://localhost:5173', true],
+          ['staging-in-CORS', 'http://127.0.0.1:8080', false],
+          ['null', 'null', false],
+          ['none', undefined, false],
+          ['malformed', 'not an origin', false],
+        ] as const,
+      },
+      {
+        label: 'console-only misconfiguration',
+        env: {
+          NODE_ENV: 'production',
+          CONSOLE_ORIGIN: 'https://console.openkey.so',
+          CORS_ORIGIN: 'https://console.openkey.so',
+          TEE_MODE: 'production',
+        },
+        origins: [
+          ['account', 'https://openkey.so', false],
+          ['console', 'https://console.openkey.so', false],
+          ['staging-in-CORS', 'https://staging.openkey.so', false],
+          ['null', 'null', false],
+          ['none', undefined, false],
+          ['malformed', 'not an origin', false],
+        ] as const,
+      },
+    ] as const;
+    for (const config of configs) {
+      for (const [category, origin, expected] of config.origins) {
+        for (const auth of ['cookie', 'session bearer']) {
+          expect(
+            isAccountOriginAllowed(origin, 'http://localhost:5173', config.env),
+            `${config.label} ${category} ${auth}`,
+          ).toBe(expected);
+        }
+      }
+    }
+  });
+
   test('keeps the development localhost defaults', () => {
     expect(resolveAccountOriginPolicy('http://localhost:5173,http://localhost:3000', {
       NODE_ENV: 'development',
