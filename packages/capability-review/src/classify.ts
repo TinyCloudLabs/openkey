@@ -25,7 +25,13 @@
 import type { CapabilityFamily, PermissionSeverity } from "./model.js";
 import { isSecretsSpace } from "./app-scope.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
-import { DELEGATION_LIST_LABEL, DELEGATION_REVOKE_LABEL, FAMILY_LABEL } from "./copy.js";
+import {
+  DELEGATION_LIST_LABEL,
+  DELEGATION_REVOKE_LABEL,
+  FAMILY_LABEL,
+  FILES_FOR_YOU_STATEMENT,
+  SENDER_HISTORY_STATEMENT,
+} from "./copy.js";
 import { APPS_SEGMENT, parseKeyResource } from "./key-resource.js";
 import { plainSentence } from "./plain-words.js";
 import {
@@ -201,6 +207,27 @@ function allVerbsIn(actions: string[], allowed: ReadonlySet<string>): boolean {
   );
 }
 
+/** Every verb in `actions` and no others — the exact wire verb set. */
+function verbsExactly(actions: string[], required: ReadonlySet<string>): boolean {
+  return (
+    actions.length > 0 &&
+    actions.every((action) => required.has(verbOf(action))) &&
+    new Set(actions.map(verbOf)).size === required.size
+  );
+}
+
+// The KV path prefix Share's sender history lives under. A Share-style
+// request covers exactly `get`, `list`, `put`, `del` below this prefix: a
+// different verb set, the broader `vault/` prefix, or a v1 path is not the
+// sharing-history grant.
+const SENDER_HISTORY_PREFIX = "vault/sender-history/v2/records/";
+const SENDER_HISTORY_VERBS = new Set(["get", "list", "put", "del"]);
+
+// The files a Share-style request deposits for the recipient live in its
+// `files-for-you` space at exactly `v1/` with `get`, `list`, `put`.
+const FILES_FOR_YOU_PATH = "v1/";
+const FILES_FOR_YOU_VERBS = new Set(["get", "list", "put"]);
+
 function unknownActionLabel(service: string): {
   family: CapabilityFamily;
   displayLabel: string;
@@ -362,7 +389,35 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         return { family: "unknown", displayLabel: "Unrecognized account data" };
       }
     } else if (spaceName === "applications") {
-      knownTarget = { family: "own-app-data", displayLabel: "Application data" };
+      // A Share-style request's sender-history grant: the exact v2 records
+      // prefix with exactly `get`, `list`, `put`, `del`. Another user's space
+      // still falls through to the cross-app label below; a different verb
+      // set, the `vault/` prefix, or a v1 path keeps the generic app row.
+      knownTarget =
+        path.startsWith(SENDER_HISTORY_PREFIX) &&
+        verbsExactly(entry.actions, SENDER_HISTORY_VERBS)
+          ? { family: "own-app-data", displayLabel: SENDER_HISTORY_STATEMENT }
+          : { family: "own-app-data", displayLabel: "Application data" };
+    } else if (spaceName === "files-for-you") {
+      // The recipient-mailbox KV space of a Share-style request. The exact
+      // `v1/` + `get,list,put` shape earns its own label but stays in the
+      // fail-closed `unknown` family so `put` keeps Sensitive severity and
+      // every other verb set stays unrecognized. Another user's space keeps
+      // the unrecognized shape — no friendly label on borrowed trust.
+      if (
+        isOtherUser ||
+        path !== FILES_FOR_YOU_PATH ||
+        !verbsExactly(entry.actions, FILES_FOR_YOU_VERBS)
+      ) {
+        return {
+          family: "unknown",
+          displayLabel: "Unrecognized key-value data",
+        };
+      }
+      knownTarget = {
+        family: "unknown",
+        displayLabel: FILES_FOR_YOU_STATEMENT,
+      };
     } else if (spaceName === "public") {
       knownTarget = { family: "public-data", displayLabel: "Public data" };
     } else if (spaceName === "default") {

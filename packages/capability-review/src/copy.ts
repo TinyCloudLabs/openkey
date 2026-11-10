@@ -64,6 +64,43 @@ export const DELEGATION_LIST_STATEMENT = "See who has access to your data";
  */
 export const DELEGATION_REVOKE_LABEL = "Remove access you gave";
 
+/**
+ * Consent sentence (and grant title) of the KV grant a Share-style request
+ * makes on the sender's own sharing-history records: `tinycloud.kv` on the
+ * `applications` space under `vault/sender-history/v2/records/` with exactly
+ * `get`, `list`, `put`, `del`. Any other verb set, a broader `vault/` prefix,
+ * or a v1 path is not this grant.
+ */
+export const SENDER_HISTORY_STATEMENT =
+  "Read, change and delete your sharing history";
+
+/**
+ * Consent sentence (and grant title) of the KV grant a Share-style request
+ * makes on the recipient's `files-for-you` space at `v1/` with exactly `get`,
+ * `list`, `put`. `put` replaces files, so the line says change, not add. The
+ * grant stays Sensitive: it writes data the signer did not share into their
+ * mailbox space.
+ */
+export const FILES_FOR_YOU_STATEMENT =
+  "Read and change files shared with you";
+
+/**
+ * Consent sentence of the `tinycloud.capabilities/read` grant: the requester
+ * can inspect which permissions the signer has already granted. Title stays
+ * "Permission check — <space>".
+ */
+export const CAPABILITIES_READ_STATEMENT =
+  "See which permissions are already granted";
+
+/**
+ * Consent sentence of a KV grant that only deletes inside one app folder
+ * (an `<appId>/` path on the `applications` space). The folder is wire text,
+ * never a caller-supplied app name; the row is one per folder.
+ */
+export function appFolderDeleteStatement(folder: string): string {
+  return `Delete data associated with \`${folder}\``;
+}
+
 /** Named-key verbs that carry consent copy. */
 export type NamedKeyVerb = "create" | "decrypt" | "block" | "unblock" | "delete";
 
