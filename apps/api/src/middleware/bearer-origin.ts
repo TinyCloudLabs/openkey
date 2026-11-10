@@ -1,5 +1,5 @@
 import { createMiddleware } from 'hono/factory';
-import { resolveOriginPolicy } from '../origin-policy';
+import { isAccountOriginAllowed, resolveOriginPolicy } from '../origin-policy';
 
 /**
  * OpenKey's own embedded widgets authenticate to key and account routes with a
@@ -21,6 +21,27 @@ export function bearerFromOpenKeyOriginError(
   if (origin && allowed.includes(origin)) return null;
   return 'Bearer session tokens are accepted only from OpenKey';
 }
+
+export function bearerFromAccountOriginError(
+  authorization: string | undefined,
+  origin: string | undefined,
+): string | null {
+  if (!authorization) return null;
+  if (isAccountOriginAllowed(origin, 'http://localhost:5173,http://localhost:3000')) return null;
+  return 'Bearer session tokens are accepted only from OpenKey';
+}
+
+export const requireAccountOriginForBearer = createMiddleware(async (c, next) => {
+  const authorization = c.req.header('authorization');
+  const origin = c.req.header('origin');
+  const error = origin !== undefined
+    ? (isAccountOriginAllowed(origin, 'http://localhost:5173,http://localhost:3000')
+      ? null
+      : 'Requests are accepted only from the OpenKey account origin')
+    : bearerFromAccountOriginError(authorization, origin);
+  if (error) return c.json({ error }, 403);
+  await next();
+});
 
 export const requireOpenKeyOriginForBearer = createMiddleware(async (c, next) => {
   const error = bearerFromOpenKeyOriginError(c.req.header('authorization'), c.req.header('origin'));

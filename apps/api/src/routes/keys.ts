@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey, type TeeQuote } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
-import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { validateTypedData, verifyMessage } from 'viem';
 import type { Hex } from 'viem';
 import {
@@ -47,7 +47,7 @@ export const keysRouter = new Hono<SessionContext>();
 
 // All routes require authentication. A bearer session token is accepted only
 // from an OpenKey web origin, where the embedded widgets run (TC-688).
-keysRouter.use('*', requireOpenKeyOriginForBearer);
+keysRouter.use('*', requireAccountOriginForBearer);
 keysRouter.use('*', requireSession);
 
 // Generate a verification challenge for wallet linking

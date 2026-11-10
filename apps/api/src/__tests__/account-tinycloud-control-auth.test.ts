@@ -21,7 +21,7 @@ const prisma = {
 };
 
 // Restored afterwards: other files in the same `bun test` run read these.
-const savedEnv = { CORS_ORIGIN: process.env.CORS_ORIGIN, TEE_MODE: process.env.TEE_MODE };
+const savedEnv = { CORS_ORIGIN: process.env.CORS_ORIGIN, WEBAUTHN_ORIGIN: process.env.WEBAUTHN_ORIGIN, TEE_MODE: process.env.TEE_MODE };
 
 replaceModules({
   '../middleware/session': () => ({
@@ -36,7 +36,7 @@ await mockModules({
 });
 
 beforeAll(() => {
-  process.env.CORS_ORIGIN = 'https://openkey.test';
+  process.env.WEBAUTHN_ORIGIN = 'https://openkey.test';
   process.env.TEE_MODE = 'production';
 });
 
@@ -79,10 +79,15 @@ describe('TinyCloud signing control authentication boundary', () => {
     expect(await response.json()).toEqual({ error: 'A same-site browser Origin is required' });
   });
 
-  test('allows a console control mutation in the sealed production origin shape', async () => {
-    const response = await request('/tinycloud-manage-key', {
+  test('refuses a console cookie control mutation but allows the account origin', async () => {
+    const consoleResponse = await request('/tinycloud-manage-key', {
       origin: 'https://console.openkey.so',
     });
-    expect(response.status).toBe(200);
+    expect(consoleResponse.status).toBe(403);
+
+    const accountResponse = await request('/tinycloud-manage-key', {
+      origin: 'https://openkey.test',
+    });
+    expect(accountResponse.status).toBe(200);
   });
 });

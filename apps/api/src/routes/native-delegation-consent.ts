@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createMiddleware } from 'hono/factory';
 import { Hono } from 'hono';
 import { Prisma, type PrismaClient } from '@openkey/db';
 import { ensureEip55, generateHostSIWEMessage, completeSessionSetup, siweToDelegationHeaders } from '@tinycloud/node-sdk-wasm';
@@ -6,7 +7,7 @@ import { activateSessionWithHost, submitHostDelegation } from '@tinycloud/sdk-co
 import { createWalletFromPrivateKey } from '@openkey/tee';
 import type { SessionContext } from '../middleware/session';
 import { auth } from '../auth';
-import { resolveOriginPolicy } from '../origin-policy';
+import { isAccountOriginAllowed, resolveOriginPolicy } from '../origin-policy';
 import { primaryKeyWhere } from '../services/primary-key';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
@@ -108,6 +109,12 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     if (c.req.header('authorization')) return c.json({ error: 'unauthorized' }, 401);
     await next();
   });
+  const requireAccountOrigin = createMiddleware(async (c, next) => {
+    if (!isAccountOriginAllowed(c.req.header('origin'), 'http://localhost:5173')) return c.json({ error: 'invalid_origin' }, 403);
+    await next();
+  });
+  router.use('/:id/prepare', requireAccountOrigin);
+  router.use('/:id/approve', requireAccountOrigin);
   router.use('*', async (c, next) => {
     const session = await auth.api.getSession({ headers: c.req.raw.headers });
     if (!session) return c.json({ error: 'unauthorized' }, 401);

@@ -231,6 +231,18 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway base domain (e.g. `dstack-pha-prod5.phala.network`); the ingress CNAMEs `api.openkey.so` to `gateway.<base>` (never `_.<base>`, which Android cannot resolve) |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |
 
+`WEBAUTHN_ORIGIN` is the account browser origin and is required in production.
+Browser requests to sensitive account routes require an `Origin` matching that
+account origin, whether authenticated by cookie or bearer. Bearers without an
+`Origin` remain refused; cookie requests without an `Origin` retain their
+existing behavior. Native delegation preparation and approval also require the
+account origin. Organization and tenant-console routes continue to accept the
+configured console origin. Better Auth `/api/auth/*` routes are not covered by
+this restriction.
+If `CONSOLE_ORIGIN` is unset in production, it defaults to
+`https://console.openkey.so`; that console origin remains accepted only on
+console-facing organization routes, unless it is also `WEBAUTHN_ORIGIN`.
+
 TC-2212 request IDs, sealed-body digests and request deadlines are bound by
 OpenKey's server-side consent context. The owner's signature covers the canonical
 delegation's target, permissions and grant expiry, not the server-authored result
