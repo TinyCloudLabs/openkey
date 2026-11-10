@@ -76,6 +76,8 @@ export interface CliSigningTransport {
    * user can retry.
    */
   approveBlockedReason?: string | null;
+  /** A server-declared terminal approval failure; only re-preparation can unblock Approve. */
+  approveBlockedByFailure?: boolean;
 }
 
 /** Transport injected by the widget popup and iframe routes. */

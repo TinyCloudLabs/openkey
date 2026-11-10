@@ -39,9 +39,11 @@
     context?: Snippet;
     /** True when the user chose one of several keys. */
     showSigner?: boolean;
+    /** Reports whether editable permission checkboxes are visible. */
+    onEditingStateChange?: (editing: boolean) => void;
   }
 
-  let { model, initialSelection, transport, context, showSigner = false }: Props = $props();
+  let { model, initialSelection, transport, context, showSigner = false, onEditingStateChange }: Props = $props();
 
   // Internal review state. The adapter owns this because it is per-surface
   // presentational state — the route no longer touches it. We intentionally
@@ -62,12 +64,13 @@
 
   function onEditingChange(next: boolean) {
     editing = next;
+    onEditingStateChange?.(next);
   }
 
   function onApprove() {
     // Never approve a prepared authorization that differs from the visible
     // selection; SigningApproval also disables the button.
-    if (transport.approveBlockedReason) return;
+    if (transport.approveBlockedReason || transport.approveBlockedByFailure) return;
     // The CLI's approve is the delegate-submission path. The transport
     // handles managed vs external signing and delegation-token capture.
     void transport.approveDelegate();
@@ -89,6 +92,7 @@
   approving={transport.approving}
   error={transport.error}
   approveBlockedReason={transport.approveBlockedReason ?? null}
+  approveBlockedByFailure={transport.approveBlockedByFailure ?? false}
   {context}
   expiryMs={transport.expiry?.chosenMs ?? null}
   onExpiryChange={transport.expiry?.onChange}
