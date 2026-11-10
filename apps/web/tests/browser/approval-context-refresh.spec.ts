@@ -170,7 +170,11 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
         });
         expect(signatures).toBe(1);
       }
-      await expect(page.getByRole('alert')).not.toContainText('Authorization context');
+      if (scenario === 'twice') {
+        await expect(page.getByRole('alert')).toContainText('Authorization context expired.');
+      } else {
+        await expect(page.getByRole('alert')).not.toContainText('Authorization context');
+      }
     });
   }
 }
