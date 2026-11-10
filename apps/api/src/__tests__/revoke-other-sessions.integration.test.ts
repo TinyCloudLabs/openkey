@@ -219,4 +219,89 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
       expect(account.status, `${route.path} account cookie reaches endpoint`).not.toBe(403);
     }
   });
+  test('organization OAuth clients are managed through the tenant console, not session client endpoints', async () => {
+    const removedUserId = 'org-app-creator';
+    const adminUserId = 'org-app-admin';
+    const removedToken = randomUUID();
+    const adminToken = randomUUID();
+    await prisma.user.createMany({ data: [
+      { id: removedUserId, email: `${removedUserId}@example.test`, name: removedUserId, emailVerified: true },
+      { id: adminUserId, email: `${adminUserId}@example.test`, name: adminUserId, emailVerified: true },
+    ] });
+    await prisma.session.createMany({ data: [
+      { id: randomUUID(), userId: removedUserId, token: removedToken, expiresAt: new Date(Date.now() + 7 * 86_400_000) },
+      { id: randomUUID(), userId: adminUserId, token: adminToken, expiresAt: new Date(Date.now() + 7 * 86_400_000) },
+    ] });
+    await prisma.organization.create({ data: { id: 'org-app-authz', name: 'App authorization' } });
+    await prisma.planEntitlements.create({ data: {
+      id: 'org-app-entitlements', organizationId: 'org-app-authz', maxApps: 5, maxOrganizationMembers: 5,
+      requestsPerMinute: 60, auditRetentionDays: 7,
+    } });
+    const removedMembership = await prisma.organizationMembership.create({
+      data: { id: 'org-app-creator-membership', organizationId: 'org-app-authz', userId: removedUserId, role: 'ADMIN' },
+    });
+    await prisma.organizationMembership.create({
+      data: { id: 'org-app-admin-membership', organizationId: 'org-app-authz', userId: adminUserId, role: 'ADMIN' },
+    });
+    const cookie = async (token: string) => (await serializeSignedCookie(cookieName, token, secret)).split(';')[0]!;
+    const creatorCookie = await cookie(removedToken);
+    const adminCookie = await cookie(adminToken);
+    const created = await app.fetch(new Request('https://api.openkey.test/api/console/organizations/org-app-authz/apps', {
+      method: 'POST', headers: { cookie: creatorCookie, origin: 'https://console.openkey.so', 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Organization app', redirectUris: ['https://example.test/callback'] }),
+    }));
+    expect(created.status, await created.clone().text()).toBe(201);
+    const client = (await created.json() as { client: { id: string; clientId: string } }).client;
+    expect(await prisma.oauthClient.findUnique({ where: { id: client.id }, select: { userId: true } })).toEqual({ userId: null });
+    await prisma.organizationMembership.update({ where: { id: removedMembership.id }, data: { status: 'REVOKED', revokedAt: new Date(), validUntil: new Date() } });
+
+    const call = (path: string, method: string, token: string, body?: unknown) => app.fetch(new Request(`https://api.openkey.test/api/auth${path}`, {
+      method,
+      headers: { cookie: token === removedToken ? creatorCookie : adminCookie, origin: 'https://openkey.test', ...(body ? { 'content-type': 'application/json' } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    }));
+    const listed = await call('/oauth2/get-clients', 'GET', removedToken);
+    expect(listed.status).toBe(200);
+    expect((await listed.json() as Array<{ client_id: string }>).some(({ client_id }) => client_id === client.clientId)).toBe(false);
+    const before = await prisma.oauthClient.findUnique({ where: { id: client.id } });
+    for (const [path, body] of [
+      ['/oauth2/update-client', { client_id: client.clientId, update: { client_name: 'Changed' } }],
+      ['/oauth2/delete-client', { client_id: client.clientId }],
+      ['/oauth2/client/rotate-secret', { client_id: client.clientId }],
+    ] as const) {
+      expect((await call(path, 'POST', removedToken, body)).status).toBe(401);
+      expect((await call(path, 'POST', adminToken, body)).status).toBe(401);
+      const bearer = await app.fetch(new Request(`https://api.openkey.test/api/auth${path}`, {
+        method: 'POST', headers: { authorization: `Bearer ${removedToken}`, origin: 'https://openkey.test', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }));
+      expect(bearer.status, `${path} bearer`).toBe(401);
+      expect(await prisma.oauthClient.findUnique({ where: { id: client.id } })).toEqual(before);
+    }
+    expect((await call(`/oauth2/get-client?client_id=${client.clientId}`, 'GET', removedToken)).status).toBe(401);
+    const updated = await app.fetch(new Request(`https://api.openkey.test/api/console/organizations/org-app-authz/apps/${client.id}`, {
+      method: 'PATCH', headers: { cookie: adminCookie, origin: 'https://console.openkey.so', 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Admin managed' }),
+    }));
+    expect(updated.status, await updated.clone().text()).toBe(200);
+    const deleted = await app.fetch(new Request(`https://api.openkey.test/api/console/organizations/org-app-authz/apps/${client.id}`, {
+      method: 'DELETE', headers: { cookie: adminCookie, origin: 'https://console.openkey.so' },
+    }));
+    expect(deleted.status).toBe(200);
+    const personalCreated = await call('/oauth2/create-client', 'POST', adminToken, {
+      redirect_uris: ['https://example.test/personal'], client_name: 'Personal client',
+    });
+    expect(personalCreated.status, await personalCreated.clone().text()).toBe(200);
+    const personalClient = await personalCreated.json() as { client_id: string };
+    expect((await call(`/oauth2/get-client?client_id=${personalClient.client_id}`, 'GET', adminToken)).status).toBe(200);
+    expect((await call('/oauth2/update-client', 'POST', adminToken, {
+      client_id: personalClient.client_id, update: { client_name: 'Personal client updated' },
+    })).status).toBe(200);
+    expect((await call('/oauth2/client/rotate-secret', 'POST', adminToken, { client_id: personalClient.client_id })).status).toBe(200);
+    expect((await call('/oauth2/update-client', 'POST', removedToken, {
+      client_id: personalClient.client_id, update: { client_name: 'Not owner' },
+    })).status).toBe(401);
+    expect((await call('/oauth2/delete-client', 'POST', removedToken, { client_id: personalClient.client_id })).status).toBe(401);
+    expect((await call('/oauth2/delete-client', 'POST', adminToken, { client_id: personalClient.client_id })).status).toBe(200);
+  });
 }

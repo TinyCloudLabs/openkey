@@ -138,6 +138,10 @@ header in this deployment; `CF-Connecting-IP` and `X-Forwarded-For` can be
 supplied by a caller, so PAR does not use either for rate limiting. Per-source
 fairness requires an authenticated network source at the ingress boundary.
 
+Organization OAuth applications are owned by the organization, not their
+creator. Organization administrators manage them through the tenant console;
+personal OAuth clients remain manageable by their creating user.
+
 The canonical-key/organization-custody cutover is governed by the
 [TC-492 release runbook](./tc-492-canonical-key-cutover.md). It requires a
 read-only deterministic pre/post report and separate deployment authority; it

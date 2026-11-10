@@ -129,7 +129,7 @@ export function createTenantConsoleRouter(db: PrismaClient, dependencies: Tenant
     const input = parseAppInput(await c.req.json<Record<string, unknown>>().catch(() => ({})));
     if (!input?.name || !input.redirectUris) return error(c, 400, 'INVALID_REQUEST', 'A valid name and redirectUris are required');
     try {
-      const client = await retrySerializable(() => db.$transaction(async (tx) => { const organizationId = c.req.param('organizationId'); const entitlements = await resolvePlanEntitlements(tx, organizationId); if (!entitlements) return null; if (await tx.oauthClient.count({ where: { organizationId } }) >= entitlements.maxApps) throw new ConsolePlanLimitError(); return tx.oauthClient.create({ data: { id: randomBytes(16).toString('hex'), clientId: `ok_${randomBytes(16).toString('hex')}`, clientSecret: null, organizationId, userId: c.get('user').id, name: input.name!, uri: input.uri ?? null, icon: input.icon ?? null, redirectUris: input.redirectUris!, scopes: ['openid', 'email', 'keys', 'offline_access'], disabled: false, skipConsent: false, enableEndSession: false, tokenEndpointAuthMethod: 'none', grantTypes: ['authorization_code', 'refresh_token'], responseTypes: ['code'], type: input.type ?? 'spa', public: true, contacts: [] }, select: APP_SELECT }); }, { isolationLevel: 'Serializable' }));
+      const client = await retrySerializable(() => db.$transaction(async (tx) => { const organizationId = c.req.param('organizationId'); const entitlements = await resolvePlanEntitlements(tx, organizationId); if (!entitlements) return null; if (await tx.oauthClient.count({ where: { organizationId } }) >= entitlements.maxApps) throw new ConsolePlanLimitError(); return tx.oauthClient.create({ data: { id: randomBytes(16).toString('hex'), clientId: `ok_${randomBytes(16).toString('hex')}`, clientSecret: null, organizationId, userId: null, name: input.name!, uri: input.uri ?? null, icon: input.icon ?? null, redirectUris: input.redirectUris!, scopes: ['openid', 'email', 'keys', 'offline_access'], disabled: false, skipConsent: false, enableEndSession: false, tokenEndpointAuthMethod: 'none', grantTypes: ['authorization_code', 'refresh_token'], responseTypes: ['code'], type: input.type ?? 'spa', public: true, contacts: [] }, select: APP_SELECT }); }, { isolationLevel: 'Serializable' }));
       if (!client) return error(c, 404, 'NOT_FOUND', 'Organization not found'); return c.json({ client }, 201);
     } catch (caught) { if (caught instanceof ConsolePlanLimitError) return error(c, 429, 'PLAN_LIMIT_EXCEEDED', 'Application limit is exhausted'); throw caught; }
   });
@@ -138,6 +138,12 @@ export function createTenantConsoleRouter(db: PrismaClient, dependencies: Tenant
     const current = await db.oauthClient.findFirst({ where, select: { type: true, redirectUris: true } }); if (!current) return error(c, 404, 'NOT_FOUND', 'Application not found');
     const data = parseAppInput(await c.req.json<Record<string, unknown>>().catch(() => ({})), true, current); if (!data) return error(c, 400, 'INVALID_REQUEST', 'No valid application changes were supplied');
     await db.oauthClient.updateMany({ where, data }); return c.json({ client: await db.oauthClient.findFirst({ where, select: APP_SELECT }) });
+  });
+  router.delete('/:organizationId/apps/:appId', async (c) => {
+    if (!isAdmin(c)) return error(c, 403, 'FORBIDDEN', 'Administrator access is required');
+    const result = await db.oauthClient.deleteMany({ where: { id: c.req.param('appId'), organizationId: c.req.param('organizationId') } });
+    if (!result.count) return error(c, 404, 'NOT_FOUND', 'Application not found');
+    return c.json({ success: true });
   });
   return router;
 }
