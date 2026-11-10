@@ -6,6 +6,7 @@
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
+  import { classifyDelegateError } from '$lib/delegate-error-classification';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import Card from '$lib/components/ui/card.svelte';
@@ -79,13 +80,18 @@
       this.code = code;
       this.status = status;
     }
-    get contextUnavailable() {
-      return this.code === 'context-expired' || this.code === 'context-not-found';
+  }
+  function delegateErrorClassification(cause: unknown) {
+    return cause instanceof DelegateResponseError
+      ? classifyDelegateError(cause.status, cause.code)
+      : 'error';
+  }
+
+  function delegateErrorMessage(cause: unknown) {
+    if (cause instanceof DelegateResponseError) {
+      return apiBusyOrEndedMessage(cause.status) ?? cause.message;
     }
-    get requestExpired() {
-      // Sign-site 410s are routed by the caller to the busy/ended wording, not this panel.
-      return this.status !== 410 && (this.code === 'expired_request' || this.code === 'expired_token' || this.code === 'expired');
-    }
+    return cause instanceof Error ? cause.message : 'Delegation failed';
   }
 
   const session = authClient.useSession();
@@ -692,8 +698,10 @@
       editingPermissions = false;
       step = 'consent';
     } catch (e: any) {
-      if (e instanceof DelegateResponseError && e.requestExpired) requestExpired = true;
-      error = e.message || 'Failed to prepare delegation';
+      const classification = delegateErrorClassification(e);
+      error = classification === 'busy' || classification === 'ended'
+        ? delegateErrorMessage(e)
+        : e.message || 'Failed to prepare delegation';
       selectedKey = null;
     } finally {
       preparing = false;
@@ -1215,28 +1223,24 @@
       }
       await finishDelegate(data);
     } catch (cause) {
-      if (cause instanceof DelegateResponseError && cause.status === 410) {
-        // A 410 carries the busy/ended wording, whichever code or attempt produced it.
-        error = cause.message;
-      } else if (refreshAttempted) {
-        requestExpired = true;
-      } else if (cause instanceof DelegateResponseError && cause.contextUnavailable) {
+      const classification = delegateErrorClassification(cause);
+      if (classification === 'refresh-once' && !refreshAttempted) {
         if (!key) {
-          requestExpired = true;
+          error = delegateErrorMessage(cause);
           return;
         }
         try {
           await refreshAuthorizationContext(key, actions);
-        } catch (cause) {
-          if (cause instanceof DelegateResponseError && cause.status === 410) error = cause.message;
-          else requestExpired = true;
+        } catch (refreshCause) {
+          const refreshClassification = delegateErrorClassification(refreshCause);
+          error = refreshClassification === 'busy' || refreshClassification === 'ended'
+            ? delegateErrorMessage(refreshCause)
+            : refreshCause instanceof Error ? refreshCause.message : 'Delegation failed';
           return;
         }
         await doManagedDelegate(true);
-      } else if (cause instanceof DelegateResponseError && cause.requestExpired) {
-        requestExpired = true;
       } else {
-        error = cause instanceof Error ? cause.message : 'Delegation failed';
+        error = delegateErrorMessage(cause);
       }
     } finally {
       delegating = false;
@@ -1370,31 +1374,27 @@
       }
       await finishDelegate(data);
     } catch (cause) {
-      if (cause instanceof DelegateResponseError && cause.status === 410) {
-        // A 410 carries the busy/ended wording, whichever code or attempt produced it.
-        error = cause.message;
-      } else if (refreshAttempted) {
-        requestExpired = true;
-      } else if (cause instanceof DelegateResponseError && cause.contextUnavailable) {
+      const classification = delegateErrorClassification(cause);
+      if (classification === 'refresh-once' && !refreshAttempted) {
         if (!key) {
-          requestExpired = true;
+          error = delegateErrorMessage(cause);
           return;
         }
         try {
           await refreshAuthorizationContext(key, selectedActionIds);
-        } catch (cause) {
-          if (cause instanceof DelegateResponseError && cause.status === 410) error = cause.message;
-          else requestExpired = true;
+        } catch (refreshCause) {
+          const refreshClassification = delegateErrorClassification(refreshCause);
+          error = refreshClassification === 'busy' || refreshClassification === 'ended'
+            ? delegateErrorMessage(refreshCause)
+            : refreshCause instanceof Error ? refreshCause.message : 'Delegation failed';
           return;
         }
         // A fresh prepare changes the signed bytes; obtain a fresh wallet signature.
         await doExternalDelegate(true);
-      } else if (cause instanceof DelegateResponseError && cause.requestExpired) {
-        requestExpired = true;
       } else if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 4001) {
         error = 'Signature was rejected by wallet.';
       } else {
-        error = cause instanceof Error ? cause.message : 'Delegation failed';
+        error = delegateErrorMessage(cause);
       }
     } finally {
       delegating = false;

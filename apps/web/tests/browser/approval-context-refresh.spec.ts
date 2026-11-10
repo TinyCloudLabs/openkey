@@ -13,7 +13,7 @@ const keyFor = (ability: string) => `${ability === capabilities ? 'tinycloud.cap
 const allKeys = [capabilities, read, write].map(keyFor);
 const narrowed = [capabilities, read].map(keyFor);
 
-type Scenario = 'success' | 'expired-link' | 'direct-expired' | 'expired-token' | 'refused' | 'twice' | 'second-refused' | 'reject-signature' | 'changed-selection' | 'duplicate-selection' | 'missing-selection' | 'empty-siwe' | 'malformed-siwe' | 'changed-message' | 'mixed-recap' | 'malformed-caveat';
+type Scenario = 'success' | 'expired-link' | 'direct-expired' | 'expired-token' | 'busy-expired-code' | 'busy-context-code' | 'refused' | 'twice' | 'second-refused' | 'reject-signature' | 'changed-selection' | 'duplicate-selection' | 'missing-selection' | 'empty-siwe' | 'malformed-siwe' | 'changed-message' | 'mixed-recap' | 'malformed-caveat';
 type Call = { path: string; body: Record<string, unknown> };
 
 async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scenario, code = 'context-expired') {
@@ -93,6 +93,8 @@ async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scena
       approvals++;
       if (scenario === 'direct-expired') return reply(410, { code: 'expired_request', error: 'Link expired' });
       if (scenario === 'expired-token') return reply(400, { code: 'expired_token', error: 'Device request expired' });
+      if (scenario === 'busy-expired-code') return reply(409, { code: 'expired_request', error: 'Request expired' });
+      if (scenario === 'busy-context-code') return reply(409, { code: 'context-expired', error: 'Authorization context expired.' });
       if (approvals === 2 && scenario === 'second-refused') return reply(400, { code: 'user-mismatch', error: 'Refreshed context refused' });
       if (approvals === 1 || scenario === 'twice') return reply(400, { code, error: 'Authorization context expired.' });
       return reply(200, { hostActivated: true });
@@ -135,7 +137,7 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
       }
     });
   }
-  for (const scenario of ['expired-link', 'direct-expired', 'expired-token', 'refused', 'twice', 'second-refused', 'changed-selection', 'duplicate-selection', 'missing-selection', 'empty-siwe', 'malformed-siwe', 'changed-message', 'mixed-recap', 'malformed-caveat', ...(keyType === 'EXTERNAL' ? ['reject-signature' as const] : [])] as const) {
+  for (const scenario of ['expired-link', 'direct-expired', 'expired-token', 'busy-expired-code', 'busy-context-code', 'refused', 'twice', 'second-refused', 'changed-selection', 'duplicate-selection', 'missing-selection', 'empty-siwe', 'malformed-siwe', 'changed-message', 'mixed-recap', 'malformed-caveat', ...(keyType === 'EXTERNAL' ? ['reject-signature' as const] : [])] as const) {
     test(`${keyType} ${scenario} ends recovery without another retry`, async ({ page }) => {
       const flow = await open(page, keyType, scenario);
       await page.getByRole('button', { name: 'Approve', exact: true }).click();
@@ -146,10 +148,20 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
         await expect(page.getByRole('alert')).toHaveText('This request has already been answered or has ended.');
         await expect(page.getByText('Link expired')).toHaveCount(0);
         await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);
+      } else if (scenario === 'busy-expired-code' || scenario === 'busy-context-code') {
+        await expect(page.getByRole('alert')).toHaveText('This request is already being approved. Wait a moment.');
+        await expect(page.locator('.expired-request')).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);
+        expect(flow.counts()).toEqual({ prepares: 2, approvals: 1 });
+      } else if (scenario === 'expired-token') {
+        await expect(page.getByRole('alert')).toHaveText('Device request expired');
+        await expect(page.locator('.expired-request')).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);
       } else {
-        await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+        await expect(page.locator('.expired-request')).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);
       }
-      expect(flow.counts()).toEqual({ prepares: scenario === 'direct-expired' || scenario === 'expired-token' ? 2 : 3, approvals: scenario === 'twice' || scenario === 'second-refused' ? 2 : 1 });
+      expect(flow.counts()).toEqual({ prepares: scenario === 'direct-expired' || scenario === 'expired-token' || scenario === 'busy-expired-code' || scenario === 'busy-context-code' ? 2 : 3, approvals: scenario === 'twice' || scenario === 'second-refused' ? 2 : 1 });
       if (keyType === 'EXTERNAL' && ['duplicate-selection', 'missing-selection', 'empty-siwe', 'malformed-siwe', 'changed-message', 'mixed-recap', 'malformed-caveat'].includes(scenario)) {
         const signatures = await page.evaluate(() => {
           const messages: unknown = Reflect.get(window, 'qaSignedMessages');
