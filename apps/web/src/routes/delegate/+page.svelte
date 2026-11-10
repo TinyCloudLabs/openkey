@@ -13,6 +13,7 @@
     deviceRelayFailureText,
     DeviceRelayDeliveryError,
     OwnerMessageError,
+    isTerminalApprovalFailure,
     shortCodeFailureText,
   } from '$lib/delegate-failure-text';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
@@ -106,6 +107,7 @@
       return deviceRelayFailureText(cause.status, cause.code);
     }
     if (cause instanceof DelegateResponseError) {
+      if (isTerminalApprovalFailure(cause.status, cause.code)) approveBlockedByFailure = true;
       return delegateResponseFailureText(cause.status, cause.code, {
         permissionsEditable: reviewEditing,
         expiryChangeable: expiryChangeControlVisible,
@@ -121,6 +123,7 @@
   let selectedKey = $state<EthereumKey | null>(null);
   let error = $state('');
   let requestExpired = $state(false);
+  let approveBlockedByFailure = $state(false);
   let keysLoaded = $state(false);
   let initialized = $state(false);
   let signingIn = $state(false);
@@ -785,8 +788,8 @@
     const permissions = Array.isArray(data.permissions)
       ? (data.permissions as DelegatePermission[])
       : [];
-
     preparedData = data.prepared;
+
     siweMessage = data.prepared?.siwe || '';
     spaceSetup = parseSpaceSetup(data.spaceSetup);
     permissionOptions = permissions;
@@ -853,6 +856,7 @@
       // reactivity picks up the change.
       reviewModel = { ...reviewModel, rawMessage: siweMessage, expiry: siweExpiration(siweMessage) ?? reviewModel.expiry };
     }
+    approveBlockedByFailure = false;
   }
 
   function resetDelegationState() {
@@ -1909,6 +1913,7 @@
                 approving: delegating || updatingPermissions,
                 error,
                 approveBlockedReason,
+                approveBlockedByFailure,
                 approveDelegate,
                 goBack,
                 ...(approvalRequestMode ? { decline: declineRequest, declining } : {}),
@@ -1982,7 +1987,7 @@
               <Button variant="secondary" onclick={goBack} disabled={delegating} class="flex-1 rounded-xl">
                 Back
               </Button>
-              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch) || (hostNeedsAcknowledgment && !hostAcknowledged)} class="flex-1 rounded-xl">
+              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || approveBlockedByFailure || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch) || (hostNeedsAcknowledgment && !hostAcknowledged)} class="flex-1 rounded-xl">
                 {#if delegating}
                   Signing...
                 {:else if updatingPermissions}

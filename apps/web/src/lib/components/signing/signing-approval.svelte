@@ -83,6 +83,8 @@
      * re-prepare.
      */
     approveBlockedReason?: string | null;
+    /** Disable Approve after an API-declared terminal failure until re-preparation succeeds. */
+    approveBlockedByFailure?: boolean;
     /** Disable Approve while an embedding host is applying the review layout. */
     layoutBlocked?: boolean;
     stickyActions?: boolean;
@@ -139,6 +141,7 @@
     approving = false,
     error = null,
     approveBlockedReason = null,
+    approveBlockedByFailure = false,
     layoutBlocked = false,
     stickyActions = false,
     refused = false,
@@ -487,7 +490,7 @@
   const nodeChecking = $derived(peerRecognition?.state === "checking");
   const approveDisabled = $derived(approving || isMalformedRecap);
   const approveButtonDisabled = $derived(
-    previewPending || layoutBlocked || refused || approveDisabled || Boolean(approveBlockedReason) || nodeChecking || declining,
+    previewPending || layoutBlocked || refused || approveDisabled || Boolean(approveBlockedReason) || approveBlockedByFailure || nodeChecking || declining,
   );
   const approveLabel = $derived(
     isMalformedRecap

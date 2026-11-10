@@ -74,8 +74,50 @@ const CODE_MESSAGES: Record<string, MappedMessage> = {
 };
 
 function safeCode(code: unknown): string | null {
-  return typeof code === 'string' && SAFE_CODE.test(code) ? code : null;
+  if (typeof code !== 'string') return null;
+  const match = SAFE_CODE.exec(code);
+  return match?.[0] === code ? code : null;
 }
+
+const TERMINAL_APPROVAL_CODES: Record<string, true> = {
+  handoff_expired: true,
+  handoff_consumed: true,
+  handoff_replayed: true,
+  handoff_cancelled: true,
+  handoff_not_found: true,
+  handoff_claimed: true,
+  prepared_expired: true,
+  expired_request: true,
+  expired_result: true,
+  already_approved: true,
+  'key-mismatch': true,
+  'user-mismatch': true,
+  'host-mismatch': true,
+  'space-mismatch': true,
+  'jwk-mismatch': true,
+  'baseline-digest-mismatch': true,
+  'immutable-fields-changed': true,
+  prepared_metadata_mismatch: true,
+  prepared_siwe_mismatch: true,
+  selected_actions_missing_siwe_entries: true,
+  selected_actions_exceed_siwe_entries: true,
+  invalid_selected_action_ids: true,
+  'handoff-mismatch': true,
+  binding_mismatch: true,
+  request_binding: true,
+  'signature-mismatch': true,
+  bound_siwe_parse_failed: true,
+  authorization_context_failed: true,
+  missing_authorization_context_token: true,
+  missing_prepared: true,
+  authorization_context_missing_original_siwe: true,
+};
+
+export function isTerminalApprovalFailure(status: number, code: unknown): boolean {
+  const codeText = safeCode(code);
+  return status === 410 || (codeText !== null && TERMINAL_APPROVAL_CODES[codeText] === true);
+}
+
 
 export class OwnerMessageError extends Error {}
 

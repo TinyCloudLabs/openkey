@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, OwnerMessageError, shortCodeFailureText } from './delegate-failure-text';
+import { delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, isTerminalApprovalFailure, OwnerMessageError, shortCodeFailureText } from './delegate-failure-text';
 
 const changedRequest = "This request changed after you opened it, so OpenKey didn't approve it. Return to the app or command and start again.";
 const approvalCannotProceed = "Couldn't approve this request. Try again.";
@@ -34,6 +34,17 @@ const permissionCodes = [
 const expiryCodes = [
   'invalid_expiry', 'invalid_expiration_time', 'missing_expiration_time',
   'expiry_exceeds_link', 'expiry_exceeds_handoff', 'expiry_not_changeable',
+];
+
+const terminalCodes = [
+  'handoff_expired', 'handoff_consumed', 'handoff_replayed', 'handoff_cancelled', 'handoff_not_found',
+  'handoff_claimed', 'prepared_expired', 'expired_request', 'expired_result', 'already_approved',
+  'key-mismatch', 'user-mismatch', 'host-mismatch', 'space-mismatch', 'jwk-mismatch', 'baseline-digest-mismatch',
+  'immutable-fields-changed', 'prepared_metadata_mismatch', 'prepared_siwe_mismatch',
+  'selected_actions_missing_siwe_entries', 'selected_actions_exceed_siwe_entries', 'invalid_selected_action_ids',
+  'handoff-mismatch', 'binding_mismatch', 'request_binding', 'signature-mismatch', 'bound_siwe_parse_failed',
+  'authorization_context_failed', 'missing_authorization_context_token', 'missing_prepared',
+  'authorization_context_missing_original_siwe',
 ];
 
 
@@ -87,7 +98,7 @@ describe('delegateFailureText code mappings', () => {
     expect(delegateResponseFailureText(500, undefined)).toBe(
       `${approvalCannotProceed} (Error 500)`,
     );
-    for (const code of ['free text', 'x'.repeat(65), {}, 10, ''] as unknown[]) {
+    for (const code of ['free text', 'x'.repeat(65), {}, 10, '', 'some_code\n'] as unknown[]) {
       expect(delegateResponseFailureText(500, code)).toBe(`${approvalCannotProceed} (Error 500)`);
     }
   });
@@ -107,6 +118,24 @@ describe('delegateFailureText code mappings', () => {
     expect(delegateFailureText(new OwnerMessageError('This approval link is incomplete.'))).toBe('This approval link is incomplete.');
     expect(delegateFailureText(new Error('server errorDescription: private detail'))).toBe(approvalCannotProceed);
     expect(delegateFailureText('raw thrown value')).toBe(approvalCannotProceed);
+  });
+  test.each(terminalCodes)('marks terminal code %s', (code: string) => {
+    expect(isTerminalApprovalFailure(400, code)).toBe(true);
+  });
+
+  test('marks HTTP 410 terminal and keeps all non-B/C failures enabled', () => {
+    expect(isTerminalApprovalFailure(410, undefined)).toBe(true);
+    for (const [status, code] of [
+      [409, 'approval_in_progress'], [401, 'session_required'],
+      [400, 'candidate-broadens-baseline'], [400, 'invalid_expiry'],
+      [403, 'app_key_grant_refused'], [429, 'rate_limited'],
+      [404, 'key_not_found'], [500, 'unknown_code'], [500, undefined],
+      [400, 'has spaces'], [400, 'x'.repeat(65)], [400, {}],
+    ] as Array<[number, unknown]>) {
+      expect(isTerminalApprovalFailure(status, code)).toBe(false);
+    }
+    expect(isTerminalApprovalFailure(400, new Error('key-mismatch'))).toBe(false);
+    expect(isTerminalApprovalFailure(400, new OwnerMessageError('owner copy'))).toBe(false);
   });
 
 

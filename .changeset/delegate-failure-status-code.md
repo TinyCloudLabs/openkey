@@ -2,6 +2,6 @@
 "@openkey/web": patch
 ---
 
-Approval failures show mapped guidance and safe status/code details; short-code failures use matching status/code text.
+Approval failures use safe, state-specific guidance and keep terminal approvals blocked until re-preparation.
 
 Details: TC-2729

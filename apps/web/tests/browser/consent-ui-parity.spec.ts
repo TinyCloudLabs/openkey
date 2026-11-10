@@ -246,15 +246,70 @@ async function openDeviceRelayReview(
 }
 
 test('a prepare fetch failure uses fixed text, not the browser error message', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await mock(page);
   await page.route('**/api/delegate/prepare', (route) => route.abort('failed'));
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}&permissions=${encodeBase64UrlJson({ permissions: request, reason: 'Sync my notes' })}`);
   const alert = page.getByRole('alert');
   await expect(alert).toHaveText("Couldn't approve this request. Try again.");
   await expect(alert).not.toContainText('Failed to fetch');
+  const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
+  if (shots) await page.screenshot({ path: `${shots}/g-generic.png`, fullPage: false });
+});
+test('expiry failure uses the editable expiry wording', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mock(page);
+  await page.route('**/api/delegate', (route) => json(route, 400, { code: 'invalid_expiry', error: 'private expiry detail' }));
+  await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}&permissions=${encodeBase64UrlJson({ permissions: request })}&expiryChangeable=true`);
+  const approve = page.getByRole('button', { name: 'Approve', exact: true });
+  await expect(approve).toBeEnabled();
+  await expect(page.getByRole('button', { name: '(Change)' })).toBeVisible();
+  await approve.click();
+  await expect(page.getByRole('alert')).toHaveText("This access length can't be used. Choose a different one, or start again from the app or command.");
+  await expect(approve).toBeEnabled();
+  const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
+  if (shots) await page.screenshot({ path: `${shots}/e.png`, fullPage: false });
 });
 
+test('a successful prepare after a terminal failure re-enables Approve', async ({ page }) => {
+  await mock(page);
+  await page.route('**/api/delegate/prepare', (route) => json(route, 200, prepared));
+  await page.route('**/api/delegate', (route) => json(route, 400, { code: 'key-mismatch', error: 'private mismatch detail' }));
+  await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}&permissions=${encodeBase64UrlJson({ permissions: request })}`);
+  const approve = page.getByRole('button', { name: 'Approve', exact: true });
+  await expect(approve).toBeEnabled();
+  await approve.click();
+  await expect(approve).toBeDisabled();
+  await expect(page.getByRole('button', { name: '(Change)' })).toBeVisible();
+  await page.getByRole('button', { name: '(Change)' }).click();
+  await page.getByRole('button', { name: '24 hr', exact: true }).click();
+  await expect(approve).toBeEnabled();
+});
+
+
+test('short-code API failure shows safe status and code', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mock(page);
+  const delegation = {
+    delegationHeader: { Authorization: 'Bearer signed' },
+    delegationCid: 'bafy-signed',
+    spaceId: space,
+    verificationMethod: 'did:key:z6Mk',
+    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+    expirationTime: '2026-11-03T01:00:00.000Z',
+    hostActivated: true,
+  };
+  await page.route('**/api/delegate', (route) => json(route, 200, delegation));
+  await page.route('**/api/delegation-codes', (route) => json(route, 503, { code: 'short_code_failed', error: 'private broker detail' }));
+  await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  const failure = "Couldn't create a short code. Use the full delegation code instead. (Error 503 · short_code_failed)";
+  await expect(page.getByText(failure, { exact: true })).toBeVisible();
+  const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
+  if (shots) await page.screenshot({ path: `${shots}/shortcode.png`, fullPage: false });
+});
 test('device relay failure shows only safe status and code and keeps Approve available', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
   await openDeviceRelayReview(page, {
     relayStatus: 503,
     relayBody: { code: 'some_code', errorDescription: 'private relay detail' },
@@ -264,6 +319,8 @@ test('device relay failure shows only safe status and code and keeps Approve ava
   await expect(alert).toHaveText("You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again. (Error 503 · some_code)");
   await expect(alert).not.toContainText('private relay detail');
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+  const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
+  if (shots) await page.screenshot({ path: `${shots}/f-device-delivery.png`, fullPage: false });
 });
 
 test('device relay uses status only for the API error body and a later 410 uses ended copy', async ({ page }) => {
