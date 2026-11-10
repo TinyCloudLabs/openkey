@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from 'bun:test';
 import { Hono } from 'hono';
-import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT, type JWK } from 'jose';
+import { createLocalJWKSet, createRemoteJWKSet, exportJWK, generateKeyPair, SignJWT, type JWK } from 'jose';
 import {
   appleEmailTransition,
   appleEventTimeMs,
@@ -69,7 +69,6 @@ describe('Apple notification JWS verification', () => {
 
   test.each([
     ['another signing key', { key: 'other' as const }],
-    ['an unknown kid', { kid: 'unknown-kid' }],
     ['a wrong issuer', { issuer: 'https://evil.example' }],
     ['a wrong audience (the Services ID)', { audience: 'so.openkey.signin' }],
     ['an iat older than 24 hours', { iat: nowSeconds() - 24 * 3600 - 60 }],
@@ -77,6 +76,18 @@ describe('Apple notification JWS verification', () => {
     ['no jti', { jti: null }],
   ])('rejects %s', async (_name, options) => {
     expect(await verify(await notification(event('consent-revoked'), options))).toBeNull();
+  });
+
+  test('an unknown kid or an unavailable Apple key set is thrown (answered 503), never read as a forgery', async () => {
+    await expect(verify(await notification(event('consent-revoked'), { kid: 'unknown-kid' }))).rejects.toThrow();
+    const outage = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('unavailable', { status: 503 }) });
+    try {
+      const remote = createRemoteJWKSet(new URL(`http://127.0.0.1:${outage.port}/auth/keys`));
+      await expect(verifyAppleNotification(await notification(event('consent-revoked')), { jwks: remote, audience: AUDIENCE }))
+        .rejects.toThrow();
+    } finally {
+      outage.stop(true);
+    }
   });
 
   test('rejects alg none and HS256 tokens', async () => {
@@ -154,12 +165,19 @@ describe('Apple webhook endpoint', () => {
     expect(appleWebhookAudience({ ...env, APPLE_KEY_ID: '' })).toBeNull();
   });
 
-  async function app(environment: NodeJS.ProcessEnv) {
+  async function app(
+    environment: NodeJS.ProcessEnv,
+    options: { jwks?: Parameters<typeof createAppleWebhookHandler>[0]['jwks']; fail?: boolean } = {},
+  ) {
     const processed: unknown[] = [];
-    const database = { $transaction: async () => { processed.push(true); return 'revoked'; } };
+    const database = { $transaction: async () => {
+      if (options.fail) throw new Error('database unavailable');
+      processed.push(true);
+      return 'revoked';
+    } };
     const router = new Hono();
     router.post('/api/webhooks/apple', createAppleWebhookHandler({
-      database: database as never, jwks: (await keys).jwks, env: environment,
+      database: database as never, jwks: options.jwks ?? (await keys).jwks, env: environment,
     }));
     return { router, processed };
   }
@@ -180,6 +198,14 @@ describe('Apple webhook endpoint', () => {
     expect(processed).toHaveLength(0);
     expect((await post(router, { payload: await notification(event('consent-revoked')) })).status).toBe(200);
     expect(processed).toHaveLength(1);
+  });
+
+  test('answers 503 when Apple\'s key set is unavailable or processing fails, so Apple retries', async () => {
+    const outage = await app(env, { jwks: async () => { throw new Error('network down'); } });
+    expect((await post(outage.router, { payload: await notification(event('consent-revoked')) })).status).toBe(503);
+    expect(outage.processed).toHaveLength(0);
+    const failing = await app(env, { fail: true });
+    expect((await post(failing.router, { payload: await notification(event('consent-revoked')) })).status).toBe(503);
   });
 });
 

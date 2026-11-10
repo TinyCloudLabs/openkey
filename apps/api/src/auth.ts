@@ -624,16 +624,20 @@ export const auth = betterAuth({
         const clientId = await appleTokenClientId.get();
         if (clientId && (account.refreshToken !== undefined || account.accessToken !== undefined)) {
           // A sign-in by `sub` restores the link: it clears revokedAt, and
-          // appleRestoredAt advances to the later of its value and the id_token iat.
+          // appleRestoredAt advances to the later of its value and the id_token
+          // iat in one statement, so concurrent sign-ins never move it back.
           const signIn = await appleTokenSignIn.get();
           if (!signIn) return { data: { appleClientId: clientId } };
-          const current = await prisma.account.findUnique({
-            where: { providerId_accountId: { providerId: 'apple', accountId: signIn.sub } },
-            select: { appleRestoredAt: true },
+          const issuedAt = new Date(signIn.issuedAt * 1000);
+          // Postgres re-checks the condition on the locked row, so the later value wins.
+          await prisma.account.updateMany({
+            where: {
+              providerId: 'apple', accountId: signIn.sub,
+              OR: [{ appleRestoredAt: null }, { appleRestoredAt: { lt: issuedAt } }],
+            },
+            data: { appleRestoredAt: issuedAt },
           });
-          const issuedAt = signIn.issuedAt * 1000;
-          const restoredAt = new Date(Math.max(current?.appleRestoredAt?.getTime() ?? issuedAt, issuedAt));
-          return { data: { appleClientId: clientId, appleRestoredAt: restoredAt, revokedAt: null } };
+          return { data: { appleClientId: clientId, revokedAt: null } };
         }
       } },
     },

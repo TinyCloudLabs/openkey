@@ -298,11 +298,15 @@ Apple server-to-server notifications arrive at
 ID `so.openkey`). The endpoint is not found unless Apple sign-in is enabled and
 `APPLE_WEBHOOK_AUDIENCE` is set to the primary App ID. Notifications are
 verified against Apple's cached JWKS (RS256, issuer, audience, `iat` within 24
-hours) and applied once per `jti`, recorded in `apple_notification`.
-`consent-revoked` and `account-deleted` end the user's sessions, native grants
-and OAuth tokens and wipe the stored Apple tokens, but keep the OpenKey account,
-keys and Apple link. `email-disabled` and `email-enabled` only flag a relay
-address as undeliverable.
+hours) and applied once per `jti`, recorded in `apple_notification`. Only an
+invalid notification is answered 400; an unavailable Apple key set or a
+processing failure is answered 503 with nothing recorded, so Apple's retry is
+applied. `consent-revoked` and `account-deleted` end the user's sessions,
+native grants and OAuth tokens and wipe the stored Apple tokens, but keep the
+OpenKey account, keys and Apple link. A non-MCP JWT access token already issued
+has no stored row and stays valid until its own expiry (at most five minutes);
+MCP tokens end with their session. `email-disabled` and `email-enabled` only
+flag a relay address as undeliverable.
 
 Pending Apple confirmations and failed revocations use the OpenKey-owned
 `apple_social_continuation` table, not Better Auth's OTP verification table.

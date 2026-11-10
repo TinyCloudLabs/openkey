@@ -546,6 +546,27 @@ if (!backend) {
       expect((await prisma.account.findUniqueOrThrow({ where: { id: flagged.id } })).appleEmailUndeliverable).toBe(false);
     });
 
+    test('a processing failure commits nothing, not even the jti; Apple\'s retry is applied', async () => {
+      const { user, cookie } = await appleUser('retry-sub', 'retry@openkey.test');
+      await prisma.$executeRawUnsafe(`CREATE FUNCTION tc1231_fail() RETURNS trigger AS $$
+        BEGIN RAISE EXCEPTION 'injected failure'; END; $$ LANGUAGE plpgsql`);
+      await prisma.$executeRawUnsafe('CREATE TRIGGER tc1231_fail BEFORE UPDATE ON account FOR EACH ROW EXECUTE FUNCTION tc1231_fail()');
+      const jti = randomUUID();
+      const eventTime = Math.floor(Date.now() / 1000);
+      try {
+        expect((await notify('consent-revoked', 'retry-sub', { jti, eventTime })).status).toBe(503);
+      } finally {
+        await prisma.$executeRawUnsafe('DROP TRIGGER tc1231_fail ON account');
+        await prisma.$executeRawUnsafe('DROP FUNCTION tc1231_fail()');
+      }
+      expect(await prisma.appleNotification.count()).toBe(0);
+      expect(await sessionUser(cookie)).toBe(user.id);
+      expect((await prisma.account.findFirstOrThrow({ where: { userId: user.id, providerId: 'apple' } })).refreshToken).not.toBeNull();
+      expect((await notify('consent-revoked', 'retry-sub', { jti, eventTime })).status).toBe(200);
+      expect(await outcome(jti)).toBe('revoked');
+      expect(await sessionUser(cookie)).toBeNull();
+    });
+
     test('an unknown sub records the jti and changes nothing else', async () => {
       const { user, cookie } = await appleUser('known-sub', 'known@openkey.test');
       const jti = randomUUID();

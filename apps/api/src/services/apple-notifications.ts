@@ -62,10 +62,20 @@ function normaliseType(type: string): AppleNotificationType | null {
   return null;
 }
 
+// What a forged, malformed, expired or misaddressed token throws. Anything else,
+// including Apple's key set failing to load and a kid it does not (yet) list
+// during jose's reload cooldown, is an outage: it is answered 503 so Apple
+// retries, never 400, which could drop a genuine revocation.
+const INVALID_TOKEN_ERRORS = [
+  joseErrors.JWSSignatureVerificationFailed, joseErrors.JWSInvalid, joseErrors.JWTInvalid,
+  joseErrors.JWTClaimValidationFailed, joseErrors.JWTExpired, joseErrors.JOSEAlgNotAllowed,
+  joseErrors.JOSENotSupported, joseErrors.JWKSMultipleMatchingKeys,
+];
+
 /**
  * Verifies the signed payload and returns its event, or null for anything that
- * is not a valid Apple notification (answered 400). A failure to read Apple's
- * key set is thrown instead, so an outage is never answered as a forgery.
+ * is not a valid Apple notification (answered 400). Any other failure, such as
+ * Apple's key set being unavailable, is thrown so it is answered 503.
  */
 export async function verifyAppleNotification(
   payload: unknown,
@@ -83,8 +93,7 @@ export async function verifyAppleNotification(
       currentDate: new Date(options.now?.() ?? Date.now()),
     }));
   } catch (error) {
-    if (error instanceof joseErrors.JWKSTimeout || error instanceof joseErrors.JWKSInvalid) throw error;
-    if (error instanceof joseErrors.JOSEError) return null;
+    if (INVALID_TOKEN_ERRORS.some((invalid) => error instanceof invalid)) return null;
     throw error;
   }
   const { jti, iat } = claims;
@@ -165,6 +174,9 @@ async function applyEvent(tx: Transaction, event: AppleNotification, now: Date):
   if (!linked) return 'unknown_subject';
   if (!event.type) return 'ignored_type';
   await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${linked.userId} FOR UPDATE`;
+  // Sessions before the account row, the order unlink and step-up use (they
+  // lock their session, then change the account), so neither can deadlock this.
+  await tx.$queryRaw`SELECT id FROM "session" WHERE "userId" = ${linked.userId} ORDER BY id FOR UPDATE`;
   const [account] = await tx.$queryRaw<LockedAccount[]>`
     SELECT id, "userId", "appleRestoredAt", "appleEmailEventAt", "appleEmailUndeliverable"
     FROM account WHERE "providerId" = 'apple' AND "accountId" = ${event.sub} FOR UPDATE`;

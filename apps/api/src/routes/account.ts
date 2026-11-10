@@ -44,7 +44,8 @@ accountRouter.post('/step-up/email-otp/send', async (c) => {
   const body = await c.req.json().catch(() => null) as { purpose?: unknown } | null;
   const purpose = parseStepUpPurpose(body?.purpose);
   if (!purpose) return c.json({ error: 'Unknown verification purpose' }, 400);
-  // A mailbox alone never deletes a passkey user's keys.
+  // A user with a passkey deletes with a fresh passkey, never a deletion code
+  // (D6; passkey enrolment rules are TC-1198).
   if (purpose === 'delete_account' && await prisma.passkey.count({ where: { userId: c.get('user').id } }) > 0) {
     return c.json({ error: 'Verify with your passkey again to continue', code: 'passkey_step_up_required' }, 403);
   }
@@ -472,14 +473,14 @@ accountRouter.post('/delete', async (c) => {
   });
 
   // Delete all user data in transaction
-  let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | null;
+  let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | 'PASSKEY' | 'EMAIL';
   try { appleTokens = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${user.id} FOR UPDATE`;
     if (!passkeyStepUp) {
       // A passkey enrolled since the check needs the passkey step-up instead;
       // the deletion code is spent only by a deletion that commits.
-      if (await tx.passkey.count({ where: { userId: user.id } }) > 0
-        || !await consumeDeleteStepUp(tx, sessionId)) return null;
+      if (await tx.passkey.count({ where: { userId: user.id } }) > 0) return 'PASSKEY';
+      if (!await consumeDeleteStepUp(tx, sessionId)) return 'EMAIL';
     }
     // Read under the user lock, before the rows go: the issuing client is
     // needed to revoke each Apple refresh token after commit.
@@ -511,7 +512,10 @@ accountRouter.post('/delete', async (c) => {
     if (unavailable) return unavailable;
     throw error;
   }
-  if (!appleTokens) return c.json(EMAIL_STEP_UP_REQUIRED, 403);
+  if (appleTokens === 'PASSKEY') {
+    return c.json({ error: 'Verify with your passkey again to continue', code: 'passkey_step_up_required' }, 403);
+  }
+  if (appleTokens === 'EMAIL') return c.json(EMAIL_STEP_UP_REQUIRED, 403);
 
   await revokeStoredAppleTokens(appleTokens);
 
