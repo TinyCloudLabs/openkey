@@ -251,8 +251,14 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
       body: JSON.stringify({ name: 'Organization app', redirectUris: ['https://example.test/callback'] }),
     }));
     expect(created.status, await created.clone().text()).toBe(201);
-    const client = (await created.json() as { client: { id: string; clientId: string } }).client;
-    expect(await prisma.oauthClient.findUnique({ where: { id: client.id }, select: { userId: true } })).toEqual({ userId: null });
+    const newClient = (await created.json() as { client: { id: string; clientId: string } }).client;
+    expect(await prisma.oauthClient.findUnique({ where: { id: newClient.id }, select: { userId: true } })).toEqual({ userId: null });
+    const client = await prisma.oauthClient.create({ data: {
+      id: 'legacy-org-app', clientId: 'ok_legacy_org_app', clientSecret: 'already-hashed-secret',
+      name: 'Legacy organization app', redirectUris: ['https://example.test/legacy'],
+      scopes: ['openid'], contacts: [], organizationId: 'org-app-authz', userId: removedUserId,
+      tokenEndpointAuthMethod: 'client_secret_basic', public: false,
+    } });
     await prisma.organizationMembership.update({ where: { id: removedMembership.id }, data: { status: 'REVOKED', revokedAt: new Date(), validUntil: new Date() } });
 
     const call = (path: string, method: string, token: string, body?: unknown) => app.fetch(new Request(`https://api.openkey.test/api/auth${path}`, {
@@ -260,9 +266,6 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
       headers: { cookie: token === removedToken ? creatorCookie : adminCookie, origin: 'https://openkey.test', ...(body ? { 'content-type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     }));
-    const listed = await call('/oauth2/get-clients', 'GET', removedToken);
-    expect(listed.status).toBe(200);
-    expect((await listed.json() as Array<{ client_id: string }>).some(({ client_id }) => client_id === client.clientId)).toBe(false);
     const before = await prisma.oauthClient.findUnique({ where: { id: client.id } });
     for (const [path, body] of [
       ['/oauth2/update-client', { client_id: client.clientId, update: { client_name: 'Changed' } }],
@@ -278,6 +281,9 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
       expect(bearer.status, `${path} bearer`).toBe(401);
       expect(await prisma.oauthClient.findUnique({ where: { id: client.id } })).toEqual(before);
     }
+    const listed = await call('/oauth2/get-clients', 'GET', removedToken);
+    expect(listed.status).toBe(200);
+    expect((await listed.json() as Array<{ client_id: string }>).some(({ client_id }) => client_id === client.clientId)).toBe(false);
     expect((await call(`/oauth2/get-client?client_id=${client.clientId}`, 'GET', removedToken)).status).toBe(401);
     const updated = await app.fetch(new Request(`https://api.openkey.test/api/console/organizations/org-app-authz/apps/${client.id}`, {
       method: 'PATCH', headers: { cookie: adminCookie, origin: 'https://console.openkey.so', 'content-type': 'application/json' },
@@ -288,20 +294,27 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
       method: 'DELETE', headers: { cookie: adminCookie, origin: 'https://console.openkey.so' },
     }));
     expect(deleted.status).toBe(200);
-    const personalCreated = await call('/oauth2/create-client', 'POST', adminToken, {
+    const personalCreated = await call('/oauth2/create-client', 'POST', removedToken, {
       redirect_uris: ['https://example.test/personal'], client_name: 'Personal client',
     });
     expect(personalCreated.status, await personalCreated.clone().text()).toBe(200);
     const personalClient = await personalCreated.json() as { client_id: string };
-    expect((await call(`/oauth2/get-client?client_id=${personalClient.client_id}`, 'GET', adminToken)).status).toBe(200);
-    expect((await call('/oauth2/update-client', 'POST', adminToken, {
+    expect((await call(`/oauth2/get-client?client_id=${personalClient.client_id}`, 'GET', removedToken)).status).toBe(200);
+    expect((await call('/oauth2/update-client', 'POST', removedToken, {
       client_id: personalClient.client_id, update: { client_name: 'Personal client updated' },
     })).status).toBe(200);
-    expect((await call('/oauth2/client/rotate-secret', 'POST', adminToken, { client_id: personalClient.client_id })).status).toBe(200);
-    expect((await call('/oauth2/update-client', 'POST', removedToken, {
+    expect((await call('/oauth2/client/rotate-secret', 'POST', removedToken, { client_id: personalClient.client_id })).status).toBe(200);
+    expect((await call('/oauth2/update-client', 'POST', adminToken, {
       client_id: personalClient.client_id, update: { client_name: 'Not owner' },
     })).status).toBe(401);
-    expect((await call('/oauth2/delete-client', 'POST', removedToken, { client_id: personalClient.client_id })).status).toBe(401);
-    expect((await call('/oauth2/delete-client', 'POST', adminToken, { client_id: personalClient.client_id })).status).toBe(200);
+    expect((await call('/oauth2/delete-client', 'POST', adminToken, { client_id: personalClient.client_id })).status).toBe(401);
+    const personalClients = await call('/oauth2/get-clients', 'GET', removedToken);
+    expect(personalClients.status).toBe(200);
+    const listedClients = await personalClients.json() as Array<{ client_id: string; client_secret?: unknown }>;
+    expect(listedClients.some(({ client_id }) => client_id === personalClient.client_id)).toBe(true);
+    expect(listedClients.some(({ client_id }) => client_id === client.clientId)).toBe(false);
+    expect(listedClients.find(({ client_id }) => client_id === personalClient.client_id)).not.toHaveProperty('client_secret');
+    expect((await call('/oauth2/client/rotate-secret', 'POST', adminToken, { client_id: personalClient.client_id })).status).toBe(401);
+    expect((await call('/oauth2/delete-client', 'POST', removedToken, { client_id: personalClient.client_id })).status).toBe(200);
   });
 }

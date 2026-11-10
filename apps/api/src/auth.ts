@@ -377,6 +377,17 @@ export const auth = betterAuth({
     // OAuth 2.1 Provider - enables third-party apps to authenticate users
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     withMcpAccessTokenLifetime(withNativeAuthorizeQuery(oauthProvider({
+      clientPrivileges: async ({ action }) => {
+        if (action === 'create' || action === 'list') return true;
+        const request = await getCurrentAuthContext();
+        const clientId = action === 'read' ? request.query?.client_id : request.body?.client_id;
+        if (typeof clientId !== 'string') return true;
+        const organizationClient = await prisma.oauthClient.findFirst({
+          where: { clientId, organizationId: { not: null } },
+          select: { id: true },
+        });
+        return !organizationClient;
+      },
       requestUriResolver: ({ requestUri, clientId }) => resolveRequestUri(prisma, requestUri, clientId),
       loginPage: `${origin}/auth/login`,
       consentPage: `${origin}/oauth/consent`,
