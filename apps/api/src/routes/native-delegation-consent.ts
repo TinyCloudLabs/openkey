@@ -1,4 +1,4 @@
-import { assertWithinDelegationCeiling } from '../services/approval-expiry';
+import { assertWithinDelegationCeiling, delegationCeilingMs, withExpirationTime } from '../services/approval-expiry';
 
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
@@ -49,7 +49,7 @@ function prepareSiwe(row: { sessionJwk: unknown }, permissions: NativePermission
     permissions, expiryMs: ttlSeconds * 1000, domain: ceiling.siweDomain ?? 'openkey.so', nonce, issuedAt: at,
   });
   const expiry = assertWithinDelegationCeiling(prepared.prepared.siwe, at.getTime());
-  if (expiry !== 'ok') fail(400, expiry === 'missing' ? 'expiry_required' : 'expiry_exceeds_ceiling');
+  if (expiry !== 'ok') fail(400, expiry === 'missing' ? 'expiry_required' : expiry === 'too_long' ? 'expiry_exceeds_ceiling' : 'invalid_siwe_recap');
   return prepared;
 }
 function selectedPermissions(requested: NativePermission[], selection: unknown, spaceId: string): NativePermission[] {
@@ -180,8 +180,12 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       let hostPlan: { host: string; spaceId: string; peerId: string; hostSiwe: string } | null = null;
       if (!existing) {
         if (!peerId || prepared.spaceId !== preSpace) fail(409, 'preparation_superseded');
-        hostPlan = { host: ceiling.tinycloudHost, spaceId: prepared.spaceId, peerId,
-          hostSiwe: generateHostSIWEMessage({ address, chainId: 1, domain: ceiling.siweDomain ?? 'openkey.so', issuedAt: new Date().toISOString(), spaceId: prepared.spaceId, peerId }) };
+        const issuedAtMs = Date.now();
+        const generatedHostSiwe = generateHostSIWEMessage({ address, chainId: 1, domain: ceiling.siweDomain ?? 'openkey.so',
+          issuedAt: new Date(issuedAtMs).toISOString(), spaceId: prepared.spaceId, peerId });
+        const hostSiwe = withExpirationTime(generatedHostSiwe, new Date(delegationCeilingMs(issuedAtMs)).toISOString());
+        if (!hostSiwe || assertWithinDelegationCeiling(hostSiwe, issuedAtMs) !== 'ok') fail(400, 'expiry_required');
+        hostPlan = { host: ceiling.tinycloudHost, spaceId: prepared.spaceId, peerId, hostSiwe };
       }
       const revision = row.currentRevision + 1;
       const preview = { requestId: row.id, revision, userId, keyId: key.id, address, sessionSiwe: prepared.prepared.siwe, permissions, hostPlan };
@@ -240,6 +244,10 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       if (!revision || revision.digest !== body.digest || revision.sessionSiwe !== body.sessionSiwe) fail(409, 'preparation_mismatch');
       const hostPlan = revision.hostPlan as { host: string; spaceId: string; peerId: string; hostSiwe: string } | null;
       if ((hostPlan?.hostSiwe ?? undefined) !== body.hostSiwe) fail(409, 'preparation_mismatch');
+      if (hostPlan) {
+        const hostExpiry = assertWithinDelegationCeiling(hostPlan.hostSiwe);
+        if (hostExpiry !== 'ok') fail(400, hostExpiry === 'missing' ? 'expiry_required' : hostExpiry === 'too_long' ? 'expiry_exceeds_ceiling' : 'invalid_siwe_recap');
+      }
       if (row.status === 'APPROVED') {
         if (row.approvedRevision !== revision.revision) fail(409, 'request_not_pending');
         return { alreadyApproved: true as const, rowId: row.id, revision: revision.revision, hosting: row.hosting };

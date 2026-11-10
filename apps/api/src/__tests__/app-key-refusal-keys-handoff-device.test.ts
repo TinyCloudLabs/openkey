@@ -106,6 +106,23 @@ describe('POST /api/keys/:keyId/sign', () => {
     });
   }
   const hex = (text: string) => `0x${Buffer.from(text, 'utf8').toString('hex')}`;
+  test.each(['\r', '\u2028', '\u2029', '\u0085'])('refuses parser-differential expiry spoofing with separator %p', async (separator) => {
+    for (const format of ['personal_sign', 'raw'] as const) {
+      const base = siweWith();
+      for (const variant of ['missing', 'too_long'] as const) {
+        const modified = variant === 'missing'
+          ? base.replace(/\nExpiration Time: [^\n]+\n/, '\n')
+          : base.replace(/(?<=\nExpiration Time: )[^\n]+/, '9999-12-31T23:59:59.000Z');
+        const statementStart = modified.indexOf('\n\n') + 2;
+        const uriStart = modified.indexOf('\nURI: ', statementStart);
+        const spoof = `${modified.slice(0, statementStart)}Expiration Time: 2027-01-01T00:00:00Z${separator}statement\n${modified.slice(uriStart)}`;
+        const response = await sign({ message: format === 'raw' ? hex(spoof) : spoof, format });
+        expect(response.status).toBe(400);
+        await expect(response.json()).resolves.toMatchObject({ code: variant === 'missing' ? 'expiry_required' : 'expiry_exceeds_ceiling' });
+        expect(calls).toEqual([]);
+      }
+    }
+  });
 
   test.each([
     ['an app key', APPS_KEY, 'app_key_grant_refused'],

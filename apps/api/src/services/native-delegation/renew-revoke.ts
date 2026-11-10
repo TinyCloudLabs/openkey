@@ -283,7 +283,7 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
             jwk: grant.sessionJwk as { kty: string; crv: string; x: string }, permissions, expiryMs: ttlSeconds * 1000,
             domain: ceiling.siweDomain ?? 'openkey.so', nonce: siweNonce, issuedAt: now });
           const expiry = assertWithinDelegationCeiling(prepared.prepared.siwe, now.getTime());
-          if (expiry !== 'ok') return fail(expiry === 'missing' ? 'expiry_required' : 'expiry_exceeds_ceiling', 400);
+          if (expiry !== 'ok') return fail(expiry === 'missing' ? 'expiry_required' : expiry === 'too_long' ? 'expiry_exceeds_ceiling' : 'invalid_siwe_recap', 400);
           const signature = await createWalletFromPrivateKey(privateKey).signMessage({ message: prepared.prepared.siwe });
           const delegation = completeSessionSetup({ ...prepared.prepared, signature });
           const newToken = generateRandomString(32, 'A-Z', 'a-z');

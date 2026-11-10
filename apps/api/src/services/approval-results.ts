@@ -118,8 +118,9 @@ export class ApprovalResultService {
       const ceiling = assertWithinDelegationCeiling(input.signedSiwe, now.getTime());
       if (ceiling !== 'ok') {
         throw new ApprovalResultError(
-          ceiling === 'missing' ? 'expiry_required' : 'expiry_exceeds_ceiling',
-          ceiling === 'missing' ? 'TinyCloud delegation SIWE requires an Expiration Time.' : 'Delegation expiry exceeds the maximum allowed lifetime.',
+          ceiling === 'missing' ? 'expiry_required' : ceiling === 'too_long' ? 'expiry_exceeds_ceiling' : 'invalid_delegation',
+          ceiling === 'missing' ? 'TinyCloud delegation SIWE requires an Expiration Time.' :
+            ceiling === 'too_long' ? 'Delegation expiry exceeds the maximum allowed lifetime.' : 'Approval requires a canonical SIWE',
           400,
         );
       }

@@ -10,23 +10,65 @@ export const MIN_EXPIRATION_LEAD_MS = 50_000;
 /** Maximum lifetime for any TinyCloud delegation SIWE signed or approved by OpenKey. */
 export const MAX_DELEGATION_CEILING_YEARS = 10;
 
-/** Calendar-year ceiling, preserving UTC month/day/time across leap years. */
+/** Calendar-year ceiling; leap-day starts clamp to the last day of February. */
 export function delegationCeilingMs(now: number = Date.now()): number {
   const ceiling = new Date(now);
-  ceiling.setUTCFullYear(ceiling.getUTCFullYear() + MAX_DELEGATION_CEILING_YEARS);
+  const day = ceiling.getUTCDate();
+  const targetYear = ceiling.getUTCFullYear() + MAX_DELEGATION_CEILING_YEARS;
+  ceiling.setUTCDate(1);
+  ceiling.setUTCFullYear(targetYear);
+  const lastTargetDay = new Date(Date.UTC(targetYear, ceiling.getUTCMonth() + 1, 0)).getUTCDate();
+  ceiling.setUTCDate(Math.min(day, lastTargetDay));
   return ceiling.getTime();
 }
 
-export type DelegationCeilingResult = 'ok' | 'too_long' | 'missing';
+export type DelegationCeilingResult = 'ok' | 'too_long' | 'missing' | 'malformed';
 
-/** TinyCloud delegations are SIWEs containing at least one ReCap resource. */
+const UNSUPPORTED_SIWE_LINE_SEPARATORS = /[\r\u0085\u2028\u2029]/;
+
+interface DelegationSiweLayout {
+  issuedAtIndex: number;
+  expirationIndex?: number;
+  resourcesIndex: number;
+}
+
+/** Mirrors the node parser's fixed fields and optional Expiration/Not Before/Request ID order. */
+function delegationSiweLayout(siwe: string): DelegationSiweLayout | null {
+  const lines = siwe.split('\n');
+  if (!lines[0]?.includes(' wants you to sign in with your Ethereum account:')) return null;
+  const uriIndex = lines[3] === '' ? 4 : 5;
+  if (!lines[uriIndex]?.startsWith('URI: ') ||
+      !lines[uriIndex + 1]?.startsWith('Version: ') ||
+      !lines[uriIndex + 2]?.startsWith('Chain ID: ') ||
+      !lines[uriIndex + 3]?.startsWith('Nonce: ') ||
+      !lines[uriIndex + 4]?.startsWith('Issued At: ')) return null;
+  const issuedAtIndex = uriIndex + 4;
+  let index = issuedAtIndex + 1;
+  let expirationIndex: number | undefined;
+  if (lines[index]?.startsWith('Expiration Time: ')) expirationIndex = index++;
+  if (lines[index]?.startsWith('Not Before: ')) index++;
+  if (lines[index]?.startsWith('Request ID: ')) index++;
+  if (lines[index] !== 'Resources:' || !lines.slice(index + 1).some((line) => line.startsWith('- urn:recap:'))) return null;
+  return { issuedAtIndex, expirationIndex, resourcesIndex: index };
+}
+
+/** TinyCloud delegations are SIWEs whose parsed Resources section contains ReCap. */
 export function assertWithinDelegationCeiling(siwe: string, now: number = Date.now()): DelegationCeilingResult {
-  if (!/^[^\r\n]+ wants you to sign in with your Ethereum account:\r?\n/.test(siwe) ||
-      !/^Resources:\r?\n(?:[^\r\n]*\r?\n)*- urn:recap:/m.test(siwe)) return 'ok';
-  const line = siwe.match(/^Expiration Time: (.+)$/m)?.[1]?.trim();
-  if (!line) return 'missing';
-  const time = Date.parse(line);
-  return Number.isFinite(time) && time <= delegationCeilingMs(now) ? 'ok' : 'too_long';
+  const layout = delegationSiweLayout(siwe);
+  if (!layout) {
+    const lines = siwe.split('\n');
+    const hasRecapShape = lines[0]?.includes(' wants you to sign in with your Ethereum account:') &&
+      lines.some((line) => line.startsWith('Resources:') && lines.slice(lines.indexOf(line) + 1).some((resource) => resource.startsWith('- urn:recap:')));
+    return hasRecapShape ? 'malformed' : 'ok';
+  }
+  const lines = siwe.split('\n');
+  const expiryLine = layout.expirationIndex === undefined ? undefined : lines[layout.expirationIndex];
+  const expiration = expiryLine?.slice('Expiration Time: '.length).trim();
+  if (!expiration) return 'missing';
+  const time = Date.parse(expiration);
+  if (!Number.isFinite(time)) return 'malformed';
+  if (time > delegationCeilingMs(now)) return 'too_long';
+  return UNSUPPORTED_SIWE_LINE_SEPARATORS.test(siwe) ? 'malformed' : 'ok';
 }
 
 /** The last second a SIWE timestamp (four-digit year) can name. */
@@ -54,14 +96,22 @@ export function validateExpirationOverride(
   return { ok: true, value };
 }
 
-const EXPIRATION_LINE = /^Expiration Time: .+$/gm;
-
-/** The SIWE with its one `Expiration Time:` line replaced; null when it does not have exactly one. */
+/** Set the positional Expiration Time header; null means the SIWE is malformed or ambiguous. */
 export function withExpirationTime(siwe: string, expirationTime: string): string | null {
-  if ((siwe.match(EXPIRATION_LINE) ?? []).length !== 1) return null;
-  return siwe.replace(/^Expiration Time: .+$/m, `Expiration Time: ${expirationTime}`);
+  if (UNSUPPORTED_SIWE_LINE_SEPARATORS.test(siwe)) return null;
+  const layout = delegationSiweLayout(siwe);
+  if (!layout) return null;
+  const lines = siwe.split('\n');
+  if (layout.expirationIndex !== undefined) lines[layout.expirationIndex] = `Expiration Time: ${expirationTime}`;
+  else lines.splice(layout.issuedAtIndex + 1, 0, `Expiration Time: ${expirationTime}`);
+  return lines.join('\n');
 }
 
+/** Return only the positional Expiration Time header, never statement/resource text. */
 export function expirationTimeOf(siwe: string): string | undefined {
-  return siwe.match(/^Expiration Time: (.+)$/m)?.[1]?.trim();
+  if (UNSUPPORTED_SIWE_LINE_SEPARATORS.test(siwe)) return undefined;
+  const layout = delegationSiweLayout(siwe);
+  if (!layout || layout.expirationIndex === undefined) return undefined;
+  return siwe.split('\n')[layout.expirationIndex]!.slice('Expiration Time: '.length).trim();
 }
+

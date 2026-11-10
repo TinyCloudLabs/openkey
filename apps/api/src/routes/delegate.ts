@@ -464,6 +464,7 @@ function delegationCeilingFailure(siwe: string): { body: { error: string; code: 
   const result = assertWithinDelegationCeiling(siwe);
   if (result === 'missing') return { body: { error: 'TinyCloud delegation SIWE requires an Expiration Time.', code: 'expiry_required' } };
   if (result === 'too_long') return { body: { error: 'Delegation expiry exceeds the maximum allowed lifetime.', code: 'expiry_exceeds_ceiling' } };
+  if (result === 'malformed') return { body: { error: 'Malformed SIWE line separators are not supported.', code: 'invalid_siwe_recap' } };
   return null;
 }
 
@@ -1311,8 +1312,9 @@ delegateRouter.post('/host', async (c) => {
     ? spacePrefix.slice(spacePrefix.lastIndexOf(':') + 1)
     : spacePrefix;
   const spaceId = makeSpaceId(address, chainId, normalizedSpace);
-  const issuedAt = new Date().toISOString();
-  const siwe = generateHostSIWEMessage({
+  const issuedAtMs = Date.now();
+  const issuedAt = new Date(issuedAtMs).toISOString();
+  const generatedSiwe = generateHostSIWEMessage({
     address,
     chainId,
     domain: SIWE_DOMAIN,
@@ -1320,6 +1322,8 @@ delegateRouter.post('/host', async (c) => {
     spaceId,
     peerId: body.peerId,
   });
+  const siwe = withExpirationTime(generatedSiwe, new Date(delegationCeilingMs(issuedAtMs)).toISOString());
+  if (!siwe || delegationCeilingFailure(siwe)) return c.json({ error: 'Could not create a bounded host delegation.', code: 'expiry_required' }, 400);
 
   const signature = await signManagedKey(key, key.sealedBlob, siwe);
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;

@@ -28,8 +28,9 @@ export async function deviceDelegationWindowError(
     const ceiling = assertWithinDelegationCeiling(input.signedSiwe);
     if (ceiling !== 'ok') return {
       body: {
-        error: ceiling === 'missing' ? 'TinyCloud delegation SIWE requires an Expiration Time.' : 'Delegation expiry exceeds the maximum allowed lifetime.',
-        code: ceiling === 'missing' ? 'expiry_required' : 'expiry_exceeds_ceiling',
+        error: ceiling === 'missing' ? 'TinyCloud delegation SIWE requires an Expiration Time.' :
+          ceiling === 'too_long' ? 'Delegation expiry exceeds the maximum allowed lifetime.' : 'Malformed SIWE line separators are not supported.',
+        code: ceiling === 'missing' ? 'expiry_required' : ceiling === 'too_long' ? 'expiry_exceeds_ceiling' : 'invalid_siwe_recap',
       },
       status: 400,
     };
