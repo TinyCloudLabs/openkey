@@ -11,6 +11,7 @@
   import { timeUntilExpiry } from '$lib/siwe-parser';
   import { SERVER_REPLY_BODY, SERVER_REPLY_TITLE, ServerReplyError, hasSignResult, hasText } from '$lib/server-reply';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
+  import { remainingFromServerClock } from '$lib/delegate-code-countdown';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import { EXPIRY_PRESETS, LONG_EXPIRY_MS, LONG_EXPIRY_WARNING, expiryAtCapped, expiryLimitNote, formatExpiry, parseExpiry, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
 
@@ -50,6 +51,11 @@
   let ticket = $state('');
   let initialized = $state(false);
   let pendingTimeout: ReturnType<typeof setTimeout> | undefined;
+  let handoffTimeout: ReturnType<typeof setTimeout> | undefined;
+  // When the CLI's prepared request stops being claimable: its issued-at plus five minutes.
+  let preparedExpiryMs = NaN;
+  // The `Date` header of the latest server reply: the server's clock, read at receipt.
+  let serverDate: string | null = null;
   let routerReady = false;
   let markerNeeded = false;
   afterNavigate(() => {
@@ -141,28 +147,44 @@
         throw new Error('Invalid prepared sign-in request. Restart the CLI command.');
       }
       if (!isClaim(value)) throw new Error('Invalid prepared sign-in request. Restart the CLI command.');
+      // Freshness is decided on the server's clock once the first reply arrives (see `load`), never the device clock.
       const issuedAt = /^Issued At:[ \t]*(.+)$/m.exec(value.request.siwe)?.[1]?.trim();
-      const remaining = Date.parse(issuedAt ?? '') + 300_000 - Date.now();
-      if (!Number.isFinite(remaining) || remaining <= 0) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
+      preparedExpiryMs = Date.parse(issuedAt ?? '') + 300_000;
+      if (!Number.isFinite(preparedExpiryMs)) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
       pending = value;
+      // Bounds how long the unclaimed request stays in this tab: five minutes from mount on a plain timer.
       pendingTimeout = setTimeout(() => {
         pending = null;
         clearPending();
         error = 'Prepared sign-in request expired. Restart the CLI command.';
-      }, remaining);
+      }, 300_000);
     } catch (cause) {
       clearPending();
       error = cause instanceof Error ? cause.message : 'Invalid prepared sign-in request. Restart the CLI command.';
     } finally {
       initialized = true;
     }
-    return () => { if (pendingTimeout !== undefined) clearTimeout(pendingTimeout); };
+    return () => {
+      if (pendingTimeout !== undefined) clearTimeout(pendingTimeout);
+      if (handoffTimeout !== undefined) clearTimeout(handoffTimeout);
+    };
   });
 
   function cancelPending(): void {
     pending = null;
     clearPending();
     error = 'Approval cancelled. Restart the CLI command for a new sign-in.';
+  }
+
+  function expireHandoff(): void {
+    // A signing in flight, or one that finished, decides its own outcome.
+    if (!handoff || submitted || phase === 'done') return;
+    handoff = null;
+    contextToken = '';
+    previewToken = '';
+    previewMessage = '';
+    phase = 'review';
+    error = 'Prepared sign-in request expired. Restart the CLI command.';
   }
 
   // `needs` names the fields a successful answer must carry as text. With it, a
@@ -172,6 +194,7 @@
     const response = await fetch(`${apiUrl}/api/delegate/${path}`, {
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
+    serverDate = response.headers?.get('date') ?? null;
     if (needs !== undefined && response.ok) {
       let parsed: unknown;
       try { parsed = await response.json(); } catch { throw new ServerReplyError(response.status); }
@@ -224,6 +247,13 @@
         !('transportVersion' in feature) || feature.transportVersion !== 2) {
         throw new Error('Could not verify prepared CLI sign-in availability. Restart the CLI command.');
       }
+      // The availability reply carries the first server `Date`: the request is fresh or expired on that clock.
+      const availableDate = availability.headers?.get('date') ?? null;
+      const serverNowMs = availableDate === null ? NaN : Date.parse(availableDate);
+      if (Number.isFinite(serverNowMs)) {
+        const remaining = preparedExpiryMs - serverNowMs;
+        if (remaining <= 0) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
+      }
       if (pending !== input) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
       const claimed = await post('handoffs/claim', input, ['ticket', 'expiresAt']);
       if (pending !== input) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
@@ -232,6 +262,9 @@
         throw new Error('Invalid approval claim response. Restart the CLI command.');
       }
       ticket = input.delivery.handoffId;
+      // Counted on the server's clock: the claim's expiry minus the server's own Date header, never the device clock.
+      const remainingMs = remainingFromServerClock(claimed.expiresAt, serverDate);
+      if (remainingMs !== null) handoffTimeout = setTimeout(expireHandoff, remainingMs);
       const resolved: Handoff = {
         request: input.request,
         delivery: input.delivery.callback ? { callback: input.delivery.callback } : {},
@@ -342,7 +375,16 @@
         body.externalSignature = signature;
       }
       submitted = true;
-      const signed = await post('authorize-sign', body, ['signature', 'address', 'signedMessage', 'deliveryState'], hasSignResult);
+      let signed: Record<string, unknown>;
+      try {
+        signed = await post('authorize-sign', body, ['signature', 'address', 'signedMessage', 'deliveryState'], hasSignResult);
+      } catch (cause) {
+        // A refusal or failure comes back with no signature. The server releases the handoff when the key failed to
+        // sign, so the owner may approve again or cancel; if the key signed but the tokens could not be spent it stays
+        // signing until it expires and a retry is refused. Only a 2xx reply that cannot be read may have been signed.
+        if (!(cause instanceof ServerReplyError)) submitted = false;
+        throw cause;
+      }
       if (signed.protocolVersion !== 1 || typeof signed.signature !== 'string' || typeof signed.address !== 'string' ||
           !Array.isArray(signed.selectedActionKeys) || !signed.selectedActionKeys.every(value => typeof value === 'string') ||
           !Array.isArray(signed.permissions) ||

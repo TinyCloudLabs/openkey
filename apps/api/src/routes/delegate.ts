@@ -25,6 +25,7 @@ import {
   permissionKey as computePermissionKey,
 } from './delegate-session';
 import { activateSessionWithinTimeout } from '../services/tinycloud-node-timeouts';
+import { ownBootstrapSpaceName } from '../services/tinycloud-siwe';
 import type { SpaceHostResult } from '@tinycloud/sdk-core';
 import { BOOTSTRAP_SPACE_NAMES, CAPABILITIES } from '@tinycloud/bootstrap';
 import {
@@ -87,6 +88,7 @@ import {
 } from '../services/authorization-signing';
 import { MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
+import { checkSignedSubset, parseStrictSiwe, SIGNED_SUBSET_REFUSAL_CODE } from '../services/signed-subset';
 import { checkSiweOrigin } from '../services/siwe-origin';
 import {
   APP_KEY_GROUP_PARTIAL_CODE,
@@ -130,7 +132,7 @@ import { PreparedHandoffError } from '../services/prepared-handoff';
 import { preparedHandoffService } from './prepared-handoffs';
 import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
-import { checkApprovalDelegation, saveApprovalDelegation } from './approval-requests';
+import { admitApprovalDelegation, checkApprovalDelegation, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
@@ -152,11 +154,8 @@ async function managedSpaceSetupPlan(input: {
   chainId: number;
   spaceId: string;
 }): Promise<ManagedSpaceSetup | null> {
-  const name = input.spaceId.slice(input.spaceId.lastIndexOf(':') + 1) as BootstrapSpaceName;
-  if (
-    !BOOTSTRAP_SPACE_NAMES.includes(name) ||
-    input.spaceId !== makeSpaceId(input.address, input.chainId, name)
-  ) return null;
+  const name = ownBootstrapSpaceName(input.spaceId, input.address, input.chainId);
+  if (!name) return null;
 
   const { trustedTinyCloudBootstrapHost } = await import('../services/tinycloud-bootstrap');
   // TC-943: Courier and node-sdk send the tee.node alias of the configured node.
@@ -1643,6 +1642,10 @@ delegateRouter.post('/', async (c) => {
       return c.json({ error: consumed.message, code: consumed.error }, 400);
     }
 
+    await admitApprovalDelegation(body);
+    // An attempt that fails after admission gives the admission back (the body is not re-indented to keep the diff small).
+    try {
+
     // Sign the STORED originalSiwe verbatim. This is the entire point of
     // Blocker 1: never regenerate the SIWE at approval time.
     const signature = await signManagedKey(key, key.sealedBlob, bound.originalSiwe);
@@ -1725,6 +1728,10 @@ delegateRouter.post('/', async (c) => {
       signedMessage: bound.originalSiwe,
       permissions: effectiveGrants,
     }));
+    } catch (error) {
+      await releaseApprovalDelegation(body);
+      throw error;
+    }
   }
 
   // Legacy token-less path — unchanged behavior. The CLI and any older
@@ -1929,6 +1936,9 @@ delegateRouter.post('/prepare', async (c) => {
   } catch (e) {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
+  // Device approvals: the bytes handed to the wallet are a subset of what the device requested.
+  const deviceSubset = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
+  if (deviceSubset) return c.json(deviceSubset.body, deviceSubset.status);
 
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
@@ -2365,6 +2375,10 @@ delegateRouter.post('/complete', async (c) => {
     }
   }
 
+  await admitApprovalDelegation(body);
+  // An attempt that fails after admission gives the admission back (not re-indented, to keep the diff small).
+  try {
+
   const address = preparedAddress;
   const chainId = signedFields.chainId;
   const spaceId = preparedSpaceId;
@@ -2434,6 +2448,10 @@ delegateRouter.post('/complete', async (c) => {
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
   }));
+  } catch (error) {
+    await releaseApprovalDelegation(body);
+    throw error;
+  }
 });
 
 /**
@@ -2877,6 +2895,16 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     admittedAppKeys = admission.admitted;
   }
 
+  // A request the pre-sign rule cannot read can never be signed; refuse it
+  // before issuing a context and a review screen for it.
+  const readable = parseStrictSiwe(body.siwe);
+  if (!readable.ok) {
+    return c.json(
+      { error: `The requested SIWE is not well formed: ${readable.message}`, code: SIGNED_SUBSET_REFUSAL_CODE, reason: 'request_unparsable' },
+      400,
+    );
+  }
+
   let issued: AuthorizationContextToken;
   try {
     issued = issueAuthorizationContext({
@@ -3315,6 +3343,19 @@ delegateRouter.post('/authorize-sign', async (c) => {
     signedMessage = withExpiry;
   }
 
+  // The pre-sign rule on the exact bytes about to be signed:
+  // signed ⊆ requested ⊆ the owner's selection.
+  const signSubset = checkSignedSubset({
+    requested: bound.originalSiwe,
+    signed: signedMessage,
+    selectedActionIds,
+    ownerPickedExpiration: sealedExpiry !== immutable.expirationTime ? sealedExpiry : undefined,
+    longerExpiryAllowed: bound.expiryChangeable === true && !bound.handoffTicketHash,
+  });
+  if (!signSubset.ok) {
+    return c.json({ error: signSubset.message, code: signSubset.code, reason: signSubset.reason }, 400);
+  }
+
   // Validate the single-use preview approval without consuming it. The
   // final selection and bytes must match exactly what the user previewed.
   const previewCheck = checkPreviewApproval({
@@ -3395,10 +3436,16 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // the winner of a concurrent race may proceed to signing.
   // The database CAS is the cross-worker signing gate. No signing or state
   // release can follow a lost race against cancellation or another context.
+  // A prepared handoff is held in SIGNING while the key signs and is spent only
+  // once a signature exists, so the tokens are spent after signing: a signing
+  // that fails releases the handoff and the owner approves again with them.
   if (ticket) await activePreparedHandoffService.reserveSigning(ticket, user.id, body.authorizationContextToken, key.id);
-  const consumed = consumeCheckedAuthorizationContext(check.claim, previewCheck.claim);
-  if (!consumed.ok) {
-    return c.json({ error: consumed.message, code: consumed.error }, 400);
+  const spendTokens = () => consumeCheckedAuthorizationContext(check.claim, previewCheck.claim);
+  if (!ticket) {
+    const consumed = spendTokens();
+    if (!consumed.ok) {
+      return c.json({ error: consumed.message, code: consumed.error }, 400);
+    }
   }
 
   let signature: string;
@@ -3408,10 +3455,19 @@ delegateRouter.post('/authorize-sign', async (c) => {
     try {
       signature = await signManagedKey(key, key.sealedBlob!, signedMessage);
     } catch (e) {
+      if (ticket) await activePreparedHandoffService.releaseSigning(ticket, user.id, body.authorizationContextToken, key.id);
       return c.json(
         { error: e instanceof Error ? e.message : 'Signing failed', code: 'sign_failed' },
         500,
       );
+    }
+  }
+  if (ticket) {
+    const consumed = spendTokens();
+    if (!consumed.ok) {
+      // A signature now exists for this handoff, so it is not released: it stays SIGNING until it
+      // expires, and the signature is discarded. Only a failed signing releases (see releaseSigning).
+      return c.json({ error: consumed.message, code: consumed.error }, 400);
     }
   }
   // Reference computePermissionKey so it doesn't get flagged as unused
@@ -3650,6 +3706,19 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
       return c.json({ error: 'Bound SIWE has no single Expiration Time line', code: 'bound_siwe_parse_failed' }, 400);
     }
     preparedSignedMessage = withExpiry;
+  }
+
+  // The pre-sign rule on the exact bytes about to reach the owner's wallet:
+  // signed ⊆ requested ⊆ the owner's selection.
+  const previewSubset = checkSignedSubset({
+    requested: bound.originalSiwe,
+    signed: preparedSignedMessage,
+    selectedActionIds,
+    ownerPickedExpiration: expirationOverride,
+    longerExpiryAllowed: bound.expiryChangeable === true && !bound.handoffTicketHash,
+  });
+  if (!previewSubset.ok) {
+    return c.json({ error: previewSubset.message, code: previewSubset.code, reason: previewSubset.reason }, 400);
   }
 
   // Preview grants + selection. `service` is canonicalized to the
