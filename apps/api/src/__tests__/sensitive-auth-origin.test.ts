@@ -32,6 +32,8 @@ const sensitiveRoutes = [
   ['POST', '/api/auth/link-social'],
   ['POST', '/api/auth/unlink-account'],
   ['POST', '/api/auth/change-email'],
+  ['POST', '/api/auth/email-otp/request-email-change'],
+  ['POST', '/api/auth/email-otp/change-email'],
   ['POST', '/api/auth/change-password'],
   ['POST', '/api/auth/delete-user'],
   ['GET', '/api/auth/oauth2/get-consents'],

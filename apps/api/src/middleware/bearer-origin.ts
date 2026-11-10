@@ -58,6 +58,8 @@ const sensitiveAuthEndpoints: Record<string, string> = {
   '/link-social': 'POST',
   '/unlink-account': 'POST',
   '/change-email': 'POST',
+  '/email-otp/request-email-change': 'POST',
+  '/email-otp/change-email': 'POST',
   '/change-password': 'POST',
   '/delete-user': 'POST',
   '/oauth2/get-consent': 'GET',
