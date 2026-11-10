@@ -208,6 +208,11 @@ if (!backend) {
         expect((await renew(offKey, token)).status).toBe(200);
       }
       process.env.OPENKEY_NATIVE_RENEW_DISABLED = '1';
+      const providerRefresh = await form('/api/auth/oauth2/token', new URLSearchParams({
+        grant_type: 'refresh_token', client_id: clientId, refresh_token: 'token-a',
+      }));
+      expect(providerRefresh.status).toBe(400);
+      expect(await error(providerRefresh)).toBe('invalid_grant');
       const revoked = await revoke(key, 'token-a');
       expect(revoked.status).toBe(200);
       expect((await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).status).toBe('REVOKED');
