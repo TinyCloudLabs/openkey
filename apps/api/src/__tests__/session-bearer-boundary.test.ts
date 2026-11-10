@@ -28,8 +28,13 @@ const tx = {
 
 const prisma = {
   $transaction: async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx),
-  // user_1 has a passkey, so deletion takes the passkey step-up (TC-689).
-  passkey: { count: async () => 1 },
+  // user_1 has a passkey that counts for step-up, so deletion takes the
+  // passkey step-up (TC-689, TC-1198).
+  passkey: {
+    count: async () => 1,
+    findFirst: async ({ where }: { where: { id?: string; userId?: string; countsForStepUp?: boolean } }) =>
+      where.id === 'passkey_1' && where.userId === 'user_1' && where.countsForStepUp === true ? { id: 'passkey_1' } : null,
+  },
   ethereumKey: {
     findMany: async () => [],
     findFirst: async () => ({
@@ -43,7 +48,7 @@ const prisma = {
   session: {
     findFirst: async (args: unknown) => {
       sessionLookups.push(args);
-      return { lastPasskeyAt };
+      return { lastPasskeyAt, lastPasskeyId: 'passkey_1' };
     },
   },
   user: {

@@ -9,6 +9,8 @@
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
   import LinkedAccounts from '$lib/components/auth/linked-accounts.svelte';
+  import PasskeyStepUpDialog from '$lib/components/auth/passkey-step-up-dialog.svelte';
+  import { passkeyStepUpMethods, type PasskeyStepUpMethod, type PasskeyStepUpPurpose } from '$lib/passkey-step-up';
 
   const session = authClient.useSession();
 
@@ -310,12 +312,19 @@
     else await disconnectTinyCloudApp(action.app);
   }
 
+  // TC-1198: a session alone cannot add or remove a passkey. The API's typed
+  // refusal opens the step-up dialog, which retries the change once verified.
+  let passkeyStepUp = $state<{ purpose: PasskeyStepUpPurpose; methods: PasskeyStepUpMethod[]; retry: () => Promise<void> } | null>(null);
+
   async function addPasskey() {
     addingPasskey = true;
     error = '';
     try {
       const result = await authClient.passkey.addPasskey();
-      if (result?.error) {
+      const methods = passkeyStepUpMethods(result?.error);
+      if (methods) {
+        passkeyStepUp = { purpose: 'passkey_register', methods, retry: addPasskey };
+      } else if (result?.error) {
         error = authErrorMessage(result.error, 'Failed to add passkey');
       } else {
         await loadPasskeys();
@@ -370,7 +379,10 @@
     error = '';
     try {
       const result = await authClient.passkey.deletePasskey({ id });
-      if (result.error) {
+      const methods = passkeyStepUpMethods(result.error);
+      if (methods) {
+        passkeyStepUp = { purpose: 'passkey_remove', methods, retry: () => deletePasskey(id) };
+      } else if (result.error) {
         error = authErrorMessage(result.error, 'Failed to delete passkey');
       } else {
         await loadPasskeys();
@@ -683,6 +695,15 @@
       </div>
     {/if}
   </Card>
+
+  {#if passkeyStepUp}
+    <PasskeyStepUpDialog
+      purpose={passkeyStepUp.purpose}
+      methods={passkeyStepUp.methods}
+      onverified={() => { const { retry } = passkeyStepUp!; passkeyStepUp = null; void retry(); }}
+      oncancel={() => { passkeyStepUp = null; }}
+    />
+  {/if}
 
   {#if tinyCloudConfirmation}
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-surface-900/40 p-4" role="presentation">

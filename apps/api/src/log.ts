@@ -49,7 +49,7 @@ const EVENTS = {
   auth_social_continuation_cleanup_failed: true, auth_social_token_revoke_failed: true, auth_social_signup_confirmed: true,
   auth_social_notice_failed: true, auth_social_email_review_required: true, auth_apple_revoke_failed: true,
   apple_notification_processed: true, apple_notification_rejected: true, apple_notification_failed: true,
-  locked_subject_guard_failed: true,
+  locked_subject_guard_failed: true, auth_passkey_enrolment_failed: true,
   auth_social_email_review_refused: true, auth_social_email_review_confirmed: true,
   analytics_token_exchange_failed: true, analytics_unique_user_failed: true, analytics_token_tracking_failed: true,
   analytics_authorization_failed: true, analytics_authorization_tracking_failed: true, oauth_client_scopes_updated: true,

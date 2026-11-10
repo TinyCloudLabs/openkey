@@ -11,7 +11,8 @@ import {
   controlMutationError,
 } from '../services/tinycloud-manage-key-control';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
-import { requireFreshPasskey } from '../services/passkey-freshness';
+import { ACCOUNT_PASSKEY_STEP_UP_REQUIRED, requireFreshPasskey } from '../services/passkey-freshness';
+import { createPasskeyStepUpChallenge, verifyPasskeyStepUp } from '../services/passkey-enrolment';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
 import {
@@ -35,19 +36,29 @@ accountRouter.use('*', requireAccountOriginForBearer);
 accountRouter.use('*', requireSession);
 
 // Account deletion needs a fresh step-up on this session within the last five
-// minutes: a passkey verification when the user has a passkey (TC-689), else a
-// deletion-purpose email code (TC-1231, plan TC-1188 D6).
+// minutes: a verification by a passkey that counts for step-up when the user
+// has one (TC-689, TC-1198), else a deletion-purpose email code (TC-1231,
+// plan TC-1188 D6).
 const ACCOUNT_DELETE_PASSKEY_MAX_AGE_MS = 5 * 60 * 1000;
+
+// The same relying party Better Auth's passkey plugin verifies against.
+const RELYING_PARTY = { rpID: process.env.WEBAUTHN_RP_ID!, origin: process.env.WEBAUTHN_ORIGIN! };
+
 accountRouter.post('/step-up/email-otp/send', async (c) => {
   const rejected = rejectNonBrowserControlRequest(c);
   if (rejected) return rejected;
   const body = await c.req.json().catch(() => null) as { purpose?: unknown } | null;
   const purpose = parseStepUpPurpose(body?.purpose);
   if (!purpose) return c.json({ error: 'Unknown verification purpose' }, 400);
-  // A user with a passkey deletes with a fresh passkey, never a deletion code
-  // (D6; passkey enrolment rules are TC-1198).
-  if (purpose === 'delete_account' && await prisma.passkey.count({ where: { userId: c.get('user').id } }) > 0) {
-    return c.json({ error: 'Verify with your passkey again to continue', code: 'passkey_step_up_required' }, 403);
+  const userId = c.get('user').id;
+  // A mailbox never stands in for a passkey that counts for step-up: such a
+  // user deletes with that passkey (D6), and an email code only removes a
+  // passkey that does not count (TC-1198).
+  if (purpose === 'delete_account' && await prisma.passkey.count({ where: { userId, countsForStepUp: true } }) > 0) {
+    return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
+  }
+  if (purpose === 'passkey_remove' && await prisma.passkey.count({ where: { userId, countsForStepUp: false } }) === 0) {
+    return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
   }
   const result = await sendAccountStepUpCode(prisma, c.get('session').id, c.get('user').email, purpose);
   if (result === 'unavailable') return c.json({ error: 'Email delivery unavailable' }, 503);
@@ -62,6 +73,29 @@ accountRouter.post('/step-up/email-otp/verify', async (c) => {
   if (!purpose) return c.json({ error: 'Unknown verification purpose' }, 400);
   const valid = await verifyAccountStepUpCode(prisma, c.get('session').id, c.get('user').email, body?.code, purpose);
   if (!valid) return c.json({ error: 'Invalid or expired account verification code' }, 400);
+  return c.json({ status: true });
+});
+
+// Passkey step-up on the current session (TC-1198). Better Auth's passkey
+// sign-in creates a new session; this verifies an assertion by one of the
+// user's passkeys that counts for step-up and stamps this session instead.
+accountRouter.post('/step-up/passkey/options', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const challenge = await createPasskeyStepUpChallenge(prisma, c.get('session').id, c.get('user').id, RELYING_PARTY);
+  if (!challenge) return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
+  return c.json(challenge);
+});
+
+accountRouter.post('/step-up/passkey/verify', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { challengeToken?: unknown; response?: unknown } | null;
+  const result = await verifyPasskeyStepUp(prisma, c.get('session').id, c.get('user').id, body, RELYING_PARTY);
+  if (result === 'not_step_up') {
+    return c.json({ error: 'This passkey was added without a verification step and cannot confirm this action', code: 'passkey_not_step_up_capable' }, 403);
+  }
+  if (result !== 'verified') return c.json({ error: 'Passkey verification failed' }, 400);
   return c.json({ status: true });
 });
 
@@ -181,7 +215,9 @@ accountRouter.get('/', async (c) => {
   // An Apple relay address whose forwarding Apple reported off cannot receive
   // email codes; Settings suggests re-enabling it or adding a passkey.
   const emailUndeliverable = userData ? await appleRelayEmailUndeliverable(prisma, user.id, userData.email) : false;
-  return c.json({ user: userData && { ...userData, emailUndeliverable } });
+  // Passkeys that can confirm deletion and passkey changes (TC-1198).
+  const stepUpPasskeys = userData ? await prisma.passkey.count({ where: { userId: user.id, countsForStepUp: true } }) : 0;
+  return c.json({ user: userData && { ...userData, emailUndeliverable, stepUpPasskeys } });
 });
 
 // Global stop control for OAuth tinycloud:manage-key signing. This is kept
@@ -438,16 +474,17 @@ const EMAIL_STEP_UP_REQUIRED = {
 
 // Delete account permanently
 // Requires: cookie session from an OpenKey origin, typed confirmation, and a
-// fresh step-up on this session: a passkey verification for a user with a
-// passkey, else a deletion-purpose email code. After commit, every stored Apple
-// refresh token is revoked with its issuing client; a revoke failure never
-// restores the account.
+// fresh step-up on this session: a verification by a passkey that counts for
+// step-up when the user has one, else a deletion-purpose email code. A passkey
+// that does not count (enrolled by email while another counted) never forces
+// or satisfies the passkey path. After commit, every stored Apple refresh token
+// is revoked with its issuing client; a revoke failure never restores the account.
 accountRouter.post('/delete', async (c) => {
   const user = c.get('user');
   const sessionId = c.get('session').id;
   const rejected = rejectNonBrowserControlRequest(c);
   if (rejected) return rejected;
-  const passkeyStepUp = await prisma.passkey.count({ where: { userId: user.id } }) > 0;
+  const passkeyStepUp = await prisma.passkey.count({ where: { userId: user.id, countsForStepUp: true } }) > 0;
   if (passkeyStepUp) {
     const stale = await requireFreshPasskey(c, ACCOUNT_DELETE_PASSKEY_MAX_AGE_MS, prisma);
     if (stale) return stale;
@@ -477,9 +514,9 @@ accountRouter.post('/delete', async (c) => {
   try { appleTokens = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${user.id} FOR UPDATE`;
     if (!passkeyStepUp) {
-      // A passkey enrolled since the check needs the passkey step-up instead;
-      // the deletion code is spent only by a deletion that commits.
-      if (await tx.passkey.count({ where: { userId: user.id } }) > 0) return 'PASSKEY';
+      // A passkey that counts, enrolled since the check, needs the passkey
+      // step-up instead; the deletion code is spent only by a deletion that commits.
+      if (await tx.passkey.count({ where: { userId: user.id, countsForStepUp: true } }) > 0) return 'PASSKEY';
       if (!await consumeDeleteStepUp(tx, sessionId)) return 'EMAIL';
     }
     // Read under the user lock, before the rows go: the issuing client is
@@ -512,9 +549,7 @@ accountRouter.post('/delete', async (c) => {
     if (unavailable) return unavailable;
     throw error;
   }
-  if (appleTokens === 'PASSKEY') {
-    return c.json({ error: 'Verify with your passkey again to continue', code: 'passkey_step_up_required' }, 403);
-  }
+  if (appleTokens === 'PASSKEY') return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
   if (appleTokens === 'EMAIL') return c.json(EMAIL_STEP_UP_REQUIRED, 403);
 
   await revokeStoredAppleTokens(appleTokens);

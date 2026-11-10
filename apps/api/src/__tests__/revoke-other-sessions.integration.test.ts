@@ -145,9 +145,10 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
   test('passkey registration proxy rejects console-origin requests before forwarding', async () => {
     const userId = 'passkey-origin-user';
     const token = randomUUID();
+    const sessionId = randomUUID();
     await prisma.user.create({ data: { id: userId, email: `${userId}@example.test`, name: userId, emailVerified: true } });
     await prisma.session.create({
-      data: { id: randomUUID(), userId, token, expiresAt: new Date(Date.now() + 7 * 86_400_000) },
+      data: { id: sessionId, userId, token, expiresAt: new Date(Date.now() + 7 * 86_400_000) },
     });
     const cookie = (await serializeSignedCookie(cookieName, token, secret)).split(';')[0]!;
     const proxyCall = (path: string, origin: string, body: unknown = {}) => app.fetch(new Request(`https://api.openkey.test/api/passkey/${path}`, {
@@ -159,6 +160,15 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
     const consoleOptions = await proxyCall('generate-register-options', 'https://console.openkey.so', { name: 'console passkey' });
     expect(consoleOptions.status).toBe(403);
 
+    // TC-1198: from the account origin a session alone is still refused.
+    const sessionOnly = await proxyCall('generate-register-options', 'http://localhost:5173', { name: 'account passkey' });
+    expect(sessionOnly.status).toBe(403);
+    expect((await sessionOnly.json() as { code?: string }).code).toBe('PASSKEY_STEP_UP_REQUIRED');
+    // The marker a verified passkey_register email code leaves on the session.
+    await prisma.verification.create({ data: {
+      id: randomUUID(), identifier: `openkey-passkey-register-step-up:${sessionId}`, value: 'email_step_up',
+      expiresAt: new Date(Date.now() + 300_000),
+    } });
     const accountOptions = await proxyCall('generate-register-options', 'http://localhost:5173', { name: 'account passkey' });
     expect(accountOptions.status).toBe(200);
 
