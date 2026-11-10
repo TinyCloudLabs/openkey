@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { createPrismaClient, Prisma, type PrismaClient } from '@openkey/db';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 
 // Codes are stored and looked up in lower case, the form every CLI since the
 // broker shipped lower-cases to before its GET, so codes issued before codes
@@ -86,7 +87,7 @@ export function createDelegationCodeRouter(input: {
     return CLAIM_PATTERN.test(header) ? createHash('sha256').update(header).digest('base64url') : null;
   };
 
-  router.post('/', input.sessionMiddleware, async (c) => {
+  router.post('/', requireAccountOriginForBearer, input.sessionMiddleware, async (c) => {
     const body = await c.req.json().catch(() => null);
     const delegation = body?.delegation;
     const jwk = delegation?.jwk;

@@ -235,10 +235,10 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 Browser requests to sensitive account routes require an `Origin` matching that
 account origin, whether authenticated by cookie or bearer. Bearers without an
 `Origin` remain refused; cookie requests without an `Origin` retain their
-existing behavior. Native delegation preparation and approval also require the
-account origin. Organization and tenant-console routes continue to accept the
-configured console origin. Better Auth `/api/auth/*` routes are not covered by
-this restriction.
+existing behavior. Sensitive authentication routes require an account origin.
+Native delegation preparation, approval, denial, and delegation-code creation
+also require the account origin. Organization and tenant-console routes continue
+to accept the configured console origin.
 If `CONSOLE_ORIGIN` is unset in production, it defaults to
 `https://console.openkey.so`; that console origin remains accepted only on
 console-facing organization routes, unless it is also `WEBAUTHN_ORIGIN`.

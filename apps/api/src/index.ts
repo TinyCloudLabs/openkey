@@ -29,6 +29,7 @@ import { deviceAuthorizationRouter } from './routes/device-authorization';
 import { approvalRequestRouter } from './routes/approval-requests';
 import { createDelegationCodeRouter, createPrismaDelegationCodeStore } from './routes/delegation-codes';
 import { requireSession } from './middleware/session';
+import { requireAccountOriginForSensitiveAuth } from './middleware/bearer-origin';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 import { configuredSocialProviderIds } from './social-providers';
 import { API_EXPOSED_HEADERS, corsOriginPolicy } from './origin-policy';
@@ -90,6 +91,7 @@ app.use('*', protocolAwareCors(cors({
 // required by this Prisma client is present and checksum-verified.
 app.get('/health', readinessHandler(undefined, readBuildInfo));
 
+app.use('/api/auth/*', requireAccountOriginForSensitiveAuth);
 // Analytics middleware - runs BEFORE auth handler, uses next() to capture response
 // POST /api/auth/oauth2/token → track token exchange + unique user
 app.use('/api/auth/oauth2/token', async (c, next) => {

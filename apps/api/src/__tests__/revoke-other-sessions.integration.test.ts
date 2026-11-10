@@ -45,6 +45,7 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
   let secret: string;
 
   beforeAll(async () => {
+    process.env.WEBAUTHN_ORIGIN = 'https://openkey.test';
     directory = await mkdtemp(join(tmpdir(), 'openkey-revoke-sessions-'));
     const database = new PGlite(directory);
     try {
@@ -89,6 +90,16 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
       const call = (path: string, method: 'GET' | 'POST') => app.fetch(new Request(`https://api.openkey.test/api/auth${path}`, {
         method, headers: { cookie, origin: 'https://openkey.test' },
       }));
+      if (count === 10) {
+        const consoleRefused = await app.fetch(new Request(`https://api.openkey.test/api/auth/revoke-other-sessions`, {
+          method: 'POST', headers: { cookie, origin: 'https://console.openkey.so' },
+        }));
+        expect(consoleRefused.status).toBe(403);
+        const consoleSession = await app.fetch(new Request(`https://api.openkey.test/api/auth/get-session`, {
+          headers: { cookie, origin: 'https://console.openkey.so' },
+        }));
+        expect(consoleSession.status).toBe(200);
+      }
 
       const revoked = await call('/revoke-other-sessions', 'POST');
       expect(revoked.status).toBe(200);
@@ -130,5 +141,82 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
     const sessions = await listed.json() as Array<unknown>;
     console.log(`N=150 expired + 53 active remaining=${sessions.length}`);
     expect(sessions).toHaveLength(1);
+  });
+  test('passkey registration proxy rejects console-origin requests before forwarding', async () => {
+    const userId = 'passkey-origin-user';
+    const token = randomUUID();
+    await prisma.user.create({ data: { id: userId, email: `${userId}@example.test`, name: userId, emailVerified: true } });
+    await prisma.session.create({
+      data: { id: randomUUID(), userId, token, expiresAt: new Date(Date.now() + 7 * 86_400_000) },
+    });
+    const cookie = (await serializeSignedCookie(cookieName, token, secret)).split(';')[0]!;
+    const proxyCall = (path: string, origin: string, body: unknown = {}) => app.fetch(new Request(`https://api.openkey.test/api/passkey/${path}`, {
+      method: 'POST',
+      headers: { cookie, origin, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }));
+
+    const consoleOptions = await proxyCall('generate-register-options', 'https://console.openkey.so', { name: 'console passkey' });
+    expect(consoleOptions.status).toBe(403);
+
+    const accountOptions = await proxyCall('generate-register-options', 'http://localhost:5173', { name: 'account passkey' });
+    expect(accountOptions.status).toBe(200);
+
+    const consoleVerification = await proxyCall('verify-registration', 'https://console.openkey.so', {
+      challengeToken: 'not-a-real-challenge',
+      response: {},
+    });
+    expect(consoleVerification.status).toBe(403);
+    expect(await prisma.passkey.count({ where: { userId } })).toBe(0);
+  });
+  test('sensitive token and OAuth client routes reject non-account origins before database changes', async () => {
+    const userId = 'sensitive-auth-origin-user';
+    const token = randomUUID();
+    await prisma.user.create({
+      data: { id: userId, email: `${userId}@example.test`, name: userId, emailVerified: true },
+    });
+    await prisma.session.create({
+      data: { id: randomUUID(), userId, token, expiresAt: new Date(Date.now() + 7 * 86_400_000) },
+    });
+    const cookie = (await serializeSignedCookie(cookieName, token, secret)).split(';')[0]!;
+    const routes = [
+      { method: 'POST', path: '/get-access-token', body: { providerId: 'google' } },
+      { method: 'POST', path: '/oauth2/client/rotate-secret', body: { client_id: 'missing-client' } },
+      {
+        method: 'POST',
+        path: '/oauth2/update-client',
+        body: { client_id: 'missing-client', update: { client_name: 'No client' } },
+      },
+    ] as const;
+    const snapshot = async () => ({
+      users: await prisma.user.count({ where: { id: userId } }),
+      sessions: await prisma.session.count({ where: { userId } }),
+      accounts: await prisma.account.count({ where: { userId } }),
+      clients: await prisma.oauthClient.count({ where: { userId } }),
+      accessTokens: await prisma.oauthAccessToken.count({ where: { userId } }),
+      refreshTokens: await prisma.oauthRefreshToken.count({ where: { userId } }),
+    });
+    const before = await snapshot();
+    for (const route of routes) {
+      const request = (headers: Record<string, string>) => app.fetch(new Request(
+        `https://api.openkey.test/api/auth${route.path}`,
+        {
+          method: route.method,
+          headers: { ...headers, ...(route.body ? { 'content-type': 'application/json' } : {}) },
+          ...(route.body ? { body: JSON.stringify(route.body) } : {}),
+        },
+      ));
+      for (const origin of ['https://console.openkey.so', 'https://staging.openkey.test', 'null']) {
+        const response = await request({ cookie, origin });
+        expect(response.status, `${route.path} from ${origin}`).toBe(403);
+        expect(await snapshot()).toEqual(before);
+      }
+      const bearer = await request({ authorization: `Bearer ${token}` });
+      expect(bearer.status, `${route.path} bearer without Origin`).toBe(403);
+      expect(await snapshot()).toEqual(before);
+
+      const account = await request({ cookie, origin: 'https://openkey.test' });
+      expect(account.status, `${route.path} account cookie reaches endpoint`).not.toBe(403);
+    }
   });
 }

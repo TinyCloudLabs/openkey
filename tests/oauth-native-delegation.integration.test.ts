@@ -722,6 +722,12 @@ if (!backend) {
       expect(expired.status).toBe(409);
       expect((await expired.json() as { error: string }).error).toBe('request_not_pending');
       const denied = await nativePar();
+      const consoleDeny = await call(`/api/oauth/tinycloud/requests/${denied.id}/deny`, {
+        method: 'POST',
+        headers: { cookie, origin: 'https://console.openkey.so', 'content-type': 'application/json' },
+        body: '{}',
+      });
+      expect(consoleDeny.status).toBe(403);
       const deny = await nativeConsent(denied.id, 'deny');
       expect(deny.status).toBe(200);
       const providerDeny = await call('/api/auth/oauth2/consent', { method: 'POST', headers: { cookie, origin: WEB_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ accept: false, oauth_query: denied.consentUrl.searchParams.toString() }) });
