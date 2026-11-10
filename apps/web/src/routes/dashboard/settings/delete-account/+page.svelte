@@ -126,6 +126,8 @@
       codeSent = true;
       code = '';
       startResendCountdown();
+      await tick();
+      document.getElementById('delete-code')?.focus();
       notice = relay
         ? `We sent a code to your Apple relay address, ${account!.email}. It lasts 5 minutes.`
         : `We sent a code to ${account!.email}. It lasts 5 minutes.`;
@@ -203,9 +205,14 @@
         <li>OpenKey doesn't delete data that apps keep with other services, such as files in your TinyCloud spaces. To remove that data, delete it in those apps first.</li>
       </ul>
       <p class="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">This can't be undone.</p>
+      {#if passkeyBlocked}
+        <p class="mt-4 text-sm text-surface-600" role="status">{PASSKEY_UNAVAILABLE}</p>
+      {/if}
       <div class="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
         <Button variant="secondary" href="/dashboard/settings">Keep my account</Button>
-        <Button onclick={() => go('confirm')}>Continue</Button>
+        {#if !passkeyBlocked}
+          <Button onclick={() => go('confirm')}>Continue</Button>
+        {/if}
       </div>
     {:else if step === 'confirm' && account}
       <h1 bind:this={heading} tabindex="-1" class="text-2xl font-bold text-surface-900 outline-none">Confirm deletion</h1>

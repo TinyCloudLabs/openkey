@@ -66,7 +66,9 @@ async function noHorizontalScroll(page: Page) {
 
 test('the Settings entry stays hidden while the API has no deletion step-up', async ({ page }) => {
   await setup(page, { emailUndeliverable: undefined });
+  const probed = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/account');
   await page.goto('/dashboard/settings');
+  await probed;
   await expect(page.getByRole('heading', { name: 'Archived Keys' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Delete account' })).toHaveCount(0);
   await page.goto('/dashboard/settings/delete-account');
@@ -182,15 +184,27 @@ test('a new code is offered only once the last one has expired', async ({ page }
   expect(calls.filter((call) => call.path === '/api/account/step-up/email-otp/send')).toHaveLength(2);
 });
 
-test('a passkey account before the passkey step-up ships cannot start a deletion it cannot finish', async ({ page }) => {
+test('a passkey account before the passkey step-up ships is told up front and cannot start', async ({ page }) => {
   const calls = await setup(page, { passkeys: 1 });
+  await page.goto('/dashboard/settings/delete-account');
+  await expect(page.getByText("Confirming with a passkey isn't available here yet")).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Continue' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Keep my account' })).toBeVisible();
+  expect(calls.some((call) => call.path.includes('step-up'))).toBe(false);
+});
+
+test('a typed 403 switches the page to the step-up the API asks for', async ({ page }) => {
+  await setup(page, { stepUpPasskeys: 0 }, {
+    '/api/account/step-up/email-otp/send': (route) => json(route, { error: 'Verify with your passkey again to continue', code: 'passkey_step_up_required' }, 403),
+  });
   await page.goto('/dashboard/settings/delete-account');
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByLabel('Type DELETE MY ACCOUNT to confirm').fill('DELETE MY ACCOUNT');
   await page.getByRole('button', { name: 'Continue' }).click();
-  await expect(page.getByText("Confirming with a passkey isn't available here yet")).toBeVisible();
-  await expect(page.getByRole('button', { name: /Send code|Verify with passkey/ })).toHaveCount(0);
-  expect(calls.some((call) => call.path.includes('step-up'))).toBe(false);
+  await page.getByRole('button', { name: 'Send code' }).click();
+  await expect(page.getByText('Verify with your passkey to continue.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Verify with passkey and delete' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Send code' })).toHaveCount(0);
 });
 
 test('a passkey account verifies with a real passkey on this session, then deletes', async ({ page }) => {
