@@ -5,6 +5,7 @@
   import { api, type ConnectedMcpApp, type EthereumKey, type TinyCloudManageKeyActivity, type TinyCloudManageKeyApp, type TinyCloudManageKeyPreference } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
   import ConnectedMcpApps from './ConnectedMcpApps.svelte';
+  import DeleteAccountEntry from './DeleteAccountEntry.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
   import LinkedAccounts from '$lib/components/auth/linked-accounts.svelte';
@@ -800,4 +801,6 @@
       </div>
     </div>
   </Card>
+
+  <DeleteAccountEntry />
 </div>
