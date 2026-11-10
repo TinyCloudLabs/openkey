@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient } from '@openkey/tee';
-import { bearerFromOpenKeyOriginError } from '../middleware/bearer-origin';
+import { bearerFromAccountOriginError } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
 import {
   createDelegateSignerAuth,
@@ -357,7 +357,7 @@ delegateRouter.use('*', async (c, next) => {
   }
   // The refusals are returned, not awaited: this router has its own onError, so
   // Hono answers a handler that returns nothing with an empty 200.
-  const bearerError = bearerFromOpenKeyOriginError(c.req.header('authorization'), c.req.header('origin'));
+  const bearerError = bearerFromAccountOriginError(c.req.header('authorization'), c.req.header('origin'));
   if (bearerError) return c.json({ error: bearerError }, 403);
   // session.ts answers `{ error: 'Unauthorized' }` to every route that uses it;
   // the delegate routes add a stable code the widget can match on.

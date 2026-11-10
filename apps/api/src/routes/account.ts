@@ -10,7 +10,7 @@ import {
   changeTinyCloudManageKeyMode,
   controlMutationError,
 } from '../services/tinycloud-manage-key-control';
-import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { requireFreshPasskey } from '../services/passkey-freshness';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
@@ -23,7 +23,7 @@ export const accountRouter = new Hono<SessionContext>();
 
 // All routes require authentication. A bearer session token is accepted only
 // from an OpenKey web origin (TC-688).
-accountRouter.use('*', requireOpenKeyOriginForBearer);
+accountRouter.use('*', requireAccountOriginForBearer);
 accountRouter.use('*', requireSession);
 
 // Account deletion needs a passkey verification on this session within the

@@ -83,11 +83,13 @@ await mockModules({
 // Restored afterwards: other files in the same `bun test` run read these.
 const savedEnv = {
   CORS_ORIGIN: process.env.CORS_ORIGIN,
+  WEBAUTHN_ORIGIN: process.env.WEBAUTHN_ORIGIN,
   TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS: process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS,
 };
 
 beforeAll(() => {
   process.env.CORS_ORIGIN = OPENKEY_ORIGIN;
+  process.env.WEBAUTHN_ORIGIN = OPENKEY_ORIGIN;
   process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = '10';
 });
 

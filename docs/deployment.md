@@ -220,6 +220,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `RESEND_API_KEY` | Resend API key for emails |
 | `API_PORT` | `3001` |
 | `CORS_ORIGIN` | `https://openkey.so,https://console.openkey.so` |
+
 | `ADMIN_API_KEY` | Bearer token for organization plan fixtures and app registration |
 | `INTERNAL_METRICS_TOKEN` | Bearer token for internal metrics |
 | `OPENKEY_METRICS_READ_TOKEN` | Separate bearer for `/api/internal/scoreboard/*`. Grants **aggregate counts only** (`GET /protocol-users` -> `{count}`, `GET /app-users` -> `{total, active7d}`); neither endpoint takes input, so the token cannot be used to look up addresses or accounts. `/protocol-users` is capped at 30 calls/min per process (429) and audit-logged (status and count only). Unset = 503 |
@@ -229,6 +230,13 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway base domain (e.g. `dstack-pha-prod5.phala.network`); the ingress CNAMEs `api.openkey.so` to `gateway.<base>` (never `_.<base>`, which Android cannot resolve) |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |
+
+`WEBAUTHN_ORIGIN` is the account browser origin and is required in production.
+Sensitive account routes accept session bearers only from that origin; CORS
+origins (including `CONSOLE_ORIGIN`) do not grant account-route access. If
+`CONSOLE_ORIGIN` is unset in production, it defaults to
+`https://console.openkey.so`; that console origin remains accepted only on
+console-facing organization routes, unless it is also `WEBAUTHN_ORIGIN`.
 
 TC-2212 request IDs, sealed-body digests and request deadlines are bound by
 OpenKey's server-side consent context. The owner's signature covers the canonical

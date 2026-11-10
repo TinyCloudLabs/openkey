@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { parseLink, resolveLink, parseApprovalRequest, validateLinkHeader, verifyHeader, linkIssuerPublicKey } from '@tinycloud/share-envelope/links';
 import { ApprovalResultError, ApprovalResultService, linkRequiredError } from '../services/approval-results';
-import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
 import { verifySessionProofClaims } from '../services/native-delegation/session-proof';
@@ -106,7 +106,7 @@ approvalRequestRouter.post('/approval-results/:ref/ack', async (c) => c.json(awa
  * re-resolved here with its key, so a signed-in caller who only knows the request id is refused (403
  * `link_required`) and the request stays open. The reference is never logged or echoed.
  */
-approvalRequestRouter.post('/approval-requests/:id/deny', requireOpenKeyOriginForBearer, requireSession, async (c) => {
+approvalRequestRouter.post('/approval-requests/:id/deny', requireAccountOriginForBearer, requireSession, async (c) => {
   const id = c.req.param('id');
   const service = approvalResultService();
   const body: unknown = await c.req.json().catch(() => null);

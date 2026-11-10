@@ -11,7 +11,7 @@ import { mockModules, replaceModules } from './mock-module';
 let database: PGlite;
 let prisma: PrismaClient;
 let sessionUserId = 'user-a';
-const savedEnv = { CORS_ORIGIN: process.env.CORS_ORIGIN, TEE_MODE: process.env.TEE_MODE };
+const savedEnv = { CORS_ORIGIN: process.env.CORS_ORIGIN, WEBAUTHN_ORIGIN: process.env.WEBAUTHN_ORIGIN, TEE_MODE: process.env.TEE_MODE };
 
 replaceModules({
   '../middleware/session': () => ({
@@ -34,6 +34,7 @@ await mockModules({
 
 beforeAll(async () => {
   process.env.CORS_ORIGIN = 'https://openkey.test';
+  process.env.WEBAUTHN_ORIGIN = 'https://openkey.test';
   process.env.TEE_MODE = 'production';
   const root = new URL('../../../../packages/db/prisma/migrations/', import.meta.url);
   const names = (await readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();

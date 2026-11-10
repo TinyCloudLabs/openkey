@@ -42,11 +42,17 @@ await mockModules({
   }),
 });
 
-const savedCorsOrigin = process.env.CORS_ORIGIN;
+const savedEnv = {
+  CORS_ORIGIN: process.env.CORS_ORIGIN,
+  WEBAUTHN_ORIGIN: process.env.WEBAUTHN_ORIGIN,
+  TEE_MODE: process.env.TEE_MODE,
+  CONSOLE_ORIGIN: process.env.CONSOLE_ORIGIN,
+};
 
 beforeAll(async () => {
-  process.env.CORS_ORIGIN = OPENKEY_ORIGIN;
-
+  process.env.CORS_ORIGIN = `${OPENKEY_ORIGIN},https://console.openkey.so`;
+  process.env.WEBAUTHN_ORIGIN = OPENKEY_ORIGIN;
+  process.env.CONSOLE_ORIGIN = 'https://console.openkey.so';
   const delegate = await import('../routes/delegate?bearer-origin-routes' as string);
   const { secretsRouter } = await import('../routes/secrets?bearer-origin-routes' as string);
   const { variablesRouter } = await import('../routes/variables?bearer-origin-routes' as string);
@@ -72,8 +78,10 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  if (savedCorsOrigin === undefined) delete process.env.CORS_ORIGIN;
-  else process.env.CORS_ORIGIN = savedCorsOrigin;
+  for (const [name, value] of Object.entries(savedEnv)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
 });
 
 beforeEach(() => {
@@ -128,8 +136,25 @@ describe('session routes refuse a bearer from outside OpenKey', () => {
     await call(method, path, { origin: OPENKEY_ORIGIN });
     expect(sessionResolutions).toBe(1);
   });
-});
+  test('console-origin bearers are refused on sensitive routes', async () => {
+    for (const path of ['/api/secrets', '/api/variables', '/api/delegate/prepare', '/api/device-authorizations/tx_1/approve']) {
+      const response = await call('POST', path, {
+        authorization: 'Bearer leaked-session-token',
+        origin: 'https://console.openkey.so',
+      });
+      expect(response.status).toBe(403);
+    }
+  });
 
+  test('console-origin bearer requests remain allowed on organization routes', async () => {
+    const response = await call('GET', '/api/organizations', {
+      authorization: 'Bearer widget-session-token',
+      origin: 'https://console.openkey.so',
+    });
+    expect(response.status).not.toBe(403);
+    expect(sessionResolutions).toBe(1);
+  });
+});
 describe('routes outside the session boundary are unchanged', () => {
   test('/api/delegate/sign keeps OAuth signer auth for a server-side bearer', async () => {
     const response = await call('POST', '/api/delegate/sign', { authorization: 'Bearer oauth-access-token' });

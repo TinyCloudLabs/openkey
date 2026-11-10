@@ -5,6 +5,7 @@ import {
   API_EXPOSED_HEADERS,
   corsOriginPolicy,
   DEFAULT_CONSOLE_ORIGIN,
+  resolveAccountOriginPolicy,
   resolveOriginPolicy,
   resolveSigningOriginPolicy,
   filterSigningOrigins,
@@ -214,6 +215,30 @@ describe('signing origin policy', () => {
       WEBAUTHN_ORIGIN: 'https://openkey.so',
       TEE_MODE: 'production',
     })).toEqual(['https://openkey.so']);
+  });
+});
+
+describe('account origin policy', () => {
+  test('accepts only canonical account origins, not CORS-only console or staging origins', () => {
+    expect(resolveAccountOriginPolicy('http://localhost:5173', {
+      CORS_ORIGIN: 'https://openkey.so,https://console.openkey.so,https://staging.openkey.so',
+      WEBAUTHN_ORIGIN: 'https://openkey.so/',
+      CONSOLE_ORIGIN: 'https://console.openkey.so',
+      TEE_MODE: 'production',
+    })).toEqual(['https://openkey.so']);
+  });
+
+  test('keeps the console when it is the configured account origin and refuses empty config', () => {
+    expect(resolveAccountOriginPolicy('http://localhost:5173', {
+      WEBAUTHN_ORIGIN: 'https://console.openkey.so',
+      CONSOLE_ORIGIN: 'https://console.openkey.so',
+      TEE_MODE: 'production',
+    })).toEqual(['https://console.openkey.so']);
+    expect(resolveAccountOriginPolicy('http://localhost:5173', {
+      CORS_ORIGIN: 'https://console.openkey.so',
+      CONSOLE_ORIGIN: 'https://console.openkey.so',
+      TEE_MODE: 'production',
+    })).toEqual([]);
   });
 });
 
