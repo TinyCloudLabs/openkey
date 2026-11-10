@@ -32,7 +32,7 @@ export interface DeviceRequestRecord {
   reason?: string;
   shareOnly?: boolean;
   delegationTtlSeconds?: number;
-  /** The lifetime the requester suggests as the default; absent means `delegationTtlSeconds`. */
+  /** The lifetime the requester suggests as the default; absent means the page preselects min(`delegationTtlSeconds`, 7 days). */
   suggestedTtlSeconds?: number;
 }
 
@@ -127,14 +127,23 @@ export function deviceRequestTtlSeconds(record: DeviceRequestRecord): number {
   return Math.min(2_592_000, Math.max(60, Number.isFinite(derived) ? derived : 60));
 }
 
+/** What is preselected when the requester suggests nothing: a week, or the maximum when that is shorter. Not a cap: the owner can pick up to the maximum. */
+const DEFAULT_PRESELECTED_LIFETIME_SECONDS = 7 * 86_400;
+
 /**
- * The lifetime to select first: the requester's suggestion, never above its maximum
- * (a missing, zero or too-large suggestion means the maximum).
+ * The lifetime to select first, for a requester that signs a maximum and may suggest a default: its
+ * suggestion when it is a whole usable value up to the maximum, otherwise the smaller of the maximum
+ * and a week. An unknown requester cannot preselect a near-permanent grant by saying nothing.
  */
+export function preselectedLifetimeSeconds(maxSeconds: number, suggestedSeconds?: number): number {
+  return typeof suggestedSeconds === 'number' && Number.isFinite(suggestedSeconds) && suggestedSeconds >= 1 && suggestedSeconds <= maxSeconds
+    ? suggestedSeconds
+    : Math.min(maxSeconds, DEFAULT_PRESELECTED_LIFETIME_SECONDS);
+}
+
+/** The lifetime to select first on /device (see preselectedLifetimeSeconds). */
 export function deviceRequestSuggestedSeconds(record: DeviceRequestRecord): number {
-  const max = deviceRequestTtlSeconds(record);
-  const suggested = record.suggestedTtlSeconds;
-  return typeof suggested === 'number' && Number.isFinite(suggested) && suggested >= 1 && suggested <= max ? suggested : max;
+  return preselectedLifetimeSeconds(deviceRequestTtlSeconds(record), record.suggestedTtlSeconds);
 }
 
 /** Lifetime choices up to (and ending with) the requested maximum, with the suggestion marked. */
