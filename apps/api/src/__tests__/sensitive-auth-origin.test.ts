@@ -33,6 +33,15 @@ const sensitiveRoutes = [
   ['POST', '/api/auth/unlink-account'],
   ['POST', '/api/auth/change-email'],
   ['POST', '/api/auth/email-otp/request-email-change'],
+  ['POST', '/api/auth/get-access-token'],
+  ['POST', '/api/auth/refresh-token'],
+  ['GET', '/api/auth/account-info'],
+  ['POST', '/api/auth/oauth2/client/rotate-secret'],
+  ['POST', '/api/auth/oauth2/update-client'],
+  ['POST', '/api/auth/oauth2/delete-client'],
+  ['POST', '/api/auth/oauth2/create-client'],
+  ['GET', '/api/auth/oauth2/get-client'],
+  ['GET', '/api/auth/oauth2/get-clients'],
   ['POST', '/api/auth/email-otp/change-email'],
   ['POST', '/api/auth/change-password'],
   ['POST', '/api/auth/delete-user'],
@@ -73,13 +82,16 @@ describe('sensitive Better Auth endpoints require an account origin', () => {
     expect(reached()).toBe(0);
   });
 
-  test.each([
+  const invalidOrigins = [
     ['staging', 'https://staging.openkey.test'],
     ['null', 'null'],
     ['malformed', 'not an origin'],
-  ])('%s cookie Origin is rejected before sensitive handlers', async (_name, origin) => {
+  ] as const;
+  test.each(sensitiveRoutes.flatMap(([method, path]) =>
+    invalidOrigins.map(([name, origin]) => [method, path, name, origin] as const),
+  ))('%s %s rejects a %s cookie Origin before the handler', async (method, path, _name, origin) => {
     const { app, reached } = fixture();
-    const response = await call(app, 'POST', '/api/auth/update-user', { origin, cookie: 'session=valid' });
+    const response = await call(app, method, path, { origin, cookie: 'session=valid' });
     expect(response.status).toBe(403);
     expect(reached()).toBe(0);
   });
@@ -127,13 +139,11 @@ describe('sensitive Better Auth endpoints require an account origin', () => {
     expect(reached()).toBe(1);
   });
 
-  test.each([
-    ['staging', 'https://staging.openkey.test'],
-    ['null', 'null'],
-    ['malformed', 'not an origin'],
-  ])('%s session bearer Origin is rejected before sensitive handlers', async (_name, origin) => {
+  test.each(sensitiveRoutes.flatMap(([method, path]) =>
+    invalidOrigins.map(([name, origin]) => [method, path, name, origin] as const),
+  ))('%s %s rejects a session bearer with %s Origin before the handler', async (method, path, _name, origin) => {
     const { app, reached } = fixture();
-    const response = await call(app, 'POST', '/api/auth/update-user', {
+    const response = await call(app, method, path, {
       origin,
       authorization: 'Bearer session-token',
     });

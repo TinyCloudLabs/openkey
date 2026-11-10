@@ -67,6 +67,15 @@ const sensitiveAuthEndpoints: Record<string, string> = {
   '/oauth2/update-consent': 'POST',
   '/oauth2/delete-consent': 'POST',
   '/oauth2/consent': 'POST',
+  '/get-access-token': 'POST',
+  '/refresh-token': 'POST',
+  '/account-info': 'GET',
+  '/oauth2/client/rotate-secret': 'POST',
+  '/oauth2/update-client': 'POST',
+  '/oauth2/delete-client': 'POST',
+  '/oauth2/create-client': 'POST',
+  '/oauth2/get-client': 'GET',
+  '/oauth2/get-clients': 'GET',
 };
 
 export const requireAccountOriginForSensitiveAuth = createMiddleware(async (c, next) => {
