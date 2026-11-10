@@ -12,6 +12,7 @@
     delegateResponseFailureText,
     deviceRelayFailureText,
     DeviceRelayDeliveryError,
+    OwnerMessageError,
     shortCodeFailureText,
   } from '$lib/delegate-failure-text';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
@@ -528,7 +529,7 @@
       // Scrub even when storage is blocked or the reference is malformed.
       history.replaceState(history.state, '', location.pathname);
       if (hasQuery || !/^[a-z2-7]{26}$/.test(approvalRequestId)) {
-        throw new Error('This approval link is malformed. Ask the requesting app or person for a new complete link, sent on its own line.');
+        throw new OwnerMessageError('This approval link is malformed. Ask the requesting app or person for a new complete link, sent on its own line.');
       }
       const storageKey = `openkey.approval.${approvalRequestId}`;
       try {
@@ -536,10 +537,10 @@
         fragment ||= sessionStorage.getItem(storageKey) || '';
         if (fragment) sessionStorage.setItem(storageKey, fragment);
       } catch {
-        throw new Error('This browser could not keep the approval link for sign-in. Open the original complete link in Safari or Chrome with site storage enabled, not a private chat preview.');
+        throw new OwnerMessageError('This browser could not keep the approval link for sign-in. Open the original complete link in Safari or Chrome with site storage enabled, not a private chat preview.');
       }
       if (!fragment) {
-        throw new Error('This approval link is incomplete or belongs to another browser tab. Reopen the original complete link from the message, including everything after #. If it was cut off, ask for a new link sent on its own line.');
+        throw new OwnerMessageError('This approval link is incomplete or belongs to another browser tab. Reopen the original complete link from the message, including everything after #. If it was cut off, ask for a new link sent on its own line.');
       }
       const reference = location.pathname + fragment;
       approvalReference = reference;
@@ -560,12 +561,12 @@
           return;
         }
         if (response.status === 404 || ['not_found', 'gone'].includes(result?.code)) {
-          throw new Error('This approval request is unavailable or has expired. Ask the requesting app or person for a new approval link.');
+          throw new OwnerMessageError('This approval request is unavailable or has expired. Ask the requesting app or person for a new approval link.');
         }
         if (response.status >= 500) {
-          throw new Error('OpenKey could not load this request right now. Reopen the original complete link shortly. If it still fails, return to the requesting app or command.');
+          throw new OwnerMessageError('OpenKey could not load this request right now. Reopen the original complete link shortly. If it still fails, return to the requesting app or command.');
         }
-        throw new Error('This approval link could not be verified. Do not edit it or approve a different request. Ask the requesting app or person for a new complete link sent on its own line.');
+        throw new OwnerMessageError('This approval link could not be verified. Do not edit it or approve a different request. Ask the requesting app or person for a new complete link sent on its own line.');
       }
       if (result.approved) {
         done = true;
@@ -730,10 +731,10 @@
   async function prepareDelegation(key: EthereumKey, actionKeys?: string[]) {
     // Every signing path starts here: never prepare the default abilities
     // for a request whose permissions could not be read.
-    if (permissionsParamError) throw new Error(permissionsParamError);
-    if (approvalRequestMode && !approvalRequestLoaded) throw new Error('Open the approval link again.');
-    if (linkPolicyError) throw new Error(linkPolicyError);
-    if (requestOwnerError) throw new Error(requestOwnerError);
+    if (permissionsParamError) throw new OwnerMessageError(permissionsParamError);
+    if (approvalRequestMode && !approvalRequestLoaded) throw new OwnerMessageError('Open the approval link again.');
+    if (linkPolicyError) throw new OwnerMessageError(linkPolicyError);
+    if (requestOwnerError) throw new OwnerMessageError(requestOwnerError);
     const API_URL = import.meta.env.VITE_API_URL || '';
     const body: Record<string, unknown> = {
       keyId: key.id,
@@ -951,7 +952,7 @@
     try {
       const accounts: string[] = await provider.request({ method: 'eth_requestAccounts' });
       if (!accounts || accounts.length === 0) {
-        throw new Error('No accounts returned from wallet');
+        throw new OwnerMessageError('No accounts returned from wallet');
       }
       const account = accounts[0];
 
@@ -1145,7 +1146,7 @@
       typeof data.prepared?.siwe !== 'string' || !data.prepared.siwe.trim() ||
       !Array.isArray(data.permissions) ||
       !preparedMatchesSelection(reviewModel, data.permissions, reviewSelection, data.selectedActionKeys)) {
-      throw new Error('The request could not be prepared with the approved selection.');
+      throw new OwnerMessageError('The request could not be prepared with the approved selection.');
     }
     const refreshed = parseCapabilityReview({
       message: data.prepared.siwe,
@@ -1161,7 +1162,7 @@
       refreshed.parseWarnings.some(warning => warning.code !== 'unknown-service') ||
       refreshed.immutable.address.toLowerCase() !== key.address.toLowerCase() ||
       signedActions.length !== expected.size || !signedActions.every(action => expected.has(action))) {
-      throw new Error('The refreshed message does not match the approved selection.');
+      throw new OwnerMessageError('The refreshed message does not match the approved selection.');
     }
     applyPreparedDelegation(data);
   }
@@ -1182,12 +1183,10 @@
       // (see step === 'consent'), so both fields MUST be present. Fail
       // closed rather than silently degrading to the legacy regenerate path.
       if (!preparedData) {
-        throw new Error('No prepared session data. Please go back and try again.');
+        throw new OwnerMessageError('No prepared session data. Please go back and try again.');
       }
       if (!authorizationContextToken) {
-        throw new Error(
-          'Missing authorization context token from /prepare. Please restart the delegation.',
-        );
+        throw new OwnerMessageError('Missing authorization context token from /prepare. Please restart the delegation.');
       }
 
       const API_URL = import.meta.env.VITE_API_URL || '';
@@ -1291,7 +1290,7 @@
     try {
       const provider = getSigningProvider();
       if (!provider) {
-        throw new Error('No wallet detected. Please install a browser wallet to sign with external keys.');
+        throw new OwnerMessageError('No wallet detected. Please install a browser wallet to sign with external keys.');
       }
 
       // Try each wallet to find the matching account
@@ -1341,7 +1340,7 @@
       }
 
       if (!matchingAccount) {
-        throw new Error(
+        throw new OwnerMessageError(
           `None of your connected wallets have account ${selectedKey!.address}. ` +
           `Please connect the wallet that holds this account and try again.`
         );
@@ -1437,7 +1436,7 @@
     if (deviceTransactionId) {
       const API_URL = import.meta.env.VITE_API_URL || '';
       const delegationExpiresAt = payload.expiresAt ?? payload.expirationTime ?? payload.expiry;
-      if (typeof delegationExpiresAt !== 'string') throw new Error('The approved delegation has no expiry binding.');
+      if (typeof delegationExpiresAt !== 'string') throw new OwnerMessageError('The approved delegation has no expiry binding.');
       // The owner may have unchecked capabilities: bind and relay exactly
       // what the signed delegation grants, in the request's manifest form.
       const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions, {

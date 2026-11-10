@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, shortCodeFailureText } from './delegate-failure-text';
+import { delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, OwnerMessageError, shortCodeFailureText } from './delegate-failure-text';
 
 const changedRequest = "This request changed after you opened it, so OpenKey didn't approve it. Return to the app or command and start again.";
 const approvalCannotProceed = "Couldn't approve this request. Try again.";
@@ -35,6 +35,7 @@ const expiryCodes = [
   'invalid_expiry', 'invalid_expiration_time', 'missing_expiration_time',
   'expiry_exceeds_link', 'expiry_exceeds_handoff', 'expiry_not_changeable',
 ];
+
 
 describe('delegateFailureText code mappings', () => {
   test.each(mappedCodes)('maps %s to its exact message', (code: string, message: string) => {
@@ -102,6 +103,12 @@ describe('delegateFailureText code mappings', () => {
     expect(message).not.toContain(rawText);
     expect(message).not.toContain('Delegation');
   });
+  test('shows only explicitly tagged owner messages', () => {
+    expect(delegateFailureText(new OwnerMessageError('This approval link is incomplete.'))).toBe('This approval link is incomplete.');
+    expect(delegateFailureText(new Error('server errorDescription: private detail'))).toBe(approvalCannotProceed);
+    expect(delegateFailureText('raw thrown value')).toBe(approvalCannotProceed);
+  });
+
 
 });
 

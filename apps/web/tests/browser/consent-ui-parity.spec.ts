@@ -92,8 +92,7 @@ test.describe('TC-659 CLI /delegate consent parity', () => {
     await expect(page.getByText('Sync my notes', { exact: true })).toHaveCount(1);
     const details = await openEditor(page);
     await details.getByRole('checkbox').last().uncheck();
-    await expect(page.getByText('Service unavailable')).toHaveCount(1);
-    await expect(page.getByRole('alert').filter({ hasText: 'Service unavailable' })).toHaveCount(1);
+    await expect(page.getByRole('alert')).toHaveText("Couldn't approve this request. Try again. (Error 503)");
   });
 });
 

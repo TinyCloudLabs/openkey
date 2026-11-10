@@ -77,10 +77,11 @@ function safeCode(code: unknown): string | null {
   return typeof code === 'string' && SAFE_CODE.test(code) ? code : null;
 }
 
-export function delegateFailureText(_cause: unknown): string {
-  return APPROVAL_FAILURE_MESSAGE;
-}
+export class OwnerMessageError extends Error {}
 
+export function delegateFailureText(cause: unknown): string {
+  return cause instanceof OwnerMessageError ? cause.message : APPROVAL_FAILURE_MESSAGE;
+}
 export function delegateResponseFailureText(
   status: number,
   code: unknown,
