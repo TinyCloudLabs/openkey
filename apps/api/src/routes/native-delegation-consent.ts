@@ -8,6 +8,7 @@ import { createWalletFromPrivateKey } from '@openkey/tee';
 import type { SessionContext } from '../middleware/session';
 import { auth } from '../auth';
 import { isAccountOriginAllowed, resolveOriginPolicy } from '../origin-policy';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { primaryKeyWhere } from '../services/primary-key';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
@@ -114,6 +115,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     await next();
   });
   router.use('/:id/prepare', requireAccountOrigin);
+  router.use('/:id/deny', requireAccountOriginForBearer);
   router.use('/:id/approve', requireAccountOrigin);
   router.use('*', async (c, next) => {
     const session = await auth.api.getSession({ headers: c.req.raw.headers });

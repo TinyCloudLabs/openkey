@@ -67,6 +67,26 @@ describe('delegation short-code broker', () => {
     expect(again.status).toBe(404);
     expect(await again.json()).toEqual({ error: 'Not found' });
   });
+  test('creates a code from the account origin', async () => {
+    const { app, records } = fixture();
+    const response = await app.request('/api/delegation-codes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173', cookie: 'session=valid' },
+      body: JSON.stringify({ delegation }),
+    });
+    expect(response.status).toBe(201);
+    expect(records.size).toBe(1);
+  });
+  test('refuses console-origin code creation before storing a delegation', async () => {
+    const { app, records } = fixture();
+    const response = await app.request('/api/delegation-codes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'https://console.openkey.so', cookie: 'session=valid' },
+      body: JSON.stringify({ delegation }),
+    });
+    expect(response.status).toBe(403);
+    expect(records.size).toBe(0);
+  });
 
   test('a redeemed code answers exactly like an unknown one', async () => {
     const { app } = fixture();

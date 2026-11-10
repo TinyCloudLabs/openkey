@@ -89,6 +89,16 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
       const call = (path: string, method: 'GET' | 'POST') => app.fetch(new Request(`https://api.openkey.test/api/auth${path}`, {
         method, headers: { cookie, origin: 'https://openkey.test' },
       }));
+      if (count === 10) {
+        const consoleRefused = await app.fetch(new Request(`https://api.openkey.test/api/auth/revoke-other-sessions`, {
+          method: 'POST', headers: { cookie, origin: 'https://console.openkey.so' },
+        }));
+        expect(consoleRefused.status).toBe(403);
+        const consoleSession = await app.fetch(new Request(`https://api.openkey.test/api/auth/get-session`, {
+          headers: { cookie, origin: 'https://console.openkey.so' },
+        }));
+        expect(consoleSession.status).toBe(200);
+      }
 
       const revoked = await call('/revoke-other-sessions', 'POST');
       expect(revoked.status).toBe(200);
@@ -130,5 +140,32 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
     const sessions = await listed.json() as Array<unknown>;
     console.log(`N=150 expired + 53 active remaining=${sessions.length}`);
     expect(sessions).toHaveLength(1);
+  });
+  test('passkey registration proxy rejects console-origin requests before forwarding', async () => {
+    const userId = 'passkey-origin-user';
+    const token = randomUUID();
+    await prisma.user.create({ data: { id: userId, email: `${userId}@example.test`, name: userId, emailVerified: true } });
+    await prisma.session.create({
+      data: { id: randomUUID(), userId, token, expiresAt: new Date(Date.now() + 7 * 86_400_000) },
+    });
+    const cookie = (await serializeSignedCookie(cookieName, token, secret)).split(';')[0]!;
+    const proxyCall = (path: string, origin: string, body: unknown = {}) => app.fetch(new Request(`https://api.openkey.test/api/passkey/${path}`, {
+      method: 'POST',
+      headers: { cookie, origin, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }));
+
+    const consoleOptions = await proxyCall('generate-register-options', 'https://console.openkey.so', { name: 'console passkey' });
+    expect(consoleOptions.status).toBe(403);
+
+    const accountOptions = await proxyCall('generate-register-options', 'http://localhost:5173', { name: 'account passkey' });
+    expect(accountOptions.status).toBe(200);
+
+    const consoleVerification = await proxyCall('verify-registration', 'https://console.openkey.so', {
+      challengeToken: 'not-a-real-challenge',
+      response: {},
+    });
+    expect(consoleVerification.status).toBe(403);
+    expect(await prisma.passkey.count({ where: { userId } })).toBe(0);
   });
 }
