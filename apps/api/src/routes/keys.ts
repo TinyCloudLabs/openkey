@@ -312,6 +312,10 @@ keysRouter.post('/:keyId/sign', async (c) => {
     return c.json({ error: 'raw message must be even-length 0x hex' }, 400);
   }
   const signedMessage = body.format === 'raw' ? Buffer.from(body.message.slice(2), 'hex').toString('utf8') : body.message;
+  const siweCheck = checkSignableMessage(signedMessage, body.requestOrigin);
+  if (siweCheck.siwe && !siweCheck.ok) {
+    return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
+  }
   const ceiling = assertWithinDelegationCeiling(signedMessage);
   if (ceiling !== 'ok') return c.json({
     error: ceiling === 'missing' ? 'TinyCloud delegation SIWE requires an Expiration Time.' : 'Delegation expiry exceeds the maximum allowed lifetime.',
