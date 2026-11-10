@@ -522,8 +522,8 @@ const refusals: RefusalCase[] = [
   {
     name: 'a missing signed expiry',
     refuse: async (p) => completeBody(p, p.prepared.siwe.replace(/^Expiration Time: .*\n/m, '')),
-    code: 'missing_expiration_time',
-    error: 'The signed SIWE must include a valid Expiration Time',
+    code: 'expiry_required',
+    error: 'TinyCloud delegation SIWE requires an Expiration Time.',
   },
   {
     name: 'a bad signature',

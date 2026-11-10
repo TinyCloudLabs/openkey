@@ -2,6 +2,7 @@ export type DelegateErrorCode =
   | 'invalid_permissions'
   | 'invalid_expiry'
   | 'expiry_exceeds_link'
+  | 'expiry_exceeds_ceiling'
   | 'delegation_prepare_failed';
 
 export interface DelegateErrorDetail {

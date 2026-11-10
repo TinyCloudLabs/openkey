@@ -204,14 +204,38 @@ describe('the chosen approval expiry is what gets signed', () => {
     });
   }
 
-  test('a longer expiry than requested is signed as chosen, with no upper cap', async () => {
+  test('expiry beyond the ten-calendar-year ceiling is refused without consuming the approval', async () => {
     const p = await prepare();
     const farAway = '9999-12-31T23:59:59.000Z';
     const result = await preview(p, p.allowed, farAway);
+    expect(result.status).toBe(400);
+    expect(result.body).toEqual({
+      error: 'Delegation expiry exceeds the maximum allowed lifetime.',
+      code: 'expiry_exceeds_ceiling',
+    });
+    expect(signManagedMessage).not.toHaveBeenCalled();
+  });
+
+  test('expiry inside the ten-calendar-year ceiling is previewed and signed', async () => {
+    const p = await prepare();
+    const ceiling = new Date();
+    ceiling.setUTCFullYear(ceiling.getUTCFullYear() + 10);
+    const chosen = new Date(ceiling.getTime() - 86_400_000).toISOString();
+    const result = await preview(p, p.allowed, chosen);
     expect(result.status).toBe(200);
     const signed = await post('/authorize-sign', signBody(p, p.allowed, stringField(result.body.previewApprovalToken)));
     expect(signed.status).toBe(200);
-    expect(expiryLine(stringField(signed.body.signedMessage))).toBe(farAway);
+    expect(expiryLine(stringField(signed.body.signedMessage))).toBe(chosen);
+  });
+
+  test('expiry beyond the ten-calendar-year ceiling is refused', async () => {
+    const p = await prepare();
+    const ceiling = new Date();
+    ceiling.setUTCFullYear(ceiling.getUTCFullYear() + 10);
+    const chosen = new Date(ceiling.getTime() + 86_400_000).toISOString();
+    const result = await preview(p, p.allowed, chosen);
+    expect(result.status).toBe(400);
+    expect(result.body.code).toBe('expiry_exceeds_ceiling');
   });
 
   test('an external signer signs the previewed bytes and /authorize-sign needs no expiry field', async () => {

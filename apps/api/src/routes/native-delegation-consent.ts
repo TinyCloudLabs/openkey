@@ -1,3 +1,5 @@
+import { assertWithinDelegationCeiling } from '../services/approval-expiry';
+
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { Prisma, type PrismaClient } from '@openkey/db';
@@ -19,7 +21,7 @@ import { prepareDelegationSession, actionKey } from './delegate-session';
 
 import { log, logError, logMetric } from '../log';
 export class NativeConsentError extends Error {
-  constructor(readonly status: 401 | 403 | 404 | 409 | 500 | 503, readonly code: string, readonly description?: string) { super(code); }
+  constructor(readonly status: 400 | 401 | 403 | 404 | 409 | 500 | 503, readonly code: string, readonly description?: string) { super(code); }
 }
 function fail(status: NativeConsentError['status'], code: string): never { throw new NativeConsentError(status, code); }
 const active = (row: { status: string; expiresAt: Date }) => {
@@ -42,10 +44,13 @@ function permitted(value: unknown, ceiling: Parameters<typeof validatePermission
   catch (error) { if (error instanceof ParError) fail(409, 'preparation_superseded'); throw error; }
 }
 function prepareSiwe(row: { sessionJwk: unknown }, permissions: NativePermission[], key: { address: string }, ceiling: { siweDomain?: string }, nonce: string, ttlSeconds: number, at: Date) {
-  return prepareDelegationSession({
+  const prepared = prepareDelegationSession({
     address: ensureEip55(key.address), chainId: 1, prefix: 'applications', jwk: row.sessionJwk as { kty: string; crv: string; x: string },
     permissions, expiryMs: ttlSeconds * 1000, domain: ceiling.siweDomain ?? 'openkey.so', nonce, issuedAt: at,
   });
+  const expiry = assertWithinDelegationCeiling(prepared.prepared.siwe, at.getTime());
+  if (expiry !== 'ok') fail(400, expiry === 'missing' ? 'expiry_required' : 'expiry_exceeds_ceiling');
+  return prepared;
 }
 function selectedPermissions(requested: NativePermission[], selection: unknown, spaceId: string): NativePermission[] {
   if (selection === undefined) return requested;

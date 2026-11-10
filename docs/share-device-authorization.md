@@ -69,7 +69,17 @@ do not support device transactions: any request to them that carries
 `deviceTransactionId` (whatever its value) is refused with 400
 `device_transaction_unsupported`, and requests without it behave as before.
 
-The default and maximum lifetime is 30 days, counted from approval.
+The API enforces a maximum delegation lifetime of 10 calendar years from the
+time each delegation is validated (UTC calendar-year arithmetic). Device
+requests retain their shorter requested-lifetime bound; their requested TTL
+cannot exceed this server ceiling.
+
+Every TinyCloud delegation SIWE is recognized by its `urn:recap:` resource
+lines and must contain exactly an `Expiration Time:` value within that
+ceiling. Plain sign-in SIWEs and non-SIWE messages are unaffected. HTTP 400
+refusals use stable codes: `expiry_required` when the line is absent and
+`expiry_exceeds_ceiling` when it exceeds the ceiling. Both are non-retryable;
+no signing or partial approval state is produced.
 
 ## Ordinary `/delegate` links
 

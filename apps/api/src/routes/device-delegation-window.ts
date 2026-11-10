@@ -1,3 +1,5 @@
+import { assertWithinDelegationCeiling } from '../services/approval-expiry';
+
 import { DeviceAuthorizationError, type DeviceAuthorizationRecord } from '../services/device-authorization';
 import { checkSignedSubset, parseStrictSiwe, SIGNED_SUBSET_REFUSAL_CODE } from '../services/signed-subset';
 import { actionKey, parsePreparedRecap, prepareDelegationSession, type DelegationJwk } from './delegate-session';
@@ -22,6 +24,16 @@ export async function deviceDelegationWindowError(
   input: { host: unknown } & ({ signedSiwe: string } | { expirationTime: string }),
 ): Promise<DelegationWindowRefusal | null> {
   const { deviceTransactionId, jwk } = body as { deviceTransactionId?: unknown; jwk?: unknown };
+  if ('signedSiwe' in input) {
+    const ceiling = assertWithinDelegationCeiling(input.signedSiwe);
+    if (ceiling !== 'ok') return {
+      body: {
+        error: ceiling === 'missing' ? 'TinyCloud delegation SIWE requires an Expiration Time.' : 'Delegation expiry exceeds the maximum allowed lifetime.',
+        code: ceiling === 'missing' ? 'expiry_required' : 'expiry_exceeds_ceiling',
+      },
+      status: 400,
+    };
+  }
   if (deviceTransactionId === undefined) return null;
   let record: DeviceAuthorizationRecord;
   try {
