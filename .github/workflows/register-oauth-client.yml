@@ -1,11 +1,15 @@
 name: Register OAuth Client
 
-# Manually register a public (PKCE-only) OAuth client in the prod database, or update
-# the branding fields of an existing enabled client by setting client_id.
+# Manually register a public (PKCE-only) OAuth client in the prod database, update
+# the branding fields of an existing enabled client by setting client_id, or
+# replace the native delegation ceiling of an existing native client by setting
+# client_id together with tinycloud_native_delegation (dry run by default).
 # OpenKey uses pre-registered clients only, and the prod ADMIN_API_KEY lives
 # solely in the Phala CVM env — this workflow provides an auditable
-# registration path using the same DATABASE_URL secret the deploy workflow's
-# schema-sync step already uses. Client ids are public, so log output is safe.
+# registration path. The job runs in the `production` environment (as
+# deploy-api does): a dispatch waits for that environment's required reviewer,
+# and DATABASE_URL is read from the environment's secret of that name.
+# Client ids are public, so log output is safe.
 
 on:
   workflow_dispatch:
@@ -27,7 +31,7 @@ on:
         description: 'Application website URL (optional)'
         required: false
       client_id:
-        description: 'Existing enabled client ID to update branding only (optional)'
+        description: 'Existing enabled client ID to update (optional); branding only, unless tinycloud_native_delegation is also set'
         required: false
       icon:
         description: 'HTTPS icon URL (optional); on update, empty leaves unchanged and none clears'
@@ -39,12 +43,23 @@ on:
         description: 'Brand accent color as #rrggbb (optional); on update, empty leaves unchanged and none clears'
         required: false
       tinycloud_native_delegation:
-        description: 'Native delegation ceiling JSON (optional)'
+        description: 'Native delegation ceiling JSON (optional). With client_id it replaces the stored ceiling; appId and siweDomain, if present, must equal the stored values (a different value is refused), e.g. {"version":1,"appId":"com.example.app","tinycloudHost":"https://tee.node.tinycloud.xyz","kv":{"paths":["com.example.app/data/"],"actions":["get","put"]},"sql":null}'
         required: false
+      dry_run:
+        description: 'Ceiling update only: the ceiling is written only when this is false; otherwise BEFORE, AFTER and the diff are printed and nothing is written (default true)'
+        required: false
+        type: boolean
+        default: true
+      allow_narrow:
+        description: 'Ceiling update only: permit a ceiling that removes existing kv paths, sql databases or actions, or reduces a limit (default false)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   register:
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,6 +87,8 @@ jobs:
           CLIENT_THEME_BACKGROUND_COLOR: ${{ inputs.theme_background_color }}
           CLIENT_THEME_ACCENT_COLOR: ${{ inputs.theme_accent_color }}
           CLIENT_TINYCLOUD_NATIVE_DELEGATION: ${{ inputs.tinycloud_native_delegation }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          ALLOW_NARROW: ${{ inputs.allow_narrow }}
         run: |
           if [ -z "$DATABASE_URL" ]; then
             echo "DATABASE_URL secret not set" >&2
@@ -79,4 +96,11 @@ jobs:
           fi
           bun install --frozen-lockfile
           bun node_modules/.bin/prisma generate --schema=./packages/db/prisma/schema.prisma
-          bun run scripts/ci-register-oauth-client.ts
+          # dry_run and allow_narrow apply to ceiling updates (client_id with a ceiling) only.
+          # The script writes a ceiling only with --apply, passed only when dry_run is exactly "false".
+          args=()
+          if [ -n "$CLIENT_ID" ] && [ -n "$CLIENT_TINYCLOUD_NATIVE_DELEGATION" ]; then
+            if [ "$DRY_RUN" = "false" ]; then args+=(--apply); fi
+            if [ "$ALLOW_NARROW" = "true" ]; then args+=(--allow-narrow); fi
+          fi
+          bun run scripts/ci-register-oauth-client.ts "${args[@]}"

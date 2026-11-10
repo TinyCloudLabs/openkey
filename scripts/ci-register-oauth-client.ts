@@ -14,15 +14,39 @@
  *   CLIENT_REDIRECT_URIS  Comma-separated redirect URIs (required on create)
  *   CLIENT_TYPE           "native" | "spa" (default "native")
  *   CLIENT_URI            Application website URL (optional)
- *   CLIENT_ID             Existing enabled client to update branding only. In
- *                         update mode, empty branding values are unchanged;
- *                         use `none` to clear icon or theme colours.
+ *   CLIENT_ID             Existing enabled client to update. Without a ceiling
+ *                         this updates branding only: empty branding values
+ *                         are unchanged; use `none` to clear icon or theme
+ *                         colours.
  *   CLIENT_ICON           HTTPS icon URL (optional)
  *   CLIENT_THEME_BACKGROUND_COLOR  #rrggbb (optional)
  *   CLIENT_THEME_ACCENT_COLOR      #rrggbb (optional)
  *   CLIENT_TINYCLOUD_NATIVE_DELEGATION
  *                         Native delegation ceiling JSON (optional; native
- *                         clients only). Adds tinycloud:delegation.
+ *                         clients only). Adds tinycloud:delegation. With
+ *                         CLIENT_ID it is the full replacement ceiling for that
+ *                         client (see below).
+ *
+ * Ceiling update (CLIENT_ID + CLIENT_TINYCLOUD_NATIVE_DELEGATION):
+ *   The value is validated by the same validator the admin API PATCH uses and
+ *   replaces the stored tinycloudNativeDelegation; no other column changes. For
+ *   a client that already has a ceiling, appId and siweDomain are kept from the
+ *   stored value: a supplied value must equal the stored one (accepted as a
+ *   no-op) and a different one is refused, as is a different tinycloudHost. An
+ *   absent stored siweDomain counts as openkey.so: supplying openkey.so is
+ *   accepted and the written value stays without one; any other value is refused.
+ *   The BEFORE and AFTER ceilings, the kept values and the entry-level diff are
+ *   printed (ceiling config only). Adding entries is allowed. A value that
+ *   removes a kv path, sql database or action, or reduces a limit, is refused
+ *   unless --allow-narrow is passed; no flag allows a change of appId,
+ *   siweDomain or tinycloudHost. It cannot be combined with branding,
+ *   redirect URI, type or website values.
+ *   A ceiling update is a dry run unless --apply is passed: without it the
+ *   BEFORE, AFTER and diff are printed and nothing is written.
+ *   --apply               Write the ceiling.
+ *   --dry-run             Same as passing neither flag (accepted for clarity);
+ *                         cannot be combined with --apply.
+ *   --allow-narrow        Permit a ceiling that removes entries or reduces limits.
  *
  * Idempotent: if an active client with the same name already exists, it is
  * printed and no new client is created.
@@ -31,6 +55,7 @@
 import { createPrismaClient, type Prisma } from '../packages/db/src/index';
 import { randomBytes } from 'crypto';
 import { TINYCLOUD_DELEGATION_SCOPE } from '../apps/api/src/oauth-config';
+import { updateNativeCeiling } from '../apps/api/src/services/native-delegation/ceiling-update';
 import {
   NativeDelegationPolicyError,
   validateNativeDelegationConfig,
@@ -101,13 +126,48 @@ function sameNativeDelegationConfig(
   }
 }
 
+function cliFlags(args: string[]): { apply: boolean; dryRun: boolean; allowNarrow: boolean } {
+  const unknown = args.filter((arg) => arg !== '--apply' && arg !== '--dry-run' && arg !== '--allow-narrow');
+  if (unknown.length > 0) throw new Error(`Unknown argument: ${unknown.join(' ')}`);
+  const flags = { apply: args.includes('--apply'), dryRun: args.includes('--dry-run'), allowNarrow: args.includes('--allow-narrow') };
+  if (flags.apply && flags.dryRun) throw new Error('--apply and --dry-run cannot be combined');
+  return flags;
+}
+
 async function main() {
   required('DATABASE_URL');
   const clientIdToUpdate = process.env.CLIENT_ID?.trim();
+  const ceilingInput = process.env.CLIENT_TINYCLOUD_NATIVE_DELEGATION?.trim();
+  const flags = cliFlags(process.argv.slice(2));
+  if (clientIdToUpdate && ceilingInput) {
+    const incompatible = [
+      ['CLIENT_NAME', process.env.CLIENT_NAME],
+      ['CLIENT_ICON', process.env.CLIENT_ICON],
+      ['CLIENT_THEME_BACKGROUND_COLOR', process.env.CLIENT_THEME_BACKGROUND_COLOR],
+      ['CLIENT_THEME_ACCENT_COLOR', process.env.CLIENT_THEME_ACCENT_COLOR],
+      ['CLIENT_REDIRECT_URIS', process.env.CLIENT_REDIRECT_URIS],
+      ['CLIENT_URI', process.env.CLIENT_URI],
+      ['CLIENT_TYPE', process.env.CLIENT_TYPE],
+    ].filter(([, value]) => value?.trim());
+    if (incompatible.length > 0) {
+      throw new Error(`a ceiling update changes the ceiling only; remove ${incompatible.map(([key]) => key).join(', ')}`);
+    }
+    await updateNativeCeiling(prisma, {
+      clientId: clientIdToUpdate,
+      rawCeiling: ceilingInput,
+      dryRun: !flags.apply,
+      allowNarrow: flags.allowNarrow,
+      log: (line) => console.log(line),
+    });
+    console.log(`CLIENT_ID=${clientIdToUpdate}`);
+    return;
+  }
+  if (flags.apply || flags.dryRun || flags.allowNarrow) {
+    throw new Error('--apply, --dry-run and --allow-narrow apply to ceiling updates only (CLIENT_ID with CLIENT_TINYCLOUD_NATIVE_DELEGATION)');
+  }
   const name = clientIdToUpdate ? process.env.CLIENT_NAME?.trim() || undefined : required('CLIENT_NAME');
   if (clientIdToUpdate) {
     const incompatible = [
-      ['CLIENT_TINYCLOUD_NATIVE_DELEGATION', process.env.CLIENT_TINYCLOUD_NATIVE_DELEGATION],
       ['CLIENT_REDIRECT_URIS', process.env.CLIENT_REDIRECT_URIS],
       ['CLIENT_URI', process.env.CLIENT_URI],
       ['CLIENT_TYPE', process.env.CLIENT_TYPE],
