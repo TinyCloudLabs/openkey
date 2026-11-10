@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
-import { createPrismaClient } from '@openkey/db';
+import { getPrisma } from '@openkey/db';
 
 type MetricsCounter = { count(options?: Record<string, unknown>): Promise<number> };
 type RenewalGroup = { clientId: string; _count: { _all: number }; _max: { createdAt: Date | null } };
@@ -123,5 +123,5 @@ export function createInternalMetricsRouter(getDatabase: () => MetricsDatabase) 
 }
 
 export const internalMetricsRouter = createInternalMetricsRouter(
-  () => createPrismaClient() as unknown as MetricsDatabase,
+  () => getPrisma() as unknown as MetricsDatabase,
 );
