@@ -996,6 +996,7 @@
   }
 
   function approveDelegate() {
+    if (approveBlockedByFailure) return;
     if (deviceTransactionId && !deviceAcknowledged) {
       error = 'Confirm that you started this request yourself, on a device you control.';
       return;
