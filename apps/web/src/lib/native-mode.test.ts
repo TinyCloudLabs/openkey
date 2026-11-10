@@ -1,9 +1,10 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
 import {
-  loadNativeBranding, nativeLoginHint, nativeOtpSentKey, nativeSignIn, nativeSocialError, nativeSocialErrorMessage,
+  loadNativeBranding, nativeLoginHint, nativeOtpSentKey, nativeSignIn, nativeSocialError,
   nativeSocialReturnUrls, parseNativeBranding,
 } from './native-mode';
+import { socialErrorMessage } from './social-continuation';
 
 const signed = (extra: Record<string, string> = {}) => new URLSearchParams({
   response_type: 'code', client_id: 'exo-native', redirect_uri: 'xyz.tinycloud.exo://cb', scope: 'openid',
@@ -87,18 +88,19 @@ describe('nativeSocialError', () => {
     expect(ret({ native_social_error: '1', error: 'access_denied' })).toEqual({ provider: null, code: 'cancelled', continuation: null });
   });
 
+  // The sheet shows these codes with the web callback's copy (social-continuation.ts).
   test('copy names the provider', () => {
-    expect(nativeSocialErrorMessage({ provider: 'apple', code: 'cancelled', continuation: null })).toBe('Apple sign-in was cancelled.');
-    expect(nativeSocialErrorMessage({ provider: 'google', code: 'failed', continuation: null })).toBe('Google could not complete sign-in. Please try again.');
-    expect(nativeSocialErrorMessage({ provider: 'apple', code: 'account_not_linked', continuation: null }))
+    expect(socialErrorMessage('apple', 'cancelled')).toBe('Apple sign-in was cancelled.');
+    expect(socialErrorMessage('google', 'failed')).toBe('Google could not complete sign-in. Please try again.');
+    expect(socialErrorMessage('apple', 'account_not_linked'))
       .toBe('An OpenKey account already uses this email. Sign in to it and add Apple in Settings.');
-    expect(nativeSocialErrorMessage({ provider: 'apple', code: 'apple_email_required', continuation: null }))
+    expect(socialErrorMessage('apple', 'apple_email_required'))
       .toBe("Apple didn't share a verified email, so OpenKey can't create an account from it. Sign in with your email or passkey, then add Apple in Settings.");
   });
 
   test('copy without a provider never names one', () => {
-    expect(nativeSocialErrorMessage({ provider: null, code: 'cancelled', continuation: null })).toBe('Sign-in was cancelled.');
-    expect(nativeSocialErrorMessage({ provider: null, code: 'failed', continuation: null })).toBe('Sign-in could not complete. Please try again.');
+    expect(socialErrorMessage(null, 'cancelled')).toBe('Sign-in was cancelled.');
+    expect(socialErrorMessage(null, 'failed')).toBe('Sign-in could not complete. Please try again.');
   });
 });
 

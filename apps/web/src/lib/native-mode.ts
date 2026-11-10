@@ -43,10 +43,6 @@ export interface NativeSignIn {
   socialError: NativeSocialError | null;
 }
 
-export function socialProviderLabel(provider: NativeSocialProvider): 'Google' | 'Apple' {
-  return provider === 'google' ? 'Google' : 'Apple';
-}
-
 // The API's continuation is 32 random bytes, base64url.
 const CONTINUATION = /^[A-Za-z0-9_-]{43}$/;
 
@@ -67,21 +63,6 @@ export function nativeSocialError(searchParams: URLSearchParams): NativeSocialEr
     : error === 'apple_email_required' && provider === 'apple' ? 'apple_email_required'
     : 'failed';
   return { provider, code, continuation: null };
-}
-
-/** Copy for a social return that lands on the email step. */
-export function nativeSocialErrorMessage(error: NativeSocialError): string {
-  const name = error.provider ? socialProviderLabel(error.provider) : null;
-  switch (error.code) {
-    case 'apple_email_required':
-      return "Apple didn't share a verified email, so OpenKey can't create an account from it. Sign in with your email or passkey, then add Apple in Settings.";
-    case 'account_not_linked':
-      return `An OpenKey account already uses this email. Sign in to it and add ${name ?? 'this sign-in method'} in Settings.`;
-    case 'cancelled':
-      return name ? `${name} sign-in was cancelled.` : 'Sign-in was cancelled.';
-    default:
-      return name ? `${name} could not complete sign-in. Please try again.` : 'Sign-in could not complete. Please try again.';
-  }
 }
 
 /** Same shape rules the API applies to `login_hint`; anything else is ignored. */

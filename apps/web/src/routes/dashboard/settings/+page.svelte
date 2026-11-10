@@ -19,6 +19,8 @@
   }
 
   let passkeys = $state<Passkey[]>([]);
+  // True once a passkey list has loaded; `passkeys` is replaced only on success.
+  let passkeysLoaded = $state(false);
   let archivedKeys = $state<EthereumKey[]>([]);
   let loading = $state(true);
   let loadingArchivedKeys = $state(true);
@@ -94,6 +96,7 @@
         error = authErrorMessage(result.error, 'Failed to load passkeys');
       } else {
         passkeys = result.data || [];
+        passkeysLoaded = true;
       }
     } catch (e: any) {
       error = e.message || 'Failed to load passkeys';
@@ -519,7 +522,8 @@
     {/if}
   </Card>
 
-  <LinkedAccounts />
+  <!-- The live count, so adding or removing a passkey here updates whether an unlink is allowed. -->
+  <LinkedAccounts passkeyCount={passkeysLoaded ? passkeys.length : null} />
 
   <Card class="mt-6">
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
