@@ -208,7 +208,7 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
     return;
   }
 
-  const [client, user] = await Promise.all([
+  const [client, userRow] = await Promise.all([
     database.oauthClient.findUnique({
       where: { clientId: token.clientId },
       select: {
@@ -226,9 +226,12 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
     }),
     database.user.findUnique({
       where: { id: token.userId },
-      select: { id: true, emailVerified: true },
+      select: { id: true, emailVerified: true, lockedAt: true },
     }),
   ]);
+  // A locked account (R9, TC-1231) is refused exactly like a deleted one: its
+  // OAuth tokens never authorize signing.
+  const user = userRow && !userRow.lockedAt ? { id: userRow.id, emailVerified: userRow.emailVerified } : null;
   const context: CoordinationosOauthContext = { token, client, user };
   c.set('delegateSignerOauthContext', context);
   const failure = (code: DelegateSignerAuthCode): DelegateSignerAuthFailure => ({

@@ -221,6 +221,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `APPLE_KEY_ID` | Sign in with Apple private-key ID |
 | `APPLE_PRIVATE_KEY` | Apple `.p8` ES256 private key (literal or escaped newlines) |
 | `APPLE_APP_BUNDLE_IDENTIFIERS` | Reserved comma-separated audiences for a future PAR-bound native flow; not active |
+| `APPLE_WEBHOOK_AUDIENCE` | Primary App ID (`so.openkey`) that Apple addresses server-to-server notifications to; the webhook is not found while it is unset or Apple sign-in is disabled |
 | `TEE_MODE` | Not read from the env: `docker-compose.prod.yml` hardcodes `production`, and the API refuses to start otherwise (TC-966) |
 | `RESEND_API_KEY` | Resend API key for emails |
 | `API_PORT` | `3001` |
@@ -280,8 +281,32 @@ email OTP step-up. Apple refresh tokens are encrypted with their issuing
 Services ID. A confirmed Apple account sends a mailbox notice; its first
 email-OTP sign-in requires a separate linked-provider review before a session.
 Google accounts retain the existing email-OTP behavior while Apple is off.
-Refusing Apple review locks the account; TC-1231 owns enforcement across
-existing sessions, grants and signing before production enablement.
+Refusing Apple review locks the account. A locked account's existing sessions
+(cookie and bearer), OAuth refresh and access tokens, native grant renewals
+and signing routes are refused (TC-1231).
+
+Account deletion needs a fresh step-up: a passkey verification for a user with
+a passkey, otherwise a deletion-purpose email code
+(`POST /api/account/step-up/email-otp/{send,verify}` with
+`purpose: "delete_account"`). After the deletion commits, each stored Apple
+refresh token is revoked with its issuing client ID, retried three times; a
+revoke that still fails logs `auth_apple_revoke_failed` and never restores the
+account.
+
+Apple server-to-server notifications arrive at
+`POST https://api.openkey.so/api/webhooks/apple` (register it on the primary App
+ID `so.openkey`). The endpoint is not found unless Apple sign-in is enabled and
+`APPLE_WEBHOOK_AUDIENCE` is set to the primary App ID. Notifications are
+verified against Apple's cached JWKS (RS256, issuer, audience, `iat` within 24
+hours) and applied once per `jti`, recorded in `apple_notification`. Only an
+invalid notification is answered 400; an unavailable Apple key set or a
+processing failure is answered 503 with nothing recorded, so Apple's retry is
+applied. `consent-revoked` and `account-deleted` end the user's sessions,
+native grants and OAuth tokens and wipe the stored Apple tokens, but keep the
+OpenKey account, keys and Apple link. A non-MCP JWT access token already issued
+has no stored row and stays valid until its own expiry (at most five minutes);
+MCP tokens end with their session. `email-disabled` and `email-enabled` only
+flag a relay address as undeliverable.
 
 Pending Apple confirmations and failed revocations use the OpenKey-owned
 `apple_social_continuation` table, not Better Auth's OTP verification table.

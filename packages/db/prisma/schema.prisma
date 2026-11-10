@@ -193,6 +193,13 @@ model Account {
   scope                 String?
   idToken               String?
   appleClientId         String?
+  // Apple server-to-server notification state (TC-1231). Revocation events
+  // older than appleRestoredAt are ignored; email events order by
+  // appleEmailEventAt in Apple event time, never by updatedAt.
+  appleRestoredAt         DateTime?
+  appleEmailEventAt       DateTime?
+  appleEmailUndeliverable Boolean   @default(false)
+  revokedAt               DateTime?
   password              String?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
@@ -230,6 +237,18 @@ model AppleSocialContinuation {
 
   @@index([expiresAt])
   @@map("apple_social_continuation")
+}
+
+// One row per processed Apple server-to-server notification `jti`, kept
+// indefinitely so a replayed notification is never applied twice (TC-1231).
+model AppleNotification {
+  jti        String   @id
+  eventType  String
+  eventTime  DateTime
+  outcome    String
+  receivedAt DateTime @default(now())
+
+  @@map("apple_notification")
 }
 
 // better-auth Passkey credentials

@@ -233,13 +233,15 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
               return fail('invalid_grant', 400);
             }
           }
-          const user = await tx.user.findUnique({ where: { id: grant.userId }, select: { tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true } });
+          const user = await tx.user.findUnique({ where: { id: grant.userId }, select: { tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true, lockedAt: true } });
           if (!user) return fail('invalid_grant', 400);
           const epoch = user.tinyCloudManageKeyPolicyEpoch;
           const deny = async (code: 'consent_required' | 'access_denied', reason: string) => {
             await recordDecision(tx, grant, epoch, false, reason);
             return fail(code, 400);
           };
+          // R9 (TC-1231): a locked account's native grants never renew.
+          if (user.lockedAt) return deny('access_denied', 'account_locked');
           if (now.getTime() >= grant.absoluteExpiresAt.getTime() - RENEWAL_CUTOFF_MS) return deny('consent_required', 'grant_expired');
           const client = await tx.oauthClient.findUnique({ where: { clientId: grant.clientId } });
           const ceiling = client && enabledNativeDelegation(client);

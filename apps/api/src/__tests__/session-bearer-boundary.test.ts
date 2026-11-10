@@ -21,13 +21,15 @@ const tx = {
   ethereumKey: { deleteMany: async () => ({ count: 1 }) },
   passkey: { deleteMany: async () => ({ count: 1 }) },
   session: { deleteMany: async () => ({ count: 1 }) },
-  account: { deleteMany: async () => ({ count: 1 }) },
+  account: { deleteMany: async () => ({ count: 1 }), findMany: async () => [] },
   verification: { deleteMany: async () => ({ count: 0 }) },
   user: { delete: async ({ where }: { where: { id: string } }) => { deletedUsers.push(where.id); return {}; } },
 };
 
 const prisma = {
   $transaction: async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx),
+  // user_1 has a passkey, so deletion takes the passkey step-up (TC-689).
+  passkey: { count: async () => 1 },
   ethereumKey: {
     findMany: async () => [],
     findFirst: async () => ({
