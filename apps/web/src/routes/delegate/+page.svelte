@@ -7,7 +7,7 @@
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
-  import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
+  import { delegateFailureText, shortCodeFailureText } from '$lib/delegate-failure-text';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
@@ -88,10 +88,8 @@
   }
 
   function delegateErrorMessage(cause: unknown) {
-    if (cause instanceof DelegateResponseError) {
-      return apiBusyOrEndedMessage(cause.status) ?? 'Delegation failed';
-    }
-    return cause instanceof Error ? cause.message : 'Delegation failed';
+    if (cause instanceof DelegateResponseError) return delegateFailureText(cause);
+    return cause instanceof Error ? delegateFailureText(cause) : 'Delegation failed';
   }
 
   const session = authClient.useSession();
@@ -108,6 +106,7 @@
   let done = $state(false);
   let pasteCode = $state('');
   let shortCode = $state('');
+  let shortCodeFailure = $state<{ status: number; code: unknown } | null>(null);
   let spaceSetup = $state<SpaceSetupNotice | null>(null);
   let spaceReadiness = $state<ReturnType<typeof spaceReadinessResult>>(null);
   let callbackFailed = $state(false);
@@ -1485,7 +1484,11 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ delegation: payload }),
       });
-      if (response.ok) {
+      if (!response.ok) {
+        const body: unknown = await response.json().catch(() => null);
+        const code = typeof body === 'object' && body !== null && 'code' in body ? body.code : undefined;
+        shortCodeFailure = { status: response.status, code };
+      } else {
         const result = await response.json();
         const remainingMs = typeof result.expiresAt === 'string'
           ? remainingFromServerClock(result.expiresAt, response.headers.get('date'))
@@ -1650,7 +1653,7 @@
                 aria-label="Copy short code"
               >{copied ? 'Copied' : 'Copy code'}</button>
             {:else}
-              <p class="text-surface-500 text-sm mb-3">Short code unavailable. Use the full delegation code instead.</p>
+              <p class="text-surface-500 text-sm mb-3">{shortCodeFailureText(shortCodeFailure?.status, shortCodeFailure?.code)}</p>
             {/if}
             <p class="w-full rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900 mt-4" role="note">
               Only paste this code into a terminal you started yourself.
