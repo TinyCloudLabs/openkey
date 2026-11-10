@@ -1,5 +1,6 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { ORIGIN } from './e2e-port';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 
 // TC-1198: adding or removing a passkey with a session alone is refused with a
 // typed 403; Settings prompts for the step-up the API offers and retries.
@@ -54,11 +55,19 @@ async function setup(page: Page, handlers: { registerOptions?: (n: number) => [u
   return calls;
 }
 
-async function virtualAuthenticator(page: Page) {
+/** A CDP virtual authenticator; `withCredential` preloads a resident passkey for localhost. */
+async function virtualAuthenticator(page: Page, withCredential = false) {
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('WebAuthn.enable');
-  await cdp.send('WebAuthn.addVirtualAuthenticator', { options: {
+  const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', { options: {
     protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true,
+  } });
+  if (!withCredential) return;
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  await cdp.send('WebAuthn.addCredential', { authenticatorId, credential: {
+    credentialId: randomBytes(16).toString('base64'), isResidentCredential: true, rpId: 'localhost',
+    privateKey: privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64'),
+    userHandle: Buffer.from('u').toString('base64'), signCount: 0,
   } });
 }
 
@@ -90,7 +99,7 @@ test('removing a passkey that counts for step-up offers only a passkey verificat
   await page.getByRole('button', { name: 'Delete' }).first().click();
   const dialog = page.getByRole('dialog', { name: 'Confirm it’s you to remove this passkey' });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText('An email code can’t remove this passkey.', { exact: false })).toBeVisible();
+  await expect(dialog.getByText('An email code can’t confirm this change.', { exact: false })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Email me a code' })).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Use an existing passkey' }).click();
   await expect(dialog.getByRole('alert')).toContainText('No passkey on this account can confirm this change');
@@ -98,6 +107,32 @@ test('removing a passkey that counts for step-up offers only a passkey verificat
   await dialog.getByRole('button', { name: 'Cancel' }).click();
   await expect(dialog).toHaveCount(0);
   expect(calls.deletes).toBe(1);
+});
+
+test('an existing passkey confirms a removal and the removal is retried', async ({ page }) => {
+  await virtualAuthenticator(page, true);
+  const calls = await setup(page, {
+    deletePasskey: (n) => (n === 1 ? [stepUpRequired(['passkey']), 403] : [{ status: true }, 200]),
+  });
+  const verified: unknown[] = [];
+  await page.route('**/api/account/step-up/passkey/**', (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/options')) {
+      return json(route, { challengeToken: 'token-1', options: {
+        challenge: 'dGMtMTE5OC1zdGVwLXVwLWNoYWxsZW5nZQ', rpId: 'localhost', allowCredentials: [], userVerification: 'required', timeout: 60000,
+      } });
+    }
+    verified.push(route.request().postDataJSON());
+    return json(route, { status: true });
+  });
+  await page.goto('/dashboard/settings');
+  await page.getByRole('button', { name: 'Delete' }).first().click();
+  const dialog = page.getByRole('dialog', { name: 'Confirm it’s you to remove this passkey' });
+  await dialog.getByRole('button', { name: 'Use an existing passkey' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => calls.deletes).toBe(2);
+  expect(verified).toEqual([expect.objectContaining({ challengeToken: 'token-1', response: expect.objectContaining({ type: 'public-key' }) })]);
+  expect(calls.send).toEqual([]);
 });
 
 test('removing a passkey that does not count accepts a removal code and retries', async ({ page }) => {

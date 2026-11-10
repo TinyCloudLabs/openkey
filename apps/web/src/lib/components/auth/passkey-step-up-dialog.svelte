@@ -72,11 +72,11 @@
       {#if offersPasskey && offersEmail}
         Verify with one of your passkeys, or with a code sent to your OpenKey email.
       {:else if offersPasskey}
-        Verify with one of your passkeys. An email code can’t {adding ? 'add' : 'remove'} this passkey.
+        Verify with one of your passkeys. An email code can’t confirm this change.
       {:else if offersEmail}
         We’ll send a code to your OpenKey email.
       {:else}
-        This change can’t be confirmed from this session. Sign in again and retry.
+        Your OpenKey email can’t receive codes right now. If you use Hide My Email, turn forwarding back on in your Apple ID settings, then try again.
       {/if}
     </p>
     {#if error}<p class="mt-4 text-sm text-red-700" role="alert">{error}</p>{/if}

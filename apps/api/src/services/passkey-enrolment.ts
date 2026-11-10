@@ -16,6 +16,8 @@ import {
   type PasskeyRegisterGrant,
 } from './email-otp-step-up';
 import { PASSKEY_STEP_UP_MAX_AGE_MS, freshStepUpPasskey } from './passkey-freshness';
+import { appleRelayEmailUndeliverable } from './apple-notifications';
+import { logError } from '../log';
 
 // TC-1198 (plan TC-1188 §2, §3). Better Auth's passkey routes need only a
 // session, so whoever holds one could enrol their own passkey, sign in with it
@@ -32,14 +34,17 @@ import { PASSKEY_STEP_UP_MAX_AGE_MS, freshStepUpPasskey } from './passkey-freshn
 //   mailbox alone never adds step-up authority to a passkey user (D6).
 // - Removing a passkey that counts needs a passkey assertion; removing one that
 //   does not also accepts a single-use `passkey_remove` email code.
+// - The typed 403 lists only methods that can work: no `email` while Apple
+//   reports the user's relay address undeliverable, no `passkey` without one
+//   that counts. An empty list means neither is available right now.
 
 export type PasskeyStepUpMethod = 'passkey' | 'email';
 export type PasskeyEnrolmentVia = PasskeyRegisterGrant | 'passkey_step_up';
 export const PASSKEY_STEP_UP_REQUIRED = 'PASSKEY_STEP_UP_REQUIRED';
 
-export type ResolvedSession = { session: { id: string }; user: { id: string } };
+export type ResolvedSession = { session: { id: string; createdAt: Date }; user: { id: string; email: string } };
 type SessionResolver = (headers: Headers) => Promise<ResolvedSession | null>;
-type Database = Pick<PrismaClient, 'passkey' | 'session' | 'verification' | '$transaction'>;
+type Database = Pick<PrismaClient, 'passkey' | 'session' | 'verification' | 'account' | '$transaction'>;
 
 const REGISTER_GRANTS: Readonly<Record<string, true>> = { email_step_up: true, email_sign_in: true, account_creation: true };
 
@@ -62,6 +67,18 @@ async function hasStepUpPasskey(db: Pick<PrismaClient, 'passkey'>, userId: strin
   }) > 0;
 }
 
+/** The step-up methods that can authorize this change for this user right now. */
+async function availableMethods(
+  db: Database, user: ResolvedSession['user'], emailAccepted: boolean,
+): Promise<PasskeyStepUpMethod[]> {
+  const methods: PasskeyStepUpMethod[] = [];
+  if (await hasStepUpPasskey(db, user.id)) methods.push('passkey');
+  if (emailAccepted && !await appleRelayEmailUndeliverable(db, user.id, user.email)) methods.push('email');
+  return methods;
+}
+
+const ENROLMENT_MESSAGE = 'Verify it is you before adding a passkey.';
+
 /** Non-consuming check that this session may start or finish a passkey enrolment. */
 export async function canEnrolPasskey(db: Database, sessionId: string, userId: string, now = new Date()): Promise<boolean> {
   if (await freshStepUpPasskey(db, sessionId, userId, PASSKEY_STEP_UP_MAX_AGE_MS, now)) return true;
@@ -72,7 +89,7 @@ export async function canEnrolPasskey(db: Database, sessionId: string, userId: s
 /**
  * Authoritative enrolment check, after Better Auth has stored the verified
  * credential. Under the user's row lock it spends the step-up proof and writes
- * provenance; false means the caller must delete the new passkey.
+ * provenance; null means no proof applied and the caller must delete the new passkey.
  */
 export async function recordPasskeyEnrolment(
   db: Database, input: { sessionId: string; userId: string; passkeyId: string }, now = new Date(),
@@ -109,16 +126,13 @@ export async function recordPasskeyEnrolment(
  * that is not the user's is left to Better Auth's ownership check.
  */
 export async function authorizePasskeyRemoval(
-  db: Database, sessionId: string, userId: string, passkeyId: string, now = new Date(),
+  db: Database, sessionId: string, user: ResolvedSession['user'], passkeyId: string, now = new Date(),
 ): Promise<void> {
-  const target = await db.passkey.findFirst({ where: { id: passkeyId, userId }, select: { countsForStepUp: true } });
+  const target = await db.passkey.findFirst({ where: { id: passkeyId, userId: user.id }, select: { countsForStepUp: true } });
   if (!target) return;
-  if (await freshStepUpPasskey(db, sessionId, userId, PASSKEY_STEP_UP_MAX_AGE_MS, now)) return;
+  if (await freshStepUpPasskey(db, sessionId, user.id, PASSKEY_STEP_UP_MAX_AGE_MS, now)) return;
   if (!target.countsForStepUp && await consumeStepUpMarker(db, 'passkey_remove', sessionId, now) !== null) return;
-  const methods: PasskeyStepUpMethod[] = [];
-  if (await hasStepUpPasskey(db, userId)) methods.push('passkey');
-  if (!target.countsForStepUp) methods.push('email');
-  throw stepUpRequired(methods, 'Verify it is you before removing this passkey.');
+  throw stepUpRequired(await availableMethods(db, user, !target.countsForStepUp), 'Verify it is you before removing this passkey.');
 }
 
 export function passkeyEnrolmentPlugin(db: Database, resolveSession: SessionResolver) {
@@ -135,32 +149,43 @@ export function passkeyEnrolmentPlugin(db: Database, resolveSession: SessionReso
           if (!current) return;
           if (ctx.path === '/passkey/delete-passkey') {
             const id = (ctx.body as { id?: unknown } | undefined)?.id;
-            if (typeof id === 'string') await authorizePasskeyRemoval(db, current.session.id, current.user.id, id);
+            if (typeof id === 'string') await authorizePasskeyRemoval(db, current.session.id, current.user, id);
             return;
           }
+          // Enrolment also needs a Better Auth fresh session (`freshAge`). Let
+          // its own refusal answer an older session, so no step-up is asked
+          // for and spent on a change that would fail anyway.
+          const freshAgeMs = ctx.context.sessionConfig.freshAge * 1000;
+          if (freshAgeMs !== 0 && Date.now() - new Date(current.session.createdAt).getTime() >= freshAgeMs) return;
           if (await canEnrolPasskey(db, current.session.id, current.user.id)) return;
-          const methods: PasskeyStepUpMethod[] = ['email'];
-          if (await hasStepUpPasskey(db, current.user.id)) methods.unshift('passkey');
-          throw stepUpRequired(methods, 'Verify it is you before adding a passkey.');
+          throw stepUpRequired(await availableMethods(db, current.user, true), ENROLMENT_MESSAGE);
         }),
       }],
       after: [{
         matcher: (ctx) => ctx.path === '/passkey/verify-registration',
         handler: createAuthMiddleware(async (ctx) => {
           const created = ctx.context.returned as { id?: unknown; userId?: unknown; credentialID?: unknown } | undefined;
-          if (typeof created?.id !== 'string' || typeof created.userId !== 'string' || typeof created.credentialID !== 'string') return;
+          const passkeyId = created?.id;
+          const userId = created?.userId;
+          if (typeof passkeyId !== 'string' || typeof userId !== 'string' || typeof created?.credentialID !== 'string') return;
+          const remove = () => db.passkey.deleteMany({ where: { id: passkeyId, userId } });
           const current = ctx.headers ? await resolveSession(ctx.headers) : null;
           let via: PasskeyEnrolmentVia | null = null;
-          if (current && current.user.id === created.userId) {
-            via = await recordPasskeyEnrolment(db, {
-              sessionId: current.session.id, userId: created.userId, passkeyId: created.id,
-            }).catch(() => null);
+          if (current && current.user.id === userId) {
+            try {
+              via = await recordPasskeyEnrolment(db, { sessionId: current.session.id, userId, passkeyId });
+            } catch (error) {
+              // Not a missing proof: the credential still must not survive.
+              logError('error', 'auth_passkey_enrolment_failed', error);
+              await remove();
+              throw new APIError('INTERNAL_SERVER_ERROR', { message: 'Could not add the passkey. Try again.' });
+            }
           }
           if (via) return;
           // The proof was spent or never existed (a concurrent enrolment won,
           // or it expired mid-ceremony): the credential must not survive.
-          await db.passkey.deleteMany({ where: { id: created.id, userId: created.userId } });
-          throw stepUpRequired(['email'], 'Verify it is you before adding a passkey.');
+          await remove();
+          throw stepUpRequired(current ? await availableMethods(db, current.user, true) : [], ENROLMENT_MESSAGE);
         }),
       }, {
         matcher: (ctx) => SESSION_GRANTS[ctx.path ?? ''] !== undefined,

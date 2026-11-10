@@ -199,8 +199,14 @@ export async function requireFreshPasskey(
   now = new Date(),
 ): Promise<Response | null> {
   if (await freshStepUpPasskey(db, c.get('session')?.id, c.get('user')?.id, maxAgeMs, now)) return null;
-  return c.json({
-    error: 'Verify with your passkey again to continue',
-    code: 'passkey_step_up_required',
-  }, 403);
+  return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
 }
+
+/**
+ * The account routes' refusal when a passkey step-up is needed. Better Auth's
+ * passkey routes answer `PASSKEY_STEP_UP_REQUIRED` instead (passkey-enrolment.ts).
+ */
+export const ACCOUNT_PASSKEY_STEP_UP_REQUIRED = {
+  error: 'Verify with your passkey again to continue',
+  code: 'passkey_step_up_required',
+} as const;

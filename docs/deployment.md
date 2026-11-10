@@ -353,8 +353,18 @@ they can't delete the account or remove the old passkeys themselves. Support
 verifies the owner out of band first. Then, in one transaction, support deletes
 the lost passkey rows (`DELETE FROM "passkey" WHERE "userId" = $1 AND id = ANY($2)`).
 With no passkey that counts, the user can delete with an email code, and the
-next passkey they enrol under an email proof counts again. Never set
-`countsForStepUp` by hand.
+next passkey they enrol under an email proof counts again. Apart from the
+post-deploy step below, never set `countsForStepUp` by hand.
+
+A user whose Apple relay address Apple reports undeliverable is offered no
+email method; until they turn forwarding back on, only a passkey that counts
+can authorize a passkey change.
+
+**Deploy window.** `deploy-api.yml` applies migrations before the new image is
+live, so passkeys the old image enrols in between get `enrolledVia = NULL` and
+don't count. That fails closed. To give them the same treatment as the
+backfill, run this once the new image serves traffic, with the time it went live:
+`UPDATE "passkey" SET "countsForStepUp" = true, "enrolledVia" = 'legacy' WHERE "enrolledVia" IS NULL AND "createdAt" < $1`.
 
 #### Trigger Conditions
 

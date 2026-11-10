@@ -11,7 +11,7 @@ import {
   controlMutationError,
 } from '../services/tinycloud-manage-key-control';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
-import { requireFreshPasskey } from '../services/passkey-freshness';
+import { ACCOUNT_PASSKEY_STEP_UP_REQUIRED, requireFreshPasskey } from '../services/passkey-freshness';
 import { createPasskeyStepUpChallenge, verifyPasskeyStepUp } from '../services/passkey-enrolment';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
@@ -40,7 +40,6 @@ accountRouter.use('*', requireSession);
 // has one (TC-689, TC-1198), else a deletion-purpose email code (TC-1231,
 // plan TC-1188 D6).
 const ACCOUNT_DELETE_PASSKEY_MAX_AGE_MS = 5 * 60 * 1000;
-const PASSKEY_STEP_UP_REQUIRED = { error: 'Verify with your passkey again to continue', code: 'passkey_step_up_required' };
 
 // The same relying party Better Auth's passkey plugin verifies against.
 const RELYING_PARTY = { rpID: process.env.WEBAUTHN_RP_ID!, origin: process.env.WEBAUTHN_ORIGIN! };
@@ -56,10 +55,10 @@ accountRouter.post('/step-up/email-otp/send', async (c) => {
   // user deletes with that passkey (D6), and an email code only removes a
   // passkey that does not count (TC-1198).
   if (purpose === 'delete_account' && await prisma.passkey.count({ where: { userId, countsForStepUp: true } }) > 0) {
-    return c.json(PASSKEY_STEP_UP_REQUIRED, 403);
+    return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
   }
   if (purpose === 'passkey_remove' && await prisma.passkey.count({ where: { userId, countsForStepUp: false } }) === 0) {
-    return c.json(PASSKEY_STEP_UP_REQUIRED, 403);
+    return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
   }
   const result = await sendAccountStepUpCode(prisma, c.get('session').id, c.get('user').email, purpose);
   if (result === 'unavailable') return c.json({ error: 'Email delivery unavailable' }, 503);
@@ -84,7 +83,7 @@ accountRouter.post('/step-up/passkey/options', async (c) => {
   const rejected = rejectNonBrowserControlRequest(c);
   if (rejected) return rejected;
   const challenge = await createPasskeyStepUpChallenge(prisma, c.get('session').id, c.get('user').id, RELYING_PARTY);
-  if (!challenge) return c.json(PASSKEY_STEP_UP_REQUIRED, 403);
+  if (!challenge) return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
   return c.json(challenge);
 });
 
@@ -550,7 +549,7 @@ accountRouter.post('/delete', async (c) => {
     if (unavailable) return unavailable;
     throw error;
   }
-  if (appleTokens === 'PASSKEY') return c.json(PASSKEY_STEP_UP_REQUIRED, 403);
+  if (appleTokens === 'PASSKEY') return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
   if (appleTokens === 'EMAIL') return c.json(EMAIL_STEP_UP_REQUIRED, 403);
 
   await revokeStoredAppleTokens(appleTokens);

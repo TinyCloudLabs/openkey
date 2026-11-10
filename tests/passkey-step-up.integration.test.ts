@@ -531,6 +531,38 @@ if (!backend) {
     });
   });
 
+  describe('the typed refusal lists only methods that can work', () => {
+    test('no email method while Apple reports the relay address undeliverable', async () => {
+      const email = 'relay-step-up@privaterelay.appleid.com';
+      const { user, creationCookie, cookie } = await appleUserWithPlainSession('relay-step-up-sub', email);
+      await prisma.account.updateMany({ where: { userId: user.id, providerId: 'apple' }, data: { appleEmailUndeliverable: true } });
+      expect(await typed(await registerOptions(cookie))).toEqual({ status: 403, code: STEP_UP_REQUIRED, methods: [] });
+      const { passkey } = await enrolled(creationCookie);
+      expect(await typed(await registerOptions(cookie))).toEqual({ status: 403, code: STEP_UP_REQUIRED, methods: ['passkey'] });
+      expect(await typed(await deletePasskey(cookie, passkey.id))).toEqual({ status: 403, code: STEP_UP_REQUIRED, methods: ['passkey'] });
+    });
+
+    test('a proof that lapses mid-ceremony offers the passkey too, and the new credential is gone', async () => {
+      const { user, creationCookie, cookie } = await appleUserWithPlainSession('lapse-sub', 'lapse@openkey.test');
+      const { authenticator } = await enrolled(creationCookie);
+      expect((await sessionStepUp(cookie, authenticator)).status).toBe(200);
+      const options = await registerOptions(cookie);
+      expect(options.status).toBe(200);
+      const { challenge } = await options.json() as { challenge: string };
+      await prisma.session.update({ where: { id: await sessionId(cookie) }, data: { lastPasskeyAt: new Date(Date.now() - 301_000) } });
+      const late = newAuthenticator();
+      const refused = await post('/api/auth/passkey/verify-registration', { response: attestation(late, challenge) }, combine(cookie, cookies(options)));
+      expect(await typed(refused)).toEqual({ status: 403, code: STEP_UP_REQUIRED, methods: ['passkey', 'email'] });
+      expect(await prisma.passkey.count({ where: { userId: user.id, credentialID: b64u(late.credentialId) } })).toBe(0);
+    });
+
+    test('a session past Better Auth\'s fresh age gets Better Auth\'s own refusal, with no step-up asked for', async () => {
+      const { cookie } = await appleUserWithPlainSession('stale-session-sub', 'stale-session@openkey.test');
+      await prisma.session.update({ where: { id: await sessionId(cookie) }, data: { createdAt: new Date(Date.now() - 2 * 86_400_000) } });
+      expect(await typed(await registerOptions(cookie))).toMatchObject({ status: 403, code: 'SESSION_NOT_FRESH' });
+    });
+  });
+
   describe('session passkey step-up', () => {
     test('needs user verification, a counting passkey and a single-use challenge bound to this session', async () => {
       const { creationCookie, cookie } = await appleUserWithPlainSession('bind-sub', 'bind@openkey.test');
