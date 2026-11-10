@@ -1,4 +1,5 @@
 // OpenKey API - better-auth configuration
+import { generateOAuthClientSecret, hasOAuthClientId, hashOAuthClientSecret } from './services/oauth-client-secrets';
 // Auth flow: email OTP by default, with optional passkey enrollment and sign-in.
 import { betterAuth, type BetterAuthPlugin } from 'better-auth';
 import { APIError, createAuthEndpoint, sensitiveSessionMiddleware } from 'better-auth/api';
@@ -377,6 +378,17 @@ export const auth = betterAuth({
     // OAuth 2.1 Provider - enables third-party apps to authenticate users
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     withMcpAccessTokenLifetime(withNativeAuthorizeQuery(oauthProvider({
+      clientPrivileges: async ({ action }) => {
+        if (action === 'create' || action === 'list') return true;
+        const request = await getCurrentAuthContext();
+        const clientId = action === 'read' ? request.query?.client_id : request.body?.client_id;
+        if (!hasOAuthClientId(clientId)) return false;
+        const organizationClient = await prisma.oauthClient.findFirst({
+          where: { clientId, organizationId: { not: null } },
+          select: { id: true },
+        });
+        return !organizationClient;
+      },
       requestUriResolver: ({ requestUri, clientId }) => resolveRequestUri(prisma, requestUri, clientId),
       loginPage: `${origin}/auth/login`,
       consentPage: `${origin}/oauth/consent`,
@@ -389,7 +401,8 @@ export const auth = betterAuth({
       accessTokenExpiresIn: DEFAULT_ACCESS_TOKEN_EXPIRES_IN, // replaced per request by withMcpAccessTokenLifetime
       refreshTokenExpiresIn: 60 * 60 * 24 * 7, // 7 days in seconds
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds
-      storeClientSecret: 'hashed',
+      storeClientSecret: { hash: hashOAuthClientSecret },
+      generateClientSecret: generateOAuthClientSecret,
       storeTokens: 'hashed',
       generateRefreshToken: (): Promise<string> => generateNativeRefreshToken(prisma, providerTokenOptions(auth)),
       async customTokenResponseFields({ grantType, user, scopes, verificationValue }) {

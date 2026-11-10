@@ -92,6 +92,29 @@ app.use('*', protocolAwareCors(cors({
 app.get('/health', readinessHandler(undefined, readBuildInfo));
 
 app.use('/api/auth/*', requireAccountOriginForSensitiveAuth);
+app.use('/api/auth/oauth2/get-clients', async (c, next) => {
+  await next();
+  if (c.res.status !== 200) return;
+
+  const response = c.res;
+  const clients = await response.clone().json() as Array<{ client_id?: unknown }>;
+  if (!Array.isArray(clients) || clients.length === 0) return;
+  const clientIds = clients.flatMap(({ client_id }) => typeof client_id === 'string' ? [client_id] : []);
+  if (clientIds.length === 0) return;
+
+  const organizationClients = await authPrisma.oauthClient.findMany({
+    where: { clientId: { in: clientIds }, organizationId: { not: null } },
+    select: { clientId: true },
+  });
+  if (organizationClients.length === 0) return;
+
+  const organizationClientIds = new Set(organizationClients.map(({ clientId }) => clientId));
+  const headers = new Headers(response.headers);
+  headers.delete('content-length');
+  c.res = new Response(JSON.stringify(clients.filter(({ client_id }) =>
+    typeof client_id !== 'string' || !organizationClientIds.has(client_id),
+  )), { status: response.status, statusText: response.statusText, headers });
+});
 // Analytics middleware - runs BEFORE auth handler, uses next() to capture response
 // POST /api/auth/oauth2/token → track token exchange + unique user
 app.use('/api/auth/oauth2/token', async (c, next) => {
