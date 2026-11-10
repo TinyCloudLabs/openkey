@@ -36,6 +36,16 @@
     window.close();
   }
 
+  function openedByRegister(): boolean {
+    try {
+      // Reading a cross-origin opener's location throws.
+      return window.opener.location.origin === window.location.origin
+        && window.opener.location.pathname === '/auth/register';
+    } catch {
+      return false;
+    }
+  }
+
   async function createAccount() {
     if (!confirmation || creating) return;
     creating = true;
@@ -84,8 +94,11 @@
       if (callback.kind === 'continuation') {
         const loaded = await loadSocialContinuation(callback);
         // /auth/register is explicit sign-up intent, but a relay address still
-        // asks first: it can never be the user's existing account (R4).
-        if (loaded.outcome === 'new_account' && callback.signupIntent && !relayNotice(loaded)) {
+        // asks first: it can never be the user's existing account (R4). The
+        // intent is only a URL parameter, so it counts only when this popup's
+        // opener is OpenKey's own register page; any other opener (another
+        // site calling window.open) gets the confirmation (R5).
+        if (loaded.outcome === 'new_account' && callback.signupIntent && openedByRegister() && !relayNotice(loaded)) {
           status = 'Creating your account…';
           confirmation = null;
           const token = await confirmSocialContinuation({ token: loaded.token, provider: loaded.provider });

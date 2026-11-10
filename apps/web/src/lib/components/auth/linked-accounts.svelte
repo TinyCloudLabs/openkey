@@ -13,6 +13,12 @@
   type Owner = { email: string; emailVerified: boolean; passkeys: number; emailUndeliverable: boolean };
   const PROVIDERS: readonly SocialProviderId[] = ['google', 'apple'];
 
+  interface Props {
+    /** Settings' own passkey count once loaded; it overrides the count read at mount. */
+    passkeyCount?: number | null;
+  }
+  let { passkeyCount = null }: Props = $props();
+
   let accounts = $state<LinkedAccount[]>([]);
   let available = $state<SocialProviderId[]>([]);
   let owner = $state<Owner | null>(null);
@@ -28,7 +34,8 @@
   const rows = $derived(PROVIDERS.filter((provider) =>
     accounts.some((account) => account.providerId === provider) || available.includes(provider)));
   // The same rule the API applies: a passkey, or a verified email Apple still forwards to.
-  const onlySocial = $derived(owner !== null && owner.passkeys === 0 && (!owner.emailVerified || owner.emailUndeliverable));
+  const passkeys = $derived(passkeyCount ?? owner?.passkeys ?? 0);
+  const onlySocial = $derived(owner !== null && passkeys === 0 && (!owner.emailVerified || owner.emailUndeliverable));
   const relayEmail = $derived(owner !== null && isAppleRelayEmail(owner.email));
 
   async function refreshAccounts() {
@@ -52,12 +59,10 @@
   }
 
   onMount(() => {
-    // One reveal: the rows, the owner's email state and the providers arrive together.
-    void Promise.all([
-      refreshAccounts(),
-      refreshOwner().catch(() => {}),
-      loadConfiguredSocialProviders().then((providers) => { available = providers; }).catch(() => {}),
-    ]).catch((cause) => {
+    // Linked rows and the owner's email state reveal together. /providers only
+    // adds "Not linked" rows, so a slow answer never hides an Unlink.
+    void loadConfiguredSocialProviders().then((providers) => { available = providers; }).catch(() => {});
+    void Promise.all([refreshAccounts(), refreshOwner().catch(() => {})]).catch((cause) => {
       error = cause instanceof Error ? cause.message : 'Could not load linked accounts.';
     }).finally(() => { loading = false; });
   });

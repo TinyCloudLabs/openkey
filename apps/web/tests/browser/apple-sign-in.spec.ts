@@ -6,7 +6,7 @@
 // The popup is a new page of the same context, so its routes are on the context.
 
 import { test, expect, type Locator, type Page, type Route, type TestInfo } from '@playwright/test';
-import { HOST, ORIGIN } from './e2e-port';
+import { HOST, LOOPBACK_ORIGIN, ORIGIN } from './e2e-port';
 
 const json = (route: Route, body: unknown, status = 200) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -36,9 +36,8 @@ interface Stub {
 async function stubApi(page: Page, options: {
   providers?: string[];
   providersDelay?: Promise<void>;
-  /** The query Apple's stub returns with. Native returns go to the start's `errorCallbackURL`. */
+  /** The answer the API's callback appends to the start's `errorCallbackURL`; none is a signed-in return. */
   appleReturn?: string;
-  native?: boolean;
   continuation?: Continuation;
   confirm?: (route: Route) => unknown;
   account?: Record<string, unknown>;
@@ -107,18 +106,12 @@ async function stubApi(page: Page, options: {
     }
     return json(route, {});
   });
-  // Apple's page: the user consents, and the API's callback redirects to the return URL with its answer.
+  // Apple's page: the user consents, and the API's callback redirects to the
+  // return URL the start request named (its error URL on a failure), with its answer.
   await context.route('https://appleid.apple.com/**', (route) => {
     const start = calls.findLast((call) => call.path === '/api/auth/sign-in/social' || call.path === '/api/auth/link-social');
-    let back: string;
-    if (options.native) {
-      const errorCallbackURL = String(start?.body?.errorCallbackURL);
-      back = options.appleReturn ? `${errorCallbackURL}&${options.appleReturn}` : String(start?.body?.callbackURL);
-    } else {
-      const url = new URL(`${ORIGIN}/auth/social/callback`);
-      url.search = options.appleReturn ?? 'via=apple';
-      back = url.href;
-    }
+    const target = String(options.appleReturn ? start?.body?.errorCallbackURL : start?.body?.callbackURL);
+    const back = options.appleReturn ? `${target}&${options.appleReturn}` : target;
     return route.fulfill({
       status: 200,
       contentType: 'text/html',
@@ -164,7 +157,7 @@ test('login: the Apple button arrives with /providers and gates nothing', async 
 
 test('new account: the popup asks first, and only Create makes the account and hands the session back', async ({ page }, info) => {
   const api = await stubApi(page, {
-    appleReturn: 'via=apple&error=new_account&continuation=cont-1',
+    appleReturn: 'error=new_account&continuation=cont-1',
     continuation: { outcome: 'new_account', email: EMAIL, isPrivateEmail: false },
   });
   await page.goto('/auth/login');
@@ -194,7 +187,7 @@ test('new account: the popup asks first, and only Create makes the account and h
 
 test('Hide My Email: the confirmation says a new account is created, even from /auth/register', async ({ page }, info) => {
   const api = await stubApi(page, {
-    appleReturn: 'via=apple&signup=1&error=new_account&continuation=cont-relay',
+    appleReturn: 'error=new_account&continuation=cont-relay',
     continuation: { outcome: 'new_account', email: RELAY, isPrivateEmail: true },
   });
   await page.goto('/auth/register');
@@ -219,7 +212,7 @@ test('Hide My Email: the confirmation says a new account is created, even from /
 
 test('register: an explicit Apple sign-up with a shared email creates without asking again', async ({ page }) => {
   const api = await stubApi(page, {
-    appleReturn: 'via=apple&signup=1&error=new_account&continuation=cont-reg',
+    appleReturn: 'error=new_account&continuation=cont-reg',
     continuation: { outcome: 'new_account', email: EMAIL, isPrivateEmail: false },
   });
   await page.goto('/auth/register');
@@ -229,9 +222,27 @@ test('register: an explicit Apple sign-up with a shared email creates without as
   expect(await page.evaluate(() => sessionStorage.getItem('openkey_session_token'))).toBe('apple-session');
 });
 
+test('sign-up intent from any opener but /auth/register still asks first (R5)', async ({ page }) => {
+  const api = await stubApi(page, {
+    appleReturn: 'error=new_account&continuation=cont-planted',
+    continuation: { outcome: 'new_account', email: EMAIL, isPrivateEmail: false },
+  });
+  // Another site opens OpenKey's popup with the register intent on its URL.
+  await page.context().route(`${LOOPBACK_ORIGIN}/elsewhere`, (route) => route.fulfill({
+    status: 200, contentType: 'text/html',
+    body: `<button onclick="window.open(${JSON.stringify(`${ORIGIN}/auth/social/callback?provider=apple&action=signup`)}, 'x', 'popup')">Sign up</button>`,
+  }));
+  await page.goto(`${LOOPBACK_ORIGIN}/elsewhere`);
+  const popup = await openApplePopup(page, page.getByRole('button', { name: 'Sign up' }));
+  await expect(popup.getByTestId('new-account-confirmation')).toContainText(`No OpenKey account for ${EMAIL}`);
+  expect(api.calls.find((call) => call.path === '/api/auth/sign-in/social')!.body?.callbackURL)
+    .toBe(`${ORIGIN}/auth/social/callback?via=apple&signup=1`);
+  expect(api.count('/api/auth/social/confirm')).toBe(0);
+});
+
 test('account exists: nothing is linked; the user signs in and adds Apple after an email code (R3)', async ({ page }, info) => {
   const api = await stubApi(page, {
-    appleReturn: 'via=apple&error=account_exists&continuation=cont-exists',
+    appleReturn: 'error=account_exists&continuation=cont-exists',
     continuation: { outcome: 'account_exists', email: EMAIL },
   });
   await page.goto('/auth/login');
@@ -253,7 +264,7 @@ test('account exists: nothing is linked; the user signs in and adds Apple after 
 });
 
 test('apple_email_required: the opener explains, and stays signed out', async ({ page }, info) => {
-  const api = await stubApi(page, { appleReturn: 'via=apple&error=apple_email_required' });
+  const api = await stubApi(page, { appleReturn: 'error=apple_email_required' });
   await page.goto('/auth/login');
   const popup = await openApplePopup(page);
   // The popup reports the failure to its opener, which closes it and shows why.
@@ -268,7 +279,7 @@ test('apple_email_required: the opener explains, and stays signed out', async ({
 });
 
 test('an expired or foreign continuation is refused, never shown', async ({ page }) => {
-  const api = await stubApi(page, { appleReturn: 'via=apple&error=new_account&continuation=stale' });
+  const api = await stubApi(page, { appleReturn: 'error=new_account&continuation=stale' });
   await page.goto('/auth/login');
   const popup = await openApplePopup(page);
   await closed(popup);
@@ -458,7 +469,6 @@ const NATIVE_CONTINUATION = 'A'.repeat(43);
 test.describe('native sheet', () => {
   test('Hide My Email: the sheet asks first, and Create carries the signed query to /authorize', async ({ page }, info) => {
     const api = await stubApi(page, {
-      native: true,
       appleReturn: `error=new_account&continuation=${NATIVE_CONTINUATION}`,
       continuation: { outcome: 'new_account', email: RELAY, isPrivateEmail: true },
     });
@@ -491,7 +501,6 @@ test.describe('native sheet', () => {
 
   test('account exists: the sheet signs in to the existing account, then continues the same request', async ({ page }, info) => {
     const api = await stubApi(page, {
-      native: true,
       appleReturn: `error=account_exists&continuation=${NATIVE_CONTINUATION}`,
       continuation: { outcome: 'account_exists', email: EMAIL },
     });
@@ -510,7 +519,7 @@ test.describe('native sheet', () => {
   });
 
   test('apple_email_required: the sheet explains on the email step', async ({ page }, info) => {
-    const api = await stubApi(page, { native: true, appleReturn: 'error=apple_email_required' });
+    const api = await stubApi(page, { appleReturn: 'error=apple_email_required' });
     await page.goto(`/auth/login?${NATIVE_QUERY}`);
     await expect(page.getByRole('alert')).toHaveText(
       "Apple didn't share a verified email, so OpenKey can't create an account from it. Sign in with your email or passkey, then add Apple in Settings.",
@@ -521,7 +530,7 @@ test.describe('native sheet', () => {
   });
 
   test('a continuation the API refuses for this request is not shown', async ({ page }) => {
-    const api = await stubApi(page, { native: true, appleReturn: `error=new_account&continuation=${NATIVE_CONTINUATION}` });
+    const api = await stubApi(page, { appleReturn: `error=new_account&continuation=${NATIVE_CONTINUATION}` });
     await page.goto(`/auth/login?${NATIVE_QUERY}`);
     await expect(page.getByRole('alert')).toHaveText('This Apple confirmation expired. Start sign-in again.');
     await expect(page.getByRole('button', { name: 'Create a new account' })).toHaveCount(0);

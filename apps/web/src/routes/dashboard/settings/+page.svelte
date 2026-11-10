@@ -519,7 +519,8 @@
     {/if}
   </Card>
 
-  <LinkedAccounts />
+  <!-- The live count, so adding or removing a passkey here updates whether an unlink is allowed. -->
+  <LinkedAccounts passkeyCount={loading || error ? null : passkeys.length} />
 
   <Card class="mt-6">
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
