@@ -81,15 +81,15 @@
       this.status = status;
     }
   }
-  function delegateErrorClassification(cause: unknown) {
+  function delegateErrorClassification(cause: unknown, refreshAttempted = false) {
     return cause instanceof DelegateResponseError
-      ? classifyDelegateError(cause.status, cause.code)
+      ? classifyDelegateError(cause.status, cause.code, refreshAttempted)
       : 'error';
   }
 
   function delegateErrorMessage(cause: unknown) {
     if (cause instanceof DelegateResponseError) {
-      return apiBusyOrEndedMessage(cause.status) ?? cause.message;
+      return apiBusyOrEndedMessage(cause.status) ?? 'Delegation failed';
     }
     return cause instanceof Error ? cause.message : 'Delegation failed';
   }
@@ -701,7 +701,7 @@
       const classification = delegateErrorClassification(e);
       error = classification === 'busy' || classification === 'ended'
         ? delegateErrorMessage(e)
-        : e.message || 'Failed to prepare delegation';
+        : e instanceof DelegateResponseError ? delegateErrorMessage(e) : e.message || 'Failed to prepare delegation';
       selectedKey = null;
     } finally {
       preparing = false;
@@ -1223,8 +1223,10 @@
       }
       await finishDelegate(data);
     } catch (cause) {
-      const classification = delegateErrorClassification(cause);
-      if (classification === 'refresh-once' && !refreshAttempted) {
+      const classification = delegateErrorClassification(cause, refreshAttempted);
+      if (classification === 'panel-after-failed-refresh') {
+        requestExpired = true;
+      } else if (classification === 'refresh-once') {
         if (!key) {
           error = delegateErrorMessage(cause);
           return;
@@ -1232,10 +1234,9 @@
         try {
           await refreshAuthorizationContext(key, actions);
         } catch (refreshCause) {
-          const refreshClassification = delegateErrorClassification(refreshCause);
-          error = refreshClassification === 'busy' || refreshClassification === 'ended'
-            ? delegateErrorMessage(refreshCause)
-            : refreshCause instanceof Error ? refreshCause.message : 'Delegation failed';
+          const refreshClassification = delegateErrorClassification(refreshCause, true);
+          if (refreshClassification === 'panel-after-failed-refresh') requestExpired = true;
+          else error = delegateErrorMessage(refreshCause);
           return;
         }
         await doManagedDelegate(true);
@@ -1374,8 +1375,10 @@
       }
       await finishDelegate(data);
     } catch (cause) {
-      const classification = delegateErrorClassification(cause);
-      if (classification === 'refresh-once' && !refreshAttempted) {
+      const classification = delegateErrorClassification(cause, refreshAttempted);
+      if (classification === 'panel-after-failed-refresh') {
+        requestExpired = true;
+      } else if (classification === 'refresh-once') {
         if (!key) {
           error = delegateErrorMessage(cause);
           return;
@@ -1383,10 +1386,9 @@
         try {
           await refreshAuthorizationContext(key, selectedActionIds);
         } catch (refreshCause) {
-          const refreshClassification = delegateErrorClassification(refreshCause);
-          error = refreshClassification === 'busy' || refreshClassification === 'ended'
-            ? delegateErrorMessage(refreshCause)
-            : refreshCause instanceof Error ? refreshCause.message : 'Delegation failed';
+          const refreshClassification = delegateErrorClassification(refreshCause, true);
+          if (refreshClassification === 'panel-after-failed-refresh') requestExpired = true;
+          else error = delegateErrorMessage(refreshCause);
           return;
         }
         // A fresh prepare changes the signed bytes; obtain a fresh wallet signature.

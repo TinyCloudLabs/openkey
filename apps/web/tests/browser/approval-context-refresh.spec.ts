@@ -13,7 +13,7 @@ const keyFor = (ability: string) => `${ability === capabilities ? 'tinycloud.cap
 const allKeys = [capabilities, read, write].map(keyFor);
 const narrowed = [capabilities, read].map(keyFor);
 
-type Scenario = 'success' | 'expired-link' | 'direct-expired' | 'expired-token' | 'busy-expired-code' | 'busy-context-code' | 'refused' | 'twice' | 'second-refused' | 'reject-signature' | 'changed-selection' | 'duplicate-selection' | 'missing-selection' | 'empty-siwe' | 'malformed-siwe' | 'changed-message' | 'mixed-recap' | 'malformed-caveat';
+type Scenario = 'success' | 'expired-link' | 'direct-expired' | 'expired-token' | 'busy-expired-code' | 'busy-context-code' | 'refresh-prepare-context' | 'refused' | 'twice' | 'second-refused' | 'reject-signature' | 'changed-selection' | 'duplicate-selection' | 'missing-selection' | 'empty-siwe' | 'malformed-siwe' | 'changed-message' | 'mixed-recap' | 'malformed-caveat';
 type Call = { path: string; body: Record<string, unknown> };
 
 async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scenario, code = 'context-expired') {
@@ -58,6 +58,7 @@ async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scena
       // Opening and narrowing each prepare once; the third call is recovery.
       if (prepares >= 3 && scenario === 'refused') return reply(403, { code: 'user-mismatch', error: 'Refused owner session' });
       if (prepares >= 3 && scenario === 'expired-link') return reply(410, { code: 'expired_request', error: 'Link expired' });
+      if (prepares >= 3 && scenario === 'refresh-prepare-context') return reply(400, { code: 'context-expired', error: 'Authorization context expired during refresh.' });
       const actionKeys = body.actionKeys;
       if (actionKeys !== undefined && (!Array.isArray(actionKeys) || !actionKeys.every(key => typeof key === 'string'))) throw new Error('Invalid action keys');
       let selected = scenario === 'changed-selection' && prepares >= 3 ? allKeys : actionKeys ?? allKeys;
@@ -137,7 +138,7 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
       }
     });
   }
-  for (const scenario of ['expired-link', 'direct-expired', 'expired-token', 'busy-expired-code', 'busy-context-code', 'refused', 'twice', 'second-refused', 'changed-selection', 'duplicate-selection', 'missing-selection', 'empty-siwe', 'malformed-siwe', 'changed-message', 'mixed-recap', 'malformed-caveat', ...(keyType === 'EXTERNAL' ? ['reject-signature' as const] : [])] as const) {
+  for (const scenario of ['expired-link', 'direct-expired', 'expired-token', 'busy-expired-code', 'busy-context-code', 'refresh-prepare-context', 'refused', 'twice', 'second-refused', 'changed-selection', 'duplicate-selection', 'missing-selection', 'empty-siwe', 'malformed-siwe', 'changed-message', 'mixed-recap', 'malformed-caveat', ...(keyType === 'EXTERNAL' ? ['reject-signature' as const] : [])] as const) {
     test(`${keyType} ${scenario} ends recovery without another retry`, async ({ page }) => {
       const flow = await open(page, keyType, scenario);
       await page.getByRole('button', { name: 'Approve', exact: true }).click();
@@ -154,9 +155,14 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
         await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);
         expect(flow.counts()).toEqual({ prepares: 2, approvals: 1 });
       } else if (scenario === 'expired-token') {
-        await expect(page.getByRole('alert')).toHaveText('Device request expired');
+        await expect(page.getByRole('alert')).toHaveText('Delegation failed');
+        await expect(page.getByText('Device request expired')).toHaveCount(0);
         await expect(page.locator('.expired-request')).toHaveCount(0);
         await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);
+      } else if (scenario === 'twice' || scenario === 'refresh-prepare-context') {
+        await expect(page.locator('.expired-request')).toBeVisible();
+        await expect(page.locator('.expired-request')).not.toContainText('Authorization context expired');
+        await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
       } else {
         await expect(page.locator('.expired-request')).toHaveCount(0);
         await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);
@@ -170,11 +176,7 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
         });
         expect(signatures).toBe(1);
       }
-      if (scenario === 'twice') {
-        await expect(page.getByRole('alert')).toContainText('Authorization context expired.');
-      } else {
-        await expect(page.getByRole('alert')).not.toContainText('Authorization context');
-      }
+      await expect(page.getByRole('alert')).not.toContainText('Authorization context');
     });
   }
 }
