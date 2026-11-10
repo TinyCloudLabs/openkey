@@ -76,10 +76,13 @@ cannot exceed this server ceiling.
 
 Every TinyCloud delegation SIWE is recognized by its `urn:recap:` resource
 lines and must contain exactly an `Expiration Time:` value within that
-ceiling. Plain sign-in SIWEs and non-SIWE messages are unaffected. HTTP 400
+ceiling. This includes host delegations (`tinycloud.space/host`); there is no
+exemption. Plain sign-in SIWEs and non-SIWE messages are unaffected. HTTP 400
 refusals use stable codes: `expiry_required` when the line is absent and
 `expiry_exceeds_ceiling` when it exceeds the ceiling. Both are non-retryable;
 no signing or partial approval state is produced.
+
+Deploy only after the SDK ships host SIWEs with an expiry (TC-2691).
 
 ## Ordinary `/delegate` links
 
