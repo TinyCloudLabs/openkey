@@ -182,6 +182,42 @@ if (!backend) {
     expect((await prisma.tinyCloudManageKeySigningDecision.findFirstOrThrow({ where: { userId: USER }, orderBy: { createdAt: 'desc' } })).reason).toBe('native_renew');
   });
 
+  test(`operator switch refuses renewal without mutation and leaves revoke available (${backend})`, async () => {
+    const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
+    const grantBefore = await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } });
+    const original = process.env.OPENKEY_NATIVE_RENEW_DISABLED;
+    const sealed = (await prisma.ethereumKey.findUniqueOrThrow({ where: { id: 'o5-key' } })).sealedBlob;
+    await prisma.ethereumKey.update({ where: { id: 'o5-key' }, data: { sealedBlob: 'deliberately-invalid-sealed-key' } });
+    try {
+      for (const value of ['true', '1', 'TRUE']) {
+        process.env.OPENKEY_NATIVE_RENEW_DISABLED = value;
+        const refused = await renew(key, 'token-a');
+        expect(refused.status).toBe(400); expect(await error(refused)).toBe('consent_required');
+        expect(await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).toMatchObject({
+          refreshTokenHash: grantBefore.refreshTokenHash, previousRefreshTokenHash: grantBefore.previousRefreshTokenHash,
+          renewCount: grantBefore.renewCount, status: grantBefore.status,
+        });
+        expect(await prisma.oauthRefreshToken.count()).toBe(1);
+        expect(await prisma.tinyCloudManageKeySigningDecision.count()).toBe(0);
+      }
+      await prisma.ethereumKey.update({ where: { id: 'o5-key' }, data: { sealedBlob: sealed } });
+      for (const [index, value] of ['', 'false', '0'].entries()) {
+        process.env.OPENKEY_NATIVE_RENEW_DISABLED = value;
+        const offKey = sessionKey(), id = `off-${index}`, token = `token-off-${index}`;
+        await seedDevice(id, offKey, token);
+        expect((await renew(offKey, token)).status).toBe(200);
+      }
+      process.env.OPENKEY_NATIVE_RENEW_DISABLED = '1';
+      const revoked = await revoke(key, 'token-a');
+      expect(revoked.status).toBe(200);
+      expect((await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).status).toBe('REVOKED');
+      await prisma.ethereumKey.update({ where: { id: 'o5-key' }, data: { sealedBlob: sealed } });
+    } finally {
+      if (original === undefined) delete process.env.OPENKEY_NATIVE_RENEW_DISABLED;
+      else process.env.OPENKEY_NATIVE_RENEW_DISABLED = original;
+    }
+  });
+
   test(`subset succeeds; superset and detail nonce/TTL are refused (${backend})`, async () => {
     const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
     const detail = (subset: typeof permissions, extra = {}) => JSON.stringify([{ type: 'tinycloud_delegation', session_key: key.publicJwk, permissions: subset, ...extra }]);

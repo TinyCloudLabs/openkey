@@ -799,6 +799,21 @@ client_id=exo-native&refresh_token=<current refresh token>[&siwe_nonce=<nonce>][
   rules (`[A-Za-z0-9]{8,64}`). If absent, OpenKey generates one.
 - Duplicate form keys are refused.
 
+Operators can set `OPENKEY_NATIVE_RENEW_DISABLED=true` (case-insensitive) or
+`1` to refuse syntactically valid renewal requests with HTTP 400
+`{"error":"consent_required"}` before proof verification, key unsealing, signing,
+token rotation, grant writes, or decision logging. The check is request-time;
+unset, empty, `false`, `0`, or any other value leaves renewals unchanged.
+Native revoke remains available. Provider `/api/auth/oauth2/token` refresh
+handling is independent. Turning the switch off restores normal renewal; owners
+can re-authorize using the still-current refresh token.
+
+`GET /api/internal/metrics/native-renewals` uses the `INTERNAL_METRICS_TOKEN`
+bearer and reports successful renewal counts per public `clientId` for 24 hours
+and 7 days. It reads allowed `native_renew` and `native_renew_recovered`
+decisions; `lastRenewalAt` is rounded down to the hour. Response contains no
+user, grant, or token identifiers. Refusals are not counted.
+
 Processing:
 
 1. Hash the token. Look up the grant without a lock by

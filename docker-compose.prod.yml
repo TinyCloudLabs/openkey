@@ -39,6 +39,7 @@ services:
       - NODE_STATS_READ_TOKEN=${NODE_STATS_READ_TOKEN:-}
       - SCOREBOARD_EXCLUDE_USER_IDS=${SCOREBOARD_EXCLUDE_USER_IDS:-}
       - SCOREBOARD_EXCLUDE_CLIENT_IDS=${SCOREBOARD_EXCLUDE_CLIENT_IDS:-}
+      - OPENKEY_NATIVE_RENEW_DISABLED=${OPENKEY_NATIVE_RENEW_DISABLED:-}
     restart: unless-stopped
     healthcheck:
       # Keep this aligned with the API's configurable listener. `$$` defers

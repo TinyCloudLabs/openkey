@@ -75,6 +75,16 @@ function permissionSubset(requested: NativePermission[], approved: NativePermiss
   });
 }
 
+/**
+ * Operator switch for native renewals, read at request time so it can be
+ * toggled without redeploying. Only `1` and `true` (case-insensitive,
+ * surrounding whitespace ignored) enable it; unset or any other value is off.
+ */
+function nativeRenewalsDisabled(): boolean {
+  const value = process.env.OPENKEY_NATIVE_RENEW_DISABLED?.trim().toLowerCase();
+  return value === 'true' || value === '1';
+}
+
 function requestedPermissions(raw: string | null, jwk: unknown): unknown {
   if (raw === null) return undefined;
   let parsed: unknown;
@@ -115,6 +125,7 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
     if (new Set(keys).size !== keys.length || keys.some((key) => !FORM_KEYS.has(key)) ||
       (operation === 'revoke' && keys.some((key) => key !== 'client_id' && key !== 'refresh_token')) ||
       !params.get('client_id') || !params.get('refresh_token')) return respond(fail('invalid_request', 400));
+    if (operation === 'renew' && nativeRenewalsDisabled()) return respond(fail('consent_required', 400));
     const token = params.get('refresh_token')!;
     const hash = credentialHash(token);
     const candidate = await db.tinyCloudNativeGrant.findFirst({ where: { OR: [{ refreshTokenHash: hash }, { previousRefreshTokenHash: hash }] } });
