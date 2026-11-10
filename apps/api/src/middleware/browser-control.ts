@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { resolveOriginPolicy } from '../origin-policy';
+import { resolveOriginPolicy, resolveSigningOriginPolicy } from '../origin-policy';
 import { logSignOriginRefused } from '../log';
 
 /**
@@ -17,17 +17,15 @@ export function rejectNonBrowserControlRequest(c: Context) {
 }
 
 /**
- * Managed-key signing routes accept a session only from an OpenKey web
- * origin: the session cookie is scoped to the whole site, so any sibling page
- * could otherwise send a signed-in user's browser here, and the caller could
- * then claim any requestOrigin it likes in the body. Bearer credentials get
- * the same answer — requireOpenKeyOriginForBearer already demands the same
- * origins, so this check is unconditional and does not depend on how the
- * router is mounted. Returns a 403 response to send, or null to continue.
+ * Managed-key signing routes must not accept the shared session cookie from
+ * the console host: a sibling page could otherwise sign for the user and
+ * claim any requestOrigin it likes in the body. On /api/delegate/sign this
+ * guard applies only to cookie-session requests; OAuth bearer requests use a
+ * separate path. Returns a 403 response to send, or null to continue.
  */
 export function rejectNonOpenKeySignRequest(c: Context) {
   const origin = c.req.header('origin');
-  const allowed = resolveOriginPolicy('http://localhost:5173,http://localhost:3000');
+  const allowed = resolveSigningOriginPolicy('http://localhost:5173,http://localhost:3000');
   if (!origin || !allowed.includes(origin)) {
     logSignOriginRefused(c.req.routePath, origin ? 'foreign' : 'missing');
     return c.json({ error: 'Managed-key signing requires an OpenKey browser origin' }, 403);

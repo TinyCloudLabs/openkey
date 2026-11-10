@@ -9,7 +9,8 @@ import type { Hex } from 'viem';
 import {
   ensureTinyCloudBootstrapForApprovedSign,
 } from '../services/tinycloud-bootstrap';
-import { awaitTinyCloudBootstrapWithinBudget } from '../services/tinycloud-bootstrap-budget';
+import { awaitTinyCloudBootstrapWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
+import { parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
@@ -348,9 +349,16 @@ keysRouter.post('/:keyId/sign', async (c) => {
 
   // personal_sign adds EIP-191 prefix, raw signs the message directly
   const format = body.format || 'personal_sign';
-  // Bound bootstrap's synchronous wait; background work keeps its existing lock/heartbeat.
+  // Bound bootstrap's synchronous wait; background work keeps its existing lock/heartbeat. A sign-in that
+  // names one of the signer's own spaces (and no account-space entry) waits for that space instead, bounded
+  // by the requested-space timeout inside the bootstrap, so the SDK never has to host it itself.
+  // The cheap refusals come first, so a message that will be skipped anyway is not parsed a second time.
+  const mayHostOwnSpace = format !== 'raw' && process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN !== 'off';
+  const siwe = mayHostOwnSpace ? parseTinyCloudSiwe(body.message) : null;
+  const waitsForOwnSpace = siwe !== null && requestedOwnSpaceForSiwe(siwe, key.address) !== null;
   const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
     ensureTinyCloudBootstrapForApprovedSign({ prisma, userId: user.id, key, privateKey, message: body.message, format }),
+    waitsForOwnSpace ? { budgetMs: OWN_TIMEOUT_BUDGET_MS, ownLogsBackground: true } : {},
   );
   if (bootstrap.status === 'failed') {
     log('error', 'tinycloud_bootstrap_failed', bootstrap.errorCode);
