@@ -123,6 +123,12 @@
   let codeDeadline = $state<number | null>(null);
   let codeCountdown = $state<CodeCountdownSnapshot | null>(null);
   let codeAnnouncement = $state('');
+  let delegationPayload = $state.raw<any>(null);
+  let codeRenewing = $state(false);
+  let codeRenewError = $state('');
+  let approvalExpiryNow = $state(Date.now());
+  const delegationExpiry = $derived(Date.parse(delegationPayload?.expirationTime ?? delegationPayload?.expiresAt ?? delegationPayload?.expiry ?? ''));
+  const delegationExpired = $derived(!Number.isFinite(delegationExpiry) || delegationExpiry <= approvalExpiryNow);
   let closeStuck = $state(false);
   let cancelCloseAttempt: (() => void) | null = null;
 
@@ -138,6 +144,15 @@
         if (snapshot.announcement) codeAnnouncement = snapshot.announcement;
       },
     });
+  });
+
+  $effect(() => {
+    if (!codeCountdown?.expired) return;
+    const now = Date.now();
+    approvalExpiryNow = now;
+    if (!Number.isFinite(delegationExpiry) || delegationExpiry <= now) return;
+    const timer = setTimeout(() => { approvalExpiryNow = Date.now(); }, Math.min(delegationExpiry - now, 2_147_483_647));
+    return () => clearTimeout(timer);
   });
 
   // Cancels a pending Close check when the page is destroyed.
@@ -1403,6 +1418,40 @@
     }
   }
 
+  async function mintShortCode(payload: any, reportError = false) {
+    codeRenewError = '';
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || '';
+      const response = await fetch(`${API_URL}/api/delegation-codes`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delegation: payload }),
+      });
+      if (!response.ok) throw new Error('Mint request failed');
+      const result = await response.json();
+      if (typeof result.code !== 'string' || !/^[a-z2-7]{4}-[a-z2-7]{4}$/i.test(result.code)) throw new Error('Invalid code response');
+      const remainingMs = typeof result.expiresAt === 'string'
+        ? remainingFromServerClock(result.expiresAt, response.headers.get('date'))
+        : null;
+      shortCode = result.code.toUpperCase();
+      copied = false;
+      codeCountdown = null;
+      codeDeadline = performance.now() + (remainingMs ?? 300_000);
+    } catch {
+      if (reportError) codeRenewError = "Couldn't get a new code. Try again, or start again in the CLI.";
+    }
+  }
+
+  async function getNewCode() {
+    if (!codeCountdown?.expired || codeRenewing || delegationExpired || !delegationPayload) return;
+    codeRenewing = true;
+    try {
+      await mintShortCode(delegationPayload, true);
+    } finally {
+      codeRenewing = false;
+    }
+  }
   async function finishDelegate(data: any) {
     const payload = permissionsEdited ? { ...data, edited: true } : data;
     spaceReadiness = spaceReadinessResult(payload, spaceSetup);
@@ -1477,28 +1526,8 @@
     }
 
     pasteCode = delegationPasteCode(payload);
-    try {
-      const API_URL = import.meta.env.VITE_API_URL || '';
-      const response = await fetch(`${API_URL}/api/delegation-codes`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ delegation: payload }),
-      });
-      if (response.ok) {
-        const result = await response.json();
-        const remainingMs = typeof result.expiresAt === 'string'
-          ? remainingFromServerClock(result.expiresAt, response.headers.get('date'))
-          : null;
-        if (/^[a-z2-7]{4}-[a-z2-7]{4}$/i.test(result.code)) {
-          shortCode = result.code.toUpperCase();
-          // Read at receipt: the countdown runs on the monotonic clock from here.
-          if (remainingMs !== null) codeDeadline = performance.now() + remainingMs;
-        }
-      }
-    } catch {
-      // The full delegation remains available when the broker is unreachable.
-    }
+    delegationPayload = Object.freeze(payload);
+    await mintShortCode(payload);
     done = true;
     step = 'done';
   }
@@ -1638,17 +1667,33 @@
                 <div class="font-mono text-2xl font-semibold tracking-widest select-all {codeCountdown?.expired ? 'text-surface-400 line-through' : 'text-surface-900'}">{shortCode}</div>
                 {#if codeCountdown}
                   <p role="timer" aria-live="off" class="text-sm mt-2 {codeCountdown.expired ? 'font-medium text-amber-900' : 'text-surface-600'}">{codeCountdown.text}</p>
-                  <p class="text-surface-500 text-xs mt-1">Works once.</p>
+                  {#if !codeCountdown.expired}
+                    <p class="text-surface-500 text-xs mt-1">Works once.</p>
+                  {/if}
                 {:else}
                   <p class="text-surface-600 text-sm mt-2">Use within 5 minutes. Works once.</p>
                 {/if}
               </div>
               <p class="sr-only" role="status" aria-live="polite">{codeAnnouncement}</p>
-              <button
-                class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-50"
-                onclick={() => copyCode(shortCode)}
-                aria-label="Copy short code"
-              >{copied ? 'Copied' : 'Copy code'}</button>
+              {#if codeCountdown?.expired}
+                {#if !delegationExpired}
+                  <button
+                    type="button"
+                    class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    onclick={getNewCode}
+                    disabled={codeRenewing}
+                  >Get a new code</button>
+                {/if}
+              {:else}
+                <button
+                  class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  onclick={() => copyCode(shortCode)}
+                  aria-label="Copy short code"
+                >{copied ? 'Copied' : 'Copy code'}</button>
+              {/if}
+              {#if codeRenewError}
+                <p class="text-red-700 text-sm mt-2" role="alert">{codeRenewError}</p>
+              {/if}
             {:else}
               <p class="text-surface-500 text-sm mb-3">Short code unavailable. Use the full delegation code instead.</p>
             {/if}

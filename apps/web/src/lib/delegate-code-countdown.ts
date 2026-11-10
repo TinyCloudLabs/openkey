@@ -5,7 +5,7 @@
 // measured on the monotonic clock (performance.now()), so the displayed time
 // does not move with wall-clock changes after receipt.
 
-export const CODE_EXPIRED_TEXT = 'Code expired: start again in the CLI.';
+export const CODE_EXPIRED_TEXT = 'Code expired. Get a new code here, or start again in the CLI.';
 export const CODE_ONE_MINUTE_ANNOUNCEMENT = '1 minute left to use this code.';
 
 const ONE_MINUTE_MS = 60_000;
