@@ -1,4 +1,3 @@
-import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
@@ -6,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { serializeSignedCookie } from 'better-call';
 import type { PrismaClient } from '@openkey/db';
+import { hashOAuthClientSecret, hasOAuthClientId } from '../services/oauth-client-secrets';
 
 const root = resolve(import.meta.dir, '../../../..');
 if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
@@ -219,18 +219,31 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
       expect(account.status, `${route.path} account cookie reaches endpoint`).not.toBe(403);
     }
   });
+  test('OAuth privilege client IDs fail closed when missing or non-string', () => {
+    expect(hasOAuthClientId(undefined)).toBe(false);
+    expect(hasOAuthClientId(42)).toBe(false);
+    expect(hasOAuthClientId('client-id')).toBe(true);
+  });
   test('organization OAuth clients are managed through the tenant console, not session client endpoints', async () => {
     const removedUserId = 'org-app-creator';
     const adminUserId = 'org-app-admin';
+    const memberUserId = 'org-app-member';
+    const otherOrgAdminId = 'other-org-admin';
     const removedToken = randomUUID();
     const adminToken = randomUUID();
+    const memberToken = randomUUID();
+    const otherOrgAdminToken = randomUUID();
     await prisma.user.createMany({ data: [
       { id: removedUserId, email: `${removedUserId}@example.test`, name: removedUserId, emailVerified: true },
       { id: adminUserId, email: `${adminUserId}@example.test`, name: adminUserId, emailVerified: true },
+      { id: memberUserId, email: `${memberUserId}@example.test`, name: memberUserId, emailVerified: true },
+      { id: otherOrgAdminId, email: `${otherOrgAdminId}@example.test`, name: otherOrgAdminId, emailVerified: true },
     ] });
     await prisma.session.createMany({ data: [
       { id: randomUUID(), userId: removedUserId, token: removedToken, expiresAt: new Date(Date.now() + 7 * 86_400_000) },
       { id: randomUUID(), userId: adminUserId, token: adminToken, expiresAt: new Date(Date.now() + 7 * 86_400_000) },
+      { id: randomUUID(), userId: memberUserId, token: memberToken, expiresAt: new Date(Date.now() + 7 * 86_400_000) },
+      { id: randomUUID(), userId: otherOrgAdminId, token: otherOrgAdminToken, expiresAt: new Date(Date.now() + 7 * 86_400_000) },
     ] });
     await prisma.organization.create({ data: { id: 'org-app-authz', name: 'App authorization' } });
     await prisma.planEntitlements.create({ data: {
@@ -243,8 +256,15 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
     await prisma.organizationMembership.create({
       data: { id: 'org-app-admin-membership', organizationId: 'org-app-authz', userId: adminUserId, role: 'ADMIN' },
     });
+    await prisma.organization.create({ data: { id: 'org-app-other', name: 'Other organization' } });
+    await prisma.organizationMembership.createMany({ data: [
+      { id: 'org-app-member-membership', organizationId: 'org-app-authz', userId: memberUserId, role: 'MEMBER' },
+      { id: 'other-org-admin-membership', organizationId: 'org-app-other', userId: otherOrgAdminId, role: 'ADMIN' },
+    ] });
     const cookie = async (token: string) => (await serializeSignedCookie(cookieName, token, secret)).split(';')[0]!;
     const creatorCookie = await cookie(removedToken);
+    const memberCookie = await cookie(memberToken);
+    const otherOrgAdminCookie = await cookie(otherOrgAdminToken);
     const adminCookie = await cookie(adminToken);
     const created = await app.fetch(new Request('https://api.openkey.test/api/console/organizations/org-app-authz/apps', {
       method: 'POST', headers: { cookie: creatorCookie, origin: 'https://console.openkey.so', 'content-type': 'application/json' },
@@ -298,6 +318,33 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
     expect(listed.status).toBe(200);
     expect((await listed.json() as Array<{ client_id: string }>).some(({ client_id }) => client_id === client.clientId)).toBe(false);
     expect((await call(`/oauth2/get-client?client_id=${client.clientId}`, 'GET', removedToken)).status).toBe(401);
+    const removedRotate = await app.fetch(new Request(`https://api.openkey.test/api/console/organizations/org-app-authz/apps/${client.id}/rotate-secret`, {
+      method: 'POST', headers: { cookie: creatorCookie, origin: 'https://console.openkey.so' },
+    }));
+    expect(removedRotate.status).toBe(404);
+    const memberRotate = await app.fetch(new Request(`https://api.openkey.test/api/console/organizations/org-app-authz/apps/${client.id}/rotate-secret`, {
+      method: 'POST', headers: { cookie: memberCookie, origin: 'https://console.openkey.so' },
+    }));
+    expect(memberRotate.status).toBe(403);
+    const otherOrgRotate = await app.fetch(new Request(`https://api.openkey.test/api/console/organizations/org-app-authz/apps/${client.id}/rotate-secret`, {
+      method: 'POST', headers: { cookie: otherOrgAdminCookie, origin: 'https://console.openkey.so' },
+    }));
+    expect(otherOrgRotate.status).toBe(404);
+    const publicRotate = await app.fetch(new Request(`https://api.openkey.test/api/console/organizations/org-app-authz/apps/${newClient.id}/rotate-secret`, {
+      method: 'POST', headers: { cookie: adminCookie, origin: 'https://console.openkey.so' },
+    }));
+    expect(publicRotate.status).toBe(400);
+    const oldHash = (await prisma.oauthClient.findUnique({ where: { id: client.id }, select: { clientSecret: true } }))!.clientSecret;
+    const rotated = await app.fetch(new Request(`https://api.openkey.test/api/console/organizations/org-app-authz/apps/${client.id}/rotate-secret`, {
+      method: 'POST', headers: { cookie: adminCookie, origin: 'https://console.openkey.so' },
+    }));
+    expect(rotated.status).toBe(200);
+    expect(rotated.headers.get('cache-control')).toBe('no-store');
+    const rotationResult = await rotated.json() as { clientSecret: string };
+    expect(Object.keys(rotationResult)).toEqual(['clientSecret']);
+    const newHash = (await prisma.oauthClient.findUnique({ where: { id: client.id }, select: { clientSecret: true } }))!.clientSecret;
+    expect(newHash).not.toBe(oldHash);
+    expect(newHash).toBe(await hashOAuthClientSecret(rotationResult.clientSecret));
     const updated = await app.fetch(new Request(`https://api.openkey.test/api/console/organizations/org-app-authz/apps/${client.id}`, {
       method: 'PATCH', headers: { cookie: adminCookie, origin: 'https://console.openkey.so', 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Admin managed' }),

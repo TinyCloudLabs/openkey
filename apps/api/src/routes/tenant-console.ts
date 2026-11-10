@@ -11,6 +11,8 @@ import {
   validateOAuthRedirectUris,
   type OAuthApplicationType,
 } from '../services/oauth-redirect-uris';
+import { generateOAuthClientSecret, hashOAuthClientSecret } from '../services/oauth-client-secrets';
+import { log } from '../log';
 
 type ConsoleMembership = { id: string; organizationId: string; userId: string; role: 'ADMIN' | 'MEMBER' };
 type TenantConsoleContext = SessionContext & { Variables: SessionContext['Variables'] & { consoleMembership: ConsoleMembership } };
@@ -144,6 +146,23 @@ export function createTenantConsoleRouter(db: PrismaClient, dependencies: Tenant
     const result = await db.oauthClient.deleteMany({ where: { id: c.req.param('appId'), organizationId: c.req.param('organizationId') } });
     if (!result.count) return error(c, 404, 'NOT_FOUND', 'Application not found');
     return c.json({ success: true });
+  });
+  router.post('/:organizationId/apps/:appId/rotate-secret', async (c) => {
+    if (!isAdmin(c)) return error(c, 403, 'FORBIDDEN', 'Administrator access is required');
+    const where = { id: c.req.param('appId'), organizationId: c.req.param('organizationId') };
+    const client = await db.oauthClient.findFirst({ where, select: { clientSecret: true, public: true } });
+    if (!client) return error(c, 404, 'NOT_FOUND', 'Application not found');
+    if (client.public || !client.clientSecret) return error(c, 400, 'INVALID_CLIENT', 'Public applications do not have a client secret');
+    const clientSecret = generateOAuthClientSecret();
+    const storedSecret = await hashOAuthClientSecret(clientSecret);
+    const rotated = await db.oauthClient.updateMany({
+      where: { ...where, public: false, clientSecret: client.clientSecret },
+      data: { clientSecret: storedSecret, updatedAt: new Date() },
+    });
+    if (!rotated.count) return error(c, 409, 'CONFLICT', 'Application changed; retry the request');
+    log('info', 'oauth_client_secret_rotated');
+    c.header('Cache-Control', 'no-store');
+    return c.json({ clientSecret }, 200);
   });
   return router;
 }
