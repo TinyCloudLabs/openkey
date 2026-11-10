@@ -9,26 +9,46 @@ const isDev = process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 
 
 /**
  * A code proves one purpose only. A linking code stamps `session.lastEmailOtpAt`
- * (link and unlink); a deletion code records a separate single-use marker, so a
- * code mailed for linking can never delete the account, and the reverse.
+ * (link and unlink); every other purpose records its own single-use marker on
+ * the session, so a code mailed for one purpose never authorizes another.
  */
-export type StepUpPurpose = 'link' | 'delete_account';
+export type StepUpPurpose = 'link' | 'delete_account' | 'passkey_register' | 'passkey_remove';
+type MarkerPurpose = Exclude<StepUpPurpose, 'link'>;
 
 export function parseStepUpPurpose(value: unknown): StepUpPurpose | null {
   if (value === undefined || value === 'link') return 'link';
-  if (value === 'delete_account') return 'delete_account';
+  if (value === 'delete_account' || value === 'passkey_register' || value === 'passkey_remove') return value;
   return null;
 }
 
+const CODE_PREFIX: Record<StepUpPurpose, string> = {
+  link: 'openkey-account-step-up-otp',
+  delete_account: 'openkey-account-delete-otp',
+  passkey_register: 'openkey-passkey-register-otp',
+  passkey_remove: 'openkey-passkey-remove-otp',
+};
+
 export function stepUpIdentifier(sessionId: string, email: string, purpose: StepUpPurpose = 'link'): string {
-  const prefix = purpose === 'link' ? 'openkey-account-step-up-otp' : 'openkey-account-delete-otp';
-  return `${prefix}:${sessionId}:${email.toLowerCase()}`;
+  return `${CODE_PREFIX[purpose]}:${sessionId}:${email.toLowerCase()}`;
 }
 
-/** The fresh (five-minute) proof a verified deletion code leaves on its session. */
-export function deleteStepUpIdentifier(sessionId: string): string {
-  return `openkey-account-delete-step-up:${sessionId}`;
+const MARKER_PREFIX: Record<MarkerPurpose, string> = {
+  delete_account: 'openkey-account-delete-step-up',
+  passkey_register: 'openkey-passkey-register-step-up',
+  passkey_remove: 'openkey-passkey-remove-step-up',
+};
+
+/** The fresh (five-minute), single-use proof a verified code leaves on its session. */
+export function stepUpMarkerIdentifier(purpose: MarkerPurpose, sessionId: string): string {
+  return `${MARKER_PREFIX[purpose]}:${sessionId}`;
 }
+
+/**
+ * How a passkey-registration marker was earned. An email code verified for
+ * `passkey_register` writes `email_step_up`; a session created by a verified
+ * email code (sign-in or sign-up) carries the same proof from its creation.
+ */
+export type PasskeyRegisterGrant = 'email_step_up' | 'email_sign_in' | 'account_creation';
 
 const EMAILS: Record<StepUpPurpose, { subject: string; html: (code: string) => string }> = {
   link: {
@@ -38,6 +58,14 @@ const EMAILS: Record<StepUpPurpose, { subject: string; html: (code: string) => s
   delete_account: {
     subject: 'Your code to delete your OpenKey account',
     html: (code) => `<p>Use this code to permanently delete your OpenKey account and its keys:</p><p>${code}</p><p>It expires in 5 minutes. If you did not request this, do not share it and ignore this email.</p>`,
+  },
+  passkey_register: {
+    subject: 'Your code to add a passkey to your OpenKey account',
+    html: (code) => `<p>Use this code to add a new passkey to your OpenKey account:</p><p>${code}</p><p>It expires in 5 minutes. If you did not request this, do not share it and ignore this email.</p>`,
+  },
+  passkey_remove: {
+    subject: 'Your code to remove a passkey from your OpenKey account',
+    html: (code) => `<p>Use this code to remove a passkey from your OpenKey account:</p><p>${code}</p><p>It expires in 5 minutes. If you did not request this, do not share it and ignore this email.</p>`,
   },
 };
 
@@ -103,12 +131,7 @@ export async function verifyAccountStepUpCode(
     if (purpose === 'link') {
       await tx.session.update({ where: { id: sessionId }, data: { lastEmailOtpAt: now } });
     } else {
-      const marker = deleteStepUpIdentifier(sessionId);
-      await tx.verification.deleteMany({ where: { identifier: marker } });
-      await tx.verification.create({ data: {
-        id: randomUUID(), identifier: marker, value: now.toISOString(),
-        expiresAt: new Date(now.getTime() + TTL_MS),
-      } });
+      await writeStepUpMarker(tx, purpose, sessionId, purpose === 'passkey_register' ? 'email_step_up' : now.toISOString(), now);
     }
     return true;
   });
@@ -122,15 +145,49 @@ export async function hasFreshEmailStepUp(database: PrismaClient, sessionId: str
 
 type VerificationClient = Pick<PrismaClient, 'verification'>;
 
+/** Replaces the session's marker for `purpose` with a fresh five-minute one. */
+export async function writeStepUpMarker(
+  database: VerificationClient, purpose: MarkerPurpose, sessionId: string, value: string, now = new Date(),
+): Promise<void> {
+  const identifier = stepUpMarkerIdentifier(purpose, sessionId);
+  await database.verification.deleteMany({ where: { identifier } });
+  await database.verification.create({ data: {
+    id: randomUUID(), identifier, value, expiresAt: new Date(now.getTime() + TTL_MS),
+  } });
+}
+
+/** The unexpired marker's value for `purpose` on this session, or null. */
+export async function freshStepUpMarker(
+  database: VerificationClient, purpose: MarkerPurpose, sessionId: string, now = new Date(),
+): Promise<string | null> {
+  const row = await database.verification.findFirst({
+    where: { identifier: stepUpMarkerIdentifier(purpose, sessionId), expiresAt: { gt: now } },
+    select: { value: true },
+  });
+  return row?.value ?? null;
+}
+
+/** Spends the marker for `purpose`; returns its value, or null if none was fresh. */
+export async function consumeStepUpMarker(
+  database: VerificationClient, purpose: MarkerPurpose, sessionId: string, now = new Date(),
+): Promise<string | null> {
+  const identifier = stepUpMarkerIdentifier(purpose, sessionId);
+  const row = await database.verification.findFirst({
+    where: { identifier, expiresAt: { gt: now } }, select: { id: true, value: true },
+  });
+  if (!row) return null;
+  // One DELETE is the single-use gate: concurrent spends race on the same row.
+  const consumed = await database.verification.deleteMany({
+    where: { id: row.id, identifier, value: row.value, expiresAt: { gt: now } },
+  });
+  return consumed.count === 1 ? row.value : null;
+}
+
 export async function hasFreshDeleteStepUp(database: VerificationClient, sessionId: string, now = new Date()): Promise<boolean> {
-  return (await database.verification.count({
-    where: { identifier: deleteStepUpIdentifier(sessionId), expiresAt: { gt: now } },
-  })) === 1;
+  return await freshStepUpMarker(database, 'delete_account', sessionId, now) !== null;
 }
 
 /** Spends the deletion proof inside the deletion transaction; false if none is fresh. */
 export async function consumeDeleteStepUp(database: VerificationClient, sessionId: string, now = new Date()): Promise<boolean> {
-  return (await database.verification.deleteMany({
-    where: { identifier: deleteStepUpIdentifier(sessionId), expiresAt: { gt: now } },
-  })).count === 1;
+  return await consumeStepUpMarker(database, 'delete_account', sessionId, now) !== null;
 }

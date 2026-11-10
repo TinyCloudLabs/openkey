@@ -173,6 +173,9 @@ model Session {
   ipAddress     String?
   userAgent     String?
   lastPasskeyAt DateTime?
+  // The passkey row whose assertion set lastPasskeyAt (TC-1198). Step-up
+  // accepts the assertion only while that passkey counts for step-up.
+  lastPasskeyId String?
   lastEmailOtpAt DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -264,6 +267,14 @@ model Passkey {
   transports   String?
   aaguid       String?
   createdAt    DateTime @default(now())
+  // Enrolment provenance (TC-1198). `enrolledVia` records how the enrolment
+  // was authorized: legacy, account_creation, email_sign_in, email_step_up or
+  // passkey_step_up. Only a passkey with `countsForStepUp` can authorize a
+  // passkey step-up (deletion, enrolment, removal). Stock Better Auth writes
+  // leave it false; OpenKey sets it only under a verified step-up.
+  enrolledVia      String?
+  enrolledStepUpAt DateTime?
+  countsForStepUp  Boolean   @default(false)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

@@ -33,6 +33,8 @@
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import { newAccountSignupToken } from '$lib/email-signup';
   import NewAccountConfirmation from '$lib/components/auth/new-account-confirmation.svelte';
+  import PasskeyStepUpDialog from '$lib/components/auth/passkey-step-up-dialog.svelte';
+  import { passkeyStepUpMethods, type PasskeyStepUpMethod } from '$lib/passkey-step-up';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -434,12 +436,19 @@
     }
   }
 
+  // TC-1198: the email sign-in that led here is a five-minute, single-use
+  // proof; past it, the API asks for a fresh step-up before enrolment.
+  let passkeyStepUpOffered = $state<PasskeyStepUpMethod[] | null>(null);
+
   async function registerPasskey() {
     loading = true;
     error = '';
     try {
       const result = await authClient.passkey.addPasskey();
-      if (result?.error) {
+      const methods = passkeyStepUpMethods(result?.error);
+      if (methods) {
+        passkeyStepUpOffered = methods;
+      } else if (result?.error) {
         error = authErrorMessage(result.error, 'Failed to create passkey');
       } else {
         handlePostSignIn();
@@ -465,6 +474,15 @@
     if (native && otp.length === 6 && !loading) verifyOTP();
   }
 </script>
+
+{#if passkeyStepUpOffered}
+  <PasskeyStepUpDialog
+    purpose="passkey_register"
+    methods={passkeyStepUpOffered}
+    onverified={() => { passkeyStepUpOffered = null; void registerPasskey(); }}
+    oncancel={() => { passkeyStepUpOffered = null; }}
+  />
+{/if}
 
 <svelte:head>
   <meta name="referrer" content="no-referrer" />

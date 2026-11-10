@@ -285,8 +285,8 @@ Refusing Apple review locks the account. A locked account's existing sessions
 (cookie and bearer), OAuth refresh and access tokens, native grant renewals
 and signing routes are refused (TC-1231).
 
-Account deletion needs a fresh step-up: a passkey verification for a user with
-a passkey, otherwise a deletion-purpose email code
+Account deletion needs a fresh step-up: a verification by a passkey that counts
+for step-up when the user has one, otherwise a deletion-purpose email code
 (`POST /api/account/step-up/email-otp/{send,verify}` with
 `purpose: "delete_account"`). After the deletion commits, each stored Apple
 refresh token is revoked with its issuing client ID, retried three times; a
@@ -319,6 +319,42 @@ Apple rejects localhost, non-HTTPS domains and invalid TLS, so live provider
 testing requires a registered HTTPS hostname. Before production, register
 the outbound sender and envelope-sender domains used by Resend in Apple's
 private email relay settings, with matching SPF and DKIM.
+
+#### Passkey enrolment and removal (TC-1198)
+
+A session alone can't add or remove a passkey. Better Auth's
+`/api/auth/passkey/generate-register-options`, `verify-registration` and
+`delete-passkey` (and the embed proxy under `/api/passkey/*`) answer 403
+`PASSKEY_STEP_UP_REQUIRED`, with the accepted `methods`, unless the current
+session has one of these:
+
+- a fresh (five-minute) assertion by one of the user's passkeys that counts for
+  step-up, through `POST /api/account/step-up/passkey/{options,verify}`;
+- for enrolment, a single-use email proof: a `passkey_register` code on the
+  email step-up endpoints, or the session's own creation by a verified email
+  code (email sign-in, email sign-up, the Apple mailbox review) or by a
+  confirmed social sign-up, within five minutes;
+- for removing a passkey that doesn't count, a single-use `passkey_remove` code.
+
+Each passkey records `enrolledVia` (`legacy`, `account_creation`,
+`email_sign_in`, `email_step_up`, `passkey_step_up`), `enrolledStepUpAt` and
+`countsForStepUp`. A passkey enrolled under a passkey assertion counts. One
+enrolled under an email proof counts only when the user has no passkey that
+counts yet, so an email inbox alone never adds step-up authority to a passkey
+user. Removing a passkey that counts needs a passkey assertion. Passkey
+freshness (deletion, and any future link or unlink step-up) is accepted only
+from a passkey that counts. Migration
+`20261110_0002_passkey_enrolment_provenance` marks every existing passkey
+`legacy` with `countsForStepUp = true`.
+
+**Support path: a user who lost every passkey that counts.** They can still
+sign in with an email code and enrol new passkeys, but those don't count, so
+they can't delete the account or remove the old passkeys themselves. Support
+verifies the owner out of band first. Then, in one transaction, support deletes
+the lost passkey rows (`DELETE FROM "passkey" WHERE "userId" = $1 AND id = ANY($2)`).
+With no passkey that counts, the user can delete with an email code, and the
+next passkey they enrol under an email proof counts again. Never set
+`countsForStepUp` by hand.
 
 #### Trigger Conditions
 

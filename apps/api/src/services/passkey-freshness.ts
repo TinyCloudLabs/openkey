@@ -97,28 +97,32 @@ export function assertFreshPasskeyUserVerification(verification: {
 /**
  * Called from Better Auth's after hook after WebAuthn verification and session
  * creation. The marker must be an in-flight server-issued ceremony. The exact
- * server-issued session/user pair is the only row that can receive freshness.
+ * server-issued session/user pair is the only row that can receive freshness,
+ * and it records which of that user's passkeys was asserted (TC-1198).
  */
 export async function recordVerifiedPasskeySession(
-  db: Pick<PrismaClient, 'session'>,
+  db: Pick<PrismaClient, 'session' | 'passkey'>,
   returned: unknown,
   ceremonyId: string | null | undefined,
+  credentialId: unknown,
   verifiedAt = new Date(),
 ): Promise<boolean> {
   if (!ceremonyId || !claimFreshnessRecording(ceremonyId, verifiedAt.getTime())) return false;
   const body = await responseBody(returned);
   const sessionId = body?.session?.id;
   const userId = body?.session?.userId;
-  if (typeof sessionId !== 'string' || typeof userId !== 'string') {
+  if (typeof sessionId !== 'string' || typeof userId !== 'string' || typeof credentialId !== 'string') {
     discardPasskeyCeremony(ceremonyId);
     return false;
   }
 
   let result: { count: number };
   try {
+    const passkey = await db.passkey.findFirst({ where: { credentialID: credentialId, userId }, select: { id: true } });
+    if (!passkey) throw new Error('asserted passkey not found');
     result = await db.session.updateMany({
       where: { id: sessionId, userId, expiresAt: { gt: verifiedAt } },
-      data: { lastPasskeyAt: verifiedAt },
+      data: { lastPasskeyAt: verifiedAt, lastPasskeyId: passkey.id },
     });
   } catch {
     discardPasskeyCeremony(ceremonyId);
@@ -138,19 +142,52 @@ export async function recordVerifiedPasskeySession(
  * every matched hook must return an object even when no freshness marker exists.
  */
 export async function recordPasskeyFreshnessAfterHook(
-  db: Pick<PrismaClient, 'session'>,
+  db: Pick<PrismaClient, 'session' | 'passkey'>,
   returned: unknown,
   ceremonyId: string | null | undefined,
+  credentialId: unknown,
 ): Promise<Record<string, never>> {
-  await recordVerifiedPasskeySession(db, returned, ceremonyId);
+  await recordVerifiedPasskeySession(db, returned, ceremonyId, credentialId);
   return {};
+}
+
+export const PASSKEY_STEP_UP_MAX_AGE_MS = 5 * 60 * 1000;
+
+type StepUpDatabase = Pick<PrismaClient, 'session' | 'passkey'>;
+
+/**
+ * The passkey whose assertion gives this session fresh passkey step-up, or
+ * null. Freshness alone is not enough: the asserted passkey must still belong
+ * to the user and count for step-up, so a passkey enrolled by whoever holds a
+ * session can never stand in for the account owner's (TC-1198).
+ */
+export async function freshStepUpPasskey(
+  db: StepUpDatabase,
+  sessionId: unknown,
+  userId: unknown,
+  maxAgeMs = PASSKEY_STEP_UP_MAX_AGE_MS,
+  now = new Date(),
+): Promise<{ id: string; verifiedAt: Date } | null> {
+  if (typeof sessionId !== 'string' || typeof userId !== 'string') return null;
+  const row = await db.session.findFirst({
+    where: { id: sessionId, userId, expiresAt: { gt: now } },
+    select: { lastPasskeyAt: true, lastPasskeyId: true },
+  });
+  const verifiedAt = row?.lastPasskeyAt;
+  const age = verifiedAt ? now.getTime() - verifiedAt.getTime() : Number.NaN;
+  if (!verifiedAt || !row.lastPasskeyId || !(age >= 0 && age <= maxAgeMs)) return null;
+  const passkey = await db.passkey.findFirst({
+    where: { id: row.lastPasskeyId, userId, countsForStepUp: true },
+    select: { id: true },
+  });
+  return passkey ? { id: passkey.id, verifiedAt } : null;
 }
 
 /**
  * Step-up check for custody-destroying operations (TC-689). The current
- * session must carry a passkey verification recorded within `maxAgeMs` by
- * `recordVerifiedPasskeySession`. Returns a 403 response when it does not,
- * or null when the caller may proceed.
+ * session must carry a verification, within `maxAgeMs`, by a passkey that
+ * counts for step-up. Returns a 403 response when it does not, or null when
+ * the caller may proceed.
  */
 export async function requireFreshPasskey(
   c: {
@@ -158,20 +195,10 @@ export async function requireFreshPasskey(
     json: (body: unknown, status: 403) => Response;
   },
   maxAgeMs: number,
-  db: Pick<PrismaClient, 'session'>,
+  db: StepUpDatabase,
   now = new Date(),
 ): Promise<Response | null> {
-  const sessionId = c.get('session')?.id;
-  const userId = c.get('user')?.id;
-  const row = typeof sessionId === 'string' && typeof userId === 'string'
-    ? await db.session.findFirst({
-      where: { id: sessionId, userId, expiresAt: { gt: now } },
-      select: { lastPasskeyAt: true },
-    })
-    : null;
-  const verifiedAt = row?.lastPasskeyAt?.getTime();
-  const age = verifiedAt === undefined ? Number.NaN : now.getTime() - verifiedAt;
-  if (age >= 0 && age <= maxAgeMs) return null;
+  if (await freshStepUpPasskey(db, c.get('session')?.id, c.get('user')?.id, maxAgeMs, now)) return null;
   return c.json({
     error: 'Verify with your passkey again to continue',
     code: 'passkey_step_up_required',

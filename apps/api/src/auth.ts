@@ -35,6 +35,7 @@ import {
   assertFreshPasskeyUserVerification,
   recordPasskeyFreshnessAfterHook,
 } from './services/passkey-freshness';
+import { passkeyEnrolmentPlugin, type ResolvedSession } from './services/passkey-enrolment';
 import {
   appleTokenClientId,
   appleTokenSignIn,
@@ -173,11 +174,12 @@ const passkeyFreshnessPlugin = {
   hooks: {
     after: [{
       matcher: (ctx) => ctx.path === '/passkey/verify-authentication',
-      handler: (async (ctx: { path?: string; headers?: Headers; context: { returned?: unknown } }) => {
+      handler: (async (ctx: { path?: string; headers?: Headers; body?: unknown; context: { returned?: unknown } }) => {
         return recordPasskeyFreshnessAfterHook(
           prisma,
           ctx.context.returned,
           ctx.headers?.get('x-openkey-passkey-ceremony'),
+          (ctx.body as { response?: { id?: unknown } } | undefined)?.response?.id,
         );
       }) as AuthMiddleware,
     }],
@@ -331,6 +333,8 @@ export const auth = betterAuth({
       },
     },
     passkeyFreshnessPlugin,
+    // TC-1198: passkey enrolment and removal need a fresh step-up.
+    passkeyEnrolmentPlugin(prisma, (headers): Promise<ResolvedSession | null> => auth.api.getSession({ headers })),
     accountLinkingStepUpPlugin,
     socialLinkStatePlugin(prisma),
     socialConfirmation(prisma),
