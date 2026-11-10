@@ -84,7 +84,8 @@ test('a passkey-less account deletes with an email code, step by step', async ({
   await entry.click();
 
   await expect(page.getByRole('heading', { name: 'Delete your OpenKey account' })).toBeVisible();
-  await expect(page.getByText('Your 2 keys are destroyed.')).toBeVisible();
+  await expect(page.getByText('Every key on this account is destroyed, including archived keys')).toBeVisible();
+  await expect(page.getByText("OpenKey doesn't delete data that apps keep with other services")).toBeVisible();
   await expect(page.getByText('OpenKey revokes its Apple tokens')).toBeVisible();
   await expect(page.getByText("This can't be undone.")).toBeVisible();
   await noHorizontalScroll(page);
@@ -104,7 +105,10 @@ test('a passkey-less account deletes with an email code, step by step', async ({
   await expect(page.getByText('We\'ll email a code to owner@example.test.')).toBeVisible();
   await shot(page, '4-email-send');
   await page.getByRole('button', { name: 'Send code' }).click();
-  await expect(page.getByText('We sent a code to owner@example.test.')).toBeVisible();
+  await expect(page.getByText('We sent a code to owner@example.test. It lasts 5 minutes.')).toBeVisible();
+  // While that code is live the API sends no other, so no resend is offered yet.
+  await expect(page.getByText(/You can ask for another code in [45]:\d\d/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Send a new code' })).toHaveCount(0);
 
   await page.getByLabel('Code from the email').fill('111111');
   await page.getByRole('button', { name: 'Verify and delete account' }).click();
@@ -117,7 +121,7 @@ test('a passkey-less account deletes with an email code, step by step', async ({
   await page.getByRole('button', { name: 'Verify and delete account' }).click();
 
   await expect(page.getByRole('heading', { name: 'Your account was deleted' })).toBeVisible();
-  await expect(page.getByText('its 2 keys were destroyed')).toBeVisible();
+  await expect(page.getByText('its keys were destroyed')).toBeVisible();
   await noHorizontalScroll(page);
   await shot(page, '7-done');
 
@@ -158,9 +162,24 @@ test('an expired email step-up at delete time asks for a new code', async ({ pag
   await page.getByRole('button', { name: 'Send code' }).click();
   await page.getByLabel('Code from the email').fill('246810');
   await page.getByRole('button', { name: 'Verify and delete account' }).click();
-  await expect(page.getByText('Your email code expired. Send a new code to continue.')).toBeVisible();
+  await expect(page.getByText('Verify with a new email code to continue.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Send code' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Your account was deleted' })).toHaveCount(0);
+});
+
+test('a new code is offered only once the last one has expired', async ({ page }) => {
+  await page.clock.install();
+  const calls = await setup(page, {});
+  await page.goto('/dashboard/settings/delete-account');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByLabel('Type DELETE MY ACCOUNT to confirm').fill('DELETE MY ACCOUNT');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('button', { name: 'Send code' }).click();
+  await expect(page.getByText('You can ask for another code in 5:00')).toBeVisible();
+  await page.clock.runFor(5 * 60 * 1000);
+  await page.getByRole('button', { name: 'Send a new code' }).click();
+  await expect(page.getByText('You can ask for another code in 5:00')).toBeVisible();
+  expect(calls.filter((call) => call.path === '/api/account/step-up/email-otp/send')).toHaveLength(2);
 });
 
 test('a passkey account before the passkey step-up ships cannot start a deletion it cannot finish', async ({ page }) => {
@@ -210,7 +229,7 @@ test('a passkey account verifies with a real passkey on this session, then delet
   });
 
   await page.goto('/dashboard/settings/delete-account');
-  await expect(page.getByText('Your key is destroyed.')).toBeVisible();
+  await expect(page.getByText('Every key on this account is destroyed')).toBeVisible();
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByLabel('Type DELETE MY ACCOUNT to confirm').fill('DELETE MY ACCOUNT');
   await page.getByRole('button', { name: 'Continue' }).click();
@@ -220,7 +239,7 @@ test('a passkey account verifies with a real passkey on this session, then delet
   await page.getByRole('button', { name: 'Verify with passkey and delete' }).click();
 
   await expect(page.getByRole('heading', { name: 'Your account was deleted' })).toBeVisible();
-  await expect(page.getByText('its key was destroyed')).toBeVisible();
+  await expect(page.getByText('its keys were destroyed')).toBeVisible();
   expect(verified!.challengeToken).toBe('ceremony-1');
   expect(verified!.response!.id).toBe(credentialId.toString('base64url'));
   expect(typeof verified!.response!.response!.authenticatorData).toBe('string');
@@ -238,7 +257,7 @@ test('a passkey account whose API answers 404 for the passkey step-up is told it
   await page.getByLabel('Type DELETE MY ACCOUNT to confirm').fill('DELETE MY ACCOUNT');
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByRole('button', { name: 'Verify with passkey and delete' }).click();
-  await expect(page.getByText("Confirming with a passkey isn't available here yet").first()).toBeVisible();
+  await expect(page.getByText("Confirming with a passkey isn't available here yet")).toHaveCount(1);
   await expect(page.getByRole('button', { name: 'Verify with passkey and delete' })).toHaveCount(0);
   expect(calls.some((call) => call.path === '/api/account/delete')).toBe(false);
 });

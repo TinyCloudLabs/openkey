@@ -1,8 +1,9 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { tick } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   import { API_BASE, authClient } from '$lib/auth-client';
   import {
+    CODE_LIFETIME_SECONDS,
     DELETE_CONFIRMATION,
     DELETE_ACCOUNT_PATH,
     DeletionError,
@@ -35,7 +36,9 @@
   let typed = $state('');
   let codeSent = $state(false);
   let code = $state('');
-  let keysDeleted = $state(0);
+  // While a code is live the API sends no other, so a resend waits it out.
+  let resendIn = $state(0);
+  let resendTimer: ReturnType<typeof setInterval> | undefined;
   let started = false;
   let heading = $state<HTMLHeadingElement | null>(null);
 
@@ -85,15 +88,30 @@
       codeSent = false;
       code = '';
     }
-    error = cause instanceof Error ? cause.message : 'Something went wrong. Try again.';
     if (cause instanceof DeletionError && cause.code === 'passkey_step_up_unavailable' && account) {
+      // The blocked passkey section already says so.
       account = { ...account, passkeyStepUpAvailable: false };
+      return;
     }
+    error = cause instanceof Error ? cause.message : 'Something went wrong. Try again.';
   }
 
+  function startResendCountdown() {
+    clearInterval(resendTimer);
+    const deadline = Date.now() + CODE_LIFETIME_SECONDS * 1000;
+    resendIn = CODE_LIFETIME_SECONDS;
+    resendTimer = setInterval(() => {
+      resendIn = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      if (resendIn === 0) clearInterval(resendTimer);
+    }, 250);
+  }
+  onDestroy(() => clearInterval(resendTimer));
+
+  const countdown = $derived(`${Math.floor(resendIn / 60)}:${String(resendIn % 60).padStart(2, '0')}`);
+
   async function finish() {
-    const result = await deleteAccount(API_BASE);
-    keysDeleted = result.keysDeleted;
+    await deleteAccount(API_BASE);
+    clearInterval(resendTimer);
     await go('done');
     // The server already removed every session; this clears the local copy.
     await authClient.signOut().catch(() => {});
@@ -107,9 +125,10 @@
       await sendDeletionCode(API_BASE);
       codeSent = true;
       code = '';
+      startResendCountdown();
       notice = relay
-        ? `We sent a code to your Apple relay address, ${account!.email}.`
-        : `We sent a code to ${account!.email}.`;
+        ? `We sent a code to your Apple relay address, ${account!.email}. It lasts 5 minutes.`
+        : `We sent a code to ${account!.email}. It lasts 5 minutes.`;
     } catch (cause) {
       handle(cause);
     } finally {
@@ -176,11 +195,12 @@
       </p>
       <ul class="mt-4 flex list-disc flex-col gap-2 pl-5 text-sm leading-6 text-surface-700">
         <li>
-          Your {account.keys === 1 ? 'key is' : `${account.keys} keys are`} destroyed. Nobody, including OpenKey, can recover
-          {account.keys === 1 ? 'it' : 'them'}, so anything that only {account.keys === 1 ? 'this key' : 'these keys'} can sign for or decrypt is lost.
+          Every key on this account is destroyed, including archived keys and any Nostr identity. Nobody, including OpenKey,
+          can recover them, so anything that only these keys can sign for or decrypt is lost.
         </li>
         <li>Your passkeys, sessions and linked sign-in methods are removed. If you used Sign in with Apple, OpenKey revokes its Apple tokens.</li>
         <li>Apps you connected with OpenKey lose access. Signatures and delegations already issued stay valid until they expire.</li>
+        <li>OpenKey doesn't delete data that apps keep with other services, such as files in your TinyCloud spaces. To remove that data, delete it in those apps first.</li>
       </ul>
       <p class="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">This can't be undone.</p>
       <div class="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
@@ -252,8 +272,12 @@
               class="mt-2 flex h-11 w-full rounded-xl border border-surface-200 bg-white px-3 py-2 font-mono text-lg tracking-widest text-surface-900 focus-visible:border-primary-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-200"
             />
             <p class="mt-2 text-xs text-surface-500">
-              No email? Check spam{relay ? ' and that Apple is forwarding to you' : ''}, or
-              <button type="button" class="underline" onclick={sendCode} disabled={busy}>send a new code</button>.
+              No email? Check spam{relay ? ' and that Apple is forwarding to you' : ''}.
+              {#if resendIn > 0}
+                You can ask for another code in {countdown}.
+              {:else}
+                <button type="button" class="underline" onclick={sendCode} disabled={busy}>Send a new code</button>.
+              {/if}
             </p>
             <div class="mt-6 flex justify-end">
               <Button type="submit" class="w-full border-red-700 bg-red-700 hover:border-red-800 hover:bg-red-800 sm:w-auto" disabled={busy || code.length !== 6}>
@@ -269,7 +293,7 @@
     {:else if step === 'done'}
       <h1 bind:this={heading} tabindex="-1" class="text-2xl font-bold text-surface-900 outline-none">Your account was deleted</h1>
       <p class="mt-3 text-sm leading-6 text-surface-600" role="status">
-        Your OpenKey account is gone and {keysDeleted === 1 ? 'its key was' : `its ${keysDeleted} keys were`} destroyed. You've been signed out everywhere.
+        Your OpenKey account is gone and its keys were destroyed. You've been signed out of OpenKey everywhere.
       </p>
       <p class="mt-3 text-sm leading-6 text-surface-600">You can close this page.</p>
       <div class="mt-6">

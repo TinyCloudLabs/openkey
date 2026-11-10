@@ -49,7 +49,7 @@ describe('parseDeletionSupport', () => {
   test('a passkey-less account deletes with an email code', () => {
     expect(parseDeletionSupport(user())).toEqual({
       supported: true,
-      account: { email: 'a@example.test', keys: 2, method: 'email', emailUndeliverable: false, passkeyStepUpAvailable: false },
+      account: { email: 'a@example.test', method: 'email', emailUndeliverable: false, passkeyStepUpAvailable: false },
     });
   });
 
@@ -100,6 +100,7 @@ describe('email code step-up', () => {
     const error = await verifyDeletionCode(API, '000000', impl).catch((cause) => cause);
     expect(error).toBeInstanceOf(DeletionError);
     expect(error.message).toContain('wrong or expired');
+    expect(error.message).toContain('when the timer ends');
   });
 
   test('email delivery down says so', async () => {
@@ -143,7 +144,7 @@ describe('passkey step-up', () => {
 describe('deleteAccount', () => {
   test('sends the exact typed confirmation with the cookie', async () => {
     const { impl, calls } = fetchSequence([200, { success: true, keysDeleted: 3 }]);
-    expect(await deleteAccount(API, impl)).toEqual({ keysDeleted: 3 });
+    await deleteAccount(API, impl);
     expect(calls[0]!.url).toBe(`${API}/api/account/delete`);
     expect(calls[0]!.init!.method).toBe('POST');
     expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({ confirmation: DELETE_CONFIRMATION });

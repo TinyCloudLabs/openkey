@@ -12,12 +12,13 @@ import {
 
 export const DELETE_CONFIRMATION = 'DELETE MY ACCOUNT';
 export const DELETE_ACCOUNT_PATH = '/dashboard/settings/delete-account';
+/** A deletion code lasts five minutes; until it expires the API sends no other (email-otp-step-up.ts). */
+export const CODE_LIFETIME_SECONDS = 5 * 60;
 
 export type DeletionMethod = 'passkey' | 'email';
 
 export interface DeletionAccount {
   email: string;
-  keys: number;
   method: DeletionMethod;
   /** Apple reported that it stopped forwarding mail to this relay address. */
   emailUndeliverable: boolean;
@@ -47,13 +48,11 @@ export function parseDeletionSupport(body: unknown): DeletionSupport {
   }
   const counts = record(user._count);
   const passkeys = typeof counts?.passkeys === 'number' ? counts.passkeys : 0;
-  const keys = typeof counts?.ethereumKeys === 'number' ? counts.ethereumKeys : 0;
   const stepUpPasskeys = typeof user.stepUpPasskeys === 'number' ? user.stepUpPasskeys : null;
   return {
     supported: true,
     account: {
       email: user.email,
-      keys,
       method: (stepUpPasskeys ?? passkeys) > 0 ? 'passkey' : 'email',
       emailUndeliverable: user.emailUndeliverable,
       passkeyStepUpAvailable: stepUpPasskeys !== null,
@@ -90,10 +89,10 @@ async function post(apiBase: string, path: string, body: unknown, fetchImpl: Fet
 }
 
 async function failure(response: Response, fallback: string): Promise<DeletionError> {
-  const body = await response.json().catch(() => null) as { error?: unknown; code?: unknown } | null;
+  const body = record(await response.json().catch(() => null));
   const code = typeof body?.code === 'string' ? body.code : null;
   if (code === PASSKEY_REQUIRED) return new DeletionError('Verify with your passkey to continue.', code, response.status);
-  if (code === EMAIL_REQUIRED) return new DeletionError('Your email code expired. Send a new code to continue.', code, response.status);
+  if (code === EMAIL_REQUIRED) return new DeletionError('Verify with a new email code to continue.', code, response.status);
   if (response.status === 503) return new DeletionError('OpenKey is busy right now. Try again in a moment.', null, 503);
   if (response.status === 401) return new DeletionError('Your session ended. Sign in again to delete your account.', null, 401);
   return new DeletionError(fallback, null, response.status);
@@ -108,16 +107,17 @@ export async function loadDeletionSupport(apiBase: string, fetchImpl: Fetch = fe
 export async function sendDeletionCode(apiBase: string, fetchImpl: Fetch = fetch): Promise<void> {
   const response = await post(apiBase, '/api/account/step-up/email-otp/send', { purpose: 'delete_account' }, fetchImpl);
   if (response.ok) return;
-  if (response.status === 503 && !(await response.clone().json().catch(() => null))?.code) {
-    throw new DeletionError('OpenKey could not send email right now. Try again later.', null, 503);
-  }
+  // The send route's only 503 is "Email delivery unavailable".
+  if (response.status === 503) throw new DeletionError('OpenKey could not send email right now. Try again later.', null, 503);
   throw await failure(response, 'Could not send a verification code. Try again.');
 }
 
 export async function verifyDeletionCode(apiBase: string, code: string, fetchImpl: Fetch = fetch): Promise<void> {
   const response = await post(apiBase, '/api/account/step-up/email-otp/verify', { purpose: 'delete_account', code }, fetchImpl);
   if (response.ok) return;
-  if (response.status === 400) throw new DeletionError('That code is wrong or expired. Check the email and try again.', 'invalid_code', 400);
+  if (response.status === 400) {
+    throw new DeletionError('That code is wrong or expired. After three wrong tries a code stops working, so ask for another when the timer ends.', 'invalid_code', 400);
+  }
   throw await failure(response, 'Could not verify the code. Try again.');
 }
 
@@ -146,15 +146,14 @@ export async function verifyDeletionPasskey(
 export const PASSKEY_UNAVAILABLE =
   "Confirming with a passkey isn't available here yet, so this account can't be deleted from the web right now. Try again later.";
 
-export async function deleteAccount(apiBase: string, fetchImpl: Fetch = fetch): Promise<{ keysDeleted: number }> {
+export async function deleteAccount(apiBase: string, fetchImpl: Fetch = fetch): Promise<void> {
   const response = await post(apiBase, '/api/account/delete', { confirmation: DELETE_CONFIRMATION }, fetchImpl);
   if (!response.ok) throw await failure(response, 'Could not delete your account. Nothing was deleted. Try again.');
-  const body = await response.json().catch(() => null) as { success?: unknown; keysDeleted?: unknown } | null;
+  const body = record(await response.json().catch(() => null));
   if (body?.success !== true) throw new DeletionError('Could not confirm the deletion. Reload to check your account.');
-  return { keysDeleted: typeof body.keysDeleted === 'number' ? body.keysDeleted : 0 };
 }
 
 /** Plan §6: a relay address Apple no longer forwards to can't receive the code. */
 export function relayForwardingMessage(email: string): string {
-  return `Apple has stopped forwarding email to ${email}, so your code can't reach you. In your Apple Account settings, open Sign in with Apple, choose OpenKey and turn email forwarding back on, then send a new code.`;
+  return `Apple has stopped forwarding email to ${email}, so your code can't reach you. In your Apple Account settings, open Sign in with Apple, choose OpenKey and turn email forwarding back on, then ask for a code.`;
 }
