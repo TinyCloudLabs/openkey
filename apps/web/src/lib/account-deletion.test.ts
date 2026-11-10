@@ -133,6 +133,16 @@ describe('passkey step-up', () => {
     expect(error.code).toBe('passkey_step_up_unavailable');
   });
 
+  test('a passkey that cannot step up says so instead of inviting a retry', async () => {
+    const { impl } = fetchSequence(
+      [200, { challengeToken: 'ct', options: {} }],
+      [403, { error: 'x', code: 'passkey_not_step_up_capable' }],
+    );
+    const error = await verifyDeletionPasskey(API, impl, (async () => ({ id: 'cred' })) as never).catch((cause) => cause);
+    expect(error.code).toBe('passkey_not_step_up_capable');
+    expect(error.message).toContain("can't confirm account deletion");
+  });
+
   test('a cancelled prompt sends nothing to verify', async () => {
     const { impl, calls } = fetchSequence([200, { challengeToken: 'ct', options: {} }]);
     const error = await verifyDeletionPasskey(API, impl, (async () => { throw new Error('NotAllowedError'); }) as never).catch((cause) => cause);
