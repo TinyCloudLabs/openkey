@@ -261,7 +261,21 @@ describe('account origin policy', () => {
     }
   });
 
-  test('origin decisions cover route auth, origin categories, and deployment shapes', () => {
+  test('origin decisions cover route groups, auth modes, origin categories, and deployment shapes', () => {
+    const routeGroups = [
+      ['account', 'account'],
+      ['keys', 'account'],
+      ['approval-request deny', 'account'],
+      ['device authorization', 'account'],
+      ['delegate session routes', 'account'],
+      ['owner revocation', 'account'],
+      ['prepared handoffs', 'account'],
+      ['secrets', 'account'],
+      ['variables', 'account'],
+      ['Nostr keys', 'account'],
+      ['organizations', 'full'],
+      ['tenant console', 'full'],
+    ] as const;
     const configs = [
       {
         label: 'production',
@@ -272,12 +286,12 @@ describe('account origin policy', () => {
           TEE_MODE: 'production',
         },
         origins: [
-          ['account', 'https://openkey.so', true],
-          ['console', 'https://console.openkey.so', false],
-          ['staging-in-CORS', 'https://staging.openkey.so', false],
-          ['null', 'null', false],
-          ['none', undefined, false],
-          ['malformed', 'not an origin', false],
+          ['account', 'https://openkey.so', true, true],
+          ['console', 'https://console.openkey.so', false, true],
+          ['staging-in-CORS', 'https://staging.openkey.so', false, true],
+          ['null', 'null', false, false],
+          ['none', undefined, false, false],
+          ['malformed', 'not an origin', false, false],
         ] as const,
       },
       {
@@ -289,12 +303,12 @@ describe('account origin policy', () => {
           CORS_ORIGIN: 'http://localhost:5173,http://127.0.0.1:8080',
         },
         origins: [
-          ['account', 'http://localhost:5173', true],
-          ['console', 'http://localhost:5173', true],
-          ['staging-in-CORS', 'http://127.0.0.1:8080', false],
-          ['null', 'null', false],
-          ['none', undefined, false],
-          ['malformed', 'not an origin', false],
+          ['account', 'http://localhost:5173', true, true],
+          ['console', 'http://localhost:5173', true, true],
+          ['staging-in-CORS', 'http://127.0.0.1:8080', false, true],
+          ['null', 'null', false, false],
+          ['none', undefined, false, false],
+          ['malformed', 'not an origin', false, false],
         ] as const,
       },
       {
@@ -306,22 +320,33 @@ describe('account origin policy', () => {
           TEE_MODE: 'production',
         },
         origins: [
-          ['account', 'https://openkey.so', false],
-          ['console', 'https://console.openkey.so', false],
-          ['staging-in-CORS', 'https://staging.openkey.so', false],
-          ['null', 'null', false],
-          ['none', undefined, false],
-          ['malformed', 'not an origin', false],
+          ['account', 'https://openkey.so', false, false],
+          ['console', 'https://console.openkey.so', false, true],
+          ['staging-in-CORS', 'https://staging.openkey.so', false, false],
+          ['null', 'null', false, false],
+          ['none', undefined, false, false],
+          ['malformed', 'not an origin', false, false],
         ] as const,
       },
     ] as const;
     for (const config of configs) {
-      for (const [category, origin, expected] of config.origins) {
-        for (const auth of ['cookie', 'session bearer']) {
-          expect(
-            isAccountOriginAllowed(origin, 'http://localhost:5173', config.env),
-            `${config.label} ${category} ${auth}`,
-          ).toBe(expected);
+      for (const [routeGroup, policy] of routeGroups) {
+        for (const [category, origin, accountExpected, fullExpected] of config.origins) {
+          for (const auth of ['cookie', 'session bearer']) {
+            let fullAllowed = false;
+            try {
+              const canonical = origin === undefined ? 'null' : new URL(origin).origin;
+              fullAllowed = canonical !== 'null'
+                && resolveOriginPolicy('http://localhost:5173', config.env).includes(canonical);
+            } catch {
+              // Malformed Origins are refused by both policies.
+            }
+            const accepted = policy === 'account'
+              ? isAccountOriginAllowed(origin, 'http://localhost:5173', config.env)
+              : fullAllowed;
+            expect(accepted, `${routeGroup} ${category} ${auth} ${config.label}`)
+              .toBe(policy === 'account' ? accountExpected : fullExpected);
+          }
         }
       }
     }
