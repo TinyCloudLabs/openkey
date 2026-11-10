@@ -16,6 +16,7 @@ import {
   sessionKeypairFromJwk,
   type NativeDelegationPermission,
   type NativeFetch,
+  type NativeLoginMethod,
   type NativeSessionJwk,
   type NativeSessionKeypair,
   type NativeTokenResult,
@@ -522,7 +523,7 @@ export class OpenKeyNative {
     return { tokens: record.tokens, delegation: record.delegation, sessionKey };
   }
 
-  signIn(options: { capabilities: NativeDelegationPermission[]; ttlSeconds?: number; siweNonce?: string; loginHint?: string; loginMethod?: 'email' | 'passkey' | 'google' }): Promise<NativeSession> {
+  signIn(options: { capabilities: NativeDelegationPermission[]; ttlSeconds?: number; siweNonce?: string; loginHint?: string; loginMethod?: NativeLoginMethod }): Promise<NativeSession> {
     if (this.coordinator.signInFlight) return Promise.reject(new OpenKeyNativeError('UNAVAILABLE', 'A sign-in is already in progress'));
     const attempt = ++this.coordinator.signInAttempt;
     const pending = this.signInOnce(options, attempt);
@@ -531,7 +532,7 @@ export class OpenKeyNative {
     return pending;
   }
 
-  private async signInOnce(options: { capabilities: NativeDelegationPermission[]; ttlSeconds?: number; siweNonce?: string; loginHint?: string; loginMethod?: 'email' | 'passkey' | 'google' }, attempt: number): Promise<NativeSession> {
+  private async signInOnce(options: { capabilities: NativeDelegationPermission[]; ttlSeconds?: number; siweNonce?: string; loginHint?: string; loginMethod?: NativeLoginMethod }, attempt: number): Promise<NativeSession> {
     // Keep the existing session active until the replacement is ready to commit.
     await this.coordinator.signOutFlight?.catch(() => {});
     this.assertAttempt(attempt);

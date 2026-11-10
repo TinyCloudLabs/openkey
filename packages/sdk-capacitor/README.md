@@ -88,8 +88,12 @@ async function handoff(next: typeof session) {
 await handoff(session);
 ```
 
-`loginHint` and `loginMethod` are optional presentation hints for OpenKey's
-sign-in page. They never authorize access or replace server-side validation.
+`loginHint` and `loginMethod` (`email`, `passkey`, `google` or `apple`) are
+optional presentation hints for OpenKey's sign-in page. They never authorize
+access or replace server-side validation. Only `email` (or no method) may carry
+a `loginHint`. Offer `google` or `apple` only when OpenKey's
+`GET /api/auth/providers` lists that provider; `apple` opens Sign in with Apple
+inside the same sign-in sheet and needs no app entitlement.
 `browserTheme` styles Android Custom Tabs; iOS `ASWebAuthenticationSession`
 does not expose browser chrome styling, so the option is ignored there.
 

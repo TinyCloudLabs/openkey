@@ -138,12 +138,12 @@ export async function handlePar(request: Request, db: PrismaClient): Promise<Res
       [...REQUIRED_FORM_KEYS].some(k => !keySet.has(k))) invalid('invalid_request', 'missing, duplicate, or unexpected field');
     const rawHint = params.get('login_hint');
     const loginMethodValue = params.get('login_method');
-    if (loginMethodValue !== null && !['email', 'passkey', 'google'].includes(loginMethodValue)) invalid('invalid_request', 'invalid login_method');
+    if (loginMethodValue !== null && !['email', 'passkey', 'google', 'apple'].includes(loginMethodValue)) invalid('invalid_request', 'invalid login_method');
     let loginHint: string | null = null;
     if (rawHint !== null) {
       const hint = rawHint.trim();
       if (hint.length > 254 || /[\s\p{C}]/u.test(hint) || (hint.match(/@/g) ?? []).length !== 1 ||
-        hint.startsWith('@') || hint.endsWith('@') || loginMethodValue === 'passkey' || loginMethodValue === 'google') {
+        hint.startsWith('@') || hint.endsWith('@') || (loginMethodValue !== null && loginMethodValue !== 'email')) {
         invalid('invalid_request', 'invalid login_hint');
       }
       loginHint = hint.toLowerCase();

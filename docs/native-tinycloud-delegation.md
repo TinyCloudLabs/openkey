@@ -226,7 +226,7 @@ No cookies or credentials are sent. Fields:
 | `scope` | yes | Space-separated. Must contain `tinycloud:delegation` and `offline_access`, and may add `openid`, `email` and `keys`. |
 | `authorization_details` | yes | A JSON array holding exactly one `tinycloud_delegation` object (below), encoded as the field's string value. |
 | `login_hint` | no | Optional email UX hint. Trimmed, at most 254 characters, no whitespace, exactly one `@` with non-empty sides; OpenKey lowercases it. May be used only with `login_method=email` or without a method. |
-| `login_method` | no | `email`, `passkey` or `google`; selects the initial sign-in UX only. |
+| `login_method` | no | `email`, `passkey`, `google` or `apple`; selects the initial sign-in UX only. `google` and `apple` take effect only when that provider is listed by `GET /api/auth/providers`. |
 
 Every form key may appear at most once; a duplicated key fails the whole
 request. Any other field, including any host field, is refused. Hints never
@@ -1214,7 +1214,13 @@ before the global CORS middleware, and the global middleware skips them:
 /api/auth/oauth2/par
 /api/auth/oauth2/token
 /api/auth/oauth2/tinycloud/*
+/api/auth/providers
 ```
+
+`GET /api/auth/providers` lists the configured social providers (for example
+`{"providers":["google","apple"]}`), so a native app offers a Google or Apple
+button only when OpenKey can complete that sign-in. OpenKey's own web app reads
+it without credentials too.
 
 Policy: `cors({ origin: '*', credentials: false, allowMethods: ['GET', 'POST',
 'OPTIONS'], allowHeaders: ['Content-Type', 'OpenKey-Session-Proof'],

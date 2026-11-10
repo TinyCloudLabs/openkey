@@ -155,9 +155,10 @@ export async function signInWithSocialRedirect(
 export async function loadConfiguredSocialProviders(
   fetchImpl: typeof fetch = fetch,
 ): Promise<SocialProviderId[]> {
+  // Public and cookie-free; the API answers it with `*` CORS so native apps can read it too.
   const response = await fetchImpl(`${API_BASE}/api/auth/providers`, {
     headers: { Accept: 'application/json' },
-    credentials: 'include',
+    credentials: 'omit',
   });
   if (!response.ok) return [];
   const body = await response.json().catch(() => null);

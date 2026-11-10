@@ -123,6 +123,14 @@ describe('OpenKeyNative', () => {
     expect(f.parForm?.get('login_method')).toBe('email');
     expect(f.plugin.openOptions?.browserTheme).toEqual(theme);
   });
+  test('passes login_method=apple to PAR without a hint', async () => {
+    const f = fixture();
+    const client = new OpenKeyNative({ clientId: 'exo', redirectUri, plugin: f.plugin, fetchFn: f.fetchFn,
+      verifyDelegation: async () => {}, sleepFn: async () => {} });
+    await client.signIn({ capabilities, loginMethod: 'apple' });
+    expect(f.parForm?.get('login_method')).toBe('apple');
+    expect(f.parForm?.has('login_hint')).toBe(false);
+  });
   test('validates browser theme at construction', () => {
     const f = fixture();
     expect(() => new OpenKeyNative({ clientId: 'exo', redirectUri, plugin: f.plugin, fetchFn: f.fetchFn,

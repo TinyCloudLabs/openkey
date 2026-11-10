@@ -3,12 +3,35 @@ import { API_BASE } from './auth-client';
 import { safeExternalHttpUrl } from './safe-oauth-url';
 import { parseHexColor } from './native-theme';
 
-export type NativeLoginMethod = 'email' | 'passkey' | 'google';
+export type NativeLoginMethod = 'email' | 'passkey' | 'google' | 'apple';
+export type NativeSocialProvider = Extract<NativeLoginMethod, 'google' | 'apple'>;
 
-const LOGIN_METHODS: readonly NativeLoginMethod[] = ['email', 'passkey', 'google'];
+const LOGIN_METHODS: readonly NativeLoginMethod[] = ['email', 'passkey', 'google', 'apple'];
+const SOCIAL_PROVIDERS: readonly NativeSocialProvider[] = ['google', 'apple'];
 
-/** Marker on the Google error return. */
+/** Marker on a social error return; its value is the provider that failed. */
 export const NATIVE_SOCIAL_ERROR_PARAM = 'native_social_error';
+
+/**
+ * Why a native social sign-in came back to the login page. `new_account` and
+ * `account_exists` carry the API's single-use continuation; everything else
+ * is shown as a message on the email step.
+ */
+export type NativeSocialErrorCode =
+  | 'new_account'
+  | 'account_exists'
+  | 'apple_email_required'
+  | 'account_not_linked'
+  | 'cancelled'
+  | 'failed';
+
+export interface NativeSocialError {
+  /** Null when the return does not name a known provider. */
+  provider: NativeSocialProvider | null;
+  code: NativeSocialErrorCode;
+  /** Non-null only for `new_account` and `account_exists`. */
+  continuation: string | null;
+}
 
 export interface NativeSignIn {
   requestId: string;
@@ -17,7 +40,48 @@ export interface NativeSignIn {
   signedQuery: string;
   method: NativeLoginMethod | null;
   hint: string | null;
-  socialError: boolean;
+  socialError: NativeSocialError | null;
+}
+
+export function socialProviderLabel(provider: NativeSocialProvider): 'Google' | 'Apple' {
+  return provider === 'google' ? 'Google' : 'Apple';
+}
+
+// The API's continuation is 32 random bytes, base64url.
+const CONTINUATION = /^[A-Za-z0-9_-]{43}$/;
+
+/** Null unless the page URL carries the social error marker. */
+export function nativeSocialError(searchParams: URLSearchParams): NativeSocialError | null {
+  const marker = searchParams.get(NATIVE_SOCIAL_ERROR_PARAM);
+  if (marker === null) return null;
+  const provider = SOCIAL_PROVIDERS.find((candidate) => candidate === marker) ?? null;
+  const error = searchParams.get('error');
+  const token = searchParams.get('continuation');
+  if (error === 'new_account' || error === 'account_exists') {
+    return token && CONTINUATION.test(token)
+      ? { provider, code: error, continuation: token }
+      : { provider, code: 'failed', continuation: null };
+  }
+  const code: NativeSocialErrorCode = error === 'access_denied' || error === 'user_cancelled_authorize' ? 'cancelled'
+    : error === 'account_not_linked' ? 'account_not_linked'
+    : error === 'apple_email_required' && provider === 'apple' ? 'apple_email_required'
+    : 'failed';
+  return { provider, code, continuation: null };
+}
+
+/** Copy for a social return that lands on the email step. */
+export function nativeSocialErrorMessage(error: NativeSocialError): string {
+  const name = error.provider ? socialProviderLabel(error.provider) : null;
+  switch (error.code) {
+    case 'apple_email_required':
+      return "Apple didn't share a verified email, so OpenKey can't create an account from it. Sign in with your email or passkey, then add Apple in Settings.";
+    case 'account_not_linked':
+      return `An OpenKey account already uses this email. Sign in to it and add ${name ?? 'this sign-in method'} in Settings.`;
+    case 'cancelled':
+      return name ? `${name} sign-in was cancelled.` : 'Sign-in was cancelled.';
+    default:
+      return name ? `${name} could not complete sign-in. Please try again.` : 'Sign-in could not complete. Please try again.';
+  }
 }
 
 /** Same shape rules the API applies to `login_hint`; anything else is ignored. */
@@ -48,18 +112,23 @@ export function nativeSignIn(searchParams: URLSearchParams): NativeSignIn | null
     signedQuery,
     method: emailHint && !method ? 'email' : method,
     hint: emailHint,
-    socialError: searchParams.has(NATIVE_SOCIAL_ERROR_PARAM),
+    socialError: nativeSocialError(searchParams),
   };
 }
 
 /**
- * Where Better Auth returns after Google. Both land on the login page with the
- * signed authorize query so the page can re-enter /authorize; the native query
- * is never sent in the social sign-in body.
+ * Where Better Auth returns after Google or Apple. Both land on the login page
+ * with the signed authorize query so the page can re-enter /authorize; the
+ * native query is never sent in the social sign-in body. The error return
+ * names the provider so the page can say which one failed.
  */
-export function nativeSocialReturnUrls(origin: string, signedQuery: string): { callbackURL: string; errorCallbackURL: string } {
+export function nativeSocialReturnUrls(
+  origin: string,
+  signedQuery: string,
+  provider: NativeSocialProvider,
+): { callbackURL: string; errorCallbackURL: string } {
   const callbackURL = `${origin}/auth/login?${signedQuery}`;
-  return { callbackURL, errorCallbackURL: `${callbackURL}&${NATIVE_SOCIAL_ERROR_PARAM}=1` };
+  return { callbackURL, errorCallbackURL: `${callbackURL}&${NATIVE_SOCIAL_ERROR_PARAM}=${provider}` };
 }
 
 export function nativeOtpSentKey(requestId: string): string {
