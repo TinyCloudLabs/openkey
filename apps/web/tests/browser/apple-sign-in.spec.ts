@@ -98,7 +98,8 @@ async function stubApi(page: Page, options: {
     if (path.includes('passkey/list-user-passkeys')) return json(route, []);
     if (path === '/api/account/auto-sign') return json(route, { autoSignEnabled: false });
     if (path.includes('tinycloud') && path.endsWith('/branding')) {
-      return json(route, { clientId: 'exo-native', name: 'TinyCloud Home', icon: null, organization: 'TinyCloud Labs', theme: {} });
+      // A light app theme, so the sheet renders light like the rest of these steps.
+      return json(route, { clientId: 'exo-native', name: 'TinyCloud Home', icon: null, organization: 'TinyCloud Labs', theme: { backgroundColor: '#FFFFFF', accentColor: '#09090B' } });
     }
     if (path.includes('tinycloud')) return json(route, { tinyCloudManageKeyEnabled: true, mode: 'APP_MANAGED', policyEpoch: 0, apps: [], activity: [] });
     if (path === '/api/auth/oauth2/authorize') {
