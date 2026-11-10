@@ -289,7 +289,7 @@ test.describe('native login', () => {
   });
 
   test('google redirects the whole window and keeps the native query out of the social request body', async ({ page }) => {
-    const api = await mockApi(page);
+    const api = await mockApi(page, { providers: ['google'] });
     const query = signedQuery({ login_method: 'google' });
     await page.goto(`/auth/login?${query}`);
     await page.waitForURL('https://accounts.google.com/**');
@@ -305,7 +305,7 @@ test.describe('native login', () => {
   });
 
   test('the google redirect frame keeps the header and says Opening Google', async ({ page }) => {
-    await mockApi(page);
+    await mockApi(page, { providers: ['google'] });
     await page.route('**/api/auth/sign-in/social', async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 1000));
       await json(route, { url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x', redirect: false }).catch(() => {});
@@ -438,7 +438,7 @@ test.describe('native login', () => {
     });
 
     test('the apple redirect frame keeps the header and says Opening Apple', async ({ page }) => {
-      await mockApi(page);
+      await mockApi(page, { providers: ['apple'] });
       await page.route('**/api/auth/sign-in/social', async (route) => {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         await json(route, { url: APPLE_AUTHORIZE, redirect: false }).catch(() => {});
@@ -450,12 +450,22 @@ test.describe('native login', () => {
     });
 
     test('an authorization URL that is not Apple\'s is refused with Apple copy', async ({ page }) => {
-      await mockApi(page);
+      await mockApi(page, { providers: ['apple'] });
       await page.route('**/api/auth/sign-in/social', (route) => json(route, { url: 'https://evil.example/auth', redirect: false }));
       await page.goto(`/auth/login?${signedQuery({ login_method: 'apple' })}`);
       await expect(page.locator('#email')).toBeVisible();
       await expect(page.getByRole('alert')).toHaveText('Apple could not complete sign-in. Please try again.');
       expect(page.url()).toContain(ORIGIN);
+    });
+
+    test('login_method=apple while OpenKey has Apple off stays on email and starts nothing', async ({ page }) => {
+      const api = await mockApi(page, { providers: ['google'] });
+      await page.goto(`/auth/login?${signedQuery({ login_method: 'apple' })}`);
+      await expect(page.locator('#email')).toBeVisible();
+      await expect(page.getByRole('alert')).toHaveText("Apple sign-in isn't available right now. Continue with your email instead.");
+      await page.waitForLoadState('networkidle');
+      expect(api.count('/api/auth/sign-in/social')).toBe(0);
+      await expect(page.getByRole('button', { name: 'Continue with Apple' })).toHaveCount(0);
     });
 
     test('the Apple button appears only when the API lists apple, and opens Apple', async ({ page }) => {
@@ -532,7 +542,7 @@ test.describe('native login', () => {
         json(route, { outcome: 'account_exists', providerId: 'apple', email: 'sam@example.test', name: 'Sam', isPrivateEmail: false }));
       await page.goto(appleReturn({ error: 'account_exists', continuation: CONTINUATION }));
       await expect(page.getByText('An OpenKey account already uses sam@example.test.')).toBeVisible();
-      await expect(page.getByText('Sign in to it and verify with an email code to add Apple.')).toBeVisible();
+      await expect(page.getByText('Sign in to it and verify with an email code to add Apple in Settings.')).toBeVisible();
       await page.getByRole('button', { name: 'Sign in to your account' }).click();
       await expect(page.locator('#email')).toHaveValue('sam@example.test');
     });

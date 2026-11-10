@@ -133,7 +133,8 @@
   }
 
   onMount(() => {
-    loadConfiguredSocialProviders().then((loaded) => { providers = loaded; }).catch(() => {});
+    const providersLoaded = loadConfiguredSocialProviders().catch((): SocialProviderId[] => []);
+    providersLoaded.then((loaded) => { providers = loaded; });
     if (native) {
       // Coming back from the provider via the browser's back button restores
       // this page mid-redirect; clear the busy state.
@@ -143,14 +144,14 @@
         loadingProvider = null;
         if (step === 'social') step = 'email';
       });
-      startNative(native);
+      startNative(native, providersLoaded);
     }
   });
 
   // Automatic first action for the requested login method. It runs once per
   // page load, and the code send is also keyed to the request in sessionStorage
   // so a reload never mails a second code.
-  async function startNative(request: NonNullable<typeof native>) {
+  async function startNative(request: NonNullable<typeof native>, providersLoaded: Promise<SocialProviderId[]>) {
     const socialError = request.socialError;
     if (socialError?.continuation) {
       const failed = nativeSocialErrorMessage({ ...socialError, code: 'failed' });
@@ -168,7 +169,8 @@
         socialProvider = result.providerId;
         socialContinuation = socialError.continuation;
         socialEmail = result.email;
-        socialIsPrivateEmail = result.isPrivateEmail === true || result.email.toLowerCase().endsWith('@privaterelay.appleid.com');
+        socialIsPrivateEmail = result.providerId === 'apple'
+          && (result.isPrivateEmail === true || result.email.toLowerCase().endsWith('@privaterelay.appleid.com'));
         step = result.outcome === 'new_account' ? 'socialNewAccount' : 'socialAccountExists';
       } catch (cause) {
         error = cause instanceof Error ? cause.message : failed;
@@ -204,7 +206,13 @@
     }
 
     if (request.method === 'google' || request.method === 'apple') {
-      await signInWithSocialTopLevel(request.method);
+      // Only a provider OpenKey has turned on can finish; otherwise stay on email.
+      if ((await providersLoaded).includes(request.method)) {
+        await signInWithSocialTopLevel(request.method);
+      } else {
+        error = `${socialProviderLabel(request.method)} sign-in isn't available right now. Continue with your email instead.`;
+        step = 'email';
+      }
     } else if (request.method === 'email' && request.hint && step === 'otp') {
       // Claimed before dispatch, and kept on a failed or unanswered send: a
       // reload while the send is in flight must not mail a second code. Resend
@@ -495,7 +503,7 @@
       </div>
     {:else if step === 'socialAccountExists'}
       <p class="nb-lede">An OpenKey account already uses <strong>{socialEmail}</strong>.</p>
-      <p class="nb-lede">Sign in to it and verify with an email code to add {socialName ?? 'this sign-in method'}.</p>
+      <p class="nb-lede">Sign in to it and verify with an email code to add {socialName ?? 'this sign-in method'} in Settings.</p>
       <div class="nb-stack">
         <button type="button" class="nb-button nb-primary" onclick={() => { email = socialEmail; step = 'email'; }}>
           Sign in to your account

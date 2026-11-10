@@ -71,16 +71,16 @@ export function nativeSocialError(searchParams: URLSearchParams): NativeSocialEr
 
 /** Copy for a social return that lands on the email step. */
 export function nativeSocialErrorMessage(error: NativeSocialError): string {
-  const name = error.provider ? socialProviderLabel(error.provider) : 'That provider';
+  const name = error.provider ? socialProviderLabel(error.provider) : null;
   switch (error.code) {
     case 'apple_email_required':
       return "Apple didn't share a verified email, so OpenKey can't create an account from it. Sign in with your email or passkey, then add Apple in Settings.";
     case 'account_not_linked':
-      return `An OpenKey account already uses this email. Sign in to it and add ${error.provider ? socialProviderLabel(error.provider) : 'this provider'} in Settings.`;
+      return `An OpenKey account already uses this email. Sign in to it and add ${name ?? 'this sign-in method'} in Settings.`;
     case 'cancelled':
-      return `${name} sign-in was cancelled.`;
+      return name ? `${name} sign-in was cancelled.` : 'Sign-in was cancelled.';
     default:
-      return `${name} could not complete sign-in. Please try again.`;
+      return name ? `${name} could not complete sign-in. Please try again.` : 'Sign-in could not complete. Please try again.';
   }
 }
 

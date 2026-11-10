@@ -95,6 +95,11 @@ describe('nativeSocialError', () => {
     expect(nativeSocialErrorMessage({ provider: 'apple', code: 'apple_email_required', continuation: null }))
       .toBe("Apple didn't share a verified email, so OpenKey can't create an account from it. Sign in with your email or passkey, then add Apple in Settings.");
   });
+
+  test('copy without a provider never names one', () => {
+    expect(nativeSocialErrorMessage({ provider: null, code: 'cancelled', continuation: null })).toBe('Sign-in was cancelled.');
+    expect(nativeSocialErrorMessage({ provider: null, code: 'failed', continuation: null })).toBe('Sign-in could not complete. Please try again.');
+  });
 });
 
 describe('nativeLoginHint', () => {
