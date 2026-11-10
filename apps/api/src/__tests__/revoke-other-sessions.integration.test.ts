@@ -259,6 +259,19 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
       scopes: ['openid'], contacts: [], organizationId: 'org-app-authz', userId: removedUserId,
       tokenEndpointAuthMethod: 'client_secret_basic', public: false,
     } });
+    const beforeRemoval = await prisma.oauthClient.findUnique({ where: { id: client.id } });
+    for (const [path, body] of [
+      ['/oauth2/update-client', { client_id: client.clientId, update: { client_name: 'Changed' } }],
+      ['/oauth2/delete-client', { client_id: client.clientId }],
+      ['/oauth2/client/rotate-secret', { client_id: client.clientId }],
+    ] as const) {
+      const refused = await app.fetch(new Request(`https://api.openkey.test/api/auth${path}`, {
+        method: 'POST', headers: { cookie: creatorCookie, origin: 'https://openkey.test', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }));
+      expect(refused.status, `${path} for creator admin`).toBe(401);
+      expect(await prisma.oauthClient.findUnique({ where: { id: client.id } })).toEqual(beforeRemoval);
+    }
     await prisma.organizationMembership.update({ where: { id: removedMembership.id }, data: { status: 'REVOKED', revokedAt: new Date(), validUntil: new Date() } });
 
     const call = (path: string, method: string, token: string, body?: unknown) => app.fetch(new Request(`https://api.openkey.test/api/auth${path}`, {
