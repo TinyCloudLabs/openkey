@@ -1307,6 +1307,15 @@ function decodeCacao(authorization: string) {
     conflictingHint.set('login_method', 'passkey');
     await check(conflictingHint, 'invalid_request');
     await check(changed('login_method', 'password'), 'invalid_request');
+    const appleHint = changed('login_hint', 'person@example.com');
+    appleHint.set('login_method', 'apple');
+    await check(appleHint, 'invalid_request');
+    const applePar = await form('/api/auth/oauth2/par', changed('login_method', 'apple').toString());
+    expect(applePar.status, await applePar.clone().text()).toBe(201);
+    const { request_uri: appleRequestUri } = await applePar.json() as { request_uri: string };
+    const appleAuthorize = await call(`/api/auth/oauth2/authorize?${new URLSearchParams({ client_id: nativeClient, request_uri: appleRequestUri })}`);
+    expect(appleAuthorize.status, await appleAuthorize.clone().text()).toBe(302);
+    expect(new URL(appleAuthorize.headers.get('location')!).searchParams.get('login_method')).toBe('apple');
     const sqlCeiling = { ...(await prisma.oauthClient.findUniqueOrThrow({ where: { clientId: nativeClient } })).tinycloudNativeDelegation as Record<string, unknown>,
       sql: { databases: ['xyz.tinycloud.tinychat/threads'], actions: ['read'] } };
     const sqlRegistration = await adminRequest('POST', '/clients', { name: 'SQL native', type: 'native', redirectUris: [NATIVE_REDIRECT], tinycloudNativeDelegation: sqlCeiling });

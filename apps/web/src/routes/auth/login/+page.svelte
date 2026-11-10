@@ -15,7 +15,10 @@
     nativeOtpSentKey,
     nativeReentryKey,
     nativeSignIn,
+    nativeSocialErrorMessage,
     nativeSocialReturnUrls,
+    socialProviderLabel,
+    type NativeSocialProvider,
   } from '$lib/native-mode';
   import NativeShell from '$lib/components/auth/native-shell.svelte';
   import { api } from '$lib/api';
@@ -27,9 +30,10 @@
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
 
-  // 'passkey' is the enrolment offer; 'passkeySignIn' and 'google' are native-mode landing steps.
+  // 'passkey' is the enrolment offer; 'passkeySignIn' and 'social' are native-mode landing steps.
+  // 'social' is the frame shown while opening a provider or checking its return.
   // 'newAccount' follows a verified code for an email with no account (TC-1114).
-  type Step = 'email' | 'otp' | 'newAccount' | 'socialNewAccount' | 'socialAccountExists' | 'passkey' | 'passkeySignIn' | 'google';
+  type Step = 'email' | 'otp' | 'newAccount' | 'socialNewAccount' | 'socialAccountExists' | 'passkey' | 'passkeySignIn' | 'social';
 
   // Native mode: the signed authorize query carries `tinycloud_request`, so the
   // sign-in is running in a system sheet opened by a native app.
@@ -39,12 +43,19 @@
 
   function initialStep(): Step {
     if (!native) return 'email';
-    if (native.socialError) return $page.url.searchParams.has('continuation') ? 'google' : 'email';
+    if (native.socialError) return native.socialError.continuation ? 'social' : 'email';
     if (native.method === 'email' && native.hint) return 'otp';
     if (native.method === 'passkey' && passkeysSupported) return 'passkeySignIn';
-    if (native.method === 'google') return 'google';
+    if (native.method === 'google' || native.method === 'apple') return 'social';
     return 'email';
   }
+
+  // The provider the 'social' step and the confirmation steps are about.
+  let socialProvider = $state<NativeSocialProvider | null>(
+    native?.socialError ? native.socialError.provider
+      : native?.method === 'google' || native?.method === 'apple' ? native.method : null,
+  );
+  let socialChecking = $state(Boolean(native?.socialError?.continuation));
 
   let email = $state(native?.hint ?? '');
   let otp = $state('');
@@ -75,6 +86,8 @@
   let creating = $state(false);
   let socialContinuation = $state<string | null>(null);
   let socialEmail = $state('');
+  let socialIsPrivateEmail = $state(false);
+  const socialName = $derived(socialProvider ? socialProviderLabel(socialProvider) : null);
 
   function getOAuthQuery(): string | undefined {
     return safeOAuthAuthorizeQuery($page.url.searchParams);
@@ -128,7 +141,7 @@
         if (!event.persisted) return;
         loading = false;
         loadingProvider = null;
-        if (step === 'google') step = 'email';
+        if (step === 'social') step = 'email';
       });
       startNative(native);
     }
@@ -138,30 +151,35 @@
   // page load, and the code send is also keyed to the request in sessionStorage
   // so a reload never mails a second code.
   async function startNative(request: NonNullable<typeof native>) {
-    const token = $page.url.searchParams.get('continuation');
-    if (request.socialError && token) {
+    const socialError = request.socialError;
+    if (socialError?.continuation) {
+      const failed = nativeSocialErrorMessage({ ...socialError, code: 'failed' });
       try {
-        const params = new URLSearchParams({ continuation: token, oauthQuery: request.signedQuery });
+        const params = new URLSearchParams({ continuation: socialError.continuation, oauthQuery: request.signedQuery });
         const response = await fetch(`${API_BASE}/api/auth/social/continuation?${params}`, {
           credentials: 'include', headers: { Accept: 'application/json' },
         });
-        if (!response.ok) throw new Error('This Google confirmation expired. Start sign-in again.');
+        if (!response.ok) throw new Error(`This ${socialName ?? 'sign-in'} confirmation expired. Start sign-in again.`);
         const result = await response.json();
-        if (typeof result.email !== 'string'
-          || (result.outcome !== 'new_account' && result.outcome !== 'account_exists')) {
-          throw new Error('Invalid Google confirmation. Start sign-in again.');
+        if (typeof result.email !== 'string' || result.outcome !== socialError.code
+          || (result.providerId !== 'google' && result.providerId !== 'apple')) {
+          throw new Error(failed);
         }
-        socialContinuation = token;
+        socialProvider = result.providerId;
+        socialContinuation = socialError.continuation;
         socialEmail = result.email;
+        socialIsPrivateEmail = result.isPrivateEmail === true || result.email.toLowerCase().endsWith('@privaterelay.appleid.com');
         step = result.outcome === 'new_account' ? 'socialNewAccount' : 'socialAccountExists';
       } catch (cause) {
-        error = cause instanceof Error ? cause.message : 'Google sign-in did not finish.';
+        error = cause instanceof Error ? cause.message : failed;
         step = 'email';
+      } finally {
+        socialChecking = false;
       }
       return;
     }
-    if (request.socialError) {
-      error = 'Google sign-in did not finish. Continue with your email instead.';
+    if (socialError) {
+      error = nativeSocialErrorMessage(socialError);
       return;
     }
 
@@ -172,7 +190,7 @@
       return;
     }
     if (existing.data) {
-      // Already signed in (for example straight back from Google): continue the
+      // Already signed in (for example straight back from Google or Apple): continue the
       // authorize request instead of signing in again. Once per request, so an
       // authorize that sends us back here cannot loop.
       const key = nativeReentryKey(request.requestId);
@@ -185,8 +203,8 @@
       return;
     }
 
-    if (request.method === 'google') {
-      await signInWithSocialTopLevel('google');
+    if (request.method === 'google' || request.method === 'apple') {
+      await signInWithSocialTopLevel(request.method);
     } else if (request.method === 'email' && request.hint && step === 'otp') {
       // Claimed before dispatch, and kept on a failed or unanswered send: a
       // reload while the send is in flight must not mail a second code. Resend
@@ -399,16 +417,17 @@
     }
   }
 
-  async function signInWithSocialTopLevel(provider: SocialProviderId) {
+  async function signInWithSocialTopLevel(provider: NativeSocialProvider) {
     if (!native) return;
-    step = 'google';
+    socialProvider = provider;
+    step = 'social';
     loading = true;
     loadingProvider = provider;
     error = '';
     try {
-      await signInWithSocialRedirect(provider, nativeSocialReturnUrls(window.location.origin, native.signedQuery));
-    } catch (e: any) {
-      error = e.message || `${provider === 'google' ? 'Google' : 'Apple'} sign-in failed`;
+      await signInWithSocialRedirect(provider, nativeSocialReturnUrls(window.location.origin, native.signedQuery, provider));
+    } catch {
+      error = nativeSocialErrorMessage({ provider, code: 'failed', continuation: null });
       step = 'email';
       loading = false;
       loadingProvider = null;
@@ -458,8 +477,12 @@
     {/if}
 
     {#if step === 'socialNewAccount'}
-      <p class="nb-lede">No OpenKey account for <strong>{socialEmail}</strong>.</p>
-      <p class="nb-lede">Create a new account, or use your existing sign-in method?</p>
+      {#if socialIsPrivateEmail}
+        <p class="nb-lede">Apple is hiding your email, so this creates a new OpenKey account. Already have one? Sign in to it and add Apple in Settings.</p>
+      {:else}
+        <p class="nb-lede">No OpenKey account for <strong>{socialEmail}</strong>.</p>
+        <p class="nb-lede">Create a new account, or use your existing sign-in method?</p>
+      {/if}
       <div class="nb-stack">
         <button type="button" class="nb-button nb-primary" onclick={createSocialAccount} disabled={loading}>
           {creating ? 'Creating account…' : 'Create a new account'}
@@ -472,7 +495,7 @@
       </div>
     {:else if step === 'socialAccountExists'}
       <p class="nb-lede">An OpenKey account already uses <strong>{socialEmail}</strong>.</p>
-      <p class="nb-lede">Sign in to it and verify with an email code to add Google in Settings.</p>
+      <p class="nb-lede">Sign in to it and verify with an email code to add {socialName ?? 'this sign-in method'}.</p>
       <div class="nb-stack">
         <button type="button" class="nb-button nb-primary" onclick={() => { email = socialEmail; step = 'email'; }}>
           Sign in to your account
@@ -561,8 +584,14 @@
       <div class="nb-center">
         <button type="button" class="nb-link" onclick={() => { step = 'email'; error = ''; }} disabled={loading}>Use email instead</button>
       </div>
-    {:else if step === 'google'}
-      <p class="nb-lede" role="status">Opening Google…</p>
+    {:else if step === 'social'}
+      <p class="nb-lede" role="status">
+        {#if socialChecking}
+          {socialName ? `Checking your ${socialName} sign-in…` : 'Checking your sign-in…'}
+        {:else}
+          {socialName ? `Opening ${socialName}…` : 'Opening sign-in…'}
+        {/if}
+      </p>
     {:else}
       <p class="nb-lede">Enter your email and we'll send you a sign-in code.</p>
       <form onsubmit={(event) => { event.preventDefault(); sendOTP(); }} class="nb-stack">
@@ -593,7 +622,7 @@
               class="nb-button"
               onclick={() => signInWithSocialTopLevel(provider)}
               disabled={loading}
-              aria-label={`Continue with ${provider === 'google' ? 'Google' : 'Apple'}`}
+              aria-label={`Continue with ${socialProviderLabel(provider)}`}
             >
               {#if provider === 'google'}
               <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
@@ -602,8 +631,12 @@
                 <path fill="#FBBC05" d="M3.963 10.707A5.41 5.41 0 0 1 3.682 9c0-.592.102-1.167.281-1.707V4.96H.956A9 9 0 0 0 0 9c0 1.452.347 2.827.956 4.04l3.007-2.333Z"/>
                 <path fill="#EA4335" d="M9 3.579c1.321 0 2.507.454 3.441 1.346l2.581-2.581C13.464.892 11.426 0 9 0A9 9 0 0 0 .956 4.96l3.007 2.333C4.672 5.164 6.656 3.579 9 3.579Z"/>
               </svg>
+              {:else}
+              <svg width="15" height="18" viewBox="0 0 15 18" fill="currentColor" aria-hidden="true">
+                <path d="M12.55 9.55c.02-2.02 1.65-2.99 1.73-3.04a3.7 3.7 0 0 0-2.91-1.57c-1.23-.13-2.43.74-3.05.74-.64 0-1.6-.73-2.64-.71a3.86 3.86 0 0 0-3.25 1.98c-1.42 2.46-.36 6.07 1 8.06.68.97 1.47 2.06 2.51 2.02 1.02-.04 1.4-.65 2.63-.65 1.22 0 1.58.65 2.64.63 1.09-.02 1.78-.98 2.43-1.96a8.05 8.05 0 0 0 1.11-2.26 3.49 3.49 0 0 1-2.2-3.24ZM10.57 3.63A3.55 3.55 0 0 0 11.38 1a3.63 3.63 0 0 0-2.35 1.25 3.4 3.4 0 0 0-.83 2.53 3 3 0 0 0 2.37-1.15Z"/>
+              </svg>
               {/if}
-              {loadingProvider === provider ? `Connecting to ${provider === 'google' ? 'Google' : 'Apple'}…` : `Continue with ${provider === 'google' ? 'Google' : 'Apple'}`}
+              {loadingProvider === provider ? `Connecting to ${socialProviderLabel(provider)}…` : `Continue with ${socialProviderLabel(provider)}`}
             </button>
           {/each}
           {#if passkeysSupported}

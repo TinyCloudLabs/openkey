@@ -1,7 +1,8 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
 import {
-  loadNativeBranding, nativeLoginHint, nativeOtpSentKey, nativeSignIn, nativeSocialReturnUrls, parseNativeBranding,
+  loadNativeBranding, nativeLoginHint, nativeOtpSentKey, nativeSignIn, nativeSocialError, nativeSocialErrorMessage,
+  nativeSocialReturnUrls, parseNativeBranding,
 } from './native-mode';
 
 const signed = (extra: Record<string, string> = {}) => new URLSearchParams({
@@ -22,7 +23,7 @@ describe('nativeSignIn', () => {
 
   test('reads the request, client and the signed query', () => {
     const native = nativeSignIn(signed());
-    expect(native).toMatchObject({ requestId: 'req-1', clientId: 'exo-native', method: null, hint: null, socialError: false });
+    expect(native).toMatchObject({ requestId: 'req-1', clientId: 'exo-native', method: null, hint: null, socialError: null });
     expect(new URLSearchParams(native!.signedQuery).get('sig')).toBe('signed');
   });
 
@@ -30,9 +31,10 @@ describe('nativeSignIn', () => {
     expect(nativeSignIn(signed({ login_hint: 'Sam@Example.test' }))).toMatchObject({ method: 'email', hint: 'sam@example.test' });
   });
 
-  test('passkey and google ignore the hint', () => {
+  test('passkey, google and apple ignore the hint', () => {
     expect(nativeSignIn(signed({ login_method: 'passkey', login_hint: 'sam@example.test' }))).toMatchObject({ method: 'passkey', hint: null });
     expect(nativeSignIn(signed({ login_method: 'google', login_hint: 'sam@example.test' }))).toMatchObject({ method: 'google', hint: null });
+    expect(nativeSignIn(signed({ login_method: 'apple', login_hint: 'sam@example.test' }))).toMatchObject({ method: 'apple', hint: null });
   });
 
   test('an unknown method is dropped', () => {
@@ -43,10 +45,55 @@ describe('nativeSignIn', () => {
     expect(nativeSignIn(signed({ login_method: 'email', login_hint: 'not-an-email' }))).toMatchObject({ method: 'email', hint: null });
   });
 
-  test('flags the Google error return', () => {
-    const params = signed({ login_method: 'google' });
-    params.set('native_social_error', '1');
-    expect(nativeSignIn(params)?.socialError).toBe(true);
+  test('reads a typed social error return', () => {
+    const params = signed({ login_method: 'apple' });
+    params.set('native_social_error', 'apple');
+    params.set('error', 'apple_email_required');
+    expect(nativeSignIn(params)?.socialError).toEqual({ provider: 'apple', code: 'apple_email_required', continuation: null });
+  });
+});
+
+describe('nativeSocialError', () => {
+  const TOKEN = 'a'.repeat(43);
+  const ret = (fields: Record<string, string>) => nativeSocialError(new URLSearchParams(fields));
+
+  test('is null without the marker, even with an error', () => {
+    expect(ret({ error: 'access_denied' })).toBeNull();
+  });
+
+  test('carries the continuation only for new_account and account_exists', () => {
+    expect(ret({ native_social_error: 'apple', error: 'new_account', continuation: TOKEN }))
+      .toEqual({ provider: 'apple', code: 'new_account', continuation: TOKEN });
+    expect(ret({ native_social_error: 'google', error: 'account_exists', continuation: TOKEN }))
+      .toEqual({ provider: 'google', code: 'account_exists', continuation: TOKEN });
+    expect(ret({ native_social_error: 'apple', error: 'access_denied', continuation: TOKEN })?.continuation).toBeNull();
+  });
+
+  test('a continuation outcome without a well-formed token is a failure', () => {
+    expect(ret({ native_social_error: 'apple', error: 'new_account' })?.code).toBe('failed');
+    expect(ret({ native_social_error: 'apple', error: 'new_account', continuation: 'short' })).toEqual({ provider: 'apple', code: 'failed', continuation: null });
+  });
+
+  test('maps provider errors to typed codes', () => {
+    expect(ret({ native_social_error: 'apple', error: 'user_cancelled_authorize' })?.code).toBe('cancelled');
+    expect(ret({ native_social_error: 'google', error: 'access_denied' })?.code).toBe('cancelled');
+    expect(ret({ native_social_error: 'google', error: 'account_not_linked' })?.code).toBe('account_not_linked');
+    expect(ret({ native_social_error: 'google', error: 'apple_email_required' })?.code).toBe('failed');
+    expect(ret({ native_social_error: 'apple', error: 'state_mismatch' })?.code).toBe('failed');
+    expect(ret({ native_social_error: 'apple' })?.code).toBe('failed');
+  });
+
+  test('an unknown provider marker keeps the code but names no provider', () => {
+    expect(ret({ native_social_error: '1', error: 'access_denied' })).toEqual({ provider: null, code: 'cancelled', continuation: null });
+  });
+
+  test('copy names the provider', () => {
+    expect(nativeSocialErrorMessage({ provider: 'apple', code: 'cancelled', continuation: null })).toBe('Apple sign-in was cancelled.');
+    expect(nativeSocialErrorMessage({ provider: 'google', code: 'failed', continuation: null })).toBe('Google could not complete sign-in. Please try again.');
+    expect(nativeSocialErrorMessage({ provider: 'apple', code: 'account_not_linked', continuation: null }))
+      .toBe('An OpenKey account already uses this email. Sign in to it and add Apple in Settings.');
+    expect(nativeSocialErrorMessage({ provider: 'apple', code: 'apple_email_required', continuation: null }))
+      .toBe("Apple didn't share a verified email, so OpenKey can't create an account from it. Sign in with your email or passkey, then add Apple in Settings.");
   });
 });
 
@@ -62,10 +109,10 @@ describe('nativeLoginHint', () => {
 });
 
 describe('nativeSocialReturnUrls', () => {
-  test('both return to the login page with the signed query; only the error one carries the marker', () => {
-    const { callbackURL, errorCallbackURL } = nativeSocialReturnUrls('https://openkey.so', 'client_id=a&sig=b');
+  test('both return to the login page with the signed query; only the error one carries the provider marker', () => {
+    const { callbackURL, errorCallbackURL } = nativeSocialReturnUrls('https://openkey.so', 'client_id=a&sig=b', 'apple');
     expect(callbackURL).toBe('https://openkey.so/auth/login?client_id=a&sig=b');
-    expect(errorCallbackURL).toBe('https://openkey.so/auth/login?client_id=a&sig=b&native_social_error=1');
+    expect(errorCallbackURL).toBe('https://openkey.so/auth/login?client_id=a&sig=b&native_social_error=apple');
   });
 });
 
