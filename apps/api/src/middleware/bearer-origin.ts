@@ -32,7 +32,13 @@ export function bearerFromAccountOriginError(
 }
 
 export const requireAccountOriginForBearer = createMiddleware(async (c, next) => {
-  const error = bearerFromAccountOriginError(c.req.header('authorization'), c.req.header('origin'));
+  const authorization = c.req.header('authorization');
+  const origin = c.req.header('origin');
+  const error = origin !== undefined
+    ? (isAccountOriginAllowed(origin, 'http://localhost:5173,http://localhost:3000')
+      ? null
+      : 'Requests are accepted only from the OpenKey account origin')
+    : bearerFromAccountOriginError(authorization, origin);
   if (error) return c.json({ error }, 403);
   await next();
 });

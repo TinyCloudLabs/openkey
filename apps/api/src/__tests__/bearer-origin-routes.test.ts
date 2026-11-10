@@ -123,6 +123,7 @@ function call(method: string, path: string, headers: Record<string, string>) {
 const sessionRoutes: Array<[string, string]> = [
   ['GET', '/api/account'],
   ['GET', '/api/keys'],
+  ['POST', '/api/keys/generate'],
   ['POST', '/api/approval-requests/appr_1/deny'],
   ['POST', '/api/device-authorizations/tx_1/approve'],
   ['POST', '/api/device-authorizations/tx_1/deny'],
@@ -131,6 +132,7 @@ const sessionRoutes: Array<[string, string]> = [
   ['GET', '/api/delegate/handoffs/available'],
   ['POST', '/api/delegate/handoffs/claim'],
   ['GET', '/api/secrets'],
+  ['GET', '/api/secrets/status'],
   ['GET', '/api/variables'],
   ['GET', '/api/keys/nostr'],
   ['POST', '/api/keys/nostr'],
@@ -163,6 +165,20 @@ describe('session routes refuse a bearer from outside OpenKey', () => {
   test.each(sessionRoutes)('%s %s still resolves a cookie session', async (method, path) => {
     await call(method, path, { origin: OPENKEY_ORIGIN });
     expect(sessionResolutions).toBeGreaterThan(0);
+  });
+  test.each(sessionRoutes.filter(([, path]) =>
+    !path.startsWith('/api/organizations') && !path.startsWith('/api/console/organizations'),
+  ))('%s %s refuses a console-origin cookie session', async (method, path) => {
+    const response = await call(method, path, { origin: 'https://console.openkey.so' });
+    expect(response.status, `${method} ${path}`).toBe(403);
+    expect(sessionResolutions, `${method} ${path} session`).toBe(0);
+  });
+
+  test.each(sessionRoutes.filter(([, path]) =>
+    !path.startsWith('/api/organizations') && !path.startsWith('/api/console/organizations'),
+  ))('%s %s allows an account-origin cookie session', async (method, path) => {
+    await call(method, path, { origin: OPENKEY_ORIGIN });
+    expect(sessionResolutions, `${method} ${path} session`).toBeGreaterThan(0);
   });
   test('console-origin bearers are refused on every sensitive route group', async () => {
     const sensitive = sessionRoutes.filter(([, path]) =>

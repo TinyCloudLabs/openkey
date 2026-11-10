@@ -220,7 +220,6 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `RESEND_API_KEY` | Resend API key for emails |
 | `API_PORT` | `3001` |
 | `CORS_ORIGIN` | `https://openkey.so,https://console.openkey.so` |
-
 | `ADMIN_API_KEY` | Bearer token for organization plan fixtures and app registration |
 | `INTERNAL_METRICS_TOKEN` | Bearer token for internal metrics |
 | `OPENKEY_METRICS_READ_TOKEN` | Separate bearer for `/api/internal/scoreboard/*`. Grants **aggregate counts only** (`GET /protocol-users` -> `{count}`, `GET /app-users` -> `{total, active7d}`); neither endpoint takes input, so the token cannot be used to look up addresses or accounts. `/protocol-users` is capped at 30 calls/min per process (429) and audit-logged (status and count only). Unset = 503 |
@@ -232,9 +231,14 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |
 
 `WEBAUTHN_ORIGIN` is the account browser origin and is required in production.
-Sensitive account routes accept session bearers only from that origin; CORS
-origins (including `CONSOLE_ORIGIN`) do not grant account-route access. If
-`CONSOLE_ORIGIN` is unset in production, it defaults to
+Browser requests to sensitive account routes require an `Origin` matching that
+account origin, whether authenticated by cookie or bearer. Bearers without an
+`Origin` remain refused; cookie requests without an `Origin` retain their
+existing behavior. Native delegation preparation and approval also require the
+account origin. Organization and tenant-console routes continue to accept the
+configured console origin. Better Auth `/api/auth/*` routes are not covered by
+this restriction.
+If `CONSOLE_ORIGIN` is unset in production, it defaults to
 `https://console.openkey.so`; that console origin remains accepted only on
 console-facing organization routes, unless it is also `WEBAUTHN_ORIGIN`.
 

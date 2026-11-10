@@ -36,7 +36,8 @@ if (!backend) {
             BETTER_AUTH_SECRET: 'tc773-isolated-regression-secret-not-for-production',
             WEBAUTHN_RP_ID: 'openkey.test',
             WEBAUTHN_ORIGIN: 'https://openkey.test',
-            CORS_ORIGIN: 'https://openkey.test',
+            CORS_ORIGIN: 'https://openkey.test,https://console.openkey.so',
+            CONSOLE_ORIGIN: 'https://console.openkey.so',
             ADMIN_API_KEY: 'tc773-admin-key',
             RESEND_API_KEY: '',
             GOOGLE_CLIENT_ID: '',
@@ -594,13 +595,18 @@ if (!backend) {
         const rejected = await call(`/api/auth/oauth2/authorize?${replay}`, { headers: { cookie } });
         expect(new URL(rejected.headers.get('location')!, API).searchParams.get('error')).toBe('invalid_request');
       }
+      const consolePrepare = await call(`/api/oauth/tinycloud/requests/${requestId}/prepare`, { method: 'POST', headers: { cookie, origin: 'https://console.openkey.so', 'content-type': 'application/json' }, body: '{}' });
+      expect(consolePrepare.status, await consolePrepare.clone().text()).toBe(403);
       const prepare = await call(`/api/oauth/tinycloud/requests/${requestId}/prepare`, { method: 'POST', headers: { cookie, origin: WEB_ORIGIN, 'content-type': 'application/json' }, body: '{}' });
       expect(prepare.status, await prepare.clone().text()).toBe(200);
       const preview = await prepare.json() as { revision: number; digest: string; sessionSiwe: string; hostPlan: { hostSiwe: string } | null };
       // The registered native PAR path signs its own issuer, not the browser origin.
       expect(preview.sessionSiwe.startsWith('openkey.so wants you to sign in with your Ethereum account:')).toBe(true);
       await Bun.sleep(20);
-      const approve = await call(`/api/oauth/tinycloud/requests/${requestId}/approve`, { method: 'POST', headers: { cookie, origin: WEB_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ revision: preview.revision, digest: preview.digest, sessionSiwe: preview.sessionSiwe, hostSiwe: preview.hostPlan?.hostSiwe }) });
+      const approvalBody = { revision: preview.revision, digest: preview.digest, sessionSiwe: preview.sessionSiwe, hostSiwe: preview.hostPlan?.hostSiwe };
+      const consoleApprove = await call(`/api/oauth/tinycloud/requests/${requestId}/approve`, { method: 'POST', headers: { cookie, origin: 'https://console.openkey.so', 'content-type': 'application/json' }, body: JSON.stringify(approvalBody) });
+      expect(consoleApprove.status, await consoleApprove.clone().text()).toBe(403);
+      const approve = await call(`/api/oauth/tinycloud/requests/${requestId}/approve`, { method: 'POST', headers: { cookie, origin: WEB_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify(approvalBody) });
       expect(approve.status, await approve.clone().text()).toBe(200);
       const approveRetry = await nativeConsent(requestId, 'approve', { revision: preview.revision, digest: preview.digest, sessionSiwe: preview.sessionSiwe, hostSiwe: preview.hostPlan?.hostSiwe });
       expect(approveRetry.status, await approveRetry.clone().text()).toBe(200);

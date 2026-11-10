@@ -1,3 +1,4 @@
+import { isAccountOriginAllowed } from '../origin-policy';
 // Delegate route - creates TinyCloud delegation for CLI auth flow
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
@@ -355,10 +356,14 @@ delegateRouter.use('*', async (c, next) => {
     // a session resolves; OAuth bearers stay open to any origin.
     return activeDelegateSignerAuth(c, next);
   }
-  // The refusals are returned, not awaited: this router has its own onError, so
-  // Hono answers a handler that returns nothing with an empty 200.
-  const bearerError = bearerFromAccountOriginError(c.req.header('authorization'), c.req.header('origin'));
-  if (bearerError) return c.json({ error: bearerError }, 403);
+  const authorization = c.req.header('authorization');
+  const origin = c.req.header('origin');
+  const originError = origin !== undefined
+    ? (isAccountOriginAllowed(origin, 'http://localhost:5173,http://localhost:3000')
+      ? null
+      : 'Requests are accepted only from the OpenKey account origin')
+    : bearerFromAccountOriginError(authorization, origin);
+  if (originError) return c.json({ error: originError }, 403);
   // session.ts answers `{ error: 'Unauthorized' }` to every route that uses it;
   // the delegate routes add a stable code the widget can match on.
   const refusal = await (requireSession as any)(c, next);
