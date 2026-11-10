@@ -146,7 +146,8 @@
     loadingProvider = provider;
     error = '';
     try {
-      await signInWithSocialPopup(provider);
+      // Explicit sign-up intent: the popup creates the account without asking again, unless Apple hides the email.
+      await signInWithSocialPopup(provider, undefined, 'signup');
       await ensureKeyExists();
       await continueAfterRegistration();
     } catch (e: any) {
