@@ -12,7 +12,7 @@ import { oauthProvider } from '@better-auth/oauth-provider';
 import { Resend } from 'resend';
 import { getAddress } from 'viem';
 import { createPrismaClient, type PrismaClient } from '@openkey/db';
-import { createTeeClient, seal, generatePrivateKey, getAddressFromPrivateKey } from '@openkey/tee';
+import { createTeeClient, generatePrivateKey, getAddressFromPrivateKey } from '@openkey/tee';
 import { buildEmailClaims } from './claims';
 import {
   DEFAULT_OAUTH_SCOPES,
@@ -29,7 +29,7 @@ import {
   dynamicClientRegistrationEnabled,
   oauthValidAudiences,
 } from './oauth-config';
-import { createSealingContext } from './services/key-sealing';
+import { createSealingContext, sealKeyForRecord } from './services/key-sealing';
 import { primaryKeyWhere } from './services/primary-key';
 import {
   assertFreshPasskeyUserVerification,
@@ -554,8 +554,7 @@ export const auth = betterAuth({
             const privateKey = generatePrivateKey();
             const address = getAddressFromPrivateKey(privateKey);
             const sealingContext = createSealingContext();
-            const sealingKey = await tee.deriveKey(`openkey/key/${sealingContext}`);
-            const sealedBlob = await seal(privateKey, sealingKey);
+            const sealedBlob = await sealKeyForRecord(tee, { userId: user.id, sealingContext }, privateKey);
 
             await prisma.ethereumKey.create({
               data: {

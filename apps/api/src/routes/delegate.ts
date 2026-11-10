@@ -252,7 +252,11 @@ async function finishManagedSpaceOnboarding(input: {
     // plaintext key is never held across a retry's wait.
     let firstRunKey: string | undefined = input.privateKey ?? await unsealManagedKey(input.key, input.key.sealedBlob!);
     const result = await hostRequestedSpaceWithinBudget(async ({ alreadyHosted, report }) => {
-      const privateKey = firstRunKey ?? await unsealManagedKey(input.key, input.key.sealedBlob!);
+      const currentKey = firstRunKey ? input.key : await prisma.ethereumKey.findFirst({
+        where: { id: input.key.id, userId: input.userId, keyType: 'MANAGED', archivedAt: null },
+      });
+      if (!currentKey?.sealedBlob) throw new Error('Managed key has no sealed key data');
+      const privateKey = firstRunKey ?? await unsealManagedKey(currentKey, currentKey.sealedBlob);
       firstRunKey = undefined;
       return ensureTinyCloudBootstrap({
         prisma,
