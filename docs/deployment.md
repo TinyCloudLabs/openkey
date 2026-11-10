@@ -214,7 +214,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `CONSOLE_ORIGIN` | `https://console.openkey.so` |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
-| `APPLE_SIGN_IN_ENABLED` | Hardcoded `false` in production Compose until Apple enrollment and Sam's separate enablement approval |
+| `APPLE_SIGN_IN_ENABLED` | Hardcoded `true` in production Compose; Apple is offered only when the four Apple credentials below are also set (TC-1188) |
 | `APPLE_NATIVE_SIGN_IN_ENABLED` | Hardcoded `false`; stock native ID-token sign-in is permanently disabled |
 | `APPLE_CLIENT_ID` | Apple web Services ID (not a bundle identifier) |
 | `APPLE_TEAM_ID` | Apple Developer Team ID |
@@ -265,10 +265,11 @@ and web together. Deploy both in one window after the reviewed migration is
 ready; the migration adds the session email-code timestamp and a unique
 provider/account identity index. This change does not enable Apple sign-in.
 
-Apple is disabled by default even with credentials present. The production
-Compose file pins `APPLE_SIGN_IN_ENABLED=false`; enrollment and a separate
-authorization are required before changing that setting. Do not deploy or
-enable Apple as part of TC-1230.
+Apple web sign-in is enabled in production (TC-1188). The production Compose
+file pins `APPLE_SIGN_IN_ENABLED=true`; the provider is still offered only when
+`APPLE_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID` and `APPLE_PRIVATE_KEY` are
+all set in the encrypted env. To turn Apple off, set the Compose value back to
+`false` and redeploy, or remove a credential from the encrypted env.
 
 The API mints an ES256 client-secret JWT for each Apple token exchange or
 revocation, valid for at most five minutes. The `.p8` key remains API-only and
