@@ -2,9 +2,11 @@
 // Protected by ADMIN_API_KEY - for registering OAuth clients
 import { Hono } from 'hono';
 import {
+  isConfidentialWebClient,
   OAUTH_SCOPES,
   RESTRICTED_SCOPES,
   TINYCLOUD_DELEGATION_SCOPE,
+  TINYCLOUD_IDENTITY_SCOPE,
   TINYCLOUD_SESSION_SCOPE,
 } from '../oauth-config';
 import { createPrismaClient, type Prisma } from '@openkey/db';
@@ -83,11 +85,12 @@ function nativeDelegationJson(config: NativeDelegationConfig): Prisma.InputJsonO
 }
 
 function hasExactCoordinationosScopes(scopes: unknown): scopes is string[] {
-  if (!Array.isArray(scopes) || scopes.length !== COORDINATIONOS_WEB_SCOPES.length) return false;
-  if (!scopes.every((scope): scope is string => typeof scope === 'string')) return false;
+  if (!Array.isArray(scopes) || !scopes.every((scope): scope is string => typeof scope === 'string')) return false;
+  const identityRequested = scopes.includes(TINYCLOUD_IDENTITY_SCOPE);
+  if (scopes.length !== COORDINATIONOS_WEB_SCOPES.length + Number(identityRequested)) return false;
   if (new Set(scopes).size !== scopes.length) return false;
   const required = new Set<string>(COORDINATIONOS_WEB_SCOPES);
-  return scopes.every((scope) => required.has(scope));
+  return scopes.every((scope) => required.has(scope) || scope === TINYCLOUD_IDENTITY_SCOPE);
 }
 
 // POST /api/admin/oauth/organizations - demo/admin fixture for tenant creation
@@ -235,6 +238,14 @@ oauthAdminRouter.post('/clients', async (c) => {
       return c.json({ error: `Invalid scopes: ${invalid.join(', ')}` }, 400);
     }
   }
+  if (Array.isArray(body.scopes) && body.scopes.includes(TINYCLOUD_IDENTITY_SCOPE)
+    && !isConfidentialWebClient({
+      type: applicationType,
+      public: applicationType !== 'web',
+      tokenEndpointAuthMethod: applicationType === 'web' ? 'client_secret_basic' : 'none',
+    })) {
+    return c.json({ error: 'tinycloud:identity is only available to confidential web clients' }, 400);
+  }
   if (body.scopes?.includes(TINYCLOUD_DELEGATION_SCOPE) && body.tinycloudNativeDelegation === undefined) {
     return c.json({ error: 'tinycloud:delegation requires tinycloudNativeDelegation in the same request' }, 400);
   }
@@ -287,7 +298,10 @@ oauthAdminRouter.post('/clients', async (c) => {
         themeBackgroundColor: body.themeBackgroundColor ?? null,
         themeAccentColor: body.themeAccentColor ?? null,
         redirectUris: body.redirectUris,
-        scopes: applicationType === 'web' ? [...COORDINATIONOS_WEB_SCOPES] : [
+        scopes: applicationType === 'web' ? [
+          ...COORDINATIONOS_WEB_SCOPES,
+          ...(body.scopes?.includes(TINYCLOUD_IDENTITY_SCOPE) ? [TINYCLOUD_IDENTITY_SCOPE] : []),
+        ] : [
           ...PUBLIC_CLIENT_SCOPES, ...(nativeConfig ? [TINYCLOUD_DELEGATION_SCOPE] : []),
         ],
         tinycloudNativeDelegation: nativeConfig ? nativeDelegationJson(nativeConfig) : undefined,
@@ -497,6 +511,9 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
     const invalid = body.scopes.filter((s) => !validScopes.has(s));
     if (invalid.length > 0) {
       return c.json({ error: `Invalid scopes: ${invalid.join(', ')}` }, 400);
+    }
+    if (body.scopes.includes(TINYCLOUD_IDENTITY_SCOPE) && !isConfidentialWebClient(existing!)) {
+      return c.json({ error: 'tinycloud:identity is only available to confidential web clients' }, 400);
     }
     // The delegation scope only changes together with its ceiling.
     if (!('tinycloudNativeDelegation' in body) &&

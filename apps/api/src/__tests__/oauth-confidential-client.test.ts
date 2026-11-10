@@ -121,6 +121,33 @@ describe('confidential CoordinationOS OAuth client', () => {
     expect(fetchedPayload.client).not.toHaveProperty('clientSecret');
     expect(JSON.stringify(fetchedPayload)).not.toContain(payload.clientSecret);
   });
+  test('identity scope is refused for public clients and can be granted to confidential web clients', async () => {
+    const publicResponse = await request('/clients', 'POST', {
+      name: 'public identity client', type: 'spa', redirectUris: ['https://app.example/callback'],
+      scopes: ['openid', 'tinycloud:identity'],
+    });
+    expect(publicResponse.status).toBe(400);
+    expect(create).not.toHaveBeenCalled();
+
+    const confidentialResponse = await request('/clients', 'POST', {
+      ...valid, scopes: [...valid.scopes, 'tinycloud:identity'],
+    });
+    expect(confidentialResponse.status).toBe(201);
+    expect(stored).toMatchObject({
+      type: 'web', public: false, tokenEndpointAuthMethod: 'client_secret_basic',
+      scopes: ['openid', 'email', 'keys', 'tinycloud:session', 'tinycloud:identity'],
+    });
+  });
+  test('public client scope updates cannot add identity access', async () => {
+    const created = await request('/clients', 'POST', {
+      name: 'Public client', type: 'spa', redirectUris: ['https://app.example/callback'],
+    });
+    expect(created.status).toBe(201);
+    const clientId = stored.clientId;
+    const response = await request(`/clients/${clientId}`, 'PATCH', { scopes: ['openid', 'tinycloud:identity'] });
+    expect(response.status).toBe(400);
+    expect(update).not.toHaveBeenCalled();
+  });
 
   test.each([
     [{ ...valid, redirectUris: [] }],
