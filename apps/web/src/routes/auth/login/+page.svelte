@@ -206,7 +206,7 @@
       if ((await providersLoaded).includes(request.method)) {
         await signInWithSocialTopLevel(request.method);
       } else {
-        error = `${socialProviderName(request.method)} sign-in isn't available right now. Continue with your email instead.`;
+        error = `${socialProviderName(request.method)} sign-in isn't available. Choose another way to sign in below.`;
         step = 'email';
       }
     } else if (request.method === 'email' && request.hint && step === 'otp') {

@@ -252,7 +252,7 @@ test('account exists: nothing is linked; the user signs in and adds Apple after 
   const popup = await openApplePopup(page);
   const step = popup.getByTestId('social-account-exists');
   await expect(step).toContainText(
-    `An OpenKey account already uses ${EMAIL}. Sign in to it and verify with an email code to add Apple in Settings.`,
+    `An OpenKey account already uses ${EMAIL}. Sign in to it, then add Apple in Settings.`,
   );
   await expect(step.getByRole('button', { name: 'Create a new account' })).toHaveCount(0);
   await shot(popup, info, '04-account-exists');
@@ -509,7 +509,7 @@ test.describe('native sheet', () => {
     });
     await page.goto(`/auth/login?${NATIVE_QUERY}`);
     await expect(page.getByTestId('social-account-exists')).toHaveText(
-      `An OpenKey account already uses ${EMAIL}. Sign in to it and verify with an email code to add Apple in Settings.`,
+      `An OpenKey account already uses ${EMAIL}. Sign in to it, then add Apple in Settings.`,
     );
     await expect(page.getByRole('button', { name: 'Create a new account' })).toHaveCount(0);
     await shot(page, info, '11-native-account-exists');
