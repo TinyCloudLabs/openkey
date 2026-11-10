@@ -5,6 +5,7 @@ import {
   API_EXPOSED_HEADERS,
   corsOriginPolicy,
   DEFAULT_CONSOLE_ORIGIN,
+  isAccountOriginAllowed,
   resolveAccountOriginPolicy,
   resolveOriginPolicy,
   resolveSigningOriginPolicy,
@@ -239,6 +240,31 @@ describe('account origin policy', () => {
       CONSOLE_ORIGIN: 'https://console.openkey.so',
       TEE_MODE: 'production',
     })).toEqual([]);
+  });
+  test('matches request Origins canonically and refuses missing or malformed values', () => {
+    const env = {
+      CORS_ORIGIN: 'https://openkey.so,https://console.openkey.so,https://staging.openkey.so',
+      WEBAUTHN_ORIGIN: 'https://openkey.so',
+      CONSOLE_ORIGIN: 'https://console.openkey.so',
+      TEE_MODE: 'production',
+    };
+    const cases: Array<[string | undefined, boolean]> = [
+      ['https://openkey.so/', true],
+      ['https://console.openkey.so', false],
+      ['https://staging.openkey.so', false],
+      ['null', false],
+      [undefined, false],
+      ['not an origin', false],
+    ];
+    for (const [origin, expected] of cases) {
+      expect(isAccountOriginAllowed(origin, 'http://localhost:5173', env)).toBe(expected);
+    }
+  });
+
+  test('keeps the development localhost defaults', () => {
+    expect(resolveAccountOriginPolicy('http://localhost:5173,http://localhost:3000', {
+      NODE_ENV: 'development',
+    })).toEqual(['http://localhost:5173', 'http://localhost:3000']);
   });
 });
 
