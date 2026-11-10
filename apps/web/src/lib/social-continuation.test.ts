@@ -79,7 +79,8 @@ describe('socialErrorMessage', () => {
     ['apple', 'unable_to_link_account', 'OpenKey could not link Apple. Verify a new email code in Settings and try again.'],
     ['apple', 'continuation_expired', 'This Apple confirmation expired. Start sign-in again.'],
     ['apple', 'invalid_code', 'Apple could not complete sign-in. Please try again.'],
-    [null, 'invalid_code', 'The provider could not complete sign-in. Please try again.'],
+    [null, 'invalid_code', 'Sign-in could not complete. Please try again.'],
+    [null, 'cancelled', 'Sign-in was cancelled.'],
   ] as const)('%s %s', (provider: 'apple' | 'google' | null, code: string, message: string) => {
     expect(socialErrorMessage(provider, code)).toBe(message);
   });

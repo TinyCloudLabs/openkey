@@ -52,25 +52,30 @@ export function accountExistsMessage(provider: SocialProviderId, email: string):
   return `An OpenKey account already uses ${email}. Sign in to it and verify with an email code to add ${socialProviderName(provider)} in Settings.`;
 }
 
-/** Copy for a provider return that failed. `provider` is null when the return did not say. */
+/**
+ * Copy for a provider return that failed, on the web callback and in the
+ * native sheet. `provider` is null when the return did not say; `cancelled`
+ * and `failed` are the native sheet's codes for the same outcomes.
+ */
 export function socialErrorMessage(provider: SocialProviderId | null, code: string | null): string {
-  const name = provider ? socialProviderName(provider) : 'The provider';
+  const name = provider ? socialProviderName(provider) : null;
   switch (code) {
     case 'apple_email_required':
       return APPLE_EMAIL_REQUIRED_MESSAGE;
     case 'account_not_linked':
-      return `An OpenKey account already uses this email. Sign in to it and add ${provider ? socialProviderName(provider) : 'this sign-in method'} in Settings.`;
+      return `An OpenKey account already uses this email. Sign in to it and add ${name ?? 'this sign-in method'} in Settings.`;
     case 'access_denied':
     case 'user_cancelled_authorize':
-      return `${provider ? socialProviderName(provider) : 'Social'} sign-in was cancelled.`;
+    case 'cancelled':
+      return name ? `${name} sign-in was cancelled.` : 'Sign-in was cancelled.';
     case 'account_already_linked_to_different_user':
-      return `This ${provider ? socialProviderName(provider) : 'sign-in'} account is already linked to another OpenKey account.`;
+      return `This ${name ?? 'sign-in'} account is already linked to another OpenKey account.`;
     case 'unable_to_link_account':
-      return `OpenKey could not link ${provider ? socialProviderName(provider) : 'this account'}. Verify a new email code in Settings and try again.`;
+      return `OpenKey could not link ${name ?? 'this account'}. Verify a new email code in Settings and try again.`;
     case 'continuation_expired':
-      return `This ${provider ? socialProviderName(provider) : 'sign-in'} confirmation expired. Start sign-in again.`;
+      return `This ${name ?? 'sign-in'} confirmation expired. Start sign-in again.`;
     default:
-      return `${name} could not complete sign-in. Please try again.`;
+      return name ? `${name} could not complete sign-in. Please try again.` : 'Sign-in could not complete. Please try again.';
   }
 }
 
