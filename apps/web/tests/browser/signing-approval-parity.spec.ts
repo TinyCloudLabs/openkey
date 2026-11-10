@@ -360,7 +360,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(dialog).toContainText('Manage your TinyCloud account');
       // The SQL write grant states its row-level reach (TC-2453); the sentence itself is not pinned here.
       await expect(dialog).toContainText(/\brows?\b/);
-      await expect(dialog).toContainText('Check your TinyCloud permissions');
+      await expect(dialog).toContainText('See which permissions are already granted');
       const summary = page.locator('[data-parity-harness] .summary');
       await expect(summary.locator('.summary-statement')).toHaveCount(12);
       await expect(summary).toContainText('See who has access to your data');
@@ -381,7 +381,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(dialog).not.toContainText('path=spaces/');
       // Exact rows: a known action that fell through to the generic fallback would change one.
       await expect(summary.locator('.summary-statement .statement-primary')).toHaveText([
-        'Check your TinyCloud permissions',
+        'See which permissions are already granted',
         'See who has access to your data',
         'Manage your TinyCloud account',
         'Read, change and delete your data',
