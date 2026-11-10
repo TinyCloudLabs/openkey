@@ -37,10 +37,12 @@ import {
 } from './services/passkey-freshness';
 import {
   appleTokenClientId,
+  appleTokenSignIn,
   configuredSocialProviderIds,
   createSocialProviders,
   socialProviderTrustedOrigins,
 } from './social-providers';
+import { appleRelayEmailUndeliverable } from './services/apple-notifications';
 import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
 import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
@@ -202,8 +204,9 @@ const accountLinkingStepUpPlugin = {
             message: 'Use the revocation-protected account unlink endpoint.',
           });
         }
-        if (ctx.path === '/unlink-account' && !session.user.emailVerified
-          && await prisma.passkey.count({ where: { userId: session.user.id } }) === 0) {
+        if (ctx.path === '/unlink-account' && await prisma.passkey.count({ where: { userId: session.user.id } }) === 0
+          && (!session.user.emailVerified
+            || await appleRelayEmailUndeliverable(prisma, session.user.id, session.user.email))) {
           throw new APIError('FORBIDDEN', {
             code: 'LAST_SIGN_IN_METHOD',
             message: 'Add a passkey or a deliverable verified email before unlinking this account.',
@@ -246,6 +249,21 @@ function withMcpAccessTokenLifetime<T extends ReturnType<typeof oauthProvider>>(
   return plugin;
 }
 
+// R9 (plan TC-1188 §2): a locked user's live sessions and OAuth tokens stop
+// resolving everywhere Better Auth looks them up, including bearer sessions
+// (the bearer plugin resolves through the same session lookup), the OAuth
+// refresh grant and opaque access-token validation. The filter is on Better
+// Auth's client only; OpenKey's own reads keep seeing the rows.
+function withLockedUserFilter(db: PrismaClient): PrismaClient {
+  const unlocked = { user: { lockedAt: null } };
+  const filter = ({ args, query }: { args: { where?: object }; query: (args: unknown) => Promise<unknown> }) =>
+    query({ ...args, where: args.where ? { AND: [args.where, unlocked] } : unlocked });
+  const reads = { findFirst: filter, findMany: filter };
+  return db.$extends({
+    query: { session: reads, oauthAccessToken: reads, oauthRefreshToken: reads },
+  }) as unknown as PrismaClient;
+}
+
 export const auth = betterAuth({
   baseURL,
   basePath: '/api/auth',
@@ -257,7 +275,7 @@ export const auth = betterAuth({
     log: betterAuthLog,
   },
 
-  database: prismaAdapter(withNativeTokenGuardErrors(prisma), {
+  database: prismaAdapter(withLockedUserFilter(withNativeTokenGuardErrors(prisma)), {
     provider: 'postgresql',
     transaction: true,
   }),
@@ -285,6 +303,8 @@ export const auth = betterAuth({
   account: {
     additionalFields: {
       appleClientId: { type: 'string', required: false, input: false, returned: false },
+      appleRestoredAt: { type: 'date', required: false, input: false, returned: false },
+      revokedAt: { type: 'date', required: false, input: false, returned: false },
     },
     encryptOAuthTokens: true,
     accountLinking: {
@@ -406,6 +426,11 @@ export const auth = betterAuth({
       storeTokens: 'hashed',
       generateRefreshToken: (): Promise<string> => generateNativeRefreshToken(prisma, providerTokenOptions(auth)),
       async customTokenResponseFields({ grantType, user, scopes, verificationValue }) {
+        // R9: no grant (authorization code or refresh) issues tokens to a
+        // locked user, whatever was authorized before the lock.
+        if (user && (await prisma.user.findUnique({ where: { id: user.id }, select: { lockedAt: true } }))?.lockedAt) {
+          throw new APIError('BAD_REQUEST', { error: 'invalid_grant', error_description: 'The account is locked' });
+        }
         // Runs before any access, refresh or ID token is created. A token
         // carrying tinycloud:delegation comes only from the native code
         // exchange, never from the provider's other grants.
@@ -587,14 +612,28 @@ export const auth = betterAuth({
             code: 'APPLE_ISSUING_CLIENT_UNKNOWN',
             message: 'The Apple token issuer was not verified.',
           });
-          return { data: { appleClientId: clientId } };
+          // Linking (or confirmed creation) restores the Apple identity now. In
+          // whole seconds, Apple's event_time unit: a revocation from before
+          // this second is ignored, one from this second or later applies.
+          const restoredAt = new Date(Math.floor(Date.now() / 1000) * 1000);
+          return { data: { appleClientId: clientId, appleRestoredAt: restoredAt } };
         }
       } },
       update: { before: async (account) => {
         await assertCurrentSocialLink(prisma);
         const clientId = await appleTokenClientId.get();
         if (clientId && (account.refreshToken !== undefined || account.accessToken !== undefined)) {
-          return { data: { appleClientId: clientId } };
+          // A sign-in by `sub` restores the link: it clears revokedAt, and
+          // appleRestoredAt advances to the later of its value and the id_token iat.
+          const signIn = await appleTokenSignIn.get();
+          if (!signIn) return { data: { appleClientId: clientId } };
+          const current = await prisma.account.findUnique({
+            where: { providerId_accountId: { providerId: 'apple', accountId: signIn.sub } },
+            select: { appleRestoredAt: true },
+          });
+          const issuedAt = signIn.issuedAt * 1000;
+          const restoredAt = new Date(Math.max(current?.appleRestoredAt?.getTime() ?? issuedAt, issuedAt));
+          return { data: { appleClientId: clientId, appleRestoredAt: restoredAt, revokedAt: null } };
         }
       } },
     },

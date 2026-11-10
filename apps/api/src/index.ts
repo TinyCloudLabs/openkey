@@ -1,6 +1,7 @@
 import './log'; // Keep first: patches dependency console output before any dependency module runs.
 import './install-process-handlers'; // Install fatal handlers before dependency startup.
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
 import { apiErrorHandler, log, logConfigInvalid, logError, requestLogger, type ApiEnv } from './log';
 import {
@@ -39,6 +40,8 @@ import { createProviderInterceptors } from './services/native-delegation/interce
 import { createRevokeDenylist } from './services/revoked-access-token';
 import { createAccessTokenVerifier } from './services/access-token-verifier';
 import { createMcpUserinfoGuard } from './services/mcp-userinfo-guard';
+import { createLockedSubjectGuard } from './services/locked-subject-guard';
+import { createAppleWebhookHandler } from './services/apple-notifications';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { handlePar } from './services/native-delegation/par';
 import { createNativeDelegationConsentRouter } from './routes/native-delegation-consent';
@@ -226,6 +229,10 @@ app.use('/api/auth/oauth2/userinfo', createMcpUserinfoGuard({
   verify: createAccessTokenVerifier({ issuer: oauthIssuer, getJwks: readSigningKeys }),
   mcpAudiences: MCP_AUDIENCES,
 }));
+// A locked user's access tokens are not active (R9, TC-1231): a JWT has no row
+// the lock filter in auth.ts can hide, so the provider's own answer is checked.
+app.use('/api/auth/oauth2/userinfo', createLockedSubjectGuard(authPrisma));
+app.use('/api/auth/oauth2/introspect', createLockedSubjectGuard(authPrisma));
 app.use('/api/auth/*', createRevokeDenylist({
   database: authPrisma,
   verify: createAccessTokenVerifier({ issuer: oauthIssuer, getJwks: readSigningKeys }),
@@ -249,6 +256,13 @@ app.use('/api/auth/*', createProviderInterceptors({
 app.on(['POST', 'GET'], '/api/auth/*', (c) => {
   return auth.handler(c.req.raw);
 });
+
+// Apple server-to-server notifications (TC-1231). Outside Better Auth's base
+// path; not found unless Apple sign-in and APPLE_WEBHOOK_AUDIENCE are set.
+app.post('/api/webhooks/apple', bodyLimit({
+  maxSize: 32 * 1024,
+  onError: (c) => c.json({ error: 'invalid_notification' }, 400),
+}), createAppleWebhookHandler({ database: authPrisma }));
 
 // Key management routes
 app.route('/api/keys', keysRouter);

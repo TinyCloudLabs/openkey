@@ -20,6 +20,9 @@ services:
       - APPLE_KEY_ID=${APPLE_KEY_ID}
       - APPLE_PRIVATE_KEY=${APPLE_PRIVATE_KEY}
       - APPLE_APP_BUNDLE_IDENTIFIERS=${APPLE_APP_BUNDLE_IDENTIFIERS}
+      # Primary App ID for Apple server-to-server notifications; the webhook is
+      # not found while Apple sign-in is disabled (TC-1231).
+      - APPLE_WEBHOOK_AUDIENCE=${APPLE_WEBHOOK_AUDIENCE:-}
       # Hardcoded: the encrypted env must not be able to select mock sealing
       # keys (TC-966).
       - TEE_MODE=production

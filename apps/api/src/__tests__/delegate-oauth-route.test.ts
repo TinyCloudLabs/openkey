@@ -77,7 +77,7 @@ let transactionTail: Promise<void> = Promise.resolve();
 let storedOauthTokens = new Map<string, any>();
 let registeredOauthClients = new Map<string, any>();
 let consentedClientIds = new Set<string>();
-let resolvedOauthUser: { id: string; emailVerified: boolean } | null = {
+let resolvedOauthUser: { id: string; emailVerified: boolean; lockedAt?: Date | null } | null = {
   id: 'user_1',
   emailVerified: true,
 };
@@ -815,6 +815,9 @@ describe('CoordinationOS OAuth signer route', () => {
       client.tinycloudSessionPolicy = 'unknown-policy';
     }, 'client_misconfigured'],
     ['missing user', () => { resolvedOauthUser = null; }, 'user_not_found'],
+    ['locked user (R9)', () => {
+      resolvedOauthUser = { id: 'user_1', emailVerified: true, lockedAt: new Date() };
+    }, 'user_not_found'],
     ['unverified user', () => {
       resolvedOauthUser = { id: 'user_1', emailVerified: false };
     }, 'email_not_verified'],

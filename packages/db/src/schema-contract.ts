@@ -51,6 +51,7 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261103_0001_delegation_code_claim', 'de705f548d9ffd6bc6a0d669f1156874258f31cc2d3e3584dbf0b49e5b40d992'],
   ['20261103_0002_approval_request_denied', '87d5205193ef11fc87a52325ff703cc9fc14dcec3c2a81ac71408ea5709bfce8'],
   ['20261109_0001_approval_request_approving', '59d59bc76994122d54d3d4564002cab2b01fecf194a12ee688f277b41c90fa6b'],
+  ['20261110_0001_apple_notifications', '431fea91f3c4ed37c4a7efef982fc5b88e7dc396bdc9b49633366c7da64fd4ba'],
 ]);
 
 export type SchemaContractDatabase = {
