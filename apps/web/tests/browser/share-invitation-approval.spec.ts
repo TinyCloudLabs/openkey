@@ -56,7 +56,7 @@ async function open(page: Page, request: Record<string, unknown>, resource: stri
 }
 
 const UNLOCK = {
-  session: 'Read Project notes messages with this invitation\'s key',
+  session: 'Unlock Project notes with this invitation\'s key',
   file: 'Unlock Project notes with this invitation\'s key',
 } as const;
 const CONTINUATION = 'Once accepted, access can continue after this date. If you remove it, access ends within 7 days.';

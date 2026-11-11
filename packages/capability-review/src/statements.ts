@@ -1953,11 +1953,7 @@ export function shareInvitationActionLabel(
   invitation: ShareInvitationSubject,
 ): string | null {
   if (!isShareInvitationKeyGrant(grant)) return null;
-  if (ability === "tinycloud.encryption/decrypt") {
-    return invitation.subjectKind === "session"
-      ? `Read ${invitation.subjectName} messages with this invitation's key`
-      : `Unlock ${invitation.subjectName} with this invitation's key`;
-  }
+  if (ability === "tinycloud.encryption/decrypt") return `Unlock ${invitation.subjectName} with this invitation's key`;
   return ability === "tinycloud.encryption/key.create" ? INVITATION_KEY_CREATE_STATEMENT : null;
 }
 

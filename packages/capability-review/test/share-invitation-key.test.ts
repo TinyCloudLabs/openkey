@@ -38,7 +38,7 @@ test.each([
 });
 
 test.each([
-  ['session', 'Read Project notes messages with this invitation\'s key'],
+  ['session', 'Unlock Project notes with this invitation\'s key'],
   ['file', 'Unlock Project notes with this invitation\'s key'],
 ] as const)('on a %s invitation the key decrypt row names the subject', (subjectKind, unlock) => {
   const rows = buildShareInvitationSummaryStatements(
@@ -62,7 +62,7 @@ test.each([
 test('the edit view labels the invitation key actions the way the summary does, and nothing else', () => {
   const key = grant(`urn:tinycloud:encryption:${owner}:default/share/${id}`, [create, decrypt]);
   const invitation = { subjectKind: 'session', subjectName: 'Project notes' } as const;
-  expect(shareInvitationActionLabel(key, decrypt, invitation)).toBe('Read Project notes messages with this invitation\'s key');
+  expect(shareInvitationActionLabel(key, decrypt, invitation)).toBe('Unlock Project notes with this invitation\'s key');
   expect(shareInvitationActionLabel(key, create, invitation)).toBe('Create an encryption key for this invitation only');
   expect(shareInvitationActionLabel(key, 'tinycloud.encryption/key.block', invitation)).toBeNull();
   expect(shareInvitationActionLabel(grant(`urn:tinycloud:encryption:${owner}:default/share/abc123`, [decrypt]), decrypt, invitation)).toBeNull();
