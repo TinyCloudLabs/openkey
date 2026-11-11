@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import type { SessionContext } from './session';
-import { TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_SESSION_SCOPE } from '../oauth-config';
+import { isConfidentialWebClient, TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_SESSION_SCOPE } from '../oauth-config';
 import { rejectNonOpenKeySignRequest } from './browser-control';
 
 export type DelegateSignerPrincipal =
@@ -117,9 +117,7 @@ function sameStringSet(actual: string[], expected: readonly string[]): boolean {
 }
 
 function isConfidentialPersonalWebClient(client: NonNullable<CoordinationosOauthContext['client']>): boolean {
-  return client.type === 'web'
-    && !client.public
-    && client.tokenEndpointAuthMethod === 'client_secret_basic'
+  return isConfidentialWebClient(client)
     && sameStringSet(client.grantTypes, ['authorization_code'])
     && sameStringSet(client.responseTypes, ['code']);
 }

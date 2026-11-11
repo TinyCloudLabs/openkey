@@ -198,6 +198,34 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     expect(session.expiresAt.getTime() - session.createdAt.getTime()).toBeLessThanOrEqual(3_600_000);
   });
 
+  test('reviewer consent metadata is read-only and bound at both auth chokepoints', async () => {
+    const runtime = await import('../auth');
+    for (const [suffix, status] of [
+      ['?client_id=' + clientId, 200],
+      ['?client_id=another-client', 403],
+      ['', 403],
+      ['?client_id=' + clientId + '&client_id=another-client', 403],
+      ['/?client_id=' + clientId, 403],
+    ] as const) {
+      const path = '/api/auth/oauth2/public-client' + suffix;
+      const response = await call(path, 'GET', undefined, { cookie });
+      expect(response.status).toBe(status);
+      if (status === 200) {
+        const body = await response.json();
+        expect(body.client_id).toBe(clientId);
+        expect(Object.keys(body).every((key) => ['client_id', 'client_name', 'client_uri', 'contacts', 'logo_uri', 'tos_uri', 'policy_uri', 'redirect_uris'].includes(key))).toBe(true);
+        expect(body.redirect_uris).toEqual([]);
+      }
+      if (!suffix.startsWith('/')) {
+        const direct = await accounts.reviewerRequest.run({}, () => runtime.auth.handler(new Request('https://api.openkey.test' + path, {
+          headers: { cookie, origin: 'https://openkey.test' },
+        })));
+        expect(direct.status).toBe(status);
+      }
+    }
+    expect((await call('/api/auth/oauth2/public-client', 'POST', { client_id: clientId }, { cookie })).status).toBe(403);
+  });
+
   test('consent and PKCE exchange issue only one-hour reviewer credentials', async () => {
     const authorization = await call('/api/auth/oauth2/authorize?' + signedQuery, 'GET', undefined, { cookie });
     expect(authorization.status, await authorization.clone().text()).toBe(302);

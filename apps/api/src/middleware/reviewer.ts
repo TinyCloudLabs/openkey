@@ -5,6 +5,7 @@ import { REVIEWER_MAX_SECONDS, captureReviewer, reviewerActive, reviewerForUser,
 
 const ROUTES = new Set([
   'GET /api/auth/get-session', 'POST /api/auth/sign-out',
+  'GET /api/auth/oauth2/public-client',
   'POST /api/auth/sign-in/reviewer', 'POST /api/auth/sign-in/email-otp',
   'GET /api/auth/oauth2/authorize', 'POST /api/auth/oauth2/consent', 'POST /api/auth/oauth2/continue',
   'POST /api/auth/oauth2/token', 'GET /api/auth/oauth2/userinfo', 'POST /api/auth/oauth2/userinfo',
@@ -23,6 +24,9 @@ export function createReviewerRouteGuard(
     if (!binding) return next();
     const session = principal.sessionId
       ? await database.session.findUnique({ where: { id: principal.sessionId } }) : null;
+    if (c.req.path.replace(/\/$/, '') === '/api/auth/oauth2/public-client'
+      && (c.req.path !== '/api/auth/oauth2/public-client' || c.req.queries('client_id')?.length !== 1
+        || c.req.query('client_id') !== binding.clientId)) return c.json({ error: 'Forbidden' }, 403);
     if (!reviewerActive(binding, session?.reviewerEpoch ?? null)
       || session?.userId !== binding.userId || session.expiresAt <= new Date()
       || session.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000 <= Date.now()
