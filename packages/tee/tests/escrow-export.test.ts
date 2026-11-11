@@ -3,6 +3,7 @@ import { DhkemP256HkdfSha256 } from '@hpke/core';
 import { prepareEscrowExport, type ExportPolicy, type EscrowExportOptions } from '../src/escrow-export';
 import { unwrapEscrowShare } from '../src/escrow-envelope';
 import { recoverEscrowKey } from '../src/escrow-shares';
+import { recoverEscrowPaths } from '../src/escrow-recovery';
 import { createDecipheriv } from 'node:crypto';
 
 test('synthetic enclave ceremony exports encrypted path key with actual split coordinates', async () => {
@@ -58,6 +59,26 @@ test('synthetic enclave ceremony exports encrypted path key with actual split co
   const decipher = createDecipheriv('aes-256-gcm', recovered, blob.subarray(0, 12));
   decipher.setAAD(aad); decipher.setAuthTag(blob.subarray(-16));
   expect(Buffer.concat([decipher.update(blob.subarray(12, -16)), decipher.final()])).toEqual(Buffer.from(key));
+  let imports = 0;
+  let keyReference: Uint8Array | undefined;
+  const recovery = {
+    enabled: true, isInTee: async () => true, header: result.header, expectedHeaderHash: result.headerHash,
+    shares, items: result.items,
+    validate: async (keys: readonly { key: Uint8Array }[]) => { expect(Buffer.from(keys[0]!.key)).toEqual(Buffer.from(key)); keyReference = keys[0]!.key; return true as const; },
+    importAndReseal: async () => { imports++; return true as const; },
+  };
+  expect(await recoverEscrowPaths(recovery)).toEqual({ completed: 1, headerHash: result.headerHash });
+  expect(keyReference!.every(byte => byte === 0)).toBe(true);
+  expect(imports).toBe(1);
+  for (const items of [[], [result.items[0]!, result.items[0]!], [{ ...result.items[0]!, path: 'extra' }]]) {
+    await expect(recoverEscrowPaths({ ...recovery, items })).rejects.toThrow();
+  }
+  const damaged = Buffer.from(result.items[0]!.ciphertext, 'base64url'); damaged[15] = damaged[15]! ^ 1;
+  await expect(recoverEscrowPaths({ ...recovery, items: [{ ...result.items[0]!, ciphertext: damaged.toString('base64url'), checksum: (await import('node:crypto')).createHash('sha256').update(damaged).digest('hex') }] })).rejects.toThrow();
+  await expect(recoverEscrowPaths({ ...recovery, validate: async () => false as unknown as true })).rejects.toThrow();
+  await expect(recoverEscrowPaths({ ...recovery, expectedHeaderHash: '0'.repeat(64) })).rejects.toThrow();
+  await expect(recoverEscrowPaths({ ...recovery, isInTee: async () => false })).rejects.toThrow();
+  expect(imports).toBe(1);
   expect(JSON.stringify(result)).not.toContain(Buffer.from(key).toString('hex'));
   await expect(prepareEscrowExport({ ...options, authorize: async () => { throw new Error('Denied'); } })).rejects.toThrow();
   await expect(prepareEscrowExport({ ...options, validateSnapshot: async () => { throw new Error('Invalid identity'); } })).rejects.toThrow();
