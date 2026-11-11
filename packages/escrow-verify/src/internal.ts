@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { freezeEscrowHeader, type EscrowHeader } from '@openkey/tee';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak256, recoverPublicKey } from 'viem';
-import { KMS_ROOT_PUBLIC_KEY, SERVICE_RELEASES } from './trust';
+import { SERVICE_RELEASES } from './trust';
 import type { getCollateral, verify } from '@phala/dcap-qvl';
 
 export const GETKEY_SIGNED_PURPOSE = '';
@@ -41,7 +41,7 @@ function replay(log: Event[]): { register: string; appId: string; composeHash: s
 
 /** Test seam is not exposed from the package entry point. */
 export async function verifyHolderBundle(bundle: HolderBundle, holderId: string, holderPublicKey: string, dependencies: { getCollateral: typeof getCollateral; verify: typeof verify }): Promise<string> {
-  if (KMS_ROOT_PUBLIC_KEY === null) throw new Error('Escrow verifier trust not configured');
+  if (SERVICE_RELEASES.length === 0) throw new Error('Escrow verifier trust not configured');
   // Copy before any network await so caller mutation cannot change the decision.
   const input = structuredClone(bundle);
   const candidates = SERVICE_RELEASES.filter(pin => pin.composeHash === input.header.composeHash);
@@ -54,7 +54,7 @@ export async function verifyHolderBundle(bundle: HolderBundle, holderId: string,
     if (!/^[a-f0-9]{96}$/.test(value) || /^0+$/.test(value)) throw new Error('Invalid measurement pin');
   }
   if (Date.parse(frozen.header.createdAt) > Date.now() + 300_000) throw new Error('Escrow creation time is in the future');
-  const root = compressed(KMS_ROOT_PUBLIC_KEY);
+  const root = compressed(trusted.kmsRootPublicKey);
   if (typeof input.quote.quote !== 'string' || !/^(?:[a-f0-9]{2})+$/.test(input.quote.quote)) throw new Error('Invalid quote encoding');
   const quote = Buffer.from(input.quote.quote, 'hex');
   const collateral = await dependencies.getCollateral(PCCS_URL, quote);

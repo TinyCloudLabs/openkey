@@ -29,7 +29,7 @@ test('holder release verifies bound header, replay, pinned service and both real
   const reportData = Buffer.concat([createHash('sha256').update('tinycloud/escrow/export-quote/v1\0').update(frozen.hash).digest(), Buffer.alloc(32)]);
   const td = { reportData, mrTd: Buffer.alloc(48, 1), rtMr0: Buffer.alloc(48, 2), rtMr1: Buffer.alloc(48, 3), rtMr2: Buffer.alloc(48, 4), rtMr3: register };
   const pins = { appId, composeHash: header.composeHash, imageDigest: header.imageDigest, mrTd: td.mrTd.toString('hex'), rtmr0: td.rtMr0.toString('hex'), rtmr1: td.rtMr1.toString('hex'), rtmr2: td.rtMr2.toString('hex'), kmsRootPublicKey: root.publicKey, holderId: header.holders[0]!.id, holderPublicKey: header.holders[0]!.publicKey };
-  mock.module('../src/trust', () => ({ KMS_ROOT_PUBLIC_KEY: root.publicKey, SERVICE_RELEASES: [pins as ServiceReleasePin] }));
+  mock.module('../src/trust', () => ({ SERVICE_RELEASES: [pins as ServiceReleasePin] }));
   const { verifyHolderBundle, PCCS_URL } = await import('../src/internal');
   const bundle = { header, quote: { quote: '00', eventLog: JSON.stringify(events) } };
   const dependencies = {

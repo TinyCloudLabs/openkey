@@ -3,7 +3,7 @@
 `verifyEscrowForHolder(bundle, holderId, holderPublicKey)` verifies an export before a holder opens
 or releases a share. It returns the verified canonical header hash for recovery.
 Service measurements are selected from committed per-service allowlists by
-composeHash. The KMS root is a committed constant. Unconfigured trust or an
+composeHash. Each committed release entry carries its own KMS-root public key. Unconfigured trust or an
 unlisted release is rejected. Only holder identity and its own public key are
 caller inputs; release/KMS pin changes go through reviewed commits.
 
