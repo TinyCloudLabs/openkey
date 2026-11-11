@@ -461,7 +461,8 @@ export const auth = betterAuth({
               throw new APIError('BAD_REQUEST', { error: 'invalid_grant' });
             }
             const source = await prisma.session.findFirst({
-              where: { id: captured.sessionId, userId: user.id, reviewerEpoch: captured.epoch, expiresAt: { gt: new Date() } },
+              where: { id: captured.sessionId, userId: user.id, reviewerEpoch: captured.epoch, expiresAt: { gt: new Date() },
+                createdAt: { gt: new Date(Date.now() - REVIEWER_MAX_SECONDS * 1000) } },
             });
             if (!source) throw new APIError('BAD_REQUEST', { error: 'invalid_grant' });
             await prisma.reviewerAccount.updateMany({
