@@ -120,3 +120,19 @@ material set and require its validatedCount=0 result. All other counts are
 positive. Positive legacy identities use the concrete per-user path and
 `legacy-user-encryption` purpose; PKCS8 private keys are validated by deriving
 and matching the persisted SPKI public key.
+
+## Export source evidence
+
+The escrow provenance client uses the explicit local dstack socket. It keeps
+GetKey's two 65-byte signature-chain entries as lowercase hex, derives the
+OpenKey sealing key as SHA-256(raw32), and clears the raw buffer. For guest-api
+v0, the first signature covers Keccak256(UTF8(":" + compressed-derived-public-key
+lowercase hex)); recovering it yields the source app public key.
+
+Export quote REPORTDATA is SHA-256(UTF8("tinycloud/escrow/export-quote/v1") ||
+NUL || UTF8(headerHash)) followed by 32 zero bytes. headerHash is its 64-character
+lowercase hexadecimal representation. The client checks the echoed data and
+TDX v4 quote body binding, and returns quote hex, event-log text and digest.
+Guest reachability plus a successful bound GetQuote supplies the runtime gate.
+The quote and event log are inputs to independent holder/recovery verification
+of TDX signatures, measurement replay and the expected app/compose policy.
