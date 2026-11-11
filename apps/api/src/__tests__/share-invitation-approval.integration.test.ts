@@ -130,12 +130,25 @@ if (!process.env.TC2234_SHARE_INVITATION_CHILD) {
     const again = await post('/api/delegate', approval(first.prepared));
     expect(again.status).toBe(410);
 
-    function proof(action: 'discover' | 'fetch', path: string, ref = '') {
+    function proof(action: 'discover' | 'fetch', path: string, ref = '', requestId = id) {
       const jkt = createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x: jwk.x })).digest('base64url');
       const head = Buffer.from(JSON.stringify({ alg: 'EdDSA', kid: jkt, typ: 'openkey-session-proof+jwt' })).toString('base64url');
-      const payload = Buffer.from(JSON.stringify({ client_id: 'openkey-approval-result-v1', cred_hash: createHash('sha256').update(JSON.stringify([action, id, opened.header.bodyCid, ref, ''])).digest('base64url'), htm: 'POST', htu: apiOrigin + path, iat: Math.floor(Date.now() / 1000), jti: randomBytes(24).toString('base64url') })).toString('base64url');
+      const payload = Buffer.from(JSON.stringify({ client_id: 'openkey-approval-result-v1', cred_hash: createHash('sha256').update(JSON.stringify([action, requestId, opened.header.bodyCid, ref, ''])).digest('base64url'), htm: 'POST', htu: apiOrigin + path, iat: Math.floor(Date.now() / 1000), jti: randomBytes(24).toString('base64url') })).toString('base64url');
       return `${head}.${payload}.${sign(null, Buffer.from(`${head}.${payload}`), pair.privateKey).toString('base64url')}`;
     }
+
+    // A declined invitation: /prepare and the requester's discovery both answer 410 with status "denied".
+    const declinedId = 'zyxwvutsrqponmlkjihgfedcba';
+    const store = createPrismaApprovalRequestStore(prisma);
+    await store.register({ id: declinedId, bodyCid: opened.header.bodyCid, issuer: opened.header.issuer, request: parseApprovalRequestV1(opened.value, { issuer: opened.header.issuer, linkIssuedAt: new Date(opened.header.issuedAt), linkExpiresAt: new Date(opened.header.expiresAt) }), expiresAt: new Date(opened.header.expiresAt), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null });
+    expect(await store.deny(declinedId, new Date())).toBe(true);
+    const declinedPrepare = await post('/api/delegate/prepare', { ...prepareBody, approvalRequestId: declinedId });
+    expect(declinedPrepare.status).toBe(410);
+    expect(await declinedPrepare.json()).toMatchObject({ code: 'expired_request' });
+    const declinedPath = `/api/approval-requests/${declinedId}/result`;
+    const declinedDiscovery = await post(declinedPath, { bodyCid: opened.header.bodyCid }, { 'OpenKey-Session-Proof': proof('discover', declinedPath, '', declinedId) });
+    expect(declinedDiscovery.status).toBe(410);
+    expect(await declinedDiscovery.json()).toMatchObject({ code: 'expired_request', status: 'denied' });
     const resultPath = `/api/approval-requests/${id}/result`;
     const discovered = await post(resultPath, { bodyCid: opened.header.bodyCid }, { 'OpenKey-Session-Proof': proof('discover', resultPath) });
     expect(discovered.status).toBe(200);

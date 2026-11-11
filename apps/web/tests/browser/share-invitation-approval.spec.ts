@@ -56,8 +56,8 @@ async function open(page: Page, request: Record<string, unknown>, resource: stri
 }
 
 const UNLOCK = {
-  session: 'Unlock Project notes messages with the invitation key',
-  file: 'Unlock Project notes with the invitation key',
+  session: 'Read Project notes messages with this invitation\'s key',
+  file: 'Unlock Project notes with this invitation\'s key',
 } as const;
 const CONTINUATION = 'Once accepted, access can continue after this date. If you remove it, access ends within 7 days.';
 
@@ -67,8 +67,9 @@ for (const subjectKind of ['session', 'file'] as const) {
     await expect(page.getByRole('heading', { name: 'Invite alex@example.test to Project notes' })).toBeVisible();
     await expect(page.getByLabel('Invitation')).toContainText('Accept by ');
     await expect(page.getByText(CONTINUATION)).toHaveCount(subjectKind === 'session' ? 1 : 0);
-    await expect(page.getByText('Create an encryption key for this invitation only')).toBeVisible();
-    await expect(page.getByText(UNLOCK[subjectKind])).toBeVisible();
+    const summary = page.getByLabel('Requested access');
+    await expect(summary.getByText('Create an encryption key for this invitation only')).toBeVisible();
+    await expect(summary.getByText(UNLOCK[subjectKind])).toBeVisible();
     await expect(page.getByText('Open this shared file')).toHaveCount(0);
     await expect(page.getByText('Approval expires')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Change' })).toHaveCount(0);
@@ -79,6 +80,13 @@ for (const subjectKind of ['session', 'file'] as const) {
     expect(prepares[0]).not.toHaveProperty('permissions');
     const dir = process.env.QA_SCREENSHOT_DIR;
     if (dir) await page.screenshot({ path: `${dir}/share-invitation-${subjectKind}-390.png`, fullPage: true });
+    // The detail and edit view names the key's actions the same way.
+    await page.locator('summary').filter({ hasText: 'Advanced details' }).click();
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    await expect(page.getByRole('checkbox', { name: UNLOCK[subjectKind] })).toBeVisible();
+    await expect(page.getByRole('checkbox', { name: 'Create an encryption key for this invitation only' })).toBeVisible();
+    await expect(page.getByText('Open this shared file')).toHaveCount(0);
+    if (dir) await page.screenshot({ path: `${dir}/share-invitation-${subjectKind}-detail-390.png`, fullPage: true });
   });
 }
 

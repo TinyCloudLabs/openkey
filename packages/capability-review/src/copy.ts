@@ -154,6 +154,9 @@ export const SHARE_KEY_PREFIX_CREATE_STATEMENT = "Create keys for files you shar
 /** The owner's decrypt on one exact `default/share/<id>` key: the file shared with that key. */
 export const SHARE_KEY_DECRYPT_STATEMENT = "Open this shared file";
 
+/** The owner's create on the `default/share/<32 hex>` key OpenKey issues for one share invitation (TC-2234). */
+export const INVITATION_KEY_CREATE_STATEMENT = "Create an encryption key for this invitation only";
+
 /**
  * Escape controls, markup and non-ASCII characters as `\uXXXX`, so
  * resource text cannot alter the displayed consent sentence. Cap raw text

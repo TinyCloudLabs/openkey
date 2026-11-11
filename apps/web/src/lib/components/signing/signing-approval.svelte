@@ -56,6 +56,7 @@
     appKeyNotGrantableStatements,
     buildRenderPlan,
     buildShareInvitationSummaryStatements,
+    shareInvitationActionLabel,
     buildSummaryStatements,
     grantIsAppKeyDecrypt,
     sensitiveSummaryCount,
@@ -264,6 +265,11 @@
 
   function isSelected(action: CapabilityAction): boolean {
     return selection.has(action.id);
+  }
+
+  /** An action's label: the invitation's own wording on the key OpenKey issued for it, else the ability's verb. */
+  function actionLabel(grant: CapabilityGrant, action: CapabilityAction): string {
+    return (shareInvitation && shareInvitationActionLabel(grant, action.ability, shareInvitation)) || action.verb;
   }
 
   // The app keys of a request are approved with the rest of it or removed as
@@ -938,11 +944,11 @@
                                 onkeydown={(e) => handleKeydown(e, action)}
                                 disabled={approveDisabled || isLockedByAppKeys(action)}
                               />
-                              <span class="verb">{action.verb}</span>
+                              <span class="verb">{actionLabel(grant, action)}</span>
                             </label>
                           {:else}
                             <span class="action-static">
-                              <span class="verb">{action.verb}</span>
+                              <span class="verb">{actionLabel(grant, action)}</span>
                               {#if action.required}
                                 <span class="required-flag">required</span>
                               {/if}
@@ -954,7 +960,7 @@
                     {#if unselectedActions.length > 0}
                       <p class="not-granting">
                         <span>Not granting:</span>
-                        {unselectedActions.map((action) => action.verb).join(", ")}
+                        {unselectedActions.map((action) => actionLabel(grant, action)).join(", ")}
                       </p>
                     {/if}
                   </li>

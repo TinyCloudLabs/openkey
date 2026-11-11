@@ -32,6 +32,7 @@ import {
   SENDER_HISTORY_STATEMENT,
   SHARE_KEY_PREFIX_CREATE_STATEMENT,
   SHARE_KEY_DECRYPT_STATEMENT,
+  INVITATION_KEY_CREATE_STATEMENT,
   appFolderDeleteStatement,
   appKeyStatementText,
   renderLiteral,
@@ -730,7 +731,7 @@ function buildNamedKeyStatement(
   // The one share key OpenKey generates for a share invitation (TC-2234): the id means nothing to the owner.
   if (parsed.kind === "key" && parsed.network === "default" &&
     /^share\/[0-9a-f]{32}$/.test(parsed.keyPath) && verb === "create") {
-    return { primaryText: "Create an encryption key for this invitation only", service: grant.service, resource, severity: "attention" };
+    return { primaryText: INVITATION_KEY_CREATE_STATEMENT, service: grant.service, resource, severity: "attention" };
   }
   if (parsed.kind === "key" && parsed.network === "default" &&
     /^share\/[^/]+$/.test(parsed.keyPath) && verb === "decrypt") {
@@ -1935,24 +1936,42 @@ export interface ShareInvitationSubject {
   subjectName: string;
 }
 
+/** True when `grant` is the signer's own `default/share/<32 hex>` key, the one OpenKey issues for an invitation. */
+function isShareInvitationKeyGrant(grant: CapabilityGrant): boolean {
+  const view = canonicalEncryptionUrn(grant);
+  return view.kind === "urn" && grant.ownedBySelf === true && view.parsed.kind === "key" &&
+    view.parsed.network === "default" && /^share\/[0-9a-f]{32}$/.test(view.parsed.keyPath);
+}
+
 /**
- * The summary rows of a share invitation approval. When the selection is exactly the signer's own
- * `default/share/<32 hex>` key OpenKey issues for the invitation, its decrypt row names the invitation's subject;
- * any other selection gets the ordinary rows.
+ * The label of one action on the key OpenKey issues for a share invitation (TC-2234), for the summary and the
+ * edit view alike; null for any other grant or ability.
+ */
+export function shareInvitationActionLabel(
+  grant: CapabilityGrant,
+  ability: string,
+  invitation: ShareInvitationSubject,
+): string | null {
+  if (!isShareInvitationKeyGrant(grant)) return null;
+  if (ability === "tinycloud.encryption/decrypt") {
+    return invitation.subjectKind === "session"
+      ? `Read ${invitation.subjectName} messages with this invitation's key`
+      : `Unlock ${invitation.subjectName} with this invitation's key`;
+  }
+  return ability === "tinycloud.encryption/key.create" ? INVITATION_KEY_CREATE_STATEMENT : null;
+}
+
+/**
+ * The summary rows of a share invitation approval. When the selection is exactly the key OpenKey issues for the
+ * invitation, its decrypt row names the invitation's subject; any other selection gets the ordinary rows.
  */
 export function buildShareInvitationSummaryStatements(
   grants: readonly CapabilityGrant[],
   invitation: ShareInvitationSubject,
 ): SummaryStatement[] {
   const rows = buildSummaryStatements(grants);
-  const view = grants.length === 1 ? canonicalEncryptionUrn(grants[0]!) : null;
-  if (view?.kind !== "urn" || grants[0]!.ownedBySelf !== true || view.parsed.kind !== "key" ||
-    view.parsed.network !== "default" || !/^share\/[0-9a-f]{32}$/.test(view.parsed.keyPath)) {
-    return rows;
-  }
-  const unlock = invitation.subjectKind === "session"
-    ? `Unlock ${invitation.subjectName} messages with the invitation key`
-    : `Unlock ${invitation.subjectName} with the invitation key`;
+  const unlock = grants.length === 1 ? shareInvitationActionLabel(grants[0]!, "tinycloud.encryption/decrypt", invitation) : null;
+  if (unlock === null) return rows;
   return rows.map((row) => row.primaryText === SHARE_KEY_DECRYPT_STATEMENT ? { ...row, key: unlock, primaryText: unlock } : row);
 }
 

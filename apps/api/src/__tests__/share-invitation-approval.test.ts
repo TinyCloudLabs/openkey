@@ -176,7 +176,7 @@ describe('the key OpenKey issues at /prepare', () => {
     expect(permissions[0]!.path).toMatch(new RegExp(`^urn:tinycloud:encryption:${OWNER_DID}:default/share/[0-9a-f]{32}$`));
     expect(permissions[0]!.actions).toEqual([CREATE, DECRYPT]);
     expect(body.permissions).toBe(permissions);
-    expect(Number(body.expiry)).toBeLessThanOrEqual(Date.parse(context().acceptanceExpiresAt) - Date.now());
+    expect(Number(body.expiry)).toBeLessThanOrEqual(Date.parse(ACCEPT_BY) - Date.now());
     const abilities = sessionAbilitiesFromPermissions(permissions, OWNER);
     expect(abilities.rawAbilities).toEqual({ [permissions[0]!.path]: [CREATE, DECRYPT] });
     expect(Object.keys(abilities.spaceAbilities)).toEqual([]);

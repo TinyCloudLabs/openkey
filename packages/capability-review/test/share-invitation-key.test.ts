@@ -1,6 +1,6 @@
 // TC-2234: the share key OpenKey generates for one invitation reads as that, without its id.
 import { expect, test } from 'bun:test';
-import { buildShareInvitationSummaryStatements, buildStatements, buildSummaryStatements, type CapabilityGrant } from '../src/index.js';
+import { buildShareInvitationSummaryStatements, buildStatements, buildSummaryStatements, shareInvitationActionLabel, type CapabilityGrant } from '../src/index.js';
 
 const owner = 'did:pkh:eip155:1:0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed';
 const id = '0123456789abcdef0123456789abcdef';
@@ -38,8 +38,8 @@ test.each([
 });
 
 test.each([
-  ['session', 'Unlock Project notes messages with the invitation key'],
-  ['file', 'Unlock Project notes with the invitation key'],
+  ['session', 'Read Project notes messages with this invitation\'s key'],
+  ['file', 'Unlock Project notes with this invitation\'s key'],
 ] as const)('on a %s invitation the key decrypt row names the subject', (subjectKind, unlock) => {
   const rows = buildShareInvitationSummaryStatements(
     [grant(`urn:tinycloud:encryption:${owner}:default/share/${id}`, [create, decrypt])],
@@ -57,4 +57,13 @@ test.each([
   const grants = Array.isArray(made) ? made : [made];
   expect(buildShareInvitationSummaryStatements(grants, { subjectKind: 'session', subjectName: 'Project notes' }))
     .toEqual(buildSummaryStatements(grants));
+});
+
+test('the edit view labels the invitation key actions the way the summary does, and nothing else', () => {
+  const key = grant(`urn:tinycloud:encryption:${owner}:default/share/${id}`, [create, decrypt]);
+  const invitation = { subjectKind: 'session', subjectName: 'Project notes' } as const;
+  expect(shareInvitationActionLabel(key, decrypt, invitation)).toBe('Read Project notes messages with this invitation\'s key');
+  expect(shareInvitationActionLabel(key, create, invitation)).toBe('Create an encryption key for this invitation only');
+  expect(shareInvitationActionLabel(key, 'tinycloud.encryption/key.block', invitation)).toBeNull();
+  expect(shareInvitationActionLabel(grant(`urn:tinycloud:encryption:${owner}:default/share/abc123`, [decrypt]), decrypt, invitation)).toBeNull();
 });
