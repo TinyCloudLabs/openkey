@@ -18,7 +18,7 @@ test('every persisted Ethereum, Nostr and legacy RSA identity is validated in me
   const material = inventory.paths.map(p => ({ ...p, key }));
   expect(validateOpenKeySnapshot(inventory.records, inventory.paths, material).map(p => p.validatedCount)).toEqual([1, 1, 1]);
   for (let i = 0; i < inventory.records.length; i++) {
-    const altered = inventory.records.map((r, j) => j === i ? { ...r, expectedIdentity: i === 2 ? generateKeyPairSync('rsa', { modulusLength: 2048, publicKeyEncoding: { type: 'spki', format: 'pem' } }).publicKey : '0'.repeat(64) } : r);
+    const altered = inventory.records.map((r, j) => j === i ? { ...r, expectedIdentity: i === 2 ? generateKeyPairSync('rsa', { modulusLength: 2048, publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem' } }).publicKey : '0'.repeat(64) } : r);
     expect(() => validateOpenKeySnapshot(altered, inventory.paths, material)).toThrow();
   }
   expect(() => validateOpenKeySnapshot(inventory.records.slice(1), inventory.paths, material)).toThrow();

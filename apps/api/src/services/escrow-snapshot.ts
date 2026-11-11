@@ -16,11 +16,12 @@ export async function withFencedOpenKeySnapshot<T>(database: EscrowSqlDatabase, 
   inventory: ReturnType<typeof buildOpenKeyInventory>;
   snapshotId: string;
   ciphertextSnapshotHash: string;
-}) => Promise<T>): Promise<T> {
+}) => Promise<T>, beforeRead?: (tx: EscrowSqlTransaction) => Promise<void>): Promise<T> {
   return database.$transaction(async tx => {
     // SHARE blocks INSERT/UPDATE/DELETE (ROW EXCLUSIVE), including new paths.
     // Fixed order across maintenance operations avoids table-order inversion.
     await tx.$executeRawUnsafe('LOCK TABLE "ethereum_keys", "nostr_keys", "user_encryption_key" IN SHARE MODE');
+    if (beforeRead) await beforeRead(tx);
     const marker = await tx.$queryRawUnsafe<{ snapshot: string }[]>('SELECT txid_current_snapshot()::text AS snapshot');
     if (marker.length !== 1 || !/^\d+:\d+:(?:\d+(?:,\d+)*)?$/.test(marker[0]!.snapshot)) throw new Error('Invalid database snapshot');
     const ethereum = await tx.$queryRawUnsafe<OpenKeySnapshotRows['ethereum']>('SELECT "id", "userId", "sealingContext", "keyType"::text AS "keyType", "sealedBlob", "address", "publicKey", "isCanonicalTinyCloud", "keyIndex", "label", "archivedAt", "createdAt" FROM "ethereum_keys" ORDER BY "id"');

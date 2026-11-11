@@ -204,6 +204,6 @@ Preflight has a separate one-admin authorization message:
 `["tinycloud/escrow/preflight",1,measuredConfigHash,nonce,expiresAt,adminId]`,
 UTF-8 compact JSON, ECDSA-SHA256 P1363 base64url. The nonce is canonical
 32-byte base64url and single-use; expiry is at most 15 minutes ahead. Preflight
-and export consume the same nonce ledger and combined hourly budget, with an
+and export consume the same nonce ledger and separate hourly budgets (six preflights and four exports), with an
 explicit kind. Domain separation prevents either signature from authorizing
 the other action. Real export still requires both configured admin signatures.

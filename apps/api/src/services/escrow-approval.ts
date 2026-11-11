@@ -36,12 +36,11 @@ export function escrowApprovalMessage(request: Pick<EscrowApprovalRequest, 'poli
 }
 
 /** Admin keys are compiled into the measured API image, never read from request/env. */
-export async function authorizeEscrow(request: EscrowApprovalRequest, expected: Omit<EscrowApprovalRequest, 'signatures'>, store: EscrowAuthorizationStore): Promise<true> {
+export async function verifyEscrowApprovalSignatures(request: EscrowApprovalRequest): Promise<EscrowApprovalRequest> {
   if (admins.length < 2) throw new Error('Escrow approval not configured');
   const copied = structuredClone(request);
   const message = escrowApprovalMessage(copied);
-  if (Buffer.from(message).toString('hex') !== Buffer.from(escrowApprovalMessage(expected)).toString('hex')
-    || copied.operatorId !== expected.operatorId || copied.approverId !== expected.approverId || Date.parse(copied.expiresAt) <= Date.now()
+  if (Date.parse(copied.expiresAt) <= Date.now()
     || typeof copied.operatorId !== 'string' || typeof copied.approverId !== 'string'
     || copied.operatorId.length > 4096 || copied.approverId.length > 4096
     || copied.operatorId === copied.approverId || !copied.operatorId || !copied.approverId
@@ -61,7 +60,19 @@ export async function authorizeEscrow(request: EscrowApprovalRequest, expected: 
     if (await webcrypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, decode(signatures[0]!.signature, 64), message) !== true) throw new Error('Invalid escrow signature');
   }
   if (Date.parse(copied.expiresAt) <= Date.now()) throw new Error('Escrow approval expired');
-  const { signatures: _signatures, ...audit } = copied;
+  return copied;
+}
+
+
+export function assertEscrowApprovalMatches(request: EscrowApprovalRequest, expected: Omit<EscrowApprovalRequest, 'signatures'>): void {
+  if (Buffer.from(escrowApprovalMessage(request)).toString('hex') !== Buffer.from(escrowApprovalMessage(expected)).toString('hex')
+    || request.operatorId !== expected.operatorId || request.approverId !== expected.approverId) throw new Error('Escrow policy mismatch');
+}
+
+export async function authorizeEscrow(request: EscrowApprovalRequest, expected: Omit<EscrowApprovalRequest, 'signatures'>, store: EscrowAuthorizationStore): Promise<true> {
+  const verified = await verifyEscrowApprovalSignatures(request);
+  assertEscrowApprovalMatches(verified, expected);
+  const { signatures: _signatures, ...audit } = verified;
   if (await store.consume({ ...audit, kind: 'export' }) !== true) throw new Error('Escrow approval refused');
   return true;
 }
@@ -78,7 +89,7 @@ export function escrowPreflightMessage(request: Omit<EscrowPreflightRequest, 'si
   decode(request.nonce, 32);
   return new TextEncoder().encode(JSON.stringify(['tinycloud/escrow/preflight', 1, request.measuredConfigHash, request.nonce, request.expiresAt, request.adminId]));
 }
-export async function authorizeEscrowPreflight(request: EscrowPreflightRequest, measuredConfigHash: string, store: EscrowAuthorizationStore): Promise<true> {
+export async function verifyEscrowPreflightSignature(request: EscrowPreflightRequest, measuredConfigHash: string): Promise<EscrowPreflightRequest> {
   if (admins.length === 0) throw new Error('Escrow approval not configured');
   const copied = structuredClone(request);
   const message = escrowPreflightMessage(copied);
@@ -91,6 +102,12 @@ export async function authorizeEscrowPreflight(request: EscrowPreflightRequest, 
   const key = await webcrypto.subtle.importKey('raw', raw, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
   if (await webcrypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, decode(copied.signature, 64), message) !== true) throw new Error('Invalid preflight signature');
   if (Date.parse(copied.expiresAt) <= Date.now()) throw new Error('Preflight approval expired');
-  if (await store.consume({ kind: 'preflight', policyHash: measuredConfigHash, nonce: copied.nonce, expiresAt: copied.expiresAt, operatorId: copied.adminId, approverId: null, dryRun: true }) !== true) throw new Error('Preflight approval refused');
+  return copied;
+}
+
+
+export async function authorizeEscrowPreflight(request: EscrowPreflightRequest, measuredConfigHash: string, store: EscrowAuthorizationStore): Promise<true> {
+  const verified = await verifyEscrowPreflightSignature(request, measuredConfigHash);
+  if (await store.consume({ kind: 'preflight', policyHash: measuredConfigHash, nonce: verified.nonce, expiresAt: verified.expiresAt, operatorId: verified.adminId, approverId: null, dryRun: true }) !== true) throw new Error('Preflight approval refused');
   return true;
 }

@@ -25,12 +25,17 @@ run('real SQL atomically consumes nonce with audit and serializes the rate limit
     expect(race.filter(result => result.status === 'rejected').length).toBe(1);
     await expect(store.consume({ ...request, policyHash: 'b'.repeat(64) })).rejects.toThrow();
     await expect(store.consume({ ...request, nonce: randomBytes(32).toString('base64url'), expiresAt: new Date(Date.now() - 1).toISOString() })).rejects.toThrow();
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 6; i++) await store.consume({ ...request, kind: 'preflight', approverId: null, nonce: randomBytes(32).toString('base64url') });
+    await expect(store.consume({ ...request, kind: 'preflight', approverId: null, nonce: randomBytes(32).toString('base64url') })).rejects.toThrow('rate limited');
+    for (let i = 0; i < 2; i++) {
       const next = { ...request, policyHash: randomBytes(32).toString('hex'), nonce: randomBytes(32).toString('base64url') };
       await seed(next); await store.consume(next);
     }
     await expect(store.consume({ ...request, kind: 'preflight', approverId: null })).rejects.toThrow();
-    await store.consume({ ...request, kind: 'preflight', approverId: null, nonce: randomBytes(32).toString('base64url') });
+    const contenders = [0, 1].map(() => ({ ...request, policyHash: randomBytes(32).toString('hex'), nonce: randomBytes(32).toString('base64url') }));
+    for (const contender of contenders) await seed(contender);
+    const budgetRace = await Promise.allSettled(contenders.map(contender => store.consume(contender)));
+    expect(budgetRace.filter(result => result.status === 'fulfilled').length).toBe(1);
     await expect(store.consume({ ...request, nonce: randomBytes(32).toString('base64url') })).rejects.toThrow('rate limited');
     const audit = (await setup.query('SELECT "policyHash", "operatorId", "approverId", "dryRun", "kind" FROM escrow_authorization')).rows;
     expect(audit.length).toBe(10);
