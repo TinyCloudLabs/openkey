@@ -35,7 +35,7 @@ export async function wrapEscrowShare(share: Uint8Array, recipientPublicKey: Cry
   const info = bindingBytes('tinycloud/escrow/share-info', binding);
   const aad = bindingBytes('tinycloud/escrow/share-aad', binding);
   const result = await suite.seal({ recipientPublicKey, info }, share, aad);
-  return { version: 1, ...binding, enc: Buffer.from(result.enc).toString('base64url'), ciphertext: Buffer.from(result.ct).toString('base64url') };
+  return { version: 1, escrowId: binding.escrowId, holderId: binding.holderId, x: binding.x, headerHash: binding.headerHash, enc: Buffer.from(result.enc).toString('base64url'), ciphertext: Buffer.from(result.ct).toString('base64url') };
 }
 
 /** Recovery enclave only. Expected binding comes from the verified frozen header. */
