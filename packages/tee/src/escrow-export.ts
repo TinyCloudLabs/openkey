@@ -1,3 +1,4 @@
+import { escrowMaterialLength } from './escrow-transform';
 import { randomBytes, createCipheriv, createHash } from 'node:crypto';
 import { freezeEscrowHeader, type EscrowHeader } from './escrow-header';
 import { escrowKeyCommitment, splitEscrowKey } from './escrow-shares';
@@ -42,12 +43,13 @@ export async function prepareEscrowExport(options: EscrowExportOptions) {
     const counts = await options.validateSnapshot(structuredClone(policy), keys);
     if (Date.now() >= Date.parse(policy.expiresAt)) throw new Error('Escrow approval expired');
     const identity = (p: { path: string; purpose: string; version: number }) => JSON.stringify([p.path, p.purpose, p.version]);
-    const expected = new Set(policy.paths.map(identity));
+    const pathsByIdentity = new Map(policy.paths.map(path => [identity(path), path]));
+    const expected = new Set(pathsByIdentity.keys());
     if (expected.size !== policy.paths.length || keys.length !== expected.size) throw new Error('Incomplete escrow inventory');
     for (const item of keys) {
-      if (item.key.length !== 32 || !expected.delete(identity(item))) throw new Error('Incomplete escrow inventory');
+      const metadata = pathsByIdentity.get(identity(item));
+      if (!metadata || item.key.length !== escrowMaterialLength(metadata.transform) || !expected.delete(identity(item))) throw new Error('Incomplete escrow inventory');
     }
-    const pathsByIdentity = new Map(policy.paths.map(path => [identity(path), path]));
     const countsSeen = new Set<string>();
     if (!Array.isArray(counts) || counts.length !== policy.paths.length) throw new Error('Incomplete record validation');
     for (const result of counts) {

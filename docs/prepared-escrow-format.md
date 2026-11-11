@@ -70,7 +70,7 @@ of 65-byte uncompressed P-256 SEC1 bytes with prefix 0x04. Holder ids and public
 keys are distinct; exactly three holders are required. Coordinates x are distinct
 integers in 1..255, bound to their holder in the header. Holder tuples sort by
 id using JavaScript string comparison (UTF-16 code units). Each path tuple is
-`[path,purpose,version,"sha256-getkey",sourcePublicKey,signatureChain,expectedCount]`.
+`[path,purpose,version,transform,sourcePublicKey,signatureChain,expectedCount]`.
 Path tuples sort by their JSON.stringify encoding using the same comparison.
 Duplicate `(path,purpose,version)` tuples are rejected. Signature-chain order
 is preserved. Header hash is SHA-256 of these bytes, lowercase hex.
@@ -93,3 +93,15 @@ The synthetic cross-language fixture `tests/fixtures/escrow-header-v1.json`
 contains the header, exact canonical UTF-8 bytes and SHA-256 hash. Its public
 P-256 keys derive from test-only private scalars 1, 2 and 3. A separate Python
 fixed-tuple encoder reproduces the bytes and hash. The TS test checks both.
+
+## Material transforms
+
+The closed v1 transform enum is `sha256-getkey` (SHA-256 of raw GetKey bytes,
+exactly 32 bytes) and `dstack-getkey-raw-v1` (raw GetKey bytes, exactly 32 bytes).
+Export and recovery reject unknown transforms and any other material length;
+no truncation or padding is permitted. Raw material is re-derived by service
+code: witness issuer uses the first 32 bytes and its subkey adapter hashes the
+full raw material. Item framing is iv12 || ciphertext(materialLength) || tag16;
+transform is authenticated in item AAD. Version 0 denotes an unversioned path
+and is rejected when the path contains a `/vN/` or trailing `/vN` segment.
+Versioned service paths use their actual N, identically in TS and Rust.

@@ -1,3 +1,4 @@
+import { escrowMaterialLength, type EscrowTransform } from './escrow-transform';
 import { createHash } from 'node:crypto';
 import { DhkemP256HkdfSha256 } from '@hpke/core';
 
@@ -22,7 +23,7 @@ export interface EscrowHeader {
   holders: readonly { id: string; x: number; publicKey: string }[];
   paths: readonly {
     path: string; purpose: string; version: number;
-    transform: 'sha256-getkey'; sourcePublicKey: string;
+    transform: EscrowTransform; sourcePublicKey: string;
     signatureChain: readonly string[]; expectedCount: number;
   }[];
 }
@@ -72,7 +73,9 @@ export function encodeEscrowHeader(header: EscrowHeader): Uint8Array {
   const paths = header.paths.map(item => {
     text(item.path); text(item.purpose); text(item.sourcePublicKey);
     count(item.version); count(item.expectedCount);
-    if (item.expectedCount === 0 || item.transform !== 'sha256-getkey' || !Array.isArray(item.signatureChain) || item.signatureChain.length === 0) throw new Error('Invalid escrow path');
+    escrowMaterialLength(item.transform);
+    if (item.version === 0 && /(?:^|\/)v[0-9]+(?:\/|$)/.test(item.path)) throw new Error('Versioned path requires version');
+    if (item.expectedCount === 0 || !Array.isArray(item.signatureChain) || item.signatureChain.length === 0) throw new Error('Invalid escrow path');
     for (const entry of item.signatureChain) text(entry);
     const identity = JSON.stringify([item.path, item.purpose, item.version]);
     if (pathsSeen.has(identity)) throw new Error('Duplicate escrow path');
@@ -101,7 +104,7 @@ export async function freezeEscrowHeader(input: EscrowHeader): Promise<{
     imageDigest: tuple[7], composeHash: tuple[8], codeHash: tuple[9], osVersion: tuple[10], agentVersion: tuple[11],
     bootReference: tuple[12], snapshotId: tuple[13], nonce: tuple[14], approvalReference: tuple[15], operatorId: tuple[16], approverId: tuple[17],
     holders: tuple[19].map((h: [string, number, string]) => ({ id: h[0], x: h[1], publicKey: h[2] })),
-    paths: tuple[20].map((p: [string, string, number, 'sha256-getkey', string, string[], number]) => ({ path: p[0], purpose: p[1], version: p[2], transform: p[3], sourcePublicKey: p[4], signatureChain: p[5], expectedCount: p[6] })),
+    paths: tuple[20].map((p: [string, string, number, EscrowTransform, string, string[], number]) => ({ path: p[0], purpose: p[1], version: p[2], transform: p[3], sourcePublicKey: p[4], signatureChain: p[5], expectedCount: p[6] })),
   };
   const kem = new DhkemP256HkdfSha256();
   const recipients = new Map<string, CryptoKey>();

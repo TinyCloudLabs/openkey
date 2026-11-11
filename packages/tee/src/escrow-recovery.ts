@@ -1,3 +1,4 @@
+import { escrowMaterialLength } from './escrow-transform';
 import { createDecipheriv, createHash } from 'node:crypto';
 import { freezeEscrowHeader, type EscrowHeader } from './escrow-header';
 import { recoverEscrowKey } from './escrow-shares';
@@ -43,7 +44,7 @@ export async function recoverEscrowPaths(options: EscrowRecoveryOptions): Promis
       const p = paths.get(identity(item))!;
       if (typeof item.ciphertext !== 'string' || typeof item.checksum !== 'string') throw new Error('Invalid recovery item');
       const bytes = Buffer.from(item.ciphertext, 'base64url');
-      if (bytes.length !== 60 || bytes.toString('base64url') !== item.ciphertext
+      if (bytes.length !== 12 + escrowMaterialLength(p.transform) + 16 || bytes.toString('base64url') !== item.ciphertext
         || createHash('sha256').update(bytes).digest('hex') !== item.checksum) throw new Error('Invalid recovery ciphertext');
       const aad = Buffer.from(JSON.stringify(['tinycloud/escrow/path-key', 1, frozen.hash,
         frozen.header.escrowId, frozen.header.appId, p.path, p.purpose, p.version,
