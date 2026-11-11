@@ -1,0 +1,46 @@
+import { expect, test } from 'bun:test';
+import { Client } from 'pg';
+import { withFencedOpenKeySnapshot, type EscrowSqlDatabase, type EscrowSqlTransaction } from '../services/escrow-snapshot';
+
+// Explicit disposable local server only. No DATABASE_URL or production configuration.
+const local = { host: '/home/tinycloud/scratch/openkey-key-escrow/postgres', port: 55483, database: 'postgres', user: 'tinycloud' };
+const run = process.env.OPENKEY_ESCROW_TEST_PG === '1' ? test : test.skip;
+run('real PostgreSQL fence blocks new sealed rows through validation and releases after failure', async () => {
+  const owner = new Client(local); const writer = new Client(local);
+  await owner.connect(); await writer.connect();
+  const schema = 'escrow_test_' + crypto.randomUUID().replaceAll('-', '');
+  try {
+    await owner.query(`CREATE SCHEMA "${schema}"`);
+    await owner.query(`SET search_path TO "${schema}"`);
+    await writer.query(`SET search_path TO "${schema}"`);
+    await owner.query('CREATE TABLE ethereum_keys (id text, "userId" text, "sealingContext" text, "keyType" text, "sealedBlob" text, address text)');
+    await owner.query('CREATE TABLE nostr_keys (id text, "userId" text, "sealingContext" text, "sealedSecret" text, "pubkeyHex" text)');
+    await owner.query('CREATE TABLE user_encryption_key (id text, "userId" text, "sealedPrivateKey" text, "publicKey" text)');
+    const tx: EscrowSqlTransaction = {
+      $executeRawUnsafe: async query => (await owner.query(query)).rowCount ?? 0,
+      $queryRawUnsafe: async <T>(query: string) => (await owner.query(query)).rows as T,
+    };
+    const database: EscrowSqlDatabase = {
+      $transaction: async (operation, options) => {
+        expect(options.isolationLevel).toBe('RepeatableRead');
+        await owner.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+        try { const result = await operation(tx); await owner.query('COMMIT'); return result; }
+        catch (error) { await owner.query('ROLLBACK'); throw error; }
+      },
+    };
+    await writer.query("SET statement_timeout = '150ms'");
+    await withFencedOpenKeySnapshot(database, async snapshot => {
+      expect(snapshot.inventory.paths[0]!.purpose).toBe('legacy-user-encryption-empty');
+      expect(snapshot.inventory.records).toEqual([]);
+      expect(snapshot.ciphertextSnapshotHash).toMatch(/^[a-f0-9]{64}$/);
+      await expect(writer.query("INSERT INTO ethereum_keys(id) VALUES ('blocked')")).rejects.toMatchObject({ code: '57014' });
+      expect(snapshot.rows.ethereum).toEqual([]);
+    });
+    await expect(withFencedOpenKeySnapshot(database, async () => { throw new Error('Validation failed'); })).rejects.toThrow('Validation failed');
+    await writer.query("INSERT INTO ethereum_keys(id) VALUES ('released')");
+    expect((await writer.query('SELECT id FROM ethereum_keys')).rows).toEqual([{ id: 'released' }]);
+  } finally {
+    await owner.query(`DROP SCHEMA "${schema}" CASCADE`);
+    await Promise.all([owner.end(), writer.end()]);
+  }
+});
