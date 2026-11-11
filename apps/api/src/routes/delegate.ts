@@ -1710,6 +1710,7 @@ delegateRouter.post('/', async (c) => {
     });
 
     let hostActivated = false;
+    let activationMayStillApply = false;
     const requestedSpaces = delegationSpaces(preparedEntries, baseline);
     let spaceReadiness = activationReadiness(requestedSpaces, preparedEntries);
     try {
@@ -1732,6 +1733,7 @@ delegateRouter.post('/', async (c) => {
         spaceReadiness = activationReadiness(requestedSpaces, preparedEntries, activationResult);
       }
     } catch (e) {
+      activationMayStillApply = true;
       logError('warn', 'delegate_session_activation_failed', e);
     }
 
@@ -1777,7 +1779,8 @@ delegateRouter.post('/', async (c) => {
     try {
       saved = await saveApprovalDelegation(body, user.id, delegation);
     } catch (error) {
-      if (body.approvalRequestId !== undefined && hostActivated) {
+      if (body.approvalRequestId !== undefined && (hostActivated || activationMayStillApply)) {
+        // A timeout also sends a best-effort revoke; if it lands before a late activation, the grant can still go live (TC-2795).
         await revokeActivatedManagedDelegation(host, key, key.sealedBlob, ownerDid, session.delegationCid);
       }
       throw error;
@@ -2503,7 +2506,7 @@ delegateRouter.post('/complete', async (c) => {
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
   };
-  // External-wallet approvals cannot be revoked here: OpenKey holds neither the wallet key (delegator) nor the session key. The delegation expires with its SIWE (at most 24 hours); follow-up TC-2795 adds a client-visible revoke-required signal with the CID.
+  // OpenKey holds neither the wallet key nor the session key, so a save failure after confirmed activation cannot be revoked here. The owner-signed grant lives for the lifetime the owner chose and saw (default 7 days; no 24-hour bound or 30-day cap; TC-2795).
   const saved = await saveApprovalDelegation(body, user.id, delegation);
   return c.json(saved);
   } catch (error) {

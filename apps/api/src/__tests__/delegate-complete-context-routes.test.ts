@@ -150,6 +150,44 @@ test('managed approval save failure does not revoke when activation reports fail
   expect(result.logs.some(line => line.event === 'delegate_session_revoke_failed')).toBe(false);
 });
 
+test('managed approval save failure attempts exact-CID revoke after activation timeout', async () => {
+  const previousTimeout = process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS;
+  process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS = '20';
+  activateSessionWithHost.mockImplementationOnce(() => new Promise<SpaceHostResult>(() => undefined));
+  try {
+    const result = await triggerManagedSaveFailure(async () => {
+      const header = activateSessionWithHost.mock.calls[0]?.[1];
+      if (!header) throw new Error('session activation was not attempted');
+      return Response.json({ revoked: true, cid: cidFromAuthorization(header.Authorization) });
+    });
+    expect(result.fetchCalls).toHaveLength(1);
+    const sessionHeader = activateSessionWithHost.mock.calls[0]?.[1];
+    if (!sessionHeader) throw new Error('session activation was not attempted');
+    const siwe = revocationSiwes.at(-1);
+    if (!siwe) throw new Error('owner revocation SIWE was not captured');
+    expect(new SiweMessage(siwe).uri).toBe(`ucan:${cidFromAuthorization(sessionHeader.Authorization)}`);
+    expect(releaseApprovalDelegation).toHaveBeenCalledTimes(1);
+  } finally {
+    if (previousTimeout === undefined) delete process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS;
+    else process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS = previousTimeout;
+  }
+});
+
+test('managed approval save failure remains the error after timeout revoke fails', async () => {
+  const previousTimeout = process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS;
+  process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS = '20';
+  activateSessionWithHost.mockImplementationOnce(() => new Promise<SpaceHostResult>(() => undefined));
+  try {
+    const result = await triggerManagedSaveFailure(async () => { throw new Error('revoke network failure'); });
+    expect(result.fetchCalls).toHaveLength(1);
+    expect(result.logs.some(line => line.event === 'delegate_session_revoke_failed')).toBe(true);
+    expect(releaseApprovalDelegation).toHaveBeenCalledTimes(1);
+  } finally {
+    if (previousTimeout === undefined) delete process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS;
+    else process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS = previousTimeout;
+  }
+});
+
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
 const other = privateKeyToAccount('0x2222222222222222222222222222222222222222222222222222222222222222');

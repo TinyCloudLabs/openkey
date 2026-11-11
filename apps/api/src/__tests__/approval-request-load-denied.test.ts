@@ -9,6 +9,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { PrismaPGlite } from 'pglite-prisma-adapter';
 import { PrismaClient } from '@openkey/db';
 import { parseApprovalRequest, signerFromJwk } from '@tinycloud/share-envelope/links';
+import { LATEST_SIWE_TIME_MS } from '../services/approval-expiry';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
 import { mockModules, replaceModules } from './mock-module';
 import type { approvalRequestRouter } from '../routes/approval-requests';
@@ -32,6 +33,7 @@ const request = parseApprovalRequest({
   grantLifetimeSeconds: 3600,
   resultEncryptionPublicJwk: { kty: 'EC', crv: 'P-256', x: relayJwk.x, y: relayJwk.y },
 });
+const requestsById = new Map<string, unknown>();
 const HEADER = { bodyCid: BODY_CID, issuer: signer.did, expiresAt: new Date(Date.now() + 3600_000).toISOString() };
 
 let database: PGlite;
@@ -50,7 +52,10 @@ replaceModules({
 await mockModules({
   '@openkey/db': () => ({ createPrismaClient: () => client }),
   '@tinycloud/share-envelope/links': () => ({
-    resolveLink: async () => ({ type: 'openkey-approval-request', header: HEADER, value: request }),
+    resolveLink: async (link: string) => {
+      const id = new URL(link).pathname.split('/').at(-1)!;
+      return { type: 'openkey-approval-request', header: HEADER, value: requestsById.get(id) ?? request };
+    },
   }),
 });
 
@@ -66,10 +71,10 @@ afterAll(async () => {
   await client.$disconnect();
   await database.close();
 });
+
 beforeEach(async () => {
   await client.approvalRequest.deleteMany();
 });
-
 const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
   route.request(path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
 const load = async () => {
@@ -79,12 +84,33 @@ const load = async () => {
 };
 const decline = () => post(`/approval-requests/${ID}/deny`, { reference: REFERENCE }, { 'x-test-session': 'owner' });
 
-describe('/load reports whether the request was declined', () => {
+describe.serial('/load reports whether the request was declined', () => {
   test('an open request is not denied, and the fields the page already reads are unchanged', async () => {
     const body = await load();
     expect(body).toMatchObject({ denied: false, approved: false, requestId: ID, bodyCid: BODY_CID });
     expect(body.request).toEqual(request);
     expect(typeof body.expiresAt).toBe('string');
+  });
+
+  test('/load rejects malformed, unsafe, and unrepresentable grant lifetimes before storing the request', async () => {
+    const invalidId = `${ID.slice(1)}a`;
+    const invalidReference = REFERENCE.replace(ID, invalidId);
+    for (const [name, grantLifetimeSeconds] of [
+      ['NaN', Number.NaN],
+      ['Infinity', Number.POSITIVE_INFINITY],
+      ['fractional seconds', 1.5],
+      ['zero', 0],
+      ['negative seconds', -1],
+      ['numeric string', '3600'],
+      ['unsafe integer', Number.MAX_SAFE_INTEGER + 1],
+      ['expiry past year 9999', Math.floor((LATEST_SIWE_TIME_MS - Date.now()) / 1000) + 1],
+    ] as const) {
+      requestsById.set(invalidId, { ...request, grantLifetimeSeconds });
+      const response = await post(`/approval-requests/${invalidId}/load`, { reference: invalidReference });
+      expect(response.status, name).toBe(400);
+      expect(await response.json(), name).toMatchObject({ error: expect.stringContaining('grantLifetimeSeconds') });
+      expect(await client.approvalRequest.findUnique({ where: { id: invalidId } }), name).toBeNull();
+    }
   });
 
   test('after the owner declines, reopening the same link says denied', async () => {
