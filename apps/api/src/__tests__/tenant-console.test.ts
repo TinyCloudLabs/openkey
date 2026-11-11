@@ -111,7 +111,7 @@ describe('developer organization console', () => {
     const app = (await created.json() as any).client;
     // Console apps never receive restricted scopes such as tinycloud:delegation.
     const stored = apps.find((candidate) => candidate.id === app.id)!;
-    expect(stored.scopes).toEqual(['openid', 'email', 'keys', 'offline_access']);
+    expect(stored.userId).toBeNull();
     expect((await console.request(`/org-a/apps/${app.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-test-user': 'admin' }, body: JSON.stringify({ scopes: ['tinycloud:delegation'] }) })).status).toBe(400);
     expect(stored.scopes).toEqual(['openid', 'email', 'keys', 'offline_access']);
     expect((await console.request(`/org-a/apps/${app.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-test-user': 'admin' }, body: JSON.stringify({ icon: 'data:text/html,owned' }) })).status).toBe(400);

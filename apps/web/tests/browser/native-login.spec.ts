@@ -62,17 +62,20 @@ async function mockApi(
     }
     if (path === '/api/keys') return json(route, { keys: [{ id: 'key-1', address: '0xabc' }] });
     if (path === '/api/auth/sign-in/social') {
-      return json(route, { url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x', redirect: false });
+      return json(route, { url: body?.provider === 'apple' ? APPLE_AUTHORIZE : GOOGLE_AUTHORIZE, redirect: false });
     }
     return json(route, { error: `unmocked ${path}` }, 404);
   });
   await page.route('https://app.test/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<p>app</p>' }));
   await page.route('https://accounts.google.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<p>google</p>' }));
-  await page.route('https://tinycloud.chat/**', (route) => route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>' }));
+  await page.route('https://appleid.apple.com/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<p>apple</p>' }));
   return { calls, count: (path) => calls.filter((call) => call.path === path).length };
 }
 
 const SEND = '/api/auth/email-otp/send-verification-otp';
+const GOOGLE_AUTHORIZE = 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x';
+const APPLE_AUTHORIZE = 'https://appleid.apple.com/auth/authorize?client_id=so.openkey.signin&response_mode=form_post';
+const CONTINUATION = 'c'.repeat(43);
 
 test.describe('native login', () => {
   test.use({ viewport: { width: 390, height: 844 } });
@@ -286,7 +289,7 @@ test.describe('native login', () => {
   });
 
   test('google redirects the whole window and keeps the native query out of the social request body', async ({ page }) => {
-    const api = await mockApi(page);
+    const api = await mockApi(page, { providers: ['google'] });
     const query = signedQuery({ login_method: 'google' });
     await page.goto(`/auth/login?${query}`);
     await page.waitForURL('https://accounts.google.com/**');
@@ -295,14 +298,14 @@ test.describe('native login', () => {
     expect(Object.keys(request.body).sort()).toEqual(['callbackURL', 'disableRedirect', 'errorCallbackURL', 'provider']);
     expect(request.body.provider).toBe('google');
     expect(request.body.callbackURL).toBe(`${ORIGIN}/auth/login?${query}`);
-    expect(request.body.errorCallbackURL).toBe(`${ORIGIN}/auth/login?${query}&native_social_error=1`);
+    expect(request.body.errorCallbackURL).toBe(`${ORIGIN}/auth/login?${query}&native_social_error=google`);
     expect(request.body.disableRedirect).toBe(true);
     expect(request.raw).not.toContain('oauth_query');
     expect(request.raw).not.toContain('additionalData');
   });
 
   test('the google redirect frame keeps the header and says Opening Google', async ({ page }) => {
-    await mockApi(page);
+    await mockApi(page, { providers: ['google'] });
     await page.route('**/api/auth/sign-in/social', async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 1000));
       await json(route, { url: 'https://accounts.google.com/o/oauth2/v2/auth?client_id=x', redirect: false }).catch(() => {});
@@ -400,9 +403,9 @@ test.describe('native login', () => {
 
   test('the google error return shows the email step with a calm message and starts nothing', async ({ page }) => {
     const api = await mockApi(page, { providers: ['google'] });
-    await page.goto(`/auth/login?${signedQuery({ login_method: 'google' })}&native_social_error=1&error=access_denied`);
+    await page.goto(`/auth/login?${signedQuery({ login_method: 'google' })}&native_social_error=google&error=access_denied`);
     await expect(page.locator('#email')).toBeVisible();
-    await expect(page.getByRole('alert')).toHaveText('Google sign-in did not finish. Continue with your email instead.');
+    await expect(page.getByRole('alert')).toHaveText('Google sign-in was cancelled.');
     await page.waitForLoadState('networkidle');
     expect(api.count('/api/auth/sign-in/social')).toBe(0);
   });
@@ -413,6 +416,154 @@ test.describe('native login', () => {
     await expect(page.locator('#email')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Use a passkey' })).toBeVisible();
+  });
+
+  test.describe('apple', () => {
+    const appleReturn = (fields: Record<string, string>) =>
+      `/auth/login?${signedQuery({ login_method: 'apple' })}&${new URLSearchParams({ native_social_error: 'apple', ...fields })}`;
+
+    test('login_method=apple redirects the whole window to Apple and names Apple on the error return', async ({ page }) => {
+      const api = await mockApi(page, { providers: ['google', 'apple'] });
+      const query = signedQuery({ login_method: 'apple' });
+      await page.goto(`/auth/login?${query}`);
+      await page.waitForURL('https://appleid.apple.com/**');
+
+      const request = api.calls.find((call) => call.path === '/api/auth/sign-in/social')!;
+      expect(Object.keys(request.body).sort()).toEqual(['callbackURL', 'disableRedirect', 'errorCallbackURL', 'provider']);
+      expect(request.body.provider).toBe('apple');
+      expect(request.body.callbackURL).toBe(`${ORIGIN}/auth/login?${query}`);
+      expect(request.body.errorCallbackURL).toBe(`${ORIGIN}/auth/login?${query}&native_social_error=apple`);
+      expect(request.raw).not.toContain('oauth_query');
+      expect(api.count(SEND)).toBe(0);
+    });
+
+    test('the apple redirect frame keeps the header and says Opening Apple', async ({ page }) => {
+      await mockApi(page, { providers: ['apple'] });
+      await page.route('**/api/auth/sign-in/social', async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await json(route, { url: APPLE_AUTHORIZE, redirect: false }).catch(() => {});
+      });
+      await page.goto(`/auth/login?${signedQuery({ login_method: 'apple' })}`);
+      await expect(page.getByRole('heading', { name: 'Sign in to Exo' })).toBeVisible();
+      await expect(page.getByText('Opening Apple…')).toBeVisible();
+      await page.waitForURL('https://appleid.apple.com/**');
+    });
+
+    test('an authorization URL that is not Apple\'s is refused with Apple copy', async ({ page }) => {
+      await mockApi(page, { providers: ['apple'] });
+      await page.route('**/api/auth/sign-in/social', (route) => json(route, { url: 'https://evil.example/auth', redirect: false }));
+      await page.goto(`/auth/login?${signedQuery({ login_method: 'apple' })}`);
+      await expect(page.locator('#email')).toBeVisible();
+      await expect(page.getByRole('alert')).toHaveText('Apple could not complete sign-in. Please try again.');
+      expect(page.url()).toContain(ORIGIN);
+    });
+
+    test('login_method=apple while OpenKey has Apple off stays on email and starts nothing', async ({ page }) => {
+      const api = await mockApi(page, { providers: ['google'] });
+      await page.goto(`/auth/login?${signedQuery({ login_method: 'apple' })}`);
+      await expect(page.locator('#email')).toBeVisible();
+      await expect(page.getByRole('alert')).toHaveText("Apple sign-in isn't available right now. Continue with your email instead.");
+      await page.waitForLoadState('networkidle');
+      expect(api.count('/api/auth/sign-in/social')).toBe(0);
+      await expect(page.getByRole('button', { name: 'Continue with Apple' })).toHaveCount(0);
+    });
+
+    test('the Apple button appears only when the API lists apple, and opens Apple', async ({ page }) => {
+      await mockApi(page, { providers: ['google'] });
+      await page.goto(`/auth/login?${signedQuery()}`);
+      await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Continue with Apple' })).toHaveCount(0);
+
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await mockApi(page, { providers: ['google', 'apple'] });
+      await page.reload();
+      const apple = page.getByRole('button', { name: 'Continue with Apple' });
+      await expect(apple).toBeVisible();
+      const box = await apple.boundingBox();
+      const googleBox = await page.getByRole('button', { name: 'Continue with Google' }).boundingBox();
+      expect(box!.height).toBe(googleBox!.height);
+      expect(box!.width).toBe(googleBox!.width);
+      await page.route('**/api/auth/sign-in/social', async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await json(route, { url: APPLE_AUTHORIZE, redirect: false }).catch(() => {});
+      });
+      await apple.click();
+      await expect(page.getByText('Opening Apple…')).toBeVisible();
+      await page.waitForURL('https://appleid.apple.com/**');
+    });
+
+    test('apple_email_required explains it and starts nothing', async ({ page }) => {
+      const api = await mockApi(page, { providers: ['apple'] });
+      await page.goto(appleReturn({ error: 'apple_email_required' }));
+      await expect(page.locator('#email')).toBeVisible();
+      await expect(page.getByRole('alert')).toHaveText(
+        "Apple didn't share a verified email, so OpenKey can't create an account from it. Sign in with your email or passkey, then add Apple in Settings.",
+      );
+      await page.waitForLoadState('networkidle');
+      expect(api.count('/api/auth/sign-in/social')).toBe(0);
+      expect(api.count(SEND)).toBe(0);
+    });
+
+    test('a cancelled Apple sheet says Apple, not Google', async ({ page }) => {
+      await mockApi(page, { providers: ['apple'] });
+      await page.goto(appleReturn({ error: 'user_cancelled_authorize' }));
+      await expect(page.getByRole('alert')).toHaveText('Apple sign-in was cancelled.');
+    });
+
+    test('a new Hide My Email account shows the relay notice and creates through the bound continuation', async ({ page }) => {
+      const api = await mockApi(page, { providers: ['apple'] });
+      const seen: string[] = [];
+      await page.route('**/api/auth/social/continuation**', (route) => {
+        seen.push(route.request().url());
+        return json(route, { outcome: 'new_account', providerId: 'apple', email: 'x7@privaterelay.appleid.com', name: 'Sam', isPrivateEmail: true });
+      });
+      let confirm: unknown = null;
+      await page.route('**/api/auth/social/confirm', (route) => {
+        confirm = route.request().postDataJSON();
+        return json(route, { token: 'session' });
+      });
+      await page.route('**/api/auth/oauth2/authorize**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<p>authorize</p>' }));
+      await page.goto(appleReturn({ error: 'new_account', continuation: CONTINUATION }));
+
+      await expect(page.getByText('Apple is hiding your email, so this creates a new OpenKey account. Already have one? Sign in to it and add Apple in Settings.')).toBeVisible();
+      const url = new URL(seen[0]!);
+      expect(url.searchParams.get('continuation')).toBe(CONTINUATION);
+      expect(url.searchParams.get('oauthQuery')).toBe(signedQuery({ login_method: 'apple' }));
+      const authorize = page.waitForRequest('**/api/auth/oauth2/authorize**');
+      await page.getByRole('button', { name: 'Create a new account' }).click();
+      expect(new URL((await authorize).url()).search).toBe(`?${signedQuery({ login_method: 'apple' })}`);
+      expect(confirm).toEqual({ continuation: CONTINUATION, oauthQuery: signedQuery({ login_method: 'apple' }) });
+      expect(api.count('/api/auth/sign-in/social')).toBe(0);
+    });
+
+    test('an existing account asks for sign-in and an email code to add Apple', async ({ page }) => {
+      await mockApi(page, { providers: ['apple'] });
+      await page.route('**/api/auth/social/continuation**', (route) =>
+        json(route, { outcome: 'account_exists', providerId: 'apple', email: 'sam@example.test', name: 'Sam', isPrivateEmail: false }));
+      await page.goto(appleReturn({ error: 'account_exists', continuation: CONTINUATION }));
+      await expect(page.getByText('An OpenKey account already uses sam@example.test.')).toBeVisible();
+      await expect(page.getByText('Sign in to it and verify with an email code to add Apple in Settings.')).toBeVisible();
+      await page.getByRole('button', { name: 'Sign in to your account' }).click();
+      await expect(page.locator('#email')).toHaveValue('sam@example.test');
+    });
+
+    test('an expired Apple continuation falls back to email with Apple copy', async ({ page }) => {
+      await mockApi(page, { providers: ['apple'] });
+      await page.route('**/api/auth/social/continuation**', (route) => json(route, { message: 'invalid' }, 400));
+      await page.goto(appleReturn({ error: 'new_account', continuation: CONTINUATION }));
+      await expect(page.locator('#email')).toBeVisible();
+      await expect(page.getByRole('alert')).toHaveText('This Apple confirmation expired. Start sign-in again.');
+      await expect(page.getByRole('button', { name: 'Create a new account' })).toHaveCount(0);
+    });
+
+    test('a continuation whose outcome disagrees with the return is refused', async ({ page }) => {
+      await mockApi(page, { providers: ['apple'] });
+      await page.route('**/api/auth/social/continuation**', (route) =>
+        json(route, { outcome: 'new_account', providerId: 'apple', email: 'sam@example.test', isPrivateEmail: false }));
+      await page.goto(appleReturn({ error: 'account_exists', continuation: CONTINUATION }));
+      await expect(page.getByRole('alert')).toHaveText('Apple could not complete sign-in. Please try again.');
+      await expect(page.getByRole('button', { name: 'Create a new account' })).toHaveCount(0);
+    });
   });
 
   test('applies the client branding and has no TEE footer or key logo', async ({ page }) => {

@@ -95,7 +95,7 @@ beforeEach(() => {
 async function post(path: string, body: Record<string, unknown>) {
   const res = await router.request(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
     body: JSON.stringify(body),
   });
   return { status: res.status, body: (await res.json()) as Record<string, any> };

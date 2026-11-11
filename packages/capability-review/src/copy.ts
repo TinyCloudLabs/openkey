@@ -57,6 +57,50 @@ export const DELEGATION_LIST_LABEL = "Who can access your data";
 /** The consent sentence for the same grant. */
 export const DELEGATION_LIST_STATEMENT = "See who has access to your data";
 
+/**
+ * Title and consent sentence of a `tinycloud.delegation/revoke` grant on the
+ * signer's own space. It lets the requester end access the signer gave; the
+ * resource names the space, not the app or link, so the row cannot name one.
+ */
+export const DELEGATION_REVOKE_LABEL = "Remove access you gave";
+
+/**
+ * Consent sentence (and grant title) of the KV grant a Share-style request
+ * makes on the sender's own sharing-history records: `tinycloud.kv` on the
+ * `applications` space under `vault/sender-history/v2/records/` with exactly
+ * `get`, `list`, `put`, `del`. Any other verb set, a broader `vault/` prefix,
+ * or a v1 path is not this grant.
+ */
+export const SENDER_HISTORY_STATEMENT =
+  "Read, change and delete your sharing history";
+
+/**
+ * Consent sentence (and grant title) of the KV grant a Share-style request
+ * makes on the recipient's `files-for-you` space at `v1/` with exactly `get`,
+ * `list`, `put`. `put` replaces files, so the line says change, not add. The
+ * grant stays Sensitive: it writes data the signer did not share into their
+ * mailbox space.
+ */
+export const FILES_FOR_YOU_STATEMENT =
+  "Read and change files shared with you";
+
+/**
+ * Consent sentence of the `tinycloud.capabilities/read` grant: the requester
+ * can inspect which permissions the signer has already granted. Title stays
+ * "Permission check — <space>".
+ */
+export const CAPABILITIES_READ_STATEMENT =
+  "See which permissions are already granted";
+
+/**
+ * Consent sentence of a KV grant that only deletes inside one app folder
+ * (an `<appId>/` path on the `applications` space). The folder is wire text,
+ * never a caller-supplied app name; the row is one per folder.
+ */
+export function appFolderDeleteStatement(folder: string): string {
+  return `Delete data associated with \`${folder}\``;
+}
+
 /** Named-key verbs that carry consent copy. */
 export type NamedKeyVerb = "create" | "decrypt" | "block" | "unblock" | "delete";
 
@@ -98,7 +142,14 @@ export const NAMED_KEY_STATEMENTS: Record<
 export const OWN_KEY_PREFIX_STATEMENTS = {
   create: "Create your own encryption keys in `{path}`",
   decrypt: "Decrypt data locked with your keys in `{path}`",
+  shareDecrypt: "Open all your shared files, including ones you share later.",
 } as const;
+
+/**
+ * The owner's default-network `share/` prefix holds the keys for files the
+ * owner shares, so its create row says that instead of naming the path.
+ */
+export const SHARE_KEY_PREFIX_CREATE_STATEMENT = "Create keys for files you share";
 
 /**
  * Escape controls, markup and non-ASCII characters as `\uXXXX`, so

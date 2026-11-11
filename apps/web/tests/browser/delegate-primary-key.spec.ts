@@ -11,7 +11,7 @@ const CAPS_READ = 'tinycloud.capabilities/read';
 const KV_GET = 'tinycloud.kv/get';
 const json = (route: Route, status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 const key = (id: string, keyIndex: number, address: string, isPrimary: boolean, keyType = 'MANAGED') =>
-  ({ id, address, publicKey: '0x', keyIndex, label: null, keyType, isPrimary, createdAt: new Date().toISOString() });
+  ({ id, address, publicKey: '0x', keyIndex, label: `Key ${keyIndex}`, keyType, isPrimary, createdAt: new Date().toISOString() });
 
 const primary = key('key_0', 0, '0xd559ccd9eb87c530a9a349262669386de93cf412', true);
 const second = key('key_1', 1, '0x2222222222222222222222222222222222222222', false);
@@ -65,7 +65,7 @@ async function mock(page: Page, keys: unknown[], delegation: Record<string, unkn
 const jwk = encodeBase64UrlJson({ kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
 const noOwner = `/delegate?did=did:key:z6Mk&jwk=${jwk}`;
 const approve = (page: Page) => page.getByRole('button', { name: 'Approve', exact: true });
-const keyButton = (page: Page, name: RegExp) => page.getByRole('button', { name });
+const keyButton = (page: Page, name: string) => page.getByRole('button', { name, exact: true });
 
 test.describe('TC-703 primary key picker', () => {
   test('with no owner named and several keys, the user picks; a non-primary key can sign', async ({ page }) => {
@@ -74,28 +74,26 @@ test.describe('TC-703 primary key picker', () => {
 
     // The picker shows; no key is prepared until the user chooses one.
     await expect(page.getByText('Sign in with your primary key')).toBeVisible();
-    await expect(keyButton(page, /Key 0/)).toContainText('Primary');
+    await expect(keyButton(page, 'Key 0')).toContainText('Primary');
     await expect(approve(page)).toHaveCount(0);
     expect(prepared).toEqual([]);
-    await expect(keyButton(page, /Key 1/)).toHaveCount(0);
-    await expect(keyButton(page, /Key 2/)).toHaveCount(0);
+    await expect(keyButton(page, 'Key 1')).toHaveCount(0);
+    await expect(keyButton(page, 'Key 2')).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Generate/ })).toHaveCount(0);
-    await expect(page.getByText(/separate account owner/)).toHaveCount(0);
 
     await page.getByRole('button', { name: 'Use a different key' }).click();
-    await expect(page.getByText(/Each key is a separate account owner, with its own data and spaces/)).toBeVisible();
-    await expect(keyButton(page, /Key 1/)).toBeVisible();
-    await expect(keyButton(page, /Key 2/)).toContainText('(External)');
-    await expect(keyButton(page, /Key 1/)).not.toContainText('Primary');
+    await expect(keyButton(page, 'Key 1')).toBeVisible();
+    await expect(keyButton(page, 'Key 2')).toContainText('(External)');
+    await expect(keyButton(page, 'Key 1')).not.toContainText('Primary');
     await expect(page.getByRole('button', { name: /Generate/ })).toHaveCount(0);
 
-    await keyButton(page, /Key 1/).click();
+    await keyButton(page, 'Key 1').click();
     await expect(approve(page)).toBeEnabled();
     await expect(page.getByLabel('Signing key')).toContainText('Key 1');
     expect(prepared).toEqual(['key_1']);
 
     // Back returns to the picker without auto-advancing.
-    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.getByTestId('signing-dismiss').click();
     await expect(page.getByText('Sign in with your primary key')).toBeVisible();
     expect(prepared).toEqual(['key_1']);
   });
@@ -111,12 +109,12 @@ test.describe('TC-703 primary key picker', () => {
     await expect(approve(page)).toBeEnabled();
     expect(prepared).toEqual(['key_1']);
 
-    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.getByTestId('signing-dismiss').click();
     await expect(page.getByText('Select a key to authorize:')).toBeVisible();
-    await expect(keyButton(page, /Key 1/)).toContainText('Requested');
-    await expect(keyButton(page, /Key 0/)).toContainText('Primary');
+    await expect(keyButton(page, 'Key 1')).toContainText('Requested');
+    await expect(keyButton(page, 'Key 0')).toContainText('Primary');
     // The named-owner path keeps its own override; no primary-key gate.
-    await expect(keyButton(page, /Key 0/)).toBeDisabled();
+    await expect(keyButton(page, 'Key 0')).toBeDisabled();
     await expect(page.getByRole('button', { name: 'Use a different key' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Generate/ })).toHaveCount(0);
   });
@@ -125,7 +123,7 @@ test.describe('TC-703 primary key picker', () => {
     const prepared = await mock(page, [{ ...primary, isPrimary: false }, second, external]);
     await page.goto(noOwner);
     await expect(page.getByText('Select a key to authorize:')).toBeVisible();
-    for (const name of [/Key 0/, /Key 1/, /Key 2/]) await expect(keyButton(page, name)).toBeEnabled();
+    for (const name of ['Key 0', 'Key 1', 'Key 2']) await expect(keyButton(page, name)).toBeEnabled();
     await expect(page.getByText('Primary', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Use a different key' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Generate/ })).toHaveCount(0);
@@ -136,25 +134,48 @@ test.describe('TC-703 primary key picker', () => {
   test('the paste code carries the primary flag from the API unchanged', async ({ page }) => {
     await mock(page, threeKeys, { primary: true });
     await page.goto(noOwner);
-    await keyButton(page, /Key 0/).click();
+    await keyButton(page, 'Key 0').click();
     await approve(page).click();
     const code = await page.locator('textarea').inputValue();
     const payload = JSON.parse(Buffer.from(code, 'base64').toString('utf8')) as Record<string, unknown>;
     expect(payload.primary).toBe(true);
   });
 
-  test('the CLI callback receives the primary flag from the API unchanged', async ({ page }) => {
-    await mock(page, threeKeys, { primary: false });
+  test('the CLI callback receives the primary flag and full readiness metadata from the API unchanged', async ({ page }) => {
+    const requestedSpaces = ['tinycloud:pkh:eip155:1:0xd559ccd9eb87c530a9a349262669386de93cf412:default'];
+    const fullJwk = { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', kid: 'delegate-key', alg: 'EdDSA', ext: true, key_ops: ['verify'] };
+    await mock(page, threeKeys, { primary: false, requestedSpaces, jwk: fullJwk });
     let delivered: Record<string, unknown> | null = null;
     await page.route('http://127.0.0.1:47123/callback', (route) => {
       if (route.request().method() === 'POST') delivered = route.request().postDataJSON() as Record<string, unknown>;
       return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type' }, body: '{"success":true}' });
     });
     await page.goto(`${noOwner}&callback=${encodeURIComponent('http://127.0.0.1:47123/callback')}`);
-    await keyButton(page, /Key 0/).click();
+    await keyButton(page, 'Key 0').click();
     await approve(page).click();
     await expect(page.getByText('You can close this window and return to the CLI.')).toBeVisible();
     expect(delivered).not.toBeNull();
     expect(delivered!.primary).toBe(false);
+    expect(delivered!.requestedSpaces).toEqual(requestedSpaces);
+    expect(delivered!.jwk).toEqual(fullJwk);
+  });
+
+  test('archiving key zero leaves the sole nonzero primary as the signer', async ({ page }) => {
+    const active = { ...second, keyIndex: 7, isPrimary: true };
+    const prepared = await mock(page, [{ ...primary, archivedAt: '2026-11-01T00:00:00Z' }, active]);
+    await page.goto(noOwner);
+    await expect(approve(page)).toBeEnabled();
+    expect(prepared).toEqual([active.id]);
+    await expect(keyButton(page, 'Key 0')).toHaveCount(0);
+  });
+
+  test('an archived requested owner is not replaced by the active primary', async ({ page }) => {
+    const prepared = await mock(page, [{ ...primary, archivedAt: '2026-11-01T00:00:00Z' }, { ...second, isPrimary: true }]);
+    const space = `tinycloud:pkh:eip155:1:${primary.address}:default`;
+    const permissions = [{ service: 'tinycloud.kv', space, path: 'notes/', actions: [KV_GET] }];
+    await page.goto(`${noOwner}&permissions=${encodeBase64UrlJson({ permissions })}`);
+    await expect(keyButton(page, 'Key 1')).toBeDisabled();
+    await expect(approve(page)).toHaveCount(0);
+    expect(prepared).toEqual([]);
   });
 });

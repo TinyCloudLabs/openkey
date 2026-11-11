@@ -76,4 +76,13 @@ describe('Cloudflare Pages console host boundary', () => {
       headers: { location: 'https://console.openkey.so/console/org_123/apps?tab=active' },
     });
   });
+
+  test('serves the Apple App Site Association as JSON without a redirect', async () => {
+    const response = await fetchHost('openkey.so', '/.well-known/apple-app-site-association');
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toBe('application/json');
+    expect(JSON.parse(response.body)).toEqual({
+      webcredentials: { apps: ['R4QVKA785H.xyz.tinycloud.home'] },
+    });
+  });
 });

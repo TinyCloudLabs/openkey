@@ -207,7 +207,7 @@ async function postBootstrapMessage(message: string) {
   const router = await delegateRouter();
   return router.request('/sign', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
     body: JSON.stringify({
       address,
       chainId,
@@ -563,7 +563,7 @@ describe('delegateRouter Auto-Sign integration', () => {
 
     const response = await router.request('/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({
         address,
         chainId,
@@ -782,7 +782,7 @@ describe('delegateRouter Auto-Sign integration', () => {
 
     const response = await router.request('/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({
         address,
         chainId,
@@ -806,7 +806,7 @@ describe('delegateRouter Auto-Sign integration', () => {
 
     const response = await router.request('/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({
         address,
         chainId,

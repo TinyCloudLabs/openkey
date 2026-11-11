@@ -12,6 +12,8 @@
     type SocialProviderId,
   } from '$lib/social-auth';
   import SocialButtons from '$lib/components/auth/social-buttons.svelte';
+  import PasskeyStepUpDialog from '$lib/components/auth/passkey-step-up-dialog.svelte';
+  import { passkeyStepUpMethods, type PasskeyStepUpMethod } from '$lib/passkey-step-up';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -146,7 +148,8 @@
     loadingProvider = provider;
     error = '';
     try {
-      await signInWithSocialPopup(provider);
+      // Explicit sign-up intent: the popup creates the account without asking again, unless Apple hides the email.
+      await signInWithSocialPopup(provider, undefined, 'signup');
       await ensureKeyExists();
       await continueAfterRegistration();
     } catch (e: any) {
@@ -157,12 +160,19 @@
     }
   }
 
+  // TC-1198: sign-up grants a five-minute, single-use passkey enrolment; past
+  // it, the API asks for a fresh step-up first.
+  let passkeyStepUpOffered = $state<PasskeyStepUpMethod[] | null>(null);
+
   async function registerPasskey() {
     loading = true;
     error = '';
     try {
       const result = await authClient.passkey.addPasskey();
-      if (result?.error) {
+      const methods = passkeyStepUpMethods(result?.error);
+      if (methods) {
+        passkeyStepUpOffered = methods;
+      } else if (result?.error) {
         error = authErrorMessage(result.error, 'Failed to register passkey');
       } else {
         // Ensure the user has a key before proceeding
@@ -252,6 +262,15 @@
   }
 
 </script>
+
+{#if passkeyStepUpOffered}
+  <PasskeyStepUpDialog
+    purpose="passkey_register"
+    methods={passkeyStepUpOffered}
+    onverified={() => { passkeyStepUpOffered = null; void registerPasskey(); }}
+    oncancel={() => { passkeyStepUpOffered = null; }}
+  />
+{/if}
 
 <div class="flex min-h-screen items-center justify-center bg-surface-50 px-4 py-12">
   <div class="w-full max-w-md">

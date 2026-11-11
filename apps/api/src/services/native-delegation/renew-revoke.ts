@@ -70,9 +70,20 @@ function respond(result: Exclude<Result, { needsUnseal: true }>): Response {
 function permissionSubset(requested: NativePermission[], approved: NativePermission[]): boolean {
   return requested.every((entry) => {
     const parent = approved.find((candidate) => candidate.service === entry.service && candidate.space === entry.space &&
-      (candidate.path === entry.path || (candidate.service === 'tinycloud.kv' && candidate.path.endsWith('/') && entry.path.startsWith(candidate.path))));
+      (candidate.path === entry.path || ((candidate.service === 'tinycloud.kv' || candidate.service === 'tinycloud.sql') &&
+        candidate.path.endsWith('/') && entry.path.startsWith(candidate.path))));
     return !!parent && entry.actions.every((action) => parent.actions.includes(action));
   });
+}
+
+/**
+ * Read per request; changing the value requires recreating the container with
+ * the new environment. Only `1` and `true` (case-insensitive, whitespace
+ * trimmed) enable the switch; unset or any other value is off.
+ */
+function nativeRenewalsDisabled(): boolean {
+  const value = process.env.OPENKEY_NATIVE_RENEW_DISABLED?.trim().toLowerCase();
+  return value === 'true' || value === '1';
 }
 
 function requestedPermissions(raw: string | null, jwk: unknown): unknown {
@@ -115,6 +126,7 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
     if (new Set(keys).size !== keys.length || keys.some((key) => !FORM_KEYS.has(key)) ||
       (operation === 'revoke' && keys.some((key) => key !== 'client_id' && key !== 'refresh_token')) ||
       !params.get('client_id') || !params.get('refresh_token')) return respond(fail('invalid_request', 400));
+    if (operation === 'renew' && nativeRenewalsDisabled()) return respond(fail('consent_required', 400));
     const token = params.get('refresh_token')!;
     const hash = credentialHash(token);
     const candidate = await db.tinyCloudNativeGrant.findFirst({ where: { OR: [{ refreshTokenHash: hash }, { previousRefreshTokenHash: hash }] } });
@@ -222,13 +234,15 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
               return fail('invalid_grant', 400);
             }
           }
-          const user = await tx.user.findUnique({ where: { id: grant.userId }, select: { tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true } });
+          const user = await tx.user.findUnique({ where: { id: grant.userId }, select: { tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true, lockedAt: true } });
           if (!user) return fail('invalid_grant', 400);
           const epoch = user.tinyCloudManageKeyPolicyEpoch;
           const deny = async (code: 'consent_required' | 'access_denied', reason: string) => {
             await recordDecision(tx, grant, epoch, false, reason);
             return fail(code, 400);
           };
+          // R9 (TC-1231): a locked account's native grants never renew.
+          if (user.lockedAt) return deny('access_denied', 'account_locked');
           if (now.getTime() >= grant.absoluteExpiresAt.getTime() - RENEWAL_CUTOFF_MS) return deny('consent_required', 'grant_expired');
           const client = await tx.oauthClient.findUnique({ where: { clientId: grant.clientId } });
           const ceiling = client && enabledNativeDelegation(client);
