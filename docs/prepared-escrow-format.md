@@ -53,3 +53,29 @@ No whitespace, tuple order fixed, JSON string escaping applies. headerHash is
 verified frozen header, never from the wrapper itself. Each share uses a fresh
 HPKE single-shot context. Recovery rejects any binding difference before open,
 and verifies the decrypted trailing x.
+
+## Header encoding
+
+`encodeEscrowHeader` emits UTF-8 JSON.stringify of this fixed-position tuple:
+
+```
+["tinycloud/escrow/header",1,escrowId,appId,imageDigest,composeHash,codeHash,
+ osVersion,agentVersion,bootReference,snapshotId,nonce,approvalReference,
+ operatorId,approverId,[16,1,2,"gf256-0x11b",2,3],holders,paths]
+```
+
+Each holder tuple is `[id,publicKey]`; publicKey is canonical unpadded base64url
+of 65-byte uncompressed P-256 SEC1 bytes with prefix 0x04. Holder ids and public
+keys are distinct; exactly three holders are required. Holder tuples sort by
+id using JavaScript string comparison (UTF-16 code units). Each path tuple is
+`[path,purpose,version,"sha256-getkey",sourcePublicKey,signatureChain,expectedCount]`.
+Path tuples sort by their JSON.stringify encoding using the same comparison.
+Duplicate `(path,purpose,version)` tuples are rejected. Signature-chain order
+is preserved. Header hash is SHA-256 of these bytes, lowercase hex.
+
+Strings must be nonempty valid Unicode scalar sequences, at most 4096 UTF-8
+bytes; escrowId is limited to 1024 bytes. Versions/counts are nonnegative safe
+integers. Image digest is `sha256:` plus 64 lowercase hex digits; compose/code
+hashes are 64 lowercase hex digits. Operator and approver ids differ.
+`freezeEscrowHeader` copies policy before asynchronous import, validates each
+recipient with `deserializePublicKey`, and freezes nested header objects.
