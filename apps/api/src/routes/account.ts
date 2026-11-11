@@ -334,6 +334,12 @@ accountRouter.post('/delete', async (c) => {
     });
     if (activeOwnerGrants > 0) return { kind: 'owner_grant' as const };
 
+    const relatedAdminGrants = await tx.keyGrant.findMany({ where: { role: 'ADMIN', OR: [
+      { granteeUserId: user.id },
+      { acceptedAt: null, invitedUserId: user.id },
+      { acceptedAt: null, invitedEmail: user.email.trim().toLowerCase() },
+    ] } });
+
     // Active ADMIN grants do not block deletion: revoke them and detach the grantee.
     // key_grants.granteeUserId is ON DELETE RESTRICT, so the user row cannot be
     // deleted while any grant still points at it.
@@ -347,6 +353,19 @@ accountRouter.post('/delete', async (c) => {
       where: { granteeUserId: user.id, revokedAt: { not: null } },
       data: { granteeUserId: null },
     });
+
+    for (const grant of relatedAdminGrants) {
+      await tx.orgKeyGrantChallenge.deleteMany({ where: { grantId: grant.id } });
+      if (!grant.revokedAt) {
+        await tx.keyGrantEvent.create({ data: { keyId: grant.keyId, grantId: grant.id, actorUserId: user.id,
+          kind: grant.granteeUserId === user.id ? 'leave' : 'cancel' } });
+      }
+      await tx.keyGrant.updateMany({ where: { id: grant.id }, data: {
+        revokedAt: grant.revokedAt ?? new Date(), revokedByUserId: grant.revokedByUserId ?? user.id,
+        granteeUserId: null, granteeDid: null, invitedEmail: null, invitedUserId: null, invitationTokenDigest: null,
+      } });
+    }
+    await tx.orgKeyGrantChallenge.deleteMany({ where: { userId: user.id } });
 
     // Delete all ethereum keys (sealed blobs will be unrecoverable)
     const { count: keysDeleted } = await tx.ethereumKey.deleteMany({ where: personalKeyWhere(user.id) });

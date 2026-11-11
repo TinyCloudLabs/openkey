@@ -26,7 +26,10 @@ const tx = {
   session: { deleteMany: async () => ({ count: 1 }) },
   account: { deleteMany: async () => ({ count: 1 }) },
   verification: { deleteMany: async () => ({ count: 0 }) },
+  orgKeyGrantChallenge: { deleteMany: async () => ({ count: 0 }) },
+  keyGrantEvent: { create: async () => ({}) },
   keyGrant: {
+    findMany: async () => [],
     count: async (args: { where: unknown }) => { ownerGrantQueries.push(args); return ownerGrantCount; },
     updateMany: async (args: unknown) => { adminRevocations.push(args); return { count: 0 }; },
   },

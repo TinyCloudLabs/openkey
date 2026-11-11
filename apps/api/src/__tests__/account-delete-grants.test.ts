@@ -7,17 +7,24 @@ import { mockModules, replaceModules } from './mock-module';
 // ON DELETE RESTRICT foreign key on key_grants.granteeUserId. A throwing
 // transaction rolls the model back, as Postgres does.
 type Grant = {
+  keyId?: string;
+  invitedUserId?: string | null;
+  invitedEmail?: string | null;
+  granteeDid?: string | null;
+  invitationTokenDigest?: string | null;
+  acceptedAt?: Date | null;
   id: string;
   role: 'OWNER' | 'ADMIN';
   granteeUserId: string | null;
   revokedAt: Date | null;
   revokedByUserId: string | null;
 };
-type State = { users: Set<string>; grants: Grant[]; sessionLastPasskeyAt: Date };
+type State = { events: Record<string, unknown>[]; users: Set<string>; grants: Grant[]; sessionLastPasskeyAt: Date };
 let state: State;
 
 function matchesGrant(grant: Grant, where: Record<string, unknown>): boolean {
   return Object.entries(where).every(([key, value]) => {
+    if (key === 'OR') return (value as Record<string, unknown>[]).some(part => matchesGrant(grant, part));
     if (key === 'revokedAt') {
       if (value === null) return grant.revokedAt === null;
       return grant.revokedAt !== null; // { not: null }
@@ -29,12 +36,13 @@ function matchesGrant(grant: Grant, where: Record<string, unknown>): boolean {
 const db: any = {
   $queryRaw: async () => [],
   $transaction: async (callback: (tx: any) => Promise<unknown>) => {
-    const snapshot = structuredClone({ users: [...state.users], grants: state.grants });
+    const snapshot = structuredClone({ users: [...state.users], grants: state.grants, events: state.events });
     try {
       return await callback(db);
     } catch (error) {
       state.users = new Set(snapshot.users);
       state.grants = snapshot.grants;
+      state.events = snapshot.events;
       throw error;
     }
   },
@@ -45,7 +53,10 @@ const db: any = {
     },
     deleteMany: async () => ({ count: 0 }),
   },
+  orgKeyGrantChallenge: { deleteMany: async () => ({ count: 0 }) },
+  keyGrantEvent: { create: async ({ data }: { data: Record<string, unknown> }) => { state.events.push(data); return data; } },
   keyGrant: {
+    findMany: async ({ where }: { where: Record<string, unknown> }) => state.grants.filter(grant => matchesGrant(grant, where)).map(grant => ({ ...grant })),
     count: async ({ where }: { where: Record<string, unknown> }) =>
       state.grants.filter((grant) => matchesGrant(grant, where)).length,
     updateMany: async ({ where, data }: { where: Record<string, unknown>; data: Partial<Grant> }) => {
@@ -75,7 +86,7 @@ const savedEnv = { CORS_ORIGIN: process.env.CORS_ORIGIN, TEE_MODE: process.env.T
 replaceModules({
   '../middleware/session': () => ({
     requireSession: createMiddleware(async (c, next) => {
-      c.set('user', { id: 'user_1' });
+      c.set('user', { id: 'user_1', email: 'user_1@example.test' });
       c.set('session', { id: 'session_1' });
       return next();
     }),
@@ -101,6 +112,7 @@ beforeEach(() => {
   state = {
     users: new Set(['user_1', 'user_2']),
     grants: [],
+    events: [],
     sessionLastPasskeyAt: new Date(),
   };
 });
@@ -130,6 +142,7 @@ describe('POST /api/account/delete and key_grants', () => {
     expect(state.grants[0]).toEqual({
       id: 'grant_old', role: 'ADMIN', granteeUserId: null,
       revokedAt, revokedByUserId: 'user_2',
+      granteeDid: null, invitedEmail: null, invitedUserId: null, invitationTokenDigest: null,
     });
   });
 
@@ -163,4 +176,37 @@ describe('POST /api/account/delete and key_grants', () => {
       revokedAt: null, revokedByUserId: null,
     });
   });
+});
+
+for (const kind of ['accepted', 'pending-account', 'pending-email'] as const) {
+  test(`account deletion clears ${kind} invitation data and records the change`, async () => {
+    const owner: Grant = { id: 'other-owner', keyId: 'org-key', role: 'OWNER', granteeUserId: 'user_2', revokedAt: null, revokedByUserId: null };
+    const grant: Grant = { id: 'affected', keyId: 'org-key', role: 'ADMIN',
+      granteeUserId: kind === 'accepted' ? 'user_1' : null,
+      granteeDid: kind === 'accepted' ? 'did:pkh:eip155:1:0x1' : null,
+      acceptedAt: kind === 'accepted' ? new Date() : null,
+      invitedUserId: kind === 'pending-account' ? 'user_1' : null,
+      invitedEmail: kind === 'pending-email' ? 'user_1@example.test' : null,
+      invitationTokenDigest: 'secret-digest', revokedAt: null, revokedByUserId: null };
+    state.grants.push(grant, owner);
+    const response = await deleteAccount();
+    expect(response.status).toBe(200);
+    expect(state.users.has('user_1')).toBe(false);
+    expect(state.grants[0]).toMatchObject({ granteeUserId: null, granteeDid: null, invitedUserId: null, invitedEmail: null, invitationTokenDigest: null });
+    expect(state.grants[0]!.revokedAt).toBeInstanceOf(Date);
+    expect(state.events).toEqual([{ keyId: 'org-key', grantId: 'affected', actorUserId: 'user_1', kind: kind === 'accepted' ? 'leave' : 'cancel' }]);
+    expect(state.grants[1]).toEqual(owner);
+  });
+}
+
+test('audit failure rolls deletion and personal-field cleanup back', async () => {
+  const grant: Grant = { id: 'audit-grant', keyId: 'org-key', role: 'ADMIN', granteeUserId: 'user_1', acceptedAt: new Date(), granteeDid: 'personal-did', invitedEmail: 'user_1@example.test', revokedAt: null, revokedByUserId: null };
+  state.grants.push(structuredClone(grant));
+  const create = db.keyGrantEvent.create;
+  db.keyGrantEvent.create = async () => { throw new Error('injected audit failure'); };
+  try { expect((await deleteAccount()).status).toBe(500); }
+  finally { db.keyGrantEvent.create = create; }
+  expect(state.users.has('user_1')).toBe(true);
+  expect(state.grants[0]).toEqual(grant);
+  expect(state.events).toEqual([]);
 });

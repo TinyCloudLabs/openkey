@@ -24,6 +24,7 @@ import { ownerRevocationRouter } from './routes/owner-revocation-runtime';
 import { internalMetricsRouter } from './routes/internal-metrics';
 import { scoreboardMetricsRouter } from './routes/scoreboard-metrics';
 import { organizationsRouter } from './routes/organizations';
+import { createOrgKeyAdminsRouter, createOrgKeyInvitationsRouter } from './routes/org-key-admins';
 import { createOrgKeysRouter } from './routes/org-keys';
 import { createOrgOwnerCheckRouter } from './routes/org-owner-check';
 import { ORG_OWNER_CHECK_PATH } from './services/org-owner-check';
@@ -281,6 +282,11 @@ app.route('/api/delegation-codes', createDelegationCodeRouter({
 // Developer Organizations own OAuth application configuration and membership only.
 app.route('/api/organizations', organizationsRouter);
 app.route('/api/console/organizations', tenantConsoleRouter);
+
+const orgAdminDeps = { prisma: authPrisma, sessionMiddleware: requireSession,
+  webauthn: () => ({ rpID: process.env.WEBAUTHN_RP_ID ?? '', origin: process.env.WEBAUTHN_ORIGIN ?? '' }) };
+app.route('/api/org-keys', createOrgKeyAdminsRouter(orgAdminDeps));
+app.route('/api/org-key-invitations', createOrgKeyInvitationsRouter(orgAdminDeps));
 
 // Organization keys are separate from personal keys under /api/keys (TC-1518).
 app.route('/api/org-keys', createOrgKeysRouter({
