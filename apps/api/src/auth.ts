@@ -54,6 +54,9 @@ import { confirmedSocialProvider, socialConfirmation } from './services/social-c
 import { assertCurrentSocialLink, socialLinkStatePlugin } from './services/social-link-state';
 import { socialMailboxReview } from './services/social-mailbox-review';
 import { betterAuthLog, log, logError } from './log';
+import { withReviewerDatabase } from './services/reviewer-database';
+import { reviewerAuth } from './services/reviewer-auth';
+import { REVIEWER_MAX_SECONDS, capturedReviewer, reviewerActive, reviewerForUser } from './services/reviewer-accounts';
 import { capSessionRefresh } from './services/session-cap';
 import { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS } from './services/session-lifetime';
 
@@ -226,6 +229,7 @@ function withNativeAuthorizeQuery<T extends ReturnType<typeof oauthProvider>>(pl
   const endpoint = plugin.endpoints.oauth2Authorize;
   endpoint.options.query = endpoint.options.query.extend({
     tinycloud_request: endpoint.options.query.shape.client_id.optional(),
+    resource: endpoint.options.query.shape.client_id.optional(),
     login_method: endpoint.options.query.shape.client_id.optional(),
   });
   return plugin;
@@ -244,9 +248,21 @@ function currentRequestResource(): unknown {
   return (endpointContext.getStore()?.body as { resource?: unknown } | undefined)?.resource;
 }
 function withMcpAccessTokenLifetime<T extends ReturnType<typeof oauthProvider>>(plugin: T): T {
+  const cappedLifetime = (seconds: number) => {
+    const reviewer = capturedReviewer();
+    if (!reviewer) return seconds;
+    const remaining = Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
+    return Math.max(0, Math.min(REVIEWER_MAX_SECONDS, seconds, remaining));
+  };
   Object.defineProperty(plugin.options, 'accessTokenExpiresIn', {
     enumerable: true,
-    get: () => accessTokenExpiresInFor(currentRequestResource()),
+    get: () => cappedLifetime(accessTokenExpiresInFor(currentRequestResource())),
+  });
+  Object.defineProperty(plugin.options, 'idTokenExpiresIn', {
+    enumerable: true, get: () => cappedLifetime(3600),
+  });
+  Object.defineProperty(plugin.options, 'refreshTokenExpiresIn', {
+    enumerable: true, get: () => cappedLifetime(7 * 24 * 3600),
   });
   return plugin;
 }
@@ -257,7 +273,7 @@ function withMcpAccessTokenLifetime<T extends ReturnType<typeof oauthProvider>>(
 // refresh grant and opaque access-token validation. The filter is on Better
 // Auth's client only; OpenKey's own reads keep seeing the rows.
 function withLockedUserFilter(db: PrismaClient): PrismaClient {
-  const unlocked = { user: { lockedAt: null } };
+  const unlocked = { user: { lockedAt: null, reviewerHoldAt: null } };
   const filter = ({ args, query }: { args: { where?: object }; query: (args: unknown) => Promise<unknown> }) =>
     query({ ...args, where: args.where ? { AND: [args.where, unlocked] } : unlocked });
   const reads = { findFirst: filter, findMany: filter };
@@ -277,7 +293,7 @@ export const auth = betterAuth({
     log: betterAuthLog,
   },
 
-  database: prismaAdapter(withLockedUserFilter(withNativeTokenGuardErrors(prisma)), {
+  database: prismaAdapter(withReviewerDatabase(withLockedUserFilter(withNativeTokenGuardErrors(prisma))), {
     provider: 'postgresql',
     transaction: true,
   }),
@@ -291,6 +307,7 @@ export const auth = betterAuth({
   session: {
     expiresIn: SESSION_EXPIRES_IN_SECONDS, // 7 days
     updateAge: SESSION_UPDATE_AGE_SECONDS, // Update session every 24 hours
+    additionalFields: { reviewerEpoch: { type: 'number', required: false, input: false, returned: false } },
     storeSessionInDatabase: true, // Required for OAuth provider
   },
 
@@ -299,6 +316,7 @@ export const auth = betterAuth({
       socialCreatedProvider: { type: 'string', required: false, input: false, returned: false },
       socialEmailReviewedAt: { type: 'date', required: false, input: false, returned: false },
       lockedAt: { type: 'date', required: false, input: false, returned: false },
+      reviewerHoldAt: { type: 'date', required: false, input: false, returned: false },
     },
   },
 
@@ -435,6 +453,23 @@ export const auth = betterAuth({
         if (user && (await prisma.user.findUnique({ where: { id: user.id }, select: { lockedAt: true } }))?.lockedAt) {
           throw new APIError('BAD_REQUEST', { error: 'invalid_grant', error_description: 'The account is locked' });
         }
+        if (user) {
+          const reviewer = await reviewerForUser(prisma, user.id);
+          if (reviewer) {
+            const captured = capturedReviewer();
+            if (captured?.userId !== user.id || !captured.sessionId || !reviewerActive(reviewer, captured.epoch)) {
+              throw new APIError('BAD_REQUEST', { error: 'invalid_grant' });
+            }
+            const source = await prisma.session.findFirst({
+              where: { id: captured.sessionId, userId: user.id, reviewerEpoch: captured.epoch, expiresAt: { gt: new Date() } },
+            });
+            if (!source) throw new APIError('BAD_REQUEST', { error: 'invalid_grant' });
+            await prisma.reviewerAccount.updateMany({
+              where: { store: reviewer.store, userId: user.id, installEpoch: captured.epoch },
+              data: { grantSessionId: source.id },
+            });
+          }
+        }
         // Runs before any access, refresh or ID token is created. A token
         // carrying tinycloud:delegation comes only from the native code
         // exchange, never from the provider's other grants.
@@ -524,6 +559,7 @@ export const auth = betterAuth({
         return claims;
       },
     }))) as any,
+    reviewerAuth(prisma, origin),
   ],
 
   // Provider entries are present only when every required secret is configured.

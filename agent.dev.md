@@ -115,3 +115,6 @@ bun dev:portless
   `DstackClient` derives different keys, which would make every sealed key unrecoverable. The
   known-answer test `packages/tee/tests/dstack-key-derivation.kat.test.ts` must pass unchanged
   (TC-964).
+- Hosted app-review accounts use administrator-managed bindings and the normal OAuth consent
+  flow (TC-2775). Review operations include explicit provisioning, credential installation,
+  audience pinning and status. Apple integration is tracked separately under TC-2780.

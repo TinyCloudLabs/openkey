@@ -63,6 +63,7 @@ const EVENTS = {
   oauth_client_create_failed: true, oauth_client_delete_failed: true, oauth_client_update_failed: true,
   oauth_client_secret_rotated: true,
   session_cap_unapplied: true,
+  reviewer_sign_in: true, reviewer_admin: true,
   resource_introspect_failed: true, resource_introspect_rate_limited: true, mcp_userinfo_guard_failed: true,
   revoked_token_record_failed: true, revoked_token_sweep_failed: true,
   tinycloud_bootstrap_background_failed: true, tinycloud_bootstrap_background_completed: true,
@@ -130,6 +131,20 @@ function emit(level: LogLevel, event: EventName, fields: Record<string, string |
 export function log(level: LogLevel, event: EventName, errorCode?: string): void {
   const safeCode = typeof errorCode === 'string' && Object.hasOwn(ERROR_CODES, errorCode) ? errorCode : undefined;
   emit(level, event, { error_code: safeCode });
+}
+
+/** Reviewer operations are read by the API operations team. Fields are fixed except the reset space ID. */
+export function logReviewer(
+  event: 'reviewer_sign_in' | 'reviewer_admin',
+  result: 'failed' | 'success' | 'installed' | 'unset' | 'boot_hold' | 'reset' | 'audience_pinned' | 'ready',
+  store: string,
+  spaceId?: string,
+): void {
+  const knownStore = ['openai', 'google', 'apple', 'all'].includes(store) ? store : 'unknown';
+  emit('info', event, {
+    store: knownStore, result,
+    ...(result === 'reset' && spaceId ? { space_id: spaceId } : {}),
+  });
 }
 
 /** Event with numeric fields only (status, count): never ids, addresses or tokens. */

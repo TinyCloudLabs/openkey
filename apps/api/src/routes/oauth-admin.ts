@@ -26,6 +26,7 @@ import {
   validateOAuthRedirectUris,
 } from '../services/oauth-redirect-uris';
 
+import { adminCredentialMatches } from '../services/reviewer-accounts';
 import { logError } from '../log';
 const defaultPrisma = createPrismaClient();
 let prisma = defaultPrisma;
@@ -55,7 +56,7 @@ oauthAdminRouter.use('*', async (c, next) => {
   }
 
   const providedKey = authHeader.slice(7);
-  if (providedKey !== adminKey) {
+  if (!adminCredentialMatches(providedKey, adminKey)) {
     return c.json({ error: 'Invalid admin API key' }, 403);
   }
 

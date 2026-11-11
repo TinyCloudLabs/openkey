@@ -52,9 +52,9 @@ export function socialMailboxReview(database: PrismaClient): BetterAuthPlugin {
               before: async (session: { userId: string }, context: AuthEndpointContext | null) => {
                 const user = await database.user.findUnique({
                   where: { id: session.userId },
-                  select: { lockedAt: true, socialCreatedProvider: true, socialEmailReviewedAt: true },
+                  select: { lockedAt: true, reviewerHoldAt: true, socialCreatedProvider: true, socialEmailReviewedAt: true },
                 });
-                if (user?.lockedAt) throw new APIError('FORBIDDEN', {
+                if (user?.lockedAt || user?.reviewerHoldAt) throw new APIError('FORBIDDEN', {
                   code: 'SOCIAL_ACCOUNT_LOCKED', message: 'This account is locked.',
                 });
                 if (context?.path !== '/sign-in/email-otp' || user?.socialCreatedProvider !== 'apple' || user.socialEmailReviewedAt) return;

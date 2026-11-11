@@ -3,6 +3,12 @@
 Track changes to agent-facing development guidance for OpenKey. Add a concise entry when
 `agent.dev.md` or related agent workflow expectations change.
 
+## 2026-11-11
+
+- Added administrator-managed hosted app-review sign-in and fixture account operations
+  for OpenAI and Google connectors (TC-2775).
+
+
 ## 2026-10-21
 
 - Added the public personal-record MCP audience and exact delegation callback
