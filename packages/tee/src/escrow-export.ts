@@ -47,11 +47,12 @@ export async function prepareEscrowExport(options: EscrowExportOptions) {
     for (const item of keys) {
       if (item.key.length !== 32 || !expected.delete(identity(item))) throw new Error('Incomplete escrow inventory');
     }
+    const pathsByIdentity = new Map(policy.paths.map(path => [identity(path), path]));
     const countsSeen = new Set<string>();
     if (!Array.isArray(counts) || counts.length !== policy.paths.length) throw new Error('Incomplete record validation');
     for (const result of counts) {
       const id = identity(result);
-      const path = policy.paths.find(p => identity(p) === id);
+      const path = pathsByIdentity.get(id);
       if (!path || countsSeen.has(id) || result.validatedCount !== path.expectedCount) throw new Error('Incomplete record validation');
       countsSeen.add(id);
     }
@@ -73,8 +74,9 @@ export async function prepareEscrowExport(options: EscrowExportOptions) {
           escrowId: frozen.header.escrowId, holderId: holder.id, x: shares[i]![32]!, headerHash: frozen.hash,
         }));
       }
+      const frozenPaths = new Map(frozen.header.paths.map(path => [identity(path), path]));
       const items = keys.map(item => {
-        const metadata = frozen.header.paths.find(path => identity(path) === identity(item))!;
+        const metadata = frozenPaths.get(identity(item))!;
         const aad = Buffer.from(JSON.stringify(['tinycloud/escrow/path-key', 1, frozen.hash,
           frozen.header.escrowId, frozen.header.appId, metadata.path, metadata.purpose, metadata.version,
           metadata.transform, metadata.sourcePublicKey, metadata.signatureChain]));

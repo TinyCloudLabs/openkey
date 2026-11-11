@@ -40,3 +40,10 @@ test('canonical header fixes ordering, copies policy and curve-checks recipients
   const bad = Buffer.alloc(65); bad[0] = 4;
   await expect(freezeEscrowHeader({ ...frozen.header, holders: [...frozen.header.holders.slice(0, 2), { id: 'bad', x: 99, publicKey: bad.toString('base64url') }] })).rejects.toThrow();
 });
+
+import fixed from './fixtures/escrow-header-v1.json';
+test('fixed public P-256 scalar 1/2/3 header vector matches exact bytes and hash', async () => {
+  const header = fixed.header as EscrowHeader;
+  expect(new TextDecoder().decode(encodeEscrowHeader(header))).toBe(fixed.canonicalUtf8);
+  expect((await freezeEscrowHeader(header)).hash).toBe(fixed.sha256);
+});
