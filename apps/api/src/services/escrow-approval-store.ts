@@ -13,7 +13,7 @@ export function createEscrowAuthorizationStore(prisma: Pick<PrismaClient, '$tran
       if (recent.length !== 1 || recent[0]!.count >= 10n) throw new Error('Escrow approval rate limited');
       if (request.kind === 'export') {
         const claimed = await tx.$executeRawUnsafe(
-          'UPDATE "escrow_preflight" SET "consumedAt" = clock_timestamp() WHERE "policyHash" = $1 AND "nonce" = $2 AND "consumedAt" IS NULL AND "expiresAt" > clock_timestamp()',
+          'UPDATE "escrow_preflight" SET "consumedAt" = clock_timestamp(), "payload" = NULL WHERE "policyHash" = $1 AND "nonce" = $2 AND "consumedAt" IS NULL AND "expiresAt" > clock_timestamp() AND "payload" IS NOT NULL',
           request.policyHash, request.nonce,
         );
         if (claimed !== 1) throw new Error('Preflight unavailable');

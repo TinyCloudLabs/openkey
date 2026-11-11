@@ -942,7 +942,7 @@ model EscrowPreflight {
   policyHash String    @id
   nonce      String    @unique
   expiresAt  DateTime  @db.Timestamptz
-  payload    Json
+  payload    Json?
   consumedAt DateTime? @db.Timestamptz
 
   @@map("escrow_preflight")
