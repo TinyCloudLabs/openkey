@@ -13,14 +13,14 @@ export const mcpAppCopy = {
 } as const;
 export const identityAppCopy = {
   title: 'Apps that can see your wallet address',
-  intro: "These apps can see your OpenKey wallet address. They can't sign anything or use your TinyCloud data. Disconnect an app to stop it.",
+  intro: "These apps can see your OpenKey wallet address. They can't sign anything or use your TinyCloud data. Disconnect an app to stop its future access.",
   connected: 'Connected',
   disconnect: 'Disconnect',
   cancel: 'Cancel',
   confirmAction: 'Disconnect app',
   confirmTitle: (name: string) => `Disconnect ${name}?`,
-  confirmBody: "The app won't be able to see your wallet address again. It can ask you to connect again later.",
-  disconnected: "Disconnected. Within 5 minutes the app can't get your wallet address again. It may keep the address it already has.",
+  confirmBody: "The app won't be able to ask for your wallet address again, but it keeps anything it already received. It can ask you to connect again later.",
+  disconnected: "Disconnected. The app can't ask for your wallet address again. It keeps anything it already received.",
   failed: "Couldn't disconnect the app. Try again.",
 } as const;
 

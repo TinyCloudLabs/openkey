@@ -475,6 +475,7 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
     || body.scopes?.includes(TINYCLOUD_IDENTITY_SCOPE) && existing.skipConsent) {
     return c.json({ error: 'tinycloud:identity clients cannot be auto-approved' }, 400);
   }
+  // Web scopes are immutable; retain this guard for non-web clients adding identity.
   if (body.scopes?.includes(TINYCLOUD_IDENTITY_SCOPE) && !existing.scopes.includes(TINYCLOUD_IDENTITY_SCOPE)) {
     return c.json({ error: 'tinycloud:identity cannot be added to an existing client' }, 400);
   }
