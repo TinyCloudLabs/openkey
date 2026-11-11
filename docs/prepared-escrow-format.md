@@ -102,10 +102,11 @@ Export and recovery reject unknown transforms and any other material length;
 no truncation or padding is permitted. Raw material is re-derived by service
 code: witness issuer uses the first 32 bytes and its subkey adapter hashes the
 full raw material. Item framing is iv12 || ciphertext(materialLength) || tag16;
-transform is authenticated in item AAD. Version 0 denotes an unversioned path
-and is rejected when the path contains a `/vN/` or trailing `/vN` segment.
-Versioned service paths require version === N for every vN segment, identically
-in TS and Rust.
+transform is authenticated in item AAD. Path is an opaque exact identity string; version is explicit nonnegative safe
+integer metadata (including 0). Service adapters enforce their own grammar:
+share-email vN uses version N; org-issuer/v1/<orgId>/<keyVersion> uses terminal
+keyVersion, where v1 is a schema namespace. The shared header does not infer
+version from path text.
 
 ## Empty legacy inventory
 

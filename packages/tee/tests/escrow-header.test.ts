@@ -48,12 +48,12 @@ test('fixed public P-256 scalar 1/2/3 header vector matches exact bytes and hash
   expect((await freezeEscrowHeader(header)).hash).toBe(fixed.sha256);
 });
 
-test('closed transform enum accepts exact raw GetKey material and versioned paths declare N', async () => {
+test('closed transform enum accepts raw material and opaque service path versions', async () => {
   const raw: EscrowHeader = { ...fixed.header as EscrowHeader, paths: [{ ...fixed.header.paths[0]!, path: 'opencredentials/witness/signing-key', transform: 'dstack-getkey-raw-v1' }] };
   expect((await freezeEscrowHeader(raw)).header.paths[0]!.transform).toBe('dstack-getkey-raw-v1');
   await expect(freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, transform: 'unknown' as never }] })).rejects.toThrow();
-  await expect(freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, path: 'opencredentials/share-email/v1/otp-pepper' }] })).rejects.toThrow();
-  await expect(freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, path: 'opencredentials/share-email/v2/otp-pepper', version: 1 }] })).rejects.toThrow();
+  expect((await freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, path: 'opencredentials/share-email/v1/otp-pepper', version: 0 }] })).header.paths[0]!.version).toBe(0);
+  expect((await freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, path: 'opencredentials/org-issuer/v1/org-test/3', version: 3 }] })).header.paths[0]!.version).toBe(3);
   expect((await freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, path: 'opencredentials/share-email/v1/otp-pepper', version: 1 }] })).header.paths[0]!.version).toBe(1);
 });
 
