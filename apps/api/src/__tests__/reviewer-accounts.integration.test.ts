@@ -189,7 +189,10 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     const cookies = result.headers.getSetCookie();
     cookie = cookies.map((value) => value.split(';')[0]).join('; ');
     expect(cookie.includes('session_token')).toBe(true);
-    const session = await database.session.findFirstOrThrow({ where: { userId: 'reviewer-owner' } });
+    const refreshed = await call('/api/auth/get-session', 'GET', undefined, { cookie });
+    expect(refreshed.status).toBe(200);
+    const current = await refreshed.json() as { session: { id: string } };
+    const session = await database.session.findUniqueOrThrow({ where: { id: current.session.id } });
     const binding = await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'openai' } });
     expect(session.reviewerEpoch).toBe(binding.installEpoch);
     expect(session.expiresAt.getTime() - session.createdAt.getTime()).toBeLessThanOrEqual(3_600_000);
@@ -290,6 +293,56 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
       expect(entry.space).toBe(binding!.spaceId!);
       expect(entry.path).toBe('xyz.tinycloud.tinyapps.todos/');
       expect(entry.actions.every((action) => ['tinycloud.kv/get', 'tinycloud.kv/list'].includes(action))).toBe(true);
+    }
+  });
+
+  test('refresh cannot extend reviewer sign-in and an overlong row cannot authorize after one hour', async () => {
+    const result = await call('/api/auth/sign-in/reviewer', 'POST', {
+      email: 'openai-review@tinycloud.xyz', code, oauth_query: signedQuery,
+    });
+    expect(result.status).toBe(200);
+    const testCookie = result.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');
+    const refreshed = await call('/api/auth/get-session', 'GET', undefined, { cookie: testCookie });
+    expect(refreshed.status).toBe(200);
+    const current = await refreshed.json() as { session: { id: string } };
+    const session = await database.session.findUniqueOrThrow({ where: { id: current.session.id } });
+    expect(session.expiresAt.getTime() - session.createdAt.getTime()).toBeLessThanOrEqual(3600_000);
+    // A legacy or direct-database extension must also be refused at every signing entry.
+    await database.session.update({ where: { id: session.id }, data: {
+      expiresAt: new Date(session.createdAt.getTime() + 7 * 86400_000),
+    } });
+    const before = await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'openai' } });
+    await database.reviewerAccount.update({ where: { store: 'openai' }, data: { grantSessionId: session.id } });
+    const runtime = await import('../auth');
+    const authorizationQuery = new URLSearchParams(signedQuery);
+    authorizationQuery.delete('sig');
+    authorizationQuery.delete('exp');
+    const authorize = () => accounts.reviewerRequest.run({}, () => runtime.auth.handler(new Request('https://api.openkey.test/api/auth/oauth2/authorize?' + authorizationQuery, {
+      headers: { cookie: testCookie },
+    })));
+    const { currentReviewerDelegate } = await import('../services/reviewer-delegation');
+    try {
+      expect((await authorize()).status).toBe(302);
+      const binding = await accounts.reviewerForUser(database, 'reviewer-owner');
+      await accounts.reviewerRequest.run({}, async () => {
+        accounts.captureReviewer(binding!, session.id, session.createdAt.getTime() + 3600_000);
+        expect((await currentReviewerDelegate(database, 'reviewer-owner'))?.userId).toBe('reviewer-owner');
+      });
+      await database.session.update({ where: { id: session.id }, data: {
+        expiresAt: new Date(session.createdAt.getTime() + 7 * 86400_000),
+      } });
+      setSystemTime(new Date(session.createdAt.getTime() + 3601_000));
+      for (const path of ['/api/delegate/prepare', '/api/delegate', '/api/delegate/complete']) {
+        expect((await call(path, 'POST', {}, { cookie: testCookie })).status).toBe(403);
+      }
+      expect((await authorize()).status).toBe(403);
+      await accounts.reviewerRequest.run({}, async () => {
+        accounts.captureReviewer(binding!, session.id, session.createdAt.getTime() + 3600_000);
+        await expect(currentReviewerDelegate(database, 'reviewer-owner')).rejects.toThrow();
+      });
+    } finally {
+      setSystemTime();
+      await database.reviewerAccount.update({ where: { store: 'openai' }, data: { grantSessionId: before.grantSessionId } });
     }
   });
 

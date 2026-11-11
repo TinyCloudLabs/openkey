@@ -118,6 +118,8 @@ export function reviewerAuth(database: PrismaClient, origin: string): BetterAuth
           if (!reviewer) return;
           const source = await database.session.findUnique({ where: { id: session.session.id } });
           if (!reviewerActive(reviewer, source?.reviewerEpoch ?? null)
+            || !source || source.expiresAt.getTime() <= Date.now()
+            || source.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000 <= Date.now()
             || !ALLOWED_AUTH_PATHS.has(ctx.path)) throw refused();
           captureReviewer(reviewer, session.session.id, source!.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000);
           if (['/oauth2/authorize', '/oauth2/consent', '/oauth2/continue'].includes(ctx.path)) {

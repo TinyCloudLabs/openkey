@@ -4,7 +4,7 @@ import { HTTPException } from 'hono/http-exception';
 import { parsePreparedRecap, canonicalizeServiceName, type RecapEntry } from '../routes/delegate-session';
 import { PUBLIC_JWK_FIELDS } from '../routes/delegation-codes';
 import { parseStrictSiwe } from './signed-subset';
-import { capturedReviewer, reviewerActive, reviewerForUser, type ReviewerBinding } from './reviewer-accounts';
+import { REVIEWER_MAX_SECONDS, capturedReviewer, reviewerActive, reviewerForUser, type ReviewerBinding } from './reviewer-accounts';
 
 function refuse(): never {
   throw new HTTPException(403, { message: 'Reviewer delegation refused' });
@@ -42,6 +42,7 @@ export async function currentReviewerDelegate(database: PrismaClient, userId: st
   const [session, consent, client] = await Promise.all([
     database.session.findFirst({ where: {
       id: captured.sessionId, userId, reviewerEpoch: captured.epoch, expiresAt: { gt: new Date() },
+      createdAt: { gt: new Date(Date.now() - REVIEWER_MAX_SECONDS * 1000) },
     } }),
     database.oauthConsent.findUnique({ where: { userId_clientId: { userId, clientId: binding.clientId! } } }),
     database.oauthClient.findUnique({

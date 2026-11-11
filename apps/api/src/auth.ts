@@ -596,10 +596,18 @@ export const auth = betterAuth({
   // User.autoSignEnabled is @default(true) in Prisma, so every new account
   // starts with bootstrap Auto-Sign enabled before this provisioning hook runs.
   databaseHooks: {
-    // Web sessions end at most WEB_SESSION_ABSOLUTE_CAP_SECONDS after sign-in (services/session-cap.ts).
+    // Ordinary web sessions use the shared absolute cap; reviewer sessions end one hour after sign-in.
     session: {
       update: {
-        before: capSessionRefresh,
+        before: async (data, context) => {
+          const capped = await capSessionRefresh(data, context);
+          const source = context?.context.session?.session;
+          if (data.expiresAt === undefined || !source || !await reviewerForUser(prisma, source.userId)) return capped;
+          const requested = new Date(capped?.data.expiresAt ?? data.expiresAt).getTime();
+          return { data: { expiresAt: new Date(Math.min(
+            requested, new Date(source.createdAt).getTime() + REVIEWER_MAX_SECONDS * 1000,
+          )) } };
+        },
       },
     },
     user: {

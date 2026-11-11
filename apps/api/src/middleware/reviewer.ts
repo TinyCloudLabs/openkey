@@ -1,7 +1,7 @@
 import type { MiddlewareHandler } from 'hono';
 import type { PrismaClient } from '@openkey/db';
 import { logReviewer } from '../log';
-import { captureReviewer, reviewerActive, reviewerForUser, reviewerForEmail } from '../services/reviewer-accounts';
+import { REVIEWER_MAX_SECONDS, captureReviewer, reviewerActive, reviewerForUser, reviewerForEmail } from '../services/reviewer-accounts';
 
 const ROUTES = new Set([
   'GET /api/auth/get-session', 'POST /api/auth/sign-out',
@@ -25,6 +25,7 @@ export function createReviewerRouteGuard(
       ? await database.session.findUnique({ where: { id: principal.sessionId } }) : null;
     if (!reviewerActive(binding, session?.reviewerEpoch ?? null)
       || session?.userId !== binding.userId || session.expiresAt <= new Date()
+      || session.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000 <= Date.now()
       || !ROUTES.has(`${c.req.method} ${c.req.path.replace(/\/$/, '')}`)) {
       return c.json({ error: 'Forbidden' }, 403);
     }
