@@ -11,7 +11,7 @@
   type Roster = { role: 'OWNER' | 'ADMIN'; grants: Grant[]; key: Key; handle: string | null; events: { id: string; actorUserId: string; kind: string; createdAt: string }[] };
   type Invitation = { key: Key; handle: string | null; inviter: { name: string | null; email: string } | null; invitedEmail: string | null; personalDid: string | null; accepted: boolean; expiresAt: string };
   const session = authClient.useSession();
-  const permissions = 'Admins approve the organisation changes you allow. They can never move funds, export the key or add admins.';
+  const permissions = 'Admins can never move funds, export the key or add admins.';
   let roster = $state<Roster | null>(null);
   let invitation = $state<Invitation | null>(null);
   let loading = $state(true);
@@ -162,7 +162,7 @@
         <label for="invite-target">{targetKind === 'email' ? 'Email address' : 'OpenKey account ID'}</label>
         <input id="invite-target" type={targetKind === 'email' ? 'email' : 'text'} bind:value={target} disabled={busy} required />
         {#if targetKind === 'email'}<p>They can accept even if they haven’t used OpenKey before.</p>{/if}
-        <h3>What you’re allowing</h3><p>{permissions}</p><p>You remain the owner.</p>
+        <h3>What admins can’t do</h3><p>{permissions}</p><p>You remain the owner.</p>
         <div class="actions"><button class="primary" disabled={busy}>Send invitation</button><button type="button" onclick={() => inviting = false} disabled={busy}>Cancel</button></div>
         <p class="muted">Use your passkey to send this invitation.</p>
       </form>
@@ -178,7 +178,7 @@
         {#if roster.grants.length === 1 && roster.role === 'OWNER'}<h3>You’re the only person with access</h3><p>Invite someone to become an admin.</p>{/if}
         {#if confirming}<div class="form"><h2>{!confirming.acceptedAt ? 'Cancel this invitation?' : roster.role === 'OWNER' ? `Remove ${confirmName} as an admin?` : 'Stop being an admin?'}</h2><p><bdi>{confirmName}</bdi></p><p>{!confirming.acceptedAt ? `${confirmName} won’t be able to accept this invitation. You can invite them again later.` : roster.role === 'OWNER' ? `${confirmName} will no longer be an admin. If they approved any changes, those changes will stay in place.` : `Your admin access will end. You can ask ${ownerName} for a new invitation if you need access again.`}</p><p><bdi>{ownerName}</bdi> remains the owner.</p><div class="actions"><button onclick={revoke} disabled={busy}>{!confirming.acceptedAt ? 'Cancel invitation' : roster.role === 'OWNER' ? 'Remove admin' : 'Leave organisation key'}</button><button onclick={() => confirming = null} disabled={busy}>Cancel</button></div></div>{/if}
         {#if roster.role === 'OWNER'}<section class="activity"><h2>Recent activity</h2>{#each roster.events as event (event.id)}<p><bdi>{event.actorUserId}</bdi> · {eventLabels[event.kind] ?? event.kind} <time datetime={event.createdAt}>{date(event.createdAt)}</time></p>{/each}</section>{/if}
-      </section><aside><h3>What admins can do</h3><p>{permissions}</p>{#if roster.role === 'OWNER'}<p>Only you can invite or remove admins. You remain the owner.</p>{/if}</aside></div>
+      </section><aside><h3>What admins can’t do</h3><p>{permissions}</p>{#if roster.role === 'OWNER'}<p>Only you can invite or remove admins. You remain the owner.</p>{/if}</aside></div>
     {/if}
   {/if}
 </main>
