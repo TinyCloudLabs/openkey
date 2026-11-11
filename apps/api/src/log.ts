@@ -57,6 +57,7 @@ const EVENTS = {
   delegate_session_activation_warning: true, delegate_session_activation_failed: true,
   delegate_authorization_context_issue_failed: true, owner_revocation_sign_failed: true, delegate_space_setup_notice_failed: true, delegate_session_jwk: true,
   delegate_origin_bind_failed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true, key_quote_failed: true,
+  approval_code_allocation_failed: true,
   native_consent_peer_lookup_failed: true, native_consent_key_unseal_failed: true,
   native_consent_activation_after_host_setup_failed: true, native_consent_host_delegation_rejected: true,
   native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true, native_consent_stale_session_revoke_failed: true,
@@ -247,6 +248,14 @@ export function logTinyCloudBootstrapSweep(
     still_failed: fields.stillFailed,
     skipped: fields.skipped,
     reaped: fields.reaped,
+  });
+}
+
+/** Approval delivery failures expose request identifiers and error class, never code or error details. */
+export function logApprovalCodeAllocationFailure(approvalRequestId: string, error: unknown): void {
+  emit('warn', 'approval_code_allocation_failed', {
+    approval_request_id: approvalRequestId,
+    error_name: safeErrorFields(error).error_name ?? 'Unknown',
   });
 }
 

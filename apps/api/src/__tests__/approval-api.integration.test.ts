@@ -129,10 +129,14 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     await prisma.approvalRequest.update({ where: { id }, data: { expiresAt: new Date(opened.header.expiresAt) } });
     const approvedResponse = await post('/api/delegate', approval, { cookie });
     expect(approvedResponse.status, await approvedResponse.clone().text()).toBe(200);
-    const delegation = z.object({ ownerDid: z.string(), siwe: z.string() }).passthrough().parse(await approvedResponse.json());
+    const { approvalCode, ...delegation } = z.object({
+      ownerDid: z.string(), siwe: z.string(),
+      approvalCode: z.object({ code: z.string().regex(/^[A-Z2-7]{4}-[A-Z2-7]{4}$/), expiresAt: z.string().datetime() }),
+    }).passthrough().parse(await approvedResponse.json());
     const saved = await prisma.approvalRequest.findUniqueOrThrow({ where: { id } });
     expect(saved.approvedByUserId).toBe(userId);
     expect(saved.ownerDid).toBe(delegation.ownerDid);
+    expect(Date.parse(approvalCode.expiresAt)).toBeLessThanOrEqual(saved.resultExpiresAt!.getTime());
     // Approved, unacknowledged results outlive the original request deadline.
     await prisma.approvalRequest.update({ where: { id }, data: { expiresAt: new Date(0) } });
     function proof(action: 'discover' | 'fetch' | 'ack', path: string, ref = '', ackId = '', signingKey = pair.privateKey) {
@@ -144,6 +148,17 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     const discovered = await post(resultPath, { bodyCid: saved.bodyCid }, { 'OpenKey-Session-Proof': proof('discover', resultPath) });
     expect(discovered.status).toBe(200);
     const { resultRef } = z.object({ resultRef: z.string() }).parse(await discovered.json());
+    const claim = randomBytes(24).toString('base64url');
+    const codeBody = { bodyCid: saved.bodyCid, approvalCode: approvalCode.code };
+    expect((await post(resultPath, codeBody, {
+      'OpenKey-Session-Proof': proof('discover', resultPath, '', '', generateKeyPairSync('ed25519').privateKey),
+      'OpenKey-Delegation-Claim': claim,
+    })).status).toBe(401);
+    const codeHeaders = { 'OpenKey-Session-Proof': proof('discover', resultPath), 'OpenKey-Delegation-Claim': claim };
+    const claimed = await post(resultPath, codeBody, codeHeaders);
+    expect(claimed.status).toBe(200);
+    expect(await claimed.json()).toMatchObject({ status: 'approved', resultRef });
+    expect((await post(resultPath, codeBody, codeHeaders)).status).toBe(200);
     const fetchPath = `/api/approval-results/${resultRef}/fetch`;
     const binding = { requestId: id, bodyCid: saved.bodyCid };
     expect((await post(fetchPath, binding)).status).toBe(401);
@@ -178,6 +193,9 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     expect(await (await post(ackPath, ackBody, { 'OpenKey-Session-Proof': proof('ack', ackPath, resultRef, ackId) })).json()).toEqual({ status: 'acknowledged', ackId });
     expect((await prisma.approvalRequest.findUniqueOrThrow({ where: { id } })).encryptedResult).toBeNull();
     expect((await post(fetchPath, binding, { 'OpenKey-Session-Proof': proof('fetch', fetchPath, resultRef) })).status).toBe(409);
+    expect((await post(resultPath, codeBody, { ...codeHeaders, 'OpenKey-Session-Proof': proof('discover', resultPath) })).status).toBe(409);
+    expect(await prisma.delegationCode.findUnique({ where: { code: approvalCode.code.toLowerCase() } })).toBeNull();
+    expect(await prisma.delegationCodeClaim.findUnique({ where: { code: approvalCode.code.toLowerCase() } })).toBeNull();
     await prisma.$disconnect();
   }, 110_000);
 }
