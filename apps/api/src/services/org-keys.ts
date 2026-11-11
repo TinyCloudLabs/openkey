@@ -83,6 +83,14 @@ export async function listOrgKeysForUser(prisma: PrismaClient, userId: string): 
   return grants.map(toPickerItem);
 }
 
+// Public organisation metadata stays in the custody-specific reader.
+export async function findActiveOrgKeyMetadata(prisma: Pick<PrismaClient, 'ethereumKey'>, keyId: string) {
+  return prisma.ethereumKey.findFirst({
+    where: { id: keyId, custody: 'ORG', userId: null, archivedAt: null, orgKey: { isNot: null } },
+    select: { id: true, address: true, orgKey: { select: { orgId: true, orgName: true, controllerDid: true } } },
+  });
+}
+
 export async function findOrgKeyForUser(
   prisma: PrismaClient,
   userId: string,

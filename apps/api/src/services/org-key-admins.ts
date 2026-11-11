@@ -2,7 +2,7 @@ import { nativeUserRetryAfter } from './native-delegation/user-rate-limit';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@openkey/db';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
-import { findActiveOrgGrant, OrgKeyRefusal } from './org-keys';
+import { findActiveOrgGrant, findActiveOrgKeyMetadata, OrgKeyRefusal } from './org-keys';
 import { invitationEmail, matchesInvitationTarget, resolveInvitationIdentity } from './org-key-invitation-identity';
 import { issueGrantChallenge, redeemGrantChallenge, type GrantActor, type GrantOperation } from './org-key-grant-challenge';
 
@@ -149,8 +149,7 @@ export async function adminRoster(prisma: PrismaClient, userId: string, keyId: s
     select: { grantee: { select: { name: true, email: true } }, id: true, role: true, granteeUserId: true, granteeDid: true, invitedEmail: actor.role === 'OWNER', invitedUserId: actor.role === 'OWNER', invitedAt: true, acceptedAt: true, invitationExpiresAt: true },
     orderBy: { createdAt: 'asc' },
   });
-  const key = await prisma.ethereumKey.findFirst({ where: { id: keyId, custody: 'ORG', archivedAt: null },
-    select: { id: true, address: true, orgKey: true } });
+  const key = await findActiveOrgKeyMetadata(prisma, keyId);
   const registration = await prisma.orgKeyRegistration.findUnique({ where: { keyId }, select: { handle: true } });
   const events = actor.role === 'OWNER' ? await prisma.keyGrantEvent.findMany({ where: { keyId }, orderBy: { createdAt: 'desc' }, take: 30 }) : [];
   return { role: actor.role, grants, key, handle: registration?.handle ?? null, events };
@@ -161,8 +160,7 @@ export async function invitationSummary(prisma: PrismaClient, actor: GrantActor,
     const grant = await recipientGrant(tx, actor, invitationId);
     if (grant.revokedAt) return { state: 'cancelled' as const };
     if (!grant.acceptedAt && (!grant.invitationExpiresAt || grant.invitationExpiresAt.getTime() <= Date.now())) return { state: 'expired' as const };
-    const key = await tx.ethereumKey.findFirst({ where: { id: grant.keyId, custody: 'ORG', archivedAt: null },
-      select: { id: true, address: true, orgKey: { select: { orgId: true, orgName: true, controllerDid: true } } } });
+    const key = await findActiveOrgKeyMetadata(tx, grant.keyId);
     if (!key) return refuse();
     const registration = await tx.orgKeyRegistration.findUnique({ where: { keyId: grant.keyId }, select: { handle: true } });
     const inviter = grant.invitedByUserId ? await tx.user.findUnique({ where: { id: grant.invitedByUserId }, select: { name: true, email: true } }) : null;

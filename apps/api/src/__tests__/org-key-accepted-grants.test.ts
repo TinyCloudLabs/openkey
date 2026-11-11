@@ -55,3 +55,18 @@ test('signing submits an accepted-only predicate in the locked SQL itself', asyn
   })).rejects.toThrow('No active grant');
   expect(submitted).toMatch(/AND\s+"acceptedAt"\s+IS NOT NULL\s+FOR SHARE/);
 });
+
+test('organisation metadata reads refuse personal, archived and detached keys', async () => {
+  const { findActiveOrgKeyMetadata } = await import('../services/org-keys');
+  const ctx = await setupOrgKey();
+  const prisma = asPrisma(ctx.db);
+  expect(await findActiveOrgKeyMetadata(prisma, ctx.key.keyId)).not.toBeNull();
+  ctx.state.keys[0]!.custody = 'PERSONAL';
+  expect(await findActiveOrgKeyMetadata(prisma, ctx.key.keyId)).toBeNull();
+  ctx.state.keys[0]!.custody = 'ORG';
+  ctx.state.keys[0]!.userId = 'someone';
+  expect(await findActiveOrgKeyMetadata(prisma, ctx.key.keyId)).toBeNull();
+  ctx.state.keys[0]!.userId = null;
+  ctx.state.keys[0]!.archivedAt = new Date();
+  expect(await findActiveOrgKeyMetadata(prisma, ctx.key.keyId)).toBeNull();
+});
