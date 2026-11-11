@@ -14,6 +14,13 @@ COPY packages/capability-review/package.json ./packages/capability-review/
 COPY packages/db/prisma ./packages/db/prisma
 COPY scripts/generate-prisma.ts ./scripts/generate-prisma.ts
 COPY packages/types/package.json ./packages/types/
+COPY apps/web/package.json ./apps/web/
+COPY packages/cli/package.json ./packages/cli/
+COPY packages/core/package.json ./packages/core/
+COPY packages/escrow-verify/package.json ./packages/escrow-verify/
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/sdk-capacitor/package.json ./packages/sdk-capacitor/
+COPY packages/sdk-react-native/package.json ./packages/sdk-react-native/
 # prisma.config.ts (root + packages/db) supplies datasource.url from
 # DATABASE_URL for `prisma migrate deploy` — omitting them makes the
 # `deps` target unusable for `bun run db:migrate:apply` (openkey-migrate
