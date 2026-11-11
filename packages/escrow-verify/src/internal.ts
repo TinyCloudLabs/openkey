@@ -2,15 +2,11 @@ import { createHash } from 'node:crypto';
 import { freezeEscrowHeader, type EscrowHeader } from '@openkey/tee';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak256, recoverPublicKey } from 'viem';
+import { KMS_ROOT_PUBLIC_KEY, SERVICE_RELEASES } from './trust';
 import type { getCollateral, verify } from '@phala/dcap-qvl';
 
 export const GETKEY_SIGNED_PURPOSE = '';
 export const PCCS_URL = 'https://pccs.phala.network';
-export interface HolderPins {
-  appId: string; composeHash: string; imageDigest: string;
-  mrTd: string; rtmr0: string; rtmr1: string; rtmr2: string;
-  kmsRootPublicKey: string; holderId: string; holderPublicKey: string;
-}
 export interface HolderBundle { header: EscrowHeader; quote: { quote: string; eventLog: string } }
 type Event = { imr: number; event_type: number; event: string; event_payload: string; digest: string; version?: number; preimage?: string };
 const hex = (value: Uint8Array) => Buffer.from(value).toString('hex');
@@ -31,9 +27,6 @@ function replay(log: Event[]): { register: string; appId: string; composeHash: s
     if ((e.version ?? 1) === 1) {
       const type = Buffer.alloc(4); type.writeUInt32LE(0x08000001);
       preimage = Buffer.concat([type, Buffer.from(':' + e.event + ':'), payload]);
-    } else if (e.version === 2) {
-      preimage = Buffer.from(JSON.stringify({ name: e.event, payload: hex(payload), type: 0x08000001 }));
-      if (e.preimage !== hex(preimage)) throw new Error('Invalid event preimage');
     } else throw new Error('Unsupported event version');
     const digest = createHash('sha384').update(preimage).digest();
     if (e.digest !== '' && e.digest !== hex(digest)) throw new Error('Invalid event digest');
@@ -47,16 +40,21 @@ function replay(log: Event[]): { register: string; appId: string; composeHash: s
 }
 
 /** Test seam is not exposed from the package entry point. */
-export async function verifyHolderBundle(bundle: HolderBundle, pins: HolderPins, dependencies: { getCollateral: typeof getCollateral; verify: typeof verify }): Promise<string> {
+export async function verifyHolderBundle(bundle: HolderBundle, holderId: string, holderPublicKey: string, dependencies: { getCollateral: typeof getCollateral; verify: typeof verify }): Promise<string> {
+  if (KMS_ROOT_PUBLIC_KEY === null) throw new Error('Escrow verifier trust not configured');
   // Copy before any network await so caller mutation cannot change the decision.
-  const input = structuredClone(bundle); const trusted = structuredClone(pins);
+  const input = structuredClone(bundle);
+  const candidates = SERVICE_RELEASES.filter(pin => pin.composeHash === input.header.composeHash);
+  if (candidates.length !== 1) throw new Error('Escrow release not configured');
+  const trusted = candidates[0]!;
   const frozen = await freezeEscrowHeader(input.header);
   if (!/^[a-f0-9]{40}$/.test(trusted.appId) || !/^[a-f0-9]{64}$/.test(trusted.composeHash)
     || !/^sha256:[a-f0-9]{64}$/.test(trusted.imageDigest)) throw new Error('Invalid service pins');
   for (const value of [trusted.mrTd, trusted.rtmr0, trusted.rtmr1, trusted.rtmr2]) {
     if (!/^[a-f0-9]{96}$/.test(value) || /^0+$/.test(value)) throw new Error('Invalid measurement pin');
   }
-  const root = compressed(trusted.kmsRootPublicKey);
+  if (Date.parse(frozen.header.createdAt) > Date.now() + 300_000) throw new Error('Escrow creation time is in the future');
+  const root = compressed(KMS_ROOT_PUBLIC_KEY);
   if (typeof input.quote.quote !== 'string' || !/^(?:[a-f0-9]{2})+$/.test(input.quote.quote)) throw new Error('Invalid quote encoding');
   const quote = Buffer.from(input.quote.quote, 'hex');
   const collateral = await dependencies.getCollateral(PCCS_URL, quote);
@@ -82,7 +80,7 @@ export async function verifyHolderBundle(bundle: HolderBundle, pins: HolderPins,
     const recoveredRoot = await recoverPublicKey({ hash: keccak256(issued), signature: `0x${path.signatureChain[1]!}` });
     if (compressed(recoveredRoot) !== root) throw new Error('Untrusted KMS chain');
   }
-  const holder = frozen.header.holders.find(h => h.id === trusted.holderId);
-  if (!holder || holder.publicKey !== trusted.holderPublicKey) throw new Error('Holder recipient mismatch');
+  const holder = frozen.header.holders.find(h => h.id === holderId);
+  if (!holder || holder.publicKey !== holderPublicKey) throw new Error('Holder recipient mismatch');
   return frozen.hash;
 }

@@ -14,7 +14,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "bun test tests",
-    "typecheck": "tsc --noEmit"
+    "test": "bun run --cwd ../tee build && bun test tests",
+    "typecheck": "bun run --cwd ../tee build && tsc --noEmit"
   }
 }
