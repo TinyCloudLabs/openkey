@@ -142,3 +142,8 @@ key: exactly 33 bytes, lowercase hex, prefix02/03, curve-checked. It immediately
 follows transform in the tuple. GetKey purpose is the empty string; chain[0]
 signs Keccak256(UTF8(":" + derivedPublicKey)). Path purpose names are service
 inventory labels, separate from this GetKey purpose argument.
+
+For both v1 transforms the GetKey signed purpose is the constant empty string,
+not the header's inventory/business purpose. The holder verifier checks chain[0]
+over keccak256(UTF8(":" + derivedPublicKey)). A service using a nonempty signed
+GetKey purpose requires a new closed transform value.

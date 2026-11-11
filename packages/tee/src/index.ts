@@ -250,3 +250,6 @@ export {
   SUPPORTED_NOSTR_KINDS,
 } from './nostr';
 export type { UnsignedNostrEvent, SignedNostrEvent, NostrKeypair, SealedNostrSecret } from './nostr';
+
+export { freezeEscrowHeader, encodeEscrowHeader } from './escrow-header';
+export type { EscrowHeader } from './escrow-header';
