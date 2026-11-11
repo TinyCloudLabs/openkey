@@ -53,3 +53,17 @@ inside the TEE; Bobbie accepts this for the one-off ceremony. Its internal
 buffers are not zeroed. The caller must generate the content key with a CSPRNG
 inside the TEE; entrypoint review must verify this. Header-hash authentication
 is enforced by the HPKE stage, not the Shamir primitive.
+
+## HPKE share wrapper candidate
+
+Each wrapper has version=1, escrowId, holderId, x, headerHash, enc and ciphertext.
+enc is the 65-byte P-256 encapsulation; ciphertext is 49 bytes (33-byte share
+plus 16-byte GCM tag). Both use canonical unpadded base64url. For info encode
+JSON.stringify(["tinycloud/escrow/share-info",1,escrowId,holderId,x,headerHash])
+as UTF-8; AAD uses the same tuple with domain "tinycloud/escrow/share-aad".
+No whitespace, tuple order fixed, JSON string escaping applies. headerHash is
+64 lowercase SHA-256 hex characters. The expected binding must come from the
+verified frozen header, never from the wrapper itself. Each share uses a fresh
+HPKE single-shot context. Recovery rejects any binding difference before open,
+and verifies the decrypted trailing x. Full header canonicalization is still
+pending; this wrapper is not yet wired to an operational entrypoint.
