@@ -96,6 +96,7 @@ async function revokeDelegation(host: string, headers: Record<string, string>): 
 class NativeOperationTimeoutError extends Error {
   constructor(ms: number) { super(`operation timed out after ${ms} ms`); this.name = 'NativeOperationTimeoutError'; }
 }
+class NeedsFreshConsentKey extends Error {}
 async function withinTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new NativeOperationTimeoutError(ms)), ms); })]); }
@@ -223,9 +224,10 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       ((preRevision.hostPlan as { hostSiwe?: string } | null)?.hostSiwe ?? undefined) !== body.hostSiwe) fail(409, 'preparation_mismatch');
     // TEE key derivation can perform I/O. Unseal before the database locks;
     // the canonical key and approved bytes are checked again under the lock.
-    const preKey = pending.status === 'APPROVED' ? null : await keyFor(db, userId);
+    let preKey = pending.status === 'APPROVED' ? null : await keyFor(db, userId);
     let privateKey: Awaited<ReturnType<typeof unsealManagedKey>> | null = null;
-    if (preKey) {
+    const unsealForApproval = async () => {
+      if (!preKey) return;
       try { privateKey = await withinTimeout(unsealManagedKey(preKey, preKey.sealedBlob), 5_000); }
       catch (error) {
         // The blob and TEE error text may contain sensitive material. Log only
@@ -235,8 +237,9 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
         if (error instanceof NativeOperationTimeoutError) fail(503, 'temporarily_unavailable');
         fail(500, 'key_unavailable');
       }
-    }
-    const result = await db.$transaction(async tx => {
+    };
+    await unsealForApproval();
+    const approve = () => db.$transaction(async tx => {
       const { row, generation } = await lockRequest(tx, c.req.param('id'), userId, true);
       if (row.userId !== userId) fail(403, 'request_user_mismatch');
       if (!body || body.revision !== row.currentRevision) fail(409, 'preparation_superseded');
@@ -249,8 +252,12 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
         return { alreadyApproved: true as const, rowId: row.id, revision: revision.revision, hosting: row.hosting };
       }
       const key = await keyFor(tx, userId);
-      if (key.id !== revision.keyId || key.id !== preKey?.id || key.sealedBlob !== preKey.sealedBlob ||
-        ensureEip55(key.address) !== revision.address) fail(409, 'preparation_mismatch');
+      if (!preKey || key.id !== revision.keyId || key.id !== preKey.id ||
+        ensureEip55(key.address) !== revision.address || ensureEip55(preKey.address) !== revision.address) fail(409, 'preparation_mismatch');
+      if (key.sealedBlob !== preKey.sealedBlob || key.sealingContext !== preKey.sealingContext || key.userId !== preKey.userId) {
+        privateKey = null;
+        throw new NeedsFreshConsentKey();
+      }
       const client = await tx.oauthClient.findUniqueOrThrow({ where: { clientId: row.clientId } });
       const ceiling = enabledNativeDelegation(client);
       if (!ceiling || revision.permissions == null) fail(409, 'preparation_superseded');
@@ -275,6 +282,19 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { status: 'APPROVED', approvedRevision: revision.revision, consentGeneration: generation, signature, delegation: artifact, hosting: 'failed' } });
       return { alreadyApproved: false as const, rowId: row.id, revision: revision.revision, hostPlan, artifact, key, siweDomain: ceiling.siweDomain ?? 'openkey.so' };
     }, { timeout: 15_000 });
+    const result = await (async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          return await approve();
+        } catch (error) {
+          if (!(error instanceof NeedsFreshConsentKey)) throw error;
+          if (attempt === 1) fail(503, 'temporarily_unavailable');
+          preKey = await keyFor(db, userId);
+          await unsealForApproval();
+        }
+      }
+      fail(503, 'temporarily_unavailable');
+    })();
     if (result.alreadyApproved) return c.json({ status: 'APPROVED', revision: result.revision, hosting: result.hosting });
     let hosting: 'existing' | 'created' | 'failed' = 'failed';
     let restart = false;

@@ -1,5 +1,10 @@
 import { afterAll, mock } from 'bun:test';
 import { readFileSync } from 'node:fs';
+import * as tee from '@openkey/tee';
+
+// The TEE module is pure at import; preserve real format parsing and keyring
+// exports when a route test overrides its signing or legacy crypto primitives.
+const teeExports = { ...tee };
 
 // bun's `mock.module()` replaces a module for the whole `bun test` process,
 // and `mock.restore()` does not undo it (TC-928). A bare mock leaks into every
@@ -61,6 +66,7 @@ export function replaceModules(factories: Record<string, () => Exports>): void {
 }
 
 function unavailableExports(specifier: string): Exports {
+  if (specifier === '@openkey/tee') return teeExports;
   const path = Bun.resolveSync(specifier, import.meta.dir);
   const { exports } = new Bun.Transpiler({ loader: 'ts' }).scan(readFileSync(path, 'utf8'));
   return Object.fromEntries(exports.map((name) => [name, () => {

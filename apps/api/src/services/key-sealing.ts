@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import type { TeeClient } from '@openkey/tee';
+import { isVersionedSealed, seal, unseal, SealingKeyring, type SealingBinding, type TeeClient } from '@openkey/tee';
 
 const SEALING_CONTEXT_BYTES = 32;
 const SEALING_CONTEXT_LENGTH = 43;
@@ -49,6 +49,30 @@ export function resolveSealingContext(key: SealingContextKey): string {
   return `openkey/key/${key.sealingContext}`;
 }
 
-export function deriveKeyForRecord(tee: TeeClient, key: SealingContextKey): Promise<Uint8Array> {
+function deriveKeyForRecord(tee: TeeClient, key: SealingContextKey): Promise<Uint8Array> {
   return tee.deriveKey(resolveSealingContext(key));
+}
+
+export type SealingRecord = SealingContextKey & { id: string };
+
+export function recordSealingBinding(key: SealingRecord): SealingBinding {
+  return { recordId: key.id, sealingContext: resolveSealingContext(key) };
+}
+
+/** Production writes remain generation zero and readable by the previous release. */
+export function createRecordKeyring(tee: TeeClient): SealingKeyring {
+  return new SealingKeyring({
+    providers: new Map([[0, (path: string) => tee.deriveKey(path)]]),
+  });
+}
+
+export async function sealKeyForRecord(tee: TeeClient, key: SealingContextKey, plaintext: string): Promise<string> {
+  return seal(plaintext, await deriveKeyForRecord(tee, key));
+}
+
+export async function unsealKeyForRecord(tee: TeeClient, key: SealingRecord, blob: string): Promise<string> {
+  if (!isVersionedSealed(blob)) {
+    return unseal(blob, await deriveKeyForRecord(tee, key));
+  }
+  return createRecordKeyring(tee).unseal(blob, recordSealingBinding(key));
 }
