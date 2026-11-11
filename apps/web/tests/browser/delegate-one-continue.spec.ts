@@ -154,7 +154,7 @@ test('a first-time account sees one "Welcome to OpenKey" line on the approval; a
   await expect(returning.getByText('Welcome to OpenKey')).toHaveCount(0);
 });
 
-test('after Approve the finished screen says the session was sent back', async ({ page }) => {
+test('after Approve the finished screen says the approval was sent back', async ({ page }) => {
   const state = await mockApi(page, 'new');
   await mockGooglePopup(page, state);
   await page.route('http://127.0.0.1:47123/callback', (route) => route.fulfill({
@@ -164,7 +164,7 @@ test('after Approve the finished screen says the session was sent back', async (
   await page.goto(`${link}&callback=${encodeURIComponent('http://127.0.0.1:47123/callback')}`);
   await google(page).click();
   await approve(page).click();
-  await expect(page.getByRole('heading', { name: 'Approved. Your session was sent back.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Approved and sent back to your agent' })).toBeVisible();
 });
 
 test('on /auth/login, while the Google window is open, the other buttons keep their words and are only disabled', async ({ page }) => {

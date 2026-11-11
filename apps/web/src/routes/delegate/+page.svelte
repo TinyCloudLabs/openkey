@@ -1705,8 +1705,8 @@
               >Close</button>
             {/if}
           {:else}
-            <h2 class="text-lg font-semibold text-surface-900 mb-2">Approved. Your session was sent back.</h2>
-            <p class="text-surface-500 text-sm">You can close this window and return to your agent.</p>
+            <h2 class="text-lg font-semibold text-surface-900 mb-2">Approved and sent back to your agent</h2>
+            <p class="text-surface-500 text-sm">You can close this window.</p>
           {/if}
         </div>
 
