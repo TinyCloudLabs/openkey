@@ -95,6 +95,7 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
+  approveBlockedReason={transport.approveBlockedReason ?? null}
   refused={transport.refused ?? false}
   previewPending={transport.canUseAuthorizeSign && !transport.previewReady}
   {peerRecognition}
