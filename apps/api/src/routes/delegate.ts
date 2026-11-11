@@ -89,7 +89,7 @@ import {
   type AuthorizationContextToken,
   type AuthorizationContextClaim,
 } from '../services/authorization-signing';
-import { MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
+import { MIN_DELEGATION_EXPIRY_MS, MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSignedSubset, parseStrictSiwe, SIGNED_SUBSET_REFUSAL_CODE } from '../services/signed-subset';
 import { checkSiweOrigin } from '../services/siwe-origin';
@@ -443,7 +443,6 @@ const DEFAULT_DELEGATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
  * states its own maximum and is held to it by its window check instead (TC-2274).
  */
 const MAX_DELEGATION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
-const MIN_DELEGATION_EXPIRY_MS = 60 * 1000; // 1 minute
 
 const MS_UNIT_FACTORS: Record<string, number> = {
   ms: 1,
@@ -2506,7 +2505,7 @@ delegateRouter.post('/complete', async (c) => {
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
   };
-  // OpenKey holds neither the wallet key nor the session key, so a save failure after confirmed activation cannot be revoked here. The owner-signed grant lives for the lifetime the owner chose and saw (default 7 days; no 24-hour bound or 30-day cap; TC-2795).
+  // OpenKey holds neither the wallet key nor the session key, so a save failure after confirmed activation cannot be revoked here. The owner-signed grant lives for the lifetime the owner chose and saw (the suggested lifetime if provided, otherwise grantLifetimeSeconds; no 24-hour bound or 30-day cap; TC-2795).
   const saved = await saveApprovalDelegation(body, user.id, delegation);
   return c.json(saved);
   } catch (error) {

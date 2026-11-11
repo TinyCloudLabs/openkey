@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { parseLink, resolveLink, parseApprovalRequest, validateLinkHeader, verifyHeader, linkIssuerPublicKey } from '@tinycloud/share-envelope/links';
-import { LATEST_SIWE_TIME_MS } from '../services/approval-expiry';
+import { LATEST_SIWE_TIME_MS, MIN_DELEGATION_EXPIRY_MS } from '../services/approval-expiry';
 import { ApprovalResultError, ApprovalResultService, linkRequiredError } from '../services/approval-results';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
@@ -46,8 +46,13 @@ function validateGrantLifetime(value: unknown): asserts value is { grantLifetime
   if (value && typeof value === 'object' && 'grantLifetimeSeconds' in value) {
     seconds = value.grantLifetimeSeconds;
   }
-  if (typeof seconds !== 'number' || !Number.isSafeInteger(seconds) || seconds <= 0
-    || Date.now() + seconds * 1000 > LATEST_SIWE_TIME_MS) {
+  if (typeof seconds !== 'number' || !Number.isSafeInteger(seconds) || seconds <= 0) {
+    throw new ApprovalResultError('invalid_request', 'grantLifetimeSeconds must be a positive safe integer with an expiry no later than year 9999', 400);
+  }
+  if (seconds * 1000 < MIN_DELEGATION_EXPIRY_MS) {
+    throw new ApprovalResultError('invalid_request', `grantLifetimeSeconds must be at least ${MIN_DELEGATION_EXPIRY_MS / 1000} seconds`, 400);
+  }
+  if (Date.now() + seconds * 1000 > LATEST_SIWE_TIME_MS) {
     throw new ApprovalResultError('invalid_request', 'grantLifetimeSeconds must be a positive safe integer with an expiry no later than year 9999', 400);
   }
 }

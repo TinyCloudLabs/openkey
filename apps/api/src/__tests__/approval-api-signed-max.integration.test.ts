@@ -113,5 +113,25 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     expect(approvedResponse.status, await approvedResponse.clone().text()).toBe(200);
     const saved = await prisma.approvalRequest.findUniqueOrThrow({ where: { id } });
     expect(saved.delegationExpiresAt!.getTime()).toBe(expiryOf(prepared.prepared.siwe));
+    const longId = 'bcdefghijklmnopqrstuvwxyza';
+    await createPrismaApprovalRequestStore(prisma).register({
+      id: longId, bodyCid: opened.header.bodyCid, issuer: opened.header.issuer, request,
+      expiresAt: new Date(opened.header.expiresAt), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null,
+    });
+    const longPreparedResponse = await prepareAs({ approvalRequestId: longId, expiry: '3456000s' });
+    expect(longPreparedResponse.status, await longPreparedResponse.clone().text()).toBe(200);
+    const longPrepared = z.object({
+      prepared: z.object({ siwe: z.string() }).passthrough(),
+      authorizationContext: z.object({ token: z.string() }),
+      selectedActionKeys: z.array(z.string()),
+    }).parse(await longPreparedResponse.json());
+    expect(Math.abs(expiryOf(longPrepared.prepared.siwe) - issuedAtOf(longPrepared.prepared.siwe) - 3_456_000_000)).toBeLessThanOrEqual(5_000);
+    const longApprovalResponse = await post('/api/delegate', {
+      ...body, approvalRequestId: longId, protocolVersion: 1, prepared: longPrepared.prepared,
+      authorizationContextToken: longPrepared.authorizationContext.token, selectedActionIds: longPrepared.selectedActionKeys,
+    }, { cookie });
+    expect(longApprovalResponse.status, await longApprovalResponse.clone().text()).toBe(200);
+    const longSaved = await prisma.approvalRequest.findUniqueOrThrow({ where: { id: longId } });
+    expect(longSaved.delegationExpiresAt!.getTime()).toBe(expiryOf(longPrepared.prepared.siwe));
   }, 20_000);
 }

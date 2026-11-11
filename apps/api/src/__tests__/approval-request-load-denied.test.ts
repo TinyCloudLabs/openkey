@@ -113,6 +113,23 @@ describe.serial('/load reports whether the request was declined', () => {
     }
   });
 
+  test('/load rejects a 59-second grant without storing it', async () => {
+    const id = `${ID.slice(1)}b`;
+    requestsById.set(id, { ...request, grantLifetimeSeconds: 59 });
+    const response = await post(`/approval-requests/${id}/load`, { reference: REFERENCE.replace(ID, id) });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'invalid_request', error: 'grantLifetimeSeconds must be at least 60 seconds' });
+    expect(await client.approvalRequest.findUnique({ where: { id } })).toBeNull();
+  });
+
+  test('/load accepts a 60-second grant unchanged', async () => {
+    const id = `${ID.slice(1)}c`;
+    requestsById.set(id, { ...request, grantLifetimeSeconds: 60 });
+    const response = await post(`/approval-requests/${id}/load`, { reference: REFERENCE.replace(ID, id) });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ request: { grantLifetimeSeconds: 60 } });
+  });
+
   test('after the owner declines, reopening the same link says denied', async () => {
     await load();
     expect((await decline()).status).toBe(200);
