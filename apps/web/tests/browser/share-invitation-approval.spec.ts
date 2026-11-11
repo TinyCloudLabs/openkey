@@ -90,6 +90,24 @@ for (const subjectKind of ['session', 'file'] as const) {
   });
 }
 
+/** The date the approval page shows for `iso`, formatted in the page as the summary formats it. */
+const shownDate = (page: Page, iso: string) => page.evaluate((instant) => new Intl.DateTimeFormat(undefined, {
+  year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+}).format(new Date(instant)), iso);
+
+for (const [label, extraMs] of [['two dates', 6 * 24 * 3600_000], ['equal dates', 0]] as const) {
+  test(`a file invitation with ${label} shows the access expiry it signed, not the key approval's`, async ({ page }) => {
+    const accessExpiresAt = new Date(Date.parse(acceptanceExpiresAt) + extraMs).toISOString();
+    await open(page, { permissions: [], context: { ...context, subjectKind: 'file', accessExpiresAt } }, shareKey, [create, decrypt]);
+    const box = page.getByLabel('Invitation');
+    await expect(box).toContainText(`Accept by ${await shownDate(page, acceptanceExpiresAt)}`);
+    await expect(box).toContainText(`alex@example.test can open Project notes until ${await shownDate(page, accessExpiresAt)}`);
+    await expect(page.getByText(CONTINUATION)).toHaveCount(0);
+    const dir = process.env.QA_SCREENSHOT_DIR;
+    if (dir) await page.screenshot({ path: `${dir}/share-invitation-file-${label.replace(' ', '-')}-390.png`, fullPage: true });
+  });
+}
+
 test('a request without an invitation shows no invitation summary', async ({ page }) => {
   const leaf = `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default/share/${shareKeyId}`;
   await open(page, { permissions: [{ service: 'tinycloud.encryption', space: 'encryption', path: leaf, actions: [decrypt] }] }, leaf, [decrypt]);

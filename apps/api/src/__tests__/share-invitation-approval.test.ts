@@ -151,9 +151,24 @@ describe('the signed request', () => {
     expect(() => parse(requestBody(), new Date(Date.now() + 2 * HOUR), issued)).toThrow('within 24 hours');
   });
 
-  test('is refused when the share envelope expiry is not the acceptance deadline', () => {
+  test('is refused for a session whose access does not end at the acceptance deadline', () => {
     expect(() => parse(requestBody({ context: context({ accessExpiresAt: wholeSecond(Date.parse(ACCEPT_BY) + 7 * 24 * HOUR) }) })))
-      .toThrow('accessExpiresAt must equal acceptanceExpiresAt');
+      .toThrow('accessExpiresAt must equal acceptanceExpiresAt for a session');
+  });
+
+  test.each([
+    ['ends with acceptance', 0],
+    ['lasts six days past acceptance', 6 * 24 * HOUR],
+  ])('keeps the exact access expiry of a file invitation that %s', (_name, extraMs) => {
+    const accessExpiresAt = wholeSecond(Date.parse(ACCEPT_BY) + extraMs);
+    const parsed = parse(requestBody({ context: context({ subjectKind: 'file', accessExpiresAt }) }));
+    expect(parsed.context!.accessExpiresAt).toBe(accessExpiresAt);
+    expect(parsed.context!.acceptanceExpiresAt).toBe(ACCEPT_BY);
+  });
+
+  test('is refused for a file whose access ends before the acceptance deadline', () => {
+    expect(() => parse(requestBody({ context: context({ subjectKind: 'file', accessExpiresAt: wholeSecond(Date.parse(ACCEPT_BY) - 1000) }) })))
+      .toThrow('must not be before acceptanceExpiresAt for a file');
   });
 
   test.each([
@@ -204,6 +219,34 @@ describe('the key OpenKey issues at /prepare', () => {
   test('is refused once the invitation can no longer be accepted', async () => {
     await register(parse(requestBody({ context: context({ acceptanceExpiresAt: wholeSecond(Date.now() + 30_000) }) })));
     await expect(prepare()).rejects.toMatchObject({ code: 'expired_request', status: 410 });
+  });
+
+  test.each([
+    ['a day before', 24 * HOUR],
+    ['an hour before (approved 23 hours in)', HOUR],
+  ])('ends at the acceptance deadline %s it, even when the file stays open six days longer', async (_name, untilAcceptance) => {
+    const acceptanceExpiresAt = wholeSecond(Date.now() + untilAcceptance);
+    const accessExpiresAt = wholeSecond(Date.parse(acceptanceExpiresAt) + 6 * 24 * HOUR);
+    await register(parse(requestBody({ grantLifetimeSeconds: 86_400, context: context({ subjectKind: 'file', acceptanceExpiresAt, accessExpiresAt }) }), new Date(Date.now() + 25 * HOUR)));
+    const { body } = await prepare();
+    expect(Number(body.expiry)).toBeLessThanOrEqual(Date.parse(acceptanceExpiresAt) - Date.now());
+    expect(Number(body.expiry)).toBeLessThanOrEqual(24 * HOUR);
+  });
+
+  test('is refused after the acceptance deadline, even while the file stays open', async () => {
+    const acceptanceExpiresAt = wholeSecond(Date.now() + 30_000);
+    await register(parse(requestBody({ context: context({ subjectKind: 'file', acceptanceExpiresAt, accessExpiresAt: wholeSecond(Date.now() + 6 * 24 * HOUR) }) })));
+    await expect(prepare()).rejects.toMatchObject({ code: 'expired_request', status: 410 });
+  });
+
+  test('cannot be moved to a later access expiry: the stored request keeps its sealed body', async () => {
+    await register(parse(requestBody({ context: context({ subjectKind: 'file', accessExpiresAt: wholeSecond(Date.parse(ACCEPT_BY) + 24 * HOUR) }) })));
+    const extended = parse(requestBody({ context: context({ subjectKind: 'file', accessExpiresAt: wholeSecond(Date.parse(ACCEPT_BY) + 6 * 24 * HOUR) }) }));
+    // A different access expiry is a different sealed body, so a different body CID for the same request id.
+    await expect(store().register({
+      id: ID, bodyCid: `bafkrei${'b'.repeat(52)}`, issuer: signer.did, request: extended,
+      expiresAt: new Date(Date.now() + 2 * HOUR), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null,
+    })).rejects.toMatchObject({ code: 'request_binding', status: 409 });
   });
 
   test('does not apply to a request without an invitation', async () => {

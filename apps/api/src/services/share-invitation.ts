@@ -26,7 +26,10 @@ export interface ShareInvitationContext {
   subjectName: string;
   /** The deadline to accept the invitation. The key delegation ends before it. */
   acceptanceExpiresAt: string;
-  /** The expiry of the share envelope that carries the invitation: the acceptance deadline. Not a session lifetime. */
+  /**
+   * When the recipient's access to the shared item ends. A session invitation's equals the acceptance deadline; a
+   * file invitation's may be later. Not the key delegation's expiry.
+   */
   accessExpiresAt: string;
 }
 
@@ -79,8 +82,11 @@ export function parseShareInvitationContext(value: unknown): ShareInvitationCont
     throw invalid('Share invitation subject name must be 1 to 120 printable characters');
   }
   const acceptanceExpiresAt = canonicalInstant(context.acceptanceExpiresAt, 'acceptanceExpiresAt');
-  if (canonicalInstant(context.accessExpiresAt, 'accessExpiresAt') !== acceptanceExpiresAt) {
-    throw invalid('Share invitation accessExpiresAt must equal acceptanceExpiresAt');
+  const accessExpiresAt = canonicalInstant(context.accessExpiresAt, 'accessExpiresAt');
+  if (context.subjectKind === 'session' ? accessExpiresAt !== acceptanceExpiresAt : Date.parse(accessExpiresAt) < Date.parse(acceptanceExpiresAt)) {
+    throw invalid(context.subjectKind === 'session'
+      ? 'Share invitation accessExpiresAt must equal acceptanceExpiresAt for a session'
+      : 'Share invitation accessExpiresAt must not be before acceptanceExpiresAt for a file');
   }
   return {
     kind: 'share-invitation',
@@ -90,7 +96,7 @@ export function parseShareInvitationContext(value: unknown): ShareInvitationCont
     subjectKind: context.subjectKind,
     subjectName: name,
     acceptanceExpiresAt,
-    accessExpiresAt: acceptanceExpiresAt,
+    accessExpiresAt,
   };
 }
 

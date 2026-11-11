@@ -10,12 +10,13 @@ export interface ShareInvitationContext {
   subjectKind: 'session' | 'file';
   subjectName: string;
   acceptanceExpiresAt: string;
+  /** When the recipient's access ends: the acceptance deadline for a session, that or later for a file. */
   accessExpiresAt: string;
 }
 
-/** The acceptance deadline as a local date and time with its time zone, e.g. "Nov 12, 2026, 3:04 PM UTC". */
-export function acceptByText(acceptanceExpiresAt: string, locale?: string, timeZone?: string): string {
+/** An invitation date as a local date and time with its time zone, e.g. "Nov 12, 2026, 3:04 PM UTC". */
+export function invitationDateText(instant: string, locale?: string, timeZone?: string): string {
   return new Intl.DateTimeFormat(locale, {
     year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short', timeZone,
-  }).format(new Date(acceptanceExpiresAt));
+  }).format(new Date(instant));
 }
