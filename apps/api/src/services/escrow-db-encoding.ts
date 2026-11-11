@@ -42,3 +42,8 @@ export function encodeOpenKeyDbSnapshot(input: unknown): Uint8Array {
 export function openKeyDbSnapshotHash(input: unknown): string {
   return createHash('sha256').update(encodeOpenKeyDbSnapshot(input)).digest('hex');
 }
+
+/** Copies for the schema coverage check; callers cannot mutate the encoding. */
+export function openKeySnapshotColumnNames(): Record<string, string[]> {
+  return Object.fromEntries(tables.map(([table, , columns]) => [table, columns.map(([field]) => field)]));
+}
