@@ -3,6 +3,7 @@ import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak256, recoverPublicKey, toBytes } from 'viem';
 
 export interface EscrowGuestAgent {
+  info?: () => Promise<unknown>;
   getKey(path: string, purpose?: string): Promise<{ key: Uint8Array; signature_chain: Uint8Array[] }>;
   getQuote(data: Uint8Array): Promise<{ quote: string; event_log: string; report_data?: string }>;
 }
@@ -25,6 +26,10 @@ async function quoteWithBinding(agent: EscrowGuestAgent, digest: Uint8Array): Pr
 /** Guest reachability/output binding only; holders/recovery verify TDX chains and measurements. */
 export function createEscrowProvenanceClient(agent: EscrowGuestAgent) {
   return {
+    async getRuntimeInfo(): Promise<unknown> {
+      if (typeof agent.info !== 'function') throw new Error('Guest info unavailable');
+      return agent.info();
+    },
     async isInTee(): Promise<boolean> {
       try { await quoteWithBinding(agent, randomBytes(32)); return true; } catch { return false; }
     },

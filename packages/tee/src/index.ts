@@ -258,3 +258,6 @@ export { prepareEscrowExport, freezeEscrowPreflightPolicy } from './escrow-expor
 export type { ExportPolicy, EscrowPathKey } from './escrow-export';
 export { encodeRecordManifest, recordManifestHash } from './escrow-manifest';
 export type { EscrowRecordManifestEntry } from './escrow-manifest';
+
+export { createEscrowProvenanceClient, createProductionEscrowProvenanceClient } from './escrow-provenance';
+export type { EscrowQuote } from './escrow-provenance';

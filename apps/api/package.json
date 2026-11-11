@@ -29,7 +29,8 @@
     "resend": "^6.6.0",
     "siwe": "^3.0.0",
     "undici": "7.29.1",
-    "viem": "^2.43.5"
+    "viem": "^2.43.5",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@types/bun": "latest",

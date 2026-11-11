@@ -20,13 +20,14 @@ COPY packages/types/package.json ./packages/types/
 # in docker-compose.openkey.yml), which needs only this stage.
 COPY prisma.config.ts ./
 COPY packages/db/prisma.config.ts ./packages/db/
-RUN bun install --ignore-scripts
+RUN bun install --frozen-lockfile --ignore-scripts
 # Generate Prisma client (skipped by --ignore-scripts)
 RUN bun run scripts/generate-prisma.ts
 
 # Build packages
 FROM deps AS builder
 COPY . .
+RUN bun run scripts/write-escrow-build.ts
 # Keep the runtime fingerprint synchronized with committed migration files.
 RUN bun test packages/db/src/schema-contract.test.ts
 RUN bun run build --filter @openkey/db
