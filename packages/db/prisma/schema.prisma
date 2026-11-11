@@ -925,6 +925,7 @@ model RevokedAccessToken {
 // Immutable approval audit metadata and persistent replay protection (TC-2823).
 model EscrowAuthorization {
   nonce      String   @id
+  // Subject is measuredConfigHash for preflight, canonical policyHash for export.
   policyHash String
   dryRun     Boolean
   operatorId String
@@ -934,4 +935,15 @@ model EscrowAuthorization {
 
   @@index([createdAt], map: "escrow_authorization_createdAt_idx")
   @@map("escrow_authorization")
+}
+
+// Private canonical policy and ciphertext snapshot; never sent to holders.
+model EscrowPreflight {
+  policyHash String    @id
+  nonce      String    @unique
+  expiresAt  DateTime  @db.Timestamptz
+  payload    Json
+  consumedAt DateTime? @db.Timestamptz
+
+  @@map("escrow_preflight")
 }

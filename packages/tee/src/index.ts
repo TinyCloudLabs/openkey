@@ -253,3 +253,8 @@ export type { UnsignedNostrEvent, SignedNostrEvent, NostrKeypair, SealedNostrSec
 
 export { freezeEscrowHeader, encodeEscrowHeader } from './escrow-header';
 export type { EscrowHeader } from './escrow-header';
+
+export { prepareEscrowExport, freezeEscrowPreflightPolicy } from './escrow-export';
+export type { ExportPolicy, EscrowPathKey } from './escrow-export';
+export { encodeRecordManifest, recordManifestHash } from './escrow-manifest';
+export type { EscrowRecordManifestEntry } from './escrow-manifest';

@@ -2,8 +2,8 @@ import { openKeyDbSnapshotHash } from './escrow-db-encoding';
 import { buildOpenKeyInventory, type OpenKeySnapshotRows } from './escrow-inventory';
 
 export interface EscrowSqlTransaction {
-  $executeRawUnsafe(query: string): Promise<number>;
-  $queryRawUnsafe<T>(query: string): Promise<T>;
+  $executeRawUnsafe(query: string, ...values: unknown[]): Promise<number>;
+  $queryRawUnsafe<T>(query: string, ...values: unknown[]): Promise<T>;
 }
 export interface EscrowSqlDatabase {
   $transaction<T>(operation: (tx: EscrowSqlTransaction) => Promise<T>, options: { isolationLevel: 'RepeatableRead'; maxWait: number; timeout: number }): Promise<T>;

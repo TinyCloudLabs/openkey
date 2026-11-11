@@ -5,8 +5,8 @@ import type { EscrowSqlDatabase } from './escrow-snapshot';
 export function createPrismaEscrowDatabase(prisma: Pick<PrismaClient, '$transaction'>): EscrowSqlDatabase {
   return {
     $transaction: (operation, options) => prisma.$transaction(tx => operation({
-      $executeRawUnsafe: query => tx.$executeRawUnsafe(query),
-      $queryRawUnsafe: <T>(query: string) => tx.$queryRawUnsafe<T>(query),
+      $executeRawUnsafe: (query, ...values) => tx.$executeRawUnsafe(query, ...values),
+      $queryRawUnsafe: <T>(query: string, ...values: unknown[]) => tx.$queryRawUnsafe<T>(query, ...values),
     }), options),
   };
 }
