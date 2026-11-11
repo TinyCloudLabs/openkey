@@ -110,8 +110,8 @@ async function sign(body: Record<string, unknown>) {
 }
 const hex = (text: string) => `0x${Buffer.from(text, 'utf8').toString('hex')}`;
 
-const NOT_DECLARED = "This website doesn't list the key this app asked for, so OpenKey didn't approve it.";
-const REFUSED = { error: NOT_DECLARED, code: 'app_key_grant_refused' };
+// TC-2291: pin the own-sites refusal copy and its stable code.
+const REFUSED = { error: "This site isn't allowed to request that access.", code: 'app_key_grant_refused' };
 
 // The six shapes a site could use to reach decrypt or key.create outside apps/.
 const SHAPES: Array<[string, Record<string, string[]>]> = [
@@ -389,8 +389,8 @@ describe('encryptionOutsideAppsRefusal', () => {
 
   test('names the resource shapes that need a first-party origin', () => {
     for (const [, raw] of SHAPES) {
-      expect(encryptionOutsideAppsRefusal(siweWith(THIRD_PARTY, raw))).toEqual({ reason: 'apps_key' });
-      expect(encryptionOutsideAppsRefusalForMessage(hex(siweWith(THIRD_PARTY, raw)))).toEqual({ reason: 'apps_key' });
+      expect(encryptionOutsideAppsRefusal(siweWith(THIRD_PARTY, raw))).toEqual({ reason: 'encryption_outside_apps' });
+      expect(encryptionOutsideAppsRefusalForMessage(hex(siweWith(THIRD_PARTY, raw)))).toEqual({ reason: 'encryption_outside_apps' });
     }
   });
 });

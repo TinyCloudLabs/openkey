@@ -528,6 +528,14 @@ test('tinycloud:manage-key fails closed when the user disables that OAuth app', 
   expect(signerCalls).toBe(0);
 });
 
+test('tinycloud:identity tokens cannot sign even when the registered client has manage-key', async () => {
+  token.scopes = ['openid', 'email', 'tinycloud:identity'];
+  client.scopes = ['openid', 'email', 'tinycloud:identity', 'tinycloud:manage-key'];
+
+  await expectRouteDenial(signingBody(), 403, 'missing_scope');
+  expect(signerCalls).toBe(0);
+});
+
 test('two independent confidential OAuth clients resolve one user to the same canonical TinyCloud identity', async () => {
   const firstRawBearer = 'independent-confidential-client-one';
   const secondRawBearer = 'independent-confidential-client-two';

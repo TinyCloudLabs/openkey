@@ -2,6 +2,7 @@ import { isAccountOriginAllowed } from '../origin-policy';
 // Delegate route - creates TinyCloud delegation for CLI auth flow
 import { randomBytes, randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
+import { routePath } from 'hono/route';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient } from '@openkey/tee';
 import { bearerFromAccountOriginError } from '../middleware/bearer-origin';
@@ -58,7 +59,7 @@ import {
   type RecapEntry,
   type SessionAbilities,
 } from './delegate-session';
-import { log, logError, logMetric, logSessionJwk } from '../log';
+import { log, logError, logMetric, logSessionJwk, recordAccountOriginRefused } from '../log';
 
 // Re-export the pure delegation helpers so existing external test files
 // (e.g. delegate-oauth-route.test.ts) that import them from this module
@@ -403,7 +404,10 @@ delegateRouter.use('*', async (c, next) => {
       ? null
       : 'Requests are accepted only from the OpenKey account origin')
     : bearerFromAccountOriginError(authorization, origin);
-  if (originError) return c.json({ error: originError }, 403);
+  if (originError) {
+    recordAccountOriginRefused(routePath(c, -1), origin === undefined ? 'missing' : 'foreign');
+    return c.json({ error: originError }, 403);
+  }
   // session.ts answers `{ error: 'Unauthorized' }` to every route that uses it;
   // the delegate routes add a stable code the widget can match on.
   const refusal = await (requireSession as any)(c, next);
