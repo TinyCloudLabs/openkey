@@ -177,6 +177,53 @@ describe('delegation short-code broker', () => {
     expect(disguised.status).toBe(400);
   });
 });
+test('a delegate completion response can mint a code after excluding only non-public response fields', async () => {
+  const completion = {
+    delegationHeader: { Authorization: 'Bearer signed-delegation' },
+    delegationCid: 'bafy-delegation',
+    spaceId: 'tinycloud:pkh:eip155:1:0x123:default',
+    ownerDid: 'did:key:zOwner',
+    verificationMethod: 'did:key:zSession',
+    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'public-key' },
+    address: '0x123',
+    chainId: 1,
+    hostActivated: true,
+    spaceReady: true,
+    spaceError: null,
+    spacePending: true,
+    primary: true,
+    edited: true,
+    reason: 'Sync files',
+    expirationTime: '2099-01-01T00:00:00.000Z',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    expiry: '2099-01-01T00:00:00.000Z',
+    siwe: 'signed message',
+    signature: 'signature',
+    signedMessage: 'signed message',
+    permissions: [],
+    requestedSpaces: ['tinycloud:pkh:eip155:1:0x123:default'],
+  };
+  // Mirrors PUBLIC_DELEGATION_FIELDS in delegation-codes.ts; keep web-side omissions aligned.
+  const publicFields: Record<string, true> = {
+    delegationHeader: true, delegationCid: true, spaceId: true, ownerDid: true,
+    verificationMethod: true, jwk: true, address: true, chainId: true,
+    hostActivated: true, spaceReady: true, spaceError: true, spacePending: true,
+    primary: true, edited: true, reason: true, expirationTime: true, expiresAt: true,
+    expiry: true, siwe: true, signature: true, signedMessage: true, permissions: true,
+  };
+  const omitted = Object.keys(completion).filter((field) => !publicFields[field]);
+  expect(omitted).toEqual(['requestedSpaces']);
+
+  const { app } = fixture();
+  const post = (value: Record<string, unknown>) => app.request('/api/delegation-codes', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ delegation: value }),
+  });
+  expect((await post(completion)).status).toBe(400);
+  const publicCompletion = Object.fromEntries(Object.entries(completion).filter(([field]) => publicFields[field]));
+  expect((await post(publicCompletion)).status).toBe(201);
+});
 
 
 describe('TC-945 pending delegation short codes', () => {

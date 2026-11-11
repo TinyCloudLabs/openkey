@@ -96,7 +96,7 @@ test.describe('TC-659 CLI /delegate consent parity', () => {
   });
 });
 
-test('manual OpenKey login shows a short retrieval code and keeps the paste fallback', async ({ page }) => {
+test('manual OpenKey login mints a short code from public fields and keeps the full delegation', async ({ page }) => {
   await mock(page);
   const delegation = {
     delegationHeader: { Authorization: 'Bearer signed' },
@@ -106,19 +106,28 @@ test('manual OpenKey login shows a short retrieval code and keeps the paste fall
     jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
     expirationTime: '2026-11-03T01:00:00.000Z',
     hostActivated: true,
+    spaceReady: true,
+    requestedSpaces: ['tinycloud:pkh:eip155:1:0x123:default'],
   };
+  const publicKeys = [
+    'delegationHeader', 'delegationCid', 'spaceId', 'ownerDid', 'verificationMethod', 'jwk',
+    'address', 'chainId', 'hostActivated', 'spaceReady', 'spaceError', 'spacePending',
+    'primary', 'edited', 'reason', 'expirationTime', 'expiresAt', 'expiry', 'siwe',
+    'signature', 'signedMessage', 'permissions',
+  ];
   await page.route('**/api/delegate', (route) => json(route, 200, delegation));
   await page.route('**/api/delegation-codes', (route) => {
-    expect(route.request().postDataJSON()).toEqual({ delegation });
+    const body = route.request().postDataJSON() as { delegation: Record<string, unknown> };
+    expect(body.delegation).toEqual(Object.fromEntries(Object.entries(delegation).filter(([key]) => publicKeys.includes(key))));
+    expect(body.delegation).not.toHaveProperty('requestedSpaces');
     return json(route, 201, { code: 'sf23-22cs', expiresAt: '2026-10-05T00:10:00.000Z' });
   });
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
-  // An API from before upper-case codes still returns lower case; the page
-  // shows the code in upper case either way.
   await expect(page.getByText('SF23-22CS')).toBeVisible();
   await page.getByText('Use full delegation code instead').click();
-  await expect(page.getByRole('textbox', { name: 'Full delegation code' })).toBeVisible();
+  const fullCode = await page.getByRole('textbox', { name: 'Full delegation code' }).inputValue();
+  expect(JSON.parse(Buffer.from(fullCode, 'base64').toString('utf8'))).toEqual(delegation);
 });
 
 test.describe('TC-660 /device prefilled code', () => {
