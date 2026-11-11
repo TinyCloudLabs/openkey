@@ -1,4 +1,7 @@
 import { expect, test } from 'bun:test';
+import { PrismaClient } from '@openkey/db';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { createPrismaEscrowDatabase } from '../services/escrow-prisma';
 import { Client } from 'pg';
 import { withFencedOpenKeySnapshot, type EscrowSqlDatabase, type EscrowSqlTransaction } from '../services/escrow-snapshot';
 
@@ -39,6 +42,20 @@ run('real PostgreSQL fence blocks new sealed rows through validation and release
     await expect(withFencedOpenKeySnapshot(database, async () => { throw new Error('Validation failed'); })).rejects.toThrow('Validation failed');
     await writer.query("INSERT INTO ethereum_keys(id) VALUES ('released')");
     expect((await writer.query('SELECT id FROM ethereum_keys')).rows).toEqual([{ id: 'released' }]);
+    await writer.query('DELETE FROM ethereum_keys');
+    const queries: string[] = [];
+    const prisma = new PrismaClient({ adapter: new PrismaPg({ ...local, options: `-c search_path=${schema}` }), log: [{ emit: 'event', level: 'query' }] });
+    prisma.$on('query', event => queries.push(event.query));
+    try {
+      // Commit immediately before Prisma begins the fenced operation.
+      await writer.query('INSERT INTO ethereum_keys VALUES ($1,$2,$3,$4,$5,$6)', ['prior', 'u', null, 'MANAGED', Buffer.alloc(32, 1).toString('base64'), '0x' + 'a'.repeat(40)]);
+      await withFencedOpenKeySnapshot(createPrismaEscrowDatabase(prisma), async snapshot => {
+        expect(snapshot.inventory.records.map(row => row.id)).toEqual(['prior']);
+        const lockIndex = queries.findIndex(query => query.startsWith('LOCK TABLE'));
+        expect(lockIndex).toBeGreaterThanOrEqual(0);
+        expect(queries.slice(0, lockIndex).every(query => /^(BEGIN|SET TRANSACTION)/i.test(query))).toBe(true);
+      });
+    } finally { await prisma.$disconnect(); }
   } finally {
     await owner.query(`DROP SCHEMA "${schema}" CASCADE`);
     await Promise.all([owner.end(), writer.end()]);
