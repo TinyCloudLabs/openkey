@@ -8,8 +8,8 @@
 
   let { invitation }: Props = $props();
   // Durations count from when the owner sees the approval, again each time the invitation renders.
-  const acceptWithin = $derived(invitationDurationText(invitation.acceptanceExpiresAt, Date.now()));
-  const openFor = $derived(invitationDurationText(invitation.accessExpiresAt, Date.now()));
+  const acceptWithin = $derived(invitationDurationText(invitation.acceptanceExpiresAt, Date.now(), 'the next hour'));
+  const openFor = $derived(invitationDurationText(invitation.accessExpiresAt, Date.now(), 'less than an hour'));
 </script>
 
 <section class="flex flex-col gap-1 rounded-xl border border-surface-200 bg-surface-50 p-4" aria-label="Invitation">

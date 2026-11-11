@@ -24,13 +24,15 @@ export function invitationDateText(instant: string, locale?: string, timeZone?: 
 const HOUR_MS = 60 * 60 * 1000;
 
 /**
- * The time from `nowMs` to `instant` in plain words, rounded down: whole hours under 48 hours ("1 hour" at least),
- * whole days from 48 hours on.
+ * The time from `nowMs` to `instant` in plain words, rounded down: whole hours from one hour to under 48 hours,
+ * whole days from 48 hours on. Under an hour it reads `underAnHour` ("the next hour" after "Accept within",
+ * "less than an hour" after "for"), so a deadline is never overstated.
  */
-export function invitationDurationText(instant: string, nowMs: number): string {
+export function invitationDurationText(instant: string, nowMs: number, underAnHour: string): string {
   const remainingMs = Math.max(0, Date.parse(instant) - nowMs);
+  if (remainingMs < HOUR_MS) return underAnHour;
   if (remainingMs < 48 * HOUR_MS) {
-    const hours = Math.max(1, Math.floor(remainingMs / HOUR_MS));
+    const hours = Math.floor(remainingMs / HOUR_MS);
     return hours === 1 ? '1 hour' : `${hours} hours`;
   }
   const days = Math.floor(remainingMs / (24 * HOUR_MS));

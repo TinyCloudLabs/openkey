@@ -116,6 +116,15 @@ for (const [label, access, words] of [
   });
 }
 
+test('a file invitation 30 minutes from its deadlines never overstates them', async ({ page }) => {
+  const soon = new Date(Math.floor((Date.now() + 30 * 60_000) / 1000) * 1000).toISOString();
+  await open(page, { permissions: [], context: { ...context, subjectKind: 'file', acceptanceExpiresAt: soon, accessExpiresAt: soon } }, shareKey, [create, decrypt]);
+  const box = page.getByLabel('Invitation');
+  await expect(box).toContainText(`Accept within the next hour, by ${await shownDate(page, soon)}`);
+  await expect(box).toContainText(`alex@example.test can open Project notes for less than an hour, until ${await shownDate(page, soon)}`);
+  await expect(box).not.toContainText('1 hour');
+});
+
 test('a request without an invitation shows no invitation summary', async ({ page }) => {
   const leaf = `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default/share/${shareKeyId}`;
   await open(page, { permissions: [{ service: 'tinycloud.encryption', space: 'encryption', path: leaf, actions: [decrypt] }] }, leaf, [decrypt]);
