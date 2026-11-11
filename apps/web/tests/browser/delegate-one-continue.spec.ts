@@ -213,7 +213,8 @@ test('Sign out clears the email session token, so the next account\'s calls carr
   await page.goto(link);
   await signInWithEmailCode(page);
   await expect(approve(page)).toBeEnabled();
-  expect(state.keyAuth.at(-1)).toBe('Bearer tok-A');
+  expect(await page.evaluate(() => sessionStorage.getItem('openkey_session_token'))).toBe('tok-A');
+  expect(state.keyAuth.at(-1)).toBeUndefined();
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(email(page)).toBeVisible();
   expect(await page.evaluate(() => sessionStorage.getItem('openkey_session_token'))).toBeNull();
