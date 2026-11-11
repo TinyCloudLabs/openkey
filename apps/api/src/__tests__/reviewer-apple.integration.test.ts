@@ -416,7 +416,7 @@ if (!process.env.OPENKEY_APPLE_REVIEW_TEST_CHILD) {
     const row = await database.reviewerCleanup.findUniqueOrThrow({ where: { spaceId } });
     const values = new Set(['first-write']);
     let emptyFails = false;
-    const adapter = { wipe: async () => { values.clear(); }, empty: async () => !emptyFails && values.size === 0 };
+    const adapter = { completeEnumeration: true, wipe: async () => { values.clear(); }, empty: async () => !emptyFails && values.size === 0 };
     await cleanup.runReviewerCleanup(database, adapter);
     expect((await database.reviewerCleanup.findUniqueOrThrow({ where: { id: row.id } })).sealedBlob).not.toBeNull();
     values.add('old-grant-write-after-first-wipe');

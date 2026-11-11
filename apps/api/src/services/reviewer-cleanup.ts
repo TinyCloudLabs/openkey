@@ -35,7 +35,7 @@ type CleanupRow = Prisma.ReviewerCleanupGetPayload<Record<string, never>>;
 // The adapter has no arbitrary-message or delegation method. It owns both
 // enumeration and deletion; unknown pagination or SQL prefixes must fail.
 export interface ReviewerCleanupAdapter {
-  completeEnumeration?: boolean;
+  completeEnumeration: boolean;
   wipe(row: CleanupRow): Promise<void>;
   empty(row: CleanupRow): Promise<boolean>;
 }
@@ -62,7 +62,7 @@ export async function runReviewerCleanup(database: PrismaClient, adapter: Review
       if (!row.sealedBlob) throw new Error('Reviewer cleanup retained');
       await adapter.wipe(row);
       const final = row.tombstoneUntil.getTime() <= Date.now();
-      if (adapter.completeEnumeration === false && final) {
+      if (adapter.completeEnumeration !== true && final) {
         // TC-2817/TC-2779 must explicitly unpark these after complete SQL
         // enumeration exists. Retain the key; do not re-sign every minute.
         await database.reviewerCleanup.updateMany({ where: { id: row.id, leaseUntil }, data: {
