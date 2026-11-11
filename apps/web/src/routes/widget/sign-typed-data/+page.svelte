@@ -2,7 +2,11 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import { activeKeys, ARCHIVED_KEY_MESSAGE } from '$lib/delegate-key-selection';
   import Button from '$lib/components/ui/button.svelte';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
+  import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
+  import { originAuthority } from '$lib/requester-display';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
@@ -17,20 +21,26 @@
   } | null>(null);
   let keyId = $state<string | null>(null);
   let key = $state<EthereumKey | null>(null);
+  let keys = $state<EthereumKey[]>([]);
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
+  let archivedKey = $state(false);
+  let requestVersion = $state(0);
 
   // Exact requesting origin; never '*' (TC-690).
   const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
+  const requester = originAuthority(origin ?? '');
+  const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
+  const refusalMessage = $derived(archivedKey ? ARCHIVED_KEY_MESSAGE :
+    error || (keyId ? 'Selected key could not be loaded.' : 'No active managed keys are available to sign this data.'));
+
   // The window that opened this widget: the opener for a popup, otherwise
   // the parent frame.
   const counterparty: Window | null = typeof window === 'undefined'
     ? null
     : window.opener ?? (window.parent !== window ? window.parent : null);
-  let sessionChecked = $state(false);
-  let keyFetched = $state(false);
   let initialized = $state(false);
 
   // Use $effect instead of onMount for Svelte 5 compatibility with SSR disabled
@@ -47,54 +57,78 @@
     }
   });
 
-  // Reactively update loading state when session becomes available
+  // Load public metadata before allowing this request to reach signing review.
   $effect(() => {
-    if ($session.data && !sessionChecked) {
-      sessionChecked = true;
+    const requestedKeyId = keyId;
+    const version = requestVersion;
+    if (!$session.data) return;
+    if (!version) {
       loading = false;
+      return;
     }
+
+    let active = true;
+    loading = true;
+    key = null;
+    keys = [];
+    archivedKey = false;
+    error = '';
+    void (async () => {
+      try {
+        if (requestedKeyId) {
+          const result = await api.getKey(requestedKeyId);
+          if (!active || version !== requestVersion) return;
+          if (result.key.archivedAt != null) {
+            archivedKey = true;
+          } else if (result.key.keyType !== 'MANAGED') {
+            error = 'This key cannot sign typed data here. Reconnect to choose a managed key.';
+          } else {
+            key = result.key;
+          }
+        } else {
+          const result = await api.listKeys();
+          if (!active || version !== requestVersion) return;
+          // External-wallet typed-data signing is handled separately by the SDK.
+          const usableKeys = activeKeys(result.keys).filter(candidate => candidate.keyType === 'MANAGED');
+          keys = usableKeys;
+          if (usableKeys.length === 1) key = usableKeys[0]!;
+        }
+      } catch {
+        if (!active || version !== requestVersion) return;
+        error = requestedKeyId ? 'Selected key could not be loaded.' : 'Keys could not be loaded. Reconnect to try again.';
+      } finally {
+        if (active && version === requestVersion) loading = false;
+      }
+    })();
+    return () => { active = false; };
   });
 
-  // Reactively fetch key when session becomes available and we have a keyId
-  $effect(() => {
-    if ($session.data && keyId && !keyFetched && !key) {
-      keyFetched = true;
-      api.getKey(keyId).then(result => {
-        key = result.key;
-      }).catch(() => {
-        // Key not found
-      });
-    }
-  });
-
-  async function handleMessage(event: MessageEvent) {
+  function handleMessage(event: MessageEvent) {
     if (!isFromWidgetCounterparty(event, origin, counterparty)) return;
     if (event.data?.type === 'openkey:signTypedData:request') {
+      requestVersion += 1;
+      key = null;
+      keys = [];
+      archivedKey = false;
+      error = '';
+      signing = false;
+      loading = true;
       typedData = event.data.data;
       keyId = event.data.data?.keyId || null;
-      keyFetched = false; // Reset so effect can run
-
-      // Try immediately if session is already available
-      if (keyId && $session.data) {
-        try {
-          const result = await api.getKey(keyId);
-          key = result.key;
-          keyFetched = true;
-        } catch {
-          // Key not found
-        }
-      }
     }
   }
 
   async function signTypedData() {
-    if (!key || !typedData) return;
+    if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing) return;
+
+    const version = requestVersion;
 
     signing = true;
     error = '';
 
     try {
       const result = await api.signTypedData(key.id, typedData);
+      if (version !== requestVersion) return;
       sendResponse({
         type: 'openkey:signTypedData:response',
         success: true,
@@ -103,17 +137,28 @@
       });
       sendClose();
     } catch (e: any) {
-      error = e.message || 'Signing failed';
+      if (version === requestVersion) error = e.message || 'Signing failed';
     } finally {
-      signing = false;
+      if (version === requestVersion) signing = false;
     }
+  }
+
+  function reconnect() {
+    sendResponse({
+      type: 'openkey:signTypedData:response',
+      success: false,
+      error: { code: 'NO_KEY', message: `${refusalMessage} ${reconnectHint}` },
+    });
+    sendClose();
   }
 
   function cancel() {
     sendResponse({
       type: 'openkey:signTypedData:response',
       success: false,
-      error: { code: 'USER_CANCELLED', message: 'User cancelled' },
+      error: archivedKey
+        ? { code: 'NO_KEY', message: ARCHIVED_KEY_MESSAGE }
+        : { code: 'USER_CANCELLED', message: 'User cancelled' },
     });
     sendClose();
   }
@@ -134,9 +179,9 @@
 
 <div class="flex-1 flex flex-col">
   <header class="flex justify-between items-center mb-6">
-    <h1 class="text-xl font-semibold text-surface-50">Sign Typed Data</h1>
+    <h1 class="text-xl font-semibold text-surface-900">Sign Typed Data</h1>
     <button
-      class="bg-transparent border-none text-surface-400 text-2xl cursor-pointer p-0 leading-none hover:text-surface-50 transition-colors"
+      class="bg-transparent border-none text-surface-600 text-2xl cursor-pointer p-0 leading-none hover:text-surface-900 transition-colors"
       onclick={cancel}
     >
       &times;
@@ -152,10 +197,21 @@
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       Loading...
     </div>
-  {:else if !key}
-    <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
-      <p>Please connect first to sign data.</p>
+  {:else if archivedKey}
+    <SigningKeyRefusal message={refusalMessage} {requester} onreconnect={reconnect} />
+  {:else if !key && !keyId && keys.length > 1}
+    <div class="flex flex-col gap-4">
+      <KeyPicker
+        {keys}
+        onselect={selected => { key = selected; }}
+        listHeading="Select a key to sign this data:"
+        primaryHeading="Sign with your primary key:"
+        compact={false}
+      />
+      <Button variant="secondary" onclick={cancel}>Cancel</Button>
     </div>
+  {:else if !key}
+    <SigningKeyRefusal message={refusalMessage} {requester} onreconnect={reconnect} />
   {:else if !typedData}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p>No data to sign.</p>

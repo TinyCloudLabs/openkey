@@ -30,7 +30,7 @@ export type PreparedHandoffRecord = {
   state: string;
   expiresAt: Date;
   requestedAt: Date;
-  status: 'PENDING' | 'CANCELLED' | 'CONSUMED';
+  status: 'PENDING' | 'SIGNING' | 'CANCELLED' | 'CONSUMED';
   ownerId: string;
   contextTokenHash: string | null;
   selectedKeyId: string | null;
@@ -41,6 +41,10 @@ export interface PreparedHandoffStore {
   find(ticketHash: string): Promise<PreparedHandoffRecord | null>;
   bind(ticketHash: string, userId: string, contextTokenHash: string, selectedKeyId: string, now: Date): Promise<boolean>;
   reserve(ticketHash: string, userId: string, contextTokenHash: string, selectedKeyId: string, now: Date): Promise<boolean>;
+  // SIGNING -> CONSUMED once the signature exists.
+  complete(ticketHash: string, userId: string, contextTokenHash: string, selectedKeyId: string, now: Date): Promise<boolean>;
+  // SIGNING -> PENDING when signing failed.
+  release(ticketHash: string, userId: string, contextTokenHash: string, selectedKeyId: string): Promise<boolean>;
   cancel(ticketHash: string, now: Date, ownerId?: string): Promise<boolean>;
 }
 
@@ -180,6 +184,7 @@ export class PreparedHandoffService {
     if (record.expiresAt <= this.now()) fail('handoff_expired', 'Handoff expired', 410);
     if (record.status === 'CANCELLED') fail('handoff_cancelled', 'Handoff cancelled', 410);
     if (record.status === 'CONSUMED') fail('handoff_consumed', 'Handoff already signed', 409);
+    if (record.status === 'SIGNING') fail('handoff_signing', 'Handoff is already being signed.', 409);
     return record;
   }
   async bindOwnerRevocation(ticket: string, userId: string, keyId: string, contextToken: string): Promise<void> {
@@ -261,14 +266,24 @@ export class PreparedHandoffService {
   }
 
   // Only the successful signing path calls this; no HTTP endpoint retrieves results by ticket.
+  // It spends the handoff: the signature exists, so the handoff cannot be signed again.
   async completeSigning(ticket: string, userId: string, contextToken: string, keyId: string) {
     if (!opaque(ticket)) fail('handoff_not_found', 'Handoff not found', 404);
     const record = await this.store.find(digest(ticket));
-    if (!record || record.status !== 'CONSUMED' || record.ownerId !== userId ||
-      record.contextTokenHash !== digest(contextToken) || record.selectedKeyId !== keyId) {
+    if (record && record.status === 'SIGNING' && record.expiresAt <= this.now()) fail('handoff_expired', 'Handoff expired', 410);
+    if (!record || record.status !== 'SIGNING' || record.ownerId !== userId ||
+      record.contextTokenHash !== digest(contextToken) || record.selectedKeyId !== keyId ||
+      !await this.store.complete(record.ticketHash, userId, digest(contextToken), keyId, this.now())) {
       fail('binding_mismatch', 'Handoff signing context is invalid', 403);
     }
     return { deliveryState: record.state, selectedKeyId: keyId };
+  }
+
+  // Called when signing failed after `reserveSigning`: no signature exists, so the handoff
+  // can be approved again or cancelled. Only the holder of the bound context releases it.
+  async releaseSigning(ticket: string, userId: string, contextToken: string, keyId: string): Promise<void> {
+    if (!opaque(ticket)) fail('handoff_not_found', 'Handoff not found', 404);
+    await this.store.release(digest(ticket), userId, digest(contextToken), keyId);
   }
 
   async cancelClaimed(ticket: string, userId: string): Promise<void> {
@@ -317,7 +332,19 @@ export class MemoryPreparedHandoffStore implements PreparedHandoffStore {
   async reserve(hash: string, userId: string, tokenHash: string, keyId: string, now: Date) {
     const r = this.records.get(hash);
     if (!r || r.status !== 'PENDING' || r.ownerId !== userId || r.contextTokenHash !== tokenHash || r.selectedKeyId !== keyId || r.expiresAt <= now) return false;
+    r.status = 'SIGNING';
+    return true;
+  }
+  async complete(hash: string, userId: string, tokenHash: string, keyId: string, now: Date) {
+    const r = this.records.get(hash);
+    if (!r || r.status !== 'SIGNING' || r.ownerId !== userId || r.contextTokenHash !== tokenHash || r.selectedKeyId !== keyId || r.expiresAt <= now) return false;
     r.status = 'CONSUMED';
+    return true;
+  }
+  async release(hash: string, userId: string, tokenHash: string, keyId: string) {
+    const r = this.records.get(hash);
+    if (!r || r.status !== 'SIGNING' || r.ownerId !== userId || r.contextTokenHash !== tokenHash || r.selectedKeyId !== keyId) return false;
+    r.status = 'PENDING';
     return true;
   }
   async cancel(hash: string, now: Date, ownerId?: string) {

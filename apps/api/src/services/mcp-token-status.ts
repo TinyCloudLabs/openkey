@@ -30,7 +30,8 @@ export async function mcpTokenStatus(database: McpTokenStatusDatabase, subject: 
   const [client, consent, session] = await Promise.all([
     database.oauthClient.findUnique({ where: { clientId }, select: { disabled: true } }),
     database.oauthConsent.findUnique({ where: { userId_clientId: { userId, clientId } }, select: { scopes: true, createdAt: true } }),
-    database.session.findFirst({ where: { id: sessionId, userId, expiresAt: { gt: now } }, select: { id: true } }),
+    // A locked user's session no longer stands (R9, TC-1231).
+    database.session.findFirst({ where: { id: sessionId, userId, expiresAt: { gt: now }, user: { lockedAt: null } }, select: { id: true } }),
   ]);
   if (!client || client.disabled) return { active: false, reason: 'client' };
   if (!consent) return { active: false, reason: 'consent' };

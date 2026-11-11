@@ -1,5 +1,7 @@
 import type { PrismaClient } from '@openkey/db';
-import { ApprovalResultError, type ApprovalRequestRecord, type ApprovalRequestStore } from './approval-results';
+import { APPROVAL_CLAIM_LEASE_MS, ApprovalResultError, type ApprovalRequestRecord, type ApprovalRequestStore } from './approval-results';
+
+const leaseStart = (now: Date) => new Date(now.getTime() - APPROVAL_CLAIM_LEASE_MS);
 
 export function createPrismaApprovalRequestStore(database: PrismaClient): ApprovalRequestStore {
   return {
@@ -16,9 +18,24 @@ export function createPrismaApprovalRequestStore(database: PrismaClient): Approv
     async findByResultRef(resultRef) {
       return await database.approvalRequest.findUnique({ where: { resultRef } }) as unknown as ApprovalRequestRecord | null;
     },
-    async approve(id, result, now) {
+    async admit(id, now) {
       const saved = await database.approvalRequest.updateMany({
-        where: { id, resultRef: null, expiresAt: { gt: now } }, data: result,
+        where: { id, resultRef: null, deniedAt: null, expiresAt: { gt: now }, OR: [{ approvingAt: null }, { approvingAt: { lte: leaseStart(now) } }] },
+        data: { approvingAt: now },
+      });
+      return saved.count === 1 ? now : null;
+    },
+    async release(id, marker) {
+      await database.approvalRequest.updateMany({ where: { id, resultRef: null, approvingAt: marker }, data: { approvingAt: null } });
+    },
+    async approve(id, result, now, marker) {
+      // One conditional write settles it. Admitted: this exact marker (a deny or a re-admission after a lapse has replaced or voided it), on a request no more than one lease past its deadline.
+      // Not admitted: the request must be unexpired and no other approval live.
+      const saved = await database.approvalRequest.updateMany({
+        where: marker
+          ? { id, resultRef: null, deniedAt: null, approvingAt: marker, expiresAt: { gt: leaseStart(now) } }
+          : { id, resultRef: null, deniedAt: null, expiresAt: { gt: now }, OR: [{ approvingAt: null }, { approvingAt: { lte: leaseStart(now) } }] },
+        data: result,
       });
       return saved.count === 1;
     },
@@ -31,6 +48,12 @@ export function createPrismaApprovalRequestStore(database: PrismaClient): Approv
         if (saved.count !== 1) return null;
         return await tx.approvalRequest.findUnique({ where: { resultRef } }) as unknown as ApprovalRequestRecord;
       });
+    },
+    async deny(id, now) {
+      const saved = await database.approvalRequest.updateMany({
+        where: { id, resultRef: null, deniedAt: null, expiresAt: { gt: now }, OR: [{ approvingAt: null }, { approvingAt: { lte: leaseStart(now) } }] }, data: { deniedAt: now },
+      });
+      return saved.count === 1;
     },
   };
 }

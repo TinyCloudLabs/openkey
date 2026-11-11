@@ -91,7 +91,7 @@ function encryptedApproval(
 }
 
 describe('OpenKey device authorization service', () => {
-  test('delivers an end-to-end encrypted relay result exactly once without plaintext disclosure', async () => {
+  test('delivers an end-to-end encrypted relay result until the client acknowledges it, without plaintext disclosure', async () => {
     const input = fixture();
     const transaction = await input.service.start(input.request, '203.0.113.9');
     expect(transaction.userCode).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
@@ -126,6 +126,20 @@ describe('OpenKey device authorization service', () => {
         shareOrigin: input.request.shareOrigin,
       });
     }
+    // Polling does not spend the result: a poll whose reply was lost is repeated and returns the same relay.
+    expect(await input.store.findById(transaction.transactionId)).toHaveProperty('encryptedResult');
+    input.advance(2000);
+    expect(await input.service.poll({
+      transactionId: transaction.transactionId,
+      deviceSecret: 'device-secret-with-at-least-256-bits-of-entropy',
+      codeVerifier: 'pkce-verifier-with-at-least-256-bits-of-entropy',
+    })).toEqual(approved);
+    // The client's acknowledgement spends it: the ciphertext is wiped and a later poll is refused.
+    await input.service.acknowledge({
+      transactionId: transaction.transactionId,
+      deviceSecret: 'device-secret-with-at-least-256-bits-of-entropy',
+      codeVerifier: 'pkce-verifier-with-at-least-256-bits-of-entropy',
+    });
     expect(await input.store.findById(transaction.transactionId)).not.toHaveProperty('encryptedResult');
     input.advance(2000);
     await expect(input.service.poll({

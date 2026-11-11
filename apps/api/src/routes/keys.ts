@@ -3,13 +3,14 @@ import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey, type TeeQuote } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
-import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { validateTypedData, verifyMessage } from 'viem';
 import type { Hex } from 'viem';
 import {
   ensureTinyCloudBootstrapForApprovedSign,
 } from '../services/tinycloud-bootstrap';
-import { awaitTinyCloudBootstrapWithinBudget } from '../services/tinycloud-bootstrap-budget';
+import { awaitTinyCloudBootstrapWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
+import { parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
@@ -22,7 +23,7 @@ import {
   encryptionOutsideAppsRefusalForMessage,
 } from '../services/app-key-refusal';
 import { isFirstPartyEncryptionOrigin } from '../services/first-party-origins';
-import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
+import { rejectNonBrowserControlRequest, rejectNonOpenKeySignRequest } from '../middleware/browser-control';
 
 import { log, logError } from '../log';
 const prisma = createPrismaClient();
@@ -46,7 +47,7 @@ export const keysRouter = new Hono<SessionContext>();
 
 // All routes require authentication. A bearer session token is accepted only
 // from an OpenKey web origin, where the embedded widgets run (TC-688).
-keysRouter.use('*', requireOpenKeyOriginForBearer);
+keysRouter.use('*', requireAccountOriginForBearer);
 keysRouter.use('*', requireSession);
 
 // Generate a verification challenge for wallet linking
@@ -284,6 +285,8 @@ keysRouter.patch('/:keyId', async (c) => {
 // Sign a message (internal - will be called by SDK widget)
 // Supports both raw signing and EIP-191 (personal_sign) format
 keysRouter.post('/:keyId/sign', async (c) => {
+  const originRefusal = rejectNonOpenKeySignRequest(c);
+  if (originRefusal) return originRefusal;
   const user = c.get('user');
   const keyId = c.req.param('keyId');
   const body = await c.req.json<{
@@ -346,9 +349,16 @@ keysRouter.post('/:keyId/sign', async (c) => {
 
   // personal_sign adds EIP-191 prefix, raw signs the message directly
   const format = body.format || 'personal_sign';
-  // Bound bootstrap's synchronous wait; background work keeps its existing lock/heartbeat.
+  // Bound bootstrap's synchronous wait; background work keeps its existing lock/heartbeat. A sign-in that
+  // names one of the signer's own spaces (and no account-space entry) waits for that space instead, bounded
+  // by the requested-space timeout inside the bootstrap, so the SDK never has to host it itself.
+  // The cheap refusals come first, so a message that will be skipped anyway is not parsed a second time.
+  const mayHostOwnSpace = format !== 'raw' && process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN !== 'off';
+  const siwe = mayHostOwnSpace ? parseTinyCloudSiwe(body.message) : null;
+  const waitsForOwnSpace = siwe !== null && requestedOwnSpaceForSiwe(siwe, key.address) !== null;
   const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
     ensureTinyCloudBootstrapForApprovedSign({ prisma, userId: user.id, key, privateKey, message: body.message, format }),
+    waitsForOwnSpace ? { budgetMs: OWN_TIMEOUT_BUDGET_MS, ownLogsBackground: true } : {},
   );
   if (bootstrap.status === 'failed') {
     log('error', 'tinycloud_bootstrap_failed', bootstrap.errorCode);
@@ -368,8 +378,10 @@ keysRouter.post('/:keyId/sign', async (c) => {
   });
 });
 
-// Sign typed data (EIP-712)
+// Sign typed data (EIP-712), behind the same origin gate as /sign.
 keysRouter.post('/:keyId/sign-typed-data', async (c) => {
+  const originRefusal = rejectNonOpenKeySignRequest(c);
+  if (originRefusal) return originRefusal;
   const user = c.get('user');
   const keyId = c.req.param('keyId');
   const body = await c.req.json<{

@@ -12,8 +12,8 @@
 // adapter component with a fixture model and a spy transport, then
 // dispatch real DOM keyboard events. A route-specific wiring bug —
 // dropping `invalidatePreview` from the widget adapter's selection
-// handler, mis-mapping the CLI selection, forgetting to call the preview
-// path when supported — surfaces as a missing spy call in that test.
+// handler, mis-mapping the CLI selection, signing before a preview
+// is ready — surfaces as an unexpected spy call in that test.
 //
 // The routes themselves are responsible for authentication and other
 // non-authorization concerns; those never enter the adapter and never
@@ -27,8 +27,17 @@ export interface CliSigningTransport {
    */
   approveDelegate: () => void | Promise<void>;
 
-  /** Cancel: the CLI's "go back to key selection" navigation. */
+  /** Back (the review's dismiss control): the CLI's "go back to key selection" navigation. It sends nothing. */
   goBack: () => void;
+
+  /**
+   * Decline the approval request (TC-2459). Set only on an approval-request review; the card then offers a Decline
+   * button left of Approve. Unset on every other `/delegate` review.
+   */
+  decline?: () => void | Promise<void>;
+
+  /** True while a decline is being sent. */
+  declining?: boolean;
 
   /**
    * Called whenever the user narrows the selection. The route is
@@ -67,10 +76,14 @@ export interface CliSigningTransport {
    * user can retry.
    */
   approveBlockedReason?: string | null;
+  /** A server-declared terminal approval failure; only re-preparation can unblock Approve. */
+  approveBlockedByFailure?: boolean;
 }
 
 /** Transport injected by the widget popup and iframe routes. */
 export interface WidgetSigningTransport {
+  /** Set once the server has refused this request for good: Approve is off and this is shown in its place. */
+  approveBlockedReason?: string | null;
   /**
    * The TinyCloud node the request names (the sign request's `host`), or empty when it names none. The host
    * approval looks the node key up only there, and only if it is a known node (TC-2309).
@@ -85,28 +98,14 @@ export interface WidgetSigningTransport {
    */
   canUseAuthorizeSign: boolean;
 
-  /**
-   * True after the server has prepared exact bytes and sealed them to the
-   * current selection. The adapter keeps rendering the shared approval
-   * content, but the next approval now consumes that preview instead of
-   * requesting another one.
-   */
+  /** True while a current, unexpired token sealed to the visible selection is held. */
   previewReady: boolean;
 
-  /**
-   * Server-authoritative narrowing path: fetch a preview of the exact
-   * bytes the server would sign for the current selection. The route puts
-   * those bytes back into the shared review model; the adapter fires this
-   * only when `canUseAuthorizeSign` is true and no preview is ready.
-   */
-  requestPreview: () => void | Promise<void>;
-
-  /**
-   * Exact-byte fall-through: the legacy widget path signs the caller's
-   * original bytes verbatim. The adapter fires this when
-   * `canUseAuthorizeSign` is false.
-   */
+  /** Sign the ready sealed preview, or the original bytes on the legacy path. */
   approveAndSign: () => void | Promise<void>;
+
+  /** Owner-initiated retry after a recoverable preview/sign failure; absent while busy. */
+  retryPreview?: () => void;
 
   /** Cancel: send the widget cancel response and close the surface. */
   cancel: () => void;
@@ -127,11 +126,13 @@ export interface WidgetSigningTransport {
    */
   invalidatePreview: () => void;
 
-  /** True while the widget is previewing or signing. */
+  /** True only while the widget is signing. */
   approving: boolean;
 
   /** Latest error string, or null. */
   error: string | null;
+  /** True once the server refused in a way a retry cannot change: Approve stays disabled. */
+  refused?: boolean;
 
   /**
    * The "Approval expires" choice (TC-2272). Set only when the signing path

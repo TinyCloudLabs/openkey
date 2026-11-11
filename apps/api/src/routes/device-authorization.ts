@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { requireSession } from '../middleware/session';
-import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import {
   DeviceAuthorizationError,
   DeviceAuthorizationService,
 } from '../services/device-authorization';
+import { rejectNonOpenKeySignRequest } from '../middleware/browser-control';
 import { createPrismaDeviceAuthorizationStore } from '../services/device-authorization-store';
 
 type DeviceAuthorizationVariables = {
@@ -45,6 +46,21 @@ export function createDeviceAuthorizationRouter(input: {
     }
   });
 
+  // The client's durable save of a result it polled. Authenticated like the poll: by the device secret
+  // and PKCE verifier, with no session.
+  router.post('/:transactionId/ack', async (c) => {
+    try {
+      const body = await c.req.json();
+      return c.json(await input.service.acknowledge({
+        transactionId: c.req.param('transactionId'),
+        deviceSecret: body?.deviceSecret,
+        codeVerifier: body?.codeVerifier,
+      }));
+    } catch (error) {
+      return routeError(c, error);
+    }
+  });
+
   router.get('/lookup', async (c) => {
     const value = await input.service.lookup(c.req.query('user_code') ?? '');
     if (!value) return c.json({ error: 'not_found' }, 404);
@@ -59,11 +75,22 @@ export function createDeviceAuthorizationRouter(input: {
 
   // Approval is a signed-in user action from the OpenKey /delegate page. A
   // bearer session token is accepted only from an OpenKey web origin (TC-688).
-  router.post('/:transactionId/approve', requireOpenKeyOriginForBearer as any, input.sessionMiddleware ?? requireSession as any, async (c) => {
+  router.post('/:transactionId/approve', requireAccountOriginForBearer as any, input.sessionMiddleware ?? requireSession as any, async (c) => {
+    const originRefusal = rejectNonOpenKeySignRequest(c);
+    if (originRefusal) return originRefusal;
     try {
       const user = c.get('user');
       await input.service.approve(c.req.param('transactionId'), user.id, await c.req.json());
       return c.json({ approved: true });
+    } catch (error) {
+      return routeError(c, error);
+    }
+  });
+
+  // Declining is a signed-in user action, like approving. The device's poll then answers access_denied.
+  router.post('/:transactionId/deny', requireAccountOriginForBearer as any, input.sessionMiddleware ?? requireSession as any, async (c) => {
+    try {
+      return c.json(await input.service.deny(c.req.param('transactionId')));
     } catch (error) {
       return routeError(c, error);
     }

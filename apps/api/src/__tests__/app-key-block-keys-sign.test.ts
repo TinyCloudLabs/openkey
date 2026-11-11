@@ -102,7 +102,7 @@ async function sign(body: Record<string, unknown>) {
   const { keysRouter } = await import('../routes/keys?app-key-block-keys-sign' as string);
   return keysRouter.request('/key_1/sign', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
     body: JSON.stringify({ requestOrigin: ORIGIN, ...body }),
   });
 }

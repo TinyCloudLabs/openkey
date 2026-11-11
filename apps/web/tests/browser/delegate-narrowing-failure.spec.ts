@@ -124,7 +124,7 @@ test('a failed narrowing keeps Approve disabled and sends no approval', async ({
   const decrypt = details.getByRole('checkbox', { name: 'decrypt' });
   await decrypt.uncheck();
 
-  await expect(page.getByText('Service unavailable').first()).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveText("Couldn't approve this request. Try again. (Error 503)");
   const approve = page.getByRole('button', { name: 'Approve', exact: true });
   await expect(approve).toBeDisabled();
   await expect(page.getByText('have not been prepared for signing')).toBeVisible();

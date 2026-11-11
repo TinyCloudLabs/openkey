@@ -1,9 +1,10 @@
 // OpenKey API - better-auth configuration
+import { generateOAuthClientSecret, hasOAuthClientId, hashOAuthClientSecret } from './services/oauth-client-secrets';
 // Auth flow: email OTP by default, with optional passkey enrollment and sign-in.
 import { betterAuth, type BetterAuthPlugin } from 'better-auth';
-import { APIError } from 'better-auth/api';
+import { APIError, createAuthEndpoint, sensitiveSessionMiddleware } from 'better-auth/api';
 import type { AuthMiddleware } from '@better-auth/core/api';
-import { defineRequestState, getCurrentAuthContext } from '@better-auth/core/context';
+import { defineRequestState, getCurrentAuthContext, getCurrentAuthContextAsyncLocalStorage } from '@better-auth/core/context';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
 import { passkey } from '@better-auth/passkey';
 import { bearer, emailOTP, jwt } from 'better-auth/plugins';
@@ -16,13 +17,17 @@ import { buildEmailClaims } from './claims';
 import {
   DEFAULT_OAUTH_SCOPES,
   DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES,
+  isConfidentialWebClient,
   OAUTH_SCOPES,
   TINYCLOUD_CANONICAL_IDENTITY_CLAIM,
   TINYCLOUD_DELEGATION_SCOPE,
+  TINYCLOUD_IDENTITY_SCOPE,
   TINYCLOUD_MANAGE_KEY_SCOPE,
   TINYCLOUD_MCP_SCOPE,
   TINYCLOUD_OWNER_DIDS_CLAIM,
   TINYCLOUD_SESSION_SCOPE,
+  DEFAULT_ACCESS_TOKEN_EXPIRES_IN,
+  accessTokenExpiresInFor,
   dynamicClientRegistrationEnabled,
   oauthValidAudiences,
 } from './oauth-config';
@@ -32,15 +37,24 @@ import {
   assertFreshPasskeyUserVerification,
   recordPasskeyFreshnessAfterHook,
 } from './services/passkey-freshness';
+import { passkeyEnrolmentPlugin, type ResolvedSession } from './services/passkey-enrolment';
 import {
+  appleTokenClientId,
+  appleTokenSignIn,
+  configuredSocialProviderIds,
   createSocialProviders,
   socialProviderTrustedOrigins,
 } from './social-providers';
+import { appleRelayEmailUndeliverable } from './services/apple-notifications';
 import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
 import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { emailSignupConfirmation } from './services/email-signup-confirmation';
+import { hasFreshEmailStepUp } from './services/email-otp-step-up';
+import { confirmedSocialProvider, socialConfirmation } from './services/social-confirmation';
+import { assertCurrentSocialLink, socialLinkStatePlugin } from './services/social-link-state';
+import { socialMailboxReview } from './services/social-mailbox-review';
 import { betterAuthLog, log, logError } from './log';
 import { capSessionRefresh } from './services/session-cap';
 import { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS } from './services/session-lifetime';
@@ -63,6 +77,9 @@ const baseURL = process.env.BETTER_AUTH_URL!;
 
 type AuthoritativeOauthClient = {
   id: string;
+  type: string | null;
+  public: boolean;
+  tokenEndpointAuthMethod: string | null;
 };
 
 const oauthClientContext = defineRequestState<string | undefined>(() => undefined);
@@ -74,7 +91,7 @@ async function loadAuthoritativeOauthClient(
   if (!clientId) return null;
   return database.oauthClient.findFirst({
     where: { clientId },
-    select: { id: true },
+    select: { id: true, type: true, public: true, tokenEndpointAuthMethod: true },
   });
 }
 
@@ -85,6 +102,9 @@ export async function buildKeyClaims(
   _mutate = false,
   database: PrismaClient = prisma,
 ) {
+  if (scopes.includes(TINYCLOUD_IDENTITY_SCOPE) && !scopes.includes(TINYCLOUD_MANAGE_KEY_SCOPE)) {
+    return undefined;
+  }
   if (!scopes.includes('keys')) return undefined;
   if (!client) return [];
   const keys = await database.ethereumKey.findMany({
@@ -129,22 +149,31 @@ export async function buildCanonicalTinyCloudIdentityClaim(
   client: AuthoritativeOauthClient | undefined,
   database: PrismaClient = prisma,
 ) {
-  if (!scopes.includes(TINYCLOUD_MANAGE_KEY_SCOPE) || !client) {
-    return undefined;
-  }
+  const hasManageKey = scopes.includes(TINYCLOUD_MANAGE_KEY_SCOPE);
+  const hasIdentity = scopes.includes(TINYCLOUD_IDENTITY_SCOPE);
+  if ((!hasManageKey && !hasIdentity) || !client) return undefined;
+  if (!hasManageKey && (!hasIdentity || !isConfidentialWebClient(client))) return undefined;
   const key = await database.ethereumKey.findFirst({
     where: primaryKeyWhere(user.id),
     select: { id: true, address: true },
   });
   if (!key) return undefined;
   const address = getAddress(key.address);
+  if (hasManageKey) {
+    return {
+      version: 'v1',
+      keyId: key.id,
+      address,
+      chainId: 1,
+      did: `did:pkh:eip155:1:${address}`,
+      spaceId: `tinycloud:pkh:eip155:1:${address}:applications`,
+    };
+  }
   return {
     version: 'v1',
-    keyId: key.id,
     address,
     chainId: 1,
     did: `did:pkh:eip155:1:${address}`,
-    spaceId: `tinycloud:pkh:eip155:1:${address}:applications`,
   };
 }
 
@@ -162,12 +191,46 @@ const passkeyFreshnessPlugin = {
   hooks: {
     after: [{
       matcher: (ctx) => ctx.path === '/passkey/verify-authentication',
-      handler: (async (ctx: { path?: string; headers?: Headers; context: { returned?: unknown } }) => {
+      handler: (async (ctx: { path?: string; headers?: Headers; body?: unknown; context: { returned?: unknown } }) => {
         return recordPasskeyFreshnessAfterHook(
           prisma,
           ctx.context.returned,
           ctx.headers?.get('x-openkey-passkey-ceremony'),
+          (ctx.body as { response?: { id?: unknown } } | undefined)?.response?.id,
         );
+      }) as AuthMiddleware,
+    }],
+  },
+} satisfies BetterAuthPlugin;
+
+const accountLinkingStepUpPlugin = {
+  id: 'openkey-account-linking-step-up',
+  hooks: {
+    before: [{
+      matcher: (ctx) => ctx.path === '/link-social' || ctx.path === '/unlink-account',
+      handler: (async (ctx: { path: string; headers?: Headers; body?: unknown }) => {
+        const session = ctx.headers ? await auth.api.getSession({ headers: ctx.headers }) : null;
+        if (!session || !await hasFreshEmailStepUp(prisma, session.session.id)) {
+          throw new APIError('FORBIDDEN', {
+            code: 'EMAIL_STEP_UP_REQUIRED',
+            message: 'Verify an email code before changing linked accounts.',
+          });
+        }
+        if (ctx.path === '/unlink-account'
+          && (ctx.body as { providerId?: unknown } | undefined)?.providerId === 'apple') {
+          throw new APIError('FORBIDDEN', {
+            code: 'APPLE_UNLINK_REQUIRES_REVOCATION',
+            message: 'Use the revocation-protected account unlink endpoint.',
+          });
+        }
+        if (ctx.path === '/unlink-account' && await prisma.passkey.count({ where: { userId: session.user.id } }) === 0
+          && (!session.user.emailVerified
+            || await appleRelayEmailUndeliverable(prisma, session.user.id, session.user.email))) {
+          throw new APIError('FORBIDDEN', {
+            code: 'LAST_SIGN_IN_METHOD',
+            message: 'Add a passkey or a deliverable verified email before unlinking this account.',
+          });
+        }
       }) as AuthMiddleware,
     }],
   },
@@ -185,6 +248,40 @@ function withNativeAuthorizeQuery<T extends ReturnType<typeof oauthProvider>>(pl
   return plugin;
 }
 
+// The provider reads `accessTokenExpiresIn` from one options object for every token request, and has no hook for a
+// per-audience value. The request's own `resource` (the audience the token is issued for) is in the endpoint context
+// Better Auth already keeps per request, so read the lifetime from it when the provider asks. `scopeExpirations` and
+// `customAccessTokenClaims` cannot do this: the first can only shorten, the second cannot change `exp`.
+// `getCurrentAuthContextAsyncLocalStorage` is marked internal by Better Auth and its async sibling cannot serve a
+// synchronous getter; @better-auth/oauth-provider is pinned exactly and oauth-mcp-token-lifetime.test.ts (real provider,
+// interleaved requests) fails if an upgrade changes how the provider reads the option.
+const endpointContext = await getCurrentAuthContextAsyncLocalStorage();
+/** The `resource` the endpoint call in progress was made with, if any. */
+function currentRequestResource(): unknown {
+  return (endpointContext.getStore()?.body as { resource?: unknown } | undefined)?.resource;
+}
+function withMcpAccessTokenLifetime<T extends ReturnType<typeof oauthProvider>>(plugin: T): T {
+  Object.defineProperty(plugin.options, 'accessTokenExpiresIn', {
+    enumerable: true,
+    get: () => accessTokenExpiresInFor(currentRequestResource()),
+  });
+  return plugin;
+}
+
+// R9 (plan TC-1188 §2): a locked user's live sessions and OAuth tokens stop
+// resolving everywhere Better Auth looks them up, including bearer sessions
+// (the bearer plugin resolves through the same session lookup), the OAuth
+// refresh grant and opaque access-token validation. The filter is on Better
+// Auth's client only; OpenKey's own reads keep seeing the rows.
+function withLockedUserFilter(db: PrismaClient): PrismaClient {
+  const unlocked = { user: { lockedAt: null } };
+  const filter = ({ args, query }: { args: { where?: object }; query: (args: unknown) => Promise<unknown> }) =>
+    query({ ...args, where: args.where ? { AND: [args.where, unlocked] } : unlocked });
+  const reads = { findFirst: filter, findMany: filter };
+  return db.$extends({
+    query: { session: reads, oauthAccessToken: reads, oauthRefreshToken: reads },
+  }) as unknown as PrismaClient;
+}
 
 export const auth = betterAuth({
   baseURL,
@@ -197,8 +294,9 @@ export const auth = betterAuth({
     log: betterAuthLog,
   },
 
-  database: prismaAdapter(withNativeTokenGuardErrors(prisma), {
+  database: prismaAdapter(withLockedUserFilter(withNativeTokenGuardErrors(prisma)), {
     provider: 'postgresql',
+    transaction: true,
   }),
 
   // Passwords stay disabled; email OTP is the default authentication path.
@@ -213,8 +311,51 @@ export const auth = betterAuth({
     storeSessionInDatabase: true, // Required for OAuth provider
   },
 
+  user: {
+    additionalFields: {
+      socialCreatedProvider: { type: 'string', required: false, input: false, returned: false },
+      socialEmailReviewedAt: { type: 'date', required: false, input: false, returned: false },
+      lockedAt: { type: 'date', required: false, input: false, returned: false },
+    },
+  },
+
+  account: {
+    additionalFields: {
+      appleClientId: { type: 'string', required: false, input: false, returned: false },
+      appleRestoredAt: { type: 'date', required: false, input: false, returned: false },
+      revokedAt: { type: 'date', required: false, input: false, returned: false },
+    },
+    encryptOAuthTokens: true,
+    accountLinking: {
+      disableImplicitLinking: true,
+      allowDifferentEmails: true,
+      allowUnlinkingAll: true,
+      trustedProviders: configuredSocialProviderIds(process.env).includes('apple') ? ['apple'] : [],
+    },
+  },
+
   plugins: [
+    {
+      id: 'revoke-other-sessions',
+      endpoints: {
+        revokeOtherSessions: createAuthEndpoint('/revoke-other-sessions', {
+          method: 'POST',
+          requireHeaders: true,
+          use: [sensitiveSessionMiddleware],
+        }, async (ctx) => {
+          const session = ctx.context.session;
+          await prisma.session.deleteMany({ where: { userId: session.user.id, token: { not: session.session.token } } });
+          return ctx.json({ status: true });
+        }),
+      },
+    },
     passkeyFreshnessPlugin,
+    // TC-1198: passkey enrolment and removal need a fresh step-up.
+    passkeyEnrolmentPlugin(prisma, (headers): Promise<ResolvedSession | null> => auth.api.getSession({ headers })),
+    accountLinkingStepUpPlugin,
+    socialLinkStatePlugin(prisma),
+    socialConfirmation(prisma),
+    socialMailboxReview(prisma),
     // Passkeys are an encouraged optional sign-in and step-up method.
     passkey({
       rpID,
@@ -277,7 +418,18 @@ export const auth = betterAuth({
 
     // OAuth 2.1 Provider - enables third-party apps to authenticate users
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    withNativeAuthorizeQuery(oauthProvider({
+    withMcpAccessTokenLifetime(withNativeAuthorizeQuery(oauthProvider({
+      clientPrivileges: async ({ action }) => {
+        if (action === 'create' || action === 'list') return true;
+        const request = await getCurrentAuthContext();
+        const clientId = action === 'read' ? request.query?.client_id : request.body?.client_id;
+        if (!hasOAuthClientId(clientId)) return false;
+        const organizationClient = await prisma.oauthClient.findFirst({
+          where: { clientId, organizationId: { not: null } },
+          select: { id: true },
+        });
+        return !organizationClient;
+      },
       requestUriResolver: ({ requestUri, clientId }) => resolveRequestUri(prisma, requestUri, clientId),
       loginPage: `${origin}/auth/login`,
       consentPage: `${origin}/oauth/consent`,
@@ -287,13 +439,19 @@ export const auth = betterAuth({
       scopes: [...OAUTH_SCOPES],
       clientRegistrationDefaultScopes: [...DEFAULT_OAUTH_SCOPES],
       clientRegistrationAllowedScopes: [...DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES],
-      accessTokenExpiresIn: 300,
+      accessTokenExpiresIn: DEFAULT_ACCESS_TOKEN_EXPIRES_IN, // replaced per request by withMcpAccessTokenLifetime
       refreshTokenExpiresIn: 60 * 60 * 24 * 7, // 7 days in seconds
       idTokenExpiresIn: 60 * 60, // 1 hour in seconds
-      storeClientSecret: 'hashed',
+      storeClientSecret: { hash: hashOAuthClientSecret },
+      generateClientSecret: generateOAuthClientSecret,
       storeTokens: 'hashed',
       generateRefreshToken: (): Promise<string> => generateNativeRefreshToken(prisma, providerTokenOptions(auth)),
       async customTokenResponseFields({ grantType, user, scopes, verificationValue }) {
+        // R9: no grant (authorization code or refresh) issues tokens to a
+        // locked user, whatever was authorized before the lock.
+        if (user && (await prisma.user.findUnique({ where: { id: user.id }, select: { lockedAt: true } }))?.lockedAt) {
+          throw new APIError('BAD_REQUEST', { error: 'invalid_grant', error_description: 'The account is locked' });
+        }
         // Runs before any access, refresh or ID token is created. A token
         // carrying tinycloud:delegation comes only from the native code
         // exchange, never from the provider's other grants.
@@ -317,6 +475,14 @@ export const auth = betterAuth({
           clientId = authorization?.startsWith('Basic ')
             ? Buffer.from(authorization.slice(6), 'base64').toString('utf8').split(':', 1)[0]
             : ctx.body?.client_id;
+        }
+        // A 12 hour token is for the hosted MCP only: asking for an MCP resource without the MCP scope is refused, so
+        // the long lifetime cannot be minted by a client that was never consented to MCP access.
+        if (accessTokenExpiresInFor(currentRequestResource()) > DEFAULT_ACCESS_TOKEN_EXPIRES_IN && !scopes.includes(TINYCLOUD_MCP_SCOPE)) {
+          throw new APIError('BAD_REQUEST', {
+            error: 'invalid_scope',
+            error_description: `${TINYCLOUD_MCP_SCOPE} is required for this resource`,
+          });
         }
         await oauthClientContext.set(clientId);
         return nativeFields;
@@ -374,7 +540,7 @@ export const auth = betterAuth({
         if (canonicalIdentity) claims[TINYCLOUD_CANONICAL_IDENTITY_CLAIM] = canonicalIdentity;
         return claims;
       },
-    })) as any,
+    }))) as any,
   ],
 
   // Provider entries are present only when every required secret is configured.
@@ -419,6 +585,16 @@ export const auth = betterAuth({
     },
     user: {
       create: {
+        before: async (user) => {
+          if (user.emailVerified !== true) {
+            throw new APIError('FORBIDDEN', {
+              code: 'UNVERIFIED_EMAIL',
+              message: 'A verified email is required to create an OpenKey account.',
+            });
+          }
+          const socialProvider = await confirmedSocialProvider.get();
+          if (socialProvider) return { data: { socialCreatedProvider: socialProvider } };
+        },
         after: async (user) => {
           try {
             const privateKey = generatePrivateKey();
@@ -445,6 +621,46 @@ export const auth = betterAuth({
           }
         },
       },
+    },
+    account: {
+      create: { before: async (account) => {
+        if (account.providerId === 'google' || account.providerId === 'apple') {
+          await assertCurrentSocialLink(prisma, account.providerId, account.userId);
+        }
+        if (account.providerId === 'apple') {
+          const clientId = await appleTokenClientId.get();
+          if (!clientId) throw new APIError('FORBIDDEN', {
+            code: 'APPLE_ISSUING_CLIENT_UNKNOWN',
+            message: 'The Apple token issuer was not verified.',
+          });
+          // Linking (or confirmed creation) restores the Apple identity now. In
+          // whole seconds, Apple's event_time unit: a revocation from before
+          // this second is ignored, one from this second or later applies.
+          const restoredAt = new Date(Math.floor(Date.now() / 1000) * 1000);
+          return { data: { appleClientId: clientId, appleRestoredAt: restoredAt } };
+        }
+      } },
+      update: { before: async (account) => {
+        await assertCurrentSocialLink(prisma);
+        const clientId = await appleTokenClientId.get();
+        if (clientId && (account.refreshToken !== undefined || account.accessToken !== undefined)) {
+          // A sign-in by `sub` restores the link: it clears revokedAt, and
+          // appleRestoredAt advances to the later of its value and the id_token
+          // iat in one statement, so concurrent sign-ins never move it back.
+          const signIn = await appleTokenSignIn.get();
+          if (!signIn) return { data: { appleClientId: clientId } };
+          const issuedAt = new Date(signIn.issuedAt * 1000);
+          // Postgres re-checks the condition on the locked row, so the later value wins.
+          await prisma.account.updateMany({
+            where: {
+              providerId: 'apple', accountId: signIn.sub,
+              OR: [{ appleRestoredAt: null }, { appleRestoredAt: { lt: issuedAt } }],
+            },
+            data: { appleRestoredAt: issuedAt },
+          });
+          return { data: { appleClientId: clientId, revokedAt: null } };
+        }
+      } },
     },
   },
 });

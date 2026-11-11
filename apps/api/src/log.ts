@@ -46,27 +46,37 @@ globalThis.fetch = Object.assign(function fetchWithRequestId(input: Parameters<t
 const EVENTS = {
   better_auth: true, otp_delivery_unconfigured: true, auth_key_generated: true, auth_key_generation_failed: true,
   auth_email_signup_confirmation_required: true, auth_email_signup_confirmed: true, auth_email_signup_refused: true,
+  auth_social_continuation_cleanup_failed: true, auth_social_token_revoke_failed: true, auth_social_signup_confirmed: true,
+  auth_social_notice_failed: true, auth_social_email_review_required: true, auth_apple_revoke_failed: true,
+  apple_notification_processed: true, apple_notification_rejected: true, apple_notification_failed: true,
+  locked_subject_guard_failed: true, auth_passkey_enrolment_failed: true,
+  auth_social_email_review_refused: true, auth_social_email_review_confirmed: true,
   analytics_token_exchange_failed: true, analytics_unique_user_failed: true, analytics_token_tracking_failed: true,
   analytics_authorization_failed: true, analytics_authorization_tracking_failed: true, oauth_client_scopes_updated: true,
   oauth_client_scopes_update_failed: true, api_starting: true, request: true, api_error: true,
   delegate_session_activation_warning: true, delegate_session_activation_failed: true,
-  delegate_authorization_context_issue_failed: true, delegate_space_setup_notice_failed: true,
+  delegate_authorization_context_issue_failed: true, owner_revocation_sign_failed: true, delegate_space_setup_notice_failed: true, delegate_session_jwk: true,
   delegate_origin_bind_failed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true, key_quote_failed: true,
+  approval_code_allocation_failed: true, approval_code_cleanup_failed: true,
   native_consent_peer_lookup_failed: true, native_consent_key_unseal_failed: true,
   native_consent_activation_after_host_setup_failed: true, native_consent_host_delegation_rejected: true,
-  native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true,
+  native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true, native_consent_stale_session_revoke_failed: true,
   oauth_client_create_failed: true, oauth_client_delete_failed: true, oauth_client_update_failed: true,
+  oauth_client_secret_rotated: true,
   session_cap_unapplied: true,
-  resource_introspect_failed: true, resource_introspect_rate_limited: true,
+  resource_introspect_failed: true, resource_introspect_rate_limited: true, mcp_userinfo_guard_failed: true,
   revoked_token_record_failed: true, revoked_token_sweep_failed: true,
   tinycloud_bootstrap_background_failed: true, tinycloud_bootstrap_background_completed: true,
   tinycloud_bootstrap_sweep_tick: true, tinycloud_bootstrap_sweep_healed: true,
   tinycloud_bootstrap_sweep_still_failed: true, tinycloud_bootstrap_sweep_exhausted: true,
+  tinycloud_bootstrap_sweep_reaped: true,
   tinycloud_bootstrap_sweep_failed: true,
   tinycloud_bootstrap_space_registry_completed: true, native_par_valid_request_volume_threshold_reached: true,
   native_par_request_cleanup_failed: true, native_session_proof_cleanup_failed: true,
   scoreboard_protocol_users_call: true, app_sign_in_record_failed: true, permission_entry_unknown_field: true,
   third_party_console: true, uncaught_exception: true, unhandled_rejection: true, config_invalid: true,
+  account_origin_refused: true,
+  sign_origin_refused: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;
 type EventName = keyof typeof EVENTS;
@@ -75,6 +85,7 @@ const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,
   tinycloud_bootstrap_node_timeout: true, tinycloud_bootstrap_space_not_hosted: true,
+  tinycloud_bootstrap_deadline: true, tinycloud_bootstrap_lease_expired: true, tinycloud_bootstrap_reclaim_failed: true,
   tinycloud_bootstrap_expired_request: true, BETTER_AUTH_URL: true, signup_token_invalid: true,
   signup_account_exists: true, quote_report_data_mismatch: true, quote_key_custody_mismatch: true,
   quote_format_invalid: true,
@@ -132,6 +143,59 @@ export function logMetric(
   emit(level, event, { status: fields.status, count: fields.count });
 }
 
+/** One line on a refused managed-key signing request: route template and why, never the origin value. */
+export function logSignOriginRefused(route: string | undefined, reason: 'missing' | 'foreign'): void {
+  emit('warn', 'sign_origin_refused', { route: routeTemplate(route), reason });
+}
+const PROCESS_STARTED_AT = new Date(performance.timeOrigin).toISOString();
+const ORIGIN_REFUSAL_KEY_CAP = 200;
+const originRefusalCounts = new Map<string, { route: string; reason: 'foreign' | 'missing' | 'other'; count: number }>();
+const OTHER_ORIGIN_REFUSALS_KEY = '\0other';
+
+/** One line per account-origin refusal; logs only a route template and refusal reason. */
+export function recordAccountOriginRefused(route: string | undefined, reason: 'foreign' | 'missing'): void {
+  const routeTemplateValue = routeTemplate(route);
+  emit('warn', 'account_origin_refused', { route: routeTemplateValue, reason });
+
+  const key = `${routeTemplateValue}\0${reason}`;
+  const existing = originRefusalCounts.get(key);
+  if (existing) {
+    existing.count += 1;
+    return;
+  }
+  if (originRefusalCounts.size < ORIGIN_REFUSAL_KEY_CAP - 1) {
+    originRefusalCounts.set(key, { route: routeTemplateValue, reason, count: 1 });
+    return;
+  }
+  const overflow = originRefusalCounts.get(OTHER_ORIGIN_REFUSALS_KEY);
+  if (overflow) overflow.count += 1;
+  else originRefusalCounts.set(OTHER_ORIGIN_REFUSALS_KEY, { route: 'other', reason: 'other', count: 1 });
+}
+
+/** Process-local counts; counters reset when the API process restarts. */
+export function getAccountOriginRefusals(): {
+  since: string;
+  counts: Array<{ route: string; reason: 'foreign' | 'missing' | 'other'; count: number }>;
+} {
+  return { since: PROCESS_STARTED_AT, counts: [...originRefusalCounts.values()].map((entry) => ({ ...entry })) };
+}
+
+
+export type SessionJwkRoute =
+  | '/api/delegate'
+  | '/api/delegate/prepare'
+  | '/api/delegate/complete'
+  | '/api/delegate/authorize-sign-prepare';
+
+/**
+ * One line per delegate request that carries a session JWK: the route and
+ * whether the JWK had a private member. Read to decide when private members
+ * can be refused. Never the key, user, IP or any other request field.
+ */
+export function logSessionJwk(route: SessionJwkRoute, privateMembers: boolean): void {
+  emit('info', 'delegate_session_jwk', { route, private_members: privateMembers === true });
+}
+
 const PERMISSION_FIELD_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
 /** Distinct valid field names logged per request; further names are counted into one `other` line. */
 const PERMISSION_FIELD_NAME_CAP = 8;
@@ -183,7 +247,8 @@ export type TinyCloudBootstrapSweepEvent =
   | 'tinycloud_bootstrap_sweep_tick'
   | 'tinycloud_bootstrap_sweep_healed'
   | 'tinycloud_bootstrap_sweep_still_failed'
-  | 'tinycloud_bootstrap_sweep_exhausted';
+  | 'tinycloud_bootstrap_sweep_exhausted'
+  | 'tinycloud_bootstrap_sweep_reaped';
 
 /**
  * Background sweep outcome: counts, attempt numbers, durations and allow-listed codes only. Never a
@@ -200,6 +265,7 @@ export function logTinyCloudBootstrapSweep(
     healed?: number;
     stillFailed?: number;
     skipped?: number;
+    reaped?: number;
   },
 ): void {
   const level: LogLevel =
@@ -215,6 +281,22 @@ export function logTinyCloudBootstrapSweep(
     healed: fields.healed,
     still_failed: fields.stillFailed,
     skipped: fields.skipped,
+    reaped: fields.reaped,
+  });
+}
+
+/** Approval delivery failures expose request identifiers and error class, never code or error details. */
+export function logApprovalCodeAllocationFailure(approvalRequestId: string, error: unknown): void {
+  emit('warn', 'approval_code_allocation_failed', {
+    approval_request_id: approvalRequestId,
+    error_name: safeErrorFields(error).error_name ?? 'Unknown',
+  });
+}
+
+export function logApprovalCodeCleanupFailure(approvalRequestId: string, error: unknown): void {
+  emit('warn', 'approval_code_cleanup_failed', {
+    approval_request_id: approvalRequestId,
+    error_name: safeErrorFields(error).error_name ?? 'Unknown',
   });
 }
 

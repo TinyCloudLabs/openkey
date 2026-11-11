@@ -104,14 +104,14 @@ async function sign(body: Record<string, unknown>) {
   const { keysRouter } = await import('../routes/keys?keys-sign-encryption-outside-apps' as string);
   return keysRouter.request('/key_1/sign', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
     body: JSON.stringify(body),
   });
 }
 const hex = (text: string) => `0x${Buffer.from(text, 'utf8').toString('hex')}`;
 
-const NOT_DECLARED = "This website doesn't list the key this app asked for, so OpenKey didn't approve it.";
-const REFUSED = { error: NOT_DECLARED, code: 'app_key_grant_refused' };
+// TC-2291: pin the own-sites refusal copy and its stable code.
+const REFUSED = { error: "This site isn't allowed to request that access.", code: 'app_key_grant_refused' };
 
 // The six shapes a site could use to reach decrypt or key.create outside apps/.
 const SHAPES: Array<[string, Record<string, string[]>]> = [
@@ -186,9 +186,10 @@ describe('a first-party origin', () => {
   const previews = FIRST_PARTY_PAGES_SUBDOMAINS.flatMap((name) => [`https://${name}.pages.dev`, `https://a1b2c3d4.${name}.pages.dev`, `https://feat-x.${name}.pages.dev`]);
   const origins = [...FIRST_PARTY_ENCRYPTION_ORIGINS, ...previews];
 
-  test('the list is the one briefed: six production origins and our own Pages projects', () => {
+  test('the list is the one briefed: seven production origins and our own Pages projects', () => {
     expect([...FIRST_PARTY_ENCRYPTION_ORIGINS].sort()).toEqual([
       'http://tauri.localhost',
+      'https://home.tinycloud.xyz',
       'https://lightning-node-1.gecko-snares.ts.net:8451',
       'https://secrets.tinycloud.xyz',
       'https://share.tinycloud.xyz',
@@ -212,6 +213,44 @@ describe('a first-party origin', () => {
   test('signs the same message as 0x hex', async () => {
     const res = await sign({ message: hex(siweWith('https://tinycloud.chat', SHAPES[1]![1])), format: 'raw', requestOrigin: 'https://tinycloud.chat' });
     expect(res.status, await res.clone().text()).toBe(200);
+  });
+});
+
+// TinyCloud Home (TC-2387) is the tinychat frontend at its own origin: it asks for exactly the
+// sign-in tinycloud.chat asks for, decrypt and network.create on the owner's `default` network.
+describe('the TinyCloud Home sign-in', () => {
+  const HOME = 'https://home.tinycloud.xyz';
+
+  test.each([
+    ['https://tinycloud.chat'],
+    [HOME],
+  ])('%s signs the bare-network decrypt and network.create, as text and as 0x hex', async (origin) => {
+    const siwe = siweWith(origin, SHAPES[1]![1]);
+    for (const body of [{ message: siwe }, { message: hex(siwe), format: 'raw' }]) {
+      unseal.mockClear();
+      calls = [];
+      const res = await sign({ ...body, requestOrigin: origin });
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(unseal).toHaveBeenCalledTimes(1);
+      expect(calls).toEqual(['sign']);
+    }
+  });
+
+  test.each([
+    'https://evilhome.tinycloud.xyz',
+    'https://evil.tinycloud.xyz',
+    'http://home.tinycloud.xyz',
+    'https://home.tinycloud.xyz.evil.com',
+    'https://home.tinycloud.xyz:8443',
+    'https://tinycloud-home.pages.dev',
+    'https://a1b2c3d4.tinycloud-home.pages.dev',
+  ])('%s is refused the same sign-in, and nothing is unsealed', async (origin) => {
+    expect(isFirstPartyEncryptionOrigin(origin)).toBe(false);
+    // The page at that origin signs a request that names its own host, so only the first-party gate can refuse it.
+    const res = await sign({ message: siweWith(origin, SHAPES[1]![1]), requestOrigin: origin });
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toEqual(REFUSED);
+    expect(unseal).not.toHaveBeenCalled();
   });
 });
 
@@ -350,8 +389,8 @@ describe('encryptionOutsideAppsRefusal', () => {
 
   test('names the resource shapes that need a first-party origin', () => {
     for (const [, raw] of SHAPES) {
-      expect(encryptionOutsideAppsRefusal(siweWith(THIRD_PARTY, raw))).toEqual({ reason: 'apps_key' });
-      expect(encryptionOutsideAppsRefusalForMessage(hex(siweWith(THIRD_PARTY, raw)))).toEqual({ reason: 'apps_key' });
+      expect(encryptionOutsideAppsRefusal(siweWith(THIRD_PARTY, raw))).toEqual({ reason: 'encryption_outside_apps' });
+      expect(encryptionOutsideAppsRefusalForMessage(hex(siweWith(THIRD_PARTY, raw)))).toEqual({ reason: 'encryption_outside_apps' });
     }
   });
 });

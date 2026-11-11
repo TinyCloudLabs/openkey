@@ -6,6 +6,7 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
+  import { activeKeys } from '$lib/delegate-key-selection';
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
   import { connectAuthResponse } from '$lib/connect-widget';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
@@ -65,7 +66,7 @@
     loading = true;
     try {
       const result = await api.listKeys();
-      keys = result.keys;
+      keys = activeKeys(result.keys);
       if (keys.length === 1) {
         selectKey(keys[0]);
         return;

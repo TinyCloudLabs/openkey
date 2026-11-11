@@ -10,6 +10,8 @@ import {
 } from './tinycloud-path-policy';
 
 export const DEVICE_AUTH_TRANSACTION_TTL_MS = 10 * 60 * 1000;
+/** How long an approved result stays retrievable, from approval, until the client acknowledges it. */
+export const DEVICE_AUTH_RESULT_RETENTION_MS = 10 * 60 * 1000;
 export const DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEVICE_AUTH_MAX_DELEGATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEVICE_AUTH_POLL_INTERVAL_SECONDS = 2;
@@ -120,8 +122,13 @@ export interface DeviceAuthorizationStore {
     encryptedResult: string;
     delegationExpiresAt: Date;
     approvedPermissions: DevicePermission[];
+    resultExpiresAt: Date;
   }): Promise<boolean>;
+  /** Marks a pending, unexpired authorization denied. False when it is approved, denied, expired or unknown. */
+  deny(id: string, now: Date): Promise<boolean>;
   consumeApproved(id: string): Promise<DeviceAuthorizationRecord | null>;
+  /** Clears the ciphertext of approved results whose retention has passed without an acknowledgement. */
+  wipeExpiredResults(now: Date): Promise<void>;
 }
 
 export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore {
@@ -155,6 +162,7 @@ export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore 
     encryptedResult: string;
     delegationExpiresAt: Date;
     approvedPermissions: DevicePermission[];
+    resultExpiresAt: Date;
   }): Promise<boolean> {
     const record = this.records.get(id);
     if (!record || record.status !== 'pending') return false;
@@ -164,7 +172,16 @@ export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore 
       encryptedResult: input.encryptedResult,
       delegationExpiresAt: input.delegationExpiresAt,
       approvedPermissions: input.approvedPermissions,
+      // After approval the deadline is the result's retention, which may run past the transaction's.
+      transactionExpiresAt: new Date(Math.max(record.transactionExpiresAt.getTime(), input.resultExpiresAt.getTime())),
     });
+    return true;
+  }
+
+  async deny(id: string, now: Date): Promise<boolean> {
+    const record = this.records.get(id);
+    if (!record || record.status !== 'pending' || record.transactionExpiresAt <= now) return false;
+    record.status = 'denied';
     return true;
   }
 
@@ -176,6 +193,12 @@ export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore 
     const consumed = { ...record };
     delete record.encryptedResult;
     return consumed;
+  }
+
+  async wipeExpiredResults(now: Date): Promise<void> {
+    for (const record of this.records.values()) {
+      if (record.status === 'approved' && record.transactionExpiresAt <= now) delete record.encryptedResult;
+    }
   }
 }
 
@@ -743,6 +766,8 @@ export class DeviceAuthorizationService {
       pollIntervalSeconds: DEVICE_AUTH_POLL_INTERVAL_SECONDS,
       status: 'pending',
     };
+    // The expiry sweep: approved results nobody acknowledged do not stay at rest past their retention.
+    await this.store.wipeExpiredResults(now);
     await this.store.create(record);
     const verificationUri = `${canonicalOrigin(this.options.verificationOrigin, 'verificationOrigin')}/device`;
     return {
@@ -764,12 +789,13 @@ export class DeviceAuthorizationService {
    * SIWE exists, from the canonical SIWE that is (or was) actually signed,
    * which also supplies the expiry; they must agree. Checked before signing
    * and before any host activation, so a delegation outside the transaction
-   * never exists.
+   * never exists. Returns the pending record so the caller can hold the
+   * signed capabilities to its requested permissions.
    */
   async assertDelegationWindow(
     transactionId: unknown,
     input: { nodeOrigin: unknown; jwk: unknown } & ({ signedSiwe: string } | { expiresAt: Date }),
-  ): Promise<void> {
+  ): Promise<DeviceAuthorizationRecord> {
     const record = typeof transactionId === 'string' ? await this.store.findById(transactionId) : null;
     const now = this.now();
     if (!record || record.status !== 'pending' || record.transactionExpiresAt <= now) {
@@ -798,6 +824,7 @@ export class DeviceAuthorizationService {
     ) {
       throw new DeviceAuthorizationError('invalid_request', 'delegation lifetime exceeds the device request', 400);
     }
+    return record;
   }
 
   async lookup(userCode: string): Promise<(Omit<DeviceAuthorizationRecord, 'deviceSecretHash' | 'codeChallenge' | 'requestIpHash' | 'encryptedResult'> & {
@@ -816,13 +843,32 @@ export class DeviceAuthorizationService {
       throw new DeviceAuthorizationError('expired_token', 'device authorization is no longer pending', 410);
     }
     const approval = validateRelayApproval(record, value, this.now());
+    const now = this.now();
     const approved = await this.store.approve(record.id, {
       userId,
       encryptedResult: JSON.stringify(approval.relay),
       delegationExpiresAt: approval.delegationExpiresAt,
       approvedPermissions: approval.approvedPermissions,
+      // Retention starts at approval, so a late approval is still retrievable, and never outlives the delegation.
+      resultExpiresAt: new Date(Math.min(approval.delegationExpiresAt.getTime(), now.getTime() + DEVICE_AUTH_RESULT_RETENTION_MS)),
     });
     if (!approved) throw new DeviceAuthorizationError('expired_token', 'device authorization is no longer pending', 410);
+  }
+
+  /** Declining refuses this authorization. Terminal and idempotent; an approved one cannot be declined. */
+  async deny(transactionId: string): Promise<{ status: 'denied' }> {
+    const record = typeof transactionId === 'string' ? await this.store.findById(transactionId) : null;
+    if (record?.status === 'denied') return { status: 'denied' };
+    if (!record || record.transactionExpiresAt <= this.now()) {
+      throw new DeviceAuthorizationError('expired_token', 'device authorization is no longer pending', 410);
+    }
+    if (record.status !== 'pending') throw new DeviceAuthorizationError('already_approved', 'device authorization was already approved', 409);
+    if (!await this.store.deny(record.id, this.now())) {
+      const current = await this.store.findById(record.id);
+      if (current?.status === 'denied') return { status: 'denied' };
+      throw new DeviceAuthorizationError('already_approved', 'device authorization was already approved', 409);
+    }
+    return { status: 'denied' };
   }
 
   async poll(input: { transactionId: string; deviceSecret: string; codeVerifier: string }): Promise<
@@ -843,16 +889,14 @@ export class DeviceAuthorizationService {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       throw new DeviceAuthorizationError('invalid_request', 'device token request must be an object', 400);
     }
-    const record = await this.store.findById(input.transactionId);
-    if (!record || record.transactionExpiresAt <= this.now()) {
-      throw new DeviceAuthorizationError('expired_token', 'device authorization expired', 410);
+    // A denial is terminal and stays readable after the transaction window, to the holder of the device credentials.
+    const found = typeof input.transactionId === 'string' ? await this.store.findById(input.transactionId) : null;
+    if (found?.status === 'denied') {
+      this.assertDeviceCredentials(found, input);
+      throw new DeviceAuthorizationError('access_denied', 'the device authorization was denied', 400);
     }
-    if (
-      !equalDigest(sha256(input.deviceSecret), record.deviceSecretHash) ||
-      !equalDigest(sha256(input.codeVerifier), record.codeChallenge)
-    ) {
-      throw new DeviceAuthorizationError('invalid_grant', 'device secret or PKCE verifier is invalid', 401);
-    }
+    const record = await this.findLive(input.transactionId);
+    this.assertDeviceCredentials(record, input);
     const now = this.now();
     if (record.nextPollAt > now) {
       throw new DeviceAuthorizationError('slow_down', 'polling faster than the allowed interval', 429);
@@ -860,27 +904,57 @@ export class DeviceAuthorizationService {
     await this.store.updatePoll(record.id, new Date(now.getTime() + record.pollIntervalSeconds * 1000));
     if (record.status === 'pending') return { status: 'pending', interval: record.pollIntervalSeconds };
     if (record.status !== 'approved') throw new DeviceAuthorizationError('invalid_grant', 'device authorization was already consumed', 409);
-    const consumed = await this.store.consumeApproved(record.id);
-    if (!consumed) throw new DeviceAuthorizationError('invalid_grant', 'device authorization was already consumed', 409);
+    // Polling does not spend the result: it stays until the client acknowledges it or retention ends.
     return {
       status: 'approved',
       relay: (() => {
         try {
-          return JSON.parse(consumed.encryptedResult ?? '') as DeviceRelayEnvelope;
+          return JSON.parse(record.encryptedResult ?? '') as DeviceRelayEnvelope;
         } catch {
           throw new DeviceAuthorizationError('invalid_result', 'approved relay result is unavailable', 500);
         }
       })(),
       binding: {
-        transactionId: consumed.id,
-        sessionDid: consumed.sessionDid,
-        nodeOrigin: consumed.nodeOrigin,
-        shareOrigin: consumed.shareOrigin,
+        transactionId: record.id,
+        sessionDid: record.sessionDid,
+        nodeOrigin: record.nodeOrigin,
+        shareOrigin: record.shareOrigin,
         // Rows approved before TC-539 carry no separate approved set; their
         // approval was validated as equal to the request.
-        permissions: consumed.approvedPermissions ?? consumed.permissions,
-        delegationExpiresAt: consumed.delegationExpiresAt.toISOString(),
+        permissions: record.approvedPermissions ?? record.permissions,
+        delegationExpiresAt: record.delegationExpiresAt.toISOString(),
       },
     };
+  }
+
+  private async findLive(transactionId: string): Promise<DeviceAuthorizationRecord> {
+    const record = await this.store.findById(transactionId);
+    if (!record || record.transactionExpiresAt <= this.now()) {
+      throw new DeviceAuthorizationError('expired_token', 'device authorization expired', 410);
+    }
+    return record;
+  }
+
+  private assertDeviceCredentials(record: DeviceAuthorizationRecord, input: { deviceSecret: string; codeVerifier: string }): void {
+    if (
+      !equalDigest(sha256(input.deviceSecret), record.deviceSecretHash) ||
+      !equalDigest(sha256(input.codeVerifier), record.codeChallenge)
+    ) {
+      throw new DeviceAuthorizationError('invalid_grant', 'device secret or PKCE verifier is invalid', 401);
+    }
+  }
+
+  /** Spends an approved result once the client has saved it. Repeating it succeeds. */
+  async acknowledge(input: { transactionId: string; deviceSecret: string; codeVerifier: string }): Promise<{ status: 'acknowledged' }> {
+    if (typeof input?.deviceSecret !== 'string' || typeof input.codeVerifier !== 'string') {
+      throw new DeviceAuthorizationError('invalid_request', 'device acknowledgement requires the device secret and PKCE verifier', 400);
+    }
+    const record = await this.findLive(input.transactionId);
+    this.assertDeviceCredentials(record, input);
+    if (record.status === 'consumed') return { status: 'acknowledged' };
+    if (record.status !== 'approved' || !await this.store.consumeApproved(record.id)) {
+      throw new DeviceAuthorizationError('invalid_grant', 'there is no approved result to acknowledge', 409);
+    }
+    return { status: 'acknowledged' };
   }
 }

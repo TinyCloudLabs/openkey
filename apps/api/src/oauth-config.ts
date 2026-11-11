@@ -1,6 +1,11 @@
 export const TINYCLOUD_MCP_SCOPE = 'tinycloud:mcp';
 export const TINYCLOUD_SESSION_SCOPE = 'tinycloud:session';
 /**
+ * Returns only the owner's canonical wallet identity; grants no signing.
+ * OpenKey admins grant it to confidential web clients.
+ */
+export const TINYCLOUD_IDENTITY_SCOPE = 'tinycloud:identity';
+/**
  * Explicit consent for an OAuth client to ask OpenKey's TEE to sign a
  * structurally-valid TinyCloud SIWE/ReCap delegation with the user's
  * canonical managed identity. It is intentionally not a registration
@@ -15,7 +20,7 @@ export const TINYCLOUD_MANAGE_KEY_SCOPE = 'tinycloud:manage-key';
 export const TINYCLOUD_DELEGATION_SCOPE = 'tinycloud:delegation';
 /** Scopes that no registration path grants by default. */
 export const RESTRICTED_SCOPES: ReadonlySet<string> = new Set<string>([
-  TINYCLOUD_SESSION_SCOPE, TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_DELEGATION_SCOPE,
+  TINYCLOUD_SESSION_SCOPE, TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_DELEGATION_SCOPE, TINYCLOUD_IDENTITY_SCOPE,
 ]);
 /**
  * Scopes only OpenKey admins grant, through the admin route or the
@@ -23,12 +28,39 @@ export const RESTRICTED_SCOPES: ReadonlySet<string> = new Set<string>([
  * (dynamic registration, create-client, update-client) may add or remove them.
  */
 export const ADMIN_MANAGED_SCOPES: ReadonlySet<string> = new Set<string>([
-  TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_DELEGATION_SCOPE,
+  TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_DELEGATION_SCOPE, TINYCLOUD_IDENTITY_SCOPE,
 ]);
 export const TINYCLOUD_OWNER_DIDS_CLAIM = 'https://tinycloud.xyz/owner_dids';
 export const TINYCLOUD_CANONICAL_IDENTITY_CLAIM =
   'https://tinycloud.xyz/canonical_identity';
 export const DEFAULT_TINYCLOUD_MCP_AUDIENCE = 'https://mcp.tinycloud.xyz/mcp';
+export const CHATGPT_TINYCLOUD_MCP_AUDIENCE = 'https://mcp.tinycloud.xyz/chatgpt/mcp';
+/** The hosted MCP resources. */
+export const MCP_AUDIENCES = [DEFAULT_TINYCLOUD_MCP_AUDIENCE, CHATGPT_TINYCLOUD_MCP_AUDIENCE] as const;
+
+/** An access token's lifetime for every audience except the hosted MCP's. */
+export const DEFAULT_ACCESS_TOKEN_EXPIRES_IN = 5 * 60;
+/**
+ * TC-1366 (B): an access token issued for the hosted MCP resources lasts 12 hours. A client that cannot refresh
+ * (or does not ask for offline_access) would otherwise make the owner sign in again every five minutes. Revoking
+ * is unaffected for the two places that accept these tokens: the MCP server asks /api/oauth/resource/introspect, and
+ * OpenKey's own /oauth2/userinfo is guarded the same way (services/mcp-userinfo-guard.ts); both check consent,
+ * session and the revoke denylist on every call, so a token stops working when the owner withdraws it, whatever its
+ * remaining lifetime. A request that names an MCP resource without the tinycloud:mcp scope is refused (auth.ts).
+ */
+export const MCP_ACCESS_TOKEN_EXPIRES_IN = 12 * 60 * 60;
+
+/**
+ * The lifetime for a token request that names `resource` (the request body's `resource`, a string or a list).
+ * Only a request for exactly one of the hosted MCP resources gets the long lifetime; no resource, any other
+ * resource, or several resources keep the default.
+ */
+export function accessTokenExpiresInFor(resource: unknown): number {
+  const only = Array.isArray(resource) && resource.length === 1 ? resource[0] : resource;
+  return typeof only === 'string' && (MCP_AUDIENCES as readonly string[]).includes(only)
+    ? MCP_ACCESS_TOKEN_EXPIRES_IN
+    : DEFAULT_ACCESS_TOKEN_EXPIRES_IN;
+}
 
 // MCP clients may omit scope during registration, then request it at authorize.
 // This allowlist does not replace user consent or grant TinyCloud signing access.
@@ -38,12 +70,19 @@ export const OAUTH_SCOPES = [
   TINYCLOUD_SESSION_SCOPE,
   TINYCLOUD_MANAGE_KEY_SCOPE,
   TINYCLOUD_DELEGATION_SCOPE,
+  TINYCLOUD_IDENTITY_SCOPE,
 ] as const;
 
-// Dynamic registration only creates public clients. `tinycloud:manage-key`
-// requires a pre-registered confidential client and `tinycloud:delegation` an
-// admin-enabled native client, so an unauthenticated dynamic registration can
-// request neither.
+export function isConfidentialWebClient(client: {
+  type: string | null;
+  public: boolean;
+  tokenEndpointAuthMethod: string | null;
+}): boolean {
+  return client.type === 'web' && !client.public && client.tokenEndpointAuthMethod === 'client_secret_basic';
+}
+
+// Dynamic registration only creates public clients. The admin-managed TinyCloud
+// scopes require an explicit grant to a client that meets their policy.
 export const DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES = OAUTH_SCOPES.filter(
   (scope) => !ADMIN_MANAGED_SCOPES.has(scope),
 );
@@ -53,7 +92,7 @@ export function oauthValidAudiences(baseURL: string, configured = process.env.OA
   return Array.from(new Set([
     baseURL,
     DEFAULT_TINYCLOUD_MCP_AUDIENCE,
-    'https://mcp.tinycloud.xyz/chatgpt/mcp',
+    CHATGPT_TINYCLOUD_MCP_AUDIENCE,
     ...values,
   ]));
 }

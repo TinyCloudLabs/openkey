@@ -9,6 +9,7 @@
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
+  import { activeKeys } from '$lib/delegate-key-selection';
 
   const session = authClient.useSession();
   const inIframe = typeof window !== 'undefined' && isEmbedContext();
@@ -85,7 +86,7 @@
     loading = true;
     try {
       const result = await api.listKeys();
-      keys = result.keys;
+      keys = activeKeys(result.keys);
       if (keys.length === 1) {
         selectKey(keys[0]);
         return;

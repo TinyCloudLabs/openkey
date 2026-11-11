@@ -37,9 +37,11 @@
       "dependencies": {
         "@better-auth/oauth-provider": "1.6.10",
         "@better-auth/passkey": "^1.6.9",
+        "@better-auth/utils": "0.3.1",
         "@openkey/capability-review": "workspace:*",
         "@openkey/db": "workspace:*",
         "@openkey/tee": "workspace:*",
+        "@simplewebauthn/server": "13.3.0",
         "@tinycloud/bootstrap": "2.8.0-beta.1",
         "@tinycloud/node-sdk": "2.11.0",
         "@tinycloud/node-sdk-wasm": "1.7.6",
@@ -136,7 +138,7 @@
     },
     "packages/sdk": {
       "name": "@openkey/sdk",
-      "version": "0.12.2",
+      "version": "0.13.0-beta.0",
       "dependencies": {
         "@openkey/core": "workspace:*",
       },
