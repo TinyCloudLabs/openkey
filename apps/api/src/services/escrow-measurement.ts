@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { parseDocument } from 'yaml';
 
 export interface EscrowMeasurement {
@@ -17,6 +18,7 @@ export function escrowMeasurementFromInfo(input: unknown, codeHash: unknown, boo
     || typeof info.instance_id !== 'string' || !/^[a-f0-9]+$/.test(info.instance_id)
     || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(bootId)
     || typeof agentVersion !== 'string' || !agentVersion) throw new Error('Invalid escrow measurement');
+  if (createHash('sha256').update(tcb.app_compose, 'utf8').digest('hex') !== info.compose_hash) throw new Error('Measured compose hash mismatch');
   const compose = JSON.parse(tcb.app_compose);
   if (compose.runner !== 'docker-compose' || typeof compose.docker_compose_file !== 'string') throw new Error('Unsupported measured compose');
   const document = parseDocument(compose.docker_compose_file, { uniqueKeys: true });
