@@ -70,6 +70,8 @@ const deviceService = new DeviceAuthorizationService(new MemoryDeviceAuthorizati
 });
 
 const unseal = mock(async () => privateKey);
+let failApprovalSave = false;
+const releaseApprovalDelegation = mock(async () => {});
 
 replaceModules({
   '../middleware/session': () => ({
@@ -101,6 +103,17 @@ await mockModules({
   '../services/tinycloud-bootstrap': () => ({
     ensureTinyCloudBootstrap,
     isTinyCloudBootstrapComplete,
+  }),
+});
+await mockModules({
+  '../routes/approval-requests': () => ({
+    admitApprovalDelegation: async () => {},
+    checkApprovalDelegation: async () => {},
+    releaseApprovalDelegation,
+    saveApprovalDelegation: async (_body: unknown, _userId: string, delegation: Record<string, unknown>) => {
+      if (failApprovalSave) throw new Error('approval save failed');
+      return delegation;
+    },
   }),
 });
 
@@ -140,6 +153,8 @@ beforeEach(() => {
   keyRecord.sealedBlob = 'sealed-blob';
   autoSignEnabled = true;
   bootstrapComplete = false;
+  failApprovalSave = false;
+  releaseApprovalDelegation.mockClear();
   activateSessionWithHost.mockClear();
   activateSessionWithHost.mockImplementation(activatedReceipt);
   ensureTinyCloudBootstrap.mockClear();
@@ -410,6 +425,31 @@ async function completeBody(prepared: Record<string, any>, siwe: string = prepar
     selectedActionIds: prepared.selectedActionKeys,
   };
 }
+test('external-wallet approval save failure revokes the activated delegation', async () => {
+  keyRecord.keyType = 'EXTERNAL';
+  keyRecord.sealedBlob = null;
+  failApprovalSave = true;
+  const prepared = await prepare({ prefix: 'agents', approvalRequestId: 'request_external' });
+  const body = { ...await completeBody(prepared), approvalRequestId: 'request_external' };
+  const revokeFetch = spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
+
+  try {
+    await expect(router.request('/complete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })).rejects.toThrow('approval save failed');
+    expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+    expect(revokeFetch).toHaveBeenCalledWith(`${host}/revoke`, expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ Authorization: expect.any(String) }),
+    }));
+    expect(releaseApprovalDelegation).toHaveBeenCalledTimes(1);
+  } finally {
+    revokeFetch.mockRestore();
+  }
+});
+
 
 test('TC-959 correlates real HTTP completion and SDK node activation without changing signed authority', async () => {
   const received: Array<{ requestId: string | null; authorization: string | null }> = [];
@@ -699,6 +739,28 @@ describe('managed approval checks everything caller-controlled before consuming 
       protocolVersion: 1,
     };
   }
+  test('managed approval save failure revokes the activated delegation', async () => {
+    failApprovalSave = true;
+    const valid = { ...await approval({ prefix: 'agents', approvalRequestId: 'request_managed' }), approvalRequestId: 'request_managed' };
+    const revokeFetch = spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
+
+    try {
+      await expect(router.request('/', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(valid),
+      })).rejects.toThrow('approval save failed');
+      expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+      expect(revokeFetch).toHaveBeenCalledWith(`${host}/revoke`, expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Authorization: expect.any(String) }),
+      }));
+      expect(releaseApprovalDelegation).toHaveBeenCalledTimes(1);
+    } finally {
+      revokeFetch.mockRestore();
+    }
+  });
+
 
   test('an expired managed context reports context-expired before signing', async () => {
     const valid = await approval();

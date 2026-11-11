@@ -136,6 +136,19 @@ import type { PreparedHandoffService } from '../services/prepared-handoff';
 import { admitApprovalDelegation, checkApprovalDelegation, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
+async function revokeActivatedDelegation(host: string, delegationHeader: { Authorization: string }): Promise<void> {
+  try {
+    const response = await fetch(`${host.replace(/\/+$/, '')}/revoke`, {
+      method: 'POST',
+      headers: delegationHeader,
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) logError('warn', 'delegate_session_revoke_failed', new Error(`Host returned ${response.status}`));
+  } catch (error) {
+    logError('warn', 'delegate_session_revoke_failed', error);
+  }
+}
+
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
   activePreparedHandoffService = service;
 }
@@ -1704,7 +1717,7 @@ delegateRouter.post('/', async (c) => {
     }));
 
     recordAppSignIn(prisma, user.id, bound.appOrigin);
-    return c.json(await saveApprovalDelegation(body, user.id, {
+    const delegation = {
       delegationHeader: session.delegationHeader,
       delegationCid: session.delegationCid,
       spaceId: bound.spaceId,
@@ -1732,7 +1745,17 @@ delegateRouter.post('/', async (c) => {
       signature,
       signedMessage: bound.originalSiwe,
       permissions: effectiveGrants,
-    }));
+    };
+    let saved: typeof delegation;
+    try {
+      saved = await saveApprovalDelegation(body, user.id, delegation);
+    } catch (error) {
+      if (body.approvalRequestId !== undefined && hostActivated) {
+        await revokeActivatedDelegation(host, session.delegationHeader);
+      }
+      throw error;
+    }
+    return c.json(saved);
     } catch (error) {
       await releaseApprovalDelegation(body);
       throw error;
@@ -2422,7 +2445,7 @@ delegateRouter.post('/complete', async (c) => {
   }));
 
   recordAppSignIn(prisma, user.id, signInAppOrigin);
-  return c.json(await saveApprovalDelegation(body, user.id, {
+  const delegation = {
     delegationHeader: session.delegationHeader,
     delegationCid: session.delegationCid,
     spaceId,
@@ -2452,7 +2475,17 @@ delegateRouter.post('/complete', async (c) => {
     //   `permissions` is the effective grant set after any narrowing.
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
-  }));
+  };
+  let saved: typeof delegation;
+  try {
+    saved = await saveApprovalDelegation(body, user.id, delegation);
+  } catch (error) {
+    if (body.approvalRequestId !== undefined && hostActivated) {
+      await revokeActivatedDelegation(body.host, session.delegationHeader);
+    }
+    throw error;
+  }
+  return c.json(saved);
   } catch (error) {
     await releaseApprovalDelegation(body);
     throw error;
