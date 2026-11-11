@@ -39,7 +39,7 @@ export async function wrapEscrowShare(share: Uint8Array, recipientPublicKey: Cry
 }
 
 /** Recovery enclave only. Expected binding comes from the verified frozen header. */
-export async function unwrapEscrowShare(envelope: ShareEnvelope, recipientKey: CryptoKey, expected: ShareBinding): Promise<Uint8Array> {
+export async function unwrapEscrowShare(envelope: ShareEnvelope, recipientKey: CryptoKey | CryptoKeyPair, expected: ShareBinding): Promise<Uint8Array> {
   const info = bindingBytes('tinycloud/escrow/share-info', expected);
   const aad = bindingBytes('tinycloud/escrow/share-aad', expected);
   if (envelope.version !== 1 || envelope.escrowId !== expected.escrowId || envelope.holderId !== expected.holderId

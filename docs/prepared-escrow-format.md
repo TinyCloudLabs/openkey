@@ -207,3 +207,21 @@ UTF-8 compact JSON, ECDSA-SHA256 P1363 base64url. The nonce is canonical
 and export consume the same nonce ledger and separate hourly budgets (six preflights and four exports), with an
 explicit kind. Domain separation prevents either signature from authorizing
 the other action. Real export still requires both configured admin signatures.
+
+Recovery sessions use the canonical UTF-8 compact JSON descriptor:
+`["tinycloud/escrow/recovery-descriptor",1,exportHeaderHash,recipientPublicKey,nonce,sessionId,targetAppId,targetComposeHash,targetImageDigest,targetCodeHash,bootReference,newPolicyId,createdAt,expiresAt]`.
+The descriptor hash is SHA-256 of these bytes. The recipient is a curve-checked
+65-byte uncompressed P-256 public key in canonical base64url; nonce and session
+id contain 32 and 16 random bytes respectively. Times are canonical millisecond
+ISO strings, with a positive lifetime of at most one hour. The session generates
+its non-extractable private key inside the enclave process.
+
+The recovery quote binds `SHA-256("tinycloud/escrow/recovery-quote/v1\0" ||
+UTF-8(descriptorHash)) || zero32` as report data. Recovery shares use the same
+HPKE suite, with info and AAD tuples respectively
+`["tinycloud/escrow/recovery-share-info",1,exportHeaderHash,descriptorHash,holderId,x]`
+and `["tinycloud/escrow/recovery-share-aad",1,exportHeaderHash,descriptorHash,holderId,x]`.
+A session accepts exactly two distinct holder identities and coordinates from
+the export header, consumes itself before opening shares, and clears opened
+share buffers on both success and failure. Responses contain completion counts
+and public identifiers only.

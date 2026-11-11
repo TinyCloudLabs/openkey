@@ -49,6 +49,11 @@ export function createEscrowProvenanceClient(agent: EscrowGuestAgent) {
         } finally { digest.fill(0); }
       } finally { result.key.fill(0); }
     },
+    async getRecoveryQuote(descriptorHash: string): Promise<EscrowQuote> {
+      if (!/^[a-f0-9]{64}$/.test(descriptorHash)) throw new Error('Invalid recovery descriptor hash');
+      const digest = createHash('sha256').update('tinycloud/escrow/recovery-quote/v1\0').update(descriptorHash, 'utf8').digest();
+      return quoteWithBinding(agent, digest);
+    },
     async getExportQuote(headerHash: string): Promise<EscrowQuote> {
       if (!/^[a-f0-9]{64}$/.test(headerHash)) throw new Error('Invalid escrow header hash');
       const digest = createHash('sha256').update('tinycloud/escrow/export-quote/v1\0').update(headerHash, 'utf8').digest();

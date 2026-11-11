@@ -261,3 +261,6 @@ export type { EscrowRecordManifestEntry } from './escrow-manifest';
 
 export { createEscrowProvenanceClient, createProductionEscrowProvenanceClient } from './escrow-provenance';
 export type { EscrowQuote } from './escrow-provenance';
+
+export { EscrowRecoverySessions, freezeRecoveryDescriptor, wrapRecoveryShare } from './escrow-recovery-session';
+export type { RecoveryDescriptor, RecoveryShareEnvelope } from './escrow-recovery-session';
