@@ -29,3 +29,27 @@ shamir-secret-sharing 0.0.4, exact integrity values in bun.lock. No install
 lifecycle scripts in these packages. Install with --frozen-lockfile
 --ignore-scripts. Lock creation also reconciled five pre-existing workspace
 version metadata entries against their package manifests.
+
+## Interpolation and commitment
+
+For each byte i, independently choose one degree-one polynomial with constant
+c0 = secret[i] and uniformly random c1. Share byte i is y_i(x); reconstruct
+secret byte i by Lagrange interpolation at x=0. The deterministic fixture uses
+c1_i = SHA256(UTF8("tinycloud-escrow-vector-v1"))[i]. Production never uses this
+fixture entropy.
+
+Commitment encoding is SHA-256(label || uint32_be(idByteLength) || idBytes || key).
+Label is UTF-8 `tinycloud/escrow/content-key/v1` followed by exactly one NUL byte;
+idBytes is the exact UTF-8 escrow_id (no normalization), length 1..1024 bytes;
+key is the raw 32-byte content key. Output is 64 lowercase hexadecimal digits.
+Escrow-id binding is required (Bobbie C2); this supersedes the initial unbound
+implementation. The fixture records escrowId and commitmentHex for this format.
+The superseded label||key vector was
+`5753bf8cd8f4adcbdfbcbf993aaa135e8b84fc9eda3af4806b6e7fb0f8a463e0`;
+it is not accepted as an escrow-id-bound commitment.
+
+Privy uses data-dependent GF table lookups, exposing cache-timing information
+inside the TEE; Bobbie accepts this for the one-off ceremony. Its internal
+buffers are not zeroed. The caller must generate the content key with a CSPRNG
+inside the TEE; entrypoint review must verify this. Header-hash authentication
+is enforced by the HPKE stage, not the Shamir primitive.

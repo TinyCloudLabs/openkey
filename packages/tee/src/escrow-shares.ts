@@ -7,13 +7,17 @@ export async function splitEscrowKey(key: Uint8Array): Promise<Uint8Array[]> {
   return split(key, 3, 2);
 }
 
-export function escrowKeyCommitment(key: Uint8Array): string {
+export function escrowKeyCommitment(key: Uint8Array, escrowId: string): string {
   if (key.length !== 32) throw new Error('Invalid escrow key');
-  return createHash('sha256').update('tinycloud/escrow/content-key/v1\0').update(key).digest('hex');
+  const id = Buffer.from(escrowId, 'utf8');
+  if (id.length === 0 || id.length > 1024) throw new Error('Invalid escrow id');
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(id.length);
+  return createHash('sha256').update('tinycloud/escrow/content-key/v1\0').update(length).update(id).update(key).digest('hex');
 }
 
 /** Caller must authenticate each HPKE envelope and its header binding first. */
-export async function recoverEscrowKey(shares: readonly Uint8Array[], commitment: string): Promise<Uint8Array> {
+export async function recoverEscrowKey(shares: readonly Uint8Array[], commitment: string, escrowId: string): Promise<Uint8Array> {
   if (shares.length !== 2 || !/^[a-f0-9]{64}$/.test(commitment)) throw new Error('Invalid escrow recovery');
   const seen = new Set<number>();
   for (const share of shares) {
@@ -22,7 +26,7 @@ export async function recoverEscrowKey(shares: readonly Uint8Array[], commitment
     seen.add(x);
   }
   const key = await combine([...shares]);
-  if (!timingSafeEqual(Buffer.from(escrowKeyCommitment(key), 'hex'), Buffer.from(commitment, 'hex'))) {
+  if (!timingSafeEqual(Buffer.from(escrowKeyCommitment(key, escrowId), 'hex'), Buffer.from(commitment, 'hex'))) {
     key.fill(0);
     throw new Error('Escrow commitment mismatch');
   }
