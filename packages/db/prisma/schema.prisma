@@ -921,3 +921,16 @@ model RevokedAccessToken {
   @@index([expiresAt])
   @@map("revoked_access_token")
 }
+
+// Immutable approval audit metadata and persistent replay protection (TC-2823).
+model EscrowAuthorization {
+  nonce      String   @id
+  policyHash String
+  dryRun     Boolean
+  operatorId String
+  approverId String
+  createdAt  DateTime @default(now()) @db.Timestamptz
+
+  @@index([createdAt], map: "escrow_authorization_createdAt_idx")
+  @@map("escrow_authorization")
+}
