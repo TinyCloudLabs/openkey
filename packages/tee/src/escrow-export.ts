@@ -17,29 +17,43 @@ export interface EscrowExportOptions {
   dryRun?: boolean;
   policy: ExportPolicy;
   /** Atomic persistent nonce consumption, distinct authenticated people, rate limit and audit. */
-  authorize: (policy: ExportPolicy, dryRun: boolean) => Promise<void>;
+  authorize: (policy: ExportPolicy, dryRun: boolean) => Promise<true>;
   /** Hold a consistent snapshot/fence through validation and export; return only validated keys. */
   snapshot: <T>(operation: (keys: readonly EscrowPathKey[]) => Promise<T>) => Promise<T>;
   /** Verify every ciphertext and identity in the snapshot; failure must throw. */
-  validateSnapshot: (policy: ExportPolicy) => Promise<void>;
-  isInTee: () => boolean;
+  validateSnapshot: (policy: ExportPolicy, keys: readonly EscrowPathKey[]) => Promise<readonly { path: string; purpose: string; version: number; validatedCount: number }[]>;
+  isInTee: () => boolean | Promise<boolean>;
 }
 
 /** Internal measured-process entry; transport/auth adapters must be installed by the service. */
 export async function prepareEscrowExport(options: EscrowExportOptions) {
-  if (options.enabled !== true || !options.isInTee()) throw new Error('Escrow export disabled');
+  if (options.enabled !== true || (await options.isInTee()) !== true) throw new Error('Escrow export disabled');
   const dryRun = options.dryRun !== false;
   const policy: ExportPolicy = structuredClone(options.policy);
   const now = Date.now();
   if (!(Date.parse(policy.createdAt) <= now && now < Date.parse(policy.expiresAt))) throw new Error('Escrow approval expired');
-  await options.authorize(structuredClone(policy), dryRun);
+  if (policy.paths.length > 2 ** 20) throw new Error('Escrow inventory too large');
+  await freezeEscrowHeader({ ...policy, contentKeyCommitment: '0'.repeat(64),
+    holders: policy.holders.map((holder, i) => ({ id: holder.id, publicKey: holder.publicKey, x: i + 1 })),
+  });
+  if (await options.authorize(structuredClone(policy), dryRun) !== true) throw new Error('Escrow authorization denied');
   return options.snapshot(async keys => {
-    await options.validateSnapshot(structuredClone(policy));
+    try {
+    const counts = await options.validateSnapshot(structuredClone(policy), keys);
+    if (Date.now() >= Date.parse(policy.expiresAt)) throw new Error('Escrow approval expired');
     const identity = (p: { path: string; purpose: string; version: number }) => JSON.stringify([p.path, p.purpose, p.version]);
     const expected = new Set(policy.paths.map(identity));
     if (expected.size !== policy.paths.length || keys.length !== expected.size) throw new Error('Incomplete escrow inventory');
     for (const item of keys) {
       if (item.key.length !== 32 || !expected.delete(identity(item))) throw new Error('Incomplete escrow inventory');
+    }
+    const countsSeen = new Set<string>();
+    if (!Array.isArray(counts) || counts.length !== policy.paths.length) throw new Error('Incomplete record validation');
+    for (const result of counts) {
+      const id = identity(result);
+      const path = policy.paths.find(p => identity(p) === id);
+      if (!path || countsSeen.has(id) || result.validatedCount !== path.expectedCount) throw new Error('Incomplete record validation');
+      countsSeen.add(id);
     }
     if (dryRun) return { dryRun: true as const, paths: keys.length, expectedRecords: policy.paths.reduce((n, p) => n + p.expectedCount, 0) };
     const contentKey = new Uint8Array(32);
@@ -74,6 +88,9 @@ export async function prepareEscrowExport(options: EscrowExportOptions) {
     } finally {
       contentKey.fill(0);
       for (const share of shares) share.fill(0);
+    }
+    } finally {
+      for (const item of keys) item.key.fill(0);
     }
   });
 }

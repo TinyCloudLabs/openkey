@@ -21,17 +21,29 @@ test('synthetic enclave ceremony exports encrypted path key with actual split co
   const events: string[] = [];
   const options: EscrowExportOptions = {
     enabled: true, dryRun: false, isInTee: () => true, policy,
-    authorize: async () => { events.push('authorize'); },
-    snapshot: async operation => { events.push('snapshot'); return operation([{ ...policy.paths[0]!, key }]); },
-    validateSnapshot: async () => { events.push('validate'); },
+    authorize: async () => { events.push('authorize'); return true; },
+    snapshot: async operation => { events.push('snapshot'); return operation([{ ...policy.paths[0]!, key: key.slice() }]); },
+    validateSnapshot: async (_policy, keys) => { events.push('validate'); return keys.map(k => ({ path: k.path, purpose: k.purpose, version: k.version, validatedCount: 1 })); },
   };
   await expect(prepareEscrowExport({ ...options, enabled: false })).rejects.toThrow();
   await expect(prepareEscrowExport({ ...options, isInTee: () => false })).rejects.toThrow();
+  await expect(prepareEscrowExport({ ...options, isInTee: async () => false })).rejects.toThrow();
+  await expect(prepareEscrowExport({ ...options, authorize: async () => false as unknown as true, snapshot: async () => { throw new Error('must not run'); } })).rejects.toThrow('authorization denied');
+  await expect(prepareEscrowExport({ ...options, policy: { ...policy, holders: holders.slice(0, 2) } })).rejects.toThrow();
+  await expect(prepareEscrowExport({ ...options, policy: { ...policy, expiresAt: new Date(now - 1).toISOString() } })).rejects.toThrow();
   const dry = await prepareEscrowExport({ ...options, dryRun: undefined });
   expect(dry).toEqual({ dryRun: true, paths: 1, expectedRecords: 1 });
   const result = await prepareEscrowExport(options);
   if (result.dryRun) throw new Error('Expected encrypted bundle');
   expect(events).toEqual(['authorize', 'snapshot', 'validate', 'authorize', 'snapshot', 'validate']);
+  for (const inventory of [[], [{ ...policy.paths[0]!, key: key.slice() }, { ...policy.paths[0]!, key: key.slice() }], [{ ...policy.paths[0]!, path: 'extra', key: key.slice() }], [{ ...policy.paths[0]!, key: new Uint8Array(31) }]]) {
+    await expect(prepareEscrowExport({ ...options, snapshot: operation => operation(inventory) })).rejects.toThrow();
+    for (const item of inventory) expect(item.key.every(byte => byte === 0)).toBe(true);
+  }
+  await expect(prepareEscrowExport({ ...options, validateSnapshot: async () => [{ ...policy.paths[0]!, validatedCount: 5 }] })).rejects.toThrow();
+  const clearedKey = key.slice();
+  await prepareEscrowExport({ ...options, dryRun: true, snapshot: operation => operation([{ ...policy.paths[0]!, key: clearedKey }]) });
+  expect(clearedKey.every(byte => byte === 0)).toBe(true);
   const shares = [];
   for (const wrapper of result.wrappers.slice(0, 2)) {
     const holder = result.header.holders.find(h => h.id === wrapper.holderId)!;
