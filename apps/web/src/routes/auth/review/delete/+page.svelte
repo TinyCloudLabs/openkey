@@ -17,7 +17,7 @@
   async function prepare() {
     try { ready = (await post('delete-intent', {})).ok; }
     catch { ready = false; }
-    if (!ready) error = "Couldn't verify the app review account.";
+    if (!ready) error = "Couldn't verify the app review account. Check the review account and code, then try again.";
   }
   onMount(prepare);
   async function remove() {
@@ -28,8 +28,8 @@
       const response = await post('delete', { email, code, confirmation });
       code = '';
       if (response.ok) deleted = true;
-      else error = "Couldn't verify the app review account.";
-    } catch { code = ''; error = "Couldn't verify the app review account."; }
+      else error = "Couldn't verify the app review account. Check the review account and code, then try again.";
+    } catch { code = ''; error = "Couldn't verify the app review account. Check the review account and code, then try again."; }
     finally { loading = false; }
   }
 </script>

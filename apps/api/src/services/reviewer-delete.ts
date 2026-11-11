@@ -8,7 +8,7 @@ import { retireReviewerOwner } from './reviewer-cleanup';
 
 const COOKIE = '__Secure-openkey-review-delete';
 const options = { httpOnly: true, secure: true, sameSite: 'strict' as const, path: '/', maxAge: 300 };
-const refusal = () => new APIError('FORBIDDEN', { code: 'REVIEWER_DELETE_REFUSED', message: "Couldn't verify the app review account." });
+const refusal = () => new APIError('FORBIDDEN', { code: 'REVIEWER_DELETE_REFUSED', message: "Couldn't verify the app review account. Check the review account and code, then try again." });
 const requireBrowser = (ctx: any, origin: string) => {
   if (!appleReviewEnabled() || !ctx.request || !reviewerBrowserRequest(ctx.request.headers, origin)) throw refusal();
 };
