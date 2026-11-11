@@ -6,7 +6,7 @@ import { strictSessionDid, type DeviceRelayEnvelope } from './device-authorizati
 import { hasPrivateJwkMember } from './authorization-signing';
 import { verifySessionProofClaims } from './native-delegation/session-proof';
 import { allocateDelegationCode, delegationClaimHash, type ApprovalCode, type ApprovalCodeDelivery, type ApprovalCodeStore } from '../routes/delegation-codes';
-import { logApprovalCodeAllocationFailure } from '../log';
+import { logApprovalCodeAllocationFailure, logApprovalCodeCleanupFailure } from '../log';
 
 export interface ApprovalRequestRecord {
   id: string;
@@ -207,11 +207,11 @@ export class ApprovalResultService {
     await this.store.release(id, marker);
   }
 
-  private authenticate(record: ApprovalRequestRecord, action: 'discover' | 'fetch' | 'ack', proof: string | undefined, ref = '', ackId = ''): void {
+  private authenticate(record: ApprovalRequestRecord, action: 'discover' | 'fetch' | 'ack', proof: string | undefined, ref = '', ackId = '', codeBinding?: [string, string]): void {
     const jwk = record.request.targetPublicJwk;
     const jkt = createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x: jwk.x })).digest('base64url');
     const path = action === 'discover' ? `/api/approval-requests/${record.id}/result` : `/api/approval-results/${ref}/${action}`;
-    if (!verifySessionProofClaims(proof, { sessionJwk: jwk, sessionJkt: jkt, htu: this.options.apiOrigin + path, clientId: 'openkey-approval-result-v1', credential: JSON.stringify([action, record.id, record.bodyCid, ref, ackId]) }, (this.options.now?.() ?? new Date()).getTime())) {
+    if (!verifySessionProofClaims(proof, { sessionJwk: jwk, sessionJkt: jkt, htu: this.options.apiOrigin + path, clientId: 'openkey-approval-result-v1', credential: JSON.stringify([action, record.id, record.bodyCid, ref, ackId, ...(codeBinding ?? [])]) }, (this.options.now?.() ?? new Date()).getTime())) {
       throw new ApprovalResultError('invalid_proof', 'Requester proof is invalid', 401);
     }
   }
@@ -220,17 +220,19 @@ export class ApprovalResultService {
     const record = await this.store.findById(id);
     if (!record) throw new ApprovalResultError('not_found', 'Approval request not found', 404);
     if (record.bodyCid !== body.bodyCid) throw new ApprovalResultError('request_binding', 'Request binding is invalid', 400);
-    this.authenticate(record, 'discover', proof);
+    const code = typeof body.approvalCode === 'string' ? body.approvalCode.trim().toLowerCase() : '';
+    const claimHash = delegationClaimHash(claim);
+    if (body.approvalCode !== undefined && !claimHash) throw new ApprovalResultError('invalid_claim', 'A saved code claim intent is required', 400);
+    this.authenticate(record, 'discover', proof, '', '', body.approvalCode === undefined ? undefined : [
+      createHash('sha256').update(code).digest('base64url'), claimHash!,
+    ]);
     if (record.deniedAt) throw deniedError(record.deniedAt);
     if (body.approvalCode !== undefined) {
-      const claimHash = delegationClaimHash(claim);
-      if (!claimHash) throw new ApprovalResultError('invalid_claim', 'A saved code claim intent is required', 400);
-      const code = typeof body.approvalCode === 'string' ? body.approvalCode.trim().toLowerCase() : '';
       const now = this.options.now?.() ?? new Date();
       if (record.ackId) throw new ApprovalResultError('acknowledged', 'Approval result was acknowledged', 409);
       if (record.resultRef && record.resultExpiresAt! <= now) throw new ApprovalResultError('expired_result', 'Result retention expired', 410);
       if (!/^[a-z2-7]{4}-[a-z2-7]{4}$/.test(code) || !record.resultRef || !this.options.codeStore ||
-        !await this.options.codeStore.claim(code, claimHash, now, { requestId: record.id, bodyCid: record.bodyCid, resultRef: record.resultRef })) {
+        !await this.options.codeStore.claim(code, claimHash!, now, { requestId: record.id, bodyCid: record.bodyCid, resultRef: record.resultRef })) {
         throw new ApprovalResultError('approval_code_unavailable', 'Approval code is unavailable for this saved request', 404);
       }
     }
@@ -287,7 +289,8 @@ export class ApprovalResultService {
     if (!record) throw new ApprovalResultError('ack_conflict', 'Result ACK intent conflicts with the saved ACK', 409);
     try {
       await this.options.codeStore?.invalidateApproval(ref);
-    } catch {
+    } catch (error) {
+      logApprovalCodeCleanupFailure(record.id, error);
       // The durable ACK is authoritative for every collection path. Code expiry
       // bounds optional broker cleanup even when that storage is unavailable.
     }

@@ -90,7 +90,14 @@ Content-Type: application/json
 ```
 
 Save the claim intent before sending it: use at least 16 random bytes encoded
-as unpadded base64url (22–128 characters). The code is bound to the request ID,
+as unpadded base64url (22–128 characters). For code discovery, the proof's credential is the exact JSON array
+`["discover", requestId, bodyCid, "", "", codeHash, claimHash]`. Both hashes are
+SHA-256 encoded as unpadded base64url: `codeHash` hashes the trimmed, lowercase
+code, and `claimHash` hashes the exact saved claim header. The proof's existing
+`cred_hash` then hashes that serialized array. Discovery without a code keeps
+its existing five-element credential; fetch and ACK are unchanged.
+
+The code is bound to the request ID,
 body CID and result reference, and requires that request's session proof.
 The same saved claim can retry until code expiry. The response carries the
 normal `status`, `resultRef` and `expiresAt`; continue through encrypted fetch,

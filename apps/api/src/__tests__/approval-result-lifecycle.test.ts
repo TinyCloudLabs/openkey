@@ -39,10 +39,10 @@ function fixture(codeStore?: ApprovalCodeStore) {
   };
   const origin = 'http://localhost:3001';
   const service = new ApprovalResultService(store, { apiOrigin: origin, retentionSeconds: 600, now: () => clock, codeStore });
-  function proof(action: 'discover' | 'fetch' | 'ack', path: string, ackId = '', key = pair.privateKey) {
+  function proof(action: 'discover' | 'fetch' | 'ack', path: string, ackId = '', key = pair.privateKey, codeBinding?: [string, string]) {
     const jkt = createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x: jwk.x })).digest('base64url');
     const head = Buffer.from(JSON.stringify({ alg: 'EdDSA', kid: jkt, typ: 'openkey-session-proof+jwt' })).toString('base64url');
-    const credential = JSON.stringify([action, record.id, record.bodyCid, action === 'discover' ? '' : record.resultRef, ackId]);
+    const credential = JSON.stringify([action, record.id, record.bodyCid, action === 'discover' ? '' : record.resultRef, ackId, ...(codeBinding ?? [])]);
     const claims = Buffer.from(JSON.stringify({ client_id: 'openkey-approval-result-v1', cred_hash: createHash('sha256').update(credential).digest('base64url'), htm: 'POST', htu: origin + path, iat: clock.getTime() / 1000, jti: 'isolated-synthetic-jti-0001' })).toString('base64url');
     return `${head}.${claims}.${sign(null, Buffer.from(`${head}.${claims}`), key).toString('base64url')}`;
   }
@@ -120,7 +120,10 @@ describe('durable approval codes use the saved request before claiming delivery'
       expiresAt: '2026-10-28T20:05:00.000Z', ...overrides };
     await codeStore.create(code, delivery, new Date(delivery.expiresAt));
     const body = { bodyCid: f.record.bodyCid, approvalCode: code.toUpperCase() };
-    const proof = () => f.proof('discover', `/api/approval-requests/${f.record.id}/result`);
+    const proof = (intent = claim, approvalCode = code) => f.proof('discover', `/api/approval-requests/${f.record.id}/result`, '', undefined, [
+      createHash('sha256').update(approvalCode.trim().toLowerCase()).digest('base64url'),
+      createHash('sha256').update(intent).digest('base64url'),
+    ]);
     return { ...f, signProof: f.proof, codeStore, body, proof };
   }
 
@@ -261,10 +264,42 @@ describe('durable approval codes use the saved request before claiming delivery'
     await expect(f.service.fetch(f.record.resultRef!, binding, f.proof('fetch', fetchPath))).rejects.toMatchObject({ code: 'acknowledged' });
   });
 
+  test('code discovery proof binds both the normalized code hash and saved claim hash', async () => {
+    const f = await ready();
+    const path = `/api/approval-requests/${f.record.id}/result`;
+    for (const proof of [f.signProof('discover', path), f.proof(claim, 'ijkl-mnop'), f.proof('another-client-claim-intent-0002')]) {
+      await expect(f.service.discover(f.record.id, f.body, proof, claim)).rejects.toMatchObject({ code: 'invalid_proof' });
+      expect(await client.delegationCode.count()).toBe(1);
+      expect(await client.delegationCodeClaim.count()).toBe(0);
+    }
+    expect((await f.service.discover(f.record.id, { ...f.body, approvalCode: ` ${code.toUpperCase()} ` }, f.proof(), claim)).status).toBe('approved');
+  });
+
+  test('cleanup failure logging keeps ACK successful and emits only safe identifiers and error class', async () => {
+    const real = createPrismaDelegationCodeStore(client);
+    const poisoned = Object.assign(new Error('private cleanup detail'), { name: 'not-an-allowlisted-name', code: 'P2025' });
+    const f = await pendingApproval({ ...real, async invalidateApproval() { throw poisoned; } });
+    await f.service.approve(f.record.id, 'qa-owner', f.body, f.delegation);
+    const logs: string[] = [];
+    const original = process.stdout.write;
+    process.stdout.write = ((chunk: unknown) => { logs.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    try {
+      const ackId = 'durable-cleanup-log-ack-0001';
+      expect(await f.service.acknowledge(f.record.resultRef!, { requestId: f.record.id, bodyCid: f.record.bodyCid, ackId },
+        f.proof('ack', `/api/approval-results/${f.record.resultRef}/ack`, ackId))).toEqual({ status: 'acknowledged', ackId });
+    } finally {
+      process.stdout.write = original;
+    }
+    const event = logs.map(line => JSON.parse(line)).find(value => value.event === 'approval_code_cleanup_failed');
+    expect(event).toEqual({ ts: expect.any(String), level: 'warn', event: 'approval_code_cleanup_failed',
+      request_id: expect.any(String), approval_request_id: f.record.id, error_name: 'Error' });
+    expect(f.record.encryptedResult).toBeNull();
+  });
+
   test('concurrent first code claims have one winner', async () => {
     const f = await ready();
     const results = await Promise.allSettled(Array.from({ length: 8 }, (_, index) =>
-      f.service.discover(f.record.id, f.body, f.proof(), `${claim}-${index}`)));
+      f.service.discover(f.record.id, f.body, f.proof(`${claim}-${index}`), `${claim}-${index}`)));
     expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter(result => result.status === 'rejected')).toHaveLength(7);
     expect(await client.delegationCodeClaim.count()).toBe(1);
@@ -276,7 +311,7 @@ describe('durable approval codes use the saved request before claiming delivery'
     expect(first).toEqual({ status: 'approved', resultRef: f.record.resultRef!, expiresAt: f.record.resultExpiresAt!.toISOString() });
     expect(await client.delegationCode.count()).toBe(0);
     expect(await f.service.discover(f.record.id, f.body, f.proof(), claim)).toEqual(first);
-    await expect(f.service.discover(f.record.id, f.body, f.proof(), 'another-client-claim-intent-0002')).rejects.toMatchObject({ code: 'approval_code_unavailable' });
+    await expect(f.service.discover(f.record.id, f.body, f.proof('another-client-claim-intent-0002'), 'another-client-claim-intent-0002')).rejects.toMatchObject({ code: 'approval_code_unavailable' });
   });
 
   test('a different signer or digest does not spend the code for the saved request', async () => {

@@ -139,9 +139,9 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     expect(Date.parse(approvalCode.expiresAt)).toBeLessThanOrEqual(saved.resultExpiresAt!.getTime());
     // Approved, unacknowledged results outlive the original request deadline.
     await prisma.approvalRequest.update({ where: { id }, data: { expiresAt: new Date(0) } });
-    function proof(action: 'discover' | 'fetch' | 'ack', path: string, ref = '', ackId = '', signingKey = pair.privateKey) {
+    function proof(action: 'discover' | 'fetch' | 'ack', path: string, ref = '', ackId = '', signingKey = pair.privateKey, codeBinding?: [string, string]) {
       const head = Buffer.from(JSON.stringify({ alg: 'EdDSA', kid: jkt, typ: 'openkey-session-proof+jwt' })).toString('base64url');
-      const payload = Buffer.from(JSON.stringify({ client_id: 'openkey-approval-result-v1', cred_hash: createHash('sha256').update(JSON.stringify([action, id, opened.header.bodyCid, ref, ackId])).digest('base64url'), htm: 'POST', htu: apiOrigin + path, iat: Math.floor(Date.now() / 1000), jti: randomBytes(24).toString('base64url') })).toString('base64url');
+      const payload = Buffer.from(JSON.stringify({ client_id: 'openkey-approval-result-v1', cred_hash: createHash('sha256').update(JSON.stringify([action, id, opened.header.bodyCid, ref, ackId, ...(codeBinding ?? [])])).digest('base64url'), htm: 'POST', htu: apiOrigin + path, iat: Math.floor(Date.now() / 1000), jti: randomBytes(24).toString('base64url') })).toString('base64url');
       return `${head}.${payload}.${sign(null, Buffer.from(`${head}.${payload}`), signingKey).toString('base64url')}`;
     }
     const resultPath = `/api/approval-requests/${id}/result`;
@@ -154,7 +154,8 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
       'OpenKey-Session-Proof': proof('discover', resultPath, '', '', generateKeyPairSync('ed25519').privateKey),
       'OpenKey-Delegation-Claim': claim,
     })).status).toBe(401);
-    const codeHeaders = { 'OpenKey-Session-Proof': proof('discover', resultPath), 'OpenKey-Delegation-Claim': claim };
+    const codeBinding: [string, string] = [createHash('sha256').update(approvalCode.code.toLowerCase()).digest('base64url'), createHash('sha256').update(claim).digest('base64url')];
+    const codeHeaders = { 'OpenKey-Session-Proof': proof('discover', resultPath, '', '', undefined, codeBinding), 'OpenKey-Delegation-Claim': claim };
     const claimed = await post(resultPath, codeBody, codeHeaders);
     expect(claimed.status).toBe(200);
     expect(await claimed.json()).toMatchObject({ status: 'approved', resultRef });
@@ -193,7 +194,7 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     expect(await (await post(ackPath, ackBody, { 'OpenKey-Session-Proof': proof('ack', ackPath, resultRef, ackId) })).json()).toEqual({ status: 'acknowledged', ackId });
     expect((await prisma.approvalRequest.findUniqueOrThrow({ where: { id } })).encryptedResult).toBeNull();
     expect((await post(fetchPath, binding, { 'OpenKey-Session-Proof': proof('fetch', fetchPath, resultRef) })).status).toBe(409);
-    expect((await post(resultPath, codeBody, { ...codeHeaders, 'OpenKey-Session-Proof': proof('discover', resultPath) })).status).toBe(409);
+    expect((await post(resultPath, codeBody, codeHeaders)).status).toBe(409);
     expect(await prisma.delegationCode.findUnique({ where: { code: approvalCode.code.toLowerCase() } })).toBeNull();
     expect(await prisma.delegationCodeClaim.findUnique({ where: { code: approvalCode.code.toLowerCase() } })).toBeNull();
     await prisma.$disconnect();
