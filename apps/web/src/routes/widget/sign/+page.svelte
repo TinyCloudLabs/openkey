@@ -1198,17 +1198,16 @@
     // request so the SDK doesn't tear down a subsequent request when a
     // stale close arrives late.
     const closeMsg: Record<string, unknown> = { type: 'openkey:close' };
-    const targetOrigin = currentRequestId ? origin : legacyOrigin;
-    if (!targetOrigin) return;
+    const targetOrigin = currentRequestId ? origin : (legacyOrigin ?? (origin !== '*' ? origin : null));
     if (currentRequestId && messageProtocolVersion !== null) {
       closeMsg.requestId = currentRequestId;
       closeMsg.protocolVersion = messageProtocolVersion;
     }
     if (window.opener) {
-      window.opener.postMessage(closeMsg, targetOrigin);
+      if (targetOrigin) window.opener.postMessage(closeMsg, targetOrigin);
       window.close();
     } else if (window.parent !== window) {
-      window.parent.postMessage(closeMsg, targetOrigin);
+      if (targetOrigin) window.parent.postMessage(closeMsg, targetOrigin);
     }
   }
 

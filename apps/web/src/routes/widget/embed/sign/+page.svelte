@@ -1279,13 +1279,12 @@
     // Sol MAJOR-4 (continuation): correlate close messages to the active
     // request.
     const closeMsg: Record<string, unknown> = { type: 'openkey:close' };
-    const targetOrigin = currentRequestId ? origin : legacyOrigin;
-    if (!targetOrigin) return;
+    const targetOrigin = currentRequestId ? origin : (legacyOrigin ?? (origin !== '*' ? origin : null));
     if (currentRequestId && messageProtocolVersion !== null) {
       closeMsg.requestId = currentRequestId;
       closeMsg.protocolVersion = messageProtocolVersion;
     }
-    window.parent.postMessage(closeMsg, targetOrigin);
+    if (targetOrigin) window.parent.postMessage(closeMsg, targetOrigin);
   }
 
 </script>

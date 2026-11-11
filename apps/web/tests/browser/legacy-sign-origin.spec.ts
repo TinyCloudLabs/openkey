@@ -100,3 +100,29 @@ for (const surface of ['embed/sign', 'sign']) {
     await expect.poll(() => page.evaluate(() => (window as any).result)).toMatchObject({ signature: '0x00', address });
   });
 }
+
+for (const configuredOrigin of [false, true]) {
+  test(`popup close before a request ${configuredOrigin ? 'posts to configured origin' : 'closes without posting'}`, async ({ page }) => {
+    await fixture(page);
+    const opened = page.waitForEvent('popup');
+    await page.evaluate(configured => window.open(
+      `/widget/sign${configured ? `?origin=${encodeURIComponent(location.origin)}` : ''}`,
+      'pre-request-sign', 'popup=true',
+    ), configuredOrigin);
+    const popup = await opened;
+    const close = popup.getByRole('button', { name: '×', exact: true });
+    await expect(close).toBeVisible();
+    // Discard bootstrap ready: assert only messages caused by the pre-request close.
+    await page.evaluate(() => { (window as any).posts = []; });
+    const closed = popup.waitForEvent('close');
+    await close.click();
+    await closed;
+    if (configuredOrigin) {
+      await expect.poll(() => page.evaluate(() => (window as any).posts)).toEqual([
+        { data: { type: 'openkey:close' }, target: ORIGIN },
+      ]);
+    } else {
+      expect(await page.evaluate(() => (window as any).posts)).toEqual([]);
+    }
+  });
+}
