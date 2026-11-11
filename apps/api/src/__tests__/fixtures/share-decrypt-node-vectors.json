@@ -1,0 +1,255 @@
+{
+  "source": {
+    "repository": "TinyCloudLabs/tinycloud-node",
+    "tag": "v1.25.12",
+    "commit": "5017033fa860fb09b0a23f789ffcecca98c59404",
+    "symbols": [
+      "EncryptionResource::extends",
+      "DecryptTarget::from_resource",
+      "check_decrypt_scope"
+    ],
+    "sha256": {
+      "tinycloud-core/src/encryption_network/key_id.rs": "6d48d6dc55a201395b279b447f5ee00a66145fcba6320ad5cc8a59a585d2c7fd",
+      "tinycloud-core/src/encryption_network/network_id.rs": "83a683e1ba58f085209f78f2734e570ff072a35265ccb75d18bf54fbf799a242",
+      "tinycloud-core/src/encryption_network/service.rs": "7a5e6e330e7a4f9af4f627e12cb7c51be07bf0a57b1ea03bef99fb3798b83360",
+      "tinycloud-auth/src/identity.rs": "dc24489e7594ae58528233970cc816cd177c11da950e7f8bff79b9ebd81bb499",
+      "dependencies/siwe/src/lib.rs": "b5a4d1a550e0fa80ad0fe660c62ffc80a40826119bd46ed63b5dcf2ed59ac1a3"
+    }
+  },
+  "owner": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+  "network": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+  "vectors": [
+    {
+      "bodyKeyPath": "share/abc123",
+      "covers": true,
+      "decryptScope": true,
+      "factsKeyPath": "share/abc123",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123"
+    },
+    {
+      "bodyKeyPath": "share/other",
+      "covers": false,
+      "decryptScope": true,
+      "factsKeyPath": "share/other",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/other"
+    },
+    {
+      "bodyKeyPath": "share/abc123/child",
+      "covers": false,
+      "decryptScope": true,
+      "factsKeyPath": "share/abc123/child",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123/child"
+    },
+    {
+      "bodyKeyPath": "share/abc123/",
+      "covers": false,
+      "decryptScope": false,
+      "factsKeyPath": "share/abc123/",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123/"
+    },
+    {
+      "bodyKeyPath": "share/",
+      "covers": false,
+      "decryptScope": false,
+      "factsKeyPath": "share/",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/"
+    },
+    {
+      "bodyKeyPath": "apps/demo/key",
+      "covers": false,
+      "decryptScope": true,
+      "factsKeyPath": "apps/demo/key",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/apps/demo/key"
+    },
+    {
+      "bodyKeyPath": "share/abc123%2Fchild",
+      "covers": false,
+      "decryptScope": false,
+      "factsKeyPath": "share/abc123%2Fchild",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123%2Fchild"
+    },
+    {
+      "bodyKeyPath": "share/abc123",
+      "covers": true,
+      "decryptScope": true,
+      "factsKeyPath": "share/abc123",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123"
+    },
+    {
+      "bodyKeyPath": "share/other",
+      "covers": true,
+      "decryptScope": true,
+      "factsKeyPath": "share/other",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/other"
+    },
+    {
+      "bodyKeyPath": "share/abc123/child",
+      "covers": true,
+      "decryptScope": true,
+      "factsKeyPath": "share/abc123/child",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123/child"
+    },
+    {
+      "bodyKeyPath": "share/abc123/",
+      "covers": true,
+      "decryptScope": false,
+      "factsKeyPath": "share/abc123/",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123/"
+    },
+    {
+      "bodyKeyPath": "share/",
+      "covers": true,
+      "decryptScope": false,
+      "factsKeyPath": "share/",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/"
+    },
+    {
+      "bodyKeyPath": "apps/demo/key",
+      "covers": false,
+      "decryptScope": true,
+      "factsKeyPath": "apps/demo/key",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/apps/demo/key"
+    },
+    {
+      "bodyKeyPath": "share/abc123%2Fchild",
+      "covers": false,
+      "decryptScope": false,
+      "factsKeyPath": "share/abc123%2Fchild",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123%2Fchild"
+    },
+    {
+      "bodyKeyPath": "share/abc123",
+      "covers": false,
+      "decryptScope": true,
+      "factsKeyPath": "share/abc123",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123"
+    },
+    {
+      "bodyKeyPath": "share/other",
+      "covers": false,
+      "decryptScope": true,
+      "factsKeyPath": "share/other",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/other"
+    },
+    {
+      "bodyKeyPath": "share/abc123/child",
+      "covers": false,
+      "decryptScope": true,
+      "factsKeyPath": "share/abc123/child",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123/child"
+    },
+    {
+      "bodyKeyPath": "share/abc123/",
+      "covers": false,
+      "decryptScope": false,
+      "factsKeyPath": "share/abc123/",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123/"
+    },
+    {
+      "bodyKeyPath": "share/",
+      "covers": false,
+      "decryptScope": false,
+      "factsKeyPath": "share/",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/"
+    },
+    {
+      "bodyKeyPath": "apps/demo/key",
+      "covers": false,
+      "decryptScope": true,
+      "factsKeyPath": "apps/demo/key",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/apps/demo/key"
+    },
+    {
+      "bodyKeyPath": "share/abc123%2Fchild",
+      "covers": false,
+      "decryptScope": false,
+      "factsKeyPath": "share/abc123%2Fchild",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123%2Fchild"
+    },
+    {
+      "bodyKeyPath": "share/abc123",
+      "covers": false,
+      "decryptScope": true,
+      "factsKeyPath": "share/abc123",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/other",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123"
+    },
+    {
+      "bodyKeyPath": "share/other",
+      "covers": true,
+      "decryptScope": true,
+      "factsKeyPath": "share/other",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/other",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/other"
+    },
+    {
+      "bodyKeyPath": "share/abc123/child",
+      "covers": false,
+      "decryptScope": true,
+      "factsKeyPath": "share/abc123/child",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/other",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123/child"
+    },
+    {
+      "bodyKeyPath": "share/abc123/",
+      "covers": false,
+      "decryptScope": false,
+      "factsKeyPath": "share/abc123/",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/other",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123/"
+    },
+    {
+      "bodyKeyPath": "share/",
+      "covers": false,
+      "decryptScope": false,
+      "factsKeyPath": "share/",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/other",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/"
+    },
+    {
+      "bodyKeyPath": "apps/demo/key",
+      "covers": false,
+      "decryptScope": true,
+      "factsKeyPath": "apps/demo/key",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/other",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/apps/demo/key"
+    },
+    {
+      "bodyKeyPath": "share/abc123%2Fchild",
+      "covers": false,
+      "decryptScope": false,
+      "factsKeyPath": "share/abc123%2Fchild",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/other",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123%2Fchild"
+    },
+    {
+      "bodyKeyPath": "share/other",
+      "covers": true,
+      "decryptScope": false,
+      "factsKeyPath": "share/abc123",
+      "granted": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123",
+      "requested": "urn:tinycloud:encryption:did:pkh:eip155:1:0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A:default/share/abc123"
+    }
+  ]
+}

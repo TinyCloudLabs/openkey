@@ -49,7 +49,7 @@ const db: any = {
   session: {
     findFirst: async ({ where, select }: { where: { id: string; userId: string }; select: unknown }) => {
       void select;
-      return where.id === 'session_1' && where.userId === 'user_1' ? { lastPasskeyAt: state.sessionLastPasskeyAt } : null;
+      return where.id === 'session_1' && where.userId === 'user_1' ? { lastPasskeyAt: state.sessionLastPasskeyAt, lastPasskeyId: 'passkey_1' } : null;
     },
     deleteMany: async () => ({ count: 0 }),
   },
@@ -65,9 +65,9 @@ const db: any = {
       return { count: matched.length };
     },
   },
-  ethereumKey: { deleteMany: async () => ({ count: 0 }) },
-  passkey: { deleteMany: async () => ({ count: 0 }) },
-  account: { deleteMany: async () => ({ count: 0 }) },
+  ethereumKey: { count: async () => 0, deleteMany: async () => ({ count: 0 }) },
+  passkey: { count: async () => 1, findFirst: async ({ where }: { where: { id: string; userId: string; countsForStepUp: boolean } }) => where.id === 'passkey_1' && where.userId === 'user_1' && where.countsForStepUp === true ? { id: 'passkey_1' } : null, deleteMany: async () => ({ count: 0 }) },
+  account: { findMany: async () => [], deleteMany: async () => ({ count: 0 }) },
   verification: { deleteMany: async () => ({ count: 0 }) },
   user: {
     findUnique: async () => ({ email: 'user_1@example.test', emailVerified: true }),
@@ -82,7 +82,7 @@ const db: any = {
 };
 
 // Restored afterwards: other files in the same `bun test` run read these.
-const savedEnv = { CORS_ORIGIN: process.env.CORS_ORIGIN, TEE_MODE: process.env.TEE_MODE };
+const savedEnv = { WEBAUTHN_ORIGIN: process.env.WEBAUTHN_ORIGIN, CORS_ORIGIN: process.env.CORS_ORIGIN, TEE_MODE: process.env.TEE_MODE };
 
 replaceModules({
   '../middleware/session': () => ({
@@ -99,6 +99,7 @@ await mockModules({
 
 beforeAll(() => {
   process.env.CORS_ORIGIN = 'https://openkey.test';
+  process.env.WEBAUTHN_ORIGIN = 'https://openkey.test';
   process.env.TEE_MODE = 'production';
 });
 

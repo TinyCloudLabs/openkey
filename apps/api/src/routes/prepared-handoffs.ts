@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { createPrismaClient } from '@openkey/db';
-import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { PreparedHandoffError, PreparedHandoffService } from '../services/prepared-handoff';
 import { createPrismaPreparedHandoffStore } from '../services/prepared-handoff-store';
@@ -29,12 +29,12 @@ export function createPreparedHandoffRouter(service: PreparedHandoffService = pr
 
   // An authenticated, non-cached feature check keeps a newer web build from
   // submitting the prepared request to an API that has no claim route yet.
-  router.get('/available', requireSession, (c) => {
+  router.get('/available', requireAccountOriginForBearer, requireSession, (c) => {
     c.header('Cache-Control', 'no-store');
     return c.json({ transportVersion: 2 });
   });
 
-  router.post('/claim', requireOpenKeyOriginForBearer, requireSession, bodyLimit({
+  router.post('/claim', requireAccountOriginForBearer, requireSession, bodyLimit({
     maxSize: 6 * 1024,
     onError: (c) => c.json({ code: 'invalid_request', error: 'Handoff request exceeds 6 KiB' }, 400),
   }), async (c) => {
@@ -47,7 +47,7 @@ export function createPreparedHandoffRouter(service: PreparedHandoffService = pr
     return c.json(await service.claim(body, c.get('user').id), 201);
   });
 
-  router.post('/cancel-claimed', requireOpenKeyOriginForBearer, requireSession, async (c) => {
+  router.post('/cancel-claimed', requireAccountOriginForBearer, requireSession, async (c) => {
     const body = await jsonRequest(c);
     if (!body || typeof body !== 'object' || !('ticket' in body) || typeof body.ticket !== 'string') {
       throw new PreparedHandoffError('invalid_request', 'ticket is required', 400);

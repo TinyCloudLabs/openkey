@@ -24,7 +24,7 @@ const tx = {
   ethereumKey: { deleteMany: async () => ({ count: 1 }) },
   passkey: { deleteMany: async () => ({ count: 1 }) },
   session: { deleteMany: async () => ({ count: 1 }) },
-  account: { deleteMany: async () => ({ count: 1 }) },
+  account: { deleteMany: async () => ({ count: 1 }), findMany: async () => [] },
   verification: { deleteMany: async () => ({ count: 0 }) },
   orgKeyGrantChallenge: { deleteMany: async () => ({ count: 0 }) },
   keyGrantEvent: { create: async () => ({}) },
@@ -38,6 +38,13 @@ const tx = {
 
 const prisma = {
   $transaction: async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx),
+  // user_1 has a passkey that counts for step-up, so deletion takes the
+  // passkey step-up (TC-689, TC-1198).
+  passkey: {
+    count: async () => 1,
+    findFirst: async ({ where }: { where: { id?: string; userId?: string; countsForStepUp?: boolean } }) =>
+      where.id === 'passkey_1' && where.userId === 'user_1' && where.countsForStepUp === true ? { id: 'passkey_1' } : null,
+  },
   ethereumKey: {
     findMany: async () => [],
     findFirst: async () => ({
@@ -51,7 +58,7 @@ const prisma = {
   session: {
     findFirst: async (args: unknown) => {
       sessionLookups.push(args);
-      return { lastPasskeyAt };
+      return { lastPasskeyAt, lastPasskeyId: 'passkey_1' };
     },
   },
   user: {
@@ -93,11 +100,13 @@ await mockModules({
 // Restored afterwards: other files in the same `bun test` run read these.
 const savedEnv = {
   CORS_ORIGIN: process.env.CORS_ORIGIN,
+  WEBAUTHN_ORIGIN: process.env.WEBAUTHN_ORIGIN,
   TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS: process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS,
 };
 
 beforeAll(() => {
   process.env.CORS_ORIGIN = OPENKEY_ORIGIN;
+  process.env.WEBAUTHN_ORIGIN = OPENKEY_ORIGIN;
   process.env.TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = '10';
 });
 

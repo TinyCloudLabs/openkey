@@ -32,6 +32,27 @@ const SAFE_RETURN_PREFIXES = [
   '/oauth/',
   '/widget/',
 ];
+export function isApprovalReturnPath(pathname: string, search: string, hash: string): boolean {
+  return /^\/a\/[A-Za-z0-9_-]+$/.test(pathname) && search === '' && hash === '';
+}
+
+export function normalizeRegisterReturnTo(returnTo: string | null, origin: string): string | null {
+  if (!returnTo) return null;
+  if (returnTo === '/org-registration/consent') return returnTo;
+
+  try {
+    const url = new URL(returnTo, origin);
+    if (url.origin !== origin) return null;
+    const approvalPath = isApprovalReturnPath(url.pathname, url.search, url.hash);
+    if (approvalPath && (/\s/.test(returnTo) || returnTo.includes('\\'))) return null;
+    if (returnTo.startsWith('/a') && !approvalPath) return null;
+    if (approvalPath) return url.pathname;
+    if (url.pathname !== '/delegate' && !url.pathname.startsWith('/widget/embed/')) return null;
+    return url.pathname + url.search + url.hash;
+  } catch {
+    return null;
+  }
+}
 
 type AuthReturnToOptions = {
   /** The separately hosted admin console is the sole allowed cross-origin return target. */
@@ -50,11 +71,15 @@ export function normalizeAuthReturnTo(
   try {
     const url = new URL(value, origin);
     if (url.username || url.password) return null;
-    const allowed = allowedPrefixes.some((prefix) =>
-      prefix.endsWith('/')
-        ? url.pathname.startsWith(prefix)
-        : url.pathname === prefix || url.pathname.startsWith(`${prefix}/`)
-    );
+    const approvalPath = isApprovalReturnPath(url.pathname, url.search, url.hash);
+    if (approvalPath && (/\s/.test(value) || value.includes('\\'))) return null;
+    if (value.startsWith('/a') && !approvalPath) return null;
+    const allowed = approvalPath ||
+      allowedPrefixes.some((prefix) =>
+        prefix.endsWith('/')
+          ? url.pathname.startsWith(prefix)
+          : url.pathname === prefix || url.pathname.startsWith(`${prefix}/`)
+      );
     if (!allowed) return null;
     if (url.origin === origin) return `${url.pathname}${url.search}${url.hash}`;
     if (options.consoleOrigin && url.origin === options.consoleOrigin && isConsolePath(url.pathname)) {

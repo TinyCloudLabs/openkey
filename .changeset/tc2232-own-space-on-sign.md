@@ -1,0 +1,7 @@
+---
+"@openkey/api": patch
+---
+
+`POST /api/keys/:id/sign` now sets up the signer's account for a TinyCloud sign-in that names one of the signer's OWN canonical bootstrap spaces (applications, default, secrets, public, agents), not only one that asks for the account space's own entries. Before signing it hosts that space and waits for it (bounded by `TINYCLOUD_BOOTSTRAP_REQUESTED_SPACE_TIMEOUT_MS`, 10 s by default, as an approval does), and the rest of the setup continues in the background. A brand-new account signing in to an app that asks only for `applications` therefore no longer makes the SDK offer to create the space itself. Another account's space, a name that is not a bootstrap space, a raw-format signature, Auto-Sign off and the kill switch change nothing; on a timeout the reply is `pending` and on another run holding the lock it is `pending` too, as before. The SIWE reading moved to `services/tinycloud-siwe.ts`, shared with the delegate route's own-space check. Details: TC-2285
+
+Any of the signer's own bootstrap spaces, `default` included, triggers the setup on purpose. The reply's `tinycloudBootstrap.status` is `hosted` when the requested space is hosted and the rest of the setup is still running, `complete` when the setup was already complete. A setup that failed less than 5 minutes ago is neither claimed nor waited for by a sign-in (it replies `pending` at once); the background sweep keeps retrying it, so a node that keeps hanging does not cost every sign-in the timeout.

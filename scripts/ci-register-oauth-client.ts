@@ -107,13 +107,12 @@ async function main() {
   const name = clientIdToUpdate ? process.env.CLIENT_NAME?.trim() || undefined : required('CLIENT_NAME');
   if (clientIdToUpdate) {
     const incompatible = [
-      ['CLIENT_TINYCLOUD_NATIVE_DELEGATION', process.env.CLIENT_TINYCLOUD_NATIVE_DELEGATION],
       ['CLIENT_REDIRECT_URIS', process.env.CLIENT_REDIRECT_URIS],
       ['CLIENT_URI', process.env.CLIENT_URI],
       ['CLIENT_TYPE', process.env.CLIENT_TYPE],
     ].filter(([, value]) => value?.trim());
     if (incompatible.length > 0) {
-      throw new Error(`client_id updates branding only; remove ${incompatible.map(([key]) => key).join(', ')}`);
+      throw new Error(`client_id updates branding and an existing delegation ceiling only; remove ${incompatible.map(([key]) => key).join(', ')}`);
     }
   }
   const redirectUris = clientIdToUpdate ? [] : required('CLIENT_REDIRECT_URIS')
@@ -127,6 +126,21 @@ async function main() {
   if (clientIdToUpdate) {
     const existingClient = await prisma.oauthClient.findUnique({ where: { clientId: clientIdToUpdate } });
     if (!existingClient || existingClient.disabled) throw new Error(`Enabled OAuth client not found: ${clientIdToUpdate}`);
+    // A ceiling change replaces the ceiling of a client that already has delegation
+    // enabled; enabling delegation on an existing client stays an admin-route decision.
+    const rawCeiling = process.env.CLIENT_TINYCLOUD_NATIVE_DELEGATION?.trim();
+    let ceiling: NativeDelegationConfig | undefined;
+    if (rawCeiling) {
+      if (!existingClient.scopes.includes(TINYCLOUD_DELEGATION_SCOPE) || existingClient.tinycloudNativeDelegation == null) {
+        throw new Error('CLIENT_TINYCLOUD_NATIVE_DELEGATION with client_id only replaces an existing delegation ceiling');
+      }
+      let parsed: unknown;
+      try { parsed = JSON.parse(rawCeiling); } catch { throw new Error('CLIENT_TINYCLOUD_NATIVE_DELEGATION is not valid JSON'); }
+      ceiling = validateNativeDelegationConfig(parsed, existingClient, POLICY_OPTIONS);
+      // The ceiling is public client policy, never a secret: the run log is the before/after record.
+      console.log(`Delegation ceiling before: ${JSON.stringify(existingClient.tinycloudNativeDelegation)}`);
+      console.log(`Delegation ceiling after: ${JSON.stringify(ceiling)}`);
+    }
     await prisma.oauthClient.update({
       where: { clientId: clientIdToUpdate },
       data: {
@@ -134,9 +148,10 @@ async function main() {
         ...(icon !== undefined ? { icon } : {}),
         ...(themeBackgroundColor !== undefined ? { themeBackgroundColor } : {}),
         ...(themeAccentColor !== undefined ? { themeAccentColor } : {}),
+        ...(ceiling ? { tinycloudNativeDelegation: ceiling as unknown as Prisma.InputJsonObject } : {}),
       },
     });
-    console.log(`Branding updated for enabled OAuth client: ${name ?? clientIdToUpdate}`);
+    console.log(`Branding${ceiling ? ' and delegation ceiling' : ''} updated for enabled OAuth client: ${name ?? clientIdToUpdate}`);
     console.log(`CLIENT_ID=${clientIdToUpdate}`);
     return;
   }

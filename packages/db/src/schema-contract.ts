@@ -40,6 +40,9 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261007_0003_tinycloud_native_token_guard', 'ba9ff8dc9183b12ff39786bdf565d70921c33da6e4865d27ab4cc13591c3b1ff'],
   ['20261012_0001_signin_polish_hints_branding', 'd09960dda6ae76472c61629283b4030131d47b5f0f5cd7d79a3d02c0c5bf0e96'],
   ['20261012_0002_native_session_proof_jti', 'e3b40f3045fbc715556496226d8b60b7eca318fe58df4ba45392665bfd88ff6b'],
+  ['20261015_0001_google_link_step_up', '4848695c2de0e91f66e9e05e4ffa9537bfb62685cc37a925db121d1e7c3c0c4c'],
+  ['20261015_0002_apple_social_identity', '5d98152596b3d2bc66dedad4128e77100cc056cefb7ca33d466a1f74c7cea8ba'],
+  ['20261015_0003_apple_social_continuation', '52ade4b7b47f44a4ee4638cb33a28fc56a54856801b44b65c4e3dc3eb2beb953'],
   ['20261016_0001_prepared_siwe_handoff', '645d931e10dbd068da7f7243dcbe995f1af6f0e339b98d082264c8153bfec9ec'],
   ['20261019_0001_app_sign_in_day', 'a2f56caea9cd46aebccfb4d369e0223cf8338d07ac685a0dce145b4c3c90bb29'],
   ['20261021_0001_org_key_custody', '2c9f0a53affc841a7f0a7d1b6f8b865f4c4ef0277e0e140e1f81cd76f1d97f23'],
@@ -50,6 +53,9 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261029_0001_org_registration_proofs', '2aba2adcbca2a1554b480ee832873d846ed57161f95668ff4b4ce6659f465569'],
   ['20261103_0001_delegation_code_claim', 'de705f548d9ffd6bc6a0d669f1156874258f31cc2d3e3584dbf0b49e5b40d992'],
   ['20261103_0002_approval_request_denied', '87d5205193ef11fc87a52325ff703cc9fc14dcec3c2a81ac71408ea5709bfce8'],
+  ['20261109_0001_approval_request_approving', '59d59bc76994122d54d3d4564002cab2b01fecf194a12ee688f277b41c90fa6b'],
+  ['20261110_0001_apple_notifications', '431fea91f3c4ed37c4a7efef982fc5b88e7dc396bdc9b49633366c7da64fd4ba'],
+  ['20261110_0002_passkey_enrolment_provenance', '9123f0159b8d5341a737f665dcd6f3853b80a70e21562163f04c611e11d6c388'],
   ['20261111_0001_org_admin_invitations', 'e45d38cc7f53da403af43182c4cfcad675341bfd013494f60f238e4562eaefad'],
 ]);
 

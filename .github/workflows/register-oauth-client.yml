@@ -27,7 +27,7 @@ on:
         description: 'Application website URL (optional)'
         required: false
       client_id:
-        description: 'Existing enabled client ID to update branding only (optional)'
+        description: 'Existing enabled client ID: update its branding, and with tinycloud_native_delegation replace its existing delegation ceiling (optional)'
         required: false
       icon:
         description: 'HTTPS icon URL (optional); on update, empty leaves unchanged and none clears'

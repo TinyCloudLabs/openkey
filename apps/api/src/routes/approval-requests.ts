@@ -2,14 +2,16 @@ import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { parseLink, resolveLink, parseApprovalRequest, validateLinkHeader, verifyHeader, linkIssuerPublicKey } from '@tinycloud/share-envelope/links';
 import { ApprovalResultError, ApprovalResultService, linkRequiredError } from '../services/approval-results';
-import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
 import { verifySessionProofClaims } from '../services/native-delegation/session-proof';
 import { createHash } from 'node:crypto';
+import { createPrismaDelegationCodeStore, type ApprovalCode } from './delegation-codes';
 
 const prisma = createPrismaClient();
 const store = createPrismaApprovalRequestStore(prisma);
+const codeStore = createPrismaDelegationCodeStore(prisma);
 const linksOrigin = process.env.APPROVAL_LINKS_API_ORIGIN ?? 'https://api.tinycloud.xyz';
 const viewerOrigin = process.env.APPROVAL_OPENKEY_ORIGIN ?? 'https://openkey.so';
 const apiOrigin = process.env.BETTER_AUTH_URL ?? 'http://localhost:3001';
@@ -21,7 +23,7 @@ export function approvalResultService(): ApprovalResultService {
   if (!configured && (process.env.NODE_ENV === 'production' || process.env.TEE_MODE === 'production')) {
     throw new ApprovalResultError('retention_not_configured', 'Approval result retention requires explicit configuration', 503);
   }
-  return new ApprovalResultService(store, { apiOrigin, retentionSeconds: configured === undefined ? 600 : Number(configured) });
+  return new ApprovalResultService(store, { apiOrigin, retentionSeconds: configured === undefined ? 600 : Number(configured), codeStore });
 }
 
 async function fetchLink(input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response> {
@@ -64,7 +66,8 @@ approvalRequestRouter.post('/approval-requests/:id/load', async (c) => {
   if (opened.type !== 'openkey-approval-request') throw new ApprovalResultError('invalid_request', 'Not an approval request', 400);
   const request = parseApprovalRequest(opened.value, { issuer: opened.header.issuer });
   const record = await store.register({ id, bodyCid: opened.header.bodyCid, issuer: opened.header.issuer, request, expiresAt: new Date(opened.header.expiresAt), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null });
-  return c.json({ request: record.request, requestId: id, bodyCid: record.bodyCid, expiresAt: record.expiresAt.toISOString(), approved: !!record.resultRef });
+  // `denied` is additive (TC-2459): a reopened declined link can say so. `approved` keeps its meaning.
+  return c.json({ request: record.request, requestId: id, bodyCid: record.bodyCid, expiresAt: record.expiresAt.toISOString(), approved: !!record.resultRef, denied: !!record.deniedAt });
 });
 
 approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
@@ -75,6 +78,7 @@ approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
   if (!/^[a-z2-7]{26}$/.test(id) || typeof body.bodyCid !== 'string') throw new ApprovalResultError('invalid_request', 'Approval reference is invalid', 400);
   const record = await store.findById(id);
   if (!record) {
+    if (body.approvalCode !== undefined) throw new ApprovalResultError('not_found', 'Saved approval request not found', 404);
     // Before a browser opens the sealed request, authenticate only the
     // issuer-signed public header. No client-supplied DID or JWK is trusted.
     const header = validateLinkHeader(body.header, { mode: 'signed', audience: linksOrigin });
@@ -92,7 +96,7 @@ approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
     }
     return c.json({ status: 'pending' }, 202);
   }
-  const result = await service.discover(id, body, proof);
+  const result = await service.discover(id, body, proof, c.req.header('OpenKey-Delegation-Claim'));
   return c.json(result, result.status === 'pending' ? 202 : 200);
 });
 
@@ -105,7 +109,7 @@ approvalRequestRouter.post('/approval-results/:ref/ack', async (c) => c.json(awa
  * re-resolved here with its key, so a signed-in caller who only knows the request id is refused (403
  * `link_required`) and the request stays open. The reference is never logged or echoed.
  */
-approvalRequestRouter.post('/approval-requests/:id/deny', requireOpenKeyOriginForBearer, requireSession, async (c) => {
+approvalRequestRouter.post('/approval-requests/:id/deny', requireAccountOriginForBearer, requireSession, async (c) => {
   const id = c.req.param('id');
   const service = approvalResultService();
   const body: unknown = await c.req.json().catch(() => null);
@@ -142,9 +146,26 @@ export async function checkApprovalDelegation(body: { approvalRequestId?: unknow
   await approvalResultService().assertDelegationWindow(body.approvalRequestId, { ...body, permissions: body.permissions, ...input });
 }
 
-export async function saveApprovalDelegation<T extends Record<string, unknown>>(body: { approvalRequestId?: unknown; jwk: unknown; host: unknown; permissions?: unknown }, userId: string, delegation: T): Promise<T> {
+const admissions = new WeakMap<object, Date>();
+
+/** Admits the approval right before signing starts: expiry is decided here and deny is held off until it is saved. */
+export async function admitApprovalDelegation(body: { approvalRequestId?: unknown }): Promise<void> {
+  if (body.approvalRequestId === undefined) return;
+  admissions.set(body, await approvalResultService().admit(String(body.approvalRequestId)));
+}
+
+/** After a failed attempt: gives the admission back so deny and a retry need not wait. Never throws. */
+export async function releaseApprovalDelegation(body: { approvalRequestId?: unknown }): Promise<void> {
+  const marker = admissions.get(body);
+  if (!marker) return;
+  admissions.delete(body);
+  await approvalResultService().release(String(body.approvalRequestId), marker).catch(() => undefined);
+}
+
+export async function saveApprovalDelegation<T extends Record<string, unknown>>(body: { approvalRequestId?: unknown; jwk: unknown; host: unknown; permissions?: unknown }, userId: string, delegation: T): Promise<T & { approvalCode?: ApprovalCode | null }> {
   if (body.approvalRequestId !== undefined) {
-    await approvalResultService().approve(String(body.approvalRequestId), userId, { ...body, permissions: body.permissions }, delegation);
+    const approvalCode = await approvalResultService().approve(String(body.approvalRequestId), userId, { ...body, permissions: body.permissions }, delegation, admissions.get(body));
+    return { ...delegation, approvalCode };
   }
   return delegation;
 }
