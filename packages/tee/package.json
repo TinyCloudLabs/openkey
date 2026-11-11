@@ -27,7 +27,9 @@
     "@noble/curves": "^2.4.0",
     "@phala/dstack-sdk": "0.5.7",
     "@scure/base": "^2.4.0",
-    "viem": "^2.0.0"
+    "viem": "^2.0.0",
+    "@hpke/core": "1.9.0",
+    "shamir-secret-sharing": "0.0.4"
   },
   "devDependencies": {
     "nostr-tools": "^2.24.1",
