@@ -521,19 +521,35 @@ function assertRawEncryptionPermission(
   }
 }
 
-// Share invitation key entries OpenKey built itself (TC-2234). A requester's own entries are never in this set, so
-// a request that names a `default/share/<id>` key is held to the decrypt-only rule above.
-const issuedShareInvitationEntries = new WeakSet<DelegationPermissionEntry>();
+// Share invitation key entries OpenKey built itself (TC-2234), each with the approval request it was issued for. A
+// requester's own entries are never in this map, so a request that names a `default/share/<id>` key is held to the
+// decrypt-only rule above.
+const issuedShareInvitationEntries = new WeakMap<DelegationPermissionEntry, string>();
 const SHARE_INVITATION_KEY_ACTIONS = ['tinycloud.encryption/key.create', ENCRYPTION.DECRYPT];
 
 /**
  * The one permission of a share invitation approval: `key.create` and `decrypt` on the share key `path`, which
- * OpenKey generated. Only entries made here may carry `key.create` on a raw encryption resource.
+ * OpenKey generated for the approval request `requestBinding` names. Only entries made here may carry
+ * `key.create` on a raw encryption resource. The SIWE prepared from it carries `requestBinding` as its Request ID.
  */
-export function issuedShareInvitationPermission(path: string): DelegationPermissionEntry {
+export function issuedShareInvitationPermission(path: string, requestBinding: string): DelegationPermissionEntry {
   const entry = { service: RAW_ENCRYPTION_SERVICE, path, actions: [...SHARE_INVITATION_KEY_ACTIONS] };
-  issuedShareInvitationEntries.add(entry);
+  issuedShareInvitationEntries.set(entry, requestBinding);
   return entry;
+}
+
+/**
+ * Adds the EIP-4361 `Request ID` field to a prepared SIWE, in its place just before `Resources:`. The wasm builder
+ * does not write the field; the node keeps it when it rebuilds the signed message.
+ */
+function withRequestId(siwe: string, requestId: string): string {
+  const lines = siwe.split('\n');
+  const resources = lines.indexOf('Resources:');
+  if (resources < 0 || lines.some((line) => line.startsWith('Request ID: ')) || /[\s]/.test(requestId)) {
+    throw new Error('The prepared SIWE cannot carry the approval request');
+  }
+  lines.splice(resources, 0, `Request ID: ${requestId}`);
+  return lines.join('\n');
 }
 
 /** The issued entry is the request's only permission and names the signer's own `default/share/<32 hex>` key. */
@@ -721,10 +737,13 @@ export function prepareDelegationSession({
   };
 
 
-  const baselinePrepared = prepareSession({
+  const generated = prepareSession({
     ...baseConfig,
     ...sessionAbilitiesConfig(baselineAbilities),
   });
+  // A share invitation approval names the approval request it was prepared for (TC-2234).
+  const requestBinding = permissions?.map((entry) => issuedShareInvitationEntries.get(entry)).find((binding) => binding !== undefined);
+  const baselinePrepared = requestBinding === undefined ? generated : { ...generated, siwe: withRequestId(generated.siwe, requestBinding) };
   const baselineEntries = parsePreparedRecap(baselinePrepared.siwe);
 
   if (baselineEntries.length === 0) {

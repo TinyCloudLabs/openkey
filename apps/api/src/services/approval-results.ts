@@ -5,7 +5,7 @@ import type { OpenKeyApprovalRequestV1 } from '@tinycloud/share-envelope/links';
 import { strictSessionDid, type DeviceRelayEnvelope } from './device-authorization';
 import { hasPrivateJwkMember } from './authorization-signing';
 import { verifySessionProofClaims } from './native-delegation/session-proof';
-import { isShareInvitationGrant, shareInvitationOf, signedRecapHoldsOnly } from './share-invitation';
+import { approvalRequestBinding, isShareInvitationGrant, shareInvitationOf, signedRecapHoldsOnly } from './share-invitation';
 
 export interface ApprovalRequestRecord {
   id: string;
@@ -127,7 +127,9 @@ export class ApprovalResultService {
       if (siwe.prepareMessage() !== input.signedSiwe || siwe.uri !== strictSessionDid(request.targetPublicJwk) || !Number.isFinite(expiry) || expiry <= now.getTime() ||
         expiry > now.getTime() + request.grantLifetimeSeconds * 1000 + 5000 || expiry > acceptanceDeadline ||
         (invitation && !(isShareInvitationGrant(input.permissions, { address: siwe.address, chainId: siwe.chainId }) &&
-          signedRecapHoldsOnly(input.signedSiwe, input.permissions[0])))) {
+          signedRecapHoldsOnly(input.signedSiwe, input.permissions[0]) && siwe.requestId === approvalRequestBinding(record))) ||
+        // Only a share invitation approval names its approval request; no other approval carries the field.
+        (!invitation && siwe.requestId !== undefined && siwe.requestId.startsWith('urn:tinycloud:approval-request:'))) {
         throw new ApprovalResultError('request_binding', 'Signed target or expiry does not match the approval request', 400);
       }
     }

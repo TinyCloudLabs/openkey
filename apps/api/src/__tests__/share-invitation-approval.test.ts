@@ -298,6 +298,55 @@ describe('the approval window', () => {
     await expect(window(permissions, { signedSiwe: prepared.prepared.siwe })).resolves.toBeDefined();
   });
 
+  test('the prepared SIWE names its approval request once, as the Request ID', async () => {
+    await register(parse(requestBody()));
+    const { prepared } = await preparedToken();
+    expect(prepared.prepared.siwe.match(/^Request ID: .*$/gm)).toEqual([`Request ID: urn:tinycloud:approval-request:${ID}:bafkrei${'a'.repeat(52)}`]);
+  });
+
+  test('refuses an owner-signed approval for another request (X approved as Y)', async () => {
+    await register(parse(requestBody()));
+    await register(parse(requestBody({ context: context({ invitationId: '01JC5Z8Q0000000000000000CD' }) })), OTHER_ID);
+    const other = await preparedToken(OTHER_ID);
+    await expect(window(other.permissions, { signedSiwe: other.prepared.prepared.siwe })).rejects.toMatchObject({ code: 'request_binding' });
+  });
+
+  test('refuses a SIWE for the issued key that names no approval request', async () => {
+    await register(parse(requestBody()));
+    const { permissions } = await preparedToken();
+    const unbound = prepareDelegationSession({
+      address: OWNER.address, chainId: OWNER.chainId, prefix: 'default', jwk: sessionJwk, expiryMs: HOUR / 2,
+      permissions: validatePermissions([{ service: 'tinycloud.encryption', path: permissions[0]!.path, actions: [DECRYPT] }]),
+    });
+    expect(unbound.prepared.siwe).not.toContain('Request ID:');
+    await expect(window(permissions, { signedSiwe: unbound.prepared.siwe })).rejects.toMatchObject({ code: 'request_binding' });
+  });
+
+  test.each([
+    ['the right request id with another body CID', (siwe: string) => siwe.replace(`:bafkrei${'a'.repeat(52)}`, `:bafkrei${'b'.repeat(52)}`)],
+    ['a second Request ID line', (siwe: string) => siwe.replace(/^(Request ID: .*)$/m, '$1\n$1')],
+    ['a malformed Request ID', (siwe: string) => siwe.replace(/^Request ID: .*$/m, 'Request ID: urn:tinycloud:approval-request:')],
+  ])('refuses a SIWE with %s', async (_name, change) => {
+    await register(parse(requestBody()));
+    const { permissions, prepared } = await preparedToken();
+    const changed = change(prepared.prepared.siwe);
+    expect(changed).not.toBe(prepared.prepared.siwe);
+    // A second Request ID line is not a canonical SIWE (`invalid_delegation`); the others name another request.
+    await expect(window(permissions, { signedSiwe: changed })).rejects.toMatchObject({ status: 400, code: expect.stringMatching(/^(request_binding|invalid_delegation)$/) });
+  });
+
+  test('refuses an approval request binding on a request without an invitation', async () => {
+    const plainPermissions = [{ service: 'tinycloud.capabilities', space: 'synthetic', path: '', actions: ['tinycloud.capabilities/read'] }];
+    const { context: _omitted, ...withoutContext } = requestBody({ permissions: plainPermissions });
+    await register(parse(withoutContext));
+    const plain = prepareDelegationSession({
+      address: OWNER.address, chainId: OWNER.chainId, prefix: 'default', jwk: sessionJwk, expiryMs: HOUR / 2, permissions: validatePermissions(plainPermissions),
+    });
+    await expect(window(plainPermissions, { signedSiwe: plain.prepared.siwe })).resolves.toBeDefined();
+    const injected = plain.prepared.siwe.replace('\nResources:', `\nRequest ID: urn:tinycloud:approval-request:${ID}:bafkrei${'a'.repeat(52)}\nResources:`);
+    await expect(window(plainPermissions, { signedSiwe: injected })).rejects.toMatchObject({ code: 'request_binding' });
+  });
+
   test('refuses a delegation that runs past the acceptance deadline', async () => {
     await register(parse(requestBody({ context: context({ acceptanceExpiresAt: wholeSecond(Date.now() + HOUR / 2) }) })));
     const { permissions } = await prepare();

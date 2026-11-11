@@ -7,7 +7,7 @@ import { requireSession } from '../middleware/session';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
 import { verifySessionProofClaims } from '../services/native-delegation/session-proof';
 import { createHash, randomBytes } from 'node:crypto';
-import { parseApprovalRequestV1, shareInvitationOf, shareInvitationKeyUrn, signerShareKeyId } from '../services/share-invitation';
+import { approvalRequestBinding, parseApprovalRequestV1, shareInvitationOf, shareInvitationKeyUrn, signerShareKeyId } from '../services/share-invitation';
 import { peekAuthorizationContext } from '../services/authorization-signing';
 import { issuedShareInvitationPermission, isRawRecapEntry, parsePreparedRecap, type DelegationPermissionEntry } from './delegate-session';
 
@@ -210,7 +210,7 @@ export async function approvalRequestPermissions(
     if (entries.length === 1 && isRawRecapEntry(entries[0]!)) shareKeyId = signerShareKeyId(entries[0]!.path, signer);
     if (!shareKeyId) throw new ApprovalResultError('request_binding', 'The prepared approval does not hold this invitation key', 400);
   }
-  const entries = [issuedShareInvitationPermission(shareInvitationKeyUrn(signer, shareKeyId))];
+  const entries = [issuedShareInvitationPermission(shareInvitationKeyUrn(signer, shareKeyId), approvalRequestBinding(record))];
   body.permissions = entries;
   return entries;
 }

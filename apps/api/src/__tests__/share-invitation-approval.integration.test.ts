@@ -153,6 +153,9 @@ if (!process.env.TC2234_SHARE_INVITATION_CHILD) {
     const signed = parsePreparedRecap(result.delegation.siwe);
     expect(signed.map((entry) => entry.path)).toEqual([`urn:tinycloud:encryption:${owner}:default/share/${second.keyId}`]);
     expect(new SiweMessage(result.delegation.siwe).uri).toBe(`${signer.did}#${signer.did.slice('did:key:'.length)}`);
+    // The owner's signature binds the approval to this request: its id and the CID of the sealed body.
+    expect(result.delegation.siwe.match(/^Request ID: (.+)$/gm)).toEqual([`Request ID: urn:tinycloud:approval-request:${id}:${opened.header.bodyCid}`]);
+    expect(result.requestDigest).toBe(opened.header.bodyCid);
     await prisma.$disconnect();
   }, 110_000);
 }

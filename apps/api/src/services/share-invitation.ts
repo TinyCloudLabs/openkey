@@ -169,3 +169,11 @@ export function signedRecapHoldsOnly(siwe: string, grant: ShareInvitationGrant):
   const actions = entries[0]!.actions;
   return actions.length > 0 && new Set(actions).size === actions.length && actions.every((action) => grant.actions.includes(action));
 }
+
+/**
+ * The SIWE `Request ID` a share invitation approval carries: the approval request id and the CID of its sealed
+ * body, as OpenKey stored them. The requester compares it with its own pending request before using the key.
+ */
+export function approvalRequestBinding(record: { id: string; bodyCid: string }): string {
+  return `urn:tinycloud:approval-request:${record.id}:${record.bodyCid}`;
+}

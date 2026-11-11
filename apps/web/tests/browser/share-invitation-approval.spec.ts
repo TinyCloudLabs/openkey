@@ -38,7 +38,8 @@ async function open(page: Page, request: Record<string, unknown>, resource: stri
       const keyFor = (ability: string) => `tinycloud.encryption\0encryption\0${resource}\0${ability}`;
       const siwe = ['cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '', `URI: ${target}#${target}`,
         'Version: 1', 'Chain ID: 1', 'Nonce: qa123451', `Issued At: ${new Date().toISOString()}`,
-        `Expiration Time: ${new Date(Date.parse(acceptanceExpiresAt) - 5000).toISOString()}`, 'Resources:',
+        `Expiration Time: ${new Date(Date.parse(acceptanceExpiresAt) - 5000).toISOString()}`,
+        ...('context' in request ? [`Request ID: urn:tinycloud:approval-request:${id}:bafkreia${'a'.repeat(52)}`] : []), 'Resources:',
         `- ${makeRecapResource({ [resource]: Object.fromEntries(abilities.map(ability => [ability, [{}]])) })}`].join('\n');
       return reply(200, { prepared: { siwe, spaceId: '', jwk: body.jwk }, spaceId: '', host: body.host, address, chainId: 1,
         permissions: [{ key: `tinycloud.encryption\0encryption\0${resource}`, service: 'encryption', path: resource, label: 'encryption', resourcePath: resource,
@@ -71,7 +72,10 @@ for (const subjectKind of ['session', 'file'] as const) {
     await expect(page.getByText('Open this shared file')).toHaveCount(0);
     await expect(page.getByText('Approval expires')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Change' })).toHaveCount(0);
-    expect(await page.locator('main').innerText()).not.toContain(shareKeyId);
+    const main = await page.locator('main').innerText();
+    expect(main).not.toContain(shareKeyId);
+    expect(main).not.toContain('approval-request');
+    expect(main).not.toContain('bafkreia');
     expect(prepares[0]).not.toHaveProperty('permissions');
     const dir = process.env.QA_SCREENSHOT_DIR;
     if (dir) await page.screenshot({ path: `${dir}/share-invitation-${subjectKind}-390.png`, fullPage: true });
