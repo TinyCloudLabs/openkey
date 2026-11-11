@@ -1,13 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 
 import {
+  ADMIN_MANAGED_SCOPES,
   CHATGPT_TINYCLOUD_MCP_AUDIENCE,
   DEFAULT_ACCESS_TOKEN_EXPIRES_IN,
   DEFAULT_OAUTH_SCOPES,
   DEFAULT_TINYCLOUD_MCP_AUDIENCE,
-  MCP_ACCESS_TOKEN_EXPIRES_IN,
   DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES,
+  MCP_ACCESS_TOKEN_EXPIRES_IN,
   OAUTH_SCOPES,
+  RESTRICTED_SCOPES,
+  TINYCLOUD_IDENTITY_SCOPE,
   TINYCLOUD_MANAGE_KEY_SCOPE,
   TINYCLOUD_SESSION_SCOPE,
   accessTokenExpiresInFor,
@@ -25,6 +28,13 @@ describe('hosted MCP OAuth configuration', () => {
     expect(OAUTH_SCOPES).toContain(TINYCLOUD_MANAGE_KEY_SCOPE);
     expect(DEFAULT_OAUTH_SCOPES).not.toContain(TINYCLOUD_MANAGE_KEY_SCOPE as never);
     expect(DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES).not.toContain(TINYCLOUD_MANAGE_KEY_SCOPE);
+  });
+  test('identity is admin-managed and excluded from public and dynamic scopes', () => {
+    expect(OAUTH_SCOPES).toContain(TINYCLOUD_IDENTITY_SCOPE);
+    expect(RESTRICTED_SCOPES.has(TINYCLOUD_IDENTITY_SCOPE)).toBe(true);
+    expect(ADMIN_MANAGED_SCOPES.has(TINYCLOUD_IDENTITY_SCOPE)).toBe(true);
+    expect(DEFAULT_OAUTH_SCOPES).not.toContain(TINYCLOUD_IDENTITY_SCOPE as never);
+    expect(DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES).not.toContain(TINYCLOUD_IDENTITY_SCOPE);
   });
 
   test('enables DCR by default and supports an explicit emergency disable', () => {

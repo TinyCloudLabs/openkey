@@ -4,6 +4,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { generateKeyPairSync } from 'node:crypto';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
 const space = `tinycloud:pkh:eip155:1:${address}:default`;
@@ -76,7 +77,8 @@ test.describe('TC-659 CLI /delegate consent parity', () => {
   test('a user with several keys picks one and sees it as a static line', async ({ page }) => {
     await mock(page, [key('key_1', 0, address), key('key_2', 1, '0x2222222222222222222222222222222222222222')]);
     await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
-    await page.getByRole('button', { name: /Key 0/ }).click();
+    // Unnamed keys use their address ending, not a generated index label.
+    await page.getByRole('button', { name: 'Key ending f412', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
     await expect(page.getByLabel('Signing key')).toContainText('Key 0');
     await expect(page.getByLabel('Signing key')).toContainText('0xd559...f412');
@@ -90,34 +92,43 @@ test.describe('TC-659 CLI /delegate consent parity', () => {
     await expect(page.getByText('Sync my notes', { exact: true })).toHaveCount(1);
     const details = await openEditor(page);
     await details.getByRole('checkbox').last().uncheck();
-    await expect(page.getByText('Service unavailable')).toHaveCount(1);
-    await expect(page.getByRole('alert').filter({ hasText: 'Service unavailable' })).toHaveCount(1);
+    await expect(page.getByRole('alert')).toHaveText("Couldn't approve this request. Try again. (Error 503)");
   });
 });
 
-test('manual OpenKey login shows a short retrieval code and keeps the paste fallback', async ({ page }) => {
+test('manual OpenKey login mints a short code from public fields and keeps the full delegation', async ({ page }) => {
   await mock(page);
   const delegation = {
     delegationHeader: { Authorization: 'Bearer signed' },
     delegationCid: 'bafy-signed',
     spaceId: space,
     verificationMethod: 'did:key:z6Mk',
-    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', kid: 'delegate-key', alg: 'EdDSA', ext: true, key_ops: ['verify'] },
     expirationTime: '2026-11-03T01:00:00.000Z',
     hostActivated: true,
+    spaceReady: true,
+    requestedSpaces: ['tinycloud:pkh:eip155:1:0x123:default'],
   };
+  const publicKeys = [
+    'delegationHeader', 'delegationCid', 'spaceId', 'ownerDid', 'verificationMethod', 'jwk',
+    'address', 'chainId', 'hostActivated', 'spaceReady', 'spaceError', 'spacePending',
+    'primary', 'edited', 'reason', 'expirationTime', 'expiresAt', 'expiry', 'siwe',
+    'signature', 'signedMessage', 'permissions',
+  ];
   await page.route('**/api/delegate', (route) => json(route, 200, delegation));
   await page.route('**/api/delegation-codes', (route) => {
-    expect(route.request().postDataJSON()).toEqual({ delegation });
+    const body = route.request().postDataJSON() as { delegation: Record<string, unknown> };
+    const publicDelegation: Record<string, unknown> = Object.fromEntries(Object.entries(delegation).filter(([key]) => publicKeys.includes(key)));
+    publicDelegation.jwk = { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', kid: 'delegate-key' };
+    expect(body.delegation).toEqual(publicDelegation);
     return json(route, 201, { code: 'sf23-22cs', expiresAt: '2026-10-05T00:10:00.000Z' });
   });
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
-  // An API from before upper-case codes still returns lower case; the page
-  // shows the code in upper case either way.
   await expect(page.getByText('SF23-22CS')).toBeVisible();
   await page.getByText('Use full delegation code instead').click();
-  await expect(page.getByRole('textbox', { name: 'Full delegation code' })).toBeVisible();
+  const fullCode = await page.getByRole('textbox', { name: 'Full delegation code' }).inputValue();
+  expect(JSON.parse(Buffer.from(fullCode, 'base64').toString('utf8'))).toEqual(delegation);
 });
 
 test.describe('TC-660 /device prefilled code', () => {
@@ -182,4 +193,164 @@ test.describe('TC-660 /device prefilled code', () => {
     await expect(page.getByText('That code is invalid or expired')).toBeVisible();
     await expect(page.getByRole('textbox', { name: 'Device code' })).toHaveValue('ABCD-EFGH');
   });
+});
+
+async function openDeviceRelayReview(
+  page: Page,
+  options: {
+    relayStatus: number | 'network';
+    relayBody?: unknown;
+    secondDelegateStatus?: number;
+  },
+) {
+  const deviceJwk = { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) };
+  const relayPublicJwk = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ format: 'jwk' });
+  const expiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
+  let delegateCalls = 0;
+
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/auth/get-session') return json(route, 200, { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, user: { id: 'u', email: 'owner@example.test' } });
+    if (url.pathname === '/api/keys') return json(route, 200, { keys: oneKey });
+    if (url.pathname === '/api/device-authorizations/lookup') {
+      return json(route, 200, {
+        id: 'tx_1', userCode: 'ABCDEFGH', sessionDid: 'did:key:z6Mk', publicJwk: deviceJwk, relayPublicJwk,
+        permissions: request, nodeOrigin: 'https://node.tinycloud.xyz', shareOrigin: 'https://share.tinycloud.xyz',
+        delegationExpiresAt: expiresAt, transactionExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+        delegationTtlSeconds: 2_592_000,
+      });
+    }
+    if (url.pathname === '/api/delegate/prepare') return json(route, 200, prepared);
+    if (url.pathname === '/api/delegate' && route.request().method() === 'POST') {
+      delegateCalls += 1;
+      if (delegateCalls > 1 && options.secondDelegateStatus) {
+        return json(route, options.secondDelegateStatus, { error: 'expired_request', code: 'handoff_expired' });
+      }
+      return json(route, 200, {
+        hostActivated: true, delegationHeader: { Authorization: 'Bearer signed' }, delegationCid: 'bafy-signed',
+        spaceId: space, verificationMethod: 'did:key:z6Mk', jwk: deviceJwk, expirationTime: expiresAt,
+        address, chainId: 1, permissions: request,
+      });
+    }
+    if (url.pathname === '/api/device-authorizations/tx_1/approve' && route.request().method() === 'POST') {
+      if (options.relayStatus === 'network') return route.abort('failed');
+      return json(route, options.relayStatus, options.relayBody ?? {});
+    }
+    return json(route, 404, { error: `unmocked ${url.pathname}` });
+  });
+
+  const params = new URLSearchParams({
+    did: 'did:key:z6Mk',
+    jwk: encodeBase64UrlJson(deviceJwk),
+    host: 'https://node.tinycloud.xyz',
+    deviceTransactionId: 'tx_1',
+    deviceShareOrigin: 'https://share.tinycloud.xyz',
+    deviceUserCode: 'ABCDEFGH',
+    relayJwk: encodeBase64UrlJson(relayPublicJwk),
+    expiry: '2592000s',
+    permissions: encodeBase64UrlJson({ permissions: request }),
+  });
+  await page.goto(`/delegate?${params}`);
+  await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+  await page.getByRole('checkbox', { name: 'I started this request myself, on a device I control.' }).check();
+}
+
+test('a prepare fetch failure uses fixed text, not the browser error message', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mock(page);
+  await page.route('**/api/delegate/prepare', (route) => route.abort('failed'));
+  await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}&permissions=${encodeBase64UrlJson({ permissions: request, reason: 'Sync my notes' })}`);
+  const alert = page.getByRole('alert');
+  await expect(alert).toHaveText("Couldn't approve this request. Try again.");
+  await expect(alert).not.toContainText('Failed to fetch');
+  const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
+  if (shots) await page.screenshot({ path: `${shots}/g-generic.png`, fullPage: false });
+});
+test('expiry failure uses the editable expiry wording', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mock(page);
+  await page.route('**/api/delegate', (route) => json(route, 400, { code: 'invalid_expiry', error: 'private expiry detail' }));
+  await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}&permissions=${encodeBase64UrlJson({ permissions: request })}&expiryChangeable=true`);
+  const approve = page.getByRole('button', { name: 'Approve', exact: true });
+  await expect(approve).toBeEnabled();
+  await expect(page.getByRole('button', { name: '(Change)' })).toBeVisible();
+  await approve.click();
+  await expect(page.getByRole('alert')).toHaveText("This access length can't be used. Choose a different one, or start again from the app or command.");
+  await expect(approve).toBeEnabled();
+  const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
+  if (shots) await page.screenshot({ path: `${shots}/e.png`, fullPage: false });
+});
+
+test('a successful prepare after a terminal failure re-enables Approve', async ({ page }) => {
+  await mock(page);
+  await page.route('**/api/delegate/prepare', (route) => json(route, 200, prepared));
+  await page.route('**/api/delegate', (route) => json(route, 400, { code: 'key-mismatch', error: 'private mismatch detail' }));
+  await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}&permissions=${encodeBase64UrlJson({ permissions: request })}`);
+  const approve = page.getByRole('button', { name: 'Approve', exact: true });
+  await expect(approve).toBeEnabled();
+  await approve.click();
+  await expect(approve).toBeDisabled();
+  await expect(page.getByRole('button', { name: '(Change)' })).toBeVisible();
+  await page.getByRole('button', { name: '(Change)' }).click();
+  await page.getByRole('button', { name: '24 hr', exact: true }).click();
+  await expect(approve).toBeEnabled();
+});
+
+
+test('short-code API failure shows safe status and code', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mock(page);
+  const delegation = {
+    delegationHeader: { Authorization: 'Bearer signed' },
+    delegationCid: 'bafy-signed',
+    spaceId: space,
+    verificationMethod: 'did:key:z6Mk',
+    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+    expirationTime: '2026-11-03T01:00:00.000Z',
+    hostActivated: true,
+  };
+  await page.route('**/api/delegate', (route) => json(route, 200, delegation));
+  await page.route('**/api/delegation-codes', (route) => json(route, 503, { code: 'short_code_failed', error: 'private broker detail' }));
+  await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  const failure = "Couldn't create a short code. Use the full delegation code instead. (Error 503 · short_code_failed)";
+  await expect(page.getByText(failure, { exact: true })).toBeVisible();
+  const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
+  if (shots) await page.screenshot({ path: `${shots}/shortcode.png`, fullPage: false });
+});
+test('device relay failure shows only safe status and code and keeps Approve available', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openDeviceRelayReview(page, {
+    relayStatus: 503,
+    relayBody: { code: 'some_code', errorDescription: 'private relay detail' },
+  });
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  const alert = page.getByRole('alert');
+  await expect(alert).toHaveText("You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again. (Error 503 · some_code)");
+  await expect(alert).not.toContainText('private relay detail');
+  await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+  const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
+  if (shots) await page.screenshot({ path: `${shots}/f-device-delivery.png`, fullPage: false });
+});
+
+test('device relay uses status only for the API error body and a later 410 uses ended copy', async ({ page }) => {
+  await openDeviceRelayReview(page, {
+    relayStatus: 500,
+    relayBody: { error: 'invalid_result', errorDescription: 'private route message' },
+    secondDelegateStatus: 410,
+  });
+  const approve = page.getByRole('button', { name: 'Approve', exact: true });
+  await approve.click();
+  await expect(page.getByRole('alert')).toHaveText("You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again. (Error 500)");
+  await expect(page.getByRole('alert')).not.toContainText('invalid_result');
+  await expect(page.getByRole('alert')).not.toContainText('private route message');
+  await expect(approve).toBeEnabled();
+  await approve.click();
+  await expect(page.getByRole('alert')).toHaveText('This request has already been answered or has ended. Return to the app or command and start a new one.');
+});
+
+test('device relay network failure has no status suffix', async ({ page }) => {
+  await openDeviceRelayReview(page, { relayStatus: 'network' });
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveText("You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again.");
 });

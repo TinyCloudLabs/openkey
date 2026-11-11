@@ -71,6 +71,46 @@ do not support device transactions: any request to them that carries
 
 The default and maximum lifetime is 30 days, counted from approval.
 
+## Durable approval-result codes
+
+Durable approval completion responses include optional `approvalCode` delivery
+metadata: `{ code, expiresAt }`, or `null` when unavailable. This metadata is
+separate from the encrypted delegation. The saved encrypted result retains the
+full completion delegation, including `requestedSpaces`.
+
+A requester collects the code through the discovery endpoint for its saved request:
+
+```http
+POST /api/approval-requests/<saved-request-id>/result
+OpenKey-Session-Proof: <existing discovery proof>
+OpenKey-Delegation-Claim: <saved random base64url claim intent>
+Content-Type: application/json
+
+{"bodyCid":"<saved-request-body-cid>","approvalCode":"XXXX-XXXX"}
+```
+
+Save the claim intent before sending it: use at least 16 random bytes encoded
+as unpadded base64url (22–128 characters). For code discovery, the proof's credential is the exact JSON array
+`["discover", requestId, bodyCid, "", "", codeHash, claimHash]`. Both hashes are
+SHA-256 encoded as unpadded base64url: `codeHash` hashes the trimmed, lowercase
+code, and `claimHash` hashes the exact saved claim header. The proof's existing
+`cred_hash` then hashes that serialized array. Discovery without a code keeps
+its existing five-element credential; fetch and ACK are unchanged.
+
+The code is bound to the request ID,
+body CID and result reference, and requires that request's session proof.
+The same saved claim can retry until code expiry. The response carries the
+normal `status`, `resultRef` and `expiresAt`; continue through encrypted fetch,
+verification, durable save and result ACK. ACK invalidates the code. A saved
+result reference can be resumed without a code.
+
+Code lifetime is at most five minutes and never exceeds result retention.
+Ordinary requester-signed discovery remains available without a code.
+Approval-result code records contain only binding metadata; ordinary delegation
+codes retain their existing public-delegation format. Device and prepared
+handoff transports are unchanged. Client integration is released separately.
+Details: TC-2489.
+
 ## Ordinary `/delegate` links
 
 A `/delegate` link without `deviceTransactionId` can be made by anyone, so
@@ -155,6 +195,50 @@ wallet completion returns the same session proof as a managed approval:
 lets the CLI perform its field gate and cryptographic proof verification
 offline.
 
+### Multi-space permission requests
+
+`permissions[]` may name several logical spaces. Each logical name resolves
+against the selected signing account; an owner-qualified space URI must name
+that same account and chain. The signed ReCap and permission edits retain
+each `(space, service, path, action)` independently, including identical
+service/path pairs in different spaces.
+
+`/api/delegate/prepare`, managed `/api/delegate`, and wallet
+`/api/delegate/complete` return:
+
+```ts
+requestedSpaces: Array<{
+  space: string;       // logical name
+  spaceId: string;     // resolved owner-qualified URI
+  spaceReady: boolean | null;
+  spacePending?: true;
+  spaceError?: string;
+}>;
+```
+
+The list preserves the full request baseline in request order, even if the
+owner removes all grants in a space. Preparation reports `null` readiness.
+Completion reports an entirely deselected space as `false`, without a signed
+grant for that space. For granted spaces, `true` requires a positive node
+activation result or managed hosting confirmation; `false` denotes an
+explicit skipped/unavailable space, and `null` denotes unconfirmed readiness.
+An already-known delegation's empty activation receipt is not hosting proof.
+Top-level `spaceReady` is `true` only when every listed space is ready.
+Clients can probe unconfirmed spaces using the permissions actually granted.
+
+Singular `spaceId` remains a routing default, not the full permission scope:
+`applications` when requested, otherwise the first requested space. The
+`spaceSetup` preparation notice still describes only that primary space and
+does not assert readiness of any space. Managed automatic setup confirms all
+granted requested spaces before reporting them ready. Existing account-wide
+bootstrap still hosts all six canonical managed-account spaces in the
+background, independent of the CLI grant; hosting gives the CLI no permission.
+Remaining account seeding continues under the bootstrap lock and bounded retry.
+
+The authorization context binds the complete per-space baseline, exact
+selection, session key, signing owner, host and lifetime. Response metadata
+never substitutes for verification of the signed SIWE and its permissions.
+
 For the widget's `/api/delegate/authorize-sign-prepare` →
 `/api/delegate/authorize-sign-preview` → `/api/delegate/authorize-sign`
 flow, the final signing request checks the bound user, key, session JWK,
@@ -167,6 +251,32 @@ correction. Immediately before managed signing (or returning a verified
 external signature), the route atomically compares and consumes both
 tokens: a concurrent loser and a replay cannot sign. A managed signing
 failure after consumption still requires a fresh approval.
+
+The popup and embedded sign pages obtain the preview automatically when the
+current permission selection or chosen expiry changes. Approve is enabled
+only with a current, unexpired preview; selection remains editable while
+the preview is being fetched. An edit discards the held preview, and an
+expired preview is fetched again (with a fresh context when necessary).
+One Approve action submits the captured preview token and its selection.
+The raw candidate remains in Advanced details. External wallets receive
+the same preview payload through the existing SDK handoff.
+
+The ordinary request-type introduction stays the same while the preview is
+loading and after it is ready. TinyCloud capability requests retain
+`Review the access this app is asking for.`; the introduction does not add
+a technical preview message or change height when the preview arrives.
+
+These page changes retain the three API endpoints, both single-use tokens,
+and the server's selection and exact-byte checks. Details: TC-2198.
+
+While a preview is loading, the disabled action reads `Getting ready...`.
+After a recoverable preview or signing error, `Try again` requests a fresh
+preview only when the owner chooses it; it does not sign or repeat on a
+timer. Existing unreadable-reply refusals still end the caller's request.
+Ordinary held-preview expiry refreshes automatically. If a newly returned
+preview is already too old to use, including a context that expires while
+the response is in flight, the page shows `OpenKey's check timed out.
+Try again.` and leaves approval disabled until an owner-initiated retry.
 
 An expired authorization context returns `context-expired` on
 `/authorize-sign`, `/authorize-sign-preview`, the managed approval, and
@@ -185,6 +295,36 @@ spending the owner's context. Previously, unrelated keys yielded
 `404 key_not_found`; a case-variant record for the same wallet yielded
 `400 user-mismatch` and spent the owner's context. A caller with no keys
 still receives `404 key_not_found`.
+
+### Refreshing a standard approval context
+
+The standard `/delegate` and `/a/<id>` pages automatically call
+`/api/delegate/prepare` once when approval returns `context-expired` or
+`context-not-found`. This is the ordinary authenticated prepare endpoint: the
+selected owner key, request identifier, session key, node, requested permissions
+and chosen grant lifetime are submitted again and validated normally. The
+owner's selected action set must be unchanged, without duplicate or missing
+actions, and the fresh message must be a usable SIWE capability request with
+those same grants before approval continues. The authorization context lifetime
+remains five minutes.
+
+Managed-key approval continues without another owner action. External wallets
+must sign the freshly prepared message in one additional ordinary wallet
+prompt; the old signature is not reused. If the request has expired, prepare is
+refused, the fresh context fails again, or the owner declines that second
+signature, the page stops approving and shows:
+
+> **Request expired**
+>
+> Ask your agent for a new link.
+
+When consent already identified the requester, its name is kept in the heading
+(for example, “TinyCloud CLI's request expired”). The terminal screen reuses the
+confirmation card and key icon, sits near the top on narrow screens, and does
+not add viewport-height scrolling when its content fits.
+
+This recovery does not change embedded signing or prepared-SIWE handoff flows.
+
 
 ## Prepared-SIWE CLI handoff (transport v2)
 
@@ -269,7 +409,11 @@ exact `signedMessage` before confirmation. Full selection signs the
 original bytes; narrowing changes only a permitted ReCap subset. There
 is no raw key mint or postapproval re-prepare.
 
-Signing atomically consumes the claim even if browser delivery fails.
+While the key signs, the handoff is in the `SIGNING` state: a second approval
+or a cancel answers `409 handoff_signing`. A signing that fails releases it
+back to pending, so the owner can approve again with the same preview or
+cancel. A handoff in `SIGNING` expires with the handoff, at the same deadline. Before the claim, the page decides whether the CLI's request is still fresh on the server's clock (the `Date` header of the availability reply), not the device clock. A signature that was produced atomically consumes the handoff even if
+browser delivery fails (`409 handoff_consumed`, "already signed").
 Only the successful signing response includes `deliveryState` and
 `selectedKeyId`. The page constructs
 `{transportVersion:2,state:deliveryState,selectedKeyId,result}`, where

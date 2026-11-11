@@ -21,7 +21,7 @@ const prisma = {
 };
 
 // Restored afterwards: other files in the same `bun test` run read these.
-const savedEnv = { CORS_ORIGIN: process.env.CORS_ORIGIN, TEE_MODE: process.env.TEE_MODE };
+const savedEnv = { CORS_ORIGIN: process.env.CORS_ORIGIN, WEBAUTHN_ORIGIN: process.env.WEBAUTHN_ORIGIN, TEE_MODE: process.env.TEE_MODE };
 
 replaceModules({
   '../middleware/session': () => ({
@@ -36,7 +36,7 @@ await mockModules({
 });
 
 beforeAll(() => {
-  process.env.CORS_ORIGIN = 'https://openkey.test';
+  process.env.WEBAUTHN_ORIGIN = 'https://openkey.test';
   process.env.TEE_MODE = 'production';
 });
 
@@ -47,17 +47,17 @@ afterAll(() => {
   }
 });
 
-async function request(path: string, headers: Record<string, string>) {
+async function request(path: string, headers: Record<string, string>, method = 'PATCH', body: unknown = {
+  mode: 'USER_CONTROLLED_SHARED',
+  enabled: true,
+  expectedEpoch: 0,
+  confirmation: 'TAKE CONTROL',
+}) {
   const { accountRouter } = await import('../routes/account?tinycloud-control-auth-test' as string);
   return accountRouter.request(path, {
-    method: 'PATCH',
+    method,
     headers: { 'content-type': 'application/json', ...headers },
-    body: JSON.stringify({
-      mode: 'USER_CONTROLLED_SHARED',
-      enabled: true,
-      expectedEpoch: 0,
-      confirmation: 'TAKE CONTROL',
-    }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -72,6 +72,13 @@ describe('TinyCloud signing control authentication boundary', () => {
       expect(await response.json()).toEqual({ error: 'Bearer tokens cannot change TinyCloud signing controls' });
     },
   );
+  test('rejects an OAuth bearer token on identity-app disconnect', async () => {
+    const response = await request('/tinycloud-apps/identity/consent-1', {
+      origin: 'https://openkey.test', authorization: 'Bearer oauth-access-token',
+    }, 'DELETE', { confirmation: 'DISCONNECT' });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'Bearer tokens cannot change TinyCloud signing controls' });
+  });
 
   test('rejects a cookie-session control mutation without a same-site origin', async () => {
     const response = await request('/tinycloud-manage-key', {});
@@ -79,10 +86,15 @@ describe('TinyCloud signing control authentication boundary', () => {
     expect(await response.json()).toEqual({ error: 'A same-site browser Origin is required' });
   });
 
-  test('allows a console control mutation in the sealed production origin shape', async () => {
-    const response = await request('/tinycloud-manage-key', {
+  test('refuses a console cookie control mutation but allows the account origin', async () => {
+    const consoleResponse = await request('/tinycloud-manage-key', {
       origin: 'https://console.openkey.so',
     });
-    expect(response.status).toBe(200);
+    expect(consoleResponse.status).toBe(403);
+
+    const accountResponse = await request('/tinycloud-manage-key', {
+      origin: 'https://openkey.test',
+    });
+    expect(accountResponse.status).toBe(200);
   });
 });

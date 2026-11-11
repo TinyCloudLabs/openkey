@@ -22,7 +22,6 @@ import {
   generateHostSIWEMessage,
   invoke,
   invokeAny,
-  parseRecapFromSiwe,
   prepareSession,
   siweToDelegationHeaders,
   vault_sha256,
@@ -32,7 +31,11 @@ import type { PrismaClient } from '@openkey/db';
 import { DEFAULT_TINYCLOUD_BOOTSTRAP_HOST, TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
 import { tinyCloudBootstrapNodeCallTimeoutMs, tinyCloudBootstrapNodeInvokeTimeoutMs } from './tinycloud-node-timeouts';
 import { kvSpaceRegistryStore, registerMissingBootstrapSpaces } from './tinycloud-space-registry';
-import { SWEEP_RETRYABLE_CODES } from './tinycloud-bootstrap-budget';
+import { hostRequestedSpaceWithinBudget, SWEEP_RETRYABLE_CODES } from './tinycloud-bootstrap-budget';
+import { isTinyCloudSiweForSigner, parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from './tinycloud-siwe';
+
+// The SIWE reading lives in tinycloud-siwe.ts (the signing route reads it without loading this module).
+export { isTinyCloudSiweForSigner, parseTinyCloudSiwe };
 
 import { log } from '../log';
 export const TINYCLOUD_BOOTSTRAP_VERSION = `@tinycloud/bootstrap:${canonicalHashHex({
@@ -49,9 +52,11 @@ const BOOTSTRAP_MAX_LOCK_LIFETIME_MS = BOOTSTRAP_RUN_DEADLINE_MS + 30 * 1000;
 /** Carries the current run's signal to nodeFetch without threading it through every call. */
 const bootstrapRunSignal = new AsyncLocalStorage<AbortSignal>();
 /** Recorded when a run that re-claimed a `complete` row fails. Not in SWEEP_RETRYABLE_CODES: the sweep never re-runs it. */
-const RECLAIM_FAILED_CODE = 'tinycloud_bootstrap_reclaim_failed';
+export const RECLAIM_FAILED_CODE = 'tinycloud_bootstrap_reclaim_failed';
 const BOOTSTRAP_WAIT_MS = 500;
 const MIN_USEFUL_SIWE_TTL_MS = 5_000;
+/** After a failed run, a sign-in neither claims nor waits for the setup again for this long (the sweep retries). */
+const FAILED_SETUP_WAIT_BACKOFF_MS = 5 * 60 * 1000;
 const BOOTSTRAP_DOMAIN = 'cli.tinycloud.xyz';
 const NETWORK_CREATE_ACTION = ENCRYPTION.NETWORK_CREATE;
 const NETWORK_ADMIN_TYPE = 'tinycloud.encryption.network-admin/v1';
@@ -87,8 +92,8 @@ export interface EnsureTinyCloudBootstrapInputCore {
   /** Resolved inside the lock, so a sweep claim that loses never unseals the key. */
   privateKey: string | (() => Promise<string>);
   host?: string;
-  /** The space this run is for: hosted first, inside the lock, and reported as soon as the node confirms it. */
-  requestedSpace?: TinyCloudBootstrapRequestedSpace;
+  /** Spaces this run is for: hosted first inside the lock, then reported together after node confirmation. */
+  requestedSpaces?: TinyCloudBootstrapRequestedSpaces;
   /** Set by the background sweep: the lock is taken only if the row still matches what it observed. */
   sweepClaim?: TinyCloudBootstrapSweepClaim;
 }
@@ -116,22 +121,10 @@ export class TinyCloudBootstrapError extends Error {
 
 export type TinyCloudBootstrapOutcome =
   | { status: 'complete' }
+  /** A sign-in's own space is hosted; the rest of the setup is still running (or may yet fail) in the background. */
+  | { status: 'hosted' }
   | { status: 'skipped' }
   | { status: 'failed'; errorCode: string; errorMessage: string };
-
-interface RecapEntry {
-  service: string;
-  space: string;
-  path: string;
-  actions: string[];
-}
-
-interface ParsedTinyCloudSiwe {
-  address: string;
-  chainId: number;
-  expirationTime?: Date;
-  entries: RecapEntry[];
-}
 
 interface BootstrapSession {
   space: BootstrapSpaceName;
@@ -154,20 +147,20 @@ export interface TinyCloudBootstrapRequestedSpaceFailure {
 export type TinyCloudBootstrapRequestedSpaceReport = { status: 'hosted' } | TinyCloudBootstrapRequestedSpaceFailure;
 
 /**
- * The space the client's approval is for. The run hosts it first, inside its own lock,
- * before the remaining spaces and the seeding (TC-1608).
+ * The spaces the client's approval is for. The run hosts all of them first, inside its own lock,
+ * before the remaining spaces and the seeding (TC-2490).
  */
-export interface TinyCloudBootstrapRequestedSpace {
-  /** Canonical bootstrap space name, already checked against the approved space id. */
-  space: BootstrapSpaceName;
-  /** An earlier attempt of this approval already had the node confirm the space: do not host it again. */
-  alreadyHosted?: boolean;
+export interface TinyCloudBootstrapRequestedSpaces {
+  /** Canonical bootstrap space names, already checked against the approved space ids. */
+  spaces: readonly BootstrapSpaceName[];
+  /** An earlier attempt of this approval had the node confirm every space: do not host them again. */
+  alreadyHosted: boolean;
   /**
-   * The node, answering this approval's fresh activation, listed the space as not hosted. A row
-   * that is already `complete` does not answer for the node: the run is claimed and hosts the space.
+   * The node, answering this approval's fresh activation, listed at least one space as not hosted. A row
+   * that is already `complete` does not answer for the node: the run is claimed and hosts the requested spaces.
    */
   nodeReportedUnhosted?: boolean;
-  /** Called once per attempt that hosts the space: the node confirmed it, or hosting it failed. */
+  /** Called once per hosting attempt: every space was node-confirmed, or at least one failed. */
   report: (report: TinyCloudBootstrapRequestedSpaceReport) => void;
 }
 
@@ -223,95 +216,13 @@ export function trustedTinyCloudBootstrapHost(): string {
   );
 }
 
-export function parseTinyCloudSiwe(message: string): ParsedTinyCloudSiwe | null {
-  const header = message.match(/^.+ wants you to sign in with your Ethereum account:\n(0x[a-fA-F0-9]{40})\n/);
-  if (!header?.[1]) {
-    return null;
-  }
-
-  const chainIdMatch = message.match(/^Chain ID:\s*(\d+)\s*$/m);
-  if (!chainIdMatch?.[1]) {
-    return null;
-  }
-
-  let entries: RecapEntry[];
-  try {
-    entries = parseRecapFromSiwe(message) as RecapEntry[];
-  } catch {
-    return null;
-  }
-
-  if (!Array.isArray(entries) || entries.length === 0) {
-    return null;
-  }
-
-  const expirationMatch = message.match(/^Expiration Time:\s*(.+)\s*$/m);
-  const expirationTime = expirationMatch?.[1] ? new Date(expirationMatch[1]) : undefined;
-
-  return {
-    address: ensureEip55(header[1]),
-    chainId: Number(chainIdMatch[1]),
-    expirationTime: expirationTime && !Number.isNaN(expirationTime.getTime())
-      ? expirationTime
-      : undefined,
-    entries,
-  };
-}
-
-export function isTinyCloudSiweForSigner(
-  parsed: ParsedTinyCloudSiwe,
-  keyAddress: string,
-): boolean {
-  const address = ensureEip55(keyAddress);
-  if (ensureEip55(parsed.address) !== address) {
-    return false;
-  }
-
-  const accountSpace = `tinycloud:pkh:eip155:${parsed.chainId}:${address}:account`;
-  const ownerDid = `did:pkh:eip155:${parsed.chainId}:${address}`;
-  const defaultEncryptionNetwork = `urn:tinycloud:encryption:${ownerDid}:default`;
-
-  return parsed.entries.some((entry) => isAccountBootstrapEntry(entry, accountSpace, defaultEncryptionNetwork));
-}
-
-function isAccountBootstrapEntry(
-  entry: RecapEntry,
-  accountSpace: string,
-  defaultEncryptionNetwork: string,
-): boolean {
-  if (entry.path === defaultEncryptionNetwork) {
-    return entry.actions.includes(NETWORK_CREATE_ACTION);
-  }
-  if (entry.space !== accountSpace) {
-    return false;
-  }
-
-  return (
-    entry.service === 'capabilities' &&
-    (entry.path === '' || entry.path === 'capabilities') &&
-    entry.actions.includes(CAPABILITIES.READ)
-  ) || (
-    entry.service === 'kv' &&
-    (entry.path === 'applications/' || entry.path === 'spaces/') &&
-    hasAnyAction(entry.actions, [KV.GET, KV.LIST, KV.PUT])
-  ) || (
-    entry.service === 'sql' &&
-    entry.path === 'account' &&
-    hasAnyAction(entry.actions, [SQL.READ, SQL.SCHEMA, SQL.WRITE])
-  );
-}
-
-function hasAnyAction(actions: string[], expected: string[]): boolean {
-  return expected.some((action) => actions.includes(action));
-}
-
 function isSupportedTinyCloudChainId(chainId: number): boolean {
   return SUPPORTED_TINYCLOUD_CHAIN_IDS.has(chainId);
 }
 
 export async function ensureTinyCloudBootstrapForApprovedSign(
   input: EnsureTinyCloudBootstrapInput,
-): Promise<TinyCloudBootstrapOutcome> {
+): Promise<TinyCloudBootstrapOutcome | { status: 'pending' }> {
   // Kill-switch: clients on the SDK auto-sign strategy bootstrap through
   // POST /api/delegate/sign instead; this hook only compensates for older
   // clients. Disable once /delegate/sign traffic replaces widget signs.
@@ -361,7 +272,64 @@ export async function ensureTinyCloudBootstrapForApprovedSign(
     };
   }
 
-  return ensureTinyCloudBootstrap({ ...input, host: tinycloudHost, chainId: parsed.chainId });
+  const requestedSpace = requestedOwnSpaceForSiwe(parsed, input.key.address);
+  if (!requestedSpace) {
+    return ensureTinyCloudBootstrap({ ...input, host: tinycloudHost, chainId: parsed.chainId });
+  }
+  return hostOwnSpaceBeforeSign(input, { space: requestedSpace, host: tinycloudHost, chainId: parsed.chainId });
+}
+
+/**
+ * A sign-in that names one of the signer's own spaces and no account-space entry (an app that asks only for
+ * `applications`): host that space and wait for it before the signature is returned, as an approval does
+ * (TC-1608), so the SDK never has to host it itself. The rest of the setup follows in the background under
+ * the same lock. `hosted` means the requested space is hosted and the rest of the setup is still running; `complete` that setup was already complete. The wait is bounded by the requested-
+ * space timeout; the caller returns `pending` past it, as before. A run that fails is not retried here (a
+ * retry would keep the plaintext key alive): the sweep retries a failed state. A state that failed less than
+ * FAILED_SETUP_WAIT_BACKOFF_MS ago is neither claimed nor waited for: a node that hangs would otherwise cost
+ * every sign-in the whole timeout and a full rerun. The background sweep keeps retrying the failed state.
+ */
+async function hostOwnSpaceBeforeSign(
+  input: EnsureTinyCloudBootstrapInput,
+  requested: { space: BootstrapSpaceName; host: string; chainId: number },
+): Promise<TinyCloudBootstrapOutcome | { status: 'pending' }> {
+  const previous = await input.prisma.tinyCloudBootstrapState.findUnique({
+    where: {
+      keyId_chainId_tinycloudHost_bootstrapVersion: {
+        keyId: input.key.id,
+        chainId: requested.chainId,
+        tinycloudHost: requested.host,
+        bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION,
+      },
+    },
+  });
+  const failedRecently = previous?.status === 'failed'
+    && Date.now() - previous.checkedAt.getTime() < FAILED_SETUP_WAIT_BACKOFF_MS;
+  if (failedRecently) return { status: 'pending' };
+  const result = await hostRequestedSpaceWithinBudget(
+    ({ alreadyHosted, report }) => ensureTinyCloudBootstrap({
+      ...input,
+      host: requested.host,
+      chainId: requested.chainId,
+      requestedSpaces: { spaces: [requested.space], alreadyHosted, report },
+    }),
+    { retryDelaysMs: [] },
+  );
+  switch (result.status) {
+    case 'hosted':
+      return { status: 'hosted' };
+    case 'complete':
+      return { status: 'complete' };
+    case 'skipped':
+      return { status: 'skipped' };
+    // Another run holds the lock, or hosting did not finish in time: it continues without this request.
+    case 'pending':
+    case 'timeout':
+      return { status: 'pending' };
+    case 'retrying':
+    case 'failed':
+      return { status: 'failed', errorCode: result.errorCode, errorMessage: result.errorMessage };
+  }
 }
 
 export async function isTinyCloudBootstrapComplete(
@@ -414,7 +382,7 @@ export async function ensureTinyCloudBootstrap(
     where: { keyId_chainId_tinycloudHost_bootstrapVersion: cacheKey },
   });
   // An approval for which the node just listed the space as skipped is fresher than a cached `complete`.
-  if (state?.status === 'complete' && !input.requestedSpace?.nodeReportedUnhosted) {
+  if (state?.status === 'complete' && !input.requestedSpaces?.nodeReportedUnhosted) {
     return { status: 'complete' };
   }
 
@@ -466,11 +434,11 @@ export async function ensureTinyCloudBootstrap(
         privateKey,
         tinycloudHost,
       };
-      const requested = input.requestedSpace;
+      const requested = input.requestedSpaces;
       if (requested) {
-        // Before the probe and the other spaces: the client waits for this space only.
-        if (!requested.alreadyHosted) await hostRequestedSpaceFirst(runInput, requested);
-        runInput.skipHostSpaces = [requested.space];
+        // Before the probe and the other spaces: readiness requires every requested space.
+        if (!requested.alreadyHosted) await hostRequestedSpacesFirst(runInput, requested);
+        runInput.skipHostSpaces = [...new Set(requested.spaces)];
       }
 
       await bootstrapProbe(runInput);
@@ -786,29 +754,31 @@ async function runTinyCloudBootstrap(input: TinyCloudBootstrapRunInput): Promise
 }
 
 /**
- * Host the space the client asked for, before anything else in the run: peer id, the host SIWE
+ * Host every space the client asked for, before anything else in the run: peer id, the host SIWE
  * signed by the managed key (the same createHostDelegation the full run uses), then submit it.
  * The node confirms by listing the space under `activated` in its response to that host
  * delegation. (Re-sending the client's session delegation would not confirm anything: a
  * delegation the node already holds is answered with an empty `skipped`.) No other signature and
- * no other ability is involved. Reports once.
+ * no other ability is involved. Reports once after every requested space is confirmed.
  */
-async function hostRequestedSpaceFirst(
+async function hostRequestedSpacesFirst(
   input: TinyCloudBootstrapRunInput,
-  requested: TinyCloudBootstrapRequestedSpace,
+  requested: TinyCloudBootstrapRequestedSpaces,
 ): Promise<void> {
   try {
-    const step = bootstrapSteps(input.address, input.chainId)
-      .find((candidate): candidate is BootstrapSpaceStep => candidate.kind === 'host' && candidate.space === requested.space);
-    if (!step) {
-      throw new Error(`TinyCloud bootstrap host policy for ${requested.space} is missing`);
-    }
-    const activated = await submitRequiredHostDelegation(input.tinycloudHost, await createHostDelegation(input, step));
-    if (!activated?.includes(step.spaceId)) {
-      throw new TinyCloudBootstrapError(
-        `TinyCloud node accepted the host delegation for ${requested.space} but did not report the space as hosted.`,
-        'tinycloud_bootstrap_space_not_hosted',
-      );
+    const steps = bootstrapSteps(input.address, input.chainId);
+    for (const space of new Set(requested.spaces)) {
+      const step = steps.find((candidate): candidate is BootstrapSpaceStep => candidate.kind === 'host' && candidate.space === space);
+      if (!step) {
+        throw new Error(`TinyCloud bootstrap host policy for ${space} is missing`);
+      }
+      const activated = await submitRequiredHostDelegation(input.tinycloudHost, await createHostDelegation(input, step));
+      if (!activated?.includes(step.spaceId)) {
+        throw new TinyCloudBootstrapError(
+          `TinyCloud node accepted the host delegation for ${space} but did not report the space as hosted.`,
+          'tinycloud_bootstrap_space_not_hosted',
+        );
+      }
     }
   } catch (error) {
     requested.report({

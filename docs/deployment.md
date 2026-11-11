@@ -71,7 +71,8 @@ pending, production deploy permits these reviewed additive migrations:
 `20261007_0002_native_preparation_host`,
 `20261007_0003_tinycloud_native_token_guard`,
 `20261012_0001_signin_polish_hints_branding`,
-`20261012_0002_native_session_proof_jti`, and
+`20261012_0002_native_session_proof_jti`,
+`20261015_0001_google_link_step_up`, and
 `20261016_0001_prepared_siwe_handoff`. The last migration only adds a table,
 indexes, and a foreign key; it does not alter existing tables. The deploy verifies their frozen
 SQL checksums, the exact pending set, the baseline marker, and the physical
@@ -81,6 +82,47 @@ the recorded checksums and physical schema, including the native preparation
 host column, sign-in hint and branding columns, and consent-withdrawal
 triggers. Any other pending migration fails closed. Once TC-488 is applied,
 deployments return to the full migration and schema-drift verification path.
+
+The `20261015_0001_google_link_step_up` migration runs as one transaction. It
+adds `session.lastEmailOtpAt` and the unique index
+`account_providerId_accountId_key` on `account("providerId", "accountId")`.
+Before `prisma migrate deploy`, the deploy script counts duplicate
+`("providerId", "accountId")` groups in `account` and stops when the count is
+above zero; the message carries only the count. Before the deploy window, run
+the same count against production:
+
+```sql
+SELECT count(*) FROM (
+  SELECT 1 FROM "account" GROUP BY "providerId", "accountId" HAVING count(*) > 1
+) AS duplicate_groups;
+```
+
+If the migration fails with `P3018`, nothing was applied: count the duplicate
+groups with the query above, resolve them, run
+`prisma migrate resolve --rolled-back 20261015_0001_google_link_step_up`, and
+redeploy. Never use `--applied`. The history then holds two rows for this
+migration (the rolled-back attempt and the finished one); the post-deploy check
+uses the finished row.
+
+A failed history row can still occur when `prisma migrate deploy` is run by
+hand without the count, or when a duplicate is inserted between the count and
+the index build. The previous image keeps serving and the schema is unchanged,
+and `P3009` stops every later deploy until that row is resolved as above.
+
+Rollback is an image-only redeploy: the previous image does not read the added
+column and ignores it. Redeploying an older commit stops at the migration step
+with "Production contains migration history absent from this checkout",
+because `_prisma_migrations` already records this migration. To revert the
+schema, together with a code revert that removes the migration directory:
+
+```sql
+BEGIN;
+DROP INDEX IF EXISTS "account_providerId_accountId_key";
+ALTER TABLE "session" DROP COLUMN IF EXISTS "lastEmailOtpAt";
+UPDATE "_prisma_migrations" SET rolled_back_at = now()
+  WHERE migration_name = '20261015_0001_google_link_step_up' AND rolled_back_at IS NULL;
+COMMIT;
+```
 
 The public native PAR endpoint validates the full request before allocating a
 row. An alert records when valid PAR volume reaches 10,000 requests per minute
@@ -95,6 +137,13 @@ session's user ID. The Phala gateway and ingress path has no authenticated HTTP 
 header in this deployment; `CF-Connecting-IP` and `X-Forwarded-For` can be
 supplied by a caller, so PAR does not use either for rate limiting. Per-source
 fairness requires an authenticated network source at the ingress boundary.
+
+The token-protected `/api/internal/metrics` response includes `originRefusals`, a process-local count by route template and refusal reason. Counts reset when the API process restarts and contain no Origin values.
+
+Organization OAuth applications are owned by the organization, not their
+creator. Organization administrators manage them through the tenant console,
+including confidential-client secret rotation; personal OAuth clients remain
+manageable by their creating user.
 
 The canonical-key/organization-custody cutover is governed by the
 [TC-492 release runbook](./tc-492-canonical-key-cutover.md). It requires a
@@ -167,24 +216,40 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `CONSOLE_ORIGIN` | `https://console.openkey.so` |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
-| `APPLE_CLIENT_ID` | Apple web Services ID |
+| `APPLE_SIGN_IN_ENABLED` | Hardcoded `true` in production Compose; Apple is offered only when the four Apple credentials below are also set (TC-1188) |
+| `APPLE_NATIVE_SIGN_IN_ENABLED` | Hardcoded `false`; stock native ID-token sign-in is permanently disabled |
+| `APPLE_CLIENT_ID` | Apple web Services ID (not a bundle identifier) |
 | `APPLE_TEAM_ID` | Apple Developer Team ID |
 | `APPLE_KEY_ID` | Sign in with Apple private-key ID |
 | `APPLE_PRIVATE_KEY` | Apple `.p8` ES256 private key (literal or escaped newlines) |
-| `APPLE_APP_BUNDLE_IDENTIFIER` | Optional native Apple app bundle identifier |
+| `APPLE_APP_BUNDLE_IDENTIFIERS` | Reserved comma-separated audiences for a future PAR-bound native flow; not active |
+| `APPLE_WEBHOOK_AUDIENCE` | Primary App ID (`so.openkey`) that Apple addresses server-to-server notifications to; the webhook is not found while it is unset or Apple sign-in is disabled |
 | `TEE_MODE` | Not read from the env: `docker-compose.prod.yml` hardcodes `production`, and the API refuses to start otherwise (TC-966) |
 | `RESEND_API_KEY` | Resend API key for emails |
 | `API_PORT` | `3001` |
 | `CORS_ORIGIN` | `https://openkey.so,https://console.openkey.so` |
 | `ADMIN_API_KEY` | Bearer token for organization plan fixtures and app registration |
-| `INTERNAL_METRICS_TOKEN` | Bearer token for internal metrics |
+| `INTERNAL_METRICS_TOKEN` | Bearer token for `/api/internal/metrics`, including counts-only `/native-renewals` by public OAuth client ID; unset = 503, missing/wrong bearer = 401. |
 | `OPENKEY_METRICS_READ_TOKEN` | Separate bearer for `/api/internal/scoreboard/*`. Grants **aggregate counts only** (`GET /protocol-users` -> `{count}`, `GET /app-users` -> `{total, active7d}`); neither endpoint takes input, so the token cannot be used to look up addresses or accounts. `/protocol-users` is capped at 30 calls/min per process (429) and audit-logged (status and count only). Unset = 503 |
 | `NODE_STATS_URL` / `NODE_STATS_READ_TOKEN` | Full URL of the node's read-only `GET /admin/stats` (TC-1482) and its read-only bearer. OpenKey fetches the owner addresses from it for `/protocol-users` (owners with data beyond the automatic `account` space; account-only owners are excluded). The URL must be `https:`; the response is capped at 16 MiB and concurrent calls share one node request; unset or failing node = 503, never a partial count. Expected response: `200 {"owners": ["0x<40 hex>", ...]}` |
 | `SCOREBOARD_EXCLUDE_USER_IDS` / `SCOREBOARD_EXCLUDE_CLIENT_IDS` | Comma-separated team/QA/agent user ids and internal OAuth client ids excluded from scoreboard counts |
+| `OPENKEY_NATIVE_RENEW_DISABLED` | `true` or `1` refuses native delegation renewals with HTTP 400 `consent_required`; unset, empty, or any other value leaves renewals enabled. Changes apply after the API container is recreated with the new environment. |
 | `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for canonical user-key bootstrap |
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway base domain (e.g. `dstack-pha-prod5.phala.network`); the ingress CNAMEs `api.openkey.so` to `gateway.<base>` (never `_.<base>`, which Android cannot resolve) |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |
+
+`WEBAUTHN_ORIGIN` is the account browser origin and is required in production.
+Browser requests to sensitive account routes require an `Origin` matching that
+account origin, whether authenticated by cookie or bearer. Bearers without an
+`Origin` remain refused; cookie requests without an `Origin` retain their
+existing behavior. Sensitive authentication routes require an account origin.
+Native delegation preparation, approval, denial, and delegation-code creation
+also require the account origin. Organization and tenant-console routes continue
+to accept the configured console origin.
+If `CONSOLE_ORIGIN` is unset in production, it defaults to
+`https://console.openkey.so`; that console origin remains accepted only on
+console-facing organization routes, unless it is also `WEBAUTHN_ORIGIN`.
 
 TC-2212 request IDs, sealed-body digests and request deadlines are bound by
 OpenKey's server-side consent context. The owner's signature covers the canonical
@@ -197,17 +262,112 @@ Google and Apple must be configured with these exact production return URLs:
 - `https://api.openkey.so/api/auth/callback/google`
 - `https://api.openkey.so/api/auth/callback/apple`
 
-Apple requires `APPLE_CLIENT_ID` to be the web Services ID. The API generates
-the ES256 client-secret JWT at runtime with a 180-day lifetime, below Apple's
-six-month maximum; the `.p8` key remains API-only and must never be set as a
-`VITE_` variable. Apple rejects localhost, non-HTTPS domains, and invalid TLS,
-so use a registered HTTPS hostname for local testing.
+Google's explicit account-linking and new-account confirmation change the API
+and web together. Deploy both in one window after the reviewed migration is
+ready; the migration adds the session email-code timestamp and a unique
+provider/account identity index. This change does not enable Apple sign-in.
 
-Apple provides email only on the first authorization. Preserve Better Auth's
-account and linking rows so later callbacks resolve the existing user by the
-Apple provider account. Before production, register the outbound sender and
-envelope-sender domains used by Resend in Apple's private email relay settings,
-and publish matching SPF and DKIM records so mail reaches private-relay users.
+Apple web sign-in is enabled in production (TC-1188). The production Compose
+file pins `APPLE_SIGN_IN_ENABLED=true`; the provider is still offered only when
+`APPLE_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID` and `APPLE_PRIVATE_KEY` are
+all set in the encrypted env. To turn Apple off, set the Compose value back to
+`false` and redeploy, or remove a credential from the encrypted env.
+
+The API mints an ES256 client-secret JWT for each Apple token exchange or
+revocation, valid for at most five minutes. The `.p8` key remains API-only and
+must never be set as a `VITE_` variable. The web callback trusts only the
+exchanged ID token's verified email, issuer, audience and lifetime; Apple's
+unsigned `user.email` is ignored. Returning identities use `(apple, sub)`,
+including callbacks without an email claim. New accounts need the existing
+cookie-bound social confirmation; linking and unlinking need current-session
+email OTP step-up. Apple refresh tokens are encrypted with their issuing
+Services ID. A confirmed Apple account sends a mailbox notice; its first
+email-OTP sign-in requires a separate linked-provider review before a session.
+Google accounts retain the existing email-OTP behavior while Apple is off.
+Refusing Apple review locks the account. A locked account's existing sessions
+(cookie and bearer), OAuth refresh and access tokens, native grant renewals
+and signing routes are refused (TC-1231).
+
+Account deletion needs a fresh step-up: a verification by a passkey that counts
+for step-up when the user has one, otherwise a deletion-purpose email code
+(`POST /api/account/step-up/email-otp/{send,verify}` with
+`purpose: "delete_account"`). After the deletion commits, each stored Apple
+refresh token is revoked with its issuing client ID, retried three times; a
+revoke that still fails logs `auth_apple_revoke_failed` and never restores the
+account.
+
+Apple server-to-server notifications arrive at
+`POST https://api.openkey.so/api/webhooks/apple` (register it on the primary App
+ID `so.openkey`). The endpoint is not found unless Apple sign-in is enabled and
+`APPLE_WEBHOOK_AUDIENCE` is set to the primary App ID. Notifications are
+verified against Apple's cached JWKS (RS256, issuer, audience, `iat` within 24
+hours) and applied once per `jti`, recorded in `apple_notification`. Only an
+invalid notification is answered 400; an unavailable Apple key set or a
+processing failure is answered 503 with nothing recorded, so Apple's retry is
+applied. `consent-revoked` and `account-deleted` end the user's sessions,
+native grants and OAuth tokens and wipe the stored Apple tokens, but keep the
+OpenKey account, keys and Apple link. A non-MCP JWT access token already issued
+has no stored row and stays valid until its own expiry (at most five minutes);
+MCP tokens end with their session. `email-disabled` and `email-enabled` only
+flag a relay address as undeliverable.
+
+Pending Apple confirmations and failed revocations use the OpenKey-owned
+`apple_social_continuation` table, not Better Auth's OTP verification table.
+The expiry/revocation worker starts even when Apple sign-in is disabled. If
+disabling Apple after use, retain the issuing Services ID, Team ID, key ID,
+private key, and Better Auth decryption secrets until pending grants are
+revoked or safely linked; removing them leaves encrypted retry rows uncleared.
+
+Apple rejects localhost, non-HTTPS domains and invalid TLS, so live provider
+testing requires a registered HTTPS hostname. Before production, register
+the outbound sender and envelope-sender domains used by Resend in Apple's
+private email relay settings, with matching SPF and DKIM.
+
+#### Passkey enrolment and removal (TC-1198)
+
+A session alone can't add or remove a passkey. Better Auth's
+`/api/auth/passkey/generate-register-options`, `verify-registration` and
+`delete-passkey` (and the embed proxy under `/api/passkey/*`) answer 403
+`PASSKEY_STEP_UP_REQUIRED`, with the accepted `methods`, unless the current
+session has one of these:
+
+- a fresh (five-minute) assertion by one of the user's passkeys that counts for
+  step-up, through `POST /api/account/step-up/passkey/{options,verify}`;
+- for enrolment, a single-use email proof: a `passkey_register` code on the
+  email step-up endpoints, or the session's own creation by a verified email
+  code (email sign-in, email sign-up, the Apple mailbox review) or by a
+  confirmed social sign-up, within five minutes;
+- for removing a passkey that doesn't count, a single-use `passkey_remove` code.
+
+Each passkey records `enrolledVia` (`legacy`, `account_creation`,
+`email_sign_in`, `email_step_up`, `passkey_step_up`), `enrolledStepUpAt` and
+`countsForStepUp`. A passkey enrolled under a passkey assertion counts. One
+enrolled under an email proof counts only when the user has no passkey that
+counts yet, so an email inbox alone never adds step-up authority to a passkey
+user. Removing a passkey that counts needs a passkey assertion. Passkey
+freshness (deletion, and any future link or unlink step-up) is accepted only
+from a passkey that counts. Migration
+`20261110_0002_passkey_enrolment_provenance` marks every existing passkey
+`legacy` with `countsForStepUp = true`.
+
+**Support path: a user who lost every passkey that counts.** They can still
+sign in with an email code and enrol new passkeys, but those don't count, so
+they can't delete the account or remove the old passkeys themselves. Support
+verifies the owner out of band first. Then, in one transaction, support deletes
+the lost passkey rows (`DELETE FROM "passkey" WHERE "userId" = $1 AND id = ANY($2)`).
+With no passkey that counts, the user can delete with an email code, and the
+next passkey they enrol under an email proof counts again. Apart from the
+post-deploy step below, never set `countsForStepUp` by hand.
+
+A user whose Apple relay address Apple reports undeliverable is offered no
+email method; until they turn forwarding back on, only a passkey that counts
+can authorize a passkey change.
+
+**Deploy window.** `deploy-api.yml` applies migrations before the new image is
+live, so passkeys the old image enrols in between get `enrolledVia = NULL` and
+don't count. That fails closed. To give them the same treatment as the
+backfill, run this once the new image serves traffic, with the time it went live:
+`UPDATE "passkey" SET "countsForStepUp" = true, "enrolledVia" = 'legacy' WHERE "enrolledVia" IS NULL AND "createdAt" < $1`.
 
 #### Trigger Conditions
 

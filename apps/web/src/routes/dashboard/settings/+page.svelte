@@ -2,11 +2,16 @@
   import { goto } from '$app/navigation';
   import { tick } from 'svelte';
   import { authClient, authErrorMessage } from '$lib/auth-client';
-  import { api, type ConnectedMcpApp, type EthereumKey, type TinyCloudManageKeyActivity, type TinyCloudManageKeyApp, type TinyCloudManageKeyPreference } from '$lib/api';
+  import { api, type ConnectedIdentityApp, type ConnectedMcpApp, type EthereumKey, type TinyCloudManageKeyActivity, type TinyCloudManageKeyApp, type TinyCloudManageKeyPreference } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
+  import ConnectedIdentityApps from './ConnectedIdentityApps.svelte';
   import ConnectedMcpApps from './ConnectedMcpApps.svelte';
+  import DeleteAccountEntry from './DeleteAccountEntry.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
+  import LinkedAccounts from '$lib/components/auth/linked-accounts.svelte';
+  import PasskeyStepUpDialog from '$lib/components/auth/passkey-step-up-dialog.svelte';
+  import { passkeyStepUpMethods, type PasskeyStepUpMethod, type PasskeyStepUpPurpose } from '$lib/passkey-step-up';
 
   const session = authClient.useSession();
 
@@ -18,6 +23,8 @@
   }
 
   let passkeys = $state<Passkey[]>([]);
+  // True once a passkey list has loaded; `passkeys` is replaced only on success.
+  let passkeysLoaded = $state(false);
   let archivedKeys = $state<EthereumKey[]>([]);
   let loading = $state(true);
   let loadingArchivedKeys = $state(true);
@@ -25,7 +32,8 @@
   let error = $state('');
   let addingPasskey = $state(false);
   let restoringKeyId = $state<string | null>(null);
-  let autoSignEnabled = $state(true);
+  let autoSignEnabled = $state(false);
+  let autoSignKnown = $state(false);
   let loadingAutoSign = $state(true);
   let savingAutoSign = $state(false);
   let tinyCloudManageKeyEnabled = $state(true);
@@ -36,8 +44,10 @@
   let tinyCloudManageKeyError = $state('');
   let tinyCloudApps = $state<TinyCloudManageKeyApp[]>([]);
   let mcpApps = $state<ConnectedMcpApp[]>([]);
-  // Set once the first list arrives; later reloads keep the section mounted so its notice stays.
+  let identityApps = $state<ConnectedIdentityApp[]>([]);
+  // Set once lists arrive; later reloads keep mounted notices visible.
   let mcpAppsLoaded = $state(false);
+  let identityAppsLoaded = $state(false);
   let tinyCloudActivity = $state<TinyCloudManageKeyActivity[]>([]);
   let loadingTinyCloudApps = $state(true);
   let savingTinyCloudAppId = $state<string | null>(null);
@@ -92,6 +102,7 @@
         error = authErrorMessage(result.error, 'Failed to load passkeys');
       } else {
         passkeys = result.data || [];
+        passkeysLoaded = true;
       }
     } catch (e: any) {
       error = e.message || 'Failed to load passkeys';
@@ -119,6 +130,7 @@
     try {
       const result = await api.getAutoSignPreference();
       autoSignEnabled = result.autoSignEnabled;
+      autoSignKnown = true;
     } catch (e: any) {
       error = e.message || 'Failed to load Auto-Sign preference';
     } finally {
@@ -243,7 +255,9 @@
       const result = await api.listTinyCloudManageKeyApps();
       tinyCloudApps = result.apps;
       mcpApps = result.mcpApps ?? [];
+      identityApps = result.identityApps ?? [];
       mcpAppsLoaded = true;
+      identityAppsLoaded = true;
       tinyCloudActivity = result.activity;
       tinyCloudManageKeyMode = result.mode;
       tinyCloudManageKeyPolicyEpoch = result.policyEpoch;
@@ -303,12 +317,19 @@
     else await disconnectTinyCloudApp(action.app);
   }
 
+  // TC-1198: a session alone cannot add or remove a passkey. The API's typed
+  // refusal opens the step-up dialog, which retries the change once verified.
+  let passkeyStepUp = $state<{ purpose: PasskeyStepUpPurpose; methods: PasskeyStepUpMethod[]; retry: () => Promise<void> } | null>(null);
+
   async function addPasskey() {
     addingPasskey = true;
     error = '';
     try {
       const result = await authClient.passkey.addPasskey();
-      if (result?.error) {
+      const methods = passkeyStepUpMethods(result?.error);
+      if (methods) {
+        passkeyStepUp = { purpose: 'passkey_register', methods, retry: addPasskey };
+      } else if (result?.error) {
         error = authErrorMessage(result.error, 'Failed to add passkey');
       } else {
         await loadPasskeys();
@@ -363,7 +384,10 @@
     error = '';
     try {
       const result = await authClient.passkey.deletePasskey({ id });
-      if (result.error) {
+      const methods = passkeyStepUpMethods(result.error);
+      if (methods) {
+        passkeyStepUp = { purpose: 'passkey_remove', methods, retry: () => deletePasskey(id) };
+      } else if (result.error) {
         error = authErrorMessage(result.error, 'Failed to delete passkey');
       } else {
         await loadPasskeys();
@@ -516,6 +540,9 @@
     {/if}
   </Card>
 
+  <!-- The live count, so adding or removing a passkey here updates whether an unlink is allowed. -->
+  <LinkedAccounts passkeyCount={passkeysLoaded ? passkeys.length : null} />
+
   <Card class="mt-6">
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
       <div class="max-w-xl">
@@ -526,21 +553,24 @@
       </div>
       <div class="flex shrink-0 items-center gap-3">
         <div class="min-w-16 text-right text-sm font-medium {autoSignEnabled ? 'text-surface-900' : 'text-surface-500'}">
-          {loadingAutoSign ? 'Loading' : savingAutoSign ? 'Saving' : autoSignEnabled ? 'Enabled' : 'Disabled'}
+          {loadingAutoSign ? 'Loading' : savingAutoSign ? 'Saving' : !autoSignKnown ? 'Unavailable' : autoSignEnabled ? 'Enabled' : 'Disabled'}
         </div>
         <button
           type="button"
           role="switch"
-          aria-checked={autoSignEnabled}
+          aria-checked={autoSignKnown && autoSignEnabled}
           aria-label="Toggle Auto-Sign"
           onclick={() => setAutoSignPreference(!autoSignEnabled)}
-          disabled={loadingAutoSign || savingAutoSign}
-          class="relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 {autoSignEnabled ? 'bg-surface-900' : 'bg-surface-300'}"
+          disabled={!autoSignKnown || loadingAutoSign || savingAutoSign}
+          class="relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 {autoSignKnown && autoSignEnabled ? 'bg-surface-900' : 'bg-surface-300'}"
         >
           <span
-            class="absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform {autoSignEnabled ? 'translate-x-5' : 'translate-x-0'}"
+            class="absolute left-1 top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform {autoSignKnown && autoSignEnabled ? 'translate-x-5' : 'translate-x-0'}"
           ></span>
         </button>
+        {#if !loadingAutoSign && !autoSignKnown}
+          <button type="button" class="text-sm underline" onclick={loadAutoSignPreference}>Try again</button>
+        {/if}
       </div>
     </div>
   </Card>
@@ -651,6 +681,9 @@
       <ConnectedMcpApps apps={mcpApps} onchanged={loadTinyCloudManageKeyApps} />
     </Card>
   {/if}
+  {#if identityAppsLoaded}
+    <ConnectedIdentityApps apps={identityApps} onchanged={loadTinyCloudManageKeyApps} />
+  {/if}
 
   <Card class="mt-6">
     <div class="mb-4">
@@ -670,6 +703,15 @@
       </div>
     {/if}
   </Card>
+
+  {#if passkeyStepUp}
+    <PasskeyStepUpDialog
+      purpose={passkeyStepUp.purpose}
+      methods={passkeyStepUp.methods}
+      onverified={() => { const { retry } = passkeyStepUp!; passkeyStepUp = null; void retry(); }}
+      oncancel={() => { passkeyStepUp = null; }}
+    />
+  {/if}
 
   {#if tinyCloudConfirmation}
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-surface-900/40 p-4" role="presentation">
@@ -788,4 +830,6 @@
       </div>
     </div>
   </Card>
+
+  <DeleteAccountEntry />
 </div>

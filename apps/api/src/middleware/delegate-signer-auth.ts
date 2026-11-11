@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import type { SessionContext } from './session';
-import { TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_SESSION_SCOPE } from '../oauth-config';
+import { isConfidentialWebClient, TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_SESSION_SCOPE } from '../oauth-config';
+import { rejectNonOpenKeySignRequest } from './browser-control';
 
 export type DelegateSignerPrincipal =
   | { kind: 'session'; userId: string }
@@ -116,9 +117,7 @@ function sameStringSet(actual: string[], expected: readonly string[]): boolean {
 }
 
 function isConfidentialPersonalWebClient(client: NonNullable<CoordinationosOauthContext['client']>): boolean {
-  return client.type === 'web'
-    && !client.public
-    && client.tokenEndpointAuthMethod === 'client_secret_basic'
+  return isConfidentialWebClient(client)
     && sameStringSet(client.grantTypes, ['authorization_code'])
     && sameStringSet(client.responseTypes, ['code']);
 }
@@ -159,6 +158,11 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
 
   if (parsed.kind === 'missing') {
     if (await resolveSession(c)) {
+      // A cookie session may sign only from an OpenKey web origin, checked
+      // only now that a session exists: a request with no credentials at all
+      // must still reach the audited missing_authorization denial below.
+      const originRefusal = rejectNonOpenKeySignRequest(c);
+      if (originRefusal) return originRefusal;
       c.set('delegateSignerPrincipal', { kind: 'session', userId: c.get('user').id });
     } else {
       c.set('delegateSignerAuthFailure', {
@@ -202,7 +206,7 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
     return;
   }
 
-  const [client, user] = await Promise.all([
+  const [client, userRow] = await Promise.all([
     database.oauthClient.findUnique({
       where: { clientId: token.clientId },
       select: {
@@ -220,9 +224,12 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
     }),
     database.user.findUnique({
       where: { id: token.userId },
-      select: { id: true, emailVerified: true },
+      select: { id: true, emailVerified: true, lockedAt: true },
     }),
   ]);
+  // A locked account (R9, TC-1231) is refused exactly like a deleted one: its
+  // OAuth tokens never authorize signing.
+  const user = userRow && !userRow.lockedAt ? { id: userRow.id, emailVerified: userRow.emailVerified } : null;
   const context: CoordinationosOauthContext = { token, client, user };
   c.set('delegateSignerOauthContext', context);
   const failure = (code: DelegateSignerAuthCode): DelegateSignerAuthFailure => ({

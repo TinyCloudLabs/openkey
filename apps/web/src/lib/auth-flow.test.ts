@@ -1,6 +1,48 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { normalizeAuthReturnTo, safeOAuthAuthorizeQuery } from './auth-flow';
+import { normalizeAuthReturnTo, normalizeRegisterReturnTo, safeOAuthAuthorizeQuery } from './auth-flow';
+
+const refusedApprovalReturns = [
+  'https://evil.example/a/abc',
+  '//evil.example/a/abc',
+  '/a/../dashboard',
+  '/a/abc/../../dashboard',
+  '/a/',
+  '/a',
+  '/a/abc/extra',
+  '/a/abc?x=1',
+  '/a/abc#frag',
+  '/a/%2e%2e/dashboard',
+  '/a/abc%2Fdef',
+  '/a/ab%00c',
+  String.raw`/a\abc`,
+  String.raw`\\evil.example\a\abc`,
+  ' /a/abc',
+  '/a/abc ',
+  '/a/ab\nc',
+];
+
+describe('approval request auth return URLs', () => {
+  test('register accepts only a canonical approval path and preserves legacy targets', () => {
+    expect(normalizeRegisterReturnTo('/a/abc_DEF-123', 'https://openkey.so')).toBe('/a/abc_DEF-123');
+    expect(normalizeRegisterReturnTo('/a/'.concat('x'.repeat(10000)), 'https://openkey.so')).toBe(`/a/${'x'.repeat(10000)}`);
+    for (const value of refusedApprovalReturns) {
+      expect(normalizeRegisterReturnTo(value, 'https://openkey.so')).toBeNull();
+    }
+    expect(normalizeRegisterReturnTo('/delegate?x=1', 'https://openkey.so')).toBe('/delegate?x=1');
+    expect(normalizeRegisterReturnTo('/widget/embed/connect', 'https://openkey.so')).toBe('/widget/embed/connect');
+  });
+
+  test('email sign-in accepts only a canonical approval path and preserves legacy targets', () => {
+    expect(normalizeAuthReturnTo('/a/abc_DEF-123', 'https://openkey.so')).toBe('/a/abc_DEF-123');
+    for (const value of refusedApprovalReturns) {
+      expect(normalizeAuthReturnTo(value, 'https://openkey.so')).toBeNull();
+    }
+    for (const value of ['/console/org_123', '/dashboard', '/delegate?x=1', '/oauth/authorize', '/widget/connect']) {
+      expect(normalizeAuthReturnTo(value, 'https://openkey.so')).toBe(value);
+    }
+  });
+});
 
 describe('normalizeAuthReturnTo', () => {
   test('keeps an approved console-host return URL for the account sign-in handoff', () => {

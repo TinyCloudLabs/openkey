@@ -276,9 +276,14 @@ describe("buildStatement — KV catalog: registered abilities preserved", () => 
       path: "cycle/",
       abilities: ["tinycloud.kv/delete"],
     });
-    expect(buildStatement(grant).primaryText).toBe(
-      "Delete your data",
-    );
+    const statement = buildStatement(grant);
+    // The alias is outside the byte-exact KV catalog, so the grant renders
+    // through the literal fallback row: delete is named in plain words, no
+    // folder is named, and the row carries the literal mark.
+    expect(statement.primaryText.toLowerCase()).toContain("delete");
+    expect(statement.primaryText).not.toContain("`");
+    expect(statement.primaryText).not.toContain("associated with");
+    expect(statement.literalEscaped).toBe(true);
   });
 
   it("KV [list, metadata] still classified as read-only", () => {

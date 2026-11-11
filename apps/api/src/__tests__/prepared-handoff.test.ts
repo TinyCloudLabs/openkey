@@ -88,7 +88,7 @@ describe('prepared CLI handoff', () => {
     await bind({});
     await expect(service.reserveSigning(ticket, 'owner', 'different-context', 'key-one')).rejects.toMatchObject({ code: 'binding_mismatch' });
     expect(await service.reserveSigning(ticket, 'owner', 'context-one', 'key-one')).toBeUndefined();
-    await expect(service.reserveSigning(ticket, 'owner', 'context-one', 'key-one')).rejects.toMatchObject({ code: 'handoff_consumed' });
+    await expect(service.reserveSigning(ticket, 'owner', 'context-one', 'key-one')).rejects.toMatchObject({ code: 'handoff_signing' });
     expect(await service.completeSigning(ticket, 'owner', 'context-one', 'key-one')).toEqual({ deliveryState: state, selectedKeyId: 'key-one' });
   });
 

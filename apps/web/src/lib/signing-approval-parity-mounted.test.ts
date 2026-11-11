@@ -465,8 +465,7 @@ function fixtureSelection(model: any): Set<string> {
 // would in the route.
 //
 // The widget transport keeps track of the surface's `canUseAuthorizeSign`
-// choice AND records whether `requestPreview` vs `approveAndSign` fired
-// on approve, so a bug that routes to the wrong path is caught here.
+// choice and preview readiness so signing before readiness is caught here.
 // -----------------------------------------------------------------------------
 
 interface CliSpies {
@@ -507,7 +506,6 @@ function makeCliTransport(): CliTransport {
 }
 
 interface WidgetSpies {
-  requestPreview: any[][];
   approveAndSign: any[][];
   cancel: any[][];
   invalidatePreview: any[][];
@@ -517,7 +515,6 @@ interface WidgetSpies {
 interface WidgetTransport {
   canUseAuthorizeSign: boolean;
   previewReady: boolean;
-  requestPreview: () => void;
   approveAndSign: () => void;
   cancel: () => void;
   invalidatePreview: () => void;
@@ -532,7 +529,6 @@ function makeWidgetTransport(
   previewReady = false,
 ): WidgetTransport {
   const spies: WidgetSpies = {
-    requestPreview: [],
     approveAndSign: [],
     cancel: [],
     invalidatePreview: [],
@@ -543,9 +539,6 @@ function makeWidgetTransport(
     previewReady,
     approving: false,
     error: null,
-    requestPreview: () => {
-      spies.requestPreview.push([]);
-    },
     approveAndSign: () => {
       spies.approveAndSign.push([]);
     },
@@ -582,7 +575,7 @@ function propsForSurface(
   }
   const transport = makeWidgetTransport(
     opts.canUseAuthorizeSign ?? true,
-    opts.previewReady ?? false,
+    opts.previewReady ?? true,
   );
   return {
     props: { model, initialSelection, transport },
@@ -784,7 +777,7 @@ describe('signing-approval mounted parity across production surface adapters (So
 
     const projections: SemanticNode[][] = [];
     for (const binding of surfaceBindings) {
-      const { props } = propsForSurface(binding, model, selection);
+      const { props } = propsForSurface(binding, model, selection, { canUseAuthorizeSign: false, previewReady: false });
       const handle = await mountSurface(binding, props);
       const dialogs = handle.container.querySelectorAll('[role="dialog"]');
       expect(dialogs.length).toBe(1);
@@ -803,7 +796,7 @@ describe('signing-approval mounted parity across production surface adapters (So
 
     const projections: SemanticNode[][] = [];
     for (const binding of surfaceBindings) {
-      const { props } = propsForSurface(binding, model, selection);
+      const { props } = propsForSurface(binding, model, selection, { canUseAuthorizeSign: false, previewReady: false });
       const handle = await mountSurface(binding, props);
       // The warning fixture's other-user warning must appear on every
       // surface — the shared component owns that rendering without exposing
@@ -938,14 +931,6 @@ describe('signing-approval mounted parity across production surface adapters (So
   });
 
   test('keyboard: Enter on the Approve button routes to the ADAPTER approve wiring on every surface', async () => {
-    // Enter on the Approve button, in a real browser, fires the button's
-    // click handler (`onclick={onApprove}` in the shared component). The
-    // adapter's `onApprove` then routes to the transport:
-    //   - CLI: `transport.approveDelegate()` must fire.
-    //   - Widget (canUseAuthorizeSign=true): `transport.requestPreview()`
-    //     must fire; `transport.approveAndSign()` must NOT fire.
-    //   - Widget (canUseAuthorizeSign=false): `transport.approveAndSign()`
-    //     must fire; `transport.requestPreview()` must NOT fire.
     for (const binding of surfaceBindings) {
       const model = benignFixtureModel();
       const selection = fixtureSelection(model);
@@ -964,10 +949,45 @@ describe('signing-approval mounted parity across production surface adapters (So
         expect(t._spies.goBack.length).toBe(0);
       } else {
         const t = built.widgetTransport!;
-        expect(t._spies.requestPreview.length).toBe(1);
-        expect(t._spies.approveAndSign.length).toBe(0);
+        expect(t._spies.approveAndSign.length).toBe(1);
         expect(t._spies.cancel.length).toBe(0);
       }
+      handle.unmount();
+    }
+  });
+
+  test('pending widget previews block approval while selection and cancel stay usable', async () => {
+    for (const binding of surfaceBindings.filter((b) => b.kind === 'widget')) {
+      const model = benignFixtureModel();
+      const built = propsForSurface(binding, model, fixtureSelection(model), {
+        canUseAuthorizeSign: true,
+        previewReady: false,
+      });
+      const handle = await mountSurface(binding, built.props);
+      const approve = handle.container.querySelector('button.approve');
+      expect(approve.disabled).toBe(true);
+      // Even a directly dispatched click must not reach signing while pending.
+      pressKeyOnButton(approve, 'Enter');
+      const transport = built.widgetTransport!;
+      expect(transport._spies.approveAndSign.length).toBe(0);
+
+      const edit = (Array.from(handle.container.querySelectorAll('button')) as any[])
+        .find((button) => (button.textContent ?? '').trim() === 'Edit');
+      expect(edit.disabled).toBe(false);
+      edit.click();
+      flushSync();
+      const checkbox = handle.container.querySelector('input[type="checkbox"]');
+      expect(checkbox.disabled).toBe(false);
+      pressKeyOnCheckbox(checkbox, ' ');
+      expect(transport._spies.onSelectionEdited.length).toBe(1);
+      expect(transport._spies.invalidatePreview.length).toBe(1);
+      expect(transport._spies.approveAndSign.length).toBe(0);
+      expect(approve.disabled).toBe(true);
+
+      const cancel = handle.container.querySelector('button.cancel');
+      expect(cancel.disabled).toBe(false);
+      pressKeyOnButton(cancel, 'Enter');
+      expect(transport._spies.cancel.length).toBe(1);
       handle.unmount();
     }
   });
@@ -990,7 +1010,6 @@ describe('signing-approval mounted parity across production surface adapters (So
       pressKeyOnButton(approve, 'Enter');
       const t = built.widgetTransport!;
       expect(t._spies.approveAndSign.length).toBe(1);
-      expect(t._spies.requestPreview.length).toBe(0);
       handle.unmount();
     }
   });
@@ -1014,14 +1033,13 @@ describe('signing-approval mounted parity across production surface adapters (So
 
       const buttons = Array.from(handle.container.querySelectorAll('button')) as any[];
       const approve = buttons.find(
-        (b) => (b.textContent ?? '').trim() === 'Approve exact bytes',
+        (b) => (b.textContent ?? '').trim() === 'Approve',
       );
       expect(approve).toBeTruthy();
       pressKeyOnButton(approve, 'Enter');
 
       const t = built.widgetTransport!;
       expect(t._spies.approveAndSign.length).toBe(1);
-      expect(t._spies.requestPreview.length).toBe(0);
       handle.unmount();
     }
   });
@@ -1041,7 +1059,10 @@ describe('signing-approval mounted parity across production surface adapters (So
       const summary = handle.container.querySelector('.summary');
       expect(summary?.textContent).toContain('Set up encryption');
       expect(summary?.textContent).not.toContain('decrypt protected data');
-      expect(handle.container.querySelector('.sensitive-callout')).toBeNull();
+      // TC-1424: the selected row still carries its badge, but an all-Sensitive summary needs no banner.
+      const pills = handle.container.querySelectorAll('.summary-statement .summary-sensitive-pill').length;
+      expect(pills).toBe(1);
+      expect(handle.container.querySelectorAll('.sensitive-callout').length).toBe(0);
 
       // Advanced details retains the removed baseline action so the user can
       // re-add it, but it no longer contaminates the top-level final copy.
@@ -1117,16 +1138,13 @@ describe('signing-approval mounted parity across production surface adapters (So
     }
   });
 
-  test('keyboard: Enter on Cancel routes to the ADAPTER cancel wiring on every surface', async () => {
+  test('keyboard: Enter on the dismiss control routes to the ADAPTER cancel wiring on every surface', async () => {
     for (const binding of surfaceBindings) {
       const model = benignFixtureModel();
       const selection = fixtureSelection(model);
       const built = propsForSurface(binding, model, selection);
       const handle = await mountSurface(binding, built.props);
-      const buttons = Array.from(handle.container.querySelectorAll('button')) as any[];
-      const cancel =
-        buttons.find((b) => b.classList?.contains?.('cancel')) ??
-        buttons.find((b) => (b.textContent ?? '').trim() === 'Cancel');
+      const cancel = handle.container.querySelector('[data-testid="signing-dismiss"]');
       expect(cancel).toBeTruthy();
       pressKeyOnButton(cancel, 'Enter');
       if (binding.kind === 'cli') {
@@ -1136,7 +1154,6 @@ describe('signing-approval mounted parity across production surface adapters (So
       } else {
         const t = built.widgetTransport!;
         expect(t._spies.cancel.length).toBe(1);
-        expect(t._spies.requestPreview.length).toBe(0);
       }
       handle.unmount();
     }
