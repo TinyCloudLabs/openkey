@@ -1,6 +1,7 @@
 # Runs the apps/web Playwright browser specs (chromium, and webkit for the SDK handshake) against
 # the SvelteKit dev server that tests/browser/playwright.config.ts starts (TC-2120). No secrets,
-# database or network services: every API call in the specs is routed in the browser.
+# external network services. Reviewer consent uses a disposable real-provider/PGlite
+# fixture; other specs route API responses in the browser.
 #
 # NOT a required check yet: make it required once a few main runs are clean (a flake is retried).
 #
@@ -79,7 +80,9 @@ jobs:
       # serves packages/sdk/dist/index.mjs (built with its @openkey/core and @openkey/types).
       - name: Build packages
         if: steps.relevance.outputs.relevant == 'true'
-        run: bun run build --filter @openkey/capability-review --filter @openkey/sdk
+        run: |
+          bun run db:generate
+          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review --filter @openkey/sdk
 
       # Restored and saved separately: a job that fails (a red spec) skips a plain cache step's
       # save, and the browser download is the slow, variable part of this job.
