@@ -45,7 +45,7 @@ export async function restoreOpenKeyDrill(options: {
   const target = await deriveRecoveryTargetPolicy(options.runtime, d);
   if (target.newPolicyId !== d.newPolicyId) throw new Error('Restore target policy changed');
   return withFencedOpenKeySnapshot(options.database, async snapshot => {
-    const receipts = await snapshot.tx.$queryRawUnsafe<{ headerHash: string; descriptorHash: string; newPolicyId: string; targetAppId: string; targetComposeHash: string; completedRecords: number }[]>('SELECT * FROM "escrow_restore_receipt" WHERE "escrowId" = $1', header.escrowId);
+    const receipts = await snapshot.tx.$queryRawUnsafe<{ headerHash: string; descriptorHash: string; newPolicyId: string; targetAppId: string; targetComposeHash: string; completedRecords: number }[]>('SELECT * FROM public."escrow_restore_receipt" WHERE "escrowId" = $1', header.escrowId);
     if (receipts.length) {
       const receipt = receipts[0]!;
       if (receipt.headerHash !== d.exportHeaderHash || receipt.descriptorHash !== frozen.descriptorHash || receipt.newPolicyId !== d.newPolicyId
@@ -82,13 +82,13 @@ export async function restoreOpenKeyDrill(options: {
             const sealed = reseal(row, oldById.get(identity(row))!, newById.get(identity(row))!);
             let count: number;
             if (row.table === 'ethereum_keys') {
-              count = await snapshot.tx.$executeRawUnsafe('UPDATE "ethereum_keys" SET "sealedBlob" = $1 WHERE id = $2', sealed, row.id);
+              count = await snapshot.tx.$executeRawUnsafe('UPDATE public."ethereum_keys" SET "sealedBlob" = $1 WHERE id = $2', sealed, row.id);
               ethereum.get(row.id)!.sealedBlob = sealed;
             } else if (row.table === 'nostr_keys') {
-              count = await snapshot.tx.$executeRawUnsafe('UPDATE "nostr_keys" SET "sealedSecret" = $1 WHERE id = $2', sealed, row.id);
+              count = await snapshot.tx.$executeRawUnsafe('UPDATE public."nostr_keys" SET "sealedSecret" = $1 WHERE id = $2', sealed, row.id);
               nostr.get(row.id)!.sealedSecret = sealed;
             } else {
-              count = await snapshot.tx.$executeRawUnsafe('UPDATE "user_encryption_key" SET "sealedPrivateKey" = $1 WHERE id = $2', sealed, row.id);
+              count = await snapshot.tx.$executeRawUnsafe('UPDATE public."user_encryption_key" SET "sealedPrivateKey" = $1 WHERE id = $2', sealed, row.id);
               legacy.get(row.id)!.sealedPrivateKey = sealed;
             }
             if (count !== 1) throw new Error('Restore row mismatch');
@@ -99,14 +99,14 @@ export async function restoreOpenKeyDrill(options: {
           const rewritten = buildOpenKeyInventory(actual);
           validateOpenKeySnapshot(rewritten.records, rewritten.paths, material);
           if (Date.parse(d.expiresAt) <= Date.now()) throw new Error('Restore descriptor expired');
-          await snapshot.tx.$executeRawUnsafe('INSERT INTO "escrow_restore_receipt" ("escrowId", "headerHash", "descriptorHash", "newPolicyId", "targetAppId", "targetComposeHash", "completedRecords") VALUES ($1,$2,$3,$4,$5,$6,$7)', header.escrowId, d.exportHeaderHash, frozen.descriptorHash, d.newPolicyId, d.targetAppId, d.targetComposeHash, completed);
+          await snapshot.tx.$executeRawUnsafe('INSERT INTO public."escrow_restore_receipt" ("escrowId", "headerHash", "descriptorHash", "newPolicyId", "targetAppId", "targetComposeHash", "completedRecords") VALUES ($1,$2,$3,$4,$5,$6,$7)', header.escrowId, d.exportHeaderHash, frozen.descriptorHash, d.newPolicyId, d.targetAppId, d.targetComposeHash, completed);
           return true;
         } finally { for (const key of fresh.values()) key.fill(0); }
       },
     });
     return { completed, descriptorHash: frozen.descriptorHash, escrowId: header.escrowId };
   }, async tx => {
-    const place = await tx.$queryRawUnsafe<{ database: string; address: string | null }[]>('SELECT current_database() AS database, inet_server_addr()::text AS address');
+    const place = await tx.$queryRawUnsafe<{ database: string; address: string | null }[]>('SELECT pg_catalog.current_database() AS database, pg_catalog.inet_server_addr()::pg_catalog.text AS address');
     if (place.length !== 1 || !place[0]!.database.endsWith('_escrow_drill') || ![null, '127.0.0.1', '::1'].includes(place[0]!.address)) throw new Error('Restore requires local drill database');
   }, true);
 }

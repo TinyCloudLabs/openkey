@@ -20,7 +20,7 @@ function assertNulFree(value: unknown): void {
 
 /** Erase expired private artifacts; retain hash, nonce and times for audit. */
 export async function sweepExpiredEscrowPreflights(database: EscrowSqlTransaction): Promise<void> {
-  await database.$executeRawUnsafe('UPDATE "escrow_preflight" SET "payload" = NULL WHERE "expiresAt" <= clock_timestamp() AND "payload" IS NOT NULL');
+  await database.$executeRawUnsafe('UPDATE public."escrow_preflight" SET "payload" = NULL WHERE "expiresAt" <= pg_catalog.clock_timestamp() AND "payload" IS NOT NULL');
 }
 
 /** Called inside the fenced preflight transaction; stores no plaintext key material. */
@@ -35,7 +35,7 @@ export async function storeEscrowPreflight(tx: EscrowSqlTransaction, input: Stor
     || createHash('sha256').update(copied.dbSnapshotUtf8).digest('hex') !== frozen.header.dbSnapshotHash) throw new Error('Invalid stored preflight');
   await sweepExpiredEscrowPreflights(tx);
   const rows = await tx.$executeRawUnsafe(
-    'INSERT INTO "escrow_preflight" ("policyHash", "nonce", "expiresAt", "payload") VALUES ($1, $2, $3::timestamptz, $4::jsonb)',
+    'INSERT INTO public."escrow_preflight" ("policyHash", "nonce", "expiresAt", "payload") VALUES ($1, $2, $3::pg_catalog.timestamptz, $4::pg_catalog.jsonb)',
     frozen.hash, frozen.header.nonce, frozen.header.expiresAt, JSON.stringify(copied),
   );
   if (rows !== 1) throw new Error('Preflight not stored');
@@ -47,7 +47,7 @@ export async function loadEscrowPreflight(database: EscrowSqlTransaction, policy
   if (typeof policyHash !== 'string' || !/^[a-f0-9]{64}$/.test(policyHash)) throw new Error('Invalid preflight hash');
   await sweepExpiredEscrowPreflights(database);
   const rows = await database.$queryRawUnsafe<{ payload: StoredEscrowPreflight }[]>(
-    'SELECT "payload" FROM "escrow_preflight" WHERE "policyHash" = $1 AND "consumedAt" IS NULL AND "expiresAt" > clock_timestamp() AND "payload" IS NOT NULL', policyHash,
+    'SELECT "payload" FROM public."escrow_preflight" WHERE "policyHash" = $1 AND "consumedAt" IS NULL AND "expiresAt" > pg_catalog.clock_timestamp() AND "payload" IS NOT NULL', policyHash,
   );
   if (rows.length !== 1) throw new Error('Preflight unavailable');
   const result = structuredClone(rows[0]!.payload);

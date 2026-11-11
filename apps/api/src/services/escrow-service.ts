@@ -125,10 +125,10 @@ export function createOpenKeyEscrowService(database: Database, getRuntime: () =>
         if (bundle.dryRun) throw new Error('Incomplete export');
         const total = snapshot.inventory.records.length;
         const inserted = await snapshot.tx.$executeRawUnsafe(
-          'INSERT INTO "escrow_archive" ("escrowId", "headerHash", "bundle", "recordManifestUtf8", "dbSnapshotUtf8", "sourceSnapshotId", "exportSnapshotId", "expectedRecords", "completedRecords", "createdAt") VALUES ($1,$2,$3::jsonb,$4,$5,$6,$7,$8,$8,clock_timestamp())',
+          'INSERT INTO public."escrow_archive" ("escrowId", "headerHash", "bundle", "recordManifestUtf8", "dbSnapshotUtf8", "sourceSnapshotId", "exportSnapshotId", "expectedRecords", "completedRecords", "createdAt") VALUES ($1,$2,$3::pg_catalog.jsonb,$4,$5,$6,$7,$8,$8,pg_catalog.clock_timestamp())',
           policy.escrowId, bundle.headerHash, JSON.stringify(bundle), prepared.recordManifestUtf8, prepared.dbSnapshotUtf8, policy.snapshotId, snapshot.snapshotId, total);
         if (inserted !== 1) throw new Error('Archive incomplete');
-        await snapshot.tx.$executeRawUnsafe('DELETE FROM "escrow_archive" WHERE "escrowId" IN (SELECT "escrowId" FROM "escrow_archive" ORDER BY "createdAt" DESC, "escrowId" DESC OFFSET 2)');
+        await snapshot.tx.$executeRawUnsafe('DELETE FROM public."escrow_archive" WHERE "escrowId" IN (SELECT "escrowId" FROM public."escrow_archive" ORDER BY "createdAt" DESC, "escrowId" DESC OFFSET 2)');
         return { archiveId: policy.escrowId, bundle };
         });
       }, async tx => {

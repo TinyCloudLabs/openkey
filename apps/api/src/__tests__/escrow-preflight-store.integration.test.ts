@@ -1,4 +1,4 @@
-import { escrowTestPostgres } from './escrow-test-pg';
+import { createEscrowTestDatabase } from './escrow-test-pg';
 import { expect, test } from 'bun:test';
 import { Client } from 'pg';
 import { PrismaClient } from '@openkey/db';
@@ -11,11 +11,10 @@ import vector from '../../../../packages/tee/tests/fixtures/escrow-approval-v1.j
 import type { ExportPolicy } from '@openkey/tee';
 const run = process.env.OPENKEY_ESCROW_TEST_PG === '1' ? test : test.skip;
 run('private preflight is immutable, expiring and consumed atomically with its approval audit', async () => {
-  const local = escrowTestPostgres();
+  const fixture = await createEscrowTestDatabase();
+  const local = fixture.local;
   const setup = new Client(local); await setup.connect();
-  const schema = 'escrow_preflight_' + crypto.randomUUID().replaceAll('-', '');
-  await setup.query(`CREATE SCHEMA "${schema}"`); await setup.query(`SET search_path TO "${schema}"`);
-  const prisma = new PrismaClient({ adapter: new PrismaPg({ ...local, options: `-c search_path=${schema}` }) });
+  const prisma = new PrismaClient({ adapter: new PrismaPg({ ...local }) });
   try {
     for (const name of ['authorization', 'preflight']) await setup.query(readFileSync(new URL(`../../../../packages/db/prisma/migrations/20261111_escrow_${name}/migration.sql`, import.meta.url), 'utf8'));
     const recordManifestUtf8 = '["tinycloud/escrow/record-manifest",1,[]]';
@@ -37,5 +36,5 @@ run('private preflight is immutable, expiring and consumed atomically with its a
     await setup.query('UPDATE escrow_preflight SET "expiresAt" = clock_timestamp() - INTERVAL \'1 second\' WHERE "policyHash"=$1', [nextHash]);
     await expect(loadEscrowPreflight(prisma, nextHash)).rejects.toThrow();
     expect((await setup.query('SELECT payload IS NULL AS erased FROM escrow_preflight WHERE \"policyHash\"=$1', [nextHash])).rows[0]!.erased).toBe(true);
-  } finally { await prisma.$disconnect(); await setup.query(`DROP SCHEMA "${schema}" CASCADE`); await setup.end(); }
+  } finally { await prisma.$disconnect(); await setup.end(); await fixture.cleanup(); }
 });

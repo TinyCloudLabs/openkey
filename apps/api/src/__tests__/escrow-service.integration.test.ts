@@ -1,4 +1,4 @@
-import { escrowTestPostgres } from './escrow-test-pg';
+import { createEscrowTestDatabase } from './escrow-test-pg';
 import { expect, test } from 'bun:test';
 import { Client } from 'pg';
 import { PrismaClient } from '@openkey/db';
@@ -21,12 +21,11 @@ run('real HTTP preflight and export bind the same private snapshot and require t
   });
   const { createOpenKeyEscrowService } = await import('../services/escrow-service?service-integration' as string);
   const { escrowPreflightMessage, escrowApprovalMessage } = await import('../services/escrow-approval');
-  const local = escrowTestPostgres();
+  const fixture = await createEscrowTestDatabase();
+  const local = fixture.local;
   const setup = new Client(local); await setup.connect();
-  const schema = 'escrow_service_' + crypto.randomUUID().replaceAll('-', '');
-  await setup.query(`CREATE SCHEMA "${schema}"`); await setup.query(`SET search_path TO "${schema}"`);
   const queries: string[] = [];
-  const prisma = new PrismaClient({ adapter: new PrismaPg({ ...local, options: `-c search_path=${schema}` }), log: [{ emit: 'event', level: 'query' }] });
+  const prisma = new PrismaClient({ adapter: new PrismaPg({ ...local }), log: [{ emit: 'event', level: 'query' }] });
   prisma.$on('query', event => queries.push(event.query));
   const derive = (path: string) => new Uint8Array(createHash('sha256').update('SYNTHETIC-ONLY:' + path).digest());
   let derivations = 0;
@@ -63,9 +62,10 @@ run('real HTTP preflight and export bind the same private snapshot and require t
     const signature = Buffer.from(await webcrypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, keys[0]!.privateKey, escrowPreflightMessage(descriptor))).toString('base64url');
     const response = await post('/preflight', { approval: { ...descriptor, signature }, approverId: 'admin-1' });
     expect(response.status).toBe(200);
-    const firstLock = queries.findIndex(query => query.startsWith('LOCK TABLE \"ethereum_keys\"'));
+    const firstLock = queries.findIndex(query => query.startsWith('LOCK TABLE public.\"ethereum_keys\"'));
     expect(firstLock).toBeGreaterThanOrEqual(0);
-    expect(queries[firstLock + 1]).toMatch(/^LOCK TABLE \"escrow_authorization\"/);
+    expect(queries[firstLock + 1]).toBe('SET LOCAL search_path = pg_catalog, public');
+    expect(queries[firstLock + 2]).toMatch(/^LOCK TABLE public.\"escrow_authorization\"/);
     expect(queries.slice(0, firstLock).every(query => /^(BEGIN|SET TRANSACTION)/i.test(query))).toBe(true);
     const preflight = await response.json();
     const publicText = JSON.stringify(preflight);
@@ -136,5 +136,5 @@ run('real HTTP preflight and export bind the same private snapshot and require t
     const child = Bun.spawn([process.execPath, '-e', script], { env: {}, stdout: 'pipe', stderr: 'pipe' });
     expect(await child.exited).toBe(0);
 
-  } finally { await prisma.$disconnect(); await setup.query(`DROP SCHEMA "${schema}" CASCADE`); await setup.end(); }
+  } finally { await prisma.$disconnect(); await setup.end(); await fixture.cleanup(); }
 }, 30000);

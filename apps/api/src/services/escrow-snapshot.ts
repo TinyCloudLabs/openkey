@@ -21,10 +21,11 @@ export async function withFencedOpenKeySnapshot<T>(database: EscrowSqlDatabase, 
     // SHARE blocks INSERT/UPDATE/DELETE (ROW EXCLUSIVE), including new paths.
     // Fixed order across maintenance operations avoids table-order inversion.
     await tx.$executeRawUnsafe(exclusive === true
-      ? 'LOCK TABLE "ethereum_keys", "nostr_keys", "user_encryption_key" IN EXCLUSIVE MODE'
-      : 'LOCK TABLE "ethereum_keys", "nostr_keys", "user_encryption_key" IN SHARE MODE');
+      ? 'LOCK TABLE public."ethereum_keys", public."nostr_keys", public."user_encryption_key" IN EXCLUSIVE MODE'
+      : 'LOCK TABLE public."ethereum_keys", public."nostr_keys", public."user_encryption_key" IN SHARE MODE');
+    await tx.$executeRawUnsafe('SET LOCAL search_path = pg_catalog, public');
     if (beforeRead) await beforeRead(tx);
-    const marker = await tx.$queryRawUnsafe<{ snapshot: string }[]>('SELECT txid_current_snapshot()::text AS snapshot');
+    const marker = await tx.$queryRawUnsafe<{ snapshot: string }[]>('SELECT pg_catalog.txid_current_snapshot()::pg_catalog.text AS snapshot');
     if (marker.length !== 1 || !/^\d+:\d+:(?:\d+(?:,\d+)*)?$/.test(marker[0]!.snapshot)) throw new Error('Invalid database snapshot');
     const rows = await readOpenKeySnapshotRows(tx);
     const inventory = buildOpenKeyInventory(rows);
@@ -35,9 +36,9 @@ export async function withFencedOpenKeySnapshot<T>(database: EscrowSqlDatabase, 
 
 /** Complete fixed-column reads, for post-write verification in the same fenced tx. */
 export async function readOpenKeySnapshotRows(tx: EscrowSqlTransaction): Promise<OpenKeySnapshotRows> {
-  const ethereum = await tx.$queryRawUnsafe<OpenKeySnapshotRows['ethereum']>('SELECT "id", "userId", "sealingContext", "keyType"::text AS "keyType", "sealedBlob", "address", "publicKey", "isCanonicalTinyCloud", "keyIndex", "label", "archivedAt", "createdAt" FROM "ethereum_keys" ORDER BY "id"');
-  const nostr = await tx.$queryRawUnsafe<OpenKeySnapshotRows['nostr']>('SELECT "id", "userId", "sealingContext", "sealedSecret", "pubkeyHex", "npub", "label", "revokedAt", "createdAt" FROM "nostr_keys" ORDER BY "id"');
-  const legacy = await tx.$queryRawUnsafe<OpenKeySnapshotRows['legacy']>('SELECT "id", "userId", "sealedPrivateKey", "publicKey", "createdAt" FROM "user_encryption_key" ORDER BY "id"');
+  const ethereum = await tx.$queryRawUnsafe<OpenKeySnapshotRows['ethereum']>('SELECT "id", "userId", "sealingContext", "keyType"::pg_catalog.text AS "keyType", "sealedBlob", "address", "publicKey", "isCanonicalTinyCloud", "keyIndex", "label", "archivedAt", "createdAt" FROM public."ethereum_keys" ORDER BY "id"');
+  const nostr = await tx.$queryRawUnsafe<OpenKeySnapshotRows['nostr']>('SELECT "id", "userId", "sealingContext", "sealedSecret", "pubkeyHex", "npub", "label", "revokedAt", "createdAt" FROM public."nostr_keys" ORDER BY "id"');
+  const legacy = await tx.$queryRawUnsafe<OpenKeySnapshotRows['legacy']>('SELECT "id", "userId", "sealedPrivateKey", "publicKey", "createdAt" FROM public."user_encryption_key" ORDER BY "id"');
   const rows = { ethereum, nostr, legacy };
   return rows;
 }

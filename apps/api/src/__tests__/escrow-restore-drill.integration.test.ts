@@ -15,6 +15,12 @@ import { withFencedOpenKeySnapshot } from '../services/escrow-snapshot';
 import { validateOpenKeySnapshot } from '../services/escrow-validate';
 import { restoreOpenKeyDrill } from '../services/escrow-restore-drill';
 
+async function createFixtureTables(setup: Client) {
+  await setup.query('CREATE TABLE ethereum_keys (id text PRIMARY KEY, "userId" text, "sealingContext" text, "keyType" text, "sealedBlob" text, address text, "publicKey" text NOT NULL DEFAULT \'\', "isCanonicalTinyCloud" boolean NOT NULL DEFAULT false, "keyIndex" integer NOT NULL DEFAULT 0, label text, "archivedAt" timestamptz, "createdAt" timestamptz NOT NULL DEFAULT now())');
+  await setup.query('CREATE TABLE nostr_keys (id text PRIMARY KEY, "userId" text, "sealingContext" text, "sealedSecret" text, "pubkeyHex" text, npub text NOT NULL DEFAULT \'\', label text, "revokedAt" timestamptz, "createdAt" timestamptz NOT NULL DEFAULT now())');
+  await setup.query('CREATE TABLE user_encryption_key (id text PRIMARY KEY, "userId" text, "sealedPrivateKey" text, "publicKey" text, "createdAt" timestamptz NOT NULL DEFAULT now())');
+}
+
 const run = process.env.OPENKEY_ESCROW_TEST_PG === '1' ? test : test.skip;
 run('isolated real PostgreSQL drill restores every key type atomically under a new policy', async () => {
   const local = escrowTestPostgres();
@@ -35,9 +41,7 @@ run('isolated real PostgreSQL drill restores every key type atomically under a n
     return { key, derivedPublicKey: Buffer.from(secp256k1.getPublicKey(key, true)).toString('hex'), sourcePublicKey: privateKeyToAccount(('0x' + '03'.padStart(64, '0')) as `0x${string}`).publicKey, signatureChain: ['0'.repeat(130), '0'.repeat(130)] };
   } };
   try {
-    await setup.query('CREATE TABLE ethereum_keys (id text PRIMARY KEY, "userId" text, "sealingContext" text, "keyType" text, "sealedBlob" text, address text, "publicKey" text NOT NULL DEFAULT \'\', "isCanonicalTinyCloud" boolean NOT NULL DEFAULT false, "keyIndex" integer NOT NULL DEFAULT 0, label text, "archivedAt" timestamptz, "createdAt" timestamptz NOT NULL DEFAULT now())');
-    await setup.query('CREATE TABLE nostr_keys (id text PRIMARY KEY, "userId" text, "sealingContext" text, "sealedSecret" text, "pubkeyHex" text, npub text NOT NULL DEFAULT \'\', label text, "revokedAt" timestamptz, "createdAt" timestamptz NOT NULL DEFAULT now())');
-    await setup.query('CREATE TABLE user_encryption_key (id text PRIMARY KEY, "userId" text, "sealedPrivateKey" text, "publicKey" text, "createdAt" timestamptz NOT NULL DEFAULT now())');
+    await createFixtureTables(setup);
     await setup.query(readFileSync(new URL('../../../../packages/db/prisma/migrations/20261111_escrow_restore_receipt/migration.sql', import.meta.url), 'utf8'));
     const ethereumSecret = ('0x' + '01'.padStart(64, '0')) as `0x${string}`;
     const nostrSecret = '02'.padStart(64, '0');
@@ -74,7 +78,41 @@ run('isolated real PostgreSQL drill restores every key type atomically under a n
         $queryRawUnsafe: async <T>(query: string) => { statements.push(query); return [place] as T; },
       }) };
       await expect(restoreOpenKeyDrill({ ...options, database: guarded })).rejects.toThrow('local drill');
-      expect(statements).toEqual(['LOCK TABLE "ethereum_keys", "nostr_keys", "user_encryption_key" IN EXCLUSIVE MODE', 'SELECT current_database() AS database, inet_server_addr()::text AS address']);
+      expect(statements).toEqual(['LOCK TABLE public."ethereum_keys", public."nostr_keys", public."user_encryption_key" IN EXCLUSIVE MODE', 'SET LOCAL search_path = pg_catalog, public', 'SELECT pg_catalog.current_database() AS database, pg_catalog.inet_server_addr()::pg_catalog.text AS address']);
+    }
+    // A valid copied snapshot in a NON-drill DB plus hostile search_path must still refuse.
+    const nonDrillName = 'tc_' + crypto.randomUUID().replaceAll('-', '') + '_non_drill';
+    await control.query(`CREATE DATABASE "${nonDrillName}"`);
+    const shadowSetup = new Client({ ...local, database: nonDrillName }); await shadowSetup.connect();
+    const shadowQueries: string[] = [];
+    const shadowPrisma = new PrismaClient({ adapter: new PrismaPg({ ...local, database: nonDrillName, options: '-c search_path=spoof,pg_catalog,public' }), log: [{ emit: 'event', level: 'query' }] });
+    shadowPrisma.$on('query', event => shadowQueries.push(event.query));
+    try {
+      await createFixtureTables(shadowSetup);
+      await shadowSetup.query(readFileSync(new URL('../../../../packages/db/prisma/migrations/20261111_escrow_restore_receipt/migration.sql', import.meta.url), 'utf8'));
+      await shadowSetup.query('CREATE SCHEMA spoof');
+      await shadowSetup.query("CREATE FUNCTION spoof.current_database() RETURNS name LANGUAGE sql AS $$ SELECT 'forged_escrow_drill'::name $$");
+      await shadowSetup.query('CREATE FUNCTION spoof.inet_server_addr() RETURNS inet LANGUAGE sql AS $$ SELECT NULL::inet $$');
+      for (const table of ['ethereum_keys', 'nostr_keys', 'user_encryption_key']) {
+        await shadowSetup.query(`CREATE TABLE spoof."${table}" (LIKE public."${table}" INCLUDING ALL)`);
+        const original = (await setup.query(`SELECT * FROM public."${table}"`)).rows;
+        for (const row of original) {
+          await shadowSetup.query(`INSERT INTO public."${table}" SELECT * FROM pg_catalog.json_populate_record(NULL::public."${table}", $1::json)`, [JSON.stringify(row)]);
+          await shadowSetup.query(`INSERT INTO spoof."${table}" SELECT * FROM pg_catalog.json_populate_record(NULL::spoof."${table}", $1::json)`, [JSON.stringify(row)]);
+        }
+      }
+      expect((await shadowSetup.query('SELECT spoof.current_database() AS database')).rows[0].database).toBe('forged_escrow_drill');
+      const beforeRows = await shadowSetup.query('SELECT (SELECT count(*) FROM public.ethereum_keys) AS ethereum, (SELECT count(*) FROM public.nostr_keys) AS nostr, (SELECT count(*) FROM public.user_encryption_key) AS legacy, (SELECT count(*) FROM public.escrow_restore_receipt) AS receipts, (SELECT count(*) FROM spoof.ethereum_keys) AS shadow');
+      await expect(restoreOpenKeyDrill({ ...options, database: createPrismaEscrowDatabase(shadowPrisma) })).rejects.toThrow('local drill');
+      expect(shadowQueries.filter(query => query.startsWith('SELECT'))).toEqual(['SELECT pg_catalog.current_database() AS database, pg_catalog.inet_server_addr()::pg_catalog.text AS address']);
+      expect(shadowQueries.some(query => /^(INSERT|UPDATE|DELETE)/.test(query))).toBe(false);
+      expect(shadowQueries.find(query => query.startsWith('LOCK TABLE'))).toBe('LOCK TABLE public."ethereum_keys", public."nostr_keys", public."user_encryption_key" IN EXCLUSIVE MODE');
+      const afterRows = await shadowSetup.query('SELECT (SELECT count(*) FROM public.ethereum_keys) AS ethereum, (SELECT count(*) FROM public.nostr_keys) AS nostr, (SELECT count(*) FROM public.user_encryption_key) AS legacy, (SELECT count(*) FROM public.escrow_restore_receipt) AS receipts, (SELECT count(*) FROM spoof.ethereum_keys) AS shadow');
+      expect(afterRows.rows).toEqual(beforeRows.rows);
+      expect(afterRows.rows[0]).toEqual({ ethereum: '3', nostr: '1', legacy: '1', receipts: '0', shadow: '3' });
+    } finally {
+      await shadowPrisma.$disconnect(); await shadowSetup.end();
+      await control.query(`DROP DATABASE "${nonDrillName}"`);
     }
     const before = await withFencedOpenKeySnapshot(database, async snapshot => snapshot.ciphertextSnapshotHash);
     await expect(restoreOpenKeyDrill({ ...options, enabled: false })).rejects.toThrow('disabled');
@@ -114,7 +152,7 @@ run('isolated real PostgreSQL drill restores every key type atomically under a n
     expect((await setup.query('SELECT * FROM escrow_restore_receipt')).rows).toHaveLength(1);
     const firstLock = queries.findIndex(query => query.includes('IN EXCLUSIVE MODE'));
     expect(firstLock).toBeGreaterThan(0);
-    expect(queries[firstLock]).toBe('LOCK TABLE \"ethereum_keys\", \"nostr_keys\", \"user_encryption_key\" IN EXCLUSIVE MODE');
+    expect(queries[firstLock]).toBe('LOCK TABLE public.\"ethereum_keys\", public.\"nostr_keys\", public.\"user_encryption_key\" IN EXCLUSIVE MODE');
     for (const share of shares) share.fill(0);
   } finally {
     await prisma.$disconnect(); await setup.end();

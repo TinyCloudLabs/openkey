@@ -1,4 +1,4 @@
-import { escrowTestPostgres } from './escrow-test-pg';
+import { createEscrowTestDatabase } from './escrow-test-pg';
 import { expect, test } from 'bun:test';
 import { PrismaClient } from '@openkey/db';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -9,14 +9,11 @@ import { withFencedOpenKeySnapshot, type EscrowSqlDatabase, type EscrowSqlTransa
 // Explicit disposable local server only. No DATABASE_URL or production configuration.
 const run = process.env.OPENKEY_ESCROW_TEST_PG === '1' ? test : test.skip;
 run('real PostgreSQL fence blocks new sealed rows through validation and releases after failure', async () => {
-  const local = escrowTestPostgres();
+  const fixture = await createEscrowTestDatabase();
+  const local = fixture.local;
   const owner = new Client(local); const writer = new Client(local);
   await owner.connect(); await writer.connect();
-  const schema = 'escrow_test_' + crypto.randomUUID().replaceAll('-', '');
   try {
-    await owner.query(`CREATE SCHEMA "${schema}"`);
-    await owner.query(`SET search_path TO "${schema}"`);
-    await writer.query(`SET search_path TO "${schema}"`);
     await owner.query('CREATE TABLE ethereum_keys (id text, "userId" text, "sealingContext" text, "keyType" text, "sealedBlob" text, address text, "publicKey" text NOT NULL DEFAULT \'\', "isCanonicalTinyCloud" boolean NOT NULL DEFAULT false, "keyIndex" integer NOT NULL DEFAULT 0, label text, "archivedAt" timestamptz, "createdAt" timestamptz NOT NULL DEFAULT now())');
     await owner.query('CREATE TABLE nostr_keys (id text, "userId" text, "sealingContext" text, "sealedSecret" text, "pubkeyHex" text, npub text NOT NULL DEFAULT \'\', label text, "revokedAt" timestamptz, "createdAt" timestamptz NOT NULL DEFAULT now())');
     await owner.query('CREATE TABLE user_encryption_key (id text, "userId" text, "sealedPrivateKey" text, "publicKey" text, "createdAt" timestamptz NOT NULL DEFAULT now())');
@@ -45,7 +42,7 @@ run('real PostgreSQL fence blocks new sealed rows through validation and release
     expect((await writer.query('SELECT id FROM ethereum_keys')).rows).toEqual([{ id: 'released' }]);
     await writer.query('DELETE FROM ethereum_keys');
     const queries: string[] = [];
-    const prisma = new PrismaClient({ adapter: new PrismaPg({ ...local, options: `-c search_path=${schema}` }), log: [{ emit: 'event', level: 'query' }] });
+    const prisma = new PrismaClient({ adapter: new PrismaPg({ ...local }), log: [{ emit: 'event', level: 'query' }] });
     prisma.$on('query', event => queries.push(event.query));
     try {
       // Commit immediately before Prisma begins the fenced operation.
@@ -58,7 +55,7 @@ run('real PostgreSQL fence blocks new sealed rows through validation and release
       });
     } finally { await prisma.$disconnect(); }
   } finally {
-    await owner.query(`DROP SCHEMA "${schema}" CASCADE`);
     await Promise.all([owner.end(), writer.end()]);
+    await fixture.cleanup();
   }
 });

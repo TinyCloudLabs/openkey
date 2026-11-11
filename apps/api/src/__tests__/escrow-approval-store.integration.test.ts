@@ -1,4 +1,4 @@
-import { escrowTestPostgres } from './escrow-test-pg';
+import { createEscrowTestDatabase } from './escrow-test-pg';
 import { expect, test } from 'bun:test';
 import { Client } from 'pg';
 import { PrismaClient } from '@openkey/db';
@@ -9,11 +9,10 @@ import { createEscrowAuthorizationStore } from '../services/escrow-approval-stor
 
 const run = process.env.OPENKEY_ESCROW_TEST_PG === '1' ? test : test.skip;
 run('real SQL atomically consumes nonce with audit and serializes the rate limit', async () => {
-  const local = escrowTestPostgres();
+  const fixture = await createEscrowTestDatabase();
+  const local = fixture.local;
   const setup = new Client(local); await setup.connect();
-  const schema = 'escrow_auth_' + crypto.randomUUID().replaceAll('-', '');
-  await setup.query(`CREATE SCHEMA "${schema}"`); await setup.query(`SET search_path TO "${schema}"`);
-  const prisma = new PrismaClient({ adapter: new PrismaPg({ ...local, options: `-c search_path=${schema}` }) });
+  const prisma = new PrismaClient({ adapter: new PrismaPg({ ...local }) });
   try {
     await setup.query(readFileSync(new URL('../../../../packages/db/prisma/migrations/20261111_escrow_authorization/migration.sql', import.meta.url), 'utf8'));
     await setup.query(readFileSync(new URL('../../../../packages/db/prisma/migrations/20261111_escrow_preflight/migration.sql', import.meta.url), 'utf8'));
@@ -42,6 +41,6 @@ run('real SQL atomically consumes nonce with audit and serializes the rate limit
     expect(audit.length).toBe(10);
     expect(audit.every(row => /^[a-f0-9]{64}$/.test(row.policyHash) && row.operatorId === request.operatorId && ((row.kind === 'export' && row.approverId === request.approverId) || (row.kind === 'preflight' && row.approverId === null)) && row.dryRun === true)).toBe(true);
   } finally {
-    await prisma.$disconnect(); await setup.query(`DROP SCHEMA "${schema}" CASCADE`); await setup.end();
+    await prisma.$disconnect(); await setup.end(); await fixture.cleanup();
   }
 });
