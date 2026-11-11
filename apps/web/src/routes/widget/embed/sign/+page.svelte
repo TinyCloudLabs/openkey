@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { legacySignOrigin, legacySignReadyOrigin } from '$lib/legacy-sign-origin';
   import { tick, untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
@@ -76,6 +77,7 @@
   let reviewEditing = $state(false);
   let currentRequestId = $state<string | null>(null);
   let transport: WidgetTransport | null = null;
+  let legacyOrigin = $state<string | null>(null);
   let layoutReady = $state(false);
   let layoutError = $state('');
   let layoutGate: IframeLayoutGate | null = null;
@@ -222,8 +224,8 @@
       // Emit legacy ready only under wildcard compat path so pre-
       // consolidation SDKs still bootstrap.
       if (origin === '*') {
-        const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
-        window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
+        const targetOrigin = legacySignReadyOrigin();
+        if (targetOrigin) window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
       }
     }
   });
@@ -370,7 +372,7 @@
         }
         return;
       }
-      window.parent.postMessage({ type: 'openkey:resize', height }, origin);
+      if (legacyOrigin) window.parent.postMessage({ type: 'openkey:resize', height }, legacyOrigin);
     };
     const observer = new ResizeObserver(measure);
     observer.observe(content);
@@ -588,11 +590,14 @@
     }
 
     if (event.data?.type === 'openkey:sign:request') {
+      const requestOrigin = legacySignOrigin(event.origin);
+      if (!requestOrigin || (legacyOrigin && legacyOrigin !== requestOrigin)) return;
       // Sol MAJOR-9: refuse overlapping legacy request.
       if (requestSealed) {
         console.warn('[embed sign widget] refusing overlapping legacy request');
         return;
       }
+      legacyOrigin = requestOrigin;
       keyReadGeneration++;
       key = null;
       keyOwnerToken = null;
@@ -1265,7 +1270,7 @@
       window.parent.postMessage(envelope, origin);
       return;
     }
-    window.parent.postMessage(data, origin);
+    if (legacyOrigin) window.parent.postMessage(data, legacyOrigin);
   }
 
   function sendClose() {
@@ -1274,11 +1279,13 @@
     // Sol MAJOR-4 (continuation): correlate close messages to the active
     // request.
     const closeMsg: Record<string, unknown> = { type: 'openkey:close' };
+    const targetOrigin = currentRequestId ? origin : legacyOrigin;
+    if (!targetOrigin) return;
     if (currentRequestId && messageProtocolVersion !== null) {
       closeMsg.requestId = currentRequestId;
       closeMsg.protocolVersion = messageProtocolVersion;
     }
-    window.parent.postMessage(closeMsg, origin);
+    window.parent.postMessage(closeMsg, targetOrigin);
   }
 
 </script>
