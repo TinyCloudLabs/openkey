@@ -53,5 +53,6 @@ test('closed transform enum accepts exact raw GetKey material and versioned path
   expect((await freezeEscrowHeader(raw)).header.paths[0]!.transform).toBe('dstack-getkey-raw-v1');
   await expect(freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, transform: 'unknown' as never }] })).rejects.toThrow();
   await expect(freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, path: 'opencredentials/share-email/v1/otp-pepper' }] })).rejects.toThrow();
+  await expect(freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, path: 'opencredentials/share-email/v2/otp-pepper', version: 1 }] })).rejects.toThrow();
   expect((await freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, path: 'opencredentials/share-email/v1/otp-pepper', version: 1 }] })).header.paths[0]!.version).toBe(1);
 });

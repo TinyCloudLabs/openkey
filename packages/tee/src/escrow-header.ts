@@ -74,7 +74,8 @@ export function encodeEscrowHeader(header: EscrowHeader): Uint8Array {
     text(item.path); text(item.purpose); text(item.sourcePublicKey);
     count(item.version); count(item.expectedCount);
     escrowMaterialLength(item.transform);
-    if (item.version === 0 && /(?:^|\/)v[0-9]+(?:\/|$)/.test(item.path)) throw new Error('Versioned path requires version');
+    const pathVersions = [...item.path.matchAll(/(?:^|\/)v([0-9]+)(?=\/|$)/g)];
+    if (pathVersions.some(match => Number(match[1]) !== item.version)) throw new Error('Path version mismatch');
     if (item.expectedCount === 0 || !Array.isArray(item.signatureChain) || item.signatureChain.length === 0) throw new Error('Invalid escrow path');
     for (const entry of item.signatureChain) text(entry);
     const identity = JSON.stringify([item.path, item.purpose, item.version]);

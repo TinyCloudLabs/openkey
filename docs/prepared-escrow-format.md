@@ -104,4 +104,5 @@ code: witness issuer uses the first 32 bytes and its subkey adapter hashes the
 full raw material. Item framing is iv12 || ciphertext(materialLength) || tag16;
 transform is authenticated in item AAD. Version 0 denotes an unversioned path
 and is rejected when the path contains a `/vN/` or trailing `/vN` segment.
-Versioned service paths use their actual N, identically in TS and Rust.
+Versioned service paths require version === N for every vN segment, identically
+in TS and Rust.
