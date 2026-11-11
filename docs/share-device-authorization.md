@@ -71,6 +71,46 @@ do not support device transactions: any request to them that carries
 
 The default and maximum lifetime is 30 days, counted from approval.
 
+## Durable approval-result codes
+
+Durable approval completion responses include optional `approvalCode` delivery
+metadata: `{ code, expiresAt }`, or `null` when unavailable. This metadata is
+separate from the encrypted delegation. The saved encrypted result retains the
+full completion delegation, including `requestedSpaces`.
+
+A requester collects the code through the discovery endpoint for its saved request:
+
+```http
+POST /api/approval-requests/<saved-request-id>/result
+OpenKey-Session-Proof: <existing discovery proof>
+OpenKey-Delegation-Claim: <saved random base64url claim intent>
+Content-Type: application/json
+
+{"bodyCid":"<saved-request-body-cid>","approvalCode":"XXXX-XXXX"}
+```
+
+Save the claim intent before sending it: use at least 16 random bytes encoded
+as unpadded base64url (22–128 characters). For code discovery, the proof's credential is the exact JSON array
+`["discover", requestId, bodyCid, "", "", codeHash, claimHash]`. Both hashes are
+SHA-256 encoded as unpadded base64url: `codeHash` hashes the trimmed, lowercase
+code, and `claimHash` hashes the exact saved claim header. The proof's existing
+`cred_hash` then hashes that serialized array. Discovery without a code keeps
+its existing five-element credential; fetch and ACK are unchanged.
+
+The code is bound to the request ID,
+body CID and result reference, and requires that request's session proof.
+The same saved claim can retry until code expiry. The response carries the
+normal `status`, `resultRef` and `expiresAt`; continue through encrypted fetch,
+verification, durable save and result ACK. ACK invalidates the code. A saved
+result reference can be resumed without a code.
+
+Code lifetime is at most five minutes and never exceeds result retention.
+Ordinary requester-signed discovery remains available without a code.
+Approval-result code records contain only binding metadata; ordinary delegation
+codes retain their existing public-delegation format. Device and prepared
+handoff transports are unchanged. Client integration is released separately.
+Details: TC-2489.
+
 ## Ordinary `/delegate` links
 
 A `/delegate` link without `deviceTransactionId` can be made by anyone, so

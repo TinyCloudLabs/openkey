@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
 import { getPrisma } from '@openkey/db';
+import { getAccountOriginRefusals } from '../log';
 
 type MetricsCounter = { count(options?: Record<string, unknown>): Promise<number> };
 type RenewalGroup = { clientId: string; _count: { _all: number }; _max: { createdAt: Date | null } };
@@ -67,6 +68,8 @@ export async function collectInternalMetrics(database: MetricsDatabase, now = ne
         denied: signingDenials24h,
       },
     },
+    // Process-local counts reset on restart and never include Origin values.
+    originRefusals: getAccountOriginRefusals(),
   };
 }
 
