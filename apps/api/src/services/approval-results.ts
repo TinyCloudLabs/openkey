@@ -5,6 +5,7 @@ import type { OpenKeyApprovalRequestV1 } from '@tinycloud/share-envelope/links';
 import { strictSessionDid, type DeviceRelayEnvelope } from './device-authorization';
 import { hasPrivateJwkMember } from './authorization-signing';
 import { verifySessionProofClaims } from './native-delegation/session-proof';
+import { isShareInvitationGrant, shareInvitationOf } from './share-invitation';
 
 export interface ApprovalRequestRecord {
   id: string;
@@ -103,21 +104,29 @@ export class ApprovalResultService {
     if (record?.deniedAt) throw deniedError(record.deniedAt);
     if (!record || (!admitted && record.expiresAt <= now) || record.resultRef) throw new ApprovalResultError('expired_request', 'Approval request is no longer pending', 410);
     const request = record.request;
+    // A share invitation request names no permissions: OpenKey issues its one key (TC-2234).
+    const invitation = shareInvitationOf(request);
+    const acceptanceDeadline = invitation ? Date.parse(invitation.acceptanceExpiresAt) : Infinity;
     const jwk = input.jwk as JsonWebKey | null;
     if (!jwk || jwk.kty !== 'OKP' || jwk.crv !== 'Ed25519' || jwk.x !== request.targetPublicJwk.x || hasPrivateJwkMember(jwk) ||
-      input.host !== request.nodeOrigin || !sameJson(input.permissions, request.permissions)) {
+      input.host !== request.nodeOrigin ||
+      !(invitation ? isShareInvitationGrant(input.permissions) : sameJson(input.permissions, request.permissions))) {
       throw new ApprovalResultError('request_binding', 'Delegation binding does not match the immutable approval request', 400);
     }
     // The requester signed the longest lifetime it will accept; the owner may pick a shorter one.
     if (input.expiryMs !== undefined && input.expiryMs > request.grantLifetimeSeconds * 1000) {
       throw new ApprovalResultError('request_binding', 'Grant lifetime exceeds the immutable approval request', 400);
     }
+    if (input.expiryMs !== undefined && now.getTime() + input.expiryMs > acceptanceDeadline) {
+      throw new ApprovalResultError('request_binding', 'Grant lifetime runs past the invitation acceptance deadline', 400);
+    }
     if (input.signedSiwe !== undefined) {
       let siwe: SiweMessage;
       try { siwe = new SiweMessage(input.signedSiwe); } catch { throw new ApprovalResultError('invalid_delegation', 'Approval requires a canonical SIWE', 400); }
       const expiry = Date.parse(siwe.expirationTime ?? '');
       if (siwe.prepareMessage() !== input.signedSiwe || siwe.uri !== strictSessionDid(request.targetPublicJwk) || !Number.isFinite(expiry) || expiry <= now.getTime() ||
-        expiry > now.getTime() + request.grantLifetimeSeconds * 1000 + 5000) {
+        expiry > now.getTime() + request.grantLifetimeSeconds * 1000 + 5000 || expiry > acceptanceDeadline ||
+        (invitation && !isShareInvitationGrant(input.permissions, { address: siwe.address, chainId: siwe.chainId }))) {
         throw new ApprovalResultError('request_binding', 'Signed target or expiry does not match the approval request', 400);
       }
     }

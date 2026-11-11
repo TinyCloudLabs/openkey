@@ -43,6 +43,8 @@
   import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
   import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
   import { requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
+  import ShareInvitationSummary from '$lib/components/delegate/share-invitation-summary.svelte';
+  import type { ShareInvitationContext } from '$lib/share-invitation';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -429,6 +431,8 @@
   }
   let requestedPermissions = $state<RequestedPermission[]>([]);
   let requestReason = $state(normalizeReason(reasonParam));
+  // The share invitation a signed approval request names (TC-2234); OpenKey issues its one key.
+  let shareInvitation = $state<ShareInvitationContext | null>(null);
   // Set when a `permissions` parameter is present (even empty) but
   // unreadable: the request is refused rather than falling back to the
   // default abilities, which apply only when the parameter is absent.
@@ -587,6 +591,7 @@
       host = request.nodeOrigin;
       requestedPermissions = request.permissions;
       requestReason = normalizeReason(request.reason);
+      shareInvitation = request.context ?? null;
       // The requester signs its longest lifetime; the owner starts from its suggestion (the maximum when it gives none).
       expiryMaxMs = request.grantLifetimeSeconds * 1000;
       expiryParam = `${request.suggestedLifetimeSeconds ?? request.grantLifetimeSeconds}s`;
@@ -1850,6 +1855,7 @@
           signer line and the single error display (TC-659).
         -->
         {#snippet cliContext()}
+        {#if shareInvitation}<ShareInvitationSummary invitation={shareInvitation} />{/if}
         {#if selectedKey}
         {#if expectedAddress && !selectedMatchesExpected}
           <div class="w-full bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl text-sm" role="alert">

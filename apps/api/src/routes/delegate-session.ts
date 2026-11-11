@@ -521,6 +521,39 @@ function assertRawEncryptionPermission(
   }
 }
 
+// Share invitation key entries OpenKey built itself (TC-2234). A requester's own entries are never in this set, so
+// a request that names a `default/share/<id>` key is held to the decrypt-only rule above.
+const issuedShareInvitationEntries = new WeakSet<DelegationPermissionEntry>();
+const SHARE_INVITATION_KEY_ACTIONS = ['tinycloud.encryption/key.create', ENCRYPTION.DECRYPT];
+
+/**
+ * The one permission of a share invitation approval: `key.create` and `decrypt` on the share key `path`, which
+ * OpenKey generated. Only entries made here may carry `key.create` on a raw encryption resource.
+ */
+export function issuedShareInvitationPermission(path: string): DelegationPermissionEntry {
+  const entry = { service: RAW_ENCRYPTION_SERVICE, path, actions: [...SHARE_INVITATION_KEY_ACTIONS] };
+  issuedShareInvitationEntries.add(entry);
+  return entry;
+}
+
+/** The issued entry is the request's only permission and names the signer's own `default/share/<32 hex>` key. */
+function assertShareInvitationPermission(
+  entry: DelegationPermissionEntry,
+  count: number,
+  signer: { address: string; chainId: number },
+) {
+  const owner = `did:pkh:eip155:${signer.chainId}:${getAddress(signer.address)}`;
+  if (
+    count !== 1 ||
+    entry.space !== undefined ||
+    !new RegExp(`^${RAW_ENCRYPTION_PREFIX}${owner}:default/share/[0-9a-f]{32}$`).test(entry.path) ||
+    entry.actions.length !== SHARE_INVITATION_KEY_ACTIONS.length ||
+    entry.actions.some((action, index) => action !== SHARE_INVITATION_KEY_ACTIONS[index])
+  ) {
+    throw new DelegateRequestError('invalid_permissions', 'A share invitation approval grants one new share key only');
+  }
+}
+
 /** Service name of the device authorization encryption entry, exact on the wire. */
 const DEVICE_ENCRYPTION_SERVICE = 'tinycloud.encryption';
 /** Space name of the approving account's own default encryption network. */
@@ -580,6 +613,11 @@ export function sessionAbilitiesFromPermissions(
       }
       deviceDefaultSeen = true;
       addActions(rawAbilities, defaultEncryptionNetworkUrn(signer), [ENCRYPTION.DECRYPT]);
+      return;
+    }
+    if (issuedShareInvitationEntries.has(entry)) {
+      assertShareInvitationPermission(entry, permissions.length, signer);
+      addActions(rawAbilities, entry.path, entry.actions);
       return;
     }
     if (isRawEncryptionPermission(entry)) {

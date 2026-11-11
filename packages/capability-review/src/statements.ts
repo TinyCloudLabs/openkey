@@ -726,6 +726,11 @@ function buildNamedKeyStatement(
     parsed.keyPath === "share/" && verb === "create") {
     return { primaryText: SHARE_KEY_PREFIX_CREATE_STATEMENT, service: grant.service, resource, severity: "attention" };
   }
+  // The one share key OpenKey generates for a share invitation (TC-2234): the id means nothing to the owner.
+  if (parsed.kind === "key" && parsed.network === "default" &&
+    /^share\/[0-9a-f]{32}$/.test(parsed.keyPath) && verb === "create") {
+    return { primaryText: "Create an encryption key for this invitation only", service: grant.service, resource, severity: "attention" };
+  }
   if (parsed.kind === "key" && parsed.network === "default" &&
     /^share\/[^/]+$/.test(parsed.keyPath) && verb === "decrypt") {
     return { primaryText: "Open this shared file", service: grant.service, resource };

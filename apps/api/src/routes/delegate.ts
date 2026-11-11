@@ -133,7 +133,7 @@ import { PreparedHandoffError } from '../services/prepared-handoff';
 import { preparedHandoffService } from './prepared-handoffs';
 import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
-import { admitApprovalDelegation, checkApprovalDelegation, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
+import { admitApprovalDelegation, approvalRequestPermissions, checkApprovalDelegation, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
@@ -1402,8 +1402,8 @@ delegateRouter.post('/', async (c) => {
   const prefix = body.prefix || 'default';
   const host = body.host;
   const reason = normalizeDelegateReason(body.reason);
-  let permissions: PermissionEntry[] | undefined;
-  if (body.permissions !== undefined) {
+  let permissions: PermissionEntry[] | undefined = await approvalRequestPermissions(body, { address, chainId });
+  if (permissions === undefined && body.permissions !== undefined) {
     try {
       permissions = validatePermissions(body.permissions);
     } catch (err) {
@@ -1905,8 +1905,8 @@ delegateRouter.post('/prepare', async (c) => {
   const prefix = body.prefix || 'default';
   const host = body.host;
   const reason = normalizeDelegateReason(body.reason);
-  let permissions: PermissionEntry[] | undefined;
-  if (body.permissions !== undefined) {
+  let permissions: PermissionEntry[] | undefined = await approvalRequestPermissions(body, { address, chainId });
+  if (permissions === undefined && body.permissions !== undefined) {
     try {
       permissions = validatePermissions(body.permissions);
     } catch (err) {
