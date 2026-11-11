@@ -225,3 +225,21 @@ A session accepts exactly two distinct holder identities and coordinates from
 the export header, claims itself while opening shares, consumes itself after both authenticate, and clears opened
 share buffers on both success and failure. Responses contain completion counts
 and public identifiers only.
+
+Recovery target evidence contains `derivedPublicKey`, `sourcePublicKey` and the
+GetKey `signatureChain`, from the fixed path
+`openkey/escrow/recovery-provenance/v1`, with GetKey purpose exactly empty.
+The new policy id is SHA-256 of UTF-8 compact JSON
+`["tinycloud/escrow/new-policy",1,targetAppId,targetComposeHash,targetImageDigest,targetCodeHash,derivedPublicKey,sourcePublicKey]`.
+The temporary derived key is cleared after producing this public evidence.
+
+The holder release implementation verifies the export bundle first, then the
+recovery descriptor's quote under the committed recovery release pins. Recovery
+entries bind app id, compose hash, image digest, code hash, mrTd, RTMR0–2 and KMS
+root public key. It replays the v1 event log to RTMR3, matches app/compose,
+requires UpToDate DCAP status, rejects expired or future-created sessions, and
+checks the recovery report-data domain. It checks both GetKey signature links
+under the selected recovery root and recomputes the new policy id. Only then
+does it open the holder's original envelope and rewrap directly to the session
+recipient, clearing the opened share in a finally block. The package entry
+point accepts no caller-provided trust pins or quote verifier.

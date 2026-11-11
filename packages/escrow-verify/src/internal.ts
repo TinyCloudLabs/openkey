@@ -10,11 +10,11 @@ export const PCCS_URL = 'https://pccs.phala.network';
 export interface HolderBundle { header: EscrowHeader; quote: { quote: string; eventLog: string } }
 type Event = { imr: number; event_type: number; event: string; event_payload: string; digest: string; version?: number; preimage?: string };
 const hex = (value: Uint8Array) => Buffer.from(value).toString('hex');
-function compressed(value: string): string {
+export function compressed(value: string): string {
   if (typeof value !== 'string' || !/^(?:0x)?(?:[a-f0-9]{66}|[a-f0-9]{130})$/.test(value)) throw new Error('Invalid source public key');
   return hex(secp256k1.Point.fromBytes(Buffer.from(value.replace(/^0x/, ''), 'hex')).toBytes(true));
 }
-function replay(log: Event[]): { register: string; appId: string; composeHash: string } {
+export function replay(log: Event[]): { register: string; appId: string; composeHash: string } {
   if (!Array.isArray(log) || log.length === 0 || log.length > 100_000) throw new Error('Invalid event log');
   let register: Buffer = Buffer.alloc(48);
   const names = new Map<string, { index: number; payload: string }[]>();

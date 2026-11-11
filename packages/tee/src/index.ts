@@ -264,3 +264,7 @@ export type { EscrowQuote } from './escrow-provenance';
 
 export { EscrowRecoverySessions, freezeRecoveryDescriptor, wrapRecoveryShare } from './escrow-recovery-session';
 export type { RecoveryDescriptor, RecoveryShareEnvelope } from './escrow-recovery-session';
+export { recoveryPolicyId, deriveRecoveryTargetPolicy, RECOVERY_PROVENANCE_PATH } from './escrow-recovery-policy';
+export type { TargetPolicyEvidence } from './escrow-recovery-policy';
+export { unwrapEscrowShare } from './escrow-envelope';
+export type { ShareEnvelope } from './escrow-envelope';
