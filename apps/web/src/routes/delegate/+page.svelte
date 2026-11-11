@@ -24,6 +24,7 @@
   import PreparedHandoff from './PreparedHandoff.svelte';
   import OwnerRevocationHandoff from './OwnerRevocationHandoff.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
+  import { publicDelegationForCode } from '$lib/delegation-code-body';
   import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, deviceRequestTtlSeconds, loadVerifiedDeviceRequest } from '$lib/device-authorization';
   import DelegateLinkNotice from '$lib/components/delegate/delegate-link-notice.svelte';
   import {
@@ -1512,7 +1513,7 @@
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ delegation: payload }),
+        body: JSON.stringify({ delegation: publicDelegationForCode(payload) }),
       });
       if (!response.ok) {
         const body: unknown = await response.json().catch(() => null);
