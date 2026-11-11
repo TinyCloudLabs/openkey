@@ -23,7 +23,7 @@
   async function confirm() {
     if (!request || !origin || complete) return;
     complete = true;
-    window.opener.postMessage(
+    window.opener?.postMessage(
       { type: 'openkey:sign-out:confirmed', requestId: request.requestId, protocolVersion: request.protocolVersion },
       origin,
     );

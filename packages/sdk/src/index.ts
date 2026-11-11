@@ -1927,7 +1927,7 @@ export class OpenKey {
                 } else if (data.type === 'openkey:link-wallet:response') {
                   resolve({ address: data.address, keyId: data.keyId } as T);
                 } else if (data.type === 'openkey:sign-out:response') {
-                  resolve({ requestId: data.requestId, revoked: data.revoked } as T);
+                  resolve({ requestId: data.requestId, revoked: data.revoked === true } as T);
                 } else if (data.type === 'openkey:externalSign:approve') {
                   resolve({
                     authorizationContextToken: (data as any).authorizationContextToken,
@@ -2252,7 +2252,7 @@ export class OpenKey {
           } else if (data.type === 'openkey:link-wallet:response') {
             resolve({ address: data.address, keyId: data.keyId } as T);
           } else if (data.type === 'openkey:sign-out:response') {
-            resolve({ requestId: data.requestId, revoked: data.revoked } as T);
+            resolve({ requestId: data.requestId, revoked: data.revoked === true } as T);
           } else if (data.type === 'openkey:externalSign:approve') {
             // Sol MAJOR-3 (continuation): hand the preview payload back
             // to authorizeTinyCloudExternal so it can invoke the wallet.
