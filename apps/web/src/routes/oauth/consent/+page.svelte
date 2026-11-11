@@ -24,6 +24,9 @@
   const nativeRequest = clientId ? $page.url.searchParams.get('tinycloud_request') : null;
   const scope = $page.url.searchParams.get('scope') || 'openid';
   const requestedScopes = new Set(scope.split(/\s+/).filter(Boolean));
+  const identityOnlyConsent = requestedScopes.has('tinycloud:identity')
+    && !['keys', 'tinycloud:manage-key', 'tinycloud:delegation', 'tinycloud:session', 'tinycloud:mcp']
+      .some((capability) => requestedScopes.has(capability));
 
   // Extract signed query params (up to and including sig) for consent endpoint
   function getOAuthQuery(): string | undefined {
@@ -186,6 +189,14 @@
               </svg>
               Verify your OpenKey identity
             </li>
+            {#if requestedScopes.has('tinycloud:identity')}
+            <li class="flex items-center gap-2 text-surface-700">
+              <svg class="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+              </svg>
+              See your OpenKey wallet address
+            </li>
+            {/if}
             {#if requestedScopes.has('tinycloud:manage-key')}
             <li class="flex items-start gap-2 text-surface-700">
               <svg class="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -197,7 +208,11 @@
           </ul>
         </div>
         <p class="mt-3 text-xs text-surface-500">
-          This application may request access to your canonical OpenKey identity only through the scopes you approve.
+          {#if identityOnlyConsent}
+            This app can't sign anything or use your TinyCloud data.
+          {:else}
+            This application may request access to your canonical OpenKey identity only through the scopes you approve.
+          {/if}
         </p>
       </div>
 

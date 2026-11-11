@@ -17,9 +17,11 @@ import { buildEmailClaims } from './claims';
 import {
   DEFAULT_OAUTH_SCOPES,
   DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES,
+  isConfidentialWebClient,
   OAUTH_SCOPES,
   TINYCLOUD_CANONICAL_IDENTITY_CLAIM,
   TINYCLOUD_DELEGATION_SCOPE,
+  TINYCLOUD_IDENTITY_SCOPE,
   TINYCLOUD_MANAGE_KEY_SCOPE,
   TINYCLOUD_MCP_SCOPE,
   TINYCLOUD_OWNER_DIDS_CLAIM,
@@ -78,6 +80,9 @@ const baseURL = process.env.BETTER_AUTH_URL!;
 
 type AuthoritativeOauthClient = {
   id: string;
+  type: string | null;
+  public: boolean;
+  tokenEndpointAuthMethod: string | null;
 };
 
 const oauthClientContext = defineRequestState<string | undefined>(() => undefined);
@@ -89,7 +94,7 @@ async function loadAuthoritativeOauthClient(
   if (!clientId) return null;
   return database.oauthClient.findFirst({
     where: { clientId },
-    select: { id: true },
+    select: { id: true, type: true, public: true, tokenEndpointAuthMethod: true },
   });
 }
 
@@ -100,6 +105,9 @@ export async function buildKeyClaims(
   _mutate = false,
   database: PrismaClient = prisma,
 ) {
+  if (scopes.includes(TINYCLOUD_IDENTITY_SCOPE) && !scopes.includes(TINYCLOUD_MANAGE_KEY_SCOPE)) {
+    return undefined;
+  }
   if (!scopes.includes('keys')) return undefined;
   if (!client) return [];
   const keys = await database.ethereumKey.findMany({
@@ -144,22 +152,31 @@ export async function buildCanonicalTinyCloudIdentityClaim(
   client: AuthoritativeOauthClient | undefined,
   database: PrismaClient = prisma,
 ) {
-  if (!scopes.includes(TINYCLOUD_MANAGE_KEY_SCOPE) || !client) {
-    return undefined;
-  }
+  const hasManageKey = scopes.includes(TINYCLOUD_MANAGE_KEY_SCOPE);
+  const hasIdentity = scopes.includes(TINYCLOUD_IDENTITY_SCOPE);
+  if ((!hasManageKey && !hasIdentity) || !client) return undefined;
+  if (!hasManageKey && (!hasIdentity || !isConfidentialWebClient(client))) return undefined;
   const key = await database.ethereumKey.findFirst({
     where: primaryKeyWhere(user.id),
     select: { id: true, address: true },
   });
   if (!key) return undefined;
   const address = getAddress(key.address);
+  if (hasManageKey) {
+    return {
+      version: 'v1',
+      keyId: key.id,
+      address,
+      chainId: 1,
+      did: `did:pkh:eip155:1:${address}`,
+      spaceId: `tinycloud:pkh:eip155:1:${address}:applications`,
+    };
+  }
   return {
     version: 'v1',
-    keyId: key.id,
     address,
     chainId: 1,
     did: `did:pkh:eip155:1:${address}`,
-    spaceId: `tinycloud:pkh:eip155:1:${address}:applications`,
   };
 }
 

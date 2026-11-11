@@ -28,9 +28,9 @@ import { nativeUserRetryAfter } from './user-rate-limit';
  *   token issued to another client (plan amendment A2). No side effects. An
  *   unknown token otherwise gets RFC 7009's 200 once the provider has
  *   validated the client, JWT-shaped or not.
- * - Client create/update: the admin-managed scopes (`tinycloud:delegation`,
- *   `tinycloud:manage-key`) are never added or removed through the
- *   provider's user-facing client routes.
+ * - Client create/update: admin-managed scopes (`tinycloud:delegation`,
+ *   `tinycloud:manage-key`, `tinycloud:identity`) are never added or removed
+ *   through the provider's user-facing client routes.
  *
  * Native tokens are classified by how they were issued, never by the
  * client's current configuration. Tokens are normalized with the provider's
