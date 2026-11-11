@@ -222,6 +222,6 @@ HPKE suite, with info and AAD tuples respectively
 `["tinycloud/escrow/recovery-share-info",1,exportHeaderHash,descriptorHash,holderId,x]`
 and `["tinycloud/escrow/recovery-share-aad",1,exportHeaderHash,descriptorHash,holderId,x]`.
 A session accepts exactly two distinct holder identities and coordinates from
-the export header, consumes itself before opening shares, and clears opened
+the export header, claims itself while opening shares, consumes itself after both authenticate, and clears opened
 share buffers on both success and failure. Responses contain completion counts
 and public identifiers only.

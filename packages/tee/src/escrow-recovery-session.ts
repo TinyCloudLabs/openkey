@@ -61,7 +61,7 @@ export async function wrapRecoveryShare(share: Uint8Array, descriptor: RecoveryD
 type Target = Pick<RecoveryDescriptor, 'targetAppId' | 'targetComposeHash' | 'targetImageDigest' | 'targetCodeHash' | 'bootReference' | 'newPolicyId'>;
 export class EscrowRecoverySessions {
   #creating = 0;
-  #sessions = new Map<string, { descriptor: RecoveryDescriptor; descriptorHash: string; keys: CryptoKeyPair }>();
+  #sessions = new Map<string, { descriptor: RecoveryDescriptor; descriptorHash: string; keys: CryptoKeyPair; claimed?: boolean }>();
   constructor(private readonly options: { enabled?: boolean; isInTee: () => boolean | Promise<boolean>; quote: (descriptorHash: string) => Promise<EscrowQuote> }) {}
   async create(exportHeaderHash: string, target: Target) {
     if (this.options.enabled !== true || await this.options.isInTee() !== true) throw new Error('Recovery disabled');
@@ -95,9 +95,9 @@ export class EscrowRecoverySessions {
       if (packet.version !== 1 || packet.exportHeaderHash !== frozen.hash || packet.descriptorHash !== descriptorHash || !holder || holder.x !== packet.x || ids.has(packet.holderId) || coordinates.has(packet.x)) throw new Error('Invalid recovery holders');
       ids.add(packet.holderId); coordinates.add(packet.x);
     }
-    // Consumed synchronously before the first HPKE open; concurrent attempts cannot reuse it.
-    if (this.#sessions.get(sessionId) !== session || Date.parse(session.descriptor.expiresAt) <= Date.now()) throw new Error('Recovery session already used');
-    this.#sessions.delete(sessionId);
+    // Claim synchronously; malformed ciphertext must not consume a public session.
+    if (this.#sessions.get(sessionId) !== session || session.claimed || Date.parse(session.descriptor.expiresAt) <= Date.now()) throw new Error('Recovery session already used');
+    session.claimed = true;
     const shares: Uint8Array[] = [];
     try {
       for (const packet of packets) {
@@ -107,9 +107,10 @@ export class EscrowRecoverySessions {
         shares.push(share);
         if (share.length !== 33 || share[32] !== packet.x) throw new Error('Invalid recovered share');
       }
+      this.#sessions.delete(sessionId);
       const result = await restore(shares);
       if (!Number.isSafeInteger(result.completed) || result.completed < 0) throw new Error('Invalid recovery result');
       return { completed: result.completed, escrowId: frozen.header.escrowId, descriptorHash };
-    } finally { for (const share of shares) share.fill(0); }
+    } finally { session.claimed = false; for (const share of shares) share.fill(0); }
   }
 }

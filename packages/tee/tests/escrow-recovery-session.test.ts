@@ -21,6 +21,9 @@ test('recovery ingress is nonce-bound, exactly two holders, single-use and clear
   const packets = await Promise.all([0, 1].map(i => wrapRecoveryShare(shares[i]!, session.descriptor, base.holders[i]!.id, shares[i]![32]!)));
   await expect(wrapRecoveryShare(shares[0]!, session.descriptor, base.holders[0]!.id, shares[1]![32]!)).rejects.toThrow();
   await expect(manager.consume(session.descriptor.sessionId, session.descriptorHash, header, [packets[0]!, packets[0]!], async () => ({ completed: 1 }))).rejects.toThrow();
+  const junk = structuredClone(packets);
+  junk[0]!.ciphertext = Buffer.alloc(49).toString('base64url');
+  await expect(manager.consume(session.descriptor.sessionId, session.descriptorHash, header, junk, async () => ({ completed: 1 }))).rejects.toThrow();
   let references: readonly Uint8Array[] = [];
   let restores = 0;
   const restore = async (opened: readonly Uint8Array[]) => {
