@@ -11,7 +11,7 @@ import type { PrismaClient } from '@openkey/db';
 
 const root = resolve(import.meta.dir, '..');
 if (process.env.OPENKEY_IDENTITY_REFRESH_TEST_CHILD !== '1') {
-  test('an identity refresh cannot gain manage-key scope', async () => {
+  test('identity clients receive no refresh token and authorization scope widening is refused', async () => {
     const child = Bun.spawn([process.execPath, 'test', import.meta.path], {
       cwd: root,
       env: { ...process.env, OPENKEY_IDENTITY_REFRESH_TEST_CHILD: '1' },
@@ -108,7 +108,11 @@ if (process.env.OPENKEY_IDENTITY_REFRESH_TEST_CHILD !== '1') {
       return call(`/oauth2/authorize?${query}`, {}, true);
     }
 
-    for (const scope of ['openid email tinycloud:identity tinycloud:manage-key', 'openid email tinycloud:identity keys']) {
+    for (const scope of [
+      'openid email tinycloud:identity tinycloud:manage-key',
+      'openid email tinycloud:identity keys',
+      'openid email tinycloud:identity offline_access',
+    ]) {
       const rejected = await authorize(scope, 'identity-scope-rejected');
       const error = rejected.status === 302
         ? new URL(rejected.headers.get('location')!, issuer).searchParams.get('error')

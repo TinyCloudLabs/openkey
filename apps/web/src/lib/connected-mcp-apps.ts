@@ -19,8 +19,8 @@ export const identityAppCopy = {
   cancel: 'Cancel',
   confirmAction: 'Disconnect app',
   confirmTitle: (name: string) => `Disconnect ${name}?`,
-  confirmBody: "The app won't be able to ask for your wallet address again, but it keeps anything it already received. It can ask you to connect again later.",
-  disconnected: "Disconnected. The app can't ask for your wallet address again. It keeps anything it already received.",
+  confirmBody: "Within 5 minutes, the app won't be able to get your wallet address, but it keeps anything it already received. It can ask you to connect again later.",
+  disconnected: "Disconnected. Within 5 minutes the app can no longer get your wallet address. It keeps anything it already received.",
   failed: "Couldn't disconnect the app. Try again.",
 } as const;
 

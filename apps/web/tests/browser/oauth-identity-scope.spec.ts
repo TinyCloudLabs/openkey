@@ -87,12 +87,12 @@ test('identity app settings show the connected app and one-step disconnect dialo
   await section.getByRole('button', { name: 'Disconnect Address Viewer' }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: 'Disconnect Address Viewer?' })).toBeVisible();
-  await expect(dialog).toContainText("The app won't be able to ask for your wallet address again, but it keeps anything it already received. It can ask you to connect again later.");
+  await expect(dialog).toContainText("Within 5 minutes, the app won't be able to get your wallet address, but it keeps anything it already received. It can ask you to connect again later.");
   await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Disconnect app' })).toBeVisible();
   await expect(dialog.locator('input')).toHaveCount(0);
   await dialog.getByRole('button', { name: 'Disconnect app' }).click();
-  await expect(page.getByRole('status')).toHaveText("Disconnected. The app can't ask for your wallet address again. It keeps anything it already received.");
+  await expect(page.getByRole('status')).toHaveText("Disconnected. Within 5 minutes the app can no longer get your wallet address. It keeps anything it already received.");
   expect(disconnectBody).toEqual({ confirmation: 'DISCONNECT' });
   await expect(page.locator('#connected-identity-apps')).toHaveCount(0);
 });
