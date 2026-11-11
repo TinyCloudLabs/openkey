@@ -40,6 +40,7 @@
         "@better-auth/utils": "0.3.1",
         "@openkey/capability-review": "workspace:*",
         "@openkey/db": "workspace:*",
+        "@openkey/delegation-code-fields": "workspace:*",
         "@openkey/tee": "workspace:*",
         "@simplewebauthn/server": "13.3.0",
         "@tinycloud/bootstrap": "2.8.0-beta.1",
@@ -68,6 +69,7 @@
         "@better-auth/oauth-provider": "1.6.10",
         "@better-auth/passkey": "^1.6.9",
         "@openkey/capability-review": "workspace:*",
+        "@openkey/delegation-code-fields": "workspace:*",
         "better-auth": "^1.6.9",
       },
       "devDependencies": {
@@ -135,6 +137,10 @@
         "tsup": "^8.0.0",
         "typescript": "^6.0.0",
       },
+    },
+    "packages/delegation-code-fields": {
+      "name": "@openkey/delegation-code-fields",
+      "version": "0.0.1",
     },
     "packages/sdk": {
       "name": "@openkey/sdk",
@@ -522,6 +528,8 @@
     "@openkey/core": ["@openkey/core@workspace:packages/core"],
 
     "@openkey/db": ["@openkey/db@workspace:packages/db"],
+
+    "@openkey/delegation-code-fields": ["@openkey/delegation-code-fields@workspace:packages/delegation-code-fields"],
 
     "@openkey/sdk": ["@openkey/sdk@workspace:packages/sdk"],
 

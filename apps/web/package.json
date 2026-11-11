@@ -17,6 +17,7 @@
     "@better-auth/oauth-provider": "1.6.10",
     "@better-auth/passkey": "^1.6.9",
     "@openkey/capability-review": "workspace:*",
+    "@openkey/delegation-code-fields": "workspace:*",
     "better-auth": "^1.6.9"
   },
   "devDependencies": {

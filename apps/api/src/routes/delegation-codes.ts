@@ -1,6 +1,10 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { createPrismaClient, Prisma, type PrismaClient } from '@openkey/db';
+import {
+  PUBLIC_DELEGATION_FIELDS as PUBLIC_DELEGATION_FIELD_LIST,
+  PUBLIC_JWK_FIELDS as PUBLIC_JWK_FIELD_LIST,
+} from '@openkey/delegation-code-fields';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 
 // Codes are stored and looked up in lower case, the form every CLI since the
@@ -14,31 +18,13 @@ const CLAIM_RETENTION_MS = 5 * 60 * 1000;
 // A client-chosen secret of at least 128 bits, base64url. It binds a redeemed code to the redeemer.
 const CLAIM_HEADER = 'OpenKey-Delegation-Claim';
 const CLAIM_PATTERN = /^[A-Za-z0-9_-]{22,128}$/;
-export const PUBLIC_DELEGATION_FIELDS: Record<string, true> = {
-  delegationHeader: true,
-  delegationCid: true,
-  spaceId: true,
-  ownerDid: true,
-  verificationMethod: true,
-  jwk: true,
-  address: true,
-  chainId: true,
-  hostActivated: true,
-  spaceReady: true,
-  spaceError: true,
-  spacePending: true,
-  primary: true,
-  edited: true,
-  reason: true,
-  expirationTime: true,
-  expiresAt: true,
-  expiry: true,
-  siwe: true,
-  signature: true,
-  signedMessage: true,
-  permissions: true,
-};
-export const PUBLIC_JWK_FIELDS: Record<string, true> = { kty: true, crv: true, x: true, kid: true };
+
+export const PUBLIC_DELEGATION_FIELDS: Record<string, true> = Object.fromEntries(
+  PUBLIC_DELEGATION_FIELD_LIST.map((field) => [field, true]),
+) as Record<string, true>;
+export const PUBLIC_JWK_FIELDS: Record<string, true> = Object.fromEntries(
+  PUBLIC_JWK_FIELD_LIST.map((field) => [field, true]),
+) as Record<string, true>;
 
 export interface DelegationCodeStore {
   create(code: string, delegation: unknown, expiresAt: Date): Promise<boolean>;

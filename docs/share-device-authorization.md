@@ -71,6 +71,12 @@ do not support device transactions: any request to them that carries
 
 The default and maximum lifetime is 30 days, counted from approval.
 
+When `/delegate` mints a short code, both the page and broker use
+`@openkey/delegation-code-fields` as the single public-field allowlist.
+Completion response fields not sent to the broker are classified separately
+in `NEVER_SENT_TO_BROKER_FIELDS`; classify every new response field in one of
+those lists with a reason so the API contract test can detect omissions.
+
 ## Ordinary `/delegate` links
 
 A `/delegate` link without `deviceTransactionId` can be made by anyone, so
