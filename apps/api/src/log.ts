@@ -64,7 +64,7 @@ const EVENTS = {
   oauth_client_create_failed: true, oauth_client_delete_failed: true, oauth_client_update_failed: true,
   oauth_client_secret_rotated: true,
   session_cap_unapplied: true,
-  reviewer_sign_in: true, reviewer_admin: true,
+  reviewer_sign_in: true, reviewer_admin: true, reviewer_cleanup: true,
   resource_introspect_failed: true, resource_introspect_rate_limited: true, mcp_userinfo_guard_failed: true,
   revoked_token_record_failed: true, revoked_token_sweep_failed: true,
   tinycloud_bootstrap_background_failed: true, tinycloud_bootstrap_background_completed: true,
@@ -138,7 +138,7 @@ export function log(level: LogLevel, event: EventName, errorCode?: string): void
 /** Reviewer operations are read by the API operations team. Fields are fixed except the reset space ID. */
 export function logReviewer(
   event: 'reviewer_sign_in' | 'reviewer_admin',
-  result: 'failed' | 'success' | 'installed' | 'unset' | 'boot_hold' | 'reset' | 'audience_pinned' | 'ready',
+  result: 'failed' | 'success' | 'installed' | 'unset' | 'boot_hold' | 'reset' | 'audience_pinned' | 'ready' | 'deleted' | 'delete_failed' | 'delete_intent_failed',
   store: string,
   spaceId?: string,
 ): void {
@@ -401,3 +401,8 @@ export const apiErrorHandler: ErrorHandler<ApiEnv> = (error, c) => {
   });
   return c.json({ error: 'Internal server error' }, 500);
 };
+
+/** Operations owns retries of retired synthetic spaces; never log SDK errors. */
+export function logReviewerCleanup(result: 'initial_wipe' | 'complete' | 'retry' | 'bound_exceeded', spaceId: string): void {
+  emit(result === 'retry' || result === 'bound_exceeded' ? 'error' : 'info', 'reviewer_cleanup', { result, space_id: spaceId, cleanup_dependency: 'TC-2817' });
+}

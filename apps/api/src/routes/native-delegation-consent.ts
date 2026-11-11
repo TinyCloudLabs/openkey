@@ -1,3 +1,5 @@
+import { lockNativeReviewer, nativeReviewerAuthority } from '../services/reviewer-native';
+import { recordReviewerWriter } from '../services/reviewer-cleanup';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import { Hono } from 'hono';
@@ -145,6 +147,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     // the consent/generation/request locks, then recheck the host under lock.
     const pending = await db.tinyCloudNativeRequest.findUnique({ where: { id: c.req.param('id') } });
     if (!pending) fail(404, 'request_not_found');
+    const preReviewer = await nativeReviewerAuthority(db, userId, pending);
     if (pending.userId && pending.userId !== userId) fail(403, 'request_user_mismatch');
     if (pending.status === 'APPROVED' && pending.userId === userId && pending.expiresAt > new Date()) {
       return c.json({ status: 'APPROVED' });
@@ -157,6 +160,8 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     const preExisting = await db.tinyCloudBootstrapState.findFirst({ where: { keyId: preKey.id, chainId: 1, tinycloudHost: preCeiling.tinycloudHost, status: 'complete' } });
     const preSpace = prepareSiwe(pending, permitted(pending.requestedPermissions, preCeiling), preKey, preCeiling,
       pending.siweNonce ?? 'AAAAAAAAAAAA', Math.min(pending.ttlSeconds, preCeiling.maxDelegationTtlSeconds, preCeiling.grantLifetimeSeconds), new Date()).spaceId;
+    if (preReviewer && (!preExisting || preKey.id !== preReviewer.binding.keyId || preSpace !== preReviewer.binding.spaceId
+      || preCeiling.tinycloudHost !== preReviewer.binding.nodeHost)) fail(403, 'reviewer_host_required');
     let peerId: string | null = null;
     if (!preExisting) {
       try { peerId = await withinTimeout(hostOps.fetchPeerId(preCeiling.tinycloudHost, preSpace), 5_000); }
@@ -167,20 +172,26 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       }
     }
     const result = await db.$transaction(async tx => {
+      const reviewerBinding = await lockNativeReviewer(tx, userId);
       const { row } = await lockRequest(tx, c.req.param('id'), userId);
+      const reviewer = await nativeReviewerAuthority(tx, userId, row, reviewerBinding);
       const key = await keyFor(tx, userId);
+      if (reviewer && key.id !== reviewer.binding.keyId) fail(403, 'reviewer_key_mismatch');
       const client = await tx.oauthClient.findUniqueOrThrow({ where: { clientId: row.clientId }, include: { organization: { select: { name: true } } } });
       const ceiling = enabledNativeDelegation(client);
       if (!ceiling) fail(409, 'preparation_superseded');
       if (ceiling.tinycloudHost !== preCeiling.tinycloudHost || key.id !== preKey.id) fail(409, 'preparation_superseded');
       const requested = permitted(row.requestedPermissions, ceiling);
-      const ttlSeconds = Math.min(row.ttlSeconds, ceiling.maxDelegationTtlSeconds, ceiling.grantLifetimeSeconds);
+      const preparedAt = new Date();
+      const ttlSeconds = Math.min(row.ttlSeconds, ceiling.maxDelegationTtlSeconds, ceiling.grantLifetimeSeconds, reviewer ? Math.floor((reviewer.deadline - preparedAt.getTime()) / 1000) : Infinity);
+      if (ttlSeconds < 1) fail(403, 'reviewer_session_ended');
       const nonce = row.siweNonce ?? randomBytes(12).toString('base64url').replaceAll('-', 'A').replaceAll('_', 'B');
       const address = ensureEip55(key.address);
-      const base = prepareSiwe(row, requested, key, ceiling, nonce, ttlSeconds, new Date());
+      const base = prepareSiwe(row, requested, key, ceiling, nonce, ttlSeconds, preparedAt);
       const permissions = selectedPermissions(requested, body.actionKeys, base.spaceId);
-      const prepared = prepareSiwe(row, permissions, key, ceiling, nonce, ttlSeconds, new Date());
+      const prepared = prepareSiwe(row, permissions, key, ceiling, nonce, ttlSeconds, preparedAt);
       const existing = await tx.tinyCloudBootstrapState.findFirst({ where: { keyId: key.id, chainId: 1, tinycloudHost: ceiling.tinycloudHost, status: 'complete' } });
+      if (reviewer && (!existing || prepared.spaceId !== reviewer.binding.spaceId || ceiling.tinycloudHost !== reviewer.binding.nodeHost)) fail(403, 'reviewer_host_required');
       let hostPlan: { host: string; spaceId: string; peerId: string; hostSiwe: string } | null = null;
       if (!existing) {
         if (!peerId || prepared.spaceId !== preSpace) fail(409, 'preparation_superseded');
@@ -191,8 +202,8 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       const preview = { requestId: row.id, revision, userId, keyId: key.id, address, sessionSiwe: prepared.prepared.siwe, permissions, hostPlan };
       const digest = preparationDigest(preview);
       await tx.tinyCloudNativePreparation.create({ data: { id: randomUUID(), requestId: row.id, revision, userId, keyId: key.id, address, tinycloudHost: ceiling.tinycloudHost, sessionSiwe: preview.sessionSiwe, permissions, hostPlan: hostPlan ?? undefined, digest } });
-      await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { userId, siweNonce: nonce, currentRevision: revision } });
-      return { ...preview, digest, client: { clientId: client.clientId, name: client.name, icon: client.icon, organization: client.organization?.name }, redirectScheme: new URL(row.redirectUri).protocol.slice(0, -1), sessionDid: row.sessionDid, tinycloudHost: ceiling.tinycloudHost, ttlSeconds, grantLifetimeSeconds: ceiling.grantLifetimeSeconds, permissionOptions: prepared.permissions, selectedActionKeys: prepared.selectedActionKeys };
+      await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { userId, siweNonce: nonce, currentRevision: revision, ...(reviewer ? { reviewerEpoch: reviewer.binding.installEpoch, reviewerSessionId: reviewer.sessionId, reviewerDeadline: new Date(reviewer.deadline) } : {}) } });
+      return { ...preview, digest, client: { clientId: client.clientId, name: client.name, icon: client.icon, organization: client.organization?.name }, redirectScheme: new URL(row.redirectUri).protocol.slice(0, -1), sessionDid: row.sessionDid, tinycloudHost: ceiling.tinycloudHost, ttlSeconds, grantLifetimeSeconds: reviewer ? reviewer.ttlSeconds : ceiling.grantLifetimeSeconds, permissionOptions: prepared.permissions, selectedActionKeys: prepared.selectedActionKeys };
     }, { timeout: 15_000 });
     return c.json(result);
   });
@@ -214,6 +225,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     const userId = c.get('user').id;
     const pending = await db.tinyCloudNativeRequest.findUnique({ where: { id: c.req.param('id') } });
     if (!pending) fail(404, 'request_not_found');
+    const preReviewer = await nativeReviewerAuthority(db, userId, pending);
     if (pending.userId && pending.userId !== userId) fail(403, 'request_user_mismatch');
     if (pending.status !== 'APPROVED') active(pending);
     if (pending.expiresAt <= new Date()) fail(409, 'request_not_pending');
@@ -237,6 +249,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       }
     }
     const result = await db.$transaction(async tx => {
+      const reviewerBinding = await lockNativeReviewer(tx, userId);
       const { row, generation } = await lockRequest(tx, c.req.param('id'), userId, true);
       if (row.userId !== userId) fail(403, 'request_user_mismatch');
       if (!body || body.revision !== row.currentRevision) fail(409, 'preparation_superseded');
@@ -245,10 +258,13 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       const hostPlan = revision.hostPlan as { host: string; spaceId: string; peerId: string; hostSiwe: string } | null;
       if ((hostPlan?.hostSiwe ?? undefined) !== body.hostSiwe) fail(409, 'preparation_mismatch');
       if (row.status === 'APPROVED') {
+        await nativeReviewerAuthority(tx, userId, row, reviewerBinding);
         if (row.approvedRevision !== revision.revision) fail(409, 'request_not_pending');
         return { alreadyApproved: true as const, rowId: row.id, revision: revision.revision, hosting: row.hosting };
       }
+      const reviewer = await nativeReviewerAuthority(tx, userId, row, reviewerBinding);
       const key = await keyFor(tx, userId);
+      if (reviewer && key.id !== reviewer.binding.keyId) fail(403, 'reviewer_key_mismatch');
       if (key.id !== revision.keyId || key.id !== preKey?.id || key.sealedBlob !== preKey.sealedBlob ||
         ensureEip55(key.address) !== revision.address) fail(409, 'preparation_mismatch');
       const client = await tx.oauthClient.findUniqueOrThrow({ where: { clientId: row.clientId } });
@@ -262,16 +278,20 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       if (!Number.isInteger(revisionTtl) || revisionTtl > ttl) fail(409, 'preparation_superseded');
       if (!row.siweNonce) fail(409, 'preparation_mismatch');
       const signedAt = new Date();
-      const rebuilt = prepareSiwe(row, permissions, key, ceiling, row.siweNonce, revisionTtl, signedAt);
+      const signedTtl = Math.min(revisionTtl, reviewer ? Math.floor((reviewer.deadline - signedAt.getTime()) / 1000) : Infinity);
+      if (signedTtl < 1) fail(403, 'reviewer_session_ended');
+      if (reviewer && (hostPlan || revision.tinycloudHost !== reviewer.binding.nodeHost)) fail(403, 'reviewer_host_required');
+      const rebuilt = prepareSiwe(row, permissions, key, ceiling, row.siweNonce, signedTtl, signedAt);
       if (!sameApprovedSiwe(revision.sessionSiwe, rebuilt.prepared.siwe)) fail(409, 'preparation_mismatch');
       const signature = await createWalletFromPrivateKey(privateKey!).signMessage({ message: rebuilt.prepared.siwe });
       const delegation = completeSessionSetup({ ...rebuilt.prepared, signature });
       const artifact = { version: 1, address: revision.address, chainId: 1, ownerDid: `did:pkh:eip155:1:${revision.address}`,
         sessionDid: row.sessionDid, sessionJkt: row.sessionJkt, issuedAt: signedAt.toISOString(),
-        expiresAt: new Date(signedAt.getTime() + revisionTtl * 1000).toISOString(), siwe: rebuilt.prepared.siwe,
+        expiresAt: new Date(signedAt.getTime() + signedTtl * 1000).toISOString(), siwe: rebuilt.prepared.siwe,
         signature, delegationHeader: delegation.delegationHeader, delegationCid: delegation.delegationCid,
         spaceId: delegation.spaceId, verificationMethod: delegation.verificationMethod, permissions,
-        ttlSeconds: revisionTtl, tinycloudHost: ceiling.tinycloudHost };
+        ttlSeconds: signedTtl, tinycloudHost: ceiling.tinycloudHost };
+      if (reviewer) await recordReviewerWriter(tx, reviewer.binding, new Date(artifact.expiresAt));
       await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { status: 'APPROVED', approvedRevision: revision.revision, consentGeneration: generation, signature, delegation: artifact, hosting: 'failed' } });
       return { alreadyApproved: false as const, rowId: row.id, revision: revision.revision, hostPlan, artifact, key, siweDomain: ceiling.siweDomain ?? 'openkey.so' };
     }, { timeout: 15_000 });
@@ -329,7 +349,9 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
   router.post('/:id/deny', async c => {
     const userId = c.get('user').id;
     await db.$transaction(async tx => {
+      const reviewerBinding = await lockNativeReviewer(tx, userId);
       const { row } = await lockRequest(tx, c.req.param('id'), userId);
+      await nativeReviewerAuthority(tx, userId, row, reviewerBinding);
       await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { status: 'DENIED' } });
     });
     return c.json({ status: 'DENIED' });

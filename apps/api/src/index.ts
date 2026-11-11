@@ -1,5 +1,7 @@
 import './log'; // Keep first: patches dependency console output before any dependency module runs.
 import './install-process-handlers'; // Install fatal handlers before dependency startup.
+import { runReviewerCleanup } from './services/reviewer-cleanup';
+import { reviewerCleanupNode } from './services/reviewer-cleanup-node';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
@@ -74,6 +76,9 @@ const app = new Hono<ApiEnv>();
 // Middleware
 app.use('*', requestLogger);
 app.use('/api/*', async (_c, next) => reviewerRequest.run({}, next));
+app.use('/api/review-account/*', bodyLimit({ maxSize: 4096 }));
+app.use('/api/auth/reviewer/*', bodyLimit({ maxSize: 4096 }));
+app.use('/api/review-account/*', createReviewerAuthAudit(authPrisma));
 app.use('/api/auth/sign-in/reviewer', bodyLimit({ maxSize: 16384 }));
 app.use('/api/auth/sign-in/email-otp', bodyLimit({ maxSize: 16384 }));
 app.use('/api/auth/*', createReviewerAuthAudit(authPrisma));
@@ -305,6 +310,14 @@ app.route('/api/passkey', passkeyProxyRouter);
 
 // OAuth admin routes (protected by ADMIN_API_KEY)
 app.route('/api/admin/oauth', oauthAdminRouter);
+app.post('/api/review-account/:action', async c => {
+  const action = c.req.param('action');
+  if (!['delete-intent', 'delete'].includes(action)) return c.json({ error: 'Not found' }, 404);
+  const url = new URL(c.req.url);
+  url.pathname = '/api/auth/reviewer/' + action;
+  return auth.handler(new Request(url, c.req.raw));
+});
+
 app.route('/api/admin/review-accounts', createReviewerAdminRouter(authPrisma));
 
 // Internal metrics route (protected by INTERNAL_METRICS_TOKEN)
@@ -366,6 +379,21 @@ const ALL_SCOPES = ['openid', 'email', 'keys', 'offline_access'];
 // Reviewer authority is held before Bun can serve this module.
 log('info', 'api_starting');
 await initializeReviewers(authPrisma);
+
+// Persisted cleanup runs outside account transactions and survives restarts.
+if (process.env.NODE_ENV !== 'test') {
+  let running = false;
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try { await runReviewerCleanup(authPrisma, reviewerCleanupNode); }
+    catch { log('error', 'reviewer_cleanup'); }
+    finally { running = false; }
+  };
+  const timer = setInterval(() => { void tick(); }, 60_000);
+  timer.unref();
+  void tick();
+}
 
 // Start server
 const port = parseInt(process.env.API_PORT || '3001');

@@ -268,7 +268,12 @@ function withMcpAccessTokenLifetime<T extends ReturnType<typeof oauthProvider>>(
   const cappedLifetime = (seconds: number) => {
     const reviewer = capturedReviewer();
     if (!reviewer) return seconds;
-    const remaining = Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
+    // Native provider tokens use an integral iat sampled before this getter.
+    // Avoid subtracting the fractional second twice while keeping exp <= the
+    // source deadline (the database adapter also caps every row).
+    const remaining = reviewer.store === 'apple'
+      ? Math.floor((reviewer.deadline ?? Date.now()) / 1000) - Math.floor(Date.now() / 1000)
+      : Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
     return Math.max(0, Math.min(REVIEWER_MAX_SECONDS, seconds, remaining));
   };
   Object.defineProperty(plugin.options, 'accessTokenExpiresIn', {

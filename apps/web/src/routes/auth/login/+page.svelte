@@ -53,6 +53,7 @@
   function initialStep(): Step {
     if (!native) return 'email';
     if (native.socialError) return native.socialError.continuation ? 'social' : 'email';
+    if (native.method === 'email' && native.hint?.trim().toLowerCase() === 'appreview@tinycloud.xyz') return 'reviewer';
     if (native.method === 'email' && native.hint) return 'otp';
     if (native.method === 'passkey' && passkeysSupported) return 'passkeySignIn';
     if (native.method === 'google' || native.method === 'apple') return 'social';
@@ -251,6 +252,12 @@
   }
 
   async function sendOTP(): Promise<boolean> {
+    if (email.trim().toLowerCase() === 'appreview@tinycloud.xyz') {
+      if (!native && $page.url.searchParams.get('redirect') === '/dashboard/settings/delete-account') {
+        await goto('/auth/review/delete');
+      } else { step = 'reviewer'; error = ''; }
+      return true;
+    }
     if (!native && ['openai-review@tinycloud.xyz', 'google-review@tinycloud.xyz'].includes(email.trim().toLowerCase())) {
       step = 'reviewer';
       error = '';
@@ -552,6 +559,16 @@
           <button type="button" class="nb-button" onclick={signInWithPasskey}>Sign in with a passkey</button>
         {/if}
       </div>
+    {:else if step === 'reviewer'}
+      <p class="nb-lede">Enter the review code for <strong>{email}</strong>.</p>
+      {#if error}<p class="nb-error" role="alert">{error}</p>{/if}
+      <form onsubmit={(event) => { event.preventDefault(); signInReviewer(); }} class="nb-stack">
+        <label for="native-review-code">Review code</label>
+        <input id="native-review-code" class="nb-input" type="password" bind:value={reviewCode}
+          autocomplete="current-password" maxlength={128} required disabled={loading} />
+        <button type="submit" class="nb-button nb-primary" disabled={loading}>Sign in</button>
+        <button type="button" class="nb-link" onclick={() => { reviewCode = ''; error = ''; email = ''; step = 'email'; }} disabled={loading}>Use a different email</button>
+      </form>
     {:else if step === 'otp'}
       <p class="nb-lede">
         {#if codeSent}

@@ -150,6 +150,7 @@ test('session-proof cleanup failure emits its allowlisted error record', async (
   const grant = { ...candidate };
   let sweepCount = 0;
   const tx = {
+    reviewerAccount: { findUnique: async () => null },
     $executeRaw: async () => undefined,
     $queryRaw: async () => [],
     tinyCloudNativeGrant: {

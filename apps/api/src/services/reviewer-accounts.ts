@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import type { PrismaClient, Prisma } from '@openkey/db';
+import { Prisma, type PrismaClient } from '@openkey/db';
+import { enabledNativeDelegation } from './native-delegation/policy';
+import { appleReviewEnabled, APPLE_REVIEW_CLIENT_ID } from './reviewer-apple-policy';
 import { logReviewer } from '../log';
 
 export const REVIEWER_MAX_SECONDS = 3600;
@@ -43,7 +45,7 @@ export async function reviewerForUser(database: PrismaClient, userId: string) {
 }
 
 export function reviewerActive(binding: ReviewerBinding | null, epoch?: number | null): binding is ReviewerBinding {
-  if (!binding?.user || binding.store === 'apple' || binding.user.lockedAt || binding.user.reviewerHoldAt) return false;
+  if (!binding?.user || (binding.store === 'apple' && !appleReviewEnabled()) || binding.user.lockedAt || binding.user.reviewerHoldAt) return false;
   const installed = verifiers.get(binding.store);
   return installed?.epoch === binding.installEpoch && (epoch === undefined || epoch === binding.installEpoch);
 }
@@ -82,11 +84,13 @@ export async function holdReviewer(transaction: Prisma.TransactionClient, bindin
   verifiers.delete(binding.store);
   if (binding.userId) {
     const userId = binding.userId;
-    await transaction.user.update({ where: { id: userId }, data: { reviewerHoldAt: new Date() } });
-    // Removing consent advances the existing native consent generation via its trigger.
-    await transaction.oauthConsent.deleteMany({ where: { userId } });
+    // Binding FOR UPDATE already blocks new reviewer authority. Remove native
+    // rows before consent revocation updates them: epoch triggers deliberately
+    // reject any UPDATE once the user is held.
     await transaction.tinyCloudNativeGrant.deleteMany({ where: { userId } });
     await transaction.tinyCloudNativeRequest.deleteMany({ where: { userId } });
+    await transaction.oauthConsent.deleteMany({ where: { userId } });
+    await transaction.user.update({ where: { id: userId }, data: { reviewerHoldAt: new Date() } });
     await transaction.oauthAccessToken.deleteMany({ where: { userId } });
     await transaction.oauthRefreshToken.deleteMany({ where: { userId } });
     await transaction.verification.deleteMany({ where: { OR: [
@@ -96,7 +100,7 @@ export async function holdReviewer(transaction: Prisma.TransactionClient, bindin
     await transaction.session.deleteMany({ where: { userId } });
   }
   return transaction.reviewerAccount.update({
-    where: { store: binding.store }, data: { installEpoch: { increment: 1 }, grantSessionId: null, readyAt: null },
+    where: { store: binding.store }, data: { installEpoch: { increment: 1 }, grantSessionId: null, readyAt: null, seedRun: Prisma.DbNull },
     include: { user: true },
   });
 }
@@ -109,14 +113,24 @@ export async function unsetReviewer(database: PrismaClient, store: string) {
 }
 
 export async function installReviewer(database: PrismaClient, store: string, code: unknown) {
-  if (store === 'apple' || !reviewerCodeFormat(code)) throw new Error('Invalid reviewer installation');
+  if ((store === 'apple' && !appleReviewEnabled()) || !reviewerCodeFormat(code)) throw new Error('Invalid reviewer installation');
   const digest = credentialDigest(code);
   verifiers.delete(store);
   await database.$transaction(async (transaction) => {
     const before = await lockReviewer(transaction, store);
     if (!before.user || before.user.lockedAt || !before.seededAt || !before.clientId || !before.redirectUri
-      || !before.resource || !before.callbackUri || !before.nodeHost || !before.keyId || !before.spaceId) {
+      || !before.nodeHost || !before.keyId || !before.spaceId
+      || (store === 'apple' ? before.clientId !== APPLE_REVIEW_CLIENT_ID : !before.resource || !before.callbackUri)) {
       throw new Error('Reviewer account is not ready');
+    }
+    if (store === 'apple') {
+      const [key, hosted, client] = await Promise.all([
+        transaction.ethereumKey.findFirst({ where: { id: before.keyId!, userId: before.userId!, isCanonicalTinyCloud: true, archivedAt: null } }),
+        transaction.tinyCloudBootstrapState.findFirst({ where: { keyId: before.keyId!, tinycloudHost: before.nodeHost!, chainId: 1, status: 'complete' } }),
+        transaction.oauthClient.findUnique({ where: { clientId: before.clientId! } }),
+      ]);
+      if (!key?.sealedBlob || !hosted || !client || !client.redirectUris.includes(before.redirectUri!)
+        || enabledNativeDelegation(client)?.tinycloudHost !== before.nodeHost) throw new Error('Reviewer native fixture is not ready');
     }
     const binding = await holdReviewer(transaction, before);
     await transaction.user.update({ where: { id: binding.userId! }, data: { reviewerHoldAt: null } });

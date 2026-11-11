@@ -679,6 +679,9 @@ model TinyCloudNativeRequest {
   @@index([userId, clientId, status])
   @@index([expiresAt])
   @@map("tinycloud_native_request")
+  reviewerEpoch Int?
+  reviewerSessionId String?
+  reviewerDeadline DateTime?
 }
 
 // Immutable consent-screen revision of a request: the exact bytes and digest
@@ -944,6 +947,32 @@ model ReviewerAccount {
   seededAt DateTime?
   readyAt DateTime?
   grantSessionId String?
+  seedRun Json?
+  seedStartedAt DateTime?
+  writerExpiresAt DateTime?
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
   @@map("reviewer_account")
+}
+
+// Retired reviewer authority is never available to authentication or generic signers.
+// No FK to the deleted owner: cleanup must survive account deletion.
+model ReviewerCleanup {
+  id String @id
+  store String
+  ownerUserId String
+  address String
+  spaceId String @unique
+  nodeHost String
+  sealedBlob String?
+  sealingContext String?
+  retiredAt DateTime
+  tombstoneUntil DateTime
+  boundExceeded Boolean @default(false)
+  initialWipedAt DateTime?
+  completedAt DateTime?
+  retryAt DateTime @default(now())
+  leaseUntil DateTime?
+  attempts Int @default(0)
+  @@index([retryAt, completedAt])
+  @@map("reviewer_cleanup")
 }

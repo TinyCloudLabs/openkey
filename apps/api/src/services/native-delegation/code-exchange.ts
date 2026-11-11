@@ -1,3 +1,4 @@
+import { lockNativeReviewer, nativeReviewerAuthority } from '../reviewer-native';
 import { randomBytes } from 'node:crypto';
 import { APIError } from 'better-auth/api';
 import { generateRandomString } from 'better-auth/crypto';
@@ -153,6 +154,7 @@ export async function exchangeNativeCode(
     // transaction timeout leaves the 5 s lock timeout to fire first.
     redeemed = await db.$transaction(async (tx) => {
       await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
+      const reviewerBinding = await lockNativeReviewer(tx, userId);
       const consents = await tx.$queryRaw<{ id: string; scopes: string[] | null }[]>`
         SELECT id, scopes FROM oauth_consent
         WHERE "userId" = ${userId} AND "clientId" = ${request.clientId} FOR SHARE`;
@@ -185,8 +187,11 @@ export async function exchangeNativeCode(
       const ceiling = enabledNativeDelegation(client);
       if (!ceiling) invalidGrant('native delegation is no longer enabled for this client');
 
+      const reviewer = await nativeReviewerAuthority(tx, userId, row, reviewerBinding);
       const now = Date.now();
-      const absoluteExpiresAt = new Date(now + ceiling.grantLifetimeSeconds * 1000);
+      const absoluteExpiresAt = new Date(reviewer?.deadline ?? now + ceiling.grantLifetimeSeconds * 1000);
+      if (reviewer && (preparation.keyId !== reviewer.binding.keyId || delegation.spaceId !== reviewer.binding.spaceId
+        || delegation.tinycloudHost !== reviewer.binding.nodeHost)) invalidGrant('review account binding changed');
       if (Date.parse(delegation.expiresAt) > absoluteExpiresAt.getTime()) {
         invalidGrant('the approved delegation would outlive the grant');
       }
@@ -207,6 +212,7 @@ export async function exchangeNativeCode(
         ttlSeconds: delegation.ttlSeconds,
         tinycloudHost: delegation.tinycloudHost,
         absoluteExpiresAt,
+        ...(reviewer ? { reviewerEpoch: reviewer.binding.installEpoch } : {}),
       } });
 
       return {
@@ -232,7 +238,7 @@ export async function exchangeNativeCode(
             delegationCid: delegation.delegationCid,
             issuedAt: delegation.issuedAt,
             expiresAt: delegation.expiresAt,
-            renewableUntil: new Date(absoluteExpiresAt.getTime() - RENEWAL_CUTOFF_MS).toISOString(),
+            renewableUntil: new Date(absoluteExpiresAt.getTime() - (reviewer ? 0 : RENEWAL_CUTOFF_MS)).toISOString(),
             // A separate copy: better-call's serializer writes a second
             // reference to the same object as "[Circular ref-N]".
             permissions: structuredClone(delegation.permissions),
