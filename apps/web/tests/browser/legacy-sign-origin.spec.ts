@@ -126,3 +126,24 @@ for (const configuredOrigin of [false, true]) {
     }
   });
 }
+
+for (const configuredOrigin of [false, true]) {
+  test(`embed resize before a request ${configuredOrigin ? 'targets configured origin' : 'sends no resize'}`, async ({ page }) => {
+    await fixture(page);
+    await page.evaluate(configured => {
+      const frame = document.createElement('iframe');
+      frame.id = 'pre-request';
+      frame.src = `/widget/embed/sign${configured ? `?origin=${encodeURIComponent(location.origin)}` : ''}`;
+      document.body.append(frame);
+    }, configuredOrigin);
+    await expect.poll(() => page.evaluate(() => (window as any).posts.some((p: any) => p.data.type === 'openkey:ready'))).toBe(true);
+    if (configuredOrigin) {
+      await expect.poll(() => page.evaluate(() => (window as any).posts.some((p: any) => p.data.type === 'openkey:resize'))).toBe(true);
+    } else {
+      const frame = page.frames().find(f => f.url().includes('/widget/embed/sign'))!;
+      await frame.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+      expect(await page.evaluate(() => (window as any).posts.some((p: any) => p.data.type === 'openkey:resize'))).toBe(false);
+    }
+    expect(await page.evaluate(() => (window as any).posts.every((p: any) => p.target === location.origin))).toBe(true);
+  });
+}

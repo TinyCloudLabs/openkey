@@ -372,7 +372,8 @@
         }
         return;
       }
-      if (legacyOrigin) window.parent.postMessage({ type: 'openkey:resize', height }, legacyOrigin);
+      const targetOrigin = legacyOrigin ?? (origin !== '*' ? origin : null);
+      if (targetOrigin) window.parent.postMessage({ type: 'openkey:resize', height }, targetOrigin);
     };
     const observer = new ResizeObserver(measure);
     observer.observe(content);
