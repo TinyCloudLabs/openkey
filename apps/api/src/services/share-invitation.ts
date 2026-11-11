@@ -54,9 +54,10 @@ function invalid(message: string): ApprovalResultError {
   return new ApprovalResultError('invalid_request', message, 400);
 }
 
+/** A UTC time in whole seconds, exactly as `toISOString()` writes it, from 1970 on. */
 function canonicalInstant(value: unknown, name: string): string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/.test(value) ||
-    Number.isNaN(Date.parse(value)) || new Date(value).toISOString() !== value) {
+    Number.isNaN(Date.parse(value)) || Date.parse(value) < 0 || new Date(value).toISOString() !== value) {
     throw invalid(`Share invitation ${name} must be a UTC time in whole seconds`);
   }
   return value;
@@ -123,6 +124,9 @@ export function parseApprovalRequestV1(value: unknown, options: { issuer: string
     throw invalid('A share invitation request lasts at most 24 hours');
   }
   const acceptBy = Date.parse(context.acceptanceExpiresAt);
+  if (acceptBy <= options.linkIssuedAt.getTime()) {
+    throw invalid('A share invitation must be accepted after its approval link was issued');
+  }
   if (acceptBy > options.linkExpiresAt.getTime() || acceptBy > options.linkIssuedAt.getTime() + SHARE_INVITATION_MAX_LIFETIME_MS) {
     throw invalid('A share invitation must be accepted before its approval link expires, within 24 hours');
   }

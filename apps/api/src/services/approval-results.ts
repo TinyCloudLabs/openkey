@@ -107,6 +107,9 @@ export class ApprovalResultService {
     // A share invitation request names no permissions: OpenKey issues its one key (TC-2234).
     const invitation = shareInvitationOf(request);
     const acceptanceDeadline = invitation ? Date.parse(invitation.acceptanceExpiresAt) : Infinity;
+    if (invitation && !admitted && acceptanceDeadline <= now.getTime()) {
+      throw new ApprovalResultError('expired_request', 'This invitation has expired. Ask the app to send a new one.', 410);
+    }
     const jwk = input.jwk as JsonWebKey | null;
     if (!jwk || jwk.kty !== 'OKP' || jwk.crv !== 'Ed25519' || jwk.x !== request.targetPublicJwk.x || hasPrivateJwkMember(jwk) ||
       input.host !== request.nodeOrigin ||

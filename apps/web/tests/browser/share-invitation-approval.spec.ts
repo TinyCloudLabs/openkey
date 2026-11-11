@@ -125,6 +125,41 @@ test('a file invitation 30 minutes from its deadlines never overstates them', as
   await expect(box).not.toContainText('1 hour');
 });
 
+// The page was opened after the deadlines passed (prepare is mocked; the server refuses such an approval).
+const past = (ms: number) => new Date(Math.floor((Date.now() - ms) / 1000) * 1000).toISOString();
+
+test('an expired file invitation says so for both dates', async ({ page }) => {
+  const accepted = past(2 * 3600_000);
+  const access = past(3600_000);
+  await open(page, { permissions: [], context: { ...context, subjectKind: 'file', acceptanceExpiresAt: accepted, accessExpiresAt: access } }, shareKey, [create, decrypt]);
+  const box = page.getByLabel('Invitation');
+  await expect(box).toContainText(`This invitation expired on ${await shownDate(page, accepted)}.`);
+  await expect(box).toContainText(`alex@example.test could open Project notes until ${await shownDate(page, access)}.`);
+  await expect(box).not.toContainText('Accept within');
+  await expect(box).not.toContainText('the next hour');
+  const dir = process.env.QA_SCREENSHOT_DIR;
+  if (dir) await page.screenshot({ path: `${dir}/share-invitation-file-expired-390.png`, fullPage: true });
+});
+
+test('a file invitation past acceptance but not access keeps the access line', async ({ page }) => {
+  const accepted = past(3600_000);
+  const access = new Date(Date.now() + 7 * DAY + 3600_000).toISOString();
+  await open(page, { permissions: [], context: { ...context, subjectKind: 'file', acceptanceExpiresAt: accepted, accessExpiresAt: access } }, shareKey, [create, decrypt]);
+  const box = page.getByLabel('Invitation');
+  await expect(box).toContainText(`This invitation expired on ${await shownDate(page, accepted)}.`);
+  await expect(box).toContainText(`alex@example.test can open Project notes for 7 days, until ${await shownDate(page, access)}`);
+});
+
+test('an expired session invitation says so and drops the continuation line', async ({ page }) => {
+  const accepted = past(3600_000);
+  await open(page, { permissions: [], context: { ...context, acceptanceExpiresAt: accepted, accessExpiresAt: accepted } }, shareKey, [create, decrypt]);
+  const box = page.getByLabel('Invitation');
+  await expect(box).toContainText(`This invitation expired on ${await shownDate(page, accepted)}.`);
+  await expect(page.getByText(CONTINUATION)).toHaveCount(0);
+  const dir = process.env.QA_SCREENSHOT_DIR;
+  if (dir) await page.screenshot({ path: `${dir}/share-invitation-session-expired-390.png`, fullPage: true });
+});
+
 test('a request without an invitation shows no invitation summary', async ({ page }) => {
   const leaf = `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default/share/${shareKeyId}`;
   await open(page, { permissions: [{ service: 'tinycloud.encryption', space: 'encryption', path: leaf, actions: [decrypt] }] }, leaf, [decrypt]);

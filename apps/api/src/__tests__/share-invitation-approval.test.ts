@@ -192,8 +192,18 @@ describe('the signed request', () => {
     ['an offset instead of Z', '2026-11-12T00:00:00.000+00:00'],
     ['no milliseconds', '2026-11-12T00:00:00Z'],
     ['free text', 'next Tuesday'],
+    ['a time before 1970', '1969-12-31T23:59:59.000Z'],
+    ['year zero', '0000-01-01T00:00:00.000Z'],
   ])('refuses a file access expiry given as %s', (_name, accessExpiresAt) => {
     expect(() => parse(requestBody({ context: context({ subjectKind: 'file', accessExpiresAt }) }))).toThrow('accessExpiresAt must be a UTC time in whole seconds');
+  });
+
+  test.each([
+    ['the moment it was issued', 0],
+    ['before it was issued', -1000],
+  ])('refuses an acceptance deadline at or before %s', (_name, offsetMs) => {
+    const issued = new Date(Date.parse(ACCEPT_BY) - offsetMs);
+    expect(() => parse(requestBody(), new Date(Date.now() + 2 * HOUR), issued)).toThrow('accepted after its approval link was issued');
   });
 
   test.each([
@@ -470,6 +480,15 @@ describe('the approval window', () => {
   ])('refuses %s in place of the issued key', async (_name, permissions) => {
     await register(parse(requestBody()));
     await expect(window(permissions)).rejects.toMatchObject({ code: 'request_binding' });
+  });
+
+  test('refuses an approval after the acceptance deadline with a plain expired message', async () => {
+    const acceptanceExpiresAt = wholeSecond(Date.now() + 2 * 60_000);
+    await register(parse(requestBody({ context: context({ acceptanceExpiresAt }) })));
+    const { permissions } = await prepare();
+    const late = new ApprovalResultService(store(), { apiOrigin: 'http://localhost:3001', retentionSeconds: 600, now: () => new Date(Date.parse(acceptanceExpiresAt) + 1000) });
+    await expect(late.assertDelegationWindow(ID, { jwk: sessionJwk, host: 'https://node.example.test', permissions }))
+      .rejects.toMatchObject({ code: 'expired_request', status: 410, message: 'This invitation has expired. Ask the app to send a new one.' });
   });
 
   test('one approval per request: once approved, another /prepare is refused', async () => {
