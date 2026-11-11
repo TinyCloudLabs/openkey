@@ -10,6 +10,7 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - WEBAUTHN_RP_ID=${WEBAUTHN_RP_ID}
       - WEBAUTHN_ORIGIN=${WEBAUTHN_ORIGIN}
+      - ORG_KEY_CUSTODY_ENABLED=${ORG_KEY_CUSTODY_ENABLED:-false}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       # Apple web sign-in is on (TC-1188); offered only when the Apple
