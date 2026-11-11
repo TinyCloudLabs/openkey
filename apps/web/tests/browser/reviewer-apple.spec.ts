@@ -40,6 +40,7 @@ test('native review code and fresh-browser account deletion use the dedicated sc
     });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('/auth/login?' + fixture.loginQuery);
+    await expect(page.getByRole('heading', { name: 'Sign in to TinyCloud Home', exact: true })).toBeVisible();
     await expect(page.getByLabel('Review code', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
     await expect(page.getByText('Enter the review code for appreview@tinycloud.xyz.')).toBeVisible();
