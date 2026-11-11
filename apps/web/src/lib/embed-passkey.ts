@@ -39,7 +39,7 @@ export function withSessionCredential(init: RequestInit): RequestInit {
 }
 
 export function setSessionToken(token: string): void {
-  sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+  if (isEmbedContext()) sessionStorage.setItem(SESSION_TOKEN_KEY, token);
 }
 
 export async function embedSendEmailOtp(
