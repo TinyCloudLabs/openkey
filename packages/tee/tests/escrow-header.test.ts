@@ -56,3 +56,12 @@ test('closed transform enum accepts exact raw GetKey material and versioned path
   await expect(freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, path: 'opencredentials/share-email/v2/otp-pepper', version: 1 }] })).rejects.toThrow();
   expect((await freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, path: 'opencredentials/share-email/v1/otp-pepper', version: 1 }] })).header.paths[0]!.version).toBe(1);
 });
+
+test('legacy empty sentinel is the only zero-count identity and excludes positive legacy paths', async () => {
+  const h = fixed.header as EscrowHeader;
+  const sentinel = { ...h.paths[0]!, path: 'openkey/user/{userId}/encryption', purpose: 'legacy-user-encryption-empty', version: 0, transform: 'sha256-getkey' as const, expectedCount: 0 };
+  expect((await freezeEscrowHeader({ ...h, paths: [...h.paths, sentinel] })).header.paths.length).toBe(2);
+  await expect(freezeEscrowHeader({ ...h, paths: [sentinel, sentinel] })).rejects.toThrow();
+  await expect(freezeEscrowHeader({ ...h, paths: [sentinel, { ...sentinel, path: 'openkey/user/u/encryption', purpose: 'legacy-user-encryption', expectedCount: 1 }] })).rejects.toThrow();
+  await expect(freezeEscrowHeader({ ...h, paths: [{ ...sentinel, path: 'other' }] })).rejects.toThrow();
+});

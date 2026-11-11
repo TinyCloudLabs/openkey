@@ -1,3 +1,4 @@
+import { isEmptyLegacyDeclaration } from './escrow-legacy';
 import { escrowMaterialLength, type EscrowTransform } from './escrow-transform';
 import { createHash } from 'node:crypto';
 import { DhkemP256HkdfSha256 } from '@hpke/core';
@@ -69,6 +70,7 @@ export function encodeEscrowHeader(header: EscrowHeader): Uint8Array {
     holderIds.add(holder.id); publicKeys.add(holder.publicKey);
     return [holder.id, holder.x, holder.publicKey];
   }).sort((a, b) => (a[0] as string) < (b[0] as string) ? -1 : (a[0] as string) > (b[0] as string) ? 1 : 0);
+  if (header.paths.some(isEmptyLegacyDeclaration) && header.paths.some(p => p.purpose === 'legacy-user-encryption')) throw new Error('Conflicting legacy inventory');
   const pathsSeen = new Set<string>();
   const paths = header.paths.map(item => {
     text(item.path); text(item.purpose); text(item.sourcePublicKey);
@@ -76,7 +78,7 @@ export function encodeEscrowHeader(header: EscrowHeader): Uint8Array {
     escrowMaterialLength(item.transform);
     const pathVersions = [...item.path.matchAll(/(?:^|\/)v([0-9]+)(?=\/|$)/g)];
     if (pathVersions.some(match => Number(match[1]) !== item.version)) throw new Error('Path version mismatch');
-    if (item.expectedCount === 0 || !Array.isArray(item.signatureChain) || item.signatureChain.length === 0) throw new Error('Invalid escrow path');
+    if ((item.expectedCount === 0 && !isEmptyLegacyDeclaration(item)) || !Array.isArray(item.signatureChain) || item.signatureChain.length === 0) throw new Error('Invalid escrow path');
     for (const entry of item.signatureChain) text(entry);
     const identity = JSON.stringify([item.path, item.purpose, item.version]);
     if (pathsSeen.has(identity)) throw new Error('Duplicate escrow path');

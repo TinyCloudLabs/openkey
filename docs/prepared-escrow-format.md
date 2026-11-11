@@ -106,3 +106,16 @@ transform is authenticated in item AAD. Version 0 denotes an unversioned path
 and is rejected when the path contains a `/vN/` or trailing `/vN` segment.
 Versioned service paths require version === N for every vN segment, identically
 in TS and Rust.
+
+## Empty legacy inventory
+
+The sole zero-count identity is path literal `openkey/user/{userId}/encryption`,
+purpose `legacy-user-encryption-empty`, version 0, transform `sha256-getkey`,
+expectedCount 0. It occurs at most once and cannot coexist with any
+`legacy-user-encryption` purpose line. Its source public key and signature chain
+carry the same app evidence as real paths. It is metadata only: no material
+item or derivation on the template. Export and recovery omit it from the
+material set and require its validatedCount=0 result. All other counts are
+positive. Positive legacy identities use the concrete per-user path and
+`legacy-user-encryption` purpose; PKCS8 private keys are validated by deriving
+and matching the persisted SPKI public key.

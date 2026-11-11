@@ -1,3 +1,4 @@
+import { isEmptyLegacyDeclaration } from './escrow-legacy';
 import { escrowMaterialLength } from './escrow-transform';
 import { createDecipheriv, createHash } from 'node:crypto';
 import { freezeEscrowHeader, type EscrowHeader } from './escrow-header';
@@ -17,7 +18,7 @@ export interface EscrowRecoveryOptions {
   shares: readonly Uint8Array[];
   items: readonly EscrowCiphertextItem[];
   /** Validate all dependent sealed records and identities before any reseal/import. */
-  validate: (keys: readonly EscrowPathKey[], header: EscrowHeader) => Promise<true>;
+  validate: (keys: readonly EscrowPathKey[], header: EscrowHeader) => Promise<readonly { path: string; purpose: string; version: number; validatedCount: number }[]>;
   /** Transactional import/reseal under the new policy, inside this enclave. */
   importAndReseal: (keys: readonly EscrowPathKey[], header: EscrowHeader) => Promise<true>;
 }
@@ -28,7 +29,7 @@ export async function recoverEscrowPaths(options: EscrowRecoveryOptions): Promis
   const frozen = await freezeEscrowHeader(options.header);
   if (frozen.hash !== options.expectedHeaderHash) throw new Error('Escrow header mismatch');
   const identity = (p: { path: string; purpose: string; version: number }) => JSON.stringify([p.path, p.purpose, p.version]);
-  const paths = new Map(frozen.header.paths.map(p => [identity(p), p]));
+  const paths = new Map(frozen.header.paths.filter(p => !isEmptyLegacyDeclaration(p)).map(p => [identity(p), p]));
   if (items.length !== paths.size || items.length > 2 ** 20) throw new Error('Incomplete recovery inventory');
   const seen = new Set<string>();
   for (const item of items) {
@@ -56,7 +57,14 @@ export async function recoverEscrowPaths(options: EscrowRecoveryOptions): Promis
       try { key = Buffer.concat([partial, decipher.final()]); } finally { partial.fill(0); }
       recovered.push({ path: p.path, purpose: p.purpose, version: p.version, key });
     }
-    if (await options.validate(recovered, frozen.header) !== true) throw new Error('Recovery validation failed');
+    const counts = await options.validate(recovered, frozen.header);
+    const expectedCounts = new Map(frozen.header.paths.map(p => [identity(p), p.expectedCount]));
+    if (!Array.isArray(counts) || counts.length !== expectedCounts.size) throw new Error('Recovery validation failed');
+    for (const result of counts) {
+      const id = identity(result);
+      if (!expectedCounts.has(id) || result.validatedCount !== expectedCounts.get(id)) throw new Error('Recovery validation failed');
+      expectedCounts.delete(id);
+    }
     if (await options.importAndReseal(recovered, frozen.header) !== true) throw new Error('Recovery import failed');
     return { completed: recovered.length, headerHash: frozen.hash };
   } finally {

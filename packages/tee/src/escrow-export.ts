@@ -1,3 +1,4 @@
+import { isEmptyLegacyDeclaration } from './escrow-legacy';
 import { escrowMaterialLength } from './escrow-transform';
 import { randomBytes, createCipheriv, createHash } from 'node:crypto';
 import { freezeEscrowHeader, type EscrowHeader } from './escrow-header';
@@ -44,8 +45,8 @@ export async function prepareEscrowExport(options: EscrowExportOptions) {
     if (Date.now() >= Date.parse(policy.expiresAt)) throw new Error('Escrow approval expired');
     const identity = (p: { path: string; purpose: string; version: number }) => JSON.stringify([p.path, p.purpose, p.version]);
     const pathsByIdentity = new Map(policy.paths.map(path => [identity(path), path]));
-    const expected = new Set(pathsByIdentity.keys());
-    if (expected.size !== policy.paths.length || keys.length !== expected.size) throw new Error('Incomplete escrow inventory');
+    const expected = new Set(policy.paths.filter(p => !isEmptyLegacyDeclaration(p)).map(identity));
+    if (pathsByIdentity.size !== policy.paths.length || keys.length !== expected.size) throw new Error('Incomplete escrow inventory');
     for (const item of keys) {
       const metadata = pathsByIdentity.get(identity(item));
       if (!metadata || item.key.length !== escrowMaterialLength(metadata.transform) || !expected.delete(identity(item))) throw new Error('Incomplete escrow inventory');

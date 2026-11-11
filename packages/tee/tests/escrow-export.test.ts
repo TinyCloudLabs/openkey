@@ -64,7 +64,7 @@ test('synthetic enclave ceremony exports encrypted path key with actual split co
   const recovery = {
     enabled: true, isInTee: async () => true, header: result.header, expectedHeaderHash: result.headerHash,
     shares, items: result.items,
-    validate: async (keys: readonly { key: Uint8Array }[]) => { expect(Buffer.from(keys[0]!.key)).toEqual(Buffer.from(key)); keyReference = keys[0]!.key; return true as const; },
+    validate: async (keys: readonly { key: Uint8Array }[]) => { expect(Buffer.from(keys[0]!.key)).toEqual(Buffer.from(key)); keyReference = keys[0]!.key; return policy.paths.map(p => ({ ...p, validatedCount: p.expectedCount })); },
     importAndReseal: async () => { imports++; return true as const; },
   };
   expect(await recoverEscrowPaths(recovery)).toEqual({ completed: 1, headerHash: result.headerHash });
@@ -75,11 +75,21 @@ test('synthetic enclave ceremony exports encrypted path key with actual split co
   }
   const damaged = Buffer.from(result.items[0]!.ciphertext, 'base64url'); damaged[15] = damaged[15]! ^ 1;
   await expect(recoverEscrowPaths({ ...recovery, items: [{ ...result.items[0]!, ciphertext: damaged.toString('base64url'), checksum: (await import('node:crypto')).createHash('sha256').update(damaged).digest('hex') }] })).rejects.toThrow();
-  await expect(recoverEscrowPaths({ ...recovery, validate: async () => false as unknown as true })).rejects.toThrow();
+  await expect(recoverEscrowPaths({ ...recovery, validate: async () => [] })).rejects.toThrow();
   await expect(recoverEscrowPaths({ ...recovery, expectedHeaderHash: '0'.repeat(64) })).rejects.toThrow();
   await expect(recoverEscrowPaths({ ...recovery, isInTee: async () => false })).rejects.toThrow();
   expect(imports).toBe(1);
   expect(JSON.stringify(result)).not.toContain(Buffer.from(key).toString('hex'));
   await expect(prepareEscrowExport({ ...options, authorize: async () => { throw new Error('Denied'); } })).rejects.toThrow();
   await expect(prepareEscrowExport({ ...options, validateSnapshot: async () => { throw new Error('Invalid identity'); } })).rejects.toThrow();
+  const sentinel = { ...policy.paths[0]!, path: 'openkey/user/{userId}/encryption', purpose: 'legacy-user-encryption-empty', expectedCount: 0 };
+  const legacyPolicy = { ...policy, paths: [...policy.paths, sentinel] };
+  const legacyOptions = { ...options, policy: legacyPolicy,
+    validateSnapshot: async () => legacyPolicy.paths.map(p => ({ ...p, validatedCount: p.expectedCount })),
+  };
+  const withEmpty = await prepareEscrowExport(legacyOptions);
+  expect(withEmpty.dryRun).toBe(false);
+  if (!withEmpty.dryRun) expect(withEmpty.items.length).toBe(1);
+  await expect(prepareEscrowExport({ ...legacyOptions, validateSnapshot: async () => legacyPolicy.paths.map(p => ({ ...p, validatedCount: 1 })) })).rejects.toThrow();
+
 });
