@@ -11,7 +11,7 @@ test('canonical header fixes ordering, copies policy and curve-checks recipients
   const h: EscrowHeader = {
     version: 1, contentKeyCommitment: 'd'.repeat(64), createdAt: '2026-11-11T00:00:00.000Z', expiresAt: '2026-11-12T00:00:00.000Z', escrowId: 'escrow', appId: 'openkey', imageDigest: 'sha256:' + 'a'.repeat(64),
     composeHash: 'b'.repeat(64), codeHash: 'c'.repeat(64), osVersion: 'test-os', agentVersion: 'test-agent',
-    bootReference: 'test-boot', snapshotId: 'test-snapshot', nonce: 'test-nonce', approvalReference: 'test-approval',
+    bootReference: 'test-boot', snapshotId: 'test-snapshot', recordManifestHash: 'e'.repeat(64), dbSnapshotHash: 'f'.repeat(64), nonce: 'test-nonce', approvalReference: 'test-approval',
     operatorId: 'operator', approverId: 'approver', holders,
     paths: [{ path: 'test/path', purpose: 'wallet', version: 0, transform: 'sha256-getkey', derivedPublicKey: '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798', sourcePublicKey: 'synthetic-source', signatureChain: ['synthetic-chain'], expectedCount: 1 }],
   };
@@ -66,4 +66,16 @@ test('legacy empty sentinel is the only zero-count identity and excludes positiv
   await expect(freezeEscrowHeader({ ...h, paths: [sentinel, sentinel] })).rejects.toThrow();
   await expect(freezeEscrowHeader({ ...h, paths: [sentinel, { ...sentinel, path: 'openkey/user/u/encryption', purpose: 'legacy-user-encryption', expectedCount: 1 }] })).rejects.toThrow();
   await expect(freezeEscrowHeader({ ...h, paths: [{ ...sentinel, path: 'other' }] })).rejects.toThrow();
+});
+
+import approval from './fixtures/escrow-approval-v1.json';
+import { freezeEscrowPreflightPolicy } from '../src/escrow-export';
+test('preflight vector zeros commitment and assigns coordinates in sorted-holder order', async () => {
+  const header = approval.preflightHeader as EscrowHeader;
+  const policy = { ...header, holders: [...header.holders].reverse() };
+  const frozen = await freezeEscrowPreflightPolicy(policy);
+  expect(new TextDecoder().decode(frozen.bytes)).toBe(approval.canonicalUtf8);
+  expect(frozen.hash).toBe(approval.policyHash);
+  expect(frozen.header.contentKeyCommitment).toBe('0'.repeat(64));
+  expect(frozen.header.holders.map(holder => holder.x)).toEqual([1, 2, 3]);
 });

@@ -16,9 +16,9 @@ run('real PostgreSQL fence blocks new sealed rows through validation and release
     await owner.query(`CREATE SCHEMA "${schema}"`);
     await owner.query(`SET search_path TO "${schema}"`);
     await writer.query(`SET search_path TO "${schema}"`);
-    await owner.query('CREATE TABLE ethereum_keys (id text, "userId" text, "sealingContext" text, "keyType" text, "sealedBlob" text, address text)');
-    await owner.query('CREATE TABLE nostr_keys (id text, "userId" text, "sealingContext" text, "sealedSecret" text, "pubkeyHex" text)');
-    await owner.query('CREATE TABLE user_encryption_key (id text, "userId" text, "sealedPrivateKey" text, "publicKey" text)');
+    await owner.query('CREATE TABLE ethereum_keys (id text, "userId" text, "sealingContext" text, "keyType" text, "sealedBlob" text, address text, "publicKey" text NOT NULL DEFAULT \'\', "isCanonicalTinyCloud" boolean NOT NULL DEFAULT false, "keyIndex" integer NOT NULL DEFAULT 0, label text, "archivedAt" timestamptz, "createdAt" timestamptz NOT NULL DEFAULT now())');
+    await owner.query('CREATE TABLE nostr_keys (id text, "userId" text, "sealingContext" text, "sealedSecret" text, "pubkeyHex" text, npub text NOT NULL DEFAULT \'\', label text, "revokedAt" timestamptz, "createdAt" timestamptz NOT NULL DEFAULT now())');
+    await owner.query('CREATE TABLE user_encryption_key (id text, "userId" text, "sealedPrivateKey" text, "publicKey" text, "createdAt" timestamptz NOT NULL DEFAULT now())');
     const tx: EscrowSqlTransaction = {
       $executeRawUnsafe: async query => (await owner.query(query)).rowCount ?? 0,
       $queryRawUnsafe: async <T>(query: string) => (await owner.query(query)).rows as T,
@@ -48,7 +48,7 @@ run('real PostgreSQL fence blocks new sealed rows through validation and release
     prisma.$on('query', event => queries.push(event.query));
     try {
       // Commit immediately before Prisma begins the fenced operation.
-      await writer.query('INSERT INTO ethereum_keys VALUES ($1,$2,$3,$4,$5,$6)', ['prior', 'u', null, 'MANAGED', Buffer.alloc(32, 1).toString('base64'), '0x' + 'a'.repeat(40)]);
+      await writer.query('INSERT INTO ethereum_keys (id,"userId","sealingContext","keyType","sealedBlob",address) VALUES ($1,$2,$3,$4,$5,$6)', ['prior', 'u', null, 'MANAGED', Buffer.alloc(32, 1).toString('base64'), '0x' + 'a'.repeat(40)]);
       await withFencedOpenKeySnapshot(createPrismaEscrowDatabase(prisma), async snapshot => {
         expect(snapshot.inventory.records.map(row => row.id)).toEqual(['prior']);
         const lockIndex = queries.findIndex(query => query.startsWith('LOCK TABLE'));

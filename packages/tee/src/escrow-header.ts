@@ -18,6 +18,8 @@ export interface EscrowHeader {
   agentVersion: string;
   bootReference: string;
   snapshotId: string;
+  recordManifestHash: string;
+  dbSnapshotHash: string;
   nonce: string;
   approvalReference: string;
   operatorId: string;
@@ -56,6 +58,7 @@ export function encodeEscrowHeader(header: EscrowHeader): Uint8Array {
     if (typeof timestamp !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(timestamp) || !Number.isFinite(Date.parse(timestamp)) || new Date(timestamp).toISOString() !== timestamp) throw new Error('Invalid escrow time');
   }
   if (header.expiresAt <= header.createdAt) throw new Error('Invalid escrow time');
+  hash(header.recordManifestHash); hash(header.dbSnapshotHash);
   hash(header.composeHash); hash(header.codeHash);
   if (!Array.isArray(header.holders) || header.holders.length !== 3
     || !Array.isArray(header.paths) || header.paths.length === 0) throw new Error('Invalid escrow header');
@@ -89,7 +92,7 @@ export function encodeEscrowHeader(header: EscrowHeader): Uint8Array {
   return new TextEncoder().encode(JSON.stringify([
     'tinycloud/escrow/header', 1, header.escrowId, header.appId, header.contentKeyCommitment, header.createdAt, header.expiresAt,
     header.imageDigest, header.composeHash, header.codeHash, header.osVersion,
-    header.agentVersion, header.bootReference, header.snapshotId, header.nonce,
+    header.agentVersion, header.bootReference, header.snapshotId, header.recordManifestHash, header.dbSnapshotHash, header.nonce,
     header.approvalReference, header.operatorId, header.approverId,
     [16, 1, 2, 'gf256-0x11b', 2, 3], holders, paths,
   ]));
@@ -106,9 +109,9 @@ export async function freezeEscrowHeader(input: EscrowHeader): Promise<{
   const header: EscrowHeader = {
     version: 1, escrowId: tuple[2], appId: tuple[3], contentKeyCommitment: tuple[4], createdAt: tuple[5], expiresAt: tuple[6],
     imageDigest: tuple[7], composeHash: tuple[8], codeHash: tuple[9], osVersion: tuple[10], agentVersion: tuple[11],
-    bootReference: tuple[12], snapshotId: tuple[13], nonce: tuple[14], approvalReference: tuple[15], operatorId: tuple[16], approverId: tuple[17],
-    holders: tuple[19].map((h: [string, number, string]) => ({ id: h[0], x: h[1], publicKey: h[2] })),
-    paths: tuple[20].map((p: [string, string, number, EscrowTransform, string, string, string[], number]) => ({ path: p[0], purpose: p[1], version: p[2], transform: p[3], derivedPublicKey: p[4], sourcePublicKey: p[5], signatureChain: p[6], expectedCount: p[7] })),
+    bootReference: tuple[12], snapshotId: tuple[13], recordManifestHash: tuple[14], dbSnapshotHash: tuple[15], nonce: tuple[16], approvalReference: tuple[17], operatorId: tuple[18], approverId: tuple[19],
+    holders: tuple[21].map((h: [string, number, string]) => ({ id: h[0], x: h[1], publicKey: h[2] })),
+    paths: tuple[22].map((p: [string, string, number, EscrowTransform, string, string, string[], number]) => ({ path: p[0], purpose: p[1], version: p[2], transform: p[3], derivedPublicKey: p[4], sourcePublicKey: p[5], signatureChain: p[6], expectedCount: p[7] })),
   };
   const kem = new DhkemP256HkdfSha256();
   const recipients = new Map<string, CryptoKey>();

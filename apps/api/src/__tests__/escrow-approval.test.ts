@@ -1,10 +1,11 @@
 import { expect, test } from 'bun:test';
 import { webcrypto, randomBytes } from 'node:crypto';
+import approvalVector from '../../../../packages/tee/tests/fixtures/escrow-approval-v1.json';
 import { mockModules } from './mock-module';
 
   const pairs = await Promise.all([1, 2].map(() => webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])));
   const admins = await Promise.all(pairs.map(async (pair, i) => ({ id: `admin-${i}`, publicKey: Buffer.from(await webcrypto.subtle.exportKey('raw', pair.publicKey)).toString('base64url') })));
-  await mockModules({ '../services/escrow-admins.json': () => ({ default: admins }) });
+  await mockModules({ '../services/escrow-admins.json': () => ({ default: [...admins, ...approvalVector.admins] }) });
   const { authorizeEscrow, escrowApprovalMessage } = await import('../services/escrow-approval?escrow-approval-test' as string);
 test('two distinct measured admin keys must sign the exact policy and consume one nonce', async () => {
   const expected = { policyHash: 'a'.repeat(64), nonce: randomBytes(32).toString('base64url'), expiresAt: new Date(Date.now() + 60000).toISOString(), dryRun: true, operatorId: 'admin-0', approverId: 'admin-1' };
@@ -25,5 +26,8 @@ test('two distinct measured admin keys must sign the exact policy and consume on
 try { await authorizeEscrow(${JSON.stringify(request)}, ${JSON.stringify(expected)}, { consume: async () => true }); process.exit(2); } catch(e) { if(e.message !== 'Escrow approval not configured') process.exit(3); }`;
   const child = Bun.spawn([process.execPath, '-e', script], { env: {}, stdout: 'pipe', stderr: 'pipe' });
   expect(await child.exited).toBe(0);
+
+  expect(new TextDecoder().decode(escrowApprovalMessage(approvalVector.expected))).toBe(approvalVector.approveMessageUtf8);
+  expect(await authorizeEscrow({ ...approvalVector.expected, signatures: approvalVector.signatures }, approvalVector.expected, store)).toBe(true);
 
 });

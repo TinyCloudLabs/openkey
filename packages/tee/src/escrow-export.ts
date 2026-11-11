@@ -29,6 +29,14 @@ export interface EscrowExportOptions {
   getExportQuote: (headerHash: string) => Promise<EscrowQuote>;
 }
 
+/** Exact server-side policy bytes signed by both admins before content-key generation. */
+export function freezeEscrowPreflightPolicy(policy: ExportPolicy) {
+  const holders = [...policy.holders].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  return freezeEscrowHeader({ ...policy, contentKeyCommitment: '0'.repeat(64),
+    holders: holders.map((holder, i) => ({ id: holder.id, publicKey: holder.publicKey, x: i + 1 })),
+  });
+}
+
 /** Internal measured-process entry; transport/auth adapters must be installed by the service. */
 export async function prepareEscrowExport(options: EscrowExportOptions) {
   if (options.enabled !== true || (await options.isInTee()) !== true) throw new Error('Escrow export disabled');
@@ -37,9 +45,7 @@ export async function prepareEscrowExport(options: EscrowExportOptions) {
   const now = Date.now();
   if (!(Date.parse(policy.createdAt) <= now && now < Date.parse(policy.expiresAt))) throw new Error('Escrow approval expired');
   if (policy.paths.length > 2 ** 20) throw new Error('Escrow inventory too large');
-  await freezeEscrowHeader({ ...policy, contentKeyCommitment: '0'.repeat(64),
-    holders: policy.holders.map((holder, i) => ({ id: holder.id, publicKey: holder.publicKey, x: i + 1 })),
-  });
+  await freezeEscrowPreflightPolicy(policy);
   if (await options.authorize(structuredClone(policy), dryRun) !== true) throw new Error('Escrow authorization denied');
   return options.snapshot(async keys => {
     try {

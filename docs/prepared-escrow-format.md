@@ -61,7 +61,8 @@ and verifies the decrypted trailing x.
 ```
 ["tinycloud/escrow/header",1,escrowId,appId,contentKeyCommitment,createdAt,expiresAt,
  imageDigest,composeHash,codeHash,
- osVersion,agentVersion,bootReference,snapshotId,nonce,approvalReference,
+ osVersion,agentVersion,bootReference,snapshotId,recordManifestHash,dbSnapshotHash,
+ nonce,approvalReference,
  operatorId,approverId,[16,1,2,"gf256-0x11b",2,3],holders,paths]
 ```
 
@@ -147,3 +148,54 @@ For both v1 transforms the GetKey signed purpose is the constant empty string,
 not the header's inventory/business purpose. The holder verifier checks chain[0]
 over keccak256(UTF8(":" + derivedPublicKey)). A service using a nonempty signed
 GetKey purpose requires a new closed transform value.
+
+## Private record manifest and database snapshot
+
+recordManifestHash is SHA-256 over UTF-8 compact JSON
+`["tinycloud/escrow/record-manifest",1,[tuples...]]`. Each tuple is
+`[table,rowId,owner|null,path,purpose,version,transform,expectedIdentity,ciphertextChecksum]`.
+Sort by each tuple's compact JSON using UTF-16 code-unit comparison. Reject
+duplicate `(table,rowId)` identities, unknown paths and per-path counts different
+from expectedCount. The sentinel has zero tuples. The private manifest is stored
+with the sealed database snapshot; holder bundles contain only its hash.
+
+OpenKey dbSnapshotHash is SHA-256 over UTF-8 compact JSON
+`["tinycloud/escrow/db-snapshot",1,[[table,rows],...]]`. Tables occur in this order,
+and each row tuple uses these exact columns:
+
+- ethereum_keys: id, userId, address, publicKey, sealedBlob, sealingContext,
+  keyType, isCanonicalTinyCloud, keyIndex, label, archivedAt, createdAt.
+- nostr_keys: id, userId, label, pubkeyHex, npub, sealedSecret, sealingContext,
+  revokedAt, createdAt.
+- user_encryption_key: id, userId, publicKey, sealedPrivateKey, createdAt.
+
+Sort rows by id using UTF-16 code-unit comparison; reject duplicate ids.
+Nullable values remain JSON null. Strings remain exact Unicode scalar sequences.
+isCanonicalTinyCloud is Boolean; keyIndex is a safe integer (negative zero
+rejected); timestamps become canonical UTC millisecond ISO strings. All three
+tables and every listed column are required, independently of driver property
+order. The snapshot reader selects all listed columns inside the table fence.
+
+## Preflight policy and admin approval
+
+policyHash is SHA-256 of canonical preflight header bytes. Set
+contentKeyCommitment to 64 zeros; sort holders by id and assign x=1,2,3 in that
+order. All other header fields are final. Export replaces only the content-key
+commitment and actual Privy coordinates. snapshotId names the preflight PostgreSQL
+snapshot; a later fenced read proves identical record and database hashes.
+
+The test-only fixture `tests/fixtures/escrow-approval-v1.json` contains the fixed
+preflight header, exact canonical bytes, policyHash, nonce, expiry, mode, approve
+message bytes and two fixed P-256 signatures. The signatures use public test
+scalars 1 and 2, ECDSA-SHA256 and 64-byte P1363 encoding, unpadded base64url.
+The approve message is UTF-8 compact JSON
+`["tinycloud/escrow/approve",1,policyHash,nonce,expiresAt,dryRun]`.
+The TS authorizer accepts this vector; independent Python encoding and P-256
+verification reproduce its bytes, hash and signatures.
+
+Admin device signing: obtain the server's preflight descriptor, verify its
+policy hash against the exact policy bytes, and sign the approve message with
+the configured P-256 key on the admin's device. WebCrypto ECDSA with SHA-256
+returns P1363 bytes; encode those 64 bytes as unpadded base64url and send only
+admin id plus signature. The private key remains on that device. Both admins
+sign the same descriptor; a dry-run signature authorizes only dry-run.
