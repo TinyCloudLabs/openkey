@@ -224,6 +224,19 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     expect(refresh.expiresAt.getTime()).toBeLessThanOrEqual(source.createdAt.getTime() + 3600_000);
   });
 
+  test('a non-reset provision retry leaves an installed account intact', async () => {
+    const before = await accounts.reviewerForUser(database, 'reviewer-owner');
+    const sessions = await database.session.count({ where: { userId: 'reviewer-owner' } });
+    const { provisionReviewer } = await import('../services/reviewer-fixtures');
+    await expect(provisionReviewer(database, 'openai', {
+      clientId, nodeHost: 'https://node.tinycloud.xyz',
+    }, false)).rejects.toThrow();
+    const after = await accounts.reviewerForUser(database, 'reviewer-owner');
+    expect(after!.installEpoch).toBe(before!.installEpoch);
+    expect(accounts.reviewerActive(after)).toBe(true);
+    expect(await database.session.count({ where: { userId: 'reviewer-owner' } })).toBe(sessions);
+  });
+
   test('reviewer cannot use key generation or organization routes', async () => {
     expect((await call('/api/keys/generate', 'POST', {}, { cookie })).status).toBe(403);
     expect((await call('/api/organizations', 'POST', {}, { cookie })).status).toBe(403);
@@ -239,6 +252,9 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
   });
 
   test('signed reviewer delegations contain only the bound audience and space and expire within an hour', async () => {
+    const { reviewerSessionDid } = await import('../services/reviewer-delegation');
+    expect(reviewerSessionDid({ ...sessionJwk, constructor: 'invalid' })).toBeNull();
+    expect(reviewerSessionDid({ ...sessionJwk, kid: {} })).toBeNull();
     const permissions = [{ service: 'tinycloud.kv', space: 'applications',
       path: 'xyz.tinycloud.tinyapps.todos/', actions: ['tinycloud.kv/get', 'tinycloud.kv/list'] }];
     const body = { keyId: 'reviewer', jwk: sessionJwk, host: 'https://node.tinycloud.xyz', prefix: 'default',

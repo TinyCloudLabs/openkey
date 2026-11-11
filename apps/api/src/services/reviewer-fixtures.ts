@@ -4,7 +4,7 @@ import { TinyCloudNode } from '@tinycloud/node-sdk';
 import { createTeeClient, generatePrivateKey, getAddressFromPrivateKey, seal } from '@openkey/tee';
 import type { PrismaClient } from '@openkey/db';
 import { createSealingContext } from './key-sealing';
-import { lockReviewer, unsetReviewer } from './reviewer-accounts';
+import { lockReviewer, holdReviewer } from './reviewer-accounts';
 import { TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
 import { logReviewer } from '../log';
 
@@ -37,8 +37,6 @@ export async function provisionReviewer(
   if (!client || client.disabled || !client.scopes?.includes('tinycloud:mcp') || client.redirectUris.length !== 1) {
     throw new Error('Reviewer configuration refused');
   }
-  // Invalidate process-memory authority before the durable reset transaction.
-  await unsetReviewer(database, store);
   const privateKey = generatePrivateKey();
   const address = getAddressFromPrivateKey(privateKey);
   const sealingContext = createSealingContext();
@@ -46,13 +44,15 @@ export async function provisionReviewer(
   const resource = store === 'openai' ? 'https://mcp.tinycloud.xyz/chatgpt/mcp' : 'https://mcp.tinycloud.xyz/mcp';
   const callbackUri = store === 'openai' ? 'https://mcp.tinycloud.xyz/chatgpt/connect/callback' : 'https://mcp.tinycloud.xyz/connect/callback';
   const spaceId = `tinycloud:pkh:eip155:1:${address}:applications`;
+  let resetSpace: string | null = null;
   const binding = await database.$transaction(async (transaction) => {
     const before = await lockReviewer(transaction, store);
     if (before.userId && !reset) throw new Error('Use explicit reset for an existing reviewer');
+    const held = await holdReviewer(transaction, before);
     if (before.userId) {
       await transaction.ethereumKey.deleteMany({ where: { userId: before.userId } });
       await transaction.user.delete({ where: { id: before.userId } });
-      logReviewer('reviewer_admin', 'reset', store, before.spaceId ?? undefined);
+      resetSpace = before.spaceId;
     }
     const user = await transaction.user.create({ data: {
       id: randomUUID(), email: before.email, emailVerified: true, reviewerHoldAt: new Date(),
@@ -65,9 +65,10 @@ export async function provisionReviewer(
     return transaction.reviewerAccount.update({ where: { store }, data: {
       userId: user.id, keyId: key.id, spaceId, clientId: config.clientId, redirectUri: client.redirectUris[0],
       resource, callbackUri, nodeHost: config.nodeHost, sessionDid: null, seededAt: null, readyAt: null,
-      grantSessionId: null, installEpoch: { increment: 1 },
+      grantSessionId: null, installEpoch: held.installEpoch,
     } });
   });
+  if (resetSpace) logReviewer('reviewer_admin', 'reset', store, resetSpace);
   const node = new TinyCloudNode({
     host: config.nodeHost, privateKey, prefix: 'applications', sessionExpirationMs: 3600_000,
     autoCreateSpace: true, autoBootstrapAccount: false, enablePublicSpace: false,

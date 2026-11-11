@@ -78,7 +78,8 @@ export async function lockReviewer(transaction: Prisma.TransactionClient, store:
   return transaction.reviewerAccount.findUniqueOrThrow({ where: { store }, include: { user: true } });
 }
 
-async function holdReviewer(transaction: Prisma.TransactionClient, binding: ReviewerBinding) {
+export async function holdReviewer(transaction: Prisma.TransactionClient, binding: ReviewerBinding) {
+  verifiers.delete(binding.store);
   if (binding.userId) {
     const userId = binding.userId;
     await transaction.user.update({ where: { id: userId }, data: { reviewerHoldAt: new Date() } });
