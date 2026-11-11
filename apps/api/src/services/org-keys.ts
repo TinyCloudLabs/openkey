@@ -33,6 +33,7 @@ export const ORG_KEY_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 function activeOrgGrantWhere(userId: string) {
   return {
     granteeUserId: userId,
+    acceptedAt: { not: null },
     revokedAt: null,
     key: {
       custody: 'ORG' as const,
@@ -80,6 +81,14 @@ export async function listOrgKeysForUser(prisma: PrismaClient, userId: string): 
     orderBy: { createdAt: 'asc' },
   });
   return grants.map(toPickerItem);
+}
+
+// Public organisation metadata stays in the custody-specific reader.
+export async function findActiveOrgKeyMetadata(prisma: Pick<PrismaClient, 'ethereumKey'>, keyId: string) {
+  return prisma.ethereumKey.findFirst({
+    where: { id: keyId, custody: 'ORG', userId: null, archivedAt: null, orgKey: { isNot: null } },
+    select: { id: true, address: true, orgKey: { select: { orgId: true, orgName: true, controllerDid: true } } },
+  });
 }
 
 export async function findOrgKeyForUser(
@@ -140,9 +149,10 @@ export async function isOrgKeyOwnerAccount(prisma: PrismaClient, keyId: string, 
 
 export class OrgKeyRefusal extends Error {
   constructor(
-    readonly status: 400 | 403 | 404 | 409 | 410 | 503,
+    readonly status: 400 | 403 | 404 | 409 | 410 | 429 | 503,
     readonly code: string,
     message: string,
+    readonly retryAfter?: number,
   ) {
     super(message);
   }
@@ -338,6 +348,7 @@ export async function signOrgKeyMessage(
         SELECT id, role FROM "key_grants"
         WHERE id = ${challenge.grantId} AND "keyId" = ${input.keyId}
           AND "granteeUserId" = ${input.userId} AND "revokedAt" IS NULL
+          AND "acceptedAt" IS NOT NULL
         FOR SHARE`;
       if (!grant) throw new OrgKeyRefusal(403, 'grant_revoked', 'No active grant on this key');
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { orgAdminRequest } from '$lib/org-key-admin-api';
   import { goto } from '$app/navigation';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
@@ -8,6 +9,8 @@
 
   const session = authClient.useSession();
 
+  let orgKeys = $state<{ keyId: string; orgName: string }[]>([]);
+  let invitations = $state<{ id: string; key: { orgKey: { orgName: string } } }[]>([]);
   let keys = $state<EthereumKey[]>([]);
   let loading = $state(true);
   let generating = $state(false);
@@ -31,6 +34,8 @@
     try {
       const result = await api.listKeys();
       keys = result.keys;
+      try { orgKeys = (await orgAdminRequest<{ keys: typeof orgKeys }>('/org-keys')).keys; } catch { orgKeys = []; }
+      try { invitations = (await orgAdminRequest<{ invitations: typeof invitations }>('/org-key-invitations')).invitations; } catch { invitations = []; }
     } catch (e: any) {
       error = e.message || 'Failed to load keys';
     } finally {
@@ -191,3 +196,14 @@
     </div>
   </Card>
 </div>
+
+{#if orgKeys.length || invitations.length}
+  <section class="mx-auto max-w-5xl px-6 py-6">
+    {#each orgKeys as orgKey (orgKey.keyId)}
+      <p><a class="text-blue-700 underline" href={`/dashboard/org-keys/${encodeURIComponent(orgKey.keyId)}/admins`}><bdi>{orgKey.orgName}</bdi> · Organisation admins</a></p>
+    {/each}
+    {#each invitations as invitation (invitation.id)}
+      <p><bdi>{invitation.key.orgKey.orgName}</bdi> · <a class="text-blue-700 underline" href={`/org-key-invitations/${encodeURIComponent(invitation.id)}`}>Review invitation</a></p>
+    {/each}
+  </section>
+{/if}

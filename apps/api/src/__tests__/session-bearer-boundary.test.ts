@@ -26,11 +26,14 @@ const tx = {
   session: { deleteMany: async () => ({ count: 1 }) },
   account: { deleteMany: async () => ({ count: 1 }), findMany: async () => [] },
   verification: { deleteMany: async () => ({ count: 0 }) },
+  orgKeyGrantChallenge: { deleteMany: async () => ({ count: 0 }) },
+  keyGrantEvent: { create: async () => ({}) },
   keyGrant: {
+    findMany: async () => [],
     count: async (args: { where: unknown }) => { ownerGrantQueries.push(args); return ownerGrantCount; },
     updateMany: async (args: unknown) => { adminRevocations.push(args); return { count: 0 }; },
   },
-  user: { delete: async ({ where }: { where: { id: string } }) => { deletedUsers.push(where.id); return {}; } },
+  user: { findUnique: async () => ({ email: 'user@example.com', emailVerified: true }), delete: async ({ where }: { where: { id: string } }) => { deletedUsers.push(where.id); return {}; } },
 };
 
 const prisma = {

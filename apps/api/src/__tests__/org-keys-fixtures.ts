@@ -68,6 +68,9 @@ export function fakeDb() {
       if (isNotCondition(condition)) {
         return condition.isNot === null ? row[field] != null : row[field] !== condition.isNot;
       }
+      if (typeof condition === 'object' && condition !== null && 'not' in condition) {
+        return condition.not === null ? row[field] != null : row[field] !== condition.not;
+      }
       return condition === null ? row[field] == null : row[field] === condition;
     });
 
@@ -110,7 +113,7 @@ export function fakeDb() {
     $queryRaw: async (_strings: TemplateStringsArray, ...values: unknown[]) => {
       const [grantId, keyId, userId] = values;
       return state.grants
-        .filter((row) => row.id === grantId && row.keyId === keyId && row.granteeUserId === userId && row.revokedAt == null)
+        .filter((row) => row.id === grantId && row.keyId === keyId && row.granteeUserId === userId && row.revokedAt == null && row.acceptedAt != null)
         .map((row) => ({ id: row.id, role: row.role }));
     },
     orgKeySignChallenge: {

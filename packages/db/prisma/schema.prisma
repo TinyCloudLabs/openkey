@@ -369,6 +369,10 @@ model KeyGrant {
   role            KeyGrantRole
   granteeUserId   String?
   invitedEmail    String?
+  invitationTokenDigest String? @unique
+  invitedUserId   String?
+  invitationExpiresAt DateTime?
+  granteeDid      String?
   invitedByUserId String?
   invitedAt       DateTime     @default(now())
   acceptedAt      DateTime?
@@ -1071,4 +1075,37 @@ model OrgKeyRegistration {
   grant KeyGrant @relation(fields: [grantId], references: [id], onDelete: Restrict)
 
   @@map("org_key_registrations")
+}
+
+// TC-1518 grant operations have a separate nonce domain from signing.
+model OrgKeyGrantChallenge {
+  nonce String @id
+  purpose String
+  keyId String
+  grantId String
+  userId String
+  sessionId String
+  operationDigest String
+  granteeDid String?
+  origin String
+  rpId String
+  expiresAt DateTime
+  consumedAt DateTime?
+  result Json?
+  createdAt DateTime @default(now())
+
+  @@index([keyId])
+  @@map("org_key_grant_challenges")
+}
+
+model KeyGrantEvent {
+  id String @id @default(cuid())
+  keyId String
+  grantId String
+  actorUserId String
+  kind String
+  createdAt DateTime @default(now())
+
+  @@index([keyId, createdAt])
+  @@map("key_grant_events")
 }

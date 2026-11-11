@@ -1,5 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
 import { E2E_PORT, ORIGIN } from './e2e-port';
+import { ORG_ADMIN_PORT, ORG_ADMIN_ORIGIN } from './org-admin-origin';
 
 /**
  * OpenKey signing-approval browser parity tests.
@@ -38,7 +39,13 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
+      testIgnore: '**/org-key-admins.spec.ts',
       use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'org-admin',
+      testMatch: '**/org-key-admins.spec.ts',
+      use: { ...devices['Desktop Chrome'], baseURL: ORG_ADMIN_ORIGIN },
     },
     {
       name: 'webkit-sign-handshake',
@@ -47,7 +54,7 @@ export default defineConfig({
     },
   ],
 
-  webServer: {
+  webServer: [{
     // Start the SvelteKit dev server on a dedicated port so the parity
     // spec can reach the /__parity_harness route without colliding with
     // a developer's own dev instance. Vite's rolldown-driven dependency
@@ -58,7 +65,14 @@ export default defineConfig({
     cwd: '../..',
     reuseExistingServer: !process.env.CI,
     timeout: 180000,
-  },
+  }, {
+    command: `vite dev --port ${ORG_ADMIN_PORT} --strictPort`,
+    url: `${ORG_ADMIN_ORIGIN}/__parity_harness`,
+    cwd: '../..',
+    env: { ORG_KEY_CUSTODY_ENABLED: 'true' },
+    reuseExistingServer: !process.env.CI,
+    timeout: 180000,
+  }],
 
   timeout: 60000,
 

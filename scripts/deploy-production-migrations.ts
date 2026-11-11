@@ -78,6 +78,7 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [revokedAccessTokenMigration, revokedAccessTokenChecksum],
   ['20261028_0001_approval_request_results', 'c1d45c495e46e7eaf8a3bb92c06802437c34ca2f63c47d63e2550190b1d8ed8f'],
   [orgRegistrationMigration, orgRegistrationChecksum],
+  ['20261111_0001_org_admin_invitations', 'e45d38cc7f53da403af43182c4cfcad675341bfd013494f60f238e4562eaefad'],
   ['20261103_0001_delegation_code_claim', 'de705f548d9ffd6bc6a0d669f1156874258f31cc2d3e3584dbf0b49e5b40d992'],
   ['20261103_0002_approval_request_denied', '87d5205193ef11fc87a52325ff703cc9fc14dcec3c2a81ac71408ea5709bfce8'],
   ['20261109_0001_approval_request_approving', '59d59bc76994122d54d3d4564002cab2b01fecf194a12ee688f277b41c90fa6b'],
