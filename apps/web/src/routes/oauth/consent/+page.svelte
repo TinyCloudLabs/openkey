@@ -25,7 +25,7 @@
   const scope = $page.url.searchParams.get('scope') || 'openid';
   const requestedScopes = new Set(scope.split(/\s+/).filter(Boolean));
   const identityOnlyConsent = requestedScopes.has('tinycloud:identity')
-    && !['tinycloud:manage-key', 'tinycloud:delegation', 'tinycloud:session', 'tinycloud:mcp']
+    && !['keys', 'tinycloud:manage-key', 'tinycloud:delegation', 'tinycloud:session', 'tinycloud:mcp']
       .some((capability) => requestedScopes.has(capability));
 
   // Extract signed query params (up to and including sig) for consent endpoint

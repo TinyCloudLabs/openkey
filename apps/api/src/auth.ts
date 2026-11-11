@@ -102,6 +102,9 @@ export async function buildKeyClaims(
   _mutate = false,
   database: PrismaClient = prisma,
 ) {
+  if (scopes.includes(TINYCLOUD_IDENTITY_SCOPE) && !scopes.includes(TINYCLOUD_MANAGE_KEY_SCOPE)) {
+    return undefined;
+  }
   if (!scopes.includes('keys')) return undefined;
   if (!client) return [];
   const keys = await database.ethereumKey.findMany({

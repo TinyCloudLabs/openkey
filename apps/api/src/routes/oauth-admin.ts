@@ -74,23 +74,24 @@ function generateClientId(): string {
 
 const publicPlans = ['FREE', 'PRO', 'ENTERPRISE'] as const;
 const COORDINATIONOS_WEB_SCOPES = ['openid', 'email', 'keys', TINYCLOUD_SESSION_SCOPE] as const;
+const IDENTITY_WEB_SCOPES = ['openid', 'email', TINYCLOUD_IDENTITY_SCOPE] as const;
 // Public clients never receive signing capabilities implicitly; clients must
 // explicitly request manage-key consent.
 const PUBLIC_CLIENT_SCOPES = OAUTH_SCOPES.filter(
   (scope) => !RESTRICTED_SCOPES.has(scope),
 );
-
 function nativeDelegationJson(config: NativeDelegationConfig): Prisma.InputJsonObject {
   return config as unknown as Prisma.InputJsonObject;
 }
 
-function hasExactCoordinationosScopes(scopes: unknown): scopes is string[] {
+function hasExactWebClientScopes(scopes: unknown): scopes is string[] {
   if (!Array.isArray(scopes) || !scopes.every((scope): scope is string => typeof scope === 'string')) return false;
-  const identityRequested = scopes.includes(TINYCLOUD_IDENTITY_SCOPE);
-  if (scopes.length !== COORDINATIONOS_WEB_SCOPES.length + Number(identityRequested)) return false;
-  if (new Set(scopes).size !== scopes.length) return false;
-  const required = new Set<string>(COORDINATIONOS_WEB_SCOPES);
-  return scopes.every((scope) => required.has(scope) || scope === TINYCLOUD_IDENTITY_SCOPE);
+  const required = scopes.includes(TINYCLOUD_IDENTITY_SCOPE)
+    ? IDENTITY_WEB_SCOPES
+    : COORDINATIONOS_WEB_SCOPES;
+  return scopes.length === required.length
+    && new Set(scopes).size === scopes.length
+    && required.every((scope) => scopes.includes(scope));
 }
 
 // POST /api/admin/oauth/organizations - demo/admin fixture for tenant creation
@@ -246,6 +247,17 @@ oauthAdminRouter.post('/clients', async (c) => {
     })) {
     return c.json({ error: 'tinycloud:identity is only available to confidential web clients' }, 400);
   }
+  if (body.autoApprove === true && body.scopes?.includes(TINYCLOUD_IDENTITY_SCOPE)) {
+    return c.json({ error: 'tinycloud:identity clients cannot be auto-approved' }, 400);
+  }
+  const identityClient = body.scopes?.includes(TINYCLOUD_IDENTITY_SCOPE) ?? false;
+  if (applicationType === 'web' && !hasExactWebClientScopes(body.scopes)) {
+    return c.json({
+      error: identityClient
+        ? 'tinycloud:identity requires exactly openid, email, and tinycloud:identity'
+        : `web clients require exactly these scopes: ${COORDINATIONOS_WEB_SCOPES.join(', ')}`,
+    }, 400);
+  }
   if (body.scopes?.includes(TINYCLOUD_DELEGATION_SCOPE) && body.tinycloudNativeDelegation === undefined) {
     return c.json({ error: 'tinycloud:delegation requires tinycloudNativeDelegation in the same request' }, 400);
   }
@@ -260,11 +272,6 @@ oauthAdminRouter.post('/clients', async (c) => {
       if (error instanceof NativeDelegationPolicyError) return c.json({ error: error.message }, 400);
       throw error;
     }
-  }
-  if (applicationType === 'web' && !hasExactCoordinationosScopes(body.scopes)) {
-    return c.json({
-      error: `web clients require exactly these scopes: ${COORDINATIONOS_WEB_SCOPES.join(', ')}`,
-    }, 400);
   }
   if (body.uri !== undefined && body.uri !== '' && !validateOAuthClientMetadataUrl(body.uri).valid) {
     return c.json({ error: 'Application URI must use HTTPS or loopback HTTP' }, 400);
@@ -298,12 +305,9 @@ oauthAdminRouter.post('/clients', async (c) => {
         themeBackgroundColor: body.themeBackgroundColor ?? null,
         themeAccentColor: body.themeAccentColor ?? null,
         redirectUris: body.redirectUris,
-        scopes: applicationType === 'web' ? [
-          ...COORDINATIONOS_WEB_SCOPES,
-          ...(body.scopes?.includes(TINYCLOUD_IDENTITY_SCOPE) ? [TINYCLOUD_IDENTITY_SCOPE] : []),
-        ] : [
-          ...PUBLIC_CLIENT_SCOPES, ...(nativeConfig ? [TINYCLOUD_DELEGATION_SCOPE] : []),
-        ],
+        scopes: applicationType === 'web'
+          ? [...(body.scopes!.includes(TINYCLOUD_IDENTITY_SCOPE) ? IDENTITY_WEB_SCOPES : COORDINATIONOS_WEB_SCOPES)]
+          : [...PUBLIC_CLIENT_SCOPES, ...(nativeConfig ? [TINYCLOUD_DELEGATION_SCOPE] : [])],
         tinycloudNativeDelegation: nativeConfig ? nativeDelegationJson(nativeConfig) : undefined,
         disabled: false,
         skipConsent: body.autoApprove === true,
@@ -454,35 +458,44 @@ oauthAdminRouter.patch('/clients/:clientId', async (c) => {
   }
   const autoApprove = typeof body.autoApprove === 'boolean' ? body.autoApprove : undefined;
 
-  let existing: {
-    type: string | null;
-    public: boolean;
-    tokenEndpointAuthMethod: string | null;
-    scopes: string[];
-    disabled: boolean;
-  } | null = null;
-  if ('redirectUris' in body || 'scopes' in body || autoApprove === true || 'tinycloudNativeDelegation' in body) {
-    existing = await prisma.oauthClient.findUnique({
-      where: { clientId },
-      select: { type: true, public: true, tokenEndpointAuthMethod: true, scopes: true, disabled: true },
-    });
-    if (!existing) return c.json({ error: 'Client not found' }, 404);
-    if (existing.type === 'web' && ('redirectUris' in body || 'scopes' in body)) {
-      return c.json({
-        error: {
-          code: 'IMMUTABLE_FIELD',
-          message: 'redirectUris and scopes cannot be changed for web clients',
-        },
-      }, 400);
-    }
-    if ((existing.type !== 'web' || existing.public) && autoApprove === true) {
-      return c.json({
-        error: {
-          code: 'INVALID_FIELD',
-          message: 'autoApprove is only available for confidential web clients',
-        },
-      }, 400);
-    }
+  const existing = await prisma.oauthClient.findUnique({
+    where: { clientId },
+    select: {
+      type: true, public: true, tokenEndpointAuthMethod: true, scopes: true,
+      disabled: true, skipConsent: true,
+    },
+  });
+  if (!existing) return c.json({ error: 'Client not found' }, 404);
+  const resultingScopes = Array.isArray(body.scopes) ? body.scopes : existing.scopes;
+  const identityInResultingScopes = resultingScopes.includes(TINYCLOUD_IDENTITY_SCOPE);
+  if (identityInResultingScopes && !hasExactWebClientScopes(resultingScopes)) {
+    return c.json({ error: 'tinycloud:identity requires exactly openid, email, and tinycloud:identity' }, 400);
+  }
+  if (identityInResultingScopes && autoApprove === true
+    || body.scopes?.includes(TINYCLOUD_IDENTITY_SCOPE) && existing.skipConsent) {
+    return c.json({ error: 'tinycloud:identity clients cannot be auto-approved' }, 400);
+  }
+  if (body.scopes?.includes(TINYCLOUD_IDENTITY_SCOPE) && !existing.scopes.includes(TINYCLOUD_IDENTITY_SCOPE)) {
+    return c.json({ error: 'tinycloud:identity cannot be added to an existing client' }, 400);
+  }
+  if (body.scopes?.includes(TINYCLOUD_IDENTITY_SCOPE) && !isConfidentialWebClient(existing)) {
+    return c.json({ error: 'tinycloud:identity is only available to confidential web clients' }, 400);
+  }
+  if (existing.type === 'web' && ('redirectUris' in body || 'scopes' in body)) {
+    return c.json({
+      error: {
+        code: 'IMMUTABLE_FIELD',
+        message: 'redirectUris and scopes cannot be changed for web clients',
+      },
+    }, 400);
+  }
+  if ((existing.type !== 'web' || existing.public) && autoApprove === true) {
+    return c.json({
+      error: {
+        code: 'INVALID_FIELD',
+        message: 'autoApprove is only available for confidential web clients',
+      },
+    }, 400);
   }
 
   // Validate redirectUris against the persisted client type when provided.

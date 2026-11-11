@@ -70,6 +70,7 @@ if (!backend) {
   let auth: typeof AuthModule.auth;
   let authPrisma: DatabaseModule.PrismaClient;
   let buildClaim: typeof AuthModule.buildCanonicalTinyCloudIdentityClaim;
+  let buildKeyList: typeof AuthModule.buildKeyClaims;
   let keysRouter: typeof KeysModule.keysRouter;
   let delegateRouter: typeof DelegateModule.delegateRouter;
   let tee: TeeModule.TeeClient;
@@ -139,7 +140,7 @@ if (!backend) {
     ({ createPrismaClient } = await import('@openkey/db'));
     prisma = createPrismaClient();
     ({ setPrimaryKey, PrimaryKeyConflictError } = await import('../apps/api/src/services/primary-key'));
-    ({ auth, prisma: authPrisma, buildCanonicalTinyCloudIdentityClaim: buildClaim } = await import('../apps/api/src/auth'));
+    ({ auth, prisma: authPrisma, buildCanonicalTinyCloudIdentityClaim: buildClaim, buildKeyClaims: buildKeyList } = await import('../apps/api/src/auth'));
     ({ keysRouter } = await import('../apps/api/src/routes/keys'));
     ({ delegateRouter } = await import('../apps/api/src/routes/delegate'));
     const teeModule = await import('@openkey/tee');
@@ -417,6 +418,16 @@ if (!backend) {
       ...confidential, public: true,
     }, prisma)).toBeUndefined();
     expect(await buildClaim({ id: userId }, ['openid', 'tinycloud:identity'], undefined, prisma)).toBeUndefined();
+    const identityWithKeys = ['openid', 'tinycloud:identity', 'keys'];
+    expect(await buildKeyList(
+      { id: userId, email: '', emailVerified: true },
+      identityWithKeys,
+      confidential,
+      prisma,
+    )).toBeUndefined();
+    expect(await buildClaim({ id: userId }, identityWithKeys, confidential, prisma)).toEqual({
+      version: 'v1', address: primary, chainId: 1, did: `did:pkh:eip155:1:${primary}`,
+    });
   });
   test('canonical identity and real delegate/sign follow the change; old-owner SIWE is rejected', async () => {
     function requestBody(owner: string) {

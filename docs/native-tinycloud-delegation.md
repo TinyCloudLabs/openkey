@@ -98,8 +98,10 @@ default.
 `tinycloud:identity` returns the owner's canonical primary wallet address,
 chain ID, and DID in the signed ID token and userinfo response. It omits key
 and TinyCloud space identifiers and grants no signing, key access, or ReCap
-capability. It is admin-managed, available only to confidential web clients,
-and excluded from defaults, public clients, and dynamic registration.
+capability. Identity clients are admin-managed, confidential web clients
+registered with exactly `openid`, `email`, and `tinycloud:identity`. They are
+never auto-approved and receive no key list. The scope is excluded from
+defaults, public clients, and dynamic registration.
 
 A client becomes able to request a delegation only when an OpenKey admin
 **enables** it. Enabling writes `OauthClient.tinycloudNativeDelegation` and

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -18,12 +18,12 @@ if (process.env.OPENKEY_IDENTITY_REFRESH_TEST_CHILD !== '1') {
       stdout: 'pipe',
       stderr: 'pipe',
     });
-    const [, , exitCode] = await Promise.all([
+    const [stdout, stderr, exitCode] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
       child.exited,
     ]);
-    expect(exitCode).toBe(0);
+    expect(exitCode, stdout + stderr).toBe(0);
   }, 120_000);
 } else {
   const issuer = 'https://api.openkey.test/api/auth';
@@ -80,28 +80,45 @@ if (process.env.OPENKEY_IDENTITY_REFRESH_TEST_CHILD !== '1') {
     app.fetch(new Request(`${issuer}${path}`, { ...init, headers: { ...(authenticated ? { cookie } : {}), ...init.headers } }));
   const form = { 'content-type': 'application/x-www-form-urlencoded' };
 
-  test('a refresh request cannot exchange identity consent for a manage-key id token', async () => {
-    const registration = await call('/oauth2/register', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        client_name: 'Identity refresh test', redirect_uris: [callback], token_endpoint_auth_method: 'none',
-        grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'],
-      }),
-    });
-    expect(registration.status).toBe(200);
-    const { client_id: clientId } = await registration.json() as { client_id: string };
-    await prisma.oauthClient.update({ where: { clientId }, data: {
-      scopes: ['openid', 'email', 'offline_access', 'tinycloud:identity', 'tinycloud:manage-key'],
+  test('confidential identity clients reject extra authorization scopes and receive no refresh token', async () => {
+    const clientId = `ok_${randomUUID().replaceAll('-', '')}`;
+    const clientSecret = randomUUID();
+    await prisma.oauthClient.create({ data: {
+      id: randomUUID(),
+      clientId,
+      clientSecret: createHash('sha256').update(clientSecret).digest('base64url'),
+      name: 'Identity refresh test',
+      redirectUris: [callback],
+      scopes: ['openid', 'email', 'tinycloud:identity'],
+      contacts: [],
+      type: 'web',
+      public: false,
+      tokenEndpointAuthMethod: 'client_secret_basic',
+      grantTypes: ['authorization_code', 'refresh_token'],
+      responseTypes: ['code'],
     } });
+    const authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`;
 
-    const query = new URLSearchParams({
-      client_id: clientId, response_type: 'code', redirect_uri: callback,
-      scope: 'openid email offline_access tinycloud:identity', state: 'identity-refresh',
-      code_challenge: await generateCodeChallenge(verifier), code_challenge_method: 'S256',
-    });
-    const authorize = await call(`/oauth2/authorize?${query}`, {}, true);
-    expect(authorize.status).toBe(302);
-    const consentUrl = new URL(authorize.headers.get('location')!, issuer);
+    async function authorize(scope: string, state: string) {
+      const query = new URLSearchParams({
+        client_id: clientId, response_type: 'code', redirect_uri: callback,
+        scope, state,
+        code_challenge: await generateCodeChallenge(verifier), code_challenge_method: 'S256',
+      });
+      return call(`/oauth2/authorize?${query}`, {}, true);
+    }
+
+    for (const scope of ['openid email tinycloud:identity tinycloud:manage-key', 'openid email tinycloud:identity keys']) {
+      const rejected = await authorize(scope, 'identity-scope-rejected');
+      const error = rejected.status === 302
+        ? new URL(rejected.headers.get('location')!, issuer).searchParams.get('error')
+        : (await rejected.json() as { error?: string }).error;
+      expect(error).toBe('invalid_scope');
+    }
+
+    const authorizeIdentity = await authorize('openid email tinycloud:identity', 'identity-refresh');
+    expect(authorizeIdentity.status).toBe(302);
+    const consentUrl = new URL(authorizeIdentity.headers.get('location')!, issuer);
     const consent = await call('/oauth2/consent', {
       method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://openkey.test' },
       body: JSON.stringify({ accept: true, oauth_query: consentUrl.searchParams.toString() }),
@@ -110,29 +127,15 @@ if (process.env.OPENKEY_IDENTITY_REFRESH_TEST_CHILD !== '1') {
     const code = new URL((await consent.json() as { url: string }).url).searchParams.get('code')!;
 
     const exchange = await call('/oauth2/token', {
-      method: 'POST', headers: form,
+      method: 'POST', headers: { ...form, authorization },
       body: new URLSearchParams({
         client_id: clientId, grant_type: 'authorization_code', code,
         redirect_uri: callback, code_verifier: verifier,
       }),
     });
     expect(exchange.status).toBe(200);
-    const issued = await exchange.json() as { refresh_token?: string };
-    expect(typeof issued.refresh_token).toBe('string');
-
-    const refresh = await call('/oauth2/token', {
-      method: 'POST', headers: form,
-      body: new URLSearchParams({
-        client_id: clientId, grant_type: 'refresh_token', refresh_token: issued.refresh_token!,
-        scope: 'openid email tinycloud:manage-key',
-      }),
-    });
-    if (refresh.status === 400) return;
-    expect(refresh.status).toBe(200);
-    const renewed = await refresh.json() as { id_token: string };
-    const claim = decodeJwt(renewed.id_token).tinycloud as Record<string, unknown>;
-    expect(claim).toHaveProperty('address');
-    expect(claim).not.toHaveProperty('keyId');
-    expect(claim).not.toHaveProperty('spaceId');
+    const issued = await exchange.json();
+    expect(issued).not.toHaveProperty('refresh_token');
+    expect(issued).toHaveProperty('access_token');
   });
 }

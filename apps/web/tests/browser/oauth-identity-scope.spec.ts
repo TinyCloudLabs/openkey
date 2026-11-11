@@ -45,6 +45,11 @@ test('manage-key-only consent remains unchanged', async ({ page }) => {
   await expect(page.getByText(/Silently request TinyCloud delegation signatures/)).toBeVisible();
   await expect(page.getByText("This app can't sign anything or use your TinyCloud data.", { exact: true })).toHaveCount(0);
 });
+test('identity consent with keys requested does not show identity-only reassurance', async ({ page }) => {
+  await openConsent(page, 'openid email tinycloud:identity keys');
+  await expect(page.getByText('See your OpenKey wallet address', { exact: true })).toBeVisible();
+  await expect(page.getByText("This app can't sign anything or use your TinyCloud data.", { exact: true })).toHaveCount(0);
+});
 
 test('identity app settings show the connected app and one-step disconnect dialog', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
