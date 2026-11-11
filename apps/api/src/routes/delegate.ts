@@ -2503,6 +2503,7 @@ delegateRouter.post('/complete', async (c) => {
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
   };
+  // External-wallet approvals cannot be revoked here: OpenKey holds neither the wallet key (delegator) nor the session key. The delegation expires with its SIWE (at most 24 hours); follow-up TC-2795 adds a client-visible revoke-required signal with the CID.
   const saved = await saveApprovalDelegation(body, user.id, delegation);
   return c.json(saved);
   } catch (error) {
