@@ -947,3 +947,19 @@ model EscrowPreflight {
 
   @@map("escrow_preflight")
 }
+
+// Private snapshot artifact; holder HTTP output contains only the bundle.
+model EscrowArchive {
+  escrowId          String   @id
+  headerHash        String   @unique
+  bundle            Json
+  recordManifestUtf8 String   @db.Text
+  dbSnapshotUtf8     String   @db.Text
+  sourceSnapshotId  String
+  exportSnapshotId  String
+  expectedRecords   Int
+  completedRecords  Int
+  createdAt         DateTime @default(now()) @db.Timestamptz
+
+  @@map("escrow_archive")
+}
