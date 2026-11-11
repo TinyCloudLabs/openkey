@@ -5,6 +5,7 @@
 // owner prepares the approval, so a request can never name a key that already exists, and the delegation it
 // signs holds only `key.create` and `decrypt` on that one key.
 import { parseApprovalRequest, type OpenKeyApprovalRequestV1 } from '@tinycloud/share-envelope/links';
+import { POLICY_ROOT_MAX_LIFETIME_SECONDS } from '@tinycloud/share-envelope';
 import { ENCRYPTION } from '@tinycloud/bootstrap';
 import { getAddress } from 'viem';
 import { ApprovalResultError } from './approval-results';
@@ -129,6 +130,14 @@ export function parseApprovalRequestV1(value: unknown, options: { issuer: string
   }
   if (acceptBy > options.linkExpiresAt.getTime() || acceptBy > options.linkIssuedAt.getTime() + SHARE_INVITATION_MAX_LIFETIME_MS) {
     throw invalid('A share invitation must be accepted before its approval link expires, within 24 hours');
+  }
+  // The recipient's access is authorized by policy roots signed when the share is published, after this approval,
+  // and a policy root lasts at most POLICY_ROOT_MAX_LIFETIME_SECONDS. Measured from the link's signed issue time, an
+  // access within that span always fits; a longer one is refused here, before the owner approves, never shortened.
+  if (Date.parse(context.accessExpiresAt) - options.linkIssuedAt.getTime() > POLICY_ROOT_MAX_LIFETIME_SECONDS * 1000) {
+    const days = POLICY_ROOT_MAX_LIFETIME_SECONDS / 86_400;
+    throw new ApprovalResultError('invitation_access_too_long',
+      `This invitation asks for file access longer than ${days} days, which OpenKey can't approve. Ask the app to send a new invitation for ${days} days or less.`, 400);
   }
   return { ...parsed, permissions: [], context };
 }

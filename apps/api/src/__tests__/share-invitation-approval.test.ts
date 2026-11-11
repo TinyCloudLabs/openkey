@@ -10,7 +10,7 @@ import { PrismaPGlite } from 'pglite-prisma-adapter';
 import { PrismaClient } from '@openkey/db';
 import { signerFromJwk } from '@tinycloud/share-envelope/links';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
-import { ApprovalResultService, type ApprovalRequestRecord } from '../services/approval-results';
+import { ApprovalResultService } from '../services/approval-results';
 import { issueAuthorizationContext } from '../services/authorization-signing';
 import { parseApprovalRequestV1, type ApprovalRequestV1 } from '../services/share-invitation';
 import {
@@ -159,7 +159,7 @@ describe('the signed request', () => {
   test.each([
     ['ends with acceptance', 0],
     ['lasts six days past acceptance', 6 * 24 * HOUR],
-    ['lasts 90 days past acceptance', 90 * 24 * HOUR],
+    ['lasts 29 days past acceptance', 29 * 24 * HOUR],
   ])('keeps the exact access expiry of a file invitation that %s', (_name, extraMs) => {
     const accessExpiresAt = wholeSecond(Date.parse(ACCEPT_BY) + extraMs);
     const parsed = parse(requestBody({ context: context({ subjectKind: 'file', accessExpiresAt }) }));
@@ -172,9 +172,26 @@ describe('the signed request', () => {
       .toThrow('must not be before acceptanceExpiresAt for a file');
   });
 
-  test('keeps a file access at the last second a SIWE timestamp can name, with no cap', () => {
-    const parsed = parse(requestBody({ context: context({ subjectKind: 'file', accessExpiresAt: '9999-12-31T23:59:59.000Z' }) }));
-    expect(parsed.context!.accessExpiresAt).toBe('9999-12-31T23:59:59.000Z');
+  // The recipient's access is authorized by policy roots that last at most POLICY_ROOT_MAX_LIFETIME_SECONDS (the
+  // shared 31-day limit), counted here from the link's signed issue time.
+  test.each([
+    ['31 days less 30 seconds', 31 * 24 * HOUR - 30_000],
+    ['exactly 31 days', 31 * 24 * HOUR],
+  ])('keeps a file access %s after the link was issued', (_name, spanMs) => {
+    const issued = new Date(Math.floor(Date.now() / 1000) * 1000);
+    const accessExpiresAt = wholeSecond(issued.getTime() + spanMs);
+    expect(parse(requestBody({ context: context({ subjectKind: 'file', accessExpiresAt }) }), new Date(Date.now() + 2 * HOUR), issued).context!.accessExpiresAt).toBe(accessExpiresAt);
+  });
+
+  test.each([
+    ['a second past 31 days', 31 * 24 * HOUR + 1000],
+    ['35 days', 35 * 24 * HOUR],
+    ['until the last SIWE second', -1],
+  ])('refuses a file access %s after the link was issued, before approval and without shortening it', (_name, spanMs) => {
+    const issued = new Date(Math.floor(Date.now() / 1000) * 1000);
+    const accessExpiresAt = spanMs < 0 ? '9999-12-31T23:59:59.000Z' : wholeSecond(issued.getTime() + spanMs);
+    expect(() => parse(requestBody({ context: context({ subjectKind: 'file', accessExpiresAt }) }), new Date(Date.now() + 2 * HOUR), issued))
+      .toThrow(expect.objectContaining({ code: 'invitation_access_too_long', status: 400 }));
   });
 
   // Every date crosses the wire as a string and is refused unless it is exactly what `toISOString()` writes for a
@@ -506,6 +523,7 @@ describe('the approval window', () => {
 describe('a stored record', () => {
   test('keeps the context the requester signed', async () => {
     const saved = await register(parse(requestBody()));
-    expect((saved.request as ApprovalRequestRecord['request'] & { context?: unknown }).context).toEqual(context());
+    const stored: unknown = 'context' in saved.request ? saved.request.context : undefined;
+    expect(stored).toEqual(context());
   });
 });

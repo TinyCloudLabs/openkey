@@ -573,6 +573,10 @@
         if (response.status >= 500) {
           throw new OwnerMessageError('OpenKey could not load this request right now. Reopen the original complete link shortly. If it still fails, return to the requesting app or command.');
         }
+        // TC-2234: a share invitation asking for more file access than its policy roots can last. OpenKey writes the message.
+        if (result?.code === 'invitation_access_too_long' && typeof result.error === 'string') {
+          throw new OwnerMessageError(result.error);
+        }
         throw new OwnerMessageError('This approval link could not be verified. Do not edit it or approve a different request. Ask the requesting app or person for a new complete link sent on its own line.');
       }
       if (result.approved) {

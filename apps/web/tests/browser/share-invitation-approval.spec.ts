@@ -101,7 +101,6 @@ const DAY = 24 * 3600_000;
 for (const [label, access, words] of [
   ['the CLI default 7 days', () => new Date(Date.now() + 7 * DAY + 3600_000).toISOString(), '7 days'],
   ['30 days', () => new Date(Date.now() + 30 * DAY + 3600_000).toISOString(), '30 days'],
-  ['90 days', () => new Date(Date.now() + 90 * DAY + 3600_000).toISOString(), '90 days'],
   ['equal dates', () => acceptanceExpiresAt, '22 hours'],
 ] as const) {
   test(`a file invitation with ${label} of access shows both signed dates with their durations`, async ({ page }) => {
@@ -167,4 +166,21 @@ test('a request without an invitation shows no invitation summary', async ({ pag
   await expect(page.getByText('Open this shared file')).toBeVisible();
   const dir = process.env.QA_SCREENSHOT_DIR;
   if (dir) await page.screenshot({ path: `${dir}/existing-share-approval-390.png`, fullPage: true });
+});
+
+test('an invitation that asks for more file access than OpenKey can approve says so plainly', async ({ page }) => {
+  const message = "This invitation asks for file access longer than 31 days, which OpenKey can't approve. Ask the app to send a new invitation for 31 days or less.";
+  await page.route('**/api/**', async route => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/api/auth/get-session') return route.fulfill({ status: 200, json: { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3600000).toISOString() }, user: { id: 'u', email: 'owner@example.test' } } });
+    if (pathname === '/api/keys') return route.fulfill({ status: 200, json: { keys: [{ id: 'owner-key', address, publicKey: '0x', keyIndex: 0, keyType: 'MANAGED', isPrimary: true, createdAt: new Date().toISOString() }] } });
+    if (pathname === `/api/approval-requests/${id}/load`) return route.fulfill({ status: 400, json: { code: 'invitation_access_too_long', error: message } });
+    return route.fulfill({ status: 404, json: { error: `Unexpected QA request ${pathname}` } });
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(path);
+  await expect(page.getByText(message)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+  const dir = process.env.QA_SCREENSHOT_DIR;
+  if (dir) await page.screenshot({ path: `${dir}/share-invitation-too-long-390.png`, fullPage: true });
 });
