@@ -20,3 +20,19 @@ export function invitationDateText(instant: string, locale?: string, timeZone?: 
     year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short', timeZone,
   }).format(new Date(instant));
 }
+
+const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * The time from `nowMs` to `instant` in plain words, rounded down: whole hours under 48 hours ("1 hour" at least),
+ * whole days from 48 hours on.
+ */
+export function invitationDurationText(instant: string, nowMs: number): string {
+  const remainingMs = Math.max(0, Date.parse(instant) - nowMs);
+  if (remainingMs < 48 * HOUR_MS) {
+    const hours = Math.max(1, Math.floor(remainingMs / HOUR_MS));
+    return hours === 1 ? '1 hour' : `${hours} hours`;
+  }
+  const days = Math.floor(remainingMs / (24 * HOUR_MS));
+  return `${days} days`;
+}

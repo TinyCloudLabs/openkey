@@ -65,7 +65,8 @@ for (const subjectKind of ['session', 'file'] as const) {
   test(`a ${subjectKind} invitation shows its recipient, subject, deadline and one key, never the key id or an expiry picker`, async ({ page }) => {
     const prepares = await open(page, { permissions: [], context: { ...context, subjectKind } }, shareKey, [create, decrypt]);
     await expect(page.getByRole('heading', { name: 'Invite alex@example.test to Project notes' })).toBeVisible();
-    await expect(page.getByLabel('Invitation')).toContainText('Accept by ');
+    // Acceptance is 23 hours after this file loaded, so a moment later at page load it is 22 whole hours away.
+    await expect(page.getByLabel('Invitation')).toContainText(`Accept within 22 hours, by ${await shownDate(page, acceptanceExpiresAt)}`);
     await expect(page.getByText(CONTINUATION)).toHaveCount(subjectKind === 'session' ? 1 : 0);
     const summary = page.getByLabel('Requested access');
     await expect(summary.getByText('Create an encryption key for this invitation only')).toBeVisible();
@@ -95,16 +96,23 @@ const shownDate = (page: Page, iso: string) => page.evaluate((instant) => new In
   year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
 }).format(new Date(instant)), iso);
 
-for (const [label, extraMs] of [['two dates', 6 * 24 * 3600_000], ['equal dates', 0]] as const) {
-  test(`a file invitation with ${label} shows the access expiry it signed, not the key approval's`, async ({ page }) => {
-    const accessExpiresAt = new Date(Date.parse(acceptanceExpiresAt) + extraMs).toISOString();
+// Access deadlines set an hour past a whole number of days from now, so the rounded-down words are exact.
+const DAY = 24 * 3600_000;
+for (const [label, access, words] of [
+  ['the CLI default 7 days', () => new Date(Date.now() + 7 * DAY + 3600_000).toISOString(), '7 days'],
+  ['30 days', () => new Date(Date.now() + 30 * DAY + 3600_000).toISOString(), '30 days'],
+  ['90 days', () => new Date(Date.now() + 90 * DAY + 3600_000).toISOString(), '90 days'],
+  ['equal dates', () => acceptanceExpiresAt, '22 hours'],
+] as const) {
+  test(`a file invitation with ${label} of access shows both signed dates with their durations`, async ({ page }) => {
+    const accessExpiresAt = access();
     await open(page, { permissions: [], context: { ...context, subjectKind: 'file', accessExpiresAt } }, shareKey, [create, decrypt]);
     const box = page.getByLabel('Invitation');
-    await expect(box).toContainText(`Accept by ${await shownDate(page, acceptanceExpiresAt)}`);
-    await expect(box).toContainText(`alex@example.test can open Project notes until ${await shownDate(page, accessExpiresAt)}`);
+    await expect(box).toContainText(`Accept within 22 hours, by ${await shownDate(page, acceptanceExpiresAt)}`);
+    await expect(box).toContainText(`alex@example.test can open Project notes for ${words}, until ${await shownDate(page, accessExpiresAt)}`);
     await expect(page.getByText(CONTINUATION)).toHaveCount(0);
     const dir = process.env.QA_SCREENSHOT_DIR;
-    if (dir) await page.screenshot({ path: `${dir}/share-invitation-file-${label.replace(' ', '-')}-390.png`, fullPage: true });
+    if (dir) await page.screenshot({ path: `${dir}/share-invitation-file-${label.replaceAll(' ', '-')}-390.png`, fullPage: true });
   });
 }
 

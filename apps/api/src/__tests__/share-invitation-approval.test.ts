@@ -159,6 +159,7 @@ describe('the signed request', () => {
   test.each([
     ['ends with acceptance', 0],
     ['lasts six days past acceptance', 6 * 24 * HOUR],
+    ['lasts 90 days past acceptance', 90 * 24 * HOUR],
   ])('keeps the exact access expiry of a file invitation that %s', (_name, extraMs) => {
     const accessExpiresAt = wholeSecond(Date.parse(ACCEPT_BY) + extraMs);
     const parsed = parse(requestBody({ context: context({ subjectKind: 'file', accessExpiresAt }) }));
@@ -169,6 +170,30 @@ describe('the signed request', () => {
   test('is refused for a file whose access ends before the acceptance deadline', () => {
     expect(() => parse(requestBody({ context: context({ subjectKind: 'file', accessExpiresAt: wholeSecond(Date.parse(ACCEPT_BY) - 1000) }) })))
       .toThrow('must not be before acceptanceExpiresAt for a file');
+  });
+
+  test('keeps a file access at the last second a SIWE timestamp can name, with no cap', () => {
+    const parsed = parse(requestBody({ context: context({ subjectKind: 'file', accessExpiresAt: '9999-12-31T23:59:59.000Z' }) }));
+    expect(parsed.context!.accessExpiresAt).toBe('9999-12-31T23:59:59.000Z');
+  });
+
+  // Every date crosses the wire as a string and is refused unless it is exactly what `toISOString()` writes for a
+  // whole second, so nothing is wrapped, shortened or converted through an unsafe number.
+  test.each([
+    ['a number', 1_800_000_000_000],
+    ['an unsafe integer', Number.MAX_SAFE_INTEGER + 2],
+    ['a fraction', 1.5],
+    ['an extended year past 9999', '+010000-01-01T00:00:00.000Z'],
+    ['an extended year at the Date maximum', '+275760-09-13T00:00:00.000Z'],
+    ['a negative year', '-000001-01-01T00:00:00.000Z'],
+    ['a five-digit year', '10000-01-01T00:00:00.000Z'],
+    ['a day that does not exist', '2026-02-30T00:00:00.000Z'],
+    ['an hour that does not exist', '2026-11-12T24:00:00.000Z'],
+    ['an offset instead of Z', '2026-11-12T00:00:00.000+00:00'],
+    ['no milliseconds', '2026-11-12T00:00:00Z'],
+    ['free text', 'next Tuesday'],
+  ])('refuses a file access expiry given as %s', (_name, accessExpiresAt) => {
+    expect(() => parse(requestBody({ context: context({ subjectKind: 'file', accessExpiresAt }) }))).toThrow('accessExpiresAt must be a UTC time in whole seconds');
   });
 
   test.each([
