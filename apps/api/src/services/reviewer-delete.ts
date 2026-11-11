@@ -1,4 +1,5 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { EncryptJWT, jwtDecrypt } from 'jose';
+import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { APIError, createAuthEndpoint } from 'better-auth/api';
 import type { PrismaClient } from '@openkey/db';
 import { reviewerBrowserRequest } from './reviewer-auth';
@@ -17,16 +18,19 @@ export function reviewerDeleteEndpoints(database: PrismaClient, origin: string) 
     reviewerDeleteIntent: createAuthEndpoint('/reviewer/delete-intent', { method: 'POST', requireHeaders: true }, async ctx => {
       requireBrowser(ctx, origin);
       const binding = await database.reviewerAccount.findUnique({ where: { store: 'apple' } });
-      const intent = JSON.stringify({ store: 'apple', userId: binding?.userId ?? randomUUID(), epoch: binding?.installEpoch ?? -1,
-        nonce: randomBytes(32).toString('base64url'), expiresAt: Date.now() + 300_000 });
-      await ctx.setSignedCookie(COOKIE, intent, ctx.context.secret, options);
+      const intent = await new EncryptJWT({ store: 'apple', userId: binding?.userId ?? randomUUID(), epoch: binding?.installEpoch ?? -1,
+        nonce: randomBytes(32).toString('base64url'), expiresAt: Date.now() + 300_000 })
+        .setProtectedHeader({ alg: 'dir', enc: 'A256GCM' }).setExpirationTime('5m')
+        .encrypt(createHash('sha256').update(ctx.context.secret).digest());
+      ctx.setCookie(COOKIE, intent, options);
       return ctx.json({ success: true });
     }),
     reviewerDelete: createAuthEndpoint('/reviewer/delete', { method: 'POST', requireHeaders: true }, async ctx => {
       try {
         requireBrowser(ctx, origin);
-        let intent: { store?: string; userId?: string; epoch?: number; nonce?: string; expiresAt?: number };
-        try { intent = JSON.parse(await ctx.getSignedCookie(COOKIE, ctx.context.secret) || 'null'); }
+        let intent: Record<string, unknown>;
+        try { intent = (await jwtDecrypt(ctx.getCookie(COOKIE) || '', createHash('sha256').update(ctx.context.secret).digest(),
+          { keyManagementAlgorithms: ['dir'], contentEncryptionAlgorithms: ['A256GCM'] })).payload; }
         catch { throw refusal(); }
         const body = ctx.body as { email?: unknown; code?: unknown; confirmation?: unknown } | undefined;
         await database.$transaction(async tx => {

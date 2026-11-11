@@ -1,5 +1,6 @@
 import './log'; // Keep first: patches dependency console output before any dependency module runs.
 import './install-process-handlers'; // Install fatal handlers before dependency startup.
+import { appleReviewEnabled } from './services/reviewer-apple-policy';
 import { runReviewerCleanup } from './services/reviewer-cleanup';
 import { reviewerCleanupNode } from './services/reviewer-cleanup-node';
 import { Hono } from 'hono';
@@ -223,9 +224,9 @@ app.get('/api/auth/.well-known/openid-configuration', (c) =>
 );
 
 // Public capability discovery keeps login buttons aligned with server config.
-// It intentionally exposes provider IDs only, never credentials.
+// Only public sign-in capabilities are exposed, never credentials.
 app.get('/api/auth/providers', (c) =>
-  c.json({ providers: configuredSocialProviderIds() })
+  c.json({ providers: configuredSocialProviderIds(), appleReviewEnabled: appleReviewEnabled() })
 );
 
 // Fail-closed guards for delegation clients, ahead of the provider's

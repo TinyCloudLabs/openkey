@@ -403,6 +403,6 @@ export const apiErrorHandler: ErrorHandler<ApiEnv> = (error, c) => {
 };
 
 /** Operations owns retries of retired synthetic spaces; never log SDK errors. */
-export function logReviewerCleanup(result: 'initial_wipe' | 'complete' | 'retry' | 'bound_exceeded', spaceId: string): void {
-  emit(result === 'retry' || result === 'bound_exceeded' ? 'error' : 'info', 'reviewer_cleanup', { result, space_id: spaceId, cleanup_dependency: 'TC-2817' });
+export function logReviewerCleanup(result: 'initial_wipe' | 'complete' | 'retry' | 'bound_exceeded' | 'parked', spaceId: string): void {
+  emit(result === 'parked' ? 'warn' : result === 'retry' || result === 'bound_exceeded' ? 'error' : 'info', 'reviewer_cleanup', { result, space_id: spaceId, cleanup_dependency: 'TC-2817' });
 }

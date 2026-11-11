@@ -53,7 +53,7 @@
   function initialStep(): Step {
     if (!native) return 'email';
     if (native.socialError) return native.socialError.continuation ? 'social' : 'email';
-    if (native.method === 'email' && native.hint?.trim().toLowerCase() === 'appreview@tinycloud.xyz') return 'reviewer';
+    if (native.method === 'email' && native.hint?.trim().toLowerCase() === 'appreview@tinycloud.xyz') return 'email';
     if (native.method === 'email' && native.hint) return 'otp';
     if (native.method === 'passkey' && passkeysSupported) return 'passkeySignIn';
     if (native.method === 'google' || native.method === 'apple') return 'social';
@@ -86,6 +86,7 @@
   let resendIn = $state(0);
   let resendTimer: ReturnType<typeof setInterval> | undefined;
   let providers = $state<SocialProviderId[]>([]);
+  let appReviewEnabled = $state(false);
   let loadingProvider = $state<SocialProviderId | null>(null);
   // In OAuth flows the API answers sign-in/email-otp with its own redirect
   // URL (the consent page, or the client's redirect_uri when consent can be
@@ -143,7 +144,10 @@
   }
 
   onMount(() => {
-    const providersLoaded = loadConfiguredSocialProviders().catch((): SocialProviderId[] => []);
+    const providersLoaded = loadConfiguredSocialProviders(undefined, (enabled) => {
+      appReviewEnabled = enabled;
+      if (enabled && native?.method === 'email' && native.hint === 'appreview@tinycloud.xyz') step = 'reviewer';
+    }).catch((): SocialProviderId[] => []);
     providersLoaded.then((loaded) => { providers = loaded; });
     if (native) {
       // Coming back from the provider via the browser's back button restores
@@ -252,7 +256,7 @@
   }
 
   async function sendOTP(): Promise<boolean> {
-    if (email.trim().toLowerCase() === 'appreview@tinycloud.xyz') {
+    if (appReviewEnabled && email.trim().toLowerCase() === 'appreview@tinycloud.xyz') {
       if (!native && $page.url.searchParams.get('redirect') === '/dashboard/settings/delete-account') {
         await goto('/auth/review/delete');
       } else { step = 'reviewer'; error = ''; }

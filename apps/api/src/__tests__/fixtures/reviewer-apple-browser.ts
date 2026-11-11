@@ -11,7 +11,13 @@ const root = process.cwd();
 let database: PrismaClient;
 let app: { fetch: (request: Request) => Response | Promise<Response> } | undefined;
 const server = Bun.serve({ hostname: '127.0.0.1', port: 0,
-  fetch: (request) => app ? app.fetch(request) : new Response(null, { status: 503 }) });
+  fetch: (request) => {
+    if (new URL(request.url).pathname === '/__fixture/review-off' && request.method === 'POST') {
+      process.env.APPLE_REVIEW_ENABLED = 'false';
+      return Response.json({ disabled: true });
+    }
+    return app ? app.fetch(request) : new Response(null, { status: 503 });
+  } });
 const api = server.url.origin;
 const origin = process.env.OPENKEY_BROWSER_ORIGIN!;
 

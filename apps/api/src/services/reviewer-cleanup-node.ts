@@ -1,6 +1,10 @@
 import { TinyCloudNode } from '@tinycloud/node-sdk';
 import type { ReviewerCleanupAdapter } from './reviewer-cleanup';
-import { buildReviewerGrant } from './reviewer-apple-seed';
+import { reviewerJwkFromDid } from './reviewer-apple-seed';
+import { prepareDelegationSession, parsePreparedRecap } from '../routes/delegate-session';
+import { signManagedKey } from './managed-key-signing';
+import { completeSessionSetup } from '@tinycloud/node-sdk-wasm';
+import { randomBytes } from 'node:crypto';
 import { REVIEWER_HOME_PERMISSIONS } from './reviewer-apple-policy';
 import { TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
 
@@ -14,6 +18,7 @@ const permissions = [
 const identifier = (value: string) => '"' + value.replaceAll('"', '""') + '"';
 
 export const reviewerCleanupNode: ReviewerCleanupAdapter = {
+  completeEnumeration: false,
   async wipe(row) {
     if (!row.sealedBlob || !TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS.has(row.nodeHost)
       || row.spaceId !== `tinycloud:pkh:eip155:1:${row.address}:applications`) throw new Error('Cleanup target refused');
@@ -21,8 +26,17 @@ export const reviewerCleanupNode: ReviewerCleanupAdapter = {
     const node = new TinyCloudNode({ host: row.nodeHost, autoCreateSpace: false,
       autoBootstrapAccount: false, enablePublicSpace: false, includeAccountRegistryPermissions: false, autoDiscoverLocalNode: false });
     if (!node.isSessionOnly) throw new Error('Cleanup authority refused');
-    const { delegation: grant } = await buildReviewerGrant({ ...row, userId: row.ownerUserId, sealedBlob: row.sealedBlob },
-      row.spaceId, row.nodeHost, node.did.split('#')[0]!, permissions, expiresAt);
+    const sessionDid = node.did.split('#')[0]!;
+    const prepared = prepareDelegationSession({ address: row.address, chainId: 1, prefix: 'applications',
+      jwk: reviewerJwkFromDid(sessionDid), permissions, issuedAt: new Date(), expiryMs: 45_000,
+      domain: 'openkey.so', nonce: randomBytes(16).toString('hex') });
+    if (prepared.spaceId !== row.spaceId) throw new Error('Cleanup space refused');
+    const signature = await signManagedKey({ userId: row.ownerUserId, sealingContext: row.sealingContext }, row.sealedBlob, prepared.prepared.siwe);
+    const complete = completeSessionSetup({ ...prepared.prepared, signature });
+    const resources = parsePreparedRecap(prepared.prepared.siwe);
+    const grant = { cid: complete.delegationCid, delegationHeader: complete.delegationHeader, spaceId: row.spaceId,
+      path: resources[0]!.path, actions: resources[0]!.actions, resources, delegateDID: sessionDid,
+      ownerAddress: row.address, chainId: 1, host: row.nodeHost, expiry: expiresAt, disableSubDelegation: false };
     const activation = await fetch(row.nodeHost + '/delegate', { method: 'POST', headers: grant.delegationHeader,
       redirect: 'error', signal: AbortSignal.timeout(5_000) });
     if (!activation.ok) throw new Error('Cleanup activation failed');

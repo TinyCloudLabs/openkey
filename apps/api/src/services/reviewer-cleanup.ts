@@ -35,6 +35,7 @@ type CleanupRow = Prisma.ReviewerCleanupGetPayload<Record<string, never>>;
 // The adapter has no arbitrary-message or delegation method. It owns both
 // enumeration and deletion; unknown pagination or SQL prefixes must fail.
 export interface ReviewerCleanupAdapter {
+  completeEnumeration?: boolean;
   wipe(row: CleanupRow): Promise<void>;
   empty(row: CleanupRow): Promise<boolean>;
 }
@@ -53,9 +54,23 @@ export async function runReviewerCleanup(database: PrismaClient, adapter: Review
     if (claim.count !== 1) continue;
     try {
       const row = await database.reviewerCleanup.findUniqueOrThrow({ where: { id: candidate.id } });
-      if (row.boundExceeded || !row.sealedBlob) throw new Error('Reviewer cleanup retained');
+      if (row.boundExceeded) {
+        await database.reviewerCleanup.updateMany({ where: { id: row.id, leaseUntil }, data: { retryAt: new Date('9999-12-31T00:00:00Z'), leaseUntil: null } });
+        logReviewerCleanup('bound_exceeded', row.spaceId);
+        continue;
+      }
+      if (!row.sealedBlob) throw new Error('Reviewer cleanup retained');
       await adapter.wipe(row);
       const final = row.tombstoneUntil.getTime() <= Date.now();
+      if (adapter.completeEnumeration === false && final) {
+        // TC-2817/TC-2779 must explicitly unpark these after complete SQL
+        // enumeration exists. Retain the key; do not re-sign every minute.
+        await database.reviewerCleanup.updateMany({ where: { id: row.id, leaseUntil }, data: {
+          initialWipedAt: new Date(), retryAt: new Date('9999-12-31T00:00:00Z'), leaseUntil: null,
+        } });
+        logReviewerCleanup('parked', row.spaceId);
+        continue;
+      }
       if (final && !await adapter.empty(row)) throw new Error('Reviewer cleanup is not empty');
       // A timed-out worker cannot destroy the key after another worker claims
       // the row. Failure/retry always retains the only cleanup authority.
@@ -68,9 +83,10 @@ export async function runReviewerCleanup(database: PrismaClient, adapter: Review
       logReviewerCleanup(final ? 'complete' : 'initial_wipe', row.spaceId);
     } catch {
       await database.reviewerCleanup.updateMany({ where: { id: candidate.id, leaseUntil }, data: {
-        retryAt: new Date(Date.now() + 60_000), leaseUntil: null,
+        retryAt: new Date(Date.now() + Math.min(3600_000, 60_000 * 2 ** Math.min(candidate.attempts, 10))), leaseUntil: null,
       } });
-      logReviewerCleanup(candidate.boundExceeded ? 'bound_exceeded' : 'retry', candidate.spaceId);
+      const attempt = candidate.attempts + 1;
+      if ((attempt & (attempt - 1)) === 0) logReviewerCleanup('retry', candidate.spaceId);
     }
   }
 }

@@ -64,6 +64,25 @@ if (!process.env.OPENKEY_APPLE_REVIEW_TEST_CHILD) {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers }, body: new URLSearchParams(body),
   }));
 
+  async function startBoundaryFlow() {
+    const verifier = randomBytes(32).toString('base64url');
+    const par = await form('/api/auth/oauth2/par', { client_id: clientId, response_type: 'code', redirect_uri: redirect, state: randomUUID(),
+      code_challenge: await generateCodeChallenge(verifier), code_challenge_method: 'S256', scope: 'openid email offline_access tinycloud:delegation',
+      login_method: 'email', login_hint: email, authorization_details: JSON.stringify([{ type: 'tinycloud_delegation', session_key: jwk, permissions: policy.REVIEWER_HOME_PERMISSIONS, ttl_seconds: 3600 }]) });
+    expect(par.status).toBe(201);
+    const requestUri = (await par.json() as any).request_uri;
+    const start = await call('/api/auth/oauth2/authorize?' + new URLSearchParams({ client_id: clientId, request_uri: requestUri }));
+    const query = new URL(start.headers.get('location')!).searchParams.toString();
+    const login = await call('/api/auth/sign-in/email-otp', 'POST', { email, otp: code, oauth_query: query });
+    expect(login.status, await login.clone().text()).toBe(200);
+    const ownCookie = login.headers.get('set-cookie')!.split(';')[0]!;
+    const resume = await app.fetch(new Request((await login.json() as any).url, { headers: { cookie: ownCookie } }));
+    const session = await (await import('../auth')).auth.api.getSession({ headers: new Headers({ cookie: ownCookie }), query: { disableRefresh: true } });
+    const source = await database.session.findUniqueOrThrow({ where: { id: session!.session.id } });
+    return { verifier, requestId: requestUri.split(':').at(-1)!, cookie: ownCookie, source,
+      consentQuery: new URL(resume.headers.get('location')!).searchParams.toString() };
+  }
+
   beforeAll(async () => {
     process.stdout.write = ((chunk: any, ...args: any[]) => { capturedOutput += String(chunk); return (originalWrite as any).call(process.stdout, chunk, ...args); }) as typeof process.stdout.write;
     directory = await mkdtemp('/var/tmp/tc2775-apple-db.');
@@ -107,7 +126,7 @@ if (!process.env.OPENKEY_APPLE_REVIEW_TEST_CHILD) {
     for (const mutation of [{ ...request, owner: 'foreign' }, { ...request, requested: [...request.requested, { service: 'tinycloud.kv', space: 'applications', path: '', actions: ['tinycloud.kv/put'] }] }]) {
       await expect(seed.reviewerSeedGrant(database, mutation as any, false)).rejects.toThrow();
     }
-    const signed = await seed.buildReviewerGrant(key, spaceId, host, sessionDid, request.requested, new Date(Date.now() + 3600_000));
+    const signed = await seed.buildSeedGrant(key, spaceId, host, sessionDid, false, new Date(Date.now() + 3600_000));
     const { parseStrictSiwe } = await import('../services/signed-subset');
     const decoded = parseStrictSiwe(signed.siwe);
     expect(decoded.ok).toBe(true);
@@ -118,6 +137,10 @@ if (!process.env.OPENKEY_APPLE_REVIEW_TEST_CHILD) {
     const { parsePreparedRecap } = await import('../routes/delegate-session');
     expect(parsePreparedRecap(signed.siwe).map(p => ({ ...p, service: 'tinycloud.' + p.service, space: 'applications', actions: [...p.actions].sort() })).sort((a,b) => a.path.localeCompare(b.path)))
       .toEqual(request.requested.map(p => ({ ...p, actions: [...p.actions].sort() })).sort((a,b) => a.path.localeCompare(b.path)));
+    await seed.reviewerSeedGrant(database, { ...request, requestId: 'reviewer-seed-' + randomUUID(), requested: policy.reviewerSeedPermissions(true) }, true);
+    const afterDryRun = await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'apple' } });
+    expect(afterDryRun.seedRun).toBeNull();
+    expect(afterDryRun.seedStartedAt).toBeNull();
     const first = await seed.reviewerSeedGrant(database, request, false);
     expect((await seed.reviewerSeedGrant(database, request, false)).expiry).toBe(first.expiry);
     await expect(seed.reviewerSeedGrant(database, { ...request, requestId: 'reviewer-seed-' + randomUUID() }, false)).rejects.toThrow();
@@ -213,6 +236,67 @@ if (!process.env.OPENKEY_APPLE_REVIEW_TEST_CHILD) {
     setSystemTime();
   });
 
+  test('Apple cannot obtain hosted MCP authority through OAuth or any delegate/sign route', async () => {
+    const registration = await call('/api/auth/oauth2/register', 'POST', {
+      client_name: 'MCP negative fixture', redirect_uris: ['https://mcp-review.test/callback'], token_endpoint_auth_method: 'none',
+      grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'],
+    });
+    expect(registration.status).toBe(200);
+    const otherClient = (await registration.json() as any).client_id;
+    const query = new URLSearchParams({ client_id: otherClient, redirect_uri: 'https://mcp-review.test/callback',
+      resource: 'https://mcp.tinycloud.xyz/chatgpt/mcp', response_type: 'code', scope: 'openid email tinycloud:mcp',
+      state: randomUUID(), code_challenge_method: 'S256', code_challenge: randomBytes(32).toString('base64url') });
+    expect((await call('/api/auth/oauth2/authorize?' + query, 'GET', undefined, { cookie })).status).toBe(403);
+    const start = await call('/api/auth/oauth2/authorize?' + query);
+    expect(start.status).toBe(302);
+    const signedQuery = new URL(start.headers.get('location')!).searchParams.toString();
+    const signIn = await call('/api/auth/sign-in/reviewer', 'POST', { email, code, oauth_query: signedQuery });
+    expect(signIn.status).toBe(403);
+    for (const path of ['/api/delegate/prepare', '/api/delegate', '/api/delegate/complete', `/api/keys/${key.id}/sign`]) {
+      expect((await call(path, 'POST', {}, { cookie })).status).toBe(403);
+    }
+    expect(await database.oauthConsent.count({ where: { userId: key.userId, clientId: otherClient } })).toBe(0);
+    expect(await database.oauthAccessToken.count({ where: { userId: key.userId, scopes: { has: 'tinycloud:mcp' } } })).toBe(0);
+  });
+
+  test('prepare, approve and exchange enforce the source-age boundary at 3599/3600/3601', async () => {
+    for (const stage of ['prepare', 'approve', 'exchange']) for (const seconds of [3599, 3600, 3601]) {
+      try {
+        const flow = await startBoundaryFlow();
+        if (seconds === 3599) {
+          const now = Date.now();
+          setSystemTime(now);
+          await database.session.update({ where: { id: flow.source.id }, data: { createdAt: new Date(now - 3599_000) } });
+        }
+        const expireSource = async () => {
+          setSystemTime(flow.source.createdAt.getTime() + seconds * 1000);
+          // Deliberately keep the row, PAR and code otherwise live. Refusal
+          // must come from the absolute source age, not incidental expiry.
+          await database.session.update({ where: { id: flow.source.id }, data: { expiresAt: new Date(Date.now() + 3600_000) } });
+          await database.tinyCloudNativeRequest.update({ where: { id: flow.requestId }, data: { expiresAt: new Date(Date.now() + 3600_000) } });
+        };
+        if (stage === 'prepare' && seconds >= 3600) await expireSource();
+        const prepare = await call(`/api/oauth/tinycloud/requests/${flow.requestId}/prepare`, 'POST', {}, { cookie: flow.cookie });
+        expect(prepare.status, stage + '/' + seconds + ': ' + await prepare.clone().text()).toBe(stage === 'prepare' && seconds >= 3600 ? 403 : 200);
+        if (stage === 'prepare') continue;
+        const preview = await prepare.json() as any;
+        if (stage === 'approve' && seconds >= 3600) await expireSource();
+        const approve = await call(`/api/oauth/tinycloud/requests/${flow.requestId}/approve`, 'POST', { revision: preview.revision, digest: preview.digest, sessionSiwe: preview.sessionSiwe }, { cookie: flow.cookie });
+        expect(approve.status, stage + '/' + seconds + ': ' + await approve.clone().text()).toBe(stage === 'approve' && seconds >= 3600 ? 403 : 200);
+        if (stage === 'approve') continue;
+        const consent = await call('/api/auth/oauth2/consent', 'POST', { accept: true, oauth_query: flow.consentQuery }, { cookie: flow.cookie });
+        expect(consent.status, await consent.clone().text()).toBe(200);
+        const authCode = new URL((await consent.json() as any).url).searchParams.get('code')!;
+        if (seconds >= 3600) {
+          await expireSource();
+          await database.verification.updateMany({ where: { identifier: hash(authCode) }, data: { expiresAt: new Date(Date.now() + 600_000) } });
+        }
+        const exchange = await form('/api/auth/oauth2/token', { grant_type: 'authorization_code', code: authCode, client_id: clientId, redirect_uri: redirect, code_verifier: flow.verifier }, { 'OpenKey-Session-Proof': proof(authCode, '/oauth2/token') });
+        expect(exchange.status, stage + '/' + seconds + ': ' + await exchange.clone().text()).toBe(seconds === 3599 ? 200 : 400);
+      } finally { setSystemTime(); }
+    }
+  }, 60_000);
+
   test('TC-2720 stays unchanged for an ordinary user on the very same Home client', async () => {
     const { serializeSignedCookie } = await import('better-call');
     const userId = 'ordinary-home-owner';
@@ -267,6 +351,24 @@ if (!process.env.OPENKEY_APPLE_REVIEW_TEST_CHILD) {
     const intentCookie = intent.headers.get('set-cookie')!.split(';')[0]!;
     expect(intent.headers.get('set-cookie')).toContain('SameSite=Strict');
     expect(intentCookie).not.toContain('session_token');
+    expect(intentCookie.includes(key.userId)).toBe(false);
+    expect(intentCookie.includes('epoch')).toBe(false);
+    const missing = await call('/api/review-account/delete', 'POST', { email, code, confirmation: 'DELETE MY ACCOUNT' });
+    expect(missing.status).toBe(403);
+    const wrongCode = await call('/api/review-account/delete', 'POST', { email, code: randomBytes(32).toString('base64url'), confirmation: 'DELETE MY ACCOUNT' }, { cookie: intentCookie });
+    expect(wrongCode.status).toBe(403);
+    const beforeExpiry = Date.now();
+    try {
+      setSystemTime(beforeExpiry + 300_001);
+      const expired = await call('/api/review-account/delete', 'POST', { email, code, confirmation: 'DELETE MY ACCOUNT' }, { cookie: intentCookie });
+      expect(expired.status).toBe(403);
+    } finally { setSystemTime(); }
+    await database.passkey.create({ data: { id: 'reviewer-delete-passkey', userId: key.userId, publicKey: 'test-only', credentialID: 'reviewer-delete-passkey', deviceType: 'singleDevice', backedUp: false } });
+    const withPasskey = await call('/api/review-account/delete', 'POST', { email, code, confirmation: 'DELETE MY ACCOUNT' }, { cookie: intentCookie });
+    expect(withPasskey.status).toBe(403);
+    expect(await database.ethereumKey.count({ where: { id: key.id } })).toBe(1);
+    await database.passkey.delete({ where: { id: 'reviewer-delete-passkey' } });
+
     const wrong = await call('/api/review-account/delete', 'POST', { email: 'ordinary@tinycloud.test', code, confirmation: 'DELETE MY ACCOUNT' }, { cookie: intentCookie });
     expect(wrong.status).toBe(403);
     expect(await database.user.count({ where: { id: key.userId } })).toBe(1);
@@ -278,10 +380,10 @@ if (!process.env.OPENKEY_APPLE_REVIEW_TEST_CHILD) {
     const retired = await database.reviewerCleanup.findUniqueOrThrow({ where: { spaceId } });
     expect(retired.sealedBlob).toBe(key.sealedBlob);
     expect(retired.completedAt).toBeNull();
-    expect(retired.tombstoneUntil.getTime()).toBeLessThanOrEqual(sourceCreatedAt + 3600_000);
+    expect(retired.tombstoneUntil.getTime()).toBeLessThanOrEqual(Date.now() + 3600_000);
     const replay = await call('/api/review-account/delete', 'POST', { email, code, confirmation: 'DELETE MY ACCOUNT' }, { cookie: intentCookie });
     expect(replay.status).toBe(403);
-  });
+  }, 20_000);
 
   test('cleanup mints only a job-private 45-second grant for the retired space and fixed wipe operations', async () => {
     const module = await import('../services/reviewer-cleanup-node');
@@ -322,7 +424,8 @@ if (!process.env.OPENKEY_APPLE_REVIEW_TEST_CHILD) {
     emptyFails = true;
     await cleanup.runReviewerCleanup(database, adapter);
     expect((await database.reviewerCleanup.findUniqueOrThrow({ where: { id: row.id } })).sealedBlob).not.toBeNull();
-    setSystemTime(Date.now() + 60_001);
+    const retry = await database.reviewerCleanup.findUniqueOrThrow({ where: { id: row.id } });
+    setSystemTime(retry.retryAt.getTime() + 1);
     emptyFails = false;
     await cleanup.runReviewerCleanup(database, adapter);
     expect(values.size).toBe(0);
@@ -343,8 +446,30 @@ if (!process.env.OPENKEY_APPLE_REVIEW_TEST_CHILD) {
     expect(over.tombstoneUntil.getTime()).toBe(overExpiry.getTime());
     await cleanup.runReviewerCleanup(database, adapter);
     expect((await database.reviewerCleanup.findUniqueOrThrow({ where: { id: over.id } })).sealedBlob).not.toBeNull();
+    expect(capturedOutput.includes('"result":"bound_exceeded"')).toBe(true);
     setSystemTime();
   });
+  test('incomplete SQL enumeration parks after the final wipe without recurring signing or alerts', async () => {
+    const previous = await database.reviewerCleanup.findUniqueOrThrow({ where: { spaceId } });
+    const row = await database.reviewerCleanup.create({ data: { ...previous, id: randomUUID(), spaceId: spaceId + '-park',
+      sealedBlob: key.sealedBlob, completedAt: null, retryAt: new Date(), leaseUntil: null, attempts: 0, initialWipedAt: null } });
+    let wipes = 0;
+    const adapter = { completeEnumeration: false, wipe: async () => { wipes++; }, empty: async () => false };
+    const alerts = () => capturedOutput.split('"result":"parked"').length - 1;
+    const before = alerts();
+    await cleanup.runReviewerCleanup(database, adapter);
+    setSystemTime(Date.now() + 86400_000);
+    await cleanup.runReviewerCleanup(database, adapter);
+    setSystemTime(Date.now() + 86400_000);
+    await cleanup.runReviewerCleanup(database, adapter);
+    setSystemTime();
+    expect(wipes).toBe(2);
+    expect(alerts() - before).toBe(1);
+    const retained = await database.reviewerCleanup.findUniqueOrThrow({ where: { id: row.id } });
+    expect(retained.sealedBlob).toBe(key.sealedBlob);
+    expect(retained.retryAt.getUTCFullYear()).toBe(9999);
+  });
+
   test('deletion intent uses the same 3-per-minute Better Auth limiter without verification-table writes', async () => {
     const ctx = await (await import('../auth')).auth.$context;
     const previous = ctx.rateLimit.enabled;

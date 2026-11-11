@@ -64,7 +64,15 @@ test('native review code and fresh-browser account deletion use the dedicated sc
     await expect(page.getByRole('alert')).toHaveCount(0);
     expect(otpSend).toBe(0);
     if (shots) await page.screenshot({ path: join(shots, 'apple-delete-390.png'), fullPage: true });
+    await page.request.post(fixture.api + '/__fixture/review-off');
+    const offConfig = page.waitForResponse(response => new URL(response.url()).pathname === '/api/auth/providers');
+    await page.goto('/auth/login?' + fixture.loginQuery);
+    expect((await (await offConfig).json()).appleReviewEnabled).toBe(false);
+    await expect(page.getByRole('heading', { name: 'Sign in to TinyCloud Home', exact: true })).toBeVisible();
+    await expect(page.getByLabel('Email address', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('Review code', { exact: true })).toHaveCount(0);
   } finally {
+    await page.unrouteAll({ behavior: 'wait' });
     child.kill('SIGTERM');
     if (child.exitCode === null) await new Promise<void>(done => child.once('exit', () => done()));
     await rm(home, { recursive: true, force: true });

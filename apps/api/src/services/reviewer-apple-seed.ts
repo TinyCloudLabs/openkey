@@ -20,11 +20,12 @@ export function reviewerJwkFromDid(did: unknown) {
 
 // All bytes and resources are built here. Callers supply a public recipient,
 // never owner material or a message for the owner to sign.
-export async function buildReviewerGrant(
+export async function buildSeedGrant(
   key: { address: string; userId: string | null; sealedBlob: string; sealingContext: string | null },
   spaceId: string, nodeHost: string, sessionDid: string,
-  permissions: { service: string; space: string; path: string; actions: string[] }[], expiresAt: Date,
+  dryRun: boolean, expiresAt: Date,
 ): Promise<{ delegation: PortableDelegation; siwe: string; signature: `0x${string}` }> {
+  const permissions = reviewerSeedPermissions(dryRun);
   const now = new Date();
   if (expiresAt <= now || expiresAt.getTime() - now.getTime() > 3600_000) throw new Error('Reviewer grant lifetime refused');
   const prepared = prepareDelegationSession({ address: ensureEip55(key.address), chainId: 1, prefix: 'applications',
@@ -61,17 +62,18 @@ export async function reviewerSeedGrant(database: PrismaClient, request: SeedReq
     if (!binding.userId || !binding.user?.reviewerHoldAt || binding.seededAt || !binding.keyId || !binding.spaceId || !binding.nodeHost) {
       throw new Error('Reviewer seed is not available');
     }
-    const prior = binding.seedRun as SeedRun | null;
+    if (dryRun && binding.seedStartedAt) throw new Error('Reviewer write run already started');
+    const prior = dryRun ? null : binding.seedRun as SeedRun | null;
     const run: SeedRun = prior ?? { requestId: request.requestId, createdAt: request.createdAt,
       sessionDid: request.sessionDid, dryRun, installEpoch: binding.installEpoch, expiresAt: new Date(Date.now() + 3600_000).toISOString() };
-    if ((binding.seedStartedAt && !prior) || run.installEpoch !== binding.installEpoch || run.requestId !== request.requestId
+    if ((!dryRun && binding.seedStartedAt && !prior) || run.installEpoch !== binding.installEpoch || run.requestId !== request.requestId
       || run.createdAt !== request.createdAt || run.sessionDid !== request.sessionDid || run.dryRun !== dryRun
       || Date.parse(run.expiresAt) <= Date.now()) throw new Error('Reviewer seed run ended; reset required');
     const key = await tx.ethereumKey.findFirst({ where: { id: binding.keyId, userId: binding.userId, archivedAt: null } });
     if (!key?.sealedBlob) throw new Error('Reviewer seed key unavailable');
-    await tx.reviewerAccount.update({ where: { store: 'apple' }, data: { seedRun: run, seedStartedAt: binding.seedStartedAt ?? new Date() } });
+    if (!dryRun) await tx.reviewerAccount.update({ where: { store: 'apple' }, data: { seedRun: run, seedStartedAt: binding.seedStartedAt ?? new Date() } });
     const expiresAt = new Date(run.expiresAt);
-    const { delegation } = await buildReviewerGrant({ ...key, sealedBlob: key.sealedBlob }, binding.spaceId, binding.nodeHost, request.sessionDid, reviewerSeedPermissions(dryRun), expiresAt);
+    const { delegation } = await buildSeedGrant({ ...key, sealedBlob: key.sealedBlob }, binding.spaceId, binding.nodeHost, request.sessionDid, dryRun, expiresAt);
     if (!dryRun) await recordReviewerWriter(tx, binding, expiresAt);
     return { userId: binding.userId, epoch: binding.installEpoch, nodeHost: binding.nodeHost, spaceId: binding.spaceId,
       artifact: { kind: 'tinycloud.auth.delegation', version: 1, requestId: request.requestId,
@@ -85,7 +87,7 @@ export async function reviewerSeedGrant(database: PrismaClient, request: SeedReq
   await database.$transaction(async tx => {
     const current = await lockReviewer(tx, 'apple');
     if (current.userId !== issued.userId || current.installEpoch !== issued.epoch || !current.user?.reviewerHoldAt
-      || (current.seedRun as SeedRun | null)?.requestId !== request.requestId) throw new Error('Reviewer seed run superseded');
+      || (dryRun ? Boolean(current.seedStartedAt) : (current.seedRun as SeedRun | null)?.requestId !== request.requestId)) throw new Error('Reviewer seed run superseded');
   });
   return issued.artifact;
 }
