@@ -6,7 +6,7 @@ import { mockModules } from './mock-module';
   const pairs = await Promise.all([1, 2].map(() => webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])));
   const admins = await Promise.all(pairs.map(async (pair, i) => ({ id: `admin-${i}`, publicKey: Buffer.from(await webcrypto.subtle.exportKey('raw', pair.publicKey)).toString('base64url') })));
   await mockModules({ '../services/escrow-admins.json': () => ({ default: [...admins, ...approvalVector.admins] }) });
-  const { authorizeEscrow, escrowApprovalMessage } = await import('../services/escrow-approval?escrow-approval-test' as string);
+  const { authorizeEscrow, escrowApprovalMessage, authorizeEscrowPreflight, escrowPreflightMessage } = await import('../services/escrow-approval?escrow-approval-test' as string);
 test('two distinct measured admin keys must sign the exact policy and consume one nonce', async () => {
   const expected = { policyHash: 'a'.repeat(64), nonce: randomBytes(32).toString('base64url'), expiresAt: new Date(Date.now() + 60000).toISOString(), dryRun: true, operatorId: 'admin-0', approverId: 'admin-1' };
   const message = escrowApprovalMessage(expected);
@@ -29,5 +29,12 @@ try { await authorizeEscrow(${JSON.stringify(request)}, ${JSON.stringify(expecte
 
   expect(new TextDecoder().decode(escrowApprovalMessage(approvalVector.expected))).toBe(approvalVector.approveMessageUtf8);
   expect(await authorizeEscrow({ ...approvalVector.expected, signatures: approvalVector.signatures }, approvalVector.expected, store)).toBe(true);
+
+  const preflight = { measuredConfigHash: 'b'.repeat(64), nonce: randomBytes(32).toString('base64url'), expiresAt: new Date(Date.now() + 60000).toISOString(), adminId: admins[0]!.id };
+  const preflightSignature = Buffer.from(await webcrypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, pairs[0]!.privateKey, escrowPreflightMessage(preflight))).toString('base64url');
+  expect(await authorizeEscrowPreflight({ ...preflight, signature: preflightSignature }, preflight.measuredConfigHash, store)).toBe(true);
+  await expect(authorizeEscrowPreflight({ ...preflight, signature: signatures[0]!.signature }, preflight.measuredConfigHash, store)).rejects.toThrow();
+  await expect(authorizeEscrow({ ...request, signatures: [{ id: admins[0]!.id, signature: preflightSignature }, signatures[1]] }, expected, store)).rejects.toThrow();
+  await expect(authorizeEscrowPreflight({ ...preflight, expiresAt: new Date(Date.now() + 901000).toISOString(), signature: preflightSignature }, preflight.measuredConfigHash, store)).rejects.toThrow();
 
 });

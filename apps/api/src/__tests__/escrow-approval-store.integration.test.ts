@@ -16,17 +16,19 @@ run('real SQL atomically consumes nonce with audit and serializes the rate limit
   try {
     await setup.query(readFileSync(new URL('../../../../packages/db/prisma/migrations/20261111_escrow_authorization/migration.sql', import.meta.url), 'utf8'));
     const store = createEscrowAuthorizationStore(prisma);
-    const request = { nonce: randomBytes(32).toString('base64url'), policyHash: 'a'.repeat(64), operatorId: 'operator', approverId: 'approver', dryRun: true, expiresAt: new Date(Date.now() + 60000).toISOString() };
+    const request = { kind: 'export' as const, nonce: randomBytes(32).toString('base64url'), policyHash: 'a'.repeat(64), operatorId: 'operator', approverId: 'approver', dryRun: true, expiresAt: new Date(Date.now() + 60000).toISOString() };
     const race = await Promise.allSettled([store.consume(request), store.consume(request)]);
     expect(race.filter(result => result.status === 'fulfilled').length).toBe(1);
     expect(race.filter(result => result.status === 'rejected').length).toBe(1);
     await expect(store.consume({ ...request, policyHash: 'b'.repeat(64) })).rejects.toThrow();
     await expect(store.consume({ ...request, nonce: randomBytes(32).toString('base64url'), expiresAt: new Date(Date.now() - 1).toISOString() })).rejects.toThrow();
-    for (let i = 0; i < 9; i++) await store.consume({ ...request, nonce: randomBytes(32).toString('base64url') });
+    for (let i = 0; i < 8; i++) await store.consume({ ...request, nonce: randomBytes(32).toString('base64url') });
+    await expect(store.consume({ ...request, kind: 'preflight', approverId: null })).rejects.toThrow();
+    await store.consume({ ...request, kind: 'preflight', approverId: null, nonce: randomBytes(32).toString('base64url') });
     await expect(store.consume({ ...request, nonce: randomBytes(32).toString('base64url') })).rejects.toThrow('rate limited');
-    const audit = (await setup.query('SELECT "policyHash", "operatorId", "approverId", "dryRun" FROM escrow_authorization')).rows;
+    const audit = (await setup.query('SELECT "policyHash", "operatorId", "approverId", "dryRun", "kind" FROM escrow_authorization')).rows;
     expect(audit.length).toBe(10);
-    expect(audit.every(row => row.policyHash === request.policyHash && row.operatorId === request.operatorId && row.approverId === request.approverId && row.dryRun === true)).toBe(true);
+    expect(audit.every(row => row.policyHash === request.policyHash && row.operatorId === request.operatorId && ((row.kind === 'export' && row.approverId === request.approverId) || (row.kind === 'preflight' && row.approverId === null)) && row.dryRun === true)).toBe(true);
   } finally {
     await prisma.$disconnect(); await setup.query(`DROP SCHEMA "${schema}" CASCADE`); await setup.end();
   }

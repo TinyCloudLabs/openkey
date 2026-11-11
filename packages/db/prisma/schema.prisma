@@ -928,7 +928,8 @@ model EscrowAuthorization {
   policyHash String
   dryRun     Boolean
   operatorId String
-  approverId String
+  approverId String?
+  kind       String
   createdAt  DateTime @default(now()) @db.Timestamptz
 
   @@index([createdAt], map: "escrow_authorization_createdAt_idx")

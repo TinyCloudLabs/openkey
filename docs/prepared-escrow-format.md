@@ -199,3 +199,11 @@ the configured P-256 key on the admin's device. WebCrypto ECDSA with SHA-256
 returns P1363 bytes; encode those 64 bytes as unpadded base64url and send only
 admin id plus signature. The private key remains on that device. Both admins
 sign the same descriptor; a dry-run signature authorizes only dry-run.
+
+Preflight has a separate one-admin authorization message:
+`["tinycloud/escrow/preflight",1,measuredConfigHash,nonce,expiresAt,adminId]`,
+UTF-8 compact JSON, ECDSA-SHA256 P1363 base64url. The nonce is canonical
+32-byte base64url and single-use; expiry is at most 15 minutes ahead. Preflight
+and export consume the same nonce ledger and combined hourly budget, with an
+explicit kind. Domain separation prevents either signature from authorizing
+the other action. Real export still requires both configured admin signatures.

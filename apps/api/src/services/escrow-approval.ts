@@ -10,9 +10,13 @@ export interface EscrowApprovalRequest {
   approverId: string;
   signatures: readonly { id: string; signature: string }[];
 }
+export interface EscrowAuthorizationRecord {
+  kind: 'preflight' | 'export'; policyHash: string; nonce: string; expiresAt: string;
+  dryRun: boolean; operatorId: string; approverId: string | null;
+}
 export interface EscrowAuthorizationStore {
   /** Atomically rate-limit and insert a unique nonce plus its audit record. */
-  consume(request: Omit<EscrowApprovalRequest, 'signatures'>): Promise<true>;
+  consume(request: EscrowAuthorizationRecord): Promise<true>;
 }
 export interface EscrowAdmin { id: string; publicKey: string }
 const admins: readonly EscrowAdmin[] = Object.freeze((configuredAdmins as EscrowAdmin[]).map(admin => Object.freeze({ id: admin.id, publicKey: admin.publicKey })));
@@ -58,6 +62,35 @@ export async function authorizeEscrow(request: EscrowApprovalRequest, expected: 
   }
   if (Date.parse(copied.expiresAt) <= Date.now()) throw new Error('Escrow approval expired');
   const { signatures: _signatures, ...audit } = copied;
-  if (await store.consume(audit) !== true) throw new Error('Escrow approval refused');
+  if (await store.consume({ ...audit, kind: 'export' }) !== true) throw new Error('Escrow approval refused');
+  return true;
+}
+
+
+export interface EscrowPreflightRequest {
+  measuredConfigHash: string; nonce: string; expiresAt: string; adminId: string; signature: string;
+}
+export function escrowPreflightMessage(request: Omit<EscrowPreflightRequest, 'signature'>): Uint8Array {
+  if (typeof request.measuredConfigHash !== 'string' || !/^[a-f0-9]{64}$/.test(request.measuredConfigHash)
+    || typeof request.adminId !== 'string' || !request.adminId || request.adminId.length > 4096
+    || typeof request.expiresAt !== 'string' || !Number.isFinite(Date.parse(request.expiresAt))
+    || new Date(request.expiresAt).toISOString() !== request.expiresAt) throw new Error('Invalid escrow preflight');
+  decode(request.nonce, 32);
+  return new TextEncoder().encode(JSON.stringify(['tinycloud/escrow/preflight', 1, request.measuredConfigHash, request.nonce, request.expiresAt, request.adminId]));
+}
+export async function authorizeEscrowPreflight(request: EscrowPreflightRequest, measuredConfigHash: string, store: EscrowAuthorizationStore): Promise<true> {
+  if (admins.length === 0) throw new Error('Escrow approval not configured');
+  const copied = structuredClone(request);
+  const message = escrowPreflightMessage(copied);
+  const expiry = Date.parse(copied.expiresAt);
+  if (copied.measuredConfigHash !== measuredConfigHash || expiry <= Date.now() || expiry > Date.now() + 900_000) throw new Error('Invalid preflight expiry or config');
+  const candidates = admins.filter(admin => admin.id === copied.adminId);
+  if (candidates.length !== 1) throw new Error('Invalid preflight admin');
+  const raw = decode(candidates[0]!.publicKey, 65);
+  if (raw[0] !== 4) throw new Error('Invalid admin key');
+  const key = await webcrypto.subtle.importKey('raw', raw, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+  if (await webcrypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, decode(copied.signature, 64), message) !== true) throw new Error('Invalid preflight signature');
+  if (Date.parse(copied.expiresAt) <= Date.now()) throw new Error('Preflight approval expired');
+  if (await store.consume({ kind: 'preflight', policyHash: measuredConfigHash, nonce: copied.nonce, expiresAt: copied.expiresAt, operatorId: copied.adminId, approverId: null, dryRun: true }) !== true) throw new Error('Preflight approval refused');
   return true;
 }
