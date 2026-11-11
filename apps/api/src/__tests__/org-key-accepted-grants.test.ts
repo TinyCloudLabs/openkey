@@ -33,3 +33,25 @@ test('fixture scalar filters and locked grant read exclude pending grants', asyn
   expect(await locked('pending', 'invitee')).toEqual([]);
   expect(await locked(key.grantId, 'user_1')).toEqual([{ id: key.grantId, role: 'OWNER' }]);
 });
+
+test('signing submits an accepted-only predicate in the locked SQL itself', async () => {
+  const { issueOrgKeySignChallenge, signOrgKeyMessage } = await import('../services/org-keys');
+  const { assertionFor, ORIGIN, RP_ID } = await import('./org-keys-fixtures');
+  const ctx = await setupOrgKey();
+  const prisma = asPrisma(ctx.db);
+  const message = 'locked-grant-predicate';
+  const issued = await issueOrgKeySignChallenge(prisma, {
+    userId: 'user_1', keyId: ctx.key.keyId, grantId: ctx.key.grantId, message,
+  });
+  let submitted = '';
+  ctx.db.$queryRaw = async (strings: TemplateStringsArray) => {
+    submitted = strings.join('?');
+    return [];
+  };
+  await expect(signOrgKeyMessage(prisma, ctx.tee, {
+    userId: 'user_1', keyId: ctx.key.keyId, nonce: issued.nonce,
+    message, messageKind: 'test-kind', origin: ORIGIN, expectedOrigin: ORIGIN, rpID: RP_ID,
+    assertion: assertionFor(ctx.passkey, issued.challenge),
+  })).rejects.toThrow('No active grant');
+  expect(submitted).toMatch(/AND\s+"acceptedAt"\s+IS NOT NULL\s+FOR SHARE/);
+});
