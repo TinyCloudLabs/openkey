@@ -16,6 +16,8 @@ model User {
   socialCreatedProvider String?
   socialEmailReviewedAt DateTime?
   lockedAt DateTime?
+  reviewerHoldAt DateTime?
+  reviewerBinding ReviewerAccount?
   image           String?
   autoSignEnabled Boolean  @default(true)
   tinyCloudManageKeyEnabled Boolean @default(true)
@@ -177,6 +179,7 @@ model Session {
   // accepts the assertion only while that passkey counts for step-up.
   lastPasskeyId String?
   lastEmailOtpAt DateTime?
+  reviewerEpoch Int?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -620,6 +623,7 @@ model OauthRefreshToken {
 
 // User consent records
 model OauthConsent {
+  reviewerEpoch Int?
   id          String   @id
   userId      String
   clientId    String
@@ -704,6 +708,7 @@ model TinyCloudNativePreparation {
 // (the provider's stored token format). Revoked by the consent-withdrawal
 // triggers in the migration.
 model TinyCloudNativeGrant {
+  reviewerEpoch Int?
   id                       String   @id
   userId                   String
   clientId                 String
@@ -920,4 +925,25 @@ model RevokedAccessToken {
 
   @@index([expiresAt])
   @@map("revoked_access_token")
+}
+
+// Operator-owned bindings survive fixture account deletion.
+model ReviewerAccount {
+  store String @id
+  email String @unique
+  userId String? @unique
+  installEpoch Int @default(0)
+  clientId String?
+  redirectUri String?
+  resource String?
+  callbackUri String?
+  nodeHost String?
+  sessionDid String?
+  keyId String?
+  spaceId String?
+  seededAt DateTime?
+  readyAt DateTime?
+  grantSessionId String?
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  @@map("reviewer_account")
 }

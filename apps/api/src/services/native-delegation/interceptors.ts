@@ -1,3 +1,4 @@
+import { captureReviewer, reviewerActive, reviewerForUser } from '../reviewer-accounts';
 import type { Context, MiddlewareHandler } from 'hono';
 import type { PrismaClient } from '@openkey/db';
 import { ADMIN_MANAGED_SCOPES, TINYCLOUD_DELEGATION_SCOPE, TINYCLOUD_MCP_SCOPE } from '../../oauth-config';
@@ -41,7 +42,7 @@ const AUTH_BASE_PATH = '/api/auth';
 const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
-export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'oauthConsent' | 'tinyCloudNativeGrant' | 'tinyCloudNativeRequest' | 'session' | '$queryRaw'>;
+export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'oauthConsent' | 'tinyCloudNativeGrant' | 'tinyCloudNativeRequest' | 'session' | '$queryRaw' | 'reviewerAccount' | 'user'>;
 
 type Refusal = { status: 400 | 401 | 429 | 503; error: string; description: string; retryAfter?: number };
 /**
@@ -393,6 +394,40 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
       // First, before anything that reads the client: no early return may precede it.
       const stale = await refuseStaleMcpCode(params.get('code'));
       if (stale) return stale;
+    }
+    try {
+      let reviewerSubject: { userId: string; sessionId: string | null; reviewerEpoch?: number; clientId?: string; scopes?: string[] } | null = null;
+      if (grantType === 'authorization_code' && params.get('code')) {
+        const identifier = await storedToken(tokens, params.get('code')!, 'authorization_code');
+        const verification = await authorizationCodes.find(identifier);
+        if (verification) {
+          try {
+            const value = JSON.parse(verification.value);
+            if (typeof value.userId === 'string') reviewerSubject = { ...value, clientId: value.query?.client_id };
+          } catch { /* Invalid provider codes are rejected by the provider. */ }
+        }
+      } else if (grantType === 'refresh_token' && params.get('refresh_token')) {
+        const stored = await storedRefreshToken(tokens, params.get('refresh_token')!);
+        if (stored) reviewerSubject = await database.oauthRefreshToken.findUnique({ where: { token: stored } });
+      }
+      if (reviewerSubject) {
+        const binding = await reviewerForUser(database as PrismaClient, reviewerSubject.userId);
+        if (binding) {
+          const clients = requestClients(c.req.raw, params);
+          const session = reviewerSubject.sessionId
+            ? await database.session.findUnique({ where: { id: reviewerSubject.sessionId } }) : null;
+          if (!reviewerActive(binding, session?.reviewerEpoch ?? null)
+            || reviewerSubject.clientId !== binding.clientId || 'status' in clients || clients.effective !== binding.clientId
+            || params.get('resource') !== binding.resource
+            || (grantType === 'authorization_code' && reviewerSubject.reviewerEpoch !== binding.installEpoch)
+            || (grantType === 'refresh_token' && !reviewerSubject.scopes?.includes(TINYCLOUD_MCP_SCOPE))) {
+            return { status: 400, error: 'invalid_grant', description: 'the review connection has ended' };
+          }
+          captureReviewer(binding, session!.id, session!.createdAt.getTime() + 3600_000);
+        }
+      }
+    } catch {
+      return { status: 503, error: 'temporarily_unavailable', description: 'the review connection could not be checked', retryAfter: 5 };
     }
     if (grantType !== 'refresh_token' && !params.has('resource')) return null;
     const clients = requestClients(c.req.raw, params);

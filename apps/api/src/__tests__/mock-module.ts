@@ -32,7 +32,7 @@ export async function mockModules(factories: Record<string, (actual: Exports) =>
   }
   for (const [specifier, factory] of Object.entries(factories)) {
     const actual = actuals[specifier]!;
-    mock.module(specifier, () => ({ ...actual, ...factory(actual) }));
+    mock.module(specifier, () => withReviewerModel(specifier, { ...actual, ...factory(actual) }));
   }
   afterAll(() => {
     for (const [specifier, actual] of Object.entries(actuals)) {
@@ -51,13 +51,31 @@ export async function mockModules(factories: Record<string, (actual: Exports) =>
  */
 export function replaceModules(factories: Record<string, () => Exports>): void {
   for (const [specifier, factory] of Object.entries(factories)) {
-    mock.module(specifier, () => ({ ...unavailableExports(specifier), ...factory() }));
+    mock.module(specifier, () => withReviewerModel(specifier, { ...unavailableExports(specifier), ...factory() }));
   }
   afterAll(() => {
     for (const specifier of Object.keys(factories)) {
       mock.module(specifier, () => unavailableExports(specifier));
     }
   });
+}
+
+// Ordinary-user route fixtures predate reviewer bindings. Give those clients an
+// empty binding table; reviewer tests supply their own model explicitly.
+function withReviewerModel(specifier: string, exports: Exports): Exports {
+  if (specifier !== '@openkey/db' || typeof exports.createPrismaClient !== 'function') return exports;
+  const createClient = exports.createPrismaClient;
+  return {
+    ...exports,
+    createPrismaClient: (...args: unknown[]) => {
+      const client = createClient(...args);
+      client.reviewerAccount ??= {
+        findUnique: async () => null,
+        findMany: async () => [],
+      };
+      return client;
+    },
+  };
 }
 
 function unavailableExports(specifier: string): Exports {

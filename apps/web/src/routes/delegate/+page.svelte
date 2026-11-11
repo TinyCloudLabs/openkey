@@ -672,8 +672,19 @@
   async function loadKeys() {
     loading = true;
     try {
-      const result = await api.listKeys();
-      keys = activeKeys(result.keys);
+      const reviewEmail = $session.data?.user.email.trim().toLowerCase();
+      if (reviewEmail && ['openai-review@tinycloud.xyz', 'google-review@tinycloud.xyz'].includes(reviewEmail)) {
+        const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/delegate/prepare`, { credentials: 'include' });
+        if (!response.ok) throw new Error('Could not load the review account.');
+        const { key } = await response.json() as { key: { address: string; did: string } };
+        keys = [{
+          id: 'reviewer', address: key.address, publicKey: key.address, keyIndex: 0,
+          label: null, keyType: 'MANAGED', createdAt: '', isPrimary: true,
+        }];
+      } else {
+        const result = await api.listKeys();
+        keys = activeKeys(result.keys);
+      }
     } catch (e: any) {
       error = delegateErrorMessage(e);
     } finally {

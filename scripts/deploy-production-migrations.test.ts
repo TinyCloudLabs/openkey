@@ -379,6 +379,26 @@ describe('production migration deployment mode', () => {
     })).toThrow();
   });
 
+  test('allows the reviewer expansion beside parked TC-488 only with its reviewed checksum', async () => {
+    const name = '20261111_0001_reviewer_accounts';
+    const checksum = createHash('sha256').update(await readFile(
+      join(import.meta.dir, '../packages/db/prisma/migrations', name, 'migration.sql'),
+    )).digest('hex');
+    expect(requiredRuntimeMigrationChecksums.get(name)).toBe(checksum);
+    const input = {
+      migrations: [baseline],
+      migrationDirectories: [baseline.migration_name, ...tc492, name],
+      managedAccountTableExists: true,
+    };
+    expect(selectProductionMigrationMode(input)).toBe('pre-tc488-additive');
+    expect(partitionPreTc488Migrations([tc488, name])).toEqual({ apply: [name], park: [tc488] });
+    const applied = { migration_name: name, checksum, finished_at: new Date(), rolled_back_at: null };
+    expect(selectProductionMigrationMode({ ...input, migrations: [baseline, applied] })).toBe('pre-tc488-additive');
+    expect(() => selectProductionMigrationMode({
+      ...input, migrations: [baseline, { ...applied, checksum: 'changed' }],
+    })).toThrow(`Stored migration checksum differs from the reviewed ${name}`);
+  });
+
   test('fails closed on inconsistent physical cutover state', () => {
     expect(() => selectProductionMigrationMode({
       migrations: [baseline],
