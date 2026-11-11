@@ -138,6 +138,8 @@ header in this deployment; `CF-Connecting-IP` and `X-Forwarded-For` can be
 supplied by a caller, so PAR does not use either for rate limiting. Per-source
 fairness requires an authenticated network source at the ingress boundary.
 
+The token-protected `/api/internal/metrics` response includes `originRefusals`, a process-local count by route template and refusal reason. Counts reset when the API process restarts and contain no Origin values.
+
 Organization OAuth applications are owned by the organization, not their
 creator. Organization administrators manage them through the tenant console,
 including confidential-client secret rotation; personal OAuth clients remain
