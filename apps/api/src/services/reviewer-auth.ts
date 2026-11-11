@@ -13,6 +13,7 @@ import {
 const REFUSAL = { code: 'REVIEWER_SIGN_IN_REFUSED', message: "Couldn't sign in with those details. Check the review account and code, then try again." };
 const ALLOWED_AUTH_PATHS = new Set([
   '/get-session', '/sign-out', '/oauth2/authorize', '/oauth2/consent', '/oauth2/continue',
+  '/oauth2/public-client',
   '/oauth2/token', '/oauth2/userinfo', '/oauth2/introspect', '/oauth2/revoke',
 ]);
 
@@ -122,6 +123,12 @@ export function reviewerAuth(database: PrismaClient, origin: string): BetterAuth
             || source.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000 <= Date.now()
             || !ALLOWED_AUTH_PATHS.has(ctx.path)) throw refused();
           captureReviewer(reviewer, session.session.id, source!.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000);
+          if (ctx.path === '/oauth2/public-client') {
+            const url = ctx.request && new URL(ctx.request.url);
+            if (ctx.request?.method !== 'GET' || url?.pathname !== '/api/auth/oauth2/public-client'
+              || url.searchParams.getAll('client_id').length !== 1
+              || url.searchParams.get('client_id') !== reviewer.clientId) throw refused();
+          }
           if (['/oauth2/authorize', '/oauth2/consent', '/oauth2/continue'].includes(ctx.path)) {
             const query = ctx.path === '/oauth2/authorize'
               ? new URLSearchParams(ctx.query as Record<string, string>)
