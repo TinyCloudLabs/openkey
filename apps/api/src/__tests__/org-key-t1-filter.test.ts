@@ -139,17 +139,26 @@ describe('K1 T1: a user whose only key is an org key', () => {
   test('POST /api/keys/:orgKeyId/sign is not found, never reaches signing', async () => {
     const res = await router.request('/key_org/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ message: 'hello' }),
     });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Key not found' });
   });
 
+  test('POST /api/keys/:orgKeyId/sign without Origin is refused before key lookup', async () => {
+    const res = await router.request('/key_org/sign', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hello' }),
+    });
+    expect(res.status).toBe(403);
+    expect(ethereumKey.findFirst).not.toHaveBeenCalled();
+  });
+
   test('POST /api/keys/:orgKeyId/sign-typed-data is not found', async () => {
     const res = await router.request('/key_org/sign-typed-data', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ domain: {}, types: {}, primaryType: 'Mail', message: {} }),
     });
     expect(res.status).toBe(404);
