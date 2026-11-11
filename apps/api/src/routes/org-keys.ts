@@ -118,6 +118,7 @@ export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
 
     const grant = await findActiveOrgGrant(prisma, user.id, keyId);
     if (!grant) return c.json({ error: 'Forbidden', code: 'no_active_grant' }, 403);
+    if (grant.role !== 'OWNER') return c.json({ error: 'Forbidden', code: 'admin_signing_disabled' }, 403);
 
     if (allowedOrigin(c) === null) return c.json({ error: 'Origin not allowed', code: 'origin_not_allowed' }, 403);
 
@@ -159,6 +160,7 @@ export function createOrgKeysRouter(deps: OrgKeysRouterDeps) {
 
     const grant = await findActiveOrgGrant(prisma, user.id, keyId);
     if (!grant) return c.json({ error: 'Forbidden', code: 'no_active_grant' }, 403);
+    if (grant.role !== 'OWNER') return c.json({ error: 'Forbidden', code: 'admin_signing_disabled' }, 403);
 
     const origin = allowedOrigin(c);
     if (origin === null) return c.json({ error: 'Origin not allowed', code: 'origin_not_allowed' }, 403);
