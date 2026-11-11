@@ -10,9 +10,11 @@ import { createHash, randomBytes } from 'node:crypto';
 import { approvalRequestBinding, parseApprovalRequestV1, shareInvitationOf, shareInvitationKeyUrn, signerShareKeyId } from '../services/share-invitation';
 import { peekAuthorizationContext } from '../services/authorization-signing';
 import { issuedShareInvitationPermission, isRawRecapEntry, parsePreparedRecap, type DelegationPermissionEntry } from './delegate-session';
+import { createPrismaDelegationCodeStore, type ApprovalCode } from './delegation-codes';
 
 const prisma = createPrismaClient();
 const store = createPrismaApprovalRequestStore(prisma);
+const codeStore = createPrismaDelegationCodeStore(prisma);
 const linksOrigin = process.env.APPROVAL_LINKS_API_ORIGIN ?? 'https://api.tinycloud.xyz';
 const viewerOrigin = process.env.APPROVAL_OPENKEY_ORIGIN ?? 'https://openkey.so';
 const apiOrigin = process.env.BETTER_AUTH_URL ?? 'http://localhost:3001';
@@ -24,7 +26,7 @@ export function approvalResultService(): ApprovalResultService {
   if (!configured && (process.env.NODE_ENV === 'production' || process.env.TEE_MODE === 'production')) {
     throw new ApprovalResultError('retention_not_configured', 'Approval result retention requires explicit configuration', 503);
   }
-  return new ApprovalResultService(store, { apiOrigin, retentionSeconds: configured === undefined ? 600 : Number(configured) });
+  return new ApprovalResultService(store, { apiOrigin, retentionSeconds: configured === undefined ? 600 : Number(configured), codeStore });
 }
 
 async function fetchLink(input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response> {
@@ -79,6 +81,7 @@ approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
   if (!/^[a-z2-7]{26}$/.test(id) || typeof body.bodyCid !== 'string') throw new ApprovalResultError('invalid_request', 'Approval reference is invalid', 400);
   const record = await store.findById(id);
   if (!record) {
+    if (body.approvalCode !== undefined) throw new ApprovalResultError('not_found', 'Saved approval request not found', 404);
     // Before a browser opens the sealed request, authenticate only the
     // issuer-signed public header. No client-supplied DID or JWK is trusted.
     const header = validateLinkHeader(body.header, { mode: 'signed', audience: linksOrigin });
@@ -96,7 +99,7 @@ approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
     }
     return c.json({ status: 'pending' }, 202);
   }
-  const result = await service.discover(id, body, proof);
+  const result = await service.discover(id, body, proof, c.req.header('OpenKey-Delegation-Claim'));
   return c.json(result, result.status === 'pending' ? 202 : 200);
 });
 
@@ -162,9 +165,10 @@ export async function releaseApprovalDelegation(body: { approvalRequestId?: unkn
   await approvalResultService().release(String(body.approvalRequestId), marker).catch(() => undefined);
 }
 
-export async function saveApprovalDelegation<T extends Record<string, unknown>>(body: { approvalRequestId?: unknown; jwk: unknown; host: unknown; permissions?: unknown }, userId: string, delegation: T): Promise<T> {
+export async function saveApprovalDelegation<T extends Record<string, unknown>>(body: { approvalRequestId?: unknown; jwk: unknown; host: unknown; permissions?: unknown }, userId: string, delegation: T): Promise<T & { approvalCode?: ApprovalCode | null }> {
   if (body.approvalRequestId !== undefined) {
-    await approvalResultService().approve(String(body.approvalRequestId), userId, { ...body, permissions: body.permissions }, delegation, admissions.get(body));
+    const approvalCode = await approvalResultService().approve(String(body.approvalRequestId), userId, { ...body, permissions: body.permissions }, delegation, admissions.get(body));
+    return { ...delegation, approvalCode };
   }
   return delegation;
 }

@@ -82,6 +82,8 @@ export interface CliSigningTransport {
 
 /** Transport injected by the widget popup and iframe routes. */
 export interface WidgetSigningTransport {
+  /** Set once the server has refused this request for good: Approve is off and this is shown in its place. */
+  approveBlockedReason?: string | null;
   /**
    * The TinyCloud node the request names (the sign request's `host`), or empty when it names none. The host
    * approval looks the node key up only there, and only if it is a known node (TC-2309).

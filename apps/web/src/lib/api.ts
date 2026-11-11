@@ -1,5 +1,6 @@
 // API client for key management
 import { getSessionToken, isEmbedContext } from './embed-passkey';
+import { isDefiniteRefusal, ServerRefusalError } from './server-reply';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -33,6 +34,8 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly =
     const error = await res.json().catch(() => ({ error: 'Unknown error' }));
     const detail = error?.error;
     const message = typeof detail === 'string' ? detail : detail?.message;
+    // A definite refusal of a sign-in keeps its code so the widget can tell the app (TC-2291).
+    if (isDefiniteRefusal(res.status, error?.code)) throw new ServerRefusalError(message || `HTTP ${res.status}`, res.status, error.code);
     const failure = new Error(message || `HTTP ${res.status}`);
     Object.assign(failure, {
       code: detail?.code ?? (typeof error?.code === 'string' ? error.code : undefined),
@@ -115,9 +118,22 @@ export interface TinyCloudManageKeyApp {
   status?: 'ENABLED' | 'DISABLED' | 'PENDING_USER_APPROVAL' | 'CONSENT_WITHDRAWN';
 }
 
-/** An MCP app the account has connected; `consentId` addresses the Disconnect call. */
+/** An MCP app the account has connected; `consentId` addresses its Disconnect call. */
 export interface ConnectedMcpApp {
   kind: 'mcp';
+  consentId: string;
+  clientId: string;
+  name: string;
+  uri: string | null;
+  host: string | null;
+  icon: string | null;
+  connectedAt: string;
+  scopes: string[];
+}
+
+/** An app that can read the owner's canonical wallet address. */
+export interface ConnectedIdentityApp {
+  kind: 'identity';
   consentId: string;
   clientId: string;
   name: string;
@@ -140,6 +156,7 @@ export interface TinyCloudManageKeyActivity {
 export interface TinyCloudManageKeyAppsResponse {
   apps: TinyCloudManageKeyApp[];
   mcpApps: ConnectedMcpApp[];
+  identityApps: ConnectedIdentityApp[];
   activity: TinyCloudManageKeyActivity[];
   mode: TinyCloudManageKeyPreference['mode'];
   policyEpoch: number;
@@ -320,6 +337,11 @@ export const api = {
 
   async disconnectMcpApp(consentId: string): Promise<{ consentId: string; disconnected: boolean }> {
     return fetchAPI(`/api/account/tinycloud-apps/mcp/${encodeURIComponent(consentId)}`, {
+      method: 'DELETE', body: JSON.stringify({ confirmation: 'DISCONNECT' }),
+    }, true);
+  },
+  async disconnectIdentityApp(consentId: string): Promise<{ consentId: string; disconnected: boolean }> {
+    return fetchAPI(`/api/account/tinycloud-apps/identity/${encodeURIComponent(consentId)}`, {
       method: 'DELETE', body: JSON.stringify({ confirmation: 'DISCONNECT' }),
     }, true);
   },

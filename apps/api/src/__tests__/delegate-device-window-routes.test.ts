@@ -58,6 +58,9 @@ replaceModules({
   '../routes/device-authorization': () => ({ deviceAuthorizationService: deviceService }),
 });
 await mockModules({
+  '../services/tinycloud-bootstrap': () => ({
+    ensureTinyCloudBootstrap: mock(async () => ({ status: 'complete' as const })),
+  }),
   '@openkey/db': () => ({ createPrismaClient: () => prisma }),
   '@openkey/tee': () => ({
     createTeeClient: () => ({
