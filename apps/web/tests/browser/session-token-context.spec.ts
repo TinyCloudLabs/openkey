@@ -55,7 +55,7 @@ test('top-level owner revocation ignores a stale bearer and uses the cookie sess
 test('session bearer persistence is confined to embedded frames', async ({ page }) => {
   await page.goto('/auth/login');
   const persist = async () => {
-    const module = await import(/* @vite-ignore */ '/src/lib/embed-passkey.ts');
+    const module = await import(/* @vite-ignore */ ('/src/lib/embed-passkey.ts' as string));
     sessionStorage.removeItem('openkey_session_token');
     module.setSessionToken('embedded-session');
     return sessionStorage.getItem('openkey_session_token');

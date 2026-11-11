@@ -57,7 +57,7 @@ const stubs: Record<string, string> = {
   '$lib/auth-client': 'export const authErrorMessage = (_, fallback) => fallback; export const authClient = { useSession: () => ({ subscribe(run) { run({ data: { user: { id: "owner" } }, isPending: false }); return () => {}; } }) };',
   '$lib/api': `export const api = { listKeys: async () => ({ keys: [${JSON.stringify(key)}] }) };`,
   '$lib/clipboard': 'export const copyText = async () => {};',
-  '$lib/embed-passkey': 'export const getSessionToken = () => null;',
+  '$lib/embed-passkey': 'export const getSessionToken = () => null; export const isEmbedContext = () => false;',
 };
 for (const [name, source] of Object.entries(stubs)) writeFileSync(join(out, `${name.replace(/[^A-Za-z0-9]/g, '_')}.mjs`), source);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');

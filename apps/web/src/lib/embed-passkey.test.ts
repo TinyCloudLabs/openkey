@@ -7,8 +7,10 @@ import {
 } from './embed-passkey';
 
 const originalSessionStorage = globalThis.sessionStorage;
+const originalWindow = globalThis.window;
 
 function installSessionStorage() {
+  (globalThis as any).window = { self: {}, top: {} };
   const values = new Map<string, string>();
   (globalThis as any).sessionStorage = {
     getItem: (key: string) => values.get(key) ?? null,
@@ -19,6 +21,7 @@ function installSessionStorage() {
 
 afterEach(() => {
   (globalThis as any).sessionStorage = originalSessionStorage;
+  (globalThis as any).window = originalWindow;
 });
 
 describe('revokeEmbeddedSession', () => {
