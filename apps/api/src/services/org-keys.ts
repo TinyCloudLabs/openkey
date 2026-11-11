@@ -33,6 +33,7 @@ export const ORG_KEY_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 function activeOrgGrantWhere(userId: string) {
   return {
     granteeUserId: userId,
+    acceptedAt: { not: null },
     revokedAt: null,
     key: {
       custody: 'ORG' as const,
@@ -338,6 +339,7 @@ export async function signOrgKeyMessage(
         SELECT id, role FROM "key_grants"
         WHERE id = ${challenge.grantId} AND "keyId" = ${input.keyId}
           AND "granteeUserId" = ${input.userId} AND "revokedAt" IS NULL
+          AND "acceptedAt" IS NOT NULL
         FOR SHARE`;
       if (!grant) throw new OrgKeyRefusal(403, 'grant_revoked', 'No active grant on this key');
 
