@@ -164,7 +164,7 @@ test('after Approve the finished screen says the approval was sent back', async 
   await page.goto(`${link}&callback=${encodeURIComponent('http://127.0.0.1:47123/callback')}`);
   await google(page).click();
   await approve(page).click();
-  await expect(page.getByRole('heading', { name: 'Approved and sent back to your agent' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Approved. Your sign-in was sent back to your agent.' })).toBeVisible();
 });
 
 test('on /auth/login, while the Google window is open, the other buttons keep their words and are only disabled', async ({ page }) => {
