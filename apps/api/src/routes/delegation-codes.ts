@@ -14,7 +14,7 @@ const CLAIM_RETENTION_MS = 5 * 60 * 1000;
 // A client-chosen secret of at least 128 bits, base64url. It binds a redeemed code to the redeemer.
 const CLAIM_HEADER = 'OpenKey-Delegation-Claim';
 const CLAIM_PATTERN = /^[A-Za-z0-9_-]{22,128}$/;
-const PUBLIC_DELEGATION_FIELDS: Record<string, true> = {
+export const PUBLIC_DELEGATION_FIELDS: Record<string, true> = {
   delegationHeader: true,
   delegationCid: true,
   spaceId: true,
@@ -38,7 +38,7 @@ const PUBLIC_DELEGATION_FIELDS: Record<string, true> = {
   signedMessage: true,
   permissions: true,
 };
-const PUBLIC_JWK_FIELDS: Record<string, true> = { kty: true, crv: true, x: true, kid: true };
+export const PUBLIC_JWK_FIELDS: Record<string, true> = { kty: true, crv: true, x: true, kid: true };
 
 export interface DelegationCodeStore {
   create(code: string, delegation: unknown, expiresAt: Date): Promise<boolean>;

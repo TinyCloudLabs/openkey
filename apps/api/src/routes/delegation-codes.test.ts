@@ -1,6 +1,15 @@
 import { describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
-import { createDelegationCodeRouter, type DelegationCodeStore } from './delegation-codes';
+import {
+  createDelegationCodeRouter,
+  PUBLIC_DELEGATION_FIELDS,
+  PUBLIC_JWK_FIELDS,
+  type DelegationCodeStore,
+} from './delegation-codes';
+import {
+  PUBLIC_DELEGATION_FIELDS as WEB_PUBLIC_DELEGATION_FIELDS,
+  PUBLIC_JWK_FIELDS as WEB_PUBLIC_JWK_FIELDS,
+} from '../../../web/src/lib/delegation-code-body';
 
 const delegation = {
   delegationHeader: { Authorization: 'Bearer signed-delegation' },
@@ -13,6 +22,18 @@ const delegation = {
   spaceError: 'TinyCloud account setup failed (tinycloud_bootstrap_failed): seed failed.',
   expirationTime: '2099-01-01T00:00:00.000Z',
 };
+function expectFieldParity(name: string, brokerFields: string[], webFields: readonly string[]) {
+  const brokerSorted = [...brokerFields].sort();
+  const webSorted = [...webFields].sort();
+  if (brokerSorted.length !== webSorted.length || brokerSorted.some((field, index) => field !== webSorted[index])) {
+    throw new Error(`web and broker public ${name} differ: broker=[${brokerSorted.join(', ')}], web=[${webSorted.join(', ')}]`);
+  }
+}
+
+test('web short-code allowlists match the broker allowlists', () => {
+  expectFieldParity('delegation fields', Object.keys(PUBLIC_DELEGATION_FIELDS), WEB_PUBLIC_DELEGATION_FIELDS);
+  expectFieldParity('JWK fields', Object.keys(PUBLIC_JWK_FIELDS), WEB_PUBLIC_JWK_FIELDS);
+});
 
 function fixture() {
   let now = Date.UTC(2026, 9, 5);
@@ -203,15 +224,8 @@ test('a delegate completion response can mint a code after excluding only non-pu
     permissions: [],
     requestedSpaces: ['tinycloud:pkh:eip155:1:0x123:default'],
   };
-  // Mirrors PUBLIC_DELEGATION_FIELDS in delegation-codes.ts; keep web-side omissions aligned.
-  const publicFields: Record<string, true> = {
-    delegationHeader: true, delegationCid: true, spaceId: true, ownerDid: true,
-    verificationMethod: true, jwk: true, address: true, chainId: true,
-    hostActivated: true, spaceReady: true, spaceError: true, spacePending: true,
-    primary: true, edited: true, reason: true, expirationTime: true, expiresAt: true,
-    expiry: true, siwe: true, signature: true, signedMessage: true, permissions: true,
-  };
-  const omitted = Object.keys(completion).filter((field) => !publicFields[field]);
+  const publicFields = new Set(Object.keys(PUBLIC_DELEGATION_FIELDS));
+  const omitted = Object.keys(completion).filter((field) => !publicFields.has(field));
   expect(omitted).toEqual(['requestedSpaces']);
 
   const { app } = fixture();
@@ -221,7 +235,7 @@ test('a delegate completion response can mint a code after excluding only non-pu
     body: JSON.stringify({ delegation: value }),
   });
   expect((await post(completion)).status).toBe(400);
-  const publicCompletion = Object.fromEntries(Object.entries(completion).filter(([field]) => publicFields[field]));
+  const publicCompletion = Object.fromEntries(Object.entries(completion).filter(([field]) => publicFields.has(field)));
   expect((await post(publicCompletion)).status).toBe(201);
 });
 test('rejects JWK extension members until the mint body contains only public members', async () => {

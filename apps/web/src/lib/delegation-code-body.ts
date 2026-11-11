@@ -1,10 +1,10 @@
-const PUBLIC_DELEGATION_FIELDS = [
+export const PUBLIC_DELEGATION_FIELDS = [
   'delegationHeader', 'delegationCid', 'spaceId', 'ownerDid', 'verificationMethod', 'jwk',
   'address', 'chainId', 'hostActivated', 'spaceReady', 'spaceError', 'spacePending',
   'primary', 'edited', 'reason', 'expirationTime', 'expiresAt', 'expiry', 'siwe',
   'signature', 'signedMessage', 'permissions',
 ] as const;
-const PUBLIC_JWK_FIELDS = ['kty', 'crv', 'x', 'kid'] as const;
+export const PUBLIC_JWK_FIELDS = ['kty', 'crv', 'x', 'kid'] as const;
 
 // Keep fields in sync with PUBLIC_DELEGATION_FIELDS and PUBLIC_JWK_FIELDS in apps/api/src/routes/delegation-codes.ts.
 export function publicDelegationForCode(payload: Record<string, unknown>): Record<string, unknown> {
