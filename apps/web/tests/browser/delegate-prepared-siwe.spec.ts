@@ -371,7 +371,7 @@ test('v2 permits choosing an account-matching key when no keyId was requested', 
   await expect(page.getByText('Choose an OpenKey signing key')).toBeVisible();
   await page.getByText('Original SIWE message', { exact: true }).click();
   await expectExactBlock(page, 'Original SIWE message', siwe);
-  await page.getByRole('button', { name: /Backup owner key/ }).click();
+  await page.getByRole('button', { name: 'Backup owner key', exact: true }).click();
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   expect(calls.find(call => call.path === '/api/delegate/authorize-sign-prepare')?.body).toMatchObject({ keyId: second.id });
@@ -405,7 +405,7 @@ test('the exact SIWE blocks show one line per line feed and scroll sideways at 3
   await expect(page.getByText('Choose an OpenKey signing key')).toBeVisible();
   await page.getByText('Original SIWE message', { exact: true }).click();
   await expectUnwrappedBlock(page, 'Original SIWE message', siwe.split('\n').length);
-  await page.getByRole('button', { name: /Backup owner key/ }).click();
+  await page.getByRole('button', { name: 'Backup owner key', exact: true }).click();
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await page.getByText('Exact candidate signedMessage', { exact: true }).click();
   await page.getByText('Original SIWE message', { exact: true }).click();
@@ -422,7 +422,7 @@ for (const width of [375, 1280]) {
     await expect(page.getByText('Choose an OpenKey signing key')).toBeVisible();
     await page.getByText('Original SIWE message', { exact: true }).click();
     await expectUnwrappedBlock(page, 'Original SIWE message', siwe.split('\n').length);
-    await page.getByRole('button', { name: /Backup owner key/ }).click();
+    await page.getByRole('button', { name: 'Backup owner key', exact: true }).click();
     await page.getByRole('button', { name: 'Preview signing message' }).click();
     await page.getByText('Exact candidate signedMessage', { exact: true }).click();
     await page.getByText('Original SIWE message', { exact: true }).click();

@@ -97,6 +97,7 @@ async function compileSvelte(libRelPath: string): Promise<string> {
 }
 const SigningApproval = (await import(await compileSvelte('components/signing/signing-approval.svelte'))).default;
 const PopupAdapter = (await import(await compileSvelte('components/signing/popup-signing-adapter.svelte'))).default;
+const IframeAdapter = (await import(await compileSvelte('components/signing/iframe-signing-adapter.svelte'))).default;
 
 const OWNER = '0x1111111111111111111111111111111111111111';
 const PEER = 'did:key:z6Mkj8ZndSavdU1RqiTepC1hj4jcKHC5qELaBUxBKrPteD25';
@@ -254,6 +255,25 @@ describe('host approval rows', () => {
     expect(mounted.approveCalls()).toBe(1);
   });
 
+  // TC-2310: Approve no longer asks whether the click came from the browser (a shared-note flow clicks it from a
+  // script). What stops a click that should not count is that the button is not armed.
+  test('no click, from the browser or a script, approves while the layout is not settled or the node is being checked', () => {
+    for (const extra of [{ layoutBlocked: true }, { peerRecognition: { state: 'checking' } }]) {
+      mounted = render(hostModel(), extra);
+      expect(mounted.approve.disabled).toBe(true);
+      // The browser ignores a click on a disabled button; a script that clears the attribute first reaches the handler,
+      // which still refuses because Approve is not armed.
+      mounted.approve.removeAttribute('disabled');
+      mounted.approve.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true }) as unknown as Event);
+      trustedClick(mounted.approve);
+      mounted.approve.click();
+      flushSync();
+      expect(mounted.approveCalls(), JSON.stringify(extra)).toBe(0);
+      mounted.destroy();
+      mounted = null;
+    }
+  });
+
   test('while the node is checked the status says so and Approve is really disabled', () => {
     mounted = render(hostModel(), { peerRecognition: { state: 'checking' } });
     expect(text(mounted.target.querySelector('.host-node-status'))).toBe('Checking the node…');
@@ -308,13 +328,13 @@ describe('framed Approve', () => {
     expect(cancelled).toBe(1);
   });
 
-  test('a click that is not from the browser is ignored, a trusted one goes through', () => {
+  test('a click made by a script on an armed Approve approves, and so does one from the browser', () => {
     mounted = render(hostModel(), { peerRecognition: { state: 'other' } });
     expect(mounted.approve.disabled).toBe(false);
     mounted.approve.click();
-    expect(mounted.approveCalls()).toBe(0);
-    trustedClick(mounted.approve);
     expect(mounted.approveCalls()).toBe(1);
+    trustedClick(mounted.approve);
+    expect(mounted.approveCalls()).toBe(2);
   });
 
   test('a node check in progress keeps Approve disabled while framed', () => {
@@ -337,7 +357,6 @@ describe('popup adapter looks the node up', () => {
     previewReady: false,
     approving: false,
     error: null,
-    requestPreview: async () => {},
     approveAndSign: async () => {},
     cancel: () => {},
     onSelectionEdited: () => {},
@@ -367,7 +386,7 @@ describe('popup adapter looks the node up', () => {
     flushSync();
   };
 
-  test('checking first, then the known marker; only the known origins are asked, for the encoded space', async () => {
+  test('checking first, then the known marker; only the default node is asked, for the encoded space', async () => {
     const urls: string[] = [];
     const gate = Promise.withResolvers<Response>();
     globalThis.fetch = (async (url: string) => {
@@ -381,10 +400,8 @@ describe('popup adapter looks the node up', () => {
     await settle();
     expect(text(mounted.target.querySelector('.host-node-status'))).toBe('Known TinyCloud node at https://node.tinycloud.xyz');
     expect(mounted.approve.disabled).toBe(false);
-    expect(urls.sort()).toEqual([
-      `https://node.tinycloud.xyz/peer/generate/${encodeURIComponent(SPACE)}`,
-      `https://tee.node.tinycloud.xyz/peer/generate/${encodeURIComponent(SPACE)}`,
-    ]);
+    // test-ruling: TC-2309 (default probe now asks one node): a request that names no node asks only node.tinycloud.xyz.
+    expect(urls).toEqual([`https://node.tinycloud.xyz/peer/generate/${encodeURIComponent(SPACE)}`]);
   });
 
   test('another key or a failing node gives the not-confirmed marker and Approve is enabled', async () => {
@@ -414,4 +431,59 @@ describe('popup adapter looks the node up', () => {
     await settle();
     expect(calls).toBe(0);
   });
+});
+
+// TC-2309: both widget adapters ask only the node the request names (the transport's `host`), never every known
+// node, and nothing at all for a host the page does not trust. They are kept in step by running the same cases on both.
+describe.each([['popup', PopupAdapter], ['iframe', IframeAdapter]])('%s adapter: which node is asked', (_name: string, Adapter: unknown) => {
+  const realFetch = globalThis.fetch;
+  let mounted: Mounted | null = null;
+  afterEach(() => {
+    mounted?.destroy();
+    mounted = null;
+    globalThis.fetch = realFetch;
+  });
+  const baseTransport = {
+    canUseAuthorizeSign: false, previewReady: false, approving: false, error: null,
+    approveAndSign: async () => {}, cancel: () => {}, onSelectionEdited: () => {}, invalidatePreview: () => {},
+  };
+  const settle = async () => {
+    for (let turn = 0; turn < 30; turn += 1) await Promise.resolve();
+    flushSync();
+  };
+  function mountWith(host: string | undefined): Mounted {
+    const created = win.document.createElement('div');
+    win.document.body.appendChild(created);
+    const target = created as unknown as HTMLElement;
+    const model = hostModel();
+    const instance = mount(Adapter, { target, props: { model, initialSelection: selectionOf(model), transport: { ...baseTransport, ...(host === undefined ? {} : { host }) } } });
+    flushSync();
+    return { target, approve: target.querySelector('button.approve') as HTMLButtonElement, approveCalls: () => 0, destroy: () => { unmount(instance); target.remove(); } };
+  }
+  const spyFetch = () => {
+    const urls: string[] = [];
+    globalThis.fetch = (async (url: string) => { urls.push(url); return new Response(PEER, { status: 200 }); }) as typeof fetch;
+    return urls;
+  };
+  const peerUrl = (origin: string) => `${origin}/peer/generate/${encodeURIComponent(SPACE)}`;
+
+  test('a named known node is the only one asked, and a match shows the known marker', async () => {
+    const urls = spyFetch();
+    mounted = mountWith('https://tee.node.tinycloud.xyz');
+    await settle();
+    expect(urls).toEqual([peerUrl('https://tee.node.tinycloud.xyz')]);
+    expect(text(mounted.target.querySelector('.host-node-status'))).toBe('Known TinyCloud node at https://tee.node.tinycloud.xyz');
+  });
+
+  test.each(['http://127.0.0.1:8000', 'https://node.example', 'https://node.tinycloud.xyz.evil.example'])(
+    'a request naming %s: no fetch, the not-confirmed marker at once, Approve enabled',
+    async (host: string) => {
+      const urls = spyFetch();
+      mounted = mountWith(host);
+      expect(text(mounted.target.querySelector('.host-node-status'))).toContain('Not confirmed as a known TinyCloud node');
+      await settle();
+      expect(urls).toEqual([]);
+      expect(mounted.approve.disabled).toBe(false);
+    },
+  );
 });

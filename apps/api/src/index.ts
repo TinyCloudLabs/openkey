@@ -1,6 +1,7 @@
 import './log'; // Keep first: patches dependency console output before any dependency module runs.
 import './install-process-handlers'; // Install fatal handlers before dependency startup.
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
 import { apiErrorHandler, log, logConfigInvalid, logError, requestLogger, type ApiEnv } from './log';
 import {
@@ -13,7 +14,7 @@ import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
 import { oauthAdminRouter } from './routes/oauth-admin';
 import { createResourceIntrospectRouter } from './routes/oauth-resource-introspect';
-import { oauthValidAudiences } from './oauth-config';
+import { MCP_AUDIENCES, oauthValidAudiences } from './oauth-config';
 import { createOauthBrandingRouter } from './routes/oauth-branding';
 import { passkeyProxyRouter } from './routes/passkey-proxy';
 import { secretsRouter } from './routes/secrets';
@@ -29,6 +30,7 @@ import { deviceAuthorizationRouter } from './routes/device-authorization';
 import { approvalRequestRouter } from './routes/approval-requests';
 import { createDelegationCodeRouter, createPrismaDelegationCodeStore } from './routes/delegation-codes';
 import { requireSession } from './middleware/session';
+import { requireAccountOriginForSensitiveAuth } from './middleware/bearer-origin';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 import { configuredSocialProviderIds } from './social-providers';
 import { API_EXPOSED_HEADERS, corsOriginPolicy } from './origin-policy';
@@ -37,6 +39,9 @@ import { readinessHandler } from './readiness';
 import { createProviderInterceptors } from './services/native-delegation/interceptors';
 import { createRevokeDenylist } from './services/revoked-access-token';
 import { createAccessTokenVerifier } from './services/access-token-verifier';
+import { createMcpUserinfoGuard } from './services/mcp-userinfo-guard';
+import { createLockedSubjectGuard } from './services/locked-subject-guard';
+import { createAppleWebhookHandler } from './services/apple-notifications';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { handlePar } from './services/native-delegation/par';
 import { createNativeDelegationConsentRouter } from './routes/native-delegation-consent';
@@ -89,6 +94,30 @@ app.use('*', protocolAwareCors(cors({
 // required by this Prisma client is present and checksum-verified.
 app.get('/health', readinessHandler(undefined, readBuildInfo));
 
+app.use('/api/auth/*', requireAccountOriginForSensitiveAuth);
+app.use('/api/auth/oauth2/get-clients', async (c, next) => {
+  await next();
+  if (c.res.status !== 200) return;
+
+  const response = c.res;
+  const clients = await response.clone().json() as Array<{ client_id?: unknown }>;
+  if (!Array.isArray(clients) || clients.length === 0) return;
+  const clientIds = clients.flatMap(({ client_id }) => typeof client_id === 'string' ? [client_id] : []);
+  if (clientIds.length === 0) return;
+
+  const organizationClients = await authPrisma.oauthClient.findMany({
+    where: { clientId: { in: clientIds }, organizationId: { not: null } },
+    select: { clientId: true },
+  });
+  if (organizationClients.length === 0) return;
+
+  const organizationClientIds = new Set(organizationClients.map(({ clientId }) => clientId));
+  const headers = new Headers(response.headers);
+  headers.delete('content-length');
+  c.res = new Response(JSON.stringify(clients.filter(({ client_id }) =>
+    typeof client_id !== 'string' || !organizationClientIds.has(client_id),
+  )), { status: response.status, statusText: response.statusText, headers });
+});
 // Analytics middleware - runs BEFORE auth handler, uses next() to capture response
 // POST /api/auth/oauth2/token → track token exchange + unique user
 app.use('/api/auth/oauth2/token', async (c, next) => {
@@ -193,6 +222,17 @@ app.route('/api/oauth/resource/introspect', createResourceIntrospectRouter({
 }));
 // A JWT access token revoked at the provider's /oauth2/revoke is recorded, so the status check
 // above answers inactive for it. Outside the interceptors: it acts on the final answer.
+// An MCP access token lasts 12 hours; the provider's /oauth2/userinfo would answer for it after the owner revoked it,
+// disconnected the app or signed out, so it gets the status check's tests first (TC-1366).
+app.use('/api/auth/oauth2/userinfo', createMcpUserinfoGuard({
+  database: authPrisma,
+  verify: createAccessTokenVerifier({ issuer: oauthIssuer, getJwks: readSigningKeys }),
+  mcpAudiences: MCP_AUDIENCES,
+}));
+// A locked user's access tokens are not active (R9, TC-1231): a JWT has no row
+// the lock filter in auth.ts can hide, so the provider's own answer is checked.
+app.use('/api/auth/oauth2/userinfo', createLockedSubjectGuard(authPrisma));
+app.use('/api/auth/oauth2/introspect', createLockedSubjectGuard(authPrisma));
 app.use('/api/auth/*', createRevokeDenylist({
   database: authPrisma,
   verify: createAccessTokenVerifier({ issuer: oauthIssuer, getJwks: readSigningKeys }),
@@ -216,6 +256,13 @@ app.use('/api/auth/*', createProviderInterceptors({
 app.on(['POST', 'GET'], '/api/auth/*', (c) => {
   return auth.handler(c.req.raw);
 });
+
+// Apple server-to-server notifications (TC-1231). Outside Better Auth's base
+// path; not found unless Apple sign-in and APPLE_WEBHOOK_AUDIENCE are set.
+app.post('/api/webhooks/apple', bodyLimit({
+  maxSize: 32 * 1024,
+  onError: (c) => c.json({ error: 'invalid_notification' }, 400),
+}), createAppleWebhookHandler({ database: authPrisma }));
 
 // Key management routes
 app.route('/api/keys', keysRouter);

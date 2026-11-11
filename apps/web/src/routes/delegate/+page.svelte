@@ -6,6 +6,17 @@
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
+  import { classifyDelegateError } from '$lib/delegate-error-classification';
+  import {
+    delegateFailureText,
+    delegateResponseFailureText,
+    deviceRelayFailureText,
+    DeviceRelayDeliveryError,
+    OwnerMessageError,
+    isTerminalApprovalFailure,
+    shortCodeFailureText,
+  } from '$lib/delegate-failure-text';
+  import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
@@ -13,6 +24,7 @@
   import PreparedHandoff from './PreparedHandoff.svelte';
   import OwnerRevocationHandoff from './OwnerRevocationHandoff.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
+  import { publicDelegationForCode } from '$lib/delegation-code-body';
   import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, deviceRequestTtlSeconds, loadVerifiedDeviceRequest } from '$lib/device-authorization';
   import DelegateLinkNotice from '$lib/components/delegate/delegate-link-notice.svelte';
   import {
@@ -24,14 +36,14 @@
     isCanonicalHttpsOrigin,
     withConfiguredEntries,
   } from '$lib/delegate-link-policy';
-  import { preparedMatchesSelection, reviewSelectionToActionKeys } from '$lib/delegate-review-selection';
+  import { preparedMatchesSelection, reviewSelectionToActionKeys, selectedServerActionIds } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
-  import { autoSelectKey } from '$lib/delegate-key-selection';
+  import { activeKeys, autoSelectKey } from '$lib/delegate-key-selection';
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
   import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
-  import { siweExpiration } from '$lib/approval-expiry';
+  import { requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -70,12 +82,49 @@
     actions: DelegatePermissionAction[];
   }
 
+  class DelegateResponseError extends Error {
+    readonly code: unknown;
+    readonly status: number;
+    constructor(message: string, code: unknown, status: number) {
+      super(message);
+      this.code = code;
+      this.status = status;
+    }
+  }
+  function delegateErrorClassification(cause: unknown, refreshAttempted = false) {
+    return cause instanceof DelegateResponseError
+      ? classifyDelegateError(cause.status, cause.code, refreshAttempted)
+      : 'error';
+  }
+
+  function delegateErrorMessage(cause: unknown) {
+    if (cause instanceof DeviceRelayDeliveryError) {
+      if (cause.status === 409 || cause.status === 410) {
+        return delegateResponseFailureText(cause.status, cause.code, {
+          permissionsEditable: reviewEditing,
+          expiryChangeable: expiryChangeControlVisible,
+        });
+      }
+      return deviceRelayFailureText(cause.status, cause.code);
+    }
+    if (cause instanceof DelegateResponseError) {
+      if (isTerminalApprovalFailure(cause.status, cause.code)) approveBlockedByFailure = true;
+      return delegateResponseFailureText(cause.status, cause.code, {
+        permissionsEditable: reviewEditing,
+        expiryChangeable: expiryChangeControlVisible,
+      });
+    }
+    return delegateFailureText(cause);
+  }
+
   const session = authClient.useSession();
 
   let keys = $state<EthereumKey[]>([]);
   let loading = $state(true);
   let selectedKey = $state<EthereumKey | null>(null);
   let error = $state('');
+  let requestExpired = $state(false);
+  let approveBlockedByFailure = $state(false);
   let keysLoaded = $state(false);
   let initialized = $state(false);
   let signingIn = $state(false);
@@ -83,6 +132,7 @@
   let done = $state(false);
   let pasteCode = $state('');
   let shortCode = $state('');
+  let shortCodeFailure = $state<{ status: number; code: unknown } | null>(null);
   let spaceSetup = $state<SpaceSetupNotice | null>(null);
   let spaceReadiness = $state<ReturnType<typeof spaceReadinessResult>>(null);
   let callbackFailed = $state(false);
@@ -133,9 +183,14 @@
   // disappear from the review UI. `reviewSelection` is the effective
   // subset the user picked; only that changes when the user narrows.
   let reviewModel = $state<CapabilityReviewModel | null>(null);
+  const expiredRequesterName = $derived(reviewModel?.requester.displayName?.trim() || '');
   let baselineSiweForReview = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
+  const expiryChangeControlVisible = $derived(
+    reviewModel?.protocol === 'tinycloud-siwe-recap' &&
+    requestedExpiryMs(reviewModel.immutable?.issuedAt, reviewModel.immutable?.expirationTime) !== null,
+  );
   const approvalRequestMode = $page.route.id === '/a/[id]';
   const approvalRequestId = approvalRequestMode ? $page.params.id || '' : '';
   const delegateReturnTo = $derived(approvalRequestMode ? $page.url.pathname : $page.url.pathname + $page.url.search + $page.url.hash);
@@ -152,6 +207,11 @@
   // Parse query params
   let approvalRequestLoading = $state(approvalRequestMode);
   let approvalRequestLoaded = $state(false);
+  // The owner declined this request (TC-2459): from the Decline button, or the link was declined before.
+  let declined = $state(false);
+  let declining = $state(false);
+  // The complete link, in memory only (the page scrubs it from the URL); Decline sends it in the body, never a URL.
+  let approvalReference = '';
   const preparedTransport = !approvalRequestMode && $page.url.searchParams.has('transportVersion');
   let preparedStorageError = $state(!approvalRequestMode && $page.url.searchParams.get('transportVersion') === 'storage-error');
   let dispatchReady = $state(false);
@@ -273,7 +333,7 @@
       expiryChoiceMs = previous.choice;
       expiryChosen = previous.chosen;
       expiryParam = previous.param;
-      error = e.message || 'Failed to change the expiry';
+      error = delegateErrorMessage(e);
     } finally {
       updatingPermissions = false;
     }
@@ -293,6 +353,7 @@
       // Will show error in UI
     }
   }
+  const incompleteLegacyRequest = $derived(!approvalRequestMode && !deviceTransactionId && !jwk);
 
   let relayPublicJwk: JsonWebKey | null = null;
   if (relayJwkB64 && !approvalRequestMode) {
@@ -429,7 +490,7 @@
     requestReason = normalizeReason(deviceRequestReason(record));
     expiryMaxMs = deviceRequestTtlSeconds(record) * 1000;
   })();
-  deviceRequestVerified.catch((cause: Error) => { error = cause.message; });
+  deviceRequestVerified.catch((cause: unknown) => { error = delegateErrorMessage(cause); });
 
   // The wallet the CLI requested: the one owner (chain and address) every
   // requested space and raw encryption network resolves to. Owners that
@@ -467,24 +528,59 @@
 
   async function loadApprovalRequest() {
     try {
-      if (location.search) throw new Error('Open the original approval link.');
-      const storageKey = `openkey.approval.${approvalRequestId}`;
-      const fragment = location.hash || sessionStorage.getItem(storageKey) || '';
-      if (!fragment) throw new Error('Open the complete approval link.');
-      // Keep the key in this tab, never in an auth return query or server log.
-      sessionStorage.setItem(storageKey, fragment);
+      let fragment = location.hash;
+      const hasQuery = !!location.search;
+      // Scrub even when storage is blocked or the reference is malformed.
       history.replaceState(history.state, '', location.pathname);
+      if (hasQuery || !/^[a-z2-7]{26}$/.test(approvalRequestId)) {
+        throw new OwnerMessageError('This approval link is malformed. Ask the requesting app or person for a new complete link, sent on its own line.');
+      }
+      const storageKey = `openkey.approval.${approvalRequestId}`;
+      try {
+        if (document.documentElement.dataset.approvalStorageError === '1') throw new Error();
+        fragment ||= sessionStorage.getItem(storageKey) || '';
+        if (fragment) sessionStorage.setItem(storageKey, fragment);
+      } catch {
+        throw new OwnerMessageError('This browser could not keep the approval link for sign-in. Open the original complete link in Safari or Chrome with site storage enabled, not a private chat preview.');
+      }
+      if (!fragment) {
+        throw new OwnerMessageError('This approval link is incomplete or belongs to another browser tab. Reopen the original complete link from the message, including everything after #. If it was cut off, ask for a new link sent on its own line.');
+      }
       const reference = location.pathname + fragment;
+      approvalReference = reference;
       const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/approval-requests/${approvalRequestId}/load`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'omit',
+        redirect: 'error',
+        cache: 'no-store',
+        referrerPolicy: 'no-referrer',
         body: JSON.stringify({ reference }),
       });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'This approval link is invalid.');
+      const result = await response.json().catch(() => null);
+      if (!response.ok) {
+        if (response.status === 410 || ['expired', 'expired_request'].includes(result?.code)) {
+          sessionStorage.removeItem(storageKey);
+          requestExpired = true;
+          return;
+        }
+        if (response.status === 404 || ['not_found', 'gone'].includes(result?.code)) {
+          throw new OwnerMessageError('This approval request is unavailable or has expired. Ask the requesting app or person for a new approval link.');
+        }
+        if (response.status >= 500) {
+          throw new OwnerMessageError('OpenKey could not load this request right now. Reopen the original complete link shortly. If it still fails, return to the requesting app or command.');
+        }
+        throw new OwnerMessageError('This approval link could not be verified. Do not edit it or approve a different request. Ask the requesting app or person for a new complete link sent on its own line.');
+      }
       if (result.approved) {
         done = true;
         step = 'done';
+      }
+      if (result.denied === true) {
+        // Older API responses carry no `denied`; they read as an open request, as before.
+        declined = true;
+        done = true;
+        sessionStorage.removeItem(storageKey);
       }
       const request = result.request;
       did = request.targetDid;
@@ -497,7 +593,7 @@
       expiryParam = `${request.suggestedLifetimeSeconds ?? request.grantLifetimeSeconds}s`;
       approvalRequestLoaded = true;
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not open this approval link.';
+      error = delegateErrorMessage(cause);
     } finally {
       approvalRequestLoading = false;
     }
@@ -567,7 +663,7 @@
 
   // Reactively load keys when session becomes available
   $effect(() => {
-    if (dispatchReady && (!approvalRequestMode || approvalRequestLoaded) && !preparedMode && !preparedTransport && !preparedStorageError && $session.data && !keysLoaded) {
+    if (dispatchReady && (!approvalRequestMode || approvalRequestLoaded) && !declined && !incompleteLegacyRequest && !preparedMode && !preparedTransport && !preparedStorageError && $session.data && !keysLoaded) {
       keysLoaded = true;
       loadKeys();
     }
@@ -577,20 +673,20 @@
     loading = true;
     try {
       const result = await api.listKeys();
-      keys = result.keys;
+      keys = activeKeys(result.keys);
     } catch (e: any) {
-      error = e.message;
+      error = delegateErrorMessage(e);
     } finally {
       loading = false;
     }
   }
 
-  // Auto-select the CLI-requested wallet, else the primary key, else the
-  // user's only key, once keys are loaded. Only runs on the initial
-  // 'select-key' step so revisiting the picker (Back, link-wallet round-trip)
+  // Auto-select the CLI-requested wallet, otherwise the user's only active
+  // key. With several keys the owner chooses, with the primary offered first.
+  // Only runs on the initial 'select-key' step so revisiting the picker
   // doesn't trap the user in an auto-advance loop.
   $effect(() => {
-    if (!dispatchReady || (approvalRequestMode && !approvalRequestLoaded) || preparedMode || preparedTransport || preparedStorageError || loading || preselectAttempted) return;
+    if (!dispatchReady || (approvalRequestMode && !approvalRequestLoaded) || incompleteLegacyRequest || done || preparedMode || preparedTransport || preparedStorageError || loading || preselectAttempted) return;
     if (step !== 'select-key') return;
     preselectAttempted = true;
     const match = autoSelectKey(keys, expectedAddress);
@@ -607,14 +703,14 @@
       loading = false;
       await onKeySelect(key);
     } catch (e: any) {
-      error = e.message;
+      error = delegateErrorMessage(e);
       loading = false;
     }
   }
 
   async function onKeySelect(key: EthereumKey) {
     if (!jwk) {
-      error = 'Missing delegation key. Return to the app or command that requested access and start again.';
+      error = 'This approval link is incomplete. Return to the requesting app or command for a new complete link, sent on its own line.';
       return;
     }
 
@@ -629,7 +725,7 @@
       editingPermissions = false;
       step = 'consent';
     } catch (e: any) {
-      error = e.message || 'Failed to prepare delegation';
+      error = delegateErrorMessage(e);
       selectedKey = null;
     } finally {
       preparing = false;
@@ -639,10 +735,10 @@
   async function prepareDelegation(key: EthereumKey, actionKeys?: string[]) {
     // Every signing path starts here: never prepare the default abilities
     // for a request whose permissions could not be read.
-    if (permissionsParamError) throw new Error(permissionsParamError);
-    if (approvalRequestMode && !approvalRequestLoaded) throw new Error('Open the approval link again.');
-    if (linkPolicyError) throw new Error(linkPolicyError);
-    if (requestOwnerError) throw new Error(requestOwnerError);
+    if (permissionsParamError) throw new OwnerMessageError(permissionsParamError);
+    if (approvalRequestMode && !approvalRequestLoaded) throw new OwnerMessageError('Open the approval link again.');
+    if (linkPolicyError) throw new OwnerMessageError(linkPolicyError);
+    if (requestOwnerError) throw new OwnerMessageError(requestOwnerError);
     const API_URL = import.meta.env.VITE_API_URL || '';
     const body: Record<string, unknown> = {
       keyId: key.id,
@@ -683,7 +779,7 @@
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(body.error || `HTTP ${res.status}`);
+      throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status);
     }
 
     return res.json();
@@ -693,8 +789,8 @@
     const permissions = Array.isArray(data.permissions)
       ? (data.permissions as DelegatePermission[])
       : [];
-
     preparedData = data.prepared;
+
     siweMessage = data.prepared?.siwe || '';
     spaceSetup = parseSpaceSetup(data.spaceSetup);
     permissionOptions = permissions;
@@ -761,6 +857,7 @@
       // reactivity picks up the change.
       reviewModel = { ...reviewModel, rawMessage: siweMessage, expiry: siweExpiration(siweMessage) ?? reviewModel.expiry };
     }
+    approveBlockedByFailure = false;
   }
 
   function resetDelegationState() {
@@ -799,6 +896,44 @@
     resetDelegationState();
   }
 
+  const DECLINE_FAILED = 'Could not decline right now. Nothing was changed. Try again.';
+  async function declineRequest() {
+    if (declining || declined || !approvalRequestMode || !approvalReference) return;
+    declining = true;
+    error = '';
+    try {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/approval-requests/${approvalRequestId}/deny`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        redirect: 'error',
+        cache: 'no-store',
+        referrerPolicy: 'no-referrer',
+        body: JSON.stringify({ reference: approvalReference }),
+      });
+      if (response.ok) {
+        sessionStorage.removeItem(`openkey.approval.${approvalRequestId}`);
+        approvalReference = '';
+        declined = true;
+        done = true;
+      } else if (response.status === 409) {
+        error = 'This request was already approved, so it cannot be declined.';
+      } else if (response.status === 410) {
+        // Same end as /load answering expired: the request is gone, so the page shows the expired message alone.
+        sessionStorage.removeItem(`openkey.approval.${approvalRequestId}`);
+        approvalReference = '';
+        approvalRequestLoaded = false;
+        error = 'This approval request has expired. Return to the requesting app or command and create a new approval link.';
+      } else {
+        error = DECLINE_FAILED;
+      }
+    } catch {
+      error = DECLINE_FAILED;
+    } finally {
+      declining = false;
+    }
+  }
+
   function selectWallet(wallet: EIP6963ProviderDetail) {
     selectedWallet = wallet;
     error = '';
@@ -822,7 +957,7 @@
     try {
       const accounts: string[] = await provider.request({ method: 'eth_requestAccounts' });
       if (!accounts || accounts.length === 0) {
-        throw new Error('No accounts returned from wallet');
+        throw new OwnerMessageError('No accounts returned from wallet');
       }
       const account = accounts[0];
 
@@ -846,7 +981,7 @@
       if (e.code === 4001) {
         error = 'Wallet connection was rejected.';
       } else {
-        error = e.message || 'Failed to link wallet';
+        error = delegateErrorMessage(e);
       }
     } finally {
       linking = false;
@@ -862,6 +997,7 @@
   }
 
   function approveDelegate() {
+    if (approveBlockedByFailure) return;
     if (deviceTransactionId && !deviceAcknowledged) {
       error = 'Confirm that you started this request yourself, on a device you control.';
       return;
@@ -979,7 +1115,7 @@
       applyPreparedDelegation(data);
       editingPermissions = true;
     } catch (e: any) {
-      error = e.message || 'Failed to update permissions';
+      error = delegateErrorMessage(e);
     } finally {
       updatingPermissions = false;
     }
@@ -999,15 +1135,49 @@
       applyPreparedDelegation(data);
       editingPermissions = false;
     } catch (e: any) {
-      error = e.message || 'Failed to reset permissions';
+      error = delegateErrorMessage(e);
     } finally {
       updatingPermissions = false;
     }
   }
 
-  async function doManagedDelegate() {
+  async function refreshAuthorizationContext(key: EthereumKey, actions: string[]) {
+    const data = await prepareDelegation(key, actions);
+    const expected = new Set(actions);
+    if (!reviewModel || !Array.isArray(data.selectedActionKeys) ||
+      data.selectedActionKeys.length !== expected.size ||
+      new Set(data.selectedActionKeys).size !== expected.size ||
+      !data.selectedActionKeys.every((action: unknown) => typeof action === 'string' && expected.has(action)) ||
+      typeof data.authorizationContext?.token !== 'string' || !data.authorizationContext.token ||
+      typeof data.prepared?.siwe !== 'string' || !data.prepared.siwe.trim() ||
+      !Array.isArray(data.permissions) ||
+      !preparedMatchesSelection(reviewModel, data.permissions, reviewSelection, data.selectedActionKeys)) {
+      throw new OwnerMessageError('The request could not be prepared with the approved selection.');
+    }
+    const refreshed = parseCapabilityReview({
+      message: data.prepared.siwe,
+      signer: reviewModel.signer,
+      requester: reviewModel.requester,
+      reason: reviewModel.reason,
+      metadataTrust: reviewModel.metadataTrust,
+      editable: true,
+    });
+    const signedActions = selectedServerActionIds(refreshed,
+      new Set(refreshed.permissions.flatMap(grant => grant.actions.map(action => action.id))));
+    if (refreshed.protocol !== 'tinycloud-siwe-recap' || !refreshed.immutable ||
+      refreshed.parseWarnings.some(warning => warning.code !== 'unknown-service') ||
+      refreshed.immutable.address.toLowerCase() !== key.address.toLowerCase() ||
+      signedActions.length !== expected.size || !signedActions.every(action => expected.has(action))) {
+      throw new OwnerMessageError('The refreshed message does not match the approved selection.');
+    }
+    applyPreparedDelegation(data);
+  }
+
+  async function doManagedDelegate(refreshAttempted = false) {
     delegating = true;
     error = '';
+    const key = selectedKey;
+    const actions = [...selectedActionKeys];
 
     try {
       // Blocker 1: the widget MUST forward the prepared SIWE bytes and the
@@ -1019,12 +1189,10 @@
       // (see step === 'consent'), so both fields MUST be present. Fail
       // closed rather than silently degrading to the legacy regenerate path.
       if (!preparedData) {
-        throw new Error('No prepared session data. Please go back and try again.');
+        throw new OwnerMessageError('No prepared session data. Please go back and try again.');
       }
       if (!authorizationContextToken) {
-        throw new Error(
-          'Missing authorization context token from /prepare. Please restart the delegation.',
-        );
+        throw new OwnerMessageError('Missing authorization context token from /prepare. Please restart the delegation.');
       }
 
       const API_URL = import.meta.env.VITE_API_URL || '';
@@ -1070,7 +1238,7 @@
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(body.error || `HTTP ${res.status}`);
+        throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status);
       }
 
       const data = await res.json();
@@ -1078,14 +1246,33 @@
         await activateWithHost(host, data.delegationHeader);
       }
       await finishDelegate(data);
-    } catch (e: any) {
-      error = e.message || 'Delegation failed';
+    } catch (cause) {
+      const classification = delegateErrorClassification(cause, refreshAttempted);
+      if (classification === 'panel-after-failed-refresh') {
+        requestExpired = true;
+      } else if (classification === 'refresh-once') {
+        if (!key) {
+          error = delegateErrorMessage(cause);
+          return;
+        }
+        try {
+          await refreshAuthorizationContext(key, actions);
+        } catch (refreshCause) {
+          const refreshClassification = delegateErrorClassification(refreshCause, true);
+          if (refreshClassification === 'panel-after-failed-refresh') requestExpired = true;
+          else error = delegateErrorMessage(refreshCause);
+          return;
+        }
+        await doManagedDelegate(true);
+      } else {
+        error = delegateErrorMessage(cause);
+      }
     } finally {
       delegating = false;
     }
   }
 
-  async function doExternalDelegate() {
+  async function doExternalDelegate(refreshAttempted = false) {
     if (!preparedData) {
       error = 'No prepared session data. Please go back and try again.';
       return;
@@ -1101,6 +1288,7 @@
     const contextToken = authorizationContextToken;
     const selectedActionIds = [...selectedActionKeys];
     const edited = permissionsEdited;
+    const key = selectedKey;
 
     delegating = true;
     error = '';
@@ -1108,7 +1296,7 @@
     try {
       const provider = getSigningProvider();
       if (!provider) {
-        throw new Error('No wallet detected. Please install a browser wallet to sign with external keys.');
+        throw new OwnerMessageError('No wallet detected. Please install a browser wallet to sign with external keys.');
       }
 
       // Try each wallet to find the matching account
@@ -1158,7 +1346,7 @@
       }
 
       if (!matchingAccount) {
-        throw new Error(
+        throw new OwnerMessageError(
           `None of your connected wallets have account ${selectedKey!.address}. ` +
           `Please connect the wallet that holds this account and try again.`
         );
@@ -1202,7 +1390,7 @@
 
       if (!compRes.ok) {
         const body = await compRes.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(body.error || `HTTP ${compRes.status}`);
+        throw new DelegateResponseError(apiBusyOrEndedMessage(compRes.status) ?? (body.error || `HTTP ${compRes.status}`), body.code, compRes.status);
       }
 
       const data = await compRes.json();
@@ -1210,11 +1398,29 @@
         await activateWithHost(host, data.delegationHeader);
       }
       await finishDelegate(data);
-    } catch (e: any) {
-      if (e.code === 4001) {
+    } catch (cause) {
+      const classification = delegateErrorClassification(cause, refreshAttempted);
+      if (classification === 'panel-after-failed-refresh') {
+        requestExpired = true;
+      } else if (classification === 'refresh-once') {
+        if (!key) {
+          error = delegateErrorMessage(cause);
+          return;
+        }
+        try {
+          await refreshAuthorizationContext(key, selectedActionIds);
+        } catch (refreshCause) {
+          const refreshClassification = delegateErrorClassification(refreshCause, true);
+          if (refreshClassification === 'panel-after-failed-refresh') requestExpired = true;
+          else error = delegateErrorMessage(refreshCause);
+          return;
+        }
+        // A fresh prepare changes the signed bytes; obtain a fresh wallet signature.
+        await doExternalDelegate(true);
+      } else if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 4001) {
         error = 'Signature was rejected by wallet.';
       } else {
-        error = e.message || 'Delegation failed';
+        error = delegateErrorMessage(cause);
       }
     } finally {
       delegating = false;
@@ -1236,7 +1442,7 @@
     if (deviceTransactionId) {
       const API_URL = import.meta.env.VITE_API_URL || '';
       const delegationExpiresAt = payload.expiresAt ?? payload.expirationTime ?? payload.expiry;
-      if (typeof delegationExpiresAt !== 'string') throw new Error('The approved delegation has no expiry binding.');
+      if (typeof delegationExpiresAt !== 'string') throw new OwnerMessageError('The approved delegation has no expiry binding.');
       // The owner may have unchecked capabilities: bind and relay exactly
       // what the signed delegation grants, in the request's manifest form.
       const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions, {
@@ -1244,25 +1450,31 @@
         chainId: payload.chainId,
       });
       const relay = await encryptDeviceRelay({ ...payload, permissions: approvedPermissions });
-      const response = await fetch(`${API_URL}/api/device-authorizations/${encodeURIComponent(deviceTransactionId)}/approve`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          relay,
-          binding: {
-            transactionId: deviceTransactionId,
-            sessionDid: did,
-            nodeOrigin: host,
-            shareOrigin: deviceShareOrigin,
-            permissions: approvedPermissions,
-            delegationExpiresAt,
-          },
-        }),
-      });
+      let response: Response;
+      try {
+        response = await fetch(`${API_URL}/api/device-authorizations/${encodeURIComponent(deviceTransactionId)}/approve`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            relay,
+            binding: {
+              transactionId: deviceTransactionId,
+              sessionDid: did,
+              nodeOrigin: host,
+              shareOrigin: deviceShareOrigin,
+              permissions: approvedPermissions,
+              delegationExpiresAt,
+            },
+          }),
+        });
+      } catch {
+        throw new DeviceRelayDeliveryError(null, undefined);
+      }
       if (!response.ok) {
-        const body = await response.json().catch(() => ({ errorDescription: 'Could not deliver the approved delegation to the CLI.' }));
-        throw new Error(body.errorDescription || 'Could not deliver the approved delegation to the CLI.');
+        const body: unknown = await response.json().catch(() => null);
+        const code = typeof body === 'object' && body !== null && 'code' in body ? body.code : undefined;
+        throw new DeviceRelayDeliveryError(response.status, code);
       }
       done = true;
       step = 'done';
@@ -1301,9 +1513,13 @@
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ delegation: payload }),
+        body: JSON.stringify({ delegation: publicDelegationForCode(payload) }),
       });
-      if (response.ok) {
+      if (!response.ok) {
+        const body: unknown = await response.json().catch(() => null);
+        const code = typeof body === 'object' && body !== null && 'code' in body ? body.code : undefined;
+        shortCodeFailure = { status: response.status, code };
+      } else {
         const result = await response.json();
         const remainingMs = typeof result.expiresAt === 'string'
           ? remainingFromServerClock(result.expiresAt, response.headers.get('date'))
@@ -1330,7 +1546,7 @@
         error = authErrorMessage(result.error, 'Passkey sign-in failed');
       }
     } catch (e: any) {
-      error = e.message || 'Passkey sign-in failed';
+      error = delegateErrorMessage(e);
     } finally {
       signingIn = false;
     }
@@ -1370,9 +1586,29 @@
   }
 </script>
 
-{#if approvalRequestMode && !approvalRequestLoaded}
+{#if requestExpired}
+  <section role="alert" class="expired-request bg-[#fafafa] flex flex-col items-center px-4 py-8">
+    <div class="w-full max-w-sm flex flex-col items-center gap-6">
+      <div aria-hidden="true" class="w-12 h-12 rounded-xl bg-gradient-to-br from-surface-800 to-surface-900 flex items-center justify-center shadow-sm">
+        <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
+        </svg>
+      </div>
+      <Card class="w-full p-6">
+        <div class="text-center py-4">
+          <h1 class="text-[17px] font-semibold text-surface-900 mb-2">{expiredRequesterName ? `${expiredRequesterName}'s request expired` : 'Request expired'}</h1>
+          <p class="text-[15px] leading-6 text-[#71717a]">Ask your agent for a new link.</p>
+        </div>
+      </Card>
+    </div>
+  </section>
+{:else if approvalRequestMode && !approvalRequestLoaded}
   <div role={error ? 'alert' : 'status'} class="min-h-screen flex items-center justify-center px-4 text-center">
     {error || (approvalRequestLoading ? 'Checking request…' : 'This approval link is unavailable.')}
+  </div>
+{:else if declined}
+  <div role="status" class="min-h-screen flex items-center justify-center px-4 text-center">
+    Declined. You can close this page.
   </div>
 {:else if !dispatchReady && !preparedTransport}
   <div role="status" class="min-h-screen flex items-center justify-center">Loading delegation request…</div>
@@ -1386,6 +1622,14 @@
   {/if}
 {:else if preparedTransport}
   <div role="alert" class="min-h-screen flex items-center justify-center">Unsupported delegate transport version. Restart the CLI command.</div>
+{:else if incompleteLegacyRequest}
+  <div role="alert" class="min-h-screen flex items-center justify-center px-4 text-center">
+    <div class="max-w-sm space-y-3">
+      <h1 class="text-lg font-semibold">Incomplete approval link</h1>
+      <p>Return to the app or command that requested access and ask for a new complete link, sent on its own line.</p>
+      <p>For TinyCloud CLI, use version 1.5.0 or later and request approval without --paste to get a short link. Open the original link in your browser rather than copying part of it from a chat preview.</p>
+    </div>
+  </div>
 {:else}
 <div class="min-h-screen bg-[#fafafa] flex flex-col items-center justify-center px-4 py-8">
   <div class="w-full max-w-sm flex flex-col items-center gap-6">
@@ -1440,7 +1684,7 @@
                 aria-label="Copy short code"
               >{copied ? 'Copied' : 'Copy code'}</button>
             {:else}
-              <p class="text-surface-500 text-sm mb-3">Short code unavailable. Use the full delegation code instead.</p>
+              <p class="text-surface-500 text-sm mb-3">{shortCodeFailureText(shortCodeFailure?.status, shortCodeFailure?.code)}</p>
             {/if}
             <p class="w-full rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900 mt-4" role="note">
               Only paste this code into a terminal you started yourself.
@@ -1665,13 +1909,16 @@
               model={reviewModel}
               initialSelection={reviewSelection}
               context={cliContext}
+              onEditingStateChange={(editing) => { reviewEditing = editing; }}
               showSigner={keys.length > 1}
               transport={{
                 approving: delegating || updatingPermissions,
                 error,
                 approveBlockedReason,
+                approveBlockedByFailure,
                 approveDelegate,
                 goBack,
+                ...(approvalRequestMode ? { decline: declineRequest, declining } : {}),
                 updateSelection: (next) => {
                   reviewSelection = next;
                   const nextServerKeys = mapReviewSelectionToActionKeys(next);
@@ -1742,7 +1989,7 @@
               <Button variant="secondary" onclick={goBack} disabled={delegating} class="flex-1 rounded-xl">
                 Back
               </Button>
-              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch) || (hostNeedsAcknowledgment && !hostAcknowledged)} class="flex-1 rounded-xl">
+              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || approveBlockedByFailure || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch) || (hostNeedsAcknowledgment && !hostAcknowledged)} class="flex-1 rounded-xl">
                 {#if delegating}
                   Signing...
                 {:else if updatingPermissions}
@@ -1761,8 +2008,10 @@
         {#if showScrollToApprove}
           <button
             type="button"
+            data-testid="scroll-to-approve"
+            aria-label="Scroll to approve"
             onclick={scrollToApprove}
-            class="fixed bottom-5 left-1/2 z-40 inline-flex -translate-x-1/2 items-center gap-2 rounded-full bg-surface-900 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-surface-900/15 transition-all hover:bg-surface-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-surface-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white"
+            class="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-[max(1rem,env(safe-area-inset-right))] z-40 inline-flex items-center gap-1.5 rounded-full bg-surface-900 px-3 py-2 text-xs font-medium text-white shadow-lg shadow-surface-900/15 transition-all hover:bg-surface-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-surface-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white"
           >
             <span>Scroll to approve</span>
             <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -1861,3 +2110,11 @@
   </div>
 </div>
 {/if}
+
+<style>
+  @media (max-width: 480px) {
+    .expired-request {
+      padding-top: 1rem;
+    }
+  }
+</style>

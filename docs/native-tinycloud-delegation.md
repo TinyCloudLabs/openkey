@@ -157,15 +157,31 @@ can set it, and the request can never exceed it.
 | `tinycloudHost` | Must be in `TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS` (`tinycloud-bootstrap.ts`). This is the only node the delegation is activated on and the only host a hosting signature can name. Requests cannot supply a host. |
 | `kv.paths` | Paths under `<appId>/`, using the device-flow path grammar (`[A-Za-z0-9._~@+=,:-]` segments; no `.` or `..` segments; `secrets` and `vault` roots refused). A trailing `/` makes it a prefix grant. |
 | `kv.actions` | A subset of `get`, `put`, `list`, `del`, `metadata`, meaning `tinycloud.kv/<action>`. |
+| `kv.root` | Optional, only `true`. Also admits the whole applications-space KV (path `""`) with `kv.actions`. TinyCloud Home's web sign-in grants it, so its native client does too (TC-2720). |
 | `sql` | `null`, or an object. Validates under the same rules as `kv`: databases confined to `<appId>/`. SQL delegates to the TinyCloud node exactly like KV — isolating databases by full path is the node's job. |
 | `sql.databases` | Exact database identities `<appId>/<name>`, with exactly one segment after the `appId` and no trailing `/`. |
+| `sql.prefixes` | Optional. Database prefixes `<appId>/<name>/` (one segment, trailing `/`): a request path equal to or under one is admitted. |
+| `sql.foreignDatabases` | Optional. Exact databases in another app's folder, `<otherAppId>/<name>`, each named explicitly; never the client's own `appId`, a `secrets` or `vault` root, or a prefix. |
 | `sql.actions` | A subset of `read`, `write`, `schema`, meaning `tinycloud.sql/<action>`. |
+| `hooks` | Optional. `{ "paths": [...], "actions": ["subscribe"] }`. Every path is `sql/<x>` where `<x>` is already in `sql.databases`, `sql.prefixes` or `sql.foreignDatabases`; `subscribe` is the only action. |
 | `maxDelegationTtlSeconds` | 300–86400, default 3600. The lifetime of each signed delegation. |
 | `grantLifetimeSeconds` | 300–2592000, default 2592000 (30 days). The absolute lifetime of a grant, after which a browser sign-in is required. |
 | `siweDomain` | Optional, default `openkey.so`. The SIWE `domain`. |
 
-Exo's ceiling is the one above: the applications-space entries of its
-manifest, without secrets or encryption.
+The example above is the original Exo ceiling. Since TC-2720 the TinyCloud
+Home client (`ok_e1d13d0b220379f37a553aa0391d28a4`) has the applications-space
+entries of Home's served manifest, matching its web sign-in: KV `threads/`,
+`connectors/`, `exo/v1/requests/`, `exo/v1/jobs/` and the whole-space KV
+(`kv.root`); SQL `threads`, `canvas`, `connectors`, `home_feed`, `details`,
+`summaries`, `transcripts`, the `feed/` prefix and the catalog databases
+`xyz.tinycloud.sample.healthlog/healthlog` and
+`xyz.tinycloud.sample.recipes/recipes`; and hook subscriptions on
+`sql/xyz.tinycloud.tinychat/feed/`, `.../home_feed` and `.../threads`. It
+never covers secrets, encryption or `tinycloud.space`.
+
+To replace an existing client's ceiling, run `register-oauth-client.yml` with
+`client_id` and `tinycloud_native_delegation`; the run log prints the ceiling
+before and after.
 
 ## Permissions and the signed session SIWE
 
@@ -177,14 +193,18 @@ fully-qualified abilities:
 ```
 
 - `space` is always `applications`; any other space is refused.
-- `service` is `tinycloud.kv`, `tinycloud.sql` or `tinycloud.capabilities`.
+- `service` is `tinycloud.kv`, `tinycloud.sql`, `tinycloud.hooks` or `tinycloud.capabilities`.
 - Every request includes
   `{"service":"tinycloud.capabilities","space":"applications","path":"","actions":["tinycloud.capabilities/read"]}`.
   The user cannot remove it.
 - A KV entry's path must equal or lie under one of the ceiling's `kv.paths`,
-  and its actions must be in `kv.actions`.
-- A SQL entry's path must equal one of the ceiling's `sql.databases`, and its
+  or be `""` when the ceiling has `kv.root`, and its actions must be in
+  `kv.actions`.
+- A SQL entry's path must equal one of the ceiling's `sql.databases` or
+  `sql.foreignDatabases`, or lie under one of its `sql.prefixes`, and its
   actions must be in `sql.actions`.
+- A hooks entry's path must equal one of the ceiling's `hooks.paths`, and its
+  only action is `tinycloud.hooks/subscribe`.
 - No two entries for the same service may overlap.
 
 OpenKey signs exactly one message: the **session SIWE** (EIP-4361 with an
@@ -226,7 +246,7 @@ No cookies or credentials are sent. Fields:
 | `scope` | yes | Space-separated. Must contain `tinycloud:delegation` and `offline_access`, and may add `openid`, `email` and `keys`. |
 | `authorization_details` | yes | A JSON array holding exactly one `tinycloud_delegation` object (below), encoded as the field's string value. |
 | `login_hint` | no | Optional email UX hint. Trimmed, at most 254 characters, no whitespace, exactly one `@` with non-empty sides; OpenKey lowercases it. May be used only with `login_method=email` or without a method. |
-| `login_method` | no | `email`, `passkey` or `google`; selects the initial sign-in UX only. |
+| `login_method` | no | `email`, `passkey`, `google` or `apple`; selects the initial sign-in UX only. `google` and `apple` take effect only when that provider is listed by `GET /api/auth/providers`. |
 
 Every form key may appear at most once; a duplicated key fails the whole
 request. Any other field, including any host field, is refused. Hints never
@@ -589,6 +609,13 @@ SIWE, and it is limited as follows:
   - If activation is `skipped`, sign the approved `hostSiwe` bytes exactly
     once (recording `hostSignedAt`), submit the hosting delegation, and
     activate again. `hosting` is then `created`, or `failed` if that fails.
+- **Stale cache:** a cached `complete` row means prepare plans no hosting. If
+  the approval's activation then lists the space as `skipped` and no plan was
+  shown, the host SIWE is never signed. Approve marks the bootstrap row
+  not-complete, returns the request to `RESOLVED` and answers 409
+  `preparation_superseded`; the consent page prepares again, and that prepare
+  carries a hosting plan. Because the row is no longer `complete`, the second
+  approval is never refused this way.
 - **Freshness:** if the node's staged `peerId` can expire before approval,
   prepare refreshes a plan older than the observed lifetime, and approve
   returns 409 `preparation_superseded`.
@@ -791,6 +818,24 @@ client_id=exo-native&refresh_token=<current refresh token>[&siwe_nonce=<nonce>][
 - `siwe_nonce` is sent **only** as a top-level form field and follows the PAR
   rules (`[A-Za-z0-9]{8,64}`). If absent, OpenKey generates one.
 - Duplicate form keys are refused.
+
+Operators can set `OPENKEY_NATIVE_RENEW_DISABLED=true` (case-insensitive) or
+`1` to refuse syntactically valid renewal requests with HTTP 400
+`{"error":"consent_required"}` before proof verification, key unsealing, signing,
+token rotation, grant writes, or decision logging. The environment is read per
+request; changing it requires recreating the API container with the new value.
+Unset, empty, `false`, `0`, or any other value leaves renewals enabled. Native
+revoke remains available. Provider `/api/auth/oauth2/token` refresh handling
+is independent. In the TinyChat path, the SDK treats `consent_required` as
+terminal and signs out, which revokes the delegation grant; turning the switch
+off later does not restore that grant. The owner must approve a new
+authorization.
+
+`GET /api/internal/metrics/native-renewals` uses the `INTERNAL_METRICS_TOKEN`
+bearer and reports successful renewal counts per public `clientId` for 24 hours
+and 7 days. It reads allowed `native_renew` and `native_renew_recovered`
+decisions; `lastRenewalAt` is rounded down to the hour. Response contains no
+user, grant, or token identifiers. Refusals are not counted.
 
 Processing:
 
@@ -1189,7 +1234,13 @@ before the global CORS middleware, and the global middleware skips them:
 /api/auth/oauth2/par
 /api/auth/oauth2/token
 /api/auth/oauth2/tinycloud/*
+/api/auth/providers
 ```
+
+`GET /api/auth/providers` lists the configured social providers (for example
+`{"providers":["google","apple"]}`), so a native app offers a Google or Apple
+button only when OpenKey can complete that sign-in. OpenKey's own web app reads
+it without credentials too.
 
 Policy: `cors({ origin: '*', credentials: false, allowMethods: ['GET', 'POST',
 'OPTIONS'], allowHeaders: ['Content-Type', 'OpenKey-Session-Proof'],

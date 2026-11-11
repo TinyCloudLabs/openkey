@@ -1,5 +1,6 @@
 // Account management routes
 import { Hono } from 'hono';
+import { symmetricDecrypt } from 'better-auth/crypto';
 import { createPrismaClient } from '@openkey/db';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { parseAutoSignPreferencePatch } from './account-preferences';
@@ -9,10 +10,21 @@ import {
   changeTinyCloudManageKeyMode,
   controlMutationError,
 } from '../services/tinycloud-manage-key-control';
-import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
-import { requireFreshPasskey } from '../services/passkey-freshness';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
+import { ACCOUNT_PASSKEY_STEP_UP_REQUIRED, requireFreshPasskey } from '../services/passkey-freshness';
+import { createPasskeyStepUpChallenge, verifyPasskeyStepUp } from '../services/passkey-enrolment';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
+import {
+  consumeDeleteStepUp,
+  hasFreshDeleteStepUp,
+  parseStepUpPurpose,
+  sendAccountStepUpCode,
+  verifyAccountStepUpCode,
+} from '../services/email-otp-step-up';
+import { revokeAppleToken } from '../services/social-confirmation';
+import { revokeStoredAppleTokens } from '../services/apple-revocation';
+import { appleRelayEmailUndeliverable } from '../services/apple-notifications';
 
 const prisma = createPrismaClient();
 
@@ -20,12 +32,162 @@ export const accountRouter = new Hono<SessionContext>();
 
 // All routes require authentication. A bearer session token is accepted only
 // from an OpenKey web origin (TC-688).
-accountRouter.use('*', requireOpenKeyOriginForBearer);
+accountRouter.use('*', requireAccountOriginForBearer);
 accountRouter.use('*', requireSession);
 
-// Account deletion needs a passkey verification on this session within the
-// last five minutes (TC-689).
+// Account deletion needs a fresh step-up on this session within the last five
+// minutes: a verification by a passkey that counts for step-up when the user
+// has one (TC-689, TC-1198), else a deletion-purpose email code (TC-1231,
+// plan TC-1188 D6).
 const ACCOUNT_DELETE_PASSKEY_MAX_AGE_MS = 5 * 60 * 1000;
+
+// The same relying party Better Auth's passkey plugin verifies against.
+const RELYING_PARTY = { rpID: process.env.WEBAUTHN_RP_ID!, origin: process.env.WEBAUTHN_ORIGIN! };
+
+accountRouter.post('/step-up/email-otp/send', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { purpose?: unknown } | null;
+  const purpose = parseStepUpPurpose(body?.purpose);
+  if (!purpose) return c.json({ error: 'Unknown verification purpose' }, 400);
+  const userId = c.get('user').id;
+  // A mailbox never stands in for a passkey that counts for step-up: such a
+  // user deletes with that passkey (D6), and an email code only removes a
+  // passkey that does not count (TC-1198).
+  if (purpose === 'delete_account' && await prisma.passkey.count({ where: { userId, countsForStepUp: true } }) > 0) {
+    return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
+  }
+  if (purpose === 'passkey_remove' && await prisma.passkey.count({ where: { userId, countsForStepUp: false } }) === 0) {
+    return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
+  }
+  const result = await sendAccountStepUpCode(prisma, c.get('session').id, c.get('user').email, purpose);
+  if (result === 'unavailable') return c.json({ error: 'Email delivery unavailable' }, 503);
+  return c.json({ status: true });
+});
+
+accountRouter.post('/step-up/email-otp/verify', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { code?: unknown; purpose?: unknown } | null;
+  const purpose = parseStepUpPurpose(body?.purpose);
+  if (!purpose) return c.json({ error: 'Unknown verification purpose' }, 400);
+  const valid = await verifyAccountStepUpCode(prisma, c.get('session').id, c.get('user').email, body?.code, purpose);
+  if (!valid) return c.json({ error: 'Invalid or expired account verification code' }, 400);
+  return c.json({ status: true });
+});
+
+// Passkey step-up on the current session (TC-1198). Better Auth's passkey
+// sign-in creates a new session; this verifies an assertion by one of the
+// user's passkeys that counts for step-up and stamps this session instead.
+accountRouter.post('/step-up/passkey/options', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const challenge = await createPasskeyStepUpChallenge(prisma, c.get('session').id, c.get('user').id, RELYING_PARTY);
+  if (!challenge) return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
+  return c.json(challenge);
+});
+
+accountRouter.post('/step-up/passkey/verify', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { challengeToken?: unknown; response?: unknown } | null;
+  const result = await verifyPasskeyStepUp(prisma, c.get('session').id, c.get('user').id, body, RELYING_PARTY);
+  if (result === 'not_step_up') {
+    return c.json({ error: 'This passkey was added without a verification step and cannot confirm this action', code: 'passkey_not_step_up_capable' }, 403);
+  }
+  if (result !== 'verified') return c.json({ error: 'Passkey verification failed' }, 400);
+  return c.json({ status: true });
+});
+
+// Better Auth's unlink endpoint also requires session.createdAt < 24 hours.
+// An email code proves freshness without refreshing the entire session (which
+// would weaken other sensitive endpoints), so Settings uses this route.
+accountRouter.post('/social/unlink', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { providerId?: unknown; accountId?: unknown } | null;
+  const providerId = body?.providerId;
+  if ((providerId !== 'google' && providerId !== 'apple')
+    || typeof body?.accountId !== 'string' || !body.accountId) {
+    return c.json({ error: 'A Google or Apple account is required' }, 400);
+  }
+  const accountId = body.accountId;
+  const current = c.get('session');
+  const outcome = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "session" WHERE id = ${current.id} FOR UPDATE`;
+    const session = await tx.session.findUnique({
+      where: { id: current.id },
+      select: { userId: true, expiresAt: true, lastEmailOtpAt: true, user: { select: { emailVerified: true, email: true } } },
+    });
+    const now = Date.now();
+    const verifiedAt = session?.lastEmailOtpAt?.getTime();
+    if (!session || session.userId !== c.get('user').id || session.expiresAt.getTime() <= now
+      || verifiedAt === undefined || verifiedAt > now || now - verifiedAt >= 5 * 60 * 1000) {
+      return 'EMAIL_STEP_UP_REQUIRED';
+    }
+    if (await tx.passkey.count({ where: { userId: session.userId } }) === 0 && (!session.user.emailVerified
+      || await appleRelayEmailUndeliverable(tx, session.userId, session.user.email))) {
+      return 'LAST_SIGN_IN_METHOD';
+    }
+    const account = await tx.account.findFirst({
+      where: { userId: session.userId, providerId, accountId },
+      select: { id: true, refreshToken: true, appleClientId: true },
+    });
+    if (!account) return 'ACCOUNT_NOT_FOUND';
+    if (providerId === 'apple') return account;
+    await tx.account.delete({ where: { id: account.id } });
+    return 'UNLINKED';
+  });
+  if (outcome === 'EMAIL_STEP_UP_REQUIRED' || outcome === 'LAST_SIGN_IN_METHOD') {
+    return c.json({ error: outcome }, 403);
+  }
+  if (outcome === 'ACCOUNT_NOT_FOUND') return c.json({ error: outcome }, 404);
+  if (typeof outcome !== 'string') {
+    let refreshToken: string | undefined;
+    if (outcome.refreshToken) {
+      try {
+        // Not a static import: loading ../auth builds Better Auth over the
+        // module's Prisma client, so importing this router (as the route unit
+        // tests do with a stand-in client) must not load it. In the running API
+        // index.ts has already loaded it; this resolves to the same instance.
+        const { auth } = await import('../auth');
+        refreshToken = await symmetricDecrypt({
+          key: (await auth.$context).secretConfig, data: outcome.refreshToken,
+        });
+      } catch {
+        return c.json({ error: 'APPLE_TOKEN_UNAVAILABLE' }, 503);
+      }
+    }
+    if (!await revokeAppleToken(refreshToken, outcome.appleClientId ?? undefined)) {
+      return c.json({ error: 'APPLE_TOKEN_REVOKE_FAILED' }, 503);
+    }
+    const removed = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "session" WHERE id = ${current.id} FOR UPDATE`;
+      const session = await tx.session.findUnique({
+        where: { id: current.id },
+        select: { userId: true, expiresAt: true, lastEmailOtpAt: true, user: { select: { emailVerified: true, email: true } } },
+      });
+      const now = Date.now();
+      const verifiedAt = session?.lastEmailOtpAt?.getTime();
+      if (!session || session.userId !== c.get('user').id || session.expiresAt.getTime() <= now
+        || verifiedAt === undefined || verifiedAt > now || now - verifiedAt >= 5 * 60 * 1000
+        || (await tx.passkey.count({ where: { userId: session.userId } }) === 0 && (!session.user.emailVerified
+          || await appleRelayEmailUndeliverable(tx, session.userId, session.user.email)))) {
+        return 'EMAIL_STEP_UP_REQUIRED';
+      }
+      const deleted = await tx.account.deleteMany({
+        where: {
+          id: outcome.id, userId: session.userId, providerId: 'apple', accountId,
+          refreshToken: outcome.refreshToken, appleClientId: outcome.appleClientId,
+        },
+      });
+      return deleted.count === 1 ? 'UNLINKED' : 'ACCOUNT_CHANGED';
+    });
+    if (removed === 'EMAIL_STEP_UP_REQUIRED') return c.json({ error: removed }, 403);
+    if (removed === 'ACCOUNT_CHANGED') return c.json({ error: removed }, 409);
+  }
+  return c.json({ status: true });
+});
 
 // Get account info
 accountRouter.get('/', async (c) => {
@@ -50,7 +212,12 @@ accountRouter.get('/', async (c) => {
     },
   });
 
-  return c.json({ user: userData });
+  // An Apple relay address whose forwarding Apple reported off cannot receive
+  // email codes; Settings suggests re-enabling it or adding a passkey.
+  const emailUndeliverable = userData ? await appleRelayEmailUndeliverable(prisma, user.id, userData.email) : false;
+  // Passkeys that can confirm deletion and passkey changes (TC-1198).
+  const stepUpPasskeys = userData ? await prisma.passkey.count({ where: { userId: user.id, countsForStepUp: true } }) : 0;
+  return c.json({ user: userData && { ...userData, emailUndeliverable, stepUpPasskeys } });
 });
 
 // Global stop control for OAuth tinycloud:manage-key signing. This is kept
@@ -300,15 +467,30 @@ function hostnameOf(uri: string | null | undefined): string | null {
   try { return new URL(uri).hostname || null; } catch { return null; }
 }
 
+const EMAIL_STEP_UP_REQUIRED = {
+  error: 'Verify with an email code again to continue',
+  code: 'email_step_up_required',
+} as const;
+
 // Delete account permanently
-// Requires: cookie session from an OpenKey origin, a passkey verification on
-// this session within the last five minutes, and typed confirmation.
+// Requires: cookie session from an OpenKey origin, typed confirmation, and a
+// fresh step-up on this session: a verification by a passkey that counts for
+// step-up when the user has one, else a deletion-purpose email code. A passkey
+// that does not count (enrolled by email while another counted) never forces
+// or satisfies the passkey path. After commit, every stored Apple refresh token
+// is revoked with its issuing client; a revoke failure never restores the account.
 accountRouter.post('/delete', async (c) => {
   const user = c.get('user');
+  const sessionId = c.get('session').id;
   const rejected = rejectNonBrowserControlRequest(c);
   if (rejected) return rejected;
-  const stale = await requireFreshPasskey(c, ACCOUNT_DELETE_PASSKEY_MAX_AGE_MS, prisma);
-  if (stale) return stale;
+  const passkeyStepUp = await prisma.passkey.count({ where: { userId: user.id, countsForStepUp: true } }) > 0;
+  if (passkeyStepUp) {
+    const stale = await requireFreshPasskey(c, ACCOUNT_DELETE_PASSKEY_MAX_AGE_MS, prisma);
+    if (stale) return stale;
+  } else if (!await hasFreshDeleteStepUp(prisma, sessionId)) {
+    return c.json(EMAIL_STEP_UP_REQUIRED, 403);
+  }
   const body = await c.req.json<{
     confirmation: string; // Must be "DELETE MY ACCOUNT"
   }>();
@@ -328,8 +510,22 @@ accountRouter.post('/delete', async (c) => {
   });
 
   // Delete all user data in transaction
-  try { await prisma.$transaction(async (tx) => {
+  let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | 'PASSKEY' | 'EMAIL';
+  try { appleTokens = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${user.id} FOR UPDATE`;
+    if (!passkeyStepUp) {
+      // A passkey that counts, enrolled since the check, needs the passkey
+      // step-up instead; the deletion code is spent only by a deletion that commits.
+      if (await tx.passkey.count({ where: { userId: user.id, countsForStepUp: true } }) > 0) return 'PASSKEY';
+      if (!await consumeDeleteStepUp(tx, sessionId)) return 'EMAIL';
+    }
+    // Read under the user lock, before the rows go: the issuing client is
+    // needed to revoke each Apple refresh token after commit.
+    const stored = await tx.account.findMany({
+      where: { userId: user.id, providerId: 'apple', refreshToken: { not: null } },
+      select: { refreshToken: true, appleClientId: true },
+    });
+
     // Delete all ethereum keys (sealed blobs will be unrecoverable)
     await tx.ethereumKey.deleteMany({ where: { userId: user.id } });
 
@@ -347,11 +543,16 @@ accountRouter.post('/delete', async (c) => {
 
     // Finally delete the user
     await tx.user.delete({ where: { id: user.id } });
+    return stored;
   }); } catch (error) {
     const unavailable = nativeDelegationLockResponse(error);
     if (unavailable) return unavailable;
     throw error;
   }
+  if (appleTokens === 'PASSKEY') return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
+  if (appleTokens === 'EMAIL') return c.json(EMAIL_STEP_UP_REQUIRED, 403);
+
+  await revokeStoredAppleTokens(appleTokens);
 
   return c.json({
     success: true,

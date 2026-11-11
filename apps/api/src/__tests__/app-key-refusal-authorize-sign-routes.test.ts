@@ -136,7 +136,7 @@ const APPS_PREFIX = { [urn('/apps/xyz.tinycloud.listen/')]: ['tinycloud.encrypti
 function post(path: string, body: unknown) {
   return router.request(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
     body: JSON.stringify(body),
   });
 }
@@ -208,8 +208,8 @@ describe('POST /authorize-sign-prepare', () => {
   ])('refuses %s and issues nothing', async (_name, raw) => {
     const res = await post('/authorize-sign-prepare', { ...prepareBody(siweWith(raw)), requestOrigin: ORIGIN });
     expect(res.status).toBe(403);
-    // TC-2291: the #389 refusal is identified by its code; its sentence is owner-visible copy, not pinned here.
-    await expect(res.json()).resolves.toEqual({ error: expect.any(String), code: 'app_key_grant_refused' });
+    // TC-2291: pin the own-sites refusal copy and its stable code.
+    await expect(res.json()).resolves.toEqual({ error: "This site isn't allowed to request that access.", code: 'app_key_grant_refused' });
     expect(signed).toEqual([]);
   });
 });

@@ -3,8 +3,8 @@
   // embedded iframe (`/widget/embed/sign`) surface.
   //
   // Popup and iframe surfaces run the same completion logic (both are
-  // widget flows that either fetch a server-signed preview or fall
-  // through to exact-byte signing). This adapter therefore mirrors the
+  // widget flows that consume a ready preview or sign original bytes).
+  // This adapter therefore mirrors the
   // popup adapter one-for-one — the parity test asserts that with the
   // same model, initialSelection, and transport shape, both adapters
   // render byte-identical DOM and invoke the same transport calls in
@@ -57,7 +57,7 @@
     void hostFactsKey;
     return watchHostPeer(untrack(() => hostFacts), import.meta.env.VITE_DELEGATE_NODE_ORIGINS, (next) => {
       peerRecognition = next;
-    });
+    }, untrack(() => transport.host));
   });
 
   function onEditingChange(next: boolean) {
@@ -65,9 +65,7 @@
   }
 
   function onApprove() {
-    if (transport.canUseAuthorizeSign && !transport.previewReady) {
-      void transport.requestPreview();
-    } else {
+    if (!transport.canUseAuthorizeSign || transport.previewReady) {
       void transport.approveAndSign();
     }
   }
@@ -84,14 +82,16 @@
   approving={transport.approving}
   error={transport.error}
   approveBlockedReason={transport.approveBlockedReason ?? null}
+  refused={transport.refused ?? false}
+  previewPending={transport.canUseAuthorizeSign && !transport.previewReady}
   {layoutBlocked}
   stickyActions
-  finalPreview={transport.previewReady}
   {peerRecognition}
   expiryMs={transport.expiry?.chosenMs ?? null}
   onExpiryChange={transport.expiry?.onChange}
   {onApprove}
   {onCancel}
+  onRetry={transport.retryPreview}
   {onSelectionChange}
   {onEditingChange}
 />

@@ -4,7 +4,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { serializeSignedCookie } from 'better-call';
-import { signerFromJwk, prepareLinkRecord, openLinkRecord, parseApprovalRequest } from '@tinycloud/share-envelope/links';
+import { signerFromJwk, prepareLinkRecord, openLinkRecord, parseApprovalRequest, signHeader } from '@tinycloud/share-envelope/links';
 import { z } from 'zod';
 import { Wallet } from 'ethers';
 import { SiweMessage } from 'siwe';
@@ -85,6 +85,15 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     expect((await post(initialResultPath, signedReference, { 'OpenKey-Session-Proof': proof('fetch', initialResultPath) })).status).toBe(401);
     expect((await post(initialResultPath, { ...signedReference, bodyCid: 'wrong-sealed-cid' }, { 'OpenKey-Session-Proof': proof('discover', initialResultPath) })).status).toBe(400);
     expect((await post(initialResultPath, { ...signedReference, signature: { algorithm: 'Ed25519', value: Buffer.alloc(64).toString('base64url') } }, { 'OpenKey-Session-Proof': proof('discover', initialResultPath) })).status).toBe(400);
+    expect(await prisma.approvalRequest.findUnique({ where: { id } })).toBeNull();
+    // Expiry before the first browser visit must terminate CLI discovery, not
+    // strand it on a generic retryable 400 with the same expired pending link.
+    const expiredHeader = { ...opened.header, issuedAt: new Date(Date.now() - 7200_000).toISOString(), expiresAt: new Date(Date.now() - 3600_000).toISOString() };
+    const expiredReference = { ...signedReference, header: expiredHeader, signature: await signHeader(expiredHeader, signer) };
+    const expired = await post(initialResultPath, expiredReference, { 'OpenKey-Session-Proof': proof('discover', initialResultPath) });
+    expect(expired.status).toBe(410);
+    expect(await expired.json()).toMatchObject({ code: 'expired_request' });
+    expect((await post(initialResultPath, expiredReference)).status).toBe(401);
     expect(await prisma.approvalRequest.findUnique({ where: { id } })).toBeNull();
     await createPrismaApprovalRequestStore(prisma).register({ id, bodyCid: opened.header.bodyCid, issuer: opened.header.issuer, request: parseApprovalRequest(opened.value, { issuer: opened.header.issuer }), expiresAt: new Date(opened.header.expiresAt), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null });
     const body = { keyId: ownerKey.id, jwk: targetJwk, host: request.nodeOrigin, permissions, expiry: '3600s', approvalRequestId: id };

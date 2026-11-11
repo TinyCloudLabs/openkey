@@ -1,5 +1,5 @@
 import { createMiddleware } from 'hono/factory';
-import { resolveOriginPolicy } from '../origin-policy';
+import { isAccountOriginAllowed, resolveOriginPolicy } from '../origin-policy';
 
 /**
  * OpenKey's own embedded widgets authenticate to key and account routes with a
@@ -21,6 +21,72 @@ export function bearerFromOpenKeyOriginError(
   if (origin && allowed.includes(origin)) return null;
   return 'Bearer session tokens are accepted only from OpenKey';
 }
+
+export function bearerFromAccountOriginError(
+  authorization: string | undefined,
+  origin: string | undefined,
+): string | null {
+  if (!authorization) return null;
+  if (isAccountOriginAllowed(origin, 'http://localhost:5173,http://localhost:3000')) return null;
+  return 'Bearer session tokens are accepted only from OpenKey';
+}
+
+export const requireAccountOriginForBearer = createMiddleware(async (c, next) => {
+  const authorization = c.req.header('authorization');
+  const origin = c.req.header('origin');
+  const error = origin !== undefined
+    ? (isAccountOriginAllowed(origin, 'http://localhost:5173,http://localhost:3000')
+      ? null
+      : 'Requests are accepted only from the OpenKey account origin')
+    : bearerFromAccountOriginError(authorization, origin);
+  if (error) return c.json({ error }, 403);
+  await next();
+});
+// Keep protocol, sign-in and session-read endpoints outside this account-management list.
+const sensitiveAuthEndpoints: Record<string, string> = {
+  '/passkey/generate-register-options': 'GET',
+  '/passkey/verify-registration': 'POST',
+  '/passkey/list-user-passkeys': 'GET',
+  '/passkey/update-passkey': 'POST',
+  '/passkey/delete-passkey': 'POST',
+  '/update-user': 'POST',
+  '/revoke-session': 'POST',
+  '/revoke-sessions': 'POST',
+  '/revoke-other-sessions': 'POST',
+  '/list-sessions': 'GET',
+  '/list-accounts': 'GET',
+  '/link-social': 'POST',
+  '/unlink-account': 'POST',
+  '/change-email': 'POST',
+  '/email-otp/request-email-change': 'POST',
+  '/email-otp/change-email': 'POST',
+  '/change-password': 'POST',
+  '/delete-user': 'POST',
+  '/oauth2/get-consent': 'GET',
+  '/oauth2/get-consents': 'GET',
+  '/oauth2/update-consent': 'POST',
+  '/oauth2/delete-consent': 'POST',
+  '/oauth2/consent': 'POST',
+  '/get-access-token': 'POST',
+  '/refresh-token': 'POST',
+  '/account-info': 'GET',
+  '/oauth2/client/rotate-secret': 'POST',
+  '/oauth2/update-client': 'POST',
+  '/oauth2/delete-client': 'POST',
+  '/oauth2/create-client': 'POST',
+  '/oauth2/get-client': 'GET',
+  '/oauth2/get-clients': 'GET',
+};
+
+export const requireAccountOriginForSensitiveAuth = createMiddleware(async (c, next) => {
+  const path = c.req.path.startsWith('/api/auth')
+    ? c.req.path.slice('/api/auth'.length)
+    : c.req.path;
+  if (sensitiveAuthEndpoints[path] !== c.req.method) return next();
+
+  return requireAccountOriginForBearer(c, next);
+});
+
 
 export const requireOpenKeyOriginForBearer = createMiddleware(async (c, next) => {
   const error = bearerFromOpenKeyOriginError(c.req.header('authorization'), c.req.header('origin'));

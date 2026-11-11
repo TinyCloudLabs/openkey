@@ -406,6 +406,13 @@ describe('PAR', () => {
     }).body);
     expect(passkey.get('login_method')).toBe('passkey');
     expect(passkey.has('login_hint')).toBe(false);
+
+    const apple = new URLSearchParams(buildParRequest({
+      clientId: CLIENT_ID, redirectUri: REDIRECT_URI, state: 'state', codeChallenge: 'challenge',
+      sessionKey: generateSessionKeypair(), permissions: PERMISSIONS, loginMethod: 'apple',
+    }).body);
+    expect(apple.get('login_method')).toBe('apple');
+    expect(apple.has('login_hint')).toBe(false);
   });
 
   it('rejects malformed or conflicting login hints at the SDK boundary', () => {
@@ -416,7 +423,10 @@ describe('PAR', () => {
     for (const loginHint of ['x'.repeat(255) + '@example.com', 'a b@example.com', 'a\u0000b@example.com', '@example.com', 'a@@example.com', 'a@']) {
       expect(() => buildParRequest({ ...base, loginHint })).toThrow();
     }
-    expect(() => buildParRequest({ ...base, loginHint: 'a@example.com', loginMethod: 'google' })).toThrow();
+    for (const loginMethod of ['passkey', 'google', 'apple'] as const) {
+      expect(() => buildParRequest({ ...base, loginHint: 'a@example.com', loginMethod })).toThrow();
+    }
+    expect(() => buildParRequest({ ...base, loginMethod: 'password' as never })).toThrow();
     expect(() => buildParRequest({ ...base, loginHint: `${'a'.repeat(252)}@x` })).not.toThrow();
   });
 

@@ -1,5 +1,6 @@
-import { API_BASE, socialRedirectClient } from './auth-client';
+import { API_BASE, authClient, socialRedirectClient } from './auth-client';
 import { setSessionToken } from './embed-passkey';
+import { socialProviderName, type SocialPopupAction } from './social-continuation';
 
 export type SocialProviderId = 'google' | 'apple';
 
@@ -26,6 +27,8 @@ export type SocialPopupDependencies = {
   setPoll: (listener: () => void) => number;
   clearPoll: (id: number) => void;
   persistToken: (token: string) => void;
+  /** Tells this tab's session store that a sign-in just happened in another window. */
+  refreshSession: () => void;
 };
 
 function browserPopupDependencies(): SocialPopupDependencies {
@@ -37,12 +40,17 @@ function browserPopupDependencies(): SocialPopupDependencies {
     setPoll: (listener) => window.setInterval(listener, 500),
     clearPoll: (id) => window.clearInterval(id),
     persistToken: setSessionToken,
+    // The popup signs in inside its own window, so this tab's Better Auth session store still holds the
+    // signed-out answer it read before; the email-code path signals it the same way (auth-client.ts).
+    refreshSession: () => authClient.$store.notify('$sessionSignal'),
   };
 }
 
-export function socialPopupStartUrl(provider: SocialProviderId, origin: string): string {
+/** `link` adds the provider to the signed-in account (Settings); `signup` comes from /auth/register. */
+export function socialPopupStartUrl(provider: SocialProviderId, origin: string, action?: SocialPopupAction): string {
   const url = new URL('/auth/social/callback', origin);
   url.searchParams.set('provider', provider);
+  if (action) url.searchParams.set('action', action);
   return url.href;
 }
 
@@ -66,15 +74,16 @@ export function safeSocialAuthorizationUrl(
 export async function signInWithSocialPopup(
   provider: SocialProviderId,
   dependencies?: SocialPopupDependencies,
+  action?: SocialPopupAction,
 ): Promise<string> {
   const deps = dependencies ?? browserPopupDependencies();
 
   // Open the same-origin starter page directly from the click. It initiates
   // Better Auth from the top-level popup so OAuth state cookies do not depend
   // on third-party cookie access from the embedding iframe.
-  const popup = deps.open(socialPopupStartUrl(provider, deps.origin));
+  const popup = deps.open(socialPopupStartUrl(provider, deps.origin, action));
   if (!popup) {
-    throw new Error(`Your browser blocked the ${provider === 'google' ? 'Google' : 'Apple'} sign-in window. Allow popups, then try again.`);
+    throw new Error(`Your browser blocked the ${socialProviderName(provider)} sign-in window. Allow popups, then try again.`);
   }
 
   return new Promise<string>((resolve, reject) => {
@@ -100,13 +109,15 @@ export async function signInWithSocialPopup(
       finish(() => {
         popup.close();
         deps.persistToken(event.data!.sessionToken!);
+        // Best effort: the token is saved, and a throwing store subscriber must not leave the sign-in pending.
+        try { deps.refreshSession(); } catch { /* the session re-reads on its own at the next load */ }
         resolve(event.data!.sessionToken!);
       });
     };
     deps.addMessageListener(onMessage);
     poll = deps.setPoll(() => {
       if (popup.closed) {
-        finish(() => reject(new Error(`${provider === 'google' ? 'Google' : 'Apple'} sign-in was cancelled.`)));
+        finish(() => reject(new Error(`${socialProviderName(provider)} sign-in was cancelled.`)));
       }
     });
   });
@@ -135,7 +146,7 @@ export async function signInWithSocialRedirect(
     navigate: (url) => window.location.assign(url),
   },
 ): Promise<void> {
-  const providerName = provider === 'google' ? 'Google' : 'Apple';
+  const providerName = socialProviderName(provider);
   const result = await dependencies.signInSocial({ provider, ...returnUrls, disableRedirect: true });
   if (result.error) throw new Error(result.error.message || `${providerName} sign-in failed.`);
   const authorizationURL = safeSocialAuthorizationUrl(result.data?.url, provider);
@@ -146,9 +157,10 @@ export async function signInWithSocialRedirect(
 export async function loadConfiguredSocialProviders(
   fetchImpl: typeof fetch = fetch,
 ): Promise<SocialProviderId[]> {
+  // Public and cookie-free; the API answers it with `*` CORS so native apps can read it too.
   const response = await fetchImpl(`${API_BASE}/api/auth/providers`, {
     headers: { Accept: 'application/json' },
-    credentials: 'include',
+    credentials: 'omit',
   });
   if (!response.ok) return [];
   const body = await response.json().catch(() => null);

@@ -195,7 +195,7 @@ if (process.env.OPENKEY_RESOURCE_INTROSPECT_TEST_CHILD !== '1') {
       expect(result.body).toMatchObject({
         active: true, scope: 'tinycloud:mcp', client_id: clientId, sub: 'u1', aud: resource, iss: issuer, token_type: 'Bearer',
       });
-      expect((result.body.exp as number) - (result.body.iat as number)).toBe(300);
+      expect((result.body.exp as number) - (result.body.iat as number)).toBe(12 * 3600);
       expect(JSON.stringify(result.body)).not.toContain('did:pkh');
       expect(JSON.stringify(result.body)).not.toContain('session-live');
     });
@@ -296,7 +296,7 @@ if (process.env.OPENKEY_RESOURCE_INTROSPECT_TEST_CHILD !== '1') {
       const opaque = (await mcpToken('opaque', null)).accessToken;
       expect(opaque.split('.')).toHaveLength(1);
       expect((await check(opaque)).body).toEqual(INACTIVE);
-      setSystemTime(new Date(Date.now() + 400_000));
+      setSystemTime(new Date(Date.now() + 12 * 3600 * 1000 + 60_000));
       try {
         expect((await check(accessToken)).body).toEqual(INACTIVE);
       } finally {
@@ -508,7 +508,7 @@ if (process.env.OPENKEY_RESOURCE_INTROSPECT_TEST_CHILD !== '1') {
       // Another client's token is still active: it was not revoked by a client it was not issued to.
       expect(await isActive(theirs.accessToken)).toBe(true);
 
-      setSystemTime(new Date(Date.now() + 400_000));
+      setSystemTime(new Date(Date.now() + 12 * 3600 * 1000 + 60_000));
       try {
         expect(await answerOf(await revokeCall({ token: mine.accessToken, client_id: mine.clientId }))).toEqual(baseline);
         expect(await rowCount()).toBe(before);

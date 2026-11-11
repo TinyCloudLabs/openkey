@@ -117,11 +117,20 @@ export function createPrismaDeviceAuthorizationStore(database: any): DeviceAutho
             approvedByUserId: input.userId,
             encryptedResult: input.encryptedResult,
             delegationExpiresAt: input.delegationExpiresAt,
+            // After approval the deadline is the result's retention, which may run past the transaction's.
+            transactionExpiresAt: new Date(Math.max(value.transactionExpiresAt.getTime(), input.resultExpiresAt.getTime())),
             permissions: encodeScope({ ...decodeScope(value), approvedPermissions: input.approvedPermissions }),
           },
         });
         return result.count === 1;
       });
+    },
+    async deny(id, now) {
+      const result = await database.deviceAuthorization.updateMany({
+        where: { id, status: 'PENDING', transactionExpiresAt: { gt: now } },
+        data: { status: 'DENIED' },
+      });
+      return result.count === 1;
     },
     async consumeApproved(id) {
       return database.$transaction(async (tx: any) => {
@@ -139,6 +148,12 @@ export function createPrismaDeviceAuthorizationStore(database: any): DeviceAutho
         });
         if (updated.count !== 1) return null;
         return fromDatabase(value);
+      });
+    },
+    async wipeExpiredResults(now) {
+      await database.deviceAuthorization.updateMany({
+        where: { status: 'APPROVED', transactionExpiresAt: { lte: now }, NOT: { encryptedResult: null } },
+        data: { encryptedResult: null },
       });
     },
   };

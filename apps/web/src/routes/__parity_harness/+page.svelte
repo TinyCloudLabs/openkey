@@ -95,7 +95,6 @@
     get error() {
       return rawGlobals?.error ?? null;
     },
-    requestPreview: () => record('requestPreview'),
     approveAndSign: () => record('approveAndSign'),
     cancel: () => record('cancel'),
     onSelectionEdited: (next) => record('onSelectionEdited', Array.from(next).sort()),

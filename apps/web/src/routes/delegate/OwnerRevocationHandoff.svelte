@@ -8,9 +8,12 @@
   import { ownerRevocationCopy as text } from '$lib/owner-revocation-copy';
   import { deliverOwnerRevocation } from '$lib/owner-revocation-response';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
+  import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import { ownerRevocationAddress, parseOwnerRevocationRequest, renderSiweLiteral, type OwnerRevocationRequest } from '@openkey/capability-review';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
+  // A 2xx reply that cannot be read: the server may have signed, so the owner must not sign again from this page.
+  class UnreadableSuccess extends Error {}
   const session = authClient.useSession();
   const apiUrl = import.meta.env.VITE_API_URL || '';
   type Delivery = { handoffId: string; state: string; cancelSecret: string; callback?: string };
@@ -96,9 +99,11 @@
       body: JSON.stringify(body),
     });
     const data: unknown = await response.json().catch(() => null);
-    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('OpenKey returned an unreadable response.');
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw response.ok ? new UnreadableSuccess('OpenKey returned an unreadable response.') : new Error('OpenKey returned an unreadable response.');
+    }
     const result = data as Record<string, unknown>;
-    if (!response.ok) throw new Error(typeof result.error === 'string' ? result.error : `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(apiBusyOrEndedMessage(response.status, 'revoke') ?? (typeof result.error === 'string' ? result.error : `HTTP ${response.status}`));
     return result;
   }
 
@@ -177,7 +182,14 @@
         externalSignature = signed;
       }
       submitted = true;
-      const signed = await post('owner-revocation/sign', { ticket, keyId: key.id, authorizationContextToken: contextToken, ...(externalSignature ? { externalSignature } : {}) });
+      let signed: Record<string, unknown>;
+      try {
+        signed = await post('owner-revocation/sign', { ticket, keyId: key.id, authorizationContextToken: contextToken, ...(externalSignature ? { externalSignature } : {}) });
+      } catch (cause) {
+        // A refused or failed signing carries no signature and the server releases the handoff: Revoke and Cancel come back.
+        if (!(cause instanceof UnreadableSuccess)) submitted = false;
+        throw cause;
+      }
       if (signed.siwe !== siwe || typeof signed.signature !== 'string' || signed.deliveryState !== delivery.state || signed.selectedKeyId !== key.id) {
         throw new Error('Signed response differs from the reviewed revocation.');
       }

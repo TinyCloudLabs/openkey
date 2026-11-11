@@ -1,6 +1,6 @@
-// TC-2291: when the server refuses a sign-in (403 app_key_grant_refused), the app's request is rejected with
-// the server's words, the page keeps showing them, and Approve is off (retrying cannot succeed). A server error
-// is not a refusal: nothing is sent to the app and Approve stays available. Both widget pages are covered.
+// TC-2291: a definite refusal during sign-in rejects the app's request once, displays the server reason, and disables Approve.
+// A server error is not a refusal and is not sent to the app. Both widget pages are covered.
+// The server identifier is sent to the app, not its owner-visible sentence.
 import { test, expect } from '@playwright/test';
 import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
 import { HOST } from './e2e-port';
@@ -40,20 +40,21 @@ for (const route of ['/widget/embed/sign', '/widget/sign']) {
     return page.frameLocator('#sign');
   }
 
-  test(`${route}: a 403 refusal rejects the app's request with the server's words and turns Approve off`, async ({ page }) => {
+  test(`${route}: a 403 refusal rejects the app's request with its refusal identifier and turns Approve off`, async ({ page }) => {
     const frame = await open(page, 403, { error: WORDS, code: 'app_key_grant_refused' });
-    await frame.getByRole('button', { name: 'Approve', exact: true }).click();
-    await expect.poll(() => responses(page)).toEqual([expect.objectContaining({ success: false, error: { code: 'UNKNOWN', message: WORDS } })]);
-    await expect(frame.getByText(WORDS)).toBeVisible();
+    await expect.poll(() => responses(page)).toEqual([expect.objectContaining({ success: false, error: { code: 'UNKNOWN', message: 'APP_KEY_GRANT_REFUSED' } })]);
+    await expect(frame.getByRole('alert')).toHaveText(WORDS);
     await expect(frame.getByRole('button', { name: 'Approve', exact: true })).toBeDisabled();
   });
 
-  test(`${route}: a server error is not a refusal: the app hears nothing and Approve stays available`, async ({ page }) => {
+  test(`${route}: a server error during prepare disables Approve but keeps the widget open with retry`, async ({ page }) => {
     const frame = await open(page, 503, { error: 'Try again later.', code: 'app_key_grant_refused' });
-    await frame.getByRole('button', { name: 'Approve', exact: true }).click();
-    await expect(frame.getByRole('alert')).toContainText('Try again later.');
-    await expect(frame.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+    await expect(frame.getByRole('alert')).toHaveText('Try again later.');
+    await expect(frame.getByText("This site isn't allowed to request that access.")).toHaveCount(0);
     expect(await responses(page)).toEqual([]);
+    await expect(page.locator('#sign')).toBeVisible();
+    await expect(frame.getByRole('button', { name: 'Approve', exact: true })).toBeDisabled();
+    await expect(frame.getByRole('button', { name: 'Try again', exact: true })).toBeVisible();
   });
 }
 

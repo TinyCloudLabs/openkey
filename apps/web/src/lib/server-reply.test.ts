@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_BODY, SERVER_REPLY_TITLE } from './server-reply';
+import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_BODY, SERVER_REPLY_TITLE, terminalRefusal } from './server-reply';
 
 const reply = (body: string, init: ResponseInit = { status: 200 }) => new Response(body, init);
 const needsToken = (body: Record<string, unknown>) => hasText(body, 'token');
@@ -104,5 +104,51 @@ describe('readReply with a definite refusal', () => {
     const error = await failure(readReply(response, needsToken, 'fallback'));
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(ServerRefusalError);
+  });
+});
+
+// TC-2457: a refusal that cannot change on retry is told apart from a temporary failure by the server's `code`.
+describe('terminal refusals', () => {
+  const refusal = (code: string | undefined, status = 403) =>
+    readReply(reply(JSON.stringify({ error: 'The server said no.', ...(code ? { code } : {}) }), { status }), needsToken, 'fallback');
+
+  test.each([
+    ['app_key_grant_refused', 403],
+    ['key_delete_not_grantable', 403],
+    ['invalid_siwe_recap', 400],
+  ])('%s is terminal and keeps the server text', async (code: string, status: number) => {
+    const error = await failure(refusal(code, status));
+    const terminal = terminalRefusal(error);
+    expect(terminal).not.toBeNull();
+    expect(terminal?.text).toBe('The server said no.');
+    expect(terminal?.hostMessage).toMatch(/^[A-Z_]+$/);
+  });
+
+  test('each terminal code reports a different identifier to the host', async () => {
+    const seen = new Set<string>();
+    for (const code of ['app_key_grant_refused', 'key_delete_not_grantable', 'invalid_siwe_recap']) {
+      seen.add(terminalRefusal(await failure(refusal(code)))!.hostMessage);
+    }
+    expect(seen.size).toBe(3);
+  });
+
+  test.each([
+    ['a 500 with no code', undefined, 500],
+    ['a 503 with a refusal code', 'app_key_grant_refused', 503],
+    ['a 403 with another code', 'something_else', 403],
+    ['a rate limit', 'rate_limited', 429],
+  ])('%s is not terminal', async (_name: string, code: string | undefined, status: number) => {
+    expect(terminalRefusal(await failure(refusal(code, status)))).toBeNull();
+  });
+
+  test('anything that is not a reply error is not terminal', () => {
+    for (const value of [null, undefined, 'app_key_grant_refused', { code: 'app_key_grant_refused' }, new Error('plain'), new ServerReplyError(200)]) {
+      expect(terminalRefusal(value)).toBeNull();
+    }
+  });
+
+  test('an error from the API client that carries the code is terminal too', () => {
+    const error = Object.assign(new Error('Not listed.'), { code: 'app_key_grant_refused', status: 403 });
+    expect(terminalRefusal(error)?.text).toBe('Not listed.');
   });
 });

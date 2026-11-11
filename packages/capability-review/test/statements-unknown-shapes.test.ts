@@ -15,6 +15,7 @@
 import { describe, expect, it } from "bun:test";
 
 import {
+  CAPABILITIES_READ_STATEMENT,
   buildStatement,
   classifyRecapEntry,
   classifySeverityFromActions,
@@ -201,9 +202,9 @@ describe("buildStatement — capabilities service unknown verbs", () => {
       family: "bootstrap-capabilities",
       severity: "standard",
     });
-    expect(buildStatement(grant).primaryText).toBe(
-      "Check your TinyCloud permissions",
-    );
+    const statement = buildStatement(grant);
+    expect(statement.primaryText).toBe(CAPABILITIES_READ_STATEMENT);
+    expect(statement.literalEscaped).toBeUndefined();
   });
 });
 
