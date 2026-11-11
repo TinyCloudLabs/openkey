@@ -11,7 +11,8 @@ export function invitationEmailDelivery(prisma: PrismaClient): InvitationDeliver
     ]);
     const ownerName = (owner.name || owner.email).replace(/[\r\n]/g, ' ');
     const orgName = org.orgName.replace(/[\r\n]/g, ' ');
-    const link = `https://openkey.so/org-key-invitations/${encodeURIComponent(mail.invitationId)}#token=${mail.token}`;
+    if (!process.env.WEBAUTHN_ORIGIN) throw new Error('Email origin unavailable');
+    const link = new URL(`/org-key-invitations/${encodeURIComponent(mail.invitationId)}`, process.env.WEBAUTHN_ORIGIN).href + `#token=${mail.token}`;
     const expires = mail.expiresAt.toLocaleString('en-GB', { timeZone: 'UTC', dateStyle: 'long', timeStyle: 'short' }) + ' UTC';
     const sent = await new Resend(process.env.RESEND_API_KEY).emails.send({
       from: 'OpenKey <noreply@openkey.so>', to: mail.to,

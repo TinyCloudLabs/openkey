@@ -70,6 +70,7 @@ const db: any = {
   account: { deleteMany: async () => ({ count: 0 }) },
   verification: { deleteMany: async () => ({ count: 0 }) },
   user: {
+    findUnique: async () => ({ email: 'user_1@example.test', emailVerified: true }),
     delete: async ({ where }: { where: { id: string } }) => {
       if (state.grants.some((grant) => grant.granteeUserId === where.id)) {
         throw new Error('Foreign key constraint failed: key_grants_granteeUserId_fkey (RESTRICT)');
@@ -207,6 +208,18 @@ test('audit failure rolls deletion and personal-field cleanup back', async () =>
   try { expect((await deleteAccount()).status).toBe(500); }
   finally { db.keyGrantEvent.create = create; }
   expect(state.users.has('user_1')).toBe(true);
+  expect(state.grants[0]).toEqual(grant);
+  expect(state.events).toEqual([]);
+});
+
+test('deleting an unverified account leaves an email invitation for another person untouched', async () => {
+  const grant: Grant = { id: 'unverified-target', keyId: 'org-key', role: 'ADMIN', granteeUserId: null,
+    invitedUserId: null, invitedEmail: 'user_1@example.test', acceptedAt: null, revokedAt: null, revokedByUserId: null };
+  state.grants.push(structuredClone(grant));
+  const findUnique = db.user.findUnique;
+  db.user.findUnique = async () => ({ email: 'user_1@example.test', emailVerified: false });
+  try { expect((await deleteAccount()).status).toBe(200); }
+  finally { db.user.findUnique = findUnique; }
   expect(state.grants[0]).toEqual(grant);
   expect(state.events).toEqual([]);
 });

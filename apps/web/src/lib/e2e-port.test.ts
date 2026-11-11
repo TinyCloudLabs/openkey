@@ -65,8 +65,24 @@ describe('the browser specs\' dev-server port', () => {
   });
 
   test('the Playwright config starts the dev server on that port and points its baseURL there', () => {
-    const at = (port: string | undefined) => JSON.parse(inFreshProcess(configFile, '{ baseURL: m.default.use.baseURL, command: m.default.webServer.command, url: m.default.webServer.url }', port).stdout);
+    const at = (port: string | undefined) => JSON.parse(inFreshProcess(configFile, '{ baseURL: m.default.use.baseURL, command: m.default.webServer[0].command, url: m.default.webServer[0].url }', port).stdout);
     expect(at(undefined)).toEqual({ baseURL: 'http://localhost:5779', command: 'vite dev --port 5779 --strictPort', url: 'http://localhost:5779/__parity_harness' });
     expect(at('5791')).toEqual({ baseURL: 'http://localhost:5791', command: 'vite dev --port 5791 --strictPort', url: 'http://localhost:5791/__parity_harness' });
   });
+});
+
+test('organisation-admin specs have a separate flag-on server and project', () => {
+  const result = inFreshProcess(configFile, `{
+    server: m.default.webServer[1],
+    project: m.default.projects.find(p => p.name === 'org-admin'),
+    chromiumIgnore: m.default.projects.find(p => p.name === 'chromium').testIgnore
+  }`, '5791');
+  expect(result.status, result.stderr).toBe(0);
+  const value = JSON.parse(result.stdout);
+  expect(value.server.command).toBe('vite dev --port 5792 --strictPort');
+  expect(value.server.url).toBe('http://localhost:5792/__parity_harness');
+  expect(value.server.env).toEqual({ ORG_KEY_CUSTODY_ENABLED: 'true' });
+  expect(value.project.use.baseURL).toBe('http://localhost:5792');
+  expect(value.project.testMatch).toBe('**/org-key-admins.spec.ts');
+  expect(value.chromiumIgnore).toBe('**/org-key-admins.spec.ts');
 });

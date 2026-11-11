@@ -26,6 +26,7 @@ export function grantPasskeyChallenge(actor: GrantActor, operationDigest: string
 const refuse = () => { throw new OrgKeyRefusal(403, 'grant_challenge_invalid', 'Forbidden'); };
 
 export async function issueGrantChallenge(prisma: Pick<PrismaClient, 'orgKeyGrantChallenge' | 'passkey'>, actor: GrantActor, operation: GrantOperation) {
+  await prisma.orgKeyGrantChallenge.deleteMany({ where: { userId: actor.userId, grantId: operation.grantId, consumedAt: null, expiresAt: { lte: new Date() } } });
   const nonce = randomBytes(32).toString('base64url');
   const operationDigest = grantOperationDigest(operation);
   const expiresAt = new Date(Date.now() + 300_000);

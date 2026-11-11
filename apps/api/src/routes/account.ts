@@ -334,10 +334,11 @@ accountRouter.post('/delete', async (c) => {
     });
     if (activeOwnerGrants > 0) return { kind: 'owner_grant' as const };
 
+    const profile = await tx.user.findUnique({ where: { id: user.id }, select: { email: true, emailVerified: true } });
     const relatedAdminGrants = await tx.keyGrant.findMany({ where: { role: 'ADMIN', OR: [
       { granteeUserId: user.id },
       { acceptedAt: null, invitedUserId: user.id },
-      { acceptedAt: null, invitedEmail: user.email.trim().toLowerCase() },
+      ...(profile?.emailVerified ? [{ acceptedAt: null, invitedEmail: profile.email.trim().toLowerCase() }] : []),
     ] } });
 
     // Active ADMIN grants do not block deletion: revoke them and detach the grantee.

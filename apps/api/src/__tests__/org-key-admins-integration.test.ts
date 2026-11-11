@@ -236,21 +236,88 @@ test.skipIf(!pool)('concurrent exact acceptance retries activate only once on re
 });
 
 test('email delivery is attempted once after creation and a failure leaves a usable pending invitation', async () => {
+
+  const mailActor = { ...owner, userId: 'mail-owner', sessionId: 'mail-session' };
+  await prisma.user.create({ data: { id: mailActor.userId, email: 'mail-owner@example.test', emailVerified: true } });
+  await prisma.session.create({ data: { id: mailActor.sessionId, userId: mailActor.userId, token: 'mail-session-token', expiresAt: new Date(Date.now() + 60000) } });
+  await prisma.ethereumKey.create({ data: { id: 'mail-org-key', userId: null, address: '0x0000000000000000000000000000000000000006', publicKey: 'mail', custody: 'ORG', keyType: 'MANAGED', sealingContext: 'B'.repeat(42) + 'A', isCanonicalTinyCloud: false } });
+  await prisma.orgKey.create({ data: { keyId: 'mail-org-key', orgId: 'mail-org', orgName: 'Mail example', controllerDid: 'mail-controller' } });
+  await prisma.keyGrant.create({ data: { id: 'mail-owner-grant', keyId: 'mail-org-key', role: 'OWNER', granteeUserId: mailActor.userId, acceptedAt: new Date() } });
+  const passkeys = { passkeys: [] as Record<string, unknown>[] };
+  const mailPasskey = addPasskey(passkeys, mailActor.userId);
+  await prisma.passkey.create({ data: { ...passkeys.passkeys[0], id: 'mail-passkey', deviceType: 'singleDevice', backedUp: false } as never });
   const mail: { token: string; invitationId: string }[] = [];
-  const challenge = challengeOf(await inviteAdmin(prisma, owner, 'org-key', { email: 'delivery@example.test' }));
-  const proof = { nonce: challenge.nonce, assertion: assertionFor(ownerPasskey, challenge.challenge, { counter: 4, origin, rpID: owner.rpId }) };
+  const challenge = challengeOf(await inviteAdmin(prisma, mailActor, 'mail-org-key', { email: 'delivery@example.test' }));
+  const proof = { nonce: challenge.nonce, assertion: assertionFor(mailPasskey, challenge.challenge, { counter: 1, origin, rpID: owner.rpId }) };
   const deliver = async (value: { token: string; invitationId: string }) => { mail.push(value); };
-  const result = await inviteAdmin(prisma, owner, 'org-key', { email: 'delivery@example.test' }, proof, deliver);
-  await inviteAdmin(prisma, owner, 'org-key', { email: 'delivery@example.test' }, proof, deliver);
+  const result = await inviteAdmin(prisma, mailActor, 'mail-org-key', { email: 'delivery@example.test' }, proof, deliver);
+  await inviteAdmin(prisma, mailActor, 'mail-org-key', { email: 'delivery@example.test' }, proof, deliver);
   expect(mail).toHaveLength(1);
   expect(mail[0]!.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
   expect(JSON.stringify(result)).not.toContain(mail[0]!.token);
-  const failedChallenge = challengeOf(await inviteAdmin(prisma, owner, 'org-key', { email: 'failed@example.test' }));
-  const failed = await inviteAdmin(prisma, owner, 'org-key', { email: 'failed@example.test' }, {
-    nonce: failedChallenge.nonce, assertion: assertionFor(ownerPasskey, failedChallenge.challenge, { counter: 5, origin, rpID: owner.rpId }),
+  const failedChallenge = challengeOf(await inviteAdmin(prisma, mailActor, 'mail-org-key', { email: 'failed@example.test' }));
+  const failed = await inviteAdmin(prisma, mailActor, 'mail-org-key', { email: 'failed@example.test' }, {
+    nonce: failedChallenge.nonce, assertion: assertionFor(mailPasskey, failedChallenge.challenge, { counter: 2, origin, rpID: owner.rpId }),
   }, async () => { throw new Error('local transport failure'); });
   expect(failed).toMatchObject({ delivery: 'failed' });
   const grant = await prisma.keyGrant.findFirstOrThrow({ where: { invitedEmail: 'failed@example.test', revokedAt: null } });
   expect(grant.acceptedAt).toBeNull();
   expect(await prisma.keyGrantEvent.count({ where: { grantId: grant.id, kind: 'delivery-failed' } })).toBe(1);
+  const third = challengeOf(await inviteAdmin(prisma, mailActor, 'mail-org-key', { email: 'third@example.test' }));
+  await inviteAdmin(prisma, mailActor, 'mail-org-key', { email: 'third@example.test' }, { nonce: third.nonce, assertion: assertionFor(mailPasskey, third.challenge, { counter: 3, origin, rpID: owner.rpId }) }, deliver);
+  const fourth = challengeOf(await inviteAdmin(prisma, mailActor, 'mail-org-key', { email: 'fourth@example.test' }));
+  const count = await prisma.keyGrant.count({ where: { keyId: 'mail-org-key' } });
+  const sent = mail.length;
+  const refusal = await inviteAdmin(prisma, mailActor, 'mail-org-key', { email: 'fourth@example.test' }, { nonce: fourth.nonce, assertion: assertionFor(mailPasskey, fourth.challenge, { counter: 4, origin, rpID: owner.rpId }) }, deliver).then(() => null, error => error);
+  expect(refusal).toMatchObject({ status: 429, code: 'invitation_rate_limited' });
+  expect(refusal.retryAfter).toBeGreaterThan(0);
+  expect(await prisma.keyGrant.count({ where: { keyId: 'mail-org-key' } })).toBe(count);
+  expect(mail.length).toBe(sent);
+  const pendingRows = await prisma.keyGrant.count({ where: { keyId: 'mail-org-key', role: 'ADMIN', acceptedAt: null, revokedAt: null } });
+  await prisma.keyGrant.createMany({ data: Array.from({ length: 50 - pendingRows }, (_, i) => ({ id: `cap-${i}`, keyId: 'mail-org-key', role: 'ADMIN' as const, invitedEmail: `cap-${i}@example.test`, invitationExpiresAt: new Date(Date.now() + 60000) })) });
+  await expect(inviteAdmin(prisma, mailActor, 'mail-org-key', { email: 'over-cap@example.test' })).rejects.toMatchObject({ status: 409, code: 'pending_invitation_limit' });
+  expect(await prisma.keyGrant.count({ where: { keyId: 'mail-org-key', role: 'ADMIN', acceptedAt: null, revokedAt: null } })).toBe(50);
+
+});
+
+test('normalized recipient send budget is shared across inviting accounts', async () => {
+  const { createSealingContext } = await import('../services/key-sealing');
+  let sent = 0;
+  for (let i = 0; i < 4; i++) {
+    const id = `recipient-owner-${i}`;
+    const keyId = `recipient-key-${i}`;
+    const actor = { ...owner, userId: id, sessionId: `${id}-session` };
+    await prisma.user.create({ data: { id, email: `${id}@example.test`, emailVerified: true } });
+    await prisma.session.create({ data: { id: actor.sessionId, userId: id, token: `${id}-token`, expiresAt: new Date(Date.now() + 60000) } });
+    await prisma.ethereumKey.create({ data: { id: keyId, userId: null, address: `0x${(32 + i).toString(16).padStart(40, '0')}`, publicKey: 'recipient', custody: 'ORG', keyType: 'MANAGED', sealingContext: createSealingContext(), isCanonicalTinyCloud: false } });
+    await prisma.orgKey.create({ data: { keyId, orgId: id, orgName: 'Recipient limit test', controllerDid: id } });
+    await prisma.keyGrant.create({ data: { id: `${id}-grant`, keyId, role: 'OWNER', granteeUserId: id, acceptedAt: new Date() } });
+    const state = { passkeys: [] as Record<string, unknown>[] };
+    const passkey = addPasskey(state, id);
+    await prisma.passkey.create({ data: { ...state.passkeys[0], id: `${id}-passkey`, deviceType: 'singleDevice', backedUp: false } as never });
+    const target = { email: i % 2 ? ' victim@example.test ' : 'Victim@EXAMPLE.test' };
+    const challenge = challengeOf(await inviteAdmin(prisma, actor, keyId, target));
+    const proof = { nonce: challenge.nonce, assertion: assertionFor(passkey, challenge.challenge, { origin, rpID: owner.rpId }) };
+    const result = inviteAdmin(prisma, actor, keyId, target, proof, async () => { sent++; });
+    if (i < 3) await result;
+    else {
+      await expect(result).rejects.toMatchObject({ status: 429, code: 'invitation_rate_limited' });
+      expect(await prisma.keyGrant.count({ where: { keyId, role: 'ADMIN' } })).toBe(0);
+    }
+  }
+  expect(sent).toBe(3);
+});
+
+test('issuing a challenge sweeps only this user and grant expired unconsumed challenges', async () => {
+  const { issueGrantChallenge } = await import('../services/org-key-grant-challenge');
+  const base = { purpose: 'accept', keyId: 'org-key', grantId: 'audit-failure', userId: 'audit-person', sessionId: 'audit-session', operationDigest: 'old', origin, rpId: owner.rpId, expiresAt: new Date(0) };
+  await prisma.orgKeyGrantChallenge.createMany({ data: [
+    { ...base, nonce: 'expired-unused' },
+    { ...base, nonce: 'expired-receipt', consumedAt: new Date(), result: { keyId: 'org-key' } },
+    { ...base, nonce: 'other-user', userId: 'owner' },
+  ] });
+  await issueGrantChallenge(prisma, { ...owner, userId: 'audit-person', sessionId: 'audit-session' }, { purpose: 'accept', keyId: 'org-key', grantId: 'audit-failure', target: 'account:audit-person', granteeDid: 'personal-did' });
+  expect(await prisma.orgKeyGrantChallenge.findUnique({ where: { nonce: 'expired-unused' } })).toBeNull();
+  expect(await prisma.orgKeyGrantChallenge.findUnique({ where: { nonce: 'expired-receipt' } })).not.toBeNull();
+  expect(await prisma.orgKeyGrantChallenge.findUnique({ where: { nonce: 'other-user' } })).not.toBeNull();
 });

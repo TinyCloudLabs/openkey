@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { ORIGIN } from './e2e-port';
+import { ORG_ADMIN_ORIGIN as ORIGIN } from './org-admin-origin';
 
 // HTTP UI fixtures only. Real database and passkey checks run in the API integration suite.
 const personalDid = 'did:pkh:eip155:1:0x52908400098527886E0F7030069857D2E4169EE7';
@@ -61,7 +61,7 @@ for (const width of [390, 1440]) {
   }
 }
 
-for (const delivery of ['created', 'failed'] as const) {
+for (const delivery of ['created', 'failed', 'rate', 'cap'] as const) {
   test(`invitation ${delivery} notice at 390px follows a real browser passkey ceremony`, async ({ page, context }) => {
     const { generateKeyPairSync } = await import('node:crypto');
     const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
@@ -82,13 +82,14 @@ for (const delivery of ['created', 'failed'] as const) {
     await page.route('**/api/org-keys/org-key/admin-invitations**', async route => {
       if (new URL(route.request().url()).pathname.endsWith('/challenge')) {
         await route.fulfill({ json: { challenge: { nonce: 'ui-nonce', challenge: Buffer.alloc(32, 8).toString('base64url'), allowCredentials: [{ id: credential.toString('base64url'), type: 'public-key' }] } } });
-      } else await route.fulfill({ json: { invitationId: 'ui-invitation', ...(delivery === 'failed' ? { delivery: 'failed' } : {}) } });
+      } else if (delivery === 'rate' || delivery === 'cap') await route.fulfill({ status: delivery === 'rate' ? 429 : 409, json: { error: 'Forbidden', code: delivery === 'rate' ? 'invitation_rate_limited' : 'pending_invitation_limit' } });
+      else await route.fulfill({ json: { invitationId: 'ui-invitation', ...(delivery === 'failed' ? { delivery: 'failed' } : {}) } });
     });
     await page.goto('/dashboard/org-keys/org-key/admins');
     await page.getByRole('button', { name: 'Invite admin' }).click();
     await page.getByLabel('Email address').fill('person@example.test');
     await page.getByRole('button', { name: 'Send invitation' }).click();
-    await expect(page.getByText(delivery === 'failed'
+    await expect(page.getByText(delivery === 'rate' ? "You've sent several invitations in the last minute. Wait a minute, then try again." : delivery === 'cap' ? 'This organisation key already has 50 pending invitations. Cancel one, or wait for one to expire, then invite again.' : delivery === 'failed'
       ? "The invitation is ready, but the email couldn't be sent. Copy the invitation link and send it to them yourself."
       : "Invitation created for person@example.test. If they don't get the email, copy the invitation link and send it to them.")).toBeVisible();
     await page.screenshot({ path: `/tmp/tc1518-delivery-${delivery}-390.png`, fullPage: true });

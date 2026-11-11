@@ -78,7 +78,12 @@
       pendingLink = `${location.origin}/org-key-invitations/${encodeURIComponent(result.invitationId)}`;
       inviting = false;
       await load();
-    } catch { error = 'Couldn’t load admins. Check your connection, then try again.'; }
+    } catch (cause) {
+      const code = cause instanceof Error && 'code' in cause ? cause.code : null;
+      error = code === 'invitation_rate_limited' ? "You've sent several invitations in the last minute. Wait a minute, then try again."
+        : code === 'pending_invitation_limit' ? 'This organisation key already has 50 pending invitations. Cancel one, or wait for one to expire, then invite again.'
+        : 'Couldn’t load admins. Check your connection, then try again.';
+    }
     finally { busy = false; }
   }
   async function accept() {

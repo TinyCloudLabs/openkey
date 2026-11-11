@@ -1,3 +1,4 @@
+import { nativeUserRetryAfter } from './native-delegation/user-rate-limit';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@openkey/db';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
@@ -45,6 +46,8 @@ export async function inviteAdmin(prisma: PrismaClient, actor: GrantActor, keyId
     const existing = await tx.keyGrant.findFirst({ where: { keyId, acceptedAt: { not: null }, revokedAt: null,
       ...(recipient.invitedUserId ? { granteeUserId: recipient.invitedUserId } : { grantee: { email: { equals: recipient.invitedEmail!, mode: 'insensitive' } } }) } });
     if (!proof && existing) return refuse();
+    const pending = await tx.keyGrant.count({ where: { keyId, role: 'ADMIN', acceptedAt: null, revokedAt: null, invitationExpiresAt: { gt: new Date() } } });
+    if (!proof && pending >= 50) throw new OrgKeyRefusal(409, 'pending_invitation_limit', 'Forbidden');
     const stored = proof ? await tx.orgKeyGrantChallenge.findUnique({ where: { nonce: proof.nonce } }) : null;
     const grantId = stored?.grantId ?? randomUUID();
     const operation: GrantOperation = { purpose: 'invite', keyId, grantId, target: recipient.encoded, granteeDid: null };
@@ -52,6 +55,11 @@ export async function inviteAdmin(prisma: PrismaClient, actor: GrantActor, keyId
     const redeemed = await redeemGrantChallenge(tx, actor, operation, proof.nonce, proof.assertion);
     if (redeemed.retry) return redeemed.retry;
     if (existing) return refuse();
+    if (pending >= 50) throw new OrgKeyRefusal(409, 'pending_invitation_limit', 'Forbidden');
+    const senderRetry = nativeUserRetryAfter(`org-invite-sender:${actor.userId}`, 'org_invite_send');
+    if (senderRetry) throw new OrgKeyRefusal(429, 'invitation_rate_limited', 'Forbidden', senderRetry);
+    const recipientRetry = nativeUserRetryAfter(`org-invite-recipient:${recipient.encoded}`, 'org_invite_send');
+    if (recipientRetry) throw new OrgKeyRefusal(429, 'invitation_rate_limited', 'Forbidden', recipientRetry);
     const previous = await tx.keyGrant.findMany({ where: { keyId, role: 'ADMIN', acceptedAt: null, revokedAt: null,
       invitedEmail: recipient.invitedEmail, invitedUserId: recipient.invitedUserId } });
     for (const old of previous) {

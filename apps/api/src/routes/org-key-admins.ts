@@ -20,7 +20,10 @@ function router(deps: Deps, paths: string[] = ['*']) {
   app.use(path, deps.sessionMiddleware);
   }
   app.onError((error, c) => {
-    if (error instanceof OrgKeyRefusal) return c.json({ error: error.message, code: error.code }, error.status);
+    if (error instanceof OrgKeyRefusal) {
+      if (error.retryAfter) c.header('Retry-After', String(error.retryAfter));
+      return c.json({ error: error.message, code: error.code }, error.status);
+    }
     throw error;
   });
   return app;

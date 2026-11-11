@@ -141,9 +141,10 @@ export async function isOrgKeyOwnerAccount(prisma: PrismaClient, keyId: string, 
 
 export class OrgKeyRefusal extends Error {
   constructor(
-    readonly status: 400 | 403 | 404 | 409 | 410 | 503,
+    readonly status: 400 | 403 | 404 | 409 | 410 | 429 | 503,
     readonly code: string,
     message: string,
+    readonly retryAfter?: number,
   ) {
     super(message);
   }

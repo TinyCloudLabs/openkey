@@ -33,7 +33,7 @@ const tx = {
     count: async (args: { where: unknown }) => { ownerGrantQueries.push(args); return ownerGrantCount; },
     updateMany: async (args: unknown) => { adminRevocations.push(args); return { count: 0 }; },
   },
-  user: { delete: async ({ where }: { where: { id: string } }) => { deletedUsers.push(where.id); return {}; } },
+  user: { findUnique: async () => ({ email: 'user@example.com', emailVerified: true }), delete: async ({ where }: { where: { id: string } }) => { deletedUsers.push(where.id); return {}; } },
 };
 
 const prisma = {

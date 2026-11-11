@@ -50,6 +50,7 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261029_0001_org_registration_proofs', '2aba2adcbca2a1554b480ee832873d846ed57161f95668ff4b4ce6659f465569'],
   ['20261103_0001_delegation_code_claim', 'de705f548d9ffd6bc6a0d669f1156874258f31cc2d3e3584dbf0b49e5b40d992'],
   ['20261103_0002_approval_request_denied', '87d5205193ef11fc87a52325ff703cc9fc14dcec3c2a81ac71408ea5709bfce8'],
+  ['20261111_0001_org_admin_invitations', 'e45d38cc7f53da403af43182c4cfcad675341bfd013494f60f238e4562eaefad'],
 ]);
 
 export type SchemaContractDatabase = {
