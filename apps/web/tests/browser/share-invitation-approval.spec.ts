@@ -66,7 +66,7 @@ for (const subjectKind of ['session', 'file'] as const) {
     const prepares = await open(page, { permissions: [], context: { ...context, subjectKind } }, shareKey, [create, decrypt]);
     await expect(page.getByRole('heading', { name: 'Invite alex@example.test to Project notes' })).toBeVisible();
     // Acceptance is 23 hours after this file loaded, so a moment later at page load it is 22 whole hours away.
-    await expect(page.getByLabel('Invitation')).toContainText(`Accept within 22 hours, by ${await shownDate(page, acceptanceExpiresAt)}`);
+    await expect(page.getByLabel('Invitation')).toContainText(`${subjectKind === 'file' ? 'Approve' : 'Accept'} within 22 hours, by ${await shownDate(page, acceptanceExpiresAt)}`);
     await expect(page.getByText(CONTINUATION)).toHaveCount(subjectKind === 'session' ? 1 : 0);
     const summary = page.getByLabel('Requested access');
     await expect(summary.getByText('Create an encryption key for this invitation only')).toBeVisible();
@@ -108,7 +108,7 @@ for (const [label, access, words] of [
     const accessExpiresAt = access();
     await open(page, { permissions: [], context: { ...context, subjectKind: 'file', accessExpiresAt } }, shareKey, [create, decrypt]);
     const box = page.getByLabel('Invitation');
-    await expect(box).toContainText(`Accept within 22 hours, by ${await shownDate(page, acceptanceExpiresAt)}`);
+    await expect(box).toContainText(`Approve within 22 hours, by ${await shownDate(page, acceptanceExpiresAt)}`);
     await expect(box).toContainText(`alex@example.test can open Project notes for ${words}, until ${await shownDate(page, accessExpiresAt)}`);
     await expect(page.getByText(CONTINUATION)).toHaveCount(0);
     const dir = process.env.QA_SCREENSHOT_DIR;
@@ -120,7 +120,7 @@ test('a file invitation 30 minutes from its deadlines never overstates them', as
   const soon = new Date(Math.floor((Date.now() + 30 * 60_000) / 1000) * 1000).toISOString();
   await open(page, { permissions: [], context: { ...context, subjectKind: 'file', acceptanceExpiresAt: soon, accessExpiresAt: soon } }, shareKey, [create, decrypt]);
   const box = page.getByLabel('Invitation');
-  await expect(box).toContainText(`Accept within the next hour, by ${await shownDate(page, soon)}`);
+  await expect(box).toContainText(`Approve within the next hour, by ${await shownDate(page, soon)}`);
   await expect(box).toContainText(`alex@example.test can open Project notes for less than an hour, until ${await shownDate(page, soon)}`);
   await expect(box).not.toContainText('1 hour');
 });
@@ -133,10 +133,10 @@ test('an expired file invitation says so for both dates', async ({ page }) => {
   const access = past(3600_000);
   await open(page, { permissions: [], context: { ...context, subjectKind: 'file', acceptanceExpiresAt: accepted, accessExpiresAt: access } }, shareKey, [create, decrypt]);
   const box = page.getByLabel('Invitation');
-  await expect(box).toContainText(`This invitation expired on ${await shownDate(page, accepted)}.`);
+  await expect(box).toContainText(`The time to approve this ended on ${await shownDate(page, accepted)}.`);
   await expect(box).toContainText(`alex@example.test could open Project notes until ${await shownDate(page, access)}.`);
-  await expect(box).not.toContainText('Accept within');
-  await expect(box).not.toContainText('the next hour');
+  await expect(box).not.toContainText('Approve within');
+  await expect(box).not.toContainText('expired');
   const dir = process.env.QA_SCREENSHOT_DIR;
   if (dir) await page.screenshot({ path: `${dir}/share-invitation-file-expired-390.png`, fullPage: true });
 });
@@ -146,7 +146,7 @@ test('a file invitation past acceptance but not access keeps the access line', a
   const access = new Date(Date.now() + 7 * DAY + 3600_000).toISOString();
   await open(page, { permissions: [], context: { ...context, subjectKind: 'file', acceptanceExpiresAt: accepted, accessExpiresAt: access } }, shareKey, [create, decrypt]);
   const box = page.getByLabel('Invitation');
-  await expect(box).toContainText(`This invitation expired on ${await shownDate(page, accepted)}.`);
+  await expect(box).toContainText(`The time to approve this ended on ${await shownDate(page, accepted)}.`);
   await expect(box).toContainText(`alex@example.test can open Project notes for 7 days, until ${await shownDate(page, access)}`);
 });
 

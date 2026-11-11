@@ -21,7 +21,14 @@
   <h2 class="text-base font-semibold leading-snug text-surface-900 [overflow-wrap:anywhere]">
     Invite {invitation.recipientEmail} to {invitation.subjectName}
   </h2>
-  {#if acceptanceOver}
+  {#if invitation.subjectKind === 'file'}
+    <!-- A file invitation's acceptance deadline is the owner's window to approve; the recipient opens until access ends. -->
+    {#if acceptanceOver}
+      <p class="text-sm text-surface-900">The time to approve this ended on {invitationDateText(invitation.acceptanceExpiresAt)}.</p>
+    {:else}
+      <p class="text-sm text-surface-900">Approve within {invitationDurationText(invitation.acceptanceExpiresAt, now, 'the next hour')}, by {invitationDateText(invitation.acceptanceExpiresAt)}</p>
+    {/if}
+  {:else if acceptanceOver}
     <p class="text-sm text-surface-900">This invitation expired on {invitationDateText(invitation.acceptanceExpiresAt)}.</p>
   {:else}
     <p class="text-sm text-surface-900">Accept within {invitationDurationText(invitation.acceptanceExpiresAt, now, 'the next hour')}, by {invitationDateText(invitation.acceptanceExpiresAt)}</p>
