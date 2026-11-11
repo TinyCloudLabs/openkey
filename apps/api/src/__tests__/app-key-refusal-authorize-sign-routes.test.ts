@@ -208,7 +208,8 @@ describe('POST /authorize-sign-prepare', () => {
   ])('refuses %s and issues nothing', async (_name, raw) => {
     const res = await post('/authorize-sign-prepare', { ...prepareBody(siweWith(raw)), requestOrigin: ORIGIN });
     expect(res.status).toBe(403);
-    await expect(res.json()).resolves.toEqual({ error: NOT_DECLARED, code: 'app_key_grant_refused' });
+    // TC-2291: pin the own-sites refusal copy and its stable code.
+    await expect(res.json()).resolves.toEqual({ error: "This site isn't allowed to request that access.", code: 'app_key_grant_refused' });
     expect(signed).toEqual([]);
   });
 });
