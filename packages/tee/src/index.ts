@@ -268,3 +268,5 @@ export { recoveryPolicyId, deriveRecoveryTargetPolicy, RECOVERY_PROVENANCE_PATH 
 export type { TargetPolicyEvidence } from './escrow-recovery-policy';
 export { unwrapEscrowShare } from './escrow-envelope';
 export type { ShareEnvelope } from './escrow-envelope';
+export { recoverEscrowPaths } from './escrow-recovery';
+export type { EscrowCiphertextItem } from './escrow-recovery';

@@ -243,3 +243,15 @@ under the selected recovery root and recomputes the new policy id. Only then
 does it open the holder's original envelope and rewrap directly to the session
 recipient, clearing the opened share in a finally block. The package entry
 point accepts no caller-provided trust pins or quote verifier.
+
+The OpenKey drill import takes an explicitly supplied database connection. Its
+first statement locks all three sealed tables in EXCLUSIVE mode, then it
+requires a local server address and a database name ending `_escrow_drill`.
+It checks the complete copied snapshot and record-manifest hashes, validates
+all old identities, and reseals generation-zero records under freshly derived
+target keys. Every new path key must differ from its old key and have the same
+app source as the dedicated target evidence. It rereads the actual written
+rows and verifies their full snapshot encoding and all identities before
+committing a receipt. The receipt binds escrow id, export header hash,
+descriptor hash and new policy id; the same receipt is idempotent and a
+conflicting identity is refused. All writes and the receipt commit together.

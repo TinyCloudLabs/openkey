@@ -22,7 +22,7 @@ const adminIds = (admins as { id: string; publicKey: string }[]).map(admin => ad
 const hash = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const pathIdentity = (path: { path: string; purpose: string; version: number; transform: string }) => JSON.stringify([path.path, path.purpose, path.version, path.transform]);
 
-async function productionRuntime(): Promise<Runtime> {
+export async function createProductionOpenKeyEscrowRuntime(): Promise<Runtime> {
   const client = await createProductionEscrowProvenanceClient();
   return { ...client, measurement: async () => escrowMeasurementFromInfo(await client.getRuntimeInfo(), build.codeHash,
     readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(), settings.agentVersion) };
@@ -56,7 +56,7 @@ async function withPreparedInventory<T>(snapshot: Snapshot, runtime: Runtime, op
 }
 
 /** Service-only dependencies; HTTP input supplies no policy or measurement fields. */
-export function createOpenKeyEscrowService(database: Database, getRuntime: () => Promise<Runtime> = productionRuntime) {
+export function createOpenKeyEscrowService(database: Database, getRuntime: () => Promise<Runtime> = createProductionOpenKeyEscrowRuntime) {
   const fenced = createPrismaEscrowDatabase(database);
   const measuredConfigHash = hash(JSON.stringify(['tinycloud/escrow/measured-config', 1, settings, admins, build.codeHash]));
   const enabled = () => settings.enabled === true && settings.serviceName === 'api' && typeof build.codeHash === 'string' && /^[a-f0-9]{64}$/.test(build.codeHash);

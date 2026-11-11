@@ -55,6 +55,7 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261110_0002_passkey_enrolment_provenance', '9123f0159b8d5341a737f665dcd6f3853b80a70e21562163f04c611e11d6c388'],
   ['20261111_escrow_archive', 'c6be8003c58e7ced017ad781296498de091a938c90ccfb725672debfc9e9c165'],
   ['20261111_escrow_authorization', '234e3a1f12ca0450052b4fbadb79718f3e7d57309b115c0352a9f84290552f61'],
+  ['20261111_escrow_restore_receipt', 'dbfc4f6080372e790055814ad040c2f0ea841af1810b52452a8a5ef731d96216'],
   ['20261111_escrow_preflight', '67233606e430795ebfb513ac1d156ca0fc85c8668f953aad6c7d00994955416a'],
 ]);
 

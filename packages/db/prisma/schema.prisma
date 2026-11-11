@@ -963,3 +963,16 @@ model EscrowArchive {
 
   @@map("escrow_archive")
 }
+
+model EscrowRestoreReceipt {
+  escrowId          String   @id
+  headerHash        String
+  descriptorHash    String
+  newPolicyId       String
+  targetAppId       String
+  targetComposeHash String
+  completedRecords Int
+  createdAt         DateTime @default(now()) @db.Timestamptz
+
+  @@map("escrow_restore_receipt")
+}
