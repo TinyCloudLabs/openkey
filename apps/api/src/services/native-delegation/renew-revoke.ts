@@ -1,3 +1,7 @@
+import { lockNativeReviewer } from '../reviewer-native';
+import { reviewerActive } from '../reviewer-accounts';
+import { recordReviewerWriter } from '../reviewer-cleanup';
+import { APPLE_REVIEW_CLIENT_ID } from '../reviewer-apple-policy';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { generateRandomString } from 'better-auth/crypto';
 import type { PrismaClient } from '@openkey/db';
@@ -189,6 +193,7 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
       try {
         return await db.$transaction(async (tx) => {
           await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
+          const reviewer = await lockNativeReviewer(tx, candidate.userId);
           // The user row comes before the native rows: account deletion takes it
           // before cascading through consent, grants and tokens.
           await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${candidate.userId} FOR SHARE`;
@@ -242,8 +247,10 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
             return fail(code, 400);
           };
           // R9 (TC-1231): a locked account's native grants never renew.
-          if (user.lockedAt || user.reviewerHoldAt || user.reviewerBinding) return deny('access_denied', 'account_locked');
-          if (now.getTime() >= grant.absoluteExpiresAt.getTime() - RENEWAL_CUTOFF_MS) return deny('consent_required', 'grant_expired');
+          if (user.lockedAt || user.reviewerHoldAt || (reviewer && (reviewer.store !== 'apple' || !reviewerActive(reviewer, grant.reviewerEpoch)
+            || grant.clientId !== APPLE_REVIEW_CLIENT_ID || grant.clientId !== reviewer.clientId
+            || grant.spaceId !== reviewer.spaceId || grant.keyId !== reviewer.keyId || grant.tinycloudHost !== reviewer.nodeHost))) return deny('access_denied', 'account_locked');
+          if (now.getTime() >= grant.absoluteExpiresAt.getTime() - (reviewer ? 0 : RENEWAL_CUTOFF_MS)) return deny('consent_required', 'grant_expired');
           const client = await tx.oauthClient.findUnique({ where: { clientId: grant.clientId } });
           const ceiling = client && enabledNativeDelegation(client);
           if (!ceiling || ceiling.tinycloudHost !== grant.tinycloudHost) return deny('consent_required', 'ceiling_changed');
@@ -288,7 +295,8 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
           const delegation = completeSessionSetup({ ...prepared.prepared, signature });
           const newToken = generateRandomString(32, 'A-Z', 'a-z');
           const newHash = await storedToken({ storeTokens: 'hashed' }, newToken, 'refresh_token');
-          const expiresAt = new Date(now.getTime() + REFRESH_LIFETIME_SECONDS * 1000);
+          const expiresAt = new Date(Math.min(now.getTime() + REFRESH_LIFETIME_SECONDS * 1000, reviewer ? grant.absoluteExpiresAt.getTime() : Infinity));
+          if (reviewer) await recordReviewerWriter(tx, reviewer, new Date(now.getTime() + ttlSeconds * 1000));
           if (recoveringLostResponse) {
             const rowsToDelete = [row.id, previousRow!.id];
             await tx.oauthAccessToken.deleteMany({ where: { refreshId: { in: rowsToDelete } } });
@@ -311,7 +319,7 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
               siwe: prepared.prepared.siwe, signature, delegationHeader: delegation.delegationHeader,
               delegationCid: delegation.delegationCid, issuedAt: now.toISOString(),
               expiresAt: new Date(now.getTime() + ttlSeconds * 1000).toISOString(),
-              renewableUntil: new Date(grant.absoluteExpiresAt.getTime() - RENEWAL_CUTOFF_MS).toISOString(),
+              renewableUntil: new Date(grant.absoluteExpiresAt.getTime() - (reviewer ? 0 : RENEWAL_CUTOFF_MS)).toISOString(),
               permissions, tinycloudHost: grant.tinycloudHost, hosting: 'existing', address: grant.address,
               chainId: 1, ownerDid: `did:pkh:eip155:1:${grant.address}`, spaceId: grant.spaceId,
             },

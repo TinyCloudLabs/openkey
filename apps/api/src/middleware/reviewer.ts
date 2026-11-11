@@ -4,6 +4,7 @@ import { logReviewer } from '../log';
 import { REVIEWER_MAX_SECONDS, captureReviewer, reviewerActive, reviewerForUser, reviewerForEmail } from '../services/reviewer-accounts';
 
 const ROUTES = new Set([
+  'POST /api/review-account/delete-intent', 'POST /api/review-account/delete',
   'GET /api/auth/get-session', 'POST /api/auth/sign-out',
   'GET /api/auth/oauth2/public-client',
   'POST /api/auth/sign-in/reviewer', 'POST /api/auth/sign-in/email-otp',
@@ -27,10 +28,15 @@ export function createReviewerRouteGuard(
     if (c.req.path.replace(/\/$/, '') === '/api/auth/oauth2/public-client'
       && (c.req.path !== '/api/auth/oauth2/public-client' || c.req.queries('client_id')?.length !== 1
         || c.req.query('client_id') !== binding.clientId)) return c.json({ error: 'Forbidden' }, 403);
+    const nativeConsent = binding.store === 'apple' && c.req.method === 'POST'
+      && (/^\/api\/oauth\/tinycloud\/requests\/[^/]+\/(prepare|approve|deny)$/.test(c.req.path)
+        || ['/api/auth/oauth2/tinycloud/renew', '/api/auth/oauth2/tinycloud/revoke'].includes(c.req.path));
+    const hostedDelegate = c.req.path.startsWith('/api/delegate');
     if (!reviewerActive(binding, session?.reviewerEpoch ?? null)
       || session?.userId !== binding.userId || session.expiresAt <= new Date()
       || session.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000 <= Date.now()
-      || !ROUTES.has(`${c.req.method} ${c.req.path.replace(/\/$/, '')}`)) {
+      || (binding.store === 'apple' && hostedDelegate)
+      || (!nativeConsent && !ROUTES.has(`${c.req.method} ${c.req.path.replace(/\/$/, '')}`))) {
       return c.json({ error: 'Forbidden' }, 403);
     }
     captureReviewer(binding, session.id, session.createdAt.getTime() + 3600_000);
@@ -41,6 +47,15 @@ export function createReviewerRouteGuard(
 /** Includes provider refusals that run before the reviewer verifier hook. */
 export function createReviewerAuthAudit(database: PrismaClient): MiddlewareHandler {
   return async (c, next) => {
+    if (['/api/review-account/delete', '/api/auth/reviewer/delete', '/api/review-account/delete-intent', '/api/auth/reviewer/delete-intent'].includes(c.req.path)) {
+      try { await next(); }
+      finally {
+        const failed = Boolean(c.error) || c.res.status >= 400;
+        if (!c.req.path.endsWith('delete-intent') || failed) logReviewer('reviewer_admin',
+          c.req.path.endsWith('delete-intent') ? 'delete_intent_failed' : failed ? 'delete_failed' : 'deleted', 'apple');
+      }
+      return;
+    }
     if (!['/api/auth/sign-in/reviewer', '/api/auth/sign-in/email-otp'].includes(c.req.path)) return next();
     let audited = c.req.path === '/api/auth/sign-in/reviewer';
     let store = 'unknown';

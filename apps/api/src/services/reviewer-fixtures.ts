@@ -1,8 +1,12 @@
+import { appleReviewEnabled, APPLE_REVIEW_CLIENT_ID } from './reviewer-apple-policy';
+import { enabledNativeDelegation } from './native-delegation/policy';
+import { retireReviewerOwner } from './reviewer-cleanup';
+import { TINYCLOUD_BOOTSTRAP_VERSION } from './tinycloud-bootstrap';
 import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { TinyCloudNode } from '@tinycloud/node-sdk';
 import { createTeeClient, generatePrivateKey, getAddressFromPrivateKey, seal } from '@openkey/tee';
-import type { PrismaClient } from '@openkey/db';
+import { Prisma, type PrismaClient } from '@openkey/db';
 import { createSealingContext } from './key-sealing';
 import { lockReviewer, holdReviewer } from './reviewer-accounts';
 import { TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
@@ -27,14 +31,18 @@ export const REVIEWER_FIXTURES = [
 export async function provisionReviewer(
   database: PrismaClient,
   store: string,
-  config: { clientId: string; nodeHost: string },
+  config: { clientId: string; nodeHost: string; redirectUri?: string },
   reset: boolean,
 ) {
-  if (!['openai', 'google'].includes(store) || !TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS.has(config.nodeHost)) {
+  if ((!['openai', 'google', 'apple'].includes(store) || (store === 'apple' && !appleReviewEnabled())) || !TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS.has(config.nodeHost)) {
     throw new Error('Reviewer configuration refused');
   }
   const client = await database.oauthClient.findUnique({ where: { clientId: config.clientId } });
-  if (!client || client.disabled || !client.scopes?.includes('tinycloud:mcp') || client.redirectUris.length !== 1) {
+  const native = client && enabledNativeDelegation(client);
+  const redirectUri = config.redirectUri ?? (client?.redirectUris.length === 1 ? client.redirectUris[0] : undefined);
+  if (!client || client.disabled || !redirectUri || !client.redirectUris.includes(redirectUri)
+    || (store === 'apple' ? client.clientId !== APPLE_REVIEW_CLIENT_ID || !native || native.tinycloudHost !== config.nodeHost
+      : !client.scopes?.includes('tinycloud:mcp') || client.redirectUris.length !== 1)) {
     throw new Error('Reviewer configuration refused');
   }
   const privateKey = generatePrivateKey();
@@ -50,6 +58,7 @@ export async function provisionReviewer(
     if (before.userId && !reset) throw new Error('Use explicit reset for an existing reviewer');
     const held = await holdReviewer(transaction, before);
     if (before.userId) {
+      if (store === 'apple') await retireReviewerOwner(transaction, before);
       await transaction.ethereumKey.deleteMany({ where: { userId: before.userId } });
       await transaction.user.delete({ where: { id: before.userId } });
       resetSpace = before.spaceId;
@@ -63,9 +72,10 @@ export async function provisionReviewer(
       isCanonicalTinyCloud: true, keyIndex: 0, label: 'App review',
     } });
     return transaction.reviewerAccount.update({ where: { store }, data: {
-      userId: user.id, keyId: key.id, spaceId, clientId: config.clientId, redirectUri: client.redirectUris[0],
-      resource, callbackUri, nodeHost: config.nodeHost, sessionDid: null, seededAt: null, readyAt: null,
+      userId: user.id, keyId: key.id, spaceId, clientId: config.clientId, redirectUri,
+      resource: store === 'apple' ? null : resource, callbackUri: store === 'apple' ? null : callbackUri, nodeHost: config.nodeHost, sessionDid: null, seededAt: null, readyAt: null,
       grantSessionId: null, installEpoch: held.installEpoch,
+      seedRun: Prisma.DbNull, seedStartedAt: null, writerExpiresAt: null,
     } });
   });
   if (resetSpace) logReviewer('reviewer_admin', 'reset', store, resetSpace);
@@ -77,6 +87,18 @@ export async function provisionReviewer(
   await node.signIn();
   const hosted = await node.ensureOwnedSpaceHosted('applications');
   if (hosted !== spaceId) throw new Error('Reviewer space mismatch');
+  if (store === 'apple') {
+    await database.$transaction(async transaction => {
+      const current = await lockReviewer(transaction, store);
+      if (current.userId !== binding.userId || current.installEpoch !== binding.installEpoch) throw new Error('Reviewer fixture was superseded');
+      await transaction.tinyCloudBootstrapState.create({ data: {
+        userId: binding.userId!, keyId: binding.keyId!, address, chainId: 1,
+        tinycloudHost: config.nodeHost, bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION,
+        status: 'complete', checkedAt: new Date(), completedAt: new Date(),
+      } });
+    });
+    return;
+  }
   const kv = node.kvForSpace(hosted);
   for (const [path, value] of REVIEWER_FIXTURES) {
     const result = await kv.put(path, value, { ifNoneMatch: '*' });

@@ -37,7 +37,7 @@ export async function currentReviewerDelegate(database: PrismaClient, userId: st
   const binding = await reviewerForUser(database, userId);
   if (!binding) return null;
   const captured = capturedReviewer();
-  if (!captured?.sessionId || captured.userId !== userId || !reviewerActive(binding, captured.epoch)
+  if (binding.store === 'apple' || !captured?.sessionId || captured.userId !== userId || !reviewerActive(binding, captured.epoch)
     || !binding.sessionDid || binding.grantSessionId !== captured.sessionId) refuse();
   const [session, consent, client] = await Promise.all([
     database.session.findFirst({ where: {

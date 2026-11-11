@@ -75,6 +75,7 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   ['20261110_0001_apple_notifications', '431fea91f3c4ed37c4a7efef982fc5b88e7dc396bdc9b49633366c7da64fd4ba'],
   ['20261110_0002_passkey_enrolment_provenance', '9123f0159b8d5341a737f665dcd6f3853b80a70e21562163f04c611e11d6c388'],
   ['20261111_0001_reviewer_accounts', '2eac83d74b03ee6d3043e8522c9cdee47c5893f343d304b572ba3d37e7ca1f40'],
+  ['20261111_0002_reviewer_apple', '60d1032a0ef4805e61101fdfb345b3c6ba8fd395110cf2bdbbb0b1573455d56a'],
 ]);
 
 export type MigrationRow = {
