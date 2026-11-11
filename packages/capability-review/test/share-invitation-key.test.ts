@@ -19,22 +19,12 @@ function grant(resource: string, abilities: string[]): CapabilityGrant {
   };
 }
 
-test('the invitation key reads as one key for this invitation, and never shows its id', () => {
+test('outside an invitation, the share key keeps its ordinary rows, naming the key', () => {
   const rows = buildStatements(grant(`urn:tinycloud:encryption:${owner}:default/share/${id}`, [create, decrypt]));
   expect(rows.map((row) => row.primaryText)).toEqual([
-    'Create an encryption key for this invitation only',
+    `Create your encryption key default/share/${id}`,
     'Open this shared file',
   ]);
-  for (const row of rows) expect(row.primaryText).not.toContain(id);
-});
-
-test.each([
-  ['an id that is not 32 lowercase hex', `default/share/${id.toUpperCase()}`],
-  ['a nested key', `default/share/${id}/x`],
-  ['another network', `vault/share/${id}`],
-])('a key create on %s keeps its own sentence', (_name, tail) => {
-  const [row] = buildStatements(grant(`urn:tinycloud:encryption:${owner}:${tail}`, [create]));
-  expect(row!.primaryText).not.toBe('Create an encryption key for this invitation only');
 });
 
 test.each([
@@ -46,6 +36,8 @@ test.each([
     { subjectKind, subjectName: 'Project notes' },
   );
   expect(rows.map((row) => row.primaryText).sort()).toEqual(['Create an encryption key for this invitation only', unlock]);
+  for (const row of rows) expect(row.primaryText).not.toContain(id);
+  expect(rows.find((row) => row.primaryText.startsWith('Create'))!.severity).toBe('attention');
 });
 
 test.each([

@@ -728,11 +728,6 @@ function buildNamedKeyStatement(
     parsed.keyPath === "share/" && verb === "create") {
     return { primaryText: SHARE_KEY_PREFIX_CREATE_STATEMENT, service: grant.service, resource, severity: "attention" };
   }
-  // The one share key OpenKey generates for a share invitation (TC-2234): the id means nothing to the owner.
-  if (parsed.kind === "key" && parsed.network === "default" &&
-    /^share\/[0-9a-f]{32}$/.test(parsed.keyPath) && verb === "create") {
-    return { primaryText: INVITATION_KEY_CREATE_STATEMENT, service: grant.service, resource, severity: "attention" };
-  }
   if (parsed.kind === "key" && parsed.network === "default" &&
     /^share\/[^/]+$/.test(parsed.keyPath) && verb === "decrypt") {
     return { primaryText: SHARE_KEY_DECRYPT_STATEMENT, service: grant.service, resource };
@@ -1959,16 +1954,27 @@ export function shareInvitationActionLabel(
 
 /**
  * The summary rows of a share invitation approval. When the selection is exactly the key OpenKey issues for the
- * invitation, its decrypt row names the invitation's subject; any other selection gets the ordinary rows.
+ * invitation, its rows read as that invitation's (`shareInvitationActionLabel`), without the key id; any other
+ * selection gets the ordinary rows.
  */
 export function buildShareInvitationSummaryStatements(
   grants: readonly CapabilityGrant[],
   invitation: ShareInvitationSubject,
 ): SummaryStatement[] {
   const rows = buildSummaryStatements(grants);
-  const unlock = grants.length === 1 ? shareInvitationActionLabel(grants[0]!, "tinycloud.encryption/decrypt", invitation) : null;
-  if (unlock === null) return rows;
-  return rows.map((row) => row.primaryText === SHARE_KEY_DECRYPT_STATEMENT ? { ...row, key: unlock, primaryText: unlock } : row);
+  const grant = grants.length === 1 ? grants[0]! : null;
+  if (grant === null || !isShareInvitationKeyGrant(grant)) return rows;
+  // The ordinary sentence of each action, replaced by the invitation's own.
+  const labels = new Map<string, string>();
+  for (const action of grant.actions) {
+    const label = shareInvitationActionLabel(grant, action.ability, invitation);
+    const ordinary = buildStatements({ ...grant, actions: [action] })[0]?.primaryText;
+    if (label !== null && ordinary !== undefined) labels.set(ordinary, label);
+  }
+  return rows.map((row) => {
+    const label = labels.get(row.primaryText);
+    return label === undefined ? row : { ...row, key: label, primaryText: label };
+  });
 }
 
 /** How many summary rows carry the Sensitive mark. */
