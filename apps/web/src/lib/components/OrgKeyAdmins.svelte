@@ -16,6 +16,7 @@
   let invitation = $state<Invitation | null>(null);
   let loading = $state(true);
   let busy = $state(false);
+  let pendingCap = $state(false);
   let notice = $state('');
   let error = $state('');
   let inviting = $state(false);
@@ -46,7 +47,7 @@
     void load();
   });
   async function load() {
-    loading = true; error = '';
+    loading = true; error = ''; pendingCap = false;
     try {
       if (window.top !== window.self) throw new Error('403');
       const current = await authClient.getSession();
@@ -70,7 +71,7 @@
   }
   async function sendInvitation() {
     if (busy || !keyId) return;
-    busy = true; error = '';
+    busy = true; error = ''; pendingCap = false;
     try {
       const base = `/org-keys/${encodeURIComponent(keyId)}/admin-invitations`;
       const result = await orgAdminAction<{ invitationId: string; delivery?: string }>(`${base}/challenge`, base, { [targetKind]: target });
@@ -80,6 +81,7 @@
       await load();
     } catch (cause) {
       const code = cause instanceof Error && 'code' in cause ? cause.code : null;
+      pendingCap = code === 'pending_invitation_limit';
       error = code === 'invitation_rate_limited' ? "You've sent several invitations in the last minute. Wait a minute, then try again."
         : code === 'pending_invitation_limit' ? 'This organisation key already has 50 pending invitations. Cancel one, or wait for one to expire, then invite again.'
         : 'Couldn’t load admins. Check your connection, then try again.';
@@ -136,7 +138,7 @@
     {/if}
     {#if loading}<p role="status">Loading people with access…</p>{/if}
     {#if notice}<div class="notice" role="status">{notice}</div>{/if}
-    {#if error}<div class="notice error" role="alert">{error}</div><button onclick={load} disabled={busy}>Try again</button>{/if}
+    {#if error}<div class="notice error" role="alert">{error}</div>{#if !pendingCap}<button onclick={load} disabled={busy}>Try again</button>{/if}{/if}
     {#if invitationState}<p>Ask the organisation owner for a new invitation.</p><a href="/dashboard">Go to OpenKey</a>{/if}
     {#if proofNeeded}<section class="form"><p>{maskedEmail ? `This invitation is for ${maskedEmail}. Sign in with that email to see it.` : 'Sign in with the invited account or verify the invited email to see this invitation.'}</p><button onclick={emailSignIn}>Sign in with email</button></section>{/if}
     {#if pendingLink}

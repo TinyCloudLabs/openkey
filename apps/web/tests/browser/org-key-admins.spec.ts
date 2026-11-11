@@ -92,6 +92,8 @@ for (const delivery of ['created', 'failed', 'rate', 'cap'] as const) {
     await expect(page.getByText(delivery === 'rate' ? "You've sent several invitations in the last minute. Wait a minute, then try again." : delivery === 'cap' ? 'This organisation key already has 50 pending invitations. Cancel one, or wait for one to expire, then invite again.' : delivery === 'failed'
       ? "The invitation is ready, but the email couldn't be sent. Copy the invitation link and send it to them yourself."
       : "Invitation created for person@example.test. If they don't get the email, copy the invitation link and send it to them.")).toBeVisible();
+    if (delivery === 'cap') await expect(page.getByRole('button', { name: 'Try again', exact: true })).toHaveCount(0);
+    if (delivery === 'rate') await expect(page.getByRole('button', { name: 'Try again', exact: true })).toBeVisible();
     await page.screenshot({ path: `/tmp/tc1518-delivery-${delivery}-390.png`, fullPage: true });
   });
 }
