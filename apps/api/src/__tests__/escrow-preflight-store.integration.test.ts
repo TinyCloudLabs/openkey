@@ -1,3 +1,4 @@
+import { escrowTestPostgres } from './escrow-test-pg';
 import { expect, test } from 'bun:test';
 import { Client } from 'pg';
 import { PrismaClient } from '@openkey/db';
@@ -10,7 +11,7 @@ import vector from '../../../../packages/tee/tests/fixtures/escrow-approval-v1.j
 import type { ExportPolicy } from '@openkey/tee';
 const run = process.env.OPENKEY_ESCROW_TEST_PG === '1' ? test : test.skip;
 run('private preflight is immutable, expiring and consumed atomically with its approval audit', async () => {
-  const local = { host: '/home/tinycloud/scratch/openkey-key-escrow/postgres', port: 55483, database: 'postgres', user: 'tinycloud' };
+  const local = escrowTestPostgres();
   const setup = new Client(local); await setup.connect();
   const schema = 'escrow_preflight_' + crypto.randomUUID().replaceAll('-', '');
   await setup.query(`CREATE SCHEMA "${schema}"`); await setup.query(`SET search_path TO "${schema}"`);

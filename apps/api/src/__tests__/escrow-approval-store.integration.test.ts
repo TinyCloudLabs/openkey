@@ -1,3 +1,4 @@
+import { escrowTestPostgres } from './escrow-test-pg';
 import { expect, test } from 'bun:test';
 import { Client } from 'pg';
 import { PrismaClient } from '@openkey/db';
@@ -8,7 +9,7 @@ import { createEscrowAuthorizationStore } from '../services/escrow-approval-stor
 
 const run = process.env.OPENKEY_ESCROW_TEST_PG === '1' ? test : test.skip;
 run('real SQL atomically consumes nonce with audit and serializes the rate limit', async () => {
-  const local = { host: '/home/tinycloud/scratch/openkey-key-escrow/postgres', port: 55483, database: 'postgres', user: 'tinycloud' };
+  const local = escrowTestPostgres();
   const setup = new Client(local); await setup.connect();
   const schema = 'escrow_auth_' + crypto.randomUUID().replaceAll('-', '');
   await setup.query(`CREATE SCHEMA "${schema}"`); await setup.query(`SET search_path TO "${schema}"`);

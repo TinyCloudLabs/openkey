@@ -1,3 +1,4 @@
+import { escrowTestPostgres } from './escrow-test-pg';
 import { expect, test } from 'bun:test';
 import { Client } from 'pg';
 import { PrismaClient } from '@openkey/db';
@@ -20,7 +21,7 @@ run('real HTTP preflight and export bind the same private snapshot and require t
   });
   const { createOpenKeyEscrowService } = await import('../services/escrow-service?service-integration' as string);
   const { escrowPreflightMessage, escrowApprovalMessage } = await import('../services/escrow-approval');
-  const local = { host: '/home/tinycloud/scratch/openkey-key-escrow/postgres', port: 55483, database: 'postgres', user: 'tinycloud' };
+  const local = escrowTestPostgres();
   const setup = new Client(local); await setup.connect();
   const schema = 'escrow_service_' + crypto.randomUUID().replaceAll('-', '');
   await setup.query(`CREATE SCHEMA "${schema}"`); await setup.query(`SET search_path TO "${schema}"`);

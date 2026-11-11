@@ -1,3 +1,4 @@
+import { escrowTestPostgres } from './escrow-test-pg';
 import { expect, test } from 'bun:test';
 import { PrismaClient } from '@openkey/db';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -6,9 +7,9 @@ import { Client } from 'pg';
 import { withFencedOpenKeySnapshot, type EscrowSqlDatabase, type EscrowSqlTransaction } from '../services/escrow-snapshot';
 
 // Explicit disposable local server only. No DATABASE_URL or production configuration.
-const local = { host: '/home/tinycloud/scratch/openkey-key-escrow/postgres', port: 55483, database: 'postgres', user: 'tinycloud' };
 const run = process.env.OPENKEY_ESCROW_TEST_PG === '1' ? test : test.skip;
 run('real PostgreSQL fence blocks new sealed rows through validation and releases after failure', async () => {
+  const local = escrowTestPostgres();
   const owner = new Client(local); const writer = new Client(local);
   await owner.connect(); await writer.connect();
   const schema = 'escrow_test_' + crypto.randomUUID().replaceAll('-', '');

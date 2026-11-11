@@ -1,3 +1,4 @@
+import { escrowTestPostgres } from './escrow-test-pg';
 import { expect, test } from 'bun:test';
 import { Client } from 'pg';
 import { PrismaClient } from '@openkey/db';
@@ -16,7 +17,7 @@ import { restoreOpenKeyDrill } from '../services/escrow-restore-drill';
 
 const run = process.env.OPENKEY_ESCROW_TEST_PG === '1' ? test : test.skip;
 run('isolated real PostgreSQL drill restores every key type atomically under a new policy', async () => {
-  const local = { host: '/home/tinycloud/scratch/openkey-key-escrow/postgres', port: 55483, user: 'tinycloud' };
+  const local = escrowTestPostgres();
   const control = new Client({ ...local, database: 'postgres' }); await control.connect();
   const name = 'tc_' + crypto.randomUUID().replaceAll('-', '') + '_escrow_drill';
   await control.query(`CREATE DATABASE "${name}"`);
