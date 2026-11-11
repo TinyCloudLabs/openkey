@@ -115,9 +115,22 @@ export interface TinyCloudManageKeyApp {
   status?: 'ENABLED' | 'DISABLED' | 'PENDING_USER_APPROVAL' | 'CONSENT_WITHDRAWN';
 }
 
-/** An MCP app the account has connected; `consentId` addresses the Disconnect call. */
+/** An MCP app the account has connected; `consentId` addresses its Disconnect call. */
 export interface ConnectedMcpApp {
   kind: 'mcp';
+  consentId: string;
+  clientId: string;
+  name: string;
+  uri: string | null;
+  host: string | null;
+  icon: string | null;
+  connectedAt: string;
+  scopes: string[];
+}
+
+/** An app that can read the owner's canonical wallet address. */
+export interface ConnectedIdentityApp {
+  kind: 'identity';
   consentId: string;
   clientId: string;
   name: string;
@@ -140,6 +153,7 @@ export interface TinyCloudManageKeyActivity {
 export interface TinyCloudManageKeyAppsResponse {
   apps: TinyCloudManageKeyApp[];
   mcpApps: ConnectedMcpApp[];
+  identityApps: ConnectedIdentityApp[];
   activity: TinyCloudManageKeyActivity[];
   mode: TinyCloudManageKeyPreference['mode'];
   policyEpoch: number;
@@ -320,6 +334,11 @@ export const api = {
 
   async disconnectMcpApp(consentId: string): Promise<{ consentId: string; disconnected: boolean }> {
     return fetchAPI(`/api/account/tinycloud-apps/mcp/${encodeURIComponent(consentId)}`, {
+      method: 'DELETE', body: JSON.stringify({ confirmation: 'DISCONNECT' }),
+    }, true);
+  },
+  async disconnectIdentityApp(consentId: string): Promise<{ consentId: string; disconnected: boolean }> {
+    return fetchAPI(`/api/account/tinycloud-apps/identity/${encodeURIComponent(consentId)}`, {
       method: 'DELETE', body: JSON.stringify({ confirmation: 'DISCONNECT' }),
     }, true);
   },

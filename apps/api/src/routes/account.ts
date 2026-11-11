@@ -4,7 +4,12 @@ import { symmetricDecrypt } from 'better-auth/crypto';
 import { createPrismaClient } from '@openkey/db';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { parseAutoSignPreferencePatch } from './account-preferences';
-import { TINYCLOUD_DELEGATION_SCOPE, TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_MCP_SCOPE } from '../oauth-config';
+import {
+  TINYCLOUD_DELEGATION_SCOPE,
+  TINYCLOUD_IDENTITY_SCOPE,
+  TINYCLOUD_MANAGE_KEY_SCOPE,
+  TINYCLOUD_MCP_SCOPE,
+} from '../oauth-config';
 import {
   changeTinyCloudManageKeyGrant,
   changeTinyCloudManageKeyMode,
@@ -303,7 +308,7 @@ accountRouter.patch('/auto-sign', async (c) => {
 // preference or decision; callers cannot create preferences without consent.
 accountRouter.get('/tinycloud-apps', async (c) => {
   const user = c.get('user');
-  const [consents, preferences, decisions, userPreference, nativeGrants, mcpConsents] = await Promise.all([
+  const [consents, preferences, decisions, userPreference, nativeGrants, mcpConsents, identityConsents] = await Promise.all([
     prisma.oauthConsent.findMany({
       where: { userId: user.id, OR: [{ scopes: { has: TINYCLOUD_MANAGE_KEY_SCOPE } }, { scopes: { has: TINYCLOUD_DELEGATION_SCOPE } }] },
       select: { clientId: true, scopes: true },
@@ -326,6 +331,12 @@ accountRouter.get('/tinycloud-apps', async (c) => {
       orderBy: { createdAt: 'desc' },
       select: { id: true, clientId: true, scopes: true, createdAt: true },
     }),
+    // Identity-only consents are visible and disconnectable without signing access.
+    prisma.oauthConsent.findMany({
+      where: { userId: user.id, scopes: { has: TINYCLOUD_IDENTITY_SCOPE } },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, clientId: true, scopes: true, createdAt: true },
+    }),
   ]);
   const clientIds = [...new Set([
     ...consents.map((consent) => consent.clientId),
@@ -333,7 +344,11 @@ accountRouter.get('/tinycloud-apps', async (c) => {
     ...decisions.map((decision) => decision.clientId),
     ...nativeGrants.map((grant) => grant.clientId),
   ])];
-  const clientLookupIds = [...new Set([...clientIds, ...mcpConsents.map((consent) => consent.clientId)])];
+  const clientLookupIds = [...new Set([
+    ...clientIds,
+    ...mcpConsents.map((consent) => consent.clientId),
+    ...identityConsents.map((consent) => consent.clientId),
+  ])];
   const clients = clientLookupIds.length === 0 ? [] : await prisma.oauthClient.findMany({
     where: { clientId: { in: clientLookupIds } },
     select: { clientId: true, name: true, uri: true, icon: true, disabled: true },
@@ -367,6 +382,20 @@ accountRouter.get('/tinycloud-apps', async (c) => {
       const client = clientById.get(consent.clientId);
       return {
         kind: 'mcp' as const,
+        consentId: consent.id,
+        clientId: consent.clientId,
+        name: client?.name || consent.clientId,
+        uri: client?.uri || null,
+        host: hostnameOf(client?.uri),
+        icon: client?.icon || null,
+        connectedAt: consent.createdAt.toISOString(),
+        scopes: consent.scopes,
+      };
+    }),
+    identityApps: identityConsents.map((consent) => {
+      const client = clientById.get(consent.clientId);
+      return {
+        kind: 'identity' as const,
         consentId: consent.id,
         clientId: consent.clientId,
         name: client?.name || consent.clientId,
@@ -459,6 +488,27 @@ accountRouter.delete('/tinycloud-apps/mcp/:consentId', async (c) => {
     return true;
   });
   if (!disconnected) return c.json({ error: 'Connected MCP app not found' }, 404);
+  return c.json({ consentId, disconnected: true });
+});
+// Disconnect an identity-only app and invalidate both provider token types.
+accountRouter.delete('/tinycloud-apps/identity/:consentId', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { confirmation?: unknown } | null;
+  if (body?.confirmation !== 'DISCONNECT') return c.json({ error: 'Type DISCONNECT to confirm' }, 400);
+  const userId = c.get('user').id;
+  const consentId = c.req.param('consentId');
+  const mine = { id: consentId, userId, scopes: { has: TINYCLOUD_IDENTITY_SCOPE } };
+  const disconnected = await prisma.$transaction(async (tx) => {
+    const consent = await tx.oauthConsent.findFirst({ where: mine, select: { clientId: true } });
+    if (!consent) return false;
+    const removed = await tx.oauthConsent.deleteMany({ where: mine });
+    if (removed.count !== 1) return false;
+    await tx.oauthAccessToken.deleteMany({ where: { userId, clientId: consent.clientId } });
+    await tx.oauthRefreshToken.deleteMany({ where: { userId, clientId: consent.clientId } });
+    return true;
+  });
+  if (!disconnected) return c.json({ error: 'Connected identity app not found' }, 404);
   return c.json({ consentId, disconnected: true });
 });
 
