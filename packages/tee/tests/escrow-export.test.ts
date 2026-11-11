@@ -16,7 +16,7 @@ test('synthetic enclave ceremony exports encrypted path key with actual split co
     composeHash: 'b'.repeat(64), codeHash: 'c'.repeat(64), osVersion: 'synthetic', agentVersion: 'synthetic',
     bootReference: 'synthetic', snapshotId: 'synthetic', nonce: 'synthetic', approvalReference: 'synthetic',
     operatorId: 'operator', approverId: 'approver', createdAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 60000).toISOString(), holders,
-    paths: [{ path: 'test/path', purpose: 'test', version: 0, transform: 'sha256-getkey', sourcePublicKey: 'synthetic', signatureChain: ['synthetic'], expectedCount: 1 }],
+    paths: [{ path: 'test/path', purpose: 'test', version: 0, transform: 'sha256-getkey', derivedPublicKey: '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798', sourcePublicKey: 'synthetic', signatureChain: ['synthetic'], expectedCount: 1 }],
   };
   const key = crypto.getRandomValues(new Uint8Array(32));
   const events: string[] = [];

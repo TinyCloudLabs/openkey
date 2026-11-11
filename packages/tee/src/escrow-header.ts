@@ -1,3 +1,4 @@
+import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { isEmptyLegacyDeclaration } from './escrow-legacy';
 import { escrowMaterialLength, type EscrowTransform } from './escrow-transform';
 import { createHash } from 'node:crypto';
@@ -24,7 +25,7 @@ export interface EscrowHeader {
   holders: readonly { id: string; x: number; publicKey: string }[];
   paths: readonly {
     path: string; purpose: string; version: number;
-    transform: EscrowTransform; sourcePublicKey: string;
+    transform: EscrowTransform; derivedPublicKey: string; sourcePublicKey: string;
     signatureChain: readonly string[]; expectedCount: number;
   }[];
 }
@@ -74,6 +75,8 @@ export function encodeEscrowHeader(header: EscrowHeader): Uint8Array {
   const pathsSeen = new Set<string>();
   const paths = header.paths.map(item => {
     text(item.path); text(item.purpose); text(item.sourcePublicKey);
+    if (typeof item.derivedPublicKey !== 'string' || !/^(02|03)[a-f0-9]{64}$/.test(item.derivedPublicKey)) throw new Error('Invalid derived public key');
+    secp256k1.Point.fromBytes(Buffer.from(item.derivedPublicKey, 'hex'));
     count(item.version); count(item.expectedCount);
     escrowMaterialLength(item.transform);
     if ((item.expectedCount === 0 && !isEmptyLegacyDeclaration(item)) || !Array.isArray(item.signatureChain) || item.signatureChain.length === 0) throw new Error('Invalid escrow path');
@@ -81,7 +84,7 @@ export function encodeEscrowHeader(header: EscrowHeader): Uint8Array {
     const identity = JSON.stringify([item.path, item.purpose, item.version]);
     if (pathsSeen.has(identity)) throw new Error('Duplicate escrow path');
     pathsSeen.add(identity);
-    return [item.path, item.purpose, item.version, item.transform, item.sourcePublicKey, [...item.signatureChain], item.expectedCount];
+    return [item.path, item.purpose, item.version, item.transform, item.derivedPublicKey, item.sourcePublicKey, [...item.signatureChain], item.expectedCount];
   }).sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0);
   return new TextEncoder().encode(JSON.stringify([
     'tinycloud/escrow/header', 1, header.escrowId, header.appId, header.contentKeyCommitment, header.createdAt, header.expiresAt,
@@ -105,7 +108,7 @@ export async function freezeEscrowHeader(input: EscrowHeader): Promise<{
     imageDigest: tuple[7], composeHash: tuple[8], codeHash: tuple[9], osVersion: tuple[10], agentVersion: tuple[11],
     bootReference: tuple[12], snapshotId: tuple[13], nonce: tuple[14], approvalReference: tuple[15], operatorId: tuple[16], approverId: tuple[17],
     holders: tuple[19].map((h: [string, number, string]) => ({ id: h[0], x: h[1], publicKey: h[2] })),
-    paths: tuple[20].map((p: [string, string, number, EscrowTransform, string, string[], number]) => ({ path: p[0], purpose: p[1], version: p[2], transform: p[3], sourcePublicKey: p[4], signatureChain: p[5], expectedCount: p[6] })),
+    paths: tuple[20].map((p: [string, string, number, EscrowTransform, string, string, string[], number]) => ({ path: p[0], purpose: p[1], version: p[2], transform: p[3], derivedPublicKey: p[4], sourcePublicKey: p[5], signatureChain: p[6], expectedCount: p[7] })),
   };
   const kem = new DhkemP256HkdfSha256();
   const recipients = new Map<string, CryptoKey>();

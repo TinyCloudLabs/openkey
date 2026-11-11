@@ -13,7 +13,7 @@ test('canonical header fixes ordering, copies policy and curve-checks recipients
     composeHash: 'b'.repeat(64), codeHash: 'c'.repeat(64), osVersion: 'test-os', agentVersion: 'test-agent',
     bootReference: 'test-boot', snapshotId: 'test-snapshot', nonce: 'test-nonce', approvalReference: 'test-approval',
     operatorId: 'operator', approverId: 'approver', holders,
-    paths: [{ path: 'test/path', purpose: 'wallet', version: 0, transform: 'sha256-getkey', sourcePublicKey: 'synthetic-source', signatureChain: ['synthetic-chain'], expectedCount: 1 }],
+    paths: [{ path: 'test/path', purpose: 'wallet', version: 0, transform: 'sha256-getkey', derivedPublicKey: '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798', sourcePublicKey: 'synthetic-source', signatureChain: ['synthetic-chain'], expectedCount: 1 }],
   };
   const frozen = await freezeEscrowHeader(h);
   expect(frozen.recipients.size).toBe(3);
@@ -51,6 +51,8 @@ test('fixed public P-256 scalar 1/2/3 header vector matches exact bytes and hash
 test('closed transform enum accepts raw material and opaque service path versions', async () => {
   const raw: EscrowHeader = { ...fixed.header as EscrowHeader, paths: [{ ...fixed.header.paths[0]!, path: 'opencredentials/witness/signing-key', transform: 'dstack-getkey-raw-v1' }] };
   expect((await freezeEscrowHeader(raw)).header.paths[0]!.transform).toBe('dstack-getkey-raw-v1');
+  await expect(freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, derivedPublicKey: '04' + '0'.repeat(64) }] })).rejects.toThrow();
+  await expect(freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, derivedPublicKey: '02' + 'f'.repeat(64) }] })).rejects.toThrow();
   await expect(freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, transform: 'unknown' as never }] })).rejects.toThrow();
   expect((await freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, path: 'opencredentials/share-email/v1/otp-pepper', version: 0 }] })).header.paths[0]!.version).toBe(0);
   expect((await freezeEscrowHeader({ ...raw, paths: [{ ...raw.paths[0]!, path: 'opencredentials/org-issuer/v1/org-test/3', version: 3 }] })).header.paths[0]!.version).toBe(3);

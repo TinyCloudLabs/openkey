@@ -70,7 +70,7 @@ of 65-byte uncompressed P-256 SEC1 bytes with prefix 0x04. Holder ids and public
 keys are distinct; exactly three holders are required. Coordinates x are distinct
 integers in 1..255, bound to their holder in the header. Holder tuples sort by
 id using JavaScript string comparison (UTF-16 code units). Each path tuple is
-`[path,purpose,version,transform,sourcePublicKey,signatureChain,expectedCount]`.
+`[path,purpose,version,transform,derivedPublicKey,sourcePublicKey,signatureChain,expectedCount]`.
 Path tuples sort by their JSON.stringify encoding using the same comparison.
 Duplicate `(path,purpose,version)` tuples are rejected. Signature-chain order
 is preserved. Header hash is SHA-256 of these bytes, lowercase hex.
@@ -136,3 +136,9 @@ TDX v4 quote body binding, and returns quote hex, event-log text and digest.
 Guest reachability plus a successful bound GetQuote supplies the runtime gate.
 The quote and event log are inputs to independent holder/recovery verification
 of TDX signatures, measurement replay and the expected app/compose policy.
+
+Each path's derivedPublicKey is the raw GetKey key's compressed secp256k1 public
+key: exactly 33 bytes, lowercase hex, prefix02/03, curve-checked. It immediately
+follows transform in the tuple. GetKey purpose is the empty string; chain[0]
+signs Keccak256(UTF8(":" + derivedPublicKey)). Path purpose names are service
+inventory labels, separate from this GetKey purpose argument.
