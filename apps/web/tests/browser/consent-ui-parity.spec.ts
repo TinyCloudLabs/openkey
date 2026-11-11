@@ -103,7 +103,7 @@ test('manual OpenKey login mints a short code from public fields and keeps the f
     delegationCid: 'bafy-signed',
     spaceId: space,
     verificationMethod: 'did:key:z6Mk',
-    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', kid: 'delegate-key', alg: 'EdDSA', ext: true, key_ops: ['verify'] },
     expirationTime: '2026-11-03T01:00:00.000Z',
     hostActivated: true,
     spaceReady: true,
@@ -118,8 +118,9 @@ test('manual OpenKey login mints a short code from public fields and keeps the f
   await page.route('**/api/delegate', (route) => json(route, 200, delegation));
   await page.route('**/api/delegation-codes', (route) => {
     const body = route.request().postDataJSON() as { delegation: Record<string, unknown> };
-    expect(body.delegation).toEqual(Object.fromEntries(Object.entries(delegation).filter(([key]) => publicKeys.includes(key))));
-    expect(body.delegation).not.toHaveProperty('requestedSpaces');
+    const publicDelegation: Record<string, unknown> = Object.fromEntries(Object.entries(delegation).filter(([key]) => publicKeys.includes(key)));
+    publicDelegation.jwk = { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', kid: 'delegate-key' };
+    expect(body.delegation).toEqual(publicDelegation);
     return json(route, 201, { code: 'sf23-22cs', expiresAt: '2026-10-05T00:10:00.000Z' });
   });
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);

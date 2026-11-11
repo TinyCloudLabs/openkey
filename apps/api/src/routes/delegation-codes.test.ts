@@ -224,6 +224,31 @@ test('a delegate completion response can mint a code after excluding only non-pu
   const publicCompletion = Object.fromEntries(Object.entries(completion).filter(([field]) => publicFields[field]));
   expect((await post(publicCompletion)).status).toBe(201);
 });
+test('rejects JWK extension members until the mint body contains only public members', async () => {
+  const { app } = fixture();
+  const extendedJwk = {
+    ...delegation,
+    jwk: {
+      kty: 'OKP',
+      crv: 'Ed25519',
+      x: 'public-key',
+      kid: 'delegate-key',
+      alg: 'EdDSA',
+      ext: true,
+      key_ops: ['verify'],
+    },
+  };
+  const post = (value: typeof extendedJwk) => app.request('/api/delegation-codes', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ delegation: value }),
+  });
+  expect((await post(extendedJwk)).status).toBe(400);
+  expect((await post({
+    ...extendedJwk,
+    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'public-key', kid: 'delegate-key' },
+  })).status).toBe(201);
+});
 
 
 describe('TC-945 pending delegation short codes', () => {
