@@ -229,3 +229,4 @@ describe('account origin policy', () => {
     })).toEqual(['http://localhost:5173', 'http://localhost:3000']);
   });
 });
+
