@@ -151,6 +151,9 @@ export const OWN_KEY_PREFIX_STATEMENTS = {
  */
 export const SHARE_KEY_PREFIX_CREATE_STATEMENT = "Create keys for files you share";
 
+/** The owner's decrypt on one exact `default/share/<id>` key: the file shared with that key. */
+export const SHARE_KEY_DECRYPT_STATEMENT = "Open this shared file";
+
 /**
  * Escape controls, markup and non-ASCII characters as `\uXXXX`, so
  * resource text cannot alter the displayed consent sentence. Cap raw text

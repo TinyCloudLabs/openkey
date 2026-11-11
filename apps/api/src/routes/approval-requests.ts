@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { parseLink, resolveLink, validateLinkHeader, verifyHeader, linkIssuerPublicKey } from '@tinycloud/share-envelope/links';
-import { ApprovalResultError, ApprovalResultService, linkRequiredError } from '../services/approval-results';
+import { ApprovalResultError, ApprovalResultService, deniedError, linkRequiredError } from '../services/approval-results';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
@@ -65,7 +65,7 @@ approvalRequestRouter.post('/approval-requests/:id/load', async (c) => {
   }
   const opened = await resolveLink(link, { trustedOrigins: [viewerOrigin], apiOrigin: linksOrigin, fetch: Object.assign(fetchLink, { preconnect: fetch.preconnect }) });
   if (opened.type !== 'openkey-approval-request') throw new ApprovalResultError('invalid_request', 'Not an approval request', 400);
-  const request = parseApprovalRequestV1(opened.value, { issuer: opened.header.issuer, linkExpiresAt: new Date(opened.header.expiresAt) });
+  const request = parseApprovalRequestV1(opened.value, { issuer: opened.header.issuer, linkIssuedAt: new Date(opened.header.issuedAt), linkExpiresAt: new Date(opened.header.expiresAt) });
   const record = await store.register({ id, bodyCid: opened.header.bodyCid, issuer: opened.header.issuer, request, expiresAt: new Date(opened.header.expiresAt), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null });
   // `denied` is additive (TC-2459): a reopened declined link can say so. `approved` keeps its meaning.
   return c.json({ request: record.request, requestId: id, bodyCid: record.bodyCid, expiresAt: record.expiresAt.toISOString(), approved: !!record.resultRef, denied: !!record.deniedAt });
@@ -174,24 +174,30 @@ const MIN_INVITATION_KEY_MS = 60_000;
 
 /**
  * The permissions OpenKey signs for an approval request that names a share invitation (TC-2234), or undefined for
- * any other request. The request names no key: /prepare generates a 128-bit share key id, so it cannot name a key
- * that exists, and signing takes the id from the SIWE that /prepare bound. The one entry grants `key.create` and
- * `decrypt` on the approver's own `default/share/<id>` key, and replaces the caller's `permissions`. At /prepare the
- * delegation lasts until the invitation's acceptance deadline, at most the requester's signed lifetime.
+ * any other request. The request names no key. `prepare` generates a new 128-bit share key id, so the request cannot
+ * name a key that exists, and sets the delegation to last until the invitation's acceptance deadline, at most the
+ * requester's signed lifetime. `sign` takes the id from the SIWE that /prepare bound. The one entry grants
+ * `key.create` and `decrypt` on the approver's own `default/share/<id>` key and replaces the caller's `permissions`.
+ * `complete` (an external wallet's signature) is refused: only a key OpenKey holds signs the bytes it prepared.
  */
 export async function approvalRequestPermissions(
   body: { approvalRequestId?: unknown; authorizationContextToken?: unknown; permissions?: unknown; expiry?: unknown },
   signer: { address: string; chainId: number },
+  phase: 'prepare' | 'sign' | 'complete',
 ): Promise<DelegationPermissionEntry[] | undefined> {
   if (typeof body.approvalRequestId !== 'string' || !/^[a-z2-7]{26}$/.test(body.approvalRequestId)) return undefined;
   const record = await store.findById(body.approvalRequestId);
   const invitation = record ? shareInvitationOf(record.request) : undefined;
   if (!record || !invitation) return undefined;
+  if (record.deniedAt) throw deniedError(record.deniedAt);
+  if (phase === 'complete') {
+    throw new ApprovalResultError('request_binding', 'A share invitation is approved with a key OpenKey holds, not a browser wallet', 400);
+  }
   if (body.permissions !== undefined && !(Array.isArray(body.permissions) && body.permissions.length === 0)) {
     throw new ApprovalResultError('request_binding', 'A share invitation approval takes no permissions; OpenKey issues its key', 400);
   }
   let shareKeyId: string | null = null;
-  if (body.authorizationContextToken === undefined) {
+  if (phase === 'prepare') {
     // Five seconds short of the deadline, so the SIWE OpenKey prepares a moment later still ends before it.
     const remainingMs = Math.min(record.request.grantLifetimeSeconds * 1000, Date.parse(invitation.acceptanceExpiresAt) - Date.now() - 5000);
     if (remainingMs < MIN_INVITATION_KEY_MS) throw new ApprovalResultError('expired_request', 'This invitation can no longer be accepted. Send a new invitation.', 410);

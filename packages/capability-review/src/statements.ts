@@ -31,6 +31,7 @@ import {
   OWN_KEY_PREFIX_STATEMENTS,
   SENDER_HISTORY_STATEMENT,
   SHARE_KEY_PREFIX_CREATE_STATEMENT,
+  SHARE_KEY_DECRYPT_STATEMENT,
   appFolderDeleteStatement,
   appKeyStatementText,
   renderLiteral,
@@ -733,7 +734,7 @@ function buildNamedKeyStatement(
   }
   if (parsed.kind === "key" && parsed.network === "default" &&
     /^share\/[^/]+$/.test(parsed.keyPath) && verb === "decrypt") {
-    return { primaryText: "Open this shared file", service: grant.service, resource };
+    return { primaryText: SHARE_KEY_DECRYPT_STATEMENT, service: grant.service, resource };
   }
   if (parsed.kind === "prefix" && parsed.network === "default" &&
     parsed.keyPath === "share/" && verb === "decrypt") {
@@ -1926,6 +1927,33 @@ export function buildSummaryStatements(grants: readonly CapabilityGrant[]): Summ
     }
   }
   return [...grouped.values()].sort((left, right) => Number(left.unmapped) - Number(right.unmapped));
+}
+
+/** The share invitation an approval request names (TC-2234): the subject its review names. */
+export interface ShareInvitationSubject {
+  subjectKind: "session" | "file";
+  subjectName: string;
+}
+
+/**
+ * The summary rows of a share invitation approval. When the selection is exactly the signer's own
+ * `default/share/<32 hex>` key OpenKey issues for the invitation, its decrypt row names the invitation's subject;
+ * any other selection gets the ordinary rows.
+ */
+export function buildShareInvitationSummaryStatements(
+  grants: readonly CapabilityGrant[],
+  invitation: ShareInvitationSubject,
+): SummaryStatement[] {
+  const rows = buildSummaryStatements(grants);
+  const view = grants.length === 1 ? canonicalEncryptionUrn(grants[0]!) : null;
+  if (view?.kind !== "urn" || grants[0]!.ownedBySelf !== true || view.parsed.kind !== "key" ||
+    view.parsed.network !== "default" || !/^share\/[0-9a-f]{32}$/.test(view.parsed.keyPath)) {
+    return rows;
+  }
+  const unlock = invitation.subjectKind === "session"
+    ? `Unlock ${invitation.subjectName} messages with the invitation key`
+    : `Unlock ${invitation.subjectName} with the invitation key`;
+  return rows.map((row) => row.primaryText === SHARE_KEY_DECRYPT_STATEMENT ? { ...row, key: unlock, primaryText: unlock } : row);
 }
 
 /** How many summary rows carry the Sensitive mark. */

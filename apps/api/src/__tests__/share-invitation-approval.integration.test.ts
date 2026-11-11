@@ -80,7 +80,7 @@ if (!process.env.TC2234_SHARE_INVITATION_CHILD) {
     const opened = await openLinkRecord(sealed.record, sealed.key);
     const id = 'abcdefghijklmnopqrstuvwxyz';
     // The request /load registers: the same parser, on the bytes the requester sealed.
-    await createPrismaApprovalRequestStore(prisma).register({ id, bodyCid: opened.header.bodyCid, issuer: opened.header.issuer, request: parseApprovalRequestV1(opened.value, { issuer: opened.header.issuer, linkExpiresAt: new Date(opened.header.expiresAt) }), expiresAt: new Date(opened.header.expiresAt), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null });
+    await createPrismaApprovalRequestStore(prisma).register({ id, bodyCid: opened.header.bodyCid, issuer: opened.header.issuer, request: parseApprovalRequestV1(opened.value, { issuer: opened.header.issuer, linkIssuedAt: new Date(opened.header.issuedAt), linkExpiresAt: new Date(opened.header.expiresAt) }), expiresAt: new Date(opened.header.expiresAt), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null });
 
     const apiOrigin = process.env.BETTER_AUTH_URL!;
     const post = (path: string, payload: unknown, headers: Record<string, string> = {}) =>
@@ -116,6 +116,10 @@ if (!process.env.TC2234_SHARE_INVITATION_CHILD) {
     expect(second.keyId).not.toBe(first.keyId);
 
     const approval = (prepared: z.infer<typeof preparedSchema>) => ({ ...prepareBody, protocolVersion: 1, prepared: prepared.prepared, authorizationContextToken: prepared.authorizationContext.token, selectedActionIds: prepared.selectedActionKeys });
+    // A browser wallet signature cannot approve an invitation: only a key OpenKey holds signs what it prepared.
+    const wallet = await post('/api/delegate/complete', { ...approval(first.prepared), signature: `0x${'11'.repeat(65)}` });
+    expect(wallet.status).toBe(400);
+    expect(await wallet.json()).toMatchObject({ code: 'request_binding' });
     const approved = await post('/api/delegate', approval(second.prepared));
     expect(approved.status, await approved.clone().text()).toBe(200);
     const delegation = z.object({ ownerDid: z.string(), siwe: z.string() }).passthrough().parse(await approved.json());

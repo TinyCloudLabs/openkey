@@ -45,12 +45,17 @@ const relay = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256
 const relayJwk = await crypto.subtle.exportKey('jwk', relay.publicKey);
 
 const wholeSecond = (ms: number) => new Date(Math.floor(ms / 1000) * 1000).toISOString();
-const context = (overrides: Record<string, unknown> = {}) => ({
-  kind: 'share-invitation', version: 1, invitationId: '01JC5Z8Q0000000000000000AB',
-  recipientEmail: 'alex@example.test', subjectKind: 'session', subjectName: 'Project notes',
-  acceptanceExpiresAt: wholeSecond(Date.now() + HOUR), accessExpiresAt: wholeSecond(Date.now() + HOUR),
-  ...overrides,
-});
+const ACCEPT_BY = wholeSecond(Date.now() + HOUR);
+/** The share envelope's expiry is the acceptance deadline, as both requesters send it. */
+const context = (overrides: Record<string, unknown> = {}) => {
+  const acceptanceExpiresAt = overrides.acceptanceExpiresAt ?? ACCEPT_BY;
+  return {
+    kind: 'share-invitation', version: 1, invitationId: '01JC5Z8Q0000000000000000AB',
+    recipientEmail: 'alex@example.test', subjectKind: 'session', subjectName: 'Project notes',
+    acceptanceExpiresAt, accessExpiresAt: acceptanceExpiresAt,
+    ...overrides,
+  };
+};
 const requestBody = (overrides: Record<string, unknown> = {}) => ({
   issuer: signer.did, requestVersion: 1, targetDid: signer.did,
   targetPublicJwk: sessionJwk,
@@ -61,8 +66,8 @@ const requestBody = (overrides: Record<string, unknown> = {}) => ({
   context: context(),
   ...overrides,
 });
-const parse = (value: unknown, linkExpiresAt = new Date(Date.now() + 2 * HOUR)) =>
-  parseApprovalRequestV1(value, { issuer: signer.did, linkExpiresAt });
+const parse = (value: unknown, linkExpiresAt = new Date(Date.now() + 2 * HOUR), linkIssuedAt = new Date()) =>
+  parseApprovalRequestV1(value, { issuer: signer.did, linkIssuedAt, linkExpiresAt });
 
 let database: PGlite;
 let client: PrismaClient;
@@ -97,9 +102,9 @@ const service = () => new ApprovalResultService(store(), { apiOrigin: 'http://lo
 const shareKeyUrn = (id: string, owner = OWNER) => `urn:tinycloud:encryption:did:pkh:eip155:${owner.chainId}:${owner.address}:default/share/${id}`;
 
 /** /prepare's view: the body the page sends for an invitation request. */
-async function prepare(id = ID, owner = OWNER) {
-  const body: Record<string, unknown> = { approvalRequestId: id, jwk: sessionJwk, host: 'https://node.example.test' };
-  const permissions = await routes.approvalRequestPermissions(body, owner);
+async function prepare(id = ID, owner = OWNER, extra: Record<string, unknown> = {}) {
+  const body: Record<string, unknown> = { approvalRequestId: id, jwk: sessionJwk, host: 'https://node.example.test', ...extra };
+  const permissions = await routes.approvalRequestPermissions(body, owner, 'prepare');
   return { body, permissions: permissions! };
 }
 
@@ -139,6 +144,16 @@ describe('the signed request', () => {
 
   test('is refused when the invitation can be accepted after its link expires', () => {
     expect(() => parse(requestBody(), new Date(Date.now() + HOUR / 2))).toThrow('before its approval link expires');
+  });
+
+  test('is refused when the invitation can be accepted more than 24 hours after its link was issued', () => {
+    const issued = new Date(Date.parse(ACCEPT_BY) - 24 * HOUR - 1000);
+    expect(() => parse(requestBody(), new Date(Date.now() + 2 * HOUR), issued)).toThrow('within 24 hours');
+  });
+
+  test('is refused when the share envelope expiry is not the acceptance deadline', () => {
+    expect(() => parse(requestBody({ context: context({ accessExpiresAt: wholeSecond(Date.parse(ACCEPT_BY) + 7 * 24 * HOUR) }) })))
+      .toThrow('accessExpiresAt must equal acceptanceExpiresAt');
   });
 
   test.each([
@@ -183,7 +198,7 @@ describe('the key OpenKey issues at /prepare', () => {
   test('is refused when the page forwards permissions of its own', async () => {
     await register(parse(requestBody()));
     const body = { approvalRequestId: ID, permissions: [{ service: 'tinycloud.encryption', path: shareKeyUrn('0'.repeat(32)), actions: [CREATE, DECRYPT] }] };
-    await expect(routes.approvalRequestPermissions(body, OWNER)).rejects.toMatchObject({ code: 'request_binding' });
+    await expect(routes.approvalRequestPermissions(body, OWNER, 'prepare')).rejects.toMatchObject({ code: 'request_binding' });
   });
 
   test('is refused once the invitation can no longer be accepted', async () => {
@@ -195,7 +210,26 @@ describe('the key OpenKey issues at /prepare', () => {
     const { context: _omitted, ...withoutContext } = requestBody({ permissions: [{ service: 'tinycloud.capabilities', space: 'synthetic', path: '', actions: ['tinycloud.capabilities/read'] }] });
     const plain = parse(withoutContext);
     await register(plain);
-    expect(await routes.approvalRequestPermissions({ approvalRequestId: ID }, OWNER)).toBeUndefined();
+    expect(await routes.approvalRequestPermissions({ approvalRequestId: ID }, OWNER, 'prepare')).toBeUndefined();
+  });
+
+  test('is a new key with its own expiry even when the page sends a token from an earlier /prepare', async () => {
+    await register(parse(requestBody()));
+    const earlier = await preparedToken();
+    const { body, permissions } = await prepare(ID, OWNER, { authorizationContextToken: earlier.token, expiry: '24h' });
+    expect(permissions[0]!.path).not.toBe(earlier.permissions[0]!.path);
+    expect(Number(body.expiry)).toBeLessThanOrEqual(Date.parse(ACCEPT_BY) - Date.now());
+  });
+
+  test('is refused for a declined request, saying it was declined', async () => {
+    await register(parse(requestBody()));
+    expect(await store().deny(ID, new Date())).toBe(true);
+    await expect(prepare()).rejects.toMatchObject({ code: 'expired_request', status: 410, extra: { status: 'denied' } });
+  });
+
+  test('cannot be approved with a browser wallet signature', async () => {
+    await register(parse(requestBody()));
+    await expect(routes.approvalRequestPermissions({ approvalRequestId: ID }, OWNER, 'complete')).rejects.toMatchObject({ code: 'request_binding' });
   });
 });
 
@@ -229,7 +263,7 @@ describe('signing takes the key from the SIWE /prepare bound', () => {
     await register(parse(requestBody()));
     const { permissions, token, prepared } = await preparedToken();
     expect(parsePreparedRecap(prepared.prepared.siwe).map((entry) => entry.path)).toEqual([permissions[0]!.path]);
-    const signed = await routes.approvalRequestPermissions({ approvalRequestId: ID, authorizationContextToken: token }, OWNER);
+    const signed = await routes.approvalRequestPermissions({ approvalRequestId: ID, authorizationContextToken: token }, OWNER, 'sign');
     expect(signed).toEqual(permissions);
   });
 
@@ -237,15 +271,20 @@ describe('signing takes the key from the SIWE /prepare bound', () => {
     await register(parse(requestBody()));
     await register(parse(requestBody({ context: context({ invitationId: '01JC5Z8Q0000000000000000CD' }) })), OTHER_ID);
     const { token } = await preparedToken(OTHER_ID);
-    await expect(routes.approvalRequestPermissions({ approvalRequestId: ID, authorizationContextToken: token }, OWNER))
+    await expect(routes.approvalRequestPermissions({ approvalRequestId: ID, authorizationContextToken: token }, OWNER, 'sign'))
       .rejects.toMatchObject({ code: 'request_binding' });
   });
 
   test('a token prepared for another owner is refused', async () => {
     await register(parse(requestBody()));
     const { token } = await preparedToken(ID, OTHER_OWNER);
-    await expect(routes.approvalRequestPermissions({ approvalRequestId: ID, authorizationContextToken: token }, OWNER))
+    await expect(routes.approvalRequestPermissions({ approvalRequestId: ID, authorizationContextToken: token }, OWNER, 'sign'))
       .rejects.toMatchObject({ code: 'request_binding' });
+  });
+
+  test('signing without a token is refused', async () => {
+    await register(parse(requestBody()));
+    await expect(routes.approvalRequestPermissions({ approvalRequestId: ID }, OWNER, 'sign')).rejects.toMatchObject({ code: 'request_binding' });
   });
 });
 
@@ -270,6 +309,37 @@ describe('the approval window', () => {
     const { permissions } = await preparedToken();
     const { prepared: foreign } = await preparedToken(ID, OTHER_OWNER);
     await expect(window(permissions, { signedSiwe: foreign.prepared.siwe })).rejects.toMatchObject({ code: 'request_binding' });
+  });
+
+  test('accepts a SIWE the owner narrowed to decrypt on the issued key', async () => {
+    await register(parse(requestBody()));
+    const { permissions, prepared } = await preparedToken();
+    const decryptKey = prepared.permissions[0]!.actions.find((action) => action.ability === DECRYPT)!.key;
+    const narrowed = prepareDelegationSession({
+      address: OWNER.address, chainId: OWNER.chainId, prefix: 'default', jwk: sessionJwk, permissions, expiryMs: HOUR / 2, actionKeys: [decryptKey],
+    });
+    expect(parsePreparedRecap(narrowed.prepared.siwe)[0]!.actions).toEqual([DECRYPT]);
+    await expect(window(permissions, { signedSiwe: narrowed.prepared.siwe })).resolves.toBeDefined();
+  });
+
+  test.each([
+    ['another key', () => [{ service: 'tinycloud.encryption', path: shareKeyUrn('1'.repeat(32)), actions: [DECRYPT] }]],
+    ['the issued key and another key', (issued: string) => [
+      { service: 'tinycloud.encryption', path: issued, actions: [DECRYPT] },
+      { service: 'tinycloud.encryption', path: shareKeyUrn('1'.repeat(32)), actions: [DECRYPT] },
+    ]],
+    ['the issued key and a space', (issued: string) => [
+      { service: 'tinycloud.encryption', path: issued, actions: [DECRYPT] },
+      { service: 'tinycloud.kv', space: 'default', path: '', actions: ['tinycloud.kv/get'] },
+    ]],
+  ])('refuses a signed SIWE that grants %s', async (_name, signedPermissions) => {
+    await register(parse(requestBody()));
+    const { permissions } = await preparedToken();
+    const signed = prepareDelegationSession({
+      address: OWNER.address, chainId: OWNER.chainId, prefix: 'default', jwk: sessionJwk,
+      permissions: validatePermissions(signedPermissions(permissions[0]!.path)), expiryMs: HOUR / 2,
+    });
+    await expect(window(permissions, { signedSiwe: signed.prepared.siwe })).rejects.toMatchObject({ code: 'request_binding' });
   });
 
   test.each([

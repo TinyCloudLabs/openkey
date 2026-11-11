@@ -1402,7 +1402,7 @@ delegateRouter.post('/', async (c) => {
   const prefix = body.prefix || 'default';
   const host = body.host;
   const reason = normalizeDelegateReason(body.reason);
-  let permissions: PermissionEntry[] | undefined = await approvalRequestPermissions(body, { address, chainId });
+  let permissions: PermissionEntry[] | undefined = await approvalRequestPermissions(body, { address, chainId }, 'sign');
   if (permissions === undefined && body.permissions !== undefined) {
     try {
       permissions = validatePermissions(body.permissions);
@@ -1905,7 +1905,7 @@ delegateRouter.post('/prepare', async (c) => {
   const prefix = body.prefix || 'default';
   const host = body.host;
   const reason = normalizeDelegateReason(body.reason);
-  let permissions: PermissionEntry[] | undefined = await approvalRequestPermissions(body, { address, chainId });
+  let permissions: PermissionEntry[] | undefined = await approvalRequestPermissions(body, { address, chainId }, 'prepare');
   if (permissions === undefined && body.permissions !== undefined) {
     try {
       permissions = validatePermissions(body.permissions);
@@ -2164,6 +2164,7 @@ delegateRouter.post('/complete', async (c) => {
     chainId: Number(body.prepared.chainId) || 1,
     spaceId: preparedSpaceId,
   });
+  await approvalRequestPermissions(body, signedFields, 'complete');
 
   const completeAppKeyRefusal = appKeyRefusalForSiwe(body.prepared.siwe);
   if (completeAppKeyRefusal) return c.json(appKeyRefusalBody(completeAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(completeAppKeyRefusal));

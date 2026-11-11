@@ -8,6 +8,14 @@ import { parseApprovalRequest, type OpenKeyApprovalRequestV1 } from '@tinycloud/
 import { ENCRYPTION } from '@tinycloud/bootstrap';
 import { getAddress } from 'viem';
 import { ApprovalResultError } from './approval-results';
+import { isRawRecapEntry, parsePreparedRecap, type RecapEntry } from '../routes/delegate-session';
+
+/** The one permission OpenKey issues for a share invitation. */
+export interface ShareInvitationGrant {
+  service: string;
+  path: string;
+  actions: string[];
+}
 
 export interface ShareInvitationContext {
   kind: 'share-invitation';
@@ -16,7 +24,9 @@ export interface ShareInvitationContext {
   recipientEmail: string;
   subjectKind: 'session' | 'file';
   subjectName: string;
+  /** The deadline to accept the invitation. The key delegation ends before it. */
   acceptanceExpiresAt: string;
+  /** The expiry of the share envelope that carries the invitation: the acceptance deadline. Not a session lifetime. */
   accessExpiresAt: string;
 }
 
@@ -68,6 +78,10 @@ export function parseShareInvitationContext(value: unknown): ShareInvitationCont
   if (typeof name !== 'string' || name.length === 0 || [...name].length > 120 || name.trim() !== name || UNSAFE_TEXT.test(name)) {
     throw invalid('Share invitation subject name must be 1 to 120 printable characters');
   }
+  const acceptanceExpiresAt = canonicalInstant(context.acceptanceExpiresAt, 'acceptanceExpiresAt');
+  if (canonicalInstant(context.accessExpiresAt, 'accessExpiresAt') !== acceptanceExpiresAt) {
+    throw invalid('Share invitation accessExpiresAt must equal acceptanceExpiresAt');
+  }
   return {
     kind: 'share-invitation',
     version: 1,
@@ -75,8 +89,8 @@ export function parseShareInvitationContext(value: unknown): ShareInvitationCont
     recipientEmail: email,
     subjectKind: context.subjectKind,
     subjectName: name,
-    acceptanceExpiresAt: canonicalInstant(context.acceptanceExpiresAt, 'acceptanceExpiresAt'),
-    accessExpiresAt: canonicalInstant(context.accessExpiresAt, 'accessExpiresAt'),
+    acceptanceExpiresAt,
+    accessExpiresAt: acceptanceExpiresAt,
   };
 }
 
@@ -86,9 +100,10 @@ const STAND_IN_PERMISSION = { service: 'tinycloud.encryption', space: 'encryptio
 
 /**
  * Parses a signed approval request. A request with a share invitation `context` must carry no permissions, a
- * grant lifetime of at most 24 hours, and an acceptance deadline no later than its link expiry.
+ * grant lifetime of at most 24 hours, and an acceptance deadline no later than its link expiry and no more than
+ * 24 hours after the link was issued.
  */
-export function parseApprovalRequestV1(value: unknown, options: { issuer: string; linkExpiresAt: Date }): ApprovalRequestV1 {
+export function parseApprovalRequestV1(value: unknown, options: { issuer: string; linkIssuedAt: Date; linkExpiresAt: Date }): ApprovalRequestV1 {
   if (!value || typeof value !== 'object' || Array.isArray(value) || !('context' in value)) {
     return parseApprovalRequest(value, { issuer: options.issuer });
   }
@@ -101,8 +116,9 @@ export function parseApprovalRequestV1(value: unknown, options: { issuer: string
   if (parsed.grantLifetimeSeconds * 1000 > SHARE_INVITATION_MAX_LIFETIME_MS) {
     throw invalid('A share invitation request lasts at most 24 hours');
   }
-  if (Date.parse(context.acceptanceExpiresAt) > options.linkExpiresAt.getTime()) {
-    throw invalid('A share invitation must be accepted before its approval link expires');
+  const acceptBy = Date.parse(context.acceptanceExpiresAt);
+  if (acceptBy > options.linkExpiresAt.getTime() || acceptBy > options.linkIssuedAt.getTime() + SHARE_INVITATION_MAX_LIFETIME_MS) {
+    throw invalid('A share invitation must be accepted before its approval link expires, within 24 hours');
   }
   return { ...parsed, permissions: [], context };
 }
@@ -129,7 +145,7 @@ export function signerShareKeyId(urn: string, signer: { address: string; chainId
  * True when `permissions` is the one entry OpenKey issues for a share invitation: `key.create` and `decrypt` on a
  * `default/share/<32 hex>` key, owned by `signer` when given.
  */
-export function isShareInvitationGrant(permissions: unknown, signer?: { address: string; chainId: number }): boolean {
+export function isShareInvitationGrant(permissions: unknown, signer?: { address: string; chainId: number }): permissions is [ShareInvitationGrant] {
   if (!Array.isArray(permissions) || permissions.length !== 1) return false;
   const entry: unknown = permissions[0];
   if (!entry || typeof entry !== 'object' || Object.keys(entry).sort().join() !== 'actions,path,service') return false;
@@ -139,6 +155,17 @@ export function isShareInvitationGrant(permissions: unknown, signer?: { address:
     entry.actions.some((action, index) => action !== SHARE_INVITATION_KEY_ACTIONS[index])) {
     return false;
   }
-  const match = SHARE_KEY_URN.exec(entry.path);
-  return match !== null && (signer === undefined || signerShareKeyId(entry.path, signer) !== null);
+  return SHARE_KEY_URN.test(entry.path) && (signer === undefined || signerShareKeyId(entry.path, signer) !== null);
+}
+
+/**
+ * True when the signed SIWE's ReCap names only the issued key and grants only its abilities (the owner may have
+ * narrowed them): no other resource, space or ability.
+ */
+export function signedRecapHoldsOnly(siwe: string, grant: ShareInvitationGrant): boolean {
+  let entries: RecapEntry[];
+  try { entries = parsePreparedRecap(siwe); } catch { return false; }
+  if (entries.length !== 1 || !isRawRecapEntry(entries[0]!) || entries[0]!.path !== grant.path) return false;
+  const actions = entries[0]!.actions;
+  return actions.length > 0 && new Set(actions).size === actions.length && actions.every((action) => grant.actions.includes(action));
 }

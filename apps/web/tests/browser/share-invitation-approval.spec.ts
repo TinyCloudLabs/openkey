@@ -54,16 +54,29 @@ async function open(page: Page, request: Record<string, unknown>, resource: stri
   return prepares;
 }
 
-test('an invitation shows its recipient, subject, deadline and one key, never the key id', async ({ page }) => {
-  const prepares = await open(page, { permissions: [], context }, shareKey, [create, decrypt]);
-  await expect(page.getByRole('heading', { name: 'Invite alex@example.test to Project notes' })).toBeVisible();
-  await expect(page.getByLabel('Invitation')).toContainText('Accept by ');
-  await expect(page.getByText('Create an encryption key for this invitation only')).toBeVisible();
-  expect(await page.locator('main').innerText()).not.toContain(shareKeyId);
-  expect(prepares[0]).not.toHaveProperty('permissions');
-  const dir = process.env.QA_SCREENSHOT_DIR;
-  if (dir) await page.screenshot({ path: `${dir}/share-invitation-approval-390.png`, fullPage: true });
-});
+const UNLOCK = {
+  session: 'Unlock Project notes messages with the invitation key',
+  file: 'Unlock Project notes with the invitation key',
+} as const;
+const CONTINUATION = 'Once accepted, access can continue after this date. If you remove it, access ends within 7 days.';
+
+for (const subjectKind of ['session', 'file'] as const) {
+  test(`a ${subjectKind} invitation shows its recipient, subject, deadline and one key, never the key id or an expiry picker`, async ({ page }) => {
+    const prepares = await open(page, { permissions: [], context: { ...context, subjectKind } }, shareKey, [create, decrypt]);
+    await expect(page.getByRole('heading', { name: 'Invite alex@example.test to Project notes' })).toBeVisible();
+    await expect(page.getByLabel('Invitation')).toContainText('Accept by ');
+    await expect(page.getByText(CONTINUATION)).toHaveCount(subjectKind === 'session' ? 1 : 0);
+    await expect(page.getByText('Create an encryption key for this invitation only')).toBeVisible();
+    await expect(page.getByText(UNLOCK[subjectKind])).toBeVisible();
+    await expect(page.getByText('Open this shared file')).toHaveCount(0);
+    await expect(page.getByText('Approval expires')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Change' })).toHaveCount(0);
+    expect(await page.locator('main').innerText()).not.toContain(shareKeyId);
+    expect(prepares[0]).not.toHaveProperty('permissions');
+    const dir = process.env.QA_SCREENSHOT_DIR;
+    if (dir) await page.screenshot({ path: `${dir}/share-invitation-${subjectKind}-390.png`, fullPage: true });
+  });
+}
 
 test('a request without an invitation shows no invitation summary', async ({ page }) => {
   const leaf = `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default/share/${shareKeyId}`;

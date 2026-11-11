@@ -19,7 +19,7 @@
   // `updateSelection` from the selection handler) surfaces there.
 
   import type { Snippet } from "svelte";
-  import type { CapabilityReviewModel } from "@openkey/capability-review";
+  import type { CapabilityReviewModel, ShareInvitationSubject } from "@openkey/capability-review";
   import SigningApproval from "$lib/components/signing/signing-approval.svelte";
   import type { CliSigningTransport } from "./signing-adapter-types";
 
@@ -41,9 +41,11 @@
     showSigner?: boolean;
     /** Reports whether editable permission checkboxes are visible. */
     onEditingStateChange?: (editing: boolean) => void;
+    /** The share invitation a signed approval request names; its review names the invitation's subject. */
+    shareInvitation?: ShareInvitationSubject | null;
   }
 
-  let { model, initialSelection, transport, context, showSigner = false, onEditingStateChange }: Props = $props();
+  let { model, initialSelection, transport, context, showSigner = false, onEditingStateChange, shareInvitation = null }: Props = $props();
 
   // Internal review state. The adapter owns this because it is per-surface
   // presentational state — the route no longer touches it. We intentionally
@@ -94,6 +96,7 @@
   approveBlockedReason={transport.approveBlockedReason ?? null}
   approveBlockedByFailure={transport.approveBlockedByFailure ?? false}
   {context}
+  {shareInvitation}
   expiryMs={transport.expiry?.chosenMs ?? null}
   onExpiryChange={transport.expiry?.onChange}
   expiryBounded={transport.expiry?.bounded ?? false}

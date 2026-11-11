@@ -14,4 +14,7 @@
     Invite {invitation.recipientEmail} to {invitation.subjectName}
   </h2>
   <p class="text-sm text-surface-600">Accept by {acceptByText(invitation.acceptanceExpiresAt)}</p>
+  {#if invitation.subjectKind === 'session'}
+    <p class="text-xs leading-relaxed text-surface-500">Once accepted, access can continue after this date. If you remove it, access ends within 7 days.</p>
+  {/if}
 </section>

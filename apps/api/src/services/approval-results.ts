@@ -5,7 +5,7 @@ import type { OpenKeyApprovalRequestV1 } from '@tinycloud/share-envelope/links';
 import { strictSessionDid, type DeviceRelayEnvelope } from './device-authorization';
 import { hasPrivateJwkMember } from './authorization-signing';
 import { verifySessionProofClaims } from './native-delegation/session-proof';
-import { isShareInvitationGrant, shareInvitationOf } from './share-invitation';
+import { isShareInvitationGrant, shareInvitationOf, signedRecapHoldsOnly } from './share-invitation';
 
 export interface ApprovalRequestRecord {
   id: string;
@@ -62,7 +62,7 @@ export class ApprovalResultError extends Error {
  * every released client already treats as terminal. `status: "denied"` and `deniedAt` tell the clients that
  * know about denial why (TC-2377).
  */
-function deniedError(deniedAt: Date): ApprovalResultError {
+export function deniedError(deniedAt: Date): ApprovalResultError {
   return new ApprovalResultError('expired_request', 'Approval request was denied', 410, { status: 'denied', deniedAt: deniedAt.toISOString() });
 }
 
@@ -126,7 +126,8 @@ export class ApprovalResultService {
       const expiry = Date.parse(siwe.expirationTime ?? '');
       if (siwe.prepareMessage() !== input.signedSiwe || siwe.uri !== strictSessionDid(request.targetPublicJwk) || !Number.isFinite(expiry) || expiry <= now.getTime() ||
         expiry > now.getTime() + request.grantLifetimeSeconds * 1000 + 5000 || expiry > acceptanceDeadline ||
-        (invitation && !isShareInvitationGrant(input.permissions, { address: siwe.address, chainId: siwe.chainId }))) {
+        (invitation && !(isShareInvitationGrant(input.permissions, { address: siwe.address, chainId: siwe.chainId }) &&
+          signedRecapHoldsOnly(input.signedSiwe, input.permissions[0])))) {
         throw new ApprovalResultError('request_binding', 'Signed target or expiry does not match the approval request', 400);
       }
     }

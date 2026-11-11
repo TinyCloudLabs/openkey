@@ -43,6 +43,7 @@
     CapabilityAction,
     CapabilityGrant,
     CapabilityReviewModel,
+    ShareInvitationSubject,
   } from "@openkey/capability-review";
   import { formatAccessEnd } from "$lib/access-end";
   import {
@@ -54,6 +55,7 @@
     FAMILY_LABEL,
     appKeyNotGrantableStatements,
     buildRenderPlan,
+    buildShareInvitationSummaryStatements,
     buildSummaryStatements,
     grantIsAppKeyDecrypt,
     sensitiveSummaryCount,
@@ -104,6 +106,8 @@
     declining?: boolean;
     /** Surface-specific context rendered in a fixed slot under the header. */
     context?: Snippet;
+    /** The share invitation a signed approval request names: the summary names its subject on the invitation key. */
+    shareInvitation?: ShareInvitationSubject | null;
     /** Show which key signs; for users who chose one of several keys. */
     showSigner?: boolean;
     /**
@@ -152,6 +156,7 @@
     declineText = "Decline",
     declining = false,
     context,
+    shareInvitation = null,
     showSigner = false,
     peerRecognition = null,
     expiryMs = null,
@@ -225,7 +230,11 @@
   // Statements for the summary view. The rows, and the count in the Sensitive
   // header, come from one function so the header always counts the rows marked
   // Sensitive below it (capability-review `buildSummaryStatements`).
-  const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
+  const summaryStatements = $derived(
+    shareInvitation
+      ? buildShareInvitationSummaryStatements(selectedGrants, shareInvitation)
+      : buildSummaryStatements(selectedGrants),
+  );
   const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
 
   // App keys: the standing-access line follows the decrypt statements, and a

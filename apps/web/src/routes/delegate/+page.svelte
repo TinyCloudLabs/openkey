@@ -1916,6 +1916,7 @@
               context={cliContext}
               onEditingStateChange={(editing) => { reviewEditing = editing; }}
               showSigner={keys.length > 1}
+              {shareInvitation}
               transport={{
                 approving: delegating || updatingPermissions,
                 error,
@@ -1933,7 +1934,8 @@
                   }
                   return updatePermissions(nextServerKeys);
                 },
-                expiry: {
+                // A share invitation's approval ends at its acceptance deadline; there is no time to pick.
+                expiry: shareInvitation ? undefined : {
                   chosenMs: expiryChoiceMs,
                   // The requester signed its longest time (signed request, device), or the link asked for exactly
                   // this much: a link without `expiryChangeable=true` is shorter-only.
