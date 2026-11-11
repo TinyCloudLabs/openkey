@@ -13,6 +13,7 @@
     "@openkey/api",
     "@openkey/web",
     "@openkey/db",
-    "@openkey/tee"
+    "@openkey/tee",
+    "@openkey/delegation-code-fields"
   ]
 }

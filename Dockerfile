@@ -11,6 +11,7 @@ COPY apps/api/package.json ./apps/api/
 COPY packages/tee/package.json ./packages/tee/
 COPY packages/db/package.json ./packages/db/
 COPY packages/capability-review/package.json ./packages/capability-review/
+COPY packages/delegation-code-fields/package.json ./packages/delegation-code-fields/
 COPY packages/db/prisma ./packages/db/prisma
 COPY scripts/generate-prisma.ts ./scripts/generate-prisma.ts
 COPY packages/types/package.json ./packages/types/
@@ -54,6 +55,8 @@ COPY --from=builder /app/packages/db/prisma ./packages/db/prisma
 COPY --from=builder /app/packages/db/package.json ./packages/db/
 COPY --from=builder /app/packages/capability-review/dist ./packages/capability-review/dist
 COPY --from=builder /app/packages/capability-review/package.json ./packages/capability-review/
+COPY --from=builder /app/packages/delegation-code-fields/src ./packages/delegation-code-fields/src
+COPY --from=builder /app/packages/delegation-code-fields/package.json ./packages/delegation-code-fields/
 COPY --from=builder /app/package.json ./
 
 # Commit the image was built from; reported by GET /health as `commit`.

@@ -10,6 +10,9 @@ export default defineConfig({
       '@openkey/capability-review': fileURLToPath(
         new URL('../../packages/capability-review/src/index.ts', import.meta.url),
       ),
+      '@openkey/delegation-code-fields': fileURLToPath(
+        new URL('../../packages/delegation-code-fields/src/index.ts', import.meta.url),
+      ),
     },
   },
   server: {
