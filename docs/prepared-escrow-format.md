@@ -193,9 +193,9 @@ The approve message is UTF-8 compact JSON
 The TS authorizer accepts this vector; independent Python encoding and P-256
 verification reproduce its bytes, hash and signatures.
 
-Admin device signing: obtain the server's preflight descriptor, verify its
-policy hash against the exact policy bytes, and sign the approve message with
-the configured P-256 key on the admin's device. WebCrypto ECDSA with SHA-256
+Admin device signing: use the server's preflight approval descriptor unchanged,
+review its public summary, and sign the approve message with the configured
+P-256 key on the admin's device. WebCrypto ECDSA with SHA-256
 returns P1363 bytes; encode those 64 bytes as unpadded base64url and send only
 admin id plus signature. The private key remains on that device. Both admins
 sign the same descriptor; a dry-run signature authorizes only dry-run.
@@ -255,3 +255,6 @@ rows and verifies their full snapshot encoding and all identities before
 committing a receipt. The receipt binds escrow id, export header hash,
 descriptor hash and new policy id; the same receipt is idempotent and a
 conflicting identity is refused. All writes and the receipt commit together.
+
+The device signing interface and request encodings are specified in
+[escrow-admin-signing.md](escrow-admin-signing.md).
