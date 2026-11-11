@@ -21,6 +21,7 @@ test('synthetic enclave ceremony exports encrypted path key with actual split co
   const key = crypto.getRandomValues(new Uint8Array(32));
   const events: string[] = [];
   const options: EscrowExportOptions = {
+    getExportQuote: async headerHash => ({ quote: 'synthetic-quote', eventLog: '[]', reportDataSha256: headerHash }),
     enabled: true, dryRun: false, isInTee: () => true, policy,
     authorize: async () => { events.push('authorize'); return true; },
     snapshot: async operation => { events.push('snapshot'); return operation([{ ...policy.paths[0]!, key: key.slice() }]); },
@@ -36,6 +37,7 @@ test('synthetic enclave ceremony exports encrypted path key with actual split co
   expect(dry).toEqual({ dryRun: true, paths: 1, expectedRecords: 1 });
   const result = await prepareEscrowExport(options);
   if (result.dryRun) throw new Error('Expected encrypted bundle');
+  expect(result.quote.quote).toBe('synthetic-quote');
   expect(events).toEqual(['authorize', 'snapshot', 'validate', 'authorize', 'snapshot', 'validate']);
   for (const inventory of [[], [{ ...policy.paths[0]!, key: key.slice() }, { ...policy.paths[0]!, key: key.slice() }], [{ ...policy.paths[0]!, path: 'extra', key: key.slice() }], [{ ...policy.paths[0]!, key: new Uint8Array(31) }]]) {
     await expect(prepareEscrowExport({ ...options, snapshot: operation => operation(inventory) })).rejects.toThrow();
@@ -45,6 +47,7 @@ test('synthetic enclave ceremony exports encrypted path key with actual split co
   const clearedKey = key.slice();
   await prepareEscrowExport({ ...options, dryRun: true, snapshot: operation => operation([{ ...policy.paths[0]!, key: clearedKey }]) });
   expect(clearedKey.every(byte => byte === 0)).toBe(true);
+  await expect(prepareEscrowExport({ ...options, getExportQuote: async () => { throw new Error('Quote unavailable'); } })).rejects.toThrow();
   const shares = [];
   for (const wrapper of result.wrappers.slice(0, 2)) {
     const holder = result.header.holders.find(h => h.id === wrapper.holderId)!;

@@ -37,8 +37,11 @@ export function createEscrowProvenanceClient(agent: EscrowGuestAgent) {
         // v0 signs Keccak256(UTF8(purpose + ':' + lowercase compressed derived pubkey)).
         const derivedPublicKey = Buffer.from(secp256k1.getPublicKey(result.key, true)).toString('hex');
         const sourcePublicKey = await recoverPublicKey({ hash: keccak256(toBytes(`:${derivedPublicKey}`)), signature: `0x${Buffer.from(result.signature_chain[0]!).toString('hex')}` });
-        return { key: new Uint8Array(createHash('sha256').update(result.key).digest()), sourcePublicKey,
-          signatureChain: result.signature_chain.map(signature => Buffer.from(signature).toString('hex')) };
+        const digest = createHash('sha256').update(result.key).digest();
+        try {
+          return { key: new Uint8Array(digest), sourcePublicKey,
+            signatureChain: result.signature_chain.map(signature => Buffer.from(signature).toString('hex')) };
+        } finally { digest.fill(0); }
       } finally { result.key.fill(0); }
     },
     async getExportQuote(headerHash: string): Promise<EscrowQuote> {

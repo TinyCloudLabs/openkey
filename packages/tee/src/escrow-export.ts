@@ -1,3 +1,4 @@
+import type { EscrowQuote } from './escrow-provenance';
 import { isEmptyLegacyDeclaration } from './escrow-legacy';
 import { escrowMaterialLength } from './escrow-transform';
 import { randomBytes, createCipheriv, createHash } from 'node:crypto';
@@ -25,6 +26,7 @@ export interface EscrowExportOptions {
   /** Verify every ciphertext and identity in the snapshot; failure must throw. */
   validateSnapshot: (policy: ExportPolicy, keys: readonly EscrowPathKey[]) => Promise<readonly { path: string; purpose: string; version: number; validatedCount: number }[]>;
   isInTee: () => boolean | Promise<boolean>;
+  getExportQuote: (headerHash: string) => Promise<EscrowQuote>;
 }
 
 /** Internal measured-process entry; transport/auth adapters must be installed by the service. */
@@ -89,7 +91,9 @@ export async function prepareEscrowExport(options: EscrowExportOptions) {
         return { path: metadata.path, purpose: metadata.purpose, version: metadata.version,
           ciphertext: bytes.toString('base64url'), checksum: createHash('sha256').update(bytes).digest('hex') };
       });
-      return { dryRun: false as const, header: frozen.header, headerHash: frozen.hash, wrappers, items };
+      const quote = await options.getExportQuote(frozen.hash);
+      if (Date.now() >= Date.parse(policy.expiresAt)) throw new Error('Escrow approval expired');
+      return { dryRun: false as const, quote, header: frozen.header, headerHash: frozen.hash, wrappers, items };
     } finally {
       contentKey.fill(0);
       for (const share of shares) share.fill(0);
