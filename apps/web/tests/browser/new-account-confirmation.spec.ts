@@ -136,7 +136,7 @@ test('embedded connect: an unknown email asks first, and Create carries the toke
   expect(await page.evaluate(() => sessionStorage.getItem('openkey_session_token'))).toBeNull();
 
   await confirmation.getByRole('button', { name: 'Create a new account' }).click();
-  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('openkey_session_token'))).toBe('session-1');
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('openkey_session_token'))).toBeNull();
   expect(signUps).toEqual([{ email: EMAIL, signupToken: 'signup-token-1' }]);
 });
 

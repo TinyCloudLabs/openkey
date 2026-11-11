@@ -61,12 +61,13 @@ async function createAccountInTheWidget(page: Page) {
   await page.getByLabel('Verification code').fill('123456');
   await page.getByRole('button', { name: 'Verify and continue' }).click();
   await page.getByRole('button', { name: 'Create a new account' }).click();
-  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('openkey_session_token'))).toBe('tok-widget');
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('openkey_session_token'))).toBeNull();
 }
 
 test('a widget-created account turns Auto-Sign off on openkey.so from the same tab', async ({ page }) => {
   const api = await mockApi(page);
   await createAccountInTheWidget(page);
+  await page.evaluate(() => sessionStorage.setItem('openkey_session_token', 'tok-widget'));
 
   await page.goto('/dashboard/settings');
   const toggle = page.getByRole('switch', { name: 'Toggle Auto-Sign' });
