@@ -1,6 +1,6 @@
 import { isAccountOriginAllowed } from '../origin-policy';
 // Delegate route - creates TinyCloud delegation for CLI auth flow
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient } from '@openkey/tee';
@@ -19,7 +19,9 @@ import {
   ensureEip55,
   generateHostSIWEMessage,
   makeSpaceId,
+  siweToDelegationHeaders,
 } from '@tinycloud/node-sdk-wasm';
+import { buildOwnerRevocationSiwe } from '@openkey/capability-review';
 import {
   canonicalizeServiceName,
   entriesForSelectedActions,
@@ -56,7 +58,7 @@ import {
   type RecapEntry,
   type SessionAbilities,
 } from './delegate-session';
-import { log, logError, logSessionJwk } from '../log';
+import { log, logError, logMetric, logSessionJwk } from '../log';
 
 // Re-export the pure delegation helpers so existing external test files
 // (e.g. delegate-oauth-route.test.ts) that import them from this module
@@ -136,14 +138,39 @@ import type { PreparedHandoffService } from '../services/prepared-handoff';
 import { admitApprovalDelegation, checkApprovalDelegation, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
-async function revokeActivatedDelegation(host: string, delegationHeader: { Authorization: string }): Promise<void> {
+async function revokeActivatedManagedDelegation(
+  host: string,
+  key: Parameters<typeof signManagedKey>[0],
+  sealedBlob: string,
+  ownerDid: string,
+  delegationCid: string,
+): Promise<void> {
+  const now = new Date();
   try {
+    const siwe = buildOwnerRevocationSiwe({
+      kind: 'owner-revocation',
+      ownerDid,
+      cid: delegationCid,
+      nonce: randomBytes(16).toString('hex'),
+      expiresAt: new Date(now.getTime() + 600_000).toISOString(),
+    }, SIWE_DOMAIN, now);
+    const signature = await signManagedKey(key, sealedBlob, siwe);
     const response = await fetch(`${host.replace(/\/+$/, '')}/revoke`, {
       method: 'POST',
-      headers: delegationHeader,
+      headers: siweToDelegationHeaders({ siwe, signature }) as Record<string, string>,
+      redirect: 'error',
       signal: AbortSignal.timeout(5_000),
     });
-    if (!response.ok) logError('warn', 'delegate_session_revoke_failed', new Error(`Host returned ${response.status}`));
+    if (!response.ok) {
+      logMetric('warn', 'delegate_session_revoke_failed', { status: response.status });
+      return;
+    }
+    const result: unknown = await response.json().catch(() => null);
+    if (!result || typeof result !== 'object' ||
+        !('revoked' in result) || result.revoked !== true ||
+        !('cid' in result) || result.cid !== delegationCid) {
+      logMetric('warn', 'delegate_session_revoke_failed', { status: response.status });
+    }
   } catch (error) {
     logError('warn', 'delegate_session_revoke_failed', error);
   }
@@ -1751,7 +1778,7 @@ delegateRouter.post('/', async (c) => {
       saved = await saveApprovalDelegation(body, user.id, delegation);
     } catch (error) {
       if (body.approvalRequestId !== undefined && hostActivated) {
-        await revokeActivatedDelegation(host, session.delegationHeader);
+        await revokeActivatedManagedDelegation(host, key, key.sealedBlob, ownerDid, session.delegationCid);
       }
       throw error;
     }
@@ -2476,15 +2503,7 @@ delegateRouter.post('/complete', async (c) => {
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
   };
-  let saved: typeof delegation;
-  try {
-    saved = await saveApprovalDelegation(body, user.id, delegation);
-  } catch (error) {
-    if (body.approvalRequestId !== undefined && hostActivated) {
-      await revokeActivatedDelegation(body.host, session.delegationHeader);
-    }
-    throw error;
-  }
+  const saved = await saveApprovalDelegation(body, user.id, delegation);
   return c.json(saved);
   } catch (error) {
     await releaseApprovalDelegation(body);
