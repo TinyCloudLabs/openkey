@@ -181,9 +181,9 @@ test('new account: the popup asks first, and only Create makes the account and h
   await confirmation.getByRole('button', { name: 'Create a new account' }).click();
   await closed;
   expect(api.calls.filter((call) => call.path === '/api/auth/social/confirm').map((call) => call.body)).toEqual([{ continuation: 'cont-1' }]);
-  // The single handoff: the opener stored the session token and moved on.
+  // The single handoff: the opener uses its cookie session and moved on.
   await expect(page).toHaveURL(/\/dashboard$/);
-  expect(await page.evaluate(() => sessionStorage.getItem('openkey_session_token'))).toBe('apple-session');
+  expect(await page.evaluate(() => sessionStorage.getItem('openkey_session_token'))).toBeNull();
 });
 
 test('Hide My Email: the confirmation says a new account is created, even from /auth/register', async ({ page }, info) => {
@@ -220,7 +220,7 @@ test('register: an explicit Apple sign-up with a shared email creates without as
   const popup = await openApplePopup(page);
   await closed(popup);
   expect(api.calls.filter((call) => call.path === '/api/auth/social/confirm').map((call) => call.body)).toEqual([{ continuation: 'cont-reg' }]);
-  expect(await page.evaluate(() => sessionStorage.getItem('openkey_session_token'))).toBe('apple-session');
+  expect(await page.evaluate(() => sessionStorage.getItem('openkey_session_token'))).toBeNull();
 });
 
 test('sign-up intent from any opener but /auth/register still asks first (R5)', async ({ page }) => {
