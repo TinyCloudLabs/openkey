@@ -151,9 +151,9 @@
     {:else if inviting}
       <form class="form" onsubmit={(event) => { event.preventDefault(); void sendInvitation(); }}>
         <h2>Who would you like to invite?</h2>
-        <div class="actions"><button type="button" aria-pressed={targetKind === 'email'} onclick={() => targetKind = 'email'}>Email</button><button type="button" aria-pressed={targetKind === 'accountId'} onclick={() => targetKind = 'accountId'}>OpenKey account</button></div>
+        <div class="actions"><button type="button" disabled={busy} aria-pressed={targetKind === 'email'} onclick={() => targetKind = 'email'}>Email</button><button type="button" disabled={busy} aria-pressed={targetKind === 'accountId'} onclick={() => targetKind = 'accountId'}>OpenKey account</button></div>
         <label for="invite-target">{targetKind === 'email' ? 'Email address' : 'OpenKey account ID'}</label>
-        <input id="invite-target" type={targetKind === 'email' ? 'email' : 'text'} bind:value={target} required />
+        <input id="invite-target" type={targetKind === 'email' ? 'email' : 'text'} bind:value={target} disabled={busy} required />
         {#if targetKind === 'email'}<p>They can accept even if they haven’t used OpenKey before.</p>{/if}
         <h3>What you’re allowing</h3><p>{permissions}</p><p>You remain the owner.</p>
         <div class="actions"><button class="primary" disabled={busy}>Send invitation</button><button type="button" onclick={() => inviting = false} disabled={busy}>Cancel</button></div>
