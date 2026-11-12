@@ -22,11 +22,11 @@ test('HTTP listing sends raw direct-owner UCAN and fresh page authorization', as
     expect(body.ownerDid).toBe(owner);
     const lastPage = body.cursor !== null;
     return Response.json({ version: 1, hostId: 'registered-node', ownerDid: owner, spaces: [lastPage ? 'tinycloud:synthetic:b' : 'tinycloud:synthetic:a'], nextCursor: lastPage ? null : 'opaque+/=', lastPage });
-  }) as typeof fetch;
+  });
   expect(await listOwnerSpacesOverHttp({ hostId: 'registered-node', url: 'https://node.example.test' }, wallet.privateKey, transport)).toHaveLength(2);
   expect(nonces.size).toBe(2);
 });
 
 test('HTTP error never becomes a successful empty listing', async () => {
-  await expect(listOwnerSpacesOverHttp({ hostId: 'registered-node', url: 'https://node.example.test' }, Wallet.createRandom().privateKey, (async () => new Response(null, { status: 503 })) as typeof fetch)).rejects.toThrow();
+  await expect(listOwnerSpacesOverHttp({ hostId: 'registered-node', url: 'https://node.example.test' }, Wallet.createRandom().privateKey, (async () => new Response(null, { status: 503 })))).rejects.toThrow();
 });

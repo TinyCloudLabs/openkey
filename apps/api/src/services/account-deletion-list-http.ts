@@ -3,12 +3,14 @@ import { Wallet } from 'ethers';
 import { listAllDeletionSpaces, type RegisteredDeletionHost, type OwnerSpacePage } from './account-deletion-list';
 import { signDeletionInvocation } from './account-deletion-signing';
 
+export type DeletionHttpTransport = (url: string, options: RequestInit) => Promise<Response>;
+
 // Called only with the deletion worker's retained owner key. Never signs in
 // through node-sdk, which would create a delegated session or owner space.
 export async function listOwnerSpacesOverHttp(
   host: RegisteredDeletionHost,
   privateKey: string,
-  transport: typeof fetch = fetch,
+  transport: DeletionHttpTransport = fetch,
 ): Promise<string[]> {
   const ownerDid = `did:pkh:eip155:1:${new Wallet(privateKey).address}`;
   return listAllDeletionSpaces(host, ownerDid, async (url, body) => {
