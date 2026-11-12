@@ -32,6 +32,7 @@
     REGISTERED_CALLBACK_ENDPOINTS,
     checkDelegateCallback,
     checkDelegateHost,
+    checkDelegateRequesterOrigin,
     isCanonicalHttpsEndpoint,
     isCanonicalHttpsOrigin,
     withConfiguredEntries,
@@ -453,14 +454,18 @@
   // delegation to this device or a registered app, and a node OpenKey does
   // not recognize must be acknowledged. Device links are bound by the
   // server-verified device request instead.
+  const requesterOriginCheck = checkDelegateRequesterOrigin(
+    $page.url.searchParams, approvalRequestMode || !!deviceTransactionId || preparedTransport,
+  );
   const callbackCheck = $derived(approvalRequestMode || deviceTransactionId
     ? null
     : checkDelegateCallback(callback, withConfiguredEntries(REGISTERED_CALLBACK_ENDPOINTS, import.meta.env.VITE_DELEGATE_CALLBACK_URLS, isCanonicalHttpsEndpoint)));
   const hostCheck = $derived(deviceTransactionId
     ? null
     : checkDelegateHost(host, withConfiguredEntries(KNOWN_NODE_ORIGINS, import.meta.env.VITE_DELEGATE_NODE_ORIGINS, isCanonicalHttpsOrigin)));
-  const linkPolicyError = $derived(callbackCheck?.ok === false
-    ? callbackCheck.reason
+  const linkPolicyError = $derived(!requesterOriginCheck.ok
+    ? requesterOriginCheck.reason
+    : callbackCheck?.ok === false ? callbackCheck.reason
     : hostCheck?.ok === false ? hostCheck.reason : '');
   $effect(() => { if (linkPolicyError) error = linkPolicyError; });
   const approvedCallback = $derived(callbackCheck?.ok ? callbackCheck.callback : null);
@@ -746,6 +751,7 @@
       host,
       prefix: 'default',
     };
+    if (requesterOriginCheck.ok && requesterOriginCheck.origin) body.requesterOrigin = requesterOriginCheck.origin;
     if (approvalRequestMode) body.approvalRequestId = approvalRequestId;
     if (actionKeys) {
       body.actionKeys = actionKeys;
@@ -826,7 +832,7 @@
           metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
           reason: { text: requestReason, source: requestReason ? 'caller' : 'none' },
           requester: {
-            displayName: 'TinyCloud CLI',
+            displayName: '',
             verifiedOrigin: null,
             appId: null,
             manifestName: null,
@@ -838,6 +844,12 @@
             originWarning: false,
           },
         });
+        // The prepared SIWE is authoritative for attribution, not a query
+        // display name. These labels remain unsigned and confer no trust.
+        const domain = model.immutable?.domain;
+        model.requester.displayName = domain === 'mcp.tinycloud.xyz' ? 'TinyCloud MCP'
+          : domain === 'cli.tinycloud.xyz' ? 'TinyCloud CLI'
+          : domain || 'Unknown requester';
         reviewModel = model;
         reviewSelection = defaultSelection(model);
         baselineSiweForReview = siweMessage;
@@ -1167,6 +1179,7 @@
     if (refreshed.protocol !== 'tinycloud-siwe-recap' || !refreshed.immutable ||
       refreshed.parseWarnings.some(warning => warning.code !== 'unknown-service') ||
       refreshed.immutable.address.toLowerCase() !== key.address.toLowerCase() ||
+      refreshed.immutable.domain !== reviewModel.immutable?.domain ||
       signedActions.length !== expected.size || !signedActions.every(action => expected.has(action))) {
       throw new OwnerMessageError('The refreshed message does not match the approved selection.');
     }
@@ -1714,7 +1727,15 @@
             {/if}
           {:else}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
-            <p class="text-surface-500 text-sm">You can close this window and return to the CLI.</p>
+            <p class="text-surface-500 text-sm">
+              {#if reviewModel?.immutable?.domain === 'mcp.tinycloud.xyz'}
+                You can close this window and return to ChatGPT or your MCP client.
+              {:else if reviewModel?.immutable?.domain && reviewModel.immutable.domain !== 'cli.tinycloud.xyz'}
+                You can close this window and return to {reviewModel.immutable.domain}.
+              {:else}
+                You can close this window and return to the CLI.
+              {/if}
+            </p>
           {/if}
         </div>
 
@@ -1876,6 +1897,12 @@
           <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} bind:acknowledged={deviceAcknowledged} />
         {:else}
           <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
+          {#if requesterOriginCheck.ok && requesterOriginCheck.origin && reviewModel?.immutable}
+            <p class="text-xs leading-relaxed text-surface-500">
+              Requester <code class="break-all">{reviewModel.immutable.domain}</code> is caller-reported, not verified.
+              This link is unsigned and has no signed app manifest.
+            </p>
+          {/if}
         {/if}
 
         {#if selectedKey.keyType === 'EXTERNAL'}
