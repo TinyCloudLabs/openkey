@@ -1,3 +1,4 @@
+import { startAccountDeletionSweep } from './services/account-deletion-sweep';
 import './log'; // Keep first: patches dependency console output before any dependency module runs.
 import './install-process-handlers'; // Install fatal handlers before dependency startup.
 import { Hono } from 'hono';
@@ -341,7 +342,10 @@ const port = parseInt(process.env.API_PORT || '3001');
 
 log('info', 'api_starting');
 // Retries failed TinyCloud account setup in the background. Off under tests; kill switch is read per tick.
-if (process.env.NODE_ENV !== 'test') startTinyCloudBootstrapSweep();
+if (process.env.NODE_ENV !== 'test') {
+  startTinyCloudBootstrapSweep();
+  startAccountDeletionSweep();
+}
 
 export default {
   port,

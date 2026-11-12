@@ -1,5 +1,7 @@
 CREATE TABLE "account_deletion_job" (
   "id" TEXT NOT NULL,
+  "leaseToken" TEXT,
+  "leaseUntil" TIMESTAMP(3),
   "userId" TEXT NOT NULL,
   "state" TEXT NOT NULL DEFAULT 'deletion_requested',
   "progress" JSONB NOT NULL,

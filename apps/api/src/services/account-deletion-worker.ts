@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '@openkey/db';
 import { advanceDeletion, type DeletionAdapter, type DeletionJob } from './account-deletion-job';
 
@@ -8,16 +9,17 @@ type Progress = { owners?: Record<string, DeletionJob> };
 export type DeletionAdapterFactory = (keyId: string) => Promise<DeletionAdapter>;
 
 export async function runAccountDeletion(prisma: PrismaClient, id: string, adapter: DeletionAdapterFactory): Promise<void> {
-  await prisma.$transaction(async tx => {
-    const locks = await tx.$queryRaw<{ acquired: boolean }[]>`SELECT pg_try_advisory_xact_lock(hashtextextended(${id}, 2871)) AS acquired`;
-    if (!locks[0]?.acquired) return;
-    const row = await tx.accountDeletionJob.findUnique({ where: { id } });
+  const leaseToken = randomUUID();
+  const claimed = await prisma.accountDeletionJob.updateMany({ where: { id, state: 'deletion_requested', OR: [{ leaseUntil: null }, { leaseUntil: { lt: new Date() } }] }, data: { leaseToken, leaseUntil: new Date(Date.now() + 600_000) } });
+  if (!claimed.count) return;
+  try {
+    const row = await prisma.accountDeletionJob.findUnique({ where: { id } });
     if (!row || row.state === 'complete') return;
     const progress = row.progress as Progress;
     progress.owners ??= {};
-    const keys = await tx.ethereumKey.findMany({ where: { userId: row.userId, keyType: 'MANAGED' }, select: { id: true } });
+    const keys = await prisma.ethereumKey.findMany({ where: { userId: row.userId, keyType: 'MANAGED' }, select: { id: true } });
     const save = async () => {
-      await prisma.accountDeletionJob.update({ where: { id }, data: { progress: JSON.parse(JSON.stringify(progress)), nextAttemptAt: new Date(Date.now() + 60_000) } });
+      await prisma.accountDeletionJob.update({ where: { id, leaseToken }, data: { leaseUntil: new Date(Date.now() + 600_000), progress: JSON.parse(JSON.stringify(progress)), nextAttemptAt: new Date(Date.now() + 60_000) } });
     };
     for (const key of keys) {
       const job = progress.owners[key.id] ??= { state: 'deletion_requested', hosts: {}, unreachableHosts: [] };
@@ -33,13 +35,17 @@ export async function runAccountDeletion(prisma: PrismaClient, id: string, adapt
       }
     }
     if (keys.some(key => progress.owners![key.id]?.state !== 'complete')) return;
-    await tx.ethereumKey.deleteMany({ where: { userId: row.userId } });
-    await tx.passkey.deleteMany({ where: { userId: row.userId } });
-    await tx.session.deleteMany({ where: { userId: row.userId } });
-    await tx.account.deleteMany({ where: { userId: row.userId } });
-    await tx.verification.deleteMany({ where: { userId: row.userId } });
-    await tx.user.delete({ where: { id: row.userId } });
-    // Discard owner identifiers, hosts and space names on completion.
-    await tx.accountDeletionJob.update({ where: { id }, data: { state: 'complete', progress: {} } });
-  }, { timeout: 300_000 });
+    await prisma.$transaction(async tx => {
+      // The lease holder alone may perform the final atomic key removal.
+      await tx.accountDeletionJob.update({ where: { id, leaseToken }, data: { state: 'complete', progress: {} } });
+      await tx.ethereumKey.deleteMany({ where: { userId: row.userId } });
+      await tx.passkey.deleteMany({ where: { userId: row.userId } });
+      await tx.session.deleteMany({ where: { userId: row.userId } });
+      await tx.account.deleteMany({ where: { userId: row.userId } });
+      await tx.verification.deleteMany({ where: { userId: row.userId } });
+      await tx.user.delete({ where: { id: row.userId } });
+    });
+  } finally {
+    await prisma.accountDeletionJob.updateMany({ where: { id, leaseToken }, data: { leaseToken: null, leaseUntil: null } });
+  }
 }

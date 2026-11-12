@@ -924,6 +924,8 @@ model RevokedAccessToken {
 
 // Retained independently of User so completed deletion remains auditable.
 model AccountDeletionJob {
+  leaseToken String?
+  leaseUntil DateTime?
   id String @id @default(cuid())
   userId String @unique
   state String @default("deletion_requested")

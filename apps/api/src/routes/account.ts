@@ -1,3 +1,4 @@
+import { commitDeletionRequest } from '../services/account-deletion-request';
 // Account management routes
 import { Hono } from 'hono';
 import { symmetricDecrypt } from 'better-auth/crypto';
@@ -578,14 +579,7 @@ accountRouter.post('/delete', async (c) => {
 
     // Commit the irreversible request before any node operation. The locked
     // account retains its sealed keys solely for the deletion worker.
-    await tx.accountDeletionJob.create({ data: {
-      userId: user.id,
-      progress: { state: 'deletion_requested', hosts: {}, unreachableHosts: [] },
-    } });
-    await tx.user.update({ where: { id: user.id }, data: { lockedAt: new Date() } });
-    await tx.session.deleteMany({ where: { userId: user.id } });
-    await tx.oauthAccessToken.deleteMany({ where: { userId: user.id } });
-    await tx.oauthRefreshToken.deleteMany({ where: { userId: user.id } });
+    await commitDeletionRequest(tx, user.id);
     return stored;
   }); } catch (error) {
     const unavailable = nativeDelegationLockResponse(error);
