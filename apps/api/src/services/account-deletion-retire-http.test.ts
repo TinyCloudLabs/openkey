@@ -20,7 +20,7 @@ test('retirement accepts first and repeated acknowledgements with stable key and
       expect(payload.att).toEqual({ [owner]: { 'tinycloud.space/retire-owner': [{}] } });
       expect(payload.fct).toEqual([{ idempotency_key: key }]);
       nonces.add(payload.nnc);
-      return Response.json({ version: 1, state: 'retired' }, { status });
+      return Response.json({ version: 1, hostId: 'registered-node', state: 'retired' }, { status });
     };
     await retireOwnerOverHttp(host, wallet.privateKey, key, transport);
   }
@@ -30,6 +30,8 @@ test('retirement accepts first and repeated acknowledgements with stable key and
 test('errors and malformed acknowledgements never retire a host', async () => {
   const wallet = Wallet.createRandom();
   for (const response of [
+    Response.json({ version: 1, state: 'retired' }),
+    Response.json({ version: 1, hostId: 'wrong', state: 'retired' }),
     Response.json({ error: { code: 'unavailable_retryable' } }, { status: 503 }),
     Response.json({ error: { code: 'idempotency_conflict' } }, { status: 409 }),
     Response.json({ version: 1, state: 'pending' }, { status: 202 }),

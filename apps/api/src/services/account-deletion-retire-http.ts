@@ -22,6 +22,6 @@ export async function retireOwnerOverHttp(
     body: JSON.stringify({ version: 1, owner_did: owner }),
   });
   if (response.status !== 200 && response.status !== 202) throw new Error('Owner retirement unavailable');
-  const acknowledgement = await response.json() as { version?: unknown; state?: unknown };
-  if (acknowledgement?.version !== 1 || acknowledgement.state !== 'retired') throw new Error('Owner retirement not acknowledged');
+  const acknowledgement = await response.json() as { hostId?: unknown; version?: unknown; state?: unknown };
+  if (acknowledgement?.hostId !== host.hostId || acknowledgement.version !== 1 || acknowledgement.state !== 'retired') throw new Error('Owner retirement not acknowledged');
 }

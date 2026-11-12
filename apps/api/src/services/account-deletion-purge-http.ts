@@ -25,8 +25,8 @@ export async function requestSpacePurge(
     body: JSON.stringify({ version: 1, space_id: spaceId, ...(status ? { purge_id: operation.purgeId } : {}) }),
   });
   if (response.status !== 200 && (status || response.status !== 202)) throw new Error('Space purge unavailable');
-  const result = await response.json() as { version?: unknown; purge_id?: unknown; state?: unknown; accepted_at?: unknown; updated_at?: unknown };
-  if (result?.version !== 1 || typeof result.purge_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(result.purge_id) || !['purging', 'complete'].includes(result.state as string) || typeof result.accepted_at !== 'string' || !Number.isFinite(Date.parse(result.accepted_at)) || typeof result.updated_at !== 'string' || !Number.isFinite(Date.parse(result.updated_at)) || (status && result.purge_id !== operation.purgeId)) {
+  const result = await response.json() as { hostId?: unknown; version?: unknown; purge_id?: unknown; state?: unknown; accepted_at?: unknown; updated_at?: unknown };
+  if (result?.hostId !== host.hostId || result.version !== 1 || typeof result.purge_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(result.purge_id) || !['purging', 'complete'].includes(result.state as string) || typeof result.accepted_at !== 'string' || !Number.isFinite(Date.parse(result.accepted_at)) || typeof result.updated_at !== 'string' || !Number.isFinite(Date.parse(result.updated_at)) || (status && result.purge_id !== operation.purgeId)) {
     throw new Error('Space purge not acknowledged');
   }
   return { purgeId: result.purge_id, complete: result.state === 'complete' };

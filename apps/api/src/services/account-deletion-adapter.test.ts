@@ -13,9 +13,9 @@ test('job reaches complete through signed HTTP adapter after status completes', 
     const path = new URL(url).pathname;
     paths.push(path);
     expect(new Headers(options.headers).get('Authorization')!.split('.')).toHaveLength(3);
-    if (path === '/space/retire-owner') return Response.json({ version: 1, state: 'retired' }, { status: 202 });
+    if (path === '/space/retire-owner') return Response.json({ version: 1, hostId: 'node-test', state: 'retired' }, { status: 202 });
     if (path === '/space/list') return Response.json({ version: 1, hostId: 'node-test', ownerDid: owner, spaces: [space], nextCursor: null, lastPage: true });
-    return Response.json({ version: 1, purge_id: purgeId, state: path.endsWith('/status') ? 'complete' : 'purging', accepted_at: '2026-11-12T00:00:00Z', updated_at: '2026-11-12T00:00:00Z' }, { status: path.endsWith('/status') ? 200 : 202 });
+    return Response.json({ version: 1, hostId: 'node-test', purge_id: purgeId, state: path.endsWith('/status') ? 'complete' : 'purging', accepted_at: '2026-11-12T00:00:00Z', updated_at: '2026-11-12T00:00:00Z' }, { status: path.endsWith('/status') ? 200 : 202 });
   });
   const job: DeletionJob = { state: 'deletion_requested', hosts: {}, unreachableHosts: [] };
   let complete = false;

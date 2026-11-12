@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
+import type { DeletionHostSnapshot } from './account-deletion-request';
 import type { PrismaClient } from '@openkey/db';
 import { advanceDeletion, type DeletionAdapter, type DeletionJob } from './account-deletion-job';
 
-type Progress = { owners?: Record<string, DeletionJob> };
+type Progress = { hostSnapshot?: DeletionHostSnapshot; owners?: Record<string, DeletionJob> };
 
 // Adapter creation is worker-only: it may unseal the retained managed key,
 // and must never create a TinyCloud session or an owner space.
-export type DeletionAdapterFactory = (keyId: string) => Promise<DeletionAdapter>;
+export type DeletionAdapterFactory = (keyId: string, hosts: DeletionHostSnapshot) => Promise<DeletionAdapter>;
 
 export async function runAccountDeletion(prisma: PrismaClient, id: string, adapter: DeletionAdapterFactory): Promise<void> {
   const leaseToken = randomUUID();
@@ -17,6 +18,8 @@ export async function runAccountDeletion(prisma: PrismaClient, id: string, adapt
     if (!row || row.state === 'complete') return;
     const progress = row.progress as Progress;
     progress.owners ??= {};
+    if (!progress.hostSnapshot || progress.hostSnapshot.uncertain) return;
+    const snapshot = progress.hostSnapshot;
     const keys = await prisma.ethereumKey.findMany({ where: { userId: row.userId, keyType: 'MANAGED' }, select: { id: true } });
     const save = async () => {
       await prisma.accountDeletionJob.update({ where: { id, leaseToken }, data: { leaseUntil: new Date(Date.now() + 600_000), progress: JSON.parse(JSON.stringify(progress)), nextAttemptAt: new Date(Date.now() + 60_000) } });
@@ -24,7 +27,12 @@ export async function runAccountDeletion(prisma: PrismaClient, id: string, adapt
     for (const key of keys) {
       const job = progress.owners[key.id] ??= { state: 'deletion_requested', hosts: {}, unreachableHosts: [] };
       try {
-        await advanceDeletion(job, await adapter(key.id), {
+        const node = await adapter(key.id, snapshot);
+        await advanceDeletion(job, {
+          ...node,
+          hosts: async () => snapshot.configured.map(host => host.url),
+          recordedHosts: async () => snapshot.recorded,
+        }, {
           save: async () => { await save(); },
           complete: async completed => { progress.owners![key.id] = completed; await save(); },
         });

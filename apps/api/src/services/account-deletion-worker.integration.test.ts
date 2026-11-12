@@ -23,7 +23,7 @@ test('database restart retains progress and keys until all hosts finish', async 
     await db.user.create({ data: { id: 'owner', email: 'owner@example.test' } });
     await db.ethereumKey.create({ data: { id: 'key', userId: 'owner', address: 'synthetic', publicKey: 'synthetic', sealedBlob: 'synthetic' } });
     await db.session.create({ data: { id: 'session', userId: 'owner', token: 'synthetic-token', expiresAt: new Date(Date.now() + 60_000) } });
-    await db.$transaction(tx => commitDeletionRequest(tx, 'owner'));
+    await db.$transaction(tx => commitDeletionRequest(tx, 'owner', [{ hostId: 'a', url: 'a' }, { hostId: 'b', url: 'b' }, { hostId: 'production', url: 'https://node.tinycloud.xyz' }]));
     const jobId = (await db.accountDeletionJob.findUniqueOrThrow({ where: { userId: 'owner' } })).id;
     expect(await db.session.count()).toBe(0);
     // A newly attempted session must be refused even while key rows exist.
@@ -62,9 +62,11 @@ test('database restart retains progress and keys until all hosts finish', async 
     await tick();
     expect(calls.length).toBe(callsBeforeLeaseExpiry);
     await db.accountDeletionJob.update({ where: { id: jobId }, data: { leaseUntil: new Date(0) } });
+    adapter.hosts = async () => ['later-host'];
     offline = false;
     await tick();
     expect(calls.filter(call => call === 'retire:a')).toHaveLength(1);
+    expect(calls).not.toContain('retire:later-host');
     expect(await db.ethereumKey.count()).toBe(1);
     expect((await db.user.findUniqueOrThrow({ where: { id: 'owner' } })).lockedAt).not.toBeNull();
     done = true;

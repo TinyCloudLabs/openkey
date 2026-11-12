@@ -5,7 +5,7 @@ import type { DeletionHttpTransport } from './account-deletion-list-http';
 const host = { hostId: 'registered-node', url: 'https://node.example.test' };
 const purgeId = crypto.randomUUID();
 const space = 'tinycloud:synthetic:openkey';
-const result = { version: 1, purge_id: purgeId, state: 'purging', accepted_at: '2026-11-12T00:00:00Z', updated_at: '2026-11-12T00:00:00Z' };
+const result = { version: 1, hostId: 'registered-node', purge_id: purgeId, state: 'purging', accepted_at: '2026-11-12T00:00:00Z', updated_at: '2026-11-12T00:00:00Z' };
 
 test('purge retries keep operation key; status uses fresh keys and nonces', async () => {
   const wallet = Wallet.createRandom();
@@ -33,6 +33,8 @@ test('purge retries keep operation key; status uses fresh keys and nonces', asyn
 test('unknown, unavailable, mismatched and malformed status stays pending', async () => {
   const wallet = Wallet.createRandom();
   for (const response of [
+    Response.json({ ...result, hostId: undefined }),
+    Response.json({ ...result, hostId: 'wrong' }),
     Response.json({ error: { code: 'not_found' } }, { status: 404 }),
     Response.json({}, { status: 503 }),
     Response.json({ ...result, purge_id: crypto.randomUUID(), state: 'complete' }),
