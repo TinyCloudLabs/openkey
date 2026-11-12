@@ -14,7 +14,7 @@ export async function listAllDeletionSpaces(
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) {
     throw new Error('Invalid registered host TLS origin');
   }
-  if (!host.hostId) throw new Error('Missing registered host identity');
+  if (!/^[a-z0-9-]{1,63}$/.test(host.hostId)) throw new Error('Invalid registered host identity');
   const spaces: string[] = [];
   const cursors = new Set<string>();
   let cursor: string | null = null;
