@@ -3,7 +3,7 @@ import { Wallet, concat, getBytes, sha256, toUtf8Bytes } from 'ethers';
 
 export type DeletionInvocation = {
   resource: string;
-  action: 'tinycloud.space/retire-owner' | 'tinycloud.space/delete';
+  action: 'tinycloud.space/retire-owner' | 'tinycloud.space/delete' | 'tinycloud.space/list';
   idempotencyKey: string;
 };
 
@@ -12,8 +12,8 @@ export type DeletionInvocation = {
 export function signDeletionInvocation(privateKey: string, intent: DeletionInvocation): string {
   const wallet = new Wallet(privateKey);
   const owner = `did:pkh:eip155:1:${wallet.address}`;
-  if (intent.action === 'tinycloud.space/retire-owner' && intent.resource !== owner) {
-    throw new Error('Retirement resource must match owner');
+  if (intent.action !== 'tinycloud.space/delete' && intent.resource !== owner) {
+    throw new Error('Owner resource must match owner');
   }
   const publicKey = getBytes(wallet.signingKey.publicKey);
   const b64 = (value: Uint8Array) => Buffer.from(value).toString('base64url');
