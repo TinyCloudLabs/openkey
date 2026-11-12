@@ -90,8 +90,7 @@ export interface DelegationPermissionEntry {
   actions: string[];
 }
 
-// SIWE domain identifies the requestor (the CLI). Duplicated (rather than
-// re-exported from delegate.ts) to keep this module standalone.
+// Default requester for CLI links that do not supply an explicit origin.
 export const SIWE_DOMAIN = 'cli.tinycloud.xyz';
 
 // Capability URNs come from the TC-112 registry constants published by
