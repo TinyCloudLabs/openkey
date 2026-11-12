@@ -579,6 +579,12 @@ export const auth = betterAuth({
   databaseHooks: {
     // Web sessions end at most WEB_SESSION_ABSOLUTE_CAP_SECONDS after sign-in (services/session-cap.ts).
     session: {
+      create: {
+        before: async (session) => {
+          const user = await prisma.user.findUnique({ where: { id: session.userId }, select: { lockedAt: true } });
+          if (!user || user.lockedAt) throw new APIError('FORBIDDEN', { message: 'Account unavailable' });
+        },
+      },
       update: {
         before: capSessionRefresh,
       },
