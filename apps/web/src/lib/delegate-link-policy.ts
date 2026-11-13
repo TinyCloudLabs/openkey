@@ -55,6 +55,26 @@ export function isCanonicalHttpsOrigin(entry: string): boolean {
 }
 
 /**
+ * Unsigned requester attribution is accepted only on ordinary links, as one
+ * canonical HTTPS or HTTP loopback origin. It never authorizes a callback or node.
+ */
+export function checkDelegateRequesterOrigin(
+  params: URLSearchParams,
+  trustedRequest: boolean,
+): { ok: true; origin?: string } | { ok: false; reason: string } {
+  const values = params.getAll('requesterOrigin');
+  if (values.length === 0) return { ok: true };
+  if (trustedRequest) {
+    return { ok: false, reason: 'A caller-reported requester cannot override a device or signed approval request.' };
+  }
+  const url = values.length === 1 ? parseUrl(values[0]!) : null;
+  if (!url || !isSafeTransport(url) || url.origin !== values[0] || url.hostname.includes('*')) {
+    return { ok: false, reason: 'This link must name one canonical HTTPS or HTTP loopback requester origin. Restart the app that opened this page.' };
+  }
+  return { ok: true, origin: values[0]! };
+}
+
+/**
  * A configured callback endpoint: canonical HTTPS URL with a path and no
  * credentials, query, or fragment, e.g. `https://app.example/callback`.
  */
