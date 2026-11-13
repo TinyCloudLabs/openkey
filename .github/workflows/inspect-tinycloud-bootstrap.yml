@@ -13,6 +13,7 @@ permissions:
 jobs:
   inspect:
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 10
     env:
       CONFIRM_INSPECT: ${{ inputs.confirm }}
