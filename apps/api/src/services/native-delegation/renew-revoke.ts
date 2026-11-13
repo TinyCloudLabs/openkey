@@ -1,4 +1,4 @@
-import { sameTinyCloudHost } from '@openkey/core';
+import { sameTinyCloudHost } from '../tinycloud-hosts';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { generateRandomString } from 'better-auth/crypto';
 import type { PrismaClient } from '@openkey/db';

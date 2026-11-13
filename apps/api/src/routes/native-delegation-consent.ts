@@ -1,4 +1,4 @@
-import { sameTinyCloudHost } from '@openkey/core';
+import { sameTinyCloudHost } from '../services/tinycloud-hosts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import { Hono } from 'hono';
