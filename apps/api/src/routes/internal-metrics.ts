@@ -62,11 +62,23 @@ const DISPOSABLE_MAIL_FAMILIES =
 const MAJOR_WEBMAIL_DOMAINS = new Set([
   'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'yahoo.com', 'ymail.com',
   'rocketmail.com', 'icloud.com', 'me.com', 'mac.com', 'proton.me', 'protonmail.com', 'pm.me', 'aol.com',
-  'gmx.com', 'gmx.net', 'gmx.de', 'mail.com', 'zoho.com', 'fastmail.com', 'fastmail.fm', 'hey.com', 'tutanota.com',
-  'tuta.io', 'tutamail.com', 'yandex.com', 'yandex.ru', 'mail.ru', 'qq.com', '163.com', '126.com', 'naver.com',
-  'duck.com', 'hushmail.com', 'comcast.net', 'verizon.net', 'att.net', 'sbcglobal.net',
+  'gmx.com', 'gmx.net', 'gmx.de', 'web.de', 'mail.com', 'zoho.com', 'fastmail.com', 'fastmail.fm', 'hey.com',
+  'tutanota.com', 'tuta.io', 'tutamail.com', 'yandex.com', 'yandex.ru', 'mail.ru', 'rambler.ru', 'qq.com', '163.com',
+  '126.com', 'yeah.net', 'sina.com', 'naver.com', 'daum.net', 'hanmail.net', 'duck.com', 'hushmail.com',
+  'comcast.net', 'verizon.net', 'att.net', 'sbcglobal.net', 'btinternet.com', 'bigpond.com', 'orange.fr',
+  'free.fr', 'laposte.net', 'sfr.fr', 't-online.de', 'libero.it', 'seznam.cz', 'wp.pl', 'o2.pl', 'interia.pl',
+  'rediffmail.com',
 ]);
-const MAJOR_WEBMAIL_FAMILIES = /^(yahoo|hotmail|outlook|live)\.[a-z]+(\.[a-z]+)?$/;
+const MAJOR_WEBMAIL_FAMILIES = /^(yahoo|hotmail|outlook|live|gmx|yandex)\.[a-z]+(\.[a-z]+)?$/;
+/** A POSTed or env disposable entry applies only if it matches at least this many accounts (else it is ignored). */
+const MIN_ACCOUNTS_FOR_LIST_ENTRY = 5;
+// Per-app figures: names are chosen by whoever registers an OAuth client, so they are truncated,
+// an app is listed by name only with at least this many real users, at most this many are
+// listed, and everything else is summed (distinct users) into one "other apps" row.
+const APP_NAME_MAX_LENGTH = 60;
+const APP_MIN_REAL_USERS = 5;
+const APPS_MAX_LISTED = 50;
+const OTHER_APPS_NAME = 'other apps';
 /** Domains with at least this many accounts, in no list, are reported for a decision. */
 const UNCLASSIFIED_MIN_ACCOUNTS = 5;
 const UNCLASSIFIED_MAX_REPORTED = 200;
@@ -143,9 +155,9 @@ function isMajorWebmail(domain: string): boolean {
 
 /**
  * A list entry that must never mark mail disposable: a major webmail domain or one of our
- * team domains, a subdomain of either, or a parent of a major webmail domain (such as
- * `co.uk`, which would swallow `yahoo.co.uk`). Request and env lists drop such entries, so
- * a poisoned feed cannot turn gmail.com or our own domains into "disposable".
+ * team domains, a subdomain of either, or a two-level country suffix (`co.uk` would swallow
+ * `yahoo.co.uk`). Request and env lists drop such entries, so a poisoned feed cannot turn
+ * gmail.com or our own domains into "disposable".
  */
 function isProtectedEntry(entry: string): boolean {
   for (let d = entry; d; ) {
@@ -154,12 +166,7 @@ function isProtectedEntry(entry: string): boolean {
     if (dot < 0) break;
     d = d.slice(dot + 1);
   }
-  // A parent of a major domain: listed ones, or a two-level country suffix (co.uk covers
-  // yahoo.co.uk, which the family pattern matches rather than the list).
-  return (
-    [...MAJOR_WEBMAIL_DOMAINS].some((major) => major.endsWith(`.${entry}`)) ||
-    /^(co|com|org|net|ne|or|ac|gov|edu)\.[a-z]{2}$/.test(entry)
-  );
+  return /^(co|com|org|net|ne|or|ac|gov|edu)\.[a-z]{2}$/.test(entry);
 }
 
 /**
@@ -232,8 +239,9 @@ export async function collectUserMetrics(
 ): Promise<UserMetrics> {
   const list = (value: string | undefined) => (value ?? '').split(',').map((item) => item.trim()).filter(Boolean);
   const excluded = new Set(list(env.SCOREBOARD_EXCLUDE_USER_IDS));
-  // Request and env lists add to the built-ins, but can never cover a protected domain.
-  const extraDisposable = new Set(
+  // Request and env lists add to the built-ins, but can never cover a protected domain. An
+  // entry only takes effect once it matches enough accounts (see extraDisposable below).
+  const requestedDisposable = new Set(
     [
       ...requestDisposableDomains,
       ...list(env.SCOREBOARD_DISPOSABLE_DOMAINS)
@@ -273,6 +281,22 @@ export async function collectUserMetrics(
   const botLike = new Set(botRows.map((row) => row.userId));
   const teamByWallet = new Set(teamRows.map((row) => row.userId));
 
+  // A POSTed or env entry that matches fewer than 5 accounts is ignored. Otherwise a token
+  // holder could add a domain and watch the real count drop to learn how many accounts sit at
+  // it, below the 5-account floor that unclassifiedDomains keeps.
+  const entryAccounts = new Map<string, number>();
+  if (requestedDisposable.size > 0) {
+    for (const user of users) {
+      for (let d = (user.email.split('@')[1] ?? '').toLowerCase(); d; ) {
+        if (requestedDisposable.has(d)) entryAccounts.set(d, (entryAccounts.get(d) ?? 0) + 1);
+        const dot = d.indexOf('.');
+        if (dot < 0) break;
+        d = d.slice(dot + 1);
+      }
+    }
+  }
+  const extraDisposable = new Set([...requestedDisposable].filter((d) => (entryAccounts.get(d) ?? 0) >= MIN_ACCOUNTS_FOR_LIST_ENTRY));
+
   const buckets = Object.fromEntries(USER_BUCKETS.map((bucket) => [bucket, 0])) as UserMetrics['buckets'];
   const realUsers = new Set<string>();
   const realActive = { d1: 0, d7: 0, d30: 0 };
@@ -311,10 +335,16 @@ export async function collectUserMetrics(
     if (last >= since30d.getTime()) realActive.d30 += 1;
   }
 
-  // Per app: distinct real users with an access token in the window, grouped by the
-  // client's display name (clients sharing a name are one app; a token whose client row is
-  // gone counts under "unknown client"). Names are developer-chosen labels, not user data.
-  const nameOf = new Map(clients.map((client) => [client.clientId, client.name]));
+  // Per app: distinct real users with an access token in the window, grouped by the client's
+  // display name (clients sharing a name are one app; a token whose client row is gone counts
+  // under "unknown client"). Names come from whoever registered the client, so they are cleaned
+  // and truncated; only apps with at least 5 real users are listed by name (top 50 by 30-day
+  // users); every other app is summed, as distinct users, into one "other apps" row.
+  const cleanName = (raw: string) => {
+    const name = raw.replace(/\s+/g, ' ').trim().slice(0, APP_NAME_MAX_LENGTH).trim() || 'unnamed app';
+    return name === OTHER_APPS_NAME ? `${name} (app)` : name;
+  };
+  const nameOf = new Map(clients.map((client) => [client.clientId, cleanName(client.name)]));
   const perApp = new Map<string, { d7: Set<string>; d30: Set<string> }>();
   const addTokens = (rows: ClientUser[], window: 'd7' | 'd30') => {
     for (const { clientId, userId } of rows) {
@@ -327,9 +357,19 @@ export async function collectUserMetrics(
   };
   addTokens(tokens30d, 'd30');
   addTokens(tokens7d, 'd7');
-  const apps = [...perApp].map(([name, sets]) => ({ name, real7d: sets.d7.size, real30d: sets.d30.size }))
-    .filter((app) => app.real30d > 0 || app.real7d > 0)
-    .sort((a, b) => b.real30d - a.real30d || b.real7d - a.real7d || a.name.localeCompare(b.name));
+  const ranked = [...perApp]
+    .map(([name, sets]) => ({ name, d7: sets.d7, d30: sets.d30 }))
+    .sort((a, b) => b.d30.size - a.d30.size || b.d7.size - a.d7.size || a.name.localeCompare(b.name));
+  const listed = ranked.filter((app) => app.d30.size >= APP_MIN_REAL_USERS).slice(0, APPS_MAX_LISTED);
+  const apps = listed.map((app) => ({ name: app.name, real7d: app.d7.size, real30d: app.d30.size }));
+  const otherD7 = new Set<string>();
+  const otherD30 = new Set<string>();
+  for (const app of ranked) {
+    if (listed.includes(app)) continue;
+    app.d7.forEach((id) => otherD7.add(id));
+    app.d30.forEach((id) => otherD30.add(id));
+  }
+  if (otherD30.size > 0 || otherD7.size > 0) apps.push({ name: OTHER_APPS_NAME, real7d: otherD7.size, real30d: otherD30.size });
   const unclassifiedDomains = [...domainAccounts]
     .filter(([, accounts]) => accounts >= UNCLASSIFIED_MIN_ACCOUNTS)
     .map(([domain, accounts]) => ({ domain, accounts }))

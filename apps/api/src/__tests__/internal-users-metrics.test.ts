@@ -274,26 +274,55 @@ test('every built-in disposable domain matches a real-looking address, and ordin
   expect(result.real).toBe(2);
 });
 
+/** `count` accounts with a session at `domain`: enough to clear the 5-account floors. */
+const crowd = (count: number, domain: string, prefix: string): Account[] =>
+  Array.from({ length: count }, (_, i) => ({ id: `${prefix}${i}`, email: `p${prefix}${i}@${domain}`, lastSession: session }));
+
 test('SCOREBOARD_DISPOSABLE_DOMAINS extends the built-in list: trimmed, case-insensitive, @ and *. prefixes, subdomains, invalid entries ignored', async () => {
   const people: Account[] = [
-    { id: 'a', email: 'p1@newrotation.mailco.io', lastSession: session },
-    { id: 'b', email: 'p2@Second-Domain.net', lastSession: session },
-    { id: 'c', email: 'p3@sub.third.org', lastSession: session },
-    { id: 'd', email: 'p4@gmail.com', lastSession: session },
-    { id: 'e', email: 'p5@mailinator.com', lastSession: session }, // built-in still applies
+    ...crowd(5, 'newrotation.mailco.io', 'a'),
+    ...crowd(5, 'Second-Domain.net', 'b'),
+    ...crowd(5, 'sub.third.org', 'c'),
+    ...crowd(5, 'gmail.com', 'd'),
+    ...crowd(5, 'mailinator.com', 'e'), // built-in still applies
   ];
   const before = await collectUserMetrics(fakeDatabase(people).database, {}, now);
-  expect(before.buckets.disposable_mail_domain).toBe(1);
-  expect(before.real).toBe(4);
+  expect(before.buckets.disposable_mail_domain).toBe(5);
+  expect(before.real).toBe(20);
 
   const extended = await collectUserMetrics(fakeDatabase(people).database, {
     SCOREBOARD_DISPOSABLE_DOMAINS: ' newrotation.mailco.io , @second-domain.NET,*.third.org,,not a domain,gmail,',
   }, now);
-  expect(extended.buckets.disposable_mail_domain).toBe(4);
-  expect(extended.real).toBe(1); // only the gmail.com account; the bare word "gmail" is not a domain and was ignored
+  expect(extended.buckets.disposable_mail_domain).toBe(20);
+  expect(extended.real).toBe(5); // only the gmail.com accounts; the bare word "gmail" is not a domain and was ignored
   for (const unset of [{}, { SCOREBOARD_DISPOSABLE_DOMAINS: '' }, { SCOREBOARD_DISPOSABLE_DOMAINS: ' , ' }]) {
-    expect((await collectUserMetrics(fakeDatabase(people).database, unset, now)).buckets.disposable_mail_domain).toBe(1);
+    expect((await collectUserMetrics(fakeDatabase(people).database, unset, now)).buckets.disposable_mail_domain).toBe(5);
   }
+});
+
+test('a POSTed or env disposable entry applies only when it matches at least 5 accounts (no count oracle below the floor)', async () => {
+  const people: Account[] = [
+    ...crowd(4, 'four.mailco.io', 'a'),
+    ...crowd(5, 'five.mailco.io', 'b'),
+    ...crowd(1, 'one.mailco.io', 'c'),
+    // An entry for a parent domain counts the accounts of all its subdomains.
+    ...crowd(3, 'x.parent.mailco.io', 'd'),
+    ...crowd(2, 'y.parent.mailco.io', 'e'),
+  ];
+  const request = ['four.mailco.io', 'five.mailco.io', 'one.mailco.io', 'parent.mailco.io'];
+  const viaRequest = await collectUserMetrics(fakeDatabase(people).database, {}, now, request);
+  expect(viaRequest.buckets.disposable_mail_domain).toBe(5 + 5); // five.* and the parent (3 + 2); four.* and one.* ignored
+  expect(viaRequest.real).toBe(4 + 1);
+  const viaEnv = await collectUserMetrics(fakeDatabase(people).database, { SCOREBOARD_DISPOSABLE_DOMAINS: request.join(',') }, now);
+  expect(viaEnv.buckets.disposable_mail_domain).toBe(10);
+  expect(viaEnv.real).toBe(5);
+  // Listing only the small domains changes nothing at all: the count cannot be probed.
+  const probe = await collectUserMetrics(fakeDatabase(people).database, {}, now, ['four.mailco.io', 'one.mailco.io']);
+  expect(probe.buckets.disposable_mail_domain).toBe(0);
+  expect(probe.real).toBe(15);
+  // The built-in list is not subject to the floor.
+  const builtin = await collectUserMetrics(fakeDatabase([...crowd(1, 'mailinator.com', 'm')]).database, {}, now);
+  expect(builtin.buckets.disposable_mail_domain).toBe(1);
 });
 
 test('a real-data shaped split (1,601 accounts) lands in the expected buckets', async () => {
@@ -394,19 +423,21 @@ test('REAL activity windows and new-7d use only real accounts', async () => {
 
 test('per-app real users: distinct real accounts per client display name, 7d and 30d, excluded accounts never counted', async () => {
   const people: Account[] = [
-    { id: 'r1', email: 'a1@gmail.com', lastSession: session },
-    { id: 'r2', email: 'a2@gmail.com', lastSession: session },
-    { id: 'r3', email: 'a3@gmail.com', lastSession: session },
+    ...Array.from({ length: 6 }, (_, i) => ({ id: `r${i}`, email: `a${i}@gmail.com`, lastSession: session })),
     { id: 'team', email: 'x@tinycloud.xyz', lastSession: session },
     { id: 'wallet', email: 'w@gmail.com', lastSession: session, addresses: [WALLET_A] },
   ];
   const tokens: Token[] = [
-    { userId: 'r1', clientId: 'c-chat', at: hoursAgo(2) },
-    { userId: 'r1', clientId: 'c-chat', at: daysAgo(3) }, // same account twice: one
-    { userId: 'r2', clientId: 'c-chat', at: daysAgo(20) }, // 30d only
-    { userId: 'r2', clientId: 'c-chat-staging', at: daysAgo(2) }, // same display name, other client: merged
-    { userId: 'r3', clientId: 'c-notes', at: daysAgo(40) }, // outside 30d
-    { userId: 'r1', clientId: 'c-gone', at: daysAgo(1) }, // client row deleted
+    { userId: 'r0', clientId: 'c-chat', at: hoursAgo(2) },
+    { userId: 'r0', clientId: 'c-chat', at: daysAgo(3) }, // same account twice: one
+    { userId: 'r1', clientId: 'c-chat', at: daysAgo(3) },
+    { userId: 'r2', clientId: 'c-chat', at: daysAgo(5) },
+    { userId: 'r3', clientId: 'c-chat', at: daysAgo(20) }, // 30d only
+    { userId: 'r4', clientId: 'c-chat', at: daysAgo(25) },
+    { userId: 'r5', clientId: 'c-chat-staging', at: daysAgo(2) }, // same display name, other client: merged
+    { userId: 'r0', clientId: 'c-notes', at: daysAgo(1) }, // a small app: summed into "other apps"
+    { userId: 'r1', clientId: 'c-notes', at: daysAgo(40) }, // outside 30d
+    { userId: 'r2', clientId: 'c-gone', at: daysAgo(1) }, // client row deleted: "unknown client", also small
     { userId: 'team', clientId: 'c-chat', at: hoursAgo(1) },
     { userId: 'wallet', clientId: 'c-notes', at: hoursAgo(1) },
   ];
@@ -418,9 +449,67 @@ test('per-app real users: distinct real accounts per client display name, 7d and
   const { database } = fakeDatabase(people, { tokens, clients });
   const result = await collectUserMetrics(database, { SCOREBOARD_EXCLUDE_ADDRESSES: WALLET_A }, now);
   expect(result.apps).toEqual([
-    { name: 'TinyChat', real7d: 2, real30d: 2 },
-    { name: 'unknown client', real7d: 1, real30d: 1 },
+    { name: 'TinyChat', real7d: 4, real30d: 6 },
+    { name: 'other apps', real7d: 2, real30d: 2 }, // distinct users of Notes (r0) and unknown client (r2)
   ]);
+});
+
+test('per-app names come from outsiders: truncated and cleaned, small apps are never listed by name, at most 50 are listed, the rest are summed', async () => {
+  const users: Account[] = [];
+  const tokens: Token[] = [];
+  const clients: Array<{ clientId: string; name: string }> = [];
+  const app = (clientId: string, name: string, usersCount: number, tokenAge = 2) => {
+    clients.push({ clientId, name });
+    for (let i = 0; i < usersCount; i += 1) {
+      const id = `${clientId}-u${i}`;
+      users.push({ id, email: `${id}@gmail.com`, lastSession: session });
+      tokens.push({ userId: id, clientId, at: daysAgo(tokenAge) });
+    }
+  };
+  app('long', `${'x'.repeat(500)}`, 9);
+  app('spaced', '   Spaced \t\n  Out   App  ', 9);
+  app('blank', '   ', 9);
+  app('impostor', 'other apps', 9);
+  app('tiny', 'Secret Startup Name', 4); // below 5 real users: never listed by name
+  for (let i = 0; i < 55; i += 1) app(`bulk${i}`, `Bulk ${String(i).padStart(2, '0')}`, 5 + (i % 3));
+  const result = await collectUserMetrics(fakeDatabase(users, { tokens, clients }).database, {}, now);
+
+  const named = result.apps.filter((a: { name: string }) => a.name !== 'other apps');
+  expect(named).toHaveLength(50);
+  expect(result.apps.every((a: { name: string }) => a.name.length <= 60)).toBe(true);
+  expect(JSON.stringify(result.apps)).not.toContain('Secret Startup Name');
+  expect(JSON.stringify(result.apps)).not.toContain('x'.repeat(61));
+  // Biggest first by 30-day users, ties by name.
+  const counts = named.map((a: { real30d: number }) => a.real30d);
+  expect(counts).toEqual([...counts].sort((a, b) => b - a));
+  // "Other apps" sums the distinct users of everything not listed: the 4-user app and the apps beyond the top 50.
+  const other = result.apps.find((a: { name: string }) => a.name === 'other apps');
+  const listedNames = new Set(named.map((a: { name: string }) => a.name));
+  const expectedOther = users.filter((u) => {
+    const clientId = u.id.split('-u')[0]!;
+    const nameOfClient = clients.find((c) => c.clientId === clientId)!.name;
+    const cleaned = nameOfClient.replace(/\s+/g, ' ').trim().slice(0, 60).trim() || 'unnamed app';
+    return !listedNames.has(cleaned === 'other apps' ? 'other apps (app)' : cleaned);
+  }).length;
+  expect(other).toEqual({ name: 'other apps', real7d: expectedOther, real30d: expectedOther });
+  expect(expectedOther).toBeGreaterThanOrEqual(4);
+  // Cleaning: whitespace collapsed, blank named, an app calling itself "other apps" cannot pose as the sum.
+  expect(listedNames.has('Spaced Out App')).toBe(true);
+  expect(listedNames.has('unnamed app')).toBe(true);
+  expect(listedNames.has('x'.repeat(60))).toBe(true);
+  expect(listedNames.has('other apps (app)')).toBe(true);
+  expect(named.filter((a: { name: string }) => a.name === 'other apps')).toHaveLength(0);
+});
+
+test('"other apps" counts a user once even when they use several small apps', async () => {
+  const people = crowd(3, 'gmail.com', 'z');
+  const tokens: Token[] = people.flatMap((p) => [
+    { userId: p.id, clientId: 'c1', at: daysAgo(1) },
+    { userId: p.id, clientId: 'c2', at: daysAgo(2) },
+  ]);
+  const clients = [{ clientId: 'c1', name: 'One' }, { clientId: 'c2', name: 'Two' }];
+  const result = await collectUserMetrics(fakeDatabase(people, { tokens, clients }).database, {}, now);
+  expect(result.apps).toEqual([{ name: 'other apps', real7d: 3, real30d: 3 }]);
 });
 
 test('empty database yields zeros', async () => {
@@ -441,7 +530,9 @@ test('the response carries counts and app names only: no emails, ids, addresses 
   const tokens: Token[] = [{ userId: 'u-real-session', clientId: 'c1', at: hoursAgo(1) }];
   const { database } = fakeDatabase(accounts, { botUserIds: ['u-bot'], tokens, clients: [{ clientId: 'c1', name: 'TinyChat' }] });
   const result = await collectUserMetrics(database, env, now);
-  expect(result.apps).toEqual([{ name: 'TinyChat', real7d: 1, real30d: 1 }]);
+  // One real user in an app: it is summed into "other apps", never listed by its (outsider-chosen) name.
+  expect(result.apps).toEqual([{ name: 'other apps', real7d: 1, real30d: 1 }]);
+  expect(JSON.stringify(result)).not.toContain('TinyChat');
   const serialized = JSON.stringify(result);
   for (const account of accounts) {
     expect(serialized).not.toContain(account.id);
@@ -496,46 +587,50 @@ test('parseDisposableDomains: lowercase hostnames, at most 5,000, anything else 
 
 test('the disposable list is the union of the built-ins, SCOREBOARD_DISPOSABLE_DOMAINS and the request list', async () => {
   const people: Account[] = [
-    { id: 'builtin', email: 'p1@fldubai.com', lastSession: session },
-    { id: 'env', email: 'p2@from-env.mailco.io', lastSession: session },
-    { id: 'request', email: 'p3@sub.from-request.mailco.io', lastSession: session }, // subdomain of a listed domain
-    { id: 'none', email: 'p4@acme.io', lastSession: session },
+    ...crowd(5, 'fldubai.com', 'a'),
+    ...crowd(5, 'from-env.mailco.io', 'b'),
+    ...crowd(5, 'sub.from-request.mailco.io', 'c'), // subdomain of a listed domain
+    ...crowd(5, 'acme.io', 'd'),
   ];
   const env = { SCOREBOARD_DISPOSABLE_DOMAINS: 'from-env.mailco.io' };
   const alone = await collectUserMetrics(fakeDatabase(people).database, {}, now);
-  expect(alone.buckets.disposable_mail_domain).toBe(1);
+  expect(alone.buckets.disposable_mail_domain).toBe(5);
   const withEnv = await collectUserMetrics(fakeDatabase(people).database, env, now);
-  expect(withEnv.buckets.disposable_mail_domain).toBe(2);
+  expect(withEnv.buckets.disposable_mail_domain).toBe(10);
   const merged = await collectUserMetrics(fakeDatabase(people).database, env, now, ['from-request.mailco.io']);
-  expect(merged.buckets.disposable_mail_domain).toBe(3);
-  expect(merged.real).toBe(1);
+  expect(merged.buckets.disposable_mail_domain).toBe(15);
+  expect(merged.real).toBe(5);
   // The request list alone does not need the env, and does not leak into the next call.
   const requestOnly = await collectUserMetrics(fakeDatabase(people).database, {}, now, ['from-request.mailco.io']);
-  expect(requestOnly.buckets.disposable_mail_domain).toBe(2);
-  expect((await collectUserMetrics(fakeDatabase(people).database, {}, now)).buckets.disposable_mail_domain).toBe(1);
+  expect(requestOnly.buckets.disposable_mail_domain).toBe(10);
+  expect((await collectUserMetrics(fakeDatabase(people).database, {}, now)).buckets.disposable_mail_domain).toBe(5);
 });
 
 test('a request or env list can never mark major webmail or our own domains disposable', async () => {
   const poisoned = [
     'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'hotmail.fr', 'live.com', 'yahoo.com', 'yahoo.co.uk',
     'icloud.com', 'proton.me', 'protonmail.com', 'aol.com', 'gmx.com', 'fastmail.com', 'hey.com',
+    'web.de', 'gmx.at', 'gmx.ch', 'yandex.kz', 'orange.fr', 'mail.ru', 'qq.com', '163.com', 'naver.com',
     'mail.gmail.com', // a subdomain of a major provider
     'co.uk', // a parent that would swallow yahoo.co.uk
     'tinycloud.xyz', 'qa-mail.tinycloud.xyz', 'openkey.so', 'gbafa.com', 'spruceid.com', 'tinycloudlabs.com',
   ];
+  // Five accounts at each domain: the protection, not the 5-account floor, is what keeps them real.
   const people: Account[] = [
-    ...['gmail.com', 'outlook.com', 'hotmail.fr', 'yahoo.co.uk', 'icloud.com', 'proton.me'].map((domain, i) => ({ id: `w${i}`, email: `person${i}@${domain}`, lastSession: session })),
-    { id: 'team', email: 'someone@tinycloud.xyz', lastSession: session },
-    { id: 'real', email: 'honest@acme-example.io', lastSession: session },
-    { id: 'bad', email: 'p@rotated.mailco.io', lastSession: session },
+    ...['gmail.com', 'outlook.com', 'hotmail.fr', 'yahoo.co.uk', 'icloud.com', 'proton.me', 'web.de', 'gmx.at', 'yandex.kz', 'orange.fr', 'mail.gmail.com']
+      .flatMap((domain, i) => crowd(5, domain, `w${i}x`)),
+    ...crowd(5, 'tinycloud.xyz', 'team'),
+    ...crowd(5, 'acme-example.io', 'real'),
+    ...crowd(5, 'rotated.mailco.io', 'bad'),
   ];
+  const webmail = 11 * 5;
   const fromRequest = await collectUserMetrics(fakeDatabase(people).database, {}, now, [...poisoned, 'rotated.mailco.io']);
-  expect(fromRequest.buckets.disposable_mail_domain).toBe(1); // only the legitimate entry applied
-  expect(fromRequest.buckets.internal_team_domain).toBe(1);
-  expect(fromRequest.real).toBe(7);
+  expect(fromRequest.buckets.disposable_mail_domain).toBe(5); // only the legitimate entry applied
+  expect(fromRequest.buckets.internal_team_domain).toBe(5);
+  expect(fromRequest.real).toBe(webmail + 5);
   const fromEnv = await collectUserMetrics(fakeDatabase(people).database, { SCOREBOARD_DISPOSABLE_DOMAINS: `${poisoned.join(',')},rotated.mailco.io` }, now);
-  expect(fromEnv.buckets.disposable_mail_domain).toBe(1);
-  expect(fromEnv.real).toBe(7);
+  expect(fromEnv.buckets.disposable_mail_domain).toBe(5);
+  expect(fromEnv.real).toBe(webmail + 5);
 
   // Through the endpoint: ignored, not an error, and still no leakage of the list.
   const router = createInternalMetricsRouter(() => fakeDatabase(people).database);
@@ -550,7 +645,7 @@ test('a request or env list can never mark major webmail or our own domains disp
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.users.buckets.disposable_mail_domain).toBe(0);
-    expect(body.users.real).toBe(8);
+    expect(body.users.real).toBe(webmail + 5 + 5);
   } finally {
     if (saved === undefined) delete process.env.INTERNAL_METRICS_TOKEN;
     else process.env.INTERNAL_METRICS_TOKEN = saved;
@@ -602,8 +697,9 @@ test('unclassifiedDomains is capped at the 200 biggest domains', async () => {
 
 test('POST / carries the maintained list behind the same token gate; GET stays body-less', async () => {
   const people: Account[] = [
-    { id: 'a', email: 'p1@rotated.mailco.io', lastSession: session },
-    { id: 'b', email: 'p2@gmail.com', lastSession: session },
+    ...crowd(5, 'rotated.mailco.io', 'a'),
+    ...crowd(2, 'tiny.mailco.io', 'c'), // below the 5-account floor: listing it changes nothing
+    ...crowd(5, 'gmail.com', 'b'),
   ];
   const { database } = fakeDatabase(people);
   const router = createInternalMetricsRouter(() => database);
@@ -621,20 +717,20 @@ test('POST / carries the maintained list behind the same token gate; GET stays b
 
     const plain = await (await router.request('/', { headers: { authorization: 'Bearer test-metrics-token' } })).json();
     expect(plain.users.buckets.disposable_mail_domain).toBe(0);
-    expect(plain.users.real).toBe(2);
+    expect(plain.users.real).toBe(12);
 
-    const merged = await post(JSON.stringify({ disposableDomains: ['rotated.mailco.io'] }));
+    const merged = await post(JSON.stringify({ disposableDomains: ['rotated.mailco.io', 'tiny.mailco.io'] }));
     expect(merged.status).toBe(200);
     const body = await merged.json();
-    expect(body.users.buckets.disposable_mail_domain).toBe(1);
-    expect(body.users.real).toBe(1);
+    expect(body.users.buckets.disposable_mail_domain).toBe(5);
+    expect(body.users.real).toBe(7);
     expect(JSON.stringify(body)).not.toContain('rotated.mailco.io'); // the list is never echoed
     expect(body.accounts).toEqual(plain.accounts);
 
     // Empty body behaves like GET; the list is not remembered between requests.
     const empty = await (await post(undefined)).json();
     expect(empty.users.buckets.disposable_mail_domain).toBe(0);
-    expect((await (await post('{}')).json()).users.real).toBe(2);
+    expect((await (await post('{}')).json()).users.real).toBe(12);
 
     for (const bad of ['not json', '[]', '"x"', '{"disposableDomains":"a.io"}', '{"disposableDomains":["BAD.IO"]}', '{"disposableDomains":["a b.io"]}']) {
       const refused = await post(bad);
