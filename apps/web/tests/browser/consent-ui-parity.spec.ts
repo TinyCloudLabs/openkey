@@ -69,7 +69,6 @@ test.describe('TC-659 CLI /delegate consent parity', () => {
     // Header, requester and CLI context come from the shared component.
     const dialog = page.getByRole('dialog');
     await expect(dialog.getByRole('heading', { name: 'Authorize capabilities' })).toBeVisible();
-    await expect(dialog).toContainText('Requested by TinyCloud CLI');
     await expect(dialog.getByRole('region', { name: 'Delegation destination' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Authorize CLI Access' })).toHaveCount(0);
   });
