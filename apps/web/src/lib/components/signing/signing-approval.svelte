@@ -216,7 +216,7 @@
   const isMalformedRecap = $derived(model.protocol === "malformed-recap");
   const headline = $derived(shareCreationHost ? "Create a new share" : PROTOCOL_HEADLINE[model.protocol]);
   const hint = $derived(shareCreationHost
-    ? `${shareCreationHost} wants to start a new share. It can open only what's in this share, and none of your other shares.`
+    ? `${shareCreationHost} wants to start a new share and open what's in it. It can't open any of your other shares.`
     : PROTOCOL_HINT[model.protocol]);
 
   // Summary copy and the sensitive count describe only actions the user is
@@ -239,7 +239,7 @@
     { key: "courier", heading: COURIER_HEADING, rows: buildSummaryStatements(summaryGrants.filter(grant => grant.family === "courier")) },
     { key: "other", heading: null, rows: buildSummaryStatements(summaryGrants.filter(grant => grant.family !== "courier")) },
   ].filter(group => group.rows.length > 0));
-  const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
+  const sensitiveCount = $derived(sensitiveSummaryCount(shareCreationHost ? buildSummaryStatements(selectedGrants) : summaryStatements));
 
   // App keys: the standing-access line follows the decrypt statements, and a
   // `key.delete` action is listed even though it is never selected.
@@ -575,7 +575,7 @@
     Count the badged rows only when mixed with unbadged rows. Not-granted
     informational rows are also unbadged; the individual badges always remain.
   -->
-  {#if sensitiveCount > 0 && sensitiveCount < summaryStatements.length + notGrantableStatements.length}
+  {#if sensitiveCount > 0 && (shareCreationHost || sensitiveCount < summaryStatements.length + notGrantableStatements.length)}
     <p class="sensitive-callout" role="status" aria-live="polite">
       {sensitiveRowsCallout(sensitiveCount)}
     </p>

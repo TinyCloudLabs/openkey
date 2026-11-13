@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { getAddress, verifyMessage } from 'ethers';
-import { isRawRecapEntry, parsePreparedRecap, prepareDelegationSession, type DelegationJwk } from '../routes/delegate-session';
+import { canonicalizeServiceName, isRawRecapEntry, parsePreparedRecap, prepareDelegationSession, type DelegationJwk } from '../routes/delegate-session';
 import { ShareApprovals, ShareApprovalError, type MintedShareApproval } from './share-approval';
+import type { ShareWindowContext } from './share-window-context';
 import { parseShareApprovalIntent, type ShareApprovalIntent } from './share-approval-intent';
 import { shareSessionBinding } from './share-approval-session';
 
@@ -19,6 +20,7 @@ interface Request {
   intent: ShareApprovalIntent;
   minted: Readonly<MintedShareApproval>;
   prepared: Prepared;
+  originalSiwe: string;
   intentDigest: string;
 }
 
@@ -28,13 +30,20 @@ export class ShareApprovalRequests {
   private readonly approvals: ShareApprovals;
   constructor(private readonly now: () => number = Date.now) { this.approvals = new ShareApprovals(now); }
 
-  prepare(value: unknown, account: ShareApprovalAccount) {
-    const intent = parseShareApprovalIntent(value);
+  prepare(value: unknown, account: ShareApprovalAccount, window: Readonly<ShareWindowContext>,
+    consumeWindow: () => Readonly<ShareWindowContext>) {
+    const claimed = parseShareApprovalIntent(value);
+    if (window.purpose !== 'share-create' || claimed.origin !== window.origin ||
+      (['userId', 'authSessionId', 'keyId', 'keyType', 'address'] as const).some(field => window[field] !== account[field])) {
+      throw new ShareApprovalError('share_window_binding_mismatch');
+    }
+    const intent = { ...claimed, origin: window.origin };
     if (intent.keyId !== account.keyId) throw new ShareApprovalError('share_approval_binding_mismatch');
     const binding = shareSessionBinding(intent.session, account, intent.origin, this.now());
     const expiresAt = Date.parse(intent.expiresAt);
     if (expiresAt <= this.now() || expiresAt > binding.sessionExpiresAt) throw new ShareApprovalError('invalid_share_expiry');
     for (const [id, record] of this.requests) if (record.minted.expiresAt <= this.now()) this.requests.delete(id);
+    if (consumeWindow() !== window) throw new ShareApprovalError('share_window_binding_mismatch');
     const minted = this.approvals.issue(binding);
     const { prepared } = prepareDelegationSession({
       address: getAddress(account.address), chainId: Number(binding.ownerDid.split(':')[3]),
@@ -46,10 +55,10 @@ export class ShareApprovalRequests {
       issuedAt: new Date(this.now()), expiryMs: expiresAt - this.now(),
     });
     const intentDigest = createHash('sha256').update(JSON.stringify([
-      'share-create', minted.requestId, minted.nonce, minted.shareId, account.authSessionId,
+      'share-create', window.requestId, minted.requestId, minted.nonce, minted.shareId, account.authSessionId,
       binding.ownerDid, binding.sessionDid, intent.origin, prepared.siwe,
     ])).digest('hex');
-    this.requests.set(minted.requestId, { account: structuredClone(account), intent, minted, prepared, intentDigest });
+    this.requests.set(minted.requestId, { account: structuredClone(account), intent, minted, prepared, originalSiwe: prepared.siwe, intentDigest });
     return this.preview(minted.requestId, account);
   }
 
@@ -84,11 +93,24 @@ export class ShareApprovalRequests {
     consumeContinuation: () => void, sign: (message: string) => Promise<string>) {
     const record = this.current(requestId, account);
     if (intentDigest !== record.intentDigest) throw new ShareApprovalError('share_approval_binding_mismatch');
-    const rows = parsePreparedRecap(record.prepared.siwe).filter(isRawRecapEntry)
-      .flatMap(row => row.actions.map(action => ({ resource: row.path, action })));
+    if (record.prepared.siwe !== record.originalSiwe) throw new ShareApprovalError('share_approval_scope_mismatch');
+    const allRows = parsePreparedRecap(record.prepared.siwe);
+    const encryptionRows = allRows.filter(row => canonicalizeServiceName(row.service) === 'tinycloud.encryption' ||
+      row.actions.some(action => action.startsWith('tinycloud.encryption/')));
+    if (encryptionRows.length !== 1 || encryptionRows.some(row => !isRawRecapEntry(row) ||
+      row.path !== record.minted.resource || row.actions.length !== 1 || row.actions[0] !== record.minted.action)) {
+      throw new ShareApprovalError('share_approval_scope_mismatch');
+    }
+    const rows = encryptionRows.flatMap(row => row.actions.map(action => ({ resource: row.path, action })));
     // Both synchronous consumptions precede the first signing await.
-    consumeContinuation();
-    this.approvals.consume(requestId, record.minted, record.minted.nonce, rows);
+    try {
+      consumeContinuation();
+      this.approvals.consume(requestId, record.minted, record.minted.nonce, rows);
+    } catch (error) {
+      try { this.approvals.cancel(requestId, record.minted); } catch { /* expired or already consumed */ }
+      this.requests.delete(requestId);
+      throw error;
+    }
     this.requests.delete(requestId);
     const signature = await sign(record.prepared.siwe);
     if (getAddress(verifyMessage(record.prepared.siwe, signature)) !== getAddress(account.address)) {

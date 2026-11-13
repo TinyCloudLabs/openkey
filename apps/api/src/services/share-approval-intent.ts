@@ -27,6 +27,11 @@ export function parseShareApprovalIntent(value: unknown): ShareApprovalIntent {
     throw new ShareApprovalError('invalid_share_session');
   }
   strictSessionDid(session.publicJwk);
+  if (body.permissions !== undefined && (!Array.isArray(body.permissions) || body.permissions.some(entry =>
+    !entry || typeof entry !== 'object' || Array.isArray(entry) ||
+    Object.keys(entry).some(key => !['service', 'space', 'path', 'actions'].includes(key))))) {
+    throw new ShareApprovalError('invalid_share_file_permissions');
+  }
   const permissions = body.permissions === undefined ? [] : validatePermissions(body.permissions);
   // This request may carry only the exact ordinary file rows the app requested.
   if (permissions.length > 16 || permissions.some(entry => entry.service !== 'tinycloud.kv' ||

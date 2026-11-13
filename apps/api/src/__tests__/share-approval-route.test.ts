@@ -6,6 +6,7 @@ import { SiweMessage } from 'siwe';
 import { createMiddleware } from 'hono/factory';
 import type { SessionContext } from '../middleware/session';
 import { createShareApprovalRouter, type ShareApprovalLifecycle } from '../routes/share-approval';
+import { ShareWindowContexts } from '../services/share-window-context';
 import { ShareApprovalRequests } from '../services/share-approval-request';
 import { strictSessionDid } from '../services/device-authorization';
 
@@ -37,7 +38,7 @@ async function fixture() {
   };
   let signed = 0;
   // Replace only the wallet transport, not SIWE preparation, parsing or signature checks.
-  const depsRouter = createShareApprovalRouter(new ShareApprovalRequests(() => now), {
+  const depsRouter = createShareApprovalRouter(new ShareApprovalRequests(() => now), new ShareWindowContexts(() => now), {
     findAccount: async () => ({ ...account }),
     signManaged: async (_account, message) => { signed++; return wallet.signMessage(message); }, lifecycle,
   }, createMiddleware<SessionContext>(async (c, next) => {
@@ -46,19 +47,25 @@ async function fixture() {
   const call = (path: string, body: unknown, headers: Record<string, string> = {}) => depsRouter.request(`http://api.test/${path}`, {
     method: 'POST', headers: { origin: 'http://localhost:5173', 'content-type': 'application/json', ...headers }, body: JSON.stringify(body),
   });
-  return { call, intent, signed: () => signed };
+  const window = async () => {
+    const requestId = crypto.randomUUID();
+    const response = await call('window', { requestId, keyId: 'key', observedOrigin: intent.origin });
+    const result = await response.json() as { requestId: string; windowContextToken: string };
+    return { requestId: result.requestId, windowContextToken: result.windowContextToken };
+  };
+  return { call, intent, window, signed: () => signed };
 }
 
 test('typed new-share route requires fresh approval and signs once', async () => {
   const f = await fixture();
-  const options = await f.call('options', { intent: f.intent });
+  const options = await f.call('options', { intent: f.intent, ...await f.window() });
   expect(options.status).toBe(200);
   const preview = await options.json() as any;
-  const request = { requestId: preview.requestId, keyId: 'key', token: preview.assertion.token };
+  const request = { requestId: preview.requestId, keyId: 'key', token: preview.assertion.token, intentDigest: preview.intentDigest };
   expect((await f.call('sign', request)).status).toBe(403);
   expect(f.signed()).toBe(0);
-  expect((await f.call('verify', { ...request, response: { fixture: true } })).status).toBe(200);
-  expect((await f.call('resume', request)).status).toBe(200);
+  expect((await f.call('verify', { requestId: request.requestId, keyId: request.keyId, token: request.token, response: { fixture: true } })).status).toBe(200);
+  expect((await f.call('resume', { requestId: request.requestId, keyId: request.keyId, token: request.token })).status).toBe(200);
   expect((await f.call('sign', { ...request, siwe: 'caller bytes' })).status).toBe(400);
   const signed = await f.call('sign', request);
   expect(signed.status).toBe(200);
@@ -69,8 +76,8 @@ test('typed new-share route requires fresh approval and signs once', async () =>
 
 test('caller ids, off-origin controls and bearer signing are refused', async () => {
   const f = await fixture();
-  expect((await f.call('options', { intent: { ...f.intent, shareId: 'existing-share-id' } })).status).toBe(403);
-  expect((await f.call('options', { intent: f.intent }, { origin: 'https://thirdparty.example' })).status).toBe(403);
-  expect((await f.call('options', { intent: f.intent }, { authorization: 'Bearer fixture' })).status).toBe(403);
+  expect((await f.call('options', { intent: { ...f.intent, shareId: 'existing-share-id' }, ...await f.window() })).status).toBe(403);
+  expect((await f.call('options', { intent: f.intent, ...await f.window() }, { origin: 'https://thirdparty.example' })).status).toBe(403);
+  expect((await f.call('options', { intent: f.intent, ...await f.window() }, { authorization: 'Bearer fixture' })).status).toBe(403);
   expect(f.signed()).toBe(0);
 });

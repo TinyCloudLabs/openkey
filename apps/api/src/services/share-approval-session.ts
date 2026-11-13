@@ -20,18 +20,19 @@ export function shareSessionBinding(proof: ShareSessionProof, account: {
     throw new ShareApprovalError('invalid_share_session');
   }
   const session = parsed.siwe;
+  const chainId = Number(session.chainId);
+  if (!Number.isSafeInteger(chainId) || chainId <= 0) throw new ShareApprovalError('invalid_share_session');
   const sessionDid = strictSessionDid(proof.publicJwk);
   const principal = (did: string) => did.split('#', 1)[0];
   const sessionExpiresAt = Date.parse(session.expirationTime ?? '');
   if (principal(session.uri) !== principal(sessionDid) ||
     !Number.isFinite(sessionExpiresAt) || sessionExpiresAt <= now ||
-    Date.parse(session.issuedAt) > now ||
     (session.notBefore !== undefined && Date.parse(session.notBefore) > now) ||
     getAddress(session.address) !== getAddress(account.address) ||
     getAddress(verifyMessage(proof.siwe, proof.signature)) !== getAddress(account.address)) {
     throw new ShareApprovalError('invalid_share_session');
   }
   return { userId: account.userId, keyId: account.keyId,
-    ownerDid: `did:pkh:eip155:${session.chainId}:${getAddress(account.address)}`,
+    ownerDid: `did:pkh:eip155:${chainId}:${getAddress(account.address)}`,
     sessionDid, origin, sessionExpiresAt };
 }

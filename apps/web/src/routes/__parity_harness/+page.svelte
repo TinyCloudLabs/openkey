@@ -23,7 +23,7 @@
   import { dev } from '$app/environment';
   import CliSigningAdapter from '$lib/components/signing/cli-signing-adapter.svelte';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
-  import ShareApproval from '$lib/components/signing/share-approval.svelte';
+  import ShareApproval, { type ShareReviewPreview } from '$lib/components/signing/share-approval.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
   import type {
     CliSigningTransport,
@@ -35,7 +35,7 @@
     model: CapabilityReviewModel;
     initialSelection: string[];
     surface: 'cli' | 'popup' | 'iframe' | 'share';
-    share?: { shareId: string; ownerDid: string; sessionDid: string; origin: string };
+    share?: Omit<ShareReviewPreview, "prepared">;
     canUseAuthorizeSign?: boolean;
     previewReady?: boolean;
     approving?: boolean;
@@ -49,7 +49,7 @@
   let model = $state<CapabilityReviewModel | null>(null);
   let initialSelection = $state<Set<string>>(new Set());
   let expiryMs = $state<number | null>(null);
-  let shareFixture = $state<{ shareId: string; ownerDid: string; sessionDid: string; origin: string; ready: boolean; approving: boolean; error: string | null } | null>(null);
+  let shareFixture = $state<{ preview: ShareReviewPreview; signer: CapabilityReviewModel["signer"]; ready: boolean; approving: boolean; error: string | null } | null>(null);
 
   // Non-reactive reference to the window-scoped harness object so
   // spy transport calls push into the SAME array Playwright reads.
@@ -62,7 +62,7 @@
     }
     rawGlobals = g;
     surface = g.surface;
-    shareFixture = g.share ? { ...g.share, ready: g.previewReady ?? true, approving: g.approving ?? false, error: g.error ?? null } : null;
+    shareFixture = g.share ? { preview: { ...g.share, prepared: { siwe: g.model.rawMessage } }, signer: g.model.signer, ready: g.previewReady ?? true, approving: g.approving ?? false, error: g.error ?? null } : null;
     model = g.model;
     initialSelection = new Set(g.initialSelection);
     ready = true;
@@ -131,8 +131,8 @@
     {:else if surface === 'iframe'}
       <IframeSigningAdapter {model} {initialSelection} transport={widgetTransport} />
     {:else if surface === 'share' && shareFixture}
-      <ShareApproval {model} {...shareFixture}
-        onApprove={() => record('approveShare')} onCancel={() => record('cancelShare')} />
+      <ShareApproval {...shareFixture}
+        onApprove={(requestId, intentDigest) => record('approveShare', { requestId, intentDigest })} onCancel={() => record('cancelShare')} />
     {/if}
   </div>
 {/if}

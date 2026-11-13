@@ -22,7 +22,8 @@ export class ShareApprovalError extends Error {
   constructor(public readonly code: string) { super(code); }
 }
 
-/** Short-lived approval contexts. A restart invalidates outstanding contexts. */
+/** Short-lived contexts, fail-closed on restart. Issue/consume require one isolate;
+ * use an atomic shared store before horizontal scale. */
 export class ShareApprovals {
   private readonly contexts = new Map<string, Readonly<MintedShareApproval>>();
   constructor(private readonly now: () => number = Date.now) {}

@@ -13,5 +13,14 @@ test('a share intent cannot select an existing id or add encryption grants', () 
     expect(() => parseShareApprovalIntent({ ...intent, [field]: 'caller-chosen' })).toThrow();
   }
   expect(() => parseShareApprovalIntent({ ...intent, permissions: [{ service: 'tinycloud.encryption', path: 'share/known-existing', actions: ['tinycloud.encryption/decrypt'] }] })).toThrow();
+  expect(() => parseShareApprovalIntent({ ...intent, permissions: [{ ...intent.permissions[0], shareId: 'caller-id' }] })).toThrow();
   expect(() => parseShareApprovalIntent({ ...intent, session: { ...intent.session, publicJwk: { ...intent.session.publicJwk, d: 'private' } } })).toThrow();
+});
+
+
+test('old stable and beta Share permission shapes cannot enter the typed mint intent', () => {
+  for (const actions of [['tinycloud.encryption/decrypt', 'tinycloud.encryption/key.create'], ['tinycloud.encryption/decrypt']]) {
+    expect(() => parseShareApprovalIntent({ ...intent, permissions: [{ service: 'tinycloud.encryption',
+      path: 'urn:tinycloud:encryption:did:pkh:eip155:1:0x1111111111111111111111111111111111111111:default/share/', actions }] })).toThrow();
+  }
 });

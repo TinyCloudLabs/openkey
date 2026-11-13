@@ -3,8 +3,9 @@ import { generateKeyPairSync } from 'node:crypto';
 import { Wallet } from 'ethers';
 import { SiweMessage } from 'siwe';
 import { strictSessionDid } from './device-authorization';
+import { ShareWindowContexts } from './share-window-context';
 import { ShareApprovalRequests } from './share-approval-request';
-import { parsePreparedRecap, isRawRecapEntry } from '../routes/delegate-session';
+import { parsePreparedRecap, isRawRecapEntry, prepareDelegationSession } from '../routes/delegate-session';
 
 async function fixture() {
   const wallet = Wallet.createRandom();
@@ -23,10 +24,17 @@ async function fixture() {
   return { wallet, intent, account, now };
 }
 
+function prepare(requests: ShareApprovalRequests, f: Awaited<ReturnType<typeof fixture>>, intent = f.intent) {
+  const windows = new ShareWindowContexts(() => f.now);
+  const outer = crypto.randomUUID();
+  const window = windows.issue(f.account, outer, f.intent.origin);
+  return requests.prepare(intent, f.account, window.context, () => windows.consume(window.token, f.account, outer));
+}
+
 test('the server prepares and signs only its minted exact key and unchanged requested file rows', async () => {
   const f = await fixture();
   const requests = new ShareApprovalRequests(() => f.now);
-  const preview = requests.prepare(f.intent, f.account);
+  const preview = prepare(requests, f);
   expect(preview.shareId).toMatch(/^[0-9a-f]{32}$/);
   const rows = parsePreparedRecap(preview.prepared.siwe);
   const encryption = rows.filter(isRawRecapEntry);
@@ -46,11 +54,11 @@ test('the server prepares and signs only its minted exact key and unchanged requ
 test('changed auth session or intent and missing fresh approval cannot sign', async () => {
   const f = await fixture();
   const requests = new ShareApprovalRequests(() => f.now);
-  const preview = requests.prepare(f.intent, f.account);
+  const preview = prepare(requests, f);
   await expect(requests.sign(preview.requestId, { ...f.account, authSessionId: 'other' }, preview.intentDigest, () => {}, message => f.wallet.signMessage(message))).rejects.toThrow();
   await expect(requests.sign(preview.requestId, f.account, 'changed', () => {}, message => f.wallet.signMessage(message))).rejects.toThrow();
   await expect(requests.sign(preview.requestId, f.account, preview.intentDigest, () => { throw new Error('fresh UV missing'); }, message => f.wallet.signMessage(message))).rejects.toThrow();
-  expect(requests.preview(preview.requestId, f.account).intentDigest).toBe(preview.intentDigest);
+  expect(() => requests.preview(preview.requestId, f.account)).toThrow();
 });
 
 
@@ -58,11 +66,69 @@ test('grant expiry is clamped by the signed session and rechecked after signing'
   const f = await fixture();
   let now = f.now;
   const requests = new ShareApprovalRequests(() => now);
-  expect(() => requests.prepare({ ...f.intent, expiresAt: new Date(now + 7200_000).toISOString() }, f.account)).toThrow();
-  const preview = requests.prepare(f.intent, f.account);
+  expect(() => prepare(requests, f, { ...f.intent, expiresAt: new Date(now + 7200_000).toISOString() })).toThrow();
+  const preview = prepare(requests, f);
   await expect(requests.sign(preview.requestId, f.account, preview.intentDigest, () => {}, async message => {
     const signature = await f.wallet.signMessage(message);
     now += 3600_000;
     return signature;
   })).rejects.toThrow();
+});
+
+
+test('a claimed origin cannot replace the observed window origin', async () => {
+  const f = await fixture();
+  const windows = new ShareWindowContexts(() => f.now);
+  const window = windows.issue(f.account, 'outer', 'https://actual-attacker.example');
+  const requests = new ShareApprovalRequests(() => f.now);
+  expect(() => requests.prepare(f.intent, f.account, window.context,
+    () => windows.consume(window.token, f.account, 'outer'))).toThrow('binding_mismatch');
+  expect(windows.read(window.token, f.account, 'outer')).toBe(window.context);
+});
+
+
+test('sign refuses added space-scoped encryption actions even beyond the exact-byte fence', async () => {
+  const f = await fixture();
+  const requests = new ShareApprovalRequests(() => f.now);
+  const preview = prepare(requests, f);
+  const { prepared } = prepareDelegationSession({
+    address: f.wallet.address, chainId: 1, prefix: 'applications',
+    jwk: f.intent.session.publicJwk, domain: 'thirdparty.example',
+    nonce: '12345678', issuedAt: new Date(f.now), expiryMs: 1800_000,
+    permissions: [...f.intent.permissions,
+      { service: 'tinycloud.encryption', space: 'encryption',
+        path: `urn:tinycloud:encryption:${preview.ownerDid}:default/share/${preview.shareId}`,
+        actions: ['tinycloud.encryption/decrypt'] },
+      { service: 'tinycloud.encryption', space: 'applications', path: 'other-key',
+        actions: ['tinycloud.encryption/key.create'] }],
+  });
+  // Probe corrupted internal state, independently of the immutable-byte guard.
+  const record = (requests as any).requests.get(preview.requestId);
+  record.prepared = prepared;
+  record.originalSiwe = prepared.siwe;
+  let consumed = false;
+  await expect(requests.sign(preview.requestId, f.account, preview.intentDigest,
+    () => { consumed = true; }, message => f.wallet.signMessage(message))).rejects.toThrow('scope_mismatch');
+  expect(consumed).toBe(false);
+});
+
+test('sign refuses changed ordinary file rows before consuming approval', async () => {
+  const f = await fixture();
+  const requests = new ShareApprovalRequests(() => f.now);
+  const preview = prepare(requests, f);
+  const record = (requests as any).requests.get(preview.requestId);
+  const { prepared } = prepareDelegationSession({
+    address: f.wallet.address, chainId: 1, prefix: 'applications',
+    jwk: f.intent.session.publicJwk, domain: 'thirdparty.example',
+    nonce: '12345678', issuedAt: new Date(f.now), expiryMs: 1800_000,
+    permissions: [{ ...f.intent.permissions[0]!, path: 'app/private/file.json' },
+      { service: 'tinycloud.encryption', space: 'encryption',
+        path: `urn:tinycloud:encryption:${preview.ownerDid}:default/share/${preview.shareId}`,
+        actions: ['tinycloud.encryption/decrypt'] }],
+  });
+  record.prepared = prepared;
+  let consumed = false;
+  await expect(requests.sign(preview.requestId, f.account, preview.intentDigest,
+    () => { consumed = true; }, message => f.wallet.signMessage(message))).rejects.toThrow('scope_mismatch');
+  expect(consumed).toBe(false);
 });
