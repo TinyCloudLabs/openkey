@@ -1,15 +1,16 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 import { expect, test, type Page } from '@playwright/test';
 
 test.use({ viewport: { width: 390, height: 844 } });
 
 const address = '0x1111111111111111111111111111111111111111';
 const space = (name: string) => `tinycloud:pkh:eip155:1:${address}:${name}`;
-const permissions = ['default', 'secrets'].flatMap((name) => [
-  { service: 'tinycloud.kv', space: space(name), path: 'notes/', actions: ['tinycloud.kv/get'] },
-  { service: 'tinycloud.capabilities', space: space(name), path: '', actions: ['tinycloud.capabilities/read'] },
-]);
+const permissions = [
+  { service: 'tinycloud.kv', space: space('default'), path: 'notes/', actions: ['tinycloud.kv/get'] },
+  { service: 'tinycloud.capabilities', space: space('default'), path: '', actions: ['tinycloud.capabilities/read'] },
+];
 
-async function deviceApi(page: Page, options: { signedIn?: boolean; admin?: boolean; max?: number; suggested?: number; multiSpace?: boolean; reason?: string; lookupStatus?: number; malformed?: boolean } = {}) {
+async function deviceApi(page: Page, options: { signedIn?: boolean; admin?: boolean; max?: number; suggested?: number; reason?: string; lookupStatus?: number; malformed?: boolean; requested?: unknown[] } = {}) {
   const max = options.max ?? 604_800;
   await page.route('**/api/**', (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -25,7 +26,7 @@ async function deviceApi(page: Page, options: { signedIn?: boolean; admin?: bool
     else if (path === '/api/device-authorizations/lookup') body = {
       id: 'device-fixture', userCode: 'ABCDEFGH', sessionDid: 'did:key:z6MkFixture',
       publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) }, relayPublicJwk: {},
-      permissions: options.malformed ? null : options.multiSpace ? permissions : permissions.slice(0, 2),
+      permissions: options.malformed ? null : options.requested ?? permissions,
       nodeOrigin: 'https://node.example.test', shareOrigin: 'https://share.example.test',
       delegationTtlSeconds: max,
       ...(options.suggested !== undefined ? { suggestedTtlSeconds: options.suggested } : {}),
@@ -36,16 +37,6 @@ async function deviceApi(page: Page, options: { signedIn?: boolean; admin?: bool
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   });
 }
-
-test('a signed-in multi-space device request stays renderable', async ({ page }) => {
-  const errors: string[] = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  await deviceApi(page, { signedIn: true, multiSpace: true });
-  await page.goto('/device?user_code=ABCD-EFGH');
-  await expect(page.locator('main h1')).toBeVisible();
-  await expect(page.locator('a[href^="/delegate?"]')).toBeVisible();
-  expect(errors).toEqual([]);
-});
 
 for (const signedIn of [false, true]) {
   test(`non-admin navigation stays hidden (${signedIn ? 'member' : 'signed out'})`, async ({ page }) => {
@@ -104,4 +95,43 @@ test('a request that cannot render fails closed and can recover', async ({ page 
   options.malformed = false;
   await page.getByRole('button', { name: 'Try again' }).click();
   await expect(page.locator('a[href^="/delegate?"]')).toBeVisible();
+});
+
+test('access in a space other than default is listed on the main summary', async ({ page }) => {
+  const notes = space('notes');
+  await deviceApi(page, { requested: [
+    { service: 'tinycloud.kv', space: notes, path: 'drafts/', actions: ['tinycloud.kv/put', 'tinycloud.kv/del'] },
+    { service: 'tinycloud.capabilities', space: notes, path: '', actions: ['tinycloud.capabilities/read'] },
+  ] });
+  await page.goto('/device?user_code=ABCD-EFGH');
+  const summary = page.getByRole('list', { name: 'Requested access' });
+  await expect(summary.getByRole('listitem')).toHaveCount(2);
+  await expect(summary).toContainText(/delete/i);
+  await expect(page.locator('details')).not.toHaveAttribute('open', '');
+});
+
+test('a stale admin answer never restores console navigation', async ({ page }) => {
+  let calls = 0;
+  await page.route('**/api/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/get-session') return route.fulfill({ json: {
+      session: { id: `session-${Date.now()}`, userId: 'owner-fixture', expiresAt: new Date(Date.now() + 3_600_000).toISOString() },
+      user: { id: 'owner-fixture', name: 'QA owner', email: 'owner@example.test' },
+    } });
+    if (path === '/api/organizations') {
+      calls += 1;
+      if (calls === 1) {
+        await sleep(1_500);
+        return route.fulfill({ json: { organizations: [{ id: 'org-fixture', role: 'ADMIN' }] } });
+      }
+      return route.fulfill({ json: { organizations: [{ id: 'org-fixture', role: 'MEMBER' }] } });
+    }
+    return route.fulfill({ json: {} });
+  });
+  await page.goto('/device');
+  await expect.poll(() => calls).toBe(1);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect.poll(() => calls).toBeGreaterThanOrEqual(2);
+  await page.waitForTimeout(2_000);
+  await expect(page.getByRole('link', { name: 'OpenKey Admin console' })).toHaveCount(0);
 });

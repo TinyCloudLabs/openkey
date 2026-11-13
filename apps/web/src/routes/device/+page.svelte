@@ -179,7 +179,6 @@
           {/if}
           <ul class="space-y-3" aria-label="Requested access">
             {#each summaryRows as row (row.key)}
-              {#if !row.unmapped}
               <li class="break-words text-sm text-surface-900">
                 {#if row.codeSpans}
                   {#each splitStatementCode(row.primaryText) as part}
@@ -192,23 +191,12 @@
                   <span class="ml-1 rounded bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-900">Sensitive</span>
                 {/if}
               </li>
-              {/if}
             {/each}
           </ul>
           <Button href={delegateHref} class="w-full">{$session.data ? 'Continue to review' : 'Sign in to review'}</Button>
           <details class="text-sm">
             <summary class="cursor-pointer text-surface-500">Advanced details</summary>
             <div class="mt-4 flex flex-col gap-4">
-              {#if summaryRows.some((row) => row.unmapped)}
-                <div>
-                  <p class="font-medium">Other requested access</p>
-                  <ul class="mt-2 space-y-2">
-                    {#each summaryRows as row (row.key)}
-                      {#if row.unmapped}<li class="break-words">{row.primaryText}</li>{/if}
-                    {/each}
-                  </ul>
-                </div>
-              {/if}
               <ul class="divide-y divide-surface-200 rounded-lg border border-surface-200">
                 {#each request.permissions as permission}
                   <li class="break-all px-3 py-2 font-mono text-xs">
