@@ -142,7 +142,13 @@ test('classifyAccount: earlier rules win over later ones', () => {
   expect(classify('tcqa-1@mailinator.com')).toBe('qa_prefix');
   expect(classify('qa-1@gmail.com', ['x'])).toBe('qa_prefix'); // before agent-name, explicit, bot
   expect(classify('TcQa-1+x@gmail.com')).toBe('qa_prefix');
-  // Only a prefix followed by the dash counts.
+  expect(classify('tcqa+x@qa-mail.tinycloud.xyz')).toBe('qa_prefix'); // ahead of plus_addressed and the team domain
+  expect(classify('tcqa+x@gmail.com', ['x'])).toBe('qa_prefix');
+  expect(classify('tcqa-x@fldubai.com')).toBe('qa_prefix'); // a mail.tm domain: ahead of disposable
+  // Only tcqa-/tcqa+/qa- followed by more count; plain qa+ is not the QA prefix.
+  expect(classify('qa+x@qa-mail.tinycloud.xyz')).toBe('internal_team_domain');
+  expect(classify('qa+1@gmail.com')).toBe('internal_agent_or_qa');
+  expect(classify('tcqa.x@gmail.com')).toBe('test_like_name');
   expect(classify('tcqa1@gmail.com')).toBe('test_like_name');
   expect(classify('xqa-1@gmail.com')).toBe('test_like_name');
   expect(classify('person.tcqa-1@gmail.com')).toBe('test_like_name');
@@ -179,6 +185,27 @@ test('internal_team_domain: our domains and every subdomain of them, not look-al
   const result = await collectUserMetrics(fakeDatabase(people).database, {}, now);
   expect(result.buckets.internal_team_domain).toBe(6);
   expect(result.real).toBe(0);
+  expect(result.unclassifiedDomains).toEqual([]);
+});
+
+test('qa_prefix: tcqa+ and tcqa- and qa- accounts, on any domain, counted ahead of plus_addressed, team and disposable domains', async () => {
+  const people: Account[] = [
+    { id: 'q1', email: 'tcqa+signin1@qa-mail.tinycloud.xyz', lastSession: session }, // Cloudflare-routed QA mail
+    { id: 'q2', email: 'tcqa-x@fldubai.com', lastSession: session }, // mail.tm domain
+    { id: 'q3', email: 'tcqa-y@maxxspace.com', lastSession: session },
+    { id: 'q4', email: 'qa-share-2@mailinator.com', lastSession: session },
+    { id: 'q5', email: 'TCQA+Upper@gmail.com', lastSession: session },
+    { id: 't1', email: 'qa+x@qa-mail.tinycloud.xyz', lastSession: session }, // not the QA prefix: still our domain
+    { id: 'p1', email: 'jane+tcqa@gmail.com', lastSession: session }, // contains tcqa but does not start with it
+    { id: 'r1', email: 'alice@gmail.com', lastSession: session },
+  ];
+  const result = await collectUserMetrics(fakeDatabase(people).database, {}, now);
+  expect(result.buckets.qa_prefix).toBe(5);
+  expect(result.buckets.internal_team_domain).toBe(1);
+  expect(result.buckets.plus_addressed).toBe(1);
+  expect(result.buckets.disposable_mail_domain).toBe(0);
+  expect(result.real).toBe(1);
+  // Nothing of the QA mail leaks into the reported domains.
   expect(result.unclassifiedDomains).toEqual([]);
 });
 

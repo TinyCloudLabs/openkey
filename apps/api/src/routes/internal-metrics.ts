@@ -77,8 +77,10 @@ const MAX_DOMAIN_LENGTH = 253;
 // A dotted hostname: labels of 1-63 letters, digits or inner hyphens.
 const DOMAIN_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const TEST_LIKE_NAME = /(test|qa|probe|canary|smoke|e2e|bot|agent|demo|dummy|fake)/;
-// Our QA/smoke accounts: `tcqa-` from now on, plus the older `qa-` prefix (Share's smoke accounts).
-const QA_PREFIX = /^(tcqa-|qa-)/;
+// Our QA/smoke accounts: `tcqa-` or `tcqa+` (Cloudflare routing forces our own QA mail to
+// `tcqa+...@qa-mail.tinycloud.xyz`), plus the older `qa-` prefix (Share's smoke accounts).
+// Checked before plus_addressed and the domain buckets.
+const QA_PREFIX = /^(tcqa[-+]|qa-)/;
 
 export const USER_BUCKETS = [
   'team_by_wallet',
