@@ -1,0 +1,11 @@
+---
+"@openkey/api": minor
+"@openkey/web": minor
+---
+
+Owners can stop renewal leases, and signing out or deleting the account stops them (TC-2946).
+
+- Stopping a lease revokes exactly that lease at the node it was registered with: an owner revocation (SIWE, URI `ucan:<lease CID>`, valid 5 minutes) signed by the key that signed the lease, sent to `<nodeOrigin>/revoke`. The node stops renewing and drops the time renewal added; the grant itself is not revoked and ends at its own signed end. A lease counts as stopped (`renewal_lease.revokedAt`) only once its node answers success; any other outcome leaves it on, and the next attempt sends it again.
+- Settings shows "Renewing permissions" once the account has a lease: each one's reason and permissions from the approved request, when renewal ends and when it was approved, and "Stop renewal". `GET /api/account/renewal-leases` lists the account's leases that are neither stopped nor past their end. `POST /api/account/renewal-leases/:leaseCid/stop` stops one (404 for another account's, an unknown, a stopped or an ended lease; 503 when the node doesn't confirm). A lease an external wallet signed answers 409 `wallet_required` with the revocation message; the same call with `{ siwe, signature }` sends the wallet's signature, which must be on that exact message for that lease and recover to its owner.
+- Signing out stops leases before the sessions go: `/sign-out` stops the leases approved in that session, `/revoke-session` those of the session it names, `/revoke-other-sessions` every lease not approved in the current session, `/revoke-sessions` all of them. Sign-out always goes ahead; when it touched any lease its answer gains `renewalLeases: { stopped, notStopped, walletRequired }`, and the dashboard says when a permission is still renewing instead of leaving.
+- Account deletion first stops every live lease. Unless every one is confirmed it deletes nothing and answers 409 `renewal_leases_not_stopped` with `walletRequired` and `nodeUnavailable` counts; deleting again retries only the leases still on. A lease approved meanwhile is caught under the user lock and refused the same way, so no lease row is removed with the user while its lease still renews.
