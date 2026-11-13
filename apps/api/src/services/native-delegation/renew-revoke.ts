@@ -278,7 +278,13 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
             Math.floor((grant.absoluteExpiresAt.getTime() - now.getTime()) / 1000));
           if (ttlSeconds <= 0) return deny('consent_required', 'grant_expired');
           if (!privateKey) throw new NeedsUnsealRetry();
-          if (key.sealedBlob !== preKey?.sealedBlob) return deny('consent_required', 'key_changed');
+          if (!preKey || key.id !== preKey.id || key.address.toLowerCase() !== preKey.address.toLowerCase()) {
+            return deny('consent_required', 'key_changed');
+          }
+          if (key.sealedBlob !== preKey.sealedBlob || key.sealingContext !== preKey.sealingContext || key.userId !== preKey.userId) {
+            privateKey = null;
+            throw new NeedsUnsealRetry();
+          }
           const siweNonce = nonce ?? randomBytes(12).toString('hex');
           const prepared = prepareDelegationSession({ address: ensureEip55(key.address), chainId: 1, prefix: 'applications',
             jwk: grant.sessionJwk as { kty: string; crv: string; x: string }, permissions, expiryMs: ttlSeconds * 1000,

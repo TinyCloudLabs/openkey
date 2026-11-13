@@ -34,13 +34,27 @@ export interface NostrKeypair {
 }
 
 /** Everything needed to unseal and use a custodied Nostr secret for exactly one signing operation. */
-export interface SealedNostrSecret {
-  /** Base64 sealed blob produced by `seal()` in ./index.ts. */
-  sealedSecret: string;
-  /** 32-byte TEE-derived sealing key for this record. */
-  sealingKey: Uint8Array;
-  /** The pubkeyHex on record for this key. The unsealed secret must derive this exact pubkey. */
+export type SealedNostrSecret = {
+  /** The unsealed secret must derive this exact recorded public identity. */
   expectedPubkeyHex: string;
+} & ({
+  sealedSecret: string;
+  sealingKey: Uint8Array;
+} | {
+  /** Opens the current record through its configured sealing keyring. */
+  unsealSecret: () => Promise<string>;
+});
+
+export function deriveNostrPubkey(secretHex: string): string {
+  let secretBytes: Uint8Array | undefined;
+  try {
+    secretBytes = hexToBytes(secretHex);
+    return bytesToHex(schnorr.getPublicKey(secretBytes));
+  } catch {
+    throw new Error('Invalid Nostr secret');
+  } finally {
+    secretBytes?.fill(0);
+  }
 }
 
 function normalizeHex(value: string): string {
@@ -110,7 +124,9 @@ export async function signNostrEvent(
   unsignedEvent: UnsignedNostrEvent,
 ): Promise<SignedNostrEvent> {
   const expectedPubkeyHex = normalizeHex(sealed.expectedPubkeyHex);
-  const secretHex = await unseal(sealed.sealedSecret, sealed.sealingKey);
+  const secretHex = 'unsealSecret' in sealed
+    ? await sealed.unsealSecret()
+    : await unseal(sealed.sealedSecret, sealed.sealingKey);
 
   let secretBytes: Uint8Array | null = null;
   try {
