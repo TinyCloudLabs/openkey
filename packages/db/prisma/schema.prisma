@@ -936,3 +936,17 @@ model AccountDeletionJob {
   @@index([state, nextAttemptAt])
   @@map("account_deletion_job")
 }
+
+model AccountDeletionReview {
+  id String @id @default(cuid())
+  jobId String
+  kind String
+  summary Json
+  actor String?
+  decidedAt DateTime?
+  reason String?
+  disposition String?
+  createdAt DateTime @default(now())
+  @@index([jobId, createdAt])
+  @@map("account_deletion_review")
+}

@@ -54,6 +54,7 @@ const revokedAccessTokenMigration = '20261026_0001_revoked_access_token';
 const revokedAccessTokenChecksum = 'a57958f43b7d1c28c25b38ef358a5392e4b7f9ecf78a979b2c86c8027bd53a30';
 // Reviewed expand-only migrations that may run while TC-488 stays parked.
 const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
+  ['20261113_0001_account_deletion_review', '934b3afb29748ba6217811ee039049a84adc9c23eb96cd56e17bb236318be6e7'],
   [deviceMigration, deviceChecksum],
   [brokerMigration, brokerChecksum],
   [nativeDelegationMigration, nativeDelegationChecksum],
