@@ -14,7 +14,7 @@ services:
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       # Apple web sign-in is on (TC-1188); offered only when the Apple
       # credentials are set in the encrypted env.
-      - APPLE_SIGN_IN_ENABLED=true
+      - APPLE_SIGN_IN_ENABLED=false
       - APPLE_NATIVE_SIGN_IN_ENABLED=false
       - APPLE_CLIENT_ID=${APPLE_CLIENT_ID}
       - APPLE_TEAM_ID=${APPLE_TEAM_ID}
