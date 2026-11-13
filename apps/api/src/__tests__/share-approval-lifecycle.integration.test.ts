@@ -3,17 +3,13 @@ import { PGlite } from '@electric-sql/pglite';
 import { readdir, readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { generateKeyPairSync, createHash, sign } from 'node:crypto';
-import { Wallet } from 'ethers';
+import { generateKeyPairSync, createHash, sign, randomBytes } from 'node:crypto';
+import { Wallet, verifyMessage } from 'ethers';
 import { SiweMessage } from 'siwe';
 import { serializeSignedCookie } from 'better-call';
 import { shareWindowContexts as windows } from '../services/share-window-session';
 import { strictSessionDid } from '../services/device-authorization';
 import type { PrismaClient } from '@openkey/db';
-import { Hono } from 'hono';
-import { requireShareApproval } from '../middleware/share-approval';
-import { createShareApprovalMount } from '../routes/share-approval-mount';
-import type { SessionContext } from '../middleware/session';
 import type { auth as Auth } from '../auth';
 import { z } from 'zod';
 if (process.env.OPENKEY_SHARE_LIFECYCLE_CHILD !== '1') {
@@ -39,7 +35,9 @@ const previewSchema = z.object({ requestId: z.string(), intentDigest: z.string()
   assertion: z.object({ token: z.string(), options: z.object({ challenge: z.string() }) }) });
 const issuedSchema = z.object({ windowContextToken: z.string() });
 const root = new URL('../../../../', import.meta.url).pathname;
-let auth: typeof Auth, db: PrismaClient, router: Hono<SessionContext>;
+let auth: typeof Auth, db: PrismaClient;
+let app: { fetch: (request: Request) => Response | Promise<Response> };
+let managedWallet: Wallet;
 const wallet = Wallet.createRandom();
 const account = { userId: 'owner', authSessionId: 'session-A', authSessionGeneration: 'fixture-generation', keyId: 'key', address: wallet.address, keyType: 'EXTERNAL' as const };
 let cookie: string;
@@ -64,13 +62,17 @@ beforeAll(async () => {
   await db.session.create({ data: { id: 'session-B', userId: account.userId, token: 'synthetic-B', expiresAt: new Date(Date.now() + 7 * 86400_000) } });
   await db.ethereumKey.create({ data: { id: 'key', userId: 'owner', address: wallet.address, publicKey: wallet.address, keyType: 'EXTERNAL' } });
   await db.passkey.create({ data: { id: 'credential', userId: 'owner', credentialID, publicKey: cose.toString('base64'), counter: 0, countsForStepUp: true, deviceType: 'singleDevice', backedUp: false } });
+  const { createTeeClient, generatePrivateKey, seal } = await import('@openkey/tee');
+  const privateKey = generatePrivateKey();
+  managedWallet = new Wallet(privateKey);
+  const sealingContext = randomBytes(32).toString('base64url');
+  const sealingKey = await createTeeClient().deriveKey(`openkey/key/${sealingContext}`);
+  await db.ethereumKey.create({ data: { id: 'managed-key', userId: 'owner', address: managedWallet.address,
+    publicKey: managedWallet.signingKey.publicKey, sealedBlob: await seal(privateKey, sealingKey), sealingContext, keyType: 'MANAGED' } });
   const context = await auth.$context;
   cookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, 'synthetic-A', context.secret)).split(';')[0]!;
-  const runtime = (await import('../routes/share-approval-runtime')).shareApprovalRouter;
-  router = new Hono<SessionContext>();
-  router.use('/api/delegate/share/*', requireShareApproval);
-  router.route('/api/delegate/share', createShareApprovalMount(runtime));
-  const capability = await router.request('http://api.test/api/delegate/share/capabilities');
+  app = (await import('../index')).default;
+  const capability = await app.fetch(new Request('https://api.openkey.test/api/delegate/share/capabilities'));
   expect(capability.status).toBe(200);
   expect(await capability.json()).toEqual({ enabled: true, protocolVersion: 1 });
 }, 90000);
@@ -78,26 +80,26 @@ beforeAll(async () => {
 let testTime = Date.now();
 beforeEach(() => { testTime += 61_000; setSystemTime(testTime); });
 afterAll(async () => { setSystemTime(); await db?.$disconnect(); });
-const call = (phase: string, body: unknown, useCookie = cookie) => router.request(`http://api.test/api/delegate/share/${phase}`, { method: 'POST', headers: { origin, cookie: useCookie, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-async function intent(signingWallet = wallet, keyId = 'key') {
+const call = (phase: string, body: unknown, useCookie = cookie) => app.fetch(new Request(`https://api.openkey.test/api/delegate/share/${phase}`, { method: 'POST', headers: { origin, cookie: useCookie, 'content-type': 'application/json' }, body: JSON.stringify(body) }));
+async function intent(signingWallet: { address: string; signMessage(message: string): Promise<string> } = wallet, keyId = 'key') {
   const publicJwk = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
   const siwe = new SiweMessage({ domain: 'thirdparty.example', address: signingWallet.address, uri: strictSessionDid(publicJwk), version: '1', chainId: 1, nonce: '12345678', issuedAt: new Date().toISOString(), expirationTime: new Date(Date.now() + 3600_000).toISOString() }).prepareMessage();
   return { approvalNonce: 'd'.repeat(64), keyId, origin: 'https://thirdparty.example', session: { siwe, signature: await signingWallet.signMessage(siwe), publicJwk }, expiresAt: new Date(Date.now() + 1800_000).toISOString() };
 }
-async function prepare() {
+async function prepare(keyId = 'key', signingWallet: { address: string; signMessage(message: string): Promise<string> } = wallet) {
   const outer = crypto.randomUUID();
-  const w = await call('window', { keyId: 'key', requestId: outer, observedOrigin: 'https://thirdparty.example' });
+  const w = await call('window', { keyId, requestId: outer, observedOrigin: 'https://thirdparty.example' });
   expect(w.status).toBe(200);
   const issued = issuedSchema.parse(await w.json());
-  const requestIntent = await intent();
+  const requestIntent = await intent(signingWallet, keyId);
   const options = await call('options', { requestId: outer, windowContextToken: issued.windowContextToken, intent: requestIntent });
   expect(options.status).toBe(200);
   return { preview: previewSchema.parse(await options.json()), issued, outer, requestIntent };
 }
-async function verified() {
-  const f = await prepare();
+async function verified(keyId = 'key', signingWallet: { address: string; signMessage(message: string): Promise<string> } = wallet) {
+  const f = await prepare(keyId, signingWallet);
   const p = f.preview;
-  const body = { requestId: p.requestId, keyId: 'key', token: p.assertion.token };
+  const body = { requestId: p.requestId, keyId, token: p.assertion.token };
   const client = Buffer.from(JSON.stringify({ type: 'webauthn.get', challenge: p.assertion.options.challenge, origin }));
   const count = Buffer.alloc(4); count.writeUInt32BE(++counter);
   const data = Buffer.concat([createHash('sha256').update(rp).digest(), Buffer.from([5]), count]);
@@ -106,6 +108,44 @@ async function verified() {
   expect((await call('resume', body)).status).toBe(200);
   return { ...f, body };
 }
+test('the real API keeps every share route dark unless the flag is exactly true', async () => {
+  const paths = ['capabilities', 'window', 'window/cancel', 'options', 'verify', 'resume', 'preview', 'sign', 'cancel'];
+  try {
+    for (const flag of [undefined, '', 'TRUE', ' true', 'true\n']) {
+      if (flag === undefined) delete process.env.OPENKEY_SHARE_APPROVAL;
+      else process.env.OPENKEY_SHARE_APPROVAL = flag;
+      for (const path of paths) for (const method of ['GET', 'POST', 'OPTIONS']) {
+        let bodyReads = 0;
+        const response = await app.fetch(new Request(`https://api.openkey.test/api/delegate/share/${path}`, {
+          method, headers: { origin, cookie, 'content-type': 'application/json', 'access-control-request-method': 'POST' },
+          body: method === 'POST' ? new ReadableStream({ pull(controller) {
+            bodyReads++; controller.enqueue(new TextEncoder().encode('{}')); controller.close();
+          } }, { highWaterMark: 0 }) : undefined,
+        }));
+        expect(response.status, `${JSON.stringify(flag)} ${method} ${path}`).toBe(404);
+        expect(response.headers.get('access-control-allow-origin')).toBeNull();
+        expect(response.headers.get('set-cookie')).toBeNull();
+        expect(bodyReads).toBe(0);
+      }
+    }
+  } finally { process.env.OPENKEY_SHARE_APPROVAL = 'true'; }
+  const capability = await app.fetch(new Request('https://api.openkey.test/api/delegate/share/capabilities'));
+  expect(capability.status).toBe(200);
+  expect(await capability.json()).toEqual({ enabled: true, protocolVersion: 1 });
+  expect((await call('window', {})).status).toBe(400);
+});
+
+test('the real managed-key route signs exactly the bytes previewed before fresh UV', async () => {
+  const f = await verified('managed-key', managedWallet);
+  // Signing happens later than preview; rebuilding a fresh SIWE would change its issued-at bytes.
+  setSystemTime(testTime + 1000);
+  const response = await call('sign', { ...f.body, intentDigest: f.preview.intentDigest });
+  expect(response.status).toBe(200);
+  const result = z.object({ prepared: z.object({ siwe: z.string() }), signature: z.string() }).parse(await response.json());
+  expect(result.prepared.siwe).toBe(f.preview.prepared.siwe);
+  expect(verifyMessage(f.preview.prepared.siwe, result.signature)).toBe(managedWallet.address);
+});
+
 test('a different auth session cannot claim, advance or cancel an approval', async () => {
   const context = await auth.$context;
   const b = (await serializeSignedCookie(context.authCookies.sessionToken.name, 'synthetic-B', context.secret)).split(';')[0]!;

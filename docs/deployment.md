@@ -517,3 +517,8 @@ Enable only on a single Bun process in a single API service: pending requester
 contexts and approval continuations use process-local, consume-once stores.
 Before adding API replicas or processes, replace these with a shared atomic
 store. Restarting the process voids pending approvals.
+
+Session changes invalidate pending requester contexts and approvals in the API
+process, with live session-generation checks before signing. A process restart
+also discards pending state. Requests refused by the feature gate still produce
+the existing access-log entry.
