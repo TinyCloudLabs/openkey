@@ -83,7 +83,6 @@ export interface RenewalStage {
   leaseSiwe: string;
   leaseAuthorization?: string;
   leaseCid?: string;
-  admitted?: true;
 }
 
 /** The `renewal` field of an approval result (js-sdk approval-renewal codec). */

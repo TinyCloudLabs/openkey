@@ -66,7 +66,7 @@ export interface CliSigningTransport {
   error: string | null;
 
   /**
-   * The "Approval expires" choice (TC-2272). `bounded` is true for a signed
+   * How long the approval lasts (TC-2272, TC-2933). `bounded` is true for a signed
    * CLI approval request or a device approval, whose requester signed the
    * longest lifetime it accepts. `onChange` re-issues `/api/delegate/prepare`
    * so the bytes that get signed carry the choice.
@@ -146,7 +146,7 @@ export interface WidgetSigningTransport {
   refused?: boolean;
 
   /**
-   * The "Approval expires" choice (TC-2272). Set only when the signing path
+   * How long the approval lasts (TC-2272, TC-2933). Set only when the signing path
    * is the server-authoritative one, which writes the choice into the signed
    * message; unset on the exact-byte path, where the line is not shown.
    * `onChange` must invalidate any approved preview.

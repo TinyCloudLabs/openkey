@@ -69,26 +69,32 @@ function stubUrl(name: string): string {
 }
 
 const COMPONENT = join(WEB_ROOT, 'src/routes/delegate/PreparedHandoff.svelte');
-const compiled = compile(readFileSync(COMPONENT, 'utf8'), { generate: 'client', dev: false, name: 'Subject', filename: COMPONENT });
-let code = '';
-let cursor = 0;
-for (const match of compiled.js.code.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
-  code += compiled.js.code.slice(cursor, match.index);
-  const spec = match[1]!;
-  let target = spec;
-  if (spec in stubs) target = stubUrl(spec);
-  // `svelte` resolves to its server build here, where onMount does nothing: use the client build.
-  else if (spec === 'svelte') target = pathToFileURL(join(dirname(require.resolve('svelte/package.json')), 'src/index-client.js')).href;
-  else if (spec === '@openkey/capability-review') {
-    target = pathToFileURL(join(WEB_ROOT, '..', '..', 'packages', 'capability-review', 'src', 'index.ts')).href;
-  } else if (spec.startsWith('$lib/')) target = pathToFileURL(join(WEB_ROOT, 'src/lib', spec.slice(5))).href;
-  code += `from '${target}'`;
-  cursor = match.index! + match[0].length;
+// Compiles a component and, recursively, the `$lib` components it imports (TC-2933: the expiry line is one).
+function compileSvelte(file: string, name: string): string {
+  const compiled = compile(readFileSync(file, 'utf8'), { generate: 'client', dev: false, name: 'Subject', filename: file });
+  let code = '';
+  let cursor = 0;
+  for (const match of compiled.js.code.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
+    code += compiled.js.code.slice(cursor, match.index);
+    const spec = match[1]!;
+    let target = spec;
+    if (spec in stubs) target = stubUrl(spec);
+    // `svelte` resolves to its server build here, where onMount does nothing: use the client build.
+    else if (spec === 'svelte') target = pathToFileURL(join(dirname(require.resolve('svelte/package.json')), 'src/index-client.js')).href;
+    else if (spec === '@openkey/capability-review') {
+      target = pathToFileURL(join(WEB_ROOT, '..', '..', 'packages', 'capability-review', 'src', 'index.ts')).href;
+    } else if (spec.startsWith('$lib/') && spec.endsWith('.svelte')) {
+      target = compileSvelte(join(WEB_ROOT, 'src/lib', spec.slice(5)), spec.slice(5).replace(/[^A-Za-z0-9]/g, '_'));
+    } else if (spec.startsWith('$lib/')) target = pathToFileURL(join(WEB_ROOT, 'src/lib', spec.slice(5))).href;
+    code += `from '${target}'`;
+    cursor = match.index! + match[0].length;
+  }
+  code += compiled.js.code.slice(cursor);
+  const out = join(OUT_DIR, `${name}.mjs`);
+  writeFileSync(out, code);
+  return pathToFileURL(out).href;
 }
-code += compiled.js.code.slice(cursor);
-const componentFile = join(OUT_DIR, 'prepared-handoff-expiry.mjs');
-writeFileSync(componentFile, code);
-const Subject = (await import(pathToFileURL(componentFile).href)).default as unknown;
+const Subject = (await import(compileSvelte(COMPONENT, 'prepared-handoff-expiry'))).default as unknown;
 
 // ---- the prepared request -------------------------------------------------
 
@@ -170,7 +176,12 @@ async function open() {
   document.body.appendChild(target);
   const app = mount(Subject, { target, props: { encoded, onClear: () => {} } });
   const button = (label: string) => [...target.querySelectorAll('button')].find((b) => b.textContent?.trim() === label) as HTMLButtonElement | undefined;
-  const line = () => target.querySelector('[aria-label="Approval expiry"] p')?.textContent?.replace(/\s+/g, ' ').trim() ?? null;
+  const line = () => target.querySelector('[data-testid="approval-expiry-line"]')?.textContent?.replace(/\s+/g, ' ').trim() ?? null;
+  // TC-2933: no "(Change)" button; the choices are under the closed "How long it lasts" fold.
+  const openFold = () => {
+    target.querySelector<HTMLDetailsElement>('.expiry-fold')!.open = true;
+    flushSync();
+  };
   const typeInto = (value: string) => {
     const input = target.querySelector<HTMLInputElement>('#approval-expiry-custom')!;
     input.value = value;
@@ -181,7 +192,7 @@ async function open() {
   };
   await until(() => button('Preview signing message') !== undefined && !button('Preview signing message')!.disabled, 'the Preview button');
   return {
-    target, previews, button, line, typeInto, asked: Date.parse(/^Expiration Time: (.+)$/m.exec(siwe)![1]!),
+    target, previews, button, line, typeInto, openFold, asked: Date.parse(/^Expiration Time: (.+)$/m.exec(siwe)![1]!),
     preview: async () => {
       button('Preview signing message')!.click();
       await until(() => previews.length > 0, 'the preview request');
@@ -190,10 +201,10 @@ async function open() {
   };
 }
 
-describe('the prepared handoff page: Approval expires', () => {
+describe('the prepared handoff page: the expiry line', () => {
   test('shows what the CLI asked for, and previews without an expiry when nothing is picked', async () => {
     const page = await open();
-    expect(page.line()).toBe('Approval expires: 1h (Change)');
+    expect(page.line()).toBe('This permission expires in 1 hour');
     await page.preview();
     expect(page.previews[0]).not.toHaveProperty('expirationTime');
     page.close();
@@ -201,10 +212,9 @@ describe('the prepared handoff page: Approval expires', () => {
 
   test('a shorter pick shows and is what the preview asks the server to sign', async () => {
     const page = await open();
-    page.button('(Change)')!.click();
-    flushSync();
+    page.openFold();
     page.typeInto('30m');
-    expect(page.line()).toBe('Approval expires: 30m (Change)');
+    expect(page.line()).toBe('This permission expires in 30 minutes');
     const before = Date.now();
     await page.preview();
     const asked = Date.parse(String(page.previews[0]!.expirationTime));
@@ -215,23 +225,19 @@ describe('the prepared handoff page: Approval expires', () => {
 
   test('a pick up to the CLI\'s own time never goes past it, even after time has passed', async () => {
     const page = await open();
-    page.button('(Change)')!.click();
-    flushSync();
+    page.openFold();
     page.typeInto('59m');
     await page.preview();
     expect(Date.parse(String(page.previews[0]!.expirationTime))).toBeLessThanOrEqual(page.asked);
     page.close();
   });
 
-  test('a pick past what the CLI asked for is refused with the note, and nothing changes', async () => {
+  test('a pick past what the CLI asked for is refused, and nothing changes', async () => {
     const page = await open();
-    page.button('(Change)')!.click();
-    flushSync();
+    page.openFold();
     page.typeInto('2h');
-    expect(page.target.querySelector('[role="alert"]')?.textContent).toBe(
-      'This app asked for up to 1h. To allow longer, start the request again with a longer expiry.',
-    );
-    expect(page.line()).toBe('Approval expires: 1h (Change)');
+    expect(page.target.querySelector('[role="alert"]')).not.toBeNull();
+    expect(page.line()).toBe('This permission expires in 1 hour');
     await page.preview();
     expect(page.previews[0]).not.toHaveProperty('expirationTime');
     page.close();
@@ -239,20 +245,18 @@ describe('the prepared handoff page: Approval expires', () => {
 
   test('the presets stop at what the CLI asked for', async () => {
     const page = await open();
-    page.button('(Change)')!.click();
-    flushSync();
-    expect(['1 hr', '24 hr', '7d', '30d'].filter((label) => page.button(label) !== undefined)).toEqual(['1 hr']);
+    page.openFold();
+    expect(page.target.querySelectorAll('.choice-preset')).toHaveLength(1);
     page.close();
   });
 
   test('once the preview is sealed the control is locked', async () => {
     const page = await open();
-    page.button('(Change)')!.click();
-    flushSync();
+    page.openFold();
     await page.preview();
     await until(() => page.button('Approve') !== undefined, 'the Approve button');
-    expect(page.button('(Change)')!.disabled).toBe(true);
-    expect(page.target.querySelector('#approval-expiry-custom')).toBeNull();
+    expect([...page.target.querySelectorAll<HTMLButtonElement>('.choice-preset')].every((b) => b.disabled)).toBe(true);
+    expect(page.target.querySelector<HTMLInputElement>('#approval-expiry-custom')?.disabled ?? true).toBe(true);
     page.close();
   });
 });

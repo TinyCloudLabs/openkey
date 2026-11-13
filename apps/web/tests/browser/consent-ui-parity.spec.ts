@@ -273,7 +273,7 @@ test('expiry failure uses the editable expiry wording', async ({ page }) => {
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}&permissions=${encodeBase64UrlJson({ permissions: request })}&expiryChangeable=true`);
   const approve = page.getByRole('button', { name: 'Approve', exact: true });
   await expect(approve).toBeEnabled();
-  await expect(page.getByRole('button', { name: '(Change)' })).toBeVisible();
+  await expect(page.getByTestId('approval-expiry-line')).toBeVisible();
   await approve.click();
   await expect(page.getByRole('alert')).toHaveText("This access length can't be used. Choose a different one, or start again from the app or command.");
   await expect(approve).toBeEnabled();
@@ -290,9 +290,9 @@ test('a successful prepare after a terminal failure re-enables Approve', async (
   await expect(approve).toBeEnabled();
   await approve.click();
   await expect(approve).toBeDisabled();
-  await expect(page.getByRole('button', { name: '(Change)' })).toBeVisible();
-  await page.getByRole('button', { name: '(Change)' }).click();
-  await page.getByRole('button', { name: '24 hr', exact: true }).click();
+  await expect(page.getByTestId('approval-expiry-line')).toBeVisible();
+  await page.getByText('How long it lasts').click();
+  await page.getByRole('button', { name: '24 hours', exact: true }).click();
   await expect(approve).toBeEnabled();
 });
 

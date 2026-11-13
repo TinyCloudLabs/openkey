@@ -184,8 +184,8 @@ export interface TinyCloudAuthorizationRequestV1 {
   presentation?: CapabilityPresentationEnvelopeV1;
   /**
    * Set only when the caller accepts a signed message whose `Expiration Time`
-   * differs from `siwe` (shorter or longer): OpenKey then shows "Approval
-   * expires … (Change)" and signs the time the user picks. Read the signed
+   * differs from `siwe` (shorter or longer): OpenKey then shows "This permission
+   * expires in …" with the time under "How long it lasts", and signs the time the user picks. Read the signed
    * expiry from the returned `signedMessage`. Forwarded only when literally `true`.
    */
   expiryChangeable?: boolean;
