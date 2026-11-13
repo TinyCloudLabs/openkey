@@ -42,7 +42,7 @@ export class ShareWindowContexts {
     const record = this.records.get(token);
     if (!record || record.state !== 'pending' || record.context.expiresAt <= this.now()) throw new ShareApprovalError('share_window_expired');
     if (record.context.requestId !== requestId || record.context.purpose !== 'share-create' ||
-      (['userId', 'authSessionId', 'keyId', 'keyType', 'address'] as const).some(field => record.context[field] !== account[field])) {
+      (['userId', 'authSessionId', 'authSessionGeneration', 'keyId', 'keyType', 'address'] as const).some(field => record.context[field] !== account[field])) {
       throw new ShareApprovalError('share_window_binding_mismatch');
     }
     return record.context;

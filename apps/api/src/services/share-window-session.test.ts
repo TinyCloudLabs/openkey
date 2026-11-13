@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { ShareWindowContexts } from './share-window-context';
 import { shareWindowSessionHooks } from './share-window-session';
-const account = { userId: 'owner', authSessionId: 'session-A', keyId: 'key',
+const account = { userId: 'owner', authSessionId: 'session-A', authSessionGeneration: 'generation', keyId: 'key',
   address: '0x1111111111111111111111111111111111111111', keyType: 'MANAGED' as const };
 for (const event of ['sign-out', 'account-switch', 'rotation', 'update'] as const) {
   test(`auth ${event} terminally invalidates outstanding window contexts`, () => {

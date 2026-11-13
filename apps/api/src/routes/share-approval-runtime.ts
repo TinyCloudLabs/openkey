@@ -1,3 +1,4 @@
+import { shareSessionGeneration } from '../services/share-session-generation';
 import { createPrismaClient } from '@openkey/db';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
 import { getAddress } from 'ethers';
@@ -6,7 +7,7 @@ import { ApprovalContinuations, type ApprovalIdentity } from '../services/approv
 import { approvalAssertionOptions, verifyApprovalAssertion } from '../services/approval-assertion';
 import { ShareApprovalError } from '../services/share-approval';
 import { ShareApprovalRequests, type ShareApprovalAccount } from '../services/share-approval-request';
-import { shareWindowContexts as windows } from '../services/share-window-session';
+import { registerShareSessionInvalidator, shareWindowContexts as windows } from '../services/share-window-session';
 import { signManagedKey } from '../services/managed-key-signing';
 import { createShareApprovalRouter, type ShareApprovalLifecycle } from './share-approval';
 
@@ -14,6 +15,10 @@ const db = createPrismaClient();
 const requests = new ShareApprovalRequests();
 // Separate purpose-bound lifecycle and issuance quotas; no sign-in token can enter this store.
 const continuations = new ApprovalContinuations();
+registerShareSessionInvalidator((userId, sessionId) => {
+  requests.invalidateSession(userId, sessionId);
+  continuations.cancelSession(userId, sessionId);
+});
 const rp = { rpID: process.env.WEBAUTHN_RP_ID!, origin: process.env.WEBAUTHN_ORIGIN! };
 
 async function findAccount(userId: string, authSessionId: string, keyId: string): Promise<ShareApprovalAccount | null> {
@@ -25,7 +30,8 @@ async function findAccount(userId: string, authSessionId: string, keyId: string)
     windows.invalidateSession(userId, authSessionId);
     return null;
   }
-  return { userId, authSessionId, keyId: key.id, address: getAddress(key.address), keyType: key.keyType };
+  const authSessionGeneration = shareSessionGeneration(session);
+  return { userId, authSessionId, authSessionGeneration, keyId: key.id, address: getAddress(key.address), keyType: key.keyType };
 }
 
 function identity(preview: ReturnType<ShareApprovalRequests['preview']>, account: ShareApprovalAccount): ApprovalIdentity {

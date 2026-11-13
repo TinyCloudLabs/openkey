@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { ShareWindowContexts } from './share-window-context';
-const account = { userId: 'user', authSessionId: 'session', keyId: 'key', address: '0x1111111111111111111111111111111111111111', keyType: 'MANAGED' as const };
+const account = { userId: 'user', authSessionId: 'session', authSessionGeneration: 'generation', keyId: 'key', address: '0x1111111111111111111111111111111111111111', keyType: 'MANAGED' as const };
 test('window context is one-use and binds account, key, request and observed origin', () => {
   const store = new ShareWindowContexts(() => 0);
   const issued = store.issue(account, 'request', 'https://actual.example');

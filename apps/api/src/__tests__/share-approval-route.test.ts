@@ -21,7 +21,7 @@ async function fixture() {
   const intent = { origin: 'https://thirdparty.example', keyId: 'key',
     session: { siwe, signature: await wallet.signMessage(siwe), publicJwk },
     expiresAt: new Date(now + 1800_000).toISOString() };
-  const account = { userId: 'owner', authSessionId: 'auth-session', keyId: 'key', address: wallet.address, keyType: 'MANAGED' as const };
+  const account = { userId: 'owner', authSessionId: 'auth-session', authSessionGeneration: 'generation', keyId: 'key', address: wallet.address, keyType: 'MANAGED' as const };
   const pending = new Map<string, { digest: string; verified: boolean; resumed: boolean }>();
   const state = (preview: { requestId: string; intentDigest: string }, token: string) => {
     const record = pending.get(preview.requestId);

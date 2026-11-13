@@ -121,7 +121,7 @@ export function createShareApprovalRouter(requests: ShareApprovalRequests, windo
           account.keyType === 'EXTERNAL' ? Promise.resolve(signature) : deps.signManaged(account, message));
       // A key archival, account/session change or logout during signing cannot deliver a result.
       const current = await deps.findAccount(account.userId, account.authSessionId, account.keyId);
-      if (!current || (['userId', 'authSessionId', 'keyId', 'keyType', 'address'] as const)
+      if (!current || (['userId', 'authSessionId', 'authSessionGeneration', 'keyId', 'keyType', 'address'] as const)
         .some(field => current[field] !== account[field])) return c.json({ code: 'share_account_changed' }, 403);
       return c.json(result);
     });

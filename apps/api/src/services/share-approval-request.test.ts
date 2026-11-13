@@ -20,7 +20,7 @@ async function fixture() {
     expiresAt: new Date(now + 1800_000).toISOString(),
     permissions: [{ service: 'tinycloud.kv', space: 'applications', path: 'app/shares/file.json', actions: ['tinycloud.kv/get', 'tinycloud.kv/metadata'] }],
   };
-  const account = { userId: 'owner', authSessionId: 'auth-session', keyId: 'key', address: wallet.address, keyType: 'MANAGED' as const };
+  const account = { userId: 'owner', authSessionId: 'auth-session', authSessionGeneration: 'generation', keyId: 'key', address: wallet.address, keyType: 'MANAGED' as const };
   return { wallet, intent, account, now };
 }
 

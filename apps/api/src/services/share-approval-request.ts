@@ -9,6 +9,7 @@ import { shareSessionBinding } from './share-approval-session';
 export interface ShareApprovalAccount {
   userId: string;
   authSessionId: string;
+  authSessionGeneration: string;
   keyId: string;
   address: string;
   keyType: 'MANAGED' | 'EXTERNAL';
@@ -34,7 +35,7 @@ export class ShareApprovalRequests {
     consumeWindow: () => Readonly<ShareWindowContext>) {
     const claimed = parseShareApprovalIntent(value);
     if (window.purpose !== 'share-create' || claimed.origin !== window.origin ||
-      (['userId', 'authSessionId', 'keyId', 'keyType', 'address'] as const).some(field => window[field] !== account[field])) {
+      (['userId', 'authSessionId', 'authSessionGeneration', 'keyId', 'keyType', 'address'] as const).some(field => window[field] !== account[field])) {
       throw new ShareApprovalError('share_window_binding_mismatch');
     }
     const intent = { ...claimed, origin: window.origin };
@@ -55,7 +56,7 @@ export class ShareApprovalRequests {
       issuedAt: new Date(this.now()), expiryMs: expiresAt - this.now(),
     });
     const intentDigest = createHash('sha256').update(JSON.stringify([
-      'share-create', window.requestId, minted.requestId, minted.nonce, minted.shareId, account.authSessionId,
+      'share-create', window.requestId, minted.requestId, minted.nonce, minted.shareId, account.authSessionId, account.authSessionGeneration,
       binding.ownerDid, binding.sessionDid, intent.origin, prepared.siwe,
     ])).digest('hex');
     this.requests.set(minted.requestId, { account: structuredClone(account), intent, minted, prepared, originalSiwe: prepared.siwe, intentDigest });
@@ -65,7 +66,7 @@ export class ShareApprovalRequests {
   private current(requestId: string, account: ShareApprovalAccount): Request {
     const request = this.requests.get(requestId);
     if (!request) throw new ShareApprovalError('share_approval_expired');
-    for (const field of ['userId', 'authSessionId', 'keyId', 'keyType'] as const) {
+    for (const field of ['userId', 'authSessionId', 'authSessionGeneration', 'keyId', 'keyType'] as const) {
       if (request.account[field] !== account[field]) throw new ShareApprovalError('share_approval_binding_mismatch');
     }
     if (getAddress(request.account.address) !== getAddress(account.address)) throw new ShareApprovalError('share_approval_binding_mismatch');
@@ -86,6 +87,14 @@ export class ShareApprovalRequests {
     const record = this.current(requestId, account);
     this.approvals.cancel(requestId, record.minted);
     this.requests.delete(requestId);
+  }
+
+  invalidateSession(userId: string, authSessionId: string): void {
+    for (const [id, record] of this.requests) {
+      if (record.account.userId !== userId || record.account.authSessionId !== authSessionId) continue;
+      try { this.approvals.cancel(id, record.minted); } catch { /* already expired */ }
+      this.requests.delete(id);
+    }
   }
 
   /** Call only after the same purpose/digest-bound continuation has fresh verified UV. */

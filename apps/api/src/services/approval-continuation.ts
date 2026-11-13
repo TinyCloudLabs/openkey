@@ -111,6 +111,12 @@ export class ApprovalContinuations {
     this.records.delete(token);
   }
 
+  cancelSession(userId: string, sessionId: string): void {
+    for (const [token, record] of this.records) {
+      if (record.identity.userId === userId && record.identity.sessionId === sessionId) this.records.delete(token);
+    }
+  }
+
   cancel(token: string, identity: ApprovalIdentity, now = Date.now()): void {
     this.current(token, identity, now);
     this.records.delete(token);
