@@ -77,4 +77,35 @@ describe('saving renewal lease steps', () => {
     }, clock, marker);
     await expect(service().saveRenewal(ID, stage(), marker)).rejects.toMatchObject({ code: 'expired_request' });
   });
+
+  test('are cleared when the result is saved, and stay cleared through its acknowledgement', async () => {
+    await register();
+    const marker = await service().admit(ID);
+    await service().saveRenewal(ID, stage({ leaseAuthorization: 'signed-lease', leaseCid: 'bafy-lease' }), marker);
+    expect(await store().approve(ID, {
+      resultRef: 'ref', approvedByUserId: 'owner', ownerDid: 'did:pkh:eip155:1:0x1', encryptedResult: '{}',
+      delegationExpiresAt: new Date(clock.getTime() + 60 * MINUTE), resultExpiresAt: new Date(clock.getTime() + 10 * MINUTE),
+    }, clock, marker)).toBe(true);
+    expect((await store().findById(ID))!.renewal).toBeNull();
+    expect(await store().acknowledge('ref', 'durable-ack-intent-0001', clock)).not.toBeNull();
+    const acknowledged = (await store().findById(ID))!;
+    expect(acknowledged.renewal).toBeNull();
+    expect(acknowledged.encryptedResult).toBeNull();
+  });
+
+  test('are cleared from a request that expired without a result, at the next admission', async () => {
+    await register();
+    const marker = await service().admit(ID);
+    await service().saveRenewal(ID, stage(), marker);
+    clock = new Date(clock.getTime() + 31 * MINUTE + APPROVAL_CLAIM_LEASE_MS);
+    const other = 'zyxwvutsrqponmlkjihgfedcba';
+    await store().register({
+      id: other, bodyCid: 'other-body-cid', issuer: 'synthetic-requester',
+      request: { targetDid: 'synthetic-requester' } as unknown as ApprovalRequestRecord['request'],
+      expiresAt: new Date(clock.getTime() + 30 * MINUTE), createdAt: clock,
+      resultRef: null, encryptedResult: null, resultExpiresAt: null,
+    });
+    await service().admit(other);
+    expect((await store().findById(ID))!.renewal).toBeNull();
+  });
 });

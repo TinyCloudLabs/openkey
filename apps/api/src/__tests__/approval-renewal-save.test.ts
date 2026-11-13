@@ -181,15 +181,16 @@ describe('saving an approval that asked for renewal', () => {
     }) as typeof fetch;
   }
 
-  test('an unsigned saved lease step is rebuilt from the length approved now, never reused', async () => {
+  test('an unsigned saved lease step is rebuilt from the length approved now, never reused: 7 days after a 90-day step', async () => {
     node();
     const request = await admittedWith(saved({}));
-    const answer = await route.saveApprovalDelegation(request, 'owner', await grant(), { renewal: { choice: 'leased', leaseLifetimeSeconds: DAY }, host: NODE });
-    expect(answer).toMatchObject({ renewalSignature: { leaseLifetimeSeconds: DAY } });
+    const answer = await route.saveApprovalDelegation(request, 'owner', await grant(), { renewal: { choice: 'leased', leaseLifetimeSeconds: 7 * DAY }, host: NODE });
+    expect(answer).toMatchObject({ renewalSignature: { leaseLifetimeSeconds: 7 * DAY } });
     const stage = (await store().findById(ID))!.renewal!;
-    expect(stage.approvedLeaseLifetimeSeconds).toBe(DAY);
+    expect(stage.approvedLeaseLifetimeSeconds).toBe(7 * DAY);
+    expect(stage.leaseSiwe).not.toBe('older lease message');
     expect(new SiweMessage(stage.leaseSiwe).expirationTime).toBe(stage.leaseExpiresAt);
-    expect(Date.parse(stage.leaseExpiresAt) - Date.parse(stage.approvedAt)).toBe(DAY * 1000);
+    expect(Date.parse(stage.leaseExpiresAt) - Date.parse(stage.approvedAt)).toBe(7 * DAY * 1000);
   });
 
   test('an already-signed lease is never completed for a finite or different choice: it is a conflict', async () => {
@@ -208,6 +209,30 @@ describe('saving an approval that asked for renewal', () => {
     const request = await admittedWith(saved({ leaseAuthorization: 'signed-lease', leaseCid: 'bafy-lease' }));
     await expect(route.saveApprovalDelegation(request, 'someone-else', await grant(), { renewal: { choice: 'leased', leaseLifetimeSeconds: 90 * DAY }, host: NODE }))
       .rejects.toMatchObject({ code: 'request_binding', status: 409 });
+  });
+
+  test('while leases are off, a lease already signed is never admitted on any resumed path', async () => {
+    // Nothing may reach a node: any fetch fails the test.
+    globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => { throw new Error(`unexpected ${String(input)}`); }) as typeof fetch;
+    for (const renewal of [undefined, { choice: 'finite' as const }, { choice: 'leased' as const, leaseLifetimeSeconds: 90 * DAY }]) {
+      await client.approvalRequest.deleteMany();
+      const request = await admittedWith(saved({ leaseAuthorization: 'signed-lease', leaseCid: 'bafy-lease' }));
+      delete process.env.OPENKEY_RENEWAL_LEASES;
+      await expect(route.saveApprovalDelegation(request, 'owner', await grant(), { renewal, host: NODE }))
+        .rejects.toMatchObject({ status: renewal?.choice === 'leased' ? 400 : 409 });
+      const record = (await store().findById(ID))!;
+      expect(record.resultRef).toBeNull();
+      expect(record.encryptedResult).toBeNull();
+      process.env.OPENKEY_RENEWAL_LEASES = 'enabled';
+    }
+    // The external wallet's second step is refused outright while leases are off.
+    await store().release(ID, (await store().findById(ID))!.approvingAt!);
+    delete process.env.OPENKEY_RENEWAL_LEASES;
+    const resumed = await route.approvalRequestRouter.request(`/approval-requests/${ID}/renewal-signature`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ signature: '0x00' }),
+    });
+    expect(resumed.status).toBe(400);
+    expect((await store().findById(ID))!.resultRef).toBeNull();
   });
 
   test('the lease is only for the node the grant was approved for', async () => {

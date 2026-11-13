@@ -298,6 +298,7 @@ async function finishLeasedApproval(id: string, userId: string, request: Approva
  * sign. Checked against the owner of the saved grant, then the lease is admitted and the result saved.
  */
 approvalRequestRouter.post('/approval-requests/:id/renewal-signature', requireAccountOriginForBearer, requireSession, async (c) => {
+  if (!renewalLeasesEnabled()) throw new ApprovalResultError('renewal_disabled', 'Renewal is not available yet', 400);
   const id = c.req.param('id');
   const userId: string = c.get('user').id;
   const body: unknown = await c.req.json().catch(() => null);
@@ -307,7 +308,6 @@ approvalRequestRouter.post('/approval-requests/:id/renewal-signature', requireAc
   const record = await service.store.findById(id);
   const saved = record?.renewal;
   if (!record || !saved || saved.userId !== userId || record.resultRef) throw new ApprovalResultError('expired_request', 'Approval request is no longer pending', 410);
-  if (!renewalLeasesEnabled()) throw new ApprovalResultError('renewal_disabled', 'Renewal is not available yet', 400);
   const marker = await service.admit(id);
   try {
     let stage = saved;

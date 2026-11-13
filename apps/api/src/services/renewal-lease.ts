@@ -34,14 +34,16 @@ export function renewalLeasesEnabled(): boolean {
 }
 
 /**
- * The node identity a lease may name on the production TinyCloud node (both of its names), from
- * `OPENKEY_RENEWAL_NODE_DID`. Without it no production lease is made; a loopback node outside production
- * is not pinned. The node's own answers must match it, so a host in between cannot present another node.
+ * The identities a lease may name on the production TinyCloud node (both of its names): the node DID from
+ * `OPENKEY_RENEWAL_NODE_DID` and the renewer DID (the lease's audience) from `OPENKEY_RENEWAL_RENEWER_DID`.
+ * Without both no production lease is made; a loopback node outside production is not pinned. The node's
+ * own answers must match them exactly, so a host in between cannot present another node or another renewer.
  */
-export function pinnedRenewalNodeDid(host: string): string | null | undefined {
+export function pinnedRenewalIdentity(host: string): { nodeDid: string; renewerDid: string } | null | undefined {
   if (!TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS.has(host)) return undefined;
-  const pinned = process.env.OPENKEY_RENEWAL_NODE_DID?.trim();
-  return pinned ? pinned : null;
+  const nodeDid = process.env.OPENKEY_RENEWAL_NODE_DID?.trim();
+  const renewerDid = process.env.OPENKEY_RENEWAL_RENEWER_DID?.trim();
+  return nodeDid && renewerDid ? { nodeDid, renewerDid } : null;
 }
 
 /** `status` 400 and 409 are the caller's; 503 means the lease could not be set up and nothing was approved. */
@@ -127,15 +129,15 @@ export interface ApprovalResultRenewal {
  * The renewer the node at `host` advertises, checked against the node's own id. `host` is the approved
  * grant's own node (the request's node origin, which the grant was signed and registered for); the
  * renewer DID comes only from that node's answer, never from the request. In production only the
- * fixed https TinyCloud node names are asked, and the node's DID must be the pinned one
- * (`OPENKEY_RENEWAL_NODE_DID`); loopback is allowed only outside production. No redirects, a short
+ * fixed https TinyCloud node names are asked, and the node's DID and its renewer DID must be the pinned
+ * ones (`OPENKEY_RENEWAL_NODE_DID`, `OPENKEY_RENEWAL_RENEWER_DID`); loopback is allowed only outside production. No redirects, a short
  * timeout and a small response cap keep this from relaying anywhere else.
  */
 export async function discoverRenewalNodeIdentity(host: string, fetchImpl: typeof fetch = fetch): Promise<RenewalNodeIdentity> {
   if (!isKnownTinyCloudActivationHost(host) || new URL(host).origin !== host) {
     throw new RenewalLeaseError('renewal_unavailable', 'Renewal is only set up on known TinyCloud nodes');
   }
-  const pinned = pinnedRenewalNodeDid(host);
+  const pinned = pinnedRenewalIdentity(host);
   if (pinned === null) throw new RenewalLeaseError('renewal_unavailable', 'The production node identity is not configured');
   const read = async (path: string): Promise<Record<string, unknown>> => {
     const response = await fetchImpl(`${host}${path}`, { redirect: 'error', signal: AbortSignal.timeout(NODE_CALL_TIMEOUT_MS) });
@@ -147,7 +149,8 @@ export async function discoverRenewalNodeIdentity(host: string, fetchImpl: typeo
     return value as Record<string, unknown>;
   };
   const [info, keys] = await Promise.all([read('/info'), read('/.well-known/tinycloud/node-keys')]);
-  if (typeof info.nodeId !== 'string' || keys.nodeDid !== info.nodeId || (pinned !== undefined && keys.nodeDid !== pinned) || typeof keys.renewerDid !== 'string' ||
+  if (typeof info.nodeId !== 'string' || keys.nodeDid !== info.nodeId || typeof keys.renewerDid !== 'string' ||
+    (pinned !== undefined && (keys.nodeDid !== pinned.nodeDid || keys.renewerDid !== pinned.renewerDid)) ||
     typeof keys.renewerPublicKey !== 'string' || !Number.isSafeInteger(keys.renewerEpoch) || (keys.renewerEpoch as number) < 0) {
     throw new RenewalLeaseError('renewal_unavailable', 'Node renewal identity is invalid');
   }
