@@ -216,14 +216,14 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `CONSOLE_ORIGIN` | `https://console.openkey.so` |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
-| `APPLE_SIGN_IN_ENABLED` | Hardcoded `true` in production Compose; Apple is offered only when the four Apple credentials below are also set (TC-1188) |
+| `APPLE_SIGN_IN_ENABLED` | Hardcoded `true` in production Compose; Apple is offered only when `APPLE_PRIVATE_KEY` is set in the encrypted env (TC-1188) |
 | `APPLE_NATIVE_SIGN_IN_ENABLED` | Hardcoded `false`; stock native ID-token sign-in is permanently disabled |
-| `APPLE_CLIENT_ID` | Apple web Services ID (not a bundle identifier) |
-| `APPLE_TEAM_ID` | Apple Developer Team ID |
-| `APPLE_KEY_ID` | Sign in with Apple private-key ID |
-| `APPLE_PRIVATE_KEY` | Apple `.p8` ES256 private key (literal or escaped newlines) |
+| `APPLE_CLIENT_ID` | Apple web Services ID (not a bundle identifier); fixed in production Compose, not set in the encrypted env |
+| `APPLE_TEAM_ID` | Apple Developer Team ID; fixed in production Compose, not set in the encrypted env |
+| `APPLE_KEY_ID` | Sign in with Apple private-key ID; fixed in production Compose, not set in the encrypted env |
+| `APPLE_PRIVATE_KEY` | Apple `.p8` ES256 private key (literal or escaped newlines), set in the encrypted env |
 | `APPLE_APP_BUNDLE_IDENTIFIERS` | Reserved comma-separated audiences for a future PAR-bound native flow; not active |
-| `APPLE_WEBHOOK_AUDIENCE` | Primary App ID (`so.openkey`) that Apple addresses server-to-server notifications to; the webhook is not found while it is unset or Apple sign-in is disabled |
+| `APPLE_WEBHOOK_AUDIENCE` | Primary App ID (`so.openkey`) that Apple addresses server-to-server notifications to; fixed in production Compose, not set in the encrypted env. The webhook is not found while Apple sign-in is disabled |
 | `TEE_MODE` | Not read from the env: `docker-compose.prod.yml` hardcodes `production`, and the API refuses to start otherwise (TC-966) |
 | `RESEND_API_KEY` | Resend API key for emails |
 | `API_PORT` | `3001` |
@@ -268,11 +268,10 @@ ready; the migration adds the session email-code timestamp and a unique
 provider/account identity index. This change does not enable Apple sign-in.
 
 Apple web sign-in is enabled in production (TC-1188). The production Compose
-file pins `APPLE_SIGN_IN_ENABLED=true`; the provider is still offered only when
-`APPLE_CLIENT_ID`, `APPLE_TEAM_ID`, `APPLE_KEY_ID` and `APPLE_PRIVATE_KEY` are
-all set in the encrypted env. To turn Apple off, set the Compose value back to
-`false` and redeploy, or remove a credential from the encrypted env.
-
+file pins `APPLE_SIGN_IN_ENABLED=true` and the Apple identifiers; the provider
+is offered only when `APPLE_PRIVATE_KEY` is set in the encrypted env. To turn
+Apple off, set the Compose value back to `false` and redeploy, or remove
+`APPLE_PRIVATE_KEY` from the encrypted env.
 The API mints an ES256 client-secret JWT for each Apple token exchange or
 revocation, valid for at most five minutes. The `.p8` key remains API-only and
 must never be set as a `VITE_` variable. The web callback trusts only the
