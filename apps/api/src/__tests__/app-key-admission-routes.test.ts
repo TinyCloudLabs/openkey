@@ -386,11 +386,11 @@ describe('admission refusals at /authorize-sign-prepare', () => {
     expect(body.code).toBe('siwe_origin_refused');
   });
 
-  test('a SIWE without Expiration Time never reaches admission', async () => {
+  test('a TinyCloud delegation SIWE without Expiration Time is refused with the stable expiry code', async () => {
     const siwe = siweWith(PREFIX).replace(/^Expiration Time:.*\n/m, '');
     const { res, body } = await prepare(siwe);
     expect(res.status).toBe(400);
-    expect(body.code).toBe('invalid_siwe_header');
+    expect(body.code).toBe('expiry_required');
   });
 
   test('an ordinary request with a declared manifest and no app keys is unchanged', async () => {

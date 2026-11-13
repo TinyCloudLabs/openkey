@@ -88,7 +88,7 @@ import {
   type AuthorizationContextToken,
   type AuthorizationContextClaim,
 } from '../services/authorization-signing';
-import { MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
+import { assertWithinDelegationCeiling, delegationCeilingMs, MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSignedSubset, parseStrictSiwe, SIGNED_SUBSET_REFUSAL_CODE } from '../services/signed-subset';
 import { checkSiweOrigin } from '../services/siwe-origin';
@@ -417,9 +417,6 @@ const MS_UNIT_FACTORS: Record<string, number> = {
   d: 24 * 60 * 60 * 1000,
   w: 7 * 24 * 60 * 60 * 1000,
 };
-/** The last second a SIWE timestamp (four-digit year) can name. */
-const LATEST_SIWE_TIME_MS = Date.UTC(9999, 11, 31, 23, 59, 59);
-
 /**
  * Parse a caller-provided expiry into a clamped ms count.
  *  - missing → default (7d)
@@ -466,12 +463,18 @@ function resolveDelegationExpiryMs(input: unknown, userChosen = false): number {
     throw new Error(`expiry must be a positive number, got ${input}`);
   }
   if (userChosen) {
-    // A time the user picked is their own choice: no 30-day link clamp, only
-    // the minimum and the last date a SIWE timestamp can hold.
-    if (Date.now() + raw > LATEST_SIWE_TIME_MS) throw new Error('expiry is too far in the future');
+    if (Date.now() + raw > delegationCeilingMs()) throw new DelegateRequestError('expiry_exceeds_ceiling', 'Delegation expiry exceeds the maximum allowed lifetime.');
     return Math.max(MIN_DELEGATION_EXPIRY_MS, raw);
   }
   return Math.min(MAX_DELEGATION_EXPIRY_MS, Math.max(MIN_DELEGATION_EXPIRY_MS, raw));
+}
+
+function delegationCeilingFailure(siwe: string): { body: { error: string; code: string } } | null {
+  const result = assertWithinDelegationCeiling(siwe);
+  if (result === 'missing') return { body: { error: 'TinyCloud delegation SIWE requires an Expiration Time.', code: 'expiry_required' } };
+  if (result === 'too_long') return { body: { error: 'Delegation expiry exceeds the maximum allowed lifetime.', code: 'expiry_exceeds_ceiling' } };
+  if (result === 'malformed') return { body: { error: 'Malformed SIWE message.', code: 'invalid_siwe_recap' } };
+  return null;
 }
 
 /**
@@ -959,6 +962,8 @@ delegateRouter.post('/sign', async (c) => {
         if (!policy.allowed) throw new Error(`message_rejected:${policy.reason}`);
         const appKeyRefusal = appKeyRefusalForSiwe(candidate.message as string);
         if (appKeyRefusal) throw new Error(`message_rejected:${appKeyRefusalMessage(appKeyRefusal, 'non_browser')}`);
+        const ceilingFailure = delegationCeilingFailure(candidate.message as string);
+        if (ceilingFailure) throw new Error(`message_rejected:${ceilingFailure.body.code}`);
         const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
         return { signature, identity };
       });
@@ -976,8 +981,13 @@ delegateRouter.post('/sign', async (c) => {
       return c.json({ approved: true, signature: result.value.signature, canonicalIdentity: result.value.identity });
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
-      if (message === 'canonical_key_unavailable') return c.json({ approved: false, code: 'canonical_key_unavailable', reason: 'The canonical TinyCloud key is unavailable.' }, 403);
-      if (message.startsWith('message_rejected:')) return c.json({ approved: false, code: 'message_rejected', reason: message.slice('message_rejected:'.length) }, 400);
+      if (message.startsWith('message_rejected:')) {
+        const reason = message.slice('message_rejected:'.length);
+        if (reason === 'expiry_required' || reason === 'expiry_exceeds_ceiling') {
+          return c.json({ error: reason === 'expiry_required' ? 'TinyCloud delegation SIWE requires an Expiration Time.' : 'Delegation expiry exceeds the maximum allowed lifetime.', code: reason }, 400);
+        }
+        return c.json({ approved: false, code: 'message_rejected', reason }, 400);
+      }
       return c.json({
         approved: false,
         code: 'signer_failed',
@@ -1053,6 +1063,12 @@ delegateRouter.post('/sign', async (c) => {
       },
     });
     if (!policy.allowed) return auditDenial(policy.code, policy.evidence);
+    const coordinationCeilingFailure = typeof candidate.message === 'string'
+      ? delegationCeilingFailure(candidate.message)
+      : null;
+    if (coordinationCeilingFailure) {
+      return c.json(coordinationCeilingFailure.body, 400);
+    }
     // A message that names an app key or key.delete is outside the approved
     // storage records: it is denied and recorded like every other denial.
     if (typeof candidate.message === 'string' && appKeyRefusalForSiwe(candidate.message)) {
@@ -1240,6 +1256,8 @@ delegateRouter.post('/sign', async (c) => {
       chainId: body.chainId,
     }),
   );
+  const ceilingFailure = delegationCeilingFailure(body.message);
+  if (ceilingFailure) return c.json(ceilingFailure.body, 400);
 
   if (!autoSignDecision.allowed) {
     return c.json(openKeyApprovalRequired(autoSignDecision.reason, autoSignDecision.code));
@@ -1303,8 +1321,9 @@ delegateRouter.post('/host', async (c) => {
     ? spacePrefix.slice(spacePrefix.lastIndexOf(':') + 1)
     : spacePrefix;
   const spaceId = makeSpaceId(address, chainId, normalizedSpace);
-  const issuedAt = new Date().toISOString();
-  const siwe = generateHostSIWEMessage({
+  const issuedAtMs = Date.now();
+  const issuedAt = new Date(issuedAtMs).toISOString();
+  const generatedSiwe = generateHostSIWEMessage({
     address,
     chainId,
     domain: SIWE_DOMAIN,
@@ -1312,6 +1331,8 @@ delegateRouter.post('/host', async (c) => {
     spaceId,
     peerId: body.peerId,
   });
+  const siwe = withExpirationTime(generatedSiwe, new Date(delegationCeilingMs(issuedAtMs)).toISOString());
+  if (!siwe || delegationCeilingFailure(siwe)) return c.json({ error: 'Could not create a bounded host delegation.', code: 'expiry_required' }, 400);
 
   const signature = await signManagedKey(key, key.sealedBlob, siwe);
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
@@ -1418,6 +1439,9 @@ delegateRouter.post('/', async (c) => {
   try {
     expiryMs = resolveRequestExpiryMs(body);
   } catch (err) {
+    if (err instanceof DelegateRequestError && err.code === 'expiry_exceeds_ceiling') {
+      return c.json({ error: err.message, code: err.code }, 400);
+    }
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
 
@@ -1634,9 +1658,9 @@ delegateRouter.post('/', async (c) => {
     }
 
     const expirationTime = signedSiweExpirationTime(bound.originalSiwe);
-    if (!expirationTime) {
-      return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
-    }
+    if (!expirationTime) return c.json({ error: 'TinyCloud delegation SIWE requires an Expiration Time.', code: 'expiry_required' }, 400);
+    const ceilingFailure = delegationCeilingFailure(bound.originalSiwe);
+    if (ceilingFailure) return c.json(ceilingFailure.body, 400);
     const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: bound.originalSiwe });
     if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
     await checkApprovalDelegation(body, { signedSiwe: bound.originalSiwe });
@@ -1764,11 +1788,12 @@ delegateRouter.post('/', async (c) => {
   }
 
   const expirationTime = signedSiweExpirationTime(preparedResult.prepared.siwe);
-  if (!expirationTime) {
-    return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
-  }
+  if (!expirationTime) return c.json({ error: 'TinyCloud delegation SIWE requires an Expiration Time.', code: 'expiry_required' }, 400);
+  const ceilingFailure = delegationCeilingFailure(preparedResult.prepared.siwe);
+  if (ceilingFailure) return c.json(ceilingFailure.body, 400);
   const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
+  await checkApprovalDelegation(body, { signedSiwe: preparedResult.prepared.siwe });
 
   const legacyAppKeyRefusal = appKeyRefusalForSiwe(preparedResult.prepared.siwe);
   if (legacyAppKeyRefusal) return c.json(appKeyRefusalBody(legacyAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(legacyAppKeyRefusal));
@@ -1937,6 +1962,9 @@ delegateRouter.post('/prepare', async (c) => {
   try {
     expiryMs = resolveRequestExpiryMs(body);
   } catch (err) {
+    if (err instanceof DelegateRequestError && err.code === 'expiry_exceeds_ceiling') {
+      return c.json({ error: err.message, code: err.code }, 400);
+    }
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
   const deviceWindow = await deviceDelegationWindowError(body, {
@@ -1962,10 +1990,10 @@ delegateRouter.post('/prepare', async (c) => {
   } catch (e) {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
-  // Device approvals: the bytes handed to the wallet are a subset of what the device requested.
+  const ceilingFailure = delegationCeilingFailure(preparedResult.prepared.siwe);
+  if (ceilingFailure) return c.json(ceilingFailure.body, 400);
   const deviceSubset = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
   if (deviceSubset) return c.json(deviceSubset.body, deviceSubset.status);
-
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
   // Ensure JWK is preserved as a plain object through JSON round-trip.
@@ -2248,7 +2276,8 @@ delegateRouter.post('/complete', async (c) => {
   });
   const primary = signerKey ? isPrimaryKey(signerKey) : false;
 
-  // Report the lifetime the wallet signed, never caller-supplied metadata.
+  const ceilingFailure = delegationCeilingFailure(body.prepared.siwe);
+  if (ceilingFailure) return c.json(ceilingFailure.body, 400);
   const expirationTime = signedSiweExpirationTime(body.prepared.siwe);
   if (!expirationTime) {
     return c.json({ error: 'The signed SIWE must include a valid Expiration Time', code: 'missing_expiration_time' }, 400);
@@ -2644,6 +2673,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       400,
     );
   }
+  const preparedCeilingFailure = delegationCeilingFailure(body.siwe);
+  if (preparedCeilingFailure) return c.json(preparedCeilingFailure.body, 400);
   // Messages that name key.delete, an unreadable recap or an unparsable
   // `apps/` key are refused here. A well-formed `apps/` grant from a browser
   // request is admitted or refused after the manifest bind below; a ticket
@@ -2925,8 +2956,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     admittedAppKeys = admission.admitted;
   }
 
-  // A request the pre-sign rule cannot read can never be signed; refuse it
-  // before issuing a context and a review screen for it.
+  const ceilingFailure = delegationCeilingFailure(body.siwe);
+  if (ceilingFailure) return c.json(ceilingFailure.body, 400);
   const readable = parseStrictSiwe(body.siwe);
   if (!readable.ok) {
     return c.json(
@@ -3363,6 +3394,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   });
   if (sealedExpiry !== undefined && sealedExpiry !== immutable.expirationTime) {
     const checked = validateExpirationOverride(sealedExpiry, immutable, 0);
+    if (!checked.ok && checked.reason === 'too_long') return c.json({ error: 'Delegation expiry exceeds the maximum allowed lifetime.', code: 'expiry_exceeds_ceiling' }, 400);
     const withExpiry = checked.ok ? withExpirationTime(signedMessage, checked.value) : null;
     if (!withExpiry) {
       return c.json(
@@ -3372,6 +3404,8 @@ delegateRouter.post('/authorize-sign', async (c) => {
     }
     signedMessage = withExpiry;
   }
+  const signedCeilingFailure = delegationCeilingFailure(signedMessage);
+  if (signedCeilingFailure) return c.json(signedCeilingFailure.body, 400);
 
   // The pre-sign rule on the exact bytes about to be signed:
   // signed ⊆ requested ⊆ the owner's selection.
@@ -3611,6 +3645,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     }
     const checked = validateExpirationOverride(body.expirationTime, immutable, MIN_EXPIRATION_LEAD_MS);
     if (!checked.ok) {
+      if (checked.reason === 'too_long') return c.json({ error: 'Delegation expiry exceeds the maximum allowed lifetime.', code: 'expiry_exceeds_ceiling' }, 400);
       return c.json(
         { error: 'expirationTime must be a future ISO-8601 UTC time after the request was issued', code: 'invalid_expiration_time' },
         400,
@@ -3737,6 +3772,8 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     }
     preparedSignedMessage = withExpiry;
   }
+  const previewCeilingFailure = delegationCeilingFailure(preparedSignedMessage);
+  if (previewCeilingFailure) return c.json(previewCeilingFailure.body, 400);
 
   // The pre-sign rule on the exact bytes about to reach the owner's wallet:
   // signed ⊆ requested ⊆ the owner's selection.

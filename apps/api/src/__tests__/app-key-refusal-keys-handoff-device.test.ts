@@ -106,6 +106,23 @@ describe('POST /api/keys/:keyId/sign', () => {
     });
   }
   const hex = (text: string) => `0x${Buffer.from(text, 'utf8').toString('hex')}`;
+  test.each(['\r', '\u2028', '\u2029', '\u0085'])('refuses parser-differential expiry spoofing with separator %p', async (separator) => {
+    for (const format of ['personal_sign', 'raw'] as const) {
+      const base = siweWith();
+      for (const variant of ['missing', 'too_long'] as const) {
+        const modified = variant === 'missing'
+          ? base.replace(/\nExpiration Time: [^\n]+\n/, '\n')
+          : base.replace(/(?<=\nExpiration Time: )[^\n]+/, '9999-12-31T23:59:59.000Z');
+        const statementStart = modified.indexOf('\n\n') + 2;
+        const uriStart = modified.indexOf('\nURI: ', statementStart);
+        const spoof = `${modified.slice(0, statementStart)}Expiration Time: 2027-01-01T00:00:00Z${separator}statement\n${modified.slice(uriStart)}`;
+        const response = await sign({ message: format === 'raw' ? hex(spoof) : spoof, format });
+        expect(response.status).toBe(400);
+        await expect(response.json()).resolves.toMatchObject({ code: variant === 'missing' ? 'expiry_required' : 'expiry_exceeds_ceiling' });
+        expect(calls).toEqual([]);
+      }
+    }
+  });
 
   test.each([
     ['an app key', APPS_KEY, 'app_key_grant_refused'],
@@ -141,6 +158,35 @@ describe('POST /api/keys/:keyId/sign', () => {
     await expect(response.json()).resolves.toMatchObject({ code: 'invalid_siwe_recap' });
     expect(calls).toEqual([]);
   });
+  test.each([
+    ['bad header order', siweWith().replace(/Expiration Time: [^\n]+\n/, '').replace(/(Issued At: [^\n]+\n)/, '$1Not Before: 2026-10-30T00:00:00.000Z\nExpiration Time: 2026-11-01T00:00:00.000Z\n')],
+    ['bad timestamp', siweWith().replace(/Expiration Time: [^\n]+/, 'Expiration Time: not-a-date')],
+  ])('uses a generic malformed-SIWE message for %s', async (_name, message) => {
+    const response = await sign({ message });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Malformed SIWE message.',
+      code: 'invalid_siwe_recap',
+    });
+    expect(calls).toEqual([]);
+  });
+  test.each([
+    ['missing expiration', siweWith().replace(/^Expiration Time:.*\n/m, ''), 'expiry_required'],
+    (() => {
+      const expiry = new Date();
+      expiry.setUTCFullYear(expiry.getUTCFullYear() + 11);
+      return ['over-ceiling expiration', siweWith().replace(/^Expiration Time:.*$/m, `Expiration Time: ${expiry.toISOString()}`), 'expiry_exceeds_ceiling'];
+    })(),
+  ])('refuses %s when the actual raw signed bytes are a delegation SIWE', async (_name, message, code) => {
+    const response = await sign({ message: hex(message), format: 'raw' });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.code).toBe(code);
+    expect(Object.keys(body).sort()).toEqual(['code', 'error']);
+    expect(calls).toEqual([]);
+    expect(unseal).not.toHaveBeenCalled();
+  });
+
 
   test('still signs a message with no app keys', async () => {
     const response = await sign({ message: siweWith() });

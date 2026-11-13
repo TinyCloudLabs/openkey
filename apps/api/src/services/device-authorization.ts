@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { SiweMessage } from 'siwe';
+import { delegationCeilingMs } from './approval-expiry';
 import { appKeyRefusalMessage } from './app-key-refusal';
 import {
   TINYCLOUD_DELEGATED_PATH,
@@ -585,17 +586,14 @@ function randomUserCode(): string {
   return [...bytes].map((value) => alphabet[value % alphabet.length]).join('');
 }
 
-/** The last second a SIWE timestamp (four-digit year) can name. */
-const LATEST_SIWE_TIME_MS = Date.UTC(9999, 11, 31, 23, 59, 59);
-
-/**
- * The longest lifetime the requester will accept (TC-2274: the requester signs it,
- * so there is no server cap; only a minute minimum and what a date can hold).
- */
+/** Longest lifetime the requester may ask for, bounded by OpenKey's calendar-year ceiling. */
 function requestedTtlSeconds(input: unknown, now: Date): number {
   const seconds = input === undefined ? DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS / 1000 : typeof input === 'number' ? input : Number.NaN;
-  const latest = (LATEST_SIWE_TIME_MS - now.getTime() - DEVICE_AUTH_TRANSACTION_TTL_MS) / 1000;
-  if (!Number.isSafeInteger(seconds) || seconds < 60 || seconds > latest) {
+  const latest = (delegationCeilingMs(now.getTime()) - now.getTime() - DEVICE_AUTH_TRANSACTION_TTL_MS) / 1000;
+  if (Number.isSafeInteger(seconds) && seconds > latest) {
+    throw new DeviceAuthorizationError('expiry_exceeds_ceiling', 'Delegation expiry exceeds the maximum allowed lifetime.', 400);
+  }
+  if (!Number.isSafeInteger(seconds) || seconds < 60) {
     throw new DeviceAuthorizationError('invalid_request', 'delegationTtlSeconds must be a whole number of at least 60 seconds', 400);
   }
   return seconds;

@@ -28,6 +28,7 @@ import {
 } from '@tinycloud/node-sdk-wasm';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { PrismaClient } from '@openkey/db';
+import { assertWithinDelegationCeiling, delegationCeilingMs, withExpirationTime } from './approval-expiry';
 import { DEFAULT_TINYCLOUD_BOOTSTRAP_HOST, TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
 import { tinyCloudBootstrapNodeCallTimeoutMs, tinyCloudBootstrapNodeInvokeTimeoutMs } from './tinycloud-node-timeouts';
 import { kvSpaceRegistryStore, registerMissingBootstrapSpaces } from './tinycloud-space-registry';
@@ -846,14 +847,17 @@ async function createHostDelegation(
   step: BootstrapSpaceStep,
 ): Promise<Record<string, string>> {
   const peerId = await nodeFetchPeerId(input.tinycloudHost, step.spaceId);
-  const siwe = generateHostSIWEMessage({
+  const issuedAtMs = Date.now();
+  const generatedSiwe = generateHostSIWEMessage({
     address: input.address,
     chainId: input.chainId,
     domain: BOOTSTRAP_DOMAIN,
-    issuedAt: new Date().toISOString(),
+    issuedAt: new Date(issuedAtMs).toISOString(),
     spaceId: step.spaceId,
     peerId,
   });
+  const siwe = withExpirationTime(generatedSiwe, new Date(delegationCeilingMs(issuedAtMs)).toISOString());
+  if (!siwe || assertWithinDelegationCeiling(siwe, issuedAtMs) !== 'ok') throw new Error('Generated host delegation has an invalid expiry');
   const signature = await signEthereumMessage(input.privateKey, siwe);
   return siweToDelegationHeaders({ siwe, signature }) as Record<string, string>;
 }

@@ -1,3 +1,5 @@
+import { assertWithinDelegationCeiling } from './approval-expiry';
+
 import { createHash, randomBytes } from 'node:crypto';
 import { SiweMessage } from 'siwe';
 import { verifyMessage } from 'ethers';
@@ -116,6 +118,15 @@ export class ApprovalResultService {
       throw new ApprovalResultError('request_binding', 'Grant lifetime exceeds the immutable approval request', 400);
     }
     if (input.signedSiwe !== undefined) {
+      const ceiling = assertWithinDelegationCeiling(input.signedSiwe, now.getTime());
+      if (ceiling !== 'ok') {
+        throw new ApprovalResultError(
+          ceiling === 'missing' ? 'expiry_required' : ceiling === 'too_long' ? 'expiry_exceeds_ceiling' : 'invalid_delegation',
+          ceiling === 'missing' ? 'TinyCloud delegation SIWE requires an Expiration Time.' :
+            ceiling === 'too_long' ? 'Delegation expiry exceeds the maximum allowed lifetime.' : 'Approval requires a canonical SIWE',
+          400,
+        );
+      }
       let siwe: SiweMessage;
       try { siwe = new SiweMessage(input.signedSiwe); } catch { throw new ApprovalResultError('invalid_delegation', 'Approval requires a canonical SIWE', 400); }
       const expiry = Date.parse(siwe.expirationTime ?? '');

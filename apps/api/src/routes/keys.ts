@@ -1,3 +1,5 @@
+import { assertWithinDelegationCeiling } from '../services/approval-expiry';
+
 // Key management routes
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
@@ -309,10 +311,17 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (body.format === 'raw' && !/^0x(?:[0-9a-fA-F]{2})*$/.test(body.message)) {
     return c.json({ error: 'raw message must be even-length 0x hex' }, 400);
   }
-  const siweCheck = checkSignableMessage(body.message, body.requestOrigin);
+  const signedMessage = body.format === 'raw' ? Buffer.from(body.message.slice(2), 'hex').toString('utf8') : body.message;
+  const siweCheck = checkSignableMessage(signedMessage, body.requestOrigin);
   if (siweCheck.siwe && !siweCheck.ok) {
     return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
   }
+  const ceiling = assertWithinDelegationCeiling(signedMessage);
+  if (ceiling !== 'ok') return c.json({
+    error: ceiling === 'missing' ? 'TinyCloud delegation SIWE requires an Expiration Time.' :
+      ceiling === 'too_long' ? 'Delegation expiry exceeds the maximum allowed lifetime.' : 'Malformed SIWE message.',
+    code: ceiling === 'missing' ? 'expiry_required' : ceiling === 'too_long' ? 'expiry_exceeds_ceiling' : 'invalid_siwe_recap',
+  }, 400);
   const appKeyRefusal = appKeyRefusalForMessage(body.message)
     ?? (blocksOutsideApps(body.message) ? ({ reason: 'apps_key' } as const) : null);
   if (appKeyRefusal) {
