@@ -307,6 +307,7 @@ type MessageType =
   | { type: 'openkey:link-wallet:result'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:use-external-wallet'; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:sign-out:request'; requestId: string; protocolVersion: 1 }
+  | { type: 'openkey:sign-out:confirmed'; requestId: string; protocolVersion: 1 }
   | { type: 'openkey:sign-out:response'; success: true; requestId: string; protocolVersion: 1; revoked: boolean }
   | { type: 'openkey:sign-out:response'; success: false; requestId: string; protocolVersion: 1; error: OpenKeyError }
   | { type: 'openkey:resize'; height: number; requestId?: string; protocolVersion?: number; layoutId?: number }
@@ -884,6 +885,7 @@ export class OpenKey {
   private config: OpenKeyConfig;
   private popup: Window | null = null;
   private lastAuth: AuthResult | null = null;
+  private signOutProgress = new Map<string, (progress: 'ready' | 'confirmed') => void>();
   private discoveredProviders: EIP6963ProviderDetail[] = [];
   /** Cancels widget flows that could outlive a sign-out on this instance. */
   private activeFlowCancellations = new Set<() => void>();
@@ -986,6 +988,8 @@ export class OpenKey {
 
   /**
    * Signs the active OpenKey account out through the OpenKey-owned widget.
+   * `onProgress` reports when the dialog is ready and when the owner confirms,
+   * so callers can bound transport waits separately from the owner's decision.
    *
    * The OpenKey-owned widget revokes the OpenKey session it holds itself;
    * the SDK never holds an OpenKey session token. Local SDK state is cleared
@@ -998,7 +1002,7 @@ export class OpenKey {
    * Remote revocation did not happen then, so clearing any app session is the
    * caller's decision.
    */
-  async signOut(opts?: { mode?: OpenKeyMode }): Promise<SignOutAcknowledgement> {
+  async signOut(opts?: { mode?: OpenKeyMode; onProgress?: (progress: 'ready' | 'confirmed') => void }): Promise<SignOutAcknowledgement> {
     const requestId = `ok-signout-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     // Redirect flows intentionally never resolve. Sign-out needs to return a
     // correlated acknowledgement, so use the OpenKey popup boundary instead.
@@ -1010,20 +1014,25 @@ export class OpenKey {
     // A failed/blocked widget must never leave this SDK instance authenticated.
     this.lastAuth = null;
 
-    const acknowledgement = await this.openFlow<SignOutAcknowledgement>(
-      'sign-out',
-      {
-        type: 'openkey:sign-out:request',
-        requestId,
-        protocolVersion: 1,
-      },
-      mode,
-    );
+    if (opts?.onProgress) this.signOutProgress.set(requestId, opts.onProgress);
+    try {
+      const acknowledgement = await this.openFlow<SignOutAcknowledgement>(
+        'sign-out',
+        {
+          type: 'openkey:sign-out:request',
+          requestId,
+          protocolVersion: 1,
+        },
+        mode,
+      );
 
-    if (acknowledgement.requestId !== requestId) {
-      throw new Error('OpenKey signOut received an acknowledgement for a different request');
+      if (acknowledgement.requestId !== requestId) {
+        throw new Error('OpenKey signOut received an acknowledgement for a different request');
+      }
+      return acknowledgement;
+    } finally {
+      this.signOutProgress?.delete(requestId);
     }
-    return acknowledgement;
   }
 
   /**
@@ -1868,6 +1877,7 @@ export class OpenKey {
               modal?.postMessage(message);
             }
             readyReceived = true;
+            if (action === 'sign-out') this.signOutProgress?.get(outgoingRequestId as string)?.('ready');
             return;
           }
           if (!readyReceived) return;
@@ -1878,6 +1888,11 @@ export class OpenKey {
           if (activeRequestId !== null) {
             if (!('requestId' in data) || data.requestId !== activeRequestId ||
                 !('protocolVersion' in data) || data.protocolVersion !== activeVersion) return;
+          }
+
+          if (action === 'sign-out' && data.type === 'openkey:sign-out:confirmed') {
+            this.signOutProgress?.get(outgoingRequestId as string)?.('confirmed');
+            return;
           }
 
           if (data.type === 'openkey:close') {
@@ -1912,7 +1927,7 @@ export class OpenKey {
                 } else if (data.type === 'openkey:link-wallet:response') {
                   resolve({ address: data.address, keyId: data.keyId } as T);
                 } else if (data.type === 'openkey:sign-out:response') {
-                  resolve({ requestId: data.requestId, revoked: data.revoked } as T);
+                  resolve({ requestId: data.requestId, revoked: data.revoked === true } as T);
                 } else if (data.type === 'openkey:externalSign:approve') {
                   resolve({
                     authorizationContextToken: (data as any).authorizationContextToken,
@@ -2179,6 +2194,14 @@ export class OpenKey {
       if (data.type === 'openkey:ready') {
         // Widget is ready, send our request
         popup.postMessage(message, this.host);
+        if (action === 'sign-out') this.signOutProgress?.get(outgoingRequestId as string)?.('ready');
+        return;
+      }
+
+      if (action === 'sign-out' && data.type === 'openkey:sign-out:confirmed') {
+        if (data.requestId === outgoingRequestId && data.protocolVersion === outgoingProtocolVersion) {
+          this.signOutProgress?.get(outgoingRequestId as string)?.('confirmed');
+        }
         return;
       }
 
@@ -2229,7 +2252,7 @@ export class OpenKey {
           } else if (data.type === 'openkey:link-wallet:response') {
             resolve({ address: data.address, keyId: data.keyId } as T);
           } else if (data.type === 'openkey:sign-out:response') {
-            resolve({ requestId: data.requestId, revoked: data.revoked } as T);
+            resolve({ requestId: data.requestId, revoked: data.revoked === true } as T);
           } else if (data.type === 'openkey:externalSign:approve') {
             // Sol MAJOR-3 (continuation): hand the preview payload back
             // to authorizeTinyCloudExternal so it can invoke the wallet.
