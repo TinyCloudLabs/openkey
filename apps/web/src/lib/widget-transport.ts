@@ -278,6 +278,16 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       opts.onInvalid?.("invalid-payload", event);
       return;
     }
+    if (payload.signInContinuation !== undefined) {
+      const continuation = payload.signInContinuation as Record<string, unknown> | null;
+      if (!continuation || typeof continuation !== 'object' ||
+          typeof continuation.token !== 'string' || !continuation.token ||
+          typeof continuation.requestId !== 'string' || !continuation.requestId ||
+          !Number.isSafeInteger(continuation.chainId) || Number(continuation.chainId) <= 0) {
+        opts.onInvalid?.('invalid-payload', event);
+        return;
+      }
+    }
     if (payload.host !== undefined && typeof payload.host !== "string") {
       opts.onInvalid?.("invalid-payload", event);
       return;
