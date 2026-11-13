@@ -31,7 +31,8 @@ const BOT_SESSIONS_PER_DAY = 50;
 // so every key of that person drops out. SCOREBOARD_EXCLUDE_USER_IDS (user
 // ids) is the second per-person list. Both come only from env, never from code.
 const ADDRESS_PATTERN = /^0x[0-9a-f]{40}$/;
-const INTERNAL_TEAM_DOMAIN = /^(tinycloud\.xyz|tinycloudlabs\.[a-z]+|gbafa\.com|openkey\.so|spruceid\.com)$/;
+// Our team domains, and any subdomain of them (QA mail uses qa-mail.tinycloud.xyz).
+const INTERNAL_TEAM_DOMAIN = /(^|\.)(tinycloud\.xyz|tinycloudlabs\.[a-z]+|gbafa\.com|openkey\.so|spruceid\.com)$/;
 const INTERNAL_AGENT_OR_QA_NAME =
   /^(qa|agent|bot|probe|canary|smoke|e2e|test|ci|julie|courier|orchard|holden|naomi|amos|alex|bobbie|clarissa|fred|miller|avasarala)([^a-z]|$)/;
 const TEST_OR_THROWAWAY_DOMAIN = /(^|\.)(example\.[a-z]+|test|invalid|localhost)$/;

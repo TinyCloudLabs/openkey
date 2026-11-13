@@ -161,6 +161,27 @@ test('classifyAccount: earlier rules win over later ones', () => {
   expect(classify('alexander@gmail.com')).toBe('bot_like');
 });
 
+test('internal_team_domain: our domains and every subdomain of them, not look-alikes', async () => {
+  const classify = (email: string) =>
+    classifyAccount({ id: 'x', email, teamByWallet: false, hasSession: true, hasKey: false, botLike: false }, new Set());
+  // Amos's QA mail: qa+x@qa-mail.tinycloud.xyz is internal (not an agent name, not plus-addressed).
+  expect(classify('qa+x@qa-mail.tinycloud.xyz')).toBe('internal_team_domain');
+  for (const domain of ['tinycloud.xyz', 'qa-mail.tinycloud.xyz', 'a.b.tinycloud.xyz', 'TinyCloud.XYZ', 'QA-Mail.TinyCloud.xyz',
+    'tinycloudlabs.com', 'mail.tinycloudlabs.io', 'gbafa.com', 'x.gbafa.com', 'openkey.so', 'mail.openkey.so', 'spruceid.com', 'qa.spruceid.com']) {
+    expect(classify(`someone@${domain}`), domain).toBe('internal_team_domain');
+    expect(classify(`qa+1@${domain}`), `qa+1@${domain}`).toBe('internal_team_domain');
+  }
+  for (const domain of ['nottinycloud.xyz', 'tinycloud.xyz.evil.io', 'tinycloud.xyz.com', 'xtinycloudlabs.com', 'myopenkey.so', 'openkey.so.example.org', 'gbafa.co']) {
+    expect(classify(`someone@${domain}`), domain).not.toBe('internal_team_domain');
+  }
+  // Counted as ours, never reported as an unclassified domain.
+  const people: Account[] = Array.from({ length: 6 }, (_, i) => ({ id: `qa${i}`, email: `qa+${i}@qa-mail.tinycloud.xyz`, lastSession: session }));
+  const result = await collectUserMetrics(fakeDatabase(people).database, {}, now);
+  expect(result.buckets.internal_team_domain).toBe(6);
+  expect(result.real).toBe(0);
+  expect(result.unclassifiedDomains).toEqual([]);
+});
+
 test('disposable_mail_domain: built-in providers, subdomains, families and QA mail catchers', () => {
   const classify = (email: string) =>
     classifyAccount({ id: 'x', email, teamByWallet: false, hasSession: true, hasKey: false, botLike: false }, new Set());
