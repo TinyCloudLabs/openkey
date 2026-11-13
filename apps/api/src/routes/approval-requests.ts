@@ -21,6 +21,7 @@ import {
   signLease,
   type RenewalStage,
 } from '../services/renewal-lease';
+import { reservedLeaseAuthorization, reserveRenewalLease } from '../services/renewal-lease-revocation';
 
 const prisma = createPrismaClient();
 const store = createPrismaApprovalRequestStore(prisma);
@@ -248,7 +249,8 @@ export async function saveApprovalDelegation(
   // but only when the preview the owner approved now is that lease. A finite or different choice is a conflict,
   // never a silent leased completion; the owner resumes by approving the signed lease length. While leases
   // are off, a signed lease is never admitted and the request can't complete over it.
-  const signed = record.renewal?.leaseAuthorization ? record.renewal : null;
+  // TC-2946: a signed step names its lease (`leaseCid`); the signed lease itself is kept only with its reservation.
+  const signed = record.renewal?.leaseAuthorization || record.renewal?.leaseCid ? record.renewal : null;
   if (signed && !renewalLeasesEnabled()) throw new ApprovalResultError('renewal_disabled', 'Renewal is not available yet', 400);
   if (signed && marker) {
     if (signed.userId !== userId) throw new ApprovalResultError('request_binding', 'Another account is approving this request', 409);
@@ -277,16 +279,31 @@ export async function saveApprovalDelegation(
       return { renewalSignature: { message: stage.leaseSiwe, leaseLifetimeSeconds: stage.approvedLeaseLifetimeSeconds } };
     }
     stage = signLease(stage, await signOwner(stage.leaseSiwe));
-    await service.saveRenewal(id, stage, marker);
+    await saveSignedStage(id, userId, options.sessionId, record.request, stage, marker);
   } catch (error) {
     renewalFailure(error);
   }
   return finishLeasedApproval(id, userId, options.sessionId, record.request, stage, marker);
 }
 
+/**
+ * TC-2946: a signed lease is reserved for its owner (encrypted) before the signed step is saved, and the saved step
+ * never holds the signed lease, so the approval request carries no lease anyone could admit.
+ */
+async function saveSignedStage(id: string, userId: string, sessionId: string | null, request: ApprovalRequestRecord['request'], stage: RenewalStage, marker: Date) {
+  await reserveRenewalLease(prisma, { approvalRequestId: id, userId, sessionId, nodeOrigin: request.nodeOrigin, stage });
+  const { leaseAuthorization: _signedLease, ...saved } = stage;
+  await approvalResultService().saveRenewal(id, saved, marker);
+}
+
 async function finishLeasedApproval(id: string, userId: string, sessionId: string | null, request: ApprovalRequestRecord['request'], stage: RenewalStage, marker: Date) {
   let renewal;
   try {
+    // A resumed signed step takes its signed lease back from the reservation.
+    if (!stage.leaseAuthorization && stage.leaseCid) stage = { ...stage, leaseAuthorization: await reservedLeaseAuthorization(prisma, userId, stage.leaseCid) };
+    // TC-2946: the owner's record of this lease is written before the node is asked to admit it, so a lease whose
+    // admission outcome is unknown can still be found and stopped. A lease stopped meanwhile is never admitted.
+    await reserveRenewalLease(prisma, { approvalRequestId: id, userId, sessionId, nodeOrigin: request.nodeOrigin, stage });
     renewal = await admitLease(stage, request);
   } catch (error) {
     renewalFailure(error);
@@ -315,13 +332,13 @@ approvalRequestRouter.post('/approval-requests/:id/renewal-signature', requireAc
   const marker = await service.admit(id);
   try {
     let stage = saved;
-    if (!stage.leaseAuthorization) {
+    if (!stage.leaseAuthorization && !stage.leaseCid) {
       let signer = '';
       try { signer = verifyMessage(stage.leaseSiwe, signature); } catch { /* refused below */ }
       if (signer.toLowerCase() !== stage.ownerAddress.toLowerCase()) throw new ApprovalResultError('invalid_signature', 'The renewal signature is not from this account', 400);
       try {
         stage = signLease(stage, signature);
-        await service.saveRenewal(id, stage, marker);
+        await saveSignedStage(id, userId, c.get('session').id, record.request, stage, marker);
       } catch (error) {
         renewalFailure(error);
       }

@@ -122,7 +122,7 @@
     {#if confirming}
       <div class="renewal-confirm" role="alertdialog" aria-labelledby="renewal-confirm-heading" aria-describedby="renewal-confirm-body">
         <h3 class="renewal-confirm-heading" id="renewal-confirm-heading" tabindex="-1" bind:this={confirmHeading}>Renew sensitive access?</h3>
-        <p id="renewal-confirm-body">This lets {requestedBy} keep the Sensitive access listed here for up to {formatDuration(proposedLeaseMs)}, without asking you again.</p>
+        <p id="renewal-confirm-body">This lets {requestedBy} keep the Sensitive access listed here for up to {formatDuration(proposedLeaseMs)}, without asking you again. You can stop renewal any time under Renewing permissions in Settings.</p>
         <div class="renewal-confirm-actions">
           <button type="button" class="renewal-confirm-no" onclick={cancelRenewal}>Don't renew</button>
           <button type="button" class="renewal-confirm-yes" onclick={confirmRenewal}>Turn on renewal</button>

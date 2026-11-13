@@ -1,7 +1,10 @@
 # Runs the whole API unit suite in one `bun test` process, the way a developer
 # runs it. Files share bun's module registry there, so a module mock that leaks
 # out of one file breaks another; apps/api/src/__tests__/mock-module.ts scopes
-# mocks to their file (TC-928). No secrets, database, or network services.
+# mocks to their file (TC-928). The api-tests job uses no secrets, database, or
+# network services. The renewal-lease-postgres job adds one throwaway Postgres,
+# only for the lease lock and race cases PGlite (a single connection) cannot
+# show (TC-2946).
 name: API tests
 
 on:
@@ -56,3 +59,45 @@ jobs:
           bun run build --filter @openkey/core --filter @openkey/types
           bun test packages/sdk
 
+  renewal-lease-postgres:
+    name: Renewal lease tests on Postgres
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+      - name: Install dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Build packages
+        run: |
+          bun run db:generate
+          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review
+
+      # Each run creates and drops its own database on this throwaway server.
+      - name: Renewal lease tests (PGlite and Postgres)
+        env:
+          OPENKEY_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: bun test apps/api/src/__tests__/renewal-lease-stop.integration.test.ts

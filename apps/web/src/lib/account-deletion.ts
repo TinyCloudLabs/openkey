@@ -97,6 +97,12 @@ async function failure(response: Response, fallback: string): Promise<DeletionEr
   if (code === 'passkey_not_step_up_capable') {
     return new DeletionError("That passkey can't confirm account deletion. Use another passkey saved for this account.", code, response.status);
   }
+  // TC-2946: deletion first stops every renewing permission; nothing is deleted until all are stopped.
+  if (code === 'renewal_leases_not_stopped') {
+    return new DeletionError(typeof body?.walletRequired === 'number' && body.walletRequired > 0
+      ? 'Some renewing permissions need your wallet to stop. Stop them under Renewing permissions in Settings, then delete your account. Nothing was deleted.'
+      : "OpenKey couldn't stop renewal for every permission. Nothing was deleted. Try again.", code, response.status);
+  }
   if (response.status === 503) return new DeletionError('OpenKey is busy right now. Try again in a moment.', null, 503);
   if (response.status === 401) return new DeletionError('Your session ended. Sign in again to delete your account.', null, 401);
   return new DeletionError(fallback, null, response.status);

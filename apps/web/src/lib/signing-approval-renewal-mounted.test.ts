@@ -259,9 +259,10 @@ describe('renewing secrets or decrypt asks first (spec D7)', () => {
     toggle(target);
     expect(calls.lease).toEqual([]);
     expect(text(target.querySelector('.renewal-confirm-heading'))).toBe('Renew sensitive access?');
-    expect(text(target.querySelector('#renewal-confirm-body'))).toBe(
-      'This lets courier.tinycloud.xyz keep the Sensitive access listed here for up to 90 days, without asking you again.',
-    );
+    // The warning names who keeps the access and for how long; its sentences are not pinned (TC-2946).
+    const warning = text(target.querySelector('#renewal-confirm-body'));
+    expect(warning).toContain('courier.tinycloud.xyz');
+    expect(warning).toContain('90 days');
     expect(box(target)).toBeNull();
     cleanup();
   });
