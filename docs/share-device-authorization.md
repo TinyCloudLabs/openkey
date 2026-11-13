@@ -71,10 +71,66 @@ do not support device transactions: any request to them that carries
 
 The default and maximum lifetime is 30 days, counted from approval.
 
+## Durable approval-result codes
+
+Durable approval completion responses include optional `approvalCode` delivery
+metadata: `{ code, expiresAt }`, or `null` when unavailable. This metadata is
+separate from the encrypted delegation. The saved encrypted result retains the
+full completion delegation, including `requestedSpaces`.
+
+A requester collects the code through the discovery endpoint for its saved request:
+
+```http
+POST /api/approval-requests/<saved-request-id>/result
+OpenKey-Session-Proof: <existing discovery proof>
+OpenKey-Delegation-Claim: <saved random base64url claim intent>
+Content-Type: application/json
+
+{"bodyCid":"<saved-request-body-cid>","approvalCode":"XXXX-XXXX"}
+```
+
+Save the claim intent before sending it: use at least 16 random bytes encoded
+as unpadded base64url (22–128 characters). For code discovery, the proof's credential is the exact JSON array
+`["discover", requestId, bodyCid, "", "", codeHash, claimHash]`. Both hashes are
+SHA-256 encoded as unpadded base64url: `codeHash` hashes the trimmed, lowercase
+code, and `claimHash` hashes the exact saved claim header. The proof's existing
+`cred_hash` then hashes that serialized array. Discovery without a code keeps
+its existing five-element credential; fetch and ACK are unchanged.
+
+The code is bound to the request ID,
+body CID and result reference, and requires that request's session proof.
+The same saved claim can retry until code expiry. The response carries the
+normal `status`, `resultRef` and `expiresAt`; continue through encrypted fetch,
+verification, durable save and result ACK. ACK invalidates the code. A saved
+result reference can be resumed without a code.
+
+Code lifetime is at most five minutes and never exceeds result retention.
+Ordinary requester-signed discovery remains available without a code.
+Approval-result code records contain only binding metadata; ordinary delegation
+codes retain their existing public-delegation format. Device and prepared
+handoff transports are unchanged. Client integration is released separately.
+Details: TC-2489.
+
 ## Ordinary `/delegate` links
 
 A `/delegate` link without `deviceTransactionId` can be made by anyone, so
 the page limits what it does with one:
+
+- Optional `requesterOrigin` attributes the request to its caller. Supply it
+  once, as an exact canonical HTTPS origin, or an HTTP origin on exactly
+  `localhost`, `127.0.0.1` or `[::1]`. Paths (including a trailing slash),
+  credentials, query/fragment, whitespace and noncanonical spellings are
+  rejected. Custom nondefault ports are retained.
+  The web page forwards it to `/api/delegate/prepare`, which binds the host
+  into the SIWE domain and authorization context. Permission narrowing,
+  managed signing and wallet completion retain that domain.
+  The consent label comes from the prepared SIWE: `mcp.tinycloud.xyz` is
+  TinyCloud MCP, `cli.tinycloud.xyz` is TinyCloud CLI, and other domains display
+  their actual host and port. Omission preserves the existing CLI domain.
+  This is **caller-reported, not verified identity**: the link remains unsigned,
+  has no signed app manifest, and gains no callback or node-host privileges.
+  Device transactions, signed approval requests and prepared handoffs reject
+  this ordinary-link override instead of replacing their bound identity.
 
 - `callback` must be a loopback URL (`localhost`, `127.0.0.1`, or `[::1]`,
   as the TinyCloud CLI uses) or a registered app callback endpoint: an
@@ -261,9 +317,11 @@ still receives `404 key_not_found`.
 The standard `/delegate` and `/a/<id>` pages automatically call
 `/api/delegate/prepare` once when approval returns `context-expired` or
 `context-not-found`. This is the ordinary authenticated prepare endpoint: the
-selected owner key, request identifier, session key, node, requested permissions
-and chosen grant lifetime are submitted again and validated normally. The
-owner's selected action set must be unchanged, without duplicate or missing
+selected owner key, request identifier, session key, node, requested permissions,
+ordinary-link requester origin and chosen grant lifetime are submitted again
+and validated normally. The ordinary `/delegate` page also requires the fresh
+SIWE domain to match the previous review. The owner's selected action set must
+be unchanged, without duplicate or missing
 actions, and the fresh message must be a usable SIWE capability request with
 those same grants before approval continues. The authorization context lifetime
 remains five minutes.

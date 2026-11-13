@@ -78,6 +78,9 @@ replaceModules({
   }),
 });
 await mockModules({
+  '../services/tinycloud-bootstrap': () => ({
+    ensureTinyCloudBootstrap: mock(async () => ({ status: 'complete' as const })),
+  }),
   '@openkey/db': () => ({ createPrismaClient: () => prisma }),
   '@openkey/tee': () => ({
     createTeeClient: () => ({
@@ -118,7 +121,7 @@ beforeEach(() => {
   resetContexts?.();
 });
 
-async function prepare(): Promise<{
+async function prepare(requesterOrigin?: string): Promise<{
   token: string;
   prepared: any;
   selectedActionKeys: string[];
@@ -131,6 +134,7 @@ async function prepare(): Promise<{
       keyId: keyRecord.id,
       jwk,
       host: 'https://node.tinycloud.xyz',
+      requesterOrigin,
     }),
   });
   expect(res.status).toBe(200);
@@ -150,8 +154,10 @@ async function prepare(): Promise<{
 }
 
 describe('POST /api/delegate — Blocker 1 versioned managed approval', () => {
-  test('signs the exact SIWE bytes bound at /prepare', async () => {
-    const { token, prepared, selectedActionKeys, siwe } = await prepare();
+  test.each([undefined, 'https://mcp.tinycloud.xyz', 'https://custom.example:8443'])('signs the exact SIWE bound for requester %s', async (requesterOrigin) => {
+    const { token, prepared, selectedActionKeys, siwe } = await prepare(requesterOrigin);
+    const domain = requesterOrigin ? new URL(requesterOrigin).host : 'cli.tinycloud.xyz';
+    expect(siwe.split('\n')[0]).toBe(`${domain} wants you to sign in with your Ethereum account:`);
 
     const res = await router.request('/', {
       method: 'POST',
@@ -200,6 +206,27 @@ describe('POST /api/delegate — Blocker 1 versioned managed approval', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as any;
     expect(body.code).toBe('prepared_siwe_mismatch');
+  });
+
+  test('rejects substituting the requester domain and retains the pending approval', async () => {
+    const { token, prepared, selectedActionKeys } = await prepare('https://mcp.tinycloud.xyz');
+    const input = {
+      keyId: keyRecord.id, jwk, host: 'https://node.tinycloud.xyz',
+      prepared, authorizationContextToken: token, selectedActionIds: selectedActionKeys, protocolVersion: 1,
+    };
+    const refused = await router.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...input, prepared: { ...prepared, siwe: prepared.siwe.replace('mcp.tinycloud.xyz', 'cli.tinycloud.xyz') },
+      }),
+    });
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ code: 'prepared_siwe_mismatch' });
+    const completed = await router.request('/', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input),
+    });
+    expect(completed.status).toBe(200);
   });
 
   test('rejects protocolVersion >= 1 without an authorization context token', async () => {

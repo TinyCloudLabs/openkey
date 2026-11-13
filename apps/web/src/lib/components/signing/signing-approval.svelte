@@ -52,6 +52,7 @@
     appKeyIdentity,
     appRequestingLine,
     FAMILY_LABEL,
+    COURIER_HEADING,
     appKeyNotGrantableStatements,
     buildRenderPlan,
     buildSummaryStatements,
@@ -172,15 +173,17 @@
   const requestedExpiry = $derived(
     requestedExpiryMs(model.immutable?.issuedAt, model.immutable?.expirationTime),
   );
+  const courierGrants = $derived(model.permissions.filter(grant => grant.family === "courier"));
   const permissionSections = $derived.by(() => {
     const reviewGrants = renderPlan
       .filter((bucket) => bucket.severity !== "standard")
-      .flatMap((bucket) => bucket.grants);
+      .flatMap((bucket) => bucket.grants).filter(grant => grant.family !== "courier");
     const standardGrants = renderPlan.find(
       (bucket) => bucket.severity === "standard",
-    )?.grants ?? [];
+    )?.grants.filter(grant => grant.family !== "courier") ?? [];
 
     return [
+      ...(courierGrants.length > 0 ? [{ key: "courier", severity: "review" as const, heading: COURIER_HEADING, hint: "", grants: courierGrants, defaultOpen: true }] : []),
       ...(reviewGrants.length > 0
         ? [{
             key: "review",
@@ -226,6 +229,10 @@
   // header, come from one function so the header always counts the rows marked
   // Sensitive below it (capability-review `buildSummaryStatements`).
   const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
+  const summaryGroups = $derived([
+    { key: "courier", heading: COURIER_HEADING, rows: buildSummaryStatements(selectedGrants.filter(grant => grant.family === "courier")) },
+    { key: "other", heading: null, rows: buildSummaryStatements(selectedGrants.filter(grant => grant.family !== "courier")) },
+  ].filter(group => group.rows.length > 0));
   const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
 
   // App keys: the standing-access line follows the decrypt statements, and a
@@ -587,8 +594,11 @@
       <p class="summary-lead">{appRequestingLine(identity.name)}</p>
     {/if}
     {#if summaryStatements.length > 0}
+      {#each summaryGroups as group (group.key)}
+      <div role="group" aria-label={group.heading ?? undefined}>
+      {#if group.heading}<h3>{group.heading}</h3>{/if}
       <ul class="summary-statements">
-        {#each summaryStatements as statement (statement.key)}
+        {#each group.rows as statement (statement.key)}
           <li
             class="summary-statement"
             data-severity={statement.severity}
@@ -602,6 +612,8 @@
           </li>
         {/each}
       </ul>
+      </div>
+      {/each}
     {:else if !isMalformedRecap}
       <p class="summary-empty">
         {model.permissions.length > 0

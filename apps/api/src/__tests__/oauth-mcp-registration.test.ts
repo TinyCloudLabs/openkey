@@ -177,9 +177,9 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
       expect(await prisma.oauthConsent.count({ where: { clientId } })).toBe(0);
     });
 
-    test('default registrations cannot request privileged TinyCloud signing scopes', async () => {
+    test('default registrations cannot request privileged TinyCloud scopes', async () => {
       const clientId = await register();
-      for (const scope of ['tinycloud:session', 'tinycloud:manage-key', 'tinycloud:delegation']) {
+      for (const scope of ['tinycloud:session', 'tinycloud:manage-key', 'tinycloud:delegation', 'tinycloud:identity']) {
         const rejected = await authorize(clientId, `openid ${scope}`, true);
         expect(rejected.searchParams.has('error')).toBe(true);
         expect(rejected.searchParams.get('code')).toBeNull();

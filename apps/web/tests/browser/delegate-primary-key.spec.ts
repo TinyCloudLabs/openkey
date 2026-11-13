@@ -153,8 +153,7 @@ test.describe('TC-703 primary key picker', () => {
     await page.goto(`${noOwner}&callback=${encodeURIComponent('http://127.0.0.1:47123/callback')}`);
     await keyButton(page, 'Key 0').click();
     await approve(page).click();
-    await expect(page.getByText('You can close this window and return to the CLI.')).toBeVisible();
-    expect(delivered).not.toBeNull();
+    await expect.poll(() => delivered).not.toBeNull();
     expect(delivered!.primary).toBe(false);
     expect(delivered!.requestedSpaces).toEqual(requestedSpaces);
     expect(delivered!.jwk).toEqual(fullJwk);

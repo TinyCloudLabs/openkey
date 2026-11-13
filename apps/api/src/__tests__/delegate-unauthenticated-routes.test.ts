@@ -4,6 +4,7 @@
 
 import './tc1777-test-env';
 import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test';
+import { Hono } from 'hono';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
@@ -151,6 +152,29 @@ describe('delegate routes without a session', () => {
     expect(res.status).toBe(403);
     await expect(res.json()).resolves.toEqual({ error: 'Requests are accepted only from the OpenKey account origin' });
   });
+  test('a foreign Origin refusal logs the delegate route template once', async () => {
+    const output: string[] = [];
+    const write = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => { output.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    try {
+      const app = new Hono();
+      app.route('/api/delegate', router);
+      const res = await app.request('/api/delegate/prepare', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer any', origin: 'https://foreign.example' },
+        body: '{}',
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Requests are accepted only from the OpenKey account origin' });
+      const refusalLines = output.join('').split('\n').filter((line) => line.includes('account_origin_refused'));
+      expect(refusalLines).toHaveLength(1);
+      expect(refusalLines[0]!).not.toContain('https://foreign.example');
+      expect(JSON.parse(refusalLines[0]!)).toMatchObject({ route: '/api/delegate/prepare', reason: 'foreign' });
+    } finally {
+      process.stdout.write = write;
+    }
+  });
+
 });
 
 describe('delegate routes with a session', () => {
