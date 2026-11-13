@@ -4,7 +4,7 @@
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
-  import { getSessionToken } from '$lib/embed-passkey';
+  import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
   import { ownerRevocationCopy as text } from '$lib/owner-revocation-copy';
   import { deliverOwnerRevocation } from '$lib/owner-revocation-response';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
@@ -92,7 +92,7 @@
   });
 
   async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
-    const token = getSessionToken();
+    const token = isEmbedContext() ? getSessionToken() : null;
     const response = await fetch(`${apiUrl}/api/delegate/${path}`, {
       method: 'POST', credentials: token ? 'omit' : 'include',
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },

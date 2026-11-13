@@ -4,6 +4,7 @@ import { Window } from 'happy-dom';
 
 // sessionStorage is the widget's own; give this file one.
 const win = new Window({ url: 'https://openkey.so/' });
+Object.defineProperty(win, 'top', { value: {} });
 Object.assign(globalThis, { window: win, sessionStorage: win.sessionStorage });
 
 const { setSessionToken, withSessionCredential } = await import('./embed-passkey');

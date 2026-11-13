@@ -29,15 +29,15 @@ async function serve(page: Page, response: { status?: number; body?: unknown } =
   return calls;
 }
 
-test('complete short link survives sign-in navigation and repeated previews without authorizing', async ({ page }) => {
+test('complete short link survives leaving and reopening the link and repeated previews without authorizing', async ({ page }) => {
   const calls = await serve(page);
   await page.goto(path + fragment);
   await expect(page.getByRole('button', { name: 'Continue with email' })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
   expect(await page.evaluate(key => sessionStorage.getItem(key), storageKey)).toBe(fragment);
   await page.getByRole('button', { name: 'Continue with email' }).click();
-  await expect(page).toHaveURL(new RegExp('/auth/login\\?redirect='));
-  expect(new URL(page.url()).searchParams.get('redirect')).toBe(path);
+  await expect(page.getByLabel('Email address')).toBeVisible();
+  expect(new URL(page.url()).pathname).toBe(path);
   await page.goto(path);
   await expect(page.getByRole('button', { name: 'Continue with email' })).toBeVisible();
   expect(calls.filter(value => value === `/api/approval-requests/${id}/load`)).toHaveLength(2);

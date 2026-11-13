@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { afterNavigate } from '$app/navigation';
   import { page } from '$app/stores';
-  import { authClient, authErrorMessage } from '$lib/auth-client';
+  import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
@@ -22,6 +22,9 @@
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
   import CliSigningAdapter from '$lib/components/signing/cli-signing-adapter.svelte';
   import PreparedHandoff from './PreparedHandoff.svelte';
+  import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
+  import { isFirstSession } from '$lib/first-session';
+  import { clearSessionToken } from '$lib/embed-passkey';
   import OwnerRevocationHandoff from './OwnerRevocationHandoff.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
   import { publicDelegationForCode } from '$lib/delegation-code-body';
@@ -127,7 +130,6 @@
   let approveBlockedByFailure = $state(false);
   let keysLoaded = $state(false);
   let initialized = $state(false);
-  let signingIn = $state(false);
   let delegating = $state(false);
   let done = $state(false);
   let pasteCode = $state('');
@@ -193,9 +195,7 @@
   );
   const approvalRequestMode = $page.route.id === '/a/[id]';
   const approvalRequestId = approvalRequestMode ? $page.params.id || '' : '';
-  const delegateReturnTo = $derived(approvalRequestMode ? $page.url.pathname : $page.url.pathname + $page.url.search + $page.url.hash);
-  const registerHref = $derived(`/auth/register?returnTo=${encodeURIComponent(delegateReturnTo)}`);
-  const emailSignInHref = $derived(`/auth/login?redirect=${encodeURIComponent(delegateReturnTo)}`);
+  const firstSession = $derived(isFirstSession($session.data));
   let actionRow: HTMLDivElement | null = $state(null);
   let showScrollToApprove = $state(false);
 
@@ -1537,20 +1537,7 @@
     step = 'done';
   }
 
-  async function signInWithPasskey() {
-    signingIn = true;
-    error = '';
-    try {
-      const result = await authClient.signIn.passkey();
-      if (result.error) {
-        error = authErrorMessage(result.error, 'Passkey sign-in failed');
-      }
-    } catch (e: any) {
-      error = delegateErrorMessage(e);
-    } finally {
-      signingIn = false;
-    }
-  }
+
 
   async function activateWithHost(
     targetHost: string,
@@ -1642,6 +1629,11 @@
 
     <!-- Main card -->
     <Card class="w-full p-6">
+      {#if $session.data && step !== 'done' && firstSession}
+        <p class="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-900" data-testid="welcome-line">
+          Welcome to OpenKey. Your account is ready.
+        </p>
+      {/if}
       {#if step === 'done'}
         <div class="flex flex-col items-center justify-center text-center py-4">
           <svg class="w-12 h-12 text-green-500 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -1713,32 +1705,27 @@
               >Close</button>
             {/if}
           {:else}
-            <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
-            <p class="text-surface-500 text-sm">You can close this window and return to the CLI.</p>
+            <h2 class="text-lg font-semibold text-surface-900 mb-2">Approved. Your sign-in was sent back to your agent.</h2>
+            <p class="text-surface-500 text-sm">You can close this window.</p>
           {/if}
         </div>
 
       {:else if !$session.data}
         <header class="mb-5">
           <h1 class="text-lg font-semibold text-surface-900">TinyCloud access request</h1>
-          <p class="text-surface-500 text-sm mt-1">Sign in to review the requested access</p>
         </header>
 
-        <div class="flex flex-col items-center justify-center text-center py-4">
+        {#if error}
+          <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
+            {error}
+          </div>
+        {/if}
 
-          {#if error}
-            <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
-              {error}
-            </div>
-          {/if}
-
-          <Button onclick={() => { window.location.href = emailSignInHref; }} disabled={signingIn} class="w-full rounded-xl">
-            Continue with email
-          </Button>
-          <Button onclick={signInWithPasskey} variant="secondary" disabled={signingIn} class="mt-3 w-full rounded-xl">
-            {signingIn ? 'Signing in…' : 'Use a passkey instead'}
-          </Button>
-        </div>
+        <EmbeddedSignIn
+          prompt="Sign in or create an account to review the requested access"
+          onauthenticated={() => authClient.$store.notify('$sessionSignal')}
+          onrecover={() => { window.location.href = '/auth/recover'; }}
+        />
 
       {:else if loading || preparing}
         <div class="flex flex-col items-center justify-center text-center text-surface-400 py-8">
@@ -2087,15 +2074,13 @@
 
     {#if $session.data && step !== 'done'}
       <button
-        onclick={() => authClient.signOut()}
+        onclick={() => { clearSessionToken(); authClient.signOut(); }}
         class="text-xs text-surface-400 hover:text-surface-600 transition-colors bg-transparent border-none cursor-pointer"
       >
         Sign out
       </button>
     {:else if !$session.data}
       <div class="flex items-center gap-3 text-sm">
-        <a href={registerHref} class="text-surface-500 hover:text-surface-700 transition-colors">Register</a>
-        <span class="text-surface-300">|</span>
         <a href="/auth/recover" class="text-surface-500 hover:text-surface-700 transition-colors">Recover account</a>
       </div>
     {/if}

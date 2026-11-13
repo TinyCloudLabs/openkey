@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { authClient, authErrorMessage } from '$lib/auth-client';
+  import { clearSessionToken } from '$lib/embed-passkey';
   import { api, type EthereumKey } from '$lib/api';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
@@ -241,7 +242,7 @@
 
     {#if $session.data}
       <button
-        onclick={() => authClient.signOut()}
+        onclick={() => { clearSessionToken(); authClient.signOut(); }}
         class="text-xs text-surface-400 hover:text-surface-600 transition-colors bg-transparent border-none cursor-pointer"
       >
         Sign out
