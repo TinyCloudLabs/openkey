@@ -38,6 +38,7 @@ export function isApprovalReturnPath(pathname: string, search: string, hash: str
 
 export function normalizeRegisterReturnTo(returnTo: string | null, origin: string): string | null {
   if (!returnTo) return null;
+  if (returnTo === '/org-registration/consent') return returnTo;
 
   try {
     const url = new URL(returnTo, origin);
@@ -65,6 +66,7 @@ export function normalizeAuthReturnTo(
   options: AuthReturnToOptions = {},
 ): string | null {
   if (!value) return null;
+  if (value === '/org-registration/consent') return value;
 
   try {
     const url = new URL(value, origin);
