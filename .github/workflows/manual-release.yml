@@ -17,7 +17,6 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
-    environment: release
     steps:
       - name: Checkout code repository
         uses: actions/checkout@v4

@@ -13,7 +13,6 @@ jobs:
   republish:
     name: Republish
     runs-on: ubuntu-latest
-    environment: release
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
