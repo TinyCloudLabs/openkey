@@ -1,3 +1,4 @@
+import { pruneCompletedReviewTargets, type DurableResourceCompletion } from './account-deletion-review-completions';
 import { randomUUID, createHash } from 'node:crypto';
 import { validateReviewEvidence, type ReviewEvidence } from './account-deletion-review-evidence';
 import { reviewJcs, validateReviewSnapshot } from './account-deletion-decision';
@@ -8,6 +9,7 @@ import type { HostRow, ReviewDecisionProof } from './account-deletion-decision';
 import { REVIEW_ALERTS, REVIEW_DEADLINE_MS, REVIEW_RECHECK_MS, reviewResolution } from './account-deletion-review-policy';
 
 export interface DeletionReviewRuntime {
+  completions(jobId: string, hosts: DeletionHostSnapshot): Promise<DurableResourceCompletion[]>;
   check(jobId: string, hosts: DeletionHostSnapshot): Promise<ReviewEvidence>;
   // The deadline implementation MUST use signDeadlineReviewDecisions, whose
   // request time and clock come only from the verified ledger/TEE provider.
@@ -60,6 +62,19 @@ export async function reevaluateDeletionReview(prisma: PrismaClient, job: { id: 
     if (!deliveredAt || deliveredAt.getTime() >= job.requestedAt.getTime() + REVIEW_DEADLINE_MS) alertsDelivered = false;
   }
   if (!runtime || !snapshot || snapshot.uncertain) return;
+  const reconcileCompletions = async () => {
+    const incoming = await runtime.completions(job.id, snapshot);
+    let pending = true;
+    await mutate(async tx => {
+      const data = (await tx.accountDeletionJob.findUniqueOrThrow({ where: { id: job.id }, select: { progress: true } })).progress as { reviewTargets?: Record<string, string[]>; completedReviewTargets?: DurableResourceCompletion[] };
+      if (!data.reviewTargets) return;
+      const pruned = pruneCompletedReviewTargets(job.id, snapshot, data.reviewTargets, data.completedReviewTargets ?? [], incoming);
+      pending = Object.values(pruned.targets).some(targets => targets.length > 0);
+      await tx.accountDeletionJob.update({ where: { id: job.id }, data: { progress: JSON.parse(JSON.stringify({ ...data, reviewTargets: pruned.targets, completedReviewTargets: pruned.records })) } });
+    });
+    return !pending;
+  };
+  await reconcileCompletions();
   const check = await runtime.check(job.id, snapshot);
   const current = await prisma.accountDeletionJob.findUniqueOrThrow({ where: { id: job.id, leaseToken }, select: { progress: true } });
   const currentProgress = current.progress as { reviewTargets?: Record<string, string[]> };
@@ -68,7 +83,7 @@ export async function reevaluateDeletionReview(prisma: PrismaClient, job: { id: 
     await mutate(async tx => { await tx.accountDeletionJob.update({ where: { id: job.id }, data: { progress: JSON.parse(JSON.stringify({ ...currentProgress, reviewPendingHosts: snapshot.configured.map(host => host.url) })) } }); });
     return;
   }
-  await mutate(async tx => { await tx.accountDeletionJob.update({ where: { id: job.id }, data: { progress: JSON.parse(JSON.stringify({ ...currentProgress, reviewTargets: check.fresh.resources, reviewPendingHosts: [] })) } }); });
+  await mutate(async tx => { await tx.accountDeletionJob.update({ where: { id: job.id }, data: { progress: JSON.parse(JSON.stringify({ ...currentProgress, reviewTargets: pruneCompletedReviewTargets(job.id, snapshot, check.fresh.resources, (currentProgress as { completedReviewTargets?: DurableResourceCompletion[] }).completedReviewTargets ?? [], []).targets, reviewPendingHosts: [] })) } }); });
   const latest = await prisma.accountDeletionReview.findFirst({ where: { jobId: job.id, kind: 'decision' }, orderBy: { createdAt: 'desc' } });
   const decision: DeletionReviewDecision | undefined = latest?.actor && latest.decidedAt && latest.reason && ['proceed', 'wait_for_re-encryption'].includes(latest.disposition ?? '') ? { actor: latest.actor, at: latest.decidedAt, expiresAt: latest.expiresAt ?? undefined, reason: latest.reason, disposition: latest.disposition as DeletionReviewDecision['disposition'] } : undefined;
   const reviewedSnapshot = (latest?.summary as { snapshot?: HostRow[] } | undefined)?.snapshot;
@@ -116,7 +131,9 @@ export async function reevaluateDeletionReview(prisma: PrismaClient, job: { id: 
     await tx.accountDeletionJob.update({ where: { id: job.id }, data: { progress: JSON.parse(JSON.stringify({ ...latestProgress, activeReviewResolution: resolution })) } });
   });
   try {
-    if (!await runtime.purge(job.id, check.fresh, proofs, resolution)) return;
+    const reportedComplete = await runtime.purge(job.id, check.fresh, proofs, resolution);
+    const ledgerComplete = await reconcileCompletions();
+    if (!reportedComplete || !ledgerComplete) return;
   } catch {
     if (mode === 'deadline') await alert('review-authorization-escalation');
     return;

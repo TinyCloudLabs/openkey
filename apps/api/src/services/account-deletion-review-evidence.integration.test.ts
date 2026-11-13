@@ -1,3 +1,4 @@
+import type { DurableResourceCompletion } from './account-deletion-review-completions';
 import { test, expect } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
@@ -31,6 +32,7 @@ test('partial zero stays pending, each zero attempt is immutable, and stale work
     };
     const resolutionKeys: string[] = [];
     const runtime: DeletionReviewRuntime = {
+      completions: async () => [],
       check,
       authorize: async () => { throw Error('Zero needs no proof'); },
       purge: async (_id, _fresh, proof, resolution) => {
@@ -74,5 +76,36 @@ test('partial zero stays pending, each zero attempt is immutable, and stale work
     expect(await db.accountDeletionReview.count({ where: { jobId: race.id, kind: 'resolved: zero dependents' } })).toBe(1);
     expect(await db.ethereumKey.count({ where: { userId: 'takeover' } })).toBe(1);
     expect((await db.accountDeletionJob.findUniqueOrThrow({ where: { id: race.id } })).state).toBe('pending_review');
+    const partial = await createJob('partial-purge');
+    const other = resource.replace(':default', ':archive');
+    await db.accountDeletionJob.update({ where: { id: partial.id }, data: { progress: { hostSnapshot: hosts, reviewTargets: { [origin]: [resource, other] } } } });
+    let phase = 0;
+    let purgeCalls = 0;
+    const completeRecords: DurableResourceCompletion[] = [];
+    const partialRuntime: DeletionReviewRuntime = {
+      ...runtime,
+      completions: async () => completeRecords,
+      check: async () => {
+        const inventory = phase === 0 ? [resource, other] : [other];
+        const observations: ResourceDependencyObservation[] = [{ hostId: 'node-test', ownerHmac: 'a'.repeat(64), dependentResourceCount: 0, resourceHmacs: [], targets: inventory.map(resourceId => ({ resourceId, targetResourceHmac: (resourceId === resource ? 'b' : 'd').repeat(64), dependentCount: 0, dependencyFingerprint: 'c'.repeat(64), fingerprintKeyId: 'fp-1' })) }];
+        return { fresh: { state: 'ready', resources: { [origin]: inventory }, inventoryComplete: { [origin]: true }, dependencies: { [origin]: { count: 0, hashes: [] } }, unavailableHosts: [] }, observations, snapshot: buildReviewSnapshot(hosts, observations) };
+      },
+      purge: async () => { purgeCalls += 1; if (phase === 0) return false; completeRecords.push({ jobId: partial.id, hostId: 'node-test', resourceId: other, purgeId: crypto.randomUUID(), state: 'complete' }); return true; },
+    };
+    const retryPartial = async () => {
+      await db.accountDeletionJob.update({ where: { id: partial.id }, data: { nextAttemptAt: new Date(0) } });
+      await sweepAccountDeletions(db, noSpaceWork, partialRuntime);
+    };
+    await retryPartial();
+    phase = 1;
+    await retryPartial(); // Inventory absence alone must NOT prune the target.
+    expect(purgeCalls).toBe(1);
+    expect((await db.accountDeletionJob.findUniqueOrThrow({ where: { id: partial.id } })).state).toBe('pending_review');
+    completeRecords.push({ jobId: partial.id, hostId: 'node-test', resourceId: resource, purgeId: crypto.randomUUID(), state: 'complete' });
+    await retryPartial();
+    expect(purgeCalls).toBe(2);
+    expect((await db.accountDeletionJob.findUniqueOrThrow({ where: { id: partial.id } })).state).toBe('deletion_requested');
+    expect(await db.ethereumKey.count({ where: { userId: 'partial-purge' } })).toBe(1);
+
   } finally { await db.$disconnect(); await rm(dir, { recursive: true, force: true }); }
 }, 90_000);

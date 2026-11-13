@@ -1,3 +1,4 @@
+import type { DurableResourceCompletion } from './account-deletion-review-completions';
 import { test, expect } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
@@ -38,7 +39,9 @@ test('review sweep resumes fresh zero and wait, alerts before deadline, signs on
     const alerts: string[] = [];
     const counts = (id: string) => id === jobIds.zero || id === jobIds.wait ? 0 : 1;
     const observations = (id: string): ResourceDependencyObservation[] => [{ hostId: 'node-test', ownerHmac: 'a'.repeat(64), dependentResourceCount: counts(id), resourceHmacs: counts(id) ? ['b'.repeat(64)] : [], targets: [{ resourceId: resource, targetResourceHmac: 'b'.repeat(64), dependentCount: counts(id), dependencyFingerprint: 'c'.repeat(64), fingerprintKeyId: 'fp-1' }] }];
+    const completed: DurableResourceCompletion[] = [];
     const runtime: DeletionReviewRuntime = {
+      completions: async id => completed.filter(record => record.jobId === id),
       check: async id => ({ fresh: { state: counts(id) ? 'pending_review' : 'ready', resources: { [origin]: [resource] }, dependencies: { [origin]: { count: counts(id), hashes: counts(id) ? ['b'.repeat(64)] : [] } }, unavailableHosts: [], inventoryComplete: { [origin]: true } }, observations: observations(id), snapshot: [['node-test', 'a'.repeat(64), counts(id), counts(id) ? ['b'.repeat(64)] : [], [['b'.repeat(64), counts(id), 'c'.repeat(64), 'fp-1']]]] }),
       authorize: async (id, mode, _snapshot, decision) => {
         authorizations += 1;
@@ -65,6 +68,7 @@ test('review sweep resumes fresh zero and wait, alerts before deadline, signs on
         }
         if (id === jobIds.operator) expect(proofs?.[0]?.payload[9]).toBe('Naomi');
         else expect(proofs).toBeUndefined();
+        completed.push({ jobId: id, hostId: 'node-test', resourceId: resource, purgeId: crypto.randomUUID(), state: 'complete' });
         return true;
       },
       notify: async (id, key) => { alerts.push(key); if (id === jobIds.zero) throw Error('Alert transport unavailable'); },
