@@ -35,20 +35,46 @@ const INTERNAL_TEAM_DOMAIN = /^(tinycloud\.xyz|tinycloudlabs\.[a-z]+|gbafa\.com|
 const INTERNAL_AGENT_OR_QA_NAME =
   /^(qa|agent|bot|probe|canary|smoke|e2e|test|ci|julie|courier|orchard|holden|naomi|amos|alex|bobbie|clarissa|fred|miller|avasarala)([^a-z]|$)/;
 const TEST_OR_THROWAWAY_DOMAIN = /(^|\.)(example\.[a-z]+|test|invalid|localhost)$/;
-// Disposable mail providers. Built-in list; SCOREBOARD_DISPOSABLE_DOMAINS (comma-separated)
-// adds more without a code change, because rotating providers (mail.tm) change domain.
-// Entries match the domain itself and any subdomain.
+// Disposable mail providers. Three sources are merged: this built-in list, the
+// SCOREBOARD_DISPOSABLE_DOMAINS env list, and `disposableDomains` in the body of an
+// authorised POST (the internal Worker sends the maintained list with each poll;
+// request-scoped, never stored here). Rotating providers (mail.tm) change domain, so the
+// built-in list is only the floor. Entries match the domain itself and any subdomain.
 const DISPOSABLE_MAIL_DOMAINS = [
-  'mailinator.com', 'sharklasers.com', 'grr.la', 'maildrop.cc', 'getnada.com', 'nada.email',
-  'throwawaymail.com', 'dispostable.com',
-  // mail.tm and its sister mail.gw, plus the mail.tm domains in use today: fldubai.com and
-  // maxxspace.com (both ours, mail.tm). mail.tm rotates domains: extend via the env list.
+  // Mailinator and its well-known alias domains.
+  'mailinator.com', 'binkmail.com', 'bobmail.info', 'chammy.info', 'devnullmail.com', 'letthemeatspam.com',
+  'mailinater.com', 'reallymymail.com', 'safetymail.info', 'sogetthis.com', 'spamhereplease.com',
+  'streetwisemail.com', 'suremail.info', 'thisisnotmyrealemail.com', 'tradermail.info', 'veryrealemail.com',
+  'zippymail.info',
+  // Guerrilla Mail family (guerrillamail.<tld> is also matched by the family pattern below).
+  'guerrillamailblock.com', 'sharklasers.com', 'grr.la', 'pokemail.net', 'spam4.me',
+  'maildrop.cc', 'getnada.com', 'nada.email', 'throwawaymail.com', 'dispostable.com',
+  // mail.tm and its sister mail.gw (their MX hosts, such as in.mail.tm, are subdomains), plus the
+  // mail.tm domains in use today: fldubai.com and maxxspace.com (both ours, mail.tm). mail.tm
+  // rotates domains: the Worker adds every domain they publish, and the env list covers the rest.
   'mail.tm', 'mail.gw', 'fldubai.com', 'maxxspace.com',
 ];
 // Provider families with many TLDs or domains, and QA mail catchers (Mailpit, MailHog, MailCatcher).
 const DISPOSABLE_MAIL_FAMILIES =
-  /(^|\.)(guerrillamail[a-z]*\.[a-z]+|10minutemail\.[a-z]+|yopmail\.[a-z]+|tempmail\.[a-z]+|temp-mail\.[a-z]+|trashmail\.[a-z]+|(mailpit|mailhog|mailcatcher)(\.[a-z0-9-]+)*)$/;
-const DOMAIN_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+  /(^|\.)(mailinator[a-z0-9]*\.[a-z]+|guerrillamail[a-z]*\.[a-z]+|10minutemail\.[a-z]+|yopmail\.[a-z]+|tempmail\.[a-z]+|temp-mail\.[a-z]+|trashmail\.[a-z]+|(mailpit|mailhog|mailcatcher)(\.[a-z0-9-]+)*)$/;
+// Major webmail providers are never reported as unclassified domains.
+const MAJOR_WEBMAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'yahoo.com', 'ymail.com',
+  'rocketmail.com', 'icloud.com', 'me.com', 'mac.com', 'proton.me', 'protonmail.com', 'pm.me', 'aol.com',
+  'gmx.com', 'gmx.net', 'gmx.de', 'mail.com', 'zoho.com', 'fastmail.com', 'fastmail.fm', 'hey.com', 'tutanota.com',
+  'tuta.io', 'tutamail.com', 'yandex.com', 'yandex.ru', 'mail.ru', 'qq.com', '163.com', '126.com', 'naver.com',
+  'duck.com', 'hushmail.com', 'comcast.net', 'verizon.net', 'att.net', 'sbcglobal.net',
+]);
+const MAJOR_WEBMAIL_FAMILIES = /^(yahoo|hotmail|outlook|live)\.[a-z]+(\.[a-z]+)?$/;
+/** Domains with at least this many accounts, in no list, are reported for a decision. */
+const UNCLASSIFIED_MIN_ACCOUNTS = 5;
+const UNCLASSIFIED_MAX_REPORTED = 200;
+/** `disposableDomains` limits of the POST body. */
+export const MAX_REQUEST_DISPOSABLE_DOMAINS = 5000;
+const MAX_REQUEST_BODY_BYTES = 1_000_000;
+const MAX_DOMAIN_LENGTH = 253;
+// A dotted hostname: labels of 1-63 letters, digits or inner hyphens.
+const DOMAIN_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const TEST_LIKE_NAME = /(test|qa|probe|canary|smoke|e2e|bot|agent|demo|dummy|fake)/;
 // Our QA/smoke accounts: `tcqa-` from now on, plus the older `qa-` prefix (Share's smoke accounts).
 const QA_PREFIX = /^(tcqa-|qa-)/;
@@ -80,6 +106,9 @@ export type AccountFacts = {
 /** Real accounts that got an OAuth access token in the window, by the client's display name. */
 export type AppUsers = { name: string; real7d: number; real30d: number };
 
+/** An email domain with several accounts that no list covers: a candidate for the disposable list. */
+export type UnclassifiedDomain = { domain: string; accounts: number };
+
 export type UserMetrics = {
   total: number;
   buckets: Record<(typeof USER_BUCKETS)[number], number>;
@@ -87,11 +116,43 @@ export type UserMetrics = {
   realActive: { d1: number; d7: number; d30: number };
   realNew7d: number;
   apps: AppUsers[];
+  /** Domains with at least 5 accounts, in no list and not a major webmail; biggest first. */
+  unclassifiedDomains: UnclassifiedDomain[];
 };
+
+const BUILTIN_DISPOSABLE = new Set(DISPOSABLE_MAIL_DOMAINS);
 
 function isDisposableDomain(domain: string, extra: ReadonlySet<string>): boolean {
   if (DISPOSABLE_MAIL_FAMILIES.test(domain)) return true;
-  return [...DISPOSABLE_MAIL_DOMAINS, ...extra].some((d) => domain === d || domain.endsWith(`.${d}`));
+  // Walk the domain and its parents: an entry matches itself and every subdomain.
+  for (let d = domain; d; ) {
+    if (BUILTIN_DISPOSABLE.has(d) || extra.has(d)) return true;
+    const dot = d.indexOf('.');
+    if (dot < 0) break;
+    d = d.slice(dot + 1);
+  }
+  return false;
+}
+
+function isMajorWebmail(domain: string): boolean {
+  return MAJOR_WEBMAIL_DOMAINS.has(domain) || MAJOR_WEBMAIL_FAMILIES.test(domain);
+}
+
+/**
+ * Validates the `disposableDomains` of a POST body: an array of at most 5,000 lowercase
+ * hostnames. Returns the list, or null if the field is malformed. Absent means no extras.
+ */
+export function parseDisposableDomains(body: unknown): string[] | null {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return null;
+  if (!('disposableDomains' in body) || body.disposableDomains === undefined) return [];
+  const domains = body.disposableDomains;
+  if (!Array.isArray(domains) || domains.length > MAX_REQUEST_DISPOSABLE_DOMAINS) return null;
+  const valid: string[] = [];
+  for (const domain of domains) {
+    if (typeof domain !== 'string' || domain.length > MAX_DOMAIN_LENGTH || !DOMAIN_PATTERN.test(domain)) return null;
+    valid.push(domain);
+  }
+  return valid;
 }
 
 export function classifyAccount(
@@ -121,14 +182,16 @@ export async function collectUserMetrics(
   database: MetricsDatabase,
   env: Record<string, string | undefined> = process.env,
   now = new Date(),
+  requestDisposableDomains: readonly string[] = [],
 ): Promise<UserMetrics> {
   const list = (value: string | undefined) => (value ?? '').split(',').map((item) => item.trim()).filter(Boolean);
   const excluded = new Set(list(env.SCOREBOARD_EXCLUDE_USER_IDS));
-  const extraDisposable = new Set(
-    list(env.SCOREBOARD_DISPOSABLE_DOMAINS)
+  const extraDisposable = new Set([
+    ...requestDisposableDomains,
+    ...list(env.SCOREBOARD_DISPOSABLE_DOMAINS)
       .map((d) => d.toLowerCase().replace(/^@/, '').replace(/^\*\./, ''))
       .filter((d) => DOMAIN_PATTERN.test(d)),
-  );
+  ]);
   const addresses = [...new Set(list(env.SCOREBOARD_EXCLUDE_ADDRESSES).map((a) => a.toLowerCase()))]
     .filter((a) => ADDRESS_PATTERN.test(a));
   const since7d = new Date(now.getTime() - 7 * DAY_MS);
@@ -166,6 +229,7 @@ export async function collectUserMetrics(
   const realActive = { d1: 0, d7: 0, d30: 0 };
   let real = 0;
   let realNew7d = 0;
+  const domainAccounts = new Map<string, number>();
   for (const user of users) {
     const bucket = classifyAccount({
       id: user.id,
@@ -175,6 +239,15 @@ export async function collectUserMetrics(
       hasKey: hasKey.has(user.id),
       botLike: botLike.has(user.id),
     }, excluded, extraDisposable);
+    // Candidates for the disposable list: domains no rule recognises (not ours, not
+    // disposable, not reserved/test, not a major webmail). Counted per domain only.
+    if (bucket !== 'team_by_wallet' && bucket !== 'qa_prefix' && bucket !== 'internal_team_domain'
+        && bucket !== 'disposable_mail_domain' && bucket !== 'test_or_throwaway_domain') {
+      const domain = (user.email.split('@')[1] ?? '').toLowerCase();
+      if (DOMAIN_PATTERN.test(domain) && !isMajorWebmail(domain)) {
+        domainAccounts.set(domain, (domainAccounts.get(domain) ?? 0) + 1);
+      }
+    }
     if (bucket !== 'real') {
       buckets[bucket] += 1;
       continue;
@@ -208,7 +281,12 @@ export async function collectUserMetrics(
   const apps = [...perApp].map(([name, sets]) => ({ name, real7d: sets.d7.size, real30d: sets.d30.size }))
     .filter((app) => app.real30d > 0 || app.real7d > 0)
     .sort((a, b) => b.real30d - a.real30d || b.real7d - a.real7d || a.name.localeCompare(b.name));
-  return { total: users.length, buckets, real, realActive, realNew7d, apps };
+  const unclassifiedDomains = [...domainAccounts]
+    .filter(([, accounts]) => accounts >= UNCLASSIFIED_MIN_ACCOUNTS)
+    .map(([domain, accounts]) => ({ domain, accounts }))
+    .sort((a, b) => b.accounts - a.accounts || a.domain.localeCompare(b.domain))
+    .slice(0, UNCLASSIFIED_MAX_REPORTED);
+  return { total: users.length, buckets, real, realActive, realNew7d, apps, unclassifiedDomains };
 }
 
 function authorized(authHeader: string | undefined): boolean {
@@ -308,6 +386,20 @@ export function createInternalMetricsRouter(getDatabase: () => MetricsDatabase) 
     return c.json(await collectNativeRenewalMetrics(getDatabase()));
   });
 
+  // GET and POST share one gate and one response. POST may carry `{ "disposableDomains": [...] }`:
+  // the maintained list the internal Worker keeps, merged for this request only (never stored here).
+  const respond = async (extraDisposableDomains: string[]) => {
+    const database = getDatabase();
+    const metrics = await collectInternalMetrics(database);
+    // A failed users query must not take the existing counts down with it: the
+    // consumer keeps its last good users block when this is null.
+    const users = await collectUserMetrics(database, process.env, new Date(), extraDisposableDomains).catch((error) => {
+      logError('error', 'api_error', error);
+      return null;
+    });
+    return { ...metrics, users };
+  };
+
   router.get('/', async (c) => {
     if (!process.env.INTERNAL_METRICS_TOKEN) {
       return c.json({ error: 'Internal metrics are not configured' }, 503);
@@ -317,15 +409,28 @@ export function createInternalMetricsRouter(getDatabase: () => MetricsDatabase) 
       return c.json({ error: 'Unauthorized' }, 401);
     }
 
-    const database = getDatabase();
-    const metrics = await collectInternalMetrics(database);
-    // A failed users query must not take the existing counts down with it: the
-    // consumer keeps its last good users block when this is null.
-    const users = await collectUserMetrics(database).catch((error) => {
-      logError('error', 'api_error', error);
-      return null;
-    });
-    return c.json({ ...metrics, users });
+    return c.json(await respond([]));
+  });
+
+  router.post('/', async (c) => {
+    if (!process.env.INTERNAL_METRICS_TOKEN) {
+      return c.json({ error: 'Internal metrics are not configured' }, 503);
+    }
+    if (!authorized(c.req.header('Authorization'))) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    const declared = Number(c.req.header('Content-Length'));
+    if (Number.isFinite(declared) && declared > MAX_REQUEST_BODY_BYTES) return c.json({ error: 'Payload too large' }, 413);
+    const text = await c.req.text();
+    if (Buffer.byteLength(text) > MAX_REQUEST_BODY_BYTES) return c.json({ error: 'Payload too large' }, 413);
+    let body: unknown = {};
+    if (text.trim() !== '') {
+      try { body = JSON.parse(text); } catch { return c.json({ error: 'Invalid disposableDomains' }, 400); }
+    }
+    const disposableDomains = parseDisposableDomains(body);
+    if (disposableDomains === null) return c.json({ error: 'Invalid disposableDomains' }, 400);
+    c.header('Cache-Control', 'no-store');
+    return c.json(await respond(disposableDomains));
   });
 
   return router;
