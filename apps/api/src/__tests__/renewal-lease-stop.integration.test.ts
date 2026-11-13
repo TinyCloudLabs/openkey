@@ -460,6 +460,29 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     expect(await stopped(leaseCid)).toBe(false);
   });
 
+  test('sign-out answers within its budget while a slow node is still being asked; stopping finishes afterwards', async () => {
+    const owner = await account();
+    const here = await owner.session();
+    const leaseCid = await lease(owner, here.id, 'slow', 3_600_000, true);
+    nodes.slow.delayMs = 2_500;
+    let signedOut: Response;
+    let seconds: number;
+    try {
+      const started = Date.now();
+      signedOut = await call(here.cookie, '/api/auth/sign-out', 'POST');
+      seconds = (Date.now() - started) / 1000;
+      expect(signedOut.status).toBe(200);
+      expect(seconds).toBeLessThan(4.5);
+      expect(await signedOut.json()).toMatchObject({ success: true, renewalLeases: { stopped: 0, notStopped: 1 } });
+      expect(await prisma.session.count({ where: { id: here.id } })).toBe(0);
+      // The replay and the revocation (2.5 s each) complete after the answer, and settle the lease.
+      for (let attempt = 0; attempt < 40 && !await stopped(leaseCid); attempt++) await delay(250);
+      expect(await stopped(leaseCid)).toBe(true);
+    } finally {
+      nodes.slow.delayMs = 0;
+    }
+  }, 30_000);
+
   test('a bare 403 from something in front of the node never settles a lease as never admitted', async () => {
     const owner = await account();
     const { cookie } = await owner.session();
@@ -639,14 +662,16 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
       signOut = await call(here.cookie, '/api/auth/sign-out', 'POST');
       seconds = (Date.now() - started) / 1000;
     } finally {
-      nodes.slow.delayMs = 0;
       await deleting;
+      nodes.slow.delayMs = 0;
     }
     expect(signOut.status).toBe(200);
-    expect(seconds).toBeLessThan(5);
+    // Well inside the sign-out's 3 s answer budget: it gives up on the busy lock at once instead of waiting.
+    expect(seconds).toBeLessThan(2);
     expect(await signOut.json()).toMatchObject({ success: true, renewalLeases: { stopped: 0 } });
     expect(await prisma.session.count({ where: { id: here.id } })).toBe(0);
-    expect(leases.length).toBe(3);
+    // The node never answered in time, so none of them was settled: all still on, for the next attempt.
+    expect(await prisma.renewalLease.count({ where: { leaseCid: { in: leases }, revokedAt: null, neverAdmittedAt: null } })).toBe(3);
   }, 120_000);
 
   test.skipIf(backend !== 'postgres')('an approval confirming a lease while it is being settled is never overwritten as never admitted', async () => {

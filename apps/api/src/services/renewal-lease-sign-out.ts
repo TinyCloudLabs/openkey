@@ -13,19 +13,27 @@ import { liveLeaseWhere, revokeRenewalLeases, type LeaseRevocationReport, type L
 
 const SIGN_OUT_PATHS = new Set(['/sign-out', '/revoke-session', '/revoke-sessions', '/revoke-other-sessions']);
 
+/** How long a sign-out's answer waits for its leases; stopping them carries on after that. */
+const SIGN_OUT_STOP_BUDGET_MS = 3_000;
+
 /** Whose leases this sign-out covers, read before its sessions end. */
 const signOutLeaseScope = defineRequestState<{ userId: string; scope: LeaseScope } | undefined>(() => undefined);
 
 export function renewalLeaseSignOutPlugin(database: PrismaClient, revoke = revokeRenewalLeases) {
-  /** Stops the leases best effort, without waiting for the owner's lock; never throws. */
+  /**
+   * Stops the leases best effort, without waiting for the owner's lock, and answers within the budget; never throws.
+   * A lease not confirmed stopped by then is reported not stopped; if stopping is still under way it finishes later.
+   */
   async function stopLeases(userId: string, scope: LeaseScope): Promise<LeaseRevocationReport> {
-    try {
-      return await revoke(database, userId, scope, undefined, { waitForLock: false });
-    } catch {
-      const left = await database.renewalLease.findMany({ where: liveLeaseWhere(userId, scope, new Date()), select: { leaseCid: true } })
-        .catch(() => []);
-      return { stopped: [], notStopped: left.map(({ leaseCid }) => ({ leaseCid, reason: 'node_unavailable' as const })) };
-    }
+    const live = await database.renewalLease.findMany({ where: liveLeaseWhere(userId, scope, new Date()), select: { leaseCid: true } })
+      .catch(() => []);
+    if (live.length === 0) return { stopped: [], notStopped: [] };
+    const stopping = revoke(database, userId, scope, undefined, { waitForLock: false }).catch(() => null);
+    const { promise: timedOut, resolve: timeUp } = Promise.withResolvers<null>();
+    const timer = setTimeout(() => timeUp(null), SIGN_OUT_STOP_BUDGET_MS);
+    const report = await Promise.race([stopping, timedOut]);
+    clearTimeout(timer);
+    return report ?? { stopped: [], notStopped: live.map(({ leaseCid }) => ({ leaseCid, reason: 'node_unavailable' as const })) };
   }
 
   return {
