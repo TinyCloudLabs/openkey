@@ -16,7 +16,7 @@ export async function retireOwnerOverHttp(
   const response = await transport(new URL('/space/retire-owner', url).href, {
     method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
     headers: {
-      Authorization: signDeletionInvocation(privateKey, { resource: owner, action: 'tinycloud.space/retire-owner', idempotencyKey }),
+      Authorization: signDeletionInvocation(privateKey, { resource: owner, action: 'tinycloud.space/retire-owner', idempotencyKey, hostId: host.hostId }),
       'Idempotency-Key': idempotencyKey, 'Content-Type': 'application/json',
     },
     body: JSON.stringify({ version: 1, owner_did: owner }),

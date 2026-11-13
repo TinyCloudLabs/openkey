@@ -19,7 +19,7 @@ export async function requestSpacePurge(
   const response = await transport(new URL(status ? '/space/purge/status' : '/space/purge', url).href, {
     method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
     headers: {
-      Authorization: signDeletionInvocation(privateKey, { resource: `${spaceId}/space`, action: 'tinycloud.space/delete', idempotencyKey: key }),
+      Authorization: signDeletionInvocation(privateKey, { resource: `${spaceId}/space`, action: 'tinycloud.space/delete', idempotencyKey: key, hostId: host.hostId }),
       'Idempotency-Key': key, 'Content-Type': 'application/json',
     },
     body: JSON.stringify({ version: 1, space_id: spaceId, ...(status ? { purge_id: operation.purgeId } : {}) }),

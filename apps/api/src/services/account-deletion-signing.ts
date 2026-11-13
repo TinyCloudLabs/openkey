@@ -5,11 +5,13 @@ export type DeletionInvocation = {
   resource: string;
   action: 'tinycloud.space/retire-owner' | 'tinycloud.space/delete' | 'tinycloud.space/list';
   idempotencyKey: string;
+  hostId: string;
 };
 
 // SSI did-pkh requires the public JWK and the blockchainAccountId issuer
 // fragment. This signs SHA-256 directly, without an Ethereum message prefix.
 export function signDeletionInvocation(privateKey: string, intent: DeletionInvocation): string {
+  if (!/^[a-z0-9-]{1,63}$/.test(intent.hostId)) throw new Error('Invalid target host identity');
   const wallet = new Wallet(privateKey);
   const owner = `did:pkh:eip155:1:${wallet.address}`;
   if (intent.action !== 'tinycloud.space/delete' && intent.resource !== owner) {
@@ -26,7 +28,7 @@ export function signDeletionInvocation(privateKey: string, intent: DeletionInvoc
     iss: `${owner}#blockchainAccountId`, aud: owner,
     att: { [intent.resource]: { [intent.action]: [{}] } },
     nbf, exp: nbf + 300, nnc: randomUUID(),
-    fct: [{ idempotency_key: intent.idempotencyKey }], prf: [],
+    fct: [{ idempotency_key: intent.idempotencyKey, hostId: intent.hostId }], prf: [],
   };
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
   const input = `${encode(header)}.${encode(payload)}`;

@@ -18,7 +18,7 @@ test('purge retries keep operation key; status uses fresh keys and nonces', asyn
     const payload = JSON.parse(Buffer.from(headers.get('Authorization')!.split('.')[1]!, 'base64url').toString());
     nonces.add(payload.nnc);
     expect(payload.att).toEqual({ [`${space}/space`]: { 'tinycloud.space/delete': [{}] } });
-    expect(payload.fct).toEqual([{ idempotency_key: keys[keys.length - 1] }]);
+    expect(payload.fct).toEqual([{ idempotency_key: keys[keys.length - 1], hostId: host.hostId }]);
     const isStatus = url.endsWith('/status');
     expect(JSON.parse(options.body as string)).toEqual({ version: 1, space_id: space, ...(isStatus ? { purge_id: purgeId } : {}) });
     return Response.json({ ...result, state: isStatus ? 'complete' : 'purging' }, { status: isStatus ? 200 : 202 });

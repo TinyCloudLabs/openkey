@@ -5,7 +5,7 @@ import { signDeletionInvocation } from './account-deletion-signing';
 test('direct owner JWS recovers its owner and binds expiry, nonce and operation key', () => {
   const wallet = Wallet.createRandom();
   const owner = `did:pkh:eip155:1:${wallet.address}`;
-  const intent = { resource: owner, action: 'tinycloud.space/retire-owner' as const, idempotencyKey: crypto.randomUUID() };
+  const intent = { resource: owner, action: 'tinycloud.space/retire-owner' as const, hostId: 'node-a', idempotencyKey: crypto.randomUUID() };
   const token = signDeletionInvocation(wallet.privateKey, intent);
   const [header64, payload64, signature64] = token.split('.') as [string, string, string];
   const header = JSON.parse(Buffer.from(header64, 'base64url').toString());
@@ -20,10 +20,21 @@ test('direct owner JWS recovers its owner and binds expiry, nonce and operation 
   expect(payload.iss).toBe(`${owner}#blockchainAccountId`);
   expect(payload.prf).toEqual([]);
   expect(payload.exp - payload.nbf).toBe(300);
-  expect(payload.fct).toEqual([{ idempotency_key: intent.idempotencyKey }]);
+  expect(payload.fct).toEqual([{ idempotency_key: intent.idempotencyKey, hostId: intent.hostId }]);
   expect(payload.att).toEqual({ [owner]: { [intent.action]: [{}] } });
   const retry = JSON.parse(Buffer.from(signDeletionInvocation(wallet.privateKey, intent).split('.')[1]!, 'base64url').toString());
   expect(retry.nnc).not.toBe(payload.nnc);
   expect(retry.fct).toEqual(payload.fct);
   expect(() => signDeletionInvocation(wallet.privateKey, { ...intent, resource: 'did:pkh:eip155:1:another' })).toThrow();
+});
+
+
+test('each signed invocation binds exactly one explicit host identity', () => {
+  const wallet = Wallet.createRandom();
+  const intent = { resource: `did:pkh:eip155:1:${wallet.address}`, action: 'tinycloud.space/list' as const, idempotencyKey: crypto.randomUUID() };
+  const tokens = ['node-a', 'node-b'].map(hostId => signDeletionInvocation(wallet.privateKey, { ...intent, hostId }));
+  const facts = tokens.map(token => JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString()).fct);
+  expect(facts).toEqual([[{ idempotency_key: intent.idempotencyKey, hostId: 'node-a' }], [{ idempotency_key: intent.idempotencyKey, hostId: 'node-b' }]]);
+  expect(tokens[0]).not.toBe(tokens[1]);
+  expect(() => signDeletionInvocation(wallet.privateKey, { ...intent, hostId: '' })).toThrow();
 });

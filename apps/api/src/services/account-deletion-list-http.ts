@@ -15,7 +15,7 @@ export async function listOwnerSpacesOverHttp(
   const ownerDid = `did:pkh:eip155:1:${new Wallet(privateKey).address}`;
   return listAllDeletionSpaces(host, ownerDid, async (url, body) => {
     const idempotencyKey = randomUUID();
-    const invocation = signDeletionInvocation(privateKey, { resource: ownerDid, action: 'tinycloud.space/list', idempotencyKey });
+    const invocation = signDeletionInvocation(privateKey, { resource: ownerDid, action: 'tinycloud.space/list', idempotencyKey, hostId: host.hostId });
     const response = await transport(url, {
       method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
       headers: { Authorization: invocation, 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },

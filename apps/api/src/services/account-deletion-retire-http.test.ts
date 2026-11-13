@@ -18,7 +18,7 @@ test('retirement accepts first and repeated acknowledgements with stable key and
       expect(headers.get('Idempotency-Key')).toBe(key);
       const payload = JSON.parse(Buffer.from(headers.get('Authorization')!.split('.')[1]!, 'base64url').toString());
       expect(payload.att).toEqual({ [owner]: { 'tinycloud.space/retire-owner': [{}] } });
-      expect(payload.fct).toEqual([{ idempotency_key: key }]);
+      expect(payload.fct).toEqual([{ idempotency_key: key, hostId: host.hostId }]);
       nonces.add(payload.nnc);
       return Response.json({ version: 1, hostId: 'registered-node', state: 'retired' }, { status });
     };

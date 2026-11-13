@@ -17,6 +17,7 @@ test('HTTP listing sends raw direct-owner UCAN and fresh page authorization', as
     expect(payload.iss).toBe(`${owner}#blockchainAccountId`);
     expect(payload.att).toEqual({ [owner]: { 'tinycloud.space/list': [{}] } });
     expect(payload.fct[0].idempotency_key).toBe(headers.get('Idempotency-Key'));
+    expect(payload.fct).toEqual([{ idempotency_key: headers.get('Idempotency-Key'), hostId: 'registered-node' }]);
     nonces.add(payload.nnc);
     const body = JSON.parse(options.body as string);
     expect(body.ownerDid).toBe(owner);
