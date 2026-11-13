@@ -16,6 +16,7 @@
     formatDuration,
     leaseLimitNote,
   } from "$lib/approval-expiry";
+  import { formatAccessEnd } from "$lib/access-end";
   import DurationChoice from "$lib/components/signing/duration-choice.svelte";
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
 
@@ -37,6 +38,8 @@
     sensitive?: boolean;
     /** Who is asking, as the screen names them, for the D7 warning. */
     requestedBy?: string;
+    /** The exact end of the window, shown inside the open fold after the choice; omitted where the screen shows it elsewhere. */
+    endsAt?: string | null;
   }
 
   let {
@@ -48,6 +51,7 @@
     renewal = null,
     sensitive = false,
     requestedBy = "",
+    endsAt = null,
   }: Props = $props();
 
   let confirming = $state(false);
@@ -151,6 +155,7 @@
         <DurationChoice
           id="approval-expiry"
           legend="Expires after"
+          detail={endsAt ? formatAccessEnd(endsAt) : null}
           presets={EXPIRY_PRESETS}
           valueMs={shownMs}
           {maxMs}
@@ -231,6 +236,10 @@
   }
   .expiry-fold[open] > summary::after {
     transform: rotate(180deg);
+  }
+  /* The open fold keeps the closed fold's gap before whatever follows. */
+  .expiry-fold[open] {
+    margin-bottom: 8px;
   }
   .expiry-panel {
     display: flex;

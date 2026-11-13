@@ -72,6 +72,13 @@
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? null : { local: date.toLocaleString(), relative: timeUntilExpiry(value).text };
   });
+  // The exact end the open fold shows after the choice: what the preview signs, else what a pick would give
+  // from now, else what the CLI asked for.
+  const foldEndsAt = $derived.by(() => {
+    if (phase === 'preview') return siweExpiration(previewMessage) ?? null;
+    if (expiryChoiceMs !== null) return new Date(Date.now() + expiryChoiceMs).toISOString();
+    return siweExpiration(handoff?.request.siwe ?? '') ?? null;
+  });
   let key = $state<EthereumKey | null>(null);
   let keyChoices = $state<KeyChoice[]>([]);
   let model = $state<CapabilityReviewModel | null>(null);
@@ -511,10 +518,11 @@
           </dd>
         </div>
       </dl>
-      {#if signedExpiry}
-        <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><dt class="font-semibold">Access granted until</dt><dd>{signedExpiry.local} ({signedExpiry.relative})</dd></div>
-      {:else}
+      {#if !signedExpiry}
         <p role="alert" class="rounded-lg border border-red-300 bg-red-50 p-3 text-sm">No expiry set</p>
+      {:else if expiryRequestedMs === null}
+        <!-- The expiry line below can't show a length, so the end date is shown here instead. -->
+        <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><dt class="font-semibold">Access granted until</dt><dd>{signedExpiry.local} ({signedExpiry.relative})</dd></div>
       {/if}
       <ApprovalExpiryControl
         requestedMs={expiryRequestedMs}
@@ -522,6 +530,7 @@
         maxMs={expiryRequestedMs}
         disabled={!expiryEditable}
         onChange={(ms) => { if (expiryEditable) expiryChoiceMs = ms; }}
+        endsAt={foldEndsAt}
       />
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each model.permissions as grant}

@@ -13,9 +13,11 @@
     limitNote: (maxMs: number) => string;
     disabled?: boolean;
     onChoose: (ms: number) => void;
+    /** Shown after the chosen length, e.g. the exact end date. */
+    detail?: string | null;
   }
 
-  let { id, legend, presets, valueMs, maxMs, limitNote, disabled = false, onChoose }: Props = $props();
+  let { id, legend, presets, valueMs, maxMs, limitNote, disabled = false, onChoose, detail = null }: Props = $props();
 
   let text = $state("");
   let error = $state("");
@@ -46,7 +48,7 @@
 </script>
 
 <fieldset class="choice" aria-describedby={error ? `${id}-error` : undefined}>
-  <legend class="choice-legend">{legend} <span class="choice-value">{formatDuration(valueMs)}</span></legend>
+  <legend class="choice-legend">{legend} <span class="choice-value">{formatDuration(valueMs)}</span>{#if detail}<span class="choice-detail">{` · ${detail}`}</span>{/if}</legend>
   <div class="choice-presets">
     {#each shown as preset (preset.label)}
       <button
@@ -110,7 +112,8 @@
     font-weight: 600;
     color: #334155;
   }
-  .choice-value {
+  .choice-value,
+  .choice-detail {
     font-weight: 400;
     color: #475569;
   }
