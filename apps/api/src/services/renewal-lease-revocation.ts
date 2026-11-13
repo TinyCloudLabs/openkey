@@ -102,9 +102,13 @@ export function leaseRevocationSiwe(lease: { ownerDid: string; leaseCid: string 
 
 type Transaction = Parameters<Parameters<LeaseRevocationDatabase['$transaction']>[0]>[0];
 
-/** Holds the owner's user row for the rest of the transaction: lease reservations and settling take it first. */
-async function lockOwner(tx: Transaction, userId: string) {
-  await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${userId} FOR UPDATE`;
+/**
+ * Holds the owner's user row for the rest of the transaction: lease reservations and settling take it first.
+ * `wait: false` gives up at once if another request holds it (sign-out must never wait behind a deletion).
+ */
+async function lockOwner(tx: Transaction, userId: string, wait = true) {
+  if (wait) await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${userId} FOR UPDATE`;
+  else await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${userId} FOR UPDATE NOWAIT`;
 }
 
 /**
@@ -151,11 +155,35 @@ export async function reserveRenewalLease(
   });
 }
 
+/**
+ * The signed lease kept with its reservation, for an approval resuming after the lease was signed. The approval
+ * request's saved step never holds the signed lease; only the reservation does, encrypted. A reservation that is
+ * missing, another account's, or already settled resumes nothing.
+ */
+export async function reservedLeaseAuthorization(
+  db: Pick<PrismaClient, 'renewalLease'>,
+  userId: string,
+  leaseCid: string,
+  deps: Pick<LeaseRevocationDeps, 'open'> = defaultDeps,
+): Promise<string> {
+  const reservation = await db.renewalLease.findFirst({ where: { leaseCid, userId, revokedAt: null, neverAdmittedAt: null } });
+  if (!reservation?.leaseAuthorization) throw new RenewalLeaseError('renewal_stopped', 'Renewal was stopped for this lease', 409);
+  return deps.open(reservation.leaseAuthorization);
+}
+
 function ownerAddress(ownerDid: string): string | null {
   return OWNER_DID.exec(ownerDid)?.[2]?.toLowerCase() ?? null;
 }
 
 type NodeAnswer = 'ok' | 'refused' | 'unavailable';
+
+/**
+ * The node's own answer to revoking a delegation it doesn't hold (tinycloud-core revocation `MissingParents`).
+ * Only this exact refusal, written by the node, says the lease isn't there; a bare 4xx (a CDN or proxy 403, a
+ * misrouted 404) never does.
+ */
+const NODE_NOT_PRESENT = 'Cannot find parent delegation';
+const NODE_REFUSAL_BODY_MAX = 256;
 
 /** A definite answer: 2xx, or a refusal that retrying the same request can't change. */
 function answer(status: number): NodeAnswer {
@@ -163,15 +191,21 @@ function answer(status: number): NodeAnswer {
   return status >= 400 && status < 500 && status !== 408 && status !== 429 ? 'refused' : 'unavailable';
 }
 
-async function callNode(deps: Pick<LeaseRevocationDeps, 'fetch'>, nodeOrigin: string, path: '/revoke' | '/delegate', headers: Record<string, string>): Promise<NodeAnswer> {
-  if (!isKnownTinyCloudActivationHost(nodeOrigin)) return 'unavailable';
+async function callNode(deps: Pick<LeaseRevocationDeps, 'fetch'>, nodeOrigin: string, path: '/revoke' | '/delegate', headers: Record<string, string>): Promise<{ answer: NodeAnswer; notPresent: boolean }> {
+  if (!isKnownTinyCloudActivationHost(nodeOrigin)) return { answer: 'unavailable', notPresent: false };
   try {
     // No body and no JSON content type: the node's JSON `/revoke` is a different (policy) route.
     const response = await deps.fetch(`${nodeOrigin}${path}`, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(NODE_CALL_TIMEOUT_MS) });
-    await response.body?.cancel();
-    return answer(response.status);
+    let notPresent = false;
+    if (response.status === 403) {
+      const text = await response.text();
+      notPresent = text.length <= NODE_REFUSAL_BODY_MAX && text.trim() === NODE_NOT_PRESENT;
+    } else {
+      await response.body?.cancel();
+    }
+    return { answer: answer(response.status), notPresent };
   } catch {
-    return 'unavailable';
+    return { answer: 'unavailable', notPresent: false };
   }
 }
 
@@ -182,20 +216,28 @@ type LeaseRow = Awaited<ReturnType<LeaseRevocationDatabase['renewalLease']['find
  * straight after it, so the lease can be live for at most that one round trip. True once the node settled it.
  */
 async function settle(tx: Transaction, lease: LeaseRow, revocation: { siwe: string; signature: string }, deps: Pick<LeaseRevocationDeps, 'fetch' | 'now' | 'open'>): Promise<boolean> {
-  let admission: NodeAnswer = 'ok';
+  // `replayed`: the node answered this attempt's own admission of the stored lease.
+  let replayed: NodeAnswer | null = null;
   if (!lease.admittedAt && lease.leaseAuthorization) {
-    admission = await callNode(deps, lease.nodeOrigin, '/delegate', { Authorization: await deps.open(lease.leaseAuthorization) });
+    let signedLease: string | null = null;
+    // A stored lease that no longer decrypts (the at-rest secret rotated) is not replayed, but still revoked below.
+    try { signedLease = await deps.open(lease.leaseAuthorization); } catch { signedLease = null; }
+    if (signedLease) replayed = (await callNode(deps, lease.nodeOrigin, '/delegate', { Authorization: signedLease })).answer;
   }
   const revoked = await callNode(deps, lease.nodeOrigin, '/revoke', siweToDelegationHeaders(revocation) as Record<string, string>);
   const at = deps.now();
-  if (revoked === 'ok') {
+  if (revoked.answer === 'ok') {
     await tx.renewalLease.updateMany({ where: { leaseCid: lease.leaseCid, revokedAt: null }, data: { revokedAt: at, leaseAuthorization: null } });
     return true;
   }
-  // The node refused to admit it and holds no lease to revoke: this signed lease can never renew.
-  if (!lease.admittedAt && admission === 'refused' && revoked === 'refused') {
-    await tx.renewalLease.updateMany({ where: { leaseCid: lease.leaseCid, revokedAt: null }, data: { neverAdmittedAt: at, leaseAuthorization: null } });
-    return true;
+  // The node refused this attempt's admission and says itself that it holds no such lease: it can never renew.
+  // Only for a lease no approval has confirmed, checked again in the write.
+  if (!lease.admittedAt && replayed === 'refused' && revoked.notPresent) {
+    const settled = await tx.renewalLease.updateMany({
+      where: { leaseCid: lease.leaseCid, revokedAt: null, neverAdmittedAt: null, admittedAt: null },
+      data: { neverAdmittedAt: at, leaseAuthorization: null },
+    });
+    return settled.count === 1;
   }
   return false;
 }
@@ -214,6 +256,7 @@ export async function revokeRenewalLeases(
   userId: string,
   scope: LeaseScope,
   deps: LeaseRevocationDeps = defaultDeps,
+  options: { waitForLock: boolean } = { waitForLock: true },
 ): Promise<LeaseRevocationReport> {
   const report: LeaseRevocationReport = { stopped: [], notStopped: [] };
   const candidates = await db.renewalLease.findMany({ where: liveLeaseWhere(userId, scope, deps.now()), select: { leaseCid: true } });
@@ -223,7 +266,7 @@ export async function revokeRenewalLeases(
     select: { address: true, keyType: true, sealedBlob: true, userId: true, sealingContext: true },
   });
   await db.$transaction(async (tx) => {
-    await lockOwner(tx, userId);
+    await lockOwner(tx, userId, options.waitForLock);
     // Re-read under the lock: another attempt may have settled some meanwhile.
     const leases = await tx.renewalLease.findMany({ where: liveLeaseWhere(userId, scope, deps.now()), orderBy: { createdAt: 'asc' } });
     for (const lease of leases) {
@@ -243,7 +286,7 @@ export async function revokeRenewalLeases(
       if (settled) report.stopped.push(lease.leaseCid);
       else report.notStopped.push({ leaseCid: lease.leaseCid, reason: 'node_unavailable' });
     }
-  }, { timeout: settleTimeout(candidates.length), maxWait: 10_000 });
+  }, { timeout: settleTimeout(candidates.length), maxWait: options.waitForLock ? 10_000 : 2_000 });
   return report;
 }
 

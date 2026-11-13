@@ -1,86 +1,136 @@
 // TC-2946: which leases each owner action stops, and what is reported, through the whole API (routes, Better
-// Auth hooks, managed-key signing) on PGlite. The node is a loopback stand-in that only answers `/revoke`; the
-// real node's acceptance of these revocations is covered by renewal-lease-stop.real-node.test.ts.
+// Auth hooks, managed-key signing). The node is a loopback stand-in that answers `/revoke` and `/delegate`; the
+// real node's acceptance of these revocations is covered by renewal-lease-stop.real-node.test.ts. Runs on PGlite,
+// and also on Postgres when OPENKEY_TEST_POSTGRES_URL is set, where the concurrency cases run too.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
+import { Client } from 'pg';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer, type Server } from 'node:http';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { serializeSignedCookie } from 'better-call';
 import { symmetricEncrypt } from 'better-auth/crypto';
 import type { PrismaClient } from '@openkey/db';
+import { mockModules } from './mock-module';
 
 const root = resolve(import.meta.dir, '../../../..');
 const ORIGIN = 'https://openkey.test';
+const postgresUrl = process.env.OPENKEY_TEST_POSTGRES_URL;
+const backend = process.env.OPENKEY_RENEWAL_STOP_BACKEND === 'postgres' ? 'postgres' : 'pglite';
 
 if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
-  test('renewal leases: dashboard stop, sign-out scopes, deletion and wallet stops', async () => {
-    const child = Bun.spawn([process.execPath, 'test', import.meta.path], {
-      cwd: root,
-      env: {
-        ...process.env,
-        OPENKEY_RENEWAL_STOP_CI_CHILD: '1',
-        NODE_ENV: 'test',
-        TEE_MODE: 'development',
-        BETTER_AUTH_URL: 'https://api.openkey.test',
-        BETTER_AUTH_SECRET: 'renewal-lease-stop-ci-isolated-test-secret',
-        WEBAUTHN_RP_ID: 'openkey.test',
-        WEBAUTHN_ORIGIN: ORIGIN,
-        CORS_ORIGIN: ORIGIN,
-        RESEND_API_KEY: '',
-        GOOGLE_CLIENT_ID: '',
-        GOOGLE_CLIENT_SECRET: '',
-      },
-      stdout: 'pipe',
-      stderr: 'pipe',
-    });
-    const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    expect(exitCode, stdout + stderr).toBe(0);
-  }, 180_000);
+  for (const engine of ['pglite', 'postgres'] as const) {
+    test.skipIf(engine === 'postgres' && !postgresUrl)(`renewal leases: dashboard stop, sign-out scopes, deletion and wallet stops (${engine})`, async () => {
+      const child = Bun.spawn([process.execPath, 'test', import.meta.path], {
+        cwd: root,
+        env: {
+          ...process.env,
+          OPENKEY_RENEWAL_STOP_CI_CHILD: '1',
+          OPENKEY_RENEWAL_STOP_BACKEND: engine,
+          NODE_ENV: 'test',
+          TEE_MODE: 'development',
+          BETTER_AUTH_URL: 'https://api.openkey.test',
+          BETTER_AUTH_SECRET: 'renewal-lease-stop-ci-isolated-test-secret',
+          WEBAUTHN_RP_ID: 'openkey.test',
+          WEBAUTHN_ORIGIN: ORIGIN,
+          CORS_ORIGIN: ORIGIN,
+          RESEND_API_KEY: '',
+          GOOGLE_CLIENT_ID: '',
+          GOOGLE_CLIENT_SECRET: '',
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect(exitCode, stdout + stderr).toBe(0);
+    }, 300_000);
+  }
 } else {
-  let directory: string;
+  let directory: string | undefined;
+  let admin: Client | undefined;
+  const databaseName = `renewal_stop_${randomBytes(6).toString('hex')}`;
   let prisma: PrismaClient;
   let app: { fetch: (request: Request) => Response | Promise<Response> };
   let cookieName: string;
   let secret: string;
   let secretConfig: Parameters<typeof symmetricEncrypt>[0]['key'];
-  // A stand-in node per behaviour: `ok` confirms every admission and revocation, `down` fails until it is switched
-  // on, `gone` refuses both (it never admitted the lease and won't). Each records the paths it was asked, in order.
-  type Node = { server: Server; origin: string; up: boolean; revocations: number; calls: string[] };
-  const nodes: Record<'ok' | 'down' | 'gone', Node> = {} as never;
+  // A stand-in node per behaviour. `ok` confirms every admission and revocation; `down` fails until it is switched
+  // on; `gone` refuses both, answering a revocation with the node's own "not present" refusal (it never admitted the
+  // lease and won't); `cdn` refuses both with a bare 403 page, as a proxy in front of a node would; `slow` answers
+  // after `delayMs`. Each records the paths it was asked, in order; `onCall` runs before it answers.
+  type NodeName = 'ok' | 'down' | 'gone' | 'cdn' | 'slow';
+  type Node = { server: Server; origin: string; up: boolean; revocations: number; calls: string[]; delayMs: number; onCall?: (path: string) => Promise<void> };
+  const nodes: Record<NodeName, Node> = {} as never;
+
+  // The database exists before any API module loads: they open it when loaded.
+  const migrations = (await readdir(join(root, 'packages/db/prisma/migrations'), { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+  if (backend === 'postgres') {
+    admin = new Client({ connectionString: postgresUrl });
+    await admin.connect();
+    await admin.query(`CREATE DATABASE "${databaseName}"`);
+    const target = new URL(postgresUrl!);
+    target.pathname = `/${databaseName}`;
+    const migrationConnection = new Client({ connectionString: target.toString() });
+    await migrationConnection.connect();
+    try {
+      for (const migration of migrations) await migrationConnection.query(await readFile(join(root, 'packages/db/prisma/migrations', migration, 'migration.sql'), 'utf8'));
+    } finally { await migrationConnection.end(); }
+    process.env.DATABASE_URL = target.toString();
+  } else {
+    directory = await mkdtemp(join(tmpdir(), 'openkey-renewal-stop-'));
+    const database = new PGlite(directory);
+    try {
+      for (const migration of migrations) await database.exec(await readFile(join(root, 'packages/db/prisma/migrations', migration, 'migration.sql'), 'utf8'));
+    } finally { await database.close(); }
+    process.env.DATABASE_URL = `pglite:${directory}`;
+  }
+  delete process.env.OPENKEY_DATABASE_SCHEMA;
+
+  // Runs once, right after the next revoke pass returns: account deletion's pass, before its locked transaction.
+  let afterRevokePass: (() => Promise<void>) | undefined;
+  await mockModules({
+    '../services/renewal-lease-revocation': (actual) => ({
+      revokeRenewalLeases: async (...args: unknown[]) => {
+        const report = await actual.revokeRenewalLeases(...args);
+        const hook = afterRevokePass;
+        afterRevokePass = undefined;
+        if (hook) await hook();
+        return report;
+      },
+    }),
+  });
 
   beforeAll(async () => {
-    for (const name of ['ok', 'down', 'gone'] as const) {
-      const node: Node = { server: createServer(), origin: '', up: name === 'ok', revocations: 0, calls: [] };
-      node.server.on('request', (request, response) => {
+    for (const name of ['ok', 'down', 'gone', 'cdn', 'slow'] as const) {
+      const node: Node = { server: createServer(), origin: '', up: name === 'ok' || name === 'slow', revocations: 0, calls: [], delayMs: 0 };
+      node.server.on('request', async (request, response) => {
         const signed = request.method === 'POST' && (request.url === '/revoke' || request.url === '/delegate') && typeof request.headers.authorization === 'string';
         if (signed) node.calls.push(request.url!);
         if (signed && request.url === '/revoke') node.revocations++;
-        const status = !signed ? 404 : node.up ? 200 : name === 'gone' ? 403 : 503;
-        response.writeHead(status, { 'content-type': 'application/json' });
-        response.end(status === 200 ? '{}' : '{"error":"no"}');
+        if (signed && node.onCall) await node.onCall(request.url!);
+        if (node.delayMs) await delay(node.delayMs);
+        if (response.destroyed) return;
+        if (!signed) { response.writeHead(404); response.end(); return; }
+        if (node.up) { response.writeHead(200, { 'content-type': 'application/json' }); response.end('{}'); return; }
+        if (name === 'gone') {
+          response.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+          response.end(request.url === '/revoke' ? 'Cannot find parent delegation' : 'Delegation refused');
+          return;
+        }
+        if (name === 'cdn') { response.writeHead(403, { 'content-type': 'text/html' }); response.end('<html><body>403 Forbidden</body></html>'); return; }
+        response.writeHead(503, { 'content-type': 'application/json' });
+        response.end('{"error":"no"}');
       });
       node.server.listen(0, '127.0.0.1');
       await once(node.server, 'listening');
       node.origin = `http://127.0.0.1:${(node.server.address() as { port: number }).port}`;
       nodes[name] = node;
     }
-    directory = await mkdtemp(join(tmpdir(), 'openkey-renewal-stop-'));
-    const database = new PGlite(directory);
-    try {
-      const migrations = (await readdir(join(root, 'packages/db/prisma/migrations'), { withFileTypes: true }))
-        .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
-      for (const migration of migrations) {
-        await database.exec(await readFile(join(root, 'packages/db/prisma/migrations', migration, 'migration.sql'), 'utf8'));
-      }
-    } finally {
-      await database.close();
-    }
-    process.env.DATABASE_URL = `pglite:${directory}`;
-    delete process.env.OPENKEY_DATABASE_SCHEMA;
     // Loaded after DATABASE_URL is set: the API modules open their database when loaded.
     const authModule = await import('../auth');
     prisma = authModule.prisma;
@@ -95,6 +145,10 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     await prisma?.$disconnect();
     for (const node of Object.values(nodes)) node.server.close();
     if (directory) await rm(directory, { recursive: true, force: true });
+    if (admin) {
+      await admin.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`).catch(() => undefined);
+      await admin.end();
+    }
   });
 
   async function account(keyType: 'MANAGED' | 'EXTERNAL' = 'MANAGED') {
@@ -121,7 +175,7 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
 
   let leaseCount = 0;
   /** `reserved`: recorded before admission and never confirmed, holding its encrypted signed lease. */
-  async function lease(owner: Awaited<ReturnType<typeof account>>, sessionId: string | null, node: 'ok' | 'down' | 'gone' = 'ok', expiresInMs = 3_600_000, reserved = false) {
+  async function lease(owner: Awaited<ReturnType<typeof account>>, sessionId: string | null, node: NodeName = 'ok', expiresInMs = 3_600_000, reserved = false) {
     const leaseCid = `bafkr4i${(leaseCount++).toString().padStart(4, '0').replace(/\d/g, (d) => 'abcdefghij'[Number(d)]!)}${'a'.repeat(48)}`;
     const approvalRequestId = randomBytes(16).toString('hex');
     await prisma.approvalRequest.create({ data: {
@@ -333,7 +387,7 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
       .rejects.toMatchObject({ code: 'renewal_stopped' });
   });
 
-  test('a stored signed lease that no longer decrypts stays unsettled, is never called never admitted, and blocks deletion', async () => {
+  test('a stored signed lease that no longer decrypts is not replayed but still revoked; never called never admitted; blocks deletion', async () => {
     const { writeStepUpMarker } = await import('../services/email-otp-step-up');
     const owner = await account();
     const here = await owner.session();
@@ -342,7 +396,8 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     await prisma.renewalLease.update({ where: { leaseCid }, data: { leaseAuthorization: 'sealed-with-an-old-secret' } });
     nodes.gone.calls.length = 0;
     expect((await call(here.cookie, `/api/account/renewal-leases/${leaseCid}/stop`, 'POST', {})).status).toBe(503);
-    expect(nodes.gone.calls).toEqual([]);
+    // Nothing to replay, so the node's "not present" can't show it was never admitted.
+    expect(nodes.gone.calls).toEqual(['/revoke']);
     const row = await prisma.renewalLease.findUniqueOrThrow({ where: { leaseCid } });
     expect([row.revokedAt, row.neverAdmittedAt, row.leaseAuthorization]).toEqual([null, null, 'sealed-with-an-old-secret']);
     await writeStepUpMarker(prisma, 'delete_account', here.id, 'email');
@@ -403,5 +458,238 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     expect(await signedOut.json()).toMatchObject({ success: true, renewalLeases: { stopped: 0, notStopped: 1 } });
     expect(await prisma.session.count({ where: { id: here.id } })).toBe(0);
     expect(await stopped(leaseCid)).toBe(false);
+  });
+
+  test('a bare 403 from something in front of the node never settles a lease as never admitted', async () => {
+    const owner = await account();
+    const { cookie } = await owner.session();
+    const leaseCid = await lease(owner, null, 'cdn', 3_600_000, true);
+    nodes.cdn.calls.length = 0;
+    expect((await call(cookie, `/api/account/renewal-leases/${leaseCid}/stop`, 'POST', {})).status).toBe(503);
+    expect(nodes.cdn.calls).toEqual(['/delegate', '/revoke']);
+    const row = await prisma.renewalLease.findUniqueOrThrow({ where: { leaseCid } });
+    expect([row.revokedAt, row.neverAdmittedAt, row.leaseAuthorization !== null]).toEqual([null, null, true]);
+  });
+
+  test('a confirmed lease is never settled as never admitted, whatever the node says', async () => {
+    const owner = await account();
+    const { cookie } = await owner.session();
+    const leaseCid = await lease(owner, null, 'gone');
+    expect((await call(cookie, `/api/account/renewal-leases/${leaseCid}/stop`, 'POST', {})).status).toBe(503);
+    const row = await prisma.renewalLease.findUniqueOrThrow({ where: { leaseCid } });
+    expect([row.admittedAt !== null, row.neverAdmittedAt, row.revokedAt]).toEqual([true, null, null]);
+  });
+
+  test('a lease reserved after deletion\'s revoke pass is caught under the user lock: nothing deleted, step-up kept, the retry settles it', async () => {
+    const { writeStepUpMarker } = await import('../services/email-otp-step-up');
+    const owner = await account();
+    const here = await owner.session();
+    await writeStepUpMarker(prisma, 'delete_account', here.id, 'email');
+    let late: string | undefined;
+    afterRevokePass = async () => { late = await lease(owner, null, 'ok', 3_600_000, true); };
+    let refused: Response;
+    try {
+      refused = await call(here.cookie, '/api/account/delete', 'POST', { confirmation: 'DELETE MY ACCOUNT' });
+    } finally {
+      afterRevokePass = undefined;
+    }
+    expect(late).toBeDefined();
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ code: 'renewal_leases_not_stopped' });
+    expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(1);
+    // The step-up was not spent: the same marker deletes on retry, after settling the late lease.
+    nodes.ok.calls.length = 0;
+    expect((await call(here.cookie, '/api/account/delete', 'POST', { confirmation: 'DELETE MY ACCOUNT' })).status).toBe(200);
+    expect(nodes.ok.calls).toEqual(['/delegate', '/revoke']);
+    expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(0);
+  });
+
+  /**
+   * A real leased approval (managed key) whose node admission is held open while account deletion runs: the lease is
+   * reserved before the node is asked, and the approval request never holds the signed lease. After Bobbie's
+   * TC-2946 review schedule.
+   */
+  async function deletionDuringAdmission(nodeName: 'ok' | 'down') {
+    const { generateKeyPairSync } = await import('node:crypto');
+    const { prepareSession, completeSessionSetup } = await import('@tinycloud/node-sdk-wasm');
+    const { strictSessionDid } = await import('../services/device-authorization');
+    const route = await import('../routes/approval-requests');
+    const { writeStepUpMarker } = await import('../services/email-otp-step-up');
+    const node = nodes[nodeName];
+    const owner = await account();
+    const here = await owner.session();
+    await writeStepUpMarker(prisma, 'delete_account', here.id, 'email');
+    const target = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }) as { kty: 'OKP'; crv: 'Ed25519'; x: string };
+    const resultKey = await crypto.subtle.exportKey('jwk', (await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])).publicKey);
+    const space = `tinycloud:pkh:eip155:1:${owner.wallet.address}:default`;
+    const nodeIdentity = { nodeDid: 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK', renewerDid: 'did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp', renewerPublicKey: 'O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik', renewerEpoch: 0 };
+    const prepared = prepareSession({
+      abilities: {}, rawAbilities: { [`${space}/kv/proof`]: ['tinycloud.kv/get'] }, address: owner.wallet.address, chainId: 1,
+      domain: 'cli.tinycloud.xyz', spaceId: space, jwk: target, delegateUri: strictSessionDid(target),
+      nonce: 'race1234567890', issuedAt: new Date(Date.now() - 1000).toISOString(), expirationTime: new Date(Date.now() + 600000).toISOString(),
+    });
+    const signature = await owner.wallet.signMessage({ message: prepared.siwe });
+    const original = completeSessionSetup({ ...prepared, signature });
+    const delegation = { ...original, signature, ownerDid: `did:pkh:eip155:1:${owner.wallet.address}`, verificationMethod: strictSessionDid(target), jwk: target, siwe: prepared.siwe, spaceId: space, hostActivated: true };
+    const request = { issuer: strictSessionDid(target), targetDid: strictSessionDid(target), targetPublicJwk: target, nodeOrigin: node.origin,
+      permissions: [{ service: 'tinycloud.kv', space, path: 'proof', actions: ['tinycloud.kv/get'] }],
+      grantLifetimeSeconds: 600, renewal: { version: 1, leaseLifetimeSeconds: 3600 },
+      resultEncryptionPublicJwk: { kty: 'EC', crv: 'P-256', x: resultKey.x!, y: resultKey.y! } };
+    const id = randomBytes(16).toString('hex');
+    await prisma.approvalRequest.create({ data: { id, bodyCid: 'body', issuer: request.issuer, request, expiresAt: new Date(Date.now() + 600000) } });
+    const body = { approvalRequestId: id, jwk: target, host: node.origin, permissions: request.permissions };
+    await route.admitApprovalDelegation(body);
+    const oldFetch = globalThis.fetch;
+    const oldFlag = process.env.OPENKEY_RENEWAL_LEASES;
+    process.env.OPENKEY_RENEWAL_LEASES = 'enabled';
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    const { promise: admittedPromise, resolve: admitted } = Promise.withResolvers<void>();
+    let signedLease = '';
+    const order: string[] = [];
+    // Only the approval's own calls go through this stand-in; settling uses the fetch captured when its module loaded.
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      if (url.origin !== node.origin) throw new Error('unexpected test transport');
+      if (url.pathname === '/info') return Response.json({ nodeId: nodeIdentity.nodeDid });
+      if (url.pathname === '/.well-known/tinycloud/node-keys') return Response.json(nodeIdentity);
+      if (url.pathname === '/delegate') {
+        signedLease = new Headers(init?.headers).get('authorization') ?? '';
+        order.push('approval /delegate (answer held)');
+        admitted();
+        await gate;
+        return Response.json({});
+      }
+      throw new Error('unexpected test path');
+    }) as typeof fetch;
+    node.calls.length = 0;
+    node.onCall = async (path) => { order.push(`settle ${path}`); };
+    let pending: Promise<unknown> | undefined;
+    let reservedDuringAdmission = false;
+    let savedStep = '';
+    let deletion: Response | undefined;
+    let approvalOutcome: unknown;
+    try {
+      pending = route.saveApprovalDelegation(body, owner.userId, delegation, {
+        renewal: { choice: 'leased', leaseLifetimeSeconds: 3600 }, host: node.origin, sessionId: here.id,
+        signOwner: (message) => owner.wallet.signMessage({ message }),
+      }).then(() => 'approved', (error) => ({ error: error.code ?? error.message }));
+      expect(await Promise.race([admittedPromise.then(() => 'admitted'), pending])).toBe('admitted');
+      reservedDuringAdmission = (await prisma.renewalLease.count({ where: { userId: owner.userId, admittedAt: null } })) === 1;
+      savedStep = JSON.stringify((await prisma.approvalRequest.findUniqueOrThrow({ where: { id } })).renewal);
+      deletion = await call(here.cookie, '/api/account/delete', 'POST', { confirmation: 'DELETE MY ACCOUNT' });
+    } finally {
+      release();
+      if (pending) approvalOutcome = await pending;
+      globalThis.fetch = oldFetch;
+      node.onCall = undefined;
+      if (oldFlag === undefined) delete process.env.OPENKEY_RENEWAL_LEASES;
+      else process.env.OPENKEY_RENEWAL_LEASES = oldFlag;
+    }
+    return {
+      reservedDuringAdmission, deletion: deletion!, order, approvalOutcome,
+      signedLease: signedLease.replace(/^Bearer\s+/i, ''), savedStep,
+      savedStepAfter: JSON.stringify((await prisma.approvalRequest.findUnique({ where: { id } }))?.renewal ?? null),
+      users: await prisma.user.count({ where: { id: owner.userId } }),
+      keys: await prisma.ethereumKey.count({ where: { userId: owner.userId } }),
+    };
+  }
+
+  test('deletion during a held admission: the lease was reserved first, so deletion settles it at the node before any key goes', async () => {
+    const result = await deletionDuringAdmission('ok');
+    expect(result.reservedDuringAdmission).toBe(true);
+    expect(result.deletion.status).toBe(200);
+    expect(result.order).toEqual(['approval /delegate (answer held)', 'settle /delegate', 'settle /revoke']);
+    expect([result.users, result.keys]).toEqual([0, 0]);
+    expect(result.approvalOutcome).not.toBe('approved');
+  }, 30_000);
+
+  test('deletion during a held admission is refused when the node can\'t settle it; nothing is deleted', async () => {
+    const result = await deletionDuringAdmission('down');
+    expect(result.reservedDuringAdmission).toBe(true);
+    expect(result.deletion.status).toBe(409);
+    expect(await result.deletion.json()).toMatchObject({ code: 'renewal_leases_not_stopped', nodeUnavailable: 1 });
+    expect([result.users, result.keys]).toEqual([1, 1]);
+  }, 30_000);
+
+  test('the approval request never holds the signed lease: only its reservation does, encrypted', async () => {
+    const result = await deletionDuringAdmission('ok');
+    expect(result.signedLease.length).toBeGreaterThan(20);
+    expect(result.savedStep).toContain('leaseCid');
+    expect(result.savedStep).not.toContain('leaseAuthorization');
+    expect(result.savedStep).not.toContain(result.signedLease);
+    expect(result.savedStepAfter).not.toContain(result.signedLease);
+  }, 30_000);
+
+  test.skipIf(backend !== 'postgres')('sign-out never waits behind another request holding the account (a slow deletion): the session ends, the leases stay on', async () => {
+    const { writeStepUpMarker } = await import('../services/email-otp-step-up');
+    const owner = await account();
+    const here = await owner.session();
+    const other = await owner.session();
+    await writeStepUpMarker(prisma, 'delete_account', other.id, 'email');
+    // Three unconfirmed leases on a node that answers only after 6 s: deletion's settle holds the user lock for a long time.
+    const leases = [await lease(owner, here.id, 'slow', 3_600_000, true), await lease(owner, null, 'slow', 3_600_000, true), await lease(owner, null, 'slow', 3_600_000, true)];
+    nodes.slow.delayMs = 6_000;
+    let signOut: Response;
+    let seconds: number;
+    let deleting: Promise<Response> | undefined;
+    try {
+      deleting = Promise.resolve(call(other.cookie, '/api/account/delete', 'POST', { confirmation: 'DELETE MY ACCOUNT' }));
+      await delay(500);
+      const started = Date.now();
+      signOut = await call(here.cookie, '/api/auth/sign-out', 'POST');
+      seconds = (Date.now() - started) / 1000;
+    } finally {
+      nodes.slow.delayMs = 0;
+      await deleting;
+    }
+    expect(signOut.status).toBe(200);
+    expect(seconds).toBeLessThan(5);
+    expect(await signOut.json()).toMatchObject({ success: true, renewalLeases: { stopped: 0 } });
+    expect(await prisma.session.count({ where: { id: here.id } })).toBe(0);
+    expect(leases.length).toBe(3);
+  }, 120_000);
+
+  test.skipIf(backend !== 'postgres')('an approval confirming a lease while it is being settled is never overwritten as never admitted', async () => {
+    const { createPrismaApprovalRequestStore } = await import('../services/approval-request-store');
+    const owner = await account();
+    const { cookie } = await owner.session();
+    const leaseCid = await lease(owner, null, 'gone', 3_600_000, true);
+    const reserved = await prisma.renewalLease.findUniqueOrThrow({ where: { leaseCid } });
+    const store = createPrismaApprovalRequestStore(prisma);
+    let confirmed: boolean | undefined;
+    nodes.gone.onCall = async (path) => {
+      if (path !== '/delegate' || confirmed !== undefined) return;
+      // The approval's own admission succeeded; its save commits while the settle is between its read and its write.
+      const now = new Date();
+      const marker = await store.admit(reserved.approvalRequestId, now);
+      confirmed = await store.approve(reserved.approvalRequestId, {
+        resultRef: randomBytes(8).toString('hex'), approvedByUserId: owner.userId, ownerDid: reserved.ownerDid, encryptedResult: '{}',
+        delegationExpiresAt: new Date(now.getTime() + 3_600_000), resultExpiresAt: new Date(now.getTime() + 600_000),
+        lease: { leaseCid, userId: owner.userId, sessionId: null, approvalRequestId: reserved.approvalRequestId, ownerDid: reserved.ownerDid, originalCid: reserved.originalCid, nodeOrigin: reserved.nodeOrigin },
+      } as never, now, marker!);
+    };
+    try {
+      await call(cookie, `/api/account/renewal-leases/${leaseCid}/stop`, 'POST', {});
+    } finally {
+      nodes.gone.onCall = undefined;
+    }
+    const after = await prisma.renewalLease.findUniqueOrThrow({ where: { leaseCid } });
+    expect(confirmed).toBe(true);
+    expect([after.admittedAt !== null, after.neverAdmittedAt]).toEqual([true, null]);
+  });
+
+  test.skipIf(backend !== 'postgres')('two simultaneous stops of one unconfirmed lease settle it once, and both say it stopped', async () => {
+    const owner = await account();
+    const { cookie } = await owner.session();
+    const leaseCid = await lease(owner, null, 'slow', 3_600_000, true);
+    nodes.slow.calls.length = 0;
+    nodes.slow.delayMs = 500;
+    try {
+      const statuses = (await Promise.all([1, 2].map(() => call(cookie, `/api/account/renewal-leases/${leaseCid}/stop`, 'POST', {})))).map((r) => r.status);
+      expect(nodes.slow.calls).toEqual(['/delegate', '/revoke']);
+      expect(statuses).toEqual([200, 200]);
+    } finally {
+      nodes.slow.delayMs = 0;
+    }
   });
 }

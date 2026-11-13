@@ -79,7 +79,10 @@ export function createRenewalLeaseRouter(db: RenewalLeaseRouteDatabase, deps?: L
     // Another account's lease, an unknown one, and one already stopped or ended all read the same.
     if (!lease) return c.json({ error: 'Renewal not found', code: 'not_found' }, 404);
     const report = await revokeRenewalLeases(db, userId, { kind: 'lease', leaseCid }, deps);
-    if (report.stopped.includes(leaseCid)) return c.json({ stopped: true });
+    // A simultaneous stop of the same lease may have settled it first: that is still a stop.
+    if (report.stopped.includes(leaseCid) || (report.notStopped.length === 0 && !await db.renewalLease.findFirst({ where: liveLeaseWhere(userId, { kind: 'lease', leaseCid }, now()) }))) {
+      return c.json({ stopped: true });
+    }
     if (report.notStopped[0]?.reason === 'wallet_required') {
       return c.json({ error: 'Sign with your wallet to stop this renewal', code: 'wallet_required', siwe: leaseRevocationSiwe(lease, now()) }, 409);
     }
