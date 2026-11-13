@@ -56,6 +56,7 @@
     defaultSelection,
     type CapabilityReviewModel,
   } from '@openkey/capability-review';
+  import { hostNamedByLink } from '$lib/requester-display';
 
   interface EIP6963ProviderInfo {
     uuid: string;
@@ -340,6 +341,8 @@
     }
   }
   const deviceTransactionId = approvalRequestMode ? '' : $page.url.searchParams.get('deviceTransactionId') || '';
+  const ordinaryLink = $derived(!approvalRequestMode && !deviceTransactionId && !preparedTransport);
+  const ordinaryRequesterHost = $derived(ordinaryLink && reviewModel ? reviewModel.requester.displayName : null);
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
   const deviceUserCode = $page.url.searchParams.get('deviceUserCode') || '';
   let deviceAcknowledged = $state(false);
@@ -840,16 +843,13 @@
             manifestId: null,
             manifestIdProvenance: 'none',
             manifestDigest: null,
-            domainWarning: false,
+            domainWarning: ordinaryLink,
             originWarning: false,
           },
         });
-        // The prepared SIWE is authoritative for attribution, not a query
-        // display name. These labels remain unsigned and confer no trust.
-        const domain = model.immutable?.domain;
-        model.requester.displayName = domain === 'mcp.tinycloud.xyz' ? 'TinyCloud MCP'
-          : domain === 'cli.tinycloud.xyz' ? 'TinyCloud CLI'
-          : domain || 'Unknown requester';
+        // A prepared domain binds signed bytes, not a first-party app identity.
+        // None of this response's requester-name fields is server-verified.
+        model.requester.displayName = hostNamedByLink(model.immutable?.domain);
         reviewModel = model;
         reviewSelection = defaultSelection(model);
         baselineSiweForReview = siweMessage;
@@ -1728,9 +1728,9 @@
           {:else}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
             <p class="text-surface-500 text-sm">
-              {#if reviewModel?.immutable?.domain === 'mcp.tinycloud.xyz'}
+              {#if !ordinaryLink && reviewModel?.immutable?.domain === 'mcp.tinycloud.xyz'}
                 You can close this window and return to ChatGPT or your MCP client.
-              {:else if reviewModel?.immutable?.domain && reviewModel.immutable.domain !== 'cli.tinycloud.xyz'}
+              {:else if reviewModel?.immutable?.domain && (ordinaryLink || reviewModel.immutable.domain !== 'cli.tinycloud.xyz')}
                 You can close this window and return to {reviewModel.immutable.domain}.
               {:else}
                 You can close this window and return to the CLI.
@@ -1897,12 +1897,6 @@
           <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} bind:acknowledged={deviceAcknowledged} />
         {:else}
           <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
-          {#if requesterOriginCheck.ok && requesterOriginCheck.origin && reviewModel?.immutable}
-            <p class="text-xs leading-relaxed text-surface-500">
-              Requester <code class="break-all">{reviewModel.immutable.domain}</code> is caller-reported, not verified.
-              This link is unsigned and has no signed app manifest.
-            </p>
-          {/if}
         {/if}
 
         {#if selectedKey.keyType === 'EXTERNAL'}
@@ -1934,6 +1928,7 @@
           <div bind:this={actionRow}>
             <CliSigningAdapter
               model={reviewModel}
+              linkNamedHost={ordinaryRequesterHost}
               initialSelection={reviewSelection}
               context={cliContext}
               onEditingStateChange={(editing) => { reviewEditing = editing; }}

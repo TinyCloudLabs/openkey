@@ -23,3 +23,13 @@ export function requesterDisplayName(
 ): string {
   return verifiedManifestName ?? originAuthority(origin) ?? 'Unknown origin';
 }
+
+/** Format an unsigned link's claimed authority without granting it an app identity. */
+export function hostNamedByLink(domain: string | null | undefined): string {
+  if (!domain || /[\s/@\\?#]/.test(domain)) return 'an unknown site';
+  try {
+    return new URL(`https://${domain}`).host.toLowerCase() || 'an unknown site';
+  } catch {
+    return 'an unknown site';
+  }
+}
