@@ -209,8 +209,9 @@ export async function bindApprovalRenewal(body: { approvalRequestId?: unknown; r
  * Saves the approved grant as the request's result. When the request signed a renewal request and the owner
  * left renewal on in the bound preview (`options.renewal`), the result also carries the node-admitted owner
  * lease (TC-2933): `signOwner` signs it with the owner's managed key; without it (an external wallet) the
- * lease message is returned for the owner to sign and nothing is saved yet. A step already saved for this
- * request is reused, never signed again. `options.host` is the node the grant was registered with.
+ * lease message is returned for the owner to sign and nothing is saved yet. Only a signed lease is kept across
+ * attempts (and only for the same owner and length); anything unsigned is rebuilt from the current approval.
+ * `options.host` is the node the grant was registered with.
  */
 export async function saveApprovalDelegation(
   body: { approvalRequestId?: unknown; jwk: unknown; host: unknown; permissions?: unknown },
@@ -231,10 +232,17 @@ export async function saveApprovalDelegation(
   } catch (error) {
     renewalFailure(error);
   }
-  // A lease this owner already signed for the request is the approval (C5): a retry collects it, never a different grant.
-  if (record.renewal?.leaseAuthorization && marker) {
-    if (record.renewal.userId !== userId) throw new ApprovalResultError('request_binding', 'Another account is approving this request', 409);
-    return finishLeasedApproval(id, userId, record.request, record.renewal, marker);
+  // A lease this owner already signed for the request is the approval (C5): a retry collects that same pair,
+  // but only when the preview the owner approved now is that lease. A finite or different choice is a conflict,
+  // never a silent leased completion; the owner resumes by approving the signed lease length.
+  const signed = record.renewal?.leaseAuthorization ? record.renewal : null;
+  if (signed && marker) {
+    if (signed.userId !== userId) throw new ApprovalResultError('request_binding', 'Another account is approving this request', 409);
+    if (choice?.choice !== 'leased' || choice.leaseLifetimeSeconds !== signed.approvedLeaseLifetimeSeconds) {
+      throw new ApprovalResultError('renewal_already_signed', 'Renewal is already signed for this request. Approve it with the same renewal length.', 409,
+        { leaseLifetimeSeconds: signed.approvedLeaseLifetimeSeconds });
+    }
+    return finishLeasedApproval(id, userId, record.request, signed, marker);
   }
   if (choice?.choice !== 'leased') {
     const approvalCode = await service.approve(id, userId, { ...body, permissions: body.permissions }, delegation, marker, choice ?? undefined);
@@ -245,18 +253,17 @@ export async function saveApprovalDelegation(
   if (options.host !== record.request.nodeOrigin) throw new ApprovalResultError('request_binding', 'Renewal node does not match the approved grant', 400);
   let stage: RenewalStage;
   try {
-    stage = record.renewal ?? await prepareRenewalStage({ userId, host: options.host, leaseLifetimeSeconds: choice.leaseLifetimeSeconds, delegation, now: new Date() });
-    if (stage.userId !== userId) throw new RenewalLeaseError('request_binding', 'Another account is approving this request', 409);
-    if (!record.renewal) await service.saveRenewal(id, stage, marker);
-    if (!stage.leaseAuthorization) {
-      if (!signOwner) {
-        // The owner's wallet signs the lease next; the request stays open for that step.
-        await releaseApprovalDelegation(body);
-        return { renewalSignature: { message: stage.leaseSiwe, leaseLifetimeSeconds: stage.approvedLeaseLifetimeSeconds } };
-      }
-      stage = signLease(stage, await signOwner(stage.leaseSiwe));
-      await service.saveRenewal(id, stage, marker);
+    // An unsigned saved step carries no authority: it is rebuilt from this approval, so a changed choice is never
+    // replaced by an older one. A wallet signature over the older bytes then fails its owner check.
+    stage = await prepareRenewalStage({ userId, host: options.host, leaseLifetimeSeconds: choice.leaseLifetimeSeconds, delegation, now: new Date() });
+    await service.saveRenewal(id, stage, marker);
+    if (!signOwner) {
+      // The owner's wallet signs the lease next; the request stays open for that step.
+      await releaseApprovalDelegation(body);
+      return { renewalSignature: { message: stage.leaseSiwe, leaseLifetimeSeconds: stage.approvedLeaseLifetimeSeconds } };
     }
+    stage = signLease(stage, await signOwner(stage.leaseSiwe));
+    await service.saveRenewal(id, stage, marker);
   } catch (error) {
     renewalFailure(error);
   }

@@ -53,9 +53,9 @@
   import {
     parseCapabilityReview,
     defaultSelection,
-    grantReachesSecretDataOrDecryption,
     type CapabilityReviewModel,
   } from '@openkey/capability-review';
+  import { renewalStartsTicked } from '$lib/renewal-default';
 
   interface EIP6963ProviderInfo {
     uuid: string;
@@ -318,15 +318,15 @@
   // TC-2933: the renewal checkbox, offered only when the approval request signed a renewal request
   // (its longest lease). `renewalLeaseMs` is the owner's lease, null while the box is unticked.
   let renewalMaxLeaseMs = $state<number | null>(null);
-  let renewalStanding = false;
+  let renewalPurpose: unknown = undefined;
   let renewalDefaulted = false;
   let renewalLeaseMs = $state<number | null>(null);
-  // Spec D12: standing access starts ticked; D7: never when it reaches secrets or decrypt; D11: no purpose is a task.
+  // Spec D12: standing access starts ticked; D7: never in the Once tier (secrets or decrypt); D11: no purpose is a task.
   // Ticking it re-prepares, so the preview the owner approves is the one that carries the lease.
   $effect(() => {
     if (renewalDefaulted || renewalMaxLeaseMs === null || !reviewModel) return;
     renewalDefaulted = true;
-    if (renewalStanding && !reviewModel.permissions.some(grantReachesSecretDataOrDecryption)) {
+    if (renewalStartsTicked(renewalPurpose, reviewModel.permissions)) {
       void changeRenewal(defaultLeaseMs(renewalMaxLeaseMs));
     }
   });
@@ -648,7 +648,7 @@
       // The box only shows where this OpenKey has leases on (`renewalAvailable`); otherwise the plain line, and finite.
       if (request.renewal && result.renewalAvailable === true) {
         renewalMaxLeaseMs = Math.min(request.renewal.leaseLifetimeSeconds * 1000, MAX_LEASE_MS);
-        renewalStanding = request.purpose === 'standing';
+        renewalPurpose = request.purpose;
       }
       approvalRequestLoaded = true;
     } catch (cause) {

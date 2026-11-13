@@ -174,10 +174,11 @@ function open(t: HTMLElement) {
   flushSync();
 }
 
+// The line's wording is Monica's; these check what it says about time (the duration), not the sentence.
 describe('the expiry line', () => {
   test('shows what the app asked for', () => {
     const { target, cleanup } = render({ onExpiryChange() {} });
-    expect(line(target)).toBe('This permission expires in 7 days');
+    expect(line(target)).toContain('7 days');
     cleanup();
   });
 
@@ -189,7 +190,8 @@ describe('the expiry line', () => {
 
   test('shows the chosen time instead of the requested one', () => {
     const { target, cleanup } = render({ onExpiryChange() {}, expiryMs: 5600 * S });
-    expect(line(target)).toBe('This permission expires in 5600 seconds');
+    expect(line(target)).toContain('5600 seconds');
+    expect(line(target)).not.toContain('7 days');
     cleanup();
   });
 
@@ -269,8 +271,10 @@ describe('the expiry line', () => {
   });
 });
 
+// A refusal is an alert naming the longest time allowed; its sentence is not pinned here.
+const refusal = (t: HTMLElement) => t.querySelector('[role="alert"]');
+
 describe('where the requester signed the longest time it accepts', () => {
-  const NOTE = 'This app asked for up to 7 days. To allow longer, the app has to ask again.';
 
   test('the picker offers nothing longer than asked', () => {
     const { target, cleanup } = render({ onExpiryChange() {}, expiryBounded: true });
@@ -280,13 +284,13 @@ describe('where the requester signed the longest time it accepts', () => {
     cleanup();
   });
 
-  test('a typed time past the signed maximum is refused with the note; the maximum itself is allowed', () => {
+  test('a typed time past the signed maximum is refused with an alert naming the maximum; the maximum itself is allowed', () => {
     const chosen: Array<number | null> = [];
     const { target, cleanup } = render({ onExpiryChange: (ms: number | null) => chosen.push(ms), expiryBounded: true });
     open(target);
     type(target, '8d');
     submit(target);
-    expect(error(target)).toBe(NOTE);
+    expect(refusal(target)?.textContent).toContain('7 days');
     expect(chosen).toEqual([]);
     type(target, '7d');
     submit(target);
@@ -311,12 +315,12 @@ describe('where the requester signed the longest time it accepts', () => {
     cleanup();
   });
 
-  test('after a refused typed value the limit note is shown once, as the error, and typing clears it', () => {
+  test('after a refused typed value there is one alert, and typing clears it', () => {
     const { target, cleanup } = render({ onExpiryChange() {}, expiryBounded: true });
     open(target);
     type(target, '8d');
     submit(target);
-    expect((target.textContent ?? '').split(NOTE).length - 1).toBe(1);
+    expect(target.querySelectorAll('[role="alert"]')).toHaveLength(1);
     type(target, '1d');
     expect(error(target)).toBeNull();
     cleanup();
@@ -326,7 +330,7 @@ describe('where the requester signed the longest time it accepts', () => {
 describe('where the requester signed a maximum above its suggested default (TC-2274)', () => {
   test('the default is the suggestion and the picker offers up to the signed maximum', () => {
     const { target, cleanup } = render({ onExpiryChange() {}, expiryBounded: true, expiryMaxMs: 365 * D });
-    expect(line(target)).toBe('This permission expires in 7 days');
+    expect(line(target)).toContain('7 days');
     open(target);
     expect(presets(target)).toHaveLength(4);
     cleanup();
@@ -341,7 +345,7 @@ describe('where the requester signed a maximum above its suggested default (TC-2
     expect(chosen).toEqual([365 * D]);
     type(target, '366d');
     submit(target);
-    expect(error(target)).toContain('up to 1 year');
+    expect(refusal(target)?.textContent).toContain('1 year');
     expect(chosen).toEqual([365 * D]);
     cleanup();
   });

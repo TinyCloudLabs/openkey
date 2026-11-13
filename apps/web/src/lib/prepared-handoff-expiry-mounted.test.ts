@@ -204,7 +204,7 @@ async function open() {
 describe('the prepared handoff page: the expiry line', () => {
   test('shows what the CLI asked for, and previews without an expiry when nothing is picked', async () => {
     const page = await open();
-    expect(page.line()).toBe('This permission expires in 1 hour');
+    expect(page.line()).toContain('1 hour');
     await page.preview();
     expect(page.previews[0]).not.toHaveProperty('expirationTime');
     page.close();
@@ -214,7 +214,7 @@ describe('the prepared handoff page: the expiry line', () => {
     const page = await open();
     page.openFold();
     page.typeInto('30m');
-    expect(page.line()).toBe('This permission expires in 30 minutes');
+    expect(page.line()).toContain('30 minutes');
     const before = Date.now();
     await page.preview();
     const asked = Date.parse(String(page.previews[0]!.expirationTime));
@@ -237,7 +237,7 @@ describe('the prepared handoff page: the expiry line', () => {
     page.openFold();
     page.typeInto('2h');
     expect(page.target.querySelector('[role="alert"]')).not.toBeNull();
-    expect(page.line()).toBe('This permission expires in 1 hour');
+    expect(page.line()).toContain('1 hour');
     await page.preview();
     expect(page.previews[0]).not.toHaveProperty('expirationTime');
     page.close();

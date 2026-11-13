@@ -77,7 +77,7 @@ test('with the opt-in the control shows, and a changed expiry is what the previe
   await frame.getByText('How long it lasts').click();
   await frame.getByLabel('Or type a time').fill('90m');
   await frame.getByLabel('Or type a time').press('Enter');
-  await expect(frame.getByTestId('approval-expiry-line')).toHaveText('This permission expires in 90 minutes');
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('90 minutes');
   await expect.poll(() => previews.length).toBeGreaterThan(1);
   const latest = previews.at(-1)!;
   const asked = Date.parse(String(latest.expirationTime));
@@ -98,7 +98,7 @@ test('the "This access lasts until" line follows the pick before anything is app
   await frame.getByText('How long it lasts').click();
   await frame.getByLabel('Or type a time').fill('30d');
   await page.keyboard.press('Enter');
-  await expect(frame.getByTestId('approval-expiry-line')).toHaveText('This permission expires in 30 days');
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('30 days');
   await expect(access).not.toHaveText(before);
   const date = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(Date.now() + 30 * 86_400_000));
   await expect(access).toContainText(date);

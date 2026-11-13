@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { SiweMessage } from 'siwe';
 import { verifyMessage } from 'ethers';
-import type { OpenKeyApprovalRequestV1 } from '@tinycloud/share-envelope/links';
+import { parseApprovalRenewal, type OpenKeyApprovalRequestV1 } from '@tinycloud/share-envelope/links';
 import { strictSessionDid, type DeviceRelayEnvelope } from './device-authorization';
 import { hasPrivateJwkMember } from './authorization-signing';
 import { verifySessionProofClaims } from './native-delegation/session-proof';
@@ -143,6 +143,10 @@ export class ApprovalResultService {
     const record = await this.assertDelegationWindow(id, { ...body, signedSiwe }, marker !== undefined);
     if (Boolean(record.request.renewal) !== Boolean(renewal)) {
       throw new ApprovalResultError('request_binding', 'Renewal choice does not match the approval request', 400);
+    }
+    if (renewal?.choice === 'leased') {
+      // The requester's codec refuses a malformed renewal; refuse it here first, before anything is saved.
+      try { parseApprovalRenewal(renewal.renewal); } catch { throw new ApprovalResultError('invalid_delegation', 'Renewal lease metadata is invalid', 400); }
     }
     const siwe = new SiweMessage(signedSiwe);
     const ownerDid = `did:pkh:eip155:${siwe.chainId}:${siwe.address}`;

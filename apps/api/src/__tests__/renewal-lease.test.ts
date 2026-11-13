@@ -5,6 +5,7 @@ import { describe, expect, test } from 'bun:test';
 import { generateKeyPairSync } from 'node:crypto';
 import { Wallet } from 'ethers';
 import { SiweMessage } from 'siwe';
+import { checkApprovalResultBinding } from '@tinycloud/share-envelope/links';
 import { ApprovalResultService, type ApprovalRequestRecord, type ApprovalRequestStore } from '../services/approval-results';
 import { strictSessionDid } from '../services/device-authorization';
 import {
@@ -168,20 +169,36 @@ describe('the approval result for a request that asked for renewal', () => {
       nodeIdentity: { nodeDid: NODE_DID, renewerDid: RENEWER_DID, renewerPublicKey: RENEWER_PUBLIC_KEY, renewerEpoch: 0 } },
   };
 
-  test('carries the lease when the owner left renewal on', async () => {
+  test('carries the lease when the owner left renewal on, in the shape the requester codec accepts', async () => {
     const f = await fixture(true);
     await f.service.approve(f.record.id, 'user-1', f.body, f.delegation, undefined, { choice: 'leased', renewal });
     const result = await f.result();
-    expect(result.renewalChoice).toBe('leased');
-    expect(result.renewal).toEqual(renewal);
     expect(Object.keys(result).sort()).toEqual(['delegation', 'delegationExpiresAt', 'ownerDid', 'renewal', 'renewalChoice', 'requestDigest', 'requestId', 'requesterDid', 'resultVersion', 'targetDid']);
+    const checked = checkApprovalResultBinding(result, {
+      requestId: f.record.id, bodyCid: f.record.bodyCid, now: Date.parse('2026-11-13T10:00:00Z'),
+      request: { issuer: f.record.request.issuer, targetDid: f.record.request.targetDid, renewal: f.record.request.renewal },
+    });
+    expect(checked.renewalChoice).toBe('leased');
+    expect(checked.renewal).toEqual(renewal);
+  });
+
+  test('refuses lease metadata the requester codec would refuse, before saving anything', async () => {
+    const f = await fixture(true);
+    const tooLong = { ...renewal, receipt: { ...renewal.receipt, leaseExpiresAt: '2027-02-12T10:00:00.000Z' } };
+    await expect(f.service.approve(f.record.id, 'user-1', f.body, f.delegation, undefined, { choice: 'leased', renewal: tooLong }))
+      .rejects.toMatchObject({ code: 'invalid_delegation' });
+    expect(f.record.encryptedResult).toBeNull();
   });
 
   test('says finite, with no lease, when the owner turned renewal off', async () => {
     const f = await fixture(true);
     await f.service.approve(f.record.id, 'user-1', f.body, f.delegation, undefined, { choice: 'finite' });
     const result = await f.result();
-    expect(result.renewalChoice).toBe('finite');
+    const checked = checkApprovalResultBinding(result, {
+      requestId: f.record.id, bodyCid: f.record.bodyCid, now: Date.parse('2026-11-13T10:00:00Z'),
+      request: { issuer: f.record.request.issuer, targetDid: f.record.request.targetDid, renewal: f.record.request.renewal },
+    });
+    expect(checked.renewalChoice).toBe('finite');
     expect(result).not.toHaveProperty('renewal');
   });
 

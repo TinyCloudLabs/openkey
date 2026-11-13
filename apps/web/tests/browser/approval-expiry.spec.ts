@@ -1,6 +1,7 @@
-// TC-2272 / TC-2933: the expiry line on the approval screen ("This permission expires in 7 days") and its
-// "How long it lasts" fold, driven with real keyboard and touch-sized input in Chromium through the dev-only
-// parity harness, which mounts the production popup adapter. Set TC2272_SHOTS_DIR to save screenshots.
+// TC-2272 / TC-2933: the expiry line on the approval screen and its "How long it lasts" fold, driven with real
+// keyboard and touch-sized input in Chromium through the dev-only parity harness, which mounts the production
+// popup adapter. The line's sentence is not pinned; the checks read the duration it names. Set TC2272_SHOTS_DIR
+// to save screenshots.
 
 import { test, expect, type Page } from '@playwright/test';
 import { parseCapabilityReview } from '../../../../packages/capability-review/src/index';
@@ -48,7 +49,7 @@ for (const viewport of [{ name: '390', width: 390, height: 844 }, { name: 'deskt
 
     test('shows the requested time, and a preset is chosen with the keyboard alone', async ({ page }) => {
       await load(page);
-      await expect(line(page)).toHaveText('This permission expires in 7 days');
+      await expect(line(page)).toContainText('7 days');
       await shot(page, `${viewport.name}-line`);
 
       await fold(page).focus();
@@ -59,7 +60,7 @@ for (const viewport of [{ name: '390', width: 390, height: 844 }, { name: 'deskt
 
       await page.keyboard.press('Tab');
       await page.keyboard.press('Enter'); // 1 hour
-      await expect(line(page)).toHaveText('This permission expires in 1 hour');
+      await expect(line(page)).toContainText('1 hour');
       expect((await calls(page)).filter((c) => c.name === 'expiryChange')).toEqual([{ name: 'expiryChange', args: 3_600_000 }]);
     });
 
@@ -68,7 +69,7 @@ for (const viewport of [{ name: '390', width: 390, height: 844 }, { name: 'deskt
       await fold(page).click();
       await page.getByLabel('Or type a time').fill('90M');
       await page.keyboard.press('Enter');
-      await expect(line(page)).toHaveText('This permission expires in 90 minutes');
+      await expect(line(page)).toContainText('90 minutes');
       expect((await calls(page)).at(-1)).toEqual({ name: 'expiryChange', args: 5_400_000 });
     });
 
@@ -85,7 +86,7 @@ for (const viewport of [{ name: '390', width: 390, height: 844 }, { name: 'deskt
       await page.keyboard.press('Enter');
       await expect(page.getByRole('alert')).toContainText('Use a number and a unit');
       expect((await calls(page)).filter((c) => c.name === 'expiryChange')).toEqual([]);
-      await expect(line(page)).toHaveText('This permission expires in 7 days');
+      await expect(line(page)).toContainText('7 days');
     });
 
     test('a very long time is allowed and shows the warning', async ({ page }) => {
@@ -93,7 +94,7 @@ for (const viewport of [{ name: '390', width: 390, height: 844 }, { name: 'deskt
       await fold(page).click();
       await page.getByLabel('Or type a time').fill('5y');
       await page.keyboard.press('Enter');
-      await expect(line(page)).toHaveText('This permission expires in 5 years');
+      await expect(line(page)).toContainText('5 years');
       await expect(page.getByText("That's a long time. OpenKey can't cancel it early once you approve.")).toBeVisible();
       expect(await noSidewaysScroll(page)).toBe(true);
       await shot(page, `${viewport.name}-warning`);

@@ -56,7 +56,6 @@
     buildRenderPlan,
     buildSummaryStatements,
     grantIsAppKeyDecrypt,
-    grantReachesSecretDataOrDecryption,
     sensitiveSummaryCount,
     grantHeading,
     PROTOCOL_HEADLINE,
@@ -72,6 +71,7 @@
   import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
   import { requestedExpiryMs } from "$lib/approval-expiry";
+  import { isOnceTier } from "$lib/renewal-default";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -638,7 +638,7 @@
         disabled={approving}
         onChange={onExpiryChange}
         {renewal}
-        sensitive={selectedGrants.some(grantReachesSecretDataOrDecryption)}
+        sensitive={isOnceTier(selectedGrants)}
         {requestedBy}
       />
     {/if}
