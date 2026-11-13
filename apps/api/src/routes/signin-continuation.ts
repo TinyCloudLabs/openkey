@@ -1,3 +1,5 @@
+import { cors } from 'hono/cors';
+import { requireSignInContinuation } from '../middleware/signin-continuation';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
@@ -9,6 +11,8 @@ import { currentSignInIdentity, signInAssertionOptions, signInContinuations,
 const prisma = createPrismaClient();
 const rp = { rpID: process.env.WEBAUTHN_RP_ID!, origin: process.env.WEBAUTHN_ORIGIN! };
 export const signInContinuationRouter = new Hono<SessionContext>();
+signInContinuationRouter.use('*', requireSignInContinuation);
+signInContinuationRouter.get('/capabilities', cors({ origin: '*', credentials: false }), c => c.json({ enabled: true, protocolVersion: 1 }));
 signInContinuationRouter.use('*', requireSession);
 signInContinuationRouter.use('*', async (c, next) => {
   const refused = rejectNonBrowserControlRequest(c);

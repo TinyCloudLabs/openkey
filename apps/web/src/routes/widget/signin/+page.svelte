@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { listenForSignInCancellation } from '$lib/signin-cancellation';
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { startAuthentication } from '@simplewebauthn/browser';
@@ -70,7 +71,10 @@
   onMount(() => {
     if (!window.opener || !requestId || !Number.isSafeInteger(chainId) || chainId <= 0 ||
         !origin || new URL(origin).origin !== origin) return;
-    ready = true;
+    void fetch(`${apiUrl}/api/delegate/signin/capabilities`, { credentials: 'omit' })
+      .then(response => response.ok ? response.json() : null)
+      .then(capability => { ready = capability?.enabled === true && capability?.protocolVersion === 1; })
+      .catch(() => { ready = false; });
     const receive = (event: MessageEvent) => {
       if (event.origin !== origin || event.source !== window.opener ||
           event.data?.requestId !== requestId || event.data?.protocolVersion !== 1) return;
@@ -81,9 +85,10 @@
       }
       if (event.data.type === 'openkey:close') { cancel(); window.close(); }
     };
+    const stopCancellation = listenForSignInCancellation(() => token ? payload() : undefined, () => { handingOff = false; });
     window.addEventListener('message', receive);
     window.addEventListener('pagehide', cancel);
-    return () => { window.removeEventListener('message', receive); window.removeEventListener('pagehide', cancel); };
+    return () => { stopCancellation(); window.removeEventListener('message', receive); window.removeEventListener('pagehide', cancel); };
   });
 </script>
 

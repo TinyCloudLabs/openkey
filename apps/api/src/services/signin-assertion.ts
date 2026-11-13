@@ -79,7 +79,7 @@ export function assertSignInSiwe(message: string, jwk: unknown, identity: SignIn
       parsed.siwe.address.toLowerCase() !== identity.address || Number(parsed.siwe.chainId) !== identity.chainId) {
     throw new Error('SIWE does not match sign-in identity');
   }
-  if (parsed.siwe.uri.startsWith('did:') && parsed.siwe.uri !== sessionDidForPublicJwk(jwk)) {
+  if (new URL(parsed.siwe.uri).protocol.toLowerCase() === 'did:' && parsed.siwe.uri !== sessionDidForPublicJwk(jwk)) {
     throw new Error('SIWE session URI does not match public session JWK');
   }
 }

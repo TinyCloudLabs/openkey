@@ -59,6 +59,8 @@ export interface WidgetTransportOptions {
   /**
    * Optional protocol version override. Defaults to 1.
    */
+  /** New sign-in messages are handled by the separately bound continuation channel. */
+  continuation?: () => { requestId: string; token: string } | undefined;
   protocolVersion?: number;
   /** V2 iframe phase identity supplied by the URL, before the request arrives. */
   requestId?: string;
@@ -208,6 +210,9 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
       opts.onLayoutApplied?.(ack.height, ack.layoutId);
       return;
     }
+    const continuation = opts.continuation?.();
+    if (continuation && (type === 'openkey:signin:cancel' || type === 'openkey:signin:finalize') &&
+        data.protocolVersion === 1 && data.requestId === continuation.requestId && data.token === continuation.token) return;
     if (type !== "openkey:sign:request" && type !== "openkey:close") {
       opts.onInvalid?.("unknown-message-type", event);
       return;

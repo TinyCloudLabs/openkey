@@ -1,3 +1,4 @@
+import { signInContinuationEnabled } from '../middleware/signin-continuation';
 import { assertSignInSiwe, currentSignInIdentity, signInContinuations } from '../services/signin-assertion';
 import { isAccountOriginAllowed } from '../origin-policy';
 // Delegate route - creates TinyCloud delegation for CLI auth flow
@@ -2566,6 +2567,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   if (body.requesterOrigin !== undefined) {
     return c.json({ error: 'requesterOrigin is only supported for ordinary delegation preparation', code: 'requester_origin_unsupported' }, 400);
   }
+  if (body.signInContinuation !== undefined && !signInContinuationEnabled()) return c.notFound();
   logSessionJwk('/api/delegate/authorize-sign-prepare', hasPrivateJwkMember(body.jwk));
   // Only the session key's public members are used or stored; a malformed
   // key counts as missing.
@@ -3166,6 +3168,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // externalSignature. Fail closed if the request/key state doesn't
   // match.
   if (bound.signInContinuation) {
+    if (!signInContinuationEnabled()) return c.notFound();
     try {
       const pinned = bound.signInContinuation;
       const current = await currentSignInIdentity(prisma, user.id, c.get('session').id,

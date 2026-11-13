@@ -16,6 +16,7 @@ test('DID session URI must derive from the request public JWK', () => {
 
 for (const [name, changed] of Object.entries({
   domain: message.replace('app.test wants', 'evil.test wants'),
+  uppercaseDID: message.replace('URI: did:', 'URI: DID:'),
   webURI: message.replace(sessionDidForPublicJwk(jwk), 'https://evil.test'),
   owner: message.replace(address, '0x2222222222222222222222222222222222222222'),
   chain: message.replace('Chain ID: 1', 'Chain ID: 2'),
