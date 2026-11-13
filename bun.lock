@@ -39,6 +39,7 @@
         "@better-auth/passkey": "^1.6.9",
         "@better-auth/utils": "0.3.1",
         "@openkey/capability-review": "workspace:*",
+        "@openkey/core": "workspace:*",
         "@openkey/db": "workspace:*",
         "@openkey/tee": "workspace:*",
         "@simplewebauthn/server": "13.3.0",

@@ -8,6 +8,7 @@ FROM base AS deps
 RUN apk add --no-cache python3 make g++
 COPY package.json bun.lock ./
 COPY apps/api/package.json ./apps/api/
+COPY packages/core/package.json ./packages/core/
 COPY packages/tee/package.json ./packages/tee/
 COPY packages/db/package.json ./packages/db/
 COPY packages/capability-review/package.json ./packages/capability-review/
@@ -35,6 +36,7 @@ RUN bun run build --filter @openkey/capability-review
 # The runtime image ships this stage's node_modules and packages/tee/dist.
 # Refuse to build it if sealed-key derivation would change (TC-964).
 RUN OPENKEY_KAT_REQUIRE_DIST=1 bun test packages/tee/tests/dstack-key-derivation.kat.test.ts
+RUN bun run build --filter @openkey/core
 RUN bun run build --filter @openkey/api
 
 # Production image
@@ -46,6 +48,8 @@ ENV TEE_MODE=production
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/apps/api/src ./apps/api/src
 COPY --from=builder /app/apps/api/package.json ./apps/api/
+COPY --from=builder /app/packages/core/dist ./packages/core/dist
+COPY --from=builder /app/packages/core/package.json ./packages/core/
 COPY --from=builder /app/packages/tee/dist ./packages/tee/dist
 COPY --from=builder /app/packages/tee/package.json ./packages/tee/
 COPY --from=builder /app/packages/db/dist ./packages/db/dist

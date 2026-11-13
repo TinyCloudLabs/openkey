@@ -1,3 +1,4 @@
+import { sameTinyCloudHost } from '@openkey/core';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import { Hono } from 'hono';
@@ -172,7 +173,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       const client = await tx.oauthClient.findUniqueOrThrow({ where: { clientId: row.clientId }, include: { organization: { select: { name: true } } } });
       const ceiling = enabledNativeDelegation(client);
       if (!ceiling) fail(409, 'preparation_superseded');
-      if (ceiling.tinycloudHost !== preCeiling.tinycloudHost || key.id !== preKey.id) fail(409, 'preparation_superseded');
+      if (!sameTinyCloudHost(ceiling.tinycloudHost, preCeiling.tinycloudHost) || key.id !== preKey.id) fail(409, 'preparation_superseded');
       const requested = permitted(row.requestedPermissions, ceiling);
       const ttlSeconds = Math.min(row.ttlSeconds, ceiling.maxDelegationTtlSeconds, ceiling.grantLifetimeSeconds);
       const nonce = row.siweNonce ?? randomBytes(12).toString('base64url').replaceAll('-', 'A').replaceAll('_', 'B');
@@ -254,7 +255,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       const client = await tx.oauthClient.findUniqueOrThrow({ where: { clientId: row.clientId } });
       const ceiling = enabledNativeDelegation(client);
       if (!ceiling || revision.permissions == null) fail(409, 'preparation_superseded');
-      if (revision.tinycloudHost !== ceiling.tinycloudHost) fail(409, 'preparation_superseded');
+      if (!sameTinyCloudHost(revision.tinycloudHost, ceiling.tinycloudHost)) fail(409, 'preparation_superseded');
       const permissions = permitted(revision.permissions, ceiling);
       const ttl = Math.min(ceiling.maxDelegationTtlSeconds, ceiling.grantLifetimeSeconds);
       const timestamps = /Issued At: ([^\n]+)\nExpiration Time: ([^\n]+)/.exec(revision.sessionSiwe);
