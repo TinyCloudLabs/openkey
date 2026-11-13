@@ -25,7 +25,7 @@
   import OwnerRevocationHandoff from './OwnerRevocationHandoff.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
   import { publicDelegationForCode } from '$lib/delegation-code-body';
-  import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, deviceRequestTtlSeconds, loadVerifiedDeviceRequest } from '$lib/device-authorization';
+  import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestDefaultSeconds, deviceRequestReason, deviceRequestTtlSeconds, loadVerifiedDeviceRequest } from '$lib/device-authorization';
   import DelegateLinkNotice from '$lib/components/delegate/delegate-link-notice.svelte';
   import {
     KNOWN_NODE_ORIGINS,
@@ -494,6 +494,7 @@
     });
     requestReason = normalizeReason(deviceRequestReason(record));
     expiryMaxMs = deviceRequestTtlSeconds(record) * 1000;
+    expiryParam = `${deviceRequestDefaultSeconds(record)}s`;
   })();
   deviceRequestVerified.catch((cause: unknown) => { error = delegateErrorMessage(cause); });
 
