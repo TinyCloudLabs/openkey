@@ -1,0 +1,60 @@
+name: Drop Session Expiry Backup
+
+# Removes ops_backup.session_expires_20261026, the backup table the session expiry backfill
+# (backfill-session-expiry.yml, TC-2101, #364) left in place (TC-2110). The 30-day web session
+# cap stays, so the backup is not needed. Run it once, from main.
+#
+# In one transaction: refuses unless the table holds exactly one row (an absent table is
+# "already gone" and exits 0 without changes), drops the table, and drops the schema
+# ops_backup only if it is then empty. No CASCADE. Prints the row count, the column names and
+# fixed text only: no row values and no connection string.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type exactly: drop-ops_backup.session_expires_20261026'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  drop:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Restore Bun dependency cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      - name: Drop session expiry backup
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DROP_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [ -z "$DATABASE_URL" ]; then
+            echo "DATABASE_URL secret not set" >&2
+            exit 1
+          fi
+          if [ "$DROP_CONFIRM" != "drop-ops_backup.session_expires_20261026" ]; then
+            echo "confirm must be: drop-ops_backup.session_expires_20261026" >&2
+            exit 1
+          fi
+          bun install --frozen-lockfile
+          bun node_modules/.bin/prisma generate --schema=./packages/db/prisma/schema.prisma
+          bun run scripts/ci-drop-session-expiry-backup.ts
