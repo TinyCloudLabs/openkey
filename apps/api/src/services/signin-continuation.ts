@@ -11,7 +11,7 @@ export type SignInIdentity = Readonly<{
   chainId: number;
 }>;
 
-type Pending = { identity: SignInIdentity; challenge: string; expiresAt: number; verified: boolean };
+type Pending = { identity: SignInIdentity; challenge: string; expiresAt: number; verified: boolean; handedOff: boolean };
 const TTL = 5 * 60 * 1000;
 const MAX_PENDING = 10_000;
 
@@ -52,7 +52,7 @@ export class SignInContinuations {
     // The server-selected random nonce and every identity field participate in
     // the WebAuthn challenge; an assertion for another request cannot resume it.
     const challenge = createHash('sha256').update(JSON.stringify([token, identity])).digest('base64url');
-    this.records.set(token, { identity: Object.freeze({ ...identity }), challenge, expiresAt: now + TTL, verified: false });
+    this.records.set(token, { identity: Object.freeze({ ...identity }), challenge, expiresAt: now + TTL, verified: false, handedOff: false });
     return { token, challenge };
   }
 
@@ -87,9 +87,22 @@ export class SignInContinuations {
     return record.identity;
   }
 
+  resume(token: string, identity: SignInIdentity, now = Date.now()): void {
+    const record = this.current(token, identity, now);
+    if (!record.verified || record.handedOff) throw new Error('Sign-in handoff unavailable');
+    record.handedOff = true;
+    record.expiresAt = Math.min(record.expiresAt, now + 60_000);
+  }
+
+  resumedIdentity(token: string, identity: SignInIdentity, now = Date.now()): SignInIdentity {
+    const pinned = this.identity(token, identity, now);
+    if (!this.current(token, identity, now).handedOff) throw new Error('Sign-in handoff has not resumed');
+    return pinned;
+  }
+
   /** Invoke synchronously with the existing authorization/preview consumption. */
   consume(token: string, identity: SignInIdentity, consumeAuthorization: () => boolean, now = Date.now()): void {
-    this.identity(token, identity, now);
+    this.resumedIdentity(token, identity, now);
     if (!consumeAuthorization()) throw new Error('Authorization consumption refused');
     this.records.delete(token);
   }

@@ -16,7 +16,7 @@ test('default-off routes match nonexistent routes without touching authenticatio
       if (setting === undefined) delete process.env.OPENKEY_SIGNIN_CONTINUATION;
       else process.env.OPENKEY_SIGNIN_CONTINUATION = setting;
       const missing = await app.request('/missing', { method: 'POST' });
-      for (const phase of ['options', 'verify', 'cancel', 'capabilities']) {
+      for (const phase of ['options', 'verify', 'resume', 'cancel', 'capabilities']) {
         const response = await app.request(`/api/delegate/signin/${phase}`, { method: phase === 'capabilities' ? 'GET' : 'POST', body: phase === 'capabilities' ? undefined : 'not json' });
         expect(response.status).toBe(missing.status);
         expect(await response.text()).toBe(await missing.clone().text());

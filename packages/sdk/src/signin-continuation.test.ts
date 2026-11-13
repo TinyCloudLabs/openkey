@@ -5,13 +5,13 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { createSiweMessage } from 'viem/siwe';
 import { sessionDidForPublicKey } from '@openkey/core';
 
-for (const verification of ['success', 'false', 'throw', 'timeout'] as const) {
+for (const verification of ['success', 'false', 'throw', 'timeout', 'cancel-retry', 'cancel-timeout'] as const) {
 test(`one reserved window; required verifier ${verification}`, async () => {
   const previous = { window: (globalThis as any).window, document: (globalThis as any).document, fetch: globalThis.fetch, setTimeout: globalThis.setTimeout };
   const listeners = new Set<(event: any) => void>();
-  if (verification === 'timeout') globalThis.setTimeout = ((fn: any, ms: number, ...args: any[]) => {
+  if (verification === 'timeout' || verification === 'cancel-timeout') globalThis.setTimeout = ((fn: any, ms: number, ...args: any[]) => {
     const timer = previous.setTimeout(fn, ms, ...args);
-    if (ms === 30_000) queueMicrotask(() => fn(...args));
+    if ((verification === 'timeout' && ms === 30_000) || (verification === 'cancel-timeout' && ms === 2000)) queueMicrotask(() => fn(...args));
     return timer;
   }) as typeof setTimeout;
   const host = 'https://openkey.test';
@@ -20,6 +20,7 @@ test(`one reserved window; required verifier ${verification}`, async () => {
   const siwe = createSiweMessage({ address: account.address, chainId: 1, domain: 'app.test', nonce: '12345678',
     uri: `${did}#${did.slice(8)}`, version: '1', issuedAt: new Date('2026-11-13T00:00:00Z') });
   let cancelledOnServer = false;
+  let cancelRequests = 0;
   let opens = 0;
   let active = true;
   const emit = (data: any, origin = host, source: any = popup) => {
@@ -28,8 +29,11 @@ test(`one reserved window; required verifier ${verification}`, async () => {
   const popup = { closed: false, location: { href: '' }, close() { this.closed = true; },
     postMessage(data: any) {
       if (data.type === 'openkey:signin:cancel') {
-        cancelledOnServer = true;
-        queueMicrotask(() => emit({ type: 'openkey:signin:cancelled', protocolVersion: 1, requestId: data.requestId, cancelled: true }));
+        cancelRequests++;
+        if (verification === 'cancel-timeout' && cancelRequests === 1) return;
+        const cancelled = !(verification === 'cancel-retry' && cancelRequests === 1);
+        cancelledOnServer = cancelled;
+        queueMicrotask(() => emit({ type: 'openkey:signin:cancelled', protocolVersion: 1, requestId: data.requestId, cancelled }));
       }
       if (data.type === 'openkey:signin:finalize') queueMicrotask(() => emit({
         type: 'openkey:signin:finalized', protocolVersion: 1, requestId: data.requestId, success: true,
@@ -93,6 +97,7 @@ test(`one reserved window; required verifier ${verification}`, async () => {
     if (verification === 'success') await result;
     else await expect(result).rejects.toThrow('verif');
     expect(cancelledOnServer).toBe(verification !== 'success');
+    expect(cancelRequests).toBe(verification.startsWith('cancel-') ? 2 : verification === 'success' ? 0 : 1);
     expect(prepared).toBe(true);
     expect(opens).toBe(1);
     expect(popup.closed).toBe(true);

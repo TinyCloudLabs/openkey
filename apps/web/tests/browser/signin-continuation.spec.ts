@@ -48,6 +48,7 @@ test(`${keyType}/${mode}: unknown app address (${initiallyAuthenticated ? 'exist
   await context.route('**/api/keys/*', route => route.fulfill({ json: { key } }));
   await context.route('**/api/delegate/signin/*', route => {
     if (route.request().url().endsWith('/capabilities')) return route.fulfill({ headers: { 'access-control-allow-origin': '*' }, json: { enabled: true, protocolVersion: 1 } });
+    if (route.request().url().endsWith('/resume')) return route.fulfill({ json: { resumed: true } });
     if (route.request().url().endsWith('/cancel')) { cancellations++; return route.fulfill({ json: { cancelled: true } }); }
     const body = route.request().postDataJSON();
     if (route.request().url().endsWith('/options')) return route.fulfill({ json: {

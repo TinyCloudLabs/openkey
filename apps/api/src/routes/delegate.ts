@@ -2947,7 +2947,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
           typeof body.requestOrigin !== 'string' || !Number.isSafeInteger(pending.chainId)) throw new Error('Invalid continuation');
       const identity = await currentSignInIdentity(prisma, user.id, c.get('session').id,
         pending.requestId, body.requestOrigin, key.id, pending.chainId);
-      signInContinuations.identity(pending.token, identity);
+      signInContinuations.resumedIdentity(pending.token, identity);
       assertSignInSiwe(body.siwe, body.jwk, identity);
       signInContinuation = { token: pending.token, identity };
     } catch {
@@ -3173,7 +3173,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
       const pinned = bound.signInContinuation;
       const current = await currentSignInIdentity(prisma, user.id, c.get('session').id,
         pinned.identity.requestId, pinned.identity.origin, key.id, pinned.identity.chainId);
-      signInContinuations.identity(pinned.token, current);
+      signInContinuations.resumedIdentity(pinned.token, current);
     } catch {
       return c.json({ code: 'signin_continuation_refused', error: 'Sign-in identity changed or expired' }, 403);
     }

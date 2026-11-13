@@ -9,6 +9,7 @@ test('continuation and actual authorization/preview claims are spent together ex
     address: '0x1111111111111111111111111111111111111111', keyType: 'MANAGED', chainId: 1, origin: 'https://app.test' };
   const pending = store.issue(identity);
   store.verified(pending.token, identity, pending.challenge);
+  store.resume(pending.token, identity);
   const common = { userId: identity.userId, keyId: identity.keyId, keyAddress: identity.address,
     jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
     host: 'https://node.test', spaceId: 'space' };

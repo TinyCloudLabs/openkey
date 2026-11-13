@@ -165,7 +165,13 @@ export interface TinyCloudSignInIdentity extends AuthResult {
   chainId: number;
 }
 
-/** Security-critical: the continuation never resolves before this verifier accepts. */
+/**
+ * Security-critical trust boundary for direct consumers. Recover the signature
+ * over signedMessage and check the pinned owner/chain, original nonce, session
+ * JWK/DID, requesting origin and capability subset before returning true.
+ * TinyCloud SDK consumers use TinyCloud's own verifier. False, rejection or
+ * timeout rejects the continuation rather than returning an unchecked result.
+ */
 export type TinyCloudSignInVerifier = (input: {
   result: TinyCloudAuthorizationResultV1;
   identity: TinyCloudSignInIdentity;
@@ -1149,18 +1155,23 @@ export class OpenKey {
     const cancel = async () => {
       cancelled = true;
       this.activeFlowCancellations.delete(cancel);
+      // Managed signature responses close only after server finalize has
+      // consumed the continuation; verifier rejection then has no token left to cancel.
       if (cancellationToken && !reserved.window.closed) {
-        await new Promise<void>((resolve) => {
-          const cleanup = () => { clearTimeout(timeout); window.removeEventListener('message', receive); resolve(); };
-          const receive = (event: MessageEvent) => {
-            if (event.origin === this.host && event.source === reserved.window &&
-                event.data?.type === 'openkey:signin:cancelled' && event.data?.protocolVersion === 1 &&
-                event.data?.requestId === requestId) cleanup();
-          };
-          const timeout = setTimeout(cleanup, 2000);
-          window.addEventListener('message', receive);
-          reserved.window.postMessage({ type: 'openkey:signin:cancel', protocolVersion: 1, requestId, token: cancellationToken }, this.host);
-        });
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const confirmed = await new Promise<boolean>((resolve) => {
+            const cleanup = (cancelled: boolean) => { clearTimeout(timeout); window.removeEventListener('message', receive); resolve(cancelled); };
+            const receive = (event: MessageEvent) => {
+              if (event.origin === this.host && event.source === reserved.window &&
+                  event.data?.type === 'openkey:signin:cancelled' && event.data?.protocolVersion === 1 &&
+                  event.data?.requestId === requestId) cleanup(event.data.cancelled === true);
+            };
+            const timeout = setTimeout(() => cleanup(false), 2000);
+            window.addEventListener('message', receive);
+            reserved.window.postMessage({ type: 'openkey:signin:cancel', protocolVersion: 1, requestId, token: cancellationToken }, this.host);
+          });
+          if (confirmed || reserved.window.closed) break;
+        }
       }
       reserved.window.close();
     };

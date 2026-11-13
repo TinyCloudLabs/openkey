@@ -12,6 +12,8 @@ describe('request-bound sign-in continuation', () => {
     const { token, challenge } = store.issue(owner, 0);
     expect(() => store.identity(token, owner, 1)).toThrow('fresh passkey');
     store.verified(token, owner, challenge, 1);
+    expect(() => store.consume(token, owner, () => true, 1)).toThrow("not resumed");
+    store.resume(token, owner, 1);
     expect(store.identity(token, owner, 2)).toEqual(owner);
     expect(() => store.consume(token, owner, () => false, 2)).toThrow('refused');
     store.consume(token, owner, () => true, 3);
@@ -67,4 +69,19 @@ test('one account cannot fill shared capacity, even across sessions; cancellatio
   }
   expect(() => limited.issue(owner, 2)).toThrow('issuance limit');
   expect(() => limited.issue(owner, 60_000)).not.toThrow();
+});
+
+
+test('resume shortens the remaining lifetime to at most sixty seconds and is single-use', () => {
+  const store = new SignInContinuations();
+  const issued = store.issue(owner, 0);
+  store.verified(issued.token, owner, issued.challenge, 1);
+  store.resume(issued.token, owner, 2);
+  expect(() => store.resume(issued.token, owner, 3)).toThrow('unavailable');
+  expect(store.resumedIdentity(issued.token, owner, 60_001)).toEqual(owner);
+  expect(() => store.resumedIdentity(issued.token, owner, 60_002)).toThrow('expired');
+  const late = store.issue(owner, 100_000);
+  store.verified(late.token, owner, late.challenge, 100_001);
+  store.resume(late.token, owner, 399_999);
+  expect(() => store.resumedIdentity(late.token, owner, 400_000)).toThrow('expired');
 });
