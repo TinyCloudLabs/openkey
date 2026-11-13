@@ -79,20 +79,26 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     const body = { keyId: ownerKey.id, jwk: targetJwk, host: request.nodeOrigin, permissions, expiry: '604800s', approvalRequestId: id };
     const prepareAs = (overrides: Record<string, unknown>) => post('/api/delegate/prepare', { ...body, ...overrides }, { cookie });
     const expiryOf = (siwe: string) => Date.parse(/^Expiration Time: (.+)$/m.exec(siwe)![1]!);
+    const issuedAtOf = (siwe: string) => Date.parse(/^Issued At: (.+)$/m.exec(siwe)![1]!);
     // The signed request carries the suggestion; the schema keeps it between a second and the maximum.
     expect(request.suggestedLifetimeSeconds).toBe(604_800);
     const base = { issuer: signer.did, requestVersion: 1, targetDid: signer.did, targetPublicJwk: targetJwk, nodeOrigin: request.nodeOrigin, permissions, grantLifetimeSeconds: 3600, resultEncryptionPublicJwk: request.resultEncryptionPublicJwk };
     expect(() => parseApprovalRequest({ ...base, suggestedLifetimeSeconds: 3601 })).toThrow();
     expect(() => parseApprovalRequest({ ...base, suggestedLifetimeSeconds: 0 })).toThrow();
     expect(() => parseApprovalRequest({ ...base, suggestedLifetimeSeconds: 3600 })).not.toThrow();
-    // The signed maximum is not clamped to the 30-day link ceiling, and it stays the ceiling.
+    // The signed maximum is not capped at 30 days, including an owner-selected 40-day lifetime.
+    const fortyDays = await prepareAs({ expiry: '3456000s' });
+    expect(fortyDays.status, await fortyDays.clone().text()).toBe(200);
+    const fortyDaySiwe = z.object({ prepared: z.object({ siwe: z.string() }).passthrough() }).parse(await fortyDays.json()).prepared.siwe;
+    expect(Math.abs(expiryOf(fortyDaySiwe) - issuedAtOf(fortyDaySiwe) - 3_456_000_000)).toBeLessThanOrEqual(5_000);
+    // The signed maximum is still the ceiling.
     const year = await prepareAs({ expiry: '31536000s' });
     expect(year.status, await year.clone().text()).toBe(200);
     const yearSiwe = z.object({ prepared: z.object({ siwe: z.string() }).passthrough() }).parse(await year.json()).prepared.siwe;
-    expect(expiryOf(yearSiwe) - Date.now()).toBeGreaterThan(365 * 86_400_000 - 60_000);
+    expect(Math.abs(expiryOf(yearSiwe) - issuedAtOf(yearSiwe) - 31_536_000_000)).toBeLessThanOrEqual(5_000);
     expect((await prepareAs({ expiry: '31536001s' })).status).toBe(400);
     expect((await prepareAs({ expiry: '31536001s', expiryChosen: true })).status).toBe(400);
-    // The suggested default prepares, signs and saves as itself.
+    // The requester-suggested default is shown on the owner page and is the exact lifetime prepared for signing.
     const preparedResponse = await prepareAs({});
     expect(preparedResponse.status, await preparedResponse.clone().text()).toBe(200);
     const prepared = z.object({
@@ -100,12 +106,32 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
       authorizationContext: z.object({ token: z.string() }),
       selectedActionKeys: z.array(z.string()),
     }).parse(await preparedResponse.json());
-    expect(expiryOf(prepared.prepared.siwe) - Date.now()).toBeLessThanOrEqual(604_800_000);
-    expect(expiryOf(prepared.prepared.siwe) - Date.now()).toBeGreaterThan(604_800_000 - 60_000);
+    expect(request.suggestedLifetimeSeconds).toBe(604_800);
+    expect(Math.abs(expiryOf(prepared.prepared.siwe) - issuedAtOf(prepared.prepared.siwe) - request.suggestedLifetimeSeconds * 1000)).toBeLessThanOrEqual(5_000);
     const approval = { ...body, protocolVersion: 1, prepared: prepared.prepared, authorizationContextToken: prepared.authorizationContext.token, selectedActionIds: prepared.selectedActionKeys };
     const approvedResponse = await post('/api/delegate', approval, { cookie });
     expect(approvedResponse.status, await approvedResponse.clone().text()).toBe(200);
     const saved = await prisma.approvalRequest.findUniqueOrThrow({ where: { id } });
     expect(saved.delegationExpiresAt!.getTime()).toBe(expiryOf(prepared.prepared.siwe));
+    const longId = 'bcdefghijklmnopqrstuvwxyza';
+    await createPrismaApprovalRequestStore(prisma).register({
+      id: longId, bodyCid: opened.header.bodyCid, issuer: opened.header.issuer, request,
+      expiresAt: new Date(opened.header.expiresAt), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null,
+    });
+    const longPreparedResponse = await prepareAs({ approvalRequestId: longId, expiry: '3456000s' });
+    expect(longPreparedResponse.status, await longPreparedResponse.clone().text()).toBe(200);
+    const longPrepared = z.object({
+      prepared: z.object({ siwe: z.string() }).passthrough(),
+      authorizationContext: z.object({ token: z.string() }),
+      selectedActionKeys: z.array(z.string()),
+    }).parse(await longPreparedResponse.json());
+    expect(Math.abs(expiryOf(longPrepared.prepared.siwe) - issuedAtOf(longPrepared.prepared.siwe) - 3_456_000_000)).toBeLessThanOrEqual(5_000);
+    const longApprovalResponse = await post('/api/delegate', {
+      ...body, approvalRequestId: longId, protocolVersion: 1, prepared: longPrepared.prepared,
+      authorizationContextToken: longPrepared.authorizationContext.token, selectedActionIds: longPrepared.selectedActionKeys,
+    }, { cookie });
+    expect(longApprovalResponse.status, await longApprovalResponse.clone().text()).toBe(200);
+    const longSaved = await prisma.approvalRequest.findUniqueOrThrow({ where: { id: longId } });
+    expect(longSaved.delegationExpiresAt!.getTime()).toBe(expiryOf(longPrepared.prepared.siwe));
   }, 20_000);
 }

@@ -1,6 +1,6 @@
 import { isAccountOriginAllowed } from '../origin-policy';
 // Delegate route - creates TinyCloud delegation for CLI auth flow
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { routePath } from 'hono/route';
 import { createPrismaClient } from '@openkey/db';
@@ -20,7 +20,9 @@ import {
   ensureEip55,
   generateHostSIWEMessage,
   makeSpaceId,
+  siweToDelegationHeaders,
 } from '@tinycloud/node-sdk-wasm';
+import { buildOwnerRevocationSiwe } from '@openkey/capability-review';
 import {
   canonicalizeServiceName,
   entriesForSelectedActions,
@@ -57,7 +59,7 @@ import {
   type RecapEntry,
   type SessionAbilities,
 } from './delegate-session';
-import { log, logError, logSessionJwk, recordAccountOriginRefused } from '../log';
+import { log, logError, logMetric, logSessionJwk, recordAccountOriginRefused } from '../log';
 
 // Re-export the pure delegation helpers so existing external test files
 // (e.g. delegate-oauth-route.test.ts) that import them from this module
@@ -88,7 +90,7 @@ import {
   type AuthorizationContextToken,
   type AuthorizationContextClaim,
 } from '../services/authorization-signing';
-import { MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
+import { MIN_DELEGATION_EXPIRY_MS, MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSignedSubset, parseStrictSiwe, SIGNED_SUBSET_REFUSAL_CODE } from '../services/signed-subset';
 import { checkSiweOrigin } from '../services/siwe-origin';
@@ -137,6 +139,44 @@ import type { PreparedHandoffService } from '../services/prepared-handoff';
 import { admitApprovalDelegation, checkApprovalDelegation, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
+async function revokeActivatedManagedDelegation(
+  host: string,
+  key: Parameters<typeof signManagedKey>[0],
+  sealedBlob: string,
+  ownerDid: string,
+  delegationCid: string,
+): Promise<void> {
+  const now = new Date();
+  try {
+    const siwe = buildOwnerRevocationSiwe({
+      kind: 'owner-revocation',
+      ownerDid,
+      cid: delegationCid,
+      nonce: randomBytes(16).toString('hex'),
+      expiresAt: new Date(now.getTime() + 600_000).toISOString(),
+    }, SIWE_DOMAIN, now);
+    const signature = await signManagedKey(key, sealedBlob, siwe);
+    const response = await fetch(`${host.replace(/\/+$/, '')}/revoke`, {
+      method: 'POST',
+      headers: siweToDelegationHeaders({ siwe, signature }) as Record<string, string>,
+      redirect: 'error',
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      logMetric('warn', 'delegate_session_revoke_failed', { status: response.status });
+      return;
+    }
+    const result: unknown = await response.json().catch(() => null);
+    if (!result || typeof result !== 'object' ||
+        !('revoked' in result) || result.revoked !== true ||
+        !('cid' in result) || result.cid !== delegationCid) {
+      logMetric('warn', 'delegate_session_revoke_failed', { status: response.status });
+    }
+  } catch (error) {
+    logError('warn', 'delegate_session_revoke_failed', error);
+  }
+}
+
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
   activePreparedHandoffService = service;
 }
@@ -407,7 +447,6 @@ const DEFAULT_DELEGATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
  * states its own maximum and is held to it by its window check instead (TC-2274).
  */
 const MAX_DELEGATION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
-const MIN_DELEGATION_EXPIRY_MS = 60 * 1000; // 1 minute
 
 const MS_UNIT_FACTORS: Record<string, number> = {
   ms: 1,
@@ -1674,6 +1713,7 @@ delegateRouter.post('/', async (c) => {
     });
 
     let hostActivated = false;
+    let activationMayStillApply = false;
     const requestedSpaces = delegationSpaces(preparedEntries, baseline);
     let spaceReadiness = activationReadiness(requestedSpaces, preparedEntries);
     try {
@@ -1696,6 +1736,7 @@ delegateRouter.post('/', async (c) => {
         spaceReadiness = activationReadiness(requestedSpaces, preparedEntries, activationResult);
       }
     } catch (e) {
+      activationMayStillApply = true;
       logError('warn', 'delegate_session_activation_failed', e);
     }
 
@@ -1708,7 +1749,7 @@ delegateRouter.post('/', async (c) => {
     }));
 
     recordAppSignIn(prisma, user.id, bound.appOrigin);
-    return c.json(await saveApprovalDelegation(body, user.id, {
+    const delegation = {
       delegationHeader: session.delegationHeader,
       delegationCid: session.delegationCid,
       spaceId: bound.spaceId,
@@ -1736,7 +1777,18 @@ delegateRouter.post('/', async (c) => {
       signature,
       signedMessage: bound.originalSiwe,
       permissions: effectiveGrants,
-    }));
+    };
+    let saved: typeof delegation;
+    try {
+      saved = await saveApprovalDelegation(body, user.id, delegation);
+    } catch (error) {
+      if (body.approvalRequestId !== undefined && (hostActivated || activationMayStillApply)) {
+        // A timeout also sends a best-effort revoke; if it lands before a late activation, the grant can still go live (TC-2795).
+        await revokeActivatedManagedDelegation(host, key, key.sealedBlob, ownerDid, session.delegationCid);
+      }
+      throw error;
+    }
+    return c.json(saved);
     } catch (error) {
       await releaseApprovalDelegation(body);
       throw error;
@@ -2443,7 +2495,7 @@ delegateRouter.post('/complete', async (c) => {
   }));
 
   recordAppSignIn(prisma, user.id, signInAppOrigin);
-  return c.json(await saveApprovalDelegation(body, user.id, {
+  const delegation = {
     delegationHeader: session.delegationHeader,
     delegationCid: session.delegationCid,
     spaceId,
@@ -2473,7 +2525,10 @@ delegateRouter.post('/complete', async (c) => {
     //   `permissions` is the effective grant set after any narrowing.
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
-  }));
+  };
+  // OpenKey holds neither the wallet key nor the session key, so a save failure after confirmed activation cannot be revoked here. The owner-signed grant lives for the lifetime the owner chose and saw (the suggested lifetime if provided, otherwise grantLifetimeSeconds; no 24-hour bound or 30-day cap; TC-2795).
+  const saved = await saveApprovalDelegation(body, user.id, delegation);
+  return c.json(saved);
   } catch (error) {
     await releaseApprovalDelegation(body);
     throw error;

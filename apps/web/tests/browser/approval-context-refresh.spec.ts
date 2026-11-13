@@ -16,7 +16,7 @@ const narrowed = [capabilities, read].map(keyFor);
 type Scenario = 'success' | 'expired-link' | 'direct-expired' | 'expired-token' | 'busy-expired-code' | 'busy-context-code' | 'refresh-prepare-context' | 'refused' | 'twice' | 'second-refused' | 'reject-signature' | 'changed-selection' | 'duplicate-selection' | 'missing-selection' | 'empty-siwe' | 'malformed-siwe' | 'changed-message' | 'mixed-recap' | 'malformed-caveat';
 type Call = { path: string; body: Record<string, unknown> };
 
-async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scenario, code = 'context-expired') {
+async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scenario, code = 'context-expired', lifetime = { grantLifetimeSeconds: 3_456_000, suggestedLifetimeSeconds: 604_800 }) {
   const calls: Call[] = [];
   let prepares = 0;
   let approvals = 0;
@@ -51,7 +51,9 @@ async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scena
     if (pathname === `/api/approval-requests/${id}/load`) return reply(200, {
       requestId: id, expiresAt: new Date(Date.now() + 600000).toISOString(), approved: false,
       request: { targetDid: target, targetPublicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) }, nodeOrigin: 'https://node.tinycloud.xyz',
-        permissions: [{ service: 'tinycloud.kv', space, path: 'notes/', actions: [read, write] }], grantLifetimeSeconds: 3600 },
+        permissions: [{ service: 'tinycloud.kv', space, path: 'notes/', actions: [read, write] }],
+        grantLifetimeSeconds: lifetime.grantLifetimeSeconds,
+        ...(lifetime.suggestedLifetimeSeconds === undefined ? {} : { suggestedLifetimeSeconds: lifetime.suggestedLifetimeSeconds }) },
     });
     if (pathname === '/api/delegate/prepare') {
       prepares++;
@@ -70,9 +72,10 @@ async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scena
         const resource = ability === capabilities ? `${space}/capabilities` : `${space}/kv/notes/`;
         (att[resource] ??= {})[ability] = [{}];
       }
+      const lifetimeSeconds = typeof body.expiry === 'string' ? Number.parseFloat(body.expiry) : 3600;
       let siwe = ['cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '', `URI: ${target}#${target}`,
         'Version: 1', 'Chain ID: 1', `Nonce: qa12345${prepares}`, `Issued At: ${new Date().toISOString()}`,
-        `Expiration Time: ${new Date(Date.now() + 3600000).toISOString()}`, 'Resources:', `- ${makeRecapResource(att)}`].join('\n');
+        `Expiration Time: ${new Date(Date.now() + lifetimeSeconds * 1000).toISOString()}`, 'Resources:', `- ${makeRecapResource(att)}`].join('\n');
       if (prepares >= 3 && scenario === 'empty-siwe') siwe = '';
       if (prepares >= 3 && scenario === 'malformed-siwe') siwe = 'Not a SIWE message';
       if (prepares >= 3 && scenario === 'mixed-recap') siwe += '\n- urn:recap:!!!';
@@ -117,13 +120,20 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
   for (const code of ['context-expired', 'context-not-found']) {
     test(`${keyType} ${code} refresh keeps the selection and completes approval`, async ({ page }) => {
       const flow = await open(page, keyType, 'success', code);
+      await expect(page.locator('.expiry-line')).toHaveText(/Approval expires:\s*7d/);
       await page.getByRole('button', { name: 'Approve', exact: true }).click();
       await expect(page.getByRole('heading', { name: /Authenticated|Approved/ })).toBeVisible();
       expect(flow.counts()).toEqual({ prepares: 3, approvals: 2 });
-      const prepare = flow.calls.filter(c => c.path === '/api/delegate/prepare').at(-1)!;
+      const prepares = flow.calls.filter(call => call.path === '/api/delegate/prepare');
+      expect(prepares.map(call => call.body.expiry)).toEqual(['604800s', '604800s', '604800s']);
+      const prepare = prepares.at(-1)!;
       expect(prepare.body).toMatchObject({ keyId: 'owner-key', approvalRequestId: id, host: 'https://node.tinycloud.xyz', actionKeys: narrowed });
-      const completed = flow.calls.filter(c => c.path === '/api/delegate' || c.path === '/api/delegate/complete');
+      const completed = flow.calls.filter(call => call.path === '/api/delegate' || call.path === '/api/delegate/complete');
       expect(completed[1].body.selectedActionIds).toEqual(narrowed);
+      const signedMessage = String((completed[1].body.prepared as { siwe: string }).siwe);
+      const issuedAt = Date.parse(/^Issued At: (.+)$/m.exec(signedMessage)![1]!);
+      const expiresAt = Date.parse(/^Expiration Time: (.+)$/m.exec(signedMessage)![1]!);
+      expect(Math.abs(expiresAt - issuedAt - 604_800_000)).toBeLessThanOrEqual(5_000);
       expect(completed[1].body.authorizationContextToken).toBe('context-3');
       if (keyType === 'EXTERNAL') {
         const signed = await page.evaluate(() => {
@@ -138,6 +148,7 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
       }
     });
   }
+
   for (const scenario of ['expired-link', 'direct-expired', 'expired-token', 'busy-expired-code', 'busy-context-code', 'refresh-prepare-context', 'refused', 'twice', 'second-refused', 'changed-selection', 'duplicate-selection', 'missing-selection', 'empty-siwe', 'malformed-siwe', 'changed-message', 'mixed-recap', 'malformed-caveat', ...(keyType === 'EXTERNAL' ? ['reject-signature' as const] : [])] as const) {
     test(`${keyType} ${scenario} ends recovery without another retry`, async ({ page }) => {
       const flow = await open(page, keyType, scenario);
@@ -180,3 +191,16 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
     });
   }
 }
+test('an unsuggested one-hour request displays and signs its requested lifetime', async ({ page }) => {
+  const flow = await open(page, 'MANAGED', 'success', 'context-expired', { grantLifetimeSeconds: 3600, suggestedLifetimeSeconds: undefined });
+  await expect(page.locator('.expiry-line')).toHaveText(/Approval expires:\s*1h/);
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect(page.getByRole('heading', { name: /Authenticated|Approved/ })).toBeVisible();
+  const prepares = flow.calls.filter(call => call.path === '/api/delegate/prepare');
+  expect(prepares.map(call => call.body.expiry)).toEqual(['3600s', '3600s', '3600s']);
+  const completed = flow.calls.filter(call => call.path === '/api/delegate' || call.path === '/api/delegate/complete');
+  const signedMessage = String((completed[1].body.prepared as { siwe: string }).siwe);
+  const issuedAt = Date.parse(/^Issued At: (.+)$/m.exec(signedMessage)![1]!);
+  const expiresAt = Date.parse(/^Expiration Time: (.+)$/m.exec(signedMessage)![1]!);
+  expect(Math.abs(expiresAt - issuedAt - 3_600_000)).toBeLessThanOrEqual(5_000);
+});

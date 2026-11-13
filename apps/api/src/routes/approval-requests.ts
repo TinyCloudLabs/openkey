@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { parseLink, resolveLink, parseApprovalRequest, validateLinkHeader, verifyHeader, linkIssuerPublicKey } from '@tinycloud/share-envelope/links';
+import { LATEST_SIWE_TIME_MS, MIN_DELEGATION_EXPIRY_MS } from '../services/approval-expiry';
 import { ApprovalResultError, ApprovalResultService, linkRequiredError } from '../services/approval-results';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
@@ -42,6 +43,22 @@ async function fetchLink(input: Parameters<typeof fetch>[0], init?: Parameters<t
   return fetch(source, { ...init, redirect: 'error', credentials: 'omit' });
 }
 
+function validateGrantLifetime(value: unknown): asserts value is { grantLifetimeSeconds: number } {
+  let seconds: unknown;
+  if (value && typeof value === 'object' && 'grantLifetimeSeconds' in value) {
+    seconds = value.grantLifetimeSeconds;
+  }
+  if (typeof seconds !== 'number' || !Number.isSafeInteger(seconds) || seconds <= 0) {
+    throw new ApprovalResultError('invalid_request', 'grantLifetimeSeconds must be a positive safe integer with an expiry no later than year 9999', 400);
+  }
+  if (seconds * 1000 < MIN_DELEGATION_EXPIRY_MS) {
+    throw new ApprovalResultError('invalid_request', `grantLifetimeSeconds must be at least ${MIN_DELEGATION_EXPIRY_MS / 1000} seconds`, 400);
+  }
+  if (Date.now() + seconds * 1000 > LATEST_SIWE_TIME_MS) {
+    throw new ApprovalResultError('invalid_request', 'grantLifetimeSeconds must be a positive safe integer with an expiry no later than year 9999', 400);
+  }
+}
+
 export const approvalRequestRouter = new Hono();
 approvalRequestRouter.use('*', async (c, next) => { c.header('Cache-Control', 'no-store'); await next(); });
 approvalRequestRouter.onError((error, c) => {
@@ -64,6 +81,7 @@ approvalRequestRouter.post('/approval-requests/:id/load', async (c) => {
   }
   const opened = await resolveLink(link, { trustedOrigins: [viewerOrigin], apiOrigin: linksOrigin, fetch: Object.assign(fetchLink, { preconnect: fetch.preconnect }) });
   if (opened.type !== 'openkey-approval-request') throw new ApprovalResultError('invalid_request', 'Not an approval request', 400);
+  validateGrantLifetime(opened.value);
   const request = parseApprovalRequest(opened.value, { issuer: opened.header.issuer });
   const record = await store.register({ id, bodyCid: opened.header.bodyCid, issuer: opened.header.issuer, request, expiresAt: new Date(opened.header.expiresAt), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null });
   // `denied` is additive (TC-2459): a reopened declined link can say so. `approved` keeps its meaning.
