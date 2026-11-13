@@ -934,11 +934,11 @@ describe('definite widget refusals reach the app as their own code (TC-2928)', (
   // handleWidgetError is the private step every widget failure passes through before the app's promise rejects.
   const openkey = Object.create(OpenKey.prototype) as unknown as { handleWidgetError(error: unknown): unknown };
 
-  test('names each definite server refusal the widget reports', () => {
-    for (const code of ['APP_KEY_GRANT_REFUSED', 'KEY_DELETE_NOT_GRANTABLE', 'INVALID_SIWE_RECAP']) {
+  for (const code of ['APP_KEY_GRANT_REFUSED', 'KEY_DELETE_NOT_GRANTABLE', 'INVALID_SIWE_RECAP']) {
+    test(`the widget's ${code} refusal rejects with code ${code}`, () => {
       expect(openkey.handleWidgetError({ code: 'UNKNOWN', message: code })).toEqual({ code, message: code });
-    }
-  });
+    });
+  }
 
   test('leaves every other widget error unchanged', () => {
     for (const error of [
