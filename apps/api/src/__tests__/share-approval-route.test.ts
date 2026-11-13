@@ -18,7 +18,7 @@ async function fixture() {
     uri: strictSessionDid(publicJwk), version: '1', chainId: 1, nonce: '12345678',
     issuedAt: new Date(now - 1000).toISOString(), expirationTime: new Date(now + 3600_000).toISOString(),
   }).prepareMessage();
-  const intent = { origin: 'https://thirdparty.example', keyId: 'key',
+  const intent = { approvalNonce: 'd'.repeat(64), origin: 'https://thirdparty.example', keyId: 'key',
     session: { siwe, signature: await wallet.signMessage(siwe), publicJwk },
     expiresAt: new Date(now + 1800_000).toISOString() };
   const account = { userId: 'owner', authSessionId: 'auth-session', authSessionGeneration: 'generation', keyId: 'key', address: wallet.address, keyType: 'MANAGED' as const };
@@ -67,6 +67,7 @@ test('typed new-share route requires fresh approval and signs once', async () =>
   expect((await f.call('verify', { requestId: request.requestId, keyId: request.keyId, token: request.token, response: { fixture: true } })).status).toBe(200);
   expect((await f.call('resume', { requestId: request.requestId, keyId: request.keyId, token: request.token })).status).toBe(200);
   expect((await f.call('sign', { ...request, siwe: 'caller bytes' })).status).toBe(400);
+  expect((await f.call('sign', { ...request, approvalNonce: 'e'.repeat(64) })).status).toBe(400);
   const signed = await f.call('sign', request);
   expect(signed.status).toBe(200);
   expect((await signed.json() as any).shareId).toBe(preview.shareId);

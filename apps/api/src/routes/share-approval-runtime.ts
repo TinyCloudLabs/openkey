@@ -15,9 +15,9 @@ const db = createPrismaClient();
 const requests = new ShareApprovalRequests();
 // Separate purpose-bound lifecycle and issuance quotas; no sign-in token can enter this store.
 const continuations = new ApprovalContinuations();
-registerShareSessionInvalidator((userId, sessionId) => {
-  requests.invalidateSession(userId, sessionId);
-  continuations.cancelSession(userId, sessionId);
+registerShareSessionInvalidator((userId, sessionId, keepGeneration) => {
+  const retained = requests.invalidateSession(userId, sessionId, keepGeneration);
+  continuations.cancelSession(userId, sessionId, retained);
 });
 const rp = { rpID: process.env.WEBAUTHN_RP_ID!, origin: process.env.WEBAUTHN_ORIGIN! };
 

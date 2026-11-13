@@ -68,10 +68,10 @@ beforeAll(async () => {
 }, 90000);
 afterAll(async () => { await db?.$disconnect(); });
 const call = (phase: string, body: unknown, useCookie = cookie) => router.request(`http://api.test/${phase}`, { method: 'POST', headers: { origin, cookie: useCookie, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-async function intent() {
+async function intent(signingWallet = wallet, keyId = 'key') {
   const publicJwk = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
-  const siwe = new SiweMessage({ domain: 'thirdparty.example', address: wallet.address, uri: strictSessionDid(publicJwk), version: '1', chainId: 1, nonce: '12345678', issuedAt: new Date().toISOString(), expirationTime: new Date(Date.now() + 3600_000).toISOString() }).prepareMessage();
-  return { keyId: 'key', origin: 'https://thirdparty.example', session: { siwe, signature: await wallet.signMessage(siwe), publicJwk }, expiresAt: new Date(Date.now() + 1800_000).toISOString() };
+  const siwe = new SiweMessage({ domain: 'thirdparty.example', address: signingWallet.address, uri: strictSessionDid(publicJwk), version: '1', chainId: 1, nonce: '12345678', issuedAt: new Date().toISOString(), expirationTime: new Date(Date.now() + 3600_000).toISOString() }).prepareMessage();
+  return { approvalNonce: 'd'.repeat(64), keyId, origin: 'https://thirdparty.example', session: { siwe, signature: await signingWallet.signMessage(siwe), publicJwk }, expiresAt: new Date(Date.now() + 1800_000).toISOString() };
 }
 async function prepare() {
   const outer = crypto.randomUUID();
@@ -111,17 +111,21 @@ test('a different auth session cannot claim, advance or cancel an approval', asy
   }
   expect((await call('preview', f.body)).status).toBe(200);
 });
-test('real session refresh refuses resumed share approvals', async () => {
+test('a real deadline-extending refresh refuses resumed share approvals', async () => {
   const f = await verified();
-  const before = await db.session.findUnique({ where: { id: 'session-A' } });
-  await db.session.update({ where: { id: 'session-A' }, data: { createdAt: new Date(Date.now() - 2 * 86400_000), expiresAt: new Date(Date.now() + 5 * 86400_000) } });
-  const response = await auth.handler(new Request('https://api.openkey.test/api/auth/get-session', { headers: { cookie } }));
-  expect(response.status).toBe(200);
-  const after = await db.session.findUnique({ where: { id: 'session-A' } });
-  if (!before || !after) throw new Error('fixture session disappeared');
-  expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
-  const result = await call('sign', { ...f.body, intentDigest: f.preview.intentDigest, externalSignature: await wallet.signMessage(f.preview.prepared.siwe) });
-  expect(result.status).toBe(403);
+  const context = await auth.$context;
+  const before = await db.session.findUniqueOrThrow({ where: { id: 'session-A' } });
+  const updateAge = context.sessionConfig.updateAge;
+  try {
+    // Force only the real refresh path; do not change the database generation in the setup.
+    context.sessionConfig.updateAge = 0;
+    const response = await auth.handler(new Request('https://api.openkey.test/api/auth/get-session', { headers: { cookie } }));
+    expect(response.status).toBe(200);
+  } finally { context.sessionConfig.updateAge = updateAge; }
+  const after = await db.session.findUniqueOrThrow({ where: { id: 'session-A' } });
+  expect(after.expiresAt.getTime()).toBeGreaterThan(before.expiresAt.getTime());
+  expect((await call('sign', { ...f.body, intentDigest: f.preview.intentDigest,
+    externalSignature: await wallet.signMessage(f.preview.prepared.siwe) })).status).toBe(403);
 });
 test('a direct Prisma session update bypassing auth hooks refuses a previously resumed approval', async () => {
   const f = await verified();
@@ -164,6 +168,44 @@ test('real OTP account replacement invalidates the previous browser session shar
   expect(await db.session.count({ where: { id: 'session-A' } })).toBe(1);
   expect((await call('sign', { ...f.body, intentDigest: f.preview.intentDigest, externalSignature: await wallet.signMessage(f.preview.prepared.siwe) })).status).toBe(403);
 
+});
+test('a 25-day-old capped session can prepare and finish a new share', async () => {
+  const capWallet = Wallet.createRandom();
+  const createdAt = new Date(Date.now() - 25 * 86400_000);
+  const expiresAt = new Date(createdAt.getTime() + 30 * 86400_000);
+  await db.user.create({ data: { id: 'cap-owner', email: 'cap@example.test', emailVerified: true } });
+  await db.session.create({ data: { id: 'cap-session', userId: 'cap-owner', token: 'cap-token', createdAt, expiresAt } });
+  await db.ethereumKey.create({ data: { id: 'cap-key', userId: 'cap-owner', address: capWallet.address,
+    publicKey: capWallet.address, keyType: 'EXTERNAL' } });
+  const capCredential = Buffer.from('cap-credential').toString('base64url');
+  await db.passkey.create({ data: { id: 'cap-passkey', userId: 'cap-owner', credentialID: capCredential,
+    publicKey: cose.toString('base64'), counter: 0, countsForStepUp: true, deviceType: 'singleDevice', backedUp: false } });
+  const context = await auth.$context;
+  const capCookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, 'cap-token', context.secret)).split(';')[0]!;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const outer = crypto.randomUUID();
+    const w = await call('window', { keyId: 'cap-key', requestId: outer, observedOrigin: 'https://thirdparty.example' }, capCookie);
+    expect(w.status).toBe(200);
+    const issued = issuedSchema.parse(await w.json());
+    const o = await call('options', { requestId: outer, windowContextToken: issued.windowContextToken,
+      intent: await intent(capWallet, 'cap-key') }, capCookie);
+    expect(o.status).toBe(200);
+    const p = previewSchema.parse(await o.json());
+    const body = { requestId: p.requestId, keyId: 'cap-key', token: p.assertion.token };
+    const client = Buffer.from(JSON.stringify({ type: 'webauthn.get', challenge: p.assertion.options.challenge, origin }));
+    const count = Buffer.alloc(4); count.writeUInt32BE(++counter);
+    const data = Buffer.concat([createHash('sha256').update(rp).digest(), Buffer.from([5]), count]);
+    const response = { id: capCredential, rawId: capCredential, type: 'public-key', clientExtensionResults: {}, response: {
+      clientDataJSON: client.toString('base64url'), authenticatorData: data.toString('base64url'),
+      signature: sign('sha256', Buffer.concat([data, createHash('sha256').update(client).digest()]), privateKey).toString('base64url'),
+    } };
+    expect((await call('verify', { ...body, response }, capCookie)).status).toBe(200);
+    expect((await call('resume', body, capCookie)).status).toBe(200);
+    expect((await call('sign', { ...body, intentDigest: p.intentDigest,
+      externalSignature: await capWallet.signMessage(p.prepared.siwe) }, capCookie)).status).toBe(200);
+  }
+  const after = await db.session.findUniqueOrThrow({ where: { id: 'cap-session' } });
+  expect(after.expiresAt.getTime()).toBe(expiresAt.getTime());
 });
 test('real sign-out delete hook terminally invalidates the session window', async () => {
   const outer = crypto.randomUUID();

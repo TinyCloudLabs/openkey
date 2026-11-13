@@ -15,7 +15,7 @@ async function fixture() {
     uri: strictSessionDid(publicJwk), version: '1', chainId: 1, nonce: '12345678',
     issuedAt: new Date(now - 1000).toISOString(), expirationTime: new Date(now + 3600_000).toISOString(),
   }).prepareMessage();
-  const intent = { origin: 'https://thirdparty.example', keyId: 'key',
+  const intent = { approvalNonce: 'd'.repeat(64), origin: 'https://thirdparty.example', keyId: 'key',
     session: { siwe, signature: await wallet.signMessage(siwe), publicJwk },
     expiresAt: new Date(now + 1800_000).toISOString(),
     permissions: [{ service: 'tinycloud.kv', space: 'applications', path: 'app/shares/file.json', actions: ['tinycloud.kv/get', 'tinycloud.kv/metadata'] }],
@@ -36,6 +36,7 @@ test('the server prepares and signs only its minted exact key and unchanged requ
   const requests = new ShareApprovalRequests(() => f.now);
   const preview = prepare(requests, f);
   expect(preview.shareId).toMatch(/^[0-9a-f]{32}$/);
+  expect(new SiweMessage(preview.prepared.siwe).nonce).toBe(f.intent.approvalNonce);
   const rows = parsePreparedRecap(preview.prepared.siwe);
   const encryption = rows.filter(isRawRecapEntry);
   expect(encryption).toHaveLength(1);
@@ -131,4 +132,16 @@ test('sign refuses changed ordinary file rows before consuming approval', async 
   await expect(requests.sign(preview.requestId, f.account, preview.intentDigest,
     () => { consumed = true; }, message => f.wallet.signMessage(message))).rejects.toThrow('scope_mismatch');
   expect(consumed).toBe(false);
+});
+
+
+test('the prepared nonce cannot be replaced before signing', async () => {
+  const f = await fixture();
+  const requests = new ShareApprovalRequests(() => f.now);
+  const preview = prepare(requests, f);
+  const record = (requests as any).requests.get(preview.requestId);
+  expect(Reflect.set(record.intent, 'approvalNonce', 'e'.repeat(64))).toBe(false);
+  const result = await requests.sign(preview.requestId, f.account, preview.intentDigest, () => {},
+    message => f.wallet.signMessage(message));
+  expect(new SiweMessage(result.prepared.siwe).nonce).toBe(f.intent.approvalNonce);
 });

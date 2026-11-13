@@ -5,6 +5,7 @@ import type { ShareSessionProof } from './share-approval-session';
 
 export interface ShareApprovalIntent {
   origin: string;
+  approvalNonce: string;
   keyId: string;
   session: ShareSessionProof;
   permissions: DelegationPermissionEntry[];
@@ -15,7 +16,8 @@ export interface ShareApprovalIntent {
 export function parseShareApprovalIntent(value: unknown): ShareApprovalIntent {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ShareApprovalError('invalid_share_intent');
   const body = value as Record<string, unknown>;
-  if (Object.keys(body).some(key => !['origin', 'keyId', 'session', 'permissions', 'expiresAt'].includes(key)) ||
+  if (Object.keys(body).some(key => !['origin', 'keyId', 'session', 'permissions', 'expiresAt', 'approvalNonce'].includes(key)) ||
+    typeof body.approvalNonce !== 'string' || !/^[0-9a-f]{64}$/.test(body.approvalNonce) ||
     typeof body.origin !== 'string' || typeof body.keyId !== 'string' || !body.keyId ||
     typeof body.expiresAt !== 'string' || !Number.isFinite(Date.parse(body.expiresAt)) ||
     !body.session || typeof body.session !== 'object' || Array.isArray(body.session)) {
@@ -40,7 +42,7 @@ export function parseShareApprovalIntent(value: unknown): ShareApprovalIntent {
       action !== 'tinycloud.kv/get' && action !== 'tinycloud.kv/metadata'))) {
     throw new ShareApprovalError('invalid_share_file_permissions');
   }
-  return { origin: body.origin, keyId: body.keyId,
+  return { approvalNonce: body.approvalNonce, origin: body.origin, keyId: body.keyId,
     session: { siwe: session.siwe, signature: session.signature, publicJwk: structuredClone(session.publicJwk) },
     permissions: structuredClone(permissions), expiresAt: body.expiresAt };
 }

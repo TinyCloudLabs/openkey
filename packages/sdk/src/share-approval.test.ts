@@ -40,13 +40,14 @@ for (const mode of ['success', 'verifier-refusal', 'wrong-origin', 'wrong-source
       removeEventListener: (_: string, fn: any) => listeners.delete(fn) };
     try {
       const handle = beginShareApprovalTransport({ host, popup: popup as any,
-        intent: { session: { siwe: 'session', signature: 'owner-signature', publicJwk: {} }, expiresAt: new Date().toISOString() },
+        intent: { approvalNonce: 'd'.repeat(64), session: { siwe: 'session', signature: 'owner-signature', publicJwk: {} }, expiresAt: new Date().toISOString() },
         verify: async input => { verifierCount++; expect(input.identity.prepared.siwe).toBe('exact server bytes');
           expect(Object.isFrozen(input.identity)).toBe(true);
           return mode !== 'verifier-refusal' && mode !== 'cancel-retry'; },
-        signExternal: async () => { throw new Error('unexpected wallet'); }, registerCancel() {}, unregisterCancel() {},
+        available: async () => true, signExternal: async () => { throw new Error('unexpected wallet'); }, registerCancel() {}, unregisterCancel() {},
       });
       const result = handle.authorize();
+      await Promise.resolve();
       outerRequestId = new URL(popup.location.href).searchParams.get('requestId')!;
       if (mode === 'wrong-origin' || mode === 'wrong-source') {
         emit({ type: 'openkey:share:ready', purpose: 'share-create', requestId: outerRequestId },

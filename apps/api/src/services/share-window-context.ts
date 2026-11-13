@@ -59,7 +59,8 @@ export class ShareWindowContexts {
     this.records.get(token)!.state = 'cancelled';
   }
 
-  invalidateSession(userId: string, authSessionId: string): void {
-    for (const record of this.records.values()) if (record.context.userId === userId && record.context.authSessionId === authSessionId) record.state = 'cancelled';
+  invalidateSession(userId: string, authSessionId: string, keepGeneration?: string): void {
+    for (const record of this.records.values()) if (record.context.userId === userId && record.context.authSessionId === authSessionId &&
+      (keepGeneration === undefined || record.context.authSessionGeneration !== keepGeneration)) record.state = 'cancelled';
   }
 }

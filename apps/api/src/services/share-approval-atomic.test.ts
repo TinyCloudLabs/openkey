@@ -14,7 +14,7 @@ test('final UV claim and share spend are terminal before yielding to cancellatio
   const windows = new ShareWindowContexts(() => now);
   const requests = new ShareApprovalRequests(() => now);
   const w = windows.issue(account, 'outer', 'https://thirdparty.example');
-  const preview = requests.prepare({ keyId: 'key', origin: 'https://thirdparty.example', session: { siwe, signature: await wallet.signMessage(siwe), publicJwk }, expiresAt: new Date(now + 1800_000).toISOString() }, account, w.context, () => windows.consume(w.token, account, 'outer'));
+  const preview = requests.prepare({ approvalNonce: 'd'.repeat(64), keyId: 'key', origin: 'https://thirdparty.example', session: { siwe, signature: await wallet.signMessage(siwe), publicJwk }, expiresAt: new Date(now + 1800_000).toISOString() }, account, w.context, () => windows.consume(w.token, account, 'outer'));
   let uvClaims = 0;
   const pending = requests.sign(preview.requestId, account, preview.intentDigest, () => { if (uvClaims++) throw new Error('UV spent'); }, message => wallet.signMessage(message));
   // A concurrent cancellation must see a terminal request immediately, not steal an in-flight claim.

@@ -52,14 +52,14 @@ export class ShareApprovalRequests {
       permissions: [...intent.permissions, { service: 'tinycloud.encryption', space: 'encryption',
         path: minted.resource, actions: [minted.action] }],
       domain: new URL(intent.origin).host,
-      nonce: createHash('sha256').update(minted.nonce).digest('hex'),
+      nonce: intent.approvalNonce,
       issuedAt: new Date(this.now()), expiryMs: expiresAt - this.now(),
     });
     const intentDigest = createHash('sha256').update(JSON.stringify([
       'share-create', window.requestId, minted.requestId, minted.nonce, minted.shareId, account.authSessionId, account.authSessionGeneration,
       binding.ownerDid, binding.sessionDid, intent.origin, prepared.siwe,
     ])).digest('hex');
-    this.requests.set(minted.requestId, { account: structuredClone(account), intent, minted, prepared, originalSiwe: prepared.siwe, intentDigest });
+    this.requests.set(minted.requestId, { account: structuredClone(account), intent: Object.freeze(intent), minted, prepared, originalSiwe: prepared.siwe, intentDigest });
     return this.preview(minted.requestId, account);
   }
 
@@ -89,12 +89,15 @@ export class ShareApprovalRequests {
     this.requests.delete(requestId);
   }
 
-  invalidateSession(userId: string, authSessionId: string): void {
+  invalidateSession(userId: string, authSessionId: string, keepGeneration?: string): Set<string> {
+    const retained = new Set<string>();
     for (const [id, record] of this.requests) {
       if (record.account.userId !== userId || record.account.authSessionId !== authSessionId) continue;
+      if (keepGeneration !== undefined && record.account.authSessionGeneration === keepGeneration) { retained.add(id); continue; }
       try { this.approvals.cancel(id, record.minted); } catch { /* already expired */ }
       this.requests.delete(id);
     }
+    return retained;
   }
 
   /** Call only after the same purpose/digest-bound continuation has fresh verified UV. */

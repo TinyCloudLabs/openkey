@@ -1134,6 +1134,14 @@ export class OpenKey {
     const reserved = this.reservePopup('share');
     if (!reserved) throw new Error('Share popup unavailable');
     return beginShareApprovalTransport({ host: this.host, popup: reserved.window, intent, verify: options.verify,
+      available: async () => {
+        try {
+          const response = await fetch(`${this.oauthHost}/api/delegate/share/capabilities`, { credentials: 'omit' });
+          if (!response.ok) return false;
+          const capability = await response.json();
+          return capability?.enabled === true && capability?.protocolVersion === 1;
+        } catch { return false; }
+      },
       registerCancel: cancel => { this.activeFlowCancellations.add(cancel); },
       unregisterCancel: cancel => { this.activeFlowCancellations.delete(cancel); },
       signExternal: async (message, address) => {

@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { generateKeyPairSync } from 'node:crypto';
 import { parseShareApprovalIntent } from './share-approval-intent';
 const intent = {
-  origin: 'https://thirdparty.example', keyId: 'key', expiresAt: '2026-11-14T00:00:00.000Z',
+  approvalNonce: 'd'.repeat(64), origin: 'https://thirdparty.example', keyId: 'key', expiresAt: '2026-11-14T00:00:00.000Z',
   session: { siwe: 'verified separately', signature: 'verified separately',
     publicJwk: generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }) },
   permissions: [{ service: 'tinycloud.kv', space: 'applications', path: 'app/shares/file.json', actions: ['tinycloud.kv/get', 'tinycloud.kv/metadata'] }],
@@ -22,5 +22,13 @@ test('old stable and beta Share permission shapes cannot enter the typed mint in
   for (const actions of [['tinycloud.encryption/decrypt', 'tinycloud.encryption/key.create'], ['tinycloud.encryption/decrypt']]) {
     expect(() => parseShareApprovalIntent({ ...intent, permissions: [{ service: 'tinycloud.encryption',
       path: 'urn:tinycloud:encryption:did:pkh:eip155:1:0x1111111111111111111111111111111111111111:default/share/', actions }] })).toThrow();
+  }
+});
+
+test('approval nonce must be exactly 32 bytes encoded as lowercase hex', () => {
+  expect(parseShareApprovalIntent(intent).approvalNonce).toBe(intent.approvalNonce);
+  for (const approvalNonce of [undefined, '', 'd'.repeat(63), 'd'.repeat(65), 'D'.repeat(64),
+    'g'.repeat(64), 'd'.repeat(16_384), { value: 'd'.repeat(64) }]) {
+    expect(() => parseShareApprovalIntent({ ...intent, approvalNonce })).toThrow('invalid_share_intent');
   }
 });

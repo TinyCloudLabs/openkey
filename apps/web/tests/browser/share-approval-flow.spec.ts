@@ -36,7 +36,7 @@ test('HTTPS outside app uses one popup and one Create share click', async ({ pag
   await context.route('**/api/delegate/share/*', route => {
     const phase = route.request().url().split('/').at(-1)!;
     phases.push(phase);
-    if (phase === 'capabilities') return route.fulfill({ json: { enabled: true, protocolVersion: 1 } });
+    if (phase === 'capabilities') return route.fulfill({ headers: { 'access-control-allow-origin': '*' }, json: { enabled: true, protocolVersion: 1 } });
     const body = route.request().postDataJSON();
     if (phase === 'window') {
       expect(body.observedOrigin).toBe(appOrigin);
@@ -62,7 +62,7 @@ test('HTTPS outside app uses one popup and one Create share click', async ({ pag
     const { OpenKey } = await import(modulePath);
     const sdk = new OpenKey({ host, mode: 'popup' });
     document.querySelector<HTMLButtonElement>('#start')!.onclick = () => {
-      const handle = sdk.beginShareApproval({ session: { siwe, signature: 'fixture-owner-signature', publicJwk: {} },
+      const handle = sdk.beginShareApproval({ approvalNonce: 'd'.repeat(64), session: { siwe, signature: 'fixture-owner-signature', publicJwk: {} },
         expiresAt: new Date(Date.now() + 3600_000).toISOString() }, {
         verify: async ({ result, identity, origin }: any) => {
           (window as any).verified = origin === window.location.origin && result.requestId === identity.requestId &&
@@ -82,5 +82,5 @@ test('HTTPS outside app uses one popup and one Create share click', async ({ pag
   await expect.poll(() => page.evaluate(() => (window as any).outcome)).toBe(shareId);
   expect(await page.evaluate(() => (window as any).verified)).toBe(true);
   expect(context.pages()).toHaveLength(1);
-  expect(phases).toEqual(['capabilities', 'window', 'options', 'verify', 'resume', 'sign']);
+  expect(phases.filter(phase => phase !== 'capabilities')).toEqual(['window', 'options', 'verify', 'resume', 'sign']);
 });

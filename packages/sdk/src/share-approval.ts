@@ -1,4 +1,5 @@
 export interface ShareApprovalIntent {
+  approvalNonce: string;
   session: { siwe: string; signature: string; publicJwk: Record<string, unknown> };
   expiresAt: string;
   permissions?: { service: 'tinycloud.kv'; space: string; path: string; actions: ('tinycloud.kv/get' | 'tinycloud.kv/metadata')[] }[];
@@ -17,6 +18,7 @@ export type ShareApprovalVerifier = (input: { result: ShareApprovalResult; ident
 /** The TinyCloud consumer supplies its cryptographic result verifier; no caller-chosen share id exists. */
 export function beginShareApprovalTransport(options: {
   host: string; popup: Window; intent: ShareApprovalIntent; verify: ShareApprovalVerifier;
+  available: () => Promise<boolean>;
   signExternal: (message: string, address: string) => Promise<string>;
   registerCancel: (cancel: () => Promise<void>) => void;
   unregisterCancel: (cancel: () => Promise<void>) => void;
@@ -25,7 +27,7 @@ export function beginShareApprovalTransport(options: {
   const outerRequestId = crypto.randomUUID();
   const origin = window.location.origin;
   const intent = structuredClone(options.intent);
-  if (Object.keys(intent).some(key => !['session', 'expiresAt', 'permissions'].includes(key))) {
+  if (!/^[0-9a-f]{64}$/.test(intent.approvalNonce) || Object.keys(intent).some(key => !['approvalNonce', 'session', 'expiresAt', 'permissions'].includes(key))) {
     popup.close(); throw new Error('Invalid new-share intent');
   }
   let identity: Readonly<ShareApprovalIdentity> | undefined;
@@ -60,6 +62,8 @@ export function beginShareApprovalTransport(options: {
     if (started || cancelled) throw new Error('Share approval already used');
     started = true;
     try {
+      if (!await options.available()) throw new Error("OpenKey new-share approval unavailable");
+      if (cancelled || popup.closed) throw new Error("Share approval cancelled");
       return await new Promise<ShareApprovalResult>((resolve, reject) => {
         let verifying = false;
         let externalSigning = false;

@@ -111,9 +111,10 @@ export class ApprovalContinuations {
     this.records.delete(token);
   }
 
-  cancelSession(userId: string, sessionId: string): void {
+  cancelSession(userId: string, sessionId: string, retainedRequests: ReadonlySet<string> = new Set()): void {
     for (const [token, record] of this.records) {
-      if (record.identity.userId === userId && record.identity.sessionId === sessionId) this.records.delete(token);
+      if (record.identity.userId === userId && record.identity.sessionId === sessionId &&
+        !retainedRequests.has(record.identity.requestId)) this.records.delete(token);
     }
   }
 
