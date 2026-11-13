@@ -17,7 +17,7 @@ export function listenForSignInCancellation(
         method: 'POST', credentials: 'include', keepalive: true,
         headers: { 'content-type': 'application/json' }, body: JSON.stringify(context),
       });
-      cancelled = response.ok;
+      cancelled = response.ok && (await response.json()).cancelled === true;
     } catch {
       cancelled = false;
     } finally {

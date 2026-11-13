@@ -20,7 +20,7 @@ signInContinuationRouter.use('*', async (c, next) => {
   await next();
 });
 
-for (const phase of ['options', 'verify', 'cancel'] as const) {
+for (const phase of ['options', 'verify', 'resume', 'cancel'] as const) {
   signInContinuationRouter.post(`/${phase}`, async (c) => {
     const body = await c.req.json().catch(() => null);
     if (!body || typeof body.requestId !== 'string' || !body.requestId || body.requestId.length > 256 ||
@@ -41,6 +41,10 @@ for (const phase of ['options', 'verify', 'cancel'] as const) {
       if (phase === 'cancel') {
         signInContinuations.cancel(body.token, identity);
         return c.json({ cancelled: true });
+      }
+      if (phase === 'resume') {
+        signInContinuations.resume(body.token, identity);
+        return c.json({ resumed: true });
       }
       if (!body.response || typeof body.response.id !== 'string') return c.json({ code: 'invalid_signin_assertion' }, 400);
       await verifySignInAssertion(prisma, body.token, identity, body.response as AuthenticationResponseJSON, rp);
