@@ -12,7 +12,12 @@ const siwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xy
 
 type Parent = 'sdk-modal' | 'never-resizes' | 'resizes-forever';
 
-async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDelayMs = 0) {
+type MovingClick = { t: number; top: number; disabled: boolean };
+
+// clickWhileMoving: in every animation frame in which Approve is on screen and has moved since the last frame, read its
+// disabled state and click it from a script, in the page, so the clicks land while the frame moves however late the test
+// itself looks (TC-2943).
+async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDelayMs = 0, clickWhileMoving = false) {
   await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
   await page.route('**/api/keys/**', async (route) => {
     if (keyDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, keyDelayMs));
@@ -34,9 +39,10 @@ async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDela
     } });
   });
   await page.goto('/__parity_harness');
-  await page.evaluate(([mode, protocol, message]) => {
-    const w = window as unknown as Window & { frameLog: Array<{ t: number; top: number; enabled: boolean | null }>; resizeCount: number; sampleTimer: number };
+  await page.evaluate(([mode, protocol, message, clickMoving]) => {
+    const w = window as unknown as Window & { frameLog: Array<{ t: number; top: number; enabled: boolean | null }>; resizeCount: number; sampleTimer: number; movingClicks: MovingClick[] };
     w.frameLog = [];
+    w.movingClicks = [];
     w.resizeCount = 0;
     // The SDK modal: a flex-centred card around a 400px frame with a 200ms height transition (index.ts:587).
     const wrap = document.createElement('div');
@@ -74,11 +80,16 @@ async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDela
       const button = frame.contentDocument?.querySelector('button.approve') as HTMLButtonElement | null;
       const box = frame.getBoundingClientRect();
       const top = button ? Math.round((box.top + button.getBoundingClientRect().top) * 10) / 10 : NaN;
+      const previous = w.frameLog.at(-1);
       w.frameLog.push({ t: Math.round(performance.now() - t0), top, enabled: button ? !button.disabled : null });
+      if (button && clickMoving && (!previous || previous.enabled === null || previous.top !== top)) {
+        w.movingClicks.push({ t: w.frameLog.at(-1)!.t, top, disabled: button.disabled });
+        button.dispatchEvent(new (frame.contentWindow as Window & typeof globalThis).MouseEvent('click', { bubbles: true }));
+      }
       w.sampleTimer = requestAnimationFrame(sample);
     };
     sample();
-  }, [parent, version, siwe] as const);
+  }, [parent, version, siwe, clickWhileMoving] as const);
 }
 
 const samples = (page: Page) => page.evaluate(() => (window as unknown as Window & { frameLog: Array<{ t: number; top: number; enabled: boolean | null }> }).frameLog);
@@ -175,20 +186,17 @@ test('a v1 frame that has settled: a click made by a script approves', async ({ 
 
 test('a v1 frame that is still moving: a click made by a script does nothing, and approves once it has settled', async ({ page }) => {
   const approvals = await approvalRequests(page);
-  await openEmbed(page, 'sdk-modal');
-  await reviewShown(page);
-  // At first display the frame is still animating: Approve is disabled.
   const approvalCount = approvals.length;
-  const disabledAfterClick = await approveFrame(page).evaluate(() => {
-    const button = document.querySelector('button.approve') as HTMLButtonElement;
-    const disabled = button.disabled;
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    return disabled;
-  });
-  expect(disabledAfterClick).toBe(true);
-  await page.waitForTimeout(250);
-  expect(approvals).toHaveLength(approvalCount);
+  await openEmbed(page, 'sdk-modal', 1, 0, true);
+  await reviewShown(page);
   await expect.poll(async () => enabledAt(await samples(page)), { timeout: 10_000 }).toBeDefined();
+  await page.waitForTimeout(250);
+  // The page clicked Approve in every frame in which it moved, from its first display: some of those clicks landed
+  // away from where it settled, every one found it disabled, and none was sent.
+  const movingClicks = await page.evaluate(() => (window as unknown as Window & { movingClicks: MovingClick[] }).movingClicks);
+  const finalTop = (await samples(page)).at(-1)!.top;
+  expect(movingClicks.some((click) => Math.abs(click.top - finalTop) > 0.5)).toBe(true);
+  expect(movingClicks.filter((click) => !click.disabled)).toEqual([]);
   expect(approvals).toHaveLength(approvalCount);
   await scriptClicks(page);
   await expect.poll(() => approvals.length).toBeGreaterThan(approvalCount);
