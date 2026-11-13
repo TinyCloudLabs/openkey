@@ -90,6 +90,24 @@ describe('the renewer the lease names', () => {
     await expect(discoverRenewalNodeIdentity(HOST, big)).rejects.toThrow('too large');
     expect(inits.every((init) => init?.redirect === 'error' && init.signal instanceof AbortSignal)).toBe(true);
   });
+  test('on the production node, must be the pinned node DID, and nothing is asked without one', async () => {
+    const saved = process.env.OPENKEY_RENEWAL_NODE_DID;
+    try {
+      const production = 'https://node.tinycloud.xyz';
+      delete process.env.OPENKEY_RENEWAL_NODE_DID;
+      const unpinned = node();
+      await expect(discoverRenewalNodeIdentity(production, unpinned.fetchImpl)).rejects.toThrow('not configured');
+      expect(unpinned.asked).toEqual([]);
+      process.env.OPENKEY_RENEWAL_NODE_DID = RENEWER_DID;
+      await expect(discoverRenewalNodeIdentity(production, node().fetchImpl)).rejects.toThrow('renewal identity is invalid');
+      process.env.OPENKEY_RENEWAL_NODE_DID = NODE_DID;
+      expect((await discoverRenewalNodeIdentity(production, node().fetchImpl)).nodeDid).toBe(NODE_DID);
+      expect((await discoverRenewalNodeIdentity('https://tee.node.tinycloud.xyz', node().fetchImpl)).nodeDid).toBe(NODE_DID);
+    } finally {
+      if (saved === undefined) delete process.env.OPENKEY_RENEWAL_NODE_DID;
+      else process.env.OPENKEY_RENEWAL_NODE_DID = saved;
+    }
+  });
 });
 
 describe('the lease OpenKey signs as the owner', () => {

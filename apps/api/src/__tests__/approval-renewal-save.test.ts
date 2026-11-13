@@ -13,6 +13,7 @@ import { SiweMessage } from 'siwe';
 import { createApprovalRequest, signerFromJwk } from '@tinycloud/share-envelope/links';
 import type { ApprovalRequestRecord } from '../services/approval-results';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
+import { issueAuthorizationContext, peekAuthorizationContext } from '../services/authorization-signing';
 import type { RenewalStage } from '../services/renewal-lease';
 import { mockModules, replaceModules } from './mock-module';
 
@@ -110,6 +111,31 @@ describe('a real signed approval link that asks for renewal', () => {
     expect(loaded.renewalAvailable).toBe(true);
     delete process.env.OPENKEY_RENEWAL_LEASES;
     expect((await (await load()).json() as { renewalAvailable: boolean }).renewalAvailable).toBe(false);
+  });
+});
+
+describe('the renewal choice is the one the preview bound', () => {
+  test('is stored with the preview and read back from it', () => {
+    const jwk = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
+    const issued = issueAuthorizationContext({
+      userId: 'owner', keyId: 'key', keyAddress: '0x1111111111111111111111111111111111111111', jwk, host: NODE, spaceId: 'space',
+      baselineAbilitiesDigest: 'b', immutableFieldsDigest: 'i', allowedActionIds: new Set(), initialSelectionActionIds: new Set(),
+      expirationTime: new Date(Date.now() + DAY * 1000).toISOString(), approvalRequestId: ID,
+      renewal: { choice: 'leased', leaseLifetimeSeconds: 90 * DAY },
+    });
+    const peeked = peekAuthorizationContext(issued.token);
+    expect(peeked.ok && peeked.value.renewal).toEqual({ choice: 'leased', leaseLifetimeSeconds: 90 * DAY });
+  });
+
+  test('an approve body may only repeat it: finite to leased, or 90 days to 1 year, is refused', () => {
+    const finite = { choice: 'finite' as const };
+    const ninety = { choice: 'leased' as const, leaseLifetimeSeconds: 90 * DAY };
+    expect(() => route.confirmBoundRenewal({ choice: 'leased', leaseLifetimeSeconds: 90 * DAY }, finite)).toThrow('does not match');
+    expect(() => route.confirmBoundRenewal({ choice: 'leased', leaseLifetimeSeconds: 365 * DAY }, ninety)).toThrow('does not match');
+    expect(() => route.confirmBoundRenewal({ choice: 'finite' }, ninety)).toThrow('does not match');
+    expect(() => route.confirmBoundRenewal({ choice: 'leased', leaseLifetimeSeconds: 90 * DAY }, undefined)).toThrow('does not match');
+    expect(() => route.confirmBoundRenewal({ leaseLifetimeSeconds: 90 * DAY, choice: 'leased' }, ninety)).not.toThrow();
+    expect(() => route.confirmBoundRenewal(undefined, ninety)).not.toThrow();
   });
 });
 

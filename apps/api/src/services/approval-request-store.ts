@@ -21,7 +21,9 @@ export function createPrismaApprovalRequestStore(database: PrismaClient): Approv
   }
   return {
     async register(record) {
-      const saved = await database.approvalRequest.upsert({ where: { id: record.id }, create: { ...record, request: record.request as object }, update: {} });
+      // A new request has no renewal steps; they are only ever written by `saveRenewal`.
+      const { renewal: _renewal, ...fields } = record;
+      const saved = await database.approvalRequest.upsert({ where: { id: record.id }, create: { ...fields, request: record.request as object }, update: {} });
       if (saved.bodyCid !== record.bodyCid || saved.issuer !== record.issuer || saved.expiresAt.getTime() !== record.expiresAt.getTime()) {
         throw new ApprovalResultError('request_binding', 'Immutable approval request binding changed', 409);
       }

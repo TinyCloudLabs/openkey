@@ -206,6 +206,17 @@ export async function bindApprovalRenewal(body: { approvalRequestId?: unknown; r
 }
 
 /**
+ * Approving may repeat the renewal choice the preview bound, but never change it (TC-2933): a body that names
+ * any other choice or length is refused before anything is signed. A body without one uses the bound choice.
+ */
+export function confirmBoundRenewal(bodyRenewal: unknown, bound: BoundRenewalChoice | undefined): void {
+  if (bodyRenewal === undefined) return;
+  const same = bound !== undefined && bodyRenewal !== null && typeof bodyRenewal === 'object' &&
+    JSON.stringify(Object.entries(bodyRenewal).sort()) === JSON.stringify(Object.entries(bound).sort());
+  if (!same) throw new ApprovalResultError('request_binding', 'The renewal choice does not match the approved preview', 400);
+}
+
+/**
  * Saves the approved grant as the request's result. When the request signed a renewal request and the owner
  * left renewal on in the bound preview (`options.renewal`), the result also carries the node-admitted owner
  * lease (TC-2933): `signOwner` signs it with the owner's managed key; without it (an external wallet) the

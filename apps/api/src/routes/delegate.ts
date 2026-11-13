@@ -135,7 +135,7 @@ import { PreparedHandoffError } from '../services/prepared-handoff';
 import { preparedHandoffService } from './prepared-handoffs';
 import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
-import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
+import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, confirmBoundRenewal, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
@@ -1346,6 +1346,8 @@ delegateRouter.post('/', async (c) => {
     permissions?: unknown;
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
+    /** Optional; may only repeat the renewal choice the preview bound (TC-2933). */
+    renewal?: unknown;
     expiry?: unknown;
     expiryChosen?: unknown;
     linkExpiry?: unknown;
@@ -1472,6 +1474,7 @@ delegateRouter.post('/', async (c) => {
     if (bound.approvalRequestId !== body.approvalRequestId) {
       return c.json({ error: 'Approval request does not match the consent preview' }, 400);
     }
+    confirmBoundRenewal(body.renewal, bound.renewal);
 
     // The stored context MUST have bound originalSiwe. Older /prepare
     // invocations that predate Blocker 1 did not set this field — those
@@ -2081,6 +2084,8 @@ delegateRouter.post('/complete', async (c) => {
     reason?: unknown;
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
+    /** Optional; may only repeat the renewal choice the preview bound (TC-2933). */
+    renewal?: unknown;
     /**
      * The CLI-supplied permissions that were the baseline for /prepare.
      * When present, this is used instead of DEFAULT_ABILITIES for the
@@ -2261,6 +2266,7 @@ delegateRouter.post('/complete', async (c) => {
     if (peekedContext.ok && peekedContext.value.approvalRequestId !== body.approvalRequestId) {
       return c.json({ error: 'Approval request does not match the consent preview' }, 400);
     }
+    if (peekedContext.ok) confirmBoundRenewal(body.renewal, peekedContext.value.renewal);
     if (!Array.isArray(body.selectedActionIds) || body.selectedActionIds.some((id) => typeof id !== 'string')) {
       return c.json({ error: 'selectedActionIds must be a string[] when authorizationContextToken is provided' }, 400);
     }
