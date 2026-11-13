@@ -44,6 +44,11 @@ services:
       - SCOREBOARD_EXCLUDE_USER_IDS=${SCOREBOARD_EXCLUDE_USER_IDS:-}
       - SCOREBOARD_EXCLUDE_CLIENT_IDS=${SCOREBOARD_EXCLUDE_CLIENT_IDS:-}
       - OPENKEY_NATIVE_RENEW_DISABLED=${OPENKEY_NATIVE_RENEW_DISABLED:-}
+      # Renewal leases (TC-2933/TC-2946): off unless set to `enabled` in the
+      # encrypted env, with the node and renewer DIDs the leases name.
+      - OPENKEY_RENEWAL_LEASES=${OPENKEY_RENEWAL_LEASES:-}
+      - OPENKEY_RENEWAL_NODE_DID=${OPENKEY_RENEWAL_NODE_DID:-}
+      - OPENKEY_RENEWAL_RENEWER_DID=${OPENKEY_RENEWAL_RENEWER_DID:-}
     restart: unless-stopped
     healthcheck:
       # Keep this aligned with the API's configurable listener. `$$` defers
