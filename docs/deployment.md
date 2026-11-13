@@ -505,3 +505,15 @@ TCB status, TDATTRIBUTES with the debug bit clear, OS image measurements,
 RTMR3 replay (hash of the full app-compose manifest, app id, key provider),
 REPORTDATA read from the verified quote, and the binding's type, version,
 nonce and address.
+
+### New-share approval
+
+`OPENKEY_SHARE_APPROVAL` defaults off. Only the exact value `true` enables
+`/api/delegate/share/*`, including its public, credential-free capabilities
+response. While disabled, every route returns 404 before authentication or
+request parsing. Publishing the SDK does not enable the server feature.
+
+Enable only on a single Bun process in a single API service: pending requester
+contexts and approval continuations use process-local, consume-once stores.
+Before adding API replicas or processes, replace these with a shared atomic
+store. Restarting the process voids pending approvals.

@@ -10,7 +10,9 @@ import { serializeSignedCookie } from 'better-call';
 import { shareWindowContexts as windows } from '../services/share-window-session';
 import { strictSessionDid } from '../services/device-authorization';
 import type { PrismaClient } from '@openkey/db';
-import type { Hono } from 'hono';
+import { Hono } from 'hono';
+import { requireShareApproval } from '../middleware/share-approval';
+import { createShareApprovalMount } from '../routes/share-approval-mount';
 import type { SessionContext } from '../middleware/session';
 import type { auth as Auth } from '../auth';
 import { z } from 'zod';
@@ -21,7 +23,7 @@ if (process.env.OPENKEY_SHARE_LIFECYCLE_CHILD !== '1') {
       const child = Bun.spawn([process.execPath, 'test', import.meta.path], {
         cwd: new URL('../../../../', import.meta.url).pathname,
         env: { ...process.env, OPENKEY_SHARE_LIFECYCLE_CHILD: '1', OPENKEY_SHARE_LIFECYCLE_DIR: scratch,
-          NODE_ENV: 'test', TEE_MODE: 'development', BETTER_AUTH_URL: 'https://api.openkey.test',
+          OPENKEY_SHARE_APPROVAL: 'true', NODE_ENV: 'test', TEE_MODE: 'development', BETTER_AUTH_URL: 'https://api.openkey.test',
           BETTER_AUTH_SECRET: 'tc2927-synthetic-local-test-secret-only', WEBAUTHN_RP_ID: 'openkey.test',
           WEBAUTHN_ORIGIN: 'https://openkey.test', CORS_ORIGIN: 'https://openkey.test',
           RESEND_API_KEY: '', GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '' },
@@ -64,13 +66,19 @@ beforeAll(async () => {
   await db.passkey.create({ data: { id: 'credential', userId: 'owner', credentialID, publicKey: cose.toString('base64'), counter: 0, countsForStepUp: true, deviceType: 'singleDevice', backedUp: false } });
   const context = await auth.$context;
   cookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, 'synthetic-A', context.secret)).split(';')[0]!;
-  router = (await import('../routes/share-approval-runtime')).shareApprovalRouter;
+  const runtime = (await import('../routes/share-approval-runtime')).shareApprovalRouter;
+  router = new Hono<SessionContext>();
+  router.use('/api/delegate/share/*', requireShareApproval);
+  router.route('/api/delegate/share', createShareApprovalMount(runtime));
+  const capability = await router.request('http://api.test/api/delegate/share/capabilities');
+  expect(capability.status).toBe(200);
+  expect(await capability.json()).toEqual({ enabled: true, protocolVersion: 1 });
 }, 90000);
 // Each ceremony has a separate minute; expire prior test records without changing production quotas.
 let testTime = Date.now();
 beforeEach(() => { testTime += 61_000; setSystemTime(testTime); });
 afterAll(async () => { setSystemTime(); await db?.$disconnect(); });
-const call = (phase: string, body: unknown, useCookie = cookie) => router.request(`http://api.test/${phase}`, { method: 'POST', headers: { origin, cookie: useCookie, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+const call = (phase: string, body: unknown, useCookie = cookie) => router.request(`http://api.test/api/delegate/share/${phase}`, { method: 'POST', headers: { origin, cookie: useCookie, 'content-type': 'application/json' }, body: JSON.stringify(body) });
 async function intent(signingWallet = wallet, keyId = 'key') {
   const publicJwk = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
   const siwe = new SiweMessage({ domain: 'thirdparty.example', address: signingWallet.address, uri: strictSessionDid(publicJwk), version: '1', chainId: 1, nonce: '12345678', issuedAt: new Date().toISOString(), expirationTime: new Date(Date.now() + 3600_000).toISOString() }).prepareMessage();

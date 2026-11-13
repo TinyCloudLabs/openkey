@@ -21,6 +21,9 @@ import { secretsRouter } from './routes/secrets';
 import { variablesRouter } from './routes/variables';
 import { delegateRouter } from './routes/delegate';
 import { signInContinuationRouter } from './routes/signin-continuation';
+import { shareApprovalRouter } from './routes/share-approval-runtime';
+import { createShareApprovalMount } from './routes/share-approval-mount';
+import { requireShareApproval } from './middleware/share-approval';
 import { preparedHandoffRouter } from './routes/prepared-handoffs';
 import { ownerRevocationRouter } from './routes/owner-revocation-runtime';
 import { internalMetricsRouter } from './routes/internal-metrics';
@@ -69,6 +72,8 @@ const app = new Hono<ApiEnv>();
 
 // Middleware
 app.use('*', requestLogger);
+// Keep the entire new-share protocol dark before CORS/authentication unless explicitly enabled.
+app.use('/api/delegate/share/*', requireShareApproval);
 
 // Zero-gesture bootstrap signing: allow any origin. Third-party apps call
 // this from the browser with a bearer session token (no cookies), and the
@@ -294,6 +299,7 @@ app.route('/api/variables', variablesRouter);
 app.route('/api/delegate/handoffs', preparedHandoffRouter);
 app.route('/api/delegate/owner-revocation', ownerRevocationRouter);
 app.route('/api/delegate/signin', signInContinuationRouter);
+app.route('/api/delegate/share', createShareApprovalMount(shareApprovalRouter));
 app.route('/api/delegate', delegateRouter);
 app.route('/api/oauth/tinycloud/requests', createNativeDelegationConsentRouter(authPrisma));
 app.route('/api/oauth/tinycloud', createOauthBrandingRouter(authPrisma));

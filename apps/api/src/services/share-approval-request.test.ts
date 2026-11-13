@@ -47,7 +47,7 @@ test('the server prepares and signs only its minted exact key and unchanged requ
   ]);
   let consumed = false;
   const result = await requests.sign(preview.requestId, f.account, preview.intentDigest,
-    () => { consumed = true; }, message => { expect(consumed).toBe(true); return f.wallet.signMessage(message); });
+    () => { consumed = true; }, message => { expect(consumed).toBe(true); expect(message).toBe(preview.prepared.siwe); return f.wallet.signMessage(message); });
   expect(result.shareId).toBe(preview.shareId);
   await expect(requests.sign(preview.requestId, f.account, preview.intentDigest, () => {}, message => f.wallet.signMessage(message))).rejects.toThrow();
 });
