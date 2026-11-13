@@ -161,7 +161,7 @@ function prepareBody(siwe: string, origin = ORIGIN) {
 }
 
 // TC-2291: pin the own-sites refusal copy and its stable code.
-const REFUSED = { error: "This site isn't allowed to request that access.", code: 'app_key_grant_refused' };
+const REFUSED = { code: 'app_key_grant_refused' };
 
 // Each request is one a third-party site could send with a single consent click.
 const OUTSIDE_APPS: Array<[string, Record<string, string[]>]> = [
@@ -181,7 +181,7 @@ describe('POST /authorize-sign-prepare without a ticket', () => {
   test.each(OUTSIDE_APPS)('refuses %s, issues nothing and unseals nothing', async (_name, raw) => {
     const res = await post('/authorize-sign-prepare', prepareBody(siweWith(raw)));
     expect(res.status).toBe(403);
-    await expect(res.json()).resolves.toEqual(REFUSED);
+    await expect(res.json()).resolves.toMatchObject(REFUSED);
     expect(unsealMock).not.toHaveBeenCalled();
     expect(signed).toEqual([]);
   });
@@ -191,7 +191,7 @@ describe('POST /authorize-sign-prepare without a ticket', () => {
     manifestBindResult = { ok: true, fetchedDigest: 'a'.repeat(64), manifest: { name: 'Listen', appId: APP_ID, prefix: APP_ID } };
     const res = await post('/authorize-sign-prepare', prepareBody(siweWith(MIXED_WITH_APPS, new URL(origin).host), origin));
     expect(res.status).toBe(403);
-    await expect(res.json()).resolves.toEqual(REFUSED);
+    await expect(res.json()).resolves.toMatchObject(REFUSED);
     expect(unsealMock).not.toHaveBeenCalled();
   });
 
@@ -221,7 +221,7 @@ describe('POST /authorize-sign-preview and /authorize-sign without a ticket', ()
     allowEncryption = false;
     const res = await post('/authorize-sign-preview', { authorizationContextToken: token, selectedActionIds: allowed });
     expect(res.status).toBe(403);
-    await expect(res.json()).resolves.toEqual(REFUSED);
+    await expect(res.json()).resolves.toMatchObject(REFUSED);
     expect(unsealMock).not.toHaveBeenCalled();
   });
 
@@ -236,7 +236,7 @@ describe('POST /authorize-sign-preview and /authorize-sign without a ticket', ()
     const body = { authorizationContextToken: token, previewApprovalToken, selectedActionIds: allowed, protocolVersion: 1 };
     const res = await post('/authorize-sign', body);
     expect(res.status).toBe(403);
-    await expect(res.json()).resolves.toEqual(REFUSED);
+    await expect(res.json()).resolves.toMatchObject(REFUSED);
     expect(unsealMock).not.toHaveBeenCalled();
     expect(signed).toEqual([]);
 

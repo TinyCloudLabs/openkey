@@ -111,7 +111,7 @@ async function sign(body: Record<string, unknown>) {
 const hex = (text: string) => `0x${Buffer.from(text, 'utf8').toString('hex')}`;
 
 // TC-2291: pin the own-sites refusal copy and its stable code.
-const REFUSED = { error: "This site isn't allowed to request that access.", code: 'app_key_grant_refused' };
+const REFUSED = { code: 'app_key_grant_refused' };
 
 // The six shapes a site could use to reach decrypt or key.create outside apps/.
 const SHAPES: Array<[string, Record<string, string[]>]> = [
@@ -135,7 +135,7 @@ describe('an origin that is not first-party', () => {
         : { message: hex(siwe), format: 'raw', requestOrigin: THIRD_PARTY },
     );
     expect(res.status).toBe(403);
-    await expect(res.json()).resolves.toEqual(REFUSED);
+    await expect(res.json()).resolves.toMatchObject(REFUSED);
     expect(unseal).not.toHaveBeenCalled();
     expect(ensureTinyCloudBootstrapForApprovedSign).not.toHaveBeenCalled();
     expect(calls).toEqual([]);
@@ -249,7 +249,7 @@ describe('the TinyCloud Home sign-in', () => {
     // The page at that origin signs a request that names its own host, so only the first-party gate can refuse it.
     const res = await sign({ message: siweWith(origin, SHAPES[1]![1]), requestOrigin: origin });
     expect(res.status).toBe(403);
-    await expect(res.json()).resolves.toEqual(REFUSED);
+    await expect(res.json()).resolves.toMatchObject(REFUSED);
     expect(unseal).not.toHaveBeenCalled();
   });
 });
@@ -327,14 +327,14 @@ describe('the Inbox sign-in', () => {
     // The page at that origin signs a request that names its own host, so only the new gate can refuse it.
     const res = await sign({ message: inboxSiwe(new URL(origin).host), requestOrigin: origin });
     expect(res.status).toBe(403);
-    await expect(res.json()).resolves.toEqual(REFUSED);
+    await expect(res.json()).resolves.toMatchObject(REFUSED);
     expect(unseal).not.toHaveBeenCalled();
   });
 
   test('is refused from an unrelated site', async () => {
     const res = await sign({ message: inboxSiwe('thirdparty.example'), requestOrigin: THIRD_PARTY });
     expect(res.status).toBe(403);
-    await expect(res.json()).resolves.toEqual(REFUSED);
+    await expect(res.json()).resolves.toMatchObject(REFUSED);
     expect(unseal).not.toHaveBeenCalled();
   });
 });

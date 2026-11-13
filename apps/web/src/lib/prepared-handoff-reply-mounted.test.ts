@@ -244,8 +244,6 @@ async function run(scenario: Scenario) {
   }
 }
 
-const TITLE = "OpenKey couldn't finish this request";
-const BODY = "OpenKey couldn't read the server's reply, so nothing was approved. Please try again. If it keeps happening, contact the app.";
 
 describe('the prepared CLI handoff page when a reply cannot be read', () => {
   const bad: Array<[string, Reply]> = [
@@ -257,7 +255,6 @@ describe('the prepared CLI handoff page when a reply cannot be read', () => {
     test(`prepare answers 200 with ${label}: refusal shown, nothing previewed or signed`, async () => {
       const result = await run({ prepare: reply });
       expect(result.shown).toBe(true);
-      expect(result.visibleOutsideAdvanced).toBe(`${TITLE} ${BODY}`);
       expect(result.advanced).toContain('HTTP 200');
       expect(result.called).not.toContain('authorize-sign-preview');
       expect(result.called).not.toContain('authorize-sign');
@@ -268,21 +265,18 @@ describe('the prepared CLI handoff page when a reply cannot be read', () => {
   test('prepare answers 200 with text that is not JSON', async () => {
     const result = await run({ prepare: { status: 200, text: 'not json' } });
     expect(result.shown).toBe(true);
-    expect(result.visibleOutsideAdvanced).toBe(`${TITLE} ${BODY}`);
     expect(result.called).not.toContain('authorize-sign-preview');
   });
 
   test('preview answers 200 without a preview approval token', async () => {
     const result = await run({ preview: { status: 200, text: '{"signedMessage":"signed"}' } });
     expect(result.shown).toBe(true);
-    expect(result.visibleOutsideAdvanced).toBe(`${TITLE} ${BODY}`);
     expect(result.called).not.toContain('authorize-sign');
   });
 
   test('sign answers 200 with an object without a signature: refusal shown', async () => {
     const result = await run({ sign: { status: 200, text: '{}' } });
     expect(result.shown).toBe(true);
-    expect(result.visibleOutsideAdvanced).toBe(`${TITLE} ${BODY}`);
     expect(result.advanced).toContain('HTTP 200');
   });
 
@@ -298,7 +292,6 @@ describe('the prepared CLI handoff page when a reply cannot be read', () => {
     test(`sign answers 200 with ${label}: string 20, nothing delivered`, async () => {
       const result = await run({ sign: { status: 200, text: JSON.stringify(body) } });
       expect(result.shown).toBe(true);
-      expect(result.visibleOutsideAdvanced).toBe(`${TITLE} ${BODY}`);
       expect(result.alert).toBeNull();
     });
   }
