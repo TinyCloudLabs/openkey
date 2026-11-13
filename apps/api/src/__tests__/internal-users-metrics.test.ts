@@ -5,7 +5,7 @@ await mockModules({
   '@openkey/db': () => ({ createPrismaClient: () => ({}) }),
 });
 
-const { classifyAccount, collectUserMetrics, createInternalMetricsRouter, parseDisposableDomains, MAX_REQUEST_DISPOSABLE_DOMAINS, USER_BUCKETS } = await import(
+const { classifyAccount, collectUserMetrics, createInternalMetricsRouter, parseDisposableDomains, DISPOSABLE_MAIL_DOMAINS, MAX_REQUEST_DISPOSABLE_DOMAINS, USER_BUCKETS } = await import(
   '../routes/internal-metrics?tc2356-users' as string
 );
 
@@ -179,6 +179,51 @@ test('disposable_mail_domain: built-in providers, subdomains, families and QA ma
   for (const domain of ['gmail.com', 'notmailinator.com', 'mailinator.com.au.example', 'fldubai.com.evil.io', 'proton.me', 'maxxspace.co']) {
     expect(classify(`user1@${domain}`), domain).not.toBe('disposable_mail_domain');
   }
+});
+
+// Guards against escaping mistakes in the patterns (for example a doubled backslash that
+// compiles but never matches): real-looking addresses, not just domain strings.
+test('every built-in disposable domain matches a real-looking address, and ordinary providers do not', async () => {
+  const classify = (email: string) =>
+    classifyAccount({ id: 'x', email, teamByWallet: false, hasSession: true, hasKey: false, botLike: false }, new Set());
+
+  // The ones that matter most today, as addresses.
+  for (const email of [
+    'qa123@mailinator.com', 'x@fldubai.com', 'y@maxxspace.com', 'z@guerrillamailblock.com', 'a@foo.mailinator.com',
+    'a@guerrillamail.com', 'b@sharklasers.com', 'c@grr.la', 'd@pokemail.net', 'e@spam4.me',
+    'f@mail.tm', 'g@mail.gw', 'h@in.mail.tm', 'i@x.y.maxxspace.com', 'J.Doe+tag@FLDUBAI.COM',
+  ]) {
+    expect(classify(email), email).toBe('disposable_mail_domain');
+  }
+
+  // Every entry of the built-in list, itself and as a subdomain; look-alikes stay out.
+  expect(DISPOSABLE_MAIL_DOMAINS).toEqual(expect.arrayContaining(['maxxspace.com', 'fldubai.com', 'guerrillamailblock.com', 'mailinator.com']));
+  for (const domain of DISPOSABLE_MAIL_DOMAINS as string[]) {
+    expect(classify(`user1@${domain}`), domain).toBe('disposable_mail_domain');
+    expect(classify(`user1@sub.${domain}`), `sub.${domain}`).toBe('disposable_mail_domain');
+    expect(classify(`user1@not${domain}`), `not${domain}`).not.toBe('disposable_mail_domain');
+    expect(classify(`user1@${domain}.evil.io`), `${domain}.evil.io`).not.toBe('disposable_mail_domain');
+  }
+
+  // One address per pattern family.
+  for (const domain of ['guerrillamail.biz', 'guerrillamail.info', 'mailinator2.com', '10minutemail.net', 'yopmail.fr', 'tempmail.io', 'temp-mail.org', 'trashmail.com', 'mailpit.local', 'mailhog.test']) {
+    expect(classify(`user1@${domain}`), domain).toBe('disposable_mail_domain');
+  }
+
+  // Ordinary providers are not disposable.
+  for (const domain of ['gmail.com', 'outlook.com', 'hotmail.com', 'yahoo.com', 'icloud.com', 'proton.me', 'tinycloud.xyz']) {
+    expect(classify(`user1@${domain}`), domain).not.toBe('disposable_mail_domain');
+  }
+
+  // End to end through the metrics query: whole-address counts.
+  const people: Account[] = [
+    ...['qa123@mailinator.com', 'x@fldubai.com', 'y@maxxspace.com', 'z@guerrillamailblock.com', 'a@foo.mailinator.com'].map((email, i) => ({ id: `d${i}`, email, lastSession: session })),
+    { id: 'g', email: 'person@gmail.com', lastSession: session },
+    { id: 'o', email: 'person@outlook.com', lastSession: session },
+  ];
+  const result = await collectUserMetrics(fakeDatabase(people).database, {}, now);
+  expect(result.buckets.disposable_mail_domain).toBe(5);
+  expect(result.real).toBe(2);
 });
 
 test('SCOREBOARD_DISPOSABLE_DOMAINS extends the built-in list: trimmed, case-insensitive, @ and *. prefixes, subdomains, invalid entries ignored', async () => {

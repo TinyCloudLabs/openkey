@@ -40,7 +40,7 @@ const TEST_OR_THROWAWAY_DOMAIN = /(^|\.)(example\.[a-z]+|test|invalid|localhost)
 // authorised POST (the internal Worker sends the maintained list with each poll;
 // request-scoped, never stored here). Rotating providers (mail.tm) change domain, so the
 // built-in list is only the floor. Entries match the domain itself and any subdomain.
-const DISPOSABLE_MAIL_DOMAINS = [
+export const DISPOSABLE_MAIL_DOMAINS = [
   // Mailinator and its well-known alias domains.
   'mailinator.com', 'binkmail.com', 'bobmail.info', 'chammy.info', 'devnullmail.com', 'letthemeatspam.com',
   'mailinater.com', 'reallymymail.com', 'safetymail.info', 'sogetthis.com', 'spamhereplease.com',
