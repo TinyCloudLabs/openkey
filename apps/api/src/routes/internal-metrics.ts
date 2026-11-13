@@ -142,6 +142,27 @@ function isMajorWebmail(domain: string): boolean {
 }
 
 /**
+ * A list entry that must never mark mail disposable: a major webmail domain or one of our
+ * team domains, a subdomain of either, or a parent of a major webmail domain (such as
+ * `co.uk`, which would swallow `yahoo.co.uk`). Request and env lists drop such entries, so
+ * a poisoned feed cannot turn gmail.com or our own domains into "disposable".
+ */
+function isProtectedEntry(entry: string): boolean {
+  for (let d = entry; d; ) {
+    if (isMajorWebmail(d) || INTERNAL_TEAM_DOMAIN.test(d)) return true;
+    const dot = d.indexOf('.');
+    if (dot < 0) break;
+    d = d.slice(dot + 1);
+  }
+  // A parent of a major domain: listed ones, or a two-level country suffix (co.uk covers
+  // yahoo.co.uk, which the family pattern matches rather than the list).
+  return (
+    [...MAJOR_WEBMAIL_DOMAINS].some((major) => major.endsWith(`.${entry}`)) ||
+    /^(co|com|org|net|ne|or|ac|gov|edu)\.[a-z]{2}$/.test(entry)
+  );
+}
+
+/**
  * Validates the `disposableDomains` of a POST body: an array of at most 5,000 lowercase
  * hostnames. Returns the list, or null if the field is malformed. Absent means no extras.
  */
@@ -211,12 +232,15 @@ export async function collectUserMetrics(
 ): Promise<UserMetrics> {
   const list = (value: string | undefined) => (value ?? '').split(',').map((item) => item.trim()).filter(Boolean);
   const excluded = new Set(list(env.SCOREBOARD_EXCLUDE_USER_IDS));
-  const extraDisposable = new Set([
-    ...requestDisposableDomains,
-    ...list(env.SCOREBOARD_DISPOSABLE_DOMAINS)
-      .map((d) => d.toLowerCase().replace(/^@/, '').replace(/^\*\./, ''))
-      .filter((d) => DOMAIN_PATTERN.test(d)),
-  ]);
+  // Request and env lists add to the built-ins, but can never cover a protected domain.
+  const extraDisposable = new Set(
+    [
+      ...requestDisposableDomains,
+      ...list(env.SCOREBOARD_DISPOSABLE_DOMAINS)
+        .map((d) => d.toLowerCase().replace(/^@/, '').replace(/^\*\./, ''))
+        .filter((d) => DOMAIN_PATTERN.test(d)),
+    ].filter((d) => !isProtectedEntry(d)),
+  );
   const addresses = [...new Set(list(env.SCOREBOARD_EXCLUDE_ADDRESSES).map((a) => a.toLowerCase()))]
     .filter((a) => ADDRESS_PATTERN.test(a));
   const since7d = new Date(now.getTime() - 7 * DAY_MS);

@@ -515,6 +515,48 @@ test('the disposable list is the union of the built-ins, SCOREBOARD_DISPOSABLE_D
   expect((await collectUserMetrics(fakeDatabase(people).database, {}, now)).buckets.disposable_mail_domain).toBe(1);
 });
 
+test('a request or env list can never mark major webmail or our own domains disposable', async () => {
+  const poisoned = [
+    'gmail.com', 'googlemail.com', 'outlook.com', 'hotmail.com', 'hotmail.fr', 'live.com', 'yahoo.com', 'yahoo.co.uk',
+    'icloud.com', 'proton.me', 'protonmail.com', 'aol.com', 'gmx.com', 'fastmail.com', 'hey.com',
+    'mail.gmail.com', // a subdomain of a major provider
+    'co.uk', // a parent that would swallow yahoo.co.uk
+    'tinycloud.xyz', 'qa-mail.tinycloud.xyz', 'openkey.so', 'gbafa.com', 'spruceid.com', 'tinycloudlabs.com',
+  ];
+  const people: Account[] = [
+    ...['gmail.com', 'outlook.com', 'hotmail.fr', 'yahoo.co.uk', 'icloud.com', 'proton.me'].map((domain, i) => ({ id: `w${i}`, email: `person${i}@${domain}`, lastSession: session })),
+    { id: 'team', email: 'someone@tinycloud.xyz', lastSession: session },
+    { id: 'real', email: 'honest@acme-example.io', lastSession: session },
+    { id: 'bad', email: 'p@rotated.mailco.io', lastSession: session },
+  ];
+  const fromRequest = await collectUserMetrics(fakeDatabase(people).database, {}, now, [...poisoned, 'rotated.mailco.io']);
+  expect(fromRequest.buckets.disposable_mail_domain).toBe(1); // only the legitimate entry applied
+  expect(fromRequest.buckets.internal_team_domain).toBe(1);
+  expect(fromRequest.real).toBe(7);
+  const fromEnv = await collectUserMetrics(fakeDatabase(people).database, { SCOREBOARD_DISPOSABLE_DOMAINS: `${poisoned.join(',')},rotated.mailco.io` }, now);
+  expect(fromEnv.buckets.disposable_mail_domain).toBe(1);
+  expect(fromEnv.real).toBe(7);
+
+  // Through the endpoint: ignored, not an error, and still no leakage of the list.
+  const router = createInternalMetricsRouter(() => fakeDatabase(people).database);
+  const saved = process.env.INTERNAL_METRICS_TOKEN;
+  try {
+    process.env.INTERNAL_METRICS_TOKEN = 'test-metrics-token';
+    const response = await router.request('/', {
+      method: 'POST',
+      body: JSON.stringify({ disposableDomains: poisoned }),
+      headers: { authorization: 'Bearer test-metrics-token', 'content-type': 'application/json' },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.users.buckets.disposable_mail_domain).toBe(0);
+    expect(body.users.real).toBe(8);
+  } finally {
+    if (saved === undefined) delete process.env.INTERNAL_METRICS_TOKEN;
+    else process.env.INTERNAL_METRICS_TOKEN = saved;
+  }
+});
+
 test('unclassifiedDomains: >=5 accounts, in no list, not a major webmail; domain and count only', async () => {
   const many: Account[] = [];
   const add = (count: number, domain: string, prefix: string, extra: Partial<Account> = {}) => {
