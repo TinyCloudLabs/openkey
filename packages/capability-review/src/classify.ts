@@ -22,6 +22,7 @@
 // the display label (see metadata.ts) but cannot flip a "sensitive" grant to
 // "standard".
 
+import { courierEntry } from "./courier.js";
 import type { CapabilityFamily, PermissionSeverity } from "./model.js";
 import { isSecretsSpace } from "./app-scope.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
@@ -48,6 +49,7 @@ interface RecapEntryLike {
   path: string;
   actions: string[];
   signerAddress?: string | null;
+  signerChainId?: number;
   /** Ability-derived and resource-derived services disagree on the wire. */
   serviceMismatch?: boolean;
 }
@@ -270,6 +272,15 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     spaceOwner !== null &&
     signerAddress !== null &&
     spaceOwner === signerAddress;
+
+  const courier = courierEntry(entry);
+  if (courier && isOwnSpace && space.startsWith(`tinycloud:pkh:eip155:${entry.signerChainId}:`)) {
+    return { family: "courier", displayLabel: new Set(entry.actions).size === courier.verbs.length ? ("exactText" in courier ? courier.exactText ?? courier.text : courier.text) : FAMILY_LABEL.courier };
+  }
+
+  if (spaceName === "agents" && (BOOTSTRAP_KV_SERVICES.has(service) || service === "tinycloud.hooks") && !path.startsWith("vault/secrets/") && !path.startsWith("secrets/")) {
+    return unknownActionLabel(service);
+  }
 
   // KV and SQL authority inside a TinyCloud secrets space reaches secret
   // data regardless of requester ownership. Classify it as a secret family
@@ -730,6 +741,8 @@ export function classifySeverityFromActions(
   const hasDecrypt = verbs.some((v) => DECRYPT_VERBS.has(v));
 
   switch (family) {
+    case "courier":
+      return scope ? courierEntry({ ...scope, actions })?.severity ?? "sensitive" : "sensitive";
     case "bootstrap-kv":
     case "bootstrap-sql":
       return "standard";
@@ -768,6 +781,7 @@ export function classifySeverityFromActions(
     case "duckdb-data":
       return "standard";
     case "unknown":
+      if (scope && /(?:^|:)agents(?:[/:]|$)/.test(scope.space)) return "sensitive";
     default:
       // Fail-closed: an unknown service could be doing anything. Always
       // elevate at least to "attention"; if it also carries a mutation verb
