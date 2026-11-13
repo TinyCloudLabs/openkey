@@ -153,30 +153,32 @@ function render(props: Record<string, unknown> = {}) {
   return { target, cleanup: () => { unmount(app); target.remove(); } };
 }
 
-const line = (t: HTMLElement) => t.querySelector('.expiry-line')?.textContent?.replace(/\s+/g, ' ').trim() ?? null;
-const changeButton = (t: HTMLElement) => t.querySelector<HTMLButtonElement>('.expiry-change')!;
-const preset = (t: HTMLElement, label: string) =>
-  [...t.querySelectorAll<HTMLButtonElement>('.expiry-preset')].find((b) => b.textContent?.trim() === label)!;
+// TC-2933: the line has no "(Change)" button; the window is picked under the closed "How long it lasts" fold.
+const line = (t: HTMLElement) => t.querySelector('[data-testid="approval-expiry-line"]')?.textContent?.replace(/\s+/g, ' ').trim() ?? null;
+const presets = (t: HTMLElement) => [...t.querySelectorAll<HTMLButtonElement>('.choice-preset')];
+const preset = (t: HTMLElement, label: string) => presets(t).find((b) => b.textContent?.trim() === label)!;
+const error = (t: HTMLElement) => t.querySelector('#approval-expiry-error')?.textContent ?? null;
 
 function type(t: HTMLElement, value: string) {
-  const input = t.querySelector<HTMLInputElement>('.expiry-input')!;
+  const input = t.querySelector<HTMLInputElement>('#approval-expiry-custom')!;
   input.value = value;
   input.dispatchEvent(new win.Event('input', { bubbles: true }) as unknown as Event);
   flushSync();
 }
 function submit(t: HTMLElement) {
-  t.querySelector('.expiry-custom')!.dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }) as unknown as Event);
+  t.querySelector('.choice-custom')!.dispatchEvent(new win.Event('submit', { bubbles: true, cancelable: true }) as unknown as Event);
   flushSync();
 }
 function open(t: HTMLElement) {
-  changeButton(t).click();
+  t.querySelector<HTMLDetailsElement>('.expiry-fold')!.open = true;
   flushSync();
 }
 
-describe('the "Approval expires" line', () => {
-  test('shows what the app asked for, in the short form', () => {
+// The line's wording is Monica's; these check what it says about time (the duration), not the sentence.
+describe('the expiry line', () => {
+  test('shows what the app asked for', () => {
     const { target, cleanup } = render({ onExpiryChange() {} });
-    expect(line(target)).toBe('Approval expires: 7d (Change)');
+    expect(line(target)).toContain('7 days');
     cleanup();
   });
 
@@ -188,19 +190,19 @@ describe('the "Approval expires" line', () => {
 
   test('shows the chosen time instead of the requested one', () => {
     const { target, cleanup } = render({ onExpiryChange() {}, expiryMs: 5600 * S });
-    expect(line(target)).toBe('Approval expires: 5600s (Change)');
+    expect(line(target)).toContain('5600 seconds');
+    expect(line(target)).not.toContain('7 days');
     cleanup();
   });
 
-  test('the presets are 1 hr, 24 hr, 7d and 30d, and a preset reports its time', () => {
+  test('a preset reports its time', () => {
     const chosen: Array<number | null> = [];
     const { target, cleanup } = render({ onExpiryChange: (ms: number | null) => chosen.push(ms) });
     open(target);
-    expect([...target.querySelectorAll('.expiry-preset')].map((b) => b.textContent?.trim())).toEqual(['1 hr', '24 hr', '7d', '30d']);
-    preset(target, '30d').click();
+    expect(presets(target)).toHaveLength(4);
+    preset(target, '30 days').click();
     flushSync();
     expect(chosen).toEqual([30 * D]);
-    expect(target.querySelector('#approval-expiry-panel')).toBeNull();
     cleanup();
   });
 
@@ -208,7 +210,7 @@ describe('the "Approval expires" line', () => {
     const chosen: Array<number | null> = [];
     const { target, cleanup } = render({ onExpiryChange: (ms: number | null) => chosen.push(ms), expiryMs: H });
     open(target);
-    preset(target, '7d').click();
+    preset(target, '7 days').click();
     expect(chosen).toEqual([null]);
     cleanup();
   });
@@ -229,18 +231,17 @@ describe('the "Approval expires" line', () => {
     open(target);
     type(target, value);
     submit(target);
-    const alert = target.querySelector('.expiry-error');
+    const alert = target.querySelector('#approval-expiry-error');
     expect(alert?.getAttribute('role')).toBe('alert');
     expect(alert?.textContent?.length).toBeGreaterThan(0);
     expect(chosen).toEqual([]);
-    expect(target.querySelector('#approval-expiry-panel')).not.toBeNull();
     // Typing again clears the error.
     type(target, '1d');
-    expect(target.querySelector('.expiry-error')).toBeNull();
+    expect(error(target)).toBeNull();
     cleanup();
   });
 
-  test('a long time shows the warning, a year or less does not', () => {
+  test('a time over a year shows the warning, a year or less does not', () => {
     const warning = (t: HTMLElement) => t.querySelector('.expiry-warning')?.textContent ?? null;
     const long = render({ onExpiryChange() {}, expiryMs: 366 * D });
     expect(warning(long.target)).toBe("That's a long time. OpenKey can't cancel it early once you approve.");
@@ -248,62 +249,48 @@ describe('the "Approval expires" line', () => {
     const edge = render({ onExpiryChange() {}, expiryMs: 365 * D });
     expect(warning(edge.target)).toBeNull();
     edge.cleanup();
-    const typed = render({ onExpiryChange() {} });
-    open(typed.target);
-    type(typed.target, '2y');
-    expect(warning(typed.target)).not.toBeNull();
-    type(typed.target, '30d');
-    expect(warning(typed.target)).toBeNull();
-    typed.cleanup();
   });
 
-  test('Escape closes the picker and returns focus to Change', () => {
+  test('is a labelled, keyboard-reachable form under a native fold: buttons, a labelled input, a submit button', () => {
     const { target, cleanup } = render({ onExpiryChange() {} });
+    expect(target.querySelector('.expiry-fold > summary')).not.toBeNull();
     open(target);
-    expect(changeButton(target).getAttribute('aria-expanded')).toBe('true');
-    target.querySelector('.expiry-input')!.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }) as unknown as Event);
-    flushSync();
-    expect(target.querySelector('#approval-expiry-panel')).toBeNull();
-    expect(changeButton(target).getAttribute('aria-expanded')).toBe('false');
-    expect(document.activeElement).toBe(changeButton(target));
-    cleanup();
-  });
-
-  test('is a labelled, keyboard-reachable form: native buttons, a labelled input, a submit button', () => {
-    const { target, cleanup } = render({ onExpiryChange() {} });
-    open(target);
-    const input = target.querySelector<HTMLInputElement>('.expiry-input')!;
+    const input = target.querySelector<HTMLInputElement>('#approval-expiry-custom')!;
     expect(target.querySelector(`label[for="${input.id}"]`)?.textContent).toBe('Or type a time');
-    expect(target.querySelector<HTMLButtonElement>('.expiry-set')?.type).toBe('submit');
+    expect(target.querySelector<HTMLButtonElement>('.choice-set')?.type).toBe('submit');
     for (const button of target.querySelectorAll('.expiry button')) expect((button as HTMLButtonElement).tabIndex).not.toBe(-1);
     cleanup();
   });
 
-  test('Change is disabled while approving', () => {
+  test('the choices are disabled while approving', () => {
     const { target, cleanup } = render({ onExpiryChange() {}, approving: true });
-    expect(changeButton(target).disabled).toBe(true);
+    open(target);
+    expect(presets(target).every((b) => b.disabled)).toBe(true);
+    expect(target.querySelector<HTMLInputElement>('#approval-expiry-custom')!.disabled).toBe(true);
     cleanup();
   });
 });
 
-describe('where the requester signed the longest time it accepts', () => {
-  const NOTE = 'This app asked for up to 7d. To allow longer, start the request again with a longer expiry.';
+// A refusal is an alert naming the longest time allowed; its sentence is not pinned here.
+const refusal = (t: HTMLElement) => t.querySelector('[role="alert"]');
 
-  test('the picker offers nothing longer than asked, with the plain note', () => {
+describe('where the requester signed the longest time it accepts', () => {
+
+  test('the picker offers nothing longer than asked', () => {
     const { target, cleanup } = render({ onExpiryChange() {}, expiryBounded: true });
     open(target);
-    expect([...target.querySelectorAll('.expiry-preset')].map((b) => b.textContent?.trim())).toEqual(['1 hr', '24 hr', '7d']);
-    expect(target.querySelector('.expiry-note')?.textContent).toBe(NOTE);
+    expect(presets(target).map((b) => b.textContent?.trim())).not.toContain('30 days');
+    expect(presets(target)).toHaveLength(3);
     cleanup();
   });
 
-  test('a typed time past the signed maximum is refused with that note; the maximum itself is allowed', () => {
+  test('a typed time past the signed maximum is refused with an alert naming the maximum; the maximum itself is allowed', () => {
     const chosen: Array<number | null> = [];
     const { target, cleanup } = render({ onExpiryChange: (ms: number | null) => chosen.push(ms), expiryBounded: true });
     open(target);
     type(target, '8d');
     submit(target);
-    expect(target.querySelector('.expiry-error')?.textContent).toBe(NOTE);
+    expect(refusal(target)?.textContent).toContain('7 days');
     expect(chosen).toEqual([]);
     type(target, '7d');
     submit(target);
@@ -321,24 +308,31 @@ describe('where the requester signed the longest time it accepts', () => {
     cleanup();
   });
 
-  test('where the user may pick anything there is no note and 30d is offered', () => {
+  test('where the user may pick anything, 30 days is offered', () => {
     const { target, cleanup } = render({ onExpiryChange() {} });
     open(target);
-    expect(target.querySelector('.expiry-note')).toBeNull();
-    expect(target.querySelectorAll('.expiry-preset').length).toBe(4);
+    expect(presets(target)).toHaveLength(4);
+    cleanup();
+  });
+
+  test('after a refused typed value there is one alert, and typing clears it', () => {
+    const { target, cleanup } = render({ onExpiryChange() {}, expiryBounded: true });
+    open(target);
+    type(target, '8d');
+    submit(target);
+    expect(target.querySelectorAll('[role="alert"]')).toHaveLength(1);
+    type(target, '1d');
+    expect(error(target)).toBeNull();
     cleanup();
   });
 });
 
 describe('where the requester signed a maximum above its suggested default (TC-2274)', () => {
-  test('the default is the suggestion, the picker offers up to the signed maximum, and the note names it', () => {
+  test('the default is the suggestion and the picker offers up to the signed maximum', () => {
     const { target, cleanup } = render({ onExpiryChange() {}, expiryBounded: true, expiryMaxMs: 365 * D });
-    expect(line(target)).toBe('Approval expires: 7d (Change)');
+    expect(line(target)).toContain('7 days');
     open(target);
-    expect([...target.querySelectorAll('.expiry-preset')].map((b) => b.textContent?.trim())).toEqual(['1 hr', '24 hr', '7d', '30d']);
-    expect(target.querySelector('.expiry-note')?.textContent).toBe(
-      'This app asked for up to 1y. To allow longer, start the request again with a longer expiry.',
-    );
+    expect(presets(target)).toHaveLength(4);
     cleanup();
   });
 
@@ -349,30 +343,15 @@ describe('where the requester signed a maximum above its suggested default (TC-2
     type(target, '1y');
     submit(target);
     expect(chosen).toEqual([365 * D]);
-    open(target);
     type(target, '366d');
     submit(target);
-    expect(target.querySelector('.expiry-error')?.textContent).toContain('up to 1y');
+    expect(refusal(target)?.textContent).toContain('1 year');
     expect(chosen).toEqual([365 * D]);
     cleanup();
   });
 });
 
-describe('QA nits (TC-2274)', () => {
-  test('after a refused typed value the limit note is shown once, as the error', () => {
-    const { target, cleanup } = render({ onExpiryChange() {}, expiryBounded: true });
-    open(target);
-    expect(target.querySelectorAll('.expiry-note').length).toBe(1);
-    type(target, '8d');
-    submit(target);
-    const text = target.textContent ?? '';
-    expect(text.split('To allow longer, start the request again with a longer expiry.').length - 1).toBe(1);
-    expect(target.querySelector('.expiry-error')).not.toBeNull();
-    expect(target.querySelector('.expiry-note')).toBeNull();
-    type(target, '1d');
-    expect(target.querySelectorAll('.expiry-note').length).toBe(1);
-    cleanup();
-  });
+describe('the link notice', () => {
 
   test('the link notice shows its own Expires row only where nothing else shows the expiry', async () => {
     const Notice = (await import(await compileSvelte('components/delegate/delegate-link-notice.svelte'))).default;

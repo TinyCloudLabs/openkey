@@ -56,6 +56,9 @@ export interface VerifiedManifestFields {
   };
 }
 
+/** The renewal choice bound into an approval-request context: finite, or leased for this many seconds. */
+export type BoundRenewalChoice = { choice: 'finite' } | { choice: 'leased'; leaseLifetimeSeconds: number };
+
 export interface AuthorizationContextIssueInput {
   userId: string;
   keyId: string;
@@ -110,6 +113,11 @@ export interface AuthorizationContextIssueInput {
   admittedAppKeys?: AdmittedAppKey[];
   /** The app's `expiryChangeable: true` opt-in, bound at prepare time (TC-2272). */
   expiryChangeable?: boolean;
+  /**
+   * The owner's renewal choice for an approval request that signed a renewal request (TC-2933), bound at
+   * prepare time with the preview, so a later step cannot add or lengthen a lease the owner did not see.
+   */
+  renewal?: BoundRenewalChoice;
 }
 
 interface StoredContext {
@@ -139,6 +147,7 @@ interface StoredContext {
   appOrigin?: string;
   admittedAppKeys?: AdmittedAppKey[];
   expiryChangeable?: boolean;
+  renewal?: BoundRenewalChoice;
 }
 
 const store = new Map<string, StoredContext>();
@@ -390,6 +399,7 @@ export function issueAuthorizationContext(
     appOrigin: input.appOrigin,
     admittedAppKeys: input.admittedAppKeys,
     expiryChangeable: input.expiryChangeable,
+    renewal: input.renewal,
   };
   store.set(token, stored);
 
@@ -846,6 +856,8 @@ export interface PeekSuccess {
     admittedAppKeys?: AdmittedAppKey[];
     /** The app opted in (`expiryChangeable: true`) to a signed expiry that differs from the one it sent. */
     expiryChangeable?: boolean;
+    /** The renewal choice bound with the preview (TC-2933). */
+    renewal?: BoundRenewalChoice;
   };
 }
 
@@ -895,6 +907,7 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       appOrigin: stored.appOrigin,
       admittedAppKeys: stored.admittedAppKeys,
       expiryChangeable: stored.expiryChangeable,
+      renewal: stored.renewal,
     },
   };
 }
