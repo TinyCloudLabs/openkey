@@ -1,15 +1,16 @@
+import type { DeletionReviewRuntime } from './account-deletion-review-worker';
 import { getPrisma, type PrismaClient } from '@openkey/db';
 import { runAccountDeletion, type DeletionAdapterFactory } from './account-deletion-worker';
 
-// Replaced by the direct owner-PKH adapter once shared wire fixtures land.
+// Production remains disabled until scoped key/host/review providers are approved.
 const unavailableAdapter: DeletionAdapterFactory = async () => { throw new Error('Deletion transport unavailable'); };
-export async function sweepAccountDeletions(prisma: PrismaClient = getPrisma(), adapter: DeletionAdapterFactory = unavailableAdapter): Promise<void> {
+export async function sweepAccountDeletions(prisma: PrismaClient = getPrisma(), adapter: DeletionAdapterFactory = unavailableAdapter, reviewRuntime?: DeletionReviewRuntime): Promise<void> {
   const rows = await prisma.accountDeletionJob.findMany({
-    where: { state: 'deletion_requested', nextAttemptAt: { lte: new Date() } },
+    where: { state: { in: ['deletion_requested', 'pending_review', 'wait_for_re_encryption'] }, nextAttemptAt: { lte: new Date() } },
     orderBy: { requestedAt: 'asc' }, take: 10, select: { id: true },
   });
   for (const row of rows) {
-    try { await runAccountDeletion(prisma, row.id, adapter); }
+    try { await runAccountDeletion(prisma, row.id, adapter, reviewRuntime); }
     catch { /* A failed pass remains durable and eligible for retry. */ }
   }
 }

@@ -18,13 +18,14 @@ test('dependencies require a recorded decision and fresh zero all-host checks', 
   const held = await assessDeletionPreflight(snapshot, adapter);
   expect(held.state).toBe('pending_review');
   const decision = { actor: 'Naomi', at: new Date(), reason: 'Review recorded', disposition: 'proceed' as const };
-  expect(mayProceedAfterReview(decision, held)).toBe(false);
+  expect(mayProceedAfterReview(decision, held)).toBe(true);
   count = 0;
   const clear = await assessDeletionPreflight(snapshot, adapter);
-  expect(mayProceedAfterReview(undefined, clear)).toBe(false);
+  expect(mayProceedAfterReview(undefined, clear)).toBe(true);
   expect(mayProceedAfterReview({ ...decision, disposition: 'wait_for_re-encryption' }, clear)).toBe(true);
   expect(mayProceedAfterReview(decision, clear)).toBe(true);
   // The same check is repeated immediately before key destruction.
   count = 1;
-  expect(mayProceedAfterReview(decision, await assessDeletionPreflight(snapshot, adapter))).toBe(false);
+  expect(mayProceedAfterReview({ ...decision, disposition: 'wait_for_re-encryption' }, await assessDeletionPreflight(snapshot, adapter))).toBe(false);
+  expect(mayProceedAfterReview({ ...decision, at: new Date(Date.now() - 172800_001) }, held)).toBe(false);
 });

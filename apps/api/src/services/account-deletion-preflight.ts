@@ -39,10 +39,16 @@ export async function assessDeletionPreflight(snapshot: DeletionHostSnapshot, ad
 export type DeletionReviewDecision = {
   actor: string;
   at: Date;
+  expiresAt?: Date;
   reason: string;
   disposition: 'proceed' | 'wait_for_re-encryption';
+  snapshot?: import('./account-deletion-decision').HostRow[];
 };
 
-export function mayProceedAfterReview(decision: DeletionReviewDecision | undefined, fresh: DeletionPreflight): boolean {
-  return !!decision && !!decision.actor.trim() && !!decision.reason.trim() && Number.isFinite(decision.at.getTime()) && ['proceed', 'wait_for_re-encryption'].includes(decision.disposition) && fresh.state === 'ready';
+export function mayProceedAfterReview(decision: DeletionReviewDecision | undefined, fresh: DeletionPreflight, now = new Date()): boolean {
+  if (fresh.unavailableHosts.length || fresh.state === 'pending') return false;
+  if (fresh.state === 'ready') return Object.values(fresh.dependencies).every(summary => summary.count === 0);
+  if (!decision || decision.disposition !== 'proceed' || decision.actor === 'deadline' || !decision.actor.trim() || !decision.reason.trim() || !Number.isFinite(decision.at.getTime()) || decision.at > now) return false;
+  const expiry = decision.expiresAt ?? new Date(decision.at.getTime() + 172800_000);
+  return Number.isFinite(expiry.getTime()) && expiry > now && expiry.getTime() - decision.at.getTime() <= 172800_000;
 }

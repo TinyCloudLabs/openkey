@@ -938,6 +938,9 @@ model AccountDeletionJob {
 }
 
 model AccountDeletionReview {
+  eventKey String? @unique
+  deliveredAt DateTime?
+  expiresAt DateTime?
   id String @id @default(cuid())
   jobId String
   kind String

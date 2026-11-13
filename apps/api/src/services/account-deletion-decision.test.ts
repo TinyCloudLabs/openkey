@@ -53,3 +53,46 @@ test('Rust-signed public vectors verify with identical TypeScript canonical byte
     expect(verify(null, Buffer.from(reviewDecisionDomain + reviewJcs(vector.proof.payload)), fixture.publicKeySpkiPem, Buffer.from(vector.proof.signature, 'base64url'))).toBe(true);
   }
 });
+
+test('deadline signing cannot run early, use caller time, reissue or bypass revocation', async () => {
+  const { signDeadlineReviewDecisions } = await import('./account-deletion-decision');
+  const { privateKey } = generateKeyPairSync('ed25519');
+  const jobId = crypto.randomUUID();
+  const requestedAt = 1_700_000_000;
+  let now = requestedAt + 604799;
+  let claimed = false;
+  let revoked = false;
+  let claims = 0;
+  const authority = {
+    writerId: 'review-test', keyId: 'key-1',
+    sign: async (bytes: Uint8Array) => sign(null, bytes, privateKey),
+    verifiedRequest: async () => ({ jobId, requestId: jobId, requestedAt, hosts: snapshot, ownerHmacs: { 'node-a': observation.ownerHmac } }), teeNow: async () => now,
+    deadlineRevoked: async () => revoked,
+    claimDeadline: async () => { claims += 1; if (claimed) return false; claimed = true; return true; },
+  };
+  await expect(signResourceReviewDecision({ ...input(), decisionMaker: 'deadline' }, snapshot, [observation], authority)).rejects.toThrow();
+  await expect(signDeadlineReviewDecisions(jobId, snapshot, [observation], authority)).rejects.toThrow();
+  expect(claims).toBe(0);
+  now += 1;
+  await expect(signDeadlineReviewDecisions(jobId, snapshot, [{ ...observation, ownerHmac: 'f'.repeat(64) }], authority)).rejects.toThrow('scope mismatch');
+  expect(claims).toBe(0);
+  const proofs = await signDeadlineReviewDecisions(jobId, snapshot, [observation], authority);
+  expect(proofs).toHaveLength(1);
+  expect(proofs[0]!.payload[9]).toBe('deadline');
+  expect(proofs[0]!.payload[10]).toBe(now);
+  await expect(signDeadlineReviewDecisions(jobId, snapshot, [observation], authority)).rejects.toThrow();
+  revoked = true;
+  await expect(signDeadlineReviewDecisions(jobId, snapshot, [observation], authority)).rejects.toThrow('revoked');
+  expect(claims).toBe(2);
+});
+
+test('reviewed target fingerprints remain exact while unrelated resource changes do not invalidate authority', async () => {
+  const { privateKey } = generateKeyPairSync('ed25519');
+  const signer = { writerId: 'review-test', keyId: 'key-1', sign: async (bytes: Uint8Array) => sign(null, bytes, privateKey) };
+  const reviewedSnapshot = buildReviewSnapshot(snapshot, [observation]);
+  const current = { ...observation, dependentResourceCount: 2, resourceHmacs: ['b'.repeat(64), 'd'.repeat(64)], targets: [...observation.targets, { resourceId: resource.replace(':default', ':archive'), targetResourceHmac: 'd'.repeat(64), dependentCount: 1, dependencyFingerprint: 'e'.repeat(64), fingerprintKeyId: 'fp-1' }] };
+  const proof = await signResourceReviewDecision({ ...input(), reviewedSnapshot }, snapshot, [current], signer);
+  expect(proof.payload[13]).toEqual(reviewedSnapshot);
+  const changed = { ...current, targets: [{ ...current.targets[0]!, dependencyFingerprint: 'f'.repeat(64) }, current.targets[1]!] };
+  await expect(signResourceReviewDecision({ ...input(), reviewedSnapshot }, snapshot, [changed], signer)).rejects.toThrow('snapshot changed');
+});
