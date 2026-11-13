@@ -108,12 +108,21 @@ export interface SignOutAcknowledgement {
   revoked: boolean;
 }
 
+/**
+ * The server's definite refusals of a signing request. Asking again with the same request cannot succeed.
+ * `APP_KEY_GRANT_REFUSED`: the request asks for an encryption key this website may not be granted.
+ */
+export type OpenKeyRefusalCode = 'APP_KEY_GRANT_REFUSED' | 'KEY_DELETE_NOT_GRANTABLE' | 'INVALID_SIWE_RECAP';
+
 export interface OpenKeyError {
-  code: 'USER_CANCELLED' | 'POPUP_BLOCKED' | 'TIMEOUT' | 'NO_KEY' | 'UNAUTHORIZED' | 'UNKNOWN' | 'STATE_MISMATCH';
+  code: 'USER_CANCELLED' | 'POPUP_BLOCKED' | 'TIMEOUT' | 'NO_KEY' | 'UNAUTHORIZED' | 'UNKNOWN' | 'STATE_MISMATCH' | OpenKeyRefusalCode;
   message: string;
   /** On `POPUP_BLOCKED`: `'embedded-webview'` when the page runs in an app WebView that cannot open popups. */
   reason?: 'embedded-webview';
 }
+
+/** The widget reports a definite refusal as `{ code: 'UNKNOWN', message: <refusal code> }`. */
+const REFUSAL_CODES: ReadonlySet<string> = new Set<OpenKeyRefusalCode>(['APP_KEY_GRANT_REFUSED', 'KEY_DELETE_NOT_GRANTABLE', 'INVALID_SIWE_RECAP']);
 
 // ======= OAuth 2.1 Types =======
 
@@ -2270,6 +2279,9 @@ export class OpenKey {
     // A validated widget response can report that the cached key no longer
     // exists. Drop the selection; only an explicit connect chooses a new key.
     if (error?.code === 'NO_KEY') this.lastAuth = null;
+    if (error?.code === 'UNKNOWN' && REFUSAL_CODES.has(error.message)) {
+      return { ...error, code: error.message as OpenKeyRefusalCode };
+    }
     return error;
   }
 

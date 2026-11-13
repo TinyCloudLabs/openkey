@@ -929,3 +929,25 @@ describe('authorizeTinyCloud expiryChangeable opt-in (TC-2272)', () => {
     expect(await requestFor({}, 'EXTERNAL')).not.toHaveProperty('expiryChangeable');
   });
 });
+
+describe('definite widget refusals reach the app as their own code (TC-2928)', () => {
+  // handleWidgetError is the private step every widget failure passes through before the app's promise rejects.
+  const openkey = Object.create(OpenKey.prototype) as unknown as { handleWidgetError(error: unknown): unknown };
+
+  test('names each definite server refusal the widget reports', () => {
+    for (const code of ['APP_KEY_GRANT_REFUSED', 'KEY_DELETE_NOT_GRANTABLE', 'INVALID_SIWE_RECAP']) {
+      expect(openkey.handleWidgetError({ code: 'UNKNOWN', message: code })).toEqual({ code, message: code });
+    }
+  });
+
+  test('leaves every other widget error unchanged', () => {
+    for (const error of [
+      { code: 'UNKNOWN', message: 'SERVER_REPLY_UNREADABLE' },
+      { code: 'UNKNOWN', message: 'SIWE_ORIGIN_REFUSED: origin_mismatch' },
+      { code: 'UNKNOWN', message: 'app_key_grant_refused' },
+      { code: 'USER_CANCELLED', message: 'APP_KEY_GRANT_REFUSED' },
+    ]) {
+      expect(openkey.handleWidgetError(error)).toEqual(error);
+    }
+  });
+});
