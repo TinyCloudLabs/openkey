@@ -8,6 +8,8 @@ import {
   buildAuthorizationUrl,
 } from '@openkey/core';
 import { OpenKeyNostr } from './nostr';
+import { beginShareApprovalTransport, type ShareApprovalIntent, type ShareApprovalVerifier } from './share-approval';
+export type { ShareApprovalIntent, ShareApprovalIdentity, ShareApprovalResult, ShareApprovalVerifier } from './share-approval';
 import { isEmbeddedAppWebView, isUsablePopup, popupUnavailableError } from './popup-capability';
 
 export { OpenKeyNostr } from './nostr';
@@ -1124,6 +1126,21 @@ export class OpenKey {
       if (!this.lastAuth) throw new Error('OpenKey is not connected');
       return new OpenKeyProvider(this, this.lastAuth).request({ method, params });
     } };
+  }
+
+  /** Reserve in the original click; TinyCloud verifies the exact signed grant before use. */
+  beginShareApproval(intent: ShareApprovalIntent, options: { verify: ShareApprovalVerifier }) {
+    if (typeof options?.verify !== 'function') throw new Error('Share approval requires a result verifier');
+    const reserved = this.reservePopup('share');
+    if (!reserved) throw new Error('Share popup unavailable');
+    return beginShareApprovalTransport({ host: this.host, popup: reserved.window, intent, verify: options.verify,
+      registerCancel: cancel => { this.activeFlowCancellations.add(cancel); },
+      unregisterCancel: cancel => { this.activeFlowCancellations.delete(cancel); },
+      signExternal: async (message, address) => {
+        const provider = await this.findWalletProvider(address);
+        return await provider.request({ method: 'personal_sign', params: [this.toHex(message), address] }) as string;
+      },
+    });
   }
 
   /** A cookie-free server advertisement; absent/disabled servers use the existing API. */

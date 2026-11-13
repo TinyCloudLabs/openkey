@@ -1,3 +1,4 @@
+// @ts-expect-error bun:test is a runtime-only module; tsc doesn't ship types
 import { expect, test } from 'bun:test';
 import { acceptRequesterHello } from '../src/lib/requester-window';
 const opener = {} as Window;

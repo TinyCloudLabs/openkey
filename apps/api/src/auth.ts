@@ -1,3 +1,4 @@
+import { shareWindowAuthHooks } from './services/share-window-session';
 // OpenKey API - better-auth configuration
 import { generateOAuthClientSecret, hasOAuthClientId, hashOAuthClientSecret } from './services/oauth-client-secrets';
 // Auth flow: email OTP by default, with optional passkey enrollment and sign-in.
@@ -579,8 +580,11 @@ export const auth = betterAuth({
   databaseHooks: {
     // Web sessions end at most WEB_SESSION_ABSOLUTE_CAP_SECONDS after sign-in (services/session-cap.ts).
     session: {
+      create: { after: shareWindowAuthHooks.created },
+      delete: { after: shareWindowAuthHooks.deleted },
       update: {
         before: capSessionRefresh,
+        after: shareWindowAuthHooks.updated,
       },
     },
     user: {

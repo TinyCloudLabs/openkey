@@ -1,14 +1,11 @@
 import { parseStrictSiwe } from './signed-subset';
 import { checkSiweOrigin } from './siwe-origin';
 import { sessionDidForPublicJwk } from './device-authorization';
-import { generateAuthenticationOptions, verifyAuthenticationResponse,
-  type AuthenticationResponseJSON, type AuthenticatorTransportFuture } from '@simplewebauthn/server';
-import type { PrismaClient } from '@openkey/db';
+import type { AuthenticationResponseJSON } from '@simplewebauthn/server';
+import { approvalAssertionOptions, verifyApprovalAssertion, type Database, type RelyingParty } from './approval-assertion';
 import { SignInContinuations, type SignInIdentity } from './signin-continuation';
 
 export const signInContinuations = new SignInContinuations();
-type Database = Pick<PrismaClient, 'passkey' | 'session' | 'ethereumKey'>;
-type RelyingParty = { rpID: string; origin: string };
 
 /** Reload the server's identity on every phase; browser key metadata is never authority. */
 export async function currentSignInIdentity(db: Database, userId: string, sessionId: string,
@@ -24,51 +21,15 @@ export async function currentSignInIdentity(db: Database, userId: string, sessio
     address: key.address.toLowerCase(), chainId };
 }
 
-export async function signInAssertionOptions(db: Database, identity: SignInIdentity, rp: RelyingParty) {
-  const passkeys = await db.passkey.findMany({ where: { userId: identity.userId, countsForStepUp: true } });
-  if (!passkeys.length) throw new Error('Sign-in requires an eligible passkey');
-  const { token, challenge } = signInContinuations.issue(identity);
-  try {
-    const options = await generateAuthenticationOptions({ rpID: rp.rpID, challenge: new Uint8Array(Buffer.from(challenge, 'base64url')),
-      userVerification: 'required', allowCredentials: passkeys.map((key) => ({
-        id: key.credentialID,
-        transports: key.transports ? key.transports.split(',') as AuthenticatorTransportFuture[] : undefined,
-      })),
-    });
-    return { token, options };
-  } catch (error) {
-    signInContinuations.cancel(token, identity);
-    throw error;
-  }
+export function signInAssertionOptions(db: Database, identity: SignInIdentity, rp: RelyingParty) {
+  return approvalAssertionOptions(db, identity, rp, signInContinuations);
 }
 
-export async function verifySignInAssertion(db: Database, token: string, identity: SignInIdentity,
+export function verifySignInAssertion(db: Database, token: string, identity: SignInIdentity,
   response: AuthenticationResponseJSON, rp: RelyingParty): Promise<void> {
-  const challenge = signInContinuations.challenge(token, identity);
-  try {
-    const key = await db.passkey.findFirst({ where: {
-      credentialID: response.id, userId: identity.userId, countsForStepUp: true,
-    } });
-    if (!key) throw new Error('Sign-in passkey not found');
-    const verified = await verifyAuthenticationResponse({ response, expectedChallenge: challenge,
-      expectedOrigin: rp.origin, expectedRPID: rp.rpID, requireUserVerification: true,
-      credential: { id: key.credentialID, publicKey: new Uint8Array(Buffer.from(key.publicKey, 'base64')),
-        counter: key.counter },
-    });
-    if (!verified.verified || verified.authenticationInfo.userVerified !== true) {
-      throw new Error('Sign-in assertion requires user verification');
-    }
-    const updated = await db.passkey.updateMany({ where: { id: key.id, userId: identity.userId,
-      countsForStepUp: true, counter: key.counter }, data: { counter: verified.authenticationInfo.newCounter } });
-    if (updated.count !== 1) throw new Error('Sign-in passkey changed');
-    // Recheck after the assertion's awaits, including session expiry and key archival.
-    const current = await currentSignInIdentity(db, identity.userId, identity.sessionId,
-      identity.requestId, identity.origin, identity.keyId, identity.chainId);
-    signInContinuations.verified(token, current, challenge);
-  } catch (error) {
-    try { signInContinuations.cancel(token, identity); } catch { /* already cancelled or expired */ }
-    throw error;
-  }
+  return verifyApprovalAssertion(db, token, identity, response, rp, signInContinuations,
+    () => currentSignInIdentity(db, identity.userId, identity.sessionId,
+      identity.requestId, identity.origin, identity.keyId, identity.chainId));
 }
 
 /** Bind the provisional identity to the caller's actual session request. */

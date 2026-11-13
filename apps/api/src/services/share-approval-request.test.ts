@@ -5,7 +5,7 @@ import { SiweMessage } from 'siwe';
 import { strictSessionDid } from './device-authorization';
 import { ShareWindowContexts } from './share-window-context';
 import { ShareApprovalRequests } from './share-approval-request';
-import { parsePreparedRecap, isRawRecapEntry, prepareDelegationSession } from '../routes/delegate-session';
+import { parsePreparedRecap, isRawRecapEntry, prepareDelegationSession, type DelegationJwk } from '../routes/delegate-session';
 
 async function fixture() {
   const wallet = Wallet.createRandom();
@@ -93,7 +93,7 @@ test('sign refuses added space-scoped encryption actions even beyond the exact-b
   const preview = prepare(requests, f);
   const { prepared } = prepareDelegationSession({
     address: f.wallet.address, chainId: 1, prefix: 'applications',
-    jwk: f.intent.session.publicJwk, domain: 'thirdparty.example',
+    jwk: f.intent.session.publicJwk as DelegationJwk, domain: 'thirdparty.example',
     nonce: '12345678', issuedAt: new Date(f.now), expiryMs: 1800_000,
     permissions: [...f.intent.permissions,
       { service: 'tinycloud.encryption', space: 'encryption',
@@ -119,7 +119,7 @@ test('sign refuses changed ordinary file rows before consuming approval', async 
   const record = (requests as any).requests.get(preview.requestId);
   const { prepared } = prepareDelegationSession({
     address: f.wallet.address, chainId: 1, prefix: 'applications',
-    jwk: f.intent.session.publicJwk, domain: 'thirdparty.example',
+    jwk: f.intent.session.publicJwk as DelegationJwk, domain: 'thirdparty.example',
     nonce: '12345678', issuedAt: new Date(f.now), expiryMs: 1800_000,
     permissions: [{ ...f.intent.permissions[0]!, path: 'app/private/file.json' },
       { service: 'tinycloud.encryption', space: 'encryption',
