@@ -198,7 +198,7 @@ describe('the approval result for a request that asked for renewal', () => {
 
   test('carries the lease when the owner left renewal on, in the shape the requester codec accepts', async () => {
     const f = await fixture(true);
-    await f.service.approve(f.record.id, 'user-1', f.body, f.delegation, undefined, { choice: 'leased', renewal });
+    await f.service.approve(f.record.id, 'user-1', f.body, f.delegation, undefined, { choice: 'leased', renewal, sessionId: 'session-1' });
     const result = await f.result();
     expect(Object.keys(result).sort()).toEqual(['delegation', 'delegationExpiresAt', 'ownerDid', 'renewal', 'renewalChoice', 'requestDigest', 'requestId', 'requesterDid', 'resultVersion', 'targetDid']);
     const checked = checkApprovalResultBinding(result, {
@@ -207,12 +207,18 @@ describe('the approval result for a request that asked for renewal', () => {
     });
     expect(checked.renewalChoice).toBe('leased');
     expect(checked.renewal).toEqual(renewal);
+    // The owner's lasting lease record comes from the node-admitted receipt, not from anything the requester sent.
+    expect((f.record as unknown as { lease: unknown }).lease).toEqual({
+      leaseCid: 'bafkrlease', userId: 'user-1', sessionId: 'session-1', approvalRequestId: f.record.id, ownerDid: f.delegation.ownerDid,
+      originalCid: ORIGINAL_CID, nodeOrigin: HOST, nodeDid: NODE_DID, renewerDid: RENEWER_DID, leaseLifetimeSeconds: renewal.approvedLeaseLifetimeSeconds,
+      approvedAt: new Date(renewal.approvedAt), leaseExpiresAt: new Date(renewal.receipt.leaseExpiresAt),
+    });
   });
 
   test('refuses lease metadata the requester codec would refuse, before saving anything', async () => {
     const f = await fixture(true);
     const tooLong = { ...renewal, receipt: { ...renewal.receipt, leaseExpiresAt: '2027-02-12T10:00:00.000Z' } };
-    await expect(f.service.approve(f.record.id, 'user-1', f.body, f.delegation, undefined, { choice: 'leased', renewal: tooLong }))
+    await expect(f.service.approve(f.record.id, 'user-1', f.body, f.delegation, undefined, { choice: 'leased', renewal: tooLong, sessionId: null }))
       .rejects.toMatchObject({ code: 'invalid_delegation' });
     expect(f.record.encryptedResult).toBeNull();
   });
@@ -227,6 +233,7 @@ describe('the approval result for a request that asked for renewal', () => {
     });
     expect(checked.renewalChoice).toBe('finite');
     expect(result).not.toHaveProperty('renewal');
+    expect(f.record).not.toHaveProperty('lease');
   });
 
   test('a renewal choice is refused for a request that did not ask, and required for one that did', async () => {

@@ -31,6 +31,7 @@ model User {
   nostrSigningGrants             NostrSigningGrant[]
   tinyCloudBootstrapState        TinyCloudBootstrapState[]
   sessions                       Session[]
+  renewalLeases                  RenewalLease[]
   accounts                       Account[]
   userEncryptionKey              UserEncryptionKey?
   verification                   Verification[]
@@ -139,6 +140,34 @@ model ApprovalRequest {
   @@index([expiresAt])
   @@index([resultExpiresAt])
   @@map("approval_request")
+}
+
+// An owner renewal lease OpenKey signed and the node admitted for an approval request (TC-2933). Written in the
+// same transaction as the approval it belongs to, so the owner can see and stop it later (TC-2946 sets revokedAt).
+model RenewalLease {
+  leaseCid             String    @id
+  userId               String
+  // The OpenKey session that completed the approval. Not a foreign key: it outlives the session.
+  sessionId            String?
+  approvalRequestId    String    @unique
+  ownerDid             String
+  // The approved grant the lease renews.
+  originalCid          String
+  nodeOrigin           String
+  nodeDid              String
+  // The lease's audience: the node's renewer.
+  renewerDid           String
+  leaseLifetimeSeconds Int
+  approvedAt           DateTime
+  leaseExpiresAt       DateTime
+  createdAt            DateTime  @default(now())
+  revokedAt            DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([sessionId])
+  @@map("renewal_lease")
 }
 
 // Short-lived, ticket-only prepared SIWE handoff. No signed result is persisted.

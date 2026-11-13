@@ -49,13 +49,18 @@ export function createPrismaApprovalRequestStore(database: PrismaClient): Approv
     async approve(id, result, now, marker) {
       // One conditional write settles it. Admitted: this exact marker (a deny or a re-admission after a lapse has replaced or voided it), on a request no more than one lease past its deadline.
       // Not admitted: the request must be unexpired and no other approval live.
-      const saved = await database.approvalRequest.updateMany({
-        where: marker
-          ? { id, resultRef: null, deniedAt: null, approvingAt: marker, expiresAt: { gt: leaseStart(now) } }
-          : { id, resultRef: null, deniedAt: null, expiresAt: { gt: now }, OR: [{ approvingAt: null }, { approvingAt: { lte: leaseStart(now) } }] },
-        data: { ...result, renewal: Prisma.DbNull },
+      const { lease, ...fields } = result;
+      const where = marker
+        ? { id, resultRef: null, deniedAt: null, approvingAt: marker, expiresAt: { gt: leaseStart(now) } }
+        : { id, resultRef: null, deniedAt: null, expiresAt: { gt: now }, OR: [{ approvingAt: null }, { approvingAt: { lte: leaseStart(now) } }] };
+      const data = { ...fields, renewal: Prisma.DbNull };
+      if (!lease) return (await database.approvalRequest.updateMany({ where, data })).count === 1;
+      // A leased approval and its lease record are written together, and only when this save wins.
+      return database.$transaction(async (tx) => {
+        if ((await tx.approvalRequest.updateMany({ where, data })).count !== 1) return false;
+        await tx.renewalLease.create({ data: lease });
+        return true;
       });
-      return saved.count === 1;
     },
     async saveRenewal(id, stage, marker) {
       const saved = await database.approvalRequest.updateMany({

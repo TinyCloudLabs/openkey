@@ -9,7 +9,7 @@ import { APPROVAL_CLAIM_LEASE_MS, ApprovalResultService, type ApprovalRequestRec
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
 import type { RenewalStage } from '../services/renewal-lease';
 
-const MIGRATIONS = ['20261028_0001_approval_request_results', '20261103_0002_approval_request_denied', '20261109_0001_approval_request_approving', '20261113_0001_approval_request_renewal']
+const MIGRATIONS = ['20261028_0001_approval_request_results', '20261103_0002_approval_request_denied', '20261109_0001_approval_request_approving', '20261113_0001_approval_request_renewal', '20261113_0002_renewal_lease']
   .map((name) => new URL(`../../../../packages/db/prisma/migrations/${name}/migration.sql`, import.meta.url));
 const MINUTE = 60_000;
 const ID = 'abcdefghijklmnopqrstuvwxyz';
@@ -21,6 +21,8 @@ let clock = new Date('2026-11-13T12:00:00Z');
 beforeAll(async () => {
   database = new PGlite();
   await database.waitReady;
+  // The lease record belongs to an OpenKey user; only its key matters here.
+  await database.exec('CREATE TABLE "user" ("id" TEXT NOT NULL PRIMARY KEY); INSERT INTO "user" ("id") VALUES (\'owner\');');
   for (const migration of MIGRATIONS) await database.exec(await readFile(migration, 'utf8'));
   client = new PrismaClient({ adapter: new PrismaPGlite(database) });
 });
@@ -29,6 +31,7 @@ afterAll(async () => {
   await database.close();
 });
 beforeEach(async () => {
+  await client.renewalLease.deleteMany();
   await client.approvalRequest.deleteMany();
   clock = new Date('2026-11-13T12:00:00Z');
 });
@@ -107,5 +110,43 @@ describe('saving renewal lease steps', () => {
     });
     await service().admit(other);
     expect((await store().findById(ID))!.renewal).toBeNull();
+  });
+});
+
+describe('the lasting lease record', () => {
+  const result = (resultRef: string) => ({
+    resultRef, approvedByUserId: 'owner', ownerDid: 'did:pkh:eip155:1:0x1', encryptedResult: '{}',
+    delegationExpiresAt: new Date(clock.getTime() + 60 * MINUTE), resultExpiresAt: new Date(clock.getTime() + 10 * MINUTE),
+  });
+  const lease = {
+    leaseCid: 'bafy-lease', userId: 'owner', sessionId: 'session-1', approvalRequestId: ID, ownerDid: 'did:pkh:eip155:1:0x1',
+    originalCid: 'bafy-original', nodeOrigin: 'https://node.tinycloud.xyz', nodeDid: 'did:key:z6MkNode', renewerDid: 'did:key:z6MkRenewer',
+    leaseLifetimeSeconds: 3600, approvedAt: new Date('2026-11-13T12:00:00.000Z'), leaseExpiresAt: new Date('2026-11-13T13:00:00.000Z'),
+  };
+
+  test('is written with the leased approval that wins, and survives acknowledgement', async () => {
+    await register();
+    const marker = await service().admit(ID);
+    expect(await store().approve(ID, { ...result('ref'), lease }, clock, marker!)).toBe(true);
+    await store().acknowledge('ref', 'durable-ack-intent-0001', clock);
+    expect(await client.renewalLease.findMany()).toEqual([{ ...lease, createdAt: expect.any(Date), revokedAt: null }]);
+  });
+
+  test('is not written by an approval that loses, and a losing write leaves no partial approval', async () => {
+    await register();
+    const marker = await service().admit(ID);
+    expect(await store().approve(ID, result('first'), clock, marker!)).toBe(true);
+    expect(await store().approve(ID, { ...result('second'), lease }, clock, marker!)).toBe(false);
+    expect(await client.renewalLease.count()).toBe(0);
+    expect((await store().findById(ID))!.resultRef).toBe('first');
+  });
+
+  test('rolls the approval back when the lease cannot be recorded', async () => {
+    await register();
+    const marker = await service().admit(ID);
+    await expect(store().approve(ID, { ...result('ref'), lease: { ...lease, userId: 'no-such-user' } }, clock, marker!)).rejects.toThrow();
+    const record = (await store().findById(ID))!;
+    expect(record.resultRef).toBeNull();
+    expect(record.encryptedResult).toBeNull();
   });
 });

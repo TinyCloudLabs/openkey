@@ -184,7 +184,7 @@ describe('saving an approval that asked for renewal', () => {
   test('an unsigned saved lease step is rebuilt from the length approved now, never reused: 7 days after a 90-day step', async () => {
     node();
     const request = await admittedWith(saved({}));
-    const answer = await route.saveApprovalDelegation(request, 'owner', await grant(), { renewal: { choice: 'leased', leaseLifetimeSeconds: 7 * DAY }, host: NODE });
+    const answer = await route.saveApprovalDelegation(request, 'owner', await grant(), { renewal: { choice: 'leased', leaseLifetimeSeconds: 7 * DAY }, host: NODE, sessionId: null });
     expect(answer).toMatchObject({ renewalSignature: { leaseLifetimeSeconds: 7 * DAY } });
     const stage = (await store().findById(ID))!.renewal!;
     expect(stage.approvedLeaseLifetimeSeconds).toBe(7 * DAY);
@@ -197,7 +197,7 @@ describe('saving an approval that asked for renewal', () => {
     for (const renewal of [{ choice: 'finite' as const }, { choice: 'leased' as const, leaseLifetimeSeconds: DAY }]) {
       await client.approvalRequest.deleteMany();
       const request = await admittedWith(saved({ leaseAuthorization: 'signed-lease', leaseCid: 'bafy-lease' }));
-      await expect(route.saveApprovalDelegation(request, 'owner', await grant(), { renewal, host: NODE }))
+      await expect(route.saveApprovalDelegation(request, 'owner', await grant(), { renewal, host: NODE, sessionId: null }))
         .rejects.toMatchObject({ code: 'renewal_already_signed', status: 409, extra: { leaseLifetimeSeconds: 90 * DAY } });
       const record = (await store().findById(ID))!;
       expect(record.resultRef).toBeNull();
@@ -207,7 +207,7 @@ describe('saving an approval that asked for renewal', () => {
 
   test('another account cannot collect a lease this owner signed', async () => {
     const request = await admittedWith(saved({ leaseAuthorization: 'signed-lease', leaseCid: 'bafy-lease' }));
-    await expect(route.saveApprovalDelegation(request, 'someone-else', await grant(), { renewal: { choice: 'leased', leaseLifetimeSeconds: 90 * DAY }, host: NODE }))
+    await expect(route.saveApprovalDelegation(request, 'someone-else', await grant(), { renewal: { choice: 'leased', leaseLifetimeSeconds: 90 * DAY }, host: NODE, sessionId: null }))
       .rejects.toMatchObject({ code: 'request_binding', status: 409 });
   });
 
@@ -218,8 +218,8 @@ describe('saving an approval that asked for renewal', () => {
       await client.approvalRequest.deleteMany();
       const request = await admittedWith(saved({ leaseAuthorization: 'signed-lease', leaseCid: 'bafy-lease' }));
       delete process.env.OPENKEY_RENEWAL_LEASES;
-      await expect(route.saveApprovalDelegation(request, 'owner', await grant(), { renewal, host: NODE }))
-        .rejects.toMatchObject({ status: renewal?.choice === 'leased' ? 400 : 409 });
+      await expect(route.saveApprovalDelegation(request, 'owner', await grant(), { renewal, host: NODE, sessionId: null }))
+        .rejects.toMatchObject({ code: 'renewal_disabled', status: 400 });
       const record = (await store().findById(ID))!;
       expect(record.resultRef).toBeNull();
       expect(record.encryptedResult).toBeNull();
@@ -238,7 +238,7 @@ describe('saving an approval that asked for renewal', () => {
   test('the lease is only for the node the grant was approved for', async () => {
     node();
     const request = await admittedWith(saved({}));
-    await expect(route.saveApprovalDelegation(request, 'owner', await grant(), { renewal: { choice: 'leased', leaseLifetimeSeconds: DAY }, host: 'http://127.0.0.1:9999' }))
+    await expect(route.saveApprovalDelegation(request, 'owner', await grant(), { renewal: { choice: 'leased', leaseLifetimeSeconds: DAY }, host: 'http://127.0.0.1:9999', sessionId: null }))
       .rejects.toMatchObject({ code: 'request_binding', status: 400 });
   });
 

@@ -44,13 +44,31 @@ export interface ApprovalRequestStore {
   /**
    * Saves the result. With the marker from `admit` the save needs that exact marker (a deny or a re-admission replaces it),
    * and a request that expired no more than one lease ago. Without it the request must be unexpired and have no live marker.
+   * With `lease`, the node-admitted renewal lease is recorded in the same transaction, only if this save wins.
    */
-  approve(id: string, result: { resultRef: string; approvedByUserId: string; ownerDid: string; encryptedResult: string; delegationExpiresAt: Date; resultExpiresAt: Date }, now: Date, marker?: Date): Promise<boolean>;
+  approve(id: string, result: { resultRef: string; approvedByUserId: string; ownerDid: string; encryptedResult: string; delegationExpiresAt: Date; resultExpiresAt: Date; lease?: RenewalLeaseRecord }, now: Date, marker?: Date): Promise<boolean>;
   /** Saves the renewal stage while this exact admission marker holds and the request has no result. */
   saveRenewal(id: string, stage: RenewalStage, marker: Date): Promise<boolean>;
   acknowledge(ref: string, ackId: string, now: Date): Promise<ApprovalRequestRecord | null>;
   /** Marks a pending, unexpired request denied. False when it is approved, denied, expired, unknown or being approved. */
   deny(id: string, now: Date): Promise<boolean>;
+}
+
+/** The lasting record of a node-admitted owner renewal lease (TC-2933), kept so the owner can see and stop it. */
+export interface RenewalLeaseRecord {
+  leaseCid: string;
+  userId: string;
+  /** The OpenKey session that completed the approval. */
+  sessionId: string | null;
+  approvalRequestId: string;
+  ownerDid: string;
+  originalCid: string;
+  nodeOrigin: string;
+  nodeDid: string;
+  renewerDid: string;
+  leaseLifetimeSeconds: number;
+  approvedAt: Date;
+  leaseExpiresAt: Date;
 }
 
 /** How long an `approving` marker holds off deny and other approvals, so an abandoned one cannot block a request for good. */
@@ -134,10 +152,11 @@ export class ApprovalResultService {
 
   /**
    * Called only by the existing authenticated delegate completion handlers. For a request that signed a
-   * renewal request, `renewal` is the owner's choice: finite, or leased with the node-admitted lease.
+   * renewal request, `renewal` is the owner's choice: finite, or leased with the node-admitted lease, which is
+   * also recorded for the owner (with the session that completed the approval).
    */
   async approve(id: string, userId: string, body: { jwk: unknown; host: unknown; permissions: unknown }, delegation: Record<string, unknown>, marker?: Date,
-    renewal?: { choice: 'finite' } | { choice: 'leased'; renewal: ApprovalResultRenewal }): Promise<ApprovalCode | null> {
+    renewal?: { choice: 'finite' } | { choice: 'leased'; renewal: ApprovalResultRenewal; sessionId: string | null }): Promise<ApprovalCode | null> {
     const signedSiwe = delegation.siwe ?? delegation.signedMessage;
     if (typeof signedSiwe !== 'string' || typeof delegation.signature !== 'string') throw new ApprovalResultError('invalid_delegation', 'Signed delegation proof is required', 400);
     const record = await this.assertDelegationWindow(id, { ...body, signedSiwe }, marker !== undefined);
@@ -180,7 +199,21 @@ export class ApprovalResultService {
     const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: context }, key, new TextEncoder().encode(JSON.stringify(payload)));
     const envelope: DeviceRelayEnvelope = { version: 1, algorithm: 'ECDH-P256-A256GCM', ephemeralPublicJwk: await crypto.subtle.exportKey('jwk', ephemeral.publicKey) as DeviceRelayEnvelope['ephemeralPublicJwk'], nonce: Buffer.from(nonce).toString('base64url'), ciphertext: Buffer.from(ciphertext).toString('base64url') };
     const resultRef = randomBytes(24).toString('base64url');
-    if (!await this.store.approve(id, { resultRef, approvedByUserId: userId, ownerDid, encryptedResult: JSON.stringify(envelope), delegationExpiresAt, resultExpiresAt }, this.options.now?.() ?? new Date(), marker)) {
+    const lease: RenewalLeaseRecord | undefined = renewal?.choice === 'leased' ? {
+      leaseCid: renewal.renewal.receipt.leaseCid,
+      userId,
+      sessionId: renewal.sessionId,
+      approvalRequestId: record.id,
+      ownerDid,
+      originalCid: renewal.renewal.receipt.originalCid,
+      nodeOrigin: record.request.nodeOrigin,
+      nodeDid: renewal.renewal.receipt.nodeIdentity.nodeDid,
+      renewerDid: renewal.renewal.receipt.nodeIdentity.renewerDid,
+      leaseLifetimeSeconds: renewal.renewal.approvedLeaseLifetimeSeconds,
+      approvedAt: new Date(renewal.renewal.approvedAt),
+      leaseExpiresAt: new Date(renewal.renewal.receipt.leaseExpiresAt),
+    } : undefined;
+    if (!await this.store.approve(id, { resultRef, approvedByUserId: userId, ownerDid, encryptedResult: JSON.stringify(envelope), delegationExpiresAt, resultExpiresAt, ...(lease ? { lease } : {}) }, this.options.now?.() ?? new Date(), marker)) {
       throw new ApprovalResultError('expired_request', 'Approval request expired or was already approved', 410);
     }
     // Approval is already saved. A delivery failure must not ask the owner to approve twice.

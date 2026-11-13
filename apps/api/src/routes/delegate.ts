@@ -1741,7 +1741,7 @@ delegateRouter.post('/', async (c) => {
       signature,
       signedMessage: bound.originalSiwe,
       permissions: effectiveGrants,
-    }, { renewal: bound.renewal, host, signOwner: (message) => signManagedKey(key, ownerSealedBlob, message) }));
+    }, { renewal: bound.renewal, host, sessionId: c.get('session')?.id ?? null, signOwner: (message) => signManagedKey(key, ownerSealedBlob, message) }));
     } catch (error) {
       await releaseApprovalDelegation(body);
       throw error;
@@ -2471,7 +2471,7 @@ delegateRouter.post('/complete', async (c) => {
     //   `permissions` is the effective grant set after any narrowing.
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
-  }, { renewal: boundRenewal, host: body.host }));
+  }, { renewal: boundRenewal, host: body.host, sessionId: c.get('session')?.id ?? null }));
   } catch (error) {
     await releaseApprovalDelegation(body);
     throw error;
