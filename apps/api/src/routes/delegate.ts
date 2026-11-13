@@ -126,7 +126,7 @@ import {
   type CoordinationosDenialCode,
 } from '../services/coordinationos-signing-audit';
 import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
-import { canonicalTrustedTinyCloudHost } from '../services/tinycloud-hosts';
+import { canonicalTrustedTinyCloudHost, LOCAL_HOSTNAMES } from '../services/tinycloud-hosts';
 import { hostRequestedSpaceWithinBudget } from '../services/tinycloud-bootstrap-budget';
 import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
@@ -1878,6 +1878,8 @@ delegateRouter.post('/prepare', async (c) => {
     linkExpiry?: unknown;
     expiryChangeable?: unknown;
     reason?: unknown;
+    /** Caller-reported attribution for ordinary links only; never verified app identity. */
+    requesterOrigin?: unknown;
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
   }>();
@@ -1894,6 +1896,20 @@ delegateRouter.post('/prepare', async (c) => {
 
   if (!body.keyId || !body.jwk || !body.host) {
     return c.json({ error: 'keyId, jwk, and host are required' }, 400);
+  }
+
+  let requesterDomain: string | undefined;
+  if (body.requesterOrigin !== undefined) {
+    if (body.deviceTransactionId !== undefined || body.approvalRequestId !== undefined) {
+      return c.json({ error: 'requesterOrigin cannot override a device or signed approval request', code: 'requester_origin_unsupported' }, 400);
+    }
+    const origin = canonicalizeCoordinationosOrigin(body.requesterOrigin);
+    const url = origin ? new URL(origin) : null;
+    if (!url || origin !== body.requesterOrigin ||
+      (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOCAL_HOSTNAMES.has(url.hostname)))) {
+      return c.json({ error: 'requesterOrigin must be a canonical HTTPS origin or HTTP loopback origin', code: 'invalid_requester_origin' }, 400);
+    }
+    requesterDomain = url.host;
   }
 
   const key = await prisma.ethereumKey.findFirst({
@@ -1941,6 +1957,7 @@ delegateRouter.post('/prepare', async (c) => {
       permissions,
       deviceTransaction: body.deviceTransactionId !== undefined,
       expiryMs,
+      domain: requesterDomain,
     });
   } catch (e) {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
@@ -2538,11 +2555,15 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     requestOrigin?: string;
     /** TC-2272: the app sends `expiryChangeable: true` when it accepts a different signed expiry. */
     expiryChangeable?: unknown;
+    requesterOrigin?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
     delivery?: unknown;
   }>();
+  if (body.requesterOrigin !== undefined) {
+    return c.json({ error: 'requesterOrigin is only supported for ordinary delegation preparation', code: 'requester_origin_unsupported' }, 400);
+  }
   logSessionJwk('/api/delegate/authorize-sign-prepare', hasPrivateJwkMember(body.jwk));
   // Only the session key's public members are used or stored; a malformed
   // key counts as missing.
