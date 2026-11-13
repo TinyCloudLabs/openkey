@@ -99,6 +99,8 @@ const isDev = process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 
 
 `.github/workflows/api-tests.yml` runs `bun test apps/api/src/__tests__` in one process on every PR and push to `main` (after `bun run db:generate` and building `@openkey/db` and `@openkey/tee`). bun's `mock.module()` is process-wide and `mock.restore()` does not undo it, so never call it directly in an API test: use `mockModules()` or `replaceModules()` from `apps/api/src/__tests__/mock-module.ts`, and import a route under test with a file-specific query string (`'../routes/keys?my-test' as string`) (TC-928).
 
+The order of files in that run differs between machines, so state one file leaves behind can break whichever file runs after it (TC-2969). `bunfig.toml` preloads `apps/api/src/__tests__/end-background-work.ts`, which after every test ends the TinyCloud setup that test left running in the background (a late result, or a retry 5, 15 or 45 seconds on), so none of it can log, call the background observer or start a retry during a later test. Assert on background work inside the test that started it. Process-wide counters, such as the origin refusal counts in `log.ts`, hold every earlier file's entries: a test that asserts on all of them gives the code under test its own instance, loaded under a file-specific query (`'../log?my-test' as string`).
+
 ## Environment Files
 
 - `.env` - Local development
