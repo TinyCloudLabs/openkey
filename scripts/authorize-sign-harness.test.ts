@@ -1,3 +1,4 @@
+import { Prisma as ActualPrisma } from '../packages/db/src/generated/prisma/client';
 // Sol MAJOR-1 (final): standalone Hono authorize-sign harness.
 //
 // Runs as a `bun test` (so bun:test's `mock.module` works to intercept
@@ -67,7 +68,7 @@ const prisma = {
   tinyCloudBootstrapState: {},
 };
 
-mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
+mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma, Prisma: ActualPrisma }));
 
 mock.module('@openkey/tee', () => ({
   createTeeClient: () => ({

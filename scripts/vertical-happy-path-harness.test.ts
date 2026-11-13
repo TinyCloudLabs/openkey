@@ -1,3 +1,4 @@
+import { Prisma as ActualPrisma } from '../packages/db/src/generated/prisma/client';
 // Vertical happy-path harness — extends `authorize-sign-harness.test.ts` with
 // the `keysRouter` mount and CORS so a real Playwright-driven vite widget can
 // call the harness end to end and prove that the byte-for-byte "Approve exact
@@ -86,7 +87,7 @@ const prisma = {
   tinyCloudBootstrapState: {},
 };
 
-mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma }));
+mock.module('@openkey/db', () => ({ createPrismaClient: () => prisma, Prisma: ActualPrisma }));
 
 mock.module('@openkey/tee', () => ({
   createTeeClient: () => ({

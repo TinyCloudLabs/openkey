@@ -38,6 +38,7 @@ const root = new URL('../../../../', import.meta.url).pathname;
 let auth: typeof Auth, db: PrismaClient;
 let app: { fetch: (request: Request) => Response | Promise<Response> };
 let managedWallet: Wallet;
+let sessionLookups = 0;
 const wallet = Wallet.createRandom();
 const account = { userId: 'owner', authSessionId: 'session-A', authSessionGeneration: 'fixture-generation', keyId: 'key', address: wallet.address, keyType: 'EXTERNAL' as const };
 let cookie: string;
@@ -71,6 +72,9 @@ beforeAll(async () => {
     publicKey: managedWallet.signingKey.publicKey, sealedBlob: await seal(privateKey, sealingKey), sealingContext, keyType: 'MANAGED' } });
   const context = await auth.$context;
   cookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, 'synthetic-A', context.secret)).split(';')[0]!;
+  auth.api.getSession = new Proxy(auth.api.getSession, { apply(target, receiver, args) {
+    sessionLookups++; return Reflect.apply(target, receiver, args);
+  } });
   app = (await import('../index')).default;
   const capability = await app.fetch(new Request('https://api.openkey.test/api/delegate/share/capabilities'));
   expect(capability.status).toBe(200);
@@ -133,6 +137,44 @@ test('the real API keeps every share route dark unless the flag is exactly true'
   expect(capability.status).toBe(200);
   expect(await capability.json()).toEqual({ enabled: true, protocolVersion: 1 });
   expect((await call('window', {})).status).toBe(400);
+});
+
+test('the real API keeps sign-in continuation dark without its exact feature flag', async () => {
+  // Global CORS may decorate a dark 404 and handles preflights; it is not an enablement signal.
+  // Application requests must still stop before session lookup or context preparation.
+  const previous = process.env.OPENKEY_SIGNIN_CONTINUATION;
+  try {
+    for (const flag of [undefined, '', 'TRUE', ' true', 'true\n']) {
+      if (flag === undefined) delete process.env.OPENKEY_SIGNIN_CONTINUATION;
+      else process.env.OPENKEY_SIGNIN_CONTINUATION = flag;
+      for (const phase of ['capabilities', 'options', 'verify', 'resume', 'cancel']) for (const method of ['GET', 'POST']) {
+        const beforeLookups = sessionLookups;
+        const response = await app.fetch(new Request(`https://api.openkey.test/api/delegate/signin/${phase}`, {
+          method, headers: { origin, cookie, 'content-type': 'application/json', 'access-control-request-method': 'POST' },
+          body: method === 'POST' ? '{}' : undefined,
+        }));
+        expect(response.status, `${JSON.stringify(flag)} ${method} ${phase}`).toBe(404);
+        expect(await response.text()).toBe('{"error":"Not found"}');
+        expect(response.headers.get('set-cookie')).toBeNull();
+        expect(sessionLookups).toBe(beforeLookups);
+      }
+      const preparation = await app.fetch(new Request('https://api.openkey.test/api/delegate/authorize-sign-prepare', {
+        method: 'POST', headers: { origin, cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ signInContinuation: { token: 'dark-token', requestId: 'dark-request', chainId: 1 } }),
+      }));
+      expect(preparation.status).toBe(404);
+      expect(await preparation.text()).toBe('{"error":"Not found"}');
+    }
+    process.env.OPENKEY_SIGNIN_CONTINUATION = 'true';
+    const capability = await app.fetch(new Request('https://api.openkey.test/api/delegate/signin/capabilities'));
+    expect(capability.status).toBe(200);
+    expect((await app.fetch(new Request('https://api.openkey.test/api/delegate/signin/options', {
+      method: 'POST', headers: { origin, cookie, 'content-type': 'application/json' }, body: '{}',
+    }))).status).toBe(400);
+  } finally {
+    if (previous === undefined) delete process.env.OPENKEY_SIGNIN_CONTINUATION;
+    else process.env.OPENKEY_SIGNIN_CONTINUATION = previous;
+  }
 });
 
 test('the real managed-key route signs exactly the bytes previewed before fresh UV', async () => {

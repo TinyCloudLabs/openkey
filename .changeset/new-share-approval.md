@@ -1,5 +1,4 @@
 ---
-"@openkey/sdk": minor
 "@openkey/api": minor
 "@openkey/web": minor
 ---
