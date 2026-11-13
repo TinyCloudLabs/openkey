@@ -106,6 +106,7 @@ import {
   appKeyRefusalStatus,
   appKeyResourcesOf,
   type AdmittedAppKey,
+  UNREADABLE_RECAP_MESSAGE,
 } from '../services/app-key-refusal';
 import { admitAppKeys, appIdForOrigin, appKeyAdmissionRefusal, type ManifestKeys } from '../services/app-key-gate';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
@@ -2607,7 +2608,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   } catch (e) {
     return c.json(
       {
-        error: e instanceof Error ? e.message : 'Invalid SIWE recap',
+        error: UNREADABLE_RECAP_MESSAGE,
         code: 'invalid_siwe_recap',
       },
       400,

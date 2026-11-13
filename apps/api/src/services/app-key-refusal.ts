@@ -67,7 +67,7 @@ const KEY_DELETE_MESSAGE =
 const NON_BROWSER_MESSAGE =
   "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request.";
 // The wording the delegate routes already use for a recap they cannot read.
-const UNREADABLE_RECAP_MESSAGE = "This request's permission list can't be read, so OpenKey didn't approve it.";
+export const UNREADABLE_RECAP_MESSAGE = "This request's permission list can't be read, so OpenKey didn't approve it.";
 
 const RECAP_RESOURCE = /urn:recap:(\S*)/gi;
 const BASE64URL = /^[A-Za-z0-9_-]+={0,2}$/;
