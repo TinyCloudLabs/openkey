@@ -40,18 +40,22 @@ const TEST_OR_THROWAWAY_DOMAIN = /(^|\.)(example\.[a-z]+|test|invalid|localhost)
 // Entries match the domain itself and any subdomain.
 const DISPOSABLE_MAIL_DOMAINS = [
   'mailinator.com', 'sharklasers.com', 'grr.la', 'maildrop.cc', 'getnada.com', 'nada.email',
-  'throwawaymail.com', 'dispostable.com', 'maxxspace.com',
-  // mail.tm / mail.gw and the domain mail.tm uses today (it rotates).
-  'mail.tm', 'mail.gw', 'fldubai.com',
+  'throwawaymail.com', 'dispostable.com',
+  // mail.tm and its sister mail.gw, plus the mail.tm domains in use today: fldubai.com and
+  // maxxspace.com (both ours, mail.tm). mail.tm rotates domains: extend via the env list.
+  'mail.tm', 'mail.gw', 'fldubai.com', 'maxxspace.com',
 ];
 // Provider families with many TLDs or domains, and QA mail catchers (Mailpit, MailHog, MailCatcher).
 const DISPOSABLE_MAIL_FAMILIES =
   /(^|\.)(guerrillamail[a-z]*\.[a-z]+|10minutemail\.[a-z]+|yopmail\.[a-z]+|tempmail\.[a-z]+|temp-mail\.[a-z]+|trashmail\.[a-z]+|(mailpit|mailhog|mailcatcher)(\.[a-z0-9-]+)*)$/;
 const DOMAIN_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 const TEST_LIKE_NAME = /(test|qa|probe|canary|smoke|e2e|bot|agent|demo|dummy|fake)/;
+// Our QA/smoke accounts: `tcqa-` from now on, plus the older `qa-` prefix (Share's smoke accounts).
+const QA_PREFIX = /^(tcqa-|qa-)/;
 
 export const USER_BUCKETS = [
   'team_by_wallet',
+  'qa_prefix',
   'internal_team_domain',
   'disposable_mail_domain',
   'internal_agent_or_qa',
@@ -98,6 +102,7 @@ export function classifyAccount(
   if (account.teamByWallet) return 'team_by_wallet';
   const [local = '', domain = ''] = account.email.split('@');
   const lowerLocal = local.toLowerCase();
+  if (QA_PREFIX.test(lowerLocal)) return 'qa_prefix';
   const lowerDomain = domain.toLowerCase();
   if (INTERNAL_TEAM_DOMAIN.test(lowerDomain)) return 'internal_team_domain';
   if (isDisposableDomain(lowerDomain, extraDisposableDomains)) return 'disposable_mail_domain';

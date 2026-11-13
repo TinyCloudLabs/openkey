@@ -84,6 +84,11 @@ const session = daysAgo(2);
 const accounts: Account[] = [
   { id: 'u-wallet', email: 'someone@gmail.com', lastSession: session, addresses: [WALLET_A] },
   { id: 'u-wallet-2nd-key', email: 'qa@tinycloud.xyz', lastSession: session, addresses: ['0x1111111111111111111111111111111111111111', WALLET_B] },
+  // QA/smoke accounts: tcqa- and the older qa- prefix, any casing. They also match later rules
+  // (team domain, disposable domain, agent-name, test-like), so a wrong order would move them.
+  { id: 'u-qa-tc', email: 'tcqa-smoke1@tinycloud.xyz', lastSession: session },
+  { id: 'u-qa-old', email: 'qa-share-1@gmail.com', lastSession: session },
+  { id: 'u-qa-upper', email: 'TCQA-Upper@mailinator.com', lastSession: session },
   { id: 'u-team', email: 'qa@tinycloud.xyz', lastSession: session },
   { id: 'u-team-case', email: 'Someone@TinyCloudLabs.com', lastSession: session },
   { id: 'u-agent', email: 'agent@gmail.com', lastSession: session },
@@ -108,6 +113,7 @@ test('each account lands in exactly one bucket, in precedence order', async () =
   const result = await collectUserMetrics(database, env, now);
   expect(result.buckets).toEqual({
     team_by_wallet: 2, // second one also has a team-domain email, wallet wins
+    qa_prefix: 3,
     internal_team_domain: 2,
     disposable_mail_domain: 1,
     internal_agent_or_qa: 2,
@@ -131,6 +137,16 @@ test('classifyAccount: earlier rules win over later ones', () => {
   const classify = (email: string, excluded: string[] = [], over: Partial<typeof facts> = {}) =>
     classifyAccount({ id: 'x', email, ...facts, ...over }, new Set(excluded));
   expect(classify('qa+1@openkey.so', ['x'], { teamByWallet: true })).toBe('team_by_wallet');
+  expect(classify('tcqa-1@gmail.com', ['x'], { teamByWallet: true })).toBe('team_by_wallet'); // wallet first
+  expect(classify('tcqa-1@openkey.so')).toBe('qa_prefix');
+  expect(classify('tcqa-1@mailinator.com')).toBe('qa_prefix');
+  expect(classify('qa-1@gmail.com', ['x'])).toBe('qa_prefix'); // before agent-name, explicit, bot
+  expect(classify('TcQa-1+x@gmail.com')).toBe('qa_prefix');
+  // Only a prefix followed by the dash counts.
+  expect(classify('tcqa1@gmail.com')).toBe('test_like_name');
+  expect(classify('xqa-1@gmail.com')).toBe('test_like_name');
+  expect(classify('person.tcqa-1@gmail.com')).toBe('test_like_name');
+  expect(classify('qa@gmail.com')).toBe('internal_agent_or_qa');
   expect(classify('qa+1@openkey.so')).toBe('internal_team_domain');
   expect(classify('qa+1@mailinator.com', ['x'])).toBe('disposable_mail_domain'); // before agent-name, plus, explicit, bot
   expect(classify('test+1@gmail.com')).toBe('internal_agent_or_qa');
