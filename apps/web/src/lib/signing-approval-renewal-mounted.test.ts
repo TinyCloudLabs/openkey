@@ -239,7 +239,7 @@ describe('the renewal box', () => {
     click(buttonNamed(target, '6 months'));
     expect(calls.lease).toEqual([182 * D]);
     typeLease(target, '1y');
-    expect(text(target.querySelector('#approval-lease-error'))).toBe('Renewal can last up to 6 months.');
+    expect(text(target.querySelector('#approval-lease-error'))).toBe('Renewal can last up to 6 months. Choose that or less.');
     expect(calls.lease).toEqual([182 * D]);
     typeLease(target, '120d');
     expect(calls.lease).toEqual([182 * D, 120 * D]);

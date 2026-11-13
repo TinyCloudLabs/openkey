@@ -119,12 +119,12 @@ export function siweExpiration(message: string): string | null {
 
 /** Shown where the requester signed the longest time it accepts (signed CLI and device requests). */
 export function expiryLimitNote(maxMs: number): string {
-  return `This app asked for up to ${formatDuration(maxMs)}. To allow longer, start the request again with a longer expiry.`;
+  return `This app asked for up to ${formatDuration(maxMs)}. To allow longer, the app has to ask again.`;
 }
 
 /** Shown when a typed renewal time is longer than the requester or the one-year limit allows. */
 export function leaseLimitNote(maxMs: number): string {
-  return `Renewal can last up to ${formatDuration(maxMs)}.`;
+  return `Renewal can last up to ${formatDuration(maxMs)}. Choose that or less.`;
 }
 
 /** Like `expiryAt`, but never later than `ceiling` (the time a requester asked for), when that is a valid time. */

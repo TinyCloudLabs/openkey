@@ -213,9 +213,24 @@
     min-height: 32px;
     display: flex;
     align-items: center;
+    gap: 6px;
     font-size: 12px;
+    font-weight: 600;
     color: #475569;
     cursor: pointer;
+    list-style: none;
+  }
+  .expiry-fold > summary::-webkit-details-marker {
+    display: none;
+  }
+  /* The same disclosure marker as "Advanced details". */
+  .expiry-fold > summary::after {
+    content: "▾";
+    color: #64748b;
+    transition: transform 160ms ease;
+  }
+  .expiry-fold[open] > summary::after {
+    transform: rotate(180deg);
   }
   .expiry-panel {
     display: flex;

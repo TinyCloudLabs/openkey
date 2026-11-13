@@ -78,7 +78,7 @@
         autocomplete="off"
         autocapitalize="off"
         spellcheck="false"
-        placeholder="90m, 40d, 1y"
+        placeholder="e.g. 40d"
         bind:this={input}
         bind:value={text}
         oninput={() => (error = "")}
