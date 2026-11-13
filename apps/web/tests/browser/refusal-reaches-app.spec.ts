@@ -43,6 +43,7 @@ for (const route of ['/widget/embed/sign', '/widget/sign']) {
   test(`${route}: a 403 refusal rejects the app's request with its refusal identifier and turns Approve off`, async ({ page }) => {
     const frame = await open(page, 403, { error: WORDS, code: 'app_key_grant_refused' });
     await expect.poll(() => responses(page)).toEqual([expect.objectContaining({ success: false, error: { code: 'UNKNOWN', message: 'APP_KEY_GRANT_REFUSED' } })]);
+    await expect(frame.locator('[role="alert"], [role="status"]').filter({ hasText: WORDS })).toHaveCount(1);
     await expect(frame.getByRole('alert')).toHaveText(WORDS);
     await expect(frame.getByRole('button', { name: 'Approve', exact: true })).toBeDisabled();
   });

@@ -1009,7 +1009,7 @@
   {#if error}
     <p class="error" role="alert" aria-live="polite">{error}</p>
   {/if}
-  {#if approveBlockedReason}
+  {#if approveBlockedReason && approveBlockedReason !== error}
     <p class="approve-blocked" role="status" aria-live="polite">{approveBlockedReason}</p>
   {/if}
 
