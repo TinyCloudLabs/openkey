@@ -133,6 +133,8 @@ model ApprovalRequest {
   deniedAt              DateTime?
   // Set when an approval is admitted, before signing starts; counts for a short lease. Deny is refused meanwhile.
   approvingAt           DateTime?
+  // The owner's renewal lease steps for this request (TC-2933): saved before each node call so a retry reuses them.
+  renewal               Json?
 
   @@index([expiresAt])
   @@index([resultExpiresAt])

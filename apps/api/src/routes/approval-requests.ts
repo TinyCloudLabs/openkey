@@ -1,13 +1,24 @@
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { parseLink, resolveLink, parseApprovalRequest, validateLinkHeader, verifyHeader, linkIssuerPublicKey } from '@tinycloud/share-envelope/links';
-import { ApprovalResultError, ApprovalResultService, linkRequiredError } from '../services/approval-results';
+import { ApprovalResultError, ApprovalResultService, linkRequiredError, type ApprovalRequestRecord } from '../services/approval-results';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
 import { verifySessionProofClaims } from '../services/native-delegation/session-proof';
 import { createHash } from 'node:crypto';
 import { createPrismaDelegationCodeStore, type ApprovalCode } from './delegation-codes';
+import { verifyMessage } from 'ethers';
+import { logError } from '../log';
+import {
+  RENEWAL_FAILED_MESSAGE,
+  RenewalLeaseError,
+  admitLease,
+  parseRenewalChoice,
+  prepareRenewalStage,
+  signLease,
+  type RenewalStage,
+} from '../services/renewal-lease';
 
 const prisma = createPrismaClient();
 const store = createPrismaApprovalRequestStore(prisma);
@@ -162,10 +173,114 @@ export async function releaseApprovalDelegation(body: { approvalRequestId?: unkn
   await approvalResultService().release(String(body.approvalRequestId), marker).catch(() => undefined);
 }
 
-export async function saveApprovalDelegation<T extends Record<string, unknown>>(body: { approvalRequestId?: unknown; jwk: unknown; host: unknown; permissions?: unknown }, userId: string, delegation: T): Promise<T & { approvalCode?: ApprovalCode | null }> {
-  if (body.approvalRequestId !== undefined) {
-    const approvalCode = await approvalResultService().approve(String(body.approvalRequestId), userId, { ...body, permissions: body.permissions }, delegation, admissions.get(body));
+/** Turns a renewal failure into what the owner sees; a caller error keeps its own answer. */
+function renewalFailure(error: unknown): never {
+  if (error instanceof ApprovalResultError) throw error;
+  if (error instanceof RenewalLeaseError && error.status !== 503) throw new ApprovalResultError(error.code, error.message, error.status);
+  logError('warn', 'approval_renewal_failed', error);
+  throw new ApprovalResultError('renewal_failed', RENEWAL_FAILED_MESSAGE, 503);
+}
+
+/** What an approval returns: the saved result, or (external wallet) the renewal lease the owner must sign next. */
+export type SavedApproval = (Record<string, unknown> & { approvalCode?: ApprovalCode | null }) | { renewalSignature: { message: string } };
+
+/**
+ * Saves the approved grant as the request's result. When the request signed a renewal request and the owner
+ * left renewal on, the result also carries the node-admitted owner lease (TC-2933): `signOwner` signs it with
+ * the owner's managed key; without it (an external wallet) the lease message is returned for the owner to sign
+ * and nothing is saved yet. A step already saved for this request is reused, never signed again.
+ */
+export async function saveApprovalDelegation(
+  body: { approvalRequestId?: unknown; jwk: unknown; host: unknown; permissions?: unknown; renewal?: unknown },
+  userId: string,
+  delegation: Record<string, unknown>,
+  signOwner?: (message: string) => Promise<string>,
+): Promise<SavedApproval> {
+  if (body.approvalRequestId === undefined) return delegation;
+  const id = String(body.approvalRequestId);
+  const service = approvalResultService();
+  const marker = admissions.get(body);
+  const record = await service.store.findById(id);
+  if (!record) throw new ApprovalResultError('expired_request', 'Approval request is no longer pending', 410);
+  let choice;
+  try {
+    choice = parseRenewalChoice(body.renewal, record.request.renewal);
+  } catch (error) {
+    renewalFailure(error);
+  }
+  // A lease this owner already signed for the request is the approval (C5): a retry collects it, never a different grant.
+  if (record.renewal?.leaseAuthorization && marker) {
+    if (record.renewal.userId !== userId) throw new ApprovalResultError('request_binding', 'Another account is approving this request', 409);
+    return finishLeasedApproval(id, userId, record.request, record.renewal, marker);
+  }
+  if (choice?.choice !== 'leased') {
+    const approvalCode = await service.approve(id, userId, { ...body, permissions: body.permissions }, delegation, marker, choice ?? undefined);
     return { ...delegation, approvalCode };
   }
-  return delegation;
+  if (!marker) throw new ApprovalResultError('request_binding', 'Renewal needs an admitted approval', 409);
+  let stage: RenewalStage;
+  try {
+    stage = record.renewal ?? await prepareRenewalStage({ userId, host: record.request.nodeOrigin, leaseLifetimeSeconds: choice.leaseLifetimeSeconds, delegation, now: new Date() });
+    if (stage.userId !== userId) throw new RenewalLeaseError('request_binding', 'Another account is approving this request', 409);
+    if (!record.renewal) await service.saveRenewal(id, stage, marker);
+    if (!stage.leaseAuthorization) {
+      if (!signOwner) {
+        // The owner's wallet signs the lease next; the request stays open for that step.
+        await releaseApprovalDelegation(body);
+        return { renewalSignature: { message: stage.leaseSiwe } };
+      }
+      stage = signLease(stage, await signOwner(stage.leaseSiwe));
+      await service.saveRenewal(id, stage, marker);
+    }
+  } catch (error) {
+    renewalFailure(error);
+  }
+  return finishLeasedApproval(id, userId, record.request, stage, marker);
 }
+
+async function finishLeasedApproval(id: string, userId: string, request: ApprovalRequestRecord['request'], stage: RenewalStage, marker: Date) {
+  let renewal;
+  try {
+    renewal = await admitLease(stage, request);
+  } catch (error) {
+    renewalFailure(error);
+  }
+  // The result carries the saved grant, the one the lease names, whatever this attempt signed.
+  const approvalCode = await approvalResultService().approve(id, userId, { jwk: request.targetPublicJwk, host: request.nodeOrigin, permissions: request.permissions }, stage.delegation, marker, { choice: 'leased', renewal });
+  return { ...stage.delegation, approvalCode };
+}
+
+/**
+ * The external wallet's signature on the renewal lease (TC-2933), after `/api/delegate/complete` returned it to
+ * sign. Checked against the owner of the saved grant, then the lease is admitted and the result saved.
+ */
+approvalRequestRouter.post('/approval-requests/:id/renewal-signature', requireAccountOriginForBearer, requireSession, async (c) => {
+  const id = c.req.param('id');
+  const userId: string = c.get('user').id;
+  const body: unknown = await c.req.json().catch(() => null);
+  const signature = body && typeof body === 'object' && 'signature' in body ? body.signature : undefined;
+  if (typeof signature !== 'string') throw new ApprovalResultError('invalid_request', 'A signature is required', 400);
+  const service = approvalResultService();
+  const record = await service.store.findById(id);
+  const saved = record?.renewal;
+  if (!record || !saved || saved.userId !== userId || record.resultRef) throw new ApprovalResultError('expired_request', 'Approval request is no longer pending', 410);
+  const marker = await service.admit(id);
+  try {
+    let stage = saved;
+    if (!stage.leaseAuthorization) {
+      let signer = '';
+      try { signer = verifyMessage(stage.leaseSiwe, signature); } catch { /* refused below */ }
+      if (signer.toLowerCase() !== stage.ownerAddress.toLowerCase()) throw new ApprovalResultError('invalid_signature', 'The renewal signature is not from this account', 400);
+      try {
+        stage = signLease(stage, signature);
+        await service.saveRenewal(id, stage, marker);
+      } catch (error) {
+        renewalFailure(error);
+      }
+    }
+    return c.json(await finishLeasedApproval(id, userId, record.request, stage, marker));
+  } catch (error) {
+    await service.release(id, marker).catch(() => undefined);
+    throw error;
+  }
+});

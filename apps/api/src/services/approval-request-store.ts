@@ -39,6 +39,13 @@ export function createPrismaApprovalRequestStore(database: PrismaClient): Approv
       });
       return saved.count === 1;
     },
+    async saveRenewal(id, stage, marker) {
+      const saved = await database.approvalRequest.updateMany({
+        where: { id, resultRef: null, deniedAt: null, approvingAt: marker },
+        data: { renewal: stage as object },
+      });
+      return saved.count === 1;
+    },
     async acknowledge(resultRef, ackId, now) {
       return database.$transaction(async (tx) => {
         const saved = await tx.approvalRequest.updateMany({

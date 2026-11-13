@@ -7,6 +7,7 @@ import { hasPrivateJwkMember } from './authorization-signing';
 import { verifySessionProofClaims } from './native-delegation/session-proof';
 import { allocateDelegationCode, delegationClaimHash, type ApprovalCode, type ApprovalCodeDelivery, type ApprovalCodeStore } from '../routes/delegation-codes';
 import { logApprovalCodeAllocationFailure, logApprovalCodeCleanupFailure } from '../log';
+import type { ApprovalResultRenewal, RenewalStage } from './renewal-lease';
 
 export interface ApprovalRequestRecord {
   id: string;
@@ -25,6 +26,8 @@ export interface ApprovalRequestRecord {
   acknowledgedAt?: Date | null;
   deniedAt?: Date | null;
   approvingAt?: Date | null;
+  /** The renewal lease in progress or done for this request (TC-2933), saved at each step. */
+  renewal?: RenewalStage | null;
 }
 
 export interface ApprovalRequestStore {
@@ -43,6 +46,8 @@ export interface ApprovalRequestStore {
    * and a request that expired no more than one lease ago. Without it the request must be unexpired and have no live marker.
    */
   approve(id: string, result: { resultRef: string; approvedByUserId: string; ownerDid: string; encryptedResult: string; delegationExpiresAt: Date; resultExpiresAt: Date }, now: Date, marker?: Date): Promise<boolean>;
+  /** Saves the renewal stage while this exact admission marker holds and the request has no result. */
+  saveRenewal(id: string, stage: RenewalStage, marker: Date): Promise<boolean>;
   acknowledge(ref: string, ackId: string, now: Date): Promise<ApprovalRequestRecord | null>;
   /** Marks a pending, unexpired request denied. False when it is approved, denied, expired, unknown or being approved. */
   deny(id: string, now: Date): Promise<boolean>;
@@ -127,11 +132,18 @@ export class ApprovalResultService {
     return record;
   }
 
-  /** Called only by the existing authenticated delegate completion handlers. */
-  async approve(id: string, userId: string, body: { jwk: unknown; host: unknown; permissions: unknown }, delegation: Record<string, unknown>, marker?: Date): Promise<ApprovalCode | null> {
+  /**
+   * Called only by the existing authenticated delegate completion handlers. For a request that signed a
+   * renewal request, `renewal` is the owner's choice: finite, or leased with the node-admitted lease.
+   */
+  async approve(id: string, userId: string, body: { jwk: unknown; host: unknown; permissions: unknown }, delegation: Record<string, unknown>, marker?: Date,
+    renewal?: { choice: 'finite' } | { choice: 'leased'; renewal: ApprovalResultRenewal }): Promise<ApprovalCode | null> {
     const signedSiwe = delegation.siwe ?? delegation.signedMessage;
     if (typeof signedSiwe !== 'string' || typeof delegation.signature !== 'string') throw new ApprovalResultError('invalid_delegation', 'Signed delegation proof is required', 400);
     const record = await this.assertDelegationWindow(id, { ...body, signedSiwe }, marker !== undefined);
+    if (Boolean(record.request.renewal) !== Boolean(renewal)) {
+      throw new ApprovalResultError('request_binding', 'Renewal choice does not match the approval request', 400);
+    }
     const siwe = new SiweMessage(signedSiwe);
     const ownerDid = `did:pkh:eip155:${siwe.chainId}:${siwe.address}`;
     const jwk = delegation.jwk;
@@ -152,6 +164,7 @@ export class ApprovalResultService {
       targetDid: record.request.targetDid,
       delegationExpiresAt: delegationExpiresAt.toISOString(),
       delegation,
+      ...(renewal?.choice === 'leased' ? { renewalChoice: 'leased', renewal: renewal.renewal } : renewal ? { renewalChoice: 'finite' } : {}),
     };
     const recipient = await crypto.subtle.importKey('jwk', record.request.resultEncryptionPublicJwk, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
     const ephemeral = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
@@ -205,6 +218,13 @@ export class ApprovalResultService {
   /** Gives the admission back after a failed attempt, so deny and a retry need not wait for the lease. */
   async release(id: string, marker: Date): Promise<void> {
     await this.store.release(id, marker);
+  }
+
+  /** Saves a renewal step under the caller's admission; refused once the request is settled or re-admitted. */
+  async saveRenewal(id: string, stage: RenewalStage, marker: Date): Promise<void> {
+    if (!await this.store.saveRenewal(id, stage, marker)) {
+      throw new ApprovalResultError('expired_request', 'Approval request expired or was already approved', 410);
+    }
   }
 
   private authenticate(record: ApprovalRequestRecord, action: 'discover' | 'fetch' | 'ack', proof: string | undefined, ref = '', ackId = '', codeBinding?: [string, string]): void {

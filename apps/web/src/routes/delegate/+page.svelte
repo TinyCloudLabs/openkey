@@ -329,6 +329,13 @@
       renewalLeaseMs = defaultLeaseMs(renewalMaxLeaseMs);
     }
   });
+  // The owner's choice as the approve body carries it; null when the request did not ask for renewal.
+  function renewalChoiceBody() {
+    if (renewalMaxLeaseMs === null) return null;
+    return renewalLeaseMs === null ? { choice: 'finite' } : { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000) };
+  }
+  const RENEWAL_NOT_SET_UP = "Renewal wasn't set up, so nothing was approved. Try again.";
+  let renewalSigning = $state(false);
   async function changeApprovalExpiry(ms: number | null) {
     if (!selectedKey || !jwk) {
       error = 'Missing key or JWK parameter.';
@@ -1246,11 +1253,7 @@
           if (linkExpiryChangeable) body.expiryChangeable = true;
         }
       }
-      if (approvalRequestMode && renewalMaxLeaseMs !== null) {
-        body.renewal = renewalLeaseMs === null
-          ? { choice: 'finite' }
-          : { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000) };
-      }
+      if (approvalRequestMode && renewalChoiceBody()) body.renewal = renewalChoiceBody();
       if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
 
       const res = await fetch(`${API_URL}/api/delegate`, {
@@ -1408,7 +1411,7 @@
               }
             : {}),
           ...(deviceTransactionId ? { deviceTransactionId } : {}),
-          ...(approvalRequestMode ? { approvalRequestId } : {}),
+          ...(approvalRequestMode ? { approvalRequestId, ...(renewalChoiceBody() ? { renewal: renewalChoiceBody() } : {}) } : {}),
         }),
       });
 
@@ -1417,7 +1420,30 @@
         throw new DelegateResponseError(apiBusyOrEndedMessage(compRes.status) ?? (body.error || `HTTP ${compRes.status}`), body.code, compRes.status);
       }
 
-      const data = await compRes.json();
+      let data = await compRes.json();
+      if (data.renewalSignature) {
+        // TC-2933: the wallet signs the renewal lease too; declining it approves nothing.
+        renewalSigning = true;
+        let leaseSignature: string;
+        try {
+          leaseSignature = await matchingProvider.request({
+            method: 'personal_sign',
+            params: [data.renewalSignature.message, matchingAccount],
+          });
+        } catch {
+          throw new OwnerMessageError(RENEWAL_NOT_SET_UP);
+        } finally {
+          renewalSigning = false;
+        }
+        const leaseRes = await fetch(`${API_URL}/api/approval-requests/${approvalRequestId}/renewal-signature`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ signature: leaseSignature }),
+        });
+        if (!leaseRes.ok) throw new OwnerMessageError(RENEWAL_NOT_SET_UP);
+        data = await leaseRes.json();
+      }
       if (!data.hostActivated) {
         await activateWithHost(host, data.delegationHeader);
       }
@@ -1903,8 +1929,12 @@
         {/if}
 
         {#if selectedKey.keyType === 'EXTERNAL'}
-          <div class="p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700">
-            Your browser wallet will prompt you to sign a message to authorize this delegation.
+          <div class="p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700" role={renewalSigning ? 'status' : undefined}>
+            {#if renewalSigning}
+              Sign once more to turn on renewal
+            {:else}
+              Your browser wallet will prompt you to sign a message to authorize this delegation.
+            {/if}
           </div>
         {/if}
         {#if spaceSetup}

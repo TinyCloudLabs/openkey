@@ -1708,6 +1708,7 @@ delegateRouter.post('/', async (c) => {
     }));
 
     recordAppSignIn(prisma, user.id, bound.appOrigin);
+    const ownerSealedBlob = key.sealedBlob;
     return c.json(await saveApprovalDelegation(body, user.id, {
       delegationHeader: session.delegationHeader,
       delegationCid: session.delegationCid,
@@ -1736,7 +1737,7 @@ delegateRouter.post('/', async (c) => {
       signature,
       signedMessage: bound.originalSiwe,
       permissions: effectiveGrants,
-    }));
+    }, (message) => signManagedKey(key, ownerSealedBlob, message)));
     } catch (error) {
       await releaseApprovalDelegation(body);
       throw error;
