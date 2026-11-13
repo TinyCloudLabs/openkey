@@ -50,3 +50,21 @@ describe('request-bound sign-in continuation', () => {
     expect(() => store.consume(second.token, owner, () => true, 300_000)).toThrow('expired');
   });
 });
+
+
+test('one account cannot fill shared capacity, even across sessions; cancellation does not refund rate quota', () => {
+  const store = new SignInContinuations();
+  const first = store.issue(owner, 0);
+  for (let i = 1; i < 5; i++) store.issue({ ...owner, sessionId: `s${i}` }, 0);
+  expect(() => store.issue({ ...owner, sessionId: 's6' }, 1)).toThrow('issuance limit');
+  expect(() => store.issue({ ...owner, userId: 'another-account' }, 1)).not.toThrow();
+  store.cancel(first.token, owner, 1);
+  expect(() => store.issue(owner, 1)).not.toThrow();
+  const limited = new SignInContinuations();
+  for (let i = 0; i < 5; i++) {
+    const issued = limited.issue(owner, 0);
+    limited.cancel(issued.token, owner, 1);
+  }
+  expect(() => limited.issue(owner, 2)).toThrow('issuance limit');
+  expect(() => limited.issue(owner, 60_000)).not.toThrow();
+});

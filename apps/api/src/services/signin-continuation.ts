@@ -13,21 +13,40 @@ export type SignInIdentity = Readonly<{
 
 type Pending = { identity: SignInIdentity; challenge: string; expiresAt: number; verified: boolean };
 const TTL = 5 * 60 * 1000;
+const MAX_PENDING = 10_000;
 
 /** Process-local, fail-closed on restart, like ordinary authorization contexts. */
 export class SignInContinuations {
   private readonly records = new Map<string, Pending>();
+  private readonly issuance = new Map<string, { start: number; count: number }>();
 
   issue(identity: SignInIdentity, now = Date.now()): { token: string; challenge: string } {
     for (const [token, record] of this.records) {
       if (record.expiresAt <= now) this.records.delete(token);
     }
-    if (this.records.size >= 10_000) throw new Error('Too many pending sign-ins');
+    if (this.records.size >= MAX_PENDING) throw new Error('Too many pending sign-ins');
     const origin = new URL(identity.origin);
     if (origin.origin !== identity.origin || !identity.requestId || !identity.sessionId ||
         !identity.userId || !identity.keyId || !identity.address ||
         !Number.isSafeInteger(identity.chainId) || identity.chainId <= 0) {
       throw new Error('Invalid sign-in identity');
+    }
+    for (const [key, rate] of this.issuance) {
+      if (now - rate.start >= 60_000) this.issuance.delete(key);
+    }
+    const pendingForUser = [...this.records.values()].filter(record => record.identity.userId === identity.userId).length;
+    const userBucket = JSON.stringify(['user', identity.userId]);
+    const sessionBucket = JSON.stringify(['session', identity.userId, identity.sessionId]);
+    if (pendingForUser >= 5 || (this.issuance.get(userBucket)?.count ?? 0) >= 10 ||
+        (this.issuance.get(sessionBucket)?.count ?? 0) >= 5) {
+      throw new Error('Sign-in issuance limit reached');
+    }
+    const newBuckets = [userBucket, sessionBucket].filter(bucket => !this.issuance.has(bucket)).length;
+    if (this.issuance.size + newBuckets > MAX_PENDING * 2) throw new Error("Too many pending sign-ins");
+    for (const bucket of [userBucket, sessionBucket]) {
+      const rate = this.issuance.get(bucket) ?? { start: now, count: 0 };
+      rate.count++;
+      this.issuance.set(bucket, rate);
     }
     const token = randomBytes(32).toString('base64url');
     // The server-selected random nonce and every identity field participate in

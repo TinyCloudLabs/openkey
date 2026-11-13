@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { listenForSignInCancellation } from '$lib/signin-cancellation';
   import { page } from '$app/stores';
   import { untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
@@ -36,6 +37,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
 
   const session = authClient.useSession();
 
+  let pendingExternalApproval: { authorizationContextToken: string; previewApprovalToken: string; signedMessage: string; selectedActionIds: string[] } | undefined;
   let signInContinuation: { token: string; requestId: string; chainId: number } | undefined;
   let message = $state('');
   let messageProtocolVersion = $state<number | null>(null);
@@ -161,6 +163,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
           transport = createWidgetTransport({
             origin,
             container,
+            continuation: () => signInContinuation,
             onRequest: handleTransportRequest,
             onClose: handleTransportClose,
             onInvalid: (reason, event) => {
@@ -756,7 +759,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
               presentation: requestPresentation ?? undefined,
               reportedOrigin: reportedOriginForPrepare,
               requestOrigin: origin === '*' ? undefined : origin,
-              signInContinuation,
+              ...(signInContinuation ? { signInContinuation } : {}),
               // Bound into the authorization context: the server refuses a changed expiry unless the app opted in.
               ...(expiryChangeable ? { expiryChangeable: true } : {}),
             }),
@@ -946,6 +949,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
         // in the parent frame, not here. Hand back the preview payload
         // and let the SDK invoke the wallet + call /authorize-sign.
         if (externalSignMode) {
+          if (signInContinuation) pendingExternalApproval = { authorizationContextToken, previewApprovalToken, signedMessage, selectedActionIds };
           sendResponse({
             type: 'openkey:externalSign:approve',
             success: true,
@@ -993,8 +997,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
           success: true,
           signature: authorizeResult.signature,
           address: authorizeResult.address,
-          keyId: authorizeResult.keyId,
-          keyType: authorizeResult.keyType,
+          ...(signInContinuation ? { keyId: authorizeResult.keyId, keyType: authorizeResult.keyType } : {}),
           signedMessage: authorizeResult.signedMessage,
           selectedActionKeys: authorizeResult.selectedActionKeys,
           permissions: authorizeResult.permissions,
@@ -1196,6 +1199,38 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
     }
   }
 
+  async function finalizeExternalContinuation(event: MessageEvent) {
+    const continuation = signInContinuation;
+    if (!continuation || !externalSignMode || event.origin !== origin || event.source !== window.opener ||
+        event.data?.type !== 'openkey:signin:finalize' || event.data?.protocolVersion !== 1 ||
+        event.data?.requestId !== continuation.requestId || event.data?.token !== continuation.token ||
+        typeof event.data?.signature !== 'string' || !pendingExternalApproval) return;
+    const approved = pendingExternalApproval;
+    pendingExternalApproval = undefined;
+    try {
+      const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/delegate/authorize-sign`, {
+        method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ authorizationContextToken: approved.authorizationContextToken,
+          previewApprovalToken: approved.previewApprovalToken, selectedActionIds: approved.selectedActionIds,
+          protocolVersion: 1, externalSignature: event.data.signature }),
+      });
+      const result = await readReply(response, hasSignResult, 'authorize-sign failed');
+      if (result.signedMessage !== approved.signedMessage) throw new Error('Server signed different bytes');
+      window.opener?.postMessage({ type: 'openkey:signin:finalized', protocolVersion: 1,
+        requestId: continuation.requestId, success: true, result }, origin);
+    } catch {
+      cancelSignInContinuation();
+      window.opener?.postMessage({ type: 'openkey:signin:finalized', protocolVersion: 1,
+        requestId: continuation.requestId, success: false }, origin);
+    }
+  }
+
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    window.addEventListener('message', finalizeExternalContinuation);
+    return () => window.removeEventListener('message', finalizeExternalContinuation);
+  });
+
   function cancelSignInContinuation() {
     if (!signInContinuation || !keyId) return;
     navigator.sendBeacon(`${import.meta.env.VITE_API_URL || ''}/api/delegate/signin/cancel`,
@@ -1204,8 +1239,9 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
 
   $effect(() => {
     if (typeof window === 'undefined') return;
+    const stopCancellation = listenForSignInCancellation(() => signInContinuation && keyId ? { ...signInContinuation, keyId, origin } : undefined, () => { pendingExternalApproval = undefined; });
     window.addEventListener('pagehide', cancelSignInContinuation);
-    return () => window.removeEventListener('pagehide', cancelSignInContinuation);
+    return () => { stopCancellation(); window.removeEventListener('pagehide', cancelSignInContinuation); };
   });
 
   function sendClose() {
