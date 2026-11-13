@@ -23,6 +23,7 @@
     "@tinycloud/sdk-core": "2.11.0",
     "@tinycloud/share-envelope": "1.4.1-beta.1",
     "better-auth": "^1.6.9",
+    "canonicalize": "5.0.0",
     "ethers": "^6.16.0",
     "hono": "^4.11.3",
     "jose": "^6.1.3",
