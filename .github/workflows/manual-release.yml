@@ -45,12 +45,16 @@ jobs:
           git remote set-url origin https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/TinyCloudLabs/openkey.git
 
       - name: Create changeset
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          echo "Creating changeset for ${{ github.event.inputs.version }} release..."
+          echo "Creating changeset for $INPUT_VERSION release..."
           bun changeset add --empty
 
       - name: Version packages
-        run: bun changeset version --${{ github.event.inputs.version }}
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: bun changeset version --"$INPUT_VERSION"
 
       - name: Build packages
         run: bun run build
@@ -89,10 +93,27 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
 
-      - name: Commit changes
+      # Packages are already published above. The version bump and changelog
+      # land on main through a pull request; `changesets.yml` pushes the git
+      # tags and creates GitHub Releases once it merges.
+      - name: Open release pull request
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           git checkout -- .  # Revert workspace:* rewrites before committing
           git add .
-          git commit -m "chore: release version [skip ci]" || echo "No changes to commit"
-          git push origin HEAD:main
-          git push origin --tags
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          VERSION=$(jq -r '.version' packages/sdk/package.json)
+          BRANCH="release/manual-${VERSION}-${GITHUB_RUN_ID}"
+          git checkout -b "$BRANCH"
+          git commit -m "chore: release version ${VERSION}"
+          git push origin "$BRANCH"
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore: release version ${VERSION}" \
+            --body "Version bump and changelog for the manual ${INPUT_VERSION} release. Packages were published by Manual Release run ${GITHUB_RUN_ID}."
