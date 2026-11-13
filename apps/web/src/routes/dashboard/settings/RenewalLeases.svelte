@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api } from '$lib/api';
-  import { describeLeasePermissions, nodeHost, renewalLeaseCopy as text, type RenewalLease } from '$lib/renewal-leases';
+  import { leaseStatements, nodeHost, renewalLeaseCopy as text, type RenewalLease } from '$lib/renewal-leases';
 
   let { leases, onchanged }: { leases: RenewalLease[]; onchanged: () => void | Promise<void> } = $props();
   let busyCid = $state<string | null>(null);
@@ -36,11 +36,12 @@
         const signature = await walletSignature(result.walletMessage);
         result = await api.stopRenewalLease(lease.leaseCid, { siwe: result.walletMessage, signature });
       }
-      notice = text.stopped;
+      notice = text.stopped(lease.grantExpiresAt);
       await onchanged();
     } catch (cause) {
       notice = '';
-      error = cause instanceof Error && cause.message ? cause.message : text.failed;
+      // The wallet steps throw the owner's own words; an API refusal reads the same whatever the server said.
+      error = cause instanceof Error && !('status' in cause) && cause.message ? cause.message : text.failed;
     } finally {
       busyCid = null;
     }
@@ -67,8 +68,8 @@
       <li class="flex flex-col gap-3 rounded-xl border border-surface-200 bg-surface-50 p-4 sm:flex-row sm:items-center sm:justify-between" data-testid="renewal-lease">
         <div class="min-w-0">
           <p class="break-words font-semibold text-surface-900">{lease.reason || text.untitled(nodeHost(lease.nodeOrigin))}</p>
-          {#each describeLeasePermissions(lease.permissions) as line}
-            <p class="mt-1 break-words text-sm text-surface-600">{line}</p>
+          {#each leaseStatements(lease.grantSiwe) as line}
+            <p class="mt-1 break-words text-sm text-surface-600" data-testid="renewal-lease-permission">{line}</p>
           {/each}
           <p class="mt-1 text-xs text-surface-500">
             {text.renewsUntil} <time datetime={lease.leaseExpiresAt}>{day(lease.leaseExpiresAt)}</time>

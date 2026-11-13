@@ -13,22 +13,11 @@ import {
   type LeaseRevocationDeps,
 } from '../services/renewal-lease-revocation';
 
-export type RenewalLeaseRouteDatabase = Pick<PrismaClient, 'renewalLease' | 'ethereumKey' | 'approvalRequest'>;
+export type RenewalLeaseRouteDatabase = Pick<PrismaClient, 'renewalLease' | 'ethereumKey' | 'approvalRequest' | '$transaction'>;
 
-interface SignedPermission { service?: unknown; path?: unknown; actions?: unknown }
-
-/** What the approval showed: its reason and permissions, from the signed request the owner approved. */
-function approvedRequestSummary(request: unknown) {
-  const value = (request && typeof request === 'object' ? request : {}) as { reason?: unknown; permissions?: unknown };
-  const permissions = Array.isArray(value.permissions) ? value.permissions as SignedPermission[] : [];
-  return {
-    reason: typeof value.reason === 'string' ? value.reason : null,
-    permissions: permissions.map((permission) => ({
-      service: String(permission.service ?? ''),
-      path: String(permission.path ?? ''),
-      actions: Array.isArray(permission.actions) ? permission.actions.map(String) : [],
-    })),
-  };
+/** The approved request's reason, which the approval screen showed; the permissions come from the signed grant itself. */
+function requestReason(request: unknown): string | null {
+  return request && typeof request === 'object' && 'reason' in request && typeof request.reason === 'string' ? request.reason : null;
 }
 
 export function createRenewalLeaseRouter(db: RenewalLeaseRouteDatabase, deps?: LeaseRevocationDeps) {
@@ -40,7 +29,7 @@ export function createRenewalLeaseRouter(db: RenewalLeaseRouteDatabase, deps?: L
     const userId = c.get('user').id;
     const leases = await db.renewalLease.findMany({ where: liveLeaseWhere(userId, { kind: 'all' }, now()), orderBy: { approvedAt: 'desc' } });
     const [requests, keys] = await Promise.all([
-      db.approvalRequest.findMany({ where: { id: { in: leases.map((lease) => lease.approvalRequestId) } }, select: { id: true, request: true } }),
+      db.approvalRequest.findMany({ where: { id: { in: leases.map((lease) => lease.approvalRequestId) } }, select: { id: true, request: true, delegationExpiresAt: true } }),
       db.ethereumKey.findMany({ where: { userId }, select: { address: true, keyType: true } }),
     ]);
     c.header('Cache-Control', 'no-store');
@@ -48,15 +37,19 @@ export function createRenewalLeaseRouter(db: RenewalLeaseRouteDatabase, deps?: L
       leases: leases.map((lease) => {
         const owner = lease.ownerDid.split(':').at(-1)?.toLowerCase();
         const key = keys.find((candidate) => candidate.address.toLowerCase() === owner);
+        const request = requests.find((row) => row.id === lease.approvalRequestId);
         return {
           leaseCid: lease.leaseCid,
           originalCid: lease.originalCid,
           nodeOrigin: lease.nodeOrigin,
           approvedAt: lease.approvedAt.toISOString(),
           leaseExpiresAt: lease.leaseExpiresAt.toISOString(),
+          // The grant's own signed end: once renewal stops, the grant ends there (the node drops renewed time).
+          grantExpiresAt: request?.delegationExpiresAt?.toISOString() ?? null,
           // A wallet-signed lease is stopped by that wallet signing its revocation.
           signer: key?.keyType === 'MANAGED' ? 'openkey' : 'wallet',
-          ...approvedRequestSummary(requests.find((request) => request.id === lease.approvalRequestId)?.request),
+          reason: requestReason(request?.request),
+          grantSiwe: lease.grantSiwe,
         };
       }),
     });
@@ -90,7 +83,7 @@ export function createRenewalLeaseRouter(db: RenewalLeaseRouteDatabase, deps?: L
     if (report.notStopped[0]?.reason === 'wallet_required') {
       return c.json({ error: 'Sign with your wallet to stop this renewal', code: 'wallet_required', siwe: leaseRevocationSiwe(lease, now()) }, 409);
     }
-    return c.json({ error: "The node didn't confirm. Renewal is still on. Try again.", code: 'node_unavailable' }, 503);
+    return c.json({ error: "Couldn't stop renewal, so it's still on. Try again.", code: 'node_unavailable' }, 503);
   });
 
   return router;

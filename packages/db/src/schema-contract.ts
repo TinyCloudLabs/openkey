@@ -55,6 +55,7 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261110_0002_passkey_enrolment_provenance', '9123f0159b8d5341a737f665dcd6f3853b80a70e21562163f04c611e11d6c388'],
   ['20261113_0001_approval_request_renewal', '1168755d777b50a32bdc33b6e3b8af5e5838527d9bf2f9edf071fc6923954bd8'],
   ['20261113_0002_renewal_lease', '2dd0af909a1d9660a44e392eb1a0efdec46b5b7d83041ba1da7fe8cd6713d18f'],
+  ['20261113_0003_renewal_lease_reservation', 'ffbdf8a2307159642d23e15bd17fa06bb77ffec1c0d62921936749b28af6dedb'],
 ]);
 
 export type SchemaContractDatabase = {

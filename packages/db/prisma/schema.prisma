@@ -162,6 +162,14 @@ model RenewalLease {
   leaseExpiresAt       DateTime
   createdAt            DateTime  @default(now())
   revokedAt            DateTime?
+  // The approved grant's SIWE message text, as signed (no signature): Settings shows its permissions.
+  grantSiwe            String
+  // Set once the approval that admitted the lease is saved; until then the admission outcome is unknown.
+  admittedAt           DateTime?
+  // Set when the node refused to admit the lease and holds no lease to revoke: it can never renew.
+  neverAdmittedAt      DateTime?
+  // The signed lease, encrypted at rest, kept only while admission is unconfirmed (to replay it and revoke).
+  leaseAuthorization   String?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

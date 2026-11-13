@@ -1,15 +1,20 @@
 // TC-2946: Renewing permissions in Settings, and the dashboard's sign-out report, against a mocked API.
 // Set TC2946_SHOTS_DIR to save screenshots at 390 and 1280 px.
 import { test, expect, type Page, type Route } from '@playwright/test';
+import { FIXTURE_META, makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
 import { ORIGIN } from './e2e-port';
 
 const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 const session = { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3600000).toISOString() }, user: { id: 'u', email: 'owner@example.test', name: 'Owner' } };
 const OWNER = '0x1111111111111111111111111111111111111111';
+const space = `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}:default`;
+/** A signed grant as the approval screen saw it: its rows come from the same statements. */
+const grant = (att: Record<string, Record<string, unknown[]>>) => siweWithResources([makeRecapResource(att)]);
+const KV_GRANT = grant({ [`${space}/kv/courier/`]: { 'tinycloud.kv/get': [{}], 'tinycloud.kv/put': [{}] } });
 const lease = (leaseCid: string, overrides: Record<string, unknown> = {}) => ({
   leaseCid, originalCid: 'bafkr4ioriginal', nodeOrigin: 'https://node.tinycloud.xyz', approvedAt: '2026-11-13T12:00:00.000Z',
-  leaseExpiresAt: '2027-02-11T12:00:00.000Z', signer: 'openkey', reason: 'Courier keeps your inbox in sync',
-  permissions: [{ service: 'tinycloud.kv', path: 'courier/', actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] }], ...overrides,
+  leaseExpiresAt: '2027-02-11T12:00:00.000Z', grantExpiresAt: '2026-12-13T12:00:00.000Z', signer: 'openkey', reason: 'Courier keeps your inbox in sync',
+  grantSiwe: KV_GRANT, ...overrides,
 });
 
 async function setup(page: Page, leases: unknown[], stop: (route: Route, body: unknown) => unknown) {
@@ -41,7 +46,7 @@ async function shot(page: Page, name: string) {
 }
 
 test('lists renewing permissions and stops exactly the one chosen', async ({ page }) => {
-  const leases = [lease('bafkr4ifirst'), lease('bafkr4isecond', { reason: null, permissions: [{ service: 'tinycloud.sql', path: '', actions: ['tinycloud.sql/read'] }] })];
+  const leases = [lease('bafkr4ifirst'), lease('bafkr4isecond', { reason: null, grantSiwe: grant({ [`${space}/sql/`]: { 'tinycloud.sql/read': [{}] } }) })];
   const stopped: string[] = [];
   await setup(page, leases, (route) => {
     stopped.push(new URL(route.request().url()).pathname.split('/').at(-2)!);
@@ -53,16 +58,18 @@ test('lists renewing permissions and stops exactly the one chosen', async ({ pag
   await expect(card.getByTestId('renewal-lease')).toHaveCount(2);
   await expect(card.getByText('Courier keeps your inbox in sync')).toBeVisible();
   await expect(card.getByText('Permission on node.tinycloud.xyz')).toBeVisible();
+  // Each row lists the signed grant's permissions in the approval screen's own sentences.
+  for (const row of await card.getByTestId('renewal-lease').all()) expect(await row.getByTestId('renewal-lease-permission').count()).toBeGreaterThan(0);
   await shot(page, 'renewing-permissions');
   await card.getByTestId('renewal-lease').first().getByRole('button').click();
-  await expect(card.getByRole('status')).toBeVisible();
+  await expect(card.getByRole('status')).toContainText('ends on');
   expect(stopped).toEqual(['bafkr4ifirst']);
   await expect(card.getByTestId('renewal-lease')).toHaveCount(1);
   await shot(page, 'renewal-stopped');
 });
 
 test('a node that does not confirm leaves the permission listed, with the reason', async ({ page }) => {
-  await setup(page, [lease('bafkr4ifirst')], (route) => json(route, { error: "The node didn't confirm. Renewal is still on. Try again.", code: 'node_unavailable' }, 503));
+  await setup(page, [lease('bafkr4ifirst')], (route) => json(route, { error: 'refused', code: 'node_unavailable' }, 503));
   await page.goto('/dashboard/settings');
   const card = page.locator('#renewing-permissions');
   await card.getByRole('button').click();

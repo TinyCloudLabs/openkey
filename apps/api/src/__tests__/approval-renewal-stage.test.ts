@@ -9,7 +9,7 @@ import { APPROVAL_CLAIM_LEASE_MS, ApprovalResultService, type ApprovalRequestRec
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
 import type { RenewalStage } from '../services/renewal-lease';
 
-const MIGRATIONS = ['20261028_0001_approval_request_results', '20261103_0002_approval_request_denied', '20261109_0001_approval_request_approving', '20261113_0001_approval_request_renewal', '20261113_0002_renewal_lease']
+const MIGRATIONS = ['20261028_0001_approval_request_results', '20261103_0002_approval_request_denied', '20261109_0001_approval_request_approving', '20261113_0001_approval_request_renewal', '20261113_0002_renewal_lease', '20261113_0003_renewal_lease_reservation']
   .map((name) => new URL(`../../../../packages/db/prisma/migrations/${name}/migration.sql`, import.meta.url));
 const MINUTE = 60_000;
 const ID = 'abcdefghijklmnopqrstuvwxyz';
@@ -123,30 +123,41 @@ describe('the lasting lease record', () => {
     originalCid: 'bafy-original', nodeOrigin: 'https://node.tinycloud.xyz', nodeDid: 'did:key:z6MkNode', renewerDid: 'did:key:z6MkRenewer',
     leaseLifetimeSeconds: 3600, approvedAt: new Date('2026-11-13T12:00:00.000Z'), leaseExpiresAt: new Date('2026-11-13T13:00:00.000Z'),
   };
+  // TC-2946: the record is reserved before the node admits the lease; the approval confirms it.
+  const reserve = () => client.renewalLease.create({ data: { ...lease, sessionId: null, grantSiwe: 'grant', leaseAuthorization: 'sealed-lease' } });
 
-  test('is written with the leased approval that wins, and survives acknowledgement', async () => {
+  test('is confirmed by the leased approval that wins, and survives acknowledgement', async () => {
     await register();
+    await reserve();
     const marker = await service().admit(ID);
     expect(await store().approve(ID, { ...result('ref'), lease }, clock, marker!)).toBe(true);
     await store().acknowledge('ref', 'durable-ack-intent-0001', clock);
-    expect(await client.renewalLease.findMany()).toEqual([{ ...lease, createdAt: expect.any(Date), revokedAt: null }]);
+    expect(await client.renewalLease.findMany()).toEqual([{
+      ...lease, grantSiwe: 'grant', createdAt: expect.any(Date), revokedAt: null, neverAdmittedAt: null, admittedAt: clock, leaseAuthorization: null,
+    }]);
   });
 
-  test('is not written by an approval that loses, and a losing write leaves no partial approval', async () => {
+  test('is not confirmed by an approval that loses, and a losing write leaves no partial approval', async () => {
     await register();
+    await reserve();
     const marker = await service().admit(ID);
     expect(await store().approve(ID, result('first'), clock, marker!)).toBe(true);
     expect(await store().approve(ID, { ...result('second'), lease }, clock, marker!)).toBe(false);
-    expect(await client.renewalLease.count()).toBe(0);
+    expect((await client.renewalLease.findUniqueOrThrow({ where: { leaseCid: lease.leaseCid } })).admittedAt).toBeNull();
     expect((await store().findById(ID))!.resultRef).toBe('first');
   });
 
-  test('rolls the approval back when the lease cannot be recorded', async () => {
-    await register();
-    const marker = await service().admit(ID);
-    await expect(store().approve(ID, { ...result('ref'), lease: { ...lease, userId: 'no-such-user' } }, clock, marker!)).rejects.toThrow();
-    const record = (await store().findById(ID))!;
-    expect(record.resultRef).toBeNull();
-    expect(record.encryptedResult).toBeNull();
+  test('approves nothing when the lease was never reserved or was stopped meanwhile', async () => {
+    for (const reserved of [false, true]) {
+      await client.renewalLease.deleteMany();
+      await client.approvalRequest.deleteMany();
+      await register();
+      if (reserved) await client.renewalLease.create({ data: { ...lease, grantSiwe: 'grant', revokedAt: clock } });
+      const marker = await service().admit(ID);
+      expect(await store().approve(ID, { ...result('ref'), lease }, clock, marker!)).toBe(false);
+      const record = (await store().findById(ID))!;
+      expect(record.resultRef).toBeNull();
+      expect(record.encryptedResult).toBeNull();
+    }
   });
 });

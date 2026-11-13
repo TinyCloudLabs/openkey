@@ -152,14 +152,19 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
     } finally { db.close(); }
   }
 
-  /** An OpenKey account whose managed key approved one renewal: the grant and its lease are on the node, and recorded as #501 records them. */
-  async function ownerWithLease(label: string) {
+  /**
+   * An OpenKey account whose managed key approved one renewal, recorded the way the approval records it: reserved
+   * before admission, then confirmed once the approval is saved. `unconfirmed`: admitted, but the approval was
+   * never saved (a crash after admission). `unadmitted`: reserved and signed, but the node was never asked.
+   */
+  async function ownerWithLease(label: string, mode: 'confirmed' | 'unconfirmed' | 'unadmitted' = 'confirmed') {
     // Imported here, after beforeAll set DATABASE_URL: the API modules open their database when loaded.
     const { TinyCloudNode } = await import('@tinycloud/node-sdk');
     const { privateKeyToAccount } = await import('viem/accounts');
     const { createTeeClient, seal } = await import('@openkey/tee');
     const { createSealingContext } = await import('../services/key-sealing');
     const { prepareRenewalStage, signLease, admitLease } = await import('../services/renewal-lease');
+    const { reserveRenewalLease } = await import('../services/renewal-lease-revocation');
     const userId = `renewal-${label}-${randomUUID()}`;
     const privateKey = `0x${randomBytes(32).toString('hex')}` as const;
     const account = privateKeyToAccount(privateKey);
@@ -183,19 +188,16 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
     const delegation = { delegationHeader: session.delegationHeader, delegationCid: session.delegationCid, spaceId: session.spaceId, siwe: session.siwe, hostActivated: true };
     let stage = await prepareRenewalStage({ userId, host, leaseLifetimeSeconds: LEASE_SECONDS, delegation, now: new Date() });
     stage = signLease(stage, await account.signMessage({ message: stage.leaseSiwe }));
-    const admitted = await admitLease(stage, { nodeOrigin: host, targetPublicJwk: { kty: 'OKP', crv: 'Ed25519', x: session.jwk.x } });
     const approvalRequestId = randomBytes(16).toString('hex');
     await prisma.approvalRequest.create({ data: {
       id: approvalRequestId, bodyCid: 'body', issuer: 'did:key:requester', expiresAt: new Date(Date.now() + 600_000),
       request: { reason: `Keep ${label}'s notes in sync`, permissions: [{ service: 'tinycloud.kv', space: session.spaceId, path: '', actions: ['tinycloud.kv/get'] }] },
     } });
-    await prisma.renewalLease.create({ data: {
-      leaseCid: admitted.receipt.leaseCid, userId, sessionId, approvalRequestId, ownerDid: `did:pkh:eip155:${stage.chainId}:${stage.ownerAddress}`,
-      originalCid: stage.originalCid, nodeOrigin: host, nodeDid: stage.nodeIdentity.nodeDid, renewerDid: stage.nodeIdentity.renewerDid,
-      leaseLifetimeSeconds: LEASE_SECONDS, approvedAt: new Date(stage.approvedAt), leaseExpiresAt: new Date(stage.leaseExpiresAt),
-    } });
+    await reserveRenewalLease(prisma, { approvalRequestId, userId, sessionId, nodeOrigin: host, stage });
+    if (mode !== 'unadmitted') await admitLease(stage, { nodeOrigin: host, targetPublicJwk: { kty: 'OKP', crv: 'Ed25519', x: session.jwk.x } });
+    if (mode === 'confirmed') await prisma.renewalLease.update({ where: { leaseCid: stage.leaseCid! }, data: { admittedAt: new Date(), leaseAuthorization: null } });
     const originalEnd = Date.parse(/^Expiration Time: (.+)$/m.exec(session.siwe)![1]!);
-    return { userId, sessionId, cookie, client, address: account.address, leaseCid: admitted.receipt.leaseCid, originalEnd, label };
+    return { userId, sessionId, cookie, client, address: account.address, leaseCid: stage.leaseCid!, leaseAuthorization: stage.leaseAuthorization!, originalEnd, label };
   }
 
   const call = (cookie: string, path: string, method: 'GET' | 'POST', body?: unknown) => app.fetch(new Request(`https://api.openkey.test${path}`, {
@@ -219,7 +221,11 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
     const signOut = await ownerWithLease('sign-out');
     const deletion = await ownerWithLease('deletion');
     const control = await ownerWithLease('control');
-    const owners = [dashboard, signOut, deletion, control];
+    // Admitted, but the approval was never saved: its stop must replay the admission and revoke straight after.
+    const unconfirmed = await ownerWithLease('unconfirmed', 'unconfirmed');
+    // Reserved and signed, never admitted: nothing renews it, and once its original lapses the node can never admit it.
+    const unadmitted = await ownerWithLease('unadmitted', 'unadmitted');
+    const owners = [dashboard, signOut, deletion, control, unconfirmed];
 
     // Another account sees none of these leases and can't stop one.
     const foreign = await ownerWithLease('foreign');
@@ -228,6 +234,13 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
     const foreignStop = await call(foreign.cookie, `/api/account/renewal-leases/${dashboard.leaseCid}/stop`, 'POST', {});
     expect(foreignStop.status).toBe(404);
     expect(await revokedAt(dashboard.leaseCid)).toBeNull();
+
+    // A late admission of a stopped lease (an approval that stalled mid-call) must not revive it: the node accepts
+    // the same bytes again, but the revoked lease never renews and its grant still ends at its signed end.
+    const readmitted = await ownerWithLease('readmitted');
+    expect((await call(readmitted.cookie, `/api/account/renewal-leases/${readmitted.leaseCid}/stop`, 'POST', {})).status).toBe(200);
+    const lateAdmission = await fetch(`${host}/delegate`, { method: 'POST', headers: { Authorization: readmitted.leaseAuthorization } });
+    expect(lateAdmission.status).toBeLessThan(500);
 
     // Wait for the node's own renewal of every grant.
     const latestEnd = Math.max(...owners.map((owner) => owner.originalEnd));
@@ -244,6 +257,10 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
     expect(await revokedAt(dashboard.leaseCid)).not.toBeNull();
     expect((await call(dashboard.cookie, `/api/account/renewal-leases/${dashboard.leaseCid}/stop`, 'POST', {})).status).toBe(404);
     expect((await (await call(dashboard.cookie, '/api/account/renewal-leases', 'GET')).json() as { leases: unknown[] }).leases).toEqual([]);
+
+    // A lease whose admission was never confirmed: replayed and revoked under the owner's lock.
+    expect((await call(unconfirmed.cookie, `/api/account/renewal-leases/${unconfirmed.leaseCid}/stop`, 'POST', {})).status).toBe(200);
+    expect(await revokedAt(unconfirmed.leaseCid)).not.toBeNull();
 
     // Sign-out: the session that approved the lease ends, and its lease is stopped first.
     const signedOut = await call(signOut.cookie, '/api/auth/sign-out', 'POST');
@@ -277,6 +294,21 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
     expect(await reads(signOut)).toBe(false);
     expect(await reads(deletion)).toBe(false);
     expect(await reads(control)).toBe(true);
+    expect(await reads(unconfirmed)).toBe(false);
     expect(await revokedAt(control.leaseCid)).toBeNull();
+
+    // Stopping a grant that lives only on renewed time ends it at once: its signed end has already passed.
+    expect((await call(control.cookie, `/api/account/renewal-leases/${control.leaseCid}/stop`, 'POST', {})).status).toBe(200);
+    expect(await reads(control)).toBe(false);
+
+    // The never-admitted lease: the node refuses its replayed admission (its original lapsed) and has nothing to revoke.
+    expect(stamps(unadmitted.address)).toBe(0);
+    expect((await call(unadmitted.cookie, `/api/account/renewal-leases/${unadmitted.leaseCid}/stop`, 'POST', {})).status).toBe(200);
+    const settled = await prisma.renewalLease.findUniqueOrThrow({ where: { leaseCid: unadmitted.leaseCid } });
+    expect([settled.neverAdmittedAt !== null, settled.revokedAt, settled.leaseAuthorization]).toEqual([true, null, null]);
+    expect(stamps(unadmitted.address)).toBe(0);
+    // The late-admitted lease: no renewal, and its grant lapsed at its signed end.
+    expect(stamps(readmitted.address)).toBe(0);
+    expect(await reads(readmitted)).toBe(false);
   }, 28 * 60_000);
 }

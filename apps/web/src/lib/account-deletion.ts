@@ -100,7 +100,7 @@ async function failure(response: Response, fallback: string): Promise<DeletionEr
   // TC-2946: deletion first stops every renewing permission; nothing is deleted until all are stopped.
   if (code === 'renewal_leases_not_stopped') {
     return new DeletionError(typeof body?.walletRequired === 'number' && body.walletRequired > 0
-      ? 'Some permissions renew with your wallet. Stop them under Renewing permissions in Settings, then delete your account. Nothing was deleted.'
+      ? 'Some renewing permissions need your wallet to stop. Stop them under Renewing permissions in Settings, then delete your account. Nothing was deleted.'
       : "OpenKey couldn't stop renewal for every permission. Nothing was deleted. Try again.", code, response.status);
   }
   if (response.status === 503) return new DeletionError('OpenKey is busy right now. Try again in a moment.', null, 503);

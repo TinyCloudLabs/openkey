@@ -10,6 +10,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { serializeSignedCookie } from 'better-call';
+import { symmetricEncrypt } from 'better-auth/crypto';
 import type { PrismaClient } from '@openkey/db';
 
 const root = resolve(import.meta.dir, '../../../..');
@@ -45,17 +46,22 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
   let app: { fetch: (request: Request) => Response | Promise<Response> };
   let cookieName: string;
   let secret: string;
-  // A stand-in node per behaviour: `ok` confirms every revocation, `down` refuses until it is switched on.
-  const nodes: Record<'ok' | 'down', { server: Server; origin: string; up: boolean; revocations: number }> = {} as never;
+  let secretConfig: Parameters<typeof symmetricEncrypt>[0]['key'];
+  // A stand-in node per behaviour: `ok` confirms every admission and revocation, `down` fails until it is switched
+  // on, `gone` refuses both (it never admitted the lease and won't). Each records the paths it was asked, in order.
+  type Node = { server: Server; origin: string; up: boolean; revocations: number; calls: string[] };
+  const nodes: Record<'ok' | 'down' | 'gone', Node> = {} as never;
 
   beforeAll(async () => {
-    for (const name of ['ok', 'down'] as const) {
-      const node = { server: createServer(), origin: '', up: name === 'ok', revocations: 0 };
+    for (const name of ['ok', 'down', 'gone'] as const) {
+      const node: Node = { server: createServer(), origin: '', up: name === 'ok', revocations: 0, calls: [] };
       node.server.on('request', (request, response) => {
-        const authorized = request.method === 'POST' && request.url === '/revoke' && typeof request.headers.authorization === 'string';
-        if (authorized) node.revocations++;
-        response.writeHead(authorized && node.up ? 200 : 503, { 'content-type': 'application/json' });
-        response.end(authorized && node.up ? '{"revoked":true}' : '{}');
+        const signed = request.method === 'POST' && (request.url === '/revoke' || request.url === '/delegate') && typeof request.headers.authorization === 'string';
+        if (signed) node.calls.push(request.url!);
+        if (signed && request.url === '/revoke') node.revocations++;
+        const status = !signed ? 404 : node.up ? 200 : name === 'gone' ? 403 : 503;
+        response.writeHead(status, { 'content-type': 'application/json' });
+        response.end(status === 200 ? '{}' : '{"error":"no"}');
       });
       node.server.listen(0, '127.0.0.1');
       await once(node.server, 'listening');
@@ -82,6 +88,7 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     const context = await authModule.auth.$context;
     cookieName = context.authCookies.sessionToken.name;
     secret = context.secret;
+    secretConfig = context.secretConfig;
   }, 90_000);
 
   afterAll(async () => {
@@ -113,7 +120,8 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
   }
 
   let leaseCount = 0;
-  async function lease(owner: Awaited<ReturnType<typeof account>>, sessionId: string | null, node: 'ok' | 'down' = 'ok', expiresInMs = 3_600_000) {
+  /** `reserved`: recorded before admission and never confirmed, holding its encrypted signed lease. */
+  async function lease(owner: Awaited<ReturnType<typeof account>>, sessionId: string | null, node: 'ok' | 'down' | 'gone' = 'ok', expiresInMs = 3_600_000, reserved = false) {
     const leaseCid = `bafkr4i${(leaseCount++).toString().padStart(4, '0').replace(/\d/g, (d) => 'abcdefghij'[Number(d)]!)}${'a'.repeat(48)}`;
     const approvalRequestId = randomBytes(16).toString('hex');
     await prisma.approvalRequest.create({ data: {
@@ -123,7 +131,10 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     await prisma.renewalLease.create({ data: {
       leaseCid, userId: owner.userId, sessionId, approvalRequestId, ownerDid: `did:pkh:eip155:1:${owner.wallet.address}`,
       originalCid: `bafkr4ioriginal${'a'.repeat(44)}`, nodeOrigin: nodes[node].origin, nodeDid: 'did:key:node', renewerDid: 'did:key:renewer',
-      leaseLifetimeSeconds: 3600, approvedAt: new Date(), leaseExpiresAt: new Date(Date.now() + expiresInMs),
+      leaseLifetimeSeconds: 3600, approvedAt: new Date(), leaseExpiresAt: new Date(Date.now() + expiresInMs), grantSiwe: 'the approved grant',
+      ...(reserved
+        ? { admittedAt: null, leaseAuthorization: await symmetricEncrypt({ key: secretConfig, data: `signed-lease-${leaseCid}` }) }
+        : { admittedAt: new Date() }),
     } });
     return leaseCid;
   }
@@ -283,6 +294,61 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     const refused = await call(here.cookie, '/api/account/delete', 'POST', { confirmation: 'DELETE MY ACCOUNT' });
     expect(refused.status).toBe(409);
     expect(await refused.json()).toMatchObject({ code: 'renewal_leases_not_stopped', walletRequired: 1 });
+    expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(1);
+  });
+
+  test('a lease whose admission was never confirmed is admitted again and revoked straight after; one admitted is only revoked', async () => {
+    const owner = await account();
+    const { cookie } = await owner.session();
+    const reserved = await lease(owner, null, 'ok', 3_600_000, true);
+    const admitted = await lease(owner, null);
+    nodes.ok.calls.length = 0;
+    expect((await call(cookie, `/api/account/renewal-leases/${reserved}/stop`, 'POST', {})).status).toBe(200);
+    expect(nodes.ok.calls).toEqual(['/delegate', '/revoke']);
+    const row = await prisma.renewalLease.findUniqueOrThrow({ where: { leaseCid: reserved } });
+    expect(row.revokedAt).not.toBeNull();
+    // The signed lease is kept only until its lease is settled.
+    expect(row.leaseAuthorization).toBeNull();
+    nodes.ok.calls.length = 0;
+    expect((await call(cookie, `/api/account/renewal-leases/${admitted}/stop`, 'POST', {})).status).toBe(200);
+    expect(nodes.ok.calls).toEqual(['/revoke']);
+  });
+
+  test('a lease the node refuses to admit and has nothing to revoke is settled as never admitted, and never reserved again', async () => {
+    const { reserveRenewalLease } = await import('../services/renewal-lease-revocation');
+    const owner = await account();
+    const { cookie } = await owner.session();
+    const leaseCid = await lease(owner, null, 'gone', 3_600_000, true);
+    expect((await call(cookie, `/api/account/renewal-leases/${leaseCid}/stop`, 'POST', {})).status).toBe(200);
+    const row = await prisma.renewalLease.findUniqueOrThrow({ where: { leaseCid } });
+    expect([row.neverAdmittedAt !== null, row.revokedAt, row.leaseAuthorization]).toEqual([true, null, null]);
+    expect((await (await call(cookie, '/api/account/renewal-leases', 'GET')).json() as { leases: unknown[] }).leases).toEqual([]);
+    // A stalled approval of that same lease finds it settled: it is not admitted.
+    const stage = {
+      leaseCid, leaseAuthorization: 'signed-lease', delegation: { siwe: 'grant' }, chainId: 1, ownerAddress: owner.wallet.address,
+      originalCid: row.originalCid, nodeIdentity: { nodeDid: 'did:key:node', renewerDid: 'did:key:renewer' }, approvedLeaseLifetimeSeconds: 3600,
+      approvedAt: new Date().toISOString(), leaseExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    };
+    await expect(reserveRenewalLease(prisma, { approvalRequestId: row.approvalRequestId, userId: owner.userId, sessionId: null, nodeOrigin: row.nodeOrigin, stage: stage as never }))
+      .rejects.toMatchObject({ code: 'renewal_stopped' });
+  });
+
+  test('a stored signed lease that no longer decrypts stays unsettled, is never called never admitted, and blocks deletion', async () => {
+    const { writeStepUpMarker } = await import('../services/email-otp-step-up');
+    const owner = await account();
+    const here = await owner.session();
+    const leaseCid = await lease(owner, here.id, 'gone', 3_600_000, true);
+    // As if the at-rest secret had been rotated since it was stored.
+    await prisma.renewalLease.update({ where: { leaseCid }, data: { leaseAuthorization: 'sealed-with-an-old-secret' } });
+    nodes.gone.calls.length = 0;
+    expect((await call(here.cookie, `/api/account/renewal-leases/${leaseCid}/stop`, 'POST', {})).status).toBe(503);
+    expect(nodes.gone.calls).toEqual([]);
+    const row = await prisma.renewalLease.findUniqueOrThrow({ where: { leaseCid } });
+    expect([row.revokedAt, row.neverAdmittedAt, row.leaseAuthorization]).toEqual([null, null, 'sealed-with-an-old-secret']);
+    await writeStepUpMarker(prisma, 'delete_account', here.id, 'email');
+    const refused = await call(here.cookie, '/api/account/delete', 'POST', { confirmation: 'DELETE MY ACCOUNT' });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ code: 'renewal_leases_not_stopped', nodeUnavailable: 1 });
     expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(1);
   });
 }

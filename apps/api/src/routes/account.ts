@@ -533,7 +533,7 @@ function renewalLeasesNotStopped(c: Context<SessionContext>, notStopped: LeaseRe
   const walletRequired = notStopped.filter((lease) => lease.reason === 'wallet_required').length;
   return c.json({
     error: walletRequired > 0
-      ? 'Some permissions renew with your wallet. Stop them under Renewing permissions in Settings, then delete your account. Nothing was deleted.'
+      ? 'Some renewing permissions need your wallet to stop. Stop them under Renewing permissions in Settings, then delete your account. Nothing was deleted.'
       : "OpenKey couldn't stop renewal for every permission. Nothing was deleted. Try again.",
     code: 'renewal_leases_not_stopped',
     walletRequired,

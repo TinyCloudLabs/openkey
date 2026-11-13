@@ -21,6 +21,7 @@ import {
   signLease,
   type RenewalStage,
 } from '../services/renewal-lease';
+import { reserveRenewalLease } from '../services/renewal-lease-revocation';
 
 const prisma = createPrismaClient();
 const store = createPrismaApprovalRequestStore(prisma);
@@ -287,6 +288,9 @@ export async function saveApprovalDelegation(
 async function finishLeasedApproval(id: string, userId: string, sessionId: string | null, request: ApprovalRequestRecord['request'], stage: RenewalStage, marker: Date) {
   let renewal;
   try {
+    // TC-2946: the owner's record of this lease is written before the node is asked to admit it, so a lease whose
+    // admission outcome is unknown can still be found and stopped. A lease stopped meanwhile is never admitted.
+    await reserveRenewalLease(prisma, { approvalRequestId: id, userId, sessionId, nodeOrigin: request.nodeOrigin, stage });
     renewal = await admitLease(stage, request);
   } catch (error) {
     renewalFailure(error);

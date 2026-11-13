@@ -24,6 +24,7 @@ const tx = {
   account: { deleteMany: async () => ({ count: 1 }), findMany: async () => [] },
   verification: { deleteMany: async () => ({ count: 0 }) },
   user: { delete: async ({ where }: { where: { id: string } }) => { deletedUsers.push(where.id); return {}; } },
+  renewalLease: { findMany: async () => [], count: async () => 0 },
 };
 
 const prisma = {
@@ -55,6 +56,7 @@ const prisma = {
     findUnique: async () => ({ autoSignEnabled: true }),
     update: async ({ data }: { data: { autoSignEnabled: boolean } }) => ({ autoSignEnabled: data.autoSignEnabled }),
   },
+  renewalLease: { findMany: async () => [], count: async () => 0 },
 };
 
 // Stands in for Better Auth: every request resolves to user_1's session.
