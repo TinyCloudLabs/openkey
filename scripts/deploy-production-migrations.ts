@@ -54,6 +54,8 @@ const revokedAccessTokenMigration = '20261026_0001_revoked_access_token';
 const revokedAccessTokenChecksum = 'a57958f43b7d1c28c25b38ef358a5392e4b7f9ecf78a979b2c86c8027bd53a30';
 // Reviewed expand-only migrations that may run while TC-488 stays parked.
 const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
+  ['20261113_0002_account_deletion_review_events', 'be305ec882cce874344ee31f4846164671744bb81347b76ab3058521ad60037d'],
+  ['20261113_0001_account_deletion_review', '934b3afb29748ba6217811ee039049a84adc9c23eb96cd56e17bb236318be6e7'],
   [deviceMigration, deviceChecksum],
   [brokerMigration, brokerChecksum],
   [nativeDelegationMigration, nativeDelegationChecksum],
@@ -74,6 +76,7 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   ['20261109_0001_approval_request_approving', '59d59bc76994122d54d3d4564002cab2b01fecf194a12ee688f277b41c90fa6b'],
   ['20261110_0001_apple_notifications', '431fea91f3c4ed37c4a7efef982fc5b88e7dc396bdc9b49633366c7da64fd4ba'],
   ['20261110_0002_passkey_enrolment_provenance', '9123f0159b8d5341a737f665dcd6f3853b80a70e21562163f04c611e11d6c388'],
+  ['20261112_0001_account_deletion_job', '660a0b50e9ab5550636df5d7a70ed3c0ca0295571f93a23b69475b3c96068d80'],
 ]);
 
 export type MigrationRow = {

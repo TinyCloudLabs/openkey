@@ -1,3 +1,4 @@
+import { commitDeletionRequest } from '../services/account-deletion-request';
 // Account management routes
 import { Hono } from 'hono';
 import { symmetricDecrypt } from 'better-auth/crypto';
@@ -576,23 +577,9 @@ accountRouter.post('/delete', async (c) => {
       select: { refreshToken: true, appleClientId: true },
     });
 
-    // Delete all ethereum keys (sealed blobs will be unrecoverable)
-    await tx.ethereumKey.deleteMany({ where: { userId: user.id } });
-
-    // Delete all passkeys
-    await tx.passkey.deleteMany({ where: { userId: user.id } });
-
-    // Delete all sessions
-    await tx.session.deleteMany({ where: { userId: user.id } });
-
-    // Delete all accounts (OAuth)
-    await tx.account.deleteMany({ where: { userId: user.id } });
-
-    // Delete all verifications
-    await tx.verification.deleteMany({ where: { userId: user.id } });
-
-    // Finally delete the user
-    await tx.user.delete({ where: { id: user.id } });
+    // Commit the irreversible request before any node operation. The locked
+    // account retains its sealed keys solely for the deletion worker.
+    await commitDeletionRequest(tx, user.id);
     return stored;
   }); } catch (error) {
     const unavailable = nativeDelegationLockResponse(error);
@@ -606,8 +593,9 @@ accountRouter.post('/delete', async (c) => {
 
   return c.json({
     success: true,
-    message: 'Account permanently deleted',
-    keysDeleted: keyCount,
+    message: 'Deletion requested',
+    state: 'deletion_requested',
+    keysPendingDeletion: keyCount,
   });
 });
 

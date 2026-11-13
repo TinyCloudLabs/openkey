@@ -921,3 +921,35 @@ model RevokedAccessToken {
   @@index([expiresAt])
   @@map("revoked_access_token")
 }
+
+// Retained independently of User so completed deletion remains auditable.
+model AccountDeletionJob {
+  leaseToken String?
+  leaseUntil DateTime?
+  id String @id @default(uuid())
+  userId String @unique
+  state String @default("deletion_requested")
+  progress Json
+  requestedAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  nextAttemptAt DateTime @default(now())
+  @@index([state, nextAttemptAt])
+  @@map("account_deletion_job")
+}
+
+model AccountDeletionReview {
+  eventKey String? @unique
+  deliveredAt DateTime?
+  expiresAt DateTime?
+  id String @id @default(cuid())
+  jobId String
+  kind String
+  summary Json
+  actor String?
+  decidedAt DateTime?
+  reason String?
+  disposition String?
+  createdAt DateTime @default(now())
+  @@index([jobId, createdAt])
+  @@map("account_deletion_review")
+}
