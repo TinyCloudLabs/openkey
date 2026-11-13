@@ -45,12 +45,16 @@ jobs:
           git remote set-url origin https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/TinyCloudLabs/openkey.git
 
       - name: Create changeset
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          echo "Creating changeset for ${{ github.event.inputs.version }} release..."
+          echo "Creating changeset for $INPUT_VERSION release..."
           bun changeset add --empty
 
       - name: Version packages
-        run: bun changeset version --${{ github.event.inputs.version }}
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: bun changeset version --"$INPUT_VERSION"
 
       - name: Build packages
         run: bun run build
@@ -95,6 +99,7 @@ jobs:
       - name: Open release pull request
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           git checkout -- .  # Revert workspace:* rewrites before committing
           git add .
@@ -111,4 +116,4 @@ jobs:
             --base main \
             --head "$BRANCH" \
             --title "chore: release version ${VERSION}" \
-            --body "Version bump and changelog for the manual ${{ github.event.inputs.version }} release. Packages were published by Manual Release run ${GITHUB_RUN_ID}."
+            --body "Version bump and changelog for the manual ${INPUT_VERSION} release. Packages were published by Manual Release run ${GITHUB_RUN_ID}."
