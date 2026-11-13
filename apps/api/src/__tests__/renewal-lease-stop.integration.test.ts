@@ -351,4 +351,57 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     expect(await refused.json()).toMatchObject({ code: 'renewal_leases_not_stopped', nodeUnavailable: 1 });
     expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(1);
   });
+
+  test('deletion during an approval whose lease is admitted but not yet saved: the reservation blocks it until the lease is settled', async () => {
+    // The approval reserves its lease before asking the node to admit it; the node admitted it and the approval
+    // has not saved yet (or crashed). Deletion must find that lease, not only saved ones.
+    const { reserveRenewalLease } = await import('../services/renewal-lease-revocation');
+    const { writeStepUpMarker } = await import('../services/email-otp-step-up');
+    const owner = await account();
+    const here = await owner.session();
+    const leaseCid = `bafkr4iinflight${'a'.repeat(45)}`;
+    const approvalRequestId = randomBytes(16).toString('hex');
+    const stage = {
+      leaseCid, leaseAuthorization: 'signed-lease', delegation: { siwe: 'the approved grant' }, chainId: 1, ownerAddress: owner.wallet.address,
+      originalCid: `bafkr4ioriginal${'a'.repeat(44)}`, nodeIdentity: { nodeDid: 'did:key:node', renewerDid: 'did:key:renewer' },
+      approvedLeaseLifetimeSeconds: 3600, approvedAt: new Date().toISOString(), leaseExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    };
+    await reserveRenewalLease(prisma, { approvalRequestId, userId: owner.userId, sessionId: here.id, nodeOrigin: nodes.down.origin, stage: stage as never });
+
+    await writeStepUpMarker(prisma, 'delete_account', here.id, 'email');
+    const refused = await call(here.cookie, '/api/account/delete', 'POST', { confirmation: 'DELETE MY ACCOUNT' });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ code: 'renewal_leases_not_stopped', nodeUnavailable: 1 });
+    expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(1);
+    expect(await prisma.ethereumKey.count({ where: { userId: owner.userId } })).toBe(1);
+
+    nodes.down.up = true;
+    nodes.down.calls.length = 0;
+    try {
+      expect((await call(here.cookie, '/api/account/delete', 'POST', { confirmation: 'DELETE MY ACCOUNT' })).status).toBe(200);
+    } finally {
+      nodes.down.up = false;
+    }
+    // Admitted again and revoked straight after, before the keys and the user went.
+    expect(nodes.down.calls).toEqual(['/delegate', '/revoke']);
+    expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(0);
+  });
+
+  test('sign-out ends the session even when stopping its leases fails, and the leases stay on for the next attempt', async () => {
+    const owner = await account();
+    const here = await owner.session();
+    const leaseCid = await lease(owner, here.id);
+    // Break the key lookup that stopping a lease needs, as a database failure would.
+    await prisma.$executeRawUnsafe('ALTER TABLE "ethereum_keys" RENAME COLUMN "address" TO "address_unavailable"');
+    let signedOut: Response;
+    try {
+      signedOut = await call(here.cookie, '/api/auth/sign-out', 'POST');
+    } finally {
+      await prisma.$executeRawUnsafe('ALTER TABLE "ethereum_keys" RENAME COLUMN "address_unavailable" TO "address"');
+    }
+    expect(signedOut.status).toBe(200);
+    expect(await signedOut.json()).toMatchObject({ success: true, renewalLeases: { stopped: 0, notStopped: 1 } });
+    expect(await prisma.session.count({ where: { id: here.id } })).toBe(0);
+    expect(await stopped(leaseCid)).toBe(false);
+  });
 }
