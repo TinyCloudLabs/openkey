@@ -1,0 +1,29 @@
+name: Prepared escrow
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  escrow:
+    name: Escrow crypto and isolated restore drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Build measured packages
+        run: |
+          bun run db:generate
+          bun run build --filter @openkey/db --filter @openkey/tee
+      - name: Crypto vectors and holder verifier
+        run: |
+          bun test packages/tee/tests
+          bun run --cwd packages/escrow-verify test
+          bun run --cwd packages/escrow-verify typecheck
+      - name: Disposable PostgreSQL drill
+        run: bun scripts/test-escrow-pg.ts

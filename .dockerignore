@@ -18,12 +18,11 @@ build
 .gitignore
 
 # Environment
-.env
+.env*
 .env.local
 .env*.local
 
 # Docker
-Dockerfile
 docker-compose*.yml
 .docker
 

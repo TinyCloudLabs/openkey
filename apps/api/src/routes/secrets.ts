@@ -1,11 +1,11 @@
 // Secrets CRUD routes - encrypted storage via TinyCloud vault
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
-import { createTeeClient, unseal } from '@openkey/tee';
+import { createTeeClient } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { tinyCloudService } from '../services/tinycloud-service';
-import { deriveKeyForRecord } from '../services/key-sealing';
+import { unsealKeyForRecord } from '../services/key-sealing';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -34,8 +34,7 @@ async function getUserPrivateKey(userId: string): Promise<string | null> {
     return null;
   }
 
-  const sealingKey = await deriveKeyForRecord(tee, key);
-  const privateKey = await unseal(key.sealedBlob, sealingKey) as string;
+  const privateKey = await unsealKeyForRecord(tee, key, key.sealedBlob);
   // Strip 0x prefix if present
   return privateKey.startsWith('0x') ? privateKey.slice(2) : privateKey;
 }

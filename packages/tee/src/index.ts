@@ -233,15 +233,40 @@ export async function unseal(sealedData: string, sealingKey: Uint8Array): Promis
   return decrypted.toString('utf8');
 }
 
+// Re-export versioned sealing utilities
+export { SealingKeyring, sealingKid, isVersionedSealed } from './versioned-sealing';
+export type { SealingBinding, SealingKeyProvider } from './versioned-sealing';
+
 // Re-export wallet utilities
 export { createWalletFromPrivateKey, generatePrivateKey, getAddressFromPrivateKey } from './wallet';
 
 // Re-export Nostr identity utilities (secp256k1 Schnorr / BIP-340, NOT ECDSA)
 export {
   generateNostrKeypair,
+  deriveNostrPubkey,
   canonicalizeNip01,
   computeEventId,
   signNostrEvent,
   SUPPORTED_NOSTR_KINDS,
 } from './nostr';
 export type { UnsignedNostrEvent, SignedNostrEvent, NostrKeypair, SealedNostrSecret } from './nostr';
+
+export { freezeEscrowHeader, encodeEscrowHeader } from './escrow-header';
+export type { EscrowHeader } from './escrow-header';
+
+export { prepareEscrowExport, freezeEscrowPreflightPolicy } from './escrow-export';
+export type { ExportPolicy, EscrowPathKey } from './escrow-export';
+export { encodeRecordManifest, recordManifestHash } from './escrow-manifest';
+export type { EscrowRecordManifestEntry } from './escrow-manifest';
+
+export { createEscrowProvenanceClient, createProductionEscrowProvenanceClient } from './escrow-provenance';
+export type { EscrowQuote } from './escrow-provenance';
+
+export { EscrowRecoverySessions, freezeRecoveryDescriptor, wrapRecoveryShare } from './escrow-recovery-session';
+export type { RecoveryDescriptor, RecoveryShareEnvelope } from './escrow-recovery-session';
+export { recoveryPolicyId, deriveRecoveryTargetPolicy, RECOVERY_PROVENANCE_PATH } from './escrow-recovery-policy';
+export type { TargetPolicyEvidence } from './escrow-recovery-policy';
+export { unwrapEscrowShare } from './escrow-envelope';
+export type { ShareEnvelope } from './escrow-envelope';
+export { recoverEscrowPaths } from './escrow-recovery';
+export type { EscrowCiphertextItem } from './escrow-recovery';

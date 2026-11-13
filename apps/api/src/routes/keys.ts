@@ -1,7 +1,7 @@
 // Key management routes
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
-import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey, type TeeQuote } from '@openkey/tee';
+import { createTeeClient, generatePrivateKey, getAddressFromPrivateKey, type TeeQuote } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { validateTypedData, verifyMessage } from 'viem';
@@ -11,7 +11,7 @@ import {
 } from '../services/tinycloud-bootstrap';
 import { awaitTinyCloudBootstrapWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
 import { parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
-import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
+import { createSealingContext, sealKeyForRecord, unsealKeyForRecord } from '../services/key-sealing';
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { checkSignableMessage } from '../services/siwe-origin';
@@ -207,10 +207,7 @@ keysRouter.post('/generate', async (c) => {
   const address = getAddressFromPrivateKey(privateKey);
 
   const sealingContext = createSealingContext();
-  const sealingKey = await tee.deriveKey(`openkey/key/${sealingContext}`);
-
-  // Seal the private key
-  const sealedBlob = await seal(privateKey, sealingKey);
+  const sealedBlob = await sealKeyForRecord(tee, { userId: user.id, sealingContext }, privateKey);
 
   // Store in database
   const key = await prisma.ethereumKey.create({
@@ -341,8 +338,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
     return c.json({ error: 'External keys must be signed client-side' }, 400);
   }
 
-  const sealingKey = await deriveKeyForRecord(tee, key);
-  const privateKey = await unseal(key.sealedBlob!, sealingKey) as Hex;
+  const privateKey = await unsealKeyForRecord(tee, key, key.sealedBlob!) as Hex;
 
   const { createWalletFromPrivateKey } = await import('@openkey/tee');
   const account = createWalletFromPrivateKey(privateKey);
@@ -417,8 +413,7 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
   }
 
   // Unseal and sign
-  const sealingKey = await deriveKeyForRecord(tee, key);
-  const privateKey = await unseal(key.sealedBlob!, sealingKey) as Hex;
+  const privateKey = await unsealKeyForRecord(tee, key, key.sealedBlob!) as Hex;
 
   const { createWalletFromPrivateKey } = await import('@openkey/tee');
   const account = createWalletFromPrivateKey(privateKey);
@@ -463,7 +458,7 @@ keysRouter.get('/:keyId/quote', async (c) => {
   let binding: string;
   let quote: TeeQuote;
   try {
-    const privateKey = await unseal(key.sealedBlob!, await deriveKeyForRecord(tee, key)) as Hex;
+    const privateKey = await unsealKeyForRecord(tee, key, key.sealedBlob!) as Hex;
     if (getAddressFromPrivateKey(privateKey).toLowerCase() !== key.address.toLowerCase()) {
       log('error', 'key_quote_failed', 'quote_key_custody_mismatch');
       return c.json({ error: 'quote_unavailable' }, 503);

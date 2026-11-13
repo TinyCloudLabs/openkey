@@ -1,0 +1,14 @@
+{
+  "format": "tinycloud-escrow-shares-v1",
+  "testOnly": true,
+  "seedUtf8": "tinycloud-escrow-vector-v1",
+  "coefficientDerivation": "SHA-256(seedUtf8), one degree-one coefficient per secret byte",
+  "secretHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "sharesHex": [
+    "43627e58d41cc8ba879b9ee37a4f68de5a78156ea13771fd613964bbb379f82d01",
+    "86c7fab5bf3781660d3639c0e089c2b684c31ce96551d8d8ea59e64059d5c97b02",
+    "a5766e76b72a514e1fe0d7ba3c575743f33ad980e422b0435acb93acd9a12241ff"
+  ],
+  "escrowId": "test-escrow-v1",
+  "commitmentHex": "795adb077e1fc67d47c013d3906377816fd096f91457bd0db0bdc918a4e87103"
+}

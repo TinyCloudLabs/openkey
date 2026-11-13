@@ -921,3 +921,58 @@ model RevokedAccessToken {
   @@index([expiresAt])
   @@map("revoked_access_token")
 }
+
+// Immutable approval audit metadata and persistent replay protection (TC-2823).
+model EscrowAuthorization {
+  nonce      String   @id
+  // Subject is measuredConfigHash for preflight, canonical policyHash for export.
+  policyHash String
+  dryRun     Boolean
+  operatorId String
+  approverId String?
+  kind       String
+  createdAt  DateTime @default(now()) @db.Timestamptz
+
+  @@index([createdAt], map: "escrow_authorization_createdAt_idx")
+  @@map("escrow_authorization")
+}
+
+// Private canonical policy and ciphertext snapshot; never sent to holders.
+model EscrowPreflight {
+  policyHash String    @id
+  nonce      String    @unique
+  expiresAt  DateTime  @db.Timestamptz
+  payload    Json?
+  consumedAt DateTime? @db.Timestamptz
+
+  @@map("escrow_preflight")
+}
+
+// Private snapshot artifact; holder HTTP output contains only the bundle.
+model EscrowArchive {
+  escrowId          String   @id
+  headerHash        String   @unique
+  bundle            Json
+  recordManifestUtf8 String   @db.Text
+  dbSnapshotUtf8     String   @db.Text
+  sourceSnapshotId  String
+  exportSnapshotId  String
+  expectedRecords   Int
+  completedRecords  Int
+  createdAt         DateTime @default(now()) @db.Timestamptz
+
+  @@map("escrow_archive")
+}
+
+model EscrowRestoreReceipt {
+  escrowId          String   @id
+  headerHash        String
+  descriptorHash    String
+  newPolicyId       String
+  targetAppId       String
+  targetComposeHash String
+  completedRecords Int
+  createdAt         DateTime @default(now()) @db.Timestamptz
+
+  @@map("escrow_restore_receipt")
+}

@@ -9,6 +9,9 @@ import {
   oauthProviderOpenIdConfigMetadata,
 } from '@better-auth/oauth-provider';
 import { auth, prisma as authPrisma } from './auth';
+import { createEscrowRouter } from './routes/escrow';
+import { sweepExpiredEscrowPreflights } from './services/escrow-preflight-store';
+import { createOpenKeyEscrowService } from './services/escrow-service';
 import { keysRouter } from './routes/keys';
 import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
@@ -279,6 +282,12 @@ app.route('/api/passkey', passkeyProxyRouter);
 
 // OAuth admin routes (protected by ADMIN_API_KEY)
 app.route('/api/admin/oauth', oauthAdminRouter);
+const escrowService = createOpenKeyEscrowService(authPrisma);
+app.route('/api/admin/escrow', createEscrowRouter(escrowService));
+if (escrowService.enabled()) {
+  const escrowCleanup = setInterval(() => { void sweepExpiredEscrowPreflights(authPrisma).catch(() => {}); }, 300_000);
+  escrowCleanup.unref();
+}
 
 // Internal metrics route (protected by INTERNAL_METRICS_TOKEN)
 app.route('/api/internal/metrics', internalMetricsRouter);
