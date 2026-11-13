@@ -23,3 +23,23 @@ test('job reaches complete through signed HTTP adapter after status completes', 
   expect(paths).toEqual(['/space/retire-owner', '/space/list', '/space/purge', '/space/purge/status']);
   expect(complete).toBe(true);
 });
+
+test('configured host mapping cannot be narrowed, duplicated or repaired by responses', async () => {
+  const wallet = Wallet.createRandom();
+  const configured = { hostId: 'node-test', url: 'https://node.example.test' };
+  let requests = 0;
+  const adapter = createDeletionAdapter(wallet.privateKey, [configured], [configured.url], async () => {
+    requests += 1;
+    return Response.json({ version: 1, hostId: 'unexpected-node', state: 'retired' }, { status: 202 });
+  });
+  expect(() => adapter.retire('https://other.example.test', crypto.randomUUID())).toThrow();
+  expect(requests).toBe(0);
+  expect(() => createDeletionAdapter(wallet.privateKey, [configured, { ...configured, url: 'https://other.example.test' }], [])).toThrow();
+  const job: DeletionJob = { state: 'deletion_requested', hosts: {}, unreachableHosts: [] };
+  let completed = false;
+  await advanceDeletion(job, adapter, { save: async () => {}, complete: async () => { completed = true; } });
+  expect(completed).toBe(false);
+  expect(job.unreachableHosts).toEqual([configured.url]);
+  expect(job.hosts[configured.url]?.retired).toBe(false);
+  expect(await adapter.hosts()).toEqual([configured.url]);
+});

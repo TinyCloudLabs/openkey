@@ -24,3 +24,11 @@ test('unknown host, owner, terminal state and cursor omissions fail closed', asy
   await expect(listAllDeletionSpaces(host, owner, async () => ({ ...page, spaces: [], lastPage: false, nextCursor: 'repeated' }))).rejects.toThrow();
   await expect(listAllDeletionSpaces({ ...host, url: 'http://node.example.test' }, owner, async () => page)).rejects.toThrow();
 });
+
+test('missing and invalid configured host identifiers cannot issue a request', async () => {
+  let requests = 0;
+  for (const hostId of ['', 'A-host', 'host_name', 'a'.repeat(64)]) {
+    await expect(listAllDeletionSpaces({ ...host, hostId }, owner, async () => { requests += 1; return page; })).rejects.toThrow();
+  }
+  expect(requests).toBe(0);
+});

@@ -3,7 +3,7 @@ import { Wallet, concat, getBytes, sha256, toUtf8Bytes } from 'ethers';
 
 export type DeletionInvocation = {
   resource: string;
-  action: 'tinycloud.space/retire-owner' | 'tinycloud.space/delete' | 'tinycloud.space/list';
+  action: 'tinycloud.space/retire-owner' | 'tinycloud.space/delete' | 'tinycloud.space/list' | 'tinycloud.resource/list' | 'tinycloud.resource/dependencies' | 'tinycloud.resource/delete';
   idempotencyKey: string;
   hostId: string;
 };
@@ -14,7 +14,7 @@ export function signDeletionInvocation(privateKey: string, intent: DeletionInvoc
   if (!/^[a-z0-9-]{1,63}$/.test(intent.hostId)) throw new Error('Invalid target host identity');
   const wallet = new Wallet(privateKey);
   const owner = `did:pkh:eip155:1:${wallet.address}`;
-  if (intent.action !== 'tinycloud.space/delete' && intent.resource !== owner) {
+  if (!['tinycloud.space/delete', 'tinycloud.resource/delete'].includes(intent.action) && intent.resource !== owner) {
     throw new Error('Owner resource must match owner');
   }
   const publicKey = getBytes(wallet.signingKey.publicKey);
