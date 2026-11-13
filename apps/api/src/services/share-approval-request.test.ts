@@ -145,3 +145,19 @@ test('the prepared nonce cannot be replaced before signing', async () => {
     message => f.wallet.signMessage(message));
   expect(new SiweMessage(result.prepared.siwe).nonce).toBe(f.intent.approvalNonce);
 });
+
+
+test('sign recomputes the digest of the same bytes confirmed by the fresh assertion', async () => {
+  const f = await fixture();
+  const requests = new ShareApprovalRequests(() => f.now);
+  const preview = prepare(requests, f);
+  const record = (requests as any).requests.get(preview.requestId);
+  const changed = new SiweMessage(record.prepared.siwe);
+  changed.nonce = 'e'.repeat(64);
+  record.prepared.siwe = changed.prepareMessage();
+  record.originalSiwe = record.prepared.siwe;
+  let consumed = false;
+  await expect(requests.sign(preview.requestId, f.account, preview.intentDigest,
+    () => { consumed = true; }, message => f.wallet.signMessage(message))).rejects.toThrow('binding_mismatch');
+  expect(consumed).toBe(false);
+});

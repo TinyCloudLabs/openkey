@@ -23,6 +23,15 @@ interface Request {
   prepared: Prepared;
   originalSiwe: string;
   intentDigest: string;
+  outerRequestId: string;
+}
+
+function shareIntentDigest(outerRequestId: string, minted: Readonly<MintedShareApproval>,
+  account: ShareApprovalAccount, siwe: string): string {
+  return createHash('sha256').update(JSON.stringify([
+    'share-create', outerRequestId, minted.requestId, minted.nonce, minted.shareId, account.authSessionId, account.authSessionGeneration,
+    minted.ownerDid, minted.sessionDid, minted.origin, siwe,
+  ])).digest('hex');
 }
 
 /** All signed bytes are built here from the server's minted id, never echoed by the app. */
@@ -55,11 +64,8 @@ export class ShareApprovalRequests {
       nonce: intent.approvalNonce,
       issuedAt: new Date(this.now()), expiryMs: expiresAt - this.now(),
     });
-    const intentDigest = createHash('sha256').update(JSON.stringify([
-      'share-create', window.requestId, minted.requestId, minted.nonce, minted.shareId, account.authSessionId, account.authSessionGeneration,
-      binding.ownerDid, binding.sessionDid, intent.origin, prepared.siwe,
-    ])).digest('hex');
-    this.requests.set(minted.requestId, { account: structuredClone(account), intent: Object.freeze(intent), minted, prepared, originalSiwe: prepared.siwe, intentDigest });
+    const intentDigest = shareIntentDigest(window.requestId, minted, account, prepared.siwe);
+    this.requests.set(minted.requestId, { account: structuredClone(account), intent: Object.freeze(intent), minted, prepared, originalSiwe: prepared.siwe, intentDigest, outerRequestId: window.requestId });
     return this.preview(minted.requestId, account);
   }
 
@@ -114,6 +120,9 @@ export class ShareApprovalRequests {
       throw new ShareApprovalError('share_approval_scope_mismatch');
     }
     const rows = encryptionRows.flatMap(row => row.actions.map(action => ({ resource: row.path, action })));
+    if (shareIntentDigest(record.outerRequestId, record.minted, record.account, record.prepared.siwe) !== record.intentDigest) {
+      throw new ShareApprovalError('share_approval_binding_mismatch');
+    }
     // Both synchronous consumptions precede the first signing await.
     try {
       consumeContinuation();

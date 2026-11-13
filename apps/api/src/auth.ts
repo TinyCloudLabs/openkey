@@ -601,7 +601,12 @@ export const auth = betterAuth({
       delete: { after: async (session) => { shareWindowAuthHooks.deleted(session); } },
       update: {
         before: capSessionRefresh,
-        after: async (session) => { shareWindowAuthHooks.updated(session); },
+        after: async (session) => {
+          // Better Auth's projection omits our security markers; use the authoritative row.
+          const current = await prisma.session.findUnique({ where: { id: session.id } });
+          if (current) shareWindowAuthHooks.updated(current);
+          else shareWindowAuthHooks.deleted(session);
+        },
       },
     },
     user: {
