@@ -1,3 +1,5 @@
+import { randomUUID, createHash } from 'node:crypto';
+import { validateReviewEvidence, type ReviewEvidence } from './account-deletion-review-evidence';
 import { reviewJcs, validateReviewSnapshot } from './account-deletion-decision';
 import type { Prisma, PrismaClient } from '@openkey/db';
 import type { DeletionHostSnapshot } from './account-deletion-request';
@@ -6,13 +8,13 @@ import type { HostRow, ReviewDecisionProof } from './account-deletion-decision';
 import { REVIEW_ALERTS, REVIEW_DEADLINE_MS, REVIEW_RECHECK_MS, reviewResolution } from './account-deletion-review-policy';
 
 export interface DeletionReviewRuntime {
-  check(jobId: string, hosts: DeletionHostSnapshot): Promise<{ fresh: DeletionPreflight; snapshot: HostRow[] }>;
+  check(jobId: string, hosts: DeletionHostSnapshot): Promise<ReviewEvidence>;
   // The deadline implementation MUST use signDeadlineReviewDecisions, whose
   // request time and clock come only from the verified ledger/TEE provider.
   authorize(jobId: string, mode: 'operator' | 'deadline', snapshot: HostRow[], decision?: DeletionReviewDecision): Promise<ReviewDecisionProof[]>;
   // Resolves true only after ALL inventoried resources have durable completed
   // purges. Partial/accepted purges remain false, retaining owner keys.
-  purge(jobId: string, fresh: DeletionPreflight, proofs: ReviewDecisionProof[] | undefined): Promise<boolean>;
+  purge(jobId: string, fresh: DeletionPreflight, proofs: ReviewDecisionProof[] | undefined, resolution: { eventKey: string; snapshotHash: string }): Promise<boolean>;
   notify(jobId: string, eventKey: string): Promise<void>;
 }
 
@@ -59,8 +61,14 @@ export async function reevaluateDeletionReview(prisma: PrismaClient, job: { id: 
   }
   if (!runtime || !snapshot || snapshot.uncertain) return;
   const check = await runtime.check(job.id, snapshot);
-  const expected = snapshot.configured.map(host => host.hostId).sort();
-  if (JSON.stringify(check.snapshot.map(row => row[0]).sort()) !== JSON.stringify(expected)) return;
+  const current = await prisma.accountDeletionJob.findUniqueOrThrow({ where: { id: job.id, leaseToken }, select: { progress: true } });
+  const currentProgress = current.progress as { reviewTargets?: Record<string, string[]> };
+  try { validateReviewEvidence(snapshot, currentProgress.reviewTargets, check); }
+  catch {
+    await mutate(async tx => { await tx.accountDeletionJob.update({ where: { id: job.id }, data: { progress: JSON.parse(JSON.stringify({ ...currentProgress, reviewPendingHosts: snapshot.configured.map(host => host.url) })) } }); });
+    return;
+  }
+  await mutate(async tx => { await tx.accountDeletionJob.update({ where: { id: job.id }, data: { progress: JSON.parse(JSON.stringify({ ...currentProgress, reviewTargets: check.fresh.resources, reviewPendingHosts: [] })) } }); });
   const latest = await prisma.accountDeletionReview.findFirst({ where: { jobId: job.id, kind: 'decision' }, orderBy: { createdAt: 'desc' } });
   const decision: DeletionReviewDecision | undefined = latest?.actor && latest.decidedAt && latest.reason && ['proceed', 'wait_for_re-encryption'].includes(latest.disposition ?? '') ? { actor: latest.actor, at: latest.decidedAt, expiresAt: latest.expiresAt ?? undefined, reason: latest.reason, disposition: latest.disposition as DeletionReviewDecision['disposition'] } : undefined;
   const reviewedSnapshot = (latest?.summary as { snapshot?: HostRow[] } | undefined)?.snapshot;
@@ -79,7 +87,7 @@ export async function reevaluateDeletionReview(prisma: PrismaClient, job: { id: 
   let proofs: ReviewDecisionProof[] | undefined;
   if (mode === 'zero') {
     if (check.snapshot.some(row => row[2] !== 0 || row[3].length !== 0 || row[4].some(target => target[1] !== 0))) return;
-    await event('resolved-zero', 'resolved: zero dependents', { snapshot: check.snapshot });
+
   } else {
     const proofScope = mode === 'operator' ? `operator-${latest!.id}` : 'deadline';
     const eventKey = `${job.id}:${proofScope}-proofs`;
@@ -101,8 +109,14 @@ export async function reevaluateDeletionReview(prisma: PrismaClient, job: { id: 
       return;
     }
   }
+  const resolution = { eventKey: `${job.id}:resolution:${randomUUID()}`, snapshotHash: createHash('sha256').update(reviewJcs([1, check.snapshot])).digest('hex') };
+  await mutate(async tx => {
+    await tx.accountDeletionReview.create({ data: { jobId: job.id, eventKey: resolution.eventKey, kind: mode === 'zero' ? 'resolved: zero dependents' : 'purge-resolution', summary: { snapshot: JSON.parse(reviewJcs(check.snapshot)), snapshotHash: resolution.snapshotHash, mode } } });
+    const latestProgress = (await tx.accountDeletionJob.findUniqueOrThrow({ where: { id: job.id }, select: { progress: true } })).progress as object;
+    await tx.accountDeletionJob.update({ where: { id: job.id }, data: { progress: JSON.parse(JSON.stringify({ ...latestProgress, activeReviewResolution: resolution })) } });
+  });
   try {
-    if (!await runtime.purge(job.id, check.fresh, proofs)) return;
+    if (!await runtime.purge(job.id, check.fresh, proofs, resolution)) return;
   } catch {
     if (mode === 'deadline') await alert('review-authorization-escalation');
     return;

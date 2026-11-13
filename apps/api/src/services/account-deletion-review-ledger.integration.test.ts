@@ -23,7 +23,7 @@ test('dependency review atomically locks access, retains keys and survives resta
     await db.session.create({ data: { id: 'review-session', userId: 'review-owner', token: 'synthetic', expiresAt: new Date(Date.now() + 60_000) } });
     await db.accountDeletionJob.create({ data: { id: 'review-job', userId: 'review-owner', state: 'preflight_pending', progress: {} } });
     await db.$transaction(tx => recordDeletionPreflight(tx, 'review-job', 'review-owner', {
-      state: 'pending_review', resources: { host: ['private-network-name'] },
+      state: 'pending_review', resources: { host: ['private-network-name'] }, inventoryComplete: { host: true },
       dependencies: { host: { count: 1, hashes: ['a'.repeat(64)] } }, unavailableHosts: [],
     }));
     expect(await db.session.count()).toBe(0);

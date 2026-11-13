@@ -29,7 +29,7 @@ test('review sweep resumes fresh zero and wait, alerts before deadline, signs on
       await db.user.create({ data: { id: name, email: `${name}@example.test` } });
       await db.ethereumKey.create({ data: { id: name, userId: name, address: `synthetic-${name}`, publicKey: 'synthetic', sealedBlob: 'synthetic' } });
       await db.session.create({ data: { id: name, userId: name, token: `synthetic-${name}`, expiresAt: new Date(Date.now() + 60_000) } });
-      const job = await db.accountDeletionJob.create({ data: { userId: name, state: name === 'wait' ? 'wait_for_re_encryption' : 'pending_review', progress: { hostSnapshot: hosts }, requestedAt: new Date(Date.now() - days * 86_400_000) } });
+      const job = await db.accountDeletionJob.create({ data: { userId: name, state: name === 'wait' ? 'wait_for_re_encryption' : 'pending_review', progress: { hostSnapshot: hosts, reviewTargets: { [origin]: [resource] } }, requestedAt: new Date(Date.now() - days * 86_400_000) } });
       jobIds[name] = job.id;
     }
     let authorizations = 0;
@@ -39,7 +39,7 @@ test('review sweep resumes fresh zero and wait, alerts before deadline, signs on
     const counts = (id: string) => id === jobIds.zero || id === jobIds.wait ? 0 : 1;
     const observations = (id: string): ResourceDependencyObservation[] => [{ hostId: 'node-test', ownerHmac: 'a'.repeat(64), dependentResourceCount: counts(id), resourceHmacs: counts(id) ? ['b'.repeat(64)] : [], targets: [{ resourceId: resource, targetResourceHmac: 'b'.repeat(64), dependentCount: counts(id), dependencyFingerprint: 'c'.repeat(64), fingerprintKeyId: 'fp-1' }] }];
     const runtime: DeletionReviewRuntime = {
-      check: async id => ({ fresh: { state: counts(id) ? 'pending_review' : 'ready', resources: { [origin]: [resource] }, dependencies: { [origin]: { count: counts(id), hashes: counts(id) ? ['b'.repeat(64)] : [] } }, unavailableHosts: [] }, snapshot: [['node-test', 'a'.repeat(64), counts(id), counts(id) ? ['b'.repeat(64)] : [], [['b'.repeat(64), counts(id), 'c'.repeat(64), 'fp-1']]]] }),
+      check: async id => ({ fresh: { state: counts(id) ? 'pending_review' : 'ready', resources: { [origin]: [resource] }, dependencies: { [origin]: { count: counts(id), hashes: counts(id) ? ['b'.repeat(64)] : [] } }, unavailableHosts: [], inventoryComplete: { [origin]: true } }, observations: observations(id), snapshot: [['node-test', 'a'.repeat(64), counts(id), counts(id) ? ['b'.repeat(64)] : [], [['b'.repeat(64), counts(id), 'c'.repeat(64), 'fp-1']]]] }),
       authorize: async (id, mode, _snapshot, decision) => {
         authorizations += 1;
         if (mode === 'operator') {
@@ -54,7 +54,9 @@ test('review sweep resumes fresh zero and wait, alerts before deadline, signs on
           claimDeadline: (jobId, requestId, nonce) => claimDeadlineSigningRecord(db, jobId, requestId, nonce),
         });
       },
-      purge: async (id, _fresh, proofs) => {
+      purge: async (id, _fresh, proofs, resolution) => {
+        const audit = await db.accountDeletionReview.findUniqueOrThrow({ where: { eventKey: resolution.eventKey } });
+        expect((audit.summary as { snapshotHash: string }).snapshotHash).toBe(resolution.snapshotHash);
         purged.push(id);
         if (id === jobIds.deadline) {
           expect(proofs?.[0]?.payload[9]).toBe('deadline');

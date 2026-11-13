@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 import { reviewResolution, REVIEW_DEADLINE_MS } from './account-deletion-review-policy';
 import type { DeletionPreflight } from './account-deletion-preflight';
 const requested = new Date('2026-11-01T00:00:00Z');
-const held: DeletionPreflight = { state: 'pending_review', resources: {}, dependencies: { host: { count: 1, hashes: ['a'.repeat(64)] } }, unavailableHosts: [] };
+const held: DeletionPreflight = { state: 'pending_review', resources: { host: ['resource'] }, inventoryComplete: { host: true }, dependencies: { host: { count: 1, hashes: ['a'.repeat(64)] } }, unavailableHosts: [] };
 
 test('wait never resets the original seven-day deadline', () => {
   const wait = { actor: 'Naomi', at: new Date(requested.getTime() + 6 * 86_400_000), reason: 'Waiting', disposition: 'wait_for_re-encryption' as const };

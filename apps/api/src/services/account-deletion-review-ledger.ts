@@ -8,6 +8,11 @@ export async function recordDeletionPreflight(tx: Prisma.TransactionClient, jobI
   await tx.accountDeletionReview.create({ data: {
     jobId, kind: 'preflight', summary: { state: result.state, dependencies: result.dependencies, unavailableHostCount: result.unavailableHosts.length },
   } });
+  const job = await tx.accountDeletionJob.findUniqueOrThrow({ where: { id: jobId }, select: { progress: true } });
+  const progress = job.progress as { reviewTargets?: Record<string, string[]> };
+  const reviewTargets = { ...progress.reviewTargets };
+  for (const [host, resources] of Object.entries(result.resources)) if (result.inventoryComplete[host]) reviewTargets[host] = [...new Set([...(reviewTargets[host] ?? []), ...resources])];
+  await tx.accountDeletionJob.update({ where: { id: jobId }, data: { progress: JSON.parse(JSON.stringify({ ...progress, reviewTargets })) } });
   if (result.state !== 'pending_review') return;
   await tx.accountDeletionJob.update({ where: { id: jobId }, data: { state: 'pending_review' } });
   await tx.user.update({ where: { id: userId }, data: { lockedAt: new Date() } });

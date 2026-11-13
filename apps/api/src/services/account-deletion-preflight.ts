@@ -9,13 +9,14 @@ export interface DeletionPreflightAdapter {
 export type DeletionPreflight = {
   state: 'ready' | 'pending' | 'pending_review';
   resources: Record<string, string[]>;
+  inventoryComplete: Record<string, boolean>;
   dependencies: Record<string, { count: number; hashes: string[] }>;
   unavailableHosts: string[];
 };
 
 /** Run before irreversible commit, and again before network-key destruction. */
 export async function assessDeletionPreflight(snapshot: DeletionHostSnapshot, adapter: DeletionPreflightAdapter): Promise<DeletionPreflight> {
-  const result: DeletionPreflight = { state: 'pending', resources: {}, dependencies: {}, unavailableHosts: [] };
+  const result: DeletionPreflight = { state: 'pending', resources: {}, inventoryComplete: {}, dependencies: {}, unavailableHosts: [] };
   const hosts = snapshot.configured.map(host => host.url);
   result.unavailableHosts = snapshot.recorded.filter(host => !hosts.includes(host));
   if (snapshot.uncertain || !hosts.length || result.unavailableHosts.length) return result;
@@ -24,6 +25,7 @@ export async function assessDeletionPreflight(snapshot: DeletionHostSnapshot, ad
       const resources = await adapter.inventory(host);
       if (!Array.isArray(resources) || resources.some(resource => typeof resource !== 'string' || !resource)) throw new Error('Invalid resource inventory');
       result.resources[host] = [...new Set(resources)];
+      result.inventoryComplete[host] = true;
       const summary = await adapter.dependencies(host);
       if (!Number.isSafeInteger(summary.count) || summary.count < 0 || !Array.isArray(summary.hashes) || summary.hashes.some(hash => typeof hash !== 'string' || !/^[0-9a-f]{64}$/i.test(hash))) throw new Error('Invalid dependency summary');
       result.dependencies[host] = summary;
@@ -47,6 +49,9 @@ export type DeletionReviewDecision = {
 
 export function mayProceedAfterReview(decision: DeletionReviewDecision | undefined, fresh: DeletionPreflight, now = new Date()): boolean {
   if (fresh.unavailableHosts.length || fresh.state === 'pending') return false;
+  if (!fresh.resources || !fresh.dependencies || !fresh.inventoryComplete) return false;
+  const hosts = Object.keys(fresh.resources);
+  if (!hosts.length || Object.keys(fresh.dependencies).length !== hosts.length || Object.keys(fresh.inventoryComplete).length !== hosts.length || hosts.some(host => fresh.inventoryComplete[host] !== true || !fresh.dependencies[host] || !Array.isArray(fresh.resources[host]))) return false;
   if (fresh.state === 'ready') return Object.values(fresh.dependencies).every(summary => summary.count === 0);
   if (!decision || decision.disposition !== 'proceed' || decision.actor === 'deadline' || !decision.actor.trim() || !decision.reason.trim() || !Number.isFinite(decision.at.getTime()) || decision.at > now) return false;
   const expiry = decision.expiresAt ?? new Date(decision.at.getTime() + 172800_000);
