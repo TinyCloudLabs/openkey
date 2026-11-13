@@ -73,6 +73,12 @@ export class ShareApprovalRequests {
       expiresAt: record.minted.expiresAt, prepared: structuredClone(record.prepared) };
   }
 
+  cancel(requestId: string, account: ShareApprovalAccount): void {
+    const record = this.current(requestId, account);
+    this.approvals.cancel(requestId, record.minted);
+    this.requests.delete(requestId);
+  }
+
   /** Call only after the same purpose/digest-bound continuation has fresh verified UV. */
   async sign(requestId: string, account: ShareApprovalAccount, intentDigest: string,
     consumeContinuation: () => void, sign: (message: string) => Promise<string>) {
@@ -88,6 +94,8 @@ export class ShareApprovalRequests {
     if (getAddress(verifyMessage(record.prepared.siwe, signature)) !== getAddress(account.address)) {
       throw new ShareApprovalError('share_signature_mismatch');
     }
+    shareSessionBinding(record.intent.session, account, record.intent.origin, this.now());
+    if (Date.parse(record.intent.expiresAt) <= this.now()) throw new ShareApprovalError('invalid_share_expiry');
     return { purpose: 'share-create' as const, requestId, shareId: record.minted.shareId,
       ownerDid: record.minted.ownerDid, sessionDid: record.minted.sessionDid,
       origin: record.minted.origin, prepared: structuredClone(record.prepared), signature };

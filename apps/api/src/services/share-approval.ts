@@ -65,6 +65,11 @@ export class ShareApprovals {
     return record;
   }
 
+  cancel(requestId: string, binding: ShareApprovalBinding): void {
+    this.read(requestId, binding);
+    this.contexts.delete(requestId);
+  }
+
   /** Atomically spend the context before any asynchronous owner signing. */
   consume(requestId: string, binding: ShareApprovalBinding, nonce: string,
     grants: readonly { resource: string; action: string }[]): Readonly<MintedShareApproval> {

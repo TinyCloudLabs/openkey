@@ -52,3 +52,17 @@ test('changed auth session or intent and missing fresh approval cannot sign', as
   await expect(requests.sign(preview.requestId, f.account, preview.intentDigest, () => { throw new Error('fresh UV missing'); }, message => f.wallet.signMessage(message))).rejects.toThrow();
   expect(requests.preview(preview.requestId, f.account).intentDigest).toBe(preview.intentDigest);
 });
+
+
+test('grant expiry is clamped by the signed session and rechecked after signing', async () => {
+  const f = await fixture();
+  let now = f.now;
+  const requests = new ShareApprovalRequests(() => now);
+  expect(() => requests.prepare({ ...f.intent, expiresAt: new Date(now + 7200_000).toISOString() }, f.account)).toThrow();
+  const preview = requests.prepare(f.intent, f.account);
+  await expect(requests.sign(preview.requestId, f.account, preview.intentDigest, () => {}, async message => {
+    const signature = await f.wallet.signMessage(message);
+    now += 3600_000;
+    return signature;
+  })).rejects.toThrow();
+});
