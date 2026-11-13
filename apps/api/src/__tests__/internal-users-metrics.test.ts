@@ -501,6 +501,27 @@ test('per-app names come from outsiders: truncated and cleaned, small apps are n
   expect(named.filter((a: { name: string }) => a.name === 'other apps')).toHaveLength(0);
 });
 
+test('no app name can pose as the "other apps" row: case, spacing and zero-width tricks are normalised first', async () => {
+  const users: Account[] = [];
+  const tokens: Token[] = [];
+  const clients: Array<{ clientId: string; name: string }> = [];
+  const names = ['Other apps', 'other  apps', ' OTHER APPS ', 'other\u200b apps', 'other\tapps'];
+  names.forEach((name, n) => {
+    clients.push({ clientId: `imp${n}`, name });
+    for (let i = 0; i < 5; i += 1) {
+      const id = `imp${n}-u${i}`;
+      users.push({ id, email: `${id}@gmail.com`, lastSession: session });
+      tokens.push({ userId: id, clientId: `imp${n}`, at: daysAgo(1) });
+    }
+  });
+  const result = await collectUserMetrics(fakeDatabase(users, { tokens, clients }).database, {}, now);
+  const listed = result.apps.map((a: { name: string }) => a.name);
+  expect(listed).not.toContain('other apps');
+  expect(new Set(listed)).toEqual(new Set(['Other apps (app)', 'OTHER APPS (app)', 'other apps (app)']));
+  // 'other  apps', 'other<zero-width> apps' and 'other<tab>apps' all clean to the same name and merge.
+  expect(result.apps.find((a: { name: string }) => a.name === 'other apps (app)')).toMatchObject({ real30d: 15 });
+});
+
 test('"other apps" counts a user once even when they use several small apps', async () => {
   const people = crowd(3, 'gmail.com', 'z');
   const tokens: Token[] = people.flatMap((p) => [
@@ -510,6 +531,33 @@ test('"other apps" counts a user once even when they use several small apps', as
   const clients = [{ clientId: 'c1', name: 'One' }, { clientId: 'c2', name: 'Two' }];
   const result = await collectUserMetrics(fakeDatabase(people, { tokens, clients }).database, {}, now);
   expect(result.apps).toEqual([{ name: 'other apps', real7d: 3, real30d: 3 }]);
+});
+
+test('a single-label entry (com, xyz) is refused by every path and can never zero REAL', async () => {
+  const people: Account[] = [...crowd(6, 'acme-example.com', 'a'), ...crowd(6, 'beta-example.xyz', 'b'), ...crowd(6, 'gamma.io', 'c')];
+  const bare = ['com', 'xyz', 'io', 'uk', 'co'];
+  // collectUserMetrics itself, even if a caller skipped the POST validation.
+  const direct = await collectUserMetrics(fakeDatabase(people).database, {}, now, bare);
+  expect(direct.buckets.disposable_mail_domain).toBe(0);
+  expect(direct.real).toBe(18);
+  const viaEnv = await collectUserMetrics(fakeDatabase(people).database, { SCOREBOARD_DISPOSABLE_DOMAINS: `${bare.join(',')},*.com,@xyz` }, now);
+  expect(viaEnv.buckets.disposable_mail_domain).toBe(0);
+  expect(viaEnv.real).toBe(18);
+  // Through the endpoint the whole body is refused (400): nothing is applied.
+  const router = createInternalMetricsRouter(() => fakeDatabase(people).database);
+  const saved = process.env.INTERNAL_METRICS_TOKEN;
+  try {
+    process.env.INTERNAL_METRICS_TOKEN = 'test-metrics-token';
+    const response = await router.request('/', {
+      method: 'POST',
+      body: JSON.stringify({ disposableDomains: ['com'] }),
+      headers: { authorization: 'Bearer test-metrics-token', 'content-type': 'application/json' },
+    });
+    expect(response.status).toBe(400);
+  } finally {
+    if (saved === undefined) delete process.env.INTERNAL_METRICS_TOKEN;
+    else process.env.INTERNAL_METRICS_TOKEN = saved;
+  }
 });
 
 test('empty database yields zeros', async () => {
@@ -571,6 +619,9 @@ test('parseDisposableDomains: lowercase hostnames, at most 5,000, anything else 
     { disposableDomains: ['a.io', 'Mail.TM'] },
     { disposableDomains: [''] },
     { disposableDomains: ['localhost'] }, // not a dotted hostname
+    { disposableDomains: ['com'] }, // a bare TLD would match every account
+    { disposableDomains: ['xyz'] },
+    { disposableDomains: ['io', 'a.io'] },
     { disposableDomains: ['a b.io'] },
     { disposableDomains: ['a_b.io'] },
     { disposableDomains: ['-a.io'] },

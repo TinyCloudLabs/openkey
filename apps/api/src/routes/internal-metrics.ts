@@ -243,7 +243,8 @@ export async function collectUserMetrics(
   // entry only takes effect once it matches enough accounts (see extraDisposable below).
   const requestedDisposable = new Set(
     [
-      ...requestDisposableDomains,
+      // Hostnames only (at least one dot): a bare label such as "com" would match every account.
+      ...requestDisposableDomains.filter((d) => DOMAIN_PATTERN.test(d)),
       ...list(env.SCOREBOARD_DISPOSABLE_DOMAINS)
         .map((d) => d.toLowerCase().replace(/^@/, '').replace(/^\*\./, ''))
         .filter((d) => DOMAIN_PATTERN.test(d)),
@@ -341,8 +342,16 @@ export async function collectUserMetrics(
   // and truncated; only apps with at least 5 real users are listed by name (top 50 by 30-day
   // users); every other app is summed, as distinct users, into one "other apps" row.
   const cleanName = (raw: string) => {
-    const name = raw.replace(/\s+/g, ' ').trim().slice(0, APP_NAME_MAX_LENGTH).trim() || 'unnamed app';
-    return name === OTHER_APPS_NAME ? `${name} (app)` : name;
+    // Drop control and zero-width characters (tab, newline and friends stay: they are whitespace),
+    // collapse whitespace, cut to 60 characters.
+    const name = raw
+      .replace(/[\u0000-\u0008\u000e-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, APP_NAME_MAX_LENGTH)
+      .trim() || 'unnamed app';
+    // An app cannot pose as the summed row, whatever its case.
+    return name.toLowerCase() === OTHER_APPS_NAME ? `${name} (app)` : name;
   };
   const nameOf = new Map(clients.map((client) => [client.clientId, cleanName(client.name)]));
   const perApp = new Map<string, { d7: Set<string>; d30: Set<string> }>();
