@@ -13,10 +13,27 @@ const now = new Date('2026-11-13T12:00:00.000Z');
 const hoursAgo = (hours: number) => new Date(now.getTime() - hours * 3_600_000);
 const daysAgo = (days: number) => hoursAgo(days * 24);
 
-type Account = { id: string; email: string; createdAt?: Date; lastSession?: Date; key?: boolean };
+type Account = {
+  id: string;
+  email: string;
+  createdAt?: Date;
+  lastSession?: Date;
+  key?: boolean;
+  /** Wallet addresses of this account's ethereum_keys rows (any casing). */
+  addresses?: string[];
+};
+type Token = { userId: string; clientId: string; at: Date };
 
-function fakeDatabase(accounts: Account[], botUserIds: string[] = []) {
-  const rawCalls: unknown[][] = [];
+const WALLET_A = '0xAAaaAAaaAAaaAAaaAAaaAAaaAAaaAAaaAAaaAAaa';
+const WALLET_B = '0xbbBBbbBBbbBBbbBBbbBBbbBBbbBBbbBBbbBBbbBB';
+
+function fakeDatabase(
+  accounts: Account[],
+  options: { botUserIds?: string[]; tokens?: Token[]; clients?: Array<{ clientId: string; name: string }> } = {},
+) {
+  const walletQueries: unknown[][] = [];
+  const botQueries: unknown[][] = [];
+  const tokens = options.tokens ?? [];
   const database = {
     user: {
       count: async () => accounts.length,
@@ -29,16 +46,34 @@ function fakeDatabase(accounts: Account[], botUserIds: string[] = []) {
     },
     ethereumKey: {
       count: async () => 0,
-      findMany: async () => accounts.filter((a) => a.key).map((a) => ({ userId: a.id })),
+      findMany: async () => accounts.filter((a) => a.key || a.addresses?.length).map((a) => ({ userId: a.id })),
     },
+    oauthAccessToken: {
+      // Distinct (clientId, userId) pairs with a token created since `where.createdAt.gte`.
+      findMany: async ({ where }: { where: { createdAt: { gte: Date } } }) => {
+        const seen = new Map<string, { clientId: string; userId: string }>();
+        for (const t of tokens) {
+          if (t.at >= where.createdAt.gte) seen.set(`${t.clientId}|${t.userId}`, { clientId: t.clientId, userId: t.userId });
+        }
+        return [...seen.values()];
+      },
+    },
+    oauthClient: { findMany: async () => options.clients ?? [] },
     tinyCloudManageKeySigningDecision: { count: async () => 0, groupBy: async () => [] },
     tinyCloudManageKeyAppPreference: { count: async () => 0 },
-    async $queryRaw(_query: TemplateStringsArray, ...values: unknown[]) {
-      rawCalls.push(values);
-      return botUserIds.map((userId) => ({ userId }));
+    async $queryRaw(query: TemplateStringsArray, ...values: unknown[]) {
+      if (query.join('').includes('ethereum_keys')) {
+        walletQueries.push(values);
+        const wanted = new Set(values[0] as string[]);
+        return accounts
+          .filter((a) => a.addresses?.some((address) => wanted.has(address.toLowerCase())))
+          .map((a) => ({ userId: a.id }));
+      }
+      botQueries.push(values);
+      return (options.botUserIds ?? []).map((userId) => ({ userId }));
     },
   };
-  return { database, rawCalls };
+  return { database, walletQueries, botQueries };
 }
 
 const session = daysAgo(2);
@@ -47,6 +82,8 @@ const session = daysAgo(2);
 // domain addresses start with qa/agent, the plus address contains "test"), so a
 // wrong order would move them.
 const accounts: Account[] = [
+  { id: 'u-wallet', email: 'someone@gmail.com', lastSession: session, addresses: [WALLET_A] },
+  { id: 'u-wallet-2nd-key', email: 'qa@tinycloud.xyz', lastSession: session, addresses: ['0x1111111111111111111111111111111111111111', WALLET_B] },
   { id: 'u-team', email: 'qa@tinycloud.xyz', lastSession: session },
   { id: 'u-team-case', email: 'Someone@TinyCloudLabs.com', lastSession: session },
   { id: 'u-agent', email: 'agent@gmail.com', lastSession: session },
@@ -63,10 +100,13 @@ const accounts: Account[] = [
   { id: 'u-real-key', email: 'bob@proton.me', key: true },
 ];
 
+const env = { SCOREBOARD_EXCLUDE_USER_IDS: 'u-explicit,u-never-listed', SCOREBOARD_EXCLUDE_ADDRESSES: `${WALLET_A.toLowerCase()},${WALLET_B}` };
+
 test('each account lands in exactly one bucket, in precedence order', async () => {
-  const { database } = fakeDatabase(accounts, ['u-bot']);
-  const result = await collectUserMetrics(database, { SCOREBOARD_EXCLUDE_USER_IDS: 'u-explicit,u-never-listed' }, now);
+  const { database } = fakeDatabase(accounts, { botUserIds: ['u-bot'] });
+  const result = await collectUserMetrics(database, env, now);
   expect(result.buckets).toEqual({
+    team_by_wallet: 2, // second one also has a team-domain email, wallet wins
     internal_team_domain: 2,
     internal_agent_or_qa: 2,
     test_or_throwaway_domain: 2,
@@ -81,12 +121,14 @@ test('each account lands in exactly one bucket, in precedence order', async () =
   const bucketed = Object.values(result.buckets as Record<string, number>).reduce((sum, n) => sum + n, 0);
   expect(bucketed + result.real).toBe(result.total);
   expect(Object.keys(result.buckets)).toEqual([...USER_BUCKETS]);
+  expect(USER_BUCKETS[0]).toBe('team_by_wallet');
 });
 
 test('classifyAccount: earlier rules win over later ones', () => {
-  const facts = { hasSession: true, hasKey: false, botLike: true };
-  const classify = (email: string, excluded: string[] = []) =>
-    classifyAccount({ id: 'x', email, ...facts }, new Set(excluded));
+  const facts = { teamByWallet: false, hasSession: true, hasKey: false, botLike: true };
+  const classify = (email: string, excluded: string[] = [], over: Partial<typeof facts> = {}) =>
+    classifyAccount({ id: 'x', email, ...facts, ...over }, new Set(excluded));
+  expect(classify('qa+1@openkey.so', ['x'], { teamByWallet: true })).toBe('team_by_wallet');
   expect(classify('qa+1@openkey.so')).toBe('internal_team_domain');
   expect(classify('test+1@gmail.com')).toBe('internal_agent_or_qa');
   expect(classify('person+1@example.org')).toBe('test_or_throwaway_domain');
@@ -94,28 +136,52 @@ test('classifyAccount: earlier rules win over later ones', () => {
   expect(classify('demo.person@gmail.com')).toBe('test_like_name');
   expect(classify('person@gmail.com', ['x'])).toBe('explicit_exclusions');
   expect(classify('person@gmail.com')).toBe('bot_like');
-  expect(classifyAccount({ id: 'x', email: 'person@gmail.com', hasSession: false, hasKey: false, botLike: true }, new Set(['x'])))
-    .toBe('never_completed_signup');
-  expect(classifyAccount({ id: 'x', email: 'person@gmail.com', hasSession: false, hasKey: true, botLike: false }, new Set()))
-    .toBe('real');
+  expect(classify('person@gmail.com', ['x'], { hasSession: false, hasKey: false })).toBe('never_completed_signup');
+  expect(classify('person@gmail.com', [], { hasSession: false, hasKey: true, botLike: false })).toBe('real');
   // Agent-name rule needs a boundary: "alexander" is not "alex".
   expect(classify('alexander@gmail.com')).toBe('bot_like');
 });
 
-test('env exclusions: ids are trimmed, unknown ids are harmless, empty or unset env excludes nobody', async () => {
+test('wallet exclusion: lowercase compare, every key of the person drops out, invalid entries are ignored', async () => {
   const people: Account[] = [
-    { id: 'a', email: 'alice@gmail.com', lastSession: session },
+    { id: 'multi', email: 'p1@gmail.com', lastSession: session, addresses: ['0x1111111111111111111111111111111111111111', WALLET_A] },
+    { id: 'single', email: 'p2@gmail.com', lastSession: session, addresses: [WALLET_B] },
+    { id: 'other', email: 'p3@gmail.com', lastSession: session, addresses: ['0x2222222222222222222222222222222222222222'] },
+  ];
+  const { database, walletQueries } = fakeDatabase(people);
+  const result = await collectUserMetrics(database, {
+    // mixed case, whitespace, duplicate, a too-short value and a non-address string
+    SCOREBOARD_EXCLUDE_ADDRESSES: ` ${WALLET_A.toUpperCase().replace('0X', '0x')} , ${WALLET_A.toLowerCase()},0x1234,not-an-address,,${WALLET_B}`,
+  }, now);
+  expect(walletQueries).toHaveLength(1);
+  expect(walletQueries[0]![0]).toEqual([WALLET_A.toLowerCase(), WALLET_B.toLowerCase()]);
+  expect(result.buckets.team_by_wallet).toBe(2);
+  expect(result.real).toBe(1);
+});
+
+test('env lists: ids are trimmed, unknown ids are harmless, empty or unset env excludes nobody and skips the wallet query', async () => {
+  const people: Account[] = [
+    { id: 'a', email: 'alice@gmail.com', lastSession: session, addresses: [WALLET_A] },
     { id: 'b', email: 'bob@gmail.com', lastSession: session },
     { id: 'c', email: 'carol@gmail.com', lastSession: session },
   ];
-  const { database } = fakeDatabase(people);
-  const listed = await collectUserMetrics(database, { SCOREBOARD_EXCLUDE_USER_IDS: ' a , ,b,,no-such-user ' }, now);
-  expect(listed.buckets.explicit_exclusions).toBe(2);
-  expect(listed.real).toBe(1);
-  for (const env of [{ SCOREBOARD_EXCLUDE_USER_IDS: '' }, { SCOREBOARD_EXCLUDE_USER_IDS: ' , ' }, {}]) {
-    const result = await collectUserMetrics(database, env, now);
-    expect(result.buckets.explicit_exclusions).toBe(0);
-    expect(result.real).toBe(3);
+  const listed = fakeDatabase(people);
+  const result = await collectUserMetrics(listed.database, { SCOREBOARD_EXCLUDE_USER_IDS: ' b , ,c,,no-such-user ' }, now);
+  expect(result.buckets.explicit_exclusions).toBe(2);
+  expect(result.buckets.team_by_wallet).toBe(0);
+  expect(result.real).toBe(1);
+  expect(listed.walletQueries).toHaveLength(0);
+  for (const e of [
+    { SCOREBOARD_EXCLUDE_USER_IDS: '', SCOREBOARD_EXCLUDE_ADDRESSES: '' },
+    { SCOREBOARD_EXCLUDE_USER_IDS: ' , ', SCOREBOARD_EXCLUDE_ADDRESSES: ' , ' },
+    {},
+  ]) {
+    const fresh = fakeDatabase(people);
+    const empty = await collectUserMetrics(fresh.database, e, now);
+    expect(empty.buckets.explicit_exclusions).toBe(0);
+    expect(empty.buckets.team_by_wallet).toBe(0);
+    expect(empty.real).toBe(3);
+    expect(fresh.walletQueries).toHaveLength(0);
   }
 });
 
@@ -124,10 +190,10 @@ test('bot_like: the query counts >=50 sessions in one day over the last 30 days,
     { id: 'bot', email: 'scraper@gmail.com', createdAt: daysAgo(1), lastSession: hoursAgo(1) },
     { id: 'human', email: 'alice@gmail.com', createdAt: daysAgo(1), lastSession: hoursAgo(1) },
   ];
-  const { database, rawCalls } = fakeDatabase(people, ['bot']);
+  const { database, botQueries } = fakeDatabase(people, { botUserIds: ['bot'] });
   const result = await collectUserMetrics(database, {}, now);
-  expect(rawCalls).toHaveLength(1);
-  const [since, threshold] = rawCalls[0] as [Date, number];
+  expect(botQueries).toHaveLength(1);
+  const [since, threshold] = botQueries[0] as [Date, number];
   expect(since.toISOString()).toBe(daysAgo(30).toISOString());
   expect(threshold).toBe(50);
   expect(result.buckets.bot_like).toBe(1);
@@ -151,6 +217,37 @@ test('REAL activity windows and new-7d use only real accounts', async () => {
   expect(result.realNew7d).toBe(2);
 });
 
+test('per-app real users: distinct real accounts per client display name, 7d and 30d, excluded accounts never counted', async () => {
+  const people: Account[] = [
+    { id: 'r1', email: 'a1@gmail.com', lastSession: session },
+    { id: 'r2', email: 'a2@gmail.com', lastSession: session },
+    { id: 'r3', email: 'a3@gmail.com', lastSession: session },
+    { id: 'team', email: 'x@tinycloud.xyz', lastSession: session },
+    { id: 'wallet', email: 'w@gmail.com', lastSession: session, addresses: [WALLET_A] },
+  ];
+  const tokens: Token[] = [
+    { userId: 'r1', clientId: 'c-chat', at: hoursAgo(2) },
+    { userId: 'r1', clientId: 'c-chat', at: daysAgo(3) }, // same account twice: one
+    { userId: 'r2', clientId: 'c-chat', at: daysAgo(20) }, // 30d only
+    { userId: 'r2', clientId: 'c-chat-staging', at: daysAgo(2) }, // same display name, other client: merged
+    { userId: 'r3', clientId: 'c-notes', at: daysAgo(40) }, // outside 30d
+    { userId: 'r1', clientId: 'c-gone', at: daysAgo(1) }, // client row deleted
+    { userId: 'team', clientId: 'c-chat', at: hoursAgo(1) },
+    { userId: 'wallet', clientId: 'c-notes', at: hoursAgo(1) },
+  ];
+  const clients = [
+    { clientId: 'c-chat', name: 'TinyChat' },
+    { clientId: 'c-chat-staging', name: 'TinyChat' },
+    { clientId: 'c-notes', name: 'Notes' },
+  ];
+  const { database } = fakeDatabase(people, { tokens, clients });
+  const result = await collectUserMetrics(database, { SCOREBOARD_EXCLUDE_ADDRESSES: WALLET_A }, now);
+  expect(result.apps).toEqual([
+    { name: 'TinyChat', real7d: 2, real30d: 2 },
+    { name: 'unknown client', real7d: 1, real30d: 1 },
+  ]);
+});
+
 test('empty database yields zeros', async () => {
   const { database } = fakeDatabase([]);
   const result = await collectUserMetrics(database, {}, now);
@@ -160,35 +257,44 @@ test('empty database yields zeros', async () => {
     real: 0,
     realActive: { d1: 0, d7: 0, d30: 0 },
     realNew7d: 0,
+    apps: [],
   });
 });
 
-test('the response carries counts only: no emails, ids or per-user data', async () => {
-  const { database } = fakeDatabase(accounts, ['u-bot']);
-  const result = await collectUserMetrics(database, { SCOREBOARD_EXCLUDE_USER_IDS: 'u-explicit' }, now);
+test('the response carries counts and app names only: no emails, ids, addresses or per-user data', async () => {
+  const tokens: Token[] = [{ userId: 'u-real-session', clientId: 'c1', at: hoursAgo(1) }];
+  const { database } = fakeDatabase(accounts, { botUserIds: ['u-bot'], tokens, clients: [{ clientId: 'c1', name: 'TinyChat' }] });
+  const result = await collectUserMetrics(database, env, now);
+  expect(result.apps).toEqual([{ name: 'TinyChat', real7d: 1, real30d: 1 }]);
   const serialized = JSON.stringify(result);
   for (const account of accounts) {
     expect(serialized).not.toContain(account.id);
     expect(serialized).not.toContain(account.email);
     expect(serialized).not.toContain(account.email.split('@')[1]!.toLowerCase());
+    for (const address of account.addresses ?? []) expect(serialized.toLowerCase()).not.toContain(address.toLowerCase());
   }
+  expect(serialized).not.toContain('c1');
   expect(serialized).not.toContain('@');
-  expect(serialized).not.toContain('u-explicit');
+  expect(serialized).not.toContain('0x');
+  expect(Object.keys(result)).toEqual(['total', 'buckets', 'real', 'realActive', 'realNew7d', 'apps']);
   const numbers: unknown[] = [];
-  const walk = (value: unknown) => {
-    if (value && typeof value === 'object') Object.values(value).forEach(walk);
-    else numbers.push(value);
+  const walk = (value: unknown, key?: string) => {
+    if (Array.isArray(value)) value.forEach((v) => walk(v));
+    else if (value && typeof value === 'object') Object.entries(value).forEach(([k, v]) => walk(v, k));
+    else if (key !== 'name') numbers.push(value);
   };
   walk(result);
   expect(numbers.every((value) => Number.isInteger(value))).toBe(true);
-  expect(Object.keys(result)).toEqual(['total', 'buckets', 'real', 'realActive', 'realNew7d']);
 });
 
 test('GET / keeps its token gate and adds the users block next to the existing counts', async () => {
-  const { database } = fakeDatabase(accounts, ['u-bot']);
+  const { database } = fakeDatabase(accounts, { botUserIds: ['u-bot'] });
   const router = createInternalMetricsRouter(() => database);
-  const savedToken = process.env.INTERNAL_METRICS_TOKEN;
-  const savedExclusions = process.env.SCOREBOARD_EXCLUDE_USER_IDS;
+  const saved = {
+    token: process.env.INTERNAL_METRICS_TOKEN,
+    ids: process.env.SCOREBOARD_EXCLUDE_USER_IDS,
+    addresses: process.env.SCOREBOARD_EXCLUDE_ADDRESSES,
+  };
   try {
     delete process.env.INTERNAL_METRICS_TOKEN;
     expect((await router.request('/')).status).toBe(503);
@@ -196,21 +302,28 @@ test('GET / keeps its token gate and adds the users block next to the existing c
     expect((await router.request('/')).status).toBe(401);
     expect((await router.request('/', { headers: { authorization: 'Bearer wrong' } })).status).toBe(401);
 
-    process.env.SCOREBOARD_EXCLUDE_USER_IDS = 'u-explicit';
+    process.env.SCOREBOARD_EXCLUDE_USER_IDS = env.SCOREBOARD_EXCLUDE_USER_IDS;
+    process.env.SCOREBOARD_EXCLUDE_ADDRESSES = env.SCOREBOARD_EXCLUDE_ADDRESSES;
     const response = await router.request('/', { headers: { authorization: 'Bearer test-metrics-token' } });
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.accounts).toEqual({ total: accounts.length, new24h: accounts.length });
     expect(body.keys).toBeDefined();
     expect(body.users.total).toBe(accounts.length);
+    expect(body.users.buckets.team_by_wallet).toBe(2);
     expect(body.users.buckets.explicit_exclusions).toBe(1);
     expect(body.users.real).toBe(2);
     expect(JSON.stringify(body)).not.toContain('u-explicit');
+    expect(JSON.stringify(body).toLowerCase()).not.toContain(WALLET_A.toLowerCase());
   } finally {
-    if (savedToken === undefined) delete process.env.INTERNAL_METRICS_TOKEN;
-    else process.env.INTERNAL_METRICS_TOKEN = savedToken;
-    if (savedExclusions === undefined) delete process.env.SCOREBOARD_EXCLUDE_USER_IDS;
-    else process.env.SCOREBOARD_EXCLUDE_USER_IDS = savedExclusions;
+    for (const [key, value] of [
+      ['INTERNAL_METRICS_TOKEN', saved.token],
+      ['SCOREBOARD_EXCLUDE_USER_IDS', saved.ids],
+      ['SCOREBOARD_EXCLUDE_ADDRESSES', saved.addresses],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 

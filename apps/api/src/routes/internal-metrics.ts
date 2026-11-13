@@ -8,10 +8,13 @@ type RenewalGroup = { clientId: string; _count: { _all: number }; _max: { create
 type RenewalGrouping = { groupBy(options: Record<string, unknown>): Promise<RenewalGroup[]> };
 type UserRow = { id: string; email: string; createdAt: Date };
 type SessionActivity = { userId: string; _max: { updatedAt: Date | null } };
+type ClientUser = { clientId: string; userId: string };
 export type MetricsDatabase = {
   user: MetricsCounter & { findMany(options: Record<string, unknown>): Promise<UserRow[]> };
   ethereumKey: MetricsCounter & { findMany(options: Record<string, unknown>): Promise<Array<{ userId: string | null }>> };
   session: { groupBy(options: Record<string, unknown>): Promise<SessionActivity[]> };
+  oauthAccessToken: { findMany(options: Record<string, unknown>): Promise<ClientUser[]> };
+  oauthClient: { findMany(options: Record<string, unknown>): Promise<Array<{ clientId: string; name: string }>> };
   tinyCloudManageKeySigningDecision: MetricsCounter & RenewalGrouping;
   tinyCloudManageKeyAppPreference: MetricsCounter;
   $queryRaw<T>(query: TemplateStringsArray, ...values: unknown[]): Promise<T>;
@@ -23,8 +26,11 @@ const BOT_SESSIONS_PER_DAY = 50;
 
 // Account bucket rules (TC-2356). Patterns are not secret. Buckets are
 // exclusive and checked in this order; an account lands in the first match.
-// Per-person exclusions (team members' personal accounts) come only from the
-// SCOREBOARD_EXCLUDE_USER_IDS env list of user ids, never from code.
+// Team accounts are excluded by wallet: SCOREBOARD_EXCLUDE_ADDRESSES (EVM
+// addresses, compared lowercase) maps through ethereum_keys.address to a user,
+// so every key of that person drops out. SCOREBOARD_EXCLUDE_USER_IDS (user
+// ids) is the second per-person list. Both come only from env, never from code.
+const ADDRESS_PATTERN = /^0x[0-9a-f]{40}$/;
 const INTERNAL_TEAM_DOMAIN = /^(tinycloud\.xyz|tinycloudlabs\.[a-z]+|gbafa\.com|openkey\.so|spruceid\.com)$/;
 const INTERNAL_AGENT_OR_QA_NAME =
   /^(qa|agent|bot|probe|canary|smoke|e2e|test|ci|julie|courier|orchard|holden|naomi|amos|alex|bobbie|clarissa|fred|miller|avasarala)([^a-z]|$)/;
@@ -33,6 +39,7 @@ const TEST_OR_THROWAWAY_DOMAIN =
 const TEST_LIKE_NAME = /(test|qa|probe|canary|smoke|e2e|bot|agent|demo|dummy|fake)/;
 
 export const USER_BUCKETS = [
+  'team_by_wallet',
   'internal_team_domain',
   'internal_agent_or_qa',
   'test_or_throwaway_domain',
@@ -47,10 +54,14 @@ export type UserBucket = (typeof USER_BUCKETS)[number] | 'real';
 export type AccountFacts = {
   id: string;
   email: string;
+  teamByWallet: boolean;
   hasSession: boolean;
   hasKey: boolean;
   botLike: boolean;
 };
+
+/** Real accounts that got an OAuth access token in the window, by the client's display name. */
+export type AppUsers = { name: string; real7d: number; real30d: number };
 
 export type UserMetrics = {
   total: number;
@@ -58,9 +69,11 @@ export type UserMetrics = {
   real: number;
   realActive: { d1: number; d7: number; d30: number };
   realNew7d: number;
+  apps: AppUsers[];
 };
 
 export function classifyAccount(account: AccountFacts, excludedUserIds: ReadonlySet<string>): UserBucket {
+  if (account.teamByWallet) return 'team_by_wallet';
   const [local = '', domain = ''] = account.email.split('@');
   const lowerLocal = local.toLowerCase();
   const lowerDomain = domain.toLowerCase();
@@ -75,15 +88,22 @@ export function classifyAccount(account: AccountFacts, excludedUserIds: Readonly
   return 'real';
 }
 
-/** Counts only. Emails and ids are read in memory and never returned or logged. */
+/** Counts only. Emails, addresses and ids are read in memory and never returned or logged. */
 export async function collectUserMetrics(
   database: MetricsDatabase,
   env: Record<string, string | undefined> = process.env,
   now = new Date(),
 ): Promise<UserMetrics> {
-  const excluded = new Set((env.SCOREBOARD_EXCLUDE_USER_IDS ?? '').split(',').map((item) => item.trim()).filter(Boolean));
+  const list = (value: string | undefined) => (value ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+  const excluded = new Set(list(env.SCOREBOARD_EXCLUDE_USER_IDS));
+  const addresses = [...new Set(list(env.SCOREBOARD_EXCLUDE_ADDRESSES).map((a) => a.toLowerCase()))]
+    .filter((a) => ADDRESS_PATTERN.test(a));
+  const since7d = new Date(now.getTime() - 7 * DAY_MS);
   const since30d = new Date(now.getTime() - 30 * DAY_MS);
-  const [users, sessions, keyOwners, botRows] = await Promise.all([
+  const tokenUsers = (since: Date) => database.oauthAccessToken.findMany({
+    where: { createdAt: { gte: since } }, distinct: ['clientId', 'userId'], select: { clientId: true, userId: true },
+  });
+  const [users, sessions, keyOwners, botRows, teamRows, tokens7d, tokens30d, clients] = await Promise.all([
     database.user.findMany({ select: { id: true, email: true, createdAt: true } }),
     database.session.groupBy({ by: ['userId'], _max: { updatedAt: true } }),
     database.ethereumKey.findMany({ where: { userId: { not: null } }, distinct: ['userId'], select: { userId: true } }),
@@ -94,12 +114,22 @@ export async function collectUserMetrics(
         GROUP BY "userId", date_trunc('day', "createdAt")
         HAVING count(*) >= ${BOT_SESSIONS_PER_DAY}
       ) bots`,
+    addresses.length === 0
+      ? Promise.resolve([] as Array<{ userId: string }>)
+      : database.$queryRaw<Array<{ userId: string }>>`
+          SELECT DISTINCT "userId" FROM ethereum_keys
+          WHERE "userId" IS NOT NULL AND lower(address) = ANY(${addresses})`,
+    tokenUsers(since7d),
+    tokenUsers(since30d),
+    database.oauthClient.findMany({ select: { clientId: true, name: true } }),
   ]);
   const lastActive = new Map(sessions.map((row) => [row.userId, row._max.updatedAt]));
   const hasKey = new Set(keyOwners.map((row) => row.userId));
   const botLike = new Set(botRows.map((row) => row.userId));
+  const teamByWallet = new Set(teamRows.map((row) => row.userId));
 
   const buckets = Object.fromEntries(USER_BUCKETS.map((bucket) => [bucket, 0])) as UserMetrics['buckets'];
+  const realUsers = new Set<string>();
   const realActive = { d1: 0, d7: 0, d30: 0 };
   let real = 0;
   let realNew7d = 0;
@@ -107,6 +137,7 @@ export async function collectUserMetrics(
     const bucket = classifyAccount({
       id: user.id,
       email: user.email,
+      teamByWallet: teamByWallet.has(user.id),
       hasSession: lastActive.has(user.id),
       hasKey: hasKey.has(user.id),
       botLike: botLike.has(user.id),
@@ -116,14 +147,35 @@ export async function collectUserMetrics(
       continue;
     }
     real += 1;
-    if (user.createdAt.getTime() >= now.getTime() - 7 * DAY_MS) realNew7d += 1;
+    realUsers.add(user.id);
+    if (user.createdAt.getTime() >= since7d.getTime()) realNew7d += 1;
     const last = lastActive.get(user.id)?.getTime();
     if (last === undefined) continue;
     if (last >= now.getTime() - DAY_MS) realActive.d1 += 1;
-    if (last >= now.getTime() - 7 * DAY_MS) realActive.d7 += 1;
-    if (last >= now.getTime() - 30 * DAY_MS) realActive.d30 += 1;
+    if (last >= since7d.getTime()) realActive.d7 += 1;
+    if (last >= since30d.getTime()) realActive.d30 += 1;
   }
-  return { total: users.length, buckets, real, realActive, realNew7d };
+
+  // Per app: distinct real users with an access token in the window, grouped by the
+  // client's display name (clients sharing a name are one app; a token whose client row is
+  // gone counts under "unknown client"). Names are developer-chosen labels, not user data.
+  const nameOf = new Map(clients.map((client) => [client.clientId, client.name]));
+  const perApp = new Map<string, { d7: Set<string>; d30: Set<string> }>();
+  const addTokens = (rows: ClientUser[], window: 'd7' | 'd30') => {
+    for (const { clientId, userId } of rows) {
+      if (!realUsers.has(userId)) continue;
+      const name = nameOf.get(clientId) ?? 'unknown client';
+      const entry = perApp.get(name) ?? { d7: new Set<string>(), d30: new Set<string>() };
+      entry[window].add(userId);
+      perApp.set(name, entry);
+    }
+  };
+  addTokens(tokens30d, 'd30');
+  addTokens(tokens7d, 'd7');
+  const apps = [...perApp].map(([name, sets]) => ({ name, real7d: sets.d7.size, real30d: sets.d30.size }))
+    .filter((app) => app.real30d > 0 || app.real7d > 0)
+    .sort((a, b) => b.real30d - a.real30d || b.real7d - a.real7d || a.name.localeCompare(b.name));
+  return { total: users.length, buckets, real, realActive, realNew7d, apps };
 }
 
 function authorized(authHeader: string | undefined): boolean {

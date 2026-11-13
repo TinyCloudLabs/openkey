@@ -43,6 +43,8 @@ test('internal metrics expose process-local origin refusal counts and preserve e
     user: { count: async () => 0, findMany: async () => [] },
     ethereumKey: { count: async () => 0, findMany: async () => [] },
     session: { groupBy: async () => [] },
+    oauthAccessToken: { findMany: async () => [] },
+    oauthClient: { findMany: async () => [] },
     tinyCloudManageKeySigningDecision: { count: async () => 0 },
     tinyCloudManageKeyAppPreference: { count: async () => 0 },
     $queryRaw: async () => [],
