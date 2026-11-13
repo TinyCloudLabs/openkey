@@ -87,6 +87,7 @@ import {
   publicJwk,
   type AuthorizationContextToken,
   type AuthorizationContextClaim,
+  type BoundRenewalChoice,
 } from '../services/authorization-signing';
 import { MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
@@ -134,7 +135,7 @@ import { PreparedHandoffError } from '../services/prepared-handoff';
 import { preparedHandoffService } from './prepared-handoffs';
 import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
-import { admitApprovalDelegation, checkApprovalDelegation, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
+import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
@@ -1737,7 +1738,7 @@ delegateRouter.post('/', async (c) => {
       signature,
       signedMessage: bound.originalSiwe,
       permissions: effectiveGrants,
-    }, (message) => signManagedKey(key, ownerSealedBlob, message)));
+    }, { renewal: bound.renewal, host, signOwner: (message) => signManagedKey(key, ownerSealedBlob, message) }));
     } catch (error) {
       await releaseApprovalDelegation(body);
       throw error;
@@ -1930,6 +1931,8 @@ delegateRouter.post('/prepare', async (c) => {
   });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
   await checkApprovalDelegation(body, { expiryMs });
+  // TC-2933: the owner's renewal choice is bound with this preview; approving reads it from here, not the body.
+  const renewal = await bindApprovalRenewal(body);
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -1998,6 +2001,7 @@ delegateRouter.post('/prepare', async (c) => {
       // issuedAt/expirationTime bytes on every attempt).
       originalSiwe: preparedResult.prepared.siwe,
       approvalRequestId: body.approvalRequestId,
+      renewal,
     });
   } catch (issueErr) {
     logError('warn', 'delegate_authorization_context_issue_failed', issueErr);
@@ -2240,6 +2244,7 @@ delegateRouter.post('/complete', async (c) => {
 
   let contextClaim: AuthorizationContextClaim | undefined;
   let signInAppOrigin: string | undefined;
+  let boundRenewal: BoundRenewalChoice | undefined;
   // Versioned callers: the `completeSessionSetup` input, built only from the
   // signed SIWE and the bound context (see below).
   let versionedSessionInput: Record<string, unknown> | undefined;
@@ -2249,7 +2254,10 @@ delegateRouter.post('/complete', async (c) => {
       return c.json({ error: 'authorizationContextToken must be a string' }, 400);
     }
     const peekedContext = peekAuthorizationContext(body.authorizationContextToken);
-    if (peekedContext.ok) signInAppOrigin = peekedContext.value.appOrigin;
+    if (peekedContext.ok) {
+      signInAppOrigin = peekedContext.value.appOrigin;
+      boundRenewal = peekedContext.value.renewal;
+    }
     if (peekedContext.ok && peekedContext.value.approvalRequestId !== body.approvalRequestId) {
       return c.json({ error: 'Approval request does not match the consent preview' }, 400);
     }
@@ -2457,7 +2465,7 @@ delegateRouter.post('/complete', async (c) => {
     //   `permissions` is the effective grant set after any narrowing.
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
-  }));
+  }, { renewal: boundRenewal, host: body.host }));
   } catch (error) {
     await releaseApprovalDelegation(body);
     throw error;

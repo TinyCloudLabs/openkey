@@ -34,7 +34,7 @@ function node(keys: Record<string, unknown> = {}, info: Record<string, unknown> 
   return { fetchImpl, asked };
 }
 
-async function approvedGrant(owner: Wallet) {
+async function approvedGrant(owner: { address: string; signMessage(message: string): Promise<string> }) {
   const space = `tinycloud:pkh:eip155:1:${owner.address}:agents`;
   const siwe = new SiweMessage({ domain: 'cli.tinycloud.xyz', address: owner.address, uri: 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK', version: '1', chainId: 1,
     nonce: 'qa123456', issuedAt: '2026-11-13T10:00:00.000Z', expirationTime: '2026-12-13T10:00:00.000Z' }).prepareMessage();
@@ -51,17 +51,22 @@ async function approvedGrant(owner: Wallet) {
 describe('the owner renewal choice', () => {
   const signed = { version: 1 as const, leaseLifetimeSeconds: 182 * DAY };
   test('a request that did not ask for renewal takes no choice, and one that did needs one', () => {
-    expect(parseRenewalChoice(undefined, undefined)).toBeNull();
-    expect(() => parseRenewalChoice({ choice: 'finite' }, undefined)).toThrow('did not ask for renewal');
-    expect(() => parseRenewalChoice(undefined, signed)).toThrow('renewal choice is required');
+    expect(parseRenewalChoice(undefined, undefined, true)).toBeNull();
+    expect(() => parseRenewalChoice({ choice: 'finite' }, undefined, true)).toThrow('did not ask for renewal');
+    expect(() => parseRenewalChoice(undefined, signed, true)).toThrow('renewal choice is required');
   });
   test('finite, or leased up to what the request signed and never past a year', () => {
-    expect(parseRenewalChoice({ choice: 'finite' }, signed)).toEqual({ choice: 'finite' });
-    expect(parseRenewalChoice({ choice: 'leased', leaseLifetimeSeconds: 182 * DAY }, signed)).toEqual({ choice: 'leased', leaseLifetimeSeconds: 182 * DAY });
-    expect(() => parseRenewalChoice({ choice: 'leased', leaseLifetimeSeconds: 182 * DAY + 1 }, signed)).toThrow();
-    expect(() => parseRenewalChoice({ choice: 'leased', leaseLifetimeSeconds: MAX_LEASE_SECONDS + 1 }, { version: 1, leaseLifetimeSeconds: MAX_LEASE_SECONDS + 1 })).toThrow();
-    expect(() => parseRenewalChoice({ choice: 'leased', leaseLifetimeSeconds: 0 }, signed)).toThrow();
-    expect(() => parseRenewalChoice({ choice: 'leased', leaseLifetimeSeconds: 90 * DAY, extra: true }, signed)).toThrow();
+    expect(parseRenewalChoice({ choice: 'finite' }, signed, true)).toEqual({ choice: 'finite' });
+    expect(parseRenewalChoice({ choice: 'leased', leaseLifetimeSeconds: 182 * DAY }, signed, true)).toEqual({ choice: 'leased', leaseLifetimeSeconds: 182 * DAY });
+    expect(() => parseRenewalChoice({ choice: 'leased', leaseLifetimeSeconds: 182 * DAY + 1 }, signed, true)).toThrow();
+    expect(() => parseRenewalChoice({ choice: 'leased', leaseLifetimeSeconds: MAX_LEASE_SECONDS + 1 }, { version: 1, leaseLifetimeSeconds: MAX_LEASE_SECONDS + 1 }, true)).toThrow();
+    expect(() => parseRenewalChoice({ choice: 'leased', leaseLifetimeSeconds: 0 }, signed, true)).toThrow();
+    expect(() => parseRenewalChoice({ choice: 'leased', leaseLifetimeSeconds: 90 * DAY, extra: true }, signed, true)).toThrow();
+  });
+  test('while leases are off, a renewal request is finite and a lease is refused', () => {
+    expect(parseRenewalChoice(undefined, signed, false)).toEqual({ choice: 'finite' });
+    expect(parseRenewalChoice({ choice: 'finite' }, signed, false)).toEqual({ choice: 'finite' });
+    expect(() => parseRenewalChoice({ choice: 'leased', leaseLifetimeSeconds: 90 * DAY }, signed, false)).toThrow('not available');
   });
 });
 
@@ -74,6 +79,15 @@ describe('the renewer the lease names', () => {
   test('is refused when the keys name another node, or the host is not a known node', async () => {
     await expect(discoverRenewalNodeIdentity(HOST, node({ nodeDid: RENEWER_DID }).fetchImpl)).rejects.toThrow('renewal identity is invalid');
     await expect(discoverRenewalNodeIdentity('https://node.example.test', node().fetchImpl)).rejects.toThrow('known TinyCloud nodes');
+  });
+  test('asks without following redirects and refuses an oversized answer', async () => {
+    const inits: Array<RequestInit | undefined> = [];
+    const big = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      inits.push(init);
+      return new Response(JSON.stringify({ nodeId: NODE_DID, padding: 'x'.repeat(20_000) }), { status: 200 });
+    }) as typeof fetch;
+    await expect(discoverRenewalNodeIdentity(HOST, big)).rejects.toThrow('too large');
+    expect(inits.every((init) => init?.redirect === 'error' && init.signal instanceof AbortSignal)).toBe(true);
   });
 });
 

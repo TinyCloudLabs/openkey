@@ -13,7 +13,7 @@ import { createPrismaApprovalRequestStore } from '../services/approval-request-s
 import { mockModules, replaceModules } from './mock-module';
 import type { approvalRequestRouter } from '../routes/approval-requests';
 
-const MIGRATIONS = ['20261028_0001_approval_request_results', '20261103_0002_approval_request_denied', '20261109_0001_approval_request_approving']
+const MIGRATIONS = ['20261028_0001_approval_request_results', '20261103_0002_approval_request_denied', '20261109_0001_approval_request_approving', '20261113_0001_approval_request_renewal']
   .map((name) => new URL(`../../../../packages/db/prisma/migrations/${name}/migration.sql`, import.meta.url));
 const ORIGIN = process.env.BETTER_AUTH_URL ?? 'http://localhost:3001';
 const MINUTE = 60_000;

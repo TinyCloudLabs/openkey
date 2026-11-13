@@ -22,6 +22,8 @@ type Options = {
   purpose?: 'task' | 'standing';
   sensitive?: boolean;
   keyType?: 'MANAGED' | 'EXTERNAL';
+  /** This OpenKey has renewal leases switched off (`renewalAvailable: false`). */
+  leasesOff?: boolean;
 };
 
 function prepared(sensitive: boolean) {
@@ -65,11 +67,12 @@ async function serve(page: Page, options: Options = {}) {
         ...(options.purpose ? { purpose: options.purpose } : {}),
         ...(options.renewal === false ? {} : { renewal: { version: 1, leaseLifetimeSeconds: 365 * DAY } }),
       };
-      return json(route, 200, { requestId: id, expiresAt: new Date(Date.now() + 3600_000).toISOString(), approved: false, denied: false, request: approvalRequest });
+      return json(route, 200, { requestId: id, expiresAt: new Date(Date.now() + 3600_000).toISOString(), approved: false, denied: false, request: approvalRequest,
+        renewalAvailable: options.leasesOff ? false : true });
     }
     if (url.pathname === '/api/delegate/prepare') return json(route, 200, prepared(options.sensitive ?? false));
     if (url.pathname === '/api/delegate' && request.method() === 'POST') return json(route, 200, RESULT);
-    if (url.pathname === '/api/delegate/complete') return json(route, 200, { ...RESULT, renewalSignature: { message: 'renewal lease message' } });
+    if (url.pathname === '/api/delegate/complete') return json(route, 200, { ...RESULT, renewalSignature: { message: 'renewal lease message', leaseLifetimeSeconds: 90 * DAY } });
     if (url.pathname === `/api/approval-requests/${id}/renewal-signature`) return json(route, 200, RESULT);
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
@@ -80,6 +83,8 @@ const approve = (page: Page) => page.getByRole('button', { name: 'Approve', exac
 const box = (page: Page) => page.getByRole('checkbox');
 const line = (page: Page) => page.getByTestId('approval-expiry-line');
 const approvals = (calls: Array<{ path: string; body: unknown }>) => calls.filter((call) => call.path === '/api/delegate');
+// The choice is bound into the preview, so it travels on /prepare; approving sends nothing about renewal.
+const lastPrepare = (calls: Array<{ path: string; body: unknown }>) => calls.filter((call) => call.path === '/api/delegate/prepare').at(-1)!.body;
 
 async function open(page: Page, options: Options = {}) {
   const calls = await serve(page, options);
@@ -88,28 +93,29 @@ async function open(page: Page, options: Options = {}) {
   return calls;
 }
 
-test('ongoing access starts ticked, and approving sends the 90-day lease', async ({ page }) => {
+test('ongoing access starts ticked, and its preview carries the 90-day lease', async ({ page }) => {
   const calls = await open(page, { purpose: 'standing' });
   await expect(box(page)).toBeChecked();
   await expect(line(page)).toHaveText('This permission renews automatically for up to 90 days');
   await expect(page.getByText('(Change)')).toHaveCount(0);
+  await expect.poll(() => lastPrepare(calls)).toMatchObject({ renewal: { choice: 'leased', leaseLifetimeSeconds: 90 * DAY } });
   await approve(page).click();
   await expect.poll(() => approvals(calls).length).toBe(1);
-  expect(approvals(calls)[0]!.body).toMatchObject({ renewal: { choice: 'leased', leaseLifetimeSeconds: 90 * DAY } });
+  expect(approvals(calls)[0]!.body).not.toHaveProperty('renewal');
 });
 
-test('unticked, it says when it expires, and approving sends a finite choice', async ({ page }) => {
+test('unticked, it says when it expires, and its preview is finite', async ({ page }) => {
   const calls = await open(page, { purpose: 'standing' });
+  await expect(box(page)).toBeChecked();
   await box(page).uncheck();
   await expect(line(page)).toHaveText('This permission expires in 30 days');
-  await approve(page).click();
-  await expect.poll(() => approvals(calls).length).toBe(1);
-  expect(approvals(calls)[0]!.body).toMatchObject({ renewal: { choice: 'finite' } });
+  await expect.poll(() => lastPrepare(calls)).toMatchObject({ renewal: { choice: 'finite' } });
 });
 
-test('a task, or a request without a purpose, starts unticked', async ({ page }) => {
-  await open(page, { purpose: 'task' });
+test('a task, or a request without a purpose, starts unticked with a finite preview', async ({ page }) => {
+  const calls = await open(page, { purpose: 'task' });
   await expect(box(page)).not.toBeChecked();
+  expect(lastPrepare(calls)).toMatchObject({ renewal: { choice: 'finite' } });
   await page.goto('about:blank');
   await open(page);
   await expect(box(page)).not.toBeChecked();
@@ -119,19 +125,23 @@ test('a request that did not ask for renewal shows no box and sends no choice', 
   const calls = await open(page, { renewal: false, purpose: 'standing' });
   await expect(box(page)).toHaveCount(0);
   await expect(line(page)).toHaveText('This permission expires in 30 days');
-  await approve(page).click();
-  await expect.poll(() => approvals(calls).length).toBe(1);
-  expect(approvals(calls)[0]!.body).not.toHaveProperty('renewal');
+  expect(lastPrepare(calls)).not.toHaveProperty('renewal');
 });
 
-test('the lease is changed under the fold', async ({ page }) => {
+test('while this OpenKey has leases off, a renewal request shows no box and sends no choice', async ({ page }) => {
+  const calls = await open(page, { purpose: 'standing', leasesOff: true });
+  await expect(box(page)).toHaveCount(0);
+  await expect(line(page)).toHaveText('This permission expires in 30 days');
+  expect(lastPrepare(calls)).not.toHaveProperty('renewal');
+});
+
+test('the lease is changed under the fold, as a new preview', async ({ page }) => {
   const calls = await open(page, { purpose: 'standing' });
+  await expect(box(page)).toBeChecked();
   await page.getByText('How long it lasts').click();
   await page.getByRole('button', { name: '1 year' }).click();
   await expect(line(page)).toHaveText('This permission renews automatically for up to 1 year');
-  await approve(page).click();
-  await expect.poll(() => approvals(calls).length).toBe(1);
-  expect(approvals(calls)[0]!.body).toMatchObject({ renewal: { choice: 'leased', leaseLifetimeSeconds: 365 * DAY } });
+  await expect.poll(() => lastPrepare(calls)).toMatchObject({ renewal: { choice: 'leased', leaseLifetimeSeconds: 365 * DAY } });
 });
 
 test('ongoing access to decrypt starts unticked, and ticking asks first', async ({ page }) => {
@@ -174,20 +184,22 @@ async function wallet(page: Page, options: { declineSecond?: boolean } = {}) {
 test('an external wallet signs the lease as a second step, then the approval is saved', async ({ page }) => {
   await wallet(page);
   const calls = await open(page, { purpose: 'standing', keyType: 'EXTERNAL' });
+  await expect(box(page)).toBeChecked();
   await approve(page).click();
-  await expect(page.getByText('Sign once more to turn on renewal')).toBeVisible();
+  await expect(page.getByText('Sign once more to turn on renewal for up to 90 days')).toBeVisible();
   expect(await page.evaluate(() => (window as unknown as { qaSigned: string[] }).qaSigned)).toEqual([expect.any(String), 'renewal lease message']);
   await page.evaluate(() => (window as unknown as { qaReleaseSecond: () => void }).qaReleaseSecond());
   await expect.poll(() => calls.filter((call) => call.path === `/api/approval-requests/${id}/renewal-signature`).length).toBe(1);
-  expect(calls.find((call) => call.path === '/api/delegate/complete')!.body).toMatchObject({ renewal: { choice: 'leased', leaseLifetimeSeconds: 90 * DAY } });
+  expect(calls.find((call) => call.path === '/api/delegate/complete')!.body).not.toHaveProperty('renewal');
   expect(calls.find((call) => call.path === `/api/approval-requests/${id}/renewal-signature`)!.body).toEqual({ signature: 'qa-signature-2' });
 });
 
 test('declining the second signature approves nothing', async ({ page }) => {
   await wallet(page, { declineSecond: true });
   const calls = await open(page, { purpose: 'standing', keyType: 'EXTERNAL' });
+  await expect(box(page)).toBeChecked();
   await approve(page).click();
-  await expect(page.getByText('Sign once more to turn on renewal')).toBeVisible();
+  await expect(page.getByText('Sign once more to turn on renewal for up to 90 days')).toBeVisible();
   await page.evaluate(() => (window as unknown as { qaReleaseSecond: () => void }).qaReleaseSecond());
   await expect(page.getByText("Renewal wasn't set up, so nothing was approved. Try again.")).toBeVisible();
   expect(calls.filter((call) => call.path === `/api/approval-requests/${id}/renewal-signature`)).toEqual([]);

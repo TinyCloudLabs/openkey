@@ -127,18 +127,18 @@ function model(sensitive: boolean): CapabilityReviewModel {
   });
 }
 
-interface Calls { lease: Array<number | null>; expiry: Array<number | null> }
+interface Calls { lease: Array<number | null>; expiry: Array<number | null>; windowWithLease: Array<number | null | undefined> }
 
 function render(options: { sensitive?: boolean; leaseMs?: number | null; maxLeaseMs?: number; renewal?: boolean; approving?: boolean; expiryMs?: number | null } = {}) {
   const target = document.createElement('div');
   document.body.appendChild(target);
   const m = model(options.sensitive ?? false);
   const selection = new Set<string>(m.permissions.flatMap((grant) => grant.actions.filter((action) => action.selected).map((action) => action.id)));
-  const calls: Calls = { lease: [], expiry: [] };
+  const calls: Calls = { lease: [], expiry: [], windowWithLease: [] };
   const renewal = options.renewal === false ? null : {
     leaseMs: options.leaseMs === undefined ? 90 * D : options.leaseMs,
     maxLeaseMs: options.maxLeaseMs ?? 365 * D,
-    onChange: (ms: number | null) => { calls.lease.push(ms); },
+    onChange: (ms: number | null, windowMs?: number | null) => { calls.lease.push(ms); calls.windowWithLease.push(windowMs); },
   };
   const app = mount(Approval, {
     target,
@@ -271,7 +271,7 @@ describe('renewing secrets or decrypt asks first (spec D7)', () => {
     toggle(target);
     click(buttonNamed(target, "Don't renew"));
     expect(box(target)!.checked).toBe(false);
-    expect(calls).toEqual({ lease: [], expiry: [] });
+    expect(calls).toEqual({ lease: [], expiry: [], windowWithLease: [] });
     cleanup();
   });
 
@@ -279,7 +279,8 @@ describe('renewing secrets or decrypt asks first (spec D7)', () => {
     const { target, calls, cleanup } = render({ sensitive: true, leaseMs: null });
     toggle(target);
     click(buttonNamed(target, 'Turn on renewal'));
-    expect(calls).toEqual({ lease: [90 * D], expiry: [7 * D] });
+    // One change carries both, so the preview is prepared once with the lease and the 7-day window.
+    expect(calls).toEqual({ lease: [90 * D], expiry: [], windowWithLease: [7 * D] });
     cleanup();
   });
 

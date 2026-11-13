@@ -23,6 +23,15 @@ import { isKnownTinyCloudActivationHost } from './tinycloud-hosts';
 /** Spec D4: a lease lasts at most one year. */
 export const MAX_LEASE_SECONDS = 365 * 86_400;
 const NODE_CALL_TIMEOUT_MS = 5_000;
+const NODE_RESPONSE_MAX_BYTES = 16 * 1024;
+
+/**
+ * Leases stay off until owners can see and revoke them (C6): with `OPENKEY_RENEWAL_LEASES=enabled`
+ * a renewal request gets the box; otherwise it shows the plain expiry line and is approved finite.
+ */
+export function renewalLeasesEnabled(): boolean {
+  return process.env.OPENKEY_RENEWAL_LEASES === 'enabled';
+}
 
 /** `status` 400 and 409 are the caller's; 503 means the lease could not be set up and nothing was approved. */
 export class RenewalLeaseError extends Error {
@@ -44,18 +53,21 @@ export interface SignedRenewalRequest {
 }
 
 /**
- * The owner's choice from the approval body. A request that signed a renewal request
- * needs an explicit choice (finite or leased, never inferred); one that did not may not
- * carry one. A lease longer than the request or one year is refused.
+ * The owner's choice, as the approval preview bound it. A request that did not sign a renewal request
+ * takes no choice. One that did needs an explicit finite or leased choice while leases are enabled
+ * (never inferred from `renewal` or the lifetime); while they are off it shows no box, so it is finite,
+ * and a leased choice is refused. A lease longer than the request or one year is refused.
  */
-export function parseRenewalChoice(value: unknown, signed: SignedRenewalRequest | undefined): RenewalChoice | null {
+export function parseRenewalChoice(value: unknown, signed: SignedRenewalRequest | undefined, enabled = renewalLeasesEnabled()): RenewalChoice | null {
   if (!signed) {
     if (value !== undefined) throw new RenewalLeaseError('request_binding', 'This request did not ask for renewal', 400);
     return null;
   }
+  if (!enabled && value === undefined) return { choice: 'finite' };
   if (!value || typeof value !== 'object') throw new RenewalLeaseError('request_binding', 'A renewal choice is required', 400);
   const choice = value as Record<string, unknown>;
   if (choice.choice === 'finite' && Object.keys(choice).length === 1) return { choice: 'finite' };
+  if (!enabled) throw new RenewalLeaseError('renewal_disabled', 'Renewal is not available yet', 400);
   const seconds = choice.leaseLifetimeSeconds;
   if (choice.choice !== 'leased' || Object.keys(choice).length !== 2 || typeof seconds !== 'number' || !Number.isSafeInteger(seconds) ||
     seconds <= 0 || seconds > signed.leaseLifetimeSeconds || seconds > MAX_LEASE_SECONDS) {
@@ -101,8 +113,11 @@ export interface ApprovalResultRenewal {
 }
 
 /**
- * The renewer the node at `host` advertises, checked against the node's own id.
- * Only the request's canonical node origin is ever asked (C2).
+ * The renewer the node at `host` advertises, checked against the node's own id. `host` is the approved
+ * grant's own node (the request's node origin, which the grant was signed and registered for); the
+ * renewer DID comes only from that node's answer, never from the request. In production only the
+ * fixed https TinyCloud node names are asked; loopback is allowed only outside production. No
+ * redirects, a short timeout and a small response cap keep this from relaying anywhere else.
  */
 export async function discoverRenewalNodeIdentity(host: string, fetchImpl: typeof fetch = fetch): Promise<RenewalNodeIdentity> {
   if (!isKnownTinyCloudActivationHost(host) || new URL(host).origin !== host) {
@@ -111,7 +126,9 @@ export async function discoverRenewalNodeIdentity(host: string, fetchImpl: typeo
   const read = async (path: string): Promise<Record<string, unknown>> => {
     const response = await fetchImpl(`${host}${path}`, { redirect: 'error', signal: AbortSignal.timeout(NODE_CALL_TIMEOUT_MS) });
     if (!response.ok) throw new RenewalLeaseError('renewal_unavailable', `Node ${path} answered ${response.status}`);
-    const value: unknown = await response.json();
+    const bytes = await boundedBytes(response);
+    let value: unknown = null;
+    try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); } catch { /* refused below */ }
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new RenewalLeaseError('renewal_unavailable', `Node ${path} is invalid`);
     return value as Record<string, unknown>;
   };
@@ -128,6 +145,24 @@ export async function discoverRenewalNodeIdentity(host: string, fetchImpl: typeo
   };
   assertRenewalNodeIdentity(identity);
   return identity;
+}
+
+async function boundedBytes(response: Response): Promise<Uint8Array> {
+  const reader = response.body?.getReader();
+  if (!reader) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > NODE_RESPONSE_MAX_BYTES) {
+      await reader.cancel();
+      throw new RenewalLeaseError('renewal_unavailable', 'Node response is too large');
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
 }
 
 function leaseSiwe(stage: Pick<RenewalStage, 'originalCid' | 'ownerAddress' | 'chainId' | 'spaceId' | 'nodeIdentity' | 'leaseNonce' | 'approvedAt' | 'leaseExpiresAt'>) {

@@ -88,10 +88,10 @@
 
   function confirmRenewal() {
     confirming = false;
-    turnOn();
     // D6 rule 3: renewing secrets or decrypt uses a 7-day window, within what the requester signed.
+    // One change, so the preview is prepared once with both the lease and the window.
     const window = maxMs == null ? SENSITIVE_RENEWAL_WINDOW_MS : Math.min(SENSITIVE_RENEWAL_WINDOW_MS, maxMs);
-    if (window !== shownMs) chooseWindow(window);
+    renewal!.onChange(proposedLeaseMs, window === shownMs ? undefined : window === requestedMs ? null : window);
     queueMicrotask(() => checkbox?.focus());
   }
 

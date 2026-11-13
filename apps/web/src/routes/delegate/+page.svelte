@@ -43,7 +43,7 @@
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
   import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
-  import { MAX_LEASE_MS, defaultLeaseMs, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
+  import { MAX_LEASE_MS, defaultLeaseMs, formatDuration, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -322,20 +322,52 @@
   let renewalDefaulted = false;
   let renewalLeaseMs = $state<number | null>(null);
   // Spec D12: standing access starts ticked; D7: never when it reaches secrets or decrypt; D11: no purpose is a task.
+  // Ticking it re-prepares, so the preview the owner approves is the one that carries the lease.
   $effect(() => {
     if (renewalDefaulted || renewalMaxLeaseMs === null || !reviewModel) return;
     renewalDefaulted = true;
     if (renewalStanding && !reviewModel.permissions.some(grantReachesSecretDataOrDecryption)) {
-      renewalLeaseMs = defaultLeaseMs(renewalMaxLeaseMs);
+      void changeRenewal(defaultLeaseMs(renewalMaxLeaseMs));
     }
   });
-  // The owner's choice as the approve body carries it; null when the request did not ask for renewal.
+  // The owner's choice as /prepare binds it into the preview; null when the request did not ask for renewal.
   function renewalChoiceBody() {
     if (renewalMaxLeaseMs === null) return null;
     return renewalLeaseMs === null ? { choice: 'finite' } : { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000) };
   }
   const RENEWAL_NOT_SET_UP = "Renewal wasn't set up, so nothing was approved. Try again.";
-  let renewalSigning = $state(false);
+  // While an external wallet signs the lease: how long renewal lasts, shown in the prompt.
+  let renewalSigningMs = $state<number | null>(null);
+  // A changed lease (and, from the sensitive-access step, the window) is a new preview: prepare once with both.
+  async function changeRenewal(leaseMs: number | null, windowMs?: number | null) {
+    if (!selectedKey || !jwk) {
+      error = 'Missing key or JWK parameter.';
+      return;
+    }
+    const previous = { lease: renewalLeaseMs, choice: expiryChoiceMs, chosen: expiryChosen, param: expiryParam, requested: requestedExpiryParam };
+    renewalLeaseMs = leaseMs;
+    if (windowMs !== undefined) {
+      requestedExpiryParam ??= expiryParam;
+      expiryChoiceMs = windowMs;
+      expiryChosen = windowMs !== null;
+      expiryParam = windowMs === null ? requestedExpiryParam : `${Math.round(windowMs / 1000)}s`;
+    }
+    updatingPermissions = true;
+    error = '';
+    try {
+      const data = await prepareDelegation(selectedKey, permissionsEdited ? selectedActionKeys : undefined);
+      applyPreparedDelegation(data);
+    } catch (e: any) {
+      renewalLeaseMs = previous.lease;
+      expiryChoiceMs = previous.choice;
+      expiryChosen = previous.chosen;
+      expiryParam = previous.param;
+      requestedExpiryParam = previous.requested;
+      error = delegateErrorMessage(e);
+    } finally {
+      updatingPermissions = false;
+    }
+  }
   async function changeApprovalExpiry(ms: number | null) {
     if (!selectedKey || !jwk) {
       error = 'Missing key or JWK parameter.';
@@ -613,7 +645,8 @@
       // The requester signs its longest lifetime; the owner starts from its suggestion (the maximum when it gives none).
       expiryMaxMs = request.grantLifetimeSeconds * 1000;
       expiryParam = `${request.suggestedLifetimeSeconds ?? request.grantLifetimeSeconds}s`;
-      if (request.renewal) {
+      // The box only shows where this OpenKey has leases on (`renewalAvailable`); otherwise the plain line, and finite.
+      if (request.renewal && result.renewalAvailable === true) {
         renewalMaxLeaseMs = Math.min(request.renewal.leaseLifetimeSeconds * 1000, MAX_LEASE_MS);
         renewalStanding = request.purpose === 'standing';
       }
@@ -793,6 +826,8 @@
         if (linkExpiryChangeable) body.expiryChangeable = true;
       }
     }
+    // TC-2933: the renewal choice is bound into this preview; approving reads it from there.
+    if (approvalRequestMode && renewalChoiceBody()) body.renewal = renewalChoiceBody();
     // The API refuses a device delegation outside the transaction's lifetime.
     if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
 
@@ -1253,7 +1288,6 @@
           if (linkExpiryChangeable) body.expiryChangeable = true;
         }
       }
-      if (approvalRequestMode && renewalChoiceBody()) body.renewal = renewalChoiceBody();
       if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
 
       const res = await fetch(`${API_URL}/api/delegate`, {
@@ -1411,7 +1445,7 @@
               }
             : {}),
           ...(deviceTransactionId ? { deviceTransactionId } : {}),
-          ...(approvalRequestMode ? { approvalRequestId, ...(renewalChoiceBody() ? { renewal: renewalChoiceBody() } : {}) } : {}),
+          ...(approvalRequestMode ? { approvalRequestId } : {}),
         }),
       });
 
@@ -1423,7 +1457,7 @@
       let data = await compRes.json();
       if (data.renewalSignature) {
         // TC-2933: the wallet signs the renewal lease too; declining it approves nothing.
-        renewalSigning = true;
+        renewalSigningMs = data.renewalSignature.leaseLifetimeSeconds * 1000;
         let leaseSignature: string;
         try {
           leaseSignature = await matchingProvider.request({
@@ -1433,7 +1467,7 @@
         } catch {
           throw new OwnerMessageError(RENEWAL_NOT_SET_UP);
         } finally {
-          renewalSigning = false;
+          renewalSigningMs = null;
         }
         const leaseRes = await fetch(`${API_URL}/api/approval-requests/${approvalRequestId}/renewal-signature`, {
           method: 'POST',
@@ -1929,9 +1963,9 @@
         {/if}
 
         {#if selectedKey.keyType === 'EXTERNAL'}
-          <div class="p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700" role={renewalSigning ? 'status' : undefined}>
-            {#if renewalSigning}
-              Sign once more to turn on renewal
+          <div class="p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700" role={renewalSigningMs !== null ? 'status' : undefined}>
+            {#if renewalSigningMs !== null}
+              Sign once more to turn on renewal for up to {formatDuration(renewalSigningMs)}
             {:else}
               Your browser wallet will prompt you to sign a message to authorize this delegation.
             {/if}
@@ -1995,7 +2029,7 @@
                   renewal: {
                     leaseMs: renewalLeaseMs,
                     maxLeaseMs: renewalMaxLeaseMs,
-                    onChange: (ms: number | null) => { renewalLeaseMs = ms; },
+                    onChange: (ms: number | null, windowMs?: number | null) => { void changeRenewal(ms, windowMs); },
                   },
                 } : {}),
               }}
