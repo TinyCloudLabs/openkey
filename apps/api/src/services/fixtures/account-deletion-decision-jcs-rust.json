@@ -1,0 +1,129 @@
+{
+  "publicKeySpkiPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAqbT+VWCpm6t93VqU4/4iFbr7+UXbtcIDQ6Piq5VjQto=\n-----END PUBLIC KEY-----\n",
+  "synthetic": true,
+  "vectors": [
+    {
+      "name": "escaping-unicode-max-safe",
+      "payloadJcs": "[1,\"openkey-review-test\",\"test-1\",\"5111e452-378a-4003-8517-c583ad9c675e\",\"be02de0c-c4f4-495a-a4c2-583d6c92daf2\",\"node-a\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"proceed\",\"Naomi\",1794534893,\"quote \\\" backslash \\\\ composed é decomposed é emoji 😀 separator  \",\"e8b04d5a1a4aa3433e2d2856de22887e36d928080e74a14d87cef5066c5a9c90\",[[\"node-a\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",1,[\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"],[[\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",9007199254740991,\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"fp-1\"]]]],1794707693]",
+      "proof": {
+        "payload": [
+          1,
+          "openkey-review-test",
+          "test-1",
+          "5111e452-378a-4003-8517-c583ad9c675e",
+          "be02de0c-c4f4-495a-a4c2-583d6c92daf2",
+          "node-a",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "proceed",
+          "Naomi",
+          1794534893,
+          "quote \" backslash \\ composed é decomposed é emoji 😀 separator  ",
+          "e8b04d5a1a4aa3433e2d2856de22887e36d928080e74a14d87cef5066c5a9c90",
+          [
+            [
+              "node-a",
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              1,
+              [
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              ],
+              [
+                [
+                  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  9007199254740991,
+                  "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "fp-1"
+                ]
+              ]
+            ]
+          ],
+          1794707693
+        ],
+        "signature": "ZapCdjRk3WhPU-mC0pnMmWhS81U4kTYJWciastAOUnxuNVvOsTl6GjWSlWMd0LH2CzqCG_P_H3t_6s7u-s2hBQ"
+      },
+      "snapshotJcs": "[1,[[\"node-a\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",1,[\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"],[[\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",9007199254740991,\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"fp-1\"]]]]]"
+    },
+    {
+      "name": "composed-zero",
+      "payloadJcs": "[1,\"openkey-review-test\",\"test-1\",\"865b8af0-bf1f-4b35-92ec-66eaefdbaf97\",\"107b0194-b5d3-4637-bf53-e0134c26579c\",\"node-a\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"proceed\",\"Naomi\",1794534893,\"é\",\"76778d53ff6b885cd4460142a8115cb8d589cd3ec73673665369365c78f4783b\",[[\"node-a\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",0,[],[[\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",0,\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"fp-1\"]]]],1794707693]",
+      "proof": {
+        "payload": [
+          1,
+          "openkey-review-test",
+          "test-1",
+          "865b8af0-bf1f-4b35-92ec-66eaefdbaf97",
+          "107b0194-b5d3-4637-bf53-e0134c26579c",
+          "node-a",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "proceed",
+          "Naomi",
+          1794534893,
+          "é",
+          "76778d53ff6b885cd4460142a8115cb8d589cd3ec73673665369365c78f4783b",
+          [
+            [
+              "node-a",
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              0,
+              [],
+              [
+                [
+                  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  0,
+                  "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "fp-1"
+                ]
+              ]
+            ]
+          ],
+          1794707693
+        ],
+        "signature": "-yCccq-YiqQ3sZkj2AaKU2bfRJuoFhhjizBovdLTyMpZFpmFWRcFyJPWGVNpCPigNbg6tmYzDd_iEX06wcPJBg"
+      },
+      "snapshotJcs": "[1,[[\"node-a\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",0,[],[[\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",0,\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"fp-1\"]]]]]"
+    },
+    {
+      "name": "decomposed-zero",
+      "payloadJcs": "[1,\"openkey-review-test\",\"test-1\",\"53d92555-e019-4cb1-9087-f3b4b047a074\",\"a87105da-e846-483a-a9ff-fe087e3127d0\",\"node-a\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"proceed\",\"Naomi\",1794534893,\"é\",\"76778d53ff6b885cd4460142a8115cb8d589cd3ec73673665369365c78f4783b\",[[\"node-a\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",0,[],[[\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",0,\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"fp-1\"]]]],1794707693]",
+      "proof": {
+        "payload": [
+          1,
+          "openkey-review-test",
+          "test-1",
+          "53d92555-e019-4cb1-9087-f3b4b047a074",
+          "a87105da-e846-483a-a9ff-fe087e3127d0",
+          "node-a",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "proceed",
+          "Naomi",
+          1794534893,
+          "é",
+          "76778d53ff6b885cd4460142a8115cb8d589cd3ec73673665369365c78f4783b",
+          [
+            [
+              "node-a",
+              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              0,
+              [],
+              [
+                [
+                  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  0,
+                  "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "fp-1"
+                ]
+              ]
+            ]
+          ],
+          1794707693
+        ],
+        "signature": "UfueuZ_d32_DJdt5IYvfDZams9pdOZjfrRh7vu8Rofy_w4s5kvsyRsbd2ncVRk9i7GAXXT0NNrEAbGyWwXs_DA"
+      },
+      "snapshotJcs": "[1,[[\"node-a\",\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",0,[],[[\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",0,\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"fp-1\"]]]]]"
+    }
+  ],
+  "verifyAtUnix": 1794534893
+}

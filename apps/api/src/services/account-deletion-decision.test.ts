@@ -43,3 +43,13 @@ test('shared public vectors preserve exact JCS bytes and Ed25519 signatures', as
   }
   expect(fixture.vectors[1].payloadJcs).not.toBe(fixture.vectors[2].payloadJcs);
 });
+
+
+test('Rust-signed public vectors verify with identical TypeScript canonical bytes', async () => {
+  const fixture = await Bun.file(new URL('./fixtures/account-deletion-decision-jcs-rust.json', import.meta.url)).json();
+  for (const vector of fixture.vectors) {
+    expect(reviewJcs(vector.proof.payload)).toBe(vector.payloadJcs);
+    expect(reviewJcs([1, vector.proof.payload[13]])).toBe(vector.snapshotJcs);
+    expect(verify(null, Buffer.from(reviewDecisionDomain + reviewJcs(vector.proof.payload)), fixture.publicKeySpkiPem, Buffer.from(vector.proof.signature, 'base64url'))).toBe(true);
+  }
+});
