@@ -1,9 +1,10 @@
 # Runs the whole API unit suite in one `bun test` process, the way a developer
 # runs it. Files share bun's module registry there, so a module mock that leaks
 # out of one file breaks another; apps/api/src/__tests__/mock-module.ts scopes
-# mocks to their file (TC-928). No secrets, database, or network services.
-# The renewal-lease job adds one disposable Postgres, only for the lock and race
-# cases PGlite (a single connection) cannot show (TC-2946).
+# mocks to their file (TC-928). The api-tests job uses no secrets, database, or
+# network services. The renewal-lease-postgres job adds one throwaway Postgres,
+# only for the lease lock and race cases PGlite (a single connection) cannot
+# show (TC-2946).
 name: API tests
 
 on:
