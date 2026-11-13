@@ -91,16 +91,16 @@ describe('nativeSocialError', () => {
   // The sheet shows these codes with the web callback's copy (social-continuation.ts).
   test('copy names the provider', () => {
     expect(socialErrorMessage('apple', 'cancelled')).toBe('Apple sign-in was cancelled.');
-    expect(socialErrorMessage('google', 'failed')).toBe('Google could not complete sign-in. Please try again.');
+    expect(socialErrorMessage('google', 'failed')).toBe("Google sign-in couldn't be completed. Try again.");
     expect(socialErrorMessage('apple', 'account_not_linked'))
-      .toBe('An OpenKey account already uses this email. Sign in to it and add Apple in Settings.');
+      .toBe('An OpenKey account already uses this email. Sign in to it, then add Apple in Settings.');
     expect(socialErrorMessage('apple', 'apple_email_required'))
       .toBe("Apple didn't share a verified email, so OpenKey can't create an account from it. Sign in with your email or passkey, then add Apple in Settings.");
   });
 
   test('copy without a provider never names one', () => {
     expect(socialErrorMessage(null, 'cancelled')).toBe('Sign-in was cancelled.');
-    expect(socialErrorMessage(null, 'failed')).toBe('Sign-in could not complete. Please try again.');
+    expect(socialErrorMessage(null, 'failed')).toBe("Sign-in couldn't be completed. Try again.");
   });
 });
 

@@ -49,7 +49,7 @@ export function relayNotice(continuation: Pick<SocialContinuation, 'provider' | 
 
 /** R3: an existing account is never linked here; the user signs in and links from Settings after an email code. */
 export function accountExistsMessage(provider: SocialProviderId, email: string): string {
-  return `An OpenKey account already uses ${email}. Sign in to it and verify with an email code to add ${socialProviderName(provider)} in Settings.`;
+  return `An OpenKey account already uses ${email}. Sign in to it, then add ${socialProviderName(provider)} in Settings.`;
 }
 
 /**
@@ -63,7 +63,7 @@ export function socialErrorMessage(provider: SocialProviderId | null, code: stri
     case 'apple_email_required':
       return APPLE_EMAIL_REQUIRED_MESSAGE;
     case 'account_not_linked':
-      return `An OpenKey account already uses this email. Sign in to it and add ${name ?? 'this sign-in method'} in Settings.`;
+      return `An OpenKey account already uses this email. Sign in to it, then add ${name ?? 'this sign-in method'} in Settings.`;
     case 'access_denied':
     case 'user_cancelled_authorize':
     case 'cancelled':
@@ -75,7 +75,7 @@ export function socialErrorMessage(provider: SocialProviderId | null, code: stri
     case 'continuation_expired':
       return `This ${name ?? 'sign-in'} confirmation expired. Start sign-in again.`;
     default:
-      return name ? `${name} could not complete sign-in. Please try again.` : 'Sign-in could not complete. Please try again.';
+      return name ? `${name} sign-in couldn't be completed. Try again.` : "Sign-in couldn't be completed. Try again.";
   }
 }
 
@@ -173,7 +173,7 @@ export async function confirmSocialContinuation(
   if (response.ok && typeof body?.token === 'string' && body.token) return body.token;
   const name = socialProviderName(input.provider);
   if (body?.code === 'ACCOUNT_ALREADY_EXISTS') {
-    throw new Error(`An OpenKey account already uses this email. Sign in to it and add ${name} in Settings.`);
+    throw new Error(`An OpenKey account already uses this email. Sign in to it, then add ${name} in Settings.`);
   }
   if (body?.code === 'ACCOUNT_ALREADY_LINKED') {
     throw new Error(`This ${name} account is already linked to an OpenKey account. Sign in with ${name} instead.`);

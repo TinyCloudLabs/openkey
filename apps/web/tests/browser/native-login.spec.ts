@@ -454,7 +454,7 @@ test.describe('native login', () => {
       await page.route('**/api/auth/sign-in/social', (route) => json(route, { url: 'https://evil.example/auth', redirect: false }));
       await page.goto(`/auth/login?${signedQuery({ login_method: 'apple' })}`);
       await expect(page.locator('#email')).toBeVisible();
-      await expect(page.getByRole('alert')).toHaveText('Apple could not complete sign-in. Please try again.');
+      await expect(page.getByRole('alert')).toHaveText("Apple sign-in couldn't be completed. Try again.");
       expect(page.url()).toContain(ORIGIN);
     });
 
@@ -462,7 +462,7 @@ test.describe('native login', () => {
       const api = await mockApi(page, { providers: ['google'] });
       await page.goto(`/auth/login?${signedQuery({ login_method: 'apple' })}`);
       await expect(page.locator('#email')).toBeVisible();
-      await expect(page.getByRole('alert')).toHaveText("Apple sign-in isn't available right now. Continue with your email instead.");
+      await expect(page.getByRole('alert')).toHaveText("Apple sign-in isn't available. Choose another way to sign in below.");
       await page.waitForLoadState('networkidle');
       expect(api.count('/api/auth/sign-in/social')).toBe(0);
       await expect(page.getByRole('button', { name: 'Continue with Apple' })).toHaveCount(0);
@@ -536,13 +536,14 @@ test.describe('native login', () => {
       expect(api.count('/api/auth/sign-in/social')).toBe(0);
     });
 
-    test('an existing account asks for sign-in and an email code to add Apple', async ({ page }) => {
+    test('an existing account asks for sign-in before adding Apple', async ({ page }) => {
       await mockApi(page, { providers: ['apple'] });
       await page.route('**/api/auth/social/continuation**', (route) =>
         json(route, { outcome: 'account_exists', providerId: 'apple', email: 'sam@example.test', name: 'Sam', isPrivateEmail: false }));
       await page.goto(appleReturn({ error: 'account_exists', continuation: CONTINUATION }));
-      await expect(page.getByText('An OpenKey account already uses sam@example.test.')).toBeVisible();
-      await expect(page.getByText('Sign in to it and verify with an email code to add Apple in Settings.')).toBeVisible();
+      await expect(page.getByTestId('social-account-exists')).toHaveText(
+        'An OpenKey account already uses sam@example.test. Sign in to it, then add Apple in Settings.',
+      );
       await page.getByRole('button', { name: 'Sign in to your account' }).click();
       await expect(page.locator('#email')).toHaveValue('sam@example.test');
     });
@@ -561,7 +562,7 @@ test.describe('native login', () => {
       await page.route('**/api/auth/social/continuation**', (route) =>
         json(route, { outcome: 'new_account', providerId: 'apple', email: 'sam@example.test', isPrivateEmail: false }));
       await page.goto(appleReturn({ error: 'account_exists', continuation: CONTINUATION }));
-      await expect(page.getByRole('alert')).toHaveText('Apple could not complete sign-in. Please try again.');
+      await expect(page.getByRole('alert')).toHaveText("Apple sign-in couldn't be completed. Try again.");
       await expect(page.getByRole('button', { name: 'Create a new account' })).toHaveCount(0);
     });
   });
