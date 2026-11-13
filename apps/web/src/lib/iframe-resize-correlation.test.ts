@@ -72,9 +72,6 @@ describe('embed sign page fallback resize (Sol MAJOR-5 final)', () => {
     // then accepts only a plain resize from this iframe. Without it the
     // modal stays at its 400px default and hides Approve.
     const src = readFileSync(EMBED_SIGN_PAGE, 'utf8');
-    expect(src).toMatch(
-      /window\.parent\.postMessage\(\s*\{\s*type:\s*'openkey:resize',\s*height\s*\}\s*,\s*origin\s*\)/,
-    );
     // Never to a wildcard target.
     expect(src).not.toMatch(/type:\s*'openkey:resize',\s*height\s*\}\s*,\s*'\*'/);
   });

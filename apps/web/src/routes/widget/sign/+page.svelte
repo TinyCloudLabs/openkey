@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { legacySignOrigin, legacySignReadyOrigin } from '$lib/legacy-sign-origin';
   import { untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
@@ -70,6 +71,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   // path (compat) does not carry a requestId — it uses direct postMessage.
   let currentRequestId = $state<string | null>(null);
   let transport: WidgetTransport | null = null;
+  let legacyOrigin = $state<string | null>(null);
   // Sol MAJOR-9 (per-request immutable state): once a request lands we
   // never mutate its bound state. A follow-up transport request creates
   // a NEW logical request. If a versioned request is already in-flight
@@ -181,10 +183,10 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       // the unversioned envelope. Only emit under the wildcard-origin
       // compatibility path — versioned callers get the transport's ready.
       if (origin === '*') {
-        const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
-        if (window.opener) {
+        const targetOrigin = legacySignReadyOrigin();
+        if (targetOrigin && window.opener) {
           window.opener.postMessage({ type: 'openkey:ready' }, targetOrigin);
-        } else if (window.parent !== window) {
+        } else if (targetOrigin && window.parent !== window) {
           window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
         }
       }
@@ -441,11 +443,14 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
 
     console.log('[sign widget] received message:', event.data?.type, event.data);
     if (event.data?.type === 'openkey:sign:request') {
+      const requestOrigin = legacySignOrigin(event.origin);
+      if (!requestOrigin || (legacyOrigin && legacyOrigin !== requestOrigin)) return;
       // Sol MAJOR-9: refuse overlapping legacy request too.
       if (requestSealed) {
         console.warn('[sign widget] refusing overlapping legacy request');
         return;
       }
+      legacyOrigin = requestOrigin;
       console.log('[sign widget] sign request received, message:', event.data.message?.substring(0, 100), 'keyId:', event.data.keyId);
       message = event.data.message;
       messageProtocolVersion = incomingProtocolVersion;
@@ -1183,11 +1188,12 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       }
       return;
     }
-    // Legacy compatibility path (wildcard origin or unversioned caller).
+    // Legacy replies stay bound to the first accepted request's browser origin.
+    if (!legacyOrigin) return;
     if (window.opener) {
-      window.opener.postMessage(data, origin);
+      window.opener.postMessage(data, legacyOrigin);
     } else if (window.parent !== window) {
-      window.parent.postMessage(data, origin);
+      window.parent.postMessage(data, legacyOrigin);
     }
   }
 
@@ -1198,15 +1204,16 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
     // request so the SDK doesn't tear down a subsequent request when a
     // stale close arrives late.
     const closeMsg: Record<string, unknown> = { type: 'openkey:close' };
+    const targetOrigin = currentRequestId ? origin : (legacyOrigin ?? (origin !== '*' ? origin : null));
     if (currentRequestId && messageProtocolVersion !== null) {
       closeMsg.requestId = currentRequestId;
       closeMsg.protocolVersion = messageProtocolVersion;
     }
     if (window.opener) {
-      window.opener.postMessage(closeMsg, origin);
+      if (targetOrigin) window.opener.postMessage(closeMsg, targetOrigin);
       window.close();
     } else if (window.parent !== window) {
-      window.parent.postMessage(closeMsg, origin);
+      if (targetOrigin) window.parent.postMessage(closeMsg, targetOrigin);
     }
   }
 
