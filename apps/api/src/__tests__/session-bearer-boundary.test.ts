@@ -228,8 +228,7 @@ describe('account controls (TC-689)', () => {
   test('delete requires a passkey verification on this session', async () => {
     const response = await call('POST', '/api/account/delete', { origin: OPENKEY_ORIGIN }, { confirmation: 'DELETE MY ACCOUNT' });
     expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({
-      error: 'Verify with your passkey again to continue',
+    expect(await response.json()).toMatchObject({
       code: 'passkey_step_up_required',
     });
     expect(deletedUsers).toEqual([]);

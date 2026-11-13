@@ -98,7 +98,7 @@ accountRouter.post('/step-up/passkey/verify', async (c) => {
   const body = await c.req.json().catch(() => null) as { challengeToken?: unknown; response?: unknown } | null;
   const result = await verifyPasskeyStepUp(prisma, c.get('session').id, c.get('user').id, body, RELYING_PARTY);
   if (result === 'not_step_up') {
-    return c.json({ error: 'This passkey was added without a verification step and cannot confirm this action', code: 'passkey_not_step_up_capable' }, 403);
+    return c.json({ error: "This passkey was added without a verification step, so it can't confirm this action.", code: 'passkey_not_step_up_capable' }, 403);
   }
   if (result !== 'verified') return c.json({ error: 'Passkey verification failed' }, 400);
   return c.json({ status: true });

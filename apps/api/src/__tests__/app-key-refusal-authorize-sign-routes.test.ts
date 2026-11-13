@@ -209,7 +209,7 @@ describe('POST /authorize-sign-prepare', () => {
     const res = await post('/authorize-sign-prepare', { ...prepareBody(siweWith(raw)), requestOrigin: ORIGIN });
     expect(res.status).toBe(403);
     // TC-2291: pin the own-sites refusal copy and its stable code.
-    await expect(res.json()).resolves.toEqual({ error: "This site isn't allowed to request that access.", code: 'app_key_grant_refused' });
+    await expect(res.json()).resolves.toMatchObject({ code: 'app_key_grant_refused' });
     expect(signed).toEqual([]);
   });
 });

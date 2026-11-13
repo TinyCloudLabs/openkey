@@ -76,7 +76,7 @@
       {:else if offersEmail}
         We’ll send a code to your OpenKey email.
       {:else}
-        Your OpenKey email can’t receive codes right now. If you use Hide My Email, turn forwarding back on in your Apple ID settings, then try again.
+        Your OpenKey email can't receive codes. If you use Hide My Email, turn forwarding back on in your Apple ID settings, then try again.
       {/if}
     </p>
     {#if error}<p class="mt-4 text-sm text-red-700" role="alert">{error}</p>{/if}

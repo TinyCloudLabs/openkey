@@ -77,7 +77,7 @@ async function availableMethods(
   return methods;
 }
 
-const ENROLMENT_MESSAGE = 'Verify it is you before adding a passkey.';
+const ENROLMENT_MESSAGE = "Confirm it's you before adding a passkey.";
 
 /** Non-consuming check that this session may start or finish a passkey enrolment. */
 export async function canEnrolPasskey(db: Database, sessionId: string, userId: string, now = new Date()): Promise<boolean> {
@@ -132,7 +132,7 @@ export async function authorizePasskeyRemoval(
   if (!target) return;
   if (await freshStepUpPasskey(db, sessionId, user.id, PASSKEY_STEP_UP_MAX_AGE_MS, now)) return;
   if (!target.countsForStepUp && await consumeStepUpMarker(db, 'passkey_remove', sessionId, now) !== null) return;
-  throw stepUpRequired(await availableMethods(db, user, !target.countsForStepUp), 'Verify it is you before removing this passkey.');
+  throw stepUpRequired(await availableMethods(db, user, !target.countsForStepUp), "Confirm it's you before removing this passkey.");
 }
 
 export function passkeyEnrolmentPlugin(db: Database, resolveSession: SessionResolver) {
@@ -178,7 +178,7 @@ export function passkeyEnrolmentPlugin(db: Database, resolveSession: SessionReso
               // Not a missing proof: the credential still must not survive.
               logError('error', 'auth_passkey_enrolment_failed', error);
               await remove();
-              throw new APIError('INTERNAL_SERVER_ERROR', { message: 'Could not add the passkey. Try again.' });
+              throw new APIError('INTERNAL_SERVER_ERROR', { message: "Couldn't add the passkey. Try again." });
             }
           }
           if (via) return;

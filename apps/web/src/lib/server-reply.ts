@@ -6,7 +6,7 @@
 /** String 20: shown when a reply cannot be read. The HTTP status is not part of it. */
 export const SERVER_REPLY_TITLE = "OpenKey couldn't finish this request";
 export const SERVER_REPLY_BODY =
-  "OpenKey couldn't read the server's reply, so nothing was approved. Please try again. If it keeps happening, contact the app.";
+  "OpenKey couldn't read the server's reply, so nothing was approved. Try again. If it keeps happening, contact the app.";
 
 /** The failure code and message the widget reports to the host. No reply content. */
 export const SERVER_REPLY_ERROR = { code: 'UNKNOWN', message: 'SERVER_REPLY_UNREADABLE' } as const;

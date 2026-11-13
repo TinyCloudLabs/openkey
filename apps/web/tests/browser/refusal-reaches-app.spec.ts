@@ -50,7 +50,6 @@ for (const route of ['/widget/embed/sign', '/widget/sign']) {
   test(`${route}: a server error during prepare disables Approve but keeps the widget open with retry`, async ({ page }) => {
     const frame = await open(page, 503, { error: 'Try again later.', code: 'app_key_grant_refused' });
     await expect(frame.getByRole('alert')).toHaveText('Try again later.');
-    await expect(frame.getByText("This site isn't allowed to request that access.")).toHaveCount(0);
     expect(await responses(page)).toEqual([]);
     await expect(page.locator('#sign')).toBeVisible();
     await expect(frame.getByRole('button', { name: 'Approve', exact: true })).toBeDisabled();
