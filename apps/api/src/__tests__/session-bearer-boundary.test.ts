@@ -13,17 +13,28 @@ const now = Date.now();
 let sessionResolutions = 0;
 let signCalls = 0;
 let deletedUsers: string[] = [];
+const lockedUsers: string[] = [];
+const deletionRequests: string[] = [];
+let deletedKeyCount = 0;
 let lastPasskeyAt: Date | null = null;
 let sessionLookups: unknown[] = [];
 
 const tx = {
   $queryRaw: async () => [],
-  ethereumKey: { deleteMany: async () => ({ count: 1 }) },
+  accountDeletionJob: { create: async ({ data }: { data: { userId: string } }) => { deletionRequests.push(data.userId); return {}; } },
+  oauthAccessToken: { deleteMany: async () => ({ count: 0 }) },
+  oauthRefreshToken: { deleteMany: async () => ({ count: 0 }) },
+  tinyCloudBootstrapState: { findMany: async () => [] },
+  tinyCloudNativeGrant: { findMany: async () => [] },
+  tinyCloudNativePreparation: { findMany: async () => [] },
+  ethereumKey: { deleteMany: async () => { deletedKeyCount += 1; return { count: 1 }; } },
   passkey: { deleteMany: async () => ({ count: 1 }) },
   session: { deleteMany: async () => ({ count: 1 }) },
   account: { deleteMany: async () => ({ count: 1 }), findMany: async () => [] },
   verification: { deleteMany: async () => ({ count: 0 }) },
-  user: { delete: async ({ where }: { where: { id: string } }) => { deletedUsers.push(where.id); return {}; } },
+  user: {
+    update: async ({ where, data }: { where: { id: string }; data: { lockedAt: Date } }) => { if (data.lockedAt) lockedUsers.push(where.id); return {}; },
+    delete: async ({ where }: { where: { id: string } }) => { deletedUsers.push(where.id); return {}; } },
 };
 
 const prisma = {
@@ -255,7 +266,11 @@ describe('account controls (TC-689)', () => {
     lastPasskeyAt = new Date(Date.now() - 60_000);
     const response = await call('POST', '/api/account/delete', { origin: OPENKEY_ORIGIN }, { confirmation: 'DELETE MY ACCOUNT' });
     expect(response.status).toBe(200);
-    expect(deletedUsers).toEqual(['user_1']);
+    expect(await response.json()).toMatchObject({ success: true, state: 'deletion_requested' });
+    expect(deletionRequests).toEqual(['user_1']);
+    expect(lockedUsers).toEqual(['user_1']);
+    expect(deletedUsers).toEqual([]);
+    expect(deletedKeyCount).toBe(0);
   });
 
   test('delete still requires the typed confirmation', async () => {
