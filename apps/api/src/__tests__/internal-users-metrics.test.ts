@@ -576,6 +576,22 @@ test('POST / carries the maintained list behind the same token gate; GET stays b
     expect((await post(JSON.stringify({ disposableDomains: tooMany }))).status).toBe(400);
     expect((await post('{}', { 'content-length': '1000001' })).status).toBe(413);
     expect((await post(JSON.stringify({ disposableDomains: [], pad: 'x'.repeat(1_000_001) }))).status).toBe(413);
+
+    // A chunked body has no Content-Length: it is read as a stream and refused once over the cap.
+    const streamed = (chunks: string[]) =>
+      router.request('/', {
+        method: 'POST',
+        body: new ReadableStream({
+          start(controller) {
+            for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+            controller.close();
+          },
+        }),
+        headers: { authorization: 'Bearer test-metrics-token', 'content-type': 'application/json' },
+        duplex: 'half',
+      } as RequestInit);
+    expect((await streamed(['{"disposableDomains":', '["rotated.mailco.io"]}'])).status).toBe(200);
+    expect((await streamed(['{"pad":"', 'x'.repeat(600_000), 'x'.repeat(600_000), '"}'])).status).toBe(413);
   } finally {
     if (saved === undefined) delete process.env.INTERNAL_METRICS_TOKEN;
     else process.env.INTERNAL_METRICS_TOKEN = saved;
