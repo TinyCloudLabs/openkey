@@ -56,6 +56,7 @@
     buildRenderPlan,
     buildSummaryStatements,
     grantIsAppKeyDecrypt,
+    grantReachesSecretDataOrDecryption,
     sensitiveSummaryCount,
     grantHeading,
     PROTOCOL_HEADLINE,
@@ -69,6 +70,7 @@
   } from "@openkey/capability-review";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
   import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
+  import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
   import { requestedExpiryMs } from "$lib/approval-expiry";
 
   interface Props {
@@ -127,6 +129,8 @@
     expiryBounded?: boolean;
     /** With `expiryBounded`: the most the requester signed, when that is more than the default it asked for. */
     expiryMaxMs?: number | null;
+    /** The renewal checkbox (TC-2933); set only where the requester signed a renewal request. */
+    renewal?: RenewalChoice | null;
     onApprove: () => void;
     onCancel: () => void;
     onRetry?: () => void;
@@ -158,6 +162,7 @@
     onExpiryChange,
     expiryBounded = false,
     expiryMaxMs = null,
+    renewal = null,
     onApprove,
     onCancel,
     onRetry,
@@ -631,6 +636,9 @@
         maxMs={expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null}
         disabled={approving}
         onChange={onExpiryChange}
+        {renewal}
+        sensitive={selectedGrants.some(grantReachesSecretDataOrDecryption)}
+        {requestedBy}
       />
     {/if}
 

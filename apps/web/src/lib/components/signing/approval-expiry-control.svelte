@@ -1,16 +1,23 @@
 <script lang="ts">
-  // "Approval expires: 7d (Change)" (TC-2272). Shows how long the approval
-  // lasts, defaulting to what the app asked for, and lets the user choose
-  // another time from a few presets or a typed duration (5600s, 90m, 40d, 1y).
-  // It only reports the choice; the server writes it into the signed message.
+  // How long the approval lasts, and whether it renews (TC-2272, TC-2933).
+  // One line: a renewal checkbox where the requester can use a renewal lease,
+  // otherwise "This permission expires in <window>". The window and the lease
+  // can be changed under a closed fold. It only reports the choices; the
+  // server writes the window into the signed message and signs the lease.
   import {
     EXPIRY_PRESETS,
+    LEASE_PRESETS,
     LONG_EXPIRY_MS,
     LONG_EXPIRY_WARNING,
-    formatExpiry,
-    parseExpiry,
+    MAX_LEASE_MS,
+    SENSITIVE_RENEWAL_WINDOW_MS,
+    defaultLeaseMs,
     expiryLimitNote,
+    formatDuration,
+    leaseLimitNote,
   } from "$lib/approval-expiry";
+  import DurationChoice from "$lib/components/signing/duration-choice.svelte";
+  import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
 
   interface Props {
     /** How long the app asked for; null when it cannot be worked out. */
@@ -24,132 +31,147 @@
     maxMs?: number | null;
     disabled?: boolean;
     onChange: (ms: number | null) => void;
+    /** Set only when the requester signed a renewal request and can use a lease. */
+    renewal?: RenewalChoice | null;
+    /** The approval includes secrets or decrypt: turning renewal on asks first (spec D7). */
+    sensitive?: boolean;
+    /** Who is asking, as the screen names them, for the D7 warning. */
+    requestedBy?: string;
   }
 
-  let { requestedMs, chosenMs, maxMs = null, disabled = false, onChange }: Props = $props();
+  let {
+    requestedMs,
+    chosenMs,
+    maxMs = null,
+    disabled = false,
+    onChange,
+    renewal = null,
+    sensitive = false,
+    requestedBy = "",
+  }: Props = $props();
 
-  let open = $state(false);
-  let text = $state("");
-  let error = $state("");
-  let changeButton = $state<HTMLButtonElement | null>(null);
-  let customInput = $state<HTMLInputElement | null>(null);
+  let confirming = $state(false);
+  let confirmHeading = $state<HTMLHeadingElement | null>(null);
+  let checkbox = $state<HTMLInputElement | null>(null);
 
   const shownMs = $derived(chosenMs ?? requestedMs);
-  const presets = $derived(EXPIRY_PRESETS.filter((preset) => maxMs == null || preset.ms <= maxMs));
-  const typed = $derived(text.trim() === "" ? null : parseExpiry(text));
-  const warnMs = $derived(typed?.ok ? typed.ms : shownMs);
-  const showWarning = $derived(warnMs !== null && warnMs > LONG_EXPIRY_MS);
+  const leaseMaxMs = $derived(renewal ? Math.min(renewal.maxLeaseMs, MAX_LEASE_MS) : MAX_LEASE_MS);
+  const proposedLeaseMs = $derived(renewal ? defaultLeaseMs(leaseMaxMs) : 0);
+  const ticked = $derived(renewal !== null && renewal.leaseMs !== null);
+  // Spec D6 rule 4: a lease no longer than the window never renews, so the line says it expires.
+  const renews = $derived(ticked && shownMs !== null && renewal!.leaseMs! > shownMs);
+  const showWarning = $derived(shownMs !== null && shownMs > LONG_EXPIRY_MS);
 
-  function choose(ms: number) {
-    error = "";
-    text = "";
-    open = false;
+  function chooseWindow(ms: number) {
     onChange(ms === requestedMs ? null : ms);
-    changeButton?.focus();
   }
 
-  function applyTyped() {
-    const result = parseExpiry(text);
-    if (result.ok && maxMs != null && result.ms > maxMs) {
-      error = expiryLimitNote(maxMs);
-      customInput?.focus();
-      return;
-    }
-    if (!result.ok) {
-      error = result.message;
-      customInput?.focus();
-      return;
-    }
-    choose(result.ms);
+  function turnOn() {
+    renewal!.onChange(proposedLeaseMs);
   }
 
-  function close() {
-    open = false;
-    error = "";
-    changeButton?.focus();
+  function toggle(event: Event) {
+    const box = event.currentTarget as HTMLInputElement;
+    if (!box.checked) {
+      renewal!.onChange(null);
+      return;
+    }
+    if (sensitive) {
+      // Intentional friction (spec D7): the box stays unticked until the owner confirms.
+      box.checked = false;
+      confirming = true;
+      queueMicrotask(() => confirmHeading?.focus());
+      return;
+    }
+    turnOn();
+  }
+
+  function confirmRenewal() {
+    confirming = false;
+    turnOn();
+    // D6 rule 3: renewing secrets or decrypt uses a 7-day window, within what the requester signed.
+    const window = maxMs == null ? SENSITIVE_RENEWAL_WINDOW_MS : Math.min(SENSITIVE_RENEWAL_WINDOW_MS, maxMs);
+    if (window !== shownMs) chooseWindow(window);
+    queueMicrotask(() => checkbox?.focus());
+  }
+
+  function cancelRenewal() {
+    confirming = false;
+    queueMicrotask(() => checkbox?.focus());
   }
 
   // A choice made while the approval is being previewed or signed would not be in what gets signed.
   $effect(() => {
-    if (disabled) open = false;
+    if (disabled) confirming = false;
   });
 
   function onKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape" && open) {
+    if (event.key === "Escape" && confirming) {
       event.stopPropagation();
-      close();
+      cancelRenewal();
     }
   }
 </script>
 
 {#if shownMs !== null}
-  <div class="expiry" role="group" aria-label="Approval expiry" onkeydown={onKeydown}>
-    <p class="expiry-line">
-      <span class="expiry-label">Approval expires:</span>
-      <span class="expiry-value" data-testid="approval-expiry-value">{formatExpiry(shownMs)}</span>
-      <button
-        type="button"
-        class="expiry-change"
-        bind:this={changeButton}
-        aria-expanded={open}
-        aria-controls="approval-expiry-panel"
-        {disabled}
-        onclick={() => (open = !open)}
-      >
-        (Change)
-      </button>
-    </p>
-    {#if open}
-      <div class="expiry-panel" id="approval-expiry-panel">
-        <div class="expiry-presets" role="group" aria-label="Preset times">
-          {#each presets as preset (preset.label)}
-            <button
-              type="button"
-              class="expiry-preset"
-              {disabled}
-              aria-pressed={shownMs === preset.ms}
-              onclick={() => choose(preset.ms)}
-            >
-              {preset.label}
-            </button>
-          {/each}
+  <div class="expiry" role="group" aria-label="How long this permission lasts" onkeydown={onKeydown}>
+    {#if confirming}
+      <div class="renewal-confirm" role="alertdialog" aria-labelledby="renewal-confirm-heading" aria-describedby="renewal-confirm-body">
+        <h3 class="renewal-confirm-heading" id="renewal-confirm-heading" tabindex="-1" bind:this={confirmHeading}>Renew sensitive access?</h3>
+        <p id="renewal-confirm-body">This lets {requestedBy} keep the Sensitive access listed here for up to {formatDuration(proposedLeaseMs)}, without asking you again.</p>
+        <div class="renewal-confirm-actions">
+          <button type="button" class="renewal-confirm-no" onclick={cancelRenewal}>Don't renew</button>
+          <button type="button" class="renewal-confirm-yes" onclick={confirmRenewal}>Turn on renewal</button>
         </div>
-        <form
-          class="expiry-custom"
-          onsubmit={(event) => {
-            event.preventDefault();
-            applyTyped();
-          }}
-        >
-          <label class="expiry-custom-label" for="approval-expiry-custom">Or type a time</label>
-          <div class="expiry-custom-row">
-            <input
-              id="approval-expiry-custom"
-              class="expiry-input"
-              {disabled}
-              type="text"
-              inputmode="text"
-              autocomplete="off"
-              autocapitalize="off"
-              spellcheck="false"
-              placeholder="5600s, 90m, 40d, 1y"
-              bind:this={customInput}
-              bind:value={text}
-              oninput={() => (error = "")}
-              aria-invalid={error ? "true" : undefined}
-              aria-describedby={error ? "approval-expiry-error" : undefined}
-            />
-            <button type="submit" class="expiry-set" {disabled}>Set</button>
-          </div>
-          {#if error}
-            <p class="expiry-error" id="approval-expiry-error" role="alert">{error}</p>
+      </div>
+    {:else if renewal}
+      <label class="renewal-line">
+        <input
+          type="checkbox"
+          class="renewal-box"
+          bind:this={checkbox}
+          checked={ticked}
+          {disabled}
+          onchange={toggle}
+        />
+        <span data-testid="approval-expiry-line">
+          {#if renews}
+            This permission renews automatically for up to {formatDuration(renewal.leaseMs!)}
+          {:else}
+            This permission expires in {formatDuration(shownMs)}
           {/if}
-        </form>
-        {#if maxMs != null && !error}
-          <p class="expiry-note" id="approval-expiry-note">{expiryLimitNote(maxMs)}</p>
+        </span>
+      </label>
+    {:else}
+      <p class="expiry-line" data-testid="approval-expiry-line">This permission expires in {formatDuration(shownMs)}</p>
+    {/if}
+    <details class="expiry-fold">
+      <summary>How long it lasts</summary>
+      <div class="expiry-panel">
+        <DurationChoice
+          id="approval-expiry"
+          legend="Expires after"
+          presets={EXPIRY_PRESETS}
+          valueMs={shownMs}
+          {maxMs}
+          limitNote={expiryLimitNote}
+          {disabled}
+          onChoose={chooseWindow}
+        />
+        {#if renewal && renewal.leaseMs !== null}
+          <DurationChoice
+            id="approval-lease"
+            legend="Renews for up to"
+            presets={LEASE_PRESETS}
+            valueMs={renewal.leaseMs}
+            maxMs={leaseMaxMs}
+            limitNote={leaseLimitNote}
+            {disabled}
+            onChoose={(ms) => renewal!.onChange(ms)}
+          />
         {/if}
       </div>
-    {/if}
+    </details>
     {#if showWarning}
       <p class="expiry-warning" role="status">{LONG_EXPIRY_WARNING}</p>
     {/if}
@@ -170,91 +192,82 @@
     margin: 0;
     overflow-wrap: anywhere;
   }
-  .expiry-value {
-    font-weight: 600;
-    color: #0f172a;
-  }
-  .expiry-change {
-    background: none;
-    border: 0;
-    padding: 6px 4px;
-    margin: -6px 0;
-    font: inherit;
-    color: #1d4ed8;
-    cursor: pointer;
-    text-decoration: underline;
+  .renewal-line {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
     min-height: 40px;
+    color: #0f172a;
+    cursor: pointer;
+    overflow-wrap: anywhere;
   }
-  .expiry-change:disabled {
-    color: #94a3b8;
-    cursor: not-allowed;
+  .renewal-box {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    margin: 0;
+    accent-color: #1d4ed8;
+  }
+  .expiry-fold > summary {
+    width: fit-content;
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+    font-size: 12px;
+    color: #475569;
+    cursor: pointer;
   }
   .expiry-panel {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 14px;
+    margin-top: 6px;
     padding: 10px 12px;
     background: #f8fafc;
     border: 1px solid #e2e8f0;
     border-radius: 12px;
   }
-  .expiry-presets {
+  .renewal-confirm {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    color: #0f172a;
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    border-radius: 12px;
+  }
+  .renewal-confirm-heading {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .renewal-confirm p {
+    margin: 0;
+  }
+  .renewal-confirm-actions {
     display: flex;
     flex-wrap: wrap;
+    justify-content: flex-end;
     gap: 8px;
   }
-  .expiry-preset,
-  .expiry-set {
+  .renewal-confirm-actions button {
     min-height: 40px;
-    min-width: 56px;
-    padding: 0 12px;
+    padding: 0 14px;
     font: inherit;
     font-weight: 600;
-    color: #0f172a;
-    background: #fff;
-    border: 1px solid #cbd5e1;
     border-radius: 10px;
     cursor: pointer;
   }
-  .expiry-preset[aria-pressed="true"] {
-    border-color: #1d4ed8;
-    box-shadow: inset 0 0 0 1px #1d4ed8;
-  }
-  .expiry-custom {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .expiry-custom-label {
-    font-size: 12px;
-    font-weight: 600;
-  }
-  .expiry-custom-row {
-    display: flex;
-    gap: 8px;
-  }
-  .expiry-input {
-    flex: 1;
-    min-width: 0;
-    min-height: 40px;
-    padding: 0 10px;
-    /* 16px keeps iOS from zooming the page when the box is focused. */
-    font-size: 16px;
+  .renewal-confirm-no {
+    color: #0f172a;
+    background: #fff;
     border: 1px solid #cbd5e1;
-    border-radius: 10px;
-    box-sizing: border-box;
   }
-  .expiry-input[aria-invalid="true"] {
-    border-color: #b91c1c;
-  }
-  .expiry-error {
-    margin: 0;
-    color: #b91c1c;
-  }
-  .expiry-note {
-    margin: 0;
-    font-size: 12px;
-    color: #475569;
+  .renewal-confirm-yes {
+    color: #fff;
+    background: #92400e;
+    border: 1px solid #92400e;
   }
   .expiry-warning {
     margin: 0;
@@ -264,7 +277,7 @@
     border: 1px solid #fde68a;
     border-radius: 10px;
   }
-  .expiry :is(button, input):focus-visible {
+  .expiry :is(button, input, summary, h3):focus-visible {
     outline: 2px solid #1d4ed8;
     outline-offset: 2px;
   }

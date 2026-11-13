@@ -19,6 +19,15 @@
 // non-authorization concerns; those never enter the adapter and never
 // enter the parity test.
 
+/** The renewal checkbox (TC-2933), offered only where the requester signed a renewal request. */
+export interface RenewalChoice {
+  /** The lease the owner chose, in ms from approval; null when the box is unticked. */
+  leaseMs: number | null;
+  /** The longest lease the requester signed (never more than a year). */
+  maxLeaseMs: number;
+  onChange: (leaseMs: number | null) => void;
+}
+
 /** Transport injected by the CLI (`/delegate`) route. */
 export interface CliSigningTransport {
   /**
@@ -69,6 +78,8 @@ export interface CliSigningTransport {
     maxMs?: number | null;
     onChange: (ms: number | null) => void;
   };
+  /** The renewal checkbox; set only on an approval request that signed a renewal request. */
+  renewal?: RenewalChoice;
   /**
    * Set while the prepared authorization does not match the visible
    * selection (a narrowing `/prepare` failed or never ran). Approve stays

@@ -43,7 +43,7 @@
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
   import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
-  import { requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
+  import { MAX_LEASE_MS, defaultLeaseMs, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -53,6 +53,7 @@
   import {
     parseCapabilityReview,
     defaultSelection,
+    grantReachesSecretDataOrDecryption,
     type CapabilityReviewModel,
   } from '@openkey/capability-review';
 
@@ -314,6 +315,20 @@
   let requestedExpiryParam: string | null = null;
   // The longest the requester signed (a signed approval request or a device request); null on a plain link.
   let expiryMaxMs = $state<number | null>(null);
+  // TC-2933: the renewal checkbox, offered only when the approval request signed a renewal request
+  // (its longest lease). `renewalLeaseMs` is the owner's lease, null while the box is unticked.
+  let renewalMaxLeaseMs = $state<number | null>(null);
+  let renewalStanding = false;
+  let renewalDefaulted = false;
+  let renewalLeaseMs = $state<number | null>(null);
+  // Spec D12: standing access starts ticked; D7: never when it reaches secrets or decrypt; D11: no purpose is a task.
+  $effect(() => {
+    if (renewalDefaulted || renewalMaxLeaseMs === null || !reviewModel) return;
+    renewalDefaulted = true;
+    if (renewalStanding && !reviewModel.permissions.some(grantReachesSecretDataOrDecryption)) {
+      renewalLeaseMs = defaultLeaseMs(renewalMaxLeaseMs);
+    }
+  });
   async function changeApprovalExpiry(ms: number | null) {
     if (!selectedKey || !jwk) {
       error = 'Missing key or JWK parameter.';
@@ -591,6 +606,10 @@
       // The requester signs its longest lifetime; the owner starts from its suggestion (the maximum when it gives none).
       expiryMaxMs = request.grantLifetimeSeconds * 1000;
       expiryParam = `${request.suggestedLifetimeSeconds ?? request.grantLifetimeSeconds}s`;
+      if (request.renewal) {
+        renewalMaxLeaseMs = Math.min(request.renewal.leaseLifetimeSeconds * 1000, MAX_LEASE_MS);
+        renewalStanding = request.purpose === 'standing';
+      }
       approvalRequestLoaded = true;
     } catch (cause) {
       error = delegateErrorMessage(cause);
@@ -1226,6 +1245,11 @@
           body.linkExpiry = requestedExpiryParam ?? '';
           if (linkExpiryChangeable) body.expiryChangeable = true;
         }
+      }
+      if (approvalRequestMode && renewalMaxLeaseMs !== null) {
+        body.renewal = renewalLeaseMs === null
+          ? { choice: 'finite' }
+          : { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000) };
       }
       if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
 
@@ -1937,6 +1961,13 @@
                   maxMs: expiryMaxMs,
                   onChange: changeApprovalExpiry,
                 },
+                ...(renewalMaxLeaseMs !== null ? {
+                  renewal: {
+                    leaseMs: renewalLeaseMs,
+                    maxLeaseMs: renewalMaxLeaseMs,
+                    onChange: (ms: number | null) => { renewalLeaseMs = ms; },
+                  },
+                } : {}),
               }}
             />
           </div>
