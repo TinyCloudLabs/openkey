@@ -25,6 +25,7 @@ test('database restart retains progress and keys until all hosts finish', async 
     await db.session.create({ data: { id: 'session', userId: 'owner', token: 'synthetic-token', expiresAt: new Date(Date.now() + 60_000) } });
     await db.$transaction(tx => commitDeletionRequest(tx, 'owner', [{ hostId: 'a', url: 'a' }, { hostId: 'b', url: 'b' }, { hostId: 'production', url: 'https://node.tinycloud.xyz' }]));
     const jobId = (await db.accountDeletionJob.findUniqueOrThrow({ where: { userId: 'owner' } })).id;
+    expect(jobId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
     expect(await db.session.count()).toBe(0);
     // A newly attempted session must be refused even while key rows exist.
     process.env.DATABASE_URL = `pglite:${dir}`;

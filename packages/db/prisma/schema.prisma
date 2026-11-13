@@ -926,7 +926,7 @@ model RevokedAccessToken {
 model AccountDeletionJob {
   leaseToken String?
   leaseUntil DateTime?
-  id String @id @default(cuid())
+  id String @id @default(uuid())
   userId String @unique
   state String @default("deletion_requested")
   progress Json
