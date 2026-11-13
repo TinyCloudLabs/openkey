@@ -77,7 +77,7 @@ jobs:
       - name: Build packages
         run: |
           bun run db:generate
-          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review
+          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review --filter @openkey/core
 
       - name: TEE mode tests
         run: bun test packages/tee/tests/tee-mode.test.ts apps/api/src/__tests__/tee-mode-startup.test.ts

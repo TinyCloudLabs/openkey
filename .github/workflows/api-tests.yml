@@ -41,7 +41,7 @@ jobs:
       - name: Build packages
         run: |
           bun run db:generate
-          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review
+          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review --filter @openkey/core
 
       - name: API tests
         run: bun test apps/api/src/__tests__ scripts/deploy-production-migrations.test.ts
