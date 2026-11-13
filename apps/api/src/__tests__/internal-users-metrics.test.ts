@@ -88,7 +88,8 @@ const accounts: Account[] = [
   { id: 'u-team-case', email: 'Someone@TinyCloudLabs.com', lastSession: session },
   { id: 'u-agent', email: 'agent@gmail.com', lastSession: session },
   { id: 'u-agent-digit', email: 'qa2@gmail.com', lastSession: session },
-  { id: 'u-throwaway', email: 'testing-person@mailinator.com', lastSession: session },
+  { id: 'u-disposable', email: 'testing-person@mailinator.com', lastSession: session }, // also test-like: the domain bucket wins
+  { id: 'u-throwaway', email: 'jo@corp.invalid', lastSession: session },
   { id: 'u-subdomain', email: 'jane@mail.example.com', lastSession: session },
   { id: 'u-plus', email: 'jane+test@gmail.com', lastSession: session },
   { id: 'u-testlike', email: 'mydemo@gmail.com', lastSession: session },
@@ -108,6 +109,7 @@ test('each account lands in exactly one bucket, in precedence order', async () =
   expect(result.buckets).toEqual({
     team_by_wallet: 2, // second one also has a team-domain email, wallet wins
     internal_team_domain: 2,
+    disposable_mail_domain: 1,
     internal_agent_or_qa: 2,
     test_or_throwaway_domain: 2,
     plus_addressed: 1,
@@ -130,6 +132,7 @@ test('classifyAccount: earlier rules win over later ones', () => {
     classifyAccount({ id: 'x', email, ...facts, ...over }, new Set(excluded));
   expect(classify('qa+1@openkey.so', ['x'], { teamByWallet: true })).toBe('team_by_wallet');
   expect(classify('qa+1@openkey.so')).toBe('internal_team_domain');
+  expect(classify('qa+1@mailinator.com', ['x'])).toBe('disposable_mail_domain'); // before agent-name, plus, explicit, bot
   expect(classify('test+1@gmail.com')).toBe('internal_agent_or_qa');
   expect(classify('person+1@example.org')).toBe('test_or_throwaway_domain');
   expect(classify('person+demo@gmail.com')).toBe('plus_addressed');
@@ -140,6 +143,68 @@ test('classifyAccount: earlier rules win over later ones', () => {
   expect(classify('person@gmail.com', [], { hasSession: false, hasKey: true, botLike: false })).toBe('real');
   // Agent-name rule needs a boundary: "alexander" is not "alex".
   expect(classify('alexander@gmail.com')).toBe('bot_like');
+});
+
+test('disposable_mail_domain: built-in providers, subdomains, families and QA mail catchers', () => {
+  const classify = (email: string) =>
+    classifyAccount({ id: 'x', email, teamByWallet: false, hasSession: true, hasKey: false, botLike: false }, new Set());
+  for (const domain of [
+    'mailinator.com', 'MAILINATOR.COM', 'foo.mailinator.com',
+    'guerrillamail.com', 'guerrillamail.net', 'guerrillamail.de', 'guerrillamailblock.com', 'sharklasers.com', 'grr.la',
+    'mail.tm', 'fldubai.com', 'maxxspace.com',
+    'maildrop.cc', '10minutemail.com', '10minutemail.net', 'yopmail.com', 'yopmail.fr', 'temp-mail.org', 'tempmail.net',
+    'trashmail.com', 'trashmail.de', 'getnada.com',
+    'mailpit.local', 'mailhog.example.org', 'mail.mailcatcher',
+  ]) {
+    expect(classify(`user1@${domain}`), domain).toBe('disposable_mail_domain');
+  }
+  // Look-alikes and real providers are not matched.
+  for (const domain of ['gmail.com', 'notmailinator.com', 'mailinator.com.au.example', 'fldubai.com.evil.io', 'proton.me', 'maxxspace.co']) {
+    expect(classify(`user1@${domain}`), domain).not.toBe('disposable_mail_domain');
+  }
+});
+
+test('SCOREBOARD_DISPOSABLE_DOMAINS extends the built-in list: trimmed, case-insensitive, @ and *. prefixes, subdomains, invalid entries ignored', async () => {
+  const people: Account[] = [
+    { id: 'a', email: 'p1@newrotation.mailco.io', lastSession: session },
+    { id: 'b', email: 'p2@Second-Domain.net', lastSession: session },
+    { id: 'c', email: 'p3@sub.third.org', lastSession: session },
+    { id: 'd', email: 'p4@gmail.com', lastSession: session },
+    { id: 'e', email: 'p5@mailinator.com', lastSession: session }, // built-in still applies
+  ];
+  const before = await collectUserMetrics(fakeDatabase(people).database, {}, now);
+  expect(before.buckets.disposable_mail_domain).toBe(1);
+  expect(before.real).toBe(4);
+
+  const extended = await collectUserMetrics(fakeDatabase(people).database, {
+    SCOREBOARD_DISPOSABLE_DOMAINS: ' newrotation.mailco.io , @second-domain.NET,*.third.org,,not a domain,gmail,',
+  }, now);
+  expect(extended.buckets.disposable_mail_domain).toBe(4);
+  expect(extended.real).toBe(1); // only the gmail.com account; the bare word "gmail" is not a domain and was ignored
+  for (const unset of [{}, { SCOREBOARD_DISPOSABLE_DOMAINS: '' }, { SCOREBOARD_DISPOSABLE_DOMAINS: ' , ' }]) {
+    expect((await collectUserMetrics(fakeDatabase(people).database, unset, now)).buckets.disposable_mail_domain).toBe(1);
+  }
+});
+
+test('a real-data shaped split (1,601 accounts) lands in the expected buckets', async () => {
+  const many: Account[] = [];
+  const add = (count: number, domain: (i: number) => string, prefix: string) => {
+    for (let i = 0; i < count; i += 1) many.push({ id: `${prefix}${i}`, email: `user${prefix}${i}@${domain(i)}`, lastSession: session });
+  };
+  add(823, () => 'mailinator.com', 'm');
+  add(471, () => 'fldubai.com', 'f'); // mail.tm's current domain
+  add(174, () => 'maxxspace.com', 'x');
+  const guerrilla = ['guerrillamail.com', 'guerrillamailblock.com', 'sharklasers.com', 'guerrillamail.net'];
+  add(67, (i) => guerrilla[i % guerrilla.length]!, 'g');
+  add(8, () => 'tinycloud.xyz', 't');
+  add(58, () => 'gmail.com', 'r');
+  const result = await collectUserMetrics(fakeDatabase(many).database, {}, now);
+  expect(result.total).toBe(1601);
+  expect(result.buckets.disposable_mail_domain).toBe(823 + 471 + 174 + 67);
+  expect(result.buckets.internal_team_domain).toBe(8);
+  expect(result.real).toBe(58);
+  const bucketed = Object.values(result.buckets as Record<string, number>).reduce((sum, n) => sum + n, 0);
+  expect(bucketed + result.real).toBe(1601);
 });
 
 test('wallet exclusion: lowercase compare, every key of the person drops out, invalid entries are ignored', async () => {

@@ -34,13 +34,26 @@ const ADDRESS_PATTERN = /^0x[0-9a-f]{40}$/;
 const INTERNAL_TEAM_DOMAIN = /^(tinycloud\.xyz|tinycloudlabs\.[a-z]+|gbafa\.com|openkey\.so|spruceid\.com)$/;
 const INTERNAL_AGENT_OR_QA_NAME =
   /^(qa|agent|bot|probe|canary|smoke|e2e|test|ci|julie|courier|orchard|holden|naomi|amos|alex|bobbie|clarissa|fred|miller|avasarala)([^a-z]|$)/;
-const TEST_OR_THROWAWAY_DOMAIN =
-  /(^|\.)(example\.[a-z]+|test|invalid|localhost|mailinator\.com|guerrillamail\.[a-z]+|10minutemail\.[a-z]+|yopmail\.com|tempmail\.[a-z]+)$/;
+const TEST_OR_THROWAWAY_DOMAIN = /(^|\.)(example\.[a-z]+|test|invalid|localhost)$/;
+// Disposable mail providers. Built-in list; SCOREBOARD_DISPOSABLE_DOMAINS (comma-separated)
+// adds more without a code change, because rotating providers (mail.tm) change domain.
+// Entries match the domain itself and any subdomain.
+const DISPOSABLE_MAIL_DOMAINS = [
+  'mailinator.com', 'sharklasers.com', 'grr.la', 'maildrop.cc', 'getnada.com', 'nada.email',
+  'throwawaymail.com', 'dispostable.com', 'maxxspace.com',
+  // mail.tm / mail.gw and the domain mail.tm uses today (it rotates).
+  'mail.tm', 'mail.gw', 'fldubai.com',
+];
+// Provider families with many TLDs or domains, and QA mail catchers (Mailpit, MailHog, MailCatcher).
+const DISPOSABLE_MAIL_FAMILIES =
+  /(^|\.)(guerrillamail[a-z]*\.[a-z]+|10minutemail\.[a-z]+|yopmail\.[a-z]+|tempmail\.[a-z]+|temp-mail\.[a-z]+|trashmail\.[a-z]+|(mailpit|mailhog|mailcatcher)(\.[a-z0-9-]+)*)$/;
+const DOMAIN_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 const TEST_LIKE_NAME = /(test|qa|probe|canary|smoke|e2e|bot|agent|demo|dummy|fake)/;
 
 export const USER_BUCKETS = [
   'team_by_wallet',
   'internal_team_domain',
+  'disposable_mail_domain',
   'internal_agent_or_qa',
   'test_or_throwaway_domain',
   'plus_addressed',
@@ -72,12 +85,22 @@ export type UserMetrics = {
   apps: AppUsers[];
 };
 
-export function classifyAccount(account: AccountFacts, excludedUserIds: ReadonlySet<string>): UserBucket {
+function isDisposableDomain(domain: string, extra: ReadonlySet<string>): boolean {
+  if (DISPOSABLE_MAIL_FAMILIES.test(domain)) return true;
+  return [...DISPOSABLE_MAIL_DOMAINS, ...extra].some((d) => domain === d || domain.endsWith(`.${d}`));
+}
+
+export function classifyAccount(
+  account: AccountFacts,
+  excludedUserIds: ReadonlySet<string>,
+  extraDisposableDomains: ReadonlySet<string> = new Set(),
+): UserBucket {
   if (account.teamByWallet) return 'team_by_wallet';
   const [local = '', domain = ''] = account.email.split('@');
   const lowerLocal = local.toLowerCase();
   const lowerDomain = domain.toLowerCase();
   if (INTERNAL_TEAM_DOMAIN.test(lowerDomain)) return 'internal_team_domain';
+  if (isDisposableDomain(lowerDomain, extraDisposableDomains)) return 'disposable_mail_domain';
   if (INTERNAL_AGENT_OR_QA_NAME.test(lowerLocal)) return 'internal_agent_or_qa';
   if (TEST_OR_THROWAWAY_DOMAIN.test(lowerDomain)) return 'test_or_throwaway_domain';
   if (local.includes('+')) return 'plus_addressed';
@@ -96,6 +119,11 @@ export async function collectUserMetrics(
 ): Promise<UserMetrics> {
   const list = (value: string | undefined) => (value ?? '').split(',').map((item) => item.trim()).filter(Boolean);
   const excluded = new Set(list(env.SCOREBOARD_EXCLUDE_USER_IDS));
+  const extraDisposable = new Set(
+    list(env.SCOREBOARD_DISPOSABLE_DOMAINS)
+      .map((d) => d.toLowerCase().replace(/^@/, '').replace(/^\*\./, ''))
+      .filter((d) => DOMAIN_PATTERN.test(d)),
+  );
   const addresses = [...new Set(list(env.SCOREBOARD_EXCLUDE_ADDRESSES).map((a) => a.toLowerCase()))]
     .filter((a) => ADDRESS_PATTERN.test(a));
   const since7d = new Date(now.getTime() - 7 * DAY_MS);
@@ -141,7 +169,7 @@ export async function collectUserMetrics(
       hasSession: lastActive.has(user.id),
       hasKey: hasKey.has(user.id),
       botLike: botLike.has(user.id),
-    }, excluded);
+    }, excluded, extraDisposable);
     if (bucket !== 'real') {
       buckets[bucket] += 1;
       continue;
