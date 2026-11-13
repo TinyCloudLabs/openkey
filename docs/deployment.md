@@ -386,12 +386,6 @@ overwrite operator changes. Re-run this inspection after rollout to confirm
 the image and migration state and check `unclassified_passkeys`. A zero count
 means the passkey deploy-window backfill above is unnecessary.
 
-The 2026-11-13 preflight found the Courier canary audience
-`https://courier-canary-1e7fgu.tinycloud.xyz/mcp` appended to the live compose.
-The tracked compose preserves that existing audience, including when
-`OAUTH_VALID_AUDIENCES` is supplied through the encrypted environment. Removing
-it belongs to a separately authorized canary retirement, not this release.
-
 For a combined web/API prepared-handoff release, merging to `main` can publish
 the Pages `/delegate` page before the manual API deployment. The v2 page first
 checks the authenticated, non-cached `/api/delegate/handoffs/available` route;
