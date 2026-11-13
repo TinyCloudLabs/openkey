@@ -186,7 +186,7 @@ describe('a first-party origin', () => {
   const previews = FIRST_PARTY_PAGES_SUBDOMAINS.flatMap((name) => [`https://${name}.pages.dev`, `https://a1b2c3d4.${name}.pages.dev`, `https://feat-x.${name}.pages.dev`]);
   const origins = [...FIRST_PARTY_ENCRYPTION_ORIGINS, ...previews];
 
-  test('the list is the one briefed: seven production origins and our own Pages projects', () => {
+  test('the list is the one briefed: eight production origins and our own Pages projects', () => {
     expect([...FIRST_PARTY_ENCRYPTION_ORIGINS].sort()).toEqual([
       'http://tauri.localhost',
       'https://home.tinycloud.xyz',
@@ -194,6 +194,7 @@ describe('a first-party origin', () => {
       'https://secrets.tinycloud.xyz',
       'https://share.tinycloud.xyz',
       'https://tinycloud.chat',
+      'https://tinycloud.one',
       'tauri://localhost',
     ]);
     expect([...FIRST_PARTY_PAGES_SUBDOMAINS].sort()).toEqual(['openkey-tinycloud-demo', 'share-2fz', 'tinychat-4jq', 'tinycloud-secrets']);
@@ -223,6 +224,7 @@ describe('the TinyCloud Home sign-in', () => {
 
   test.each([
     ['https://tinycloud.chat'],
+    ['https://tinycloud.one'],
     [HOME],
   ])('%s signs the bare-network decrypt and network.create, as text and as 0x hex', async (origin) => {
     const siwe = siweWith(origin, SHAPES[1]![1]);
@@ -342,6 +344,13 @@ describe('the Inbox sign-in', () => {
 describe('look-alikes of a first-party origin are not first-party', () => {
   const lookAlikes = [
     'https://tinycloud.chat.evil.example',
+    'https://www.tinycloud.one',
+    'https://other.tinycloud.one',
+    'https://evil-tinycloud.one',
+    'https://tinycloud.one.evil.example',
+    'https://tinycloud.one:8443',
+    'http://tinycloud.one',
+    'https://TINYCLOUD.ONE',
     'https://evil-tinycloud.chat',
     'https://tinycloud.chat:8443',
     'http://tinycloud.chat',
