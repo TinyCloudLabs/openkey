@@ -42,7 +42,7 @@
   import { activeKeys, autoSelectKey } from '$lib/delegate-key-selection';
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
-  import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
+  import { startCodeCountdown, remainingFromServerClock, formatCodeCountdown, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
   import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
   import { requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import {
@@ -161,7 +161,11 @@
       deadline,
       onUpdate: (snapshot) => {
         codeCountdown = snapshot;
-        if (snapshot.announcement) codeAnnouncement = snapshot.announcement;
+        if (snapshot.announcement) {
+          codeAnnouncement = approvalRequestMode && snapshot.expired
+            ? 'Code expired. Tell your agent to check your request.'
+            : snapshot.announcement;
+        }
       },
     });
   });
@@ -1255,10 +1259,15 @@
       }
 
       const data = await res.json();
+      const codeTiming = approvalRequestMode ? {
+        serverDate: res.headers.get('date'),
+        wallTime: Date.now(),
+        monotonicTime: performance.now(),
+      } : undefined;
       if (!data.hostActivated) {
         await activateWithHost(host, data.delegationHeader);
       }
-      await finishDelegate(data);
+      await finishDelegate(data, codeTiming);
     } catch (cause) {
       const classification = delegateErrorClassification(cause, refreshAttempted);
       if (classification === 'panel-after-failed-refresh') {
@@ -1407,10 +1416,15 @@
       }
 
       const data = await compRes.json();
+      const codeTiming = approvalRequestMode ? {
+        serverDate: compRes.headers.get('date'),
+        wallTime: Date.now(),
+        monotonicTime: performance.now(),
+      } : undefined;
       if (!data.hostActivated) {
         await activateWithHost(host, data.delegationHeader);
       }
-      await finishDelegate(data);
+      await finishDelegate(data, codeTiming);
     } catch (cause) {
       const classification = delegateErrorClassification(cause, refreshAttempted);
       if (classification === 'panel-after-failed-refresh') {
@@ -1440,12 +1454,31 @@
     }
   }
 
-  async function finishDelegate(data: any) {
+  async function finishDelegate(data: any, codeTiming?: {
+    serverDate: string | null;
+    wallTime: number;
+    monotonicTime: number;
+  }) {
     const payload = permissionsEdited ? { ...data, edited: true } : data;
     spaceReadiness = spaceReadinessResult(payload, spaceSetup);
     if (approvalRequestMode) {
       // The authenticated API has durably encrypted and saved this exact
       // delegation before returning; the CLI independently verifies and ACKs.
+      const approvalCode = data.approvalCode;
+      if (codeTiming && typeof approvalCode?.code === 'string'
+        && /^[a-z2-7]{4}-[a-z2-7]{4}$/i.test(approvalCode.code)
+        && typeof approvalCode.expiresAt === 'string') {
+        const expiryMs = Date.parse(approvalCode.expiresAt);
+        const serverMs = codeTiming.serverDate === null ? NaN : Date.parse(codeTiming.serverDate);
+        const remainingMs = Number.isFinite(serverMs)
+          ? expiryMs <= serverMs ? 0 : remainingFromServerClock(approvalCode.expiresAt, codeTiming.serverDate)
+          : Number.isFinite(expiryMs) ? Math.max(0, expiryMs - codeTiming.wallTime) : null;
+        if (remainingMs !== null && remainingMs <= 6 * 60_000) {
+          shortCode = approvalCode.code.toUpperCase();
+          // Allow for Date header rounding; elapsed delivery time stays monotonic.
+          codeDeadline = codeTiming.monotonicTime + Math.max(0, remainingMs - 1000);
+        }
+      }
       done = true;
       step = 'done';
       sessionStorage.removeItem(`openkey.approval.${approvalRequestId}`);
@@ -1644,7 +1677,7 @@
     </div>
   </div>
 {:else}
-<div class="min-h-screen bg-[#fafafa] flex flex-col items-center justify-center px-4 py-8">
+<div class="min-h-screen bg-[#fafafa] flex flex-col items-center justify-center px-4 py-8" class:approval-confirmation={approvalRequestMode && step === 'done'}>
   <div class="w-full max-w-sm flex flex-col items-center gap-6">
     <!-- Logo mark -->
     <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-surface-800 to-surface-900 flex items-center justify-center shadow-sm">
@@ -1673,7 +1706,35 @@
             </div>
           {/if}
 
-          {#if pasteCode}
+          {#if approvalRequestMode}
+            <h2 class="text-lg font-semibold text-surface-900 mb-2">Approved</h2>
+            {#if shortCode && codeCountdown}
+              <p class="text-surface-500 text-sm mb-4">{codeCountdown.expired ? "Tell your agent you've approved." : "Tell your agent you've approved, or paste this code into your chat."}</p>
+              <div class="w-full rounded-xl bg-surface-50 border border-surface-200 px-3 py-4">
+                <div class="font-mono text-2xl font-semibold tracking-widest select-all {codeCountdown.expired ? 'text-surface-400 line-through' : 'text-surface-900'}">{shortCode}</div>
+                <p role="timer" aria-live="off" class="text-sm mt-2 {codeCountdown.expired ? 'font-medium text-amber-900' : 'text-surface-600'}">
+                  {#if codeCountdown.expired}
+                    Code expired. Tell your agent to check your request.
+                  {:else}
+                    Works once. Expires in {formatCodeCountdown(codeCountdown.remainingMs)}.
+                  {/if}
+                </p>
+              </div>
+              <p class="sr-only" role="status" aria-live="polite">{codeAnnouncement}</p>
+              <button
+                class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={codeCountdown.expired}
+                onclick={() => {
+                  if (codeDeadline !== null && performance.now() < codeDeadline) void copyCode(shortCode);
+                }}
+              >{copied ? 'Copied' : 'Copy code'}</button>
+              {#if error}
+                <p class="text-surface-600 text-sm mt-3" role="alert">{error}</p>
+              {/if}
+            {:else}
+              <p class="text-surface-500 text-sm">Tell your agent to check your request.</p>
+            {/if}
+          {:else if pasteCode}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Delegation Created</h2>
             {#if callbackFailed}
               <p class="text-surface-500 text-sm mb-4">Could not reach the CLI automatically. Enter the code below in your CLI to finish signing in.</p>
@@ -2141,6 +2202,11 @@
 <style>
   @media (max-width: 480px) {
     .expired-request {
+      padding-top: 1rem;
+    }
+    .approval-confirmation {
+      min-height: 0;
+      justify-content: flex-start;
       padding-top: 1rem;
     }
   }
