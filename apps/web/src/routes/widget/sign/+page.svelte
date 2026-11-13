@@ -36,6 +36,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
 
   const session = authClient.useSession();
 
+  let signInContinuation: { token: string; requestId: string; chainId: number } | undefined;
   let message = $state('');
   let messageProtocolVersion = $state<number | null>(null);
   // The JWK carried by a versioned sign request. Required by the
@@ -229,6 +230,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       return;
     }
     const data = request.data;
+    signInContinuation = data.signInContinuation as typeof signInContinuation;
     currentRequestId = request.requestId;
     message = String(data.message ?? '');
     messageProtocolVersion = request.protocolVersion;
@@ -754,6 +756,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
               presentation: requestPresentation ?? undefined,
               reportedOrigin: reportedOriginForPrepare,
               requestOrigin: origin === '*' ? undefined : origin,
+              signInContinuation,
               // Bound into the authorization context: the server refuses a changed expiry unless the app opted in.
               ...(expiryChangeable ? { expiryChangeable: true } : {}),
             }),
@@ -952,7 +955,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
             selectedActionIds,
             address: key.address,
           });
-          sendClose();
+          if (!signInContinuation) sendClose();
           return;
         }
         const authorizeRes = await fetch(
@@ -990,6 +993,8 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
           success: true,
           signature: authorizeResult.signature,
           address: authorizeResult.address,
+          keyId: authorizeResult.keyId,
+          keyType: authorizeResult.keyType,
           signedMessage: authorizeResult.signedMessage,
           selectedActionKeys: authorizeResult.selectedActionKeys,
           permissions: authorizeResult.permissions,
@@ -1191,7 +1196,20 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
     }
   }
 
+  function cancelSignInContinuation() {
+    if (!signInContinuation || !keyId) return;
+    navigator.sendBeacon(`${import.meta.env.VITE_API_URL || ''}/api/delegate/signin/cancel`,
+      new Blob([JSON.stringify({ ...signInContinuation, keyId, origin })], { type: 'application/json' }));
+  }
+
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    window.addEventListener('pagehide', cancelSignInContinuation);
+    return () => window.removeEventListener('pagehide', cancelSignInContinuation);
+  });
+
   function sendClose() {
+    cancelSignInContinuation();
     previewStopped = true;
     heldPreview = null;
     // Sol MAJOR-4 (continuation): correlate close messages to the active

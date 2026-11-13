@@ -20,6 +20,7 @@ import { passkeyProxyRouter } from './routes/passkey-proxy';
 import { secretsRouter } from './routes/secrets';
 import { variablesRouter } from './routes/variables';
 import { delegateRouter } from './routes/delegate';
+import { signInContinuationRouter } from './routes/signin-continuation';
 import { preparedHandoffRouter } from './routes/prepared-handoffs';
 import { ownerRevocationRouter } from './routes/owner-revocation-runtime';
 import { internalMetricsRouter } from './routes/internal-metrics';
@@ -292,6 +293,7 @@ app.route('/api/variables', variablesRouter);
 // Delegate route (CLI auth flow)
 app.route('/api/delegate/handoffs', preparedHandoffRouter);
 app.route('/api/delegate/owner-revocation', ownerRevocationRouter);
+app.route('/api/delegate/signin', signInContinuationRouter);
 app.route('/api/delegate', delegateRouter);
 app.route('/api/oauth/tinycloud/requests', createNativeDelegationConsentRouter(authPrisma));
 app.route('/api/oauth/tinycloud', createOauthBrandingRouter(authPrisma));

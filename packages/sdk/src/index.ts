@@ -158,7 +158,15 @@ export interface OAuthTokenResponse {
 // the caller's original request. See `NodeUserAuthorization` in the
 // js-sdk for the consumer side of this contract.
 
+/** Provisional until the caller verifies the signed SIWE and signature. */
+export interface TinyCloudSignInIdentity extends AuthResult {
+  requestId: string;
+  chainId: number;
+}
+
 export interface TinyCloudAuthorizationRequestV1 {
+  /** Request-bound identity continuation; supplied by beginTinyCloudSignIn only. */
+  signInContinuation?: { token: string; requestId: string; chainId: number };
   protocolVersion: 1;
   /** Suggested SIWE (may be edited server-side before signing). */
   siwe: string;
@@ -192,6 +200,8 @@ export interface TinyCloudAuthorizationRequestV1 {
 }
 
 export interface TinyCloudAuthorizationResultV1 {
+  keyId?: string;
+  keyType?: 'MANAGED' | 'EXTERNAL';
   protocolVersion: 1;
   /** EIP-55 signer address. */
   address: string;
@@ -1089,6 +1099,86 @@ export class OpenKey {
    * Legacy `signMessage()` callers are unaffected: their exact-byte contract
    * remains preserved and OpenKey never rewrites their bytes.
    */
+  /** Reserve synchronously at the original app click, before restore/preparation. */
+  beginTinyCloudSignIn(options: { chainId: number }): {
+    cancel: () => void;
+    authorize: (prepare: (identity: TinyCloudSignInIdentity) => Promise<TinyCloudAuthorizationRequestV1>) => Promise<TinyCloudAuthorizationResultV1>;
+  } {
+    if (!Number.isSafeInteger(options.chainId) || options.chainId <= 0) throw new Error('Invalid sign-in chain');
+    const reserved = this.reservePopup('signin');
+    if (!reserved) throw new Error('Sign-in popup unavailable');
+    const requestId = crypto.randomUUID();
+    let cancelled = false;
+    let started = false;
+    const cancel = () => {
+      cancelled = true;
+      reserved.window.close();
+      this.activeFlowCancellations.delete(cancel);
+    };
+    this.activeFlowCancellations.add(cancel);
+    return {
+      cancel,
+      authorize: async (prepare) => {
+        if (started || cancelled) throw new Error('Sign-in already started or cancelled');
+        started = true;
+        try {
+          const identified = await new Promise<TinyCloudSignInIdentity & { token: string }>((resolve, reject) => {
+            const cleanup = () => { clearInterval(poll); clearTimeout(timeout); window.removeEventListener('message', receive); };
+            const receive = (event: MessageEvent) => {
+              if (event.origin !== this.host || event.source !== reserved.window ||
+                  event.data?.requestId !== requestId || event.data?.protocolVersion !== 1) return;
+              if (event.data.type === 'openkey:signin:error') { cleanup(); reject(new Error('OpenKey sign-in refused')); }
+              if (event.data.type !== 'openkey:signin:identity') return;
+              const identity = event.data.identity;
+              if (!identity || identity.requestId !== requestId || identity.chainId !== options.chainId ||
+                  typeof identity.token !== 'string' || typeof identity.address !== 'string' ||
+                  typeof identity.keyId !== 'string' || !['MANAGED', 'EXTERNAL'].includes(identity.keyType)) {
+                cleanup(); reject(new Error('Invalid OpenKey sign-in identity')); return;
+              }
+              cleanup(); resolve(Object.freeze({ ...identity }));
+            };
+            const poll = setInterval(() => {
+              if (cancelled || reserved.window.closed) { cleanup(); reject(new Error('Sign-in cancelled')); }
+            }, 100);
+            const timeout = setTimeout(() => { cleanup(); reject(new Error('Sign-in expired')); }, 300_000);
+            window.addEventListener('message', receive);
+            reserved.window.location.href = `${this.host}/widget/signin?origin=${encodeURIComponent(window.location.origin)}&requestId=${encodeURIComponent(requestId)}&chainId=${options.chainId}`;
+          });
+          const request = await new Promise<TinyCloudAuthorizationRequestV1>((resolve, reject) => {
+            const cleanup = () => { clearInterval(poll); clearTimeout(timeout); };
+            const poll = setInterval(() => {
+              if (cancelled || reserved.window.closed) { cleanup(); reject(new Error('Sign-in cancelled')); }
+            }, 100);
+            const timeout = setTimeout(() => { cleanup(); reject(new Error('Sign-in preparation expired')); }, 300_000);
+            Promise.resolve().then(() => prepare(identified)).then(
+              (value) => { cleanup(); resolve(value); }, (error) => { cleanup(); reject(error); });
+          });
+          if (cancelled || reserved.window.closed) throw new Error('Sign-in cancelled');
+          if (request.keyId && request.keyId !== identified.keyId) throw new Error('Sign-in key changed');
+          // The server verifies SIWE owner, chain, origin and all existing bounds.
+          // The caller must independently verify the signature/owner before activation.
+          await new Promise<void>((resolve, reject) => {
+            const cleanup = () => { clearTimeout(timeout); window.removeEventListener('message', receive); };
+            const receive = (event: MessageEvent) => {
+              if (event.origin !== this.host || event.source !== reserved.window ||
+                  event.data?.requestId !== requestId || event.data?.protocolVersion !== 1 ||
+                  event.data?.type !== 'openkey:signin:resumed') return;
+              cleanup(); resolve();
+            };
+            const timeout = setTimeout(() => { cleanup(); reject(new Error('Sign-in resume expired')); }, 10_000);
+            window.addEventListener('message', receive);
+            reserved.window.postMessage({ type: 'openkey:signin:resume', requestId, protocolVersion: 1, token: identified.token }, this.host);
+          });
+          const pinnedRequest = { ...request, keyId: identified.keyId,
+            signInContinuation: { token: identified.token, requestId, chainId: identified.chainId } };
+          const result = await this.authorizeTinyCloudFlow(pinnedRequest, { mode: 'popup' }, reserved, identified);
+          if (cancelled || result.keyId !== identified.keyId || result.keyType !== identified.keyType || result.address.toLowerCase() !== identified.address.toLowerCase()) throw new Error('Sign-in owner changed');
+          return result;
+        } finally { cancel(); }
+      },
+    };
+  }
+
   async authorizeTinyCloud(
     request: TinyCloudAuthorizationRequestV1,
     opts?: { mode?: OpenKeyMode },
@@ -1116,6 +1206,7 @@ export class OpenKey {
     request: TinyCloudAuthorizationRequestV1,
     opts: { mode?: OpenKeyMode } | undefined,
     reserved: ReservedPopup | null,
+    identity?: TinyCloudSignInIdentity,
   ): Promise<TinyCloudAuthorizationResultV1> {
     if (request.protocolVersion !== 1) {
       throw new Error(
@@ -1166,9 +1257,9 @@ export class OpenKey {
     // type (or throw on conflicting pins).
     let routing: AuthorizeTinyCloudRouting;
     try {
-      const knownKeys = await this.fetchKnownKeysIfNeeded(request.keyId);
+      const knownKeys = identity ? [{ id: identity.keyId, address: identity.address, keyType: identity.keyType }] : await this.fetchKnownKeysIfNeeded(request.keyId);
       routing = resolveAuthorizeTinyCloudRouting({
-        lastAuth: this.lastAuth,
+        lastAuth: identity ?? this.lastAuth,
         requestKeyId: request.keyId,
         knownKeys,
       });
@@ -1179,7 +1270,7 @@ export class OpenKey {
         : new Error('authorizeTinyCloud: failed to resolve target key type');
     }
     if (routing.route === 'external') {
-      return this.authorizeTinyCloudExternal(request, opts);
+      return this.authorizeTinyCloudExternal(request, opts, reserved, identity);
     }
     // Sol CRITICAL-1: Send a DISTINCT versioned sign request so the widget
     // knows to route through the server-authoritative /authorize-sign
@@ -1197,6 +1288,8 @@ export class OpenKey {
     const raw = await this.openFlow<{
       signature: string;
       address: string;
+      keyId?: string;
+      keyType?: 'MANAGED' | 'EXTERNAL';
       signedMessage?: string;
       selectedActionKeys?: string[];
       permissions?: TinyCloudAuthorizationResultV1['permissions'];
@@ -1207,6 +1300,7 @@ export class OpenKey {
         requestId,
         protocolVersion: 1,
         message: request.siwe,
+        signInContinuation: request.signInContinuation,
         keyId: resolvedKeyId,
         // Forward JWK so the widget can pass it to /authorize-sign for
         // narrowed-SIWE regeneration.
@@ -1250,6 +1344,8 @@ export class OpenKey {
     return {
       protocolVersion: 1,
       address: raw.address,
+      keyId: raw.keyId,
+      keyType: raw.keyType,
       signature: raw.signature,
       signedMessage: raw.signedMessage,
       selectedActionKeys: raw.selectedActionKeys,
@@ -1280,6 +1376,8 @@ export class OpenKey {
   private async authorizeTinyCloudExternal(
     request: TinyCloudAuthorizationRequestV1,
     opts?: { mode?: OpenKeyMode },
+    reserved?: ReservedPopup | null,
+    identity?: TinyCloudSignInIdentity,
   ): Promise<TinyCloudAuthorizationResultV1> {
     const keyId = request.keyId ?? this.lastAuth?.keyId;
     if (!keyId) {
@@ -1287,7 +1385,7 @@ export class OpenKey {
         'authorizeTinyCloud (external) requires a keyId — call connect() first or pass request.keyId',
       );
     }
-    const walletAddress = this.lastAuth?.address;
+    const walletAddress = identity?.address ?? this.lastAuth?.address;
     if (!walletAddress) {
       throw new Error(
         'authorizeTinyCloud (external) requires a connected wallet — call connect() first',
@@ -1309,6 +1407,7 @@ export class OpenKey {
         requestId,
         protocolVersion: 1,
         message: request.siwe,
+        signInContinuation: request.signInContinuation,
         keyId,
         jwk: request.jwk,
         host: request.host,
@@ -1327,6 +1426,7 @@ export class OpenKey {
         externalSign: true,
       } as unknown as MessageType,
       opts?.mode,
+      reserved,
     );
     if (!approval?.previewApprovalToken || !approval?.signedMessage) {
       throw new Error(
@@ -1348,6 +1448,7 @@ export class OpenKey {
       method: 'personal_sign',
       params: [hexMessage, walletAddress],
     })) as string;
+    if (reserved?.window.closed) throw new Error('Sign-in cancelled');
     // Finalize — server verifies the wallet signature against the exact
     // same bytes it emitted for the preview.
     const finalizeRes = await fetch(
@@ -1378,6 +1479,8 @@ export class OpenKey {
     return {
       protocolVersion: 1,
       address: finalize.address,
+      keyId: finalize.keyId,
+      keyType: finalize.keyType,
       signature: finalize.signature,
       signedMessage: finalize.signedMessage,
       selectedActionKeys: finalize.selectedActionKeys ?? [],
@@ -1917,6 +2020,8 @@ export class OpenKey {
                   resolve({
                     authorizationContextToken: (data as any).authorizationContextToken,
                     previewApprovalToken: (data as any).previewApprovalToken,
+                    keyId: (data as any).keyId,
+                    keyType: (data as any).keyType,
                     signedMessage: (data as any).signedMessage,
                     selectedActionIds: (data as any).selectedActionIds,
                     address: (data as any).address,
@@ -1925,6 +2030,8 @@ export class OpenKey {
                   resolve({
                     signature: (data as any).signature,
                     address: (data as any).address,
+                    keyId: (data as any).keyId,
+                    keyType: (data as any).keyType,
                     signedMessage: (data as any).signedMessage,
                     selectedActionKeys: (data as any).selectedActionKeys,
                     permissions: (data as any).permissions,
@@ -2096,6 +2203,10 @@ export class OpenKey {
     const top = window.screenY + (window.outerHeight - POPUP_HEIGHT) / 2;
 
     let popup: Window | null;
+    if (reserved?.window.closed) {
+      reject({ code: 'USER_CANCELLED', message: 'User closed the popup' });
+      return;
+    }
     if (reserved && !reserved.window.closed) {
       // The window opened in the caller's gesture: send it to the widget. It
       // counts as taken over once that navigation has succeeded; a failure
@@ -2236,6 +2347,8 @@ export class OpenKey {
             resolve({
               authorizationContextToken: (data as any).authorizationContextToken,
               previewApprovalToken: (data as any).previewApprovalToken,
+              keyId: (data as any).keyId,
+              keyType: (data as any).keyType,
               signedMessage: (data as any).signedMessage,
               selectedActionIds: (data as any).selectedActionIds,
               address: (data as any).address,
@@ -2244,6 +2357,8 @@ export class OpenKey {
             resolve({
               signature: (data as any).signature,
               address: (data as any).address,
+              keyId: (data as any).keyId,
+              keyType: (data as any).keyType,
               signedMessage: (data as any).signedMessage,
               selectedActionKeys: (data as any).selectedActionKeys,
               permissions: (data as any).permissions,
