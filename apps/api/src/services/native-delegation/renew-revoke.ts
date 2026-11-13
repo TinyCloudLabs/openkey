@@ -1,3 +1,4 @@
+import { sameTinyCloudHost } from '../tinycloud-hosts';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { generateRandomString } from 'better-auth/crypto';
 import type { PrismaClient } from '@openkey/db';
@@ -246,7 +247,7 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
           if (now.getTime() >= grant.absoluteExpiresAt.getTime() - RENEWAL_CUTOFF_MS) return deny('consent_required', 'grant_expired');
           const client = await tx.oauthClient.findUnique({ where: { clientId: grant.clientId } });
           const ceiling = client && enabledNativeDelegation(client);
-          if (!ceiling || ceiling.tinycloudHost !== grant.tinycloudHost) return deny('consent_required', 'ceiling_changed');
+          if (!ceiling || !sameTinyCloudHost(ceiling.tinycloudHost, grant.tinycloudHost)) return deny('consent_required', 'ceiling_changed');
           const approved = grant.approvedPermissions as NativePermission[];
           let permissions: NativePermission[];
           try {

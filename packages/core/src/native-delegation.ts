@@ -1,3 +1,4 @@
+import { sameTinyCloudHost } from './tinycloud-host';
 /**
  * Native TinyCloud delegation flow (TC-774 task S1).
  *
@@ -868,7 +869,7 @@ export interface ValidateDelegationOptions {
   /**
    * The TinyCloud node the client expects (spec: `tinycloudHost` must be
    * "the host it expects"). Required: validation fails closed without it.
-   * Exact-match against `delegation.tinycloudHost`.
+   * The two production node names match; other hosts require exact equality.
    */
   expectedTinycloudHost: string;
 }
@@ -969,7 +970,7 @@ export function validateTinyCloudDelegation(
       'expectedTinycloudHost is required to validate tinycloud_delegation',
     );
   }
-  if (delegation.tinycloudHost !== options.expectedTinycloudHost) {
+  if (!sameTinyCloudHost(delegation.tinycloudHost, options.expectedTinycloudHost)) {
     throw new OpenKeyNativeError(
       'SERVER',
       `tinycloud_delegation.tinycloudHost "${delegation.tinycloudHost}" is not the expected host "${options.expectedTinycloudHost}"`,
@@ -1087,7 +1088,7 @@ export interface ExchangeNativeCodeOptions {
   codeVerifier: string;
   sessionKey: NativeSessionKeypair;
   requestedPermissions: NativeDelegationPermission[];
-  /** Expected TinyCloud node, exact-matched against `tinycloudHost`. Required - fails closed. */
+  /** Expected TinyCloud node, accepting either production node name. Required - fails closed. */
   expectedTinycloudHost: string;
   fetchFn?: NativeFetch;
   sha256Fn?: SHA256Fn;
@@ -1231,7 +1232,7 @@ export interface RenewDelegationOptions {
    * field (PAR shape, same session key, no `ttl_seconds`).
    */
   permissionsSubset?: NativeDelegationPermission[];
-  /** Expected TinyCloud node, exact-matched against `tinycloudHost`. Required - fails closed. */
+  /** Expected TinyCloud node, accepting either production node name. Required - fails closed. */
   expectedTinycloudHost: string;
   fetchFn?: NativeFetch;
   sha256Fn?: SHA256Fn;
