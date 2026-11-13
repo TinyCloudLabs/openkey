@@ -19,8 +19,6 @@ Set these in your repo's **Settings > Secrets and variables > Actions**:
 
 | Secret | Description |
 |--------|-------------|
-| `DOCKER_REGISTRY_USERNAME` | Docker Hub username (e.g., `skgbafa`) |
-| `DOCKER_REGISTRY_PASSWORD` | Docker Hub [access token](https://docs.docker.com/docker-hub/access-tokens/) |
 | `PHALA_CLOUD_API_KEY` | From [Phala Cloud Dashboard](https://cloud.phala.network/dashboard) > Avatar > API Tokens |
 | `DATABASE_URL` | Production PostgreSQL connection string used by the migration job |
 
@@ -407,8 +405,8 @@ and web changes into separate merges.
 
 1. Build the Docker image:
    ```bash
-   docker build -t skgbafa/openkey-api:v1.0.x .
-   docker push skgbafa/openkey-api:v1.0.x
+   docker build -t ghcr.io/tinycloudlabs/openkey-api:v1.0.x .
+   docker push ghcr.io/tinycloudlabs/openkey-api:v1.0.x
    ```
    The API image includes the built `@openkey/capability-review` workspace
    package in its runtime stage. Details: TC-2005
