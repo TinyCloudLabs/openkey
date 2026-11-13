@@ -5,8 +5,8 @@
 import { isAppsKeyResource, isFirstPartyEncryptionOrigin, KEY_RESOURCE_PREFIX } from '@openkey/capability-review';
 import { parseSIWE } from './siwe-parser';
 
-/** The server's own words for this refusal (ENCRYPTION_OUTSIDE_APPS_MESSAGE in apps/api/src/services/app-key-refusal.ts). */
-export const ENCRYPTION_OUTSIDE_APPS_TEXT = "This site isn't allowed to request that access.";
+/** The approved owner-facing sentence for this refusal; TC-2291 gives the server's refusal the same sentence. */
+export const ENCRYPTION_OUTSIDE_APPS_TEXT = "This site can't ask for that access, so OpenKey didn't approve this request.";
 
 /** Would the signing route refuse `message` from `origin` as an encryption grant outside `apps/`? */
 export function refusesEncryptionOutsideApps(message: string, origin: string): boolean {

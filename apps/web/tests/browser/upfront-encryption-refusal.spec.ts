@@ -6,7 +6,7 @@ import { HOST, ORIGIN } from './e2e-port';
 
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const OWNER = `did:pkh:eip155:1:${address}`;
-const WORDS = "This site isn't allowed to request that access.";
+const WORDS = "This site can't ask for that access, so OpenKey didn't approve this request.";
 
 function siwe(att: Record<string, Record<string, unknown[]>>): string {
   const recap = Buffer.from(JSON.stringify({ att, prf: [] })).toString('base64url');
