@@ -29,6 +29,7 @@
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
   import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
+  import { ENCRYPTION_OUTSIDE_APPS_TEXT, refusesEncryptionOutsideApps } from '$lib/encryption-grant-refusal';
   import { createFrameSettleGate, type FrameSettleGate } from '$lib/frame-settle-gate';
   import {
     createIframeLayoutGate,
@@ -1195,6 +1196,16 @@
     }
     return true;
   }
+
+  // TC-2928: /api/keys/:keyId/sign refuses an encryption grant outside apps/ from a site that is not first-party. On the
+  // path that signs through it, refuse before Approve exactly as its answer would. The authorize-sign path is refused by
+  // its own prepare step.
+  $effect(() => {
+    if (refused || !reviewModel || siweRefusal || canUseAuthorizeSignFn()) return;
+    if (refusesEncryptionOutsideApps(message, origin)) {
+      refuse(new ServerRefusalError(ENCRYPTION_OUTSIDE_APPS_TEXT, 403, 'app_key_grant_refused'));
+    }
+  });
 
   function closeRefused() {
     sendClose();
