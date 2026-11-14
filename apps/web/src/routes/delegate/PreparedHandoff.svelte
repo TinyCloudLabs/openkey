@@ -526,7 +526,6 @@
           <dt class="font-semibold">Signing key</dt>
           <dd class="flex flex-wrap items-center gap-2">
             <span class="font-medium" title={key.address}>{key.label || `Key ending ${key.address.slice(-4)}`}</span>
-            <button type="button" class="min-h-11 rounded-lg px-3 text-sm underline underline-offset-4 hover:bg-surface-50" title={key.address} onclick={() => { if (key) void copyText(key.address); }}>Copy address</button>
           </dd>
         </div>
       </dl>
