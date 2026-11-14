@@ -1,3 +1,4 @@
+import type { SignInIdentity } from './signin-continuation';
 // Authorization signing service.
 //
 // The /prepare handler issues an opaque single-use context describing the
@@ -77,6 +78,8 @@ export interface AuthorizationContextIssueInput {
    * caller-echoed SIWE.
    */
   originalSiwe?: string;
+  /** Request-bound identity for the original-click sign-in path. */
+  signInContinuation?: { token: string; identity: SignInIdentity };
   /** Only prepared-handoff contexts carry this DB ticket digest. */
   handoffTicketHash?: string;
   /** Immutable approval request selected by the consent preview. */
@@ -129,6 +132,7 @@ interface StoredContext {
   initialSelectionActionIds: string[];
   expirationTime: string;
   originalSiwe: string;
+  signInContinuation?: { token: string; identity: SignInIdentity };
   handoffTicketHash?: string;
   approvalRequestId?: string;
   metadataTrust: {
@@ -383,6 +387,7 @@ export function issueAuthorizationContext(
     initialSelectionActionIds: [...input.initialSelectionActionIds].sort(),
     expirationTime: input.expirationTime,
     originalSiwe: input.originalSiwe ?? "",
+    signInContinuation: input.signInContinuation,
     handoffTicketHash: input.handoffTicketHash,
     approvalRequestId: input.approvalRequestId,
     metadataTrust,
@@ -836,6 +841,7 @@ export interface PeekSuccess {
     host: string;
     spaceId: string;
     originalSiwe: string;
+    signInContinuation?: { token: string; identity: SignInIdentity };
     handoffTicketHash?: string;
     approvalRequestId?: string;
     jwk: unknown;
@@ -886,6 +892,7 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       host: stored.host,
       spaceId: stored.spaceId,
       originalSiwe: stored.originalSiwe,
+      signInContinuation: stored.signInContinuation,
       handoffTicketHash: stored.handoffTicketHash,
       approvalRequestId: stored.approvalRequestId,
       jwk: stored.jwk,

@@ -1,3 +1,4 @@
+import { rememberSharePreviousSession, shareWindowAuthHooks } from './services/share-window-session';
 // OpenKey API - better-auth configuration
 import { generateOAuthClientSecret, hasOAuthClientId, hashOAuthClientSecret } from './services/oauth-client-secrets';
 // Auth flow: email OTP by default, with optional passkey enrollment and sign-in.
@@ -186,6 +187,22 @@ export async function buildUserInfoKeyClaims(
   return buildKeyClaims(user, scopes, client, false, database);
 }
 
+// Resolve the incoming browser cookie before login endpoints replace it. These endpoints
+// do not otherwise populate context.session before their createSession call.
+const shareSessionReplacementPlugin = {
+  id: 'share-session-replacement',
+  hooks: { before: [{
+    matcher: (ctx) => ctx.path?.startsWith('/sign-in/') || ctx.path?.startsWith('/sign-up/') || ctx.path?.startsWith('/callback/') ||
+      ctx.path === '/passkey/verify-authentication' || ctx.path === '/email-otp/verify-email' ||
+      ctx.path === '/social/confirm' || ctx.path === '/social/email-sign-in/confirm',
+    handler: (async (ctx: { headers?: Headers; context: object }) => {
+      if (!ctx.headers?.get('cookie')) return;
+      const previous = await auth.api.getSession({ headers: ctx.headers });
+      if (previous) rememberSharePreviousSession(ctx.context, previous.session);
+    }) as AuthMiddleware,
+  }] },
+} satisfies BetterAuthPlugin;
+
 const passkeyFreshnessPlugin = {
   id: 'openkey-passkey-freshness',
   hooks: {
@@ -335,6 +352,7 @@ export const auth = betterAuth({
   },
 
   plugins: [
+    shareSessionReplacementPlugin,
     {
       id: 'revoke-other-sessions',
       endpoints: {
@@ -579,8 +597,16 @@ export const auth = betterAuth({
   databaseHooks: {
     // Web sessions end at most WEB_SESSION_ABSOLUTE_CAP_SECONDS after sign-in (services/session-cap.ts).
     session: {
+      create: { after: async (session, context) => { shareWindowAuthHooks.created(session, context); } },
+      delete: { after: async (session) => { shareWindowAuthHooks.deleted(session); } },
       update: {
         before: capSessionRefresh,
+        after: async (session) => {
+          // Better Auth's projection omits our security markers; use the authoritative row.
+          const current = await prisma.session.findUnique({ where: { id: session.id } });
+          if (current) shareWindowAuthHooks.updated(current);
+          else shareWindowAuthHooks.deleted(session);
+        },
       },
     },
     user: {

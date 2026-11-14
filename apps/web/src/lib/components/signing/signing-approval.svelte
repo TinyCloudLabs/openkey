@@ -93,6 +93,8 @@
     refused?: boolean;
     /** Disable only Approve while the route prepares the current preview. */
     previewPending?: boolean;
+    /** Verified host for the typed server-minted new-share approval only. */
+    shareCreationHost?: string;
     approveText?: string;
     cancelText?: string;
     /**
@@ -147,6 +149,7 @@
     stickyActions = false,
     refused = false,
     previewPending = false,
+    shareCreationHost,
     approveText = "Approve",
     cancelText = "Cancel",
     onDecline,
@@ -211,8 +214,10 @@
     model.permissions.some((grant) => grant.actions.some((action) => action.editable)),
   );
   const isMalformedRecap = $derived(model.protocol === "malformed-recap");
-  const headline = $derived(PROTOCOL_HEADLINE[model.protocol]);
-  const hint = $derived(PROTOCOL_HINT[model.protocol]);
+  const headline = $derived(shareCreationHost ? "Create a new share" : PROTOCOL_HEADLINE[model.protocol]);
+  const hint = $derived(shareCreationHost
+    ? `${shareCreationHost} wants to start a new share and open what's in it. It can't open any of your other shares.`
+    : PROTOCOL_HINT[model.protocol]);
 
   // Summary copy and the sensitive count describe only actions the user is
   // currently approving. Advanced details deliberately retains the baseline
@@ -228,12 +233,13 @@
   // Statements for the summary view. The rows, and the count in the Sensitive
   // header, come from one function so the header always counts the rows marked
   // Sensitive below it (capability-review `buildSummaryStatements`).
-  const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
+  const summaryStatements = $derived(buildSummaryStatements(shareCreationHost ? selectedGrants.filter((grant) => grant.service !== "tinycloud.encryption") : selectedGrants));
+  const summaryGrants = $derived(shareCreationHost ? selectedGrants.filter(grant => grant.service !== "tinycloud.encryption") : selectedGrants);
   const summaryGroups = $derived([
-    { key: "courier", heading: COURIER_HEADING, rows: buildSummaryStatements(selectedGrants.filter(grant => grant.family === "courier")) },
-    { key: "other", heading: null, rows: buildSummaryStatements(selectedGrants.filter(grant => grant.family !== "courier")) },
+    { key: "courier", heading: COURIER_HEADING, rows: buildSummaryStatements(summaryGrants.filter(grant => grant.family === "courier")) },
+    { key: "other", heading: null, rows: buildSummaryStatements(summaryGrants.filter(grant => grant.family !== "courier")) },
   ].filter(group => group.rows.length > 0));
-  const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
+  const sensitiveCount = $derived(sensitiveSummaryCount(shareCreationHost ? buildSummaryStatements(selectedGrants) : summaryStatements));
 
   // App keys: the standing-access line follows the decrypt statements, and a
   // `key.delete` action is listed even though it is never selected.
@@ -534,7 +540,7 @@
     {:else}
       <h2 id="signing-approval-headline" class="headline">{headline}</h2>
       <p class="requester-line">
-        Requested by <span class="requester-name">{requesterName}</span>
+        Requested by <span class="requester-name">{shareCreationHost ?? requesterName}</span>
       </p>
     {/if}
     <p id="signing-approval-hint" class="hint">{hint}</p>
@@ -569,7 +575,7 @@
     Count the badged rows only when mixed with unbadged rows. Not-granted
     informational rows are also unbadged; the individual badges always remain.
   -->
-  {#if sensitiveCount > 0 && sensitiveCount < summaryStatements.length + notGrantableStatements.length}
+  {#if sensitiveCount > 0 && (shareCreationHost || sensitiveCount < summaryStatements.length + notGrantableStatements.length)}
     <p class="sensitive-callout" role="status" aria-live="polite">
       {sensitiveRowsCallout(sensitiveCount)}
     </p>
@@ -589,6 +595,7 @@
     Requester provenance and exact resource identifiers are deliberately kept
     in Advanced details so the first viewport is useful to ordinary users.
   -->
+  {#if !shareCreationHost || summaryStatements.length > 0}
   <section class="summary" aria-label="Requested access">
     {#if identity && summaryStatements.length > 0}
       <p class="summary-lead">{appRequestingLine(identity.name)}</p>
@@ -614,7 +621,7 @@
       </ul>
       </div>
       {/each}
-    {:else if !isMalformedRecap}
+    {:else if !isMalformedRecap && !shareCreationHost}
       <p class="summary-empty">
         {model.permissions.length > 0
           ? "No optional access selected."
@@ -700,6 +707,7 @@
       {/if}
     {/if}
   </section>
+  {/if}
 
   <!--
     Single Advanced details disclosure. Contains: requester, verified
@@ -1056,7 +1064,7 @@
       onclick={handleApproveClick}
       disabled={approveButtonDisabled}
       aria-disabled={approveButtonDisabled}
-      aria-describedby={nodeChecking ? "host-node-status" : undefined}
+      aria-describedby={[shareCreationHost ? "signing-approval-hint" : "", nodeChecking ? "host-node-status" : ""].filter(Boolean).join(" ") || undefined}
     >
       {approveLabel}
     </button>

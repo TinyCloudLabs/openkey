@@ -1,3 +1,5 @@
+import { signInContinuationEnabled } from '../middleware/signin-continuation';
+import { assertSignInSiwe, currentSignInIdentity, signInContinuations } from '../services/signin-assertion';
 import { isAccountOriginAllowed } from '../origin-policy';
 // Delegate route - creates TinyCloud delegation for CLI auth flow
 import { randomUUID } from 'node:crypto';
@@ -2553,6 +2555,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
      * which only drives the optional manifest origin-bind.
      */
     requestOrigin?: string;
+    signInContinuation?: { token: string; requestId: string; chainId: number };
     /** TC-2272: the app sends `expiryChangeable: true` when it accepts a different signed expiry. */
     expiryChangeable?: unknown;
     requesterOrigin?: unknown;
@@ -2564,6 +2567,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   if (body.requesterOrigin !== undefined) {
     return c.json({ error: 'requesterOrigin is only supported for ordinary delegation preparation', code: 'requester_origin_unsupported' }, 400);
   }
+  if (body.signInContinuation !== undefined && !signInContinuationEnabled()) return c.notFound();
   logSessionJwk('/api/delegate/authorize-sign-prepare', hasPrivateJwkMember(body.jwk));
   // Only the session key's public members are used or stored; a malformed
   // key counts as missing.
@@ -2935,6 +2939,22 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     );
   }
 
+  let signInContinuation;
+  if (body.signInContinuation !== undefined) {
+    try {
+      const pending = body.signInContinuation;
+      if (!pending || typeof pending.token !== 'string' || typeof pending.requestId !== 'string' ||
+          typeof body.requestOrigin !== 'string' || !Number.isSafeInteger(pending.chainId)) throw new Error('Invalid continuation');
+      const identity = await currentSignInIdentity(prisma, user.id, c.get('session').id,
+        pending.requestId, body.requestOrigin, key.id, pending.chainId);
+      signInContinuations.resumedIdentity(pending.token, identity);
+      assertSignInSiwe(body.siwe, body.jwk, identity);
+      signInContinuation = { token: pending.token, identity };
+    } catch {
+      return c.json({ code: 'signin_continuation_refused', error: 'Sign-in identity changed or expired' }, 403);
+    }
+  }
+
   let issued: AuthorizationContextToken;
   try {
     issued = issueAuthorizationContext({
@@ -2951,6 +2971,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       expirationTime: immutable.expirationTime,
       originalSiwe: body.siwe,
       handoffTicketHash,
+      signInContinuation,
       metadataTrust,
       verifiedManifest,
       // The widget-reported sender origin of the requesting app. Used only for
@@ -3146,6 +3167,17 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // Managed keys require sealedBlob; external keys require an
   // externalSignature. Fail closed if the request/key state doesn't
   // match.
+  if (bound.signInContinuation) {
+    if (!signInContinuationEnabled()) return c.notFound();
+    try {
+      const pinned = bound.signInContinuation;
+      const current = await currentSignInIdentity(prisma, user.id, c.get('session').id,
+        pinned.identity.requestId, pinned.identity.origin, key.id, pinned.identity.chainId);
+      signInContinuations.resumedIdentity(pinned.token, current);
+    } catch {
+      return c.json({ code: 'signin_continuation_refused', error: 'Sign-in identity changed or expired' }, 403);
+    }
+  }
   const isExternal = key.keyType === 'EXTERNAL';
   if (isExternal) {
     if (typeof body.externalSignature !== 'string' || !body.externalSignature) {
@@ -3470,7 +3502,20 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // once a signature exists, so the tokens are spent after signing: a signing
   // that fails releases the handoff and the owner approves again with them.
   if (ticket) await activePreparedHandoffService.reserveSigning(ticket, user.id, body.authorizationContextToken, key.id);
-  const spendTokens = () => consumeCheckedAuthorizationContext(check.claim, previewCheck.claim);
+  const spendTokens = () => {
+    if (!bound.signInContinuation) return consumeCheckedAuthorizationContext(check.claim, previewCheck.claim);
+    try {
+      const pinned = bound.signInContinuation;
+      let result: ReturnType<typeof consumeCheckedAuthorizationContext> = { ok: true };
+      signInContinuations.consume(pinned.token, pinned.identity, () => {
+        result = consumeCheckedAuthorizationContext(check.claim, previewCheck.claim);
+        return result.ok;
+      });
+      return result;
+    } catch {
+      return { ok: false as const, error: 'signin_continuation_refused', message: 'Sign-in continuation expired or consumed' };
+    }
+  };
   if (!ticket) {
     const consumed = spendTokens();
     if (!consumed.ok) {
@@ -3511,6 +3556,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   return c.json({
     protocolVersion: 1,
     address: boundAddress,
+    ...(bound.signInContinuation ? { keyId: key.id, keyType: key.keyType } : {}),
     signature,
     signedMessage,
     selectedActionKeys: effectiveSelectedActionKeys,
