@@ -178,3 +178,70 @@ test.describe('TC-703 primary key picker', () => {
     expect(prepared).toEqual([]);
   });
 });
+
+test.describe('ordinary-link requester claims', () => {
+  for (const request of [
+    {
+      title: 'a pasted registered callback does not verify the named MCP requester',
+      domain: 'mcp.tinycloud.xyz',
+      requesterOrigin: 'https://mcp.tinycloud.xyz',
+      callback: 'https://mcp.tinycloud.xyz/connect/callback',
+    },
+    {
+      title: 'omitting requesterOrigin does not verify the default CLI requester',
+      domain: 'cli.tinycloud.xyz',
+      requesterOrigin: null,
+      callback: null,
+    },
+  ]) {
+    test(request.title, async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.clock.setFixedTime(new Date('2026-10-15T00:00:00Z'));
+      await mock(page, [primary]);
+      const prepared = preparedFor(primary.address);
+      prepared.prepared.siwe = prepared.prepared.siwe.replace('cli.tinycloud.xyz', request.domain);
+      await page.route('**/api/delegate/prepare', route => json(route, 200, prepared));
+      const params = new URLSearchParams();
+      if (request.requesterOrigin) params.set('requesterOrigin', request.requesterOrigin);
+      if (request.callback) params.set('callback', request.callback);
+      await page.goto(`${noOwner}&${params}`);
+
+      // A link-chosen authority is not a verified first-party app name,
+      // even when the link also names a registered callback endpoint.
+      await expect(page.locator('.requester-line .requester-name')).toHaveText(request.domain);
+      const warning = page.getByRole('alert').filter({ has: page.getByRole('heading') });
+      await expect(warning).toBeVisible();
+      await expect(warning).toContainText(request.domain);
+      await expect(approve(page)).toBeEnabled();
+    });
+  }
+});
+
+test('a server-loaded signed request keeps its attribution without the ordinary-link warning', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.clock.setFixedTime(new Date('2026-10-15T00:00:00Z'));
+  await mock(page, [primary]);
+  const id = 'abcdefghijklmnopqrstuvwxyz';
+  const space = `tinycloud:pkh:eip155:1:${primary.address}:default`;
+  await page.route(`**/api/approval-requests/${id}/load`, route => json(route, 200, {
+    request: {
+      targetDid: 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
+      targetPublicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+      nodeOrigin: 'https://node.tinycloud.xyz',
+      permissions: [
+        { service: 'tinycloud.capabilities', space, path: '', actions: [CAPS_READ] },
+        { service: 'tinycloud.kv', space, path: 'notes/', actions: [KV_GET] },
+      ],
+      grantLifetimeSeconds: 3600,
+    },
+  }));
+  const prepared = preparedFor(primary.address);
+  prepared.prepared.siwe = prepared.prepared.siwe
+    .replace('2026-10-03T00:00:00.000Z', '2026-10-15T00:00:00.000Z')
+    .replace('2026-11-03T01:00:00.000Z', '2026-10-15T01:00:00.000Z');
+  await page.route('**/api/delegate/prepare', route => json(route, 200, prepared));
+  await page.goto(`/a/${id}#v=4&k=${'A'.repeat(43)}&c=bafkreia${'a'.repeat(52)}`);
+  await expect(page.locator('.requester-line .requester-name')).toHaveText('cli.tinycloud.xyz');
+  await expect(page.getByRole('alert').filter({ has: page.getByRole('heading') })).toHaveCount(0);
+  await expect(approve(page)).toBeEnabled();
+});

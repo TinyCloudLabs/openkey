@@ -107,6 +107,8 @@
     context?: Snippet;
     /** Show which key signs; for users who chose one of several keys. */
     showSigner?: boolean;
+    /** A host named by an unsigned ordinary link, not a verified sender. */
+    linkNamedHost?: string | null;
     /**
      * Lookup state for the node key on a host approval. Leave unset where the
      * key on the request is not a node (the `/delegate` session grant): the
@@ -154,6 +156,7 @@
     declining = false,
     context,
     showSigner = false,
+    linkNamedHost = null,
     peerRecognition = null,
     expiryMs = null,
     onExpiryChange,
@@ -528,17 +531,28 @@
       {:else}
         <h2 id="signing-approval-headline" class="headline app-id-headline mono">{identity.appId}</h2>
       {/if}
-      <p class="requester-line">
-        Requested by <span class="requester-name">{requestedBy}</span>
-      </p>
     {:else}
       <h2 id="signing-approval-headline" class="headline">{headline}</h2>
-      <p class="requester-line">
-        Requested by <span class="requester-name">{requesterName}</span>
-      </p>
     {/if}
+    <p class="requester-line">
+      {#if linkNamedHost !== null}
+        From a link that names <span class="requester-name break-all">{linkNamedHost}</span>
+      {:else}
+        Requested by <span class="requester-name">{identity ? requestedBy : requesterName}</span>
+      {/if}
+    </p>
     <p id="signing-approval-hint" class="hint">{hint}</p>
   </header>
+
+  {#if linkNamedHost !== null}
+    <section class="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
+      <h3 class="font-semibold">OpenKey can't confirm who sent this request</h3>
+      <p class="mt-1 leading-relaxed">
+        Anyone can make a link that names <span class="break-all">{linkNamedHost}</span>.
+        Approve only if you started this request yourself.
+      </p>
+    </section>
+  {/if}
 
   {#if context}
     <div class="context">{@render context()}</div>
@@ -738,7 +752,7 @@
           </span>
         </div>
       {/if}
-      {#if model.requester.domainWarning}
+      {#if model.requester.domainWarning && linkNamedHost === null}
         <div class="row">
           <span class="warn" role="status">
             Domain warning: SIWE domain does not match the verified browser origin

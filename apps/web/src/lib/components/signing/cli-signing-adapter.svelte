@@ -39,11 +39,13 @@
     context?: Snippet;
     /** True when the user chose one of several keys. */
     showSigner?: boolean;
+    /** Ordinary link attribution only; a callback URL is not verified requester identity. */
+    linkNamedHost?: string | null;
     /** Reports whether editable permission checkboxes are visible. */
     onEditingStateChange?: (editing: boolean) => void;
   }
 
-  let { model, initialSelection, transport, context, showSigner = false, onEditingStateChange }: Props = $props();
+  let { model, initialSelection, transport, context, showSigner = false, linkNamedHost = null, onEditingStateChange }: Props = $props();
 
   // Internal review state. The adapter owns this because it is per-surface
   // presentational state — the route no longer touches it. We intentionally
@@ -99,6 +101,7 @@
   expiryBounded={transport.expiry?.bounded ?? false}
   expiryMaxMs={transport.expiry?.maxMs ?? null}
   {showSigner}
+  {linkNamedHost}
   {onApprove}
   {onCancel}
   cancelText={transport.decline ? "Back" : undefined}

@@ -69,7 +69,6 @@ test.describe('TC-659 CLI /delegate consent parity', () => {
     // Header, requester and CLI context come from the shared component.
     const dialog = page.getByRole('dialog');
     await expect(dialog.getByRole('heading', { name: 'Authorize capabilities' })).toBeVisible();
-    await expect(dialog).toContainText('Requested by TinyCloud CLI');
     await expect(dialog.getByRole('region', { name: 'Delegation destination' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Authorize CLI Access' })).toHaveCount(0);
   });
@@ -92,7 +91,7 @@ test.describe('TC-659 CLI /delegate consent parity', () => {
     await expect(page.getByText('Sync my notes', { exact: true })).toHaveCount(1);
     const details = await openEditor(page);
     await details.getByRole('checkbox').last().uncheck();
-    await expect(page.getByRole('alert')).toHaveText("Couldn't approve this request. Try again. (Error 503)");
+    await expect(page.getByRole('alert').and(page.locator('.error'))).toHaveText("Couldn't approve this request. Try again. (Error 503)");
   });
 });
 
@@ -275,7 +274,7 @@ test('expiry failure uses the editable expiry wording', async ({ page }) => {
   await expect(approve).toBeEnabled();
   await expect(page.getByRole('button', { name: '(Change)' })).toBeVisible();
   await approve.click();
-  await expect(page.getByRole('alert')).toHaveText("This access length can't be used. Choose a different one, or start again from the app or command.");
+  await expect(page.getByRole('alert').and(page.locator('.error'))).toHaveText("This access length can't be used. Choose a different one, or start again from the app or command.");
   await expect(approve).toBeEnabled();
   const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
   if (shots) await page.screenshot({ path: `${shots}/e.png`, fullPage: false });
