@@ -26,6 +26,8 @@ describe('the widget refuses up front exactly the encryption grants the signing 
     ['upper-case prefix and ability', siwe({ [`URN:TINYCLOUD:ENCRYPTION:${OWNER}:default/share/`]: { 'Tinycloud.Encryption/DECRYPT': [{}] } }), OUTSIDE, true],
     ['the same grant from a first-party site', siwe({ [`urn:tinycloud:encryption:${OWNER}:default/share/`]: { 'tinycloud.encryption/decrypt': [{}] } }, 'share.tinycloud.xyz'), 'https://share.tinycloud.xyz', false],
     ['the same grant from a first-party Pages preview', siwe({ [`urn:tinycloud:encryption:${OWNER}:default/share/`]: { 'tinycloud.encryption/decrypt': [{}] } }, 'abc.share-2fz.pages.dev'), 'https://abc.share-2fz.pages.dev', false],
+    ['the same grant from tinycloud.one', siwe({ [`urn:tinycloud:encryption:${OWNER}:default/share/`]: { 'tinycloud.encryption/decrypt': [{}] } }, 'tinycloud.one'), 'https://tinycloud.one', false],
+    ['the same grant from a look-alike of tinycloud.one', siwe({ [`urn:tinycloud:encryption:${OWNER}:default/share/`]: { 'tinycloud.encryption/decrypt': [{}] } }, 'tinycloud.one.evil.example'), 'https://tinycloud.one.evil.example', true],
     ['decrypt under apps/', siwe({ [`urn:tinycloud:encryption:${OWNER}:default/apps/notes/`]: { 'tinycloud.encryption/decrypt': [{}] } }), OUTSIDE, false],
     ['encrypt outside apps/', siwe({ [`urn:tinycloud:encryption:${OWNER}:default/share/`]: { 'tinycloud.encryption/encrypt': [{}] } }), OUTSIDE, false],
     ['storage only', siwe(kv), OUTSIDE, false],
