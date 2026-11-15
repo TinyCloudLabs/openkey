@@ -124,7 +124,11 @@ scenario() { # scenario <name> <admin url> <database>
   expect_status "$name: provision succeeds and its post-checks pass" 0
   expect_line "$name: counts, not names, are printed" "tables_with_any_privilege"
   expect_line "$name: a PUBLIC-executable function is reported, not counted against the monitor" "$(printf 'info  %-46s %s' info_public_executable_functions 1)"
-  if grep -qF -- "$pw1" <<<"$out"; then bad "$name: the password is in the output"; else ok "$name: the password is not in the output"; fi
+  # The runner consumes `::add-mask::` workflow commands and never shows them; every other line must be free of it.
+  if grep -v '^::add-mask::' <<<"$out" | grep -qF -- "$pw1"; then bad "$name: the password is in the output"; else ok "$name: the password is not in the output"; fi
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    if grep -qxF -- "::add-mask::$pw1" <<<"$out"; then ok "$name: the password is masked first"; else bad "$name: the password is not masked"; fi
+  fi
 
   if [ "$(as_monitor "$pw1" -c 'SELECT count(*) FROM monitor.connection_counts()')" = 1 ]; then
     ok "$name: the monitor role reads the function"
