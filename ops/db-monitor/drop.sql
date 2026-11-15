@@ -48,6 +48,8 @@ DROP ROLE IF EXISTS openkey_monitor;
 
 SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'openkey_monitor_owner') AS owner_still \gset
 \if :owner_still
-  REVOKE pg_read_all_stats FROM openkey_monitor_owner;
+  SELECT format('REVOKE %I FROM openkey_monitor_owner', r)
+  FROM unnest(ARRAY['pg_read_all_stats', 'pg_monitor']) AS r
+  WHERE EXISTS (SELECT 1 FROM pg_auth_members WHERE member = 'openkey_monitor_owner'::regrole AND roleid = r::regrole) \gexec
   DROP ROLE openkey_monitor_owner;
 \endif

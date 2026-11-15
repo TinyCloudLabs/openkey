@@ -9,6 +9,8 @@
 # Environment
 #   DATABASE_URL            the database owner's connection URL (required)
 #   OPENKEY_MONITOR_PW      the monitor role's password; provision generates one when it is unset
+#   OPENKEY_OWNER_STATS_ROLE the one statistics role the NOLOGIN owner role joins: pg_read_all_stats (default) or
+#                           pg_monitor. Never the monitor login role, which the post-checks prove is in neither.
 #   OPENKEY_AGE_RECIPIENT   provision: an age public key (age1...) to encrypt the monitor URL to
 #   OPENKEY_MONITOR_URL_OUT provision: the file the encrypted URL is written to (with OPENKEY_AGE_RECIPIENT)
 #
@@ -26,6 +28,13 @@ case "$mode" in provision | verify | drop) ;; *)
   ;;
 esac
 : "${DATABASE_URL:?DATABASE_URL is required}"
+
+export OPENKEY_OWNER_STATS_ROLE=${OPENKEY_OWNER_STATS_ROLE:-pg_read_all_stats}
+case "$OPENKEY_OWNER_STATS_ROLE" in pg_read_all_stats | pg_monitor) ;; *)
+  echo "OPENKEY_OWNER_STATS_ROLE must be pg_read_all_stats or pg_monitor" >&2
+  exit 2
+  ;;
+esac
 
 # psql 15 or later: \getenv.
 psql_major=$(psql --version | sed -E 's/^[^0-9]*([0-9]+).*/\1/')
@@ -118,7 +127,7 @@ verify() {
     [owner_can_login]=false
     [owner_superuser]=false
     [owner_memberships]=1
-    [owner_member_of_pg_read_all_stats_only]=true
+    [owner_member_of_stats_role_only]=true
     [owner_members_able_to_use_it]=0
     [schema_owned_by_owner]=true
     [schema_usage_for_public]=false
@@ -136,6 +145,9 @@ verify() {
     [sequences_with_any_privilege]=0
     [functions_with_privilege_beyond_public]=0
     [database_create_for_monitor]=false
+    [public_schema_create_for_monitor]=false
+    [schemas_with_create_for_monitor]=0
+    [public_executable_security_definer_functions]=0
     [other_sessions_showing_query_text]=0
     [other_sessions_seen]=true
   )
@@ -145,7 +157,7 @@ verify() {
   compare_rows expected "$rows" || failed=1
 
   # The function must count what the database owner's own session counts, and must see the held-open session in
-  # its idle-in-transaction count. If the owner role lacks pg_read_all_stats, every other role's state reads as
+  # its idle-in-transaction count. If the owner role lacks its statistics role, every other role's state reads as
   # NULL and the function silently under-counts.
   echo "Cross-check against the database owner's own session counts:"
   if [ "$ready" -lt 1 ]; then
@@ -202,7 +214,11 @@ if [ "$mode" = provision ]; then
   fi
 
   is_super=$(psql_admin -At -c "SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
-  echo "Database owner is a superuser: $is_super"
+  echo "Database owner is a superuser: $is_super; the owner role joins: $OPENKEY_OWNER_STATS_ROLE"
+  # Whether the server logs the statement that sets the password. Either way only a SCRAM-SHA-256 verifier of it is sent.
+  echo "Server log_statement: $(psql_admin -At -c 'SHOW log_statement'); the password is sent as a SCRAM-SHA-256 verifier."
+  OPENKEY_MONITOR_PW_VERIFIER=$(python3 "$here/scram.py")
+  export OPENKEY_MONITOR_PW_VERIFIER
   psql_admin --single-transaction -f "$here/provision.sql"
   echo "Provisioned: openkey_monitor_owner, schema monitor, monitor.connection_counts(), openkey_monitor."
 

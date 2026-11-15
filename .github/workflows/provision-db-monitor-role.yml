@@ -1,7 +1,9 @@
 name: Provision DB monitor role
 
 # Manual only. Creates, or removes, the read-only connection-count monitor in the production database (TC-3067):
-#   openkey_monitor_owner  NOLOGIN, member only of pg_read_all_stats; owns schema `monitor` and one function
+#   openkey_monitor_owner  NOLOGIN, member only of one statistics role, pg_read_all_stats by default or pg_monitor when
+#                          the owner_stats_role input says so (only after the pg_read_all_stats grant was refused;
+#                          there is no automatic fallback); owns schema `monitor` and one function
 #   openkey_monitor        LOGIN, two connections, may only run monitor.connection_counts()
 # monitor.connection_counts() returns six aggregate numbers for this database (connections, active, idle in
 # transaction, lock waiters, max_connections, oldest transaction age). No query text, no identity.
@@ -39,6 +41,14 @@ on:
         description: 'provision only: the age public key (age1...) the connection URL is encrypted to'
         required: false
         type: string
+      owner_stats_role:
+        description: 'provision only: the one statistics role the NOLOGIN owner role joins. pg_read_all_stats unless that grant was refused'
+        required: false
+        type: choice
+        default: pg_read_all_stats
+        options:
+          - pg_read_all_stats
+          - pg_monitor
 
 concurrency:
   group: db-monitor-role
@@ -71,6 +81,9 @@ jobs:
           fi
 
       - uses: actions/checkout@v4
+        with:
+          # This job holds the production database login: the token is not left on disk.
+          persist-credentials: false
 
       - name: Install age
         if: inputs.mode == 'provision'
@@ -81,6 +94,7 @@ jobs:
           MODE: ${{ inputs.mode }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           OPENKEY_AGE_RECIPIENT: ${{ inputs.mode == 'provision' && inputs.age_recipient || '' }}
+          OPENKEY_OWNER_STATS_ROLE: ${{ inputs.owner_stats_role }}
           OPENKEY_MONITOR_URL_OUT: ${{ runner.temp }}/openkey-db-monitor-url.age
         run: |
           if [ -z "$DATABASE_URL" ]; then

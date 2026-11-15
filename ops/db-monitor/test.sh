@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Tests of db-monitor-role.sh against a real PostgreSQL server (TC-3067). Needs a superuser connection, which it
-# uses only to create two scratch databases; the script under test runs in each as the database's owner:
+# uses only to create scratch databases; the script under test runs in each as the database's owner:
 #
 #   super  a database owned by a superuser
 #   owner  a database owned by a role that is not a superuser, has CREATEROLE and CREATEDB, and may grant
-#          pg_read_all_stats: the shape of a managed Postgres owner
+#          pg_read_all_stats and pg_monitor: the shape of a managed Postgres owner
+#
+# Each runs once for each statistics role the NOLOGIN owner role may join (pg_read_all_stats, pg_monitor).
 #
 # Environment: TEST_PGHOST, TEST_PGPORT, TEST_PGUSER, TEST_PGPASSWORD (the superuser connection).
 # Every scenario is: provision, post-checks, a deliberate deviation that the post-checks must catch, drop.
@@ -23,19 +25,23 @@ bad() { fail=$((fail + 1)); printf 'FAIL  %s\n' "$1"; }
 super_sql() { PGPASSWORD=$TEST_PGPASSWORD psql -X -q -At -v ON_ERROR_STOP=1 -h "$TEST_PGHOST" -p "$TEST_PGPORT" -U "$TEST_PGUSER" "$@"; }
 
 OWNER_PW=owner-test-pw
-url_super="postgresql://$TEST_PGUSER:$TEST_PGPASSWORD@$TEST_PGHOST:$TEST_PGPORT/monitor_test_super"
-url_owner="postgresql://monitor_test_owner:$OWNER_PW@$TEST_PGHOST:$TEST_PGPORT/monitor_test_owner"
 
-# The roles are shared by the whole server: start from a server that has none of them.
+# The roles are shared by the whole server: start from a server that has none of them, and no scratch database.
 reset_server() {
+  local db
+  for db in $(super_sql -d postgres -c "SELECT datname FROM pg_database WHERE datname LIKE 'monitor\_test\_%'"); do
+    super_sql -d postgres -c "DROP DATABASE \"$db\""
+  done
   super_sql -d postgres <<'SQL'
-DROP DATABASE IF EXISTS monitor_test_super;
-DROP DATABASE IF EXISTS monitor_test_owner;
-DROP DATABASE IF EXISTS monitor_test_refused;
 DO $$
+DECLARE r text;
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'openkey_monitor_owner') THEN
-    REVOKE pg_read_all_stats FROM openkey_monitor_owner;
+    FOR r IN SELECT unnest(ARRAY['pg_read_all_stats', 'pg_monitor']) LOOP
+      IF EXISTS (SELECT 1 FROM pg_auth_members WHERE member = 'openkey_monitor_owner'::regrole AND roleid = r::regrole) THEN
+        EXECUTE format('REVOKE %I FROM openkey_monitor_owner', r);
+      END IF;
+    END LOOP;
   END IF;
 END
 $$;
@@ -50,12 +56,10 @@ reset_server
 super_sql -d postgres <<SQL
 CREATE ROLE monitor_test_owner LOGIN CREATEROLE CREATEDB PASSWORD '$OWNER_PW';
 GRANT pg_read_all_stats TO monitor_test_owner WITH ADMIN OPTION;
-CREATE DATABASE monitor_test_super;
-CREATE DATABASE monitor_test_owner OWNER monitor_test_owner;
+GRANT pg_monitor TO monitor_test_owner WITH ADMIN OPTION;
 -- A database owner that may grant pg_monitor but not pg_read_all_stats, which is what Neon documents for its owner.
 CREATE ROLE monitor_test_refused LOGIN CREATEROLE CREATEDB PASSWORD '$OWNER_PW';
 GRANT pg_monitor TO monitor_test_refused WITH ADMIN OPTION;
-CREATE DATABASE monitor_test_refused OWNER monitor_test_refused;
 SQL
 
 # Objects the application's database has before the monitor exists: a table with a column and a sequence, a table
@@ -110,19 +114,29 @@ deviation() { # deviation <description> <named check> <apply sql> <undo sql>
   expect_status "verify passes again after undoing: $1" 0
 }
 
-scenario() { # scenario <name> <admin url> <database>
-  local name=$1
-  ADMIN_URL=$2
-  DB=$3
-  export DATABASE_URL=$2
+scenario() { # scenario <super|owner> <statistics role>
+  local kind=$1 stats=$2
+  local name="$kind/$stats"
+  DB="monitor_test_${kind}_${stats#pg_}"
+  export OPENKEY_OWNER_STATS_ROLE=$stats
+  if [ "$kind" = super ]; then
+    super_sql -d postgres -c "CREATE DATABASE $DB"
+    ADMIN_URL="postgresql://$TEST_PGUSER:$TEST_PGPASSWORD@$TEST_PGHOST:$TEST_PGPORT/$DB"
+  else
+    super_sql -d postgres -c "CREATE DATABASE $DB OWNER monitor_test_owner"
+    ADMIN_URL="postgresql://monitor_test_owner:$OWNER_PW@$TEST_PGHOST:$TEST_PGPORT/$DB"
+  fi
+  export DATABASE_URL=$ADMIN_URL
   echo "=== $name"
   fixtures "$ADMIN_URL"
 
-  local pw1="test-pw-one-$name" pw2="test-pw-two-$name"
+  local pw1="test-pw-one-$kind-$stats" pw2="test-pw-two-$kind-$stats"
   export OPENKEY_MONITOR_PW=$pw1
   run provision
   expect_status "$name: provision succeeds and its post-checks pass" 0
   expect_line "$name: counts, not names, are printed" "tables_with_any_privilege"
+  expect_line "$name: it reports whether the server logs statements" "Server log_statement:"
+  expect_line "$name: it reports whether the monitor role may create temporary tables" "info_temporary_tables_for_monitor"
   expect_line "$name: a PUBLIC-executable function is reported, not counted against the monitor" "$(printf 'info  %-46s %s' info_public_executable_functions 1)"
   # The runner consumes `::add-mask::` workflow commands and never shows them; every other line must be free of it.
   if grep -v '^::add-mask::' <<<"$out" | grep -qF -- "$pw1"; then bad "$name: the password is in the output"; else ok "$name: the password is not in the output"; fi
@@ -167,13 +181,17 @@ scenario() { # scenario <name> <admin url> <database>
     "GRANT pg_read_all_stats TO openkey_monitor" "REVOKE pg_read_all_stats FROM openkey_monitor"
   deviation "the monitor role may create objects in schema monitor" schema_create_for_monitor \
     "GRANT CREATE ON SCHEMA monitor TO openkey_monitor" "REVOKE CREATE ON SCHEMA monitor FROM openkey_monitor"
+  deviation "the monitor role may create objects in the public schema" public_schema_create_for_monitor \
+    "GRANT CREATE ON SCHEMA public TO openkey_monitor" "REVOKE CREATE ON SCHEMA public FROM openkey_monitor"
+  deviation "a SECURITY DEFINER function PUBLIC can execute exists" public_executable_security_definer_functions \
+    "CREATE FUNCTION public.fx_definer() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'" "DROP FUNCTION public.fx_definer()"
   deviation "the connection limit is raised" monitor_connection_limit \
     "ALTER ROLE openkey_monitor CONNECTION LIMIT 5" "ALTER ROLE openkey_monitor CONNECTION LIMIT 2"
   # The owner role's own grant is revoked by the role that made it.
-  local regrant="GRANT pg_read_all_stats TO openkey_monitor_owner"
+  local regrant="GRANT $stats TO openkey_monitor_owner"
   [ "$(admin -c "SELECT current_setting('server_version_num')::int >= 160000")" = t ] && regrant="$regrant WITH INHERIT TRUE"
-  DEVIATE_AS=owner deviation "the owner role loses pg_read_all_stats, so the function under-counts" function_conns_match_owner_count \
-    "REVOKE pg_read_all_stats FROM openkey_monitor_owner" "$regrant"
+  DEVIATE_AS=owner deviation "the owner role loses $stats, so the function under-counts" function_conns_match_owner_count \
+    "REVOKE $stats FROM openkey_monitor_owner" "$regrant"
 
   # Rollback.
   run drop
@@ -203,27 +221,52 @@ scenario() { # scenario <name> <admin url> <database>
   as_super -c "DROP SCHEMA monitor CASCADE"
 }
 
-scenario super "$url_super" monitor_test_super
-scenario owner "$url_owner" monitor_test_owner
+for stats in pg_read_all_stats pg_monitor; do
+  scenario super "$stats"
+  scenario owner "$stats"
+done
 
-# An owner that may not grant pg_read_all_stats: provision stops with the reason and leaves nothing behind. Only
-# PostgreSQL 16 and later check this: before 16, CREATEROLE may grant any role that is not a superuser.
+# A value that is neither is refused before the database is touched.
+export DATABASE_URL="postgresql://$TEST_PGUSER:$TEST_PGPASSWORD@$TEST_PGHOST:$TEST_PGPORT/postgres"
+export OPENKEY_MONITOR_PW=invalid-stats-test-pw
+OPENKEY_OWNER_STATS_ROLE=pg_signal_backend run provision
+expect_status "an owner statistics role other than the two allowed is refused" nonzero
+expect_line "the refusal names the allowed values" "must be pg_read_all_stats or pg_monitor"
+if [ "$(super_sql -d postgres -c "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'openkey_monitor%'")" = 0 ]; then
+  ok "the refused value left no role behind"
+else
+  bad "the refused value left a role behind"
+fi
+
+# An owner that may grant pg_monitor but not pg_read_all_stats (what Neon documents for its owner): the default value
+# stops with the reason and leaves nothing behind, with no fallback; asking for pg_monitor succeeds. Only PostgreSQL 16
+# and later check this: before 16, CREATEROLE may grant any role that is not a superuser.
 if [ "$(super_sql -d postgres -c "SELECT current_setting('server_version_num')::int >= 160000")" = t ]; then
-  echo "=== refused"
+  echo "=== refused owner"
+  super_sql -d postgres -c "CREATE DATABASE monitor_test_refused OWNER monitor_test_refused"
   export DATABASE_URL="postgresql://monitor_test_refused:$OWNER_PW@$TEST_PGHOST:$TEST_PGPORT/monitor_test_refused"
   ADMIN_URL=$DATABASE_URL
   DB=monitor_test_refused
   export OPENKEY_MONITOR_PW=refused-test-pw
+  unset OPENKEY_OWNER_STATS_ROLE
   run provision
-  expect_status "refused: provision fails when the owner may not grant pg_read_all_stats" nonzero
-  expect_line "refused: the failure names the role it could not grant" "pg_read_all_stats"
+  expect_status "refused owner: the default pg_read_all_stats fails when the owner may not grant it" nonzero
+  expect_line "refused owner: the failure names the role it could not grant" "pg_read_all_stats"
   if [ "$(super_sql -d postgres -c "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'openkey_monitor%'")" = 0 ]; then
-    ok "refused: it left no role behind"
+    ok "refused owner: it left no role behind and did not fall back"
   else
-    bad "refused: it left a role behind"
+    bad "refused owner: it left a role behind"
   fi
+  export OPENKEY_OWNER_STATS_ROLE=pg_monitor
+  run provision
+  expect_status "refused owner: asking for pg_monitor succeeds and its post-checks pass" 0
+  expect_line "refused owner: the owner role joined pg_monitor" "the owner role joins: pg_monitor"
+  expect_line "refused owner: the login role is outside pg_monitor" "$(printf 'ok    %-46s %s' monitor_is_pg_monitor false)"
+  expect_line "refused owner: the login role is outside pg_read_all_stats" "$(printf 'ok    %-46s %s' monitor_is_pg_read_all_stats false)"
+  run drop
+  expect_status "refused owner: drop succeeds and nothing is left" 0
 else
-  echo "=== refused: skipped (PostgreSQL before 16)"
+  echo "=== refused owner: skipped (PostgreSQL before 16)"
 fi
 
 # The age-encrypted URL: only the recipient can read it, and it is the monitor role's.
@@ -233,14 +276,17 @@ if command -v age >/dev/null && command -v age-keygen >/dev/null; then
   trap 'rm -rf "$tmp"' EXIT
   age-keygen -o "$tmp/key.txt" 2>/dev/null
   recipient=$(age-keygen -y "$tmp/key.txt")
-  export DATABASE_URL=$url_super ADMIN_URL=$url_super DB=monitor_test_super
+  DB=monitor_test_super_url
+  super_sql -d postgres -c "CREATE DATABASE $DB"
+  export DATABASE_URL="postgresql://$TEST_PGUSER:$TEST_PGPASSWORD@$TEST_PGHOST:$TEST_PGPORT/$DB" ADMIN_URL="postgresql://$TEST_PGUSER:$TEST_PGPASSWORD@$TEST_PGHOST:$TEST_PGPORT/$DB"
+  unset OPENKEY_OWNER_STATS_ROLE
   export OPENKEY_MONITOR_PW=url-test-pw OPENKEY_AGE_RECIPIENT=$recipient OPENKEY_MONITOR_URL_OUT=$tmp/url.age
   run provision
   expect_status "provision writes the encrypted URL" 0
   expect_line "the output says it wrote it" "age-encrypted"
   if [ -s "$tmp/url.age" ] && ! grep -qF -- "url-test-pw" "$tmp/url.age"; then ok "the file does not hold the password in clear"; else bad "the file is empty or holds the password in clear"; fi
   decrypted=$(age -d -i "$tmp/key.txt" "$tmp/url.age")
-  if [ "$decrypted" = "postgresql://openkey_monitor:url-test-pw@$TEST_PGHOST:$TEST_PGPORT/monitor_test_super" ]; then
+  if [ "$decrypted" = "postgresql://openkey_monitor:url-test-pw@$TEST_PGHOST:$TEST_PGPORT/$DB" ]; then
     ok "decrypted, it is the monitor role's URL for the same database"
   else
     bad "the decrypted URL is not the monitor role's"

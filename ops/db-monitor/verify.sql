@@ -3,6 +3,7 @@
 -- identity and no query text. db-monitor-role.sh compares every row with its expected value.
 
 \set ON_ERROR_STOP on
+\getenv stats_role OPENKEY_OWNER_STATS_ROLE
 
 SELECT 'function_returns_one_row', count(*)::text FROM monitor.connection_counts();
 
@@ -27,8 +28,8 @@ SELECT 'monitor_statement_timeout', current_setting('statement_timeout');
 SELECT 'owner_can_login', rolcanlogin::text FROM pg_roles WHERE rolname = 'openkey_monitor_owner';
 SELECT 'owner_superuser', rolsuper::text FROM pg_roles WHERE rolname = 'openkey_monitor_owner';
 SELECT 'owner_memberships', count(*)::text FROM pg_auth_members WHERE member = 'openkey_monitor_owner'::regrole;
-SELECT 'owner_member_of_pg_read_all_stats_only', (count(*) = 1)::text FROM pg_auth_members
-  WHERE member = 'openkey_monitor_owner'::regrole AND roleid = 'pg_read_all_stats'::regrole;
+SELECT 'owner_member_of_stats_role_only', (count(*) = 1)::text FROM pg_auth_members
+  WHERE member = 'openkey_monitor_owner'::regrole AND roleid = :'stats_role'::regrole;
 -- Nobody can use the owner role: no member inherits it or can SET ROLE to it. (On PostgreSQL 16 the role's creator,
 -- when it is not a superuser, keeps a bare ADMIN membership, which neither inherits nor can SET ROLE; before 16
 -- there are no such flags, so any member counts.)
@@ -80,14 +81,29 @@ WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
   AND has_function_privilege('openkey_monitor', p.oid, 'EXECUTE')
   AND NOT has_function_privilege('public', p.oid, 'EXECUTE');
 SELECT 'database_create_for_monitor', has_database_privilege('openkey_monitor', current_database(), 'CREATE')::text;
+-- The monitor role cannot create objects in the public schema, or in any other non-system schema.
+SELECT 'public_schema_create_for_monitor', has_schema_privilege('openkey_monitor', 'public', 'CREATE')::text;
+SELECT 'schemas_with_create_for_monitor', count(*)::text FROM pg_namespace n
+WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+  AND has_schema_privilege('openkey_monitor', n.oid, 'CREATE');
+-- No function that runs with its owner's rights may be executable by PUBLIC.
+SELECT 'public_executable_security_definer_functions', count(*)::text
+FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+  AND p.prosecdef AND has_function_privilege('public', p.oid, 'EXECUTE');
 
 -- Other sessions in this database show no query text to the monitor role. (Their backend_type and state read as
--- NULL too: the monitor role is not in pg_read_all_stats; only the function, through its owner, sees them.)
+-- NULL too: the monitor role is in neither pg_read_all_stats nor pg_monitor; only the function, through its owner,
+-- sees them.)
 SELECT 'other_sessions_showing_query_text', count(*)::text FROM pg_stat_activity
 WHERE datname = current_database() AND pid <> pg_backend_pid()
   AND query IS DISTINCT FROM '<insufficient privilege>';
 SELECT 'other_sessions_seen', (count(*) > 0)::text FROM pg_stat_activity
 WHERE datname = current_database() AND pid <> pg_backend_pid();
+
+-- Information only, not compared: whether the monitor role may create temporary tables (PUBLIC holds TEMPORARY on
+-- a database by default; nothing persists, and no table it could create is readable by anyone else).
+SELECT 'info_temporary_tables_for_monitor', has_database_privilege('openkey_monitor', current_database(), 'TEMPORARY')::text;
 
 -- Information only, not compared: functions PUBLIC can execute in non-system schemas.
 SELECT 'info_public_executable_functions', count(*)::text

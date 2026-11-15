@@ -1,7 +1,8 @@
 -- Provision the connection-count monitor (TC-3067, design B). Run by db-monitor-role.sh as the database
 -- owner, in one transaction (psql --single-transaction) with ON_ERROR_STOP: any failure leaves nothing behind.
 --
---   openkey_monitor_owner  NOLOGIN, member only of pg_read_all_stats. Owns schema `monitor` and the function.
+--   openkey_monitor_owner  NOLOGIN, member only of one statistics role: pg_read_all_stats (the default) or, when the
+--                          caller asks for it, pg_monitor. Owns schema `monitor` and the function.
 --   openkey_monitor        LOGIN, two connections, no memberships. May use schema `monitor` and execute the
 --                          one function in it. Nothing else.
 --
@@ -9,14 +10,23 @@
 
 \set ON_ERROR_STOP on
 SET client_min_messages = warning;
--- The password comes from the environment, never from the command line.
-\getenv pw OPENKEY_MONITOR_PW
+-- The password reaches this script as a SCRAM-SHA-256 verifier computed by db-monitor-role.sh, from the environment,
+-- never from the command line: a server that logs statements never sees the password itself.
+\getenv pw OPENKEY_MONITOR_PW_VERIFIER
+-- Which statistics role the owner role joins: exactly pg_read_all_stats or pg_monitor, nothing else.
+\getenv stats_role OPENKEY_OWNER_STATS_ROLE
+SELECT :'stats_role' IN ('pg_read_all_stats', 'pg_monitor') AS stats_role_ok \gset
+\if :stats_role_ok
+\else
+  \echo OPENKEY_OWNER_STATS_ROLE must be pg_read_all_stats or pg_monitor
+  SELECT 1/0;
+\endif
 
 SELECT current_setting('server_version_num')::int >= 160000 AS pg16,
        (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS is_super \gset
 
 -- On PostgreSQL 16 the membership edge carries the inherit flag, so the owner can be NOINHERIT. Before 16 the
--- flag lives on the role, so the owner must be INHERIT to use pg_read_all_stats.
+-- flag lives on the role, so the owner must be INHERIT to use its statistics role.
 SELECT CASE WHEN :'pg16' = 't' THEN 'NOINHERIT' ELSE 'INHERIT' END AS owner_inherit \gset
 
 -- Owner role.
@@ -38,12 +48,18 @@ SELECT NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'openkey_monitor_owner
   \endif
 \endif
 
--- pg_read_all_stats lets the function see state and xact_start of other roles' sessions.
+-- The statistics role lets the function see state and xact_start of other roles' sessions. pg_monitor includes
+-- pg_read_all_stats; only the NOLOGIN owner role joins it, never the monitor login role. A re-run with the other
+-- value leaves the owner in exactly one of the two.
 \if :pg16
-  GRANT pg_read_all_stats TO openkey_monitor_owner WITH INHERIT TRUE;
+  GRANT :"stats_role" TO openkey_monitor_owner WITH INHERIT TRUE;
 \else
-  GRANT pg_read_all_stats TO openkey_monitor_owner;
+  GRANT :"stats_role" TO openkey_monitor_owner;
 \endif
+SELECT format('REVOKE %I FROM openkey_monitor_owner', r)
+FROM unnest(ARRAY['pg_read_all_stats', 'pg_monitor']) AS r
+WHERE r <> :'stats_role'
+  AND EXISTS (SELECT 1 FROM pg_auth_members WHERE member = 'openkey_monitor_owner'::regrole AND roleid = r::regrole) \gexec
 
 -- Never take over a schema called monitor that something else owns.
 DO $$
