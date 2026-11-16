@@ -44,13 +44,15 @@
     linkNamedHost?: string | null;
     /** An ordinary link: nothing about its sender is verified. */
     ordinaryLink?: boolean;
+    /** A neutral line for requests with no signed requester details; never a brand. */
+    neutralRequesterLine?: string | null;
     /** Where an ordinary link's approval is delivered; a destination, not the requester. */
     receiver?: DelegateReceiver | null;
     /** Reports whether editable permission checkboxes are visible. */
     onEditingStateChange?: (editing: boolean) => void;
   }
 
-  let { model, initialSelection, transport, context, showSigner = false, linkNamedHost = null, ordinaryLink = false, receiver = null, onEditingStateChange }: Props = $props();
+  let { model, initialSelection, transport, context, showSigner = false, linkNamedHost = null, ordinaryLink = false, neutralRequesterLine = null, receiver = null, onEditingStateChange }: Props = $props();
 
   // Internal review state. The adapter owns this because it is per-surface
   // presentational state — the route no longer touches it. We intentionally
@@ -109,6 +111,7 @@
   {showSigner}
   {linkNamedHost}
   {ordinaryLink}
+  {neutralRequesterLine}
   {receiver}
   {onApprove}
   {onCancel}

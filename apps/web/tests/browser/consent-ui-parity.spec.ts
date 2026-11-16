@@ -354,14 +354,15 @@ test('device relay network failure has no status suffix', async ({ page }) => {
   await expect(page.getByRole('alert')).toHaveText("You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again.");
 });
 
-// TC-2526 follow-up: the CLI's device sign-in is bound by the server-verified
-// device request, so it is a verified requester. It keeps its friendly name,
-// with no ordinary-link warning and no receiver line.
-test('a CLI device sign-in keeps its verified TinyCloud CLI name', async ({ page }) => {
+// TC-2526 follow-up: a device sign-in names no requester. The server binds the
+// request, but anyone can start one, and the signing domain is the server's
+// own default, so the page never calls it the TinyCloud CLI. The owner
+// compares the code with the terminal instead.
+test('a device sign-in shows a neutral line with the code and never the CLI brand', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await openDeviceRelayReview(page, { relayStatus: 200 });
-  await expect(page.locator('.requester-line')).toHaveText('Requested by TinyCloud CLI');
-  await expect(page.locator('.requester-line')).not.toContainText('From a link');
+  await expect(page.locator('.requester-line')).toHaveText('A device sign-in is asking (code ABCD-EFGH)');
+  await expect(page.getByRole('dialog')).not.toContainText('TinyCloud CLI');
   await expect(page.getByRole('heading', { name: "OpenKey can't confirm who sent this request" })).toHaveCount(0);
   await expect(page.getByTestId('receiver-line')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();

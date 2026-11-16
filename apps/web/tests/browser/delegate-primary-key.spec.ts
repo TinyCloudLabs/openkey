@@ -249,8 +249,10 @@ test('a server-loaded signed request keeps its attribution without the ordinary-
     .replace('2026-11-03T01:00:00.000Z', '2026-10-15T01:00:00.000Z');
   await page.route('**/api/delegate/prepare', route => json(route, 200, prepared));
   await page.goto(`/a/${id}#v=4&k=${'A'.repeat(43)}&c=bafkreia${'a'.repeat(52)}`);
-  // A signed request is server-bound, so the CLI keeps its friendly name.
-  await expect(page.locator('.requester-line .requester-name')).toHaveText('TinyCloud CLI');
+  // A signed request carries no requester details of its own here, so the
+  // line is neutral; the signing default is not a name.
+  await expect(page.locator('.requester-line')).toHaveText('An approval link is asking');
+  await expect(page.locator('.requester-line')).not.toContainText('TinyCloud');
   await expect(page.getByRole('alert').filter({ has: page.getByRole('heading') })).toHaveCount(0);
   await expect(approve(page)).toBeEnabled();
 });

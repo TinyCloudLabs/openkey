@@ -115,6 +115,12 @@
     /** An ordinary link: nothing about its sender is verified, so the warning shows. */
     ordinaryLink?: boolean;
     /**
+     * Shown instead of "Requested by …" when the request carries no signed
+     * requester details of its own (a device sign-in, an approval link).
+     * The signing domain is the server's fixed default, not who asked.
+     */
+    neutralRequesterLine?: string | null;
+    /**
      * Where an ordinary link's approval will be delivered, as OpenKey
      * enforces it. Names a destination, never the requester.
      */
@@ -170,6 +176,7 @@
     showSigner = false,
     linkNamedHost = null,
     ordinaryLink = false,
+    neutralRequesterLine = null,
     receiver = null,
     peerRecognition = null,
     expiryMs = null,
@@ -555,6 +562,8 @@
         From a link that names <span class="requester-name break-all">{linkNamedHost}</span>
       {:else if ordinaryLink}
         From a link
+      {:else if !identity && neutralRequesterLine}
+        {neutralRequesterLine}
       {:else}
         Requested by <span class="requester-name">{identity ? requestedBy : requesterName}</span>
       {/if}
@@ -582,7 +591,7 @@
         </p>
       {:else if receiver?.kind === "device"}
         <p class="mt-2 leading-relaxed" data-testid="receiver-line">
-          Your approval will be delivered to an app on this device (<span class="break-all">{receiver.address}</span>).
+          Your approval will be delivered to an app on this device (<span class="whitespace-nowrap">{receiver.address}</span>).
         </p>
       {/if}
     </section>

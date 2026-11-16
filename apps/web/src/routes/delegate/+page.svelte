@@ -399,6 +399,16 @@
   const ordinaryLink = $derived(!approvalRequestMode && !deviceTransactionId && !preparedTransport);
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
   const deviceUserCode = $page.url.searchParams.get('deviceUserCode') || '';
+  // The device sign-in names no requester: the owner compares the code with the terminal.
+  const deviceCodeShown = (() => {
+    const normalized = deviceUserCode.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+    return normalized.length > 4 ? `${normalized.slice(0, 4)}-${normalized.slice(4)}` : normalized;
+  })();
+  const neutralRequesterLine = $derived(
+    deviceTransactionId
+      ? (deviceCodeShown ? `A device sign-in is asking (code ${deviceCodeShown})` : 'A device sign-in is asking')
+      : approvalRequestMode ? 'An approval link is asking' : null,
+  );
   let deviceAcknowledged = $state(false);
   const relayJwkB64 = $page.url.searchParams.get('relayJwk') || '';
 
@@ -914,14 +924,10 @@
             originWarning: false,
           },
         });
-        // An ordinary link's domain is whatever the link said, so it is never
-        // a first-party name. A device, signed-request or prepared flow refuses
-        // a caller-reported requester, so its domain is the server's own and the
-        // CLI keeps its name there.
-        const signedDomain = model.immutable?.domain;
-        model.requester.displayName = !ordinaryLink && signedDomain === 'cli.tinycloud.xyz'
-          ? 'TinyCloud CLI'
-          : hostNamedByLink(signedDomain);
+        // A prepared domain binds signed bytes, not a first-party app identity,
+        // and it is the server's fixed default on device and signed flows. None
+        // of this response's requester-name fields is server-verified.
+        model.requester.displayName = hostNamedByLink(model.immutable?.domain);
         reviewModel = model;
         reviewSelection = defaultSelection(model);
         baselineSiweForReview = siweMessage;
@@ -2029,6 +2035,7 @@
               model={reviewModel}
               linkNamedHost={ordinaryRequesterHost}
               ordinaryLink={ordinaryLink}
+              neutralRequesterLine={neutralRequesterLine}
               receiver={ordinaryReceiver}
               initialSelection={reviewSelection}
               context={cliContext}
