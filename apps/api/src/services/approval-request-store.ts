@@ -6,6 +6,9 @@ const leaseStart = (now: Date) => new Date(now.getTime() - APPROVAL_CLAIM_LEASE_
 /** How often admission also clears the renewal steps of requests that expired unapproved (TC-2933). */
 const STALE_RENEWAL_SWEEP_MS = 10 * 60_000;
 
+/** Rolls back a leased approval whose lease reservation can't be confirmed (TC-2946). */
+class UnreservedLease extends Error {}
+
 // The saved renewal steps (TC-2933) hold the approved grant and the signed lease. They are only needed until
 // the result is saved: every write that settles a request (approve, deny, ACK) clears them, and admission
 // periodically clears them from requests that expired without a result.
@@ -55,12 +58,26 @@ export function createPrismaApprovalRequestStore(database: PrismaClient): Approv
         : { id, resultRef: null, deniedAt: null, expiresAt: { gt: now }, OR: [{ approvingAt: null }, { approvingAt: { lte: leaseStart(now) } }] };
       const data = { ...fields, renewal: Prisma.DbNull };
       if (!lease) return (await database.approvalRequest.updateMany({ where, data })).count === 1;
-      // A leased approval and its lease record are written together, and only when this save wins.
-      return database.$transaction(async (tx) => {
-        if ((await tx.approvalRequest.updateMany({ where, data })).count !== 1) return false;
-        await tx.renewalLease.create({ data: lease });
-        return true;
-      });
+      // A leased approval confirms its lease record in the same write, and only when this save wins. The record was
+      // reserved before the node admitted the lease (TC-2946); a reservation that is missing, names another lease, or
+      // was settled meanwhile (stopped, or never admitted) approves nothing.
+      try {
+        return await database.$transaction(async (tx) => {
+          if ((await tx.approvalRequest.updateMany({ where, data })).count !== 1) return false;
+          const confirmed = await tx.renewalLease.updateMany({
+            where: {
+              leaseCid: lease.leaseCid, userId: lease.userId, approvalRequestId: lease.approvalRequestId, ownerDid: lease.ownerDid,
+              originalCid: lease.originalCid, nodeOrigin: lease.nodeOrigin, revokedAt: null, neverAdmittedAt: null,
+            },
+            data: { admittedAt: now, leaseAuthorization: null, sessionId: lease.sessionId },
+          });
+          if (confirmed.count !== 1) throw new UnreservedLease();
+          return true;
+        });
+      } catch (error) {
+        if (error instanceof UnreservedLease) return false;
+        throw error;
+      }
     },
     async saveRenewal(id, stage, marker) {
       const saved = await database.approvalRequest.updateMany({

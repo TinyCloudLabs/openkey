@@ -1,6 +1,7 @@
 // API client for key management
 import { getSessionToken, isEmbedContext } from './embed-passkey';
 import { isDefiniteRefusal, ServerRefusalError } from './server-reply';
+import type { RenewalLease } from './renewal-leases';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -344,6 +345,26 @@ export const api = {
     return fetchAPI(`/api/account/tinycloud-apps/identity/${encodeURIComponent(consentId)}`, {
       method: 'DELETE', body: JSON.stringify({ confirmation: 'DISCONNECT' }),
     }, true);
+  },
+
+  async listRenewalLeases(): Promise<{ leases: RenewalLease[] }> {
+    return fetchAPI('/api/account/renewal-leases', {}, true);
+  },
+  /**
+   * Stop one lease. `{ walletMessage }` when an external wallet must sign the stop: call again with
+   * `{ siwe: walletMessage, signature }`.
+   */
+  async stopRenewalLease(leaseCid: string, signed?: { siwe: string; signature: string }): Promise<{ stopped: true } | { walletMessage: string }> {
+    const res = await fetch(`${API_URL}/api/account/renewal-leases/${encodeURIComponent(leaseCid)}/stop`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(signed ?? {}),
+    });
+    const body = await res.json().catch(() => null) as { stopped?: boolean; code?: string; siwe?: string; error?: string } | null;
+    if (res.ok && body?.stopped === true) return { stopped: true };
+    if (res.status === 409 && body?.code === 'wallet_required' && typeof body.siwe === 'string') return { walletMessage: body.siwe };
+    throw Object.assign(new Error(typeof body?.error === 'string' ? body.error : `HTTP ${res.status}`), { code: body?.code, status: res.status });
   },
 
   async getLinkChallenge(): Promise<{ message: string; nonce: string }> {
