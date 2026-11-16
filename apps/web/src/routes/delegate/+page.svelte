@@ -32,6 +32,7 @@
     REGISTERED_CALLBACK_ENDPOINTS,
     checkDelegateCallback,
     checkDelegateHost,
+    delegateReceiver,
     checkDelegateRequesterOrigin,
     isCanonicalHttpsEndpoint,
     isCanonicalHttpsOrigin,
@@ -526,6 +527,8 @@
     : hostCheck?.ok === false ? hostCheck.reason : '');
   $effect(() => { if (linkPolicyError) error = linkPolicyError; });
   const approvedCallback = $derived(callbackCheck?.ok ? callbackCheck.callback : null);
+  // Where the approval will go, as OpenKey enforces it; only on ordinary links.
+  const ordinaryReceiver = $derived(ordinaryLink ? delegateReceiver(approvedCallback) : null);
   const showLoopbackHint = $derived(
     shouldShowLoopbackHint({ delegating, approvedCallback, deviceTransactionId, callbackInFlight, pasteCode }),
   );
@@ -2017,6 +2020,7 @@
             <CliSigningAdapter
               model={reviewModel}
               linkNamedHost={ordinaryRequesterHost}
+              receiver={ordinaryReceiver}
               initialSelection={reviewSelection}
               context={cliContext}
               onEditingStateChange={(editing) => { reviewEditing = editing; }}

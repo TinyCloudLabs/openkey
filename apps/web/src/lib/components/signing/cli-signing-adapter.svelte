@@ -22,6 +22,7 @@
   import type { CapabilityReviewModel } from "@openkey/capability-review";
   import SigningApproval from "$lib/components/signing/signing-approval.svelte";
   import type { CliSigningTransport } from "./signing-adapter-types";
+  import type { DelegateReceiver } from "$lib/delegate-link-policy";
 
   interface Props {
     /** The parsed authorization model to review. */
@@ -41,11 +42,13 @@
     showSigner?: boolean;
     /** Ordinary link attribution only; a callback URL is not verified requester identity. */
     linkNamedHost?: string | null;
+    /** Where an ordinary link's approval is delivered; a destination, not the requester. */
+    receiver?: DelegateReceiver | null;
     /** Reports whether editable permission checkboxes are visible. */
     onEditingStateChange?: (editing: boolean) => void;
   }
 
-  let { model, initialSelection, transport, context, showSigner = false, linkNamedHost = null, onEditingStateChange }: Props = $props();
+  let { model, initialSelection, transport, context, showSigner = false, linkNamedHost = null, receiver = null, onEditingStateChange }: Props = $props();
 
   // Internal review state. The adapter owns this because it is per-surface
   // presentational state — the route no longer touches it. We intentionally
@@ -103,6 +106,7 @@
   renewal={transport.renewal ?? null}
   {showSigner}
   {linkNamedHost}
+  {receiver}
   {onApprove}
   {onCancel}
   cancelText={transport.decline ? "Back" : undefined}

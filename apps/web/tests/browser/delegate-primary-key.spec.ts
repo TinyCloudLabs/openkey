@@ -245,3 +245,59 @@ test('a server-loaded signed request keeps its attribution without the ordinary-
   await expect(page.getByRole('alert').filter({ has: page.getByRole('heading') })).toHaveCount(0);
   await expect(approve(page)).toBeEnabled();
 });
+
+// TC-2526 follow-up: an ordinary link may name where the approval goes, as
+// OpenKey itself enforces it. It never names the requester, and the warning
+// stays in the same box.
+test.describe('ordinary-link receiver line', () => {
+  async function openOrdinary(page: Page, params: Record<string, string>) {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.clock.setFixedTime(new Date('2026-10-15T00:00:00Z'));
+    await mock(page, [primary]);
+    await page.goto(`${noOwner}&${new URLSearchParams(params)}`);
+  }
+  const warning = (page: Page) => page.getByRole('alert').filter({ has: page.getByRole('heading', { name: "OpenKey can't confirm who sent this request" }) });
+  const receiverLine = (page: Page) => page.getByTestId('receiver-line');
+
+  test('a registered MCP callback names the service as the destination, inside the warning', async ({ page }) => {
+    await openOrdinary(page, { callback: 'https://mcp.tinycloud.xyz/connect/callback?state=t.n.sig' });
+    await expect(warning(page)).toBeVisible();
+    await expect(warning(page)).toContainText("This request may come from someone else's TinyCloud MCP session.");
+    await expect(warning(page)).toContainText('Approve only if you started this request yourself.');
+    await expect(warning(page).getByTestId('receiver-line')).toHaveText('Your approval will be delivered to the TinyCloud MCP service.');
+    await expect(page.getByText(/is requesting|verified/i)).toHaveCount(0);
+    await expect(approve(page)).toBeEnabled();
+  });
+
+  test('a loopback callback is an app on this device, with no brand', async ({ page }) => {
+    await openOrdinary(page, { callback: 'http://127.0.0.1:47123/callback' });
+    await expect(warning(page).getByTestId('receiver-line')).toHaveText('Your approval will be delivered to an app on this device (127.0.0.1:47123).');
+    await expect(warning(page)).not.toContainText('TinyCloud');
+    await expect(page.locator('.requester-line')).not.toContainText(/TinyCloud (MCP|CLI)/);
+  });
+
+  test('the service label never comes from a link parameter', async ({ page }) => {
+    await openOrdinary(page, {
+      callback: 'http://127.0.0.1:47123/callback',
+      requesterOrigin: 'https://mcp.tinycloud.xyz',
+      service: 'TinyCloud MCP',
+      receiver: 'TinyCloud MCP',
+      label: 'TinyCloud MCP',
+    });
+    await expect(receiverLine(page)).toHaveText('Your approval will be delivered to an app on this device (127.0.0.1:47123).');
+    await expect(receiverLine(page)).not.toContainText('TinyCloud MCP');
+    await expect(warning(page)).not.toContainText("someone else's TinyCloud MCP session");
+  });
+
+  test('a look-alike of a registered callback is refused and gets no receiver line', async ({ page }) => {
+    await openOrdinary(page, { callback: 'https://mcp.tinycloud.xyz/connect/callback/extra' });
+    await expect(page.getByRole('alert').filter({ hasText: 'not a registered TinyCloud app' })).toBeVisible();
+    await expect(receiverLine(page)).toHaveCount(0);
+  });
+
+  test('with no callback there is no receiver line', async ({ page }) => {
+    await openOrdinary(page, {});
+    await expect(warning(page)).toBeVisible();
+    await expect(receiverLine(page)).toHaveCount(0);
+  });
+});

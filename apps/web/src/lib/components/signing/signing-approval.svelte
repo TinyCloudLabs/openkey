@@ -73,6 +73,7 @@
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
   import { requestedExpiryMs } from "$lib/approval-expiry";
   import { isOnceTier } from "$lib/renewal-default";
+  import type { DelegateReceiver } from "$lib/delegate-link-policy";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -111,6 +112,11 @@
     showSigner?: boolean;
     /** A host named by an unsigned ordinary link, not a verified sender. */
     linkNamedHost?: string | null;
+    /**
+     * Where an ordinary link's approval will be delivered, as OpenKey
+     * enforces it. Names a destination, never the requester.
+     */
+    receiver?: DelegateReceiver | null;
     /**
      * Lookup state for the node key on a host approval. Leave unset where the
      * key on the request is not a node (the `/delegate` session grant): the
@@ -161,6 +167,7 @@
     context,
     showSigner = false,
     linkNamedHost = null,
+    receiver = null,
     peerRecognition = null,
     expiryMs = null,
     onExpiryChange,
@@ -555,8 +562,20 @@
       <h3 class="font-semibold">OpenKey can't confirm who sent this request</h3>
       <p class="mt-1 leading-relaxed">
         Anyone can make a link that names <span class="break-all">{linkNamedHost}</span>.
+        {#if receiver?.kind === "service"}
+          This request may come from someone else's {receiver.service} session.
+        {/if}
         Approve only if you started this request yourself.
       </p>
+      {#if receiver?.kind === "service"}
+        <p class="mt-2 leading-relaxed" data-testid="receiver-line">
+          Your approval will be delivered to the {receiver.service} service.
+        </p>
+      {:else if receiver?.kind === "device"}
+        <p class="mt-2 leading-relaxed" data-testid="receiver-line">
+          Your approval will be delivered to an app on this device (<span class="break-all">{receiver.address}</span>).
+        </p>
+      {/if}
     </section>
   {/if}
 
