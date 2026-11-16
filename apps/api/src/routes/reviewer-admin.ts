@@ -76,7 +76,9 @@ export function createReviewerAdminRouter(database: PrismaClient) {
     return c.json({ set: true });
   });
   router.delete('/:store/code', async (c) => {
-    await unsetReviewer(database, c.req.param('store'));
+    // Only a 200 means the code is revoked; on failure nothing changed and the caller repeats.
+    try { await unsetReviewer(database, c.req.param('store')); }
+    catch { return c.json({ error: 'Reviewer code was not revoked' }, 500); }
     return c.json({ set: false });
   });
   return router;

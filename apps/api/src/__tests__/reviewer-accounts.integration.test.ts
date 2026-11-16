@@ -683,6 +683,92 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     expect(binding!.user!.reviewerHoldAt).not.toBeNull();
   });
 
+  const admin = { authorization: 'Bearer reviewer-isolated-admin-test' };
+  const listed = async () => {
+    const body = await (await call('/api/admin/review-accounts', 'GET', undefined, admin)).json() as {
+      accounts: Array<{ store: string; set: boolean; held: boolean }>;
+    };
+    const { set, held } = body.accounts.find((entry) => entry.store === 'openai')!;
+    return { set, held };
+  };
+  /** Every transaction on the shared client runs its work and then fails instead of committing. */
+  async function withFailingCommits<T>(run: () => Promise<T>): Promise<T> {
+    const client = database as unknown as { $transaction: (...values: any[]) => Promise<unknown> };
+    const commit = client.$transaction;
+    client.$transaction = (work: (transaction: unknown) => Promise<unknown>, ...rest: unknown[]) =>
+      commit.call(database, async (transaction: unknown) => {
+        await work(transaction);
+        throw new Error('simulated commit failure');
+      }, ...rest);
+    try { return await run(); } finally { client.$transaction = commit; }
+  }
+
+  test('a revoke that does not commit changes nothing, and a restart agrees with the listing', async () => {
+    await accounts.installReviewer(database, 'openai', code);
+    const digest = accounts.credentialDigest(code).toString('hex');
+    const failed = await withFailingCommits(() => call('/api/admin/review-accounts/openai/code', 'DELETE', undefined, admin));
+    expect(failed.status).toBe(500);
+    // Nothing was revoked, and nothing claims it was: stored and in-memory state still agree.
+    let binding = await accounts.reviewerForUser(database, 'reviewer-owner');
+    expect(binding!.codeDigest).toBe(digest);
+    expect(binding!.user!.reviewerHoldAt).toBeNull();
+    expect(accounts.reviewerCodeMatches(binding, code)).toBe(true);
+    expect(await listed()).toEqual({ set: true, held: false });
+    await accounts.initializeReviewers(database);
+    expect(await listed()).toEqual({ set: true, held: false });
+    // The repeated revoke commits; from then on the code is refused, across a restart too.
+    expect((await call('/api/admin/review-accounts/openai/code', 'DELETE', undefined, admin)).status).toBe(200);
+    expect(await listed()).toEqual({ set: false, held: true });
+    await accounts.initializeReviewers(database);
+    expect(await listed()).toEqual({ set: false, held: true });
+    binding = await accounts.reviewerForUser(database, 'reviewer-owner');
+    expect(binding!.codeDigest).toBeNull();
+    expect(accounts.reviewerCodeMatches(binding, code)).toBe(false);
+    expect((await call('/api/auth/sign-in/reviewer', 'POST', {
+      email: 'openai-review@tinycloud.xyz', code, oauth_query: signedQuery,
+    })).status).toBe(403);
+  });
+
+  test('a rotation that does not commit keeps the old code, and a restart never swaps codes', async () => {
+    const replacement = randomBytes(32).toString('base64url');
+    const accepted = async () => {
+      const binding = await accounts.reviewerForUser(database, 'reviewer-owner');
+      return { old: accounts.reviewerCodeMatches(binding, code), replacement: accounts.reviewerCodeMatches(binding, replacement), digest: binding!.codeDigest };
+    };
+    await accounts.installReviewer(database, 'openai', code);
+    const oldDigest = accounts.credentialDigest(code).toString('hex');
+    const failed = await withFailingCommits(() => call('/api/admin/review-accounts/openai/code', 'PUT', { code: replacement }, admin));
+    expect(failed.status).toBe(400);
+    expect(await accepted()).toEqual({ old: true, replacement: false, digest: oldDigest });
+    expect(await listed()).toEqual({ set: true, held: false });
+    await accounts.initializeReviewers(database);
+    expect(await accepted()).toEqual({ old: true, replacement: false, digest: oldDigest });
+    // The repeated rotation commits; the old code is gone for good.
+    expect((await call('/api/admin/review-accounts/openai/code', 'PUT', { code: replacement }, admin)).status).toBe(200);
+    const newDigest = accounts.credentialDigest(replacement).toString('hex');
+    expect(await accepted()).toEqual({ old: false, replacement: true, digest: newDigest });
+    await accounts.initializeReviewers(database);
+    expect(await accepted()).toEqual({ old: false, replacement: true, digest: newDigest });
+    expect(capturedLogs.includes(replacement)).toBe(false);
+    expect(capturedLogs.includes(newDigest)).toBe(false);
+  });
+
+  test('an audience change that does not commit leaves the pin and the code as they were', async () => {
+    await accounts.installReviewer(database, 'openai', code);
+    const before = await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'openai' } });
+    const { reviewerSessionDid } = await import('../services/reviewer-delegation');
+    const other = reviewerSessionDid(generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }));
+    const failed = await withFailingCommits(() => call('/api/admin/review-accounts/openai/audience', 'PUT', { sessionDid: other }, admin));
+    expect(failed.status).toBe(400);
+    const after = await accounts.reviewerForUser(database, 'reviewer-owner');
+    expect(after!.sessionDid).toBe(before.sessionDid);
+    expect(after!.installEpoch).toBe(before.installEpoch);
+    expect(accounts.reviewerCodeMatches(after, code)).toBe(true);
+    expect(await listed()).toEqual({ set: true, held: false });
+    await accounts.initializeReviewers(database);
+    expect(await listed()).toEqual({ set: true, held: false });
+  });
+
   test('a failed boot initialisation leaves the API serving and every reviewer refused', async () => {
     await accounts.installReviewer(database, 'openai', code);
     expect(accounts.reviewerActive(await accounts.reviewerForUser(database, 'reviewer-owner'))).toBe(true);

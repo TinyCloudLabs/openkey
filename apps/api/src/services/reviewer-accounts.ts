@@ -78,8 +78,20 @@ export async function lockReviewer(transaction: Prisma.TransactionClient, store:
   return transaction.reviewerAccount.findUniqueOrThrow({ where: { store }, include: { user: true } });
 }
 
+/**
+ * Process memory follows the database: callers apply it only after their transaction has
+ * committed, so a change that fails leaves the stored and the in-memory state as they were and
+ * a restart cannot bring back something the caller was told is gone. It never replaces the
+ * verifier of a later epoch. Without a digest the store's verifier is dropped.
+ */
+export function settleReviewerVerifier(store: string, epoch: number, digest?: Buffer): void {
+  if ((verifiers.get(store)?.epoch ?? -1) > epoch) return;
+  if (digest) verifiers.set(store, { digest, epoch });
+  else verifiers.delete(store);
+}
+
+/** Database side of a hold only. The caller settles the verifier once this has committed. */
 export async function holdReviewer(transaction: Prisma.TransactionClient, binding: ReviewerBinding) {
-  verifiers.delete(binding.store);
   if (binding.userId) {
     const userId = binding.userId;
     await transaction.user.update({ where: { id: userId }, data: { reviewerHoldAt: new Date() } });
@@ -104,8 +116,8 @@ export async function holdReviewer(transaction: Prisma.TransactionClient, bindin
 }
 
 export async function unsetReviewer(database: PrismaClient, store: string) {
-  verifiers.delete(store);
   const binding = await database.$transaction(async (transaction) => holdReviewer(transaction, await lockReviewer(transaction, store)));
+  settleReviewerVerifier(store, binding.installEpoch);
   logReviewer('reviewer_admin', 'unset', store);
   return binding;
 }
@@ -113,8 +125,7 @@ export async function unsetReviewer(database: PrismaClient, store: string) {
 export async function installReviewer(database: PrismaClient, store: string, code: unknown) {
   if (store === 'apple' || !reviewerCodeFormat(code)) throw new Error('Invalid reviewer installation');
   const digest = credentialDigest(code);
-  verifiers.delete(store);
-  await database.$transaction(async (transaction) => {
+  const epoch = await database.$transaction(async (transaction) => {
     const before = await lockReviewer(transaction, store);
     if (!before.user || before.user.lockedAt || !before.seededAt || !before.clientId || !before.redirectUri
       || !before.resource || !before.callbackUri || !before.nodeHost || !before.keyId || !before.spaceId) {
@@ -124,12 +135,10 @@ export async function installReviewer(database: PrismaClient, store: string, cod
     await transaction.user.update({ where: { id: binding.userId! }, data: { reviewerHoldAt: null } });
     // Only the SHA-256 digest of the 32-byte code is stored, so an API restart can restore it.
     await transaction.reviewerAccount.update({ where: { store }, data: { codeDigest: digest.toString('hex') } });
-    // Process memory is installed before commit while competing mutations wait on the binding lock.
-    verifiers.set(store, { digest, epoch: binding.installEpoch });
-  }).catch((error) => {
-    verifiers.delete(store);
-    throw error;
+    return binding.installEpoch;
   });
+  // Until this line the previous verifier is still in memory at an older epoch, which no check accepts.
+  settleReviewerVerifier(store, epoch, digest);
   failures.delete(store);
   logReviewer('reviewer_admin', 'installed', store);
 }
@@ -179,10 +188,11 @@ export async function pinReviewerAudience(database: PrismaClient, store: string,
   if (store === 'apple' || (sessionDid !== null && !/^did:key:z[1-9A-HJ-NP-Za-km-z]{40,60}$/.test(sessionDid))) {
     throw new Error('Reviewer audience refused');
   }
-  verifiers.delete(store);
-  await database.$transaction(async (transaction) => {
+  const epoch = await database.$transaction(async (transaction) => {
     const binding = await holdReviewer(transaction, await lockReviewer(transaction, store));
     await transaction.reviewerAccount.update({ where: { store: binding.store }, data: { sessionDid } });
+    return binding.installEpoch;
   });
+  settleReviewerVerifier(store, epoch);
   logReviewer('reviewer_admin', 'audience_pinned', store);
 }
