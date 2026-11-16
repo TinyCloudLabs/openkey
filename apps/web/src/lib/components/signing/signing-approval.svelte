@@ -71,7 +71,7 @@
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
   import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
-  import { requestedExpiryMs } from "$lib/approval-expiry";
+  import { ONCE_DEFAULT_EXPIRY_MS, onceDefaultExpiryMs, requestedExpiryMs } from "$lib/approval-expiry";
   import { isOnceTier } from "$lib/renewal-default";
   import type { DelegateReceiver } from "$lib/delegate-link-policy";
 
@@ -148,6 +148,11 @@
     expiryBounded?: boolean;
     /** With `expiryBounded`: the most the requester signed, when that is more than the default it asked for. */
     expiryMaxMs?: number | null;
+    /**
+     * Set by the surfaces that write the choice into the signed message: a one-time approval (secrets or decrypt)
+     * that asks for longer than an hour starts at one hour, until the owner picks a time (TC-3111).
+     */
+    onceExpiryDefault?: boolean;
     /** The renewal checkbox (TC-2933); set only where the requester signed a renewal request. */
     renewal?: RenewalChoice | null;
     onApprove: () => void;
@@ -186,6 +191,7 @@
     onExpiryChange,
     expiryBounded = false,
     expiryMaxMs = null,
+    onceExpiryDefault = false,
     renewal = null,
     onApprove,
     onCancel,
@@ -263,6 +269,40 @@
   ].filter(group => group.rows.length > 0));
   const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
 
+  // TC-3111: a one-time approval (secrets or decrypt) that asks for longer than an hour starts at one hour. It goes
+  // into the signed message through `onExpiryChange` like any pick, so what is signed is what the line says. The
+  // owner's own pick is never replaced, and a request that stops being one-time (a narrowing that drops the secret
+  // or decrypt access) goes back to what the app asked for.
+  const onceDefaultMs = $derived(
+    onceExpiryDefault && onExpiryChange && model.protocol === "tinycloud-siwe-recap"
+      ? onceDefaultExpiryMs(isOnceTier(selectedGrants), requestedExpiry)
+      : null,
+  );
+  let ownerChoseExpiry = $state(false);
+  let onceDefaultSent = $state(false);
+  // Until the default has been applied the expiry line and its note are not shown and Approve waits, so neither a
+  // screen reader nor a click meets the app's longer time first (the surface re-prepares with the hour at once).
+  const onceDefaultPending = $derived(
+    onceDefaultMs !== null && !ownerChoseExpiry && !onceDefaultSent && expiryMs === null,
+  );
+  $effect(() => {
+    if (approving || previewPending || !onExpiryChange || ownerChoseExpiry) return;
+    if (onceDefaultMs !== null) {
+      if (expiryMs === null && !onceDefaultSent) {
+        onceDefaultSent = true;
+        onExpiryChange(onceDefaultMs);
+      }
+    } else if (onceDefaultSent) {
+      onceDefaultSent = false;
+      if (expiryMs === ONCE_DEFAULT_EXPIRY_MS) onExpiryChange(null);
+    }
+  });
+  function chooseExpiry(ms: number | null) {
+    ownerChoseExpiry = true;
+    onExpiryChange?.(ms);
+  }
+  const onceDefaultShown = $derived(onceDefaultMs !== null && !ownerChoseExpiry && expiryMs === onceDefaultMs);
+
   // App keys: the standing-access line follows the decrypt statements, and a
   // `key.delete` action is listed even though it is never selected.
   const identity = $derived(appKeyIdentity(model));
@@ -295,6 +335,9 @@
   const requesterName = $derived(appDisplayName(model.requester.displayName) ?? originHost ?? "");
   const manifestNameShown = $derived(appDisplayName(model.requester.manifestName));
   const requestedBy = $derived(originHost ?? requesterName);
+  // The note under the expiry line names who asked as the screen does: the verified origin, or "This request" where
+  // nothing identifies the requester (a link, a device sign-in, an approval link).
+  const onceNoteSite = $derived(unattributed || !requestedBy ? "This request" : requestedBy);
   // Beside the renewal box a fixed end date is wrong (ticked) or repeats the box (unticked), so it is not shown there.
   const appKeyAccessLine = $derived(
     !renewal && selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatAccessEnd) : null,
@@ -541,7 +584,7 @@
   const nodeChecking = $derived(peerRecognition?.state === "checking");
   const approveDisabled = $derived(approving || isMalformedRecap);
   const approveButtonDisabled = $derived(
-    previewPending || layoutBlocked || refused || approveDisabled || Boolean(approveBlockedReason) || approveBlockedByFailure || nodeChecking || declining,
+    previewPending || onceDefaultPending || layoutBlocked || refused || approveDisabled || Boolean(approveBlockedReason) || approveBlockedByFailure || nodeChecking || declining,
   );
   const approveLabel = $derived(
     isMalformedRecap
@@ -711,13 +754,14 @@
       </ul>
     {/if}
 
-    {#if onExpiryChange && model.protocol === "tinycloud-siwe-recap"}
+    {#if onExpiryChange && model.protocol === "tinycloud-siwe-recap" && !onceDefaultPending}
       <ApprovalExpiryControl
         requestedMs={requestedExpiry}
         chosenMs={expiryMs}
         maxMs={expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null}
         disabled={approving}
-        onChange={onExpiryChange}
+        onChange={chooseExpiry}
+        onceSite={onceDefaultShown ? onceNoteSite : null}
         {renewal}
         sensitive={isOnceTier(selectedGrants)}
         {requestedBy}

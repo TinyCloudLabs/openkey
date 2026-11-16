@@ -3,8 +3,10 @@ import { describe, expect, test } from 'bun:test';
 import {
   LONG_EXPIRY_MS,
   LONG_EXPIRY_WARNING,
+  ONCE_DEFAULT_EXPIRY_MS,
   expiryAt,
   formatExpiry,
+  onceDefaultExpiryMs,
   parseExpiry,
   requestedExpiryMs,
 } from './approval-expiry';
@@ -136,5 +138,20 @@ describe('expiryAtCapped', () => {
     expect(expiryAtCapped(7 * D, '2026-11-05T00:00:00.000Z', now)).toBe('2026-11-05T00:00:00.000Z');
     expect(expiryAtCapped(H, null, now)).toBe('2026-10-31T01:00:00.000Z');
     expect(expiryAtCapped(H, 'not a time', now)).toBe('2026-10-31T01:00:00.000Z');
+  });
+});
+
+describe('onceDefaultExpiryMs (TC-3111)', () => {
+  test('a one-time request that asks for more than an hour starts at one hour', () => {
+    expect(ONCE_DEFAULT_EXPIRY_MS).toBe(H);
+    expect(onceDefaultExpiryMs(true, H + S)).toBe(H);
+    expect(onceDefaultExpiryMs(true, 7 * D)).toBe(H);
+  });
+
+  test('an hour or less, an unknown request, or a request that is not one-time keeps what the app asked for', () => {
+    expect(onceDefaultExpiryMs(true, H)).toBeNull();
+    expect(onceDefaultExpiryMs(true, 30 * M)).toBeNull();
+    expect(onceDefaultExpiryMs(true, null)).toBeNull();
+    expect(onceDefaultExpiryMs(false, 7 * D)).toBeNull();
   });
 });

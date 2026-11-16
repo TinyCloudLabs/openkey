@@ -40,6 +40,11 @@
     requestedBy?: string;
     /** The exact end of the window, shown inside the open fold after the choice; omitted where the screen shows it elsewhere. */
     endsAt?: string | null;
+    /**
+     * Set while a one-hour start is in effect and the owner has not picked a time (TC-3111): who asked, as the
+     * screen names them ("This request" on a link). Null shows no note.
+     */
+    onceSite?: string | null;
   }
 
   let {
@@ -52,6 +57,7 @@
     sensitive = false,
     requestedBy = "",
     endsAt = null,
+    onceSite = null,
   }: Props = $props();
 
   let confirming = $state(false);
@@ -149,6 +155,11 @@
     {:else}
       <p class="expiry-line" data-testid="approval-expiry-line">This permission expires in {formatDuration(shownMs)}</p>
     {/if}
+    {#if onceSite !== null && requestedMs !== null}
+      <p class="expiry-once-note" data-testid="approval-expiry-once-note">
+        {onceSite} asked for {formatDuration(requestedMs)}. Access to secrets or encrypted data starts at {formatDuration(shownMs)}. You can choose longer under How long it lasts.
+      </p>
+    {/if}
     <details class="expiry-fold">
       <summary>How long it lasts</summary>
       <div class="expiry-panel">
@@ -193,7 +204,8 @@
     line-height: 1.45;
     color: #475569;
   }
-  .expiry-line {
+  .expiry-line,
+  .expiry-once-note {
     margin: 0;
     overflow-wrap: anywhere;
   }
