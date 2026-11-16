@@ -399,14 +399,17 @@
   const ordinaryLink = $derived(!approvalRequestMode && !deviceTransactionId && !preparedTransport);
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
   const deviceUserCode = $page.url.searchParams.get('deviceUserCode') || '';
-  // The device sign-in names no requester: the owner compares the code with the terminal.
-  const deviceCodeShown = (() => {
-    const normalized = deviceUserCode.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+  // A device sign-in names no requester: the owner compares the code with the
+  // terminal. The code shown is the one the server holds for this transaction,
+  // read after the request is verified; the link's own code is never displayed.
+  const displayDeviceCode = (code: string) => {
+    const normalized = code.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
     return normalized.length > 4 ? `${normalized.slice(0, 4)}-${normalized.slice(4)}` : normalized;
-  })();
+  };
+  let serverDeviceCode = $state('');
   const neutralRequesterLine = $derived(
     deviceTransactionId
-      ? (deviceCodeShown ? `A device sign-in is asking (code ${deviceCodeShown})` : 'A device sign-in is asking')
+      ? 'A device sign-in is asking'
       : approvalRequestMode ? 'An approval link is asking' : null,
   );
   let deviceAcknowledged = $state(false);
@@ -566,6 +569,8 @@
       expiry: expiryParam,
     });
     requestReason = normalizeReason(deviceRequestReason(record));
+    // Only the server's own code for THIS transaction is ever shown.
+    serverDeviceCode = displayDeviceCode(record.userCode);
     expiryMaxMs = deviceRequestTtlSeconds(record) * 1000;
   })();
   deviceRequestVerified.catch((cause: unknown) => { error = delegateErrorMessage(cause); });
@@ -2036,6 +2041,7 @@
               linkNamedHost={ordinaryRequesterHost}
               ordinaryLink={ordinaryLink}
               neutralRequesterLine={neutralRequesterLine}
+              neutralRequesterCode={serverDeviceCode}
               receiver={ordinaryReceiver}
               initialSelection={reviewSelection}
               context={cliContext}

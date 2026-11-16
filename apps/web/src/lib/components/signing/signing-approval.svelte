@@ -120,6 +120,8 @@
      * The signing domain is the server's fixed default, not who asked.
      */
     neutralRequesterLine?: string | null;
+    /** The server's code for a device sign-in, to compare with the terminal. */
+    neutralRequesterCode?: string | null;
     /**
      * Where an ordinary link's approval will be delivered, as OpenKey
      * enforces it. Names a destination, never the requester.
@@ -177,6 +179,7 @@
     linkNamedHost = null,
     ordinaryLink = false,
     neutralRequesterLine = null,
+    neutralRequesterCode = null,
     receiver = null,
     peerRecognition = null,
     expiryMs = null,
@@ -237,7 +240,7 @@
   );
   const isMalformedRecap = $derived(model.protocol === "malformed-recap");
   const headline = $derived(PROTOCOL_HEADLINE[model.protocol]);
-  const hint = $derived(PROTOCOL_HINT[model.protocol]);
+  // (hint is derived below, after `identity`.)
 
   // Summary copy and the sensitive count describe only actions the user is
   // currently approving. Advanced details deliberately retains the baseline
@@ -263,6 +266,14 @@
   // App keys: the standing-access line follows the decrypt statements, and a
   // `key.delete` action is listed even though it is never selected.
   const identity = $derived(appKeyIdentity(model));
+  // "This app" only where signed app details name one; otherwise the request
+  // has no identified app (a link, a device sign-in, an approval link).
+  const unattributed = $derived(ordinaryLink || (!identity && !!neutralRequesterLine));
+  const hint = $derived(
+    unattributed && model.protocol === "tinycloud-siwe-recap"
+      ? "Review the access this request is asking for."
+      : PROTOCOL_HINT[model.protocol],
+  );
   const originHost = $derived.by(() => {
     const origin = model.requester.verifiedOrigin;
     if (!origin) return null;
@@ -563,7 +574,7 @@
       {:else if ordinaryLink}
         From a link
       {:else if !identity && neutralRequesterLine}
-        {neutralRequesterLine}
+        {neutralRequesterLine}{#if neutralRequesterCode}{" "}(<span class="whitespace-nowrap">code {neutralRequesterCode}</span>){/if}
       {:else}
         Requested by <span class="requester-name">{identity ? requestedBy : requesterName}</span>
       {/if}

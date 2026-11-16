@@ -188,6 +188,12 @@ test.describe('ordinary-link requester claims', () => {
       callback: 'https://mcp.tinycloud.xyz/connect/callback',
     },
     {
+      title: 'a link that names a requester origin still names it, as an unverified claim',
+      domain: 'listen.example',
+      requesterOrigin: 'https://listen.example',
+      callback: null,
+    },
+    {
       title: 'omitting requesterOrigin does not verify the default CLI requester',
       domain: 'cli.tinycloud.xyz',
       requesterOrigin: null,
