@@ -49,7 +49,7 @@ export interface RecapEntryLike {
 
 const NOT_DECLARED_MESSAGE =
   "This website doesn't list the key this app asked for, so OpenKey didn't approve it.";
-const ENCRYPTION_OUTSIDE_APPS_MESSAGE = "This site can't ask for that access, so OpenKey didn't approve this request.";
+const ENCRYPTION_OUTSIDE_APPS_MESSAGE = "This site isn't allowed to request that access.";
 const ORIGIN_MESSAGE =
   "App keys can only be requested by the app's own website, so OpenKey didn't approve this request.";
 const APP_ID_MESSAGE =
