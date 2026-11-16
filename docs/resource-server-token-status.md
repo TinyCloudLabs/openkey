@@ -41,7 +41,7 @@ echo "$CIPHERTEXT" | base64 -d | openssl pkeyutl -decrypt -inkey private.pem \
 
 The secret cannot be shown again. To rotate it, disable the client and register again. Registering a name that already exists changes nothing, so give every resource at the first run, or once the last audience is deployed.
 
-To add a resource to a server that is already registered, register a second client under a new name with every resource, old and new, give the hosted server the new id and secret, and disable the old client only after the hosted server runs with the new one. Until then OpenKey answers `active: false` for tokens of the new resource, so the hosted server refuses them, while the resources of the old registration keep working.
+To add a resource to a server that is already registered, register a second client under a new name with every resource, old and new, and the same rate limit. Give the hosted server the new id and the decrypted secret, confirm that an authenticated request to one of the old resources still succeeds, and only then disable the old client. Until the hosted server runs with the new client, OpenKey answers `active: false` for tokens of the new resource, so the hosted server refuses them, while the resources of the old registration keep working. A hosted server given the wrong secret (the ciphertext instead of the decrypted secret, or the old secret with the new id) gets `401 invalid_client`, and the TinyCloud MCP server then answers 500 to every authenticated request on every resource; the old id and secret are the way back until the old client is disabled.
 
 ## Revocation at `/oauth2/revoke`
 
