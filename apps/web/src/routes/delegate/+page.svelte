@@ -187,7 +187,6 @@
   // disappear from the review UI. `reviewSelection` is the effective
   // subset the user picked; only that changes when the user narrows.
   let reviewModel = $state<CapabilityReviewModel | null>(null);
-  const expiredRequesterName = $derived(reviewModel?.requester.displayName?.trim() || '');
   let baselineSiweForReview = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
@@ -1715,7 +1714,7 @@
       </div>
       <Card class="w-full p-6">
         <div class="text-center py-4">
-          <h1 class="text-[17px] font-semibold text-surface-900 mb-2">{expiredRequesterName ? `${expiredRequesterName}'s request expired` : 'Request expired'}</h1>
+          <h1 class="text-[17px] font-semibold text-surface-900 mb-2">This request expired</h1>
           <p class="text-[15px] leading-6 text-[#71717a]">Ask your agent for a new link.</p>
         </div>
       </Card>

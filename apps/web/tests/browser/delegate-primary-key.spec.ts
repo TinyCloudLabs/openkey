@@ -226,6 +226,9 @@ test.describe('ordinary-link requester claims', () => {
         await expect(warning).toContainText('Anyone can make a link like this.');
         await expect(warning).not.toContainText(request.domain);
       }
+      // Advanced details never presents the claimed host as a verified requester.
+      await expect(page.locator('.identity .label').first()).toHaveText(request.requesterOrigin ? 'Named in the link (not verified)' : 'Default signing domain');
+      await expect(page.getByText('Review the access this request is asking for.')).toBeVisible();
       await expect(approve(page)).toBeEnabled();
     });
   }

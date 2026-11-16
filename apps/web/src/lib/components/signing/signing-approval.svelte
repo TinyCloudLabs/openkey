@@ -274,6 +274,13 @@
       ? "Review the access this request is asking for."
       : PROTOCOL_HINT[model.protocol],
   );
+  // On a link, the claimed host (or the server's default domain) is not a
+  // verified requester, so the row says so.
+  const requesterRowLabel = $derived(
+    ordinaryLink && linkNamedHost !== null ? "Named in the link (not verified)"
+    : unattributed ? "Default signing domain"
+    : "Requester",
+  );
   const originHost = $derived.by(() => {
     const origin = model.requester.verifiedOrigin;
     if (!origin) return null;
@@ -786,7 +793,7 @@
 
       <section class="identity" aria-label="Requester identity">
       <div class="row">
-        <span class="label">Requester</span>
+        <span class="label">{requesterRowLabel}</span>
         <span class="value">{requesterName}</span>
       </div>
 
