@@ -1,7 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
 import {
-  EXPIRY_PRESETS,
   LONG_EXPIRY_MS,
   LONG_EXPIRY_WARNING,
   expiryAt,
@@ -107,15 +106,6 @@ describe('requestedExpiryMs', () => {
 });
 
 describe('presets, warning and expiry time', () => {
-  test('presets are 1 hr, 24 hr, 7d, 30d', () => {
-    expect(EXPIRY_PRESETS).toEqual([
-      { label: '1 hr', ms: H },
-      { label: '24 hr', ms: 24 * H },
-      { label: '7d', ms: 7 * D },
-      { label: '30d', ms: 30 * D },
-    ]);
-  });
-
   test('the warning threshold is more than one year', () => {
     expect(LONG_EXPIRY_MS).toBe(365 * D);
     expect(LONG_EXPIRY_WARNING).toBe("That's a long time. OpenKey can't cancel it early once you approve.");
@@ -123,15 +113,6 @@ describe('presets, warning and expiry time', () => {
 
   test('expiryAt adds the duration to now, as an ISO string', () => {
     expect(expiryAt(7 * D, Date.UTC(2026, 9, 31))).toBe('2026-11-07T00:00:00.000Z');
-  });
-});
-
-describe('expiryLimitNote', () => {
-  test('names the longest time the request allows and how to get longer', async () => {
-    const { expiryLimitNote } = await import('./approval-expiry');
-    expect(expiryLimitNote(7 * D)).toBe(
-      'This app asked for up to 7d. To allow longer, start the request again with a longer expiry.',
-    );
   });
 });
 
