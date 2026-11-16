@@ -7,6 +7,8 @@
   import ConnectedIdentityApps from './ConnectedIdentityApps.svelte';
   import ConnectedMcpApps from './ConnectedMcpApps.svelte';
   import DeleteAccountEntry from './DeleteAccountEntry.svelte';
+  import RenewalLeases from './RenewalLeases.svelte';
+  import { renewalLeaseCopy, type RenewalLease } from '$lib/renewal-leases';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
   import LinkedAccounts from '$lib/components/auth/linked-accounts.svelte';
@@ -48,6 +50,10 @@
   // Set once lists arrive; later reloads keep mounted notices visible.
   let mcpAppsLoaded = $state(false);
   let identityAppsLoaded = $state(false);
+  // TC-2946: shown once the account has a renewing permission; stays for this visit so its notices remain.
+  let renewalLeases = $state<RenewalLease[]>([]);
+  let renewalLeasesShown = $state(false);
+  let renewalLeasesError = $state('');
   let tinyCloudActivity = $state<TinyCloudManageKeyActivity[]>([]);
   let loadingTinyCloudApps = $state(true);
   let savingTinyCloudAppId = $state<string | null>(null);
@@ -89,9 +95,20 @@
         loadArchivedKeys();
         loadAutoSignPreference();
         loadTinyCloudManageKeyPreference();
+        loadRenewalLeases();
       }
     }
   });
+
+  async function loadRenewalLeases() {
+    renewalLeasesError = '';
+    try {
+      renewalLeases = (await api.listRenewalLeases()).leases;
+      if (renewalLeases.length > 0) renewalLeasesShown = true;
+    } catch {
+      renewalLeasesError = renewalLeaseCopy.loadFailed;
+    }
+  }
 
   async function loadPasskeys() {
     loading = true;
@@ -676,6 +693,13 @@
     {/if}
   </Card>
 
+  {#if renewalLeasesError}
+    <Card class="mt-6"><p role="alert" class="text-sm text-red-600">{renewalLeasesError}</p></Card>
+  {:else if renewalLeasesShown}
+    <Card id="renewing-permissions" class="mt-6">
+      <RenewalLeases leases={renewalLeases} onchanged={loadRenewalLeases} />
+    </Card>
+  {/if}
   {#if mcpAppsLoaded}
     <Card id="connected-mcp-apps" class="mt-6">
       <ConnectedMcpApps apps={mcpApps} onchanged={loadTinyCloudManageKeyApps} />

@@ -6,6 +6,7 @@ import {
   checkDelegateCallback,
   checkDelegateHost,
   checkDelegateRequesterOrigin,
+  delegateReceiver,
   isCanonicalHttpsEndpoint,
   isCanonicalHttpsOrigin,
   withConfiguredEntries,
@@ -134,5 +135,51 @@ describe('checkDelegateRequesterOrigin', () => {
     expect(checkDelegateRequesterOrigin(new URLSearchParams({ requesterOrigin: origin }), true).ok).toBe(false);
     expect(checkDelegateRequesterOrigin(new URLSearchParams(), true).ok).toBe(true);
     expect(checkDelegateCallback(`${origin}/callback`, REGISTERED_CALLBACK_ENDPOINTS).ok).toBe(false);
+  });
+});
+
+describe('delegateReceiver', () => {
+  test('names the service only for an exact built-in registered endpoint, with OpenKey\'s own label', () => {
+    for (const callback of [
+      'https://mcp.tinycloud.xyz/connect/callback?state=t.n.sig',
+      'https://mcp.tinycloud.xyz/chatgpt/connect/callback?state=t.n.sig',
+    ]) {
+      expect(delegateReceiver(callback)).toEqual({ kind: 'service', service: 'TinyCloud MCP' });
+    }
+  });
+
+  test('look-alikes of a registered endpoint get no receiver', () => {
+    for (const callback of [
+      'https://mcp.tinycloud.xyz/connect/callback/extra',
+      'https://mcp.tinycloud.xyz/connect/callbacks',
+      'https://mcp.tinycloud.xyz/connect',
+      'https://mcp.tinycloud.xyz:8443/connect/callback',
+      'http://mcp.tinycloud.xyz/connect/callback',
+      'https://evil.example/connect/callback',
+      'https://mcp.tinycloud.xyz.evil.example/connect/callback',
+      'https://mcp.tinycloud.xyz@evil.example/connect/callback',
+      'https://user:pass@mcp.tinycloud.xyz/connect/callback',
+      'https://sub.mcp.tinycloud.xyz/connect/callback',
+    ]) {
+      expect(delegateReceiver(callback)).toBeNull();
+    }
+  });
+
+  test('a callback registered only through configuration has no label', () => {
+    const configured = 'https://app.example/callback';
+    expect(checkDelegateCallback(configured, withConfiguredEntries(REGISTERED_CALLBACK_ENDPOINTS, configured, isCanonicalHttpsEndpoint)).ok).toBe(true);
+    expect(delegateReceiver(configured)).toBeNull();
+  });
+
+  test('a loopback callback is an app on this device, with its address and no brand', () => {
+    expect(delegateReceiver('http://127.0.0.1:53124/callback')).toEqual({ kind: 'device', address: '127.0.0.1:53124' });
+    expect(delegateReceiver('http://localhost:8787/callback')).toEqual({ kind: 'device', address: 'localhost:8787' });
+    expect(delegateReceiver('http://[::1]:9000/callback')).toEqual({ kind: 'device', address: '[::1]:9000' });
+  });
+
+  test('no callback means no receiver', () => {
+    expect(delegateReceiver(null)).toBeNull();
+    expect(delegateReceiver('')).toBeNull();
+    expect(delegateReceiver('not a url')).toBeNull();
   });
 });

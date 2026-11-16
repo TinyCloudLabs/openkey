@@ -36,7 +36,8 @@ concurrency:
 jobs:
   web-browser-tests:
     name: Web browser specs
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest is Ubuntu 26.04, where Playwright cannot install Chromium. Unpin per TC-3071.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       # Full history: the relevance step diffs the pull request's base against the merge commit.
