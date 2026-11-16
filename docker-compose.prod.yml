@@ -47,6 +47,7 @@ services:
       - OPENKEY_RENEWAL_LEASES=${OPENKEY_RENEWAL_LEASES:-}
       - OPENKEY_RENEWAL_NODE_DID=${OPENKEY_RENEWAL_NODE_DID:-}
       - OPENKEY_RENEWAL_RENEWER_DID=${OPENKEY_RENEWAL_RENEWER_DID:-}
+      - OPENKEY_RENEWAL_STOP_TOKEN=${OPENKEY_RENEWAL_STOP_TOKEN:-}
     restart: unless-stopped
     healthcheck:
       # Keep this aligned with the API's configurable listener. `$$` defers

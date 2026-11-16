@@ -314,6 +314,75 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     expect(await renewalLeaseReport(prisma)).toMatchObject({ live: 1, openkeySigned: 0, walletSigned: 1, unconfirmed: 0, accounts: 1 });
   });
 
+  test('the operator stop-all route is a dry run unless told to apply, needs its own token, skips wallet-signed leases and writes one audit line per run', async () => {
+    const saved = { token: process.env.OPENKEY_RENEWAL_STOP_TOKEN, metrics: process.env.INTERNAL_METRICS_TOKEN };
+    const TOKEN = 'stop-all-token-for-this-route-only';
+    const run = (headers: Record<string, string>, body?: unknown) => app.fetch(new Request('https://api.openkey.test/api/internal/renewal-leases/stop-all', {
+      method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: body === undefined ? undefined : JSON.stringify(body) }));
+    const auth = { authorization: `Bearer ${TOKEN}`, 'x-operator': 'amos' };
+    const audit: Array<Record<string, unknown>> = [];
+    const realWrite = process.stdout.write.bind(process.stdout);
+    try {
+      await prisma.renewalLease.updateMany({ data: { revokedAt: new Date() } });
+      // Not configured: refused, even with a token-looking header.
+      delete process.env.OPENKEY_RENEWAL_STOP_TOKEN;
+      expect((await run(auth)).status).toBe(503);
+      process.env.OPENKEY_RENEWAL_STOP_TOKEN = TOKEN;
+      // The metrics token is a different secret and does not open this route.
+      process.env.INTERNAL_METRICS_TOKEN = 'metrics-token';
+      expect((await run({ authorization: 'Bearer metrics-token', 'x-operator': 'amos' })).status).toBe(401);
+      expect((await run({ 'x-operator': 'amos' })).status).toBe(401);
+      expect((await run({ authorization: `Bearer ${TOKEN}x`, 'x-operator': 'amos' })).status).toBe(401);
+      // A run without an operator label, or with a malformed body, is refused before anything happens.
+      expect((await run({ authorization: `Bearer ${TOKEN}` })).status).toBe(400);
+      expect((await run(auth, { apply: 'yes' })).status).toBe(400);
+
+      const managedOwner = await account();
+      const secondOwner = await account();
+      const walletOwner = await account('EXTERNAL');
+      const first = await lease(managedOwner, null);
+      const second = await lease(secondOwner, null);
+      const walletLease = await lease(walletOwner, null);
+      await lease(managedOwner, null, 'ok', -1_000); // ended: not counted
+
+      process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+        for (const line of String(chunk).split('\n')) { try { const parsed = JSON.parse(line); if (parsed.event === 'renewal_lease_stop_all_run') audit.push(parsed); } catch { /* not a log line */ } }
+        return (realWrite as (...args: unknown[]) => boolean)(chunk, ...rest);
+      }) as typeof process.stdout.write;
+
+      // Dry run (no body, then explicit false): counts only, nothing stopped.
+      const dry = await run(auth);
+      expect(dry.status).toBe(200);
+      expect(await dry.json()).toEqual({ mode: 'dry-run', wouldStop: 2, skippedExternal: 1 });
+      expect(await (await run(auth, { apply: false })).json()).toEqual({ mode: 'dry-run', wouldStop: 2, skippedExternal: 1 });
+      expect(await stopped(first)).toBe(false);
+      expect(await stopped(second)).toBe(false);
+
+      // Apply: the OpenKey-signed leases are stopped, the wallet-signed one is skipped and reported.
+      const applied = await run(auth, { apply: true });
+      expect(applied.status).toBe(200);
+      const counts = await applied.text();
+      expect(JSON.parse(counts)).toEqual({ mode: 'applied', wouldStop: 2, stopped: 2, failed: 0, skippedExternal: 1 });
+      expect(counts).not.toMatch(/did:pkh|0x[0-9a-f]{40}|bafkr|127\.0\.0\.1/i);
+      expect(await stopped(first)).toBe(true);
+      expect(await stopped(second)).toBe(true);
+      expect(await stopped(walletLease)).toBe(false);
+
+      // Idempotent: a second apply stops nothing and still reports the wallet-signed lease.
+      expect(await (await run(auth, { apply: true })).json()).toEqual({ mode: 'applied', wouldStop: 0, stopped: 0, failed: 0, skippedExternal: 1 });
+
+      // One audit line per run (2 dry runs + 2 applied), each with the operator and counts only.
+      expect(audit).toHaveLength(4);
+      expect(audit.map((line) => [line.apply, line.stopped, line.failed, line.skipped_external])).toEqual([[false, 0, 0, 1], [false, 0, 0, 1], [true, 2, 0, 1], [true, 0, 0, 1]]);
+      expect(audit.every((line) => line.operator === 'amos')).toBe(true);
+      expect(JSON.stringify(audit)).not.toMatch(/did:pkh|0x[0-9a-f]{40}|bafkr/i);
+    } finally {
+      process.stdout.write = realWrite;
+      if (saved.token === undefined) delete process.env.OPENKEY_RENEWAL_STOP_TOKEN; else process.env.OPENKEY_RENEWAL_STOP_TOKEN = saved.token;
+      if (saved.metrics === undefined) delete process.env.INTERNAL_METRICS_TOKEN; else process.env.INTERNAL_METRICS_TOKEN = saved.metrics;
+    }
+  });
+
   test('a node that does not confirm leaves the lease on; the retry stops it', async () => {
     const owner = await account();
     const { cookie } = await owner.session();

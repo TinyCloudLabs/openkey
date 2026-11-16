@@ -73,6 +73,7 @@ const EVENTS = {
   tinycloud_bootstrap_sweep_failed: true,
   renewal_lease_sweep_stopped: true, renewal_lease_sweep_wallet_required: true,
   renewal_lease_sweep_not_stopped: true, renewal_lease_sweep_failed: true,
+  renewal_lease_stop_all_run: true,
   tinycloud_bootstrap_space_registry_completed: true, native_par_valid_request_volume_threshold_reached: true,
   native_par_request_cleanup_failed: true, native_session_proof_cleanup_failed: true,
   scoreboard_protocol_users_call: true, app_sign_in_record_failed: true, permission_entry_unknown_field: true,
@@ -143,6 +144,21 @@ export function logMetric(
   fields: { status?: number; count?: number },
 ): void {
   emit(level, event, { status: fields.status, count: fields.count });
+}
+
+/**
+ * One audit line per operator stop-all run (TC-3088): who ran it, whether it only counted or stopped, and the counts.
+ * The operator is a short label the caller sent; never an owner, account, lease id, address or node host.
+ */
+export function logRenewalLeaseStopAll(fields: { operator: string; apply: boolean; wouldStop: number; stopped: number; failed: number; skippedExternal: number }): void {
+  emit('info', 'renewal_lease_stop_all_run', {
+    operator: fields.operator,
+    apply: fields.apply,
+    would_stop: fields.wouldStop,
+    stopped: fields.stopped,
+    failed: fields.failed,
+    skipped_external: fields.skippedExternal,
+  });
 }
 
 /** One line on a refused managed-key signing request: route template and why, never the origin value. */

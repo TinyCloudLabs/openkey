@@ -248,6 +248,8 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 3. Run the count again: `openkeySigned` and `unconfirmed` fall to 0. `walletSigned` stays until each owner's wallet revokes it (owners can also still stop any lease in Settings). The log lines `renewal_lease_sweep_stopped`, `renewal_lease_sweep_wallet_required` and `renewal_lease_sweep_not_stopped` carry the counts per pass.
 4. To end the sweep, set the variable to anything else and redeploy.
 
+**Operator stop-all route (TC-3088).** The same stop, on demand. `POST /api/internal/renewal-leases/stop-all` needs `Authorization: Bearer $OPENKEY_RENEWAL_STOP_TOKEN` (a token for this route only; with the variable unset the route answers 503) and an `X-Operator: <label>` header. With no body it is a dry run: `{"mode":"dry-run","wouldStop":N,"skippedExternal":M}`. With `{"apply": true}` it revokes every live lease an OpenKey-held key signed, one account at a time through the same revocation as Settings "Stop renewal", and answers `{"mode":"applied","wouldStop":N,"stopped":S,"failed":F,"skippedExternal":M}`. Counts only; no owner, lease or address. Leases an external wallet signed are skipped and counted. It is idempotent: run it again and `stopped` is 0. Each run writes one `renewal_lease_stop_all_run` log line with the operator label and the counts.
+
 `WEBAUTHN_ORIGIN` is the account browser origin and is required in production.
 Browser requests to sensitive account routes require an `Origin` matching that
 account origin, whether authenticated by cookie or bearer. Bearers without an

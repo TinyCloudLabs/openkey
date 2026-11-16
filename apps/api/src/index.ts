@@ -53,6 +53,7 @@ import {
 } from './services/native-delegation/public-protocol';
 import { startTinyCloudBootstrapSweep } from './services/tinycloud-bootstrap-sweep';
 import { startRenewalLeaseStopSweep } from './services/renewal-lease-sweep';
+import { createInternalRenewalLeaseRouter } from './routes/internal-renewal-leases';
 
 
 const betterAuthUrl = process.env.BETTER_AUTH_URL;
@@ -283,6 +284,8 @@ app.route('/api/admin/oauth', oauthAdminRouter);
 
 // Internal metrics route (protected by INTERNAL_METRICS_TOKEN)
 app.route('/api/internal/metrics', internalMetricsRouter);
+// Operator stop-all for renewal leases (protected by OPENKEY_RENEWAL_STOP_TOKEN; dry run unless {"apply": true})
+app.route('/api/internal/renewal-leases', createInternalRenewalLeaseRouter(authPrisma));
 // Counts-only scoreboard metrics (protected by OPENKEY_METRICS_READ_TOKEN)
 app.route('/api/internal/scoreboard', scoreboardMetricsRouter);
 
