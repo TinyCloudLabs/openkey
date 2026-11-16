@@ -29,7 +29,7 @@ export function createRenewalLeaseRouter(db: RenewalLeaseRouteDatabase, deps?: L
     const userId = c.get('user').id;
     const leases = await db.renewalLease.findMany({ where: liveLeaseWhere(userId, { kind: 'all' }, now()), orderBy: { approvedAt: 'desc' } });
     const [requests, keys] = await Promise.all([
-      db.approvalRequest.findMany({ where: { id: { in: leases.map((lease) => lease.approvalRequestId) } }, select: { id: true, request: true, delegationExpiresAt: true } }),
+      db.approvalRequest.findMany({ where: { id: { in: leases.flatMap((lease) => lease.approvalRequestId ?? []) } }, select: { id: true, request: true, delegationExpiresAt: true } }),
       db.ethereumKey.findMany({ where: { userId }, select: { address: true, keyType: true } }),
     ]);
     c.header('Cache-Control', 'no-store');
@@ -37,7 +37,7 @@ export function createRenewalLeaseRouter(db: RenewalLeaseRouteDatabase, deps?: L
       leases: leases.map((lease) => {
         const owner = lease.ownerDid.split(':').at(-1)?.toLowerCase();
         const key = keys.find((candidate) => candidate.address.toLowerCase() === owner);
-        const request = requests.find((row) => row.id === lease.approvalRequestId);
+        const request = lease.approvalRequestId === null ? undefined : requests.find((row) => row.id === lease.approvalRequestId);
         return {
           leaseCid: lease.leaseCid,
           originalCid: lease.originalCid,

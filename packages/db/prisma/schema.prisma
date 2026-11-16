@@ -149,7 +149,8 @@ model RenewalLease {
   userId               String
   // The OpenKey session that completed the approval. Not a foreign key: it outlives the session.
   sessionId            String?
-  approvalRequestId    String    @unique
+  // Null for a lease no approval request produced; Settings lists and stops it all the same.
+  approvalRequestId    String?   @unique
   ownerDid             String
   // The approved grant the lease renews.
   originalCid          String

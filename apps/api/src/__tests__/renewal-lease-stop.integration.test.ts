@@ -174,11 +174,11 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
   }
 
   let leaseCount = 0;
-  /** `reserved`: recorded before admission and never confirmed, holding its encrypted signed lease. */
-  async function lease(owner: Awaited<ReturnType<typeof account>>, sessionId: string | null, node: NodeName = 'ok', expiresInMs = 3_600_000, reserved = false) {
+  /** `reserved`: recorded before admission and never confirmed, holding its encrypted signed lease. `withRequest: false`: no approval request produced it. */
+  async function lease(owner: Awaited<ReturnType<typeof account>>, sessionId: string | null, node: NodeName = 'ok', expiresInMs = 3_600_000, reserved = false, withRequest = true) {
     const leaseCid = `bafkr4i${(leaseCount++).toString().padStart(4, '0').replace(/\d/g, (d) => 'abcdefghij'[Number(d)]!)}${'a'.repeat(48)}`;
-    const approvalRequestId = randomBytes(16).toString('hex');
-    await prisma.approvalRequest.create({ data: {
+    const approvalRequestId = withRequest ? randomBytes(16).toString('hex') : null;
+    if (approvalRequestId !== null) await prisma.approvalRequest.create({ data: {
       id: approvalRequestId, bodyCid: 'body', issuer: 'did:key:requester', expiresAt: new Date(Date.now() + 600_000),
       request: { reason: 'Keep notes in sync', permissions: [{ service: 'tinycloud.kv', space: 'space', path: 'notes/', actions: ['tinycloud.kv/get'] }] },
     } });
@@ -219,6 +219,27 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     expect(await stopped(first)).toBe(true);
     expect(await stopped(second)).toBe(false);
     expect((await call(cookie, `/api/account/renewal-leases/${first}/stop`, 'POST', {})).status).toBe(404);
+  });
+
+  test('a lease no approval request produced is listed and stopped like any other', async () => {
+    const owner = await account();
+    const { cookie } = await owner.session();
+    const withRequest = await lease(owner, null);
+    const withoutRequest = await lease(owner, null, 'ok', 3_600_000, false, false);
+    expect((await prisma.renewalLease.findUnique({ where: { leaseCid: withoutRequest } }))?.approvalRequestId).toBeNull();
+    // A second null row beside it: the unique index must not treat NULLs as equal.
+    const another = await lease(owner, null, 'ok', 3_600_000, false, false);
+
+    const listed = await (await call(cookie, '/api/account/renewal-leases', 'GET')).json() as { leases: Array<{ leaseCid: string; reason: string | null; grantExpiresAt: string | null; grantSiwe: string }> };
+    expect(listed.leases.map((row) => row.leaseCid).sort()).toEqual([withRequest, withoutRequest, another].sort());
+    const bare = listed.leases.find((row) => row.leaseCid === withoutRequest)!;
+    expect(bare).toMatchObject({ reason: null, grantExpiresAt: null, grantSiwe: 'the approved grant' });
+    expect(listed.leases.find((row) => row.leaseCid === withRequest)!.reason).toBe('Keep notes in sync');
+
+    expect((await call(cookie, `/api/account/renewal-leases/${withoutRequest}/stop`, 'POST', {})).status).toBe(200);
+    expect(await stopped(withoutRequest)).toBe(true);
+    expect(await stopped(another)).toBe(false);
+    expect(await stopped(withRequest)).toBe(false);
   });
 
   test('a node that does not confirm leaves the lease on; the retry stops it', async () => {
@@ -383,7 +404,7 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
       originalCid: row.originalCid, nodeIdentity: { nodeDid: 'did:key:node', renewerDid: 'did:key:renewer' }, approvedLeaseLifetimeSeconds: 3600,
       approvedAt: new Date().toISOString(), leaseExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
     };
-    await expect(reserveRenewalLease(prisma, { approvalRequestId: row.approvalRequestId, userId: owner.userId, sessionId: null, nodeOrigin: row.nodeOrigin, stage: stage as never }))
+    await expect(reserveRenewalLease(prisma, { approvalRequestId: row.approvalRequestId!, userId: owner.userId, sessionId: null, nodeOrigin: row.nodeOrigin, stage: stage as never }))
       .rejects.toMatchObject({ code: 'renewal_stopped' });
   });
 
@@ -686,8 +707,8 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
       if (path !== '/delegate' || confirmed !== undefined) return;
       // The approval's own admission succeeded; its save commits while the settle is between its read and its write.
       const now = new Date();
-      const marker = await store.admit(reserved.approvalRequestId, now);
-      confirmed = await store.approve(reserved.approvalRequestId, {
+      const marker = await store.admit(reserved.approvalRequestId!, now);
+      confirmed = await store.approve(reserved.approvalRequestId!, {
         resultRef: randomBytes(8).toString('hex'), approvedByUserId: owner.userId, ownerDid: reserved.ownerDid, encryptedResult: '{}',
         delegationExpiresAt: new Date(now.getTime() + 3_600_000), resultExpiresAt: new Date(now.getTime() + 600_000),
         lease: { leaseCid, userId: owner.userId, sessionId: null, approvalRequestId: reserved.approvalRequestId, ownerDid: reserved.ownerDid, originalCid: reserved.originalCid, nodeOrigin: reserved.nodeOrigin },
