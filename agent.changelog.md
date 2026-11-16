@@ -9,6 +9,8 @@ Track changes to agent-facing development guidance for OpenKey. Add a concise en
   checksum registries and the reviewer policy were corrected, and the operator steps are in
   `docs/deployment.md` under "Hosted app-review accounts". `agent.dev.md` notes the two
   registries that pin a migration checksum and the count-only reserved-address preflight.
+  It also notes that an applied migration's file and checksum pins are frozen, so a feature
+  that added a column to it is backed out in code only.
 
 ## 2026-11-13
 

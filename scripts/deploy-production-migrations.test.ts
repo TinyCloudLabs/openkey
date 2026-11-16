@@ -253,6 +253,20 @@ describe('production migration deployment mode', () => {
     expect(queries).toHaveLength(1);
   });
 
+  // Once this migration is applied to production its file and both pins are frozen: reverting
+  // the commit that added `codeDigest` would change the checksum and block every API deploy.
+  // Restart survival is backed out in code only (docs/deployment.md, "The migration file is frozen").
+  test('the reviewer migration keeps the checksum and the codeDigest column it ships with', async () => {
+    const name = '20261111_0001_reviewer_accounts';
+    const frozen = '11196b6dd808c535f5ad66f7a92aff85a12afcd47004e279bc42bbc9d9fa7cf2';
+    const migration = await readFile(join(import.meta.dir, '../packages/db/prisma/migrations', name, 'migration.sql'));
+    expect(createHash('sha256').update(migration).digest('hex')).toBe(frozen);
+    expect(requiredRuntimeMigrationChecksums.get(name)).toBe(frozen);
+    expect(migration.toString('utf8')).toContain('"codeDigest" TEXT');
+    const runner = await readFile(join(import.meta.dir, 'deploy-production-migrations.ts'), 'utf8');
+    expect(runner).toContain(`[reviewerAccountsMigration, '${frozen}']`);
+  });
+
   test('accepts the finished history row when a rolled-back attempt of the same migration exists', () => {
     const reviewed = 'reviewed-checksum';
     const rolledBack: MigrationRow = {

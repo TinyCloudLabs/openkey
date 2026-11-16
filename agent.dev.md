@@ -133,3 +133,7 @@ bun dev:portless
   that adds a column to a table counted by `scripts/native-delegation-schema-guards.ts` must
   update that count too, or the production deploy fails after applying it. A migration that can
   raise on existing data gets a count-only preflight in the deploy script (TC-2775).
+- Once a migration has been applied to production, its file and both checksum pins are
+  frozen: never edit or revert them, even when reverting the feature that added a column
+  to it. Back a feature out in code and leave the column unused. `codeDigest` in
+  `20261111_0001_reviewer_accounts` is such a column (TC-2775).
