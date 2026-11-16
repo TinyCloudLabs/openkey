@@ -89,7 +89,7 @@
   {peerRecognition}
   expiryMs={transport.expiry?.chosenMs ?? null}
   onExpiryChange={transport.expiry?.onChange}
-  onceExpiryDefault
+  onceExpiryDefault={transport.expiry?.onceDefault ?? false}
   {onApprove}
   {onCancel}
   onRetry={transport.retryPreview}
