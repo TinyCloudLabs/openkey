@@ -449,15 +449,20 @@ enter the review account, for example `openai-review@tinycloud.xyz`, and the
   account may also create any other personal app in its own space; the catalog
   apps `healthlog` and `recipes` and every other space stay refused.
 
-**Restarts.** The installed code is held in API process memory only. Every API
-start (deploy, restart, crash) holds every review account and ends its
-sessions until the code is installed again with step 5. If that boot step
-itself fails, the API still starts and logs `reviewer_boot_failed`; review
-accounts stay refused until the code is installed again.
+**Restarts.** The SHA-256 digest of the installed code is stored with the
+account (`reviewer_account.codeDigest`), never the code. On every API start
+(deploy, restart, crash) an account that has a digest and is neither held nor
+locked gets its code back: the reviewer's code keeps working and a live
+session continues until its own one-hour limit. Revoking the code, pinning a
+new audience, resetting the account and any hold clear the digest, so none of
+those is undone by a restart; an account without a digest is held on start as
+before. If the start-up step itself fails, the API still starts and logs
+`reviewer_boot_failed`; review accounts are refused until the next successful
+start or until the code is installed again.
 
-Logs: `reviewer_admin` (`installed`, `unset`, `boot_hold`, `reset`,
-`audience_pinned`, `ready`) and `reviewer_sign_in` (`success`, `failed`) carry
-the store name only.
+Logs: `reviewer_admin` (`installed`, `unset`, `boot_restored`, `boot_hold`,
+`reset`, `audience_pinned`, `ready`) and `reviewer_sign_in` (`success`,
+`failed`) carry the store name only.
 
 #### Trigger Conditions
 

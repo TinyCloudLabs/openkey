@@ -984,6 +984,8 @@ model ReviewerAccount {
   seededAt DateTime?
   readyAt DateTime?
   grantSessionId String?
+  // SHA-256 (hex) of the installed review code; cleared by every hold. Never the code itself.
+  codeDigest String?
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
   @@map("reviewer_account")
 }

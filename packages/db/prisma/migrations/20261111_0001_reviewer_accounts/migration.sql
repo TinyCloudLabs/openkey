@@ -10,7 +10,8 @@ CREATE TABLE reviewer_account (
   "installEpoch" INTEGER NOT NULL DEFAULT 0,
   "clientId" TEXT, "redirectUri" TEXT, resource TEXT, "callbackUri" TEXT,
   "nodeHost" TEXT, "sessionDid" TEXT, "keyId" TEXT, "spaceId" TEXT,
-  "seededAt" TIMESTAMP(3), "readyAt" TIMESTAMP(3), "grantSessionId" TEXT
+  "seededAt" TIMESTAMP(3), "readyAt" TIMESTAMP(3), "grantSessionId" TEXT,
+  "codeDigest" TEXT
 );
 DO $$
 BEGIN

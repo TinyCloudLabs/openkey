@@ -138,7 +138,7 @@ export function log(level: LogLevel, event: EventName, errorCode?: string): void
 /** Reviewer operations are read by the API operations team. Fields are fixed: never ids, addresses or codes. */
 export function logReviewer(
   event: 'reviewer_sign_in' | 'reviewer_admin',
-  result: 'failed' | 'success' | 'installed' | 'unset' | 'boot_hold' | 'reset' | 'audience_pinned' | 'ready',
+  result: 'failed' | 'success' | 'installed' | 'unset' | 'boot_hold' | 'boot_restored' | 'reset' | 'audience_pinned' | 'ready',
   store: string,
 ): void {
   const knownStore = ['openai', 'google', 'apple', 'all'].includes(store) ? store : 'unknown';

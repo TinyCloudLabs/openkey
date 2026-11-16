@@ -593,10 +593,80 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     await expect(assertNativeDelegationSchema(database)).resolves.toBeUndefined();
   });
 
-  test('boot clears installation and durably holds the account', async () => {
+  test('a restart restores the installed code and keeps live sessions inside their one-hour cap', async () => {
+    const signedIn = await call('/api/auth/sign-in/reviewer', 'POST', {
+      email: 'openai-review@tinycloud.xyz', code, oauth_query: signedQuery,
+    });
+    expect(signedIn.status).toBe(200);
+    const liveCookie = signedIn.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');
+    const before = await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'openai' } });
+    const digest = accounts.credentialDigest(code).toString('hex');
+    expect(before.codeDigest).toBe(digest);
+    const logged = capturedLogs.length;
+    // A new process starts with an empty verifier map and runs this once.
+    await accounts.initializeReviewers(database);
+    const after = await accounts.reviewerForUser(database, 'reviewer-owner');
+    expect(after!.installEpoch).toBe(before.installEpoch);
+    expect(after!.codeDigest).toBe(digest);
+    expect(after!.user!.reviewerHoldAt).toBeNull();
+    expect(accounts.reviewerActive(after)).toBe(true);
+    expect(accounts.reviewerCodeMatches(after, code)).toBe(true);
+    expect(accounts.reviewerCodeMatches(after, randomBytes(32).toString('base64url'))).toBe(false);
+    const current = await call('/api/auth/get-session', 'GET', undefined, { cookie: liveCookie });
+    const session = await database.session.findUniqueOrThrow({ where: { id: (await current.json() as { session: { id: string } }).session.id } });
+    expect(session.expiresAt.getTime() - session.createdAt.getTime()).toBeLessThanOrEqual(3_600_000);
+    expect((await call('/api/auth/sign-in/reviewer', 'POST', {
+      email: 'openai-review@tinycloud.xyz', code, oauth_query: signedQuery,
+    }, { cookie: liveCookie })).status).toBe(200);
+    expect((await call('/api/auth/sign-in/reviewer', 'POST', {
+      email: 'openai-review@tinycloud.xyz', code: randomBytes(32).toString('base64url'), oauth_query: signedQuery,
+    })).status).toBe(403);
+    const lines = capturedLogs.slice(logged);
+    expect(lines.includes('boot_restored')).toBe(true);
+    expect(capturedLogs.includes(digest)).toBe(false);
+    setSystemTime(new Date(session.createdAt.getTime() + 3601_000));
+    try {
+      expect(await (await call('/api/auth/get-session', 'GET', undefined, { cookie: liveCookie })).json()).toBeNull();
+    } finally { setSystemTime(); }
+  });
+
+  test('an unset survives a restart', async () => {
+    await accounts.unsetReviewer(database, 'openai');
+    expect((await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'openai' } })).codeDigest).toBeNull();
     await accounts.initializeReviewers(database);
     const binding = await accounts.reviewerForUser(database, 'reviewer-owner');
     expect(accounts.reviewerActive(binding)).toBe(false);
+    expect(binding!.codeDigest).toBeNull();
+    expect(binding!.user!.reviewerHoldAt).not.toBeNull();
+    expect((await call('/api/auth/sign-in/reviewer', 'POST', {
+      email: 'openai-review@tinycloud.xyz', code, oauth_query: signedQuery,
+    })).status).toBe(403);
+  });
+
+  test('boot durably holds an account that has no persisted code digest', async () => {
+    await accounts.installReviewer(database, 'openai', code);
+    await database.reviewerAccount.update({ where: { store: 'openai' }, data: { codeDigest: null } });
+    await accounts.initializeReviewers(database);
+    const binding = await accounts.reviewerForUser(database, 'reviewer-owner');
+    expect(accounts.reviewerActive(binding)).toBe(false);
+    expect(binding!.user!.reviewerHoldAt).not.toBeNull();
+  });
+
+  test('an audience change, a held user and a locked user do not come back after a restart', async () => {
+    const pinned = (await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'openai' } })).sessionDid;
+    await accounts.installReviewer(database, 'openai', code);
+    await accounts.pinReviewerAudience(database, 'openai', pinned);
+    expect((await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'openai' } })).codeDigest).toBeNull();
+    await accounts.initializeReviewers(database);
+    expect(accounts.reviewerActive(await accounts.reviewerForUser(database, 'reviewer-owner'))).toBe(false);
+
+    await accounts.installReviewer(database, 'openai', code);
+    await database.user.update({ where: { id: 'reviewer-owner' }, data: { lockedAt: new Date() } });
+    await accounts.initializeReviewers(database);
+    await database.user.update({ where: { id: 'reviewer-owner' }, data: { lockedAt: null } });
+    const binding = await accounts.reviewerForUser(database, 'reviewer-owner');
+    expect(accounts.reviewerActive(binding)).toBe(false);
+    expect(binding!.codeDigest).toBeNull();
     expect(binding!.user!.reviewerHoldAt).not.toBeNull();
   });
 
@@ -620,5 +690,18 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     const context = await runtime.auth.$context;
     const ordinaryCookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, 'ordinary-test-token', context.secret)).split(';')[0]!;
     expect((await call('/api/keys', 'GET', undefined, { cookie: ordinaryCookie })).status).toBe(200);
+  });
+
+  test('a reset clears the persisted code digest', async () => {
+    await accounts.installReviewer(database, 'openai', code);
+    const { provisionReviewer } = await import('../services/reviewer-fixtures');
+    // The binding transaction commits; the node sign-in then fails because the network is disabled.
+    await expect(provisionReviewer(database, 'openai', { clientId, nodeHost: 'https://node.tinycloud.xyz' }, true)).rejects.toThrow();
+    const binding = await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'openai' }, include: { user: true } });
+    expect(binding.userId).not.toBe('reviewer-owner');
+    expect(binding.codeDigest).toBeNull();
+    expect(accounts.reviewerActive(binding)).toBe(false);
+    await accounts.initializeReviewers(database);
+    expect(accounts.reviewerActive(await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'openai' }, include: { user: true } }))).toBe(false);
   });
 }

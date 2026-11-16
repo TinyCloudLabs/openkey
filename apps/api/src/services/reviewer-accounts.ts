@@ -95,8 +95,10 @@ export async function holdReviewer(transaction: Prisma.TransactionClient, bindin
     ] } });
     await transaction.session.deleteMany({ where: { userId } });
   }
+  // Every hold (unset, reset, audience change, boot hold) also forgets the persisted code digest.
   return transaction.reviewerAccount.update({
-    where: { store: binding.store }, data: { installEpoch: { increment: 1 }, grantSessionId: null, readyAt: null },
+    where: { store: binding.store },
+    data: { installEpoch: { increment: 1 }, grantSessionId: null, readyAt: null, codeDigest: null },
     include: { user: true },
   });
 }
@@ -120,6 +122,8 @@ export async function installReviewer(database: PrismaClient, store: string, cod
     }
     const binding = await holdReviewer(transaction, before);
     await transaction.user.update({ where: { id: binding.userId! }, data: { reviewerHoldAt: null } });
+    // Only the SHA-256 digest of the 32-byte code is stored, so an API restart can restore it.
+    await transaction.reviewerAccount.update({ where: { store }, data: { codeDigest: digest.toString('hex') } });
     // Process memory is installed before commit while competing mutations wait on the binding lock.
     verifiers.set(store, { digest, epoch: binding.installEpoch });
   }).catch((error) => {
@@ -130,15 +134,31 @@ export async function installReviewer(database: PrismaClient, store: string, cod
   logReviewer('reviewer_admin', 'installed', store);
 }
 
+/**
+ * Runs once per API start. A binding whose installed code left a digest, and whose user is
+ * neither held nor locked, gets its verifier back at the same epoch, so its live sessions and
+ * the code keep working across a restart. Every other binding is held as before.
+ */
 export async function initializeReviewers(database: PrismaClient) {
   verifiers.clear();
+  const restored = new Map<string, { digest: Buffer; epoch: number }>();
   await database.$transaction(async (transaction) => {
     for (const store of REVIEWER_STORES) {
-      const binding = await transaction.reviewerAccount.findUnique({ where: { store } });
-      if (binding) await holdReviewer(transaction, await lockReviewer(transaction, store));
+      if (!await transaction.reviewerAccount.findUnique({ where: { store } })) continue;
+      const binding = await lockReviewer(transaction, store);
+      if (store !== 'apple' && binding.codeDigest && /^[0-9a-f]{64}$/.test(binding.codeDigest)
+        && binding.user && !binding.user.lockedAt && !binding.user.reviewerHoldAt) {
+        restored.set(store, { digest: Buffer.from(binding.codeDigest, 'hex'), epoch: binding.installEpoch });
+      } else {
+        await holdReviewer(transaction, binding);
+      }
     }
   });
-  logReviewer('reviewer_admin', 'boot_hold', 'all');
+  for (const store of REVIEWER_STORES) {
+    const verifier = restored.get(store);
+    if (verifier) verifiers.set(store, verifier);
+    logReviewer('reviewer_admin', verifier ? 'boot_restored' : 'boot_hold', store);
+  }
 }
 
 /** A failed boot hold must not stop the API: with no verifier installed every reviewer stays refused. */
