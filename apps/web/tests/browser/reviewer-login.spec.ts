@@ -50,6 +50,8 @@ test.describe('app-review sign-in', () => {
   test('a plain sign-in page offers no review code and explains a reserved address', async ({ page }) => {
     const api = await mockApi(page);
     await page.goto('/auth/login');
+    // Handlers and bind:value attach when hydration lands; wait so clicks and fills stick.
+    await page.waitForLoadState('networkidle');
     await expect(page.getByRole('heading', { name: 'Welcome to OpenKey' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Continue with email' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Use a review code' })).toHaveCount(0);
@@ -65,6 +67,7 @@ test.describe('app-review sign-in', () => {
   test('inside an OAuth flow the review-code link opens the step and signs in with the authorize query', async ({ page }) => {
     const api = await mockApi(page);
     await page.goto(`/auth/login?${oauthQuery}`);
+    await page.waitForLoadState('networkidle');
     await page.getByRole('button', { name: 'Use a review code' }).click();
     await expect(page.getByRole('heading', { name: 'App review sign-in' })).toBeVisible();
 
@@ -88,7 +91,8 @@ test.describe('app-review sign-in', () => {
   test('inside an OAuth flow a typed reserved address reaches the review-code step without sending a code', async ({ page }) => {
     const api = await mockApi(page);
     await page.goto(`/auth/login?${oauthQuery}`);
-    await page.getByLabel('Email address').fill(' OpenAI-Review@tinycloud.xyz');
+    await page.waitForLoadState('networkidle');
+    await page.getByLabel('Email address').fill('OpenAI-Review@tinycloud.xyz');
     await page.getByRole('button', { name: 'Continue with email' }).click();
     await expect(page.getByRole('heading', { name: 'App review sign-in' })).toBeVisible();
     await expect(page.getByLabel('Review code')).toBeVisible();
