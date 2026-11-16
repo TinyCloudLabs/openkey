@@ -21,6 +21,7 @@ Object.assign(globalThis, {
   window: win,
   document: win.document,
   HTMLElement: win.HTMLElement,
+  HTMLMediaElement: win.HTMLMediaElement,
   Element: win.Element,
   Node: win.Node,
   Text: win.Text,
@@ -68,6 +69,17 @@ function stubUrl(name: string): string {
   return pathToFileURL(file).href;
 }
 
+// The page mounts `$lib` components (the expiry line, TC-2933): compile them, and theirs, the same way.
+function compileChild(file: string): string {
+  const code = compile(readFileSync(file, 'utf8'), { generate: 'client', dev: false, name: 'Child', filename: file }).js.code
+    .replace(/from\s+['"](\$lib\/[^'"]+)['"]/g, (_match, spec: string) => `from '${spec.endsWith('.svelte')
+      ? compileChild(join(WEB_ROOT, 'src/lib', spec.slice(5)))
+      : pathToFileURL(join(WEB_ROOT, 'src/lib', spec.slice(5))).href}'`);
+  const out = join(OUT_DIR, `${file.replace(/[^A-Za-z0-9]/g, '_')}.mjs`);
+  writeFileSync(out, code);
+  return pathToFileURL(out).href;
+}
+
 const COMPONENT = join(WEB_ROOT, 'src/routes/delegate/PreparedHandoff.svelte');
 const compiled = compile(readFileSync(COMPONENT, 'utf8'), { generate: 'client', dev: false, name: 'Subject', filename: COMPONENT });
 let code = '';
@@ -81,7 +93,8 @@ for (const match of compiled.js.code.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
   else if (spec === 'svelte') target = pathToFileURL(join(dirname(require.resolve('svelte/package.json')), 'src/index-client.js')).href;
   else if (spec === '@openkey/capability-review') {
     target = pathToFileURL(join(WEB_ROOT, '..', '..', 'packages', 'capability-review', 'src', 'index.ts')).href;
-  } else if (spec.startsWith('$lib/')) target = pathToFileURL(join(WEB_ROOT, 'src/lib', spec.slice(5))).href;
+  } else if (spec.startsWith('$lib/') && spec.endsWith('.svelte')) target = compileChild(join(WEB_ROOT, 'src/lib', spec.slice(5)));
+  else if (spec.startsWith('$lib/')) target = pathToFileURL(join(WEB_ROOT, 'src/lib', spec.slice(5))).href;
   code += `from '${target}'`;
   cursor = match.index! + match[0].length;
 }

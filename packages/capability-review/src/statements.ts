@@ -17,6 +17,7 @@
 // decryption) is used by the native access summary. UI callers route through these rather
 // than composing the sentence themselves.
 
+import { courierTexts, COURIER_CATALOG } from "./courier.js";
 import type { CapabilityAction, CapabilityGrant, CapabilityReviewModel, PermissionSeverity } from "./model.js";
 import { appDisplayName } from "./app-identity.js";
 import {
@@ -976,6 +977,8 @@ export function splitStatementCode(text: string): Array<{ text: string; code: bo
  * renders only the non-schema part of a mixed grant.
  */
 export function buildStatements(input: CapabilityGrant): StatementEntry[] {
+  const courier = courierTexts(input);
+  if (courier) return courier.map(primaryText => ({ primaryText, service: input.service, resource: resourceOf(input) }));
   const appKeyRows = appKeyStatements(input);
   if (appKeyRows) return appKeyRows;
   // key.delete is its own never-approvable row beside any other abilities.
@@ -1084,6 +1087,8 @@ function sqlWriteStatementText(path: string): string {
  *   4. Anything else → literal fallback
  */
 export function buildStatement(input: CapabilityGrant): StatementEntry {
+  const courier = courierTexts(input);
+  if (courier) return { primaryText: courier.join("; "), service: input.service, resource: resourceOf(input) };
   const appKeyRows = appKeyStatements(input);
   if (appKeyRows) return appKeyRows[0]!;
   // key.delete fails closed: every delete row is never approvable and renders
@@ -1901,7 +1906,8 @@ const SUMMARY_SEVERITY_RANK: Record<PermissionSeverity, number> = { standard: 0,
  */
 export function buildSummaryStatements(grants: readonly CapabilityGrant[]): SummaryStatement[] {
   const grouped = new Map<string, SummaryStatement>();
-  for (const grant of grants) {
+  const courier = grants.filter(grant => grant.family === "courier").sort((a, b) => COURIER_CATALOG.findIndex(row => row.path === a.path) - COURIER_CATALOG.findIndex(row => row.path === b.path));
+  for (const grant of [...courier, ...grants.filter(grant => grant.family !== "courier")]) {
     for (const statement of buildStatements(grant)) {
       const existing = grouped.get(statement.primaryText);
       const rowSeverity = statement.severity ?? grant.severity;

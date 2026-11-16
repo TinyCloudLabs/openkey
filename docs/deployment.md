@@ -234,6 +234,8 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `NODE_STATS_URL` / `NODE_STATS_READ_TOKEN` | Full URL of the node's read-only `GET /admin/stats` (TC-1482) and its read-only bearer. OpenKey fetches the owner addresses from it for `/protocol-users` (owners with data beyond the automatic `account` space; account-only owners are excluded). The URL must be `https:`; the response is capped at 16 MiB and concurrent calls share one node request; unset or failing node = 503, never a partial count. Expected response: `200 {"owners": ["0x<40 hex>", ...]}` |
 | `SCOREBOARD_EXCLUDE_USER_IDS` / `SCOREBOARD_EXCLUDE_CLIENT_IDS` | Comma-separated team/QA/agent user ids and internal OAuth client ids excluded from scoreboard counts |
 | `OPENKEY_NATIVE_RENEW_DISABLED` | `true` or `1` refuses native delegation renewals with HTTP 400 `consent_required`; unset, empty, or any other value leaves renewals enabled. Changes apply after the API container is recreated with the new environment. |
+| `OPENKEY_RENEWAL_LEASES` | Renewal leases are off unless this is exactly `enabled`. While off, a request that asked for renewal is approved finite and a leased choice is refused with 400 `renewal_disabled`; leases already granted keep renewing on the node and can still be stopped. Enable only after the web that shows the renewal choice is live. Changes apply after the API container is recreated with the new environment. |
+| `OPENKEY_RENEWAL_NODE_DID` / `OPENKEY_RENEWAL_RENEWER_DID` | The production TinyCloud node's DID and its renewer DID, exactly as the node advertises them at `/.well-known/tinycloud/node-keys`. Without both, no production lease is made. |
 | `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for canonical user-key bootstrap |
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway base domain (e.g. `dstack-pha-prod5.phala.network`); the ingress CNAMEs `api.openkey.so` to `gateway.<base>` (never `_.<base>`, which Android cannot resolve) |
@@ -374,6 +376,23 @@ backfill, run this once the new image serves traffic, with the time it went live
 The release coordinator manually dispatches **Actions > Deploy API to Phala Cloud >
 Run workflow** from `main` (`gh workflow run deploy-api.yml --ref main`).
 The `production-api` concurrency group serializes runs; non-`main` refs are refused.
+Run `gh workflow run deploy-api.yml --ref main -f preflight_only=true` first.
+This uses the same production environment and concurrency guard but performs
+only provider reads and a read-only database transaction. Its output records
+the complete app CVM inventory, immutable rollback image, changed environment
+key names, public audience expressions, and reviewed pending migrations. No
+encrypted environment values or user records are printed. The existing
+single-CVM deployment requires exactly one stable running app instance.
+Resolve unexpected live configuration differences before the deploy; do not
+overwrite operator changes. Re-run this inspection after rollout to confirm
+the image and migration state and check `unclassified_passkeys`. A zero count
+means the passkey deploy-window backfill above is unnecessary.
+
+The 2026-11-13 preflight found the Courier canary audience
+`https://courier-canary-1e7fgu.tinycloud.xyz/mcp` appended to the live compose.
+The tracked compose preserves that existing audience, including when
+`OAUTH_VALID_AUDIENCES` is supplied through the encrypted environment. Removing
+it belongs to a separately authorized canary retirement, not this release.
 
 For a combined web/API prepared-handoff release, merging to `main` can publish
 the Pages `/delegate` page before the manual API deployment. The v2 page first
