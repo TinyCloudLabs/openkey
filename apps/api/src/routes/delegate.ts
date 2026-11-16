@@ -87,6 +87,7 @@ import {
   publicJwk,
   type AuthorizationContextToken,
   type AuthorizationContextClaim,
+  type BoundRenewalChoice,
 } from '../services/authorization-signing';
 import { MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
@@ -127,7 +128,7 @@ import {
   type CoordinationosDenialCode,
 } from '../services/coordinationos-signing-audit';
 import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
-import { canonicalTrustedTinyCloudHost } from '../services/tinycloud-hosts';
+import { canonicalTrustedTinyCloudHost, LOCAL_HOSTNAMES } from '../services/tinycloud-hosts';
 import { hostRequestedSpaceWithinBudget } from '../services/tinycloud-bootstrap-budget';
 import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
@@ -135,7 +136,7 @@ import { PreparedHandoffError } from '../services/prepared-handoff';
 import { preparedHandoffService } from './prepared-handoffs';
 import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
-import { admitApprovalDelegation, checkApprovalDelegation, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
+import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, confirmBoundRenewal, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
@@ -1346,6 +1347,8 @@ delegateRouter.post('/', async (c) => {
     permissions?: unknown;
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
+    /** Optional; may only repeat the renewal choice the preview bound (TC-2933). */
+    renewal?: unknown;
     expiry?: unknown;
     expiryChosen?: unknown;
     linkExpiry?: unknown;
@@ -1472,6 +1475,7 @@ delegateRouter.post('/', async (c) => {
     if (bound.approvalRequestId !== body.approvalRequestId) {
       return c.json({ error: 'Approval request does not match the consent preview' }, 400);
     }
+    confirmBoundRenewal(body.renewal, bound.renewal);
 
     // The stored context MUST have bound originalSiwe. Older /prepare
     // invocations that predate Blocker 1 did not set this field — those
@@ -1709,6 +1713,7 @@ delegateRouter.post('/', async (c) => {
     }));
 
     recordAppSignIn(prisma, user.id, bound.appOrigin);
+    const ownerSealedBlob = key.sealedBlob;
     return c.json(await saveApprovalDelegation(body, user.id, {
       delegationHeader: session.delegationHeader,
       delegationCid: session.delegationCid,
@@ -1737,7 +1742,7 @@ delegateRouter.post('/', async (c) => {
       signature,
       signedMessage: bound.originalSiwe,
       permissions: effectiveGrants,
-    }));
+    }, { renewal: bound.renewal, host, sessionId: c.get('session')?.id ?? null, signOwner: (message) => signManagedKey(key, ownerSealedBlob, message) }));
     } catch (error) {
       await releaseApprovalDelegation(body);
       throw error;
@@ -1879,6 +1884,8 @@ delegateRouter.post('/prepare', async (c) => {
     linkExpiry?: unknown;
     expiryChangeable?: unknown;
     reason?: unknown;
+    /** Caller-reported attribution for ordinary links only; never verified app identity. */
+    requesterOrigin?: unknown;
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
   }>();
@@ -1895,6 +1902,20 @@ delegateRouter.post('/prepare', async (c) => {
 
   if (!body.keyId || !body.jwk || !body.host) {
     return c.json({ error: 'keyId, jwk, and host are required' }, 400);
+  }
+
+  let requesterDomain: string | undefined;
+  if (body.requesterOrigin !== undefined) {
+    if (body.deviceTransactionId !== undefined || body.approvalRequestId !== undefined) {
+      return c.json({ error: 'requesterOrigin cannot override a device or signed approval request', code: 'requester_origin_unsupported' }, 400);
+    }
+    const origin = canonicalizeCoordinationosOrigin(body.requesterOrigin);
+    const url = origin ? new URL(origin) : null;
+    if (!url || origin !== body.requesterOrigin ||
+      (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOCAL_HOSTNAMES.has(url.hostname)))) {
+      return c.json({ error: 'requesterOrigin must be a canonical HTTPS origin or HTTP loopback origin', code: 'invalid_requester_origin' }, 400);
+    }
+    requesterDomain = url.host;
   }
 
   const key = await prisma.ethereumKey.findFirst({
@@ -1930,6 +1951,8 @@ delegateRouter.post('/prepare', async (c) => {
   });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
   await checkApprovalDelegation(body, { expiryMs });
+  // TC-2933: the owner's renewal choice is bound with this preview; approving reads it from here, not the body.
+  const renewal = await bindApprovalRenewal(body);
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -1942,6 +1965,7 @@ delegateRouter.post('/prepare', async (c) => {
       permissions,
       deviceTransaction: body.deviceTransactionId !== undefined,
       expiryMs,
+      domain: requesterDomain,
     });
   } catch (e) {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
@@ -1998,6 +2022,7 @@ delegateRouter.post('/prepare', async (c) => {
       // issuedAt/expirationTime bytes on every attempt).
       originalSiwe: preparedResult.prepared.siwe,
       approvalRequestId: body.approvalRequestId,
+      renewal,
     });
   } catch (issueErr) {
     logError('warn', 'delegate_authorization_context_issue_failed', issueErr);
@@ -2077,6 +2102,8 @@ delegateRouter.post('/complete', async (c) => {
     reason?: unknown;
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
+    /** Optional; may only repeat the renewal choice the preview bound (TC-2933). */
+    renewal?: unknown;
     /**
      * The CLI-supplied permissions that were the baseline for /prepare.
      * When present, this is used instead of DEFAULT_ABILITIES for the
@@ -2240,6 +2267,7 @@ delegateRouter.post('/complete', async (c) => {
 
   let contextClaim: AuthorizationContextClaim | undefined;
   let signInAppOrigin: string | undefined;
+  let boundRenewal: BoundRenewalChoice | undefined;
   // Versioned callers: the `completeSessionSetup` input, built only from the
   // signed SIWE and the bound context (see below).
   let versionedSessionInput: Record<string, unknown> | undefined;
@@ -2249,10 +2277,14 @@ delegateRouter.post('/complete', async (c) => {
       return c.json({ error: 'authorizationContextToken must be a string' }, 400);
     }
     const peekedContext = peekAuthorizationContext(body.authorizationContextToken);
-    if (peekedContext.ok) signInAppOrigin = peekedContext.value.appOrigin;
+    if (peekedContext.ok) {
+      signInAppOrigin = peekedContext.value.appOrigin;
+      boundRenewal = peekedContext.value.renewal;
+    }
     if (peekedContext.ok && peekedContext.value.approvalRequestId !== body.approvalRequestId) {
       return c.json({ error: 'Approval request does not match the consent preview' }, 400);
     }
+    if (peekedContext.ok) confirmBoundRenewal(body.renewal, peekedContext.value.renewal);
     if (!Array.isArray(body.selectedActionIds) || body.selectedActionIds.some((id) => typeof id !== 'string')) {
       return c.json({ error: 'selectedActionIds must be a string[] when authorizationContextToken is provided' }, 400);
     }
@@ -2457,7 +2489,7 @@ delegateRouter.post('/complete', async (c) => {
     //   `permissions` is the effective grant set after any narrowing.
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
-  }));
+  }, { renewal: boundRenewal, host: body.host, sessionId: c.get('session')?.id ?? null }));
   } catch (error) {
     await releaseApprovalDelegation(body);
     throw error;
@@ -2539,11 +2571,15 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     requestOrigin?: string;
     /** TC-2272: the app sends `expiryChangeable: true` when it accepts a different signed expiry. */
     expiryChangeable?: unknown;
+    requesterOrigin?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
     delivery?: unknown;
   }>();
+  if (body.requesterOrigin !== undefined) {
+    return c.json({ error: 'requesterOrigin is only supported for ordinary delegation preparation', code: 'requester_origin_unsupported' }, 400);
+  }
   logSessionJwk('/api/delegate/authorize-sign-prepare', hasPrivateJwkMember(body.jwk));
   // Only the session key's public members are used or stored; a malformed
   // key counts as missing.

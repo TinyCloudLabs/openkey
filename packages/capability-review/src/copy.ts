@@ -24,6 +24,7 @@ export const SEVERITY_HINT: Record<PermissionSeverity, string> = {
 };
 
 export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
+  courier: "Courier",
   "bootstrap-kv": "Key-value storage",
   "bootstrap-sql": "SQL database",
   "bootstrap-capabilities": "Capability metadata",

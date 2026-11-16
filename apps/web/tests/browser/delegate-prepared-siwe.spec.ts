@@ -110,14 +110,15 @@ test('v2 distinguishes the approval request expiry from the exact SIWE grant exp
   await page.clock.setFixedTime(new Date('2026-10-16T17:00:00.000Z'));
   await setup(page);
   const ticketExpiry = new Date('2026-10-16T17:05:00.000Z').toLocaleString();
-  const grantExpiry = new Date('2026-10-23T17:00:00.000Z').toLocaleString();
   await expect(page.getByText('Approval request expires')).toBeVisible();
-  await expect(page.getByText('Access granted until')).toBeVisible();
   await expect(page.getByText(ticketExpiry)).toBeVisible();
-  await expect(page.getByText(`${grantExpiry} (in 7 days)`)).toBeVisible();
+  // The grant's length is the expiry line; its exact end is shown once, inside the open fold.
+  await expect(page.getByTestId('approval-expiry-line')).toContainText('7 days');
+  await page.getByText('How long it lasts').click();
+  await expect(page.getByText('Oct 23, 2026, 5:00 PM UTC')).toHaveCount(1);
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await expect(page.getByText('Approval request expires')).toBeVisible();
-  await expect(page.getByText(`${grantExpiry} (in 7 days)`)).toBeVisible();
+  await expect(page.getByText('Oct 23, 2026, 5:00 PM UTC')).toHaveCount(1);
 });
 
 test('v2 warns when the exact SIWE has no expiration rather than implying the ticket TTL is a grant TTL', async ({ page }) => {

@@ -32,6 +32,8 @@
     REGISTERED_CALLBACK_ENDPOINTS,
     checkDelegateCallback,
     checkDelegateHost,
+    delegateReceiver,
+    checkDelegateRequesterOrigin,
     isCanonicalHttpsEndpoint,
     isCanonicalHttpsOrigin,
     withConfiguredEntries,
@@ -43,7 +45,7 @@
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
   import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
-  import { requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
+  import { MAX_LEASE_MS, defaultLeaseMs, formatDuration, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -55,6 +57,8 @@
     defaultSelection,
     type CapabilityReviewModel,
   } from '@openkey/capability-review';
+  import { hostNamedByLink } from '$lib/requester-display';
+  import { renewalStartsTicked } from '$lib/renewal-default';
 
   interface EIP6963ProviderInfo {
     uuid: string;
@@ -183,7 +187,6 @@
   // disappear from the review UI. `reviewSelection` is the effective
   // subset the user picked; only that changes when the user narrows.
   let reviewModel = $state<CapabilityReviewModel | null>(null);
-  const expiredRequesterName = $derived(reviewModel?.requester.displayName?.trim() || '');
   let baselineSiweForReview = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
@@ -314,6 +317,59 @@
   let requestedExpiryParam: string | null = null;
   // The longest the requester signed (a signed approval request or a device request); null on a plain link.
   let expiryMaxMs = $state<number | null>(null);
+  // TC-2933: the renewal checkbox, offered only when the approval request signed a renewal request
+  // (its longest lease). `renewalLeaseMs` is the owner's lease, null while the box is unticked.
+  let renewalMaxLeaseMs = $state<number | null>(null);
+  let renewalPurpose: unknown = undefined;
+  let renewalDefaulted = false;
+  let renewalLeaseMs = $state<number | null>(null);
+  // Spec D12: standing access starts ticked; D7: never in the Once tier (secrets or decrypt); D11: no purpose is a task.
+  // Ticking it re-prepares, so the preview the owner approves is the one that carries the lease.
+  $effect(() => {
+    if (renewalDefaulted || renewalMaxLeaseMs === null || !reviewModel) return;
+    renewalDefaulted = true;
+    if (renewalStartsTicked(renewalPurpose, reviewModel.permissions)) {
+      void changeRenewal(defaultLeaseMs(renewalMaxLeaseMs));
+    }
+  });
+  // The owner's choice as /prepare binds it into the preview; null when the request did not ask for renewal.
+  function renewalChoiceBody() {
+    if (renewalMaxLeaseMs === null) return null;
+    return renewalLeaseMs === null ? { choice: 'finite' } : { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000) };
+  }
+  const RENEWAL_NOT_SET_UP = "Renewal wasn't set up, so nothing was approved. Try again.";
+  // While an external wallet signs the lease: how long renewal lasts, shown in the prompt.
+  let renewalSigningMs = $state<number | null>(null);
+  // A changed lease (and, from the sensitive-access step, the window) is a new preview: prepare once with both.
+  async function changeRenewal(leaseMs: number | null, windowMs?: number | null) {
+    if (!selectedKey || !jwk) {
+      error = 'Missing key or JWK parameter.';
+      return;
+    }
+    const previous = { lease: renewalLeaseMs, choice: expiryChoiceMs, chosen: expiryChosen, param: expiryParam, requested: requestedExpiryParam };
+    renewalLeaseMs = leaseMs;
+    if (windowMs !== undefined) {
+      requestedExpiryParam ??= expiryParam;
+      expiryChoiceMs = windowMs;
+      expiryChosen = windowMs !== null;
+      expiryParam = windowMs === null ? requestedExpiryParam : `${Math.round(windowMs / 1000)}s`;
+    }
+    updatingPermissions = true;
+    error = '';
+    try {
+      const data = await prepareDelegation(selectedKey, permissionsEdited ? selectedActionKeys : undefined);
+      applyPreparedDelegation(data);
+    } catch (e: any) {
+      renewalLeaseMs = previous.lease;
+      expiryChoiceMs = previous.choice;
+      expiryChosen = previous.chosen;
+      expiryParam = previous.param;
+      requestedExpiryParam = previous.requested;
+      error = delegateErrorMessage(e);
+    } finally {
+      updatingPermissions = false;
+    }
+  }
   async function changeApprovalExpiry(ms: number | null) {
     if (!selectedKey || !jwk) {
       error = 'Missing key or JWK parameter.';
@@ -339,8 +395,22 @@
     }
   }
   const deviceTransactionId = approvalRequestMode ? '' : $page.url.searchParams.get('deviceTransactionId') || '';
+  const ordinaryLink = $derived(!approvalRequestMode && !deviceTransactionId && !preparedTransport);
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
   const deviceUserCode = $page.url.searchParams.get('deviceUserCode') || '';
+  // A device sign-in names no requester: the owner compares the code with the
+  // terminal. The code shown is the one the server holds for this transaction,
+  // read after the request is verified; the link's own code is never displayed.
+  const displayDeviceCode = (code: string) => {
+    const normalized = code.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+    return normalized.length > 4 ? `${normalized.slice(0, 4)}-${normalized.slice(4)}` : normalized;
+  };
+  let serverDeviceCode = $state('');
+  const neutralRequesterLine = $derived(
+    deviceTransactionId
+      ? 'A device sign-in is asking'
+      : approvalRequestMode ? 'An approval link is asking' : null,
+  );
   let deviceAcknowledged = $state(false);
   const relayJwkB64 = $page.url.searchParams.get('relayJwk') || '';
 
@@ -453,17 +523,27 @@
   // delegation to this device or a registered app, and a node OpenKey does
   // not recognize must be acknowledged. Device links are bound by the
   // server-verified device request instead.
+  const requesterOriginCheck = checkDelegateRequesterOrigin(
+    $page.url.searchParams, approvalRequestMode || !!deviceTransactionId || preparedTransport,
+  );
+  // A host is named only when the link actually carried one.
+  const ordinaryRequesterHost = $derived(
+    ordinaryLink && reviewModel && requesterOriginCheck.ok && requesterOriginCheck.origin ? reviewModel.requester.displayName : null,
+  );
   const callbackCheck = $derived(approvalRequestMode || deviceTransactionId
     ? null
     : checkDelegateCallback(callback, withConfiguredEntries(REGISTERED_CALLBACK_ENDPOINTS, import.meta.env.VITE_DELEGATE_CALLBACK_URLS, isCanonicalHttpsEndpoint)));
   const hostCheck = $derived(deviceTransactionId
     ? null
     : checkDelegateHost(host, withConfiguredEntries(KNOWN_NODE_ORIGINS, import.meta.env.VITE_DELEGATE_NODE_ORIGINS, isCanonicalHttpsOrigin)));
-  const linkPolicyError = $derived(callbackCheck?.ok === false
-    ? callbackCheck.reason
+  const linkPolicyError = $derived(!requesterOriginCheck.ok
+    ? requesterOriginCheck.reason
+    : callbackCheck?.ok === false ? callbackCheck.reason
     : hostCheck?.ok === false ? hostCheck.reason : '');
   $effect(() => { if (linkPolicyError) error = linkPolicyError; });
   const approvedCallback = $derived(callbackCheck?.ok ? callbackCheck.callback : null);
+  // Where the approval will go, as OpenKey enforces it; only on ordinary links.
+  const ordinaryReceiver = $derived(ordinaryLink ? delegateReceiver(approvedCallback) : null);
   const showLoopbackHint = $derived(
     shouldShowLoopbackHint({ delegating, approvedCallback, deviceTransactionId, callbackInFlight, pasteCode }),
   );
@@ -488,6 +568,8 @@
       expiry: expiryParam,
     });
     requestReason = normalizeReason(deviceRequestReason(record));
+    // Only the server's own code for THIS transaction is ever shown.
+    serverDeviceCode = displayDeviceCode(record.userCode);
     expiryMaxMs = deviceRequestTtlSeconds(record) * 1000;
   })();
   deviceRequestVerified.catch((cause: unknown) => { error = delegateErrorMessage(cause); });
@@ -591,6 +673,11 @@
       // The requester signs its longest lifetime; the owner starts from its suggestion (the maximum when it gives none).
       expiryMaxMs = request.grantLifetimeSeconds * 1000;
       expiryParam = `${request.suggestedLifetimeSeconds ?? request.grantLifetimeSeconds}s`;
+      // The box only shows where this OpenKey has leases on (`renewalAvailable`); otherwise the plain line, and finite.
+      if (request.renewal && result.renewalAvailable === true) {
+        renewalMaxLeaseMs = Math.min(request.renewal.leaseLifetimeSeconds * 1000, MAX_LEASE_MS);
+        renewalPurpose = request.purpose;
+      }
       approvalRequestLoaded = true;
     } catch (cause) {
       error = delegateErrorMessage(cause);
@@ -746,6 +833,7 @@
       host,
       prefix: 'default',
     };
+    if (requesterOriginCheck.ok && requesterOriginCheck.origin) body.requesterOrigin = requesterOriginCheck.origin;
     if (approvalRequestMode) body.approvalRequestId = approvalRequestId;
     if (actionKeys) {
       body.actionKeys = actionKeys;
@@ -767,6 +855,8 @@
         if (linkExpiryChangeable) body.expiryChangeable = true;
       }
     }
+    // TC-2933: the renewal choice is bound into this preview; approving reads it from there.
+    if (approvalRequestMode && renewalChoiceBody()) body.renewal = renewalChoiceBody();
     // The API refuses a device delegation outside the transaction's lifetime.
     if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
 
@@ -826,7 +916,7 @@
           metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
           reason: { text: requestReason, source: requestReason ? 'caller' : 'none' },
           requester: {
-            displayName: 'TinyCloud CLI',
+            displayName: '',
             verifiedOrigin: null,
             appId: null,
             manifestName: null,
@@ -834,10 +924,14 @@
             manifestId: null,
             manifestIdProvenance: 'none',
             manifestDigest: null,
-            domainWarning: false,
+            domainWarning: ordinaryLink,
             originWarning: false,
           },
         });
+        // A prepared domain binds signed bytes, not a first-party app identity,
+        // and it is the server's fixed default on device and signed flows. None
+        // of this response's requester-name fields is server-verified.
+        model.requester.displayName = hostNamedByLink(model.immutable?.domain);
         reviewModel = model;
         reviewSelection = defaultSelection(model);
         baselineSiweForReview = siweMessage;
@@ -1167,6 +1261,7 @@
     if (refreshed.protocol !== 'tinycloud-siwe-recap' || !refreshed.immutable ||
       refreshed.parseWarnings.some(warning => warning.code !== 'unknown-service') ||
       refreshed.immutable.address.toLowerCase() !== key.address.toLowerCase() ||
+      refreshed.immutable.domain !== reviewModel.immutable?.domain ||
       signedActions.length !== expected.size || !signedActions.every(action => expected.has(action))) {
       throw new OwnerMessageError('The refreshed message does not match the approved selection.');
     }
@@ -1393,7 +1488,30 @@
         throw new DelegateResponseError(apiBusyOrEndedMessage(compRes.status) ?? (body.error || `HTTP ${compRes.status}`), body.code, compRes.status);
       }
 
-      const data = await compRes.json();
+      let data = await compRes.json();
+      if (data.renewalSignature) {
+        // TC-2933: the wallet signs the renewal lease too; declining it approves nothing.
+        renewalSigningMs = data.renewalSignature.leaseLifetimeSeconds * 1000;
+        let leaseSignature: string;
+        try {
+          leaseSignature = await matchingProvider.request({
+            method: 'personal_sign',
+            params: [data.renewalSignature.message, matchingAccount],
+          });
+        } catch {
+          throw new OwnerMessageError(RENEWAL_NOT_SET_UP);
+        } finally {
+          renewalSigningMs = null;
+        }
+        const leaseRes = await fetch(`${API_URL}/api/approval-requests/${approvalRequestId}/renewal-signature`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ signature: leaseSignature }),
+        });
+        if (!leaseRes.ok) throw new OwnerMessageError(RENEWAL_NOT_SET_UP);
+        data = await leaseRes.json();
+      }
       if (!data.hostActivated) {
         await activateWithHost(host, data.delegationHeader);
       }
@@ -1596,7 +1714,7 @@
       </div>
       <Card class="w-full p-6">
         <div class="text-center py-4">
-          <h1 class="text-[17px] font-semibold text-surface-900 mb-2">{expiredRequesterName ? `${expiredRequesterName}'s request expired` : 'Request expired'}</h1>
+          <h1 class="text-[17px] font-semibold text-surface-900 mb-2">This request expired</h1>
           <p class="text-[15px] leading-6 text-[#71717a]">Ask your agent for a new link.</p>
         </div>
       </Card>
@@ -1714,7 +1832,16 @@
             {/if}
           {:else}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
-            <p class="text-surface-500 text-sm">You can close this window and return to the CLI.</p>
+            <p class="text-surface-500 text-sm">
+              {#if ordinaryReceiver?.kind === 'service'}
+                <!-- Every built-in service endpoint is the hosted MCP (delegate-link-policy.ts). -->
+                You can close this window and return to ChatGPT or your MCP client.
+              {:else if ordinaryRequesterHost}
+                You can close this window and return to {ordinaryRequesterHost}.
+              {:else}
+                You can close this window and return to the CLI.
+              {/if}
+            </p>
           {/if}
         </div>
 
@@ -1879,8 +2006,12 @@
         {/if}
 
         {#if selectedKey.keyType === 'EXTERNAL'}
-          <div class="p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700">
-            Your browser wallet will prompt you to sign a message to authorize this delegation.
+          <div class="p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700" role={renewalSigningMs !== null ? 'status' : undefined}>
+            {#if renewalSigningMs !== null}
+              Sign once more to turn on renewal for up to {formatDuration(renewalSigningMs)}
+            {:else}
+              Your browser wallet will prompt you to sign a message to authorize this delegation.
+            {/if}
           </div>
         {/if}
         {#if spaceSetup}
@@ -1907,6 +2038,11 @@
           <div bind:this={actionRow}>
             <CliSigningAdapter
               model={reviewModel}
+              linkNamedHost={ordinaryRequesterHost}
+              ordinaryLink={ordinaryLink}
+              neutralRequesterLine={neutralRequesterLine}
+              neutralRequesterCode={serverDeviceCode}
+              receiver={ordinaryReceiver}
               initialSelection={reviewSelection}
               context={cliContext}
               onEditingStateChange={(editing) => { reviewEditing = editing; }}
@@ -1937,6 +2073,13 @@
                   maxMs: expiryMaxMs,
                   onChange: changeApprovalExpiry,
                 },
+                ...(renewalMaxLeaseMs !== null ? {
+                  renewal: {
+                    leaseMs: renewalLeaseMs,
+                    maxLeaseMs: renewalMaxLeaseMs,
+                    onChange: (ms: number | null, windowMs?: number | null) => { void changeRenewal(ms, windowMs); },
+                  },
+                } : {}),
               }}
             />
           </div>
