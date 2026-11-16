@@ -320,6 +320,7 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
   });
   const prepareStatus = async (permissions: unknown[]) =>
     (await call('/api/delegate/prepare', 'POST', delegateBody(permissions), { cookie })).status;
+  let approvedSpaceId = '';
   /** Prepare and sign as the approval page does; returns the entries the signed message carries. */
   async function approve(permissions: unknown[]) {
     const body = delegateBody(permissions);
@@ -331,7 +332,8 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
       selectedActionIds: preview.selectedActionKeys, protocolVersion: 1,
     }, { cookie });
     expect(signed.status, await signed.clone().text()).toBe(200);
-    const result = await signed.json() as { signedMessage: string; signature: Hex };
+    const result = await signed.json() as { signedMessage: string; signature: Hex; spaceId: string };
+    approvedSpaceId = result.spaceId;
     expect(await verifyMessage({ address: address as Hex, message: result.signedMessage, signature: result.signature })).toBe(true);
     const { parsePreparedRecap } = await import('../routes/delegate-session');
     return parsePreparedRecap(result.signedMessage)
@@ -350,6 +352,8 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
       { service: 'kv', space: accountSpace, path: 'applications/', actions: kvRead },
       { service: 'kv', space: accountSpace, path: 'spaces/', actions: kvRead },
     ]);
+    // The MCP stores this as the session's space and probes `spaces/` in it, so it must be the account space.
+    expect(approvedSpaceId).toBe(accountSpace);
     expect(await prepareStatus([{ ...bootstrap[0], path: 'profile/' }])).toBe(403);
     expect(await prepareStatus([{ ...bootstrap[0], path: 'spaces/other/' }])).toBe(403);
     expect(await prepareStatus([{ ...bootstrap[0], path: '' }])).toBe(403);

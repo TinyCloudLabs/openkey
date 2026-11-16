@@ -402,20 +402,27 @@ or `google`.
    step needs both: the older web caps the code box at six characters, and the
    older API refuses the sign-in.
 2. Provision: `POST /<store>/provision` with
-   `{"clientId": "<client id>", "nodeHost": "https://node.tinycloud.xyz"}`.
+   `{"clientId": "<client id>", "nodeHost": "https://tee.node.tinycloud.xyz"}`.
    `clientId` is the OAuth client id of the **published plugin's connection**:
    the client ChatGPT registered when the published connector was connected,
    which reviewers reuse. It must be enabled, hold `tinycloud:mcp` and have
-   exactly one redirect URI. Provisioning creates the held account and its
-   sealed key, hosts its `applications` and `account` spaces on the node and
-   writes the fixtures (apps `todos` and `workouts`). Add `"reset": true` to
-   replace an existing account; that deletes the old synthetic user.
+   exactly one redirect URI. `nodeHost` must be, character for character, the
+   node address the hosted MCP puts in its approval links (its `TC_HOST`,
+   `https://tee.node.tinycloud.xyz` in the production MCP deployment).
+   `https://node.tinycloud.xyz` is the same node, but an approval that names
+   a different address than the one provisioned is refused. Provisioning
+   creates the held account and its sealed key, hosts its `applications` and
+   `account` spaces on the node and writes the fixtures (apps `todos` and
+   `workouts`). Add `"reset": true` to replace an existing account; that
+   deletes the old synthetic user, and the new one needs steps 3 to 6 again.
 3. Learn the MCP session DID. The hosted MCP keeps one session key per signed-in
    account, and it exists only after that account first reaches the MCP. Install
    a temporary code (step 5), connect the connector as the review account and
-   ask it to connect to TinyCloud. The approval link it returns carries the
-   session key; read its `did:key:z…` from the link. The approval itself is
-   refused until the audience is pinned.
+   ask it to connect to TinyCloud. Open the approval link it returns: it lands
+   on `openkey.so/delegate?did=…&host=…`. Copy the `did` value
+   (`did:key:z…`) and check that `host` equals the provisioned `nodeHost`. The
+   page itself shows an error at this point, because approvals are refused
+   until the audience is pinned.
 4. Pin the audience: `PUT /<store>/audience` with `{"sessionDid": "did:key:z…"}`.
    This ends every session of the account and removes the installed code.
 5. Install the code: `PUT /<store>/code` with `{"code": "<review code>"}`. The
