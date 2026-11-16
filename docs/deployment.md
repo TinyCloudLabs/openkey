@@ -426,15 +426,30 @@ or `google`.
 4. Pin the audience: `PUT /<store>/audience` with `{"sessionDid": "did:key:z…"}`.
    This ends every session of the account and removes the installed code.
 5. Install the code: `PUT /<store>/code` with `{"code": "<review code>"}`. The
-   code is exactly 43 base64url characters encoding 32 random bytes, for
-   example `openssl rand -base64 32 | tr '+/' '-_' | tr -d '='`. Only its
-   SHA-256 digest is kept. `DELETE /<store>/code` revokes it and ends every
-   session.
+   code is exactly 43 base64url characters encoding 32 random bytes. Generate
+   it randomly, exactly like this: `openssl rand -base64 32 | tr '+/' '-_' | tr -d '='`.
+   The server checks only the format, so the code is as strong as the way it
+   was generated. Only its SHA-256 digest is kept. The code has no expiry: it
+   stays valid, across API restarts too, until it is revoked or replaced.
+   OpenAI asks that the test account stay available for later reviews, so
+   leave it installed, and revoke it when the listing is withdrawn or the code
+   may have leaked.
 6. Verify as a reviewer would: connect from the store's client, sign in with
    the review account, approve the connection and one app, and read a seeded
    record. Then mark it ready: `PUT /<store>/ready` with
    `{"seededReadVerified": true}`. `GET /` lists each account's `set`, `ready`
    and `held` state.
+
+**Revoking and replacing the code.** `DELETE /<store>/code` revokes it;
+`PUT /<store>/code` replaces it. Either one ends every session, consent and
+refresh token of the account at once and makes OpenKey's token check, which the
+hosted MCP uses, report its access tokens inactive, so the connector stops
+working for the account. Neither recalls an approval that was already signed:
+the node honours each one until it expires, at most one hour after it was
+signed. Only a `200` from `DELETE /<store>/code` or `PUT /<store>/code` means
+the change took effect. Treat any other answer as not done and repeat the
+request until it returns `200`; until then the previous code, if there was one,
+still works. `GET /` shows the current state.
 
 **What a reviewer types.** In the sign-in window the connector opens, choose
 "Use a review code" (or type the review account into the email field), then
@@ -448,8 +463,12 @@ enter the review account, for example `openai-review@tinycloud.xyz`, and the
   review-code option and refuses the review account, and an approval link opened
   in a browser that is not signed in cannot sign in either. Open approval links
   in the browser that completed the connector sign-in.
-- The session, its tokens and every approval end one hour after sign-in. After
-  that the reviewer connects again from the store's client and signs in again.
+- The sign-in session and its tokens end one hour after sign-in. After that the
+  reviewer connects again from the store's client and signs in again.
+- Each approval lasts one hour from the moment it is approved, not from
+  sign-in. An approval given late in a session therefore stays valid on the
+  node until up to about two hours after sign-in, although the connector can
+  use it only while it holds a live token.
 - Review cases use the apps `todos` and `workouts`, which are seeded. `workouts`
   holds two records, 20 and 30 minutes at 09:00 Europe/London on 2026-10-18 and
   2026-10-19, so "total my workout minutes for October 18–19, 2026" is 50. The
