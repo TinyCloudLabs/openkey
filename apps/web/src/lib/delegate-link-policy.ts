@@ -20,16 +20,6 @@ export const REGISTERED_CALLBACK_ENDPOINTS: readonly string[] = [
 ];
 
 /**
- * The service name OpenKey itself gives each built-in callback endpoint, for
- * the receiver line only. A label never comes from the link; entries added
- * through `VITE_DELEGATE_CALLBACK_URLS` have no label and show none.
- */
-const REGISTERED_CALLBACK_SERVICES: Readonly<Record<string, string>> = {
-  'https://mcp.tinycloud.xyz/connect/callback': 'TinyCloud MCP',
-  'https://mcp.tinycloud.xyz/chatgpt/connect/callback': 'TinyCloud MCP',
-};
-
-/**
  * TinyCloud nodes shown without a warning: the nodes OpenKey already trusts
  * for bootstrap (`TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS` in the API). The CLI and
  * hosted MCP default to the TEE node. Extra deployments can be listed in
@@ -130,28 +120,6 @@ export function checkDelegateCallback(raw: string, registeredEndpoints: readonly
     ok: false,
     reason: `This link asks OpenKey to send your delegation to ${url.origin}${url.pathname}, which is not a registered TinyCloud app. OpenKey only returns delegations to this device or to registered apps, so this request was refused.`,
   };
-}
-
-export type DelegateReceiver =
-  | { kind: 'service'; service: string }
-  | { kind: 'device'; address: string };
-
-/**
- * Where the signed delegation will be delivered, for the receiver line on an
- * ordinary link. This states the destination OpenKey itself enforces, not who
- * asked. A service is named only when the callback is exactly a built-in
- * registered endpoint (scheme, host, port and path), and the name comes from
- * OpenKey's own table, never from the link. A loopback callback is an app on
- * this device; nothing about it identifies which app.
- */
-export function delegateReceiver(callback: string | null): DelegateReceiver | null {
-  const url = callback ? parseUrl(callback) : null;
-  if (!url || !isSafeTransport(url)) return null;
-  if (isLoopbackHostname(url.hostname)) return { kind: 'device', address: url.host };
-  const key = `${url.origin}${url.pathname}`;
-  return Object.hasOwn(REGISTERED_CALLBACK_SERVICES, key)
-    ? { kind: 'service', service: REGISTERED_CALLBACK_SERVICES[key]! }
-    : null;
 }
 
 export type DelegateHostCheck =
