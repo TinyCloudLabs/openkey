@@ -152,6 +152,9 @@ export async function initializeReviewers(database: PrismaClient) {
   verifiers.clear();
   const restored = new Map<string, { digest: Buffer; epoch: number }>();
   await database.$transaction(async (transaction) => {
+    // API start must not wait on a row lock someone else holds (an open psql transaction, another
+    // process mid admin call). After two seconds the statement fails and boot fails closed.
+    await transaction.$executeRaw`SET LOCAL lock_timeout = '2s'`;
     for (const store of REVIEWER_STORES) {
       if (!await transaction.reviewerAccount.findUnique({ where: { store } })) continue;
       const binding = await lockReviewer(transaction, store);
