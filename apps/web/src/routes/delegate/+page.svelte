@@ -1837,7 +1837,8 @@
                 <!-- Every built-in service endpoint is the hosted MCP (delegate-link-policy.ts). -->
                 You can close this window and return to ChatGPT or your MCP client.
               {:else if ordinaryRequesterHost}
-                You can close this window and return to {ordinaryRequesterHost}.
+                <!-- The host is the link's own claim; it is never shown as a place to go. -->
+                You can close this window and return to the app or site that sent you.
               {:else}
                 You can close this window and return to the CLI.
               {/if}

@@ -332,11 +332,11 @@ test.describe('ordinary-link completion sentence', () => {
       sentence: 'You can close this window and return to ChatGPT or your MCP client.',
     },
     {
-      title: 'a link that names a host and delivers to this device sends the owner back to that host',
-      domain: 'listen.example',
-      requesterOrigin: 'https://listen.example',
+      title: 'a link that names a host sends the owner back to the app or site that sent them, never to the named host',
+      domain: 'evil.example',
+      requesterOrigin: 'https://evil.example',
       callback: 'http://127.0.0.1:47123/callback',
-      sentence: 'You can close this window and return to listen.example.',
+      sentence: 'You can close this window and return to the app or site that sent you.',
     },
     {
       title: 'a link that names no host sends the owner back to the CLI, not to the default signing domain',
@@ -363,6 +363,10 @@ test.describe('ordinary-link completion sentence', () => {
       await expect.poll(() => delivered).toBe(true);
       await expect(page.getByRole('heading', { name: 'Authenticated' })).toBeVisible();
       await expect(page.getByText(request.sentence, { exact: true })).toBeVisible();
+      // A host the link named is never shown as the closing instruction.
+      if (request.requesterOrigin && request.domain !== 'mcp.tinycloud.xyz') {
+        await expect(page.getByRole('heading', { name: 'Authenticated' }).locator('..')).not.toContainText(request.domain);
+      }
     });
   }
 });
