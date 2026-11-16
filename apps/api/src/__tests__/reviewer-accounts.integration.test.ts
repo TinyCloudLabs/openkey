@@ -409,6 +409,15 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     ]);
     const records = { service: 'tinycloud.kv', space: 'applications', path: workouts + '/', actions: kvRecords };
     expect(await prepareStatus([{ ...records, path: 'xyz.tinycloud.tinyapps.goals-2027/' }])).toBe(200);
+    // An app permission is the app root with its slash, or a path below it.
+    expect(await prepareStatus([{ ...records, path: todos + '/' }])).toBe(200);
+    expect(await prepareStatus([{ ...records, path: todos + '/todo/open/store-review-fixture' }])).toBe(200);
+    expect(await prepareStatus([{ ...records, path: todos }])).toBe(403);
+    expect(await prepareStatus([{ ...records, path: todos, actions: ['tinycloud.kv/get'] }])).toBe(403);
+    expect(await prepareStatus([{ ...records, path: workouts }])).toBe(403);
+    expect(await prepareStatus([{ ...records, path: 'xyz.tinycloud.tinyapps.catalo' }])).toBe(403);
+    expect(await prepareStatus([{ ...records, path: 'xyz.tinycloud.tinyapps.catalog' }])).toBe(403);
+    expect(await prepareStatus([{ ...records, path: 'xyz.tinycloud.tinyapps.todo' }])).toBe(403);
     for (const app of ['healthlog', 'recipes', 'catalog', 'index-stale', 'Workouts', '1workouts', 'work_outs', '']) {
       expect(await prepareStatus([{ ...records, path: `xyz.tinycloud.tinyapps.${app}/` }]), app).toBe(403);
       expect(await prepareStatus([{ ...records, path: `xyz.tinycloud.tinyapps.catalog/${app}/entry`, actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] }]), app).toBe(403);

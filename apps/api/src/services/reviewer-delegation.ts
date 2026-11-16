@@ -55,7 +55,9 @@ export function reviewerPermissionAllowed(binding: ReviewerBinding, entry: Recap
     if (rest.length === 1 && rest[0] === '') return within(KV_READ);
     return rest.length === 2 && reviewerApp(rest[0]!) && rest[1] === 'entry' && within(KV_ENTRY);
   }
-  return reviewerApp(app) && within(KV_RECORDS);
+  // An app's records are `<app>/` and below, as the MCP sends them (`appRoot(app)`). A path with no
+  // slash after the name is refused: read as a raw prefix it would also cover longer app names.
+  return rest.length > 0 && reviewerApp(app) && within(KV_RECORDS);
 }
 
 export async function currentReviewerDelegate(database: PrismaClient, userId: string): Promise<ReviewerBinding | null> {
