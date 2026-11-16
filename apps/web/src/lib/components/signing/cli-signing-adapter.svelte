@@ -100,6 +100,7 @@
   onExpiryChange={transport.expiry?.onChange}
   expiryBounded={transport.expiry?.bounded ?? false}
   expiryMaxMs={transport.expiry?.maxMs ?? null}
+  renewal={transport.renewal ?? null}
   {showSigner}
   {linkNamedHost}
   {onApprove}

@@ -58,6 +58,7 @@ import { socialMailboxReview } from './services/social-mailbox-review';
 import { betterAuthLog, log, logError } from './log';
 import { capSessionRefresh } from './services/session-cap';
 import { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS } from './services/session-lifetime';
+import { renewalLeaseSignOutPlugin } from './services/renewal-lease-sign-out';
 
 export const prisma: PrismaClient = createPrismaClient();
 const tee = createTeeClient();
@@ -349,6 +350,8 @@ export const auth = betterAuth({
         }),
       },
     },
+    // TC-2946: signing out stops the renewal leases approved under the sessions it ends.
+    renewalLeaseSignOutPlugin(prisma),
     passkeyFreshnessPlugin,
     // TC-1198: passkey enrolment and removal need a fresh step-up.
     passkeyEnrolmentPlugin(prisma, (headers): Promise<ResolvedSession | null> => auth.api.getSession({ headers })),
