@@ -127,3 +127,9 @@ bun dev:portless
 - Hosted app-review accounts use administrator-managed bindings and the normal OAuth consent
   flow (TC-2775). Review operations include explicit provisioning, credential installation,
   audience pinning and status. Apple integration is tracked separately under TC-2780.
+  Operator steps are in `docs/deployment.md` under "Hosted app-review accounts".
+- A migration's SHA-256 is pinned in two registries that must agree with the file:
+  `scripts/deploy-production-migrations.ts` and `packages/db/src/schema-contract.ts`. A migration
+  that adds a column to a table counted by `scripts/native-delegation-schema-guards.ts` must
+  update that count too, or the production deploy fails after applying it. A migration that can
+  raise on existing data gets a count-only preflight in the deploy script (TC-2775).

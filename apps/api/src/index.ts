@@ -8,7 +8,7 @@ import {
   oauthProviderAuthServerMetadata,
   oauthProviderOpenIdConfigMetadata,
 } from '@better-auth/oauth-provider';
-import { initializeReviewers, reviewerRequest } from './services/reviewer-accounts';
+import { initializeReviewersAtBoot, reviewerRequest } from './services/reviewer-accounts';
 import { createReviewerRouteGuard, createReviewerAuthAudit } from './middleware/reviewer';
 import { JWT_SHAPE } from './services/access-token-verifier';
 import { storedOpaqueAccessToken } from './services/native-delegation/provider-tokens';
@@ -78,20 +78,23 @@ app.use('/api/auth/sign-in/reviewer', bodyLimit({ maxSize: 16384 }));
 app.use('/api/auth/sign-in/email-otp', bodyLimit({ maxSize: 16384 }));
 app.use('/api/auth/*', createReviewerAuthAudit(authPrisma));
 app.use('/api/*', createReviewerRouteGuard(authPrisma, async (headers) => {
-  if (!headers.has('cookie') && !headers.has('authorization')) return null;
+  if (!headers.has('cookie') && !headers.has('authorization')) return [];
+  const principals: Array<{ userId: string; sessionId: string | null }> = [];
   const session = await auth.api.getSession({ headers, query: { disableRefresh: true } });
-  if (session) return { userId: session.user.id, sessionId: session.session.id };
-  const token = headers.get('authorization')?.replace(/^Bearer /, '');
-  if (!token || token.length > 8192) return null;
+  if (session) principals.push({ userId: session.user.id, sessionId: session.session.id });
+  const token = /^bearer +(\S+)$/i.exec(headers.get('authorization') ?? '')?.[1];
+  if (!token || token.length > 8192) return principals;
   if (JWT_SHAPE.test(token)) {
     const payload = await reviewerTokenVerifier(token, tokenAudiences);
-    return typeof payload?.sub === 'string' ? {
-      userId: payload.sub, sessionId: typeof payload.sid === 'string' ? payload.sid : null,
-    } : null;
+    if (typeof payload?.sub === 'string') {
+      principals.push({ userId: payload.sub, sessionId: typeof payload.sid === 'string' ? payload.sid : null });
+    }
+    return principals;
   }
   const stored = await storedOpaqueAccessToken(providerTokenOptions(auth), token);
   const row = stored ? await authPrisma.oauthAccessToken.findUnique({ where: { token: stored } }) : null;
-  return row && row.expiresAt > new Date() ? { userId: row.userId, sessionId: row.sessionId } : null;
+  if (row && row.expiresAt > new Date()) principals.push({ userId: row.userId, sessionId: row.sessionId });
+  return principals;
 }));
 
 // Zero-gesture bootstrap signing: allow any origin. Third-party apps call
@@ -363,9 +366,10 @@ const ALL_SCOPES = ['openid', 'email', 'keys', 'offline_access'];
   }
 })();
 
-// Reviewer authority is held before Bun can serve this module.
+// Reviewer authority is settled before Bun can serve this module. A failure leaves every
+// reviewer refused and does not stop the API for ordinary users.
 log('info', 'api_starting');
-await initializeReviewers(authPrisma);
+await initializeReviewersAtBoot(authPrisma);
 
 // Start server
 const port = parseInt(process.env.API_PORT || '3001');

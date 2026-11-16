@@ -6,7 +6,7 @@ ALTER TABLE tinycloud_native_grant ADD COLUMN "reviewerEpoch" INTEGER;
 CREATE TABLE reviewer_account (
   store TEXT PRIMARY KEY CHECK (store IN ('openai', 'google', 'apple')),
   email TEXT NOT NULL UNIQUE,
-  "userId" TEXT UNIQUE REFERENCES "user"(id) ON DELETE SET NULL,
+  "userId" TEXT UNIQUE REFERENCES "user"(id) ON DELETE SET NULL ON UPDATE CASCADE,
   "installEpoch" INTEGER NOT NULL DEFAULT 0,
   "clientId" TEXT, "redirectUri" TEXT, resource TEXT, "callbackUri" TEXT,
   "nodeHost" TEXT, "sessionDid" TEXT, "keyId" TEXT, "spaceId" TEXT,

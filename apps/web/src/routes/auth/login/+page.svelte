@@ -252,6 +252,11 @@
 
   async function sendOTP(): Promise<boolean> {
     if (!native && ['openai-review@tinycloud.xyz', 'google-review@tinycloud.xyz'].includes(email.trim().toLowerCase())) {
+      // Review sign-in is refused without a signed OAuth authorize query, and no code is ever emailed.
+      if (!getOAuthQuery()) {
+        error = "Review accounts sign in from the app's own connect window. Start from the app's Connect button, then try again.";
+        return false;
+      }
       step = 'reviewer';
       error = '';
       return true;
@@ -765,8 +770,10 @@
           {loading ? 'Waiting for passkey…' : 'Use a passkey instead'}
         </Button>
         {/if}
+        {#if !native && getOAuthQuery()}
         <button type="button" class="mt-5 w-full text-center text-sm text-surface-500 hover:text-surface-900"
           onclick={() => { step = 'reviewer'; error = ''; }} disabled={loading}>Use a review code</button>
+        {/if}
       {:else if step === 'reviewer'}
         <h1 class="mb-7 text-center text-2xl font-bold text-surface-900">App review sign-in</h1>
         {#if error}

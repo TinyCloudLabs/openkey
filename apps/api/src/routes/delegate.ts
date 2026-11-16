@@ -404,7 +404,7 @@ delegateRouter.use('*', async (c, next) => {
   const body = await c.req.json<Record<string, any>>();
   if (body.host !== binding.nodeHost || reviewerSessionDid(body.jwk) !== binding.sessionDid
     || (body.keyId && body.keyId !== 'reviewer' && body.keyId !== binding.keyId)
-    || body.deviceTransactionId || body.approvalRequestId || body.ticket || body.relay) {
+    || body.deviceTransactionId || body.approvalRequestId !== undefined || body.ticket || body.relay) {
     throw new HTTPException(403);
   }
   body.keyId = binding.keyId;

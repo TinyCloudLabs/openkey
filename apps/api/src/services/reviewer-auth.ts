@@ -12,7 +12,7 @@ import {
 
 const REFUSAL = { code: 'REVIEWER_SIGN_IN_REFUSED', message: "Couldn't sign in with those details. Check the review account and code, then try again." };
 const ALLOWED_AUTH_PATHS = new Set([
-  '/get-session', '/sign-out', '/oauth2/authorize', '/oauth2/consent', '/oauth2/continue',
+  '/get-session', '/sign-out', '/oauth2/authorize', '/oauth2/public-client', '/oauth2/consent', '/oauth2/continue',
   '/oauth2/token', '/oauth2/userinfo', '/oauth2/introspect', '/oauth2/revoke',
 ]);
 

@@ -3,6 +3,13 @@
 Track changes to agent-facing development guidance for OpenKey. Add a concise entry when
 `agent.dev.md` or related agent workflow expectations change.
 
+## 2026-11-16
+
+- Hosted app-review accounts (TC-2775): the native-grant column guard, both migration
+  checksum registries and the reviewer policy were corrected, and the operator steps are in
+  `docs/deployment.md` under "Hosted app-review accounts". `agent.dev.md` notes the two
+  registries that pin a migration checksum and the count-only reserved-address preflight.
+
 ## 2026-11-13
 
 - The API tests workflow gained a `renewal-lease-postgres` job: the renewal lease integration
@@ -22,7 +29,6 @@ Track changes to agent-facing development guidance for OpenKey. Add a concise en
 
 - Added administrator-managed hosted app-review sign-in and fixture account operations
   for OpenAI and Google connectors (TC-2775).
-
 
 ## 2026-10-21
 

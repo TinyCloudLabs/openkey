@@ -6,30 +6,39 @@ import { REVIEWER_MAX_SECONDS, captureReviewer, reviewerActive, reviewerForUser,
 const ROUTES = new Set([
   'GET /api/auth/get-session', 'POST /api/auth/sign-out',
   'POST /api/auth/sign-in/reviewer', 'POST /api/auth/sign-in/email-otp',
-  'GET /api/auth/oauth2/authorize', 'POST /api/auth/oauth2/consent', 'POST /api/auth/oauth2/continue',
+  'GET /api/auth/oauth2/authorize', 'GET /api/auth/oauth2/public-client',
+  'POST /api/auth/oauth2/consent', 'POST /api/auth/oauth2/continue',
   'POST /api/auth/oauth2/token', 'GET /api/auth/oauth2/userinfo', 'POST /api/auth/oauth2/userinfo',
   'POST /api/auth/oauth2/introspect', 'POST /api/auth/oauth2/revoke',
   'GET /api/delegate/prepare', 'POST /api/delegate/prepare', 'POST /api/delegate', 'POST /api/delegate/complete',
 ]);
 
+type Principal = { userId: string; sessionId: string | null };
+
+/** `resolve` returns every principal the request carries: the cookie session and the bearer token. */
 export function createReviewerRouteGuard(
   database: PrismaClient,
-  resolve: (headers: Headers) => Promise<{ userId: string; sessionId: string | null } | null>,
+  resolve: (headers: Headers) => Promise<Principal[]>,
 ): MiddlewareHandler {
   return async (c, next) => {
-    const principal = await resolve(c.req.raw.headers);
-    if (!principal) return next();
-    const binding = await reviewerForUser(database, principal.userId);
-    if (!binding) return next();
-    const session = principal.sessionId
-      ? await database.session.findUnique({ where: { id: principal.sessionId } }) : null;
-    if (!reviewerActive(binding, session?.reviewerEpoch ?? null)
-      || session?.userId !== binding.userId || session.expiresAt <= new Date()
-      || session.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000 <= Date.now()
-      || !ROUTES.has(`${c.req.method} ${c.req.path.replace(/\/$/, '')}`)) {
-      return c.json({ error: 'Forbidden' }, 403);
+    const principals = await resolve(c.req.raw.headers);
+    const bindings = await Promise.all(principals.map((principal) => reviewerForUser(database, principal.userId)));
+    if (!bindings.some(Boolean)) return next();
+    const allowed = ROUTES.has(`${c.req.method} ${c.req.path.replace(/\/$/, '')}`);
+    let captured = false;
+    for (const [index, principal] of principals.entries()) {
+      // A reviewer credential beside any other account's credential is refused outright.
+      const binding = bindings[index];
+      const session = principal.sessionId
+        ? await database.session.findUnique({ where: { id: principal.sessionId } }) : null;
+      if (!allowed || !binding || !reviewerActive(binding, session?.reviewerEpoch ?? null)
+        || session?.userId !== binding.userId || session.expiresAt <= new Date()
+        || session.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000 <= Date.now()) {
+        return c.json({ error: 'Forbidden' }, 403);
+      }
+      if (!captured) captureReviewer(binding, session.id, session.createdAt.getTime() + 3600_000);
+      captured = true;
     }
-    captureReviewer(binding, session.id, session.createdAt.getTime() + 3600_000);
     await next();
   };
 }

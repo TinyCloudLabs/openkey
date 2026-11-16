@@ -21,16 +21,41 @@ export function reviewerSessionDid(jwk: unknown): string | null {
   return 'did:key:z' + encodeBase58(Buffer.concat([Buffer.from([0xed, 0x01]), publicKey]));
 }
 
+const APP_ID_PREFIX = 'xyz.tinycloud.tinyapps.';
+const KV_READ = ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata'];
+const KV_RECORDS = [...KV_READ, 'tinycloud.kv/put', 'tinycloud.kv/del'];
+const KV_ENTRY = [...KV_READ, 'tinycloud.kv/put'];
+const SQL_COPY = ['tinycloud.sql/read', 'tinycloud.sql/write', 'tinycloud.sql/schema'];
+const ACCOUNT_BOOTSTRAP = ['tinycloud.kv/get', 'tinycloud.kv/list'];
+
+/** A new-layout personal app name, as the hosted MCP accepts it (js-sdk `tc-apps/layout.ts`). */
+function reviewerApp(value: string): boolean {
+  return /^[a-z][a-z0-9-]*$/.test(value) && !['catalog', 'index-stale', 'healthlog', 'recipes'].includes(value);
+}
+
+/**
+ * The synthetic account may delegate only inside its own applications space, on personal-app
+ * records, their discovery entries and their searchable copies, plus the two account-space
+ * registry reads the hosted MCP asks for on first connect.
+ */
 export function reviewerPermissionAllowed(binding: ReviewerBinding, entry: RecapEntry): boolean {
-  if (entry.space !== binding.spaceId || !entry.actions.length) return false;
+  if (!binding.spaceId || !entry.actions.length) return false;
+  const within = (allowed: string[]) => entry.actions.every((action) => allowed.includes(action));
   const service = canonicalizeServiceName(entry.service);
-  if (service === 'tinycloud.capabilities') return entry.path === '' && entry.actions.every((action) => action === 'tinycloud.capabilities/read');
+  if (entry.space === binding.spaceId.replace(/:applications$/, ':account')) {
+    return service === 'tinycloud.kv' && ['spaces/', 'applications/'].includes(entry.path) && within(ACCOUNT_BOOTSTRAP);
+  }
+  if (entry.space !== binding.spaceId) return false;
+  if (service === 'tinycloud.capabilities') return entry.path === '' && within(['tinycloud.capabilities/read']);
+  if (!entry.path.startsWith(APP_ID_PREFIX)) return false;
+  const [app, ...rest] = entry.path.slice(APP_ID_PREFIX.length).split('/') as [string, ...string[]];
+  if (service === 'tinycloud.sql') return reviewerApp(app) && rest.join('/') === 'index' && within(SQL_COPY);
   if (service !== 'tinycloud.kv') return false;
-  const todo = entry.path === 'xyz.tinycloud.tinyapps.todos' || entry.path.startsWith('xyz.tinycloud.tinyapps.todos/');
-  const catalog = entry.path === 'xyz.tinycloud.tinyapps.catalog/todos' || entry.path.startsWith('xyz.tinycloud.tinyapps.catalog/todos/');
-  const catalogRead = entry.path === 'xyz.tinycloud.tinyapps.catalog/' && entry.actions.every((action) => ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata'].includes(action));
-  return (todo || catalog || catalogRead)
-    && entry.actions.every((action) => ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata', 'tinycloud.kv/put', 'tinycloud.kv/del'].includes(action));
+  if (app === 'catalog') {
+    if (rest.length === 1 && rest[0] === '') return within(KV_READ);
+    return rest.length === 2 && reviewerApp(rest[0]!) && rest[1] === 'entry' && within(KV_ENTRY);
+  }
+  return reviewerApp(app) && within(KV_RECORDS);
 }
 
 export async function currentReviewerDelegate(database: PrismaClient, userId: string): Promise<ReviewerBinding | null> {

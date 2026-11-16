@@ -22,6 +22,23 @@ export const REVIEWER_FIXTURES = [
   ['xyz.tinycloud.tinyapps.todos/todo/open/store-review-fixture', {
     v: 1, at: '2026-11-11T00:00:00.000Z', data: { title: 'Existing synthetic review fixture' },
   }],
+  ['xyz.tinycloud.tinyapps.workouts/catalog', {
+    app: 'workouts', title: 'Workouts', about: 'Synthetic store-review workouts.', created: '2026-11-11',
+  }],
+  ['xyz.tinycloud.tinyapps.workouts/catalog/workout', {
+    app: 'workouts', kind: 'workout', about: 'Synthetic review workout.', shape: 'log', per: 'time',
+    v: 1, fields: { minutes: 'number' }, created: '2026-11-11',
+  }],
+  ['xyz.tinycloud.tinyapps.catalog/workouts/entry', {
+    v: 1, app: 'workouts', id: 'xyz.tinycloud.tinyapps.workouts', title: 'Workouts',
+  }],
+  // Europe/London local times; the submitted review case totals these two (50 minutes).
+  ['xyz.tinycloud.tinyapps.workouts/workout/2026-10/2026-10-18T0900-workout', {
+    v: 1, at: '2026-10-18T09:00:00+01:00', data: { minutes: 20 },
+  }],
+  ['xyz.tinycloud.tinyapps.workouts/workout/2026-10/2026-10-19T0900-workout', {
+    v: 1, at: '2026-10-19T09:00:00+01:00', data: { minutes: 30 },
+  }],
 ] as const;
 
 export async function provisionReviewer(
@@ -44,7 +61,7 @@ export async function provisionReviewer(
   const resource = store === 'openai' ? 'https://mcp.tinycloud.xyz/chatgpt/mcp' : 'https://mcp.tinycloud.xyz/mcp';
   const callbackUri = store === 'openai' ? 'https://mcp.tinycloud.xyz/chatgpt/connect/callback' : 'https://mcp.tinycloud.xyz/connect/callback';
   const spaceId = `tinycloud:pkh:eip155:1:${address}:applications`;
-  let resetSpace: string | null = null;
+  let wasReset = false;
   const binding = await database.$transaction(async (transaction) => {
     const before = await lockReviewer(transaction, store);
     if (before.userId && !reset) throw new Error('Use explicit reset for an existing reviewer');
@@ -52,7 +69,7 @@ export async function provisionReviewer(
     if (before.userId) {
       await transaction.ethereumKey.deleteMany({ where: { userId: before.userId } });
       await transaction.user.delete({ where: { id: before.userId } });
-      resetSpace = before.spaceId;
+      wasReset = true;
     }
     const user = await transaction.user.create({ data: {
       id: randomUUID(), email: before.email, emailVerified: true, reviewerHoldAt: new Date(),
@@ -68,7 +85,7 @@ export async function provisionReviewer(
       grantSessionId: null, installEpoch: held.installEpoch,
     } });
   });
-  if (resetSpace) logReviewer('reviewer_admin', 'reset', store, resetSpace);
+  if (wasReset) logReviewer('reviewer_admin', 'reset', store);
   const node = new TinyCloudNode({
     host: config.nodeHost, privateKey, prefix: 'applications', sessionExpirationMs: 3600_000,
     autoCreateSpace: true, autoBootstrapAccount: false, enablePublicSpace: false,
@@ -77,6 +94,9 @@ export async function provisionReviewer(
   await node.signIn();
   const hosted = await node.ensureOwnedSpaceHosted('applications');
   if (hosted !== spaceId) throw new Error('Reviewer space mismatch');
+  // The hosted MCP's first connect reads the account registry, so that space must be hosted too.
+  const account = await node.ensureOwnedSpaceHosted('account');
+  if (account !== spaceId.replace(/:applications$/, ':account')) throw new Error('Reviewer space mismatch');
   const kv = node.kvForSpace(hosted);
   for (const [path, value] of REVIEWER_FIXTURES) {
     const result = await kv.put(path, value, { ifNoneMatch: '*' });

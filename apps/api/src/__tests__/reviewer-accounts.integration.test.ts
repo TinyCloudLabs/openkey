@@ -198,6 +198,20 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     expect(session.expiresAt.getTime() - session.createdAt.getTime()).toBeLessThanOrEqual(3_600_000);
   });
 
+  test('the consent page can load public client metadata with a reviewer session', async () => {
+    const result = await call('/api/auth/oauth2/public-client?client_id=' + encodeURIComponent(clientId), 'GET', undefined, { cookie });
+    expect(result.status, await result.clone().text()).toBe(200);
+    const client = await result.json() as Record<string, unknown>;
+    expect(client.client_id).toBe(clientId);
+    expect(client.client_name).toBe('Reviewer fixture');
+    // The provider's public projection: display fields only (it also emits an empty `redirect_uris`).
+    const publicFields = ['client_id', 'client_name', 'client_uri', 'logo_uri', 'contacts', 'tos_uri', 'policy_uri', 'redirect_uris'];
+    expect(Object.keys(client).filter((field) => !publicFields.includes(field))).toEqual([]);
+    expect(client.redirect_uris ?? []).toEqual([]);
+    // The neighbouring full-client read stays outside the reviewer allowlist.
+    expect((await call('/api/auth/oauth2/get-client?client_id=' + encodeURIComponent(clientId), 'GET', undefined, { cookie })).status).toBe(403);
+  });
+
   test('consent and PKCE exchange issue only one-hour reviewer credentials', async () => {
     const authorization = await call('/api/auth/oauth2/authorize?' + signedQuery, 'GET', undefined, { cookie });
     expect(authorization.status, await authorization.clone().text()).toBe(302);
@@ -294,6 +308,144 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
       expect(entry.path).toBe('xyz.tinycloud.tinyapps.todos/');
       expect(entry.actions.every((action) => ['tinycloud.kv/get', 'tinycloud.kv/list'].includes(action))).toBe(true);
     }
+  });
+
+  const todos = 'xyz.tinycloud.tinyapps.todos';
+  const workouts = 'xyz.tinycloud.tinyapps.workouts';
+  const kvRecords = ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/put', 'tinycloud.kv/del'];
+  const kvRead = ['tinycloud.kv/get', 'tinycloud.kv/list'];
+  const sqlCopy = ['tinycloud.sql/read', 'tinycloud.sql/write', 'tinycloud.sql/schema'];
+  const delegateBody = (permissions: unknown[]) => ({
+    keyId: 'reviewer', jwk: sessionJwk, host: 'https://node.tinycloud.xyz', prefix: 'default', permissions, expiry: '1h',
+  });
+  const prepareStatus = async (permissions: unknown[]) =>
+    (await call('/api/delegate/prepare', 'POST', delegateBody(permissions), { cookie })).status;
+  /** Prepare and sign as the approval page does; returns the entries the signed message carries. */
+  async function approve(permissions: unknown[]) {
+    const body = delegateBody(permissions);
+    const prepared = await call('/api/delegate/prepare', 'POST', body, { cookie });
+    expect(prepared.status, await prepared.clone().text()).toBe(200);
+    const preview = await prepared.json() as any;
+    const signed = await call('/api/delegate', 'POST', {
+      ...body, prepared: preview.prepared, authorizationContextToken: preview.authorizationContext.token,
+      selectedActionIds: preview.selectedActionKeys, protocolVersion: 1,
+    }, { cookie });
+    expect(signed.status, await signed.clone().text()).toBe(200);
+    const result = await signed.json() as { signedMessage: string; signature: Hex };
+    expect(await verifyMessage({ address: address as Hex, message: result.signedMessage, signature: result.signature })).toBe(true);
+    const { parsePreparedRecap } = await import('../routes/delegate-session');
+    return parsePreparedRecap(result.signedMessage)
+      .map((entry) => ({ ...entry, actions: [...entry.actions].sort() }))
+      .sort((a, b) => (a.service + a.path).localeCompare(b.service + b.path));
+  }
+
+  test('the hosted MCP bootstrap grant is prepared and signed, and nothing else in the account space is', async () => {
+    const accountSpace = `tinycloud:pkh:eip155:1:${address}:account`;
+    // js-sdk 0c09ed52d packages/mcp/src/remote-store.ts BOOTSTRAP_PERMISSIONS, verbatim.
+    const bootstrap = [
+      { service: 'tinycloud.kv', space: 'account', path: 'spaces/', actions: ['tinycloud.kv/get', 'tinycloud.kv/list'] },
+      { service: 'tinycloud.kv', space: 'account', path: 'applications/', actions: ['tinycloud.kv/get', 'tinycloud.kv/list'] },
+    ];
+    expect(await approve(bootstrap)).toEqual([
+      { service: 'kv', space: accountSpace, path: 'applications/', actions: kvRead },
+      { service: 'kv', space: accountSpace, path: 'spaces/', actions: kvRead },
+    ]);
+    expect(await prepareStatus([{ ...bootstrap[0], path: 'profile/' }])).toBe(403);
+    expect(await prepareStatus([{ ...bootstrap[0], path: 'spaces/other/' }])).toBe(403);
+    expect(await prepareStatus([{ ...bootstrap[0], path: '' }])).toBe(403);
+    expect(await prepareStatus([{ ...bootstrap[0], actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] }])).toBe(403);
+    expect(await prepareStatus([{ ...bootstrap[0], actions: ['tinycloud.kv/metadata'] }])).toBe(403);
+    expect(await prepareStatus([{ ...bootstrap[0], service: 'tinycloud.sql', actions: ['tinycloud.sql/read'] }])).toBe(403);
+    const foreignAccount = 'tinycloud:pkh:eip155:1:0x00000000000000000000000000000000000000aa:account';
+    expect(await prepareStatus([{ ...bootstrap[0], space: foreignAccount }])).toBe(403);
+    const { reviewerPermissionAllowed } = await import('../services/reviewer-delegation');
+    const binding = await accounts.reviewerForUser(database, 'reviewer-owner');
+    expect(reviewerPermissionAllowed(binding!, { service: 'kv', space: accountSpace, path: 'spaces/', actions: kvRead })).toBe(true);
+    expect(reviewerPermissionAllowed(binding!, { service: 'kv', space: foreignAccount, path: 'spaces/', actions: kvRead })).toBe(false);
+  });
+
+  test('the narrowed app approval and the searchable-copy approval are signed in the shapes the MCP sends', async () => {
+    const space = `tinycloud:pkh:eip155:1:${address}:applications`;
+    expect(await approve([
+      { service: 'tinycloud.kv', space: 'applications', path: 'xyz.tinycloud.tinyapps.catalog/', actions: kvRead },
+      { service: 'tinycloud.kv', space: 'applications', path: 'xyz.tinycloud.tinyapps.catalog/todos/entry', actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] },
+      { service: 'tinycloud.kv', space: 'applications', path: todos + '/', actions: kvRecords },
+    ])).toEqual([
+      { service: 'kv', space, path: 'xyz.tinycloud.tinyapps.catalog/', actions: kvRead },
+      { service: 'kv', space, path: 'xyz.tinycloud.tinyapps.catalog/todos/entry', actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] },
+      { service: 'kv', space, path: todos + '/', actions: [...kvRecords].sort() },
+    ]);
+    expect(await approve([
+      { service: 'tinycloud.kv', space: 'applications', path: todos + '/', actions: kvRecords },
+      { service: 'tinycloud.sql', space: 'applications', path: todos + '/index', actions: sqlCopy },
+    ])).toEqual([
+      { service: 'kv', space, path: todos + '/', actions: [...kvRecords].sort() },
+      { service: 'sql', space, path: todos + '/index', actions: [...sqlCopy].sort() },
+    ]);
+    const sql = { service: 'tinycloud.sql', space: 'applications', path: todos + '/index', actions: sqlCopy };
+    expect(await prepareStatus([sql])).toBe(200);
+    expect(await prepareStatus([{ ...sql, path: todos + '/other' }])).toBe(403);
+    expect(await prepareStatus([{ ...sql, path: todos + '/index/extra' }])).toBe(403);
+    expect(await prepareStatus([{ ...sql, path: todos }])).toBe(403);
+    expect(await prepareStatus([{ ...sql, path: 'xyz.tinycloud.sample.healthlog/healthlog' }])).toBe(403);
+    expect(await prepareStatus([{ ...sql, path: 'xyz.tinycloud.agent-data.index' }])).toBe(403);
+    expect(await prepareStatus([{ ...sql, actions: ['tinycloud.sql/export'] }])).toBe(403);
+  });
+
+  test('any valid personal app is admitted inside the bound space and everything else stays refused', async () => {
+    const space = `tinycloud:pkh:eip155:1:${address}:applications`;
+    expect(await approve([
+      { service: 'tinycloud.kv', space: 'applications', path: 'xyz.tinycloud.tinyapps.catalog/workouts/entry', actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] },
+      { service: 'tinycloud.kv', space: 'applications', path: workouts + '/', actions: kvRecords },
+      { service: 'tinycloud.sql', space: 'applications', path: workouts + '/index', actions: sqlCopy },
+    ])).toEqual([
+      { service: 'kv', space, path: 'xyz.tinycloud.tinyapps.catalog/workouts/entry', actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] },
+      { service: 'kv', space, path: workouts + '/', actions: [...kvRecords].sort() },
+      { service: 'sql', space, path: workouts + '/index', actions: [...sqlCopy].sort() },
+    ]);
+    const records = { service: 'tinycloud.kv', space: 'applications', path: workouts + '/', actions: kvRecords };
+    expect(await prepareStatus([{ ...records, path: 'xyz.tinycloud.tinyapps.goals-2027/' }])).toBe(200);
+    for (const app of ['healthlog', 'recipes', 'catalog', 'index-stale', 'Workouts', '1workouts', 'work_outs', '']) {
+      expect(await prepareStatus([{ ...records, path: `xyz.tinycloud.tinyapps.${app}/` }]), app).toBe(403);
+      expect(await prepareStatus([{ ...records, path: `xyz.tinycloud.tinyapps.catalog/${app}/entry`, actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] }]), app).toBe(403);
+      expect(await prepareStatus([{ service: 'tinycloud.sql', space: 'applications', path: `xyz.tinycloud.tinyapps.${app}/index`, actions: sqlCopy }]), app).toBe(403);
+    }
+    // Catalog root is read-only; a discovery entry cannot be deleted or widened to its siblings.
+    expect(await prepareStatus([{ ...records, path: 'xyz.tinycloud.tinyapps.catalog/', actions: ['tinycloud.kv/put'] }])).toBe(403);
+    expect(await prepareStatus([{ ...records, path: 'xyz.tinycloud.tinyapps.catalog/workouts/entry', actions: ['tinycloud.kv/del'] }])).toBe(403);
+    expect(await prepareStatus([{ ...records, path: 'xyz.tinycloud.tinyapps.catalog/workouts/' }])).toBe(403);
+    expect(await prepareStatus([{ service: 'tinycloud.sql', space: 'applications', path: workouts + '/other', actions: sqlCopy }])).toBe(403);
+    // Outside the personal-app namespace, and outside the bound space.
+    expect(await prepareStatus([{ ...records, path: '' }])).toBe(403);
+    expect(await prepareStatus([{ ...records, path: 'xyz.tinycloud.agent-data/' }])).toBe(403);
+    expect(await prepareStatus([{ ...records, path: 'xyz.tinycloud.tinyapps.' }])).toBe(403);
+    for (const other of ['default', 'secrets', 'public', 'account']) {
+      expect(await prepareStatus([{ ...records, space: other }]), other).toBe(403);
+    }
+    expect(await prepareStatus([{ service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/delegate'] }])).toBe(403);
+    // One refused entry refuses the whole request.
+    expect(await prepareStatus([records, { ...records, space: 'secrets' }])).toBe(403);
+  });
+
+  test('a present approval-request id is refused for a reviewer even when it is falsy', async () => {
+    const permissions = [{ service: 'tinycloud.kv', space: 'applications', path: todos + '/', actions: kvRead }];
+    for (const approvalRequestId of ['', 0, null, false]) {
+      const result = await call('/api/delegate/prepare', 'POST', { ...delegateBody(permissions), approvalRequestId }, { cookie });
+      expect(result.status, String(approvalRequestId)).toBe(403);
+    }
+  });
+
+  test('the route guard refuses a reviewer token beside another session and reads the bearer scheme in any case', async () => {
+    const runtime = await import('../auth');
+    const context = await runtime.auth.$context;
+    const ordinaryCookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, 'ordinary-test-token', context.secret)).split(';')[0]!;
+    expect((await call('/api/keys', 'GET', undefined, { cookie: ordinaryCookie })).status).toBe(200);
+    expect((await call('/api/keys', 'GET', undefined, { cookie: ordinaryCookie, authorization: 'Bearer ' + accessToken })).status).toBe(403);
+    for (const scheme of ['Bearer', 'bearer', 'BEARER']) {
+      expect((await call('/api/keys', 'GET', undefined, { authorization: scheme + ' ' + accessToken })).status, scheme).toBe(403);
+    }
+    // The allowlisted token endpoint still answers the reviewer's own token.
+    expect((await call('/api/auth/oauth2/userinfo', 'GET', undefined, { authorization: 'Bearer ' + accessToken })).status).toBe(200);
   });
 
   test('refresh cannot extend reviewer sign-in and an overlong row cannot authorize after one hour', async () => {
@@ -426,10 +578,47 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     expect(capturedLogs.includes('reviewer_sign_in')).toBe(true);
   });
 
+  test('the reset log line carries no space id', async () => {
+    const { logReviewer } = await import('../log');
+    const before = capturedLogs.length;
+    (logReviewer as (...values: string[]) => void)('reviewer_admin', 'reset', 'openai', `tinycloud:pkh:eip155:1:${address}:applications`);
+    const line = capturedLogs.slice(before);
+    expect(line.includes('"result":"reset"')).toBe(true);
+    expect(line.includes('space_id')).toBe(false);
+    expect(line.includes(address)).toBe(false);
+  });
+
+  test('the native delegation schema guard accepts the schema with the reviewer migration applied', async () => {
+    const { assertNativeDelegationSchema } = await import('../../../../scripts/native-delegation-schema-guards');
+    await expect(assertNativeDelegationSchema(database)).resolves.toBeUndefined();
+  });
+
   test('boot clears installation and durably holds the account', async () => {
     await accounts.initializeReviewers(database);
     const binding = await accounts.reviewerForUser(database, 'reviewer-owner');
     expect(accounts.reviewerActive(binding)).toBe(false);
     expect(binding!.user!.reviewerHoldAt).not.toBeNull();
+  });
+
+  test('a failed boot initialisation leaves the API serving and every reviewer refused', async () => {
+    await accounts.installReviewer(database, 'openai', code);
+    expect(accounts.reviewerActive(await accounts.reviewerForUser(database, 'reviewer-owner'))).toBe(true);
+    const before = capturedLogs.length;
+    const failing = { $transaction: () => Promise.reject(new Error('database unreachable for reviewer-owner')) } as unknown as PrismaClient;
+    await expect(accounts.initializeReviewersAtBoot(failing)).resolves.toBeUndefined();
+    const line = capturedLogs.slice(before);
+    expect(line.includes('reviewer_boot_failed')).toBe(true);
+    expect(line.includes('reviewer-owner')).toBe(false);
+    expect(line.includes('unreachable')).toBe(false);
+    const binding = await accounts.reviewerForUser(database, 'reviewer-owner');
+    expect(accounts.reviewerActive(binding)).toBe(false);
+    expect(accounts.reviewerCodeMatches(binding, code)).toBe(false);
+    expect((await call('/api/auth/sign-in/reviewer', 'POST', {
+      email: 'openai-review@tinycloud.xyz', code, oauth_query: signedQuery,
+    })).status).toBe(403);
+    const runtime = await import('../auth');
+    const context = await runtime.auth.$context;
+    const ordinaryCookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, 'ordinary-test-token', context.secret)).split(';')[0]!;
+    expect((await call('/api/keys', 'GET', undefined, { cookie: ordinaryCookie })).status).toBe(200);
   });
 }

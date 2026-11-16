@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { PrismaClient, Prisma } from '@openkey/db';
-import { logReviewer } from '../log';
+import { log, logReviewer } from '../log';
 
 export const REVIEWER_MAX_SECONDS = 3600;
 export const REVIEWER_STORES = ['openai', 'google', 'apple'] as const;
@@ -139,6 +139,16 @@ export async function initializeReviewers(database: PrismaClient) {
     }
   });
   logReviewer('reviewer_admin', 'boot_hold', 'all');
+}
+
+/** A failed boot hold must not stop the API: with no verifier installed every reviewer stays refused. */
+export async function initializeReviewersAtBoot(database: PrismaClient) {
+  try {
+    await initializeReviewers(database);
+  } catch {
+    verifiers.clear();
+    log('error', 'reviewer_boot_failed');
+  }
 }
 
 export function reviewerStatus(binding: ReviewerBinding) {

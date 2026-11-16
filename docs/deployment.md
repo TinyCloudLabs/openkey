@@ -371,6 +371,94 @@ don't count. That fails closed. To give them the same treatment as the
 backfill, run this once the new image serves traffic, with the time it went live:
 `UPDATE "passkey" SET "countsForStepUp" = true, "enrolledVia" = 'legacy' WHERE "enrolledVia" IS NULL AND "createdAt" < $1`.
 
+#### Hosted app-review accounts (TC-2775)
+
+Store reviewers (OpenAI's plugin review, Google) sign in with a fixed review
+code instead of an emailed one. Each store has one synthetic account on a
+reserved address (`openai-review@tinycloud.xyz`, `google-review@tinycloud.xyz`;
+`appreview@tinycloud.xyz` is reserved for Apple and stays disabled). The account
+owns no real data: its key is generated at provisioning and it can approve
+access only inside its own TinyCloud spaces.
+
+**Migration.** `20261111_0001_reviewer_accounts` is additive and may run while
+TC-488 stays parked. It reserves the three addresses and raises when a user
+already holds one. The deploy script counts such users before any migration is
+attempted and stops when the count is above zero; the message carries only the
+count. Before the deploy window, run the same read-only count against
+production and resolve any hit first:
+
+```sql
+SELECT count(*) FROM "user"
+WHERE lower(email) IN ('openai-review@tinycloud.xyz', 'google-review@tinycloud.xyz', 'appreview@tinycloud.xyz');
+```
+
+**Order of operations.** Every admin call below is
+`https://api.openkey.so/api/admin/review-accounts/...` with
+`Authorization: Bearer $ADMIN_API_KEY` and a JSON body. `<store>` is `openai`
+or `google`.
+
+1. Deploy the API and the web together. Merging to `main` publishes the web
+   first; dispatch `deploy-api.yml` right after the merge. The review-code
+   step needs both: the older web caps the code box at six characters, and the
+   older API refuses the sign-in.
+2. Provision: `POST /<store>/provision` with
+   `{"clientId": "<client id>", "nodeHost": "https://node.tinycloud.xyz"}`.
+   `clientId` is the OAuth client id of the **published plugin's connection**:
+   the client ChatGPT registered when the published connector was connected,
+   which reviewers reuse. It must be enabled, hold `tinycloud:mcp` and have
+   exactly one redirect URI. Provisioning creates the held account and its
+   sealed key, hosts its `applications` and `account` spaces on the node and
+   writes the fixtures (apps `todos` and `workouts`). Add `"reset": true` to
+   replace an existing account; that deletes the old synthetic user.
+3. Learn the MCP session DID. The hosted MCP keeps one session key per signed-in
+   account, and it exists only after that account first reaches the MCP. Install
+   a temporary code (step 5), connect the connector as the review account and
+   ask it to connect to TinyCloud. The approval link it returns carries the
+   session key; read its `did:key:z…` from the link. The approval itself is
+   refused until the audience is pinned.
+4. Pin the audience: `PUT /<store>/audience` with `{"sessionDid": "did:key:z…"}`.
+   This ends every session of the account and removes the installed code.
+5. Install the code: `PUT /<store>/code` with `{"code": "<review code>"}`. The
+   code is exactly 43 base64url characters encoding 32 random bytes, for
+   example `openssl rand -base64 32 | tr '+/' '-_' | tr -d '='`. Only its
+   SHA-256 digest is kept. `DELETE /<store>/code` revokes it and ends every
+   session.
+6. Verify as a reviewer would: connect from the store's client, sign in with
+   the review account, approve the connection and one app, and read a seeded
+   record. Then mark it ready: `PUT /<store>/ready` with
+   `{"seededReadVerified": true}`. `GET /` lists each account's `set`, `ready`
+   and `held` state.
+
+**What a reviewer types.** In the sign-in window the connector opens, choose
+"Use a review code" (or type the review account into the email field), then
+enter the review account, for example `openai-review@tinycloud.xyz`, and the
+43-character review code. No email, SMS or second factor is involved.
+
+**Limits to put in the review notes.**
+
+- Sign-in works only from the connector's own OAuth window (the one the
+  store's client opens on Connect). The plain OpenKey sign-in page shows no
+  review-code option and refuses the review account, and an approval link opened
+  in a browser that is not signed in cannot sign in either. Open approval links
+  in the browser that completed the connector sign-in.
+- The session, its tokens and every approval end one hour after sign-in. After
+  that the reviewer connects again from the store's client and signs in again.
+- Review cases use the apps `todos` and `workouts`, which are seeded. `workouts`
+  holds two records, 20 and 30 minutes at 09:00 Europe/London on 2026-10-18 and
+  2026-10-19, so "total my workout minutes for October 18–19, 2026" is 50. The
+  account may also create any other personal app in its own space; the catalog
+  apps `healthlog` and `recipes` and every other space stay refused.
+
+**Restarts.** The installed code is held in API process memory only. Every API
+start (deploy, restart, crash) holds every review account and ends its
+sessions until the code is installed again with step 5. If that boot step
+itself fails, the API still starts and logs `reviewer_boot_failed`; review
+accounts stay refused until the code is installed again.
+
+Logs: `reviewer_admin` (`installed`, `unset`, `boot_hold`, `reset`,
+`audience_pinned`, `ready`) and `reviewer_sign_in` (`success`, `failed`) carry
+the store name only.
+
 #### Trigger Conditions
 
 The release coordinator manually dispatches **Actions > Deploy API to Phala Cloud >

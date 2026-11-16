@@ -10,6 +10,7 @@ import {
   type MigrationRow,
 } from './deploy-production-migrations';
 import { requiredRuntimeMigrationChecksums } from '../packages/db/src/schema-contract';
+import { assertNoReservedReviewerEmails } from './deploy-production-migrations';
 
 const baseline: MigrationRow = {
   migration_name: '20260714_origin_main_schema_catchup',
@@ -206,6 +207,49 @@ describe('production migration deployment mode', () => {
       },
     };
     await expect(assertNoDuplicateAccountIdentities(database)).resolves.toBeUndefined();
+    expect(queries).toHaveLength(1);
+  });
+
+  test('refuses the reviewer migration while a user holds a reserved address and reports only the count', async () => {
+    const queries: string[] = [];
+    const database = {
+      async $queryRawUnsafe<T>(query: string): Promise<T> {
+        queries.push(query);
+        return (query.includes('to_regclass') ? [{ exists: true }] : [{ reserved_users: 2 }]) as T;
+      },
+    };
+    const failure = await assertNoReservedReviewerEmails(database).then(() => null, (error: Error) => error);
+    expect(failure?.message).toBe(
+      '20261111_0001_reviewer_accounts cannot run: 2 existing user(s) hold a reserved app-review address; resolve them before deploying',
+    );
+    expect(queries).toHaveLength(2);
+    // Case-insensitive, count-only, and the same three addresses the migration reserves.
+    expect(queries[1]).toContain('lower(email) IN');
+    expect(queries[1]).toContain('count(*)');
+    const migration = await readFile(
+      join(import.meta.dir, '../packages/db/prisma/migrations/20261111_0001_reviewer_accounts/migration.sql'), 'utf8',
+    );
+    for (const address of ['openai-review@tinycloud.xyz', 'google-review@tinycloud.xyz', 'appreview@tinycloud.xyz']) {
+      expect(queries[1]).toContain(`'${address}'`);
+      expect(migration).toContain(`'${address}'`);
+    }
+  });
+
+  test('allows the reviewer migration when no user holds a reserved address, and skips the check without a user table', async () => {
+    const present = {
+      async $queryRawUnsafe<T>(query: string): Promise<T> {
+        return (query.includes('to_regclass') ? [{ exists: true }] : [{ reserved_users: 0 }]) as T;
+      },
+    };
+    await expect(assertNoReservedReviewerEmails(present)).resolves.toBeUndefined();
+    const queries: string[] = [];
+    const absent = {
+      async $queryRawUnsafe<T>(query: string): Promise<T> {
+        queries.push(query);
+        return [{ exists: false }] as T;
+      },
+    };
+    await expect(assertNoReservedReviewerEmails(absent)).resolves.toBeUndefined();
     expect(queries).toHaveLength(1);
   });
 
