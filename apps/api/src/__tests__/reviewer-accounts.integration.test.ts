@@ -315,15 +315,16 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
   const kvRecords = ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/put', 'tinycloud.kv/del'];
   const kvRead = ['tinycloud.kv/get', 'tinycloud.kv/list'];
   const sqlCopy = ['tinycloud.sql/read', 'tinycloud.sql/write', 'tinycloud.sql/schema'];
-  const delegateBody = (permissions: unknown[]) => ({
-    keyId: 'reviewer', jwk: sessionJwk, host: 'https://node.tinycloud.xyz', prefix: 'default', permissions, expiry: '1h',
+  const provisionedHost = 'https://node.tinycloud.xyz';
+  const delegateBody = (permissions: unknown[], host = provisionedHost) => ({
+    keyId: 'reviewer', jwk: sessionJwk, host, prefix: 'default', permissions, expiry: '1h',
   });
-  const prepareStatus = async (permissions: unknown[]) =>
-    (await call('/api/delegate/prepare', 'POST', delegateBody(permissions), { cookie })).status;
+  const prepareStatus = async (permissions: unknown[], host = provisionedHost) =>
+    (await call('/api/delegate/prepare', 'POST', delegateBody(permissions, host), { cookie })).status;
   let approvedSpaceId = '';
   /** Prepare and sign as the approval page does; returns the entries the signed message carries. */
-  async function approve(permissions: unknown[]) {
-    const body = delegateBody(permissions);
+  async function approve(permissions: unknown[], host = provisionedHost) {
+    const body = delegateBody(permissions, host);
     const prepared = await call('/api/delegate/prepare', 'POST', body, { cookie });
     expect(prepared.status, await prepared.clone().text()).toBe(200);
     const preview = await prepared.json() as any;
@@ -370,22 +371,40 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
 
   test('the narrowed app approval and the searchable-copy approval are signed in the shapes the MCP sends', async () => {
     const space = `tinycloud:pkh:eip155:1:${address}:applications`;
-    expect(await approve([
-      { service: 'tinycloud.kv', space: 'applications', path: 'xyz.tinycloud.tinyapps.catalog/', actions: kvRead },
-      { service: 'tinycloud.kv', space: 'applications', path: 'xyz.tinycloud.tinyapps.catalog/todos/entry', actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] },
-      { service: 'tinycloud.kv', space: 'applications', path: todos + '/', actions: kvRecords },
-    ])).toEqual([
-      { service: 'kv', space, path: 'xyz.tinycloud.tinyapps.catalog/', actions: kvRead },
-      { service: 'kv', space, path: 'xyz.tinycloud.tinyapps.catalog/todos/entry', actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] },
-      { service: 'kv', space, path: todos + '/', actions: [...kvRecords].sort() },
-    ]);
-    expect(await approve([
-      { service: 'tinycloud.kv', space: 'applications', path: todos + '/', actions: kvRecords },
-      { service: 'tinycloud.sql', space: 'applications', path: todos + '/index', actions: sqlCopy },
-    ])).toEqual([
-      { service: 'kv', space, path: todos + '/', actions: [...kvRecords].sort() },
-      { service: 'sql', space, path: todos + '/index', actions: [...sqlCopy].sort() },
-    ]);
+    // The hosted MCP names the space in full with a lowercase address, and sends its own node
+    // address (`TC_HOST`, https://tee.node.tinycloud.xyz in production) as `host`.
+    const sent = `tinycloud:pkh:eip155:1:${address.toLowerCase()}:applications`;
+    expect(sent).not.toBe(space);
+    const tee = 'https://tee.node.tinycloud.xyz';
+    await database.reviewerAccount.update({ where: { store: 'openai' }, data: { nodeHost: tee } });
+    try {
+      expect(await approve([
+        { service: 'tinycloud.kv', space: sent, path: 'xyz.tinycloud.tinyapps.catalog/', actions: kvRead },
+        { service: 'tinycloud.kv', space: sent, path: 'xyz.tinycloud.tinyapps.catalog/todos/entry', actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] },
+        { service: 'tinycloud.kv', space: sent, path: todos + '/', actions: kvRecords },
+      ], tee)).toEqual([
+        { service: 'kv', space, path: 'xyz.tinycloud.tinyapps.catalog/', actions: kvRead },
+        { service: 'kv', space, path: 'xyz.tinycloud.tinyapps.catalog/todos/entry', actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] },
+        { service: 'kv', space, path: todos + '/', actions: [...kvRecords].sort() },
+      ]);
+      expect(await approve([
+        { service: 'tinycloud.kv', space: sent, path: todos + '/', actions: kvRecords },
+        { service: 'tinycloud.sql', space: sent, path: todos + '/index', actions: sqlCopy },
+      ], tee)).toEqual([
+        { service: 'kv', space, path: todos + '/', actions: [...kvRecords].sort() },
+        { service: 'sql', space, path: todos + '/index', actions: [...sqlCopy].sort() },
+      ]);
+      // The provisioned node address is matched exactly: the other name of the same node and a
+      // trailing slash are refused.
+      const records = { service: 'tinycloud.kv', space: sent, path: todos + '/', actions: kvRecords };
+      expect(await prepareStatus([records], tee)).toBe(200);
+      expect(await prepareStatus([records], 'https://node.tinycloud.xyz')).toBe(403);
+      expect(await prepareStatus([records], tee + '/')).toBe(403);
+      // Another owner's applications space, written the same way, stays refused.
+      expect(await prepareStatus([{ ...records, space: 'tinycloud:pkh:eip155:1:0x00000000000000000000000000000000000000aa:applications' }], tee)).toBe(403);
+    } finally {
+      await database.reviewerAccount.update({ where: { store: 'openai' }, data: { nodeHost: provisionedHost } });
+    }
     const sql = { service: 'tinycloud.sql', space: 'applications', path: todos + '/index', actions: sqlCopy };
     expect(await prepareStatus([sql])).toBe(200);
     expect(await prepareStatus([{ ...sql, path: todos + '/other' }])).toBe(403);
@@ -791,6 +810,84 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     expect((await call('/api/keys', 'GET', undefined, { cookie: ordinaryCookie })).status).toBe(200);
   });
 
+  test('boot holds an account whose user is held or whose digest is malformed, even though a digest is stored', async () => {
+    await accounts.installReviewer(database, 'openai', code);
+    const installed = await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'openai' } });
+    expect(installed.codeDigest).not.toBeNull();
+    await database.user.update({ where: { id: 'reviewer-owner' }, data: { reviewerHoldAt: new Date() } });
+    await accounts.initializeReviewers(database);
+    let binding = await accounts.reviewerForUser(database, 'reviewer-owner');
+    expect(binding!.codeDigest).toBeNull();
+    expect(binding!.installEpoch).toBe(installed.installEpoch + 1);
+    // Lifting the hold by hand must not bring the code back: nothing was restored.
+    await database.user.update({ where: { id: 'reviewer-owner' }, data: { reviewerHoldAt: null } });
+    binding = await accounts.reviewerForUser(database, 'reviewer-owner');
+    expect(accounts.reviewerCodeMatches(binding, code)).toBe(false);
+    expect(accounts.reviewerActive(binding)).toBe(false);
+
+    await accounts.installReviewer(database, 'openai', code);
+    await database.reviewerAccount.update({ where: { store: 'openai' }, data: { codeDigest: 'not-a-digest' } });
+    await accounts.initializeReviewers(database);
+    binding = await accounts.reviewerForUser(database, 'reviewer-owner');
+    expect(binding!.codeDigest).toBeNull();
+    expect(binding!.user!.reviewerHoldAt).not.toBeNull();
+    expect(accounts.reviewerActive(binding)).toBe(false);
+  });
+
+  test('boot bounds its wait for a reviewer row lock, inside its own transaction only', async () => {
+    const statements: string[] = [];
+    const client = database as unknown as { $transaction: (...values: any[]) => Promise<unknown> };
+    const run = client.$transaction;
+    client.$transaction = (work: (transaction: unknown) => Promise<unknown>, ...rest: unknown[]) =>
+      run.call(database, (transaction: any) => work(new Proxy(transaction, {
+        get(target, key) {
+          const value = Reflect.get(target, key);
+          if (key !== '$executeRaw' && key !== '$queryRaw') return value;
+          return (strings: TemplateStringsArray, ...values: unknown[]) => {
+            statements.push(strings.join('?'));
+            return value.call(target, strings, ...values);
+          };
+        },
+      })), ...rest);
+    try { await accounts.initializeReviewers(database); } finally { client.$transaction = run; }
+    // The bound is the first statement, so it covers every lock the boot transaction waits for.
+    expect(statements[0]).toBe("SET LOCAL lock_timeout = '2s'");
+    expect(statements.findIndex((statement) => statement.includes('FOR UPDATE'))).toBeGreaterThan(0);
+    // LOCAL: it ends with the transaction and never reaches ordinary requests on a pooled connection.
+    const after = await database.$queryRawUnsafe<Array<{ lock_timeout: string }>>('SHOW lock_timeout');
+    expect(after[0]!.lock_timeout).toBe('0');
+  });
+
+  test('the seeded fixtures hold both apps and the workout minutes the submitted case totals', async () => {
+    const { REVIEWER_FIXTURES } = await import('../services/reviewer-fixtures');
+    const fixtures = new Map<string, any>(REVIEWER_FIXTURES.map(([key, value]) => [key, value]));
+    expect([...fixtures.keys()].sort()).toEqual([
+      'xyz.tinycloud.tinyapps.catalog/todos/entry',
+      'xyz.tinycloud.tinyapps.catalog/workouts/entry',
+      todos + '/catalog',
+      todos + '/catalog/todo',
+      todos + '/todo/open/store-review-fixture',
+      workouts + '/catalog',
+      workouts + '/catalog/workout',
+      workouts + '/workout/2026-10/2026-10-18T0900-workout',
+      workouts + '/workout/2026-10/2026-10-19T0900-workout',
+    ].sort());
+    expect(fixtures.get('xyz.tinycloud.tinyapps.catalog/workouts/entry')).toEqual({ v: 1, app: 'workouts', id: workouts, title: 'Workouts' });
+    expect(fixtures.get(workouts + '/catalog')).toMatchObject({ app: 'workouts', title: 'Workouts' });
+    expect(fixtures.get(workouts + '/catalog/workout')).toMatchObject({
+      app: 'workouts', kind: 'workout', shape: 'log', per: 'time', v: 1, fields: { minutes: 'number' },
+    });
+    // 09:00 Europe/London, which is +01:00 on both days (summer time ends on 25 October 2026).
+    expect(fixtures.get(workouts + '/workout/2026-10/2026-10-18T0900-workout')).toEqual({ v: 1, at: '2026-10-18T09:00:00+01:00', data: { minutes: 20 } });
+    expect(fixtures.get(workouts + '/workout/2026-10/2026-10-19T0900-workout')).toEqual({ v: 1, at: '2026-10-19T09:00:00+01:00', data: { minutes: 30 } });
+    // "Total my workout minutes for October 18–19, 2026": every workout record on those two days.
+    const total = [...fixtures]
+      .filter(([key]) => /^xyz\.tinycloud\.tinyapps\.workouts\/workout\/2026-10\/2026-10-1[89]T/.test(key))
+      .reduce((sum, [, value]) => sum + value.data.minutes, 0);
+    expect(total).toBe(50);
+    expect([...fixtures.keys()].filter((key) => key.startsWith(workouts + '/workout/'))).toHaveLength(2);
+  });
+
   test('a reset clears the persisted code digest', async () => {
     await accounts.installReviewer(database, 'openai', code);
     const { provisionReviewer } = await import('../services/reviewer-fixtures');
@@ -802,5 +899,43 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     expect(accounts.reviewerActive(binding)).toBe(false);
     await accounts.initializeReviewers(database);
     expect(accounts.reviewerActive(await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'openai' }, include: { user: true } }))).toBe(false);
+  });
+
+  test('provisioning hosts the applications and the account space and writes every fixture', async () => {
+    const { TinyCloudNode } = await import('@tinycloud/node-sdk');
+    const { provisionReviewer, REVIEWER_FIXTURES } = await import('../services/reviewer-fixtures');
+    const hosted: string[] = [];
+    const written = new Map<string, unknown>();
+    let seededSpace = '';
+    const ownSpace = async (name: string) =>
+      (await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'openai' } })).spaceId!.replace(/:applications$/, ':' + name);
+    // The node is replaced at the SDK boundary: no network, and every call provisioning makes is recorded.
+    const node = TinyCloudNode.prototype as unknown as Record<string, unknown>;
+    const real = { signIn: node.signIn, ensureOwnedSpaceHosted: node.ensureOwnedSpaceHosted, kvForSpace: node.kvForSpace };
+    node.signIn = async () => {};
+    node.ensureOwnedSpaceHosted = async (name: string) => { hosted.push(name); return ownSpace(name); };
+    node.kvForSpace = (spaceId: string) => {
+      seededSpace = spaceId;
+      return {
+        put: async (key: string, value: unknown) => { written.set(key, value); return { ok: true }; },
+        get: async (key: string) => written.has(key) ? { ok: true, data: { data: written.get(key) } } : { ok: false },
+      };
+    };
+    try {
+      await provisionReviewer(database, 'openai', { clientId, nodeHost: 'https://tee.node.tinycloud.xyz' }, true);
+    } finally {
+      Object.assign(node, real);
+    }
+    const binding = await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'openai' }, include: { user: true } });
+    // The hosted MCP's first connect probes the account space, so it must be hosted as well.
+    expect(hosted).toEqual(['applications', 'account']);
+    expect(seededSpace).toBe(binding.spaceId!);
+    expect(Object.fromEntries(written)).toEqual(Object.fromEntries(REVIEWER_FIXTURES.map(([key, value]) => [key, value])));
+    expect(written.size).toBe(9);
+    expect(binding.seededAt).not.toBeNull();
+    expect(binding.nodeHost).toBe('https://tee.node.tinycloud.xyz');
+    // Provisioned, seeded, and still held until a code is installed.
+    expect(binding.user!.reviewerHoldAt).not.toBeNull();
+    expect(accounts.reviewerActive(binding)).toBe(false);
   });
 }
