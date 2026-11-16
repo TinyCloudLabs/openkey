@@ -188,7 +188,11 @@ function aggregateSpaceReadiness(requestedSpaces: RequestedSpaceReadiness[]): De
   };
 }
 
-/** An empty activation receipt (already-known delegation) is not proof of hosting. */
+/**
+ * An empty activation receipt (already-known delegation) is not proof of hosting. Readiness is
+ * reporting only: `spaceReady: null` (unknown) or `false` never withholds the delegation. The
+ * approval always returns its delegation header, and clients decide what to do with the answer.
+ */
 function activationReadiness(spaces: RequestedDelegationSpace[], entries: RecapEntry[], activation?: SpaceActivation): DelegationReadiness {
   const granted = new Set(delegationSpaces(entries).map(space => space.spaceId));
   return aggregateSpaceReadiness(spaces.map(space => ({

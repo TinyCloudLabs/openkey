@@ -48,6 +48,12 @@ describe('spaceReadinessResult', () => {
     }
     expect(spaceReadinessResult({ spaceReady: null }, null)).toBeNull();
   });
+  test('an unknown answer is worded neutrally, with no error language', () => {
+    const result = spaceReadinessResult({ spaceReady: null, spaceId: 'did:space:agents' }, notice('setup'));
+    expect(result?.kind).toBe('unknown');
+    expect(result?.text).not.toMatch(/couldn't|failed|didn't finish|isn't set up/);
+    expect(result && 'detail' in result).toBe(false);
+  });
 
   test('reports failed details separately from the user-facing text', () => {
     const result = spaceReadinessResult(

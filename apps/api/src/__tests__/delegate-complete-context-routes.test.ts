@@ -1068,4 +1068,23 @@ describe('TC-1608 requested space', () => {
     expect(result.body.spaceReady).toBe(true);
     expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
   });
+
+  // spaceReady only reports. An unknown answer (here: a repeated approval whose delegation the node
+  // already holds, receipt `activated: []`, `skipped: []`) still completes the approval.
+  for (const [name, approve] of [['versioned', managedApproval], ['legacy', legacyApproval]] as const) {
+    test(`${name} approval with spaceReady null still returns its delegation`, async () => {
+      activateSessionWithHost.mockImplementationOnce(async () => ({
+        success: true, status: 200, activated: [], skipped: [],
+      }));
+      // The mock is typed for the success result only; this failure result has the real service's shape.
+      ensureTinyCloudBootstrap.mockImplementationOnce(async () => ({
+        status: 'failed', errorCode: 'tinycloud_bootstrap_in_progress', errorMessage: 'Already in progress.',
+      }) as unknown as { status: 'complete' });
+      const result = await approve(host);
+      expect(result.status).toBe(200);
+      expect(result.body.spaceReady).toBeNull();
+      expect(result.body.delegationHeader?.Authorization).toBeString();
+      expect(result.body.delegationCid).toBeString();
+    });
+  }
 });
