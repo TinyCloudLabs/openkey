@@ -12,11 +12,15 @@
  * that may receive a delegation through a `/delegate` callback. Register an
  * app by adding its endpoint here, or, for another deployment, to
  * `VITE_DELEGATE_CALLBACK_URLS`.
- *  - Broad hosted TinyCloud MCP and the public personal-records plugin.
+ *  - Broad hosted TinyCloud MCP, the public personal-records plugin, and the
+ *    personal-records addresses listed in the Claude, Grok and Muse directories.
  */
 export const REGISTERED_CALLBACK_ENDPOINTS: readonly string[] = [
   'https://mcp.tinycloud.xyz/connect/callback',
   'https://mcp.tinycloud.xyz/chatgpt/connect/callback',
+  'https://mcp.tinycloud.xyz/claude/connect/callback',
+  'https://mcp.tinycloud.xyz/grok/connect/callback',
+  'https://mcp.tinycloud.xyz/muse/connect/callback',
 ];
 
 /**
@@ -24,10 +28,9 @@ export const REGISTERED_CALLBACK_ENDPOINTS: readonly string[] = [
  * the receiver line only. A label never comes from the link; entries added
  * through `VITE_DELEGATE_CALLBACK_URLS` have no label and show none.
  */
-const REGISTERED_CALLBACK_SERVICES: Readonly<Record<string, string>> = {
-  'https://mcp.tinycloud.xyz/connect/callback': 'TinyCloud MCP',
-  'https://mcp.tinycloud.xyz/chatgpt/connect/callback': 'TinyCloud MCP',
-};
+const REGISTERED_CALLBACK_SERVICES: Readonly<Record<string, string>> = Object.fromEntries(
+  REGISTERED_CALLBACK_ENDPOINTS.map((endpoint) => [endpoint, 'TinyCloud MCP']),
+);
 
 /**
  * TinyCloud nodes shown without a warning: the nodes OpenKey already trusts
