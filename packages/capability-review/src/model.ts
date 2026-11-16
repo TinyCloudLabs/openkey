@@ -195,8 +195,9 @@ export interface RequesterIdentity {
    */
   displayName: string;
   /**
-   * Verified origin of the request (the SIWE `domain` field, or the
-   * postMessage origin). Never a caller-supplied "app name".
+   * Verified origin of the request: the postMessage origin, or null when none
+   * was verified. Never the SIWE `domain` field and never a caller-supplied
+   * "app name".
    */
   verifiedOrigin: string | null;
   /**

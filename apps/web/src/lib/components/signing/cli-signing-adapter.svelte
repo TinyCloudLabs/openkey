@@ -22,6 +22,7 @@
   import type { CapabilityReviewModel } from "@openkey/capability-review";
   import SigningApproval from "$lib/components/signing/signing-approval.svelte";
   import type { CliSigningTransport } from "./signing-adapter-types";
+  import type { DelegateReceiver } from "$lib/delegate-link-policy";
 
   interface Props {
     /** The parsed authorization model to review. */
@@ -39,11 +40,21 @@
     context?: Snippet;
     /** True when the user chose one of several keys. */
     showSigner?: boolean;
+    /** Ordinary link attribution only; a callback URL is not verified requester identity. */
+    linkNamedHost?: string | null;
+    /** An ordinary link: nothing about its sender is verified. */
+    ordinaryLink?: boolean;
+    /** A neutral line for requests with no signed requester details; never a brand. */
+    neutralRequesterLine?: string | null;
+    /** The server's code for a device sign-in, to compare with the terminal. */
+    neutralRequesterCode?: string | null;
+    /** Where an ordinary link's approval is delivered; a destination, not the requester. */
+    receiver?: DelegateReceiver | null;
     /** Reports whether editable permission checkboxes are visible. */
     onEditingStateChange?: (editing: boolean) => void;
   }
 
-  let { model, initialSelection, transport, context, showSigner = false, onEditingStateChange }: Props = $props();
+  let { model, initialSelection, transport, context, showSigner = false, linkNamedHost = null, ordinaryLink = false, neutralRequesterLine = null, neutralRequesterCode = null, receiver = null, onEditingStateChange }: Props = $props();
 
   // Internal review state. The adapter owns this because it is per-surface
   // presentational state — the route no longer touches it. We intentionally
@@ -100,6 +111,11 @@
   expiryMaxMs={transport.expiry?.maxMs ?? null}
   renewal={transport.renewal ?? null}
   {showSigner}
+  {linkNamedHost}
+  {ordinaryLink}
+  {neutralRequesterLine}
+  {neutralRequesterCode}
+  {receiver}
   {onApprove}
   {onCancel}
   cancelText={transport.decline ? "Back" : undefined}

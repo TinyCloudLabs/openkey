@@ -32,6 +32,7 @@
     REGISTERED_CALLBACK_ENDPOINTS,
     checkDelegateCallback,
     checkDelegateHost,
+    delegateReceiver,
     checkDelegateRequesterOrigin,
     isCanonicalHttpsEndpoint,
     isCanonicalHttpsOrigin,
@@ -56,6 +57,7 @@
     defaultSelection,
     type CapabilityReviewModel,
   } from '@openkey/capability-review';
+  import { hostNamedByLink } from '$lib/requester-display';
   import { renewalStartsTicked } from '$lib/renewal-default';
 
   interface EIP6963ProviderInfo {
@@ -185,7 +187,6 @@
   // disappear from the review UI. `reviewSelection` is the effective
   // subset the user picked; only that changes when the user narrows.
   let reviewModel = $state<CapabilityReviewModel | null>(null);
-  const expiredRequesterName = $derived(reviewModel?.requester.displayName?.trim() || '');
   let baselineSiweForReview = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
@@ -394,8 +395,22 @@
     }
   }
   const deviceTransactionId = approvalRequestMode ? '' : $page.url.searchParams.get('deviceTransactionId') || '';
+  const ordinaryLink = $derived(!approvalRequestMode && !deviceTransactionId && !preparedTransport);
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
   const deviceUserCode = $page.url.searchParams.get('deviceUserCode') || '';
+  // A device sign-in names no requester: the owner compares the code with the
+  // terminal. The code shown is the one the server holds for this transaction,
+  // read after the request is verified; the link's own code is never displayed.
+  const displayDeviceCode = (code: string) => {
+    const normalized = code.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+    return normalized.length > 4 ? `${normalized.slice(0, 4)}-${normalized.slice(4)}` : normalized;
+  };
+  let serverDeviceCode = $state('');
+  const neutralRequesterLine = $derived(
+    deviceTransactionId
+      ? 'A device sign-in is asking'
+      : approvalRequestMode ? 'An approval link is asking' : null,
+  );
   let deviceAcknowledged = $state(false);
   const relayJwkB64 = $page.url.searchParams.get('relayJwk') || '';
 
@@ -511,6 +526,10 @@
   const requesterOriginCheck = checkDelegateRequesterOrigin(
     $page.url.searchParams, approvalRequestMode || !!deviceTransactionId || preparedTransport,
   );
+  // A host is named only when the link actually carried one.
+  const ordinaryRequesterHost = $derived(
+    ordinaryLink && reviewModel && requesterOriginCheck.ok && requesterOriginCheck.origin ? reviewModel.requester.displayName : null,
+  );
   const callbackCheck = $derived(approvalRequestMode || deviceTransactionId
     ? null
     : checkDelegateCallback(callback, withConfiguredEntries(REGISTERED_CALLBACK_ENDPOINTS, import.meta.env.VITE_DELEGATE_CALLBACK_URLS, isCanonicalHttpsEndpoint)));
@@ -523,6 +542,8 @@
     : hostCheck?.ok === false ? hostCheck.reason : '');
   $effect(() => { if (linkPolicyError) error = linkPolicyError; });
   const approvedCallback = $derived(callbackCheck?.ok ? callbackCheck.callback : null);
+  // Where the approval will go, as OpenKey enforces it; only on ordinary links.
+  const ordinaryReceiver = $derived(ordinaryLink ? delegateReceiver(approvedCallback) : null);
   const showLoopbackHint = $derived(
     shouldShowLoopbackHint({ delegating, approvedCallback, deviceTransactionId, callbackInFlight, pasteCode }),
   );
@@ -547,6 +568,8 @@
       expiry: expiryParam,
     });
     requestReason = normalizeReason(deviceRequestReason(record));
+    // Only the server's own code for THIS transaction is ever shown.
+    serverDeviceCode = displayDeviceCode(record.userCode);
     expiryMaxMs = deviceRequestTtlSeconds(record) * 1000;
   })();
   deviceRequestVerified.catch((cause: unknown) => { error = delegateErrorMessage(cause); });
@@ -901,16 +924,14 @@
             manifestId: null,
             manifestIdProvenance: 'none',
             manifestDigest: null,
-            domainWarning: false,
+            domainWarning: ordinaryLink,
             originWarning: false,
           },
         });
-        // The prepared SIWE is authoritative for attribution, not a query
-        // display name. These labels remain unsigned and confer no trust.
-        const domain = model.immutable?.domain;
-        model.requester.displayName = domain === 'mcp.tinycloud.xyz' ? 'TinyCloud MCP'
-          : domain === 'cli.tinycloud.xyz' ? 'TinyCloud CLI'
-          : domain || 'Unknown requester';
+        // A prepared domain binds signed bytes, not a first-party app identity,
+        // and it is the server's fixed default on device and signed flows. None
+        // of this response's requester-name fields is server-verified.
+        model.requester.displayName = hostNamedByLink(model.immutable?.domain);
         reviewModel = model;
         reviewSelection = defaultSelection(model);
         baselineSiweForReview = siweMessage;
@@ -1693,7 +1714,7 @@
       </div>
       <Card class="w-full p-6">
         <div class="text-center py-4">
-          <h1 class="text-[17px] font-semibold text-surface-900 mb-2">{expiredRequesterName ? `${expiredRequesterName}'s request expired` : 'Request expired'}</h1>
+          <h1 class="text-[17px] font-semibold text-surface-900 mb-2">This request expired</h1>
           <p class="text-[15px] leading-6 text-[#71717a]">Ask your agent for a new link.</p>
         </div>
       </Card>
@@ -1812,10 +1833,11 @@
           {:else}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
             <p class="text-surface-500 text-sm">
-              {#if reviewModel?.immutable?.domain === 'mcp.tinycloud.xyz'}
+              {#if ordinaryReceiver?.kind === 'service'}
+                <!-- Every built-in service endpoint is the hosted MCP (delegate-link-policy.ts). -->
                 You can close this window and return to ChatGPT or your MCP client.
-              {:else if reviewModel?.immutable?.domain && reviewModel.immutable.domain !== 'cli.tinycloud.xyz'}
-                You can close this window and return to {reviewModel.immutable.domain}.
+              {:else if ordinaryRequesterHost}
+                You can close this window and return to {ordinaryRequesterHost}.
               {:else}
                 You can close this window and return to the CLI.
               {/if}
@@ -1981,12 +2003,6 @@
           <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} bind:acknowledged={deviceAcknowledged} />
         {:else}
           <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
-          {#if requesterOriginCheck.ok && requesterOriginCheck.origin && reviewModel?.immutable}
-            <p class="text-xs leading-relaxed text-surface-500">
-              Requester <code class="break-all">{reviewModel.immutable.domain}</code> is caller-reported, not verified.
-              This link is unsigned and has no signed app manifest.
-            </p>
-          {/if}
         {/if}
 
         {#if selectedKey.keyType === 'EXTERNAL'}
@@ -2022,6 +2038,11 @@
           <div bind:this={actionRow}>
             <CliSigningAdapter
               model={reviewModel}
+              linkNamedHost={ordinaryRequesterHost}
+              ordinaryLink={ordinaryLink}
+              neutralRequesterLine={neutralRequesterLine}
+              neutralRequesterCode={serverDeviceCode}
+              receiver={ordinaryReceiver}
               initialSelection={reviewSelection}
               context={cliContext}
               onEditingStateChange={(editing) => { reviewEditing = editing; }}

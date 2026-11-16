@@ -69,7 +69,6 @@ test.describe('TC-659 CLI /delegate consent parity', () => {
     // Header, requester and CLI context come from the shared component.
     const dialog = page.getByRole('dialog');
     await expect(dialog.getByRole('heading', { name: 'Authorize capabilities' })).toBeVisible();
-    await expect(dialog).toContainText('Requested by TinyCloud CLI');
     await expect(dialog.getByRole('region', { name: 'Delegation destination' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Authorize CLI Access' })).toHaveCount(0);
   });
@@ -92,7 +91,7 @@ test.describe('TC-659 CLI /delegate consent parity', () => {
     await expect(page.getByText('Sync my notes', { exact: true })).toHaveCount(1);
     const details = await openEditor(page);
     await details.getByRole('checkbox').last().uncheck();
-    await expect(page.getByRole('alert')).toHaveText("Couldn't approve this request. Try again. (Error 503)");
+    await expect(page.getByRole('alert').and(page.locator('.error'))).toHaveText("Couldn't approve this request. Try again. (Error 503)");
   });
 });
 
@@ -275,7 +274,7 @@ test('expiry failure uses the editable expiry wording', async ({ page }) => {
   await expect(approve).toBeEnabled();
   await expect(page.getByTestId('approval-expiry-line')).toBeVisible();
   await approve.click();
-  await expect(page.getByRole('alert')).toHaveText("This access length can't be used. Choose a different one, or start again from the app or command.");
+  await expect(page.getByRole('alert').and(page.locator('.error'))).toHaveText("This access length can't be used. Choose a different one, or start again from the app or command.");
   await expect(approve).toBeEnabled();
   const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
   if (shots) await page.screenshot({ path: `${shots}/e.png`, fullPage: false });
@@ -353,4 +352,63 @@ test('device relay network failure has no status suffix', async ({ page }) => {
   await openDeviceRelayReview(page, { relayStatus: 'network' });
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveText("You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again.");
+});
+
+// TC-2526 follow-up: a device sign-in names no requester. The server binds the
+// request, but anyone can start one, and the signing domain is the server's
+// own default, so the page never calls it the TinyCloud CLI. The owner
+// compares the code with the terminal instead.
+test('a device sign-in shows a neutral line with the code and never the CLI brand', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openDeviceRelayReview(page, { relayStatus: 200 });
+  await expect(page.locator('.requester-line')).toHaveText('A device sign-in is asking (code ABCD-EFGH)');
+  await expect(page.getByRole('dialog')).not.toContainText('TinyCloud CLI');
+  await expect(page.getByRole('heading', { name: "OpenKey can't confirm who sent this request" })).toHaveCount(0);
+  await expect(page.getByTestId('receiver-line')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+  await expect(page.getByText('Review the access this request is asking for.')).toBeVisible();
+  await expect(page.getByText('this app is asking')).toHaveCount(0);
+});
+
+// The code on the neutral line is only worth comparing if it is the server's
+// code for THIS transaction, so it is read from the verified server record,
+// never from the link.
+async function openDeviceLink(page: Page, options: { urlCode: string; recordId?: string }) {
+  const deviceJwk = { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) };
+  const relayPublicJwk = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ format: 'jwk' });
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/auth/get-session') return json(route, 200, { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, user: { id: 'u', email: 'owner@example.test' } });
+    if (url.pathname === '/api/keys') return json(route, 200, { keys: oneKey });
+    if (url.pathname === '/api/device-authorizations/lookup') {
+      return json(route, 200, {
+        id: options.recordId ?? 'tx_1', userCode: 'ABCDEFGH', sessionDid: 'did:key:z6Mk', publicJwk: deviceJwk, relayPublicJwk,
+        permissions: request, nodeOrigin: 'https://node.tinycloud.xyz', shareOrigin: 'https://share.tinycloud.xyz',
+        delegationExpiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(), transactionExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+        delegationTtlSeconds: 2_592_000,
+      });
+    }
+    if (url.pathname === '/api/delegate/prepare') return json(route, 200, prepared);
+    return json(route, 404, { error: `unmocked ${url.pathname}` });
+  });
+  await page.goto(`/delegate?${new URLSearchParams({
+    did: 'did:key:z6Mk', jwk: encodeBase64UrlJson(deviceJwk), host: 'https://node.tinycloud.xyz',
+    deviceTransactionId: 'tx_1', deviceShareOrigin: 'https://share.tinycloud.xyz', deviceUserCode: options.urlCode,
+    relayJwk: encodeBase64UrlJson(relayPublicJwk), expiry: '2592000s', permissions: encodeBase64UrlJson({ permissions: request }),
+  })}`);
+}
+
+test('a device sign-in shows the server code, never a different code from the link', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openDeviceLink(page, { urlCode: 'ZZZZ-ZZZZ' });
+  await expect(page.locator('.requester-line')).toHaveText('A device sign-in is asking (code ABCD-EFGH)');
+  await expect(page.getByRole('dialog')).not.toContainText('ZZZZ');
+});
+
+test('a device link for another transaction is refused and shows no code', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openDeviceLink(page, { urlCode: 'ZZZZ-ZZZZ', recordId: 'tx_other' });
+  await expect(page.getByRole('alert')).toHaveText("Couldn't approve this request. Try again.");
+  await expect(page.getByText(/A device sign-in is asking/)).toHaveCount(0);
+  await expect(page.getByText(/ZZZZ|ABCD-EFGH/)).toHaveCount(0);
 });
