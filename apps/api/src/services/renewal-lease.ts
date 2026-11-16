@@ -57,8 +57,8 @@ export class RenewalLeaseError extends Error {
 /** Shown to the owner whenever a ticked renewal could not be set up: nothing is approved. */
 export const RENEWAL_FAILED_MESSAGE = "OpenKey couldn't set up renewal. Nothing was approved. Try again.";
 
-/** Shown when renewal is ticked on an account whose key an external wallet holds (TC-3088): nothing is approved. Draft copy for Monica. */
-export const RENEWAL_EXTERNAL_WALLET_MESSAGE = "Renewal isn't available for accounts that sign with an external wallet yet. Nothing was approved. Approve again without renewal.";
+/** Shown when renewal is ticked on an account whose key an external wallet holds (TC-3088): nothing is approved. Copy: Monica. */
+export const RENEWAL_EXTERNAL_WALLET_MESSAGE = "Automatic renewal doesn't work with an external wallet, so OpenKey didn't approve this request. Turn off renewal and approve again.";
 
 export type RenewalChoice = { choice: 'finite' } | { choice: 'leased'; leaseLifetimeSeconds: number };
 
