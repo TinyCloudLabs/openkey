@@ -242,6 +242,50 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     expect(await stopped(withRequest)).toBe(false);
   });
 
+  test('the stop sweep revokes every OpenKey-signed lease, reports wallet-signed ones, retries what the node did not confirm, and runs only for `stop`', async () => {
+    const sweep = await import('../services/renewal-lease-sweep');
+    const saved = process.env.OPENKEY_RENEWAL_LEASES;
+    try {
+      for (const [value, expected] of [[undefined, false], ['enabled', false], ['disabled', false], ['STOP', false], ['stop', true]] as const) {
+        if (value === undefined) delete process.env.OPENKEY_RENEWAL_LEASES; else process.env.OPENKEY_RENEWAL_LEASES = value;
+        expect(sweep.renewalLeaseStopSweepEnabled()).toBe(expected);
+      }
+    } finally {
+      if (saved === undefined) delete process.env.OPENKEY_RENEWAL_LEASES; else process.env.OPENKEY_RENEWAL_LEASES = saved;
+    }
+
+    // Earlier tests in this file leave live leases behind; the sweep counts every account's, so start clean.
+    await prisma.renewalLease.updateMany({ data: { revokedAt: new Date() } });
+    const first = await account();
+    const second = await account();
+    const walletOwner = await account('EXTERNAL');
+    const firstLease = await lease(first, null);
+    const secondLease = await lease(second, null);
+    const secondDown = await lease(second, null, 'down');
+    const walletLease = await lease(walletOwner, null);
+    const ended = await lease(first, null, 'ok', -1_000);
+
+    // Stopped, wallet-signed and unconfirmed leases are each counted once; one that already ended is left alone.
+    expect(await sweep.stopAllRenewalLeasesOnce(prisma)).toEqual({ users: 3, stopped: 2, walletRequired: 1, notStopped: 1 });
+    expect(await stopped(firstLease)).toBe(true);
+    expect(await stopped(secondLease)).toBe(true);
+    expect(await stopped(secondDown)).toBe(false);
+    expect(await stopped(walletLease)).toBe(false);
+    expect(await stopped(ended)).toBe(false);
+
+    // The node comes back: the next pass settles the one it did not confirm; the wallet lease still waits for its wallet.
+    nodes.down.up = true;
+    try {
+      expect(await sweep.stopAllRenewalLeasesOnce(prisma)).toEqual({ users: 2, stopped: 1, walletRequired: 1, notStopped: 0 });
+    } finally {
+      nodes.down.up = false;
+    }
+    expect(await stopped(secondDown)).toBe(true);
+    // Running again changes nothing.
+    expect(await sweep.stopAllRenewalLeasesOnce(prisma)).toEqual({ users: 1, stopped: 0, walletRequired: 1, notStopped: 0 });
+    expect(await stopped(walletLease)).toBe(false);
+  });
+
   test('a node that does not confirm leaves the lease on; the retry stops it', async () => {
     const owner = await account();
     const { cookie } = await owner.session();

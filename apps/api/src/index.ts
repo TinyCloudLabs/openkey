@@ -52,6 +52,7 @@ import {
   withNativeDelegationMetadata,
 } from './services/native-delegation/public-protocol';
 import { startTinyCloudBootstrapSweep } from './services/tinycloud-bootstrap-sweep';
+import { startRenewalLeaseStopSweep } from './services/renewal-lease-sweep';
 
 
 const betterAuthUrl = process.env.BETTER_AUTH_URL;
@@ -342,6 +343,8 @@ const port = parseInt(process.env.API_PORT || '3001');
 log('info', 'api_starting');
 // Retries failed TinyCloud account setup in the background. Off under tests; kill switch is read per tick.
 if (process.env.NODE_ENV !== 'test') startTinyCloudBootstrapSweep();
+// With OPENKEY_RENEWAL_LEASES=stop, revokes every live renewal lease (TC-3088). Does nothing for any other value.
+if (process.env.NODE_ENV !== 'test') startRenewalLeaseStopSweep(authPrisma);
 
 export default {
   port,
