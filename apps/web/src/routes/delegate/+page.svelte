@@ -1836,11 +1836,12 @@
               {#if ordinaryReceiver?.kind === 'service'}
                 <!-- Every built-in service endpoint is the hosted MCP (delegate-link-policy.ts). -->
                 You can close this window and return to ChatGPT or your MCP client.
-              {:else if ordinaryRequesterHost}
-                <!-- The host is the link's own claim; it is never shown as a place to go. -->
-                You can close this window and return to the app or site that sent you.
+              {:else if deviceTransactionId}
+                <!-- The owner started a device sign-in at their terminal and compared its code. -->
+                You can close this window and return to your terminal.
               {:else}
-                You can close this window and return to the CLI.
+                <!-- A host, or a CLI, the link or request names is only a claim; never shown as a place to go. -->
+                You can close this window and return to the app or site that sent you.
               {/if}
             </p>
           {/if}

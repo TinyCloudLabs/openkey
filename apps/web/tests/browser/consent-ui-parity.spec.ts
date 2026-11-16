@@ -332,6 +332,14 @@ test('device relay failure shows only safe status and code and keeps Approve ava
   if (shots) await page.screenshot({ path: `${shots}/f-device-delivery.png`, fullPage: false });
 });
 
+test('a device sign-in closes by sending the owner back to their terminal', async ({ page }) => {
+  await openDeviceRelayReview(page, { relayStatus: 200 });
+  await page.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Authenticated' })).toBeVisible();
+  await expect(page.getByText('You can close this window and return to your terminal.', { exact: true })).toBeVisible();
+  await expect(page.getByText('return to the CLI')).toHaveCount(0);
+});
+
 test('device relay uses status only for the API error body and a later 410 uses ended copy', async ({ page }) => {
   await openDeviceRelayReview(page, {
     relayStatus: 500,

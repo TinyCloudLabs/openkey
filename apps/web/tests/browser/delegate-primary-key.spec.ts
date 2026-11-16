@@ -339,11 +339,11 @@ test.describe('ordinary-link completion sentence', () => {
       sentence: 'You can close this window and return to the app or site that sent you.',
     },
     {
-      title: 'a link that names no host sends the owner back to the CLI, not to the default signing domain',
+      title: 'a link that names no host sends the owner back to the app or site that sent them, not to a CLI or the default signing domain',
       domain: 'cli.tinycloud.xyz',
       requesterOrigin: null,
       callback: 'http://127.0.0.1:47123/callback',
-      sentence: 'You can close this window and return to the CLI.',
+      sentence: 'You can close this window and return to the app or site that sent you.',
     },
   ]) {
     test(request.title, async ({ page }) => {

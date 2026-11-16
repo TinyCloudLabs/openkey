@@ -2,4 +2,4 @@
 "@openkey/web": patch
 ---
 
-After an approval link succeeds, a link that names a host now closes with "You can close this window and return to the app or site that sent you." The host the link named is no longer shown there. The line for the TinyCloud MCP service is unchanged.
+After an approval link succeeds, the closing line no longer names a host from the link: links say "You can close this window and return to the app or site that sent you.", device sign-ins say "You can close this window and return to your terminal.", and the TinyCloud MCP line is unchanged.
