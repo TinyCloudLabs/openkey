@@ -135,6 +135,7 @@ import { PreparedHandoffError } from '../services/prepared-handoff';
 import { preparedHandoffService } from './prepared-handoffs';
 import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
+import { RENEWAL_EXTERNAL_WALLET_MESSAGE } from '../services/renewal-lease';
 import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, confirmBoundRenewal, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
@@ -1952,6 +1953,10 @@ delegateRouter.post('/prepare', async (c) => {
   await checkApprovalDelegation(body, { expiryMs });
   // TC-2933: the owner's renewal choice is bound with this preview; approving reads it from here, not the body.
   const renewal = await bindApprovalRenewal(body);
+  // TC-3088: a lease is only made for an OpenKey-held key (the operator kill can stop only those); a wallet account is refused.
+  if (renewal?.choice === 'leased' && (key.keyType !== 'MANAGED' || !key.sealedBlob)) {
+    return c.json({ error: RENEWAL_EXTERNAL_WALLET_MESSAGE, code: 'renewal_external_wallet' }, 400);
+  }
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -2279,6 +2284,10 @@ delegateRouter.post('/complete', async (c) => {
     if (peekedContext.ok) {
       signInAppOrigin = peekedContext.value.appOrigin;
       boundRenewal = peekedContext.value.renewal;
+      // TC-3088: leases are for OpenKey-held keys only until a wallet-signed lease can be stopped by the operator kill.
+      if (boundRenewal?.choice === 'leased') {
+        return c.json({ error: RENEWAL_EXTERNAL_WALLET_MESSAGE, code: 'renewal_external_wallet' }, 400);
+      }
     }
     if (peekedContext.ok && peekedContext.value.approvalRequestId !== body.approvalRequestId) {
       return c.json({ error: 'Approval request does not match the consent preview' }, 400);
