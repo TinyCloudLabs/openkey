@@ -209,6 +209,10 @@
     margin: 0;
     overflow-wrap: anywhere;
   }
+  /* Spaced under the line like the other paragraphs on the screen (measured at 390px: 10px, as above the line). */
+  .expiry-once-note {
+    margin-top: 4px;
+  }
   .renewal-line {
     display: flex;
     align-items: flex-start;
