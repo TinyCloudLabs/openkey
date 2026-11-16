@@ -1952,10 +1952,11 @@ delegateRouter.post('/prepare', async (c) => {
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
   await checkApprovalDelegation(body, { expiryMs });
   // TC-2933: the owner's renewal choice is bound with this preview; approving reads it from here, not the body.
-  let renewal = await bindApprovalRenewal(body);
-  // TC-3088: a lease is made only for an OpenKey-held key (the operator kill can stop only those). On a wallet account a
-  // leased choice is bound as a finite one: the approval goes ahead, ends at the grant's own end, and no lease exists.
-  if (renewal?.choice === 'leased' && (key.keyType !== 'MANAGED' || !key.sealedBlob)) renewal = { choice: 'finite' };
+  const renewal = await bindApprovalRenewal(body);
+  // TC-3088: a lease is only made for an OpenKey-held key (the operator kill can stop only those); a wallet account is refused.
+  if (renewal?.choice === 'leased' && (key.keyType !== 'MANAGED' || !key.sealedBlob)) {
+    return c.json({ error: RENEWAL_EXTERNAL_WALLET_MESSAGE, code: 'renewal_external_wallet' }, 400);
+  }
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -2291,13 +2292,7 @@ delegateRouter.post('/complete', async (c) => {
     if (peekedContext.ok && peekedContext.value.approvalRequestId !== body.approvalRequestId) {
       return c.json({ error: 'Approval request does not match the consent preview' }, 400);
     }
-    if (peekedContext.ok) {
-      // TC-3088: a wallet account's lease tick was bound finite at /prepare; the page repeats what the owner ticked, and
-      // that mismatch is allowed only here (the wallet path), never to widen a finite choice into a lease.
-      const tickedLease = typeof body.renewal === 'object' && body.renewal !== null && (body.renewal as { choice?: unknown }).choice === 'leased';
-      const walletSigner = !signerKey || signerKey.keyType !== 'MANAGED';
-      if (!(walletSigner && tickedLease && peekedContext.value.renewal?.choice === 'finite')) confirmBoundRenewal(body.renewal, peekedContext.value.renewal);
-    }
+    if (peekedContext.ok) confirmBoundRenewal(body.renewal, peekedContext.value.renewal);
     if (!Array.isArray(body.selectedActionIds) || body.selectedActionIds.some((id) => typeof id !== 'string')) {
       return c.json({ error: 'selectedActionIds must be a string[] when authorizationContextToken is provided' }, 400);
     }

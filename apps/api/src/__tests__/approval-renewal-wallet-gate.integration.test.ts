@@ -11,7 +11,7 @@ import { z } from 'zod';
 // TC-3088: while a lease an external wallet signed can't be stopped by the operator kill, leases are made only for
 // OpenKey-held keys. A fresh process keeps the app's auth/database singletons on the isolated child environment.
 if (!process.env.TC3088_WALLET_GATE_CHILD) {
-  test('renewal leases are made only for OpenKey-held keys; a wallet account asking for one is approved finite', async () => {
+  test('renewal leases are refused for external-wallet accounts and offered to OpenKey-held keys', async () => {
     const directory = await mkdtemp('/var/tmp/TC3088-wallet-gate-');
     try {
       const child = Bun.spawn([process.execPath, 'test', import.meta.path], {
@@ -32,7 +32,7 @@ if (!process.env.TC3088_WALLET_GATE_CHILD) {
     }
   }, 120_000);
 } else {
-  test('a wallet account is approved finite when it asks for renewal, and an OpenKey-held key is still offered a lease', async () => {
+  test('prepare and complete refuse a lease for a wallet account, and prepare still offers one to an OpenKey-held key', async () => {
     const directory = process.env.TC3088_WALLET_GATE_CHILD!;
     const root = resolve(import.meta.dir, '../../../..');
     const database = new PGlite(join(directory, 'db'));
@@ -51,9 +51,8 @@ if (!process.env.TC3088_WALLET_GATE_CHILD) {
     async function account(kind: 'MANAGED' | 'EXTERNAL') {
       const userId = randomUUID();
       await prisma.user.create({ data: { id: userId, email: `${userId}@example.test`, emailVerified: true } });
-      const external = Wallet.createRandom();
-      const privateKey = kind === 'MANAGED' ? generatePrivateKey() : external.privateKey;
-      const address = kind === 'MANAGED' ? getAddressFromPrivateKey(privateKey) : external.address;
+      const privateKey = generatePrivateKey();
+      const address = kind === 'MANAGED' ? getAddressFromPrivateKey(privateKey) : Wallet.createRandom().address;
       const sealingContext = randomBytes(32).toString('base64url');
       const key = await prisma.ethereumKey.create({ data: kind === 'MANAGED'
         ? { userId, address, publicKey: '0x1', sealedBlob: await seal(privateKey, await createTeeClient().deriveKey(`openkey/key/${sealingContext}`)), sealingContext, keyType: 'MANAGED', isCanonicalTinyCloud: true }
@@ -85,13 +84,13 @@ if (!process.env.TC3088_WALLET_GATE_CHILD) {
       ({ keyId, jwk: targetJwk, host, permissions, expiry: '3600s', approvalRequestId: id, ...(renewal === undefined ? {} : { renewal }) });
     const leased = { choice: 'leased', leaseLifetimeSeconds: 3600 };
 
-    // A wallet account: a leased choice is bound as a finite one (the approval goes ahead without a lease); finite is unaffected.
+    // A wallet account: a leased choice is refused with the stated code; a finite choice is unaffected.
     const wallet = await account('EXTERNAL');
     const walletRequest = await registerRequest();
-    const leasedWalletPrepare = await post('/api/delegate/prepare', prepareBody(wallet.key.id, walletRequest.id, walletRequest.request.nodeOrigin, leased), wallet.cookie);
-    expect(leasedWalletPrepare.status, await leasedWalletPrepare.clone().text()).toBe(200);
-    const finiteRequest = await registerRequest();
-    const finite = await post('/api/delegate/prepare', prepareBody(wallet.key.id, finiteRequest.id, finiteRequest.request.nodeOrigin, { choice: 'finite' }), wallet.cookie);
+    const refused = await post('/api/delegate/prepare', prepareBody(wallet.key.id, walletRequest.id, walletRequest.request.nodeOrigin, leased), wallet.cookie);
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ code: 'renewal_external_wallet' });
+    const finite = await post('/api/delegate/prepare', prepareBody(wallet.key.id, walletRequest.id, walletRequest.request.nodeOrigin, { choice: 'finite' }), wallet.cookie);
     expect(finite.status, await finite.clone().text()).toBe(200);
 
     // An OpenKey-held key: the leased preview is offered.
@@ -105,7 +104,7 @@ if (!process.env.TC3088_WALLET_GATE_CHILD) {
       selectedActionKeys: z.array(z.string()),
     }).parse(await offered.json());
 
-    // The wallet completion path never carries a lease: a leased context (a managed key's) is refused there, even with a valid signature.
+    // The wallet completion path never carries a lease: a leased context is refused there too, even with a valid signature.
     const approval = { ...prepareBody(managed.key.id, managedRequest.id, managedRequest.request.nodeOrigin, leased), protocolVersion: 1, prepared: prepared.prepared,
       authorizationContextToken: prepared.authorizationContext.token, selectedActionIds: prepared.selectedActionKeys };
     const signature = await new Wallet(managed.privateKey.startsWith('0x') ? managed.privateKey : `0x${managed.privateKey}`).signMessage(prepared.prepared.siwe);
@@ -113,21 +112,6 @@ if (!process.env.TC3088_WALLET_GATE_CHILD) {
     expect(complete.status).toBe(400);
     expect(await complete.json()).toMatchObject({ code: 'renewal_external_wallet' });
     expect((await prisma.approvalRequest.findUniqueOrThrow({ where: { id: managedRequest.id } })).resultRef).toBeNull();
-
-    // The wallet owner approves through /complete repeating the tick: the approval goes ahead, finite, with no lease.
-    const walletPrepared = z.object({
-      prepared: z.object({ siwe: z.string() }).passthrough(),
-      authorizationContext: z.object({ token: z.string() }),
-      selectedActionKeys: z.array(z.string()),
-    }).parse(await leasedWalletPrepare.json());
-    const walletApproval = { ...prepareBody(wallet.key.id, walletRequest.id, walletRequest.request.nodeOrigin, leased), protocolVersion: 1, prepared: walletPrepared.prepared,
-      authorizationContextToken: walletPrepared.authorizationContext.token, selectedActionIds: walletPrepared.selectedActionKeys };
-    const walletSignature = await new Wallet(wallet.privateKey).signMessage(walletPrepared.prepared.siwe);
-    const approved = await post('/api/delegate/complete', { ...walletApproval, signature: walletSignature }, wallet.cookie);
-    expect(approved.status, await approved.clone().text()).toBe(200);
-    expect((await prisma.approvalRequest.findUniqueOrThrow({ where: { id: walletRequest.id } })).resultRef).not.toBeNull();
-    expect(await prisma.renewalLease.count()).toBe(0);
-    expect(JSON.stringify(await approved.json())).not.toContain('leaseAuthorization');
     await prisma.$disconnect();
   }, 120_000);
 }
