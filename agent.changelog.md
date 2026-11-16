@@ -3,6 +3,15 @@
 Track changes to agent-facing development guidance for OpenKey. Add a concise entry when
 `agent.dev.md` or related agent workflow expectations change.
 
+## 2026-11-12
+
+- Ordinary consent accepts a canonical requester origin and binds its host
+  into the prepared SIWE, managed signing, wallet completion and refreshed
+  review. The UI distinguishes MCP, CLI and custom hosts while retaining the
+  caller-reported / no-signed-manifest disclosure. Documented validation,
+  protected-flow exclusions and the coordinated SDK deployment dependency.
+  Local signing and browser smoke passed; no production deployment occurred.
+
 ## 2026-10-21
 
 - Added the public personal-record MCP audience and exact delegation callback

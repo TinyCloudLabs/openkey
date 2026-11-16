@@ -116,6 +116,22 @@ Details: TC-2489.
 A `/delegate` link without `deviceTransactionId` can be made by anyone, so
 the page limits what it does with one:
 
+- Optional `requesterOrigin` attributes the request to its caller. Supply it
+  once, as an exact canonical HTTPS origin, or an HTTP origin on exactly
+  `localhost`, `127.0.0.1` or `[::1]`. Paths (including a trailing slash),
+  credentials, query/fragment, whitespace and noncanonical spellings are
+  rejected. Custom nondefault ports are retained.
+  The web page forwards it to `/api/delegate/prepare`, which binds the host
+  into the SIWE domain and authorization context. Permission narrowing,
+  managed signing and wallet completion retain that domain.
+  The consent label comes from the prepared SIWE: `mcp.tinycloud.xyz` is
+  TinyCloud MCP, `cli.tinycloud.xyz` is TinyCloud CLI, and other domains display
+  their actual host and port. Omission preserves the existing CLI domain.
+  This is **caller-reported, not verified identity**: the link remains unsigned,
+  has no signed app manifest, and gains no callback or node-host privileges.
+  Device transactions, signed approval requests and prepared handoffs reject
+  this ordinary-link override instead of replacing their bound identity.
+
 - `callback` must be a loopback URL (`localhost`, `127.0.0.1`, or `[::1]`,
   as the TinyCloud CLI uses) or a registered app callback endpoint: an
   HTTPS origin plus exact path, with any query
@@ -301,9 +317,11 @@ still receives `404 key_not_found`.
 The standard `/delegate` and `/a/<id>` pages automatically call
 `/api/delegate/prepare` once when approval returns `context-expired` or
 `context-not-found`. This is the ordinary authenticated prepare endpoint: the
-selected owner key, request identifier, session key, node, requested permissions
-and chosen grant lifetime are submitted again and validated normally. The
-owner's selected action set must be unchanged, without duplicate or missing
+selected owner key, request identifier, session key, node, requested permissions,
+ordinary-link requester origin and chosen grant lifetime are submitted again
+and validated normally. The ordinary `/delegate` page also requires the fresh
+SIWE domain to match the previous review. The owner's selected action set must
+be unchanged, without duplicate or missing
 actions, and the fresh message must be a usable SIWE capability request with
 those same grants before approval continues. The authorization context lifetime
 remains five minutes.

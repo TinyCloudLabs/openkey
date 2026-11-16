@@ -8,6 +8,7 @@ import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
+import type { PermissionOption, PermissionActionOption } from '../routes/delegate-session';
 import { mockModules, replaceModules } from './mock-module';
 
 const walletKey = '0x1111111111111111111111111111111111111111111111111111111111111111';
@@ -182,6 +183,90 @@ describe('versioned /complete for wallet keys', () => {
     expect(res.body.expirationTime).toBe(signedExpiry);
     expect(res.body.expiresAt).toBe(signedExpiry);
     expect(res.body.expiry).toBe(signedExpiry);
+  });
+});
+
+describe('ordinary requester attribution', () => {
+  test.each([
+    ['https://mcp.tinycloud.xyz', 'mcp.tinycloud.xyz'],
+    ['https://personal.example:8443', 'personal.example:8443'],
+    ['http://localhost:8787', 'localhost:8787'],
+    ['http://127.0.0.1:8787', '127.0.0.1:8787'],
+    ['http://[::1]:8787', '[::1]:8787'],
+    [undefined, 'cli.tinycloud.xyz'],
+  ])('binds %s through preparation, narrowing and wallet completion', async (requesterOrigin, domain) => {
+    const input = { keyId: externalKey.id, jwk, host, requesterOrigin };
+    const prepared = await post('/prepare', input);
+    expect(prepared.status).toBe(200);
+    expect(prepared.body.prepared.siwe.split('\n')[0]).toBe(`${domain} wants you to sign in with your Ethereum account:`);
+    const removable = prepared.body.permissions.flatMap((permission: PermissionOption) => permission.actions)
+      .find((action: PermissionActionOption) => !action.required);
+    expect(removable).toBeDefined();
+    const selected = prepared.body.selectedActionKeys.filter((key: string) => key !== removable.key);
+    const narrowed = await post('/prepare', { ...input, actionKeys: selected });
+    expect(narrowed.status).toBe(200);
+    expect(narrowed.body.prepared.siwe.split('\n')[0]).toBe(`${domain} wants you to sign in with your Ethereum account:`);
+    expect(new Set(narrowed.body.selectedActionKeys)).toEqual(new Set(selected));
+    const completed = await post('/complete', await webCompleteBody(narrowed));
+    expect(completed.status).toBe(200);
+    expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    null, false, {}, ['https://mcp.tinycloud.xyz'], '',
+    'http://mcp.tinycloud.xyz', 'http://localhost.evil.example:8787',
+    'http://127.0.0.1.evil.example:8787', 'http://sub.localhost:8787',
+    'http://127.1:8787', 'http://2130706433:8787', 'http://0x7f000001:8787',
+    'http://127.0.0.2:8787', 'http://localhost:80', 'http://localhost:8787/',
+    'http://user@localhost:8787', 'http://[0:0:0:0:0:0:0:1]:8787',
+    'https://mcp.tinycloud.xyz/', 'https://mcp.tinycloud.xyz/path',
+    'https://mcp.tinycloud.xyz?x=1', 'https://mcp.tinycloud.xyz#fragment',
+    'https://user@mcp.tinycloud.xyz', 'https://MCP.tinycloud.xyz',
+    'https://mcp.tinycloud.xyz:443', ' https://mcp.tinycloud.xyz',
+    'https://mcp.tinycloud.xyz\n', 'https://*.tinycloud.xyz',
+    'https://mcp.tinycloud.xyz\\evil',
+  ].map(requesterOrigin => [requesterOrigin]))('rejects invalid or ambiguous requester origin %j', async (requesterOrigin) => {
+    const result = await post('/prepare', { keyId: externalKey.id, jwk, host, requesterOrigin });
+    expect(result.status).toBe(400);
+    expect(result.body.code).toBe('invalid_requester_origin');
+    expect(result.body.authorizationContext).toBeUndefined();
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test.each(['deviceTransactionId', 'approvalRequestId'])('cannot override %s identity', async (binding) => {
+    const result = await post('/prepare', {
+      keyId: externalKey.id, jwk, host, requesterOrigin: 'https://mcp.tinycloud.xyz', [binding]: 'bound-request',
+    });
+    expect(result.status).toBe(400);
+    expect(result.body.code).toBe('requester_origin_unsupported');
+    expect(result.body.authorizationContext).toBeUndefined();
+  });
+
+  test('cannot override an origin-bound signing request', async () => {
+    const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host });
+    const result = await post('/authorize-sign-prepare', {
+      keyId: externalKey.id, jwk, host, siwe: prepared.body.prepared.siwe,
+      requestOrigin: 'https://cli.tinycloud.xyz', requesterOrigin: 'https://mcp.tinycloud.xyz',
+    });
+    expect(result.status).toBe(400);
+    expect(result.body.code).toBe('requester_origin_unsupported');
+    expect(result.body.authorizationContext).toBeUndefined();
+  });
+
+  test('rejects a correctly signed replacement domain without burning the context', async () => {
+    const prepared = await post('/prepare', {
+      keyId: externalKey.id, jwk, host, requesterOrigin: 'https://mcp.tinycloud.xyz',
+    });
+    const body = await webCompleteBody(prepared);
+    const substituted = body.prepared.siwe.replace('mcp.tinycloud.xyz', 'cli.tinycloud.xyz');
+    const refused = await post('/complete', {
+      ...body, prepared: { ...body.prepared, siwe: substituted },
+      signature: await wallet.signMessage({ message: substituted }),
+    });
+    expect(refused.status).toBe(400);
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+    expect((await post('/complete', body)).status).toBe(200);
+    expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
   });
 });
 

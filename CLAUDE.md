@@ -71,7 +71,7 @@ it detects drift. `db:push` remains a local-development command only.
 - Deploys automatically on push
 
 ### Post-deploy: Share sender sign-in
-- `.github/workflows/share-sender-smoke.yml` runs `scripts/share-sender-smoke.sh` after every web deploy and every successful API deploy. A new throwaway Mailinator OpenKey account signs in to production Share, creates a share and opens it (TC-994). Run the script by hand as part of any manual deploy smoke. A failure means OpenKey broke an embedding app; its JSON report names the failing request.
+- `.github/workflows/share-sender-smoke.yml` runs `scripts/share-sender-smoke.sh` after every web deploy and every successful API deploy. A new throwaway mail.tm OpenKey account signs in to production Share, creates a share and opens it (TC-994). Run the script by hand as part of any manual deploy smoke. A failure means OpenKey broke an embedding app; its JSON report names the failing request.
 
 ## Auth Architecture (better-auth)
 
