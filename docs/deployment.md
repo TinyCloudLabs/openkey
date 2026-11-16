@@ -428,10 +428,14 @@ does not read the added columns or the new table, and the new triggers do
 nothing for ordinary users. `gh run rerun <last good run>`, which the header of
 `deploy-api.yml` names, does not work here: an older checkout stops at the
 migration step with "Production contains migration history absent from this
-checkout", because `_prisma_migrations` already records this migration. To
-revert the schema as well, together with a code revert that removes the
-migration directory, its two checksum pins and the 25-column expectation in
-`scripts/native-delegation-schema-guards.ts`:
+checkout", because `_prisma_migrations` already records this migration.
+
+The schema can be reverted as well, together with a code revert that removes
+the migration directory, its two checksum pins and the 25-column expectation in
+`scripts/native-delegation-schema-guards.ts`. Run the SQL below only after the
+previous image is the one serving: an image built from this change reads
+`user."reviewerHoldAt"` and `session."reviewerEpoch"`, so while it serves, every
+`user` and `session` read fails with `P2022` once those columns are dropped.
 
 ```sql
 BEGIN;
