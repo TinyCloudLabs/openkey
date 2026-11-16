@@ -1714,8 +1714,8 @@
     {error || (approvalRequestLoading ? 'Checking request…' : 'This approval link is unavailable.')}
   </div>
 {:else if declined}
-  <div role="status" data-testid="declined" class="min-h-screen flex flex-col items-center justify-center px-4 text-center">
-    <p>Declined. You can close this window.</p>
+  <div data-testid="declined" class="min-h-screen flex flex-col items-center justify-center px-4 text-center">
+    <p role="status">Declined. You can close this window.</p>
     <CloseTabButton />
   </div>
 {:else if !dispatchReady && !preparedTransport}
