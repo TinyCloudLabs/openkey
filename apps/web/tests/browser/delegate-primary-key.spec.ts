@@ -321,3 +321,48 @@ test.describe('ordinary-link receiver line', () => {
     await expect(receiverLine(page)).toHaveCount(0);
   });
 });
+
+test.describe('ordinary-link completion sentence', () => {
+  for (const request of [
+    {
+      title: 'an approval delivered to the hosted MCP sends the owner back to ChatGPT or their MCP client',
+      domain: 'mcp.tinycloud.xyz',
+      requesterOrigin: 'https://mcp.tinycloud.xyz',
+      callback: 'https://mcp.tinycloud.xyz/chatgpt/connect/callback?state=t.n.sig',
+      sentence: 'You can close this window and return to ChatGPT or your MCP client.',
+    },
+    {
+      title: 'a link that names a host and delivers to this device sends the owner back to that host',
+      domain: 'listen.example',
+      requesterOrigin: 'https://listen.example',
+      callback: 'http://127.0.0.1:47123/callback',
+      sentence: 'You can close this window and return to listen.example.',
+    },
+    {
+      title: 'a link that names no host sends the owner back to the CLI, not to the default signing domain',
+      domain: 'cli.tinycloud.xyz',
+      requesterOrigin: null,
+      callback: 'http://127.0.0.1:47123/callback',
+      sentence: 'You can close this window and return to the CLI.',
+    },
+  ]) {
+    test(request.title, async ({ page }) => {
+      await mock(page, [primary]);
+      const prepared = preparedFor(primary.address);
+      prepared.prepared.siwe = prepared.prepared.siwe.replace('cli.tinycloud.xyz', request.domain);
+      await page.route('**/api/delegate/prepare', route => json(route, 200, prepared));
+      let delivered = false;
+      await page.route(`${request.callback.split('?')[0]}**`, (route) => {
+        if (route.request().method() === 'POST') delivered = true;
+        return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type' }, body: '{"success":true}' });
+      });
+      const params = new URLSearchParams({ callback: request.callback });
+      if (request.requesterOrigin) params.set('requesterOrigin', request.requesterOrigin);
+      await page.goto(`${noOwner}&${params}`);
+      await approve(page).click();
+      await expect.poll(() => delivered).toBe(true);
+      await expect(page.getByRole('heading', { name: 'Authenticated' })).toBeVisible();
+      await expect(page.getByText(request.sentence, { exact: true })).toBeVisible();
+    });
+  }
+});

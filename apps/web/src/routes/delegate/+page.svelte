@@ -1833,10 +1833,11 @@
           {:else}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
             <p class="text-surface-500 text-sm">
-              {#if !ordinaryLink && reviewModel?.immutable?.domain === 'mcp.tinycloud.xyz'}
+              {#if ordinaryReceiver?.kind === 'service'}
+                <!-- Every built-in service endpoint is the hosted MCP (delegate-link-policy.ts). -->
                 You can close this window and return to ChatGPT or your MCP client.
-              {:else if reviewModel?.immutable?.domain && (ordinaryLink || reviewModel.immutable.domain !== 'cli.tinycloud.xyz')}
-                You can close this window and return to {reviewModel.immutable.domain}.
+              {:else if ordinaryRequesterHost}
+                You can close this window and return to {ordinaryRequesterHost}.
               {:else}
                 You can close this window and return to the CLI.
               {/if}
