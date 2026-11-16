@@ -14,6 +14,7 @@
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
+  import { serverActionId } from '$lib/delegate-review-selection';
   import { expiryAt, siweExpiration } from '$lib/approval-expiry';
   import { PREVIEW_EXPIRED_MESSAGE, signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
   import {
@@ -125,6 +126,9 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   let previewing = $state(false);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
+  // TC-2927: the extra permissions (decrypt or key creation on the encryption network or on keys outside the app's own
+  // area) the owner allowed on the warning screen. The preview records them and signing refuses an undecided one.
+  let elevatedAllowed = $state<string[]>([]);
   // Sol MAJOR-3 (continuation): external-key review mode. See widget/sign.
   let externalSignMode = $state(false);
   let expiryChangeable = $state(false);
@@ -791,7 +795,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   const previewInput = $derived.by(() =>
     key && canUseAuthorizeSignFn() && !siweRefusal
       ? JSON.stringify([currentRequestId, key.id, message,
-          [...currentSelectedActionIds()].sort(), expiryChoiceMs])
+          [...currentSelectedActionIds()].sort(), expiryChoiceMs, elevatedAllowed])
       : null,
   );
 
@@ -973,6 +977,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
+            ...(elevatedAllowed.length === 0 ? {} : { elevatedDecision: { allowed: elevatedAllowed } }),
             // TC-2272: only when the user changed it; the app's own expiry stays the default.
             ...(requestedExpiry === null ? {} : { expirationTime: requestedExpiry }),
           }),
@@ -1099,7 +1104,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
 
       // Exact-byte signing cannot narrow the request: show every parsed
       // action and report the full set rather than a UI-only selection.
-      const result = await api.signMessage(key.id, message, origin === '*' ? undefined : origin);
+      const result = await api.signMessage(key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0);
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
             service: grant.service,
@@ -1384,6 +1389,16 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
                 },
               }
             : undefined,
+          // TC-2927: the warning screen for extra permissions. On the server-authoritative path the owner can reject one
+          // and approve the rest; the exact-byte path cannot be narrowed, so it is all or nothing. The allowed ids go into the
+          // next preview (or the exact-byte sign) and the server refuses to sign an extra permission that is not among them.
+          elevated: {
+            splittable: canUseAuthorizeSignFn(),
+            onDecide: (allowed) => {
+              elevatedAllowed = allowed.map(serverActionId).sort();
+              invalidatePreviewForSelectionEdit();
+            },
+          },
           invalidatePreview: invalidatePreviewForSelectionEdit,
         }}
       />

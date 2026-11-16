@@ -101,6 +101,7 @@
   {peerRecognition}
   expiryMs={transport.expiry?.chosenMs ?? null}
   onExpiryChange={transport.expiry?.onChange}
+  elevated={transport.elevated ?? null}
   {onApprove}
   {onCancel}
   onRetry={transport.retryPreview}
