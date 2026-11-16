@@ -208,10 +208,18 @@ test.describe('ordinary-link requester claims', () => {
 
       // A link-chosen authority is not a verified first-party app name,
       // even when the link also names a registered callback endpoint.
-      await expect(page.locator('.requester-line .requester-name')).toHaveText(request.domain);
       const warning = page.getByRole('alert').filter({ has: page.getByRole('heading') });
       await expect(warning).toBeVisible();
-      await expect(warning).toContainText(request.domain);
+      if (request.requesterOrigin) {
+        await expect(page.locator('.requester-line .requester-name')).toHaveText(request.domain);
+        await expect(warning).toContainText(request.domain);
+      } else {
+        // The link named no host, so none is claimed; the default signing
+        // domain is not something the link said.
+        await expect(page.locator('.requester-line')).toHaveText('From a link');
+        await expect(warning).toContainText('Anyone can make a link like this.');
+        await expect(warning).not.toContainText(request.domain);
+      }
       await expect(approve(page)).toBeEnabled();
     });
   }
@@ -241,7 +249,8 @@ test('a server-loaded signed request keeps its attribution without the ordinary-
     .replace('2026-11-03T01:00:00.000Z', '2026-10-15T01:00:00.000Z');
   await page.route('**/api/delegate/prepare', route => json(route, 200, prepared));
   await page.goto(`/a/${id}#v=4&k=${'A'.repeat(43)}&c=bafkreia${'a'.repeat(52)}`);
-  await expect(page.locator('.requester-line .requester-name')).toHaveText('cli.tinycloud.xyz');
+  // A signed request is server-bound, so the CLI keeps its friendly name.
+  await expect(page.locator('.requester-line .requester-name')).toHaveText('TinyCloud CLI');
   await expect(page.getByRole('alert').filter({ has: page.getByRole('heading') })).toHaveCount(0);
   await expect(approve(page)).toBeEnabled();
 });

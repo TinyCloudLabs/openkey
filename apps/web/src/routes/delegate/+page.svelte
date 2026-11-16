@@ -397,7 +397,6 @@
   }
   const deviceTransactionId = approvalRequestMode ? '' : $page.url.searchParams.get('deviceTransactionId') || '';
   const ordinaryLink = $derived(!approvalRequestMode && !deviceTransactionId && !preparedTransport);
-  const ordinaryRequesterHost = $derived(ordinaryLink && reviewModel ? reviewModel.requester.displayName : null);
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
   const deviceUserCode = $page.url.searchParams.get('deviceUserCode') || '';
   let deviceAcknowledged = $state(false);
@@ -514,6 +513,10 @@
   // server-verified device request instead.
   const requesterOriginCheck = checkDelegateRequesterOrigin(
     $page.url.searchParams, approvalRequestMode || !!deviceTransactionId || preparedTransport,
+  );
+  // A host is named only when the link actually carried one.
+  const ordinaryRequesterHost = $derived(
+    ordinaryLink && reviewModel && requesterOriginCheck.ok && requesterOriginCheck.origin ? reviewModel.requester.displayName : null,
   );
   const callbackCheck = $derived(approvalRequestMode || deviceTransactionId
     ? null
@@ -911,9 +914,14 @@
             originWarning: false,
           },
         });
-        // A prepared domain binds signed bytes, not a first-party app identity.
-        // None of this response's requester-name fields is server-verified.
-        model.requester.displayName = hostNamedByLink(model.immutable?.domain);
+        // An ordinary link's domain is whatever the link said, so it is never
+        // a first-party name. A device, signed-request or prepared flow refuses
+        // a caller-reported requester, so its domain is the server's own and the
+        // CLI keeps its name there.
+        const signedDomain = model.immutable?.domain;
+        model.requester.displayName = !ordinaryLink && signedDomain === 'cli.tinycloud.xyz'
+          ? 'TinyCloud CLI'
+          : hostNamedByLink(signedDomain);
         reviewModel = model;
         reviewSelection = defaultSelection(model);
         baselineSiweForReview = siweMessage;
@@ -2020,6 +2028,7 @@
             <CliSigningAdapter
               model={reviewModel}
               linkNamedHost={ordinaryRequesterHost}
+              ordinaryLink={ordinaryLink}
               receiver={ordinaryReceiver}
               initialSelection={reviewSelection}
               context={cliContext}

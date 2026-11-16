@@ -112,6 +112,8 @@
     showSigner?: boolean;
     /** A host named by an unsigned ordinary link, not a verified sender. */
     linkNamedHost?: string | null;
+    /** An ordinary link: nothing about its sender is verified, so the warning shows. */
+    ordinaryLink?: boolean;
     /**
      * Where an ordinary link's approval will be delivered, as OpenKey
      * enforces it. Names a destination, never the requester.
@@ -167,6 +169,7 @@
     context,
     showSigner = false,
     linkNamedHost = null,
+    ordinaryLink = false,
     receiver = null,
     peerRecognition = null,
     expiryMs = null,
@@ -550,6 +553,8 @@
     <p class="requester-line">
       {#if linkNamedHost !== null}
         From a link that names <span class="requester-name break-all">{linkNamedHost}</span>
+      {:else if ordinaryLink}
+        From a link
       {:else}
         Requested by <span class="requester-name">{identity ? requestedBy : requesterName}</span>
       {/if}
@@ -557,11 +562,15 @@
     <p id="signing-approval-hint" class="hint">{hint}</p>
   </header>
 
-  {#if linkNamedHost !== null}
+  {#if ordinaryLink}
     <section class="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
       <h3 class="font-semibold">OpenKey can't confirm who sent this request</h3>
       <p class="mt-1 leading-relaxed">
-        Anyone can make a link that names <span class="break-all">{linkNamedHost}</span>.
+        {#if linkNamedHost !== null}
+          Anyone can make a link that names <span class="break-all">{linkNamedHost}</span>.
+        {:else}
+          Anyone can make a link like this.
+        {/if}
         {#if receiver?.kind === "service"}
           This request may come from someone else's {receiver.service} session.
         {/if}
@@ -780,7 +789,7 @@
           </span>
         </div>
       {/if}
-      {#if model.requester.domainWarning && linkNamedHost === null}
+      {#if model.requester.domainWarning && !ordinaryLink}
         <div class="row">
           <span class="warn" role="status">
             Domain warning: SIWE domain does not match the verified browser origin
