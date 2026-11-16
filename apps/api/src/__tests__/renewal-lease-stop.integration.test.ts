@@ -286,6 +286,34 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     expect(await stopped(walletLease)).toBe(false);
   });
 
+  test('the operator report counts only live leases, split by who signed them, and the stop sweep takes its OpenKey-signed count to zero', async () => {
+    const { renewalLeaseReport } = await import('../services/renewal-lease-report');
+    const { stopAllRenewalLeasesOnce } = await import('../services/renewal-lease-sweep');
+    await prisma.renewalLease.updateMany({ data: { revokedAt: new Date() } });
+    expect(await renewalLeaseReport(prisma)).toEqual({ live: 0, openkeySigned: 0, walletSigned: 0, unconfirmed: 0, accounts: 0, earliestEnd: null, latestEnd: null });
+
+    const managed = await account();
+    const other = await account();
+    const wallet = await account('EXTERNAL');
+    await lease(managed, null, 'ok', 3_600_000);
+    await lease(managed, null, 'ok', 7_200_000);
+    await lease(other, null, 'ok', 5_400_000, true); // recorded before the node confirmed it
+    await lease(wallet, null);
+    await lease(managed, null, 'ok', -1_000); // already ended
+    const stoppedAlready = await lease(other, null);
+    await prisma.renewalLease.update({ where: { leaseCid: stoppedAlready }, data: { revokedAt: new Date() } });
+
+    const before = await renewalLeaseReport(prisma);
+    expect(before).toMatchObject({ live: 4, openkeySigned: 3, walletSigned: 1, unconfirmed: 1, accounts: 3 });
+    expect(Date.parse(before.earliestEnd!)).toBeLessThan(Date.parse(before.latestEnd!));
+
+    // Counts only: nothing in the report can name a lease, an account or an address.
+    expect(JSON.stringify(before)).not.toMatch(/did:pkh|0x[0-9a-f]{40}|bafkr/i);
+
+    await stopAllRenewalLeasesOnce(prisma);
+    expect(await renewalLeaseReport(prisma)).toMatchObject({ live: 1, openkeySigned: 0, walletSigned: 1, unconfirmed: 0, accounts: 1 });
+  });
+
   test('a node that does not confirm leaves the lease on; the retry stops it', async () => {
     const owner = await account();
     const { cookie } = await owner.session();

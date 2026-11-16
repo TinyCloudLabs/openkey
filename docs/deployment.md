@@ -241,6 +241,13 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway base domain (e.g. `dstack-pha-prod5.phala.network`); the ingress CNAMEs `api.openkey.so` to `gateway.<base>` (never `_.<base>`, which Android cannot resolve) |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |
 
+**Turning renewal off, and stopping every lease (TC-3088).** Unsetting `OPENKEY_RENEWAL_LEASES` only stops new leases; the node keeps renewing the ones it holds. To stop them all:
+
+1. Count first (read-only, counts only, safe to run any time): `DATABASE_URL=<read-only url> bun run scripts/renewal-leases-report.ts`. It prints `live`, `openkeySigned`, `walletSigned`, `unconfirmed`, `accounts` and the earliest and latest lease end.
+2. Write `OPENKEY_RENEWAL_LEASES=stop` to the encrypted env and redeploy the API. Within about 30 seconds of boot, and then every 5 minutes, the API revokes each live lease an OpenKey-held key signed, through the same revocation that Settings "Stop renewal", sign-out and account deletion use (revoking needs OpenKey's sealed keys, so nothing outside the API can do it).
+3. Run the count again: `openkeySigned` and `unconfirmed` fall to 0. `walletSigned` stays until each owner's wallet revokes it (owners can also still stop any lease in Settings). The log lines `renewal_lease_sweep_stopped`, `renewal_lease_sweep_wallet_required` and `renewal_lease_sweep_not_stopped` carry the counts per pass.
+4. To end the sweep, set the variable to anything else and redeploy.
+
 `WEBAUTHN_ORIGIN` is the account browser origin and is required in production.
 Browser requests to sensitive account routes require an `Origin` matching that
 account origin, whether authenticated by cookie or bearer. Bearers without an
