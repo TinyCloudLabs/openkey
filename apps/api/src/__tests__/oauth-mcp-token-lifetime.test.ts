@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -106,8 +106,8 @@ if (process.env.OPENKEY_MCP_LIFETIME_TEST_CHILD !== '1') {
   }
 
   // Sign in as the owner and approve; returns the code. `resource` undefined asks for no audience at all.
-  async function authorizeCode(scope: string, resource: string | undefined) {
-    const clientId = await register();
+  async function authorizeCode(scope: string, resource: string | undefined, registeredClientId?: string) {
+    const clientId = registeredClientId ?? await register();
     const query = new URLSearchParams({
       client_id: clientId, response_type: 'code', redirect_uri: callback, scope, state: 's',
       code_challenge: await generateCodeChallenge(verifier), code_challenge_method: 'S256',
@@ -312,4 +312,40 @@ if (process.env.OPENKEY_MCP_LIFETIME_TEST_CHILD !== '1') {
       expect(rows[0]!.expiresAt.getTime() / 1000).toBe(decodeJwt(tokens.access_token).exp!);
     });
   });
+  test('a reviewer access token has exp minus iat of at most one hour', async () => {
+    const clientId = await register();
+    const reviewer = await prisma.user.create({ data: {
+      id: 'lifetime-reviewer', email: 'openai-review@tinycloud.xyz', name: 'App review',
+      emailVerified: true, reviewerHoldAt: new Date(),
+    } });
+    await prisma.reviewerAccount.update({ where: { store: 'openai' }, data: {
+      userId: reviewer.id, clientId, redirectUri: callback, resource: MCP_RESOURCES[1],
+      callbackUri: 'https://mcp.tinycloud.xyz/chatgpt/connect/callback', nodeHost: 'https://node.tinycloud.xyz',
+      keyId: 'lifetime-review-key', spaceId: 'lifetime-review-space', seededAt: new Date(),
+    } });
+    const { installReviewer, unsetReviewer } = await import('../services/reviewer-accounts');
+    await installReviewer(prisma, 'openai', randomBytes(32).toString('base64url'));
+    const binding = await prisma.reviewerAccount.findUniqueOrThrow({ where: { store: 'openai' } });
+    const token = randomUUID();
+    await prisma.session.create({ data: {
+      id: 'lifetime-review-session', token, userId: reviewer.id, reviewerEpoch: binding.installEpoch,
+      expiresAt: new Date(Date.now() + 3600_000),
+    } });
+    const runtime = await import('../auth');
+    const context = await runtime.auth.$context;
+    const savedCookie = cookie;
+    cookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, token, context.secret)).split(';')[0]!;
+    try {
+      const { code } = await authorizeCode('openid email offline_access tinycloud:mcp', MCP_RESOURCES[1], clientId);
+      const response = await exchange(clientId, code, MCP_RESOURCES[1]);
+      expect(response.status, await response.clone().text()).toBe(200);
+      const issued = await response.json() as { access_token: string; expires_in: number };
+      expect(lifetimeOf(issued.access_token)).toBeLessThanOrEqual(3600);
+      expect(issued.expires_in).toBeLessThanOrEqual(3600);
+    } finally {
+      cookie = savedCookie;
+      await unsetReviewer(prisma, 'openai');
+    }
+  });
+
 }

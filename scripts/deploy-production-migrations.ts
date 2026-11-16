@@ -77,6 +77,7 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   ['20261113_0001_approval_request_renewal', '1168755d777b50a32bdc33b6e3b8af5e5838527d9bf2f9edf071fc6923954bd8'],
   ['20261113_0002_renewal_lease', '2dd0af909a1d9660a44e392eb1a0efdec46b5b7d83041ba1da7fe8cd6713d18f'],
   ['20261113_0003_renewal_lease_reservation', 'b9463cc0c23648dbc22b97ebfcd35b415be99da6cc6f6ab8422a46e367b76ce0'],
+  ['20261111_0001_reviewer_accounts', '2eac83d74b03ee6d3043e8522c9cdee47c5893f343d304b572ba3d37e7ca1f40'],
 ]);
 
 export type MigrationRow = {

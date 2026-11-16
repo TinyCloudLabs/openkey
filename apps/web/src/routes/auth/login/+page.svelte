@@ -42,7 +42,7 @@
   // 'passkey' is the enrolment offer; 'passkeySignIn' and 'social' are native-mode landing steps.
   // 'social' is the frame shown while opening a provider or checking its return.
   // 'newAccount' follows a verified code for an email with no account (TC-1114).
-  type Step = 'email' | 'otp' | 'newAccount' | 'socialNewAccount' | 'socialAccountExists' | 'passkey' | 'passkeySignIn' | 'social';
+  type Step = 'reviewer' | 'email' | 'otp' | 'newAccount' | 'socialNewAccount' | 'socialAccountExists' | 'passkey' | 'passkeySignIn' | 'social';
 
   // Native mode: the signed authorize query carries `tinycloud_request`, so the
   // sign-in is running in a system sheet opened by a native app.
@@ -68,6 +68,7 @@
 
   let email = $state(native?.hint ?? '');
   let otp = $state('');
+  let reviewCode = $state('');
   let step = $state<Step>(initialStep());
   let codeSent = $state(false);
   // A code was requested by an earlier load of this page; delivery is unconfirmed.
@@ -225,7 +226,36 @@
     }
   }
 
+  async function signInReviewer() {
+    loading = true;
+    error = '';
+    try {
+      const result = await authClient.$fetch('/sign-in/reviewer', {
+        method: 'POST',
+        body: { email, code: reviewCode, oauth_query: getOAuthQuery() },
+        onSuccess: keepOAuthRedirect,
+      });
+      reviewCode = '';
+      if (result.error) {
+        error = "Couldn't sign in with those details. Check the review account and code, then try again.";
+        return;
+      }
+      authClient.$store.notify('$sessionSignal');
+      handlePostSignIn();
+    } catch {
+      reviewCode = '';
+      error = "Couldn't sign in with those details. Check the review account and code, then try again.";
+    } finally {
+      loading = false;
+    }
+  }
+
   async function sendOTP(): Promise<boolean> {
+    if (!native && ['openai-review@tinycloud.xyz', 'google-review@tinycloud.xyz'].includes(email.trim().toLowerCase())) {
+      step = 'reviewer';
+      error = '';
+      return true;
+    }
     loading = true;
     error = '';
     try {
@@ -735,6 +765,28 @@
           {loading ? 'Waiting for passkey…' : 'Use a passkey instead'}
         </Button>
         {/if}
+        <button type="button" class="mt-5 w-full text-center text-sm text-surface-500 hover:text-surface-900"
+          onclick={() => { step = 'reviewer'; error = ''; }} disabled={loading}>Use a review code</button>
+      {:else if step === 'reviewer'}
+        <h1 class="mb-7 text-center text-2xl font-bold text-surface-900">App review sign-in</h1>
+        {#if error}
+          <p class="mb-6 text-sm text-red-700" role="alert">{error}</p>
+        {/if}
+        <form onsubmit={(event) => { event.preventDefault(); signInReviewer(); }} class="flex flex-col gap-4">
+          <div>
+            <label for="review-email" class="mb-2 block text-sm font-medium text-surface-700">Review account</label>
+            <Input id="review-email" type="email" bind:value={email} autocomplete="username"
+              autocapitalize="none" spellcheck={false} required disabled={loading} />
+          </div>
+          <div>
+            <label for="review-code" class="mb-2 block text-sm font-medium text-surface-700">Review code</label>
+            <Input id="review-code" type="password" bind:value={reviewCode} autocomplete="current-password"
+              maxlength={128} required disabled={loading} />
+          </div>
+          <Button type="submit" disabled={loading} class="w-full">Sign in</Button>
+        </form>
+        <button type="button" class="mt-4 w-full text-center text-sm text-surface-500 hover:text-surface-900"
+          onclick={() => { reviewCode = ''; error = ''; step = 'email'; }} disabled={loading}>Back</button>
       {:else if step === 'otp'}
         <h1 class="mb-2 text-center text-2xl font-bold text-surface-900">Check your email</h1>
         <p class="mb-7 text-center text-sm text-surface-500">
