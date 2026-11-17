@@ -4,6 +4,7 @@
 // subset, in the request's own manifest form, so the CLI can compare them.
 
 import { formatAccessEnd } from './access-end';
+import { EXPIRY_PRESETS } from './approval-expiry';
 
 export interface DevicePermission {
   service: string;
@@ -67,7 +68,9 @@ export async function lookupDeviceRequest(apiBase: string, userCode: string): Pr
     credentials: 'omit',
     headers: { accept: 'application/json' },
   });
-  return response.ok ? ((await response.json()) as DeviceRequestRecord) : null;
+  if (response.status === 404 || response.status === 410) return null;
+  if (!response.ok) throw new Error("Couldn't load this request.");
+  return (await response.json()) as DeviceRequestRecord;
 }
 
 /**
@@ -135,6 +138,13 @@ export function deviceRequestSuggestedSeconds(record: DeviceRequestRecord): numb
   const max = deviceRequestTtlSeconds(record);
   const suggested = record.suggestedTtlSeconds;
   return typeof suggested === 'number' && Number.isFinite(suggested) && suggested >= 1 && suggested <= max ? suggested : max;
+}
+
+/** Start no longer than the shortest shared-review preset or the requester's own smaller choice. */
+export function deviceRequestDefaultSeconds(record: DeviceRequestRecord): number {
+  let seconds = deviceRequestSuggestedSeconds(record);
+  for (const preset of EXPIRY_PRESETS) seconds = Math.min(seconds, preset.ms / 1000);
+  return seconds;
 }
 
 /** Lifetime choices up to (and ending with) the requested maximum, with the suggestion marked. */

@@ -7,6 +7,7 @@ import {
   formatExpiry,
   parseExpiry,
   requestedExpiryMs,
+  approvalRequestStartSeconds,
 } from './approval-expiry';
 
 const S = 1000;
@@ -136,5 +137,22 @@ describe('expiryAtCapped', () => {
     expect(expiryAtCapped(7 * D, '2026-11-05T00:00:00.000Z', now)).toBe('2026-11-05T00:00:00.000Z');
     expect(expiryAtCapped(H, null, now)).toBe('2026-10-31T01:00:00.000Z');
     expect(expiryAtCapped(H, 'not a time', now)).toBe('2026-10-31T01:00:00.000Z');
+  });
+});
+
+describe('approvalRequestStartSeconds', () => {
+  test('a request that suggests nothing starts at one hour, however long its signed maximum', () => {
+    expect(approvalRequestStartSeconds(7 * 86_400)).toBe(3600);
+    expect(approvalRequestStartSeconds(8000 * 365 * 86_400)).toBe(3600);
+    expect(approvalRequestStartSeconds(7 * 86_400, 0)).toBe(3600);
+  });
+  test('a request for less than an hour starts at what it asked for', () => {
+    expect(approvalRequestStartSeconds(600)).toBe(600);
+    expect(approvalRequestStartSeconds(7 * 86_400, 1800)).toBe(1800);
+  });
+  test('a suggestion above an hour is not used as the start, and one above the maximum is ignored', () => {
+    expect(approvalRequestStartSeconds(30 * 86_400, 7 * 86_400)).toBe(3600);
+    expect(approvalRequestStartSeconds(7200, 30 * 86_400)).toBe(3600);
+    expect(approvalRequestStartSeconds(900, 30 * 86_400)).toBe(900);
   });
 });

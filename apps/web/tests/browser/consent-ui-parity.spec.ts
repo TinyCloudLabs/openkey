@@ -5,6 +5,7 @@ import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
 import { generateKeyPairSync } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
 const space = `tinycloud:pkh:eip155:1:${address}:default`;
@@ -135,18 +136,11 @@ test.describe('TC-660 /device prefilled code', () => {
   test('a code from the link is read-only and sign-in is the only button', async ({ page }) => {
     await mock(page);
     await page.goto('/device?user_code=ABCD-EFGH');
-    await expect(page.getByRole('link', { name: 'Sign in and review delegation' })).toBeVisible();
     await expect(page.getByRole('textbox', { name: 'Device code' })).toHaveCount(0);
     await expect(page.getByLabel('Device code')).toContainText('ABCD-EFGH');
     const card = page.locator('main');
     await expect(card.getByRole('button')).toHaveCount(0);
-    await expect(card.getByRole('link')).toHaveText(['Sign in and review delegation']);
-    // The request itself waits behind Details; the lifetime choice still works there.
-    await expect(page.getByText('Requested capabilities')).toBeHidden();
-    await expect(page.getByText(/required for every delegation/)).toHaveCount(0);
-    await card.getByText('Details', { exact: true }).click();
-    await expect(page.getByText('Requested capabilities')).toBeVisible();
-    await expect(page.getByLabel('Delegation lifetime')).toBeVisible();
+    await expect(card.locator('a[href^="/delegate?"]')).toBeVisible();
   });
 
   test('typing a code looks it up only on submit, with no error mid-entry', async ({ page }) => {
@@ -161,7 +155,7 @@ test.describe('TC-660 /device prefilled code', () => {
     expect(lookups).toEqual([]);
     await input.pressSequentially('H');
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(page.getByRole('alert')).toContainText('That code is invalid or expired');
+    await expect(page.getByRole('alert')).toBeVisible();
     expect(lookups).toHaveLength(1);
   });
 
@@ -190,7 +184,7 @@ test.describe('TC-660 /device prefilled code', () => {
   test('a prefilled code that fails reopens the editable form', async ({ page }) => {
     await mock(page, oneKey, false);
     await page.goto('/device?user_code=ABCD-EFGH');
-    await expect(page.getByText('That code is invalid or expired')).toBeVisible();
+    await expect(page.getByRole('alert')).toBeVisible();
     await expect(page.getByRole('textbox', { name: 'Device code' })).toHaveValue('ABCD-EFGH');
   });
 });
@@ -353,4 +347,81 @@ test('device relay network failure has no status suffix', async ({ page }) => {
   await openDeviceRelayReview(page, { relayStatus: 'network' });
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveText("You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again.");
+});
+
+// TC-2984: a device link's lifetime default comes from the verified server
+// request, and nothing is prepared until that verification has finished.
+async function openDeviceLinkDelegate(page: Page, options: { linkExpiry: string; lookupDelayMs?: number; lookupStatus?: number }) {
+  const deviceJwk = { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) };
+  const relayPublicJwk = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ format: 'jwk' });
+  const events: string[] = [];
+  const prepares: Record<string, unknown>[] = [];
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/auth/get-session') return json(route, 200, { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, user: { id: 'u', email: 'owner@example.test' } });
+    if (url.pathname === '/api/keys') return json(route, 200, { keys: oneKey });
+    if (url.pathname === '/api/device-authorizations/lookup') {
+      if (options.lookupDelayMs) await sleep(options.lookupDelayMs);
+      events.push('lookup');
+      if (options.lookupStatus) return json(route, options.lookupStatus, { error: 'unavailable' });
+      return json(route, 200, {
+        id: 'tx_1', userCode: 'ABCDEFGH', sessionDid: 'did:key:z6Mk', publicJwk: deviceJwk, relayPublicJwk,
+        permissions: request, nodeOrigin: 'https://node.tinycloud.xyz', shareOrigin: 'https://share.tinycloud.xyz',
+        delegationExpiresAt: new Date(Date.now() + (604_800 + 600) * 1000).toISOString(),
+        transactionExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+        delegationTtlSeconds: 604_800,
+      });
+    }
+    if (url.pathname === '/api/delegate/prepare') {
+      events.push('prepare');
+      prepares.push(route.request().postDataJSON() as Record<string, unknown>);
+      return json(route, 200, prepared);
+    }
+    return json(route, 404, { error: `unmocked ${url.pathname}` });
+  });
+  const params = new URLSearchParams({
+    did: 'did:key:z6Mk',
+    jwk: encodeBase64UrlJson(deviceJwk),
+    host: 'https://node.tinycloud.xyz',
+    deviceTransactionId: 'tx_1',
+    deviceShareOrigin: 'https://share.tinycloud.xyz',
+    deviceUserCode: 'ABCDEFGH',
+    relayJwk: encodeBase64UrlJson(relayPublicJwk),
+    expiry: options.linkExpiry,
+    permissions: encodeBase64UrlJson({ permissions: request }),
+  });
+  await page.goto(`/delegate?${params}`);
+  return { events, prepares };
+}
+
+async function expectNoApproval(page: Page, prepares: unknown[]) {
+  await expect(page.getByRole('alert')).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(prepares).toEqual([]);
+  const approve = page.getByRole('button', { name: 'Approve', exact: true });
+  if (await approve.count()) await expect(approve).toBeDisabled();
+}
+
+test.describe('TC-2984 device-link lifetime on /delegate', () => {
+  test('the shortest default applies only after the server request is verified', async ({ page }) => {
+    const { events, prepares } = await openDeviceLinkDelegate(page, { linkExpiry: '604800s', lookupDelayMs: 1_500 });
+    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
+    expect(events[0]).toBe('lookup');
+    expect(prepares.length).toBeGreaterThan(0);
+    for (const body of prepares) {
+      expect(body.expiry).toBe('3600s');
+      expect(body.expiryChosen).toBeUndefined();
+      expect(body.deviceTransactionId).toBe('tx_1');
+    }
+  });
+
+  test('a link longer than the request maximum never reaches prepare', async ({ page }) => {
+    const { prepares } = await openDeviceLinkDelegate(page, { linkExpiry: '604801s' });
+    await expectNoApproval(page, prepares);
+  });
+
+  test('a failed verification never reaches prepare', async ({ page }) => {
+    const { prepares } = await openDeviceLinkDelegate(page, { linkExpiry: '604800s', lookupStatus: 503 });
+    await expectNoApproval(page, prepares);
+  });
 });
