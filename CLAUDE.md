@@ -99,6 +99,8 @@ const isDev = process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 
 
 `.github/workflows/api-tests.yml` runs `bun test apps/api/src/__tests__` in one process on every PR and push to `main` (after `bun run db:generate` and building `@openkey/db` and `@openkey/tee`). bun's `mock.module()` is process-wide and `mock.restore()` does not undo it, so never call it directly in an API test: use `mockModules()` or `replaceModules()` from `apps/api/src/__tests__/mock-module.ts`, and import a route under test with a file-specific query string (`'../routes/keys?my-test' as string`) (TC-928).
 
+The same workflow's `renewal-lease-postgres` job runs `apps/api/src/__tests__/renewal-lease-stop.integration.test.ts` with `OPENKEY_TEST_POSTGRES_URL` pointing at a throwaway Postgres service, so its lock and race cases (which PGlite's single connection cannot show) run in CI. Locally, set `OPENKEY_TEST_POSTGRES_URL` to a server where the test may create and drop a database (TC-2946).
+
 ## Environment Files
 
 - `.env` - Local development
