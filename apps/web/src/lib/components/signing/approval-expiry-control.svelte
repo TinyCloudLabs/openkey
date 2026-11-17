@@ -145,7 +145,7 @@
           {#if renews}
             {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}
           {:else}
-            This permission expires in {formatDuration(shownMs)}
+            {permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDuration(shownMs)}
           {/if}
         </span>
       </label>
