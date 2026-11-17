@@ -4,7 +4,7 @@
   import { authClient, API_BASE } from '$lib/auth-client';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
-  import { safeExternalHttpUrl, safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
+  import { redirectHostForDisplay, safeExternalHttpUrl, safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
   import NativeDelegationConsent from './NativeDelegationConsent.svelte';
 
   const session = authClient.useSession();
@@ -28,17 +28,26 @@
     && !['keys', 'tinycloud:manage-key', 'tinycloud:delegation', 'tinycloud:session', 'tinycloud:mcp']
       .some((capability) => requestedScopes.has(capability));
 
-  // Extract signed query params (up to and including sig) for consent endpoint
-  function getOAuthQuery(): string | undefined {
-    const params = new URLSearchParams(window.location.search);
+  // The signed query params (up to and including sig); the consent endpoint verifies them.
+  function signedOAuthParams(search: string): URLSearchParams | undefined {
+    const params = new URLSearchParams(search);
     if (!params.has('sig')) return undefined;
     const signed = new URLSearchParams();
     for (const [key, value] of params.entries()) {
       signed.append(key, value);
       if (key === 'sig') break;
     }
-    return signed.toString();
+    return signed;
   }
+
+  function getOAuthQuery(): string | undefined {
+    return signedOAuthParams(window.location.search)?.toString();
+  }
+
+  // Where the app returns the owner. Only the signed part of the query is trusted:
+  // the authorize endpoint matched redirect_uri to the client's registered URIs
+  // before sending the owner here, and a changed value fails the signature on Allow.
+  const redirectHost = redirectHostForDisplay(signedOAuthParams($page.url.search)?.get('redirect_uri'));
 
   async function fetchClientInfo() {
     if (!clientId) {
@@ -205,6 +214,22 @@
               <span>Silently request TinyCloud delegation signatures from your canonical OpenKey key. You can <a href="/dashboard/settings#tinycloud-signing" class="text-primary-600 underline hover:text-primary-700">stop new signatures later in OpenKey</a>; existing delegations are not revoked by this permission.</span>
             </li>
             {/if}
+            {#if requestedScopes.has('tinycloud:mcp')}
+            <li class="flex items-center gap-2 text-surface-700">
+              <svg class="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+              </svg>
+              Use your TinyCloud through the MCP server
+            </li>
+            {/if}
+            {#if requestedScopes.has('offline_access')}
+            <li class="flex items-center gap-2 text-surface-700">
+              <svg class="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+              </svg>
+              Stay connected until you disconnect it
+            </li>
+            {/if}
           </ul>
         </div>
         <p class="mt-3 text-xs text-surface-500">
@@ -215,6 +240,12 @@
           {/if}
         </p>
       </div>
+
+      {#if redirectHost}
+        <p class="text-sm text-surface-600 text-center mb-4">
+          After you allow, you'll return to <span class="font-medium text-surface-900 break-all">{redirectHost}</span>
+        </p>
+      {/if}
 
       {#if error}
         <div class="text-red-600 text-sm text-center mb-4">{error}</div>
