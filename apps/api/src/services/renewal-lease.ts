@@ -80,7 +80,7 @@ export function parseRenewalChoice(value: unknown, signed: SignedRenewalRequest 
   if (!value || typeof value !== 'object') throw new RenewalLeaseError('request_binding', 'A renewal choice is required', 400);
   const choice = value as Record<string, unknown>;
   if (choice.choice === 'finite' && Object.keys(choice).length === 1) return { choice: 'finite' };
-  if (!enabled) throw new RenewalLeaseError('renewal_disabled', 'Renewal is not available yet', 400);
+  if (!enabled) throw new RenewalLeaseError('renewal_disabled', "Renewal isn't available for this sign-in.", 400);
   const seconds = choice.leaseLifetimeSeconds;
   if (choice.choice !== 'leased' || Object.keys(choice).length !== 2 || typeof seconds !== 'number' || !Number.isSafeInteger(seconds) ||
     seconds <= 0 || seconds > signed.leaseLifetimeSeconds || seconds > MAX_LEASE_SECONDS) {

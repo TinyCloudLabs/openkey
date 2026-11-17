@@ -251,7 +251,7 @@ export async function saveApprovalDelegation(
   // are off, a signed lease is never admitted and the request can't complete over it.
   // TC-2946: a signed step names its lease (`leaseCid`); the signed lease itself is kept only with its reservation.
   const signed = record.renewal?.leaseAuthorization || record.renewal?.leaseCid ? record.renewal : null;
-  if (signed && !renewalLeasesEnabled()) throw new ApprovalResultError('renewal_disabled', 'Renewal is not available yet', 400);
+  if (signed && !renewalLeasesEnabled()) throw new ApprovalResultError('renewal_disabled', "Renewal isn't available for this request.", 400);
   if (signed && marker) {
     if (signed.userId !== userId) throw new ApprovalResultError('request_binding', 'Another account is approving this request', 409);
     if (choice?.choice !== 'leased' || choice.leaseLifetimeSeconds !== signed.approvedLeaseLifetimeSeconds) {
@@ -319,7 +319,7 @@ async function finishLeasedApproval(id: string, userId: string, sessionId: strin
  * sign. Checked against the owner of the saved grant, then the lease is admitted and the result saved.
  */
 approvalRequestRouter.post('/approval-requests/:id/renewal-signature', requireAccountOriginForBearer, requireSession, async (c) => {
-  if (!renewalLeasesEnabled()) throw new ApprovalResultError('renewal_disabled', 'Renewal is not available yet', 400);
+  if (!renewalLeasesEnabled()) throw new ApprovalResultError('renewal_disabled', "Renewal isn't available for this request.", 400);
   const id = c.req.param('id');
   const userId: string = c.get('user').id;
   const body: unknown = await c.req.json().catch(() => null);
