@@ -183,7 +183,7 @@ jobs:
           # Other curl errors (DNS, connect, TLS, timeout) prove nothing: retry.
           raw_url="$RAW_APP_URL/health"
           closed=0
-          for attempt in $(seq 1 10); do
+          for _ in $(seq 1 10); do
             rc=0
             code=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' "$raw_url" 2>/tmp/tc1012-curl.err) || rc=$?
             if [ "$code" != "000" ]; then
