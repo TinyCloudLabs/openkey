@@ -51,7 +51,7 @@ const SITES: Array<[string, CapabilityGrant["family"], string, string, string, s
     ["Manage your TinyCloud account"], ["Manage a TinyCloud account"]],
   ["account bootstrap sql schema", "bootstrap-sql", "tinycloud.sql", "account", "", ["read", "schema"],
     ["Manage your TinyCloud account", "Edit and delete tables in your TinyCloud account"],
-    ["Manage a TinyCloud account", "Edit and delete tables"]],
+    ["Manage a TinyCloud account", "Edit and delete account tables"]],
   ["public read and publish", "public-data", "tinycloud.kv", "public", "", ["get", "put"],
     ["Read and publish your public data"], ["Read and publish public data"]],
   ["public publish", "public-data", "tinycloud.kv", "public", "", ["put"],

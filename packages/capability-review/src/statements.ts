@@ -845,7 +845,7 @@ function schemaOnlyStatementText(
   }
   if (spaceName === "account" && grant.family === "bootstrap-sql") {
     return grant.ownedBySelf === null
-      ? "Edit and delete tables"
+      ? "Edit and delete account tables"
       : "Edit and delete tables in your TinyCloud account";
   }
   if (grant.family === "own-app-data" || grant.family === "cross-app-data") {
