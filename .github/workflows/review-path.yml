@@ -228,6 +228,22 @@ jobs:
           API_PORT: '3001'
         run: bunx playwright test --config tests/review-path/playwright.config.ts
 
+      # Build once, promote the same artifact: the image that just passed is saved as it is, and
+      # deploy-api.yml pushes this exact image (commit tag only, never `latest`) instead of rebuilding.
+      - name: Save the image that passed, for deploy-api.yml to promote
+        if: github.event_name == 'push' && steps.relevance.outputs.relevant == 'true'
+        run: docker save "$API_IMAGE" | gzip -1 > "$RUNNER_TEMP/api-image.tar.gz"
+
+      - name: Upload the image that passed
+        if: github.event_name == 'push' && steps.relevance.outputs.relevant == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: api-image-${{ github.sha }}
+          path: ${{ runner.temp }}/api-image.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
       - name: API log
         if: failure() && steps.relevance.outputs.relevant == 'true'
         run: docker logs --tail 300 openkey-api || true

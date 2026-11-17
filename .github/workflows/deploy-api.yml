@@ -54,8 +54,15 @@ jobs:
     if: github.ref == 'refs/heads/main' && !inputs.preflight_only
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: read
+      # Reads the Review path run for this commit and downloads its image artifact.
+      actions: read
     steps:
+      # Full history: the release note diffs the commit live in production against this one.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Phala CLI
         run: npm install -g phala@1.1.22
@@ -75,26 +82,60 @@ jobs:
             exit 1
           fi
 
+      # The one-line release note for this publish: the diff from the commit production reports on
+      # /health to the commit being deployed. Fails open: "yes" whenever either commit is unknown.
+      - name: Release note
+        run: |
+          live="$(curl -fsS --max-time 20 https://api.openkey.so/health | jq -r '.commit // empty' || true)"
+          if [[ ! "$live" =~ ^[0-9a-f]{40}$ ]] || ! git cat-file -e "$live^{commit}" 2>/dev/null; then live=""; fi
+          note="$(BASE="$live" HEAD="$GITHUB_SHA" node .github/scripts/review-path-scope.mjs note)" || note='touches sign-in/approval: yes (the note script failed, so assume it does)'
+          echo "Release note: $note" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Build and Push Docker image
-        uses: docker/build-push-action@v5
+      # Build once, promote the same artifact: the image is the one review-path.yml built from this commit
+      # and ran the Review path on. It is pushed under its commit tag only, never `latest`, and never rebuilt.
+      # A commit tag already in the registry (a rollback rerun) is deployed as it is.
+      - name: Find the image that passed the Review path
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "$DOCKER_IMAGE:$GITHUB_SHA" > /dev/null 2>&1; then
+            echo "$DOCKER_IMAGE:$GITHUB_SHA is already in the registry; deploying that image."
+            exit 0
+          fi
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow review-path.yml --branch main --event push \
+            --commit "$GITHUB_SHA" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          if [ -z "$run_id" ]; then
+            echo "::error::No successful Review path run on main for $GITHUB_SHA, so there is no image to promote. Wait for the run on this commit, or deploy a commit whose run passed."
+            exit 1
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download the image that passed the Review path
+        if: steps.image.outputs.run_id != ''
+        uses: actions/download-artifact@v4
         with:
-          context: .
-          push: true
-          build-args: |
-            GIT_SHA=${{ github.sha }}
-          cache-from: type=gha,scope=openkey-api-image
-          cache-to: type=gha,mode=max,scope=openkey-api-image
-          tags: |
-            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
-            ${{ env.DOCKER_IMAGE }}:latest
+          name: api-image-${{ github.sha }}
+          run-id: ${{ steps.image.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/api-image
+
+      - name: Push that image under its commit tag
+        if: steps.image.outputs.run_id != ''
+        run: |
+          set -euo pipefail
+          gunzip -c "$RUNNER_TEMP/api-image/api-image.tar.gz" | docker load
+          docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "openkey-api:$GITHUB_SHA" | grep -qx "GIT_SHA=$GITHUB_SHA" \
+            || { echo "::error::the downloaded image was not built from $GITHUB_SHA"; exit 1; }
+          docker tag "openkey-api:$GITHUB_SHA" "$DOCKER_IMAGE:$GITHUB_SHA"
+          docker push "$DOCKER_IMAGE:$GITHUB_SHA"
 
       - name: Update compose with image tag
         run: |
@@ -157,6 +198,6 @@ jobs:
             echo "### Production API deployed"
             echo ""
             echo "Commit: [\`${GITHUB_SHA::7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})"
-            echo "Image: \`${{ env.DOCKER_IMAGE }}:${GITHUB_SHA}\`"
+            echo "Image: \`${{ env.DOCKER_IMAGE }}:${GITHUB_SHA}\` (built once by review-path.yml, not rebuilt here)"
             echo "Deployments: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/deployments/production"
           } >> "$GITHUB_STEP_SUMMARY"
