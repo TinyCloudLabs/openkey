@@ -60,10 +60,9 @@ export const SHARE_DEVICE_PERMISSIONS: readonly DevicePermission[] = Object.free
  *   no `.`/`..` segments, no `secrets/` or `vault/` roots) and no KV path may
  *   cover another (Node grants cover every path beneath a granted path);
  *   capabilities grants are space-wide (empty path);
- *   encryption grants are decrypt on exact shared files of the approving account's own `default` network:
+ *   device sessions may decrypt only exact shared-file keys of the approving account's own `default` network:
  *   space `default`, path `share/<id>`, only `tinycloud.encryption/decrypt`, at most
- *   `DEVICE_AUTH_MAX_SHARE_DECRYPTS` per request. The whole network, the `share/` prefix and any other key or prefix
- *   are refused (TC-3204): one phished approval of the whole network would open every shared file, past and future;
+ *   `DEVICE_AUTH_MAX_SHARE_DECRYPTS` per request; every other encryption key or prefix is refused (TC-3204);
  * - `tinycloud.capabilities/read` is required: every OpenKey delegation
  *   carries it, so it is never optional at consent. One exception: a
  *   decrypt-only request carries no capabilities entry, and the requirement
