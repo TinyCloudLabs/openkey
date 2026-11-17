@@ -71,6 +71,19 @@ function gate() {
   return { c, g, states };
 }
 
+/** Resizes every 100ms from the first resize; Approve must be off the whole time until CEILING_MS after that first resize. */
+function resizeForeverUntilCeiling(c: ReturnType<typeof clock>, g: ReturnType<typeof createFrameSettleGate>) {
+  g.resized();
+  expect(g.settled()).toBe(false);
+  for (let elapsed = 100; elapsed < FRAME_SETTLE_CEILING_MS; elapsed += 100) {
+    c.advance(100);
+    g.resized();
+    expect(g.settled()).toBe(false);
+  }
+  c.advance(100); // the ceiling fires here, CEILING_MS after the first resize; its stable check needs a frame
+  expect(g.settled()).toBe(false);
+}
+
 /** Real (manual) frames and a settable sample, for the observed-stability behaviour. */
 function observed() {
   const c = clock();
@@ -264,6 +277,28 @@ describe('the settle gate', () => {
     c.advance(FRAME_SETTLE_CEILING_GRACE_MS);
     expect(g.settled()).toBe(false); // the grace is over, but arming waits for an observed frame (a stall delays, not skips)
     move([400, 999, 0, 0, 100, 40]);
+    f.tick();
+    expect(g.settled()).toBe(true);
+  });
+
+  test('a host that resizes every 100ms after Approve was armed at quiet: the first resize disarms, and the ceiling re-arms it', () => {
+    const { c, f, g } = observed();
+    g.show();
+    c.advance(FRAME_SETTLE_QUIET_MS);
+    for (let i = 0; i < FRAME_SETTLE_STABLE_FRAMES; i += 1) f.tick();
+    expect(g.settled()).toBe(true);
+    resizeForeverUntilCeiling(c, g);
+    f.tick(); // one stable frame at the ceiling arms it
+    expect(g.settled()).toBe(true);
+  });
+
+  test('the same after the ceiling itself had armed it', () => {
+    const { c, f, g } = observed();
+    g.show();
+    resizeForeverUntilCeiling(c, g);
+    f.tick();
+    expect(g.settled()).toBe(true);
+    resizeForeverUntilCeiling(c, g);
     f.tick();
     expect(g.settled()).toBe(true);
   });

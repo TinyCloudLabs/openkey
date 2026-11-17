@@ -130,6 +130,8 @@ export function createFrameSettleGate(options: {
     resized() {
       if (!shown || destroyed || atCeiling) return;
       set(false);
+      // Every disarm is bounded by the ceiling: arming cleared it, so a resize after Approve was enabled starts a new one.
+      if (!cancelCeiling) startCeiling();
       restartQuiet();
     },
     settled: () => settled,
