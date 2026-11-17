@@ -1,8 +1,8 @@
 services:
   api:
     image: ${DOCKER_IMAGE}
-    ports:
-      - "${API_PORT:-3001}:${API_PORT:-3001}"
+    # TC-1012: no host port. The ingress reaches api over the compose network;
+    # publishing it would expose the app via the Phala gateway, bypassing ingress.
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock
     environment:
