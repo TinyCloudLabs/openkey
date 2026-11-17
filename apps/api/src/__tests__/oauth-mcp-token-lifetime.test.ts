@@ -44,7 +44,10 @@ if (process.env.OPENKEY_MCP_LIFETIME_TEST_CHILD !== '1') {
   }, 120_000);
 } else {
   const issuer = 'https://api.openkey.test/api/auth';
-  const MCP_RESOURCES = ['https://mcp.tinycloud.xyz/mcp', 'https://mcp.tinycloud.xyz/chatgpt/mcp'] as const;
+  const MCP_RESOURCES = [
+    'https://mcp.tinycloud.xyz/mcp', 'https://mcp.tinycloud.xyz/chatgpt/mcp',
+    'https://mcp.tinycloud.xyz/claude/mcp', 'https://mcp.tinycloud.xyz/grok/mcp', 'https://mcp.tinycloud.xyz/muse/mcp',
+  ] as const;
   const OPENKEY_AUDIENCE = 'https://api.openkey.test';
   const callback = 'https://chatgpt.com/connector_platform_oauth_redirect';
   const verifier = 'mcp-lifetime-pkce-verifier-0123456789012345678901';
