@@ -15,7 +15,7 @@ const SQL_ALL = ["tinycloud.sql/read", "tinycloud.sql/write", "tinycloud.sql/sch
 const HOME_FEED = "xyz.tinycloud.tinychat/home_feed";
 const FEED = "xyz.tinycloud.tinychat/feed/";
 
-function rows(resources: Record<string, string[]>): string[] {
+function summary(resources: Record<string, string[]>) {
   const att = Object.fromEntries(
     Object.entries(resources).map(([resource, abilities]) => [
       resource,
@@ -41,13 +41,15 @@ function rows(resources: Record<string, string[]>): string[] {
       originWarning: false,
     },
   });
-  return buildSummaryStatements(model.permissions).map((row) => row.primaryText);
+  return buildSummaryStatements(model.permissions);
 }
 
+const rows = (resources: Record<string, string[]>): string[] => summary(resources).map((row) => row.primaryText);
+
 const FEED_ROWS = [
-  "Set up and use your TinyCloud One agent list",
-  "Set up and use cards and answers in TinyCloud One",
-  "Get notified of changes to your TinyCloud One feed",
+  "Set up and use the agent list in your Feed",
+  "Set up and use cards and answers in your Feed",
+  "Get notified of changes in your TinyCloud One Feed",
 ];
 
 const feedConnect = (owner = OWNER): Record<string, string[]> => ({
@@ -71,6 +73,27 @@ describe("feed connect grants", () => {
     expect(rows({ [`${space(OWNER)}/sql/${HOME_FEED}`]: SQL_ALL })).toEqual([FEED_ROWS[0]!]);
     expect(rows({ [`${space(OWNER)}/sql/${FEED}`]: SQL_ALL })).toEqual([FEED_ROWS[1]!]);
     expect(rows({ [`${space(OWNER)}/hooks/sql/${FEED}`]: ["tinycloud.hooks/subscribe"] })).toEqual([FEED_ROWS[2]!]);
+  });
+});
+
+describe("the risk tier is the one the generic rows had", () => {
+  const RANK = { standard: 0, attention: 1, sensitive: 2 } as const;
+  const strongest = (resources: Record<string, string[]>) =>
+    Math.max(...summary(resources).map((row) => RANK[row.severity as keyof typeof RANK]));
+
+  it("a feed database grant is as strong as the same verbs on any other database path", () => {
+    for (const path of [HOME_FEED, FEED]) {
+      const feed = strongest({ [`${space(OWNER)}/sql/${path}`]: SQL_ALL });
+      const other = strongest({ [`${space(OWNER)}/sql/xyz.tinycloud.other/${path.split("/")[1]}`]: SQL_ALL });
+      expect(feed).toBe(other);
+    }
+  });
+
+  it("the change-notification row is as strong as the same grant on another path, and not Standard", () => {
+    const feed = strongest({ [`${space(OWNER)}/hooks/sql/${FEED}`]: ["tinycloud.hooks/subscribe"] });
+    const other = strongest({ [`${space(OWNER)}/hooks/sql/xyz.tinycloud.other/feed/`]: ["tinycloud.hooks/subscribe"] });
+    expect(feed).toBe(other);
+    expect(feed).toBeGreaterThanOrEqual(RANK.attention);
   });
 });
 

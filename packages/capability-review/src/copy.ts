@@ -93,9 +93,9 @@ export const FILES_FOR_YOU_STATEMENT =
  * databases. `schema` is the ability to create and edit tables, so the first
  * two say "set up".
  */
-export const FEED_REGISTRY_STATEMENT = "Set up and use your TinyCloud One agent list";
-export const FEED_CARDS_STATEMENT = "Set up and use cards and answers in TinyCloud One";
-export const FEED_NOTIFY_STATEMENT = "Get notified of changes to your TinyCloud One feed";
+export const FEED_REGISTRY_STATEMENT = "Set up and use the agent list in your Feed";
+export const FEED_CARDS_STATEMENT = "Set up and use cards and answers in your Feed";
+export const FEED_NOTIFY_STATEMENT = "Get notified of changes in your TinyCloud One Feed";
 
 /**
  * Consent sentence of the `tinycloud.capabilities/read` grant: the requester
