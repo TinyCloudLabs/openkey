@@ -145,7 +145,7 @@ import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, 
 import { ApprovalResultError } from '../services/approval-results';
 import { bindSignInRenewalRequest, finishSignInLease, setUpSignInLease, signInRenewalFailure, takePendingSignInLease, type SignInLease } from '../services/signin-renewal';
 import type { SignInRenewalRequest } from '../services/authorization-signing';
-import { parseRenewalChoice, renewalLeasesEnabled, signLease } from '../services/renewal-lease';
+import { parseRenewalChoice, renewalLeasesEnabled, renewalUnavailableMessage, signLease } from '../services/renewal-lease';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
   activePreparedHandoffService = service;
@@ -3511,7 +3511,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   const sealedRenewal = previewCheck.renewal;
   confirmBoundRenewal(body.renewal, sealedRenewal);
   if (sealedRenewal?.choice === 'leased' && !renewalLeasesEnabled()) {
-    return c.json({ error: "Renewal isn't available for this sign-in.", code: 'renewal_disabled' }, 400);
+    return c.json({ error: renewalUnavailableMessage('sign-in', 'before-signing'), code: 'renewal_disabled' }, 400);
   }
 
   // External signatures must recover to the bound signer over these exact
@@ -3671,7 +3671,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
  * recover to the grant's owner. The lease is then recorded, admitted and confirmed; the receipt is returned.
  */
 delegateRouter.post('/authorize-sign-renewal', async (c) => {
-  if (!renewalLeasesEnabled()) return c.json({ error: "Renewal isn't available for this sign-in.", code: 'renewal_disabled' }, 400);
+  if (!renewalLeasesEnabled()) return c.json({ error: renewalUnavailableMessage('sign-in', 'after-signing'), code: 'renewal_disabled' }, 400);
   const user = c.get('user');
   const body: unknown = await c.req.json().catch(() => null);
   const fields = body !== null && typeof body === 'object' ? body as Record<string, unknown> : {};
@@ -3764,7 +3764,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   // The renewal box's state is sealed with this preview, so signing can only use what the owner saw here.
   let renewalChoice: BoundRenewalChoice | undefined;
   try {
-    renewalChoice = parseRenewalChoice(body.renewal, bound.signInRenewal) ?? undefined;
+    renewalChoice = parseRenewalChoice(body.renewal, bound.signInRenewal, renewalLeasesEnabled(), 'sign-in') ?? undefined;
   } catch (error) {
     const refused = signInRenewalFailure(error);
     return c.json(refused.body, refused.status);

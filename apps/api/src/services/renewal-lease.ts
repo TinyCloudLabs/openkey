@@ -57,6 +57,20 @@ export class RenewalLeaseError extends Error {
 /** Shown to the owner whenever a ticked renewal could not be set up: nothing is approved. */
 export const RENEWAL_FAILED_MESSAGE = "OpenKey couldn't set up renewal. Nothing was approved. Try again.";
 
+/** What renewal at an app sign-in or on an approval request is called in the owner's words. */
+export type RenewalSubject = 'sign-in' | 'request';
+
+/**
+ * Shown when renewal leases were turned off under an owner who chose renewal. Before anything is signed the box is
+ * still on screen, so unticking it approves without renewal; after signing, the sign-in or request can't finish.
+ */
+export function renewalUnavailableMessage(subject: RenewalSubject, stage: 'before-signing' | 'after-signing'): string {
+  if (stage === 'before-signing') return `Renewal isn't available for this ${subject}. Untick it to approve without renewal.`;
+  return subject === 'sign-in'
+    ? "Renewal stopped being available while you were approving, so this sign-in didn't finish. Sign in again."
+    : "Renewal stopped being available while you were approving, so this request didn't finish. Ask the app to send it again.";
+}
+
 export type RenewalChoice = { choice: 'finite' } | { choice: 'leased'; leaseLifetimeSeconds: number };
 
 /** The renewal request an approval request signed: its longest lease. */
@@ -71,7 +85,9 @@ export interface SignedRenewalRequest {
  * (never inferred from `renewal` or the lifetime); while they are off it shows no box, so it is finite,
  * and a leased choice is refused. A lease longer than the request or one year is refused.
  */
-export function parseRenewalChoice(value: unknown, signed: SignedRenewalRequest | undefined, enabled = renewalLeasesEnabled()): RenewalChoice | null {
+export function parseRenewalChoice(
+  value: unknown, signed: SignedRenewalRequest | undefined, enabled = renewalLeasesEnabled(), subject: RenewalSubject = 'request',
+): RenewalChoice | null {
   if (!signed) {
     if (value !== undefined) throw new RenewalLeaseError('request_binding', 'This request did not ask for renewal', 400);
     return null;
@@ -80,7 +96,7 @@ export function parseRenewalChoice(value: unknown, signed: SignedRenewalRequest 
   if (!value || typeof value !== 'object') throw new RenewalLeaseError('request_binding', 'A renewal choice is required', 400);
   const choice = value as Record<string, unknown>;
   if (choice.choice === 'finite' && Object.keys(choice).length === 1) return { choice: 'finite' };
-  if (!enabled) throw new RenewalLeaseError('renewal_disabled', "Renewal isn't available for this sign-in.", 400);
+  if (!enabled) throw new RenewalLeaseError('renewal_disabled', renewalUnavailableMessage(subject, 'before-signing'), 400);
   const seconds = choice.leaseLifetimeSeconds;
   if (choice.choice !== 'leased' || Object.keys(choice).length !== 2 || typeof seconds !== 'number' || !Number.isSafeInteger(seconds) ||
     seconds <= 0 || seconds > signed.leaseLifetimeSeconds || seconds > MAX_LEASE_SECONDS) {

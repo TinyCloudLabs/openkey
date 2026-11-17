@@ -40,6 +40,8 @@
     requestedBy?: string;
     /** The exact end of the window, shown inside the open fold after the choice; omitted where the screen shows it elsewhere. */
     endsAt?: string | null;
+    /** How many permission rows the line sits under: more than one reads in the plural. */
+    permissionCount?: number;
   }
 
   let {
@@ -52,6 +54,7 @@
     sensitive = false,
     requestedBy = "",
     endsAt = null,
+    permissionCount = 1,
   }: Props = $props();
 
   let confirming = $state(false);
@@ -140,7 +143,7 @@
         />
         <span data-testid="approval-expiry-line">
           {#if renews}
-            This permission renews automatically for up to {formatDuration(renewal.leaseMs!)}
+            {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}
           {:else}
             This permission expires in {formatDuration(shownMs)}
           {/if}

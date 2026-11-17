@@ -15,12 +15,13 @@ import {
   admitLease,
   prepareRenewalStage,
   renewalLeasesEnabled,
+  renewalUnavailableMessage,
   signLease,
   type ApprovalResultRenewal,
   type RenewalStage,
 } from './renewal-lease';
 import { logError } from '../log';
-import { reserveRenewalLease } from './renewal-lease-revocation';
+import { defaultDeps, reserveRenewalLease, revokeRenewalLeases, type LeaseRevocationDatabase } from './renewal-lease-revocation';
 import { isKnownTinyCloudActivationHost } from './tinycloud-hosts';
 import { activateSessionWithinTimeout } from './tinycloud-node-timeouts';
 import type { SignInRenewalRequest } from './authorization-signing';
@@ -30,7 +31,7 @@ const PENDING_LEASE_TTL_MS = 10 * 60 * 1000;
 
 type TargetJwk = { kty: 'OKP'; crv: 'Ed25519'; x: string };
 
-let database: Pick<PrismaClient, 'renewalLease' | '$transaction'> | undefined;
+let database: LeaseRevocationDatabase | undefined;
 function db() {
   database ??= createPrismaClient();
   return database;
@@ -97,7 +98,7 @@ export async function setUpSignInLease(
     signOwner?: (message: string) => Promise<string>;
   },
 ): Promise<SignInLease> {
-  if (!renewalLeasesEnabled()) throw new RenewalLeaseError('renewal_disabled', "Renewal isn't available for this sign-in.", 400);
+  if (!renewalLeasesEnabled()) throw new RenewalLeaseError('renewal_disabled', renewalUnavailableMessage('sign-in', 'after-signing'), 400);
   const jwk = targetJwk(owner.jwk);
   const session = completeSessionSetup({
     siwe: owner.signedMessage,
@@ -149,21 +150,33 @@ export function takePendingSignInLease(renewalToken: unknown, userId: string): (
 
 /**
  * Records the signed lease for its owner, has the node admit it, then confirms the record. A lease stopped in
- * between is refused at either end, so the sign-in fails and no receipt is returned.
+ * between is refused at either end, so the sign-in fails and no receipt is returned. When admission or the confirm
+ * fails after the reservation, the node may still hold the lease (an answer lost after it stored it), so the lease is
+ * stopped before the failure is returned: no lease keeps renewing a grant this sign-in never handed out. A lease an
+ * external wallet signed can only be stopped by that wallet; Settings lists it until then.
  */
 export async function finishSignInLease(owner: SignInLeaseOwner, stage: RenewalStage): Promise<ApprovalResultRenewal> {
-  if (!renewalLeasesEnabled()) throw new RenewalLeaseError('renewal_disabled', "Renewal isn't available for this sign-in.", 400);
+  if (!renewalLeasesEnabled()) throw new RenewalLeaseError('renewal_disabled', renewalUnavailableMessage('sign-in', 'after-signing'), 400);
   await reserveRenewalLease(db(), { approvalRequestId: null, userId: owner.userId, sessionId: owner.sessionId, nodeOrigin: owner.host, stage });
-  const renewal = await admitLease(stage, { nodeOrigin: owner.host, targetPublicJwk: targetJwk(owner.jwk) });
-  const confirmed = await db().renewalLease.updateMany({
-    where: {
-      leaseCid: stage.leaseCid, userId: owner.userId, approvalRequestId: null, ownerDid: `did:pkh:eip155:${stage.chainId}:${stage.ownerAddress}`,
-      originalCid: stage.originalCid, nodeOrigin: owner.host, revokedAt: null, neverAdmittedAt: null,
-    },
-    data: { admittedAt: new Date(), leaseAuthorization: null, sessionId: owner.sessionId },
-  });
-  if (confirmed.count !== 1) throw new RenewalLeaseError('renewal_stopped', 'Renewal was turned off for this sign-in. To turn it back on, sign in again.', 409);
-  return renewal;
+  try {
+    const renewal = await admitLease(stage, { nodeOrigin: owner.host, targetPublicJwk: targetJwk(owner.jwk) });
+    const confirmed = await db().renewalLease.updateMany({
+      where: {
+        leaseCid: stage.leaseCid, userId: owner.userId, approvalRequestId: null, ownerDid: `did:pkh:eip155:${stage.chainId}:${stage.ownerAddress}`,
+        originalCid: stage.originalCid, nodeOrigin: owner.host, revokedAt: null, neverAdmittedAt: null, admittedAt: null,
+      },
+      data: { admittedAt: new Date(), leaseAuthorization: null, sessionId: owner.sessionId },
+    });
+    if (confirmed.count !== 1) throw new RenewalLeaseError('renewal_stopped', 'Renewal was turned off for this sign-in. To turn it back on, sign in again.', 409);
+    return renewal;
+  } catch (error) {
+    if (stage.leaseCid) {
+      // The same fetch as this sign-in's own node calls, looked up now.
+      await revokeRenewalLeases(db(), owner.userId, { kind: 'lease', leaseCid: stage.leaseCid }, { ...defaultDeps, fetch: globalThis.fetch })
+        .catch((cleanup: unknown) => logError('warn', 'signin_renewal_failed', cleanup));
+    }
+    throw error;
+  }
 }
 
 /**

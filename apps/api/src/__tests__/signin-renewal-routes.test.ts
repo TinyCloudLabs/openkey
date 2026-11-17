@@ -70,10 +70,11 @@ await mockModules({
   }),
 });
 
-// The stand-in node: its identity, and `/delegate` (a grant's activation, then the lease's admission). Each
-// activation's Authorization header is recorded in order; `onDelegate` may answer instead.
+// The stand-in node: its identity, `/delegate` (a grant's activation, then the lease's admission) and `/revoke`.
+// Each activation's and revocation's Authorization header is recorded in order; `onDelegate` may answer instead.
 const realFetch = globalThis.fetch;
 let activations: string[] = [];
+let revocations: string[] = [];
 let nodeCalls = 0;
 let onDelegate: ((authorization: string, index: number) => Promise<Response | undefined>) | undefined;
 function node() {
@@ -89,6 +90,10 @@ function node() {
       const authorization = String(new Headers(init.headers).get('Authorization'));
       activations.push(authorization);
       return await onDelegate?.(authorization, activations.length - 1) ?? Response.json({ activated: [], skipped: [] });
+    }
+    if (url.pathname === '/revoke' && init?.method === 'POST') {
+      revocations.push(String(new Headers(init.headers).get('Authorization')));
+      return new Response(null, { status: 200 });
     }
     throw new Error(`unexpected ${url.href}`);
   }) as typeof fetch;
@@ -131,6 +136,7 @@ beforeEach(async () => {
   currentUser = owner;
   currentKey = managed;
   activations = [];
+  revocations = [];
   nodeCalls = 0;
   onDelegate = undefined;
   signManagedMessage.mockClear();
@@ -182,11 +188,14 @@ async function sign(p: Prepared, previewBody: Record<string, any>, extra: Record
 
 const LEASED = { choice: 'leased', leaseLifetimeSeconds: 90 * DAY };
 
-/** The grant's own CID, from the signed bytes and signature the response returned. */
-function grantCid(signed: Record<string, any>): string {
+/** The grant's own CID and the header that registers it, from the signed bytes and signature the response returned. */
+function grantSetup(signed: Record<string, any>): { delegationCid: string; delegationHeader: { Authorization: string } } {
   return completeSessionSetup({
     siwe: signed.signedMessage, jwk, spaceId: space, verificationMethod: new SiweMessage(signed.signedMessage).uri, signature: signed.signature,
-  } as Parameters<typeof completeSessionSetup>[0]).delegationCid;
+  } as Parameters<typeof completeSessionSetup>[0]);
+}
+function grantCid(signed: Record<string, any>): string {
+  return grantSetup(signed).delegationCid;
 }
 
 /** The ReCap attenuation a signed SIWE carries. */
@@ -213,10 +222,13 @@ describe('while renewal leases are off', () => {
   });
 
   test('a leased choice is refused at the preview, and the wallet step is refused outright', async () => {
+    const offered = await prepare();
     delete process.env.OPENKEY_RENEWAL_LEASES;
     noNode();
-    const shown = await preview(await prepare(), LEASED);
-    expect(shown.status).toBe(400);
+    // Off since prepare: nothing asked for renewal, so any choice is a binding error.
+    expect(await preview(await prepare(), LEASED)).toMatchObject({ status: 400, body: { code: 'request_binding' } });
+    // Offered while on, then turned off: the choice is refused as unavailable.
+    expect(await preview(offered, LEASED)).toMatchObject({ status: 400, body: { code: 'renewal_disabled' } });
     const step = await post('/authorize-sign-renewal', { renewalToken: 'okr_anything', signature: '0x00' });
     expect(step).toMatchObject({ status: 400, body: { code: 'renewal_disabled' } });
   });
@@ -334,6 +346,31 @@ describe('a managed key with renewal turned on', () => {
     expect(signed.body).not.toHaveProperty('signature');
     expect((await client.renewalLease.findFirstOrThrow()).admittedAt).toBeNull();
   });
+
+  test('a grant its node will not register gets no lease: nothing more is signed and no signature is returned', async () => {
+    onDelegate = async (_authorization, index) => index === 0 ? new Response('refused', { status: 403 }) : undefined;
+    const asked = await prepare();
+    const signed = await sign(asked, (await preview(asked, LEASED)).body);
+    expect(signed).toMatchObject({ status: 503, body: { code: 'renewal_failed' } });
+    expect(signed.body).not.toHaveProperty('signature');
+    // Only the grant was signed: the lease is signed after the node holds the grant, never before.
+    expect(signManagedMessage).toHaveBeenCalledTimes(1);
+    expect(activations).toHaveLength(1);
+    expect(await client.renewalLease.count()).toBe(0);
+  });
+
+  test('an admission whose answer was lost is stopped before the failure is returned', async () => {
+    // The node stores the lease, but its answer never arrives.
+    onDelegate = async (_authorization, index) => index === 1 ? new Response('unavailable', { status: 503 }) : undefined;
+    const asked = await prepare();
+    const signed = await sign(asked, (await preview(asked, LEASED)).body);
+    expect(signed).toMatchObject({ status: 503, body: { code: 'renewal_failed' } });
+    expect(signed.body).not.toHaveProperty('signature');
+    expect(revocations).toHaveLength(1);
+    const record = await client.renewalLease.findFirstOrThrow();
+    expect(record.revokedAt).not.toBeNull();
+    expect(record.admittedAt).toBeNull();
+  });
 });
 
 describe('an external wallet with renewal turned on', () => {
@@ -350,6 +387,8 @@ describe('an external wallet with renewal turned on', () => {
     const grant = await signedGrant();
     expect(grant.renewalChoice).toBe('leased');
     expect(grant).not.toHaveProperty('renewal');
+    // The node already holds the grant, and only the grant, when the lease is handed out to sign.
+    expect(activations).toEqual([grantSetup(grant).delegationHeader.Authorization]);
     const { message, leaseLifetimeSeconds, renewalToken } = grant.renewalSignature;
     expect(leaseLifetimeSeconds).toBe(90 * DAY);
     const cid = grantCid(grant);
@@ -375,6 +414,18 @@ describe('an external wallet with renewal turned on', () => {
     currentUser = owner;
     const wrong = await post('/authorize-sign-renewal', { renewalToken, signature: await stranger.signMessage({ message }) });
     expect(wrong).toMatchObject({ status: 400, body: { code: 'invalid_signature' } });
+    expect(await client.renewalLease.count()).toBe(0);
+  });
+
+  test('a grant its node will not register gets no lease to sign', async () => {
+    currentKey = external;
+    onDelegate = async (_authorization, index) => index === 0 ? new Response('refused', { status: 403 }) : undefined;
+    const asked = await prepare();
+    const shown = await preview(asked, LEASED);
+    const signed = await sign(asked, shown.body, { externalSignature: await account.signMessage({ message: shown.body.signedMessage }) });
+    expect(signed).toMatchObject({ status: 503, body: { code: 'renewal_failed' } });
+    expect(signed.body).not.toHaveProperty('signature');
+    expect(signed.body).not.toHaveProperty('renewalSignature');
     expect(await client.renewalLease.count()).toBe(0);
   });
 });
