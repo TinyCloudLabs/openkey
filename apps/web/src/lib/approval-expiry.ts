@@ -47,6 +47,17 @@ export const MAX_LEASE_MS = 365 * D;
 /** Spec D6 rule 3: renewing access to secrets or decrypt uses a 7-day window. */
 export const SENSITIVE_RENEWAL_WINDOW_MS = 7 * D;
 
+/** One-time approvals (the Once tier: secrets or decrypt) start at one hour (spec D6). */
+export const ONCE_DEFAULT_EXPIRY_MS = H;
+
+/**
+ * The window a one-time approval starts at: one hour when the app asked for longer, otherwise null (the app asked
+ * for an hour or less, or the request is not one-time, so what it asked for stands).
+ */
+export function onceDefaultExpiryMs(onceTier: boolean, requestedMs: number | null): number | null {
+  return onceTier && requestedMs !== null && requestedMs > ONCE_DEFAULT_EXPIRY_MS ? ONCE_DEFAULT_EXPIRY_MS : null;
+}
+
 /** The lease shown when the box is first ticked: the default, or less when the requester asked for less. */
 export function defaultLeaseMs(maxLeaseMs: number): number {
   return Math.min(DEFAULT_LEASE_MS, maxLeaseMs);
