@@ -246,9 +246,7 @@ jobs:
 
       - name: API log
         if: failure() && steps.relevance.outputs.relevant == 'true'
-        run: |
-          docker logs --tail 300 openkey-api || true
-          docker exec openkey-api sh -c 'for p in better-auth @better-auth/oauth-provider @better-auth/core better-call; do echo "$p $(sed -n "s/.*\"version\": \"\(.*\)\",/\1/p" node_modules/$p/package.json | head -1)"; done; bun --version' || true
+        run: docker logs --tail 300 openkey-api || true
 
       - name: Upload the report and the failure context
         if: failure()

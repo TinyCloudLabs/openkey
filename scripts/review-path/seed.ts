@@ -65,15 +65,23 @@ async function main() {
     const binding = await prisma.reviewerAccount.findUnique({ where: { store: STORE } });
     if (!binding) throw new Error('reviewer binding row missing: migrations did not apply');
 
-    const registration = await fetch(`${api}/api/auth/oauth2/register`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', origin: webOrigin },
-      body: JSON.stringify({
-        client_name: 'Review path fixture', redirect_uris: [REDIRECT_URI], token_endpoint_auth_method: 'none',
-        grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'],
-      }),
-    });
-    if (!registration.ok) throw new Error(`client registration failed: HTTP ${registration.status} ${(await registration.text()).slice(0, 300)}`);
+    // The API's first auth request after boot has answered 500 once in CI with the same image and database,
+    // and 200 on the run after it; a 5xx is retried a few times so a cold start does not fail the check.
+    let registration: Response | undefined;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      registration = await fetch(`${api}/api/auth/oauth2/register`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: webOrigin },
+        body: JSON.stringify({
+          client_name: 'Review path fixture', redirect_uris: [REDIRECT_URI], token_endpoint_auth_method: 'none',
+          grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'],
+        }),
+      });
+      if (registration.status < 500) break;
+      console.warn(`client registration attempt ${attempt}: HTTP ${registration.status} ${(await registration.text()).slice(0, 300)}`);
+      await Bun.sleep(2000);
+    }
+    if (!registration?.ok) throw new Error(`client registration failed: HTTP ${registration?.status} ${(await registration?.text())?.slice(0, 300)}`);
     const registered: { client_id?: unknown } = await registration.json();
     if (typeof registered.client_id !== 'string') throw new Error('client registration returned no client id');
     const clientId = registered.client_id;
