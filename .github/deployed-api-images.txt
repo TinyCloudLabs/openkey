@@ -1,3 +1,4 @@
 # Digests of API images that ran in production before deploy-api.yml recorded its deployments.
-# One per line: sha256:<64 hex>, then an optional # note. These are the images rollback_digest may restore
-# besides the ones deploy-api.yml recorded itself. Add a line only by PR, for a digest known to have run.
+# One per line: `sha256:<64 hex> <reason>` (the reason is required; a bare digest does not count). These are the
+# images rollback_digest may restore besides the ones deploy-api.yml recorded itself. Add a line only by PR, for a
+# digest known to have run in production, saying where it ran (for example `live 2025-11 before #551`).

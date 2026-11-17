@@ -245,10 +245,11 @@ test('rollback refuses a digest the workflow never deployed, whoever made the re
   refused({ RUN_JSON: JSON.stringify({ path: '.github/workflows/other.yml', head_branch: 'main', conclusion: 'success' }) }, 'another workflow');
   refused({ DEPLOYMENTS_JSON: record({ payload: { digest: DIGEST, run: 'x; rm -rf /' } }) }, 'a run id that is not a number');
   refused({ DEPLOYMENTS_JSON: '[]' }, 'a different digest in the list', { '.github/deployed-api-images.txt': `${OTHER} # not this one\n` });
+  refused({ DEPLOYMENTS_JSON: '[]' }, 'a listed digest with no reason', { '.github/deployed-api-images.txt': `${DIGEST}\n${DIGEST}   \n` });
 });
 
 test('rollback accepts a digest from the reviewed list of images that ran before the records', () => {
-  const listed = attempt({ DEPLOYMENTS_JSON: '[]' }, { '.github/deployed-api-images.txt': `# header\n${DIGEST} # live before #551\n` });
+  const listed = attempt({ DEPLOYMENTS_JSON: '[]' }, { '.github/deployed-api-images.txt': `# header\n${DIGEST} live before #551\n` });
   assert.equal(listed.status, 0, listed.stderr);
   assert.equal(listed.out.trim(), `image_ref=skgbafa/openkey-api@${DIGEST}`);
   assert.match(listed.summary, /deployed-api-images\.txt/);

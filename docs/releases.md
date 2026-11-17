@@ -42,7 +42,7 @@ Cloudflare Pages deploys `main` on merge but only reports a check run, not a Dep
 
 It refuses a digest that was never deployed. "Deployed" is one of two things, and nothing made by hand counts:
 - a Deployment in the environment `openkey-api-image` made by `github-actions[bot]` (the deploy's "Record the deployed image" step), with a success status, whose `payload.run` is a successful `deploy-api.yml` run on `main`. List them with `gh api 'repos/TinyCloudLabs/openkey/deployments?environment=openkey-api-image' --jq '.[] | [.created_at, .payload.digest, .payload.rollback] | @tsv'`;
-- a line in `.github/deployed-api-images.txt`, the images that ran in production before the records existed (for example the live digest from `rollback_image` in `scripts/inspect-api-production.ts`). Add a line only by PR, for a digest known to have run.
+- a line `sha256:<digest> <reason>` in `.github/deployed-api-images.txt` (the reason is required), the images that ran in production before the records existed (for example the live digest from `rollback_image` in `scripts/inspect-api-production.ts`). Add a line only by PR, for a digest known to have run.
 
 ## Review path
 

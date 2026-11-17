@@ -212,11 +212,11 @@ jobs:
             exit 1
           fi
           # Previously deployed means one of two things, and nothing a person can create by hand counts:
-          #  - the digest is in .github/deployed-api-images.txt (images that ran before the records; changed by PR), or
+          #  - the digest is in .github/deployed-api-images.txt with a reason (images that ran before the records; changed by PR), or
           #  - a Deployment record made by github-actions[bot] (the "Record the deployed image" step) names it, its
           #    status is success, and its payload.run is a successful deploy-api.yml run on main.
           deployed=""
-          if grep -Eq "^$ROLLBACK_DIGEST([[:space:]]|$)" .github/deployed-api-images.txt; then
+          if grep -Eq "^$ROLLBACK_DIGEST[[:space:]]+[^[:space:]]" .github/deployed-api-images.txt; then
             deployed="the list in .github/deployed-api-images.txt"
           else
             while IFS=$'\t' read -r id run_id; do
