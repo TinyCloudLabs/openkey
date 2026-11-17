@@ -152,7 +152,8 @@ const REQUESTER_BY_CALLBACK_ENDPOINT: Record<string, DelegateRequester> = {
  */
 export function delegateRequester(approvedCallback: string | null): DelegateRequester {
   const url = approvedCallback ? parseUrl(approvedCallback) : null;
-  if (!url || url.protocol !== 'https:') return CLI_REQUESTER;
+  // The caller passes an approved callback, but a name is not handed out on that assumption alone.
+  if (!url || url.protocol !== 'https:' || !isSafeTransport(url)) return CLI_REQUESTER;
   const endpoint = `${url.origin}${url.pathname}`;
   return Object.hasOwn(REQUESTER_BY_CALLBACK_ENDPOINT, endpoint) ? REQUESTER_BY_CALLBACK_ENDPOINT[endpoint]! : CLI_REQUESTER;
 }

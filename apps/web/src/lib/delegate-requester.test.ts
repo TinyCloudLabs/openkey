@@ -34,6 +34,9 @@ describe('delegateRequester', () => {
       'https://mcp.tinycloud.xyz/gemini/connect/callback',
       'https://mcp.tinycloud.xyz.evil.example/claude/connect/callback',
       'https://mcp.tinycloud.xyz@evil.example/claude/connect/callback',
+      // Credentials in the URL: the endpoint matches, but no name.
+      'https://user:pw@mcp.tinycloud.xyz/claude/connect/callback',
+      'https://user@mcp.tinycloud.xyz/claude/connect/callback',
       'http://mcp.tinycloud.xyz/claude/connect/callback',
       'https://evil.example/claude/connect/callback',
       // Object prototype keys are not endpoints.
