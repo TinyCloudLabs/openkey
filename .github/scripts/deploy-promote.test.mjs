@@ -196,7 +196,9 @@ test('the digest the compose file will pin is itself checked against the tested 
 const rollback = stepScript('Roll back to a previously deployed image');
 const BOT = 'github-actions[bot]';
 const record = (over = {}) => JSON.stringify([{ id: 7, creator: { login: BOT }, payload: { digest: DIGEST, run: '900' }, ...over }]);
-const RUN_OK = JSON.stringify({ path: '.github/workflows/deploy-api.yml', head_branch: 'main', conclusion: 'success' });
+const RUN = { path: '.github/workflows/deploy-api.yml', head_branch: 'main', conclusion: 'success', event: 'workflow_dispatch', head_repository: { full_name: 'TinyCloudLabs/openkey' } };
+const runWith = (over) => JSON.stringify({ ...RUN, ...over });
+const RUN_OK = runWith({});
 const artifactsFor = (digest, over = {}) => JSON.stringify({ artifacts: [{ name: `deployed-api-image-${digest.slice('sha256:'.length)}`, expired: false, ...over }] });
 const ROLLBACK = {
   ROLLBACK_DIGEST: DIGEST, ROLLBACK_REASON: 'sign-in regression in the new image', TAG_EXISTS: '1',
@@ -241,9 +243,12 @@ test('rollback refuses a digest the workflow never deployed, whoever made the re
   refused({ DEPLOYMENTS_JSON: record({ payload: { digest: OTHER, run: '900' } }) }, 'a record for another image');
   refused({ DEPLOYMENTS_JSON: record({ payload: 'not an object' }) }, 'a record with no digest payload');
   refused({ STATUSES_JSON: '[{"state":"failure"}]' }, 'a deployment that did not succeed');
-  refused({ RUN_JSON: JSON.stringify({ path: '.github/workflows/deploy-api.yml', head_branch: 'main', conclusion: 'failure' }) }, 'a failed run');
-  refused({ RUN_JSON: JSON.stringify({ path: '.github/workflows/deploy-api.yml', head_branch: 'feature', conclusion: 'success' }) }, 'a run off main');
-  refused({ RUN_JSON: JSON.stringify({ path: '.github/workflows/other.yml', head_branch: 'main', conclusion: 'success' }) }, 'another workflow');
+  refused({ RUN_JSON: runWith({ conclusion: 'failure' }) }, 'a failed run');
+  refused({ RUN_JSON: runWith({ head_branch: 'feature' }) }, 'a run off main');
+  refused({ RUN_JSON: runWith({ path: '.github/workflows/other.yml' }) }, 'another workflow');
+  // A fork's branch can be named main, and its pull_request run of an edited deploy-api.yml reports the same path and success.
+  refused({ RUN_JSON: runWith({ event: 'pull_request' }) }, 'a pull_request run');
+  refused({ RUN_JSON: runWith({ head_repository: { full_name: 'someone/openkey' } }) }, 'a run from a fork');
   refused({ DEPLOYMENTS_JSON: record({ payload: { digest: DIGEST, run: 'x; rm -rf /' } }) }, 'a run id that is not a number');
   // A bot token from any workflow can cite a real run id; only the cited run can have uploaded its own artifact.
   refused({ ARTIFACTS_JSON: '{"artifacts":[]}' }, 'a cited run that uploaded no artifact');

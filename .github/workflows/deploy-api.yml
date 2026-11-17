@@ -215,7 +215,7 @@ jobs:
           # Previously deployed means one of two things, and nothing a person can create by hand counts:
           #  - the digest is in .github/deployed-api-images.txt with a reason (images that ran before the records; changed by PR), or
           #  - a Deployment record made by github-actions[bot] (the "Record the deployed image" step) names it, its
-          #    status is success, its payload.run is a successful deploy-api.yml run on main, and that run's own
+          #    status is success, its payload.run is a successful deploy-api.yml workflow_dispatch run on main in this repo, and that run's own
           #    artifact deployed-api-image-<digest> (uploaded below) names the same digest.
           deployed=""
           if grep -Eq "^$ROLLBACK_DIGEST[[:space:]]+[^[:space:]]" .github/deployed-api-images.txt; then
@@ -225,8 +225,11 @@ jobs:
               [[ "$id" =~ ^[0-9]+$ && "$run_id" =~ ^[0-9]+$ ]] || continue
               ok="$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --jq '[.[] | select(.state == "success")] | length')"
               [ "${ok:-0}" -gt 0 ] || continue
-              prov="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '[(.path | split("@")[0]), .head_branch, .conclusion] | @tsv')"
-              [ "$prov" = "$(printf '.github/workflows/deploy-api.yml\tmain\tsuccess')" ] || continue
+              # A dispatch from this repo only: a fork's pull_request run of an edited deploy-api.yml can report the same
+              # path, a head_branch named main and success.
+              prov="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" \
+                --jq '[(.path | split("@")[0]), .head_branch, .conclusion, .event, .head_repository.full_name] | @tsv')"
+              [ "$prov" = "$(printf '.github/workflows/deploy-api.yml\tmain\tsuccess\tworkflow_dispatch\t%s' "$GITHUB_REPOSITORY")" ] || continue
               # That run must itself have deployed this digest: it uploaded an artifact named for it. Any workflow's
               # token shows up as github-actions[bot] and can cite a real run id, but cannot add artifacts to that run.
               named="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" \
