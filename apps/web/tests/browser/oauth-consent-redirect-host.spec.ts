@@ -96,6 +96,20 @@ test.describe('consent permission lines', () => {
     await expect(page.getByText(stayLine, { exact: true })).toHaveCount(0);
   });
 
+  test('every granted scope gets a row, so "only the access listed above" is true', async ({ page }) => {
+    await openConsent(page, { scope: 'openid email profile keys tinycloud:session vendor:custom', redirectUri: 'https://app.example.test/cb' });
+    for (const row of ['See your email address', 'See your profile name', 'See your account keys', 'Access named “tinycloud:session”', 'Access named “vendor:custom”']) {
+      await expect(page.getByText(row, { exact: true })).toBeVisible();
+    }
+    await expect(page.getByText('This app gets only the access listed above.', { exact: true })).toBeVisible();
+  });
+
+  test('without tinycloud:mcp the stay-connected row makes no 30-day claim', async ({ page }) => {
+    await openConsent(page, { scope: 'openid offline_access', redirectUri: 'https://app.example.test/cb' });
+    await expect(page.getByText('Stay connected until you disconnect it or it expires.', { exact: true })).toBeVisible();
+    await expect(page.getByText(/30 days/)).toHaveCount(0);
+  });
+
   test('a scope appended after the signature does not change what is shown', async ({ page }) => {
     await openConsent(page, { scope: 'openid', unsigned: '&scope=tinycloud:mcp%20offline_access' });
     await expect(page.getByText('wants to verify your identity', { exact: true })).toBeVisible();

@@ -49,6 +49,18 @@
       .some((capability) => requestedScopes.has(capability));
   const redirectHost = redirectHostForDisplay(signedParams?.get('redirect_uri'));
 
+  // Scopes with their own row below. Every other granted scope gets a plain row, so the note
+  // under the list ("only the access listed above") is true whatever the client asked for.
+  const SCOPES_WITH_OWN_ROW = new Set(['openid', 'tinycloud:identity', 'tinycloud:manage-key', 'tinycloud:mcp', 'offline_access']);
+  const OTHER_SCOPE_ROWS: Record<string, string> = {
+    email: 'See your email address',
+    profile: 'See your profile name',
+    keys: 'See your account keys',
+  };
+  const otherScopeRows = [...requestedScopes]
+    .filter((requested) => !SCOPES_WITH_OWN_ROW.has(requested))
+    .map((requested) => (Object.hasOwn(OTHER_SCOPE_ROWS, requested) ? OTHER_SCOPE_ROWS[requested]! : `Access named “${requested}”`));
+
   async function fetchClientInfo() {
     if (!clientId) {
       error = 'Missing client_id';
@@ -227,9 +239,17 @@
               <svg class="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
               </svg>
-              Stay connected for up to 30 days, or until you disconnect it.
+              {requestedScopes.has('tinycloud:mcp') ? 'Stay connected for up to 30 days, or until you disconnect it.' : 'Stay connected until you disconnect it or it expires.'}
             </li>
             {/if}
+            {#each otherScopeRows as row}
+            <li class="flex items-center gap-2 text-surface-700">
+              <svg class="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+              </svg>
+              {row}
+            </li>
+            {/each}
           </ul>
         </div>
         <p class="mt-3 text-xs text-surface-500">
