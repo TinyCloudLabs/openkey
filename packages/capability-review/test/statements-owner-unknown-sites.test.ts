@@ -1,5 +1,5 @@
-// Non-secret statements that name an owner ("your ...") must not claim it when
-// the owner is not yet known (`ownedBySelf: null`). `true` keeps its wording
+// Statements that name an owner ("your ...") must not claim it when the owner
+// is not yet known (`ownedBySelf: null`), and must not say "requested". `true` keeps its wording
 // exactly. Every case runs null and true; the old wording is pinned for true.
 
 import { describe, expect, it } from "bun:test";
@@ -48,24 +48,24 @@ function makeGrant(
 // [name, family, service, space, path, verbs, text when true, text when null]
 const SITES: Array<[string, CapabilityGrant["family"], string, string, string, string[], string[], string[]]> = [
   ["account bootstrap", "bootstrap-kv", "tinycloud.kv", "account", "", ["get", "put"],
-    ["Manage your TinyCloud account"], ["Manage the requested TinyCloud account"]],
+    ["Manage your TinyCloud account"], ["Manage a TinyCloud account"]],
   ["account bootstrap sql schema", "bootstrap-sql", "tinycloud.sql", "account", "", ["read", "schema"],
     ["Manage your TinyCloud account", "Edit and delete tables in your TinyCloud account"],
-    ["Manage the requested TinyCloud account", "Edit and delete tables in the requested account"]],
+    ["Manage a TinyCloud account", "Edit and delete tables"]],
   ["public read and publish", "public-data", "tinycloud.kv", "public", "", ["get", "put"],
-    ["Read and publish your public data"], ["Read and publish the requested public data"]],
+    ["Read and publish your public data"], ["Read and publish public data"]],
   ["public publish", "public-data", "tinycloud.kv", "public", "", ["put"],
-    ["Publish and update your public data"], ["Publish and update the requested public data"]],
+    ["Publish and update your public data"], ["Publish and update public data"]],
   ["public read", "public-data", "tinycloud.kv", "public", "", ["get"],
-    ["Read your public data"], ["Read the requested public data"]],
+    ["Read your public data"], ["Read public data"]],
   ["default read and update", "bootstrap-kv", "tinycloud.kv", "default", "notes/", ["get", "put"],
-    ["Read and update your TinyCloud data"], ["Read and update data in the requested account"]],
+    ["Read and update your TinyCloud data"], ["Read and update data"]],
   ["default update", "bootstrap-kv", "tinycloud.kv", "default", "notes/", ["put"],
-    ["Update your TinyCloud data"], ["Update data in the requested account"]],
+    ["Update your TinyCloud data"], ["Update data"]],
   ["default read", "bootstrap-kv", "tinycloud.kv", "default", "notes/", ["get"],
-    ["Read your TinyCloud data"], ["Read data in the requested account"]],
+    ["Read your TinyCloud data"], ["Read data"]],
   ["delegation list", "bootstrap-capabilities", "tinycloud.delegation", "notes", "apps/x/", ["list"],
-    ["See who has access to your data"], ["See who has access to the requested data"]],
+    ["See who has access to your data"], ["See who has access to data"]],
 ];
 
 describe("an unknown owner never reads as \"your\"", () => {
@@ -73,7 +73,7 @@ describe("an unknown owner never reads as \"your\"", () => {
     it(`${name}: null is neutral`, () => {
       const out = buildStatements(makeGrant(family, service, spaceName, path, verbs, null)).map((s) => s.primaryText);
       expect(out).toEqual(whenNull);
-      for (const text of out) expect(text.toLowerCase()).not.toMatch(/\byour\b/);
+      for (const text of out) expect(text.toLowerCase()).not.toMatch(/\b(your|requested)\b/);
     });
     it(`${name}: true keeps its wording`, () => {
       expect(buildStatements(makeGrant(family, service, spaceName, path, verbs, true)).map((s) => s.primaryText)).toEqual(whenTrue);

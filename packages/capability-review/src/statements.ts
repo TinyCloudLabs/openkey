@@ -845,7 +845,7 @@ function schemaOnlyStatementText(
   }
   if (spaceName === "account" && grant.family === "bootstrap-sql") {
     return grant.ownedBySelf === null
-      ? "Edit and delete tables in the requested account"
+      ? "Edit and delete tables"
       : "Edit and delete tables in your TinyCloud account";
   }
   if (grant.family === "own-app-data" || grant.family === "cross-app-data") {
@@ -1454,7 +1454,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
         ? "another user's"
         : grant.ownedBySelf === true
           ? "your"
-          : "the requested";
+          : "the";
     // TinyCloud's secrets SQL database stores the secret catalog (scope,
     // name, provider, notes, and test metadata). Secret values live in KV.
     if (SQL_SERVICES.has(service)) {
@@ -1539,7 +1539,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     return {
       primaryText:
         grant.ownedBySelf === null
-          ? "Manage the requested TinyCloud account"
+          ? "Manage a TinyCloud account"
           : "Manage your TinyCloud account",
       service,
       resource,
@@ -1575,10 +1575,10 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       return {
         primaryText: verbs.hasRead
           ? grant.ownedBySelf === null
-            ? "Read and publish the requested public data"
+            ? "Read and publish public data"
             : "Read and publish your public data"
           : grant.ownedBySelf === null
-            ? "Publish and update the requested public data"
+            ? "Publish and update public data"
             : "Publish and update your public data",
         service,
         resource,
@@ -1588,7 +1588,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       return {
         primaryText:
           grant.ownedBySelf === null
-            ? "Read the requested public data"
+            ? "Read public data"
             : "Read your public data",
         service,
         resource,
@@ -1606,7 +1606,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       return {
         primaryText:
           grant.ownedBySelf === null
-            ? "Read and update data in the requested account"
+            ? "Read and update data"
             : "Read and update your TinyCloud data",
         service,
         resource,
@@ -1616,7 +1616,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       return {
         primaryText:
           grant.ownedBySelf === null
-            ? "Update data in the requested account"
+            ? "Update data"
             : "Update your TinyCloud data",
         service,
         resource,
@@ -1626,7 +1626,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       return {
         primaryText:
           grant.ownedBySelf === null
-            ? "Read data in the requested account"
+            ? "Read data"
             : "Read your TinyCloud data",
         service,
         resource,
@@ -1775,7 +1775,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     return {
       primaryText:
         grant.ownedBySelf === null
-          ? "See who has access to the requested data"
+          ? "See who has access to data"
           : DELEGATION_LIST_STATEMENT,
       service,
       resource,

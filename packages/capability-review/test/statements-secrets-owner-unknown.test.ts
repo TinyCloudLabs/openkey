@@ -79,8 +79,17 @@ describe("secrets space with unknown owner", () => {
 
   it("names the catalog neutrally", () => {
     expect(texts(makeGrant("tinycloud.sql", "default", ["tinycloud.sql/read"], null))).toEqual([
-      "View the requested secret catalog",
+      "View the secret catalog",
     ]);
+  });
+
+  it("manage and view-and-manage read without an owner", () => {
+    expect(texts(makeGrant("tinycloud.sql", "default", ["tinycloud.sql/write"], null))).toEqual([
+      "Manage the secret catalog",
+    ]);
+    expect(
+      texts(makeGrant("tinycloud.sql", "default", ["tinycloud.sql/read", "tinycloud.sql/write"], null)),
+    ).toEqual(["View and manage the secret catalog"]);
   });
 
   it("owner true still says your", () => {
