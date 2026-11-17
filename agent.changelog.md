@@ -11,11 +11,6 @@ Track changes to agent-facing development guidance for OpenKey. Add a concise en
   registries that pin a migration checksum and the count-only reserved-address preflight.
   It also notes that an applied migration's file and checksum pins are frozen, so a feature
   that added a column to it is backed out in code only.
-- Added the Claude, Grok and Muse personal-record MCP audiences and their exact
-  delegation callbacks alongside the broad and ChatGPT ones. Release needs the API
-  and web changes, the connector's token-status client registered for the new
-  resources, and the SDK candidate. No default-branch integration or deployment
-  without explicit owner approval.
 
 ## 2026-11-13
 

@@ -210,7 +210,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `BETTER_AUTH_URL` | `https://api.openkey.so` |
 | `APPROVAL_RESULT_RETENTION_SECONDS` | `600` (10 min, Sam 2026-10-29), fixed in production compose for collecting approved CLI results. The result deadline is capped by the signed grant expiry. |
 | `OAUTH_DYNAMIC_CLIENT_REGISTRATION` | Keep `true` for MCP clients that register automatically; set `false` only as an emergency disable |
-| `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs; code includes the exact broad `https://mcp.tinycloud.xyz/mcp`, the public `https://mcp.tinycloud.xyz/chatgpt/mcp`, and the directory `https://mcp.tinycloud.xyz/claude/mcp`, `/grok/mcp` and `/muse/mcp` audiences. Preserve any additional configured resources. |
+| `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs; code includes the exact broad `https://mcp.tinycloud.xyz/mcp` and public `https://mcp.tinycloud.xyz/chatgpt/mcp` audiences. Preserve any additional configured resources. |
 | `WEBAUTHN_RP_ID` | `openkey.so` |
 | `WEBAUTHN_ORIGIN` | `https://openkey.so` |
 | `CONSOLE_ORIGIN` | `https://console.openkey.so` |
@@ -674,13 +674,10 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
      callback endpoints such as `https://mcp.staging.example/connect/callback`)
      and `VITE_DELEGATE_NODE_ORIGINS` (comma-separated HTTPS node origins).
      Production needs neither for the first-party MCP services: the exact
-     `/connect/callback`, `/chatgpt/connect/callback`, `/claude/connect/callback`,
-     `/grok/connect/callback` and `/muse/connect/callback` endpoints on
+     `/connect/callback` and `/chatgpt/connect/callback` endpoints on
      `https://mcp.tinycloud.xyz` and the `node`/`tee.node.tinycloud.xyz` nodes
-     are built in. Each restricted address needs both this web registration
-     and the API audience update deployed, and the connector's token-status
-     client registered for it (`docs/resource-server-token-status.md`); none of
-     these establishes an assistant's acceptance. See
+     are built in. The public ChatGPT candidate needs both this web registration
+     and the API audience update deployed; neither establishes ChatGPT acceptance. See
      `docs/share-device-authorization.md` ("Ordinary `/delegate` links").
 
 4. Deploy

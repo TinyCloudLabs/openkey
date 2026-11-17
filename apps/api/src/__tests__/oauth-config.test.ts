@@ -15,7 +15,6 @@ import {
   TINYCLOUD_SESSION_SCOPE,
   accessTokenExpiresInFor,
   dynamicClientRegistrationEnabled,
-  oauthValidAudiences,
 } from '../oauth-config';
 
 describe('hosted MCP OAuth configuration', () => {
@@ -44,32 +43,14 @@ describe('hosted MCP OAuth configuration', () => {
   });
 });
 
-describe('oauthValidAudiences', () => {
-  test('issues tokens for every hosted MCP address without configuration, and keeps configured extras', () => {
-    expect(oauthValidAudiences('https://api.openkey.test', ' https://other.example/mcp ,')).toEqual([
-      'https://api.openkey.test',
-      'https://mcp.tinycloud.xyz/mcp',
-      'https://mcp.tinycloud.xyz/chatgpt/mcp',
-      'https://mcp.tinycloud.xyz/claude/mcp',
-      'https://mcp.tinycloud.xyz/grok/mcp',
-      'https://mcp.tinycloud.xyz/muse/mcp',
-      'https://other.example/mcp',
-    ]);
-  });
-});
-
 describe('accessTokenExpiresInFor (TC-1366)', () => {
   test('only a request for exactly one hosted MCP resource gets the long lifetime', () => {
     const long = MCP_ACCESS_TOKEN_EXPIRES_IN;
-    for (const resource of [
-      DEFAULT_TINYCLOUD_MCP_AUDIENCE, CHATGPT_TINYCLOUD_MCP_AUDIENCE, [CHATGPT_TINYCLOUD_MCP_AUDIENCE],
-      'https://mcp.tinycloud.xyz/claude/mcp', 'https://mcp.tinycloud.xyz/grok/mcp', ['https://mcp.tinycloud.xyz/muse/mcp'],
-    ]) {
-      expect(accessTokenExpiresInFor(resource), JSON.stringify(resource)).toBe(long);
+    for (const resource of [DEFAULT_TINYCLOUD_MCP_AUDIENCE, CHATGPT_TINYCLOUD_MCP_AUDIENCE, [CHATGPT_TINYCLOUD_MCP_AUDIENCE]]) {
+      expect(accessTokenExpiresInFor(resource)).toBe(long);
     }
     for (const resource of [
       undefined, null, '', 'https://api.openkey.so', 'https://mcp.tinycloud.xyz/mcp/', 'https://mcp.tinycloud.xyz/chatgpt',
-      'https://mcp.tinycloud.xyz/claude', 'https://mcp.tinycloud.xyz/claude/mcp/', 'https://mcp.tinycloud.xyz/gemini/mcp',
       'https://mcp.tinycloud.xyz/mcp?x=1', [], [DEFAULT_TINYCLOUD_MCP_AUDIENCE, 'https://api.openkey.so'],
       [DEFAULT_TINYCLOUD_MCP_AUDIENCE, CHATGPT_TINYCLOUD_MCP_AUDIENCE], 42, { resource: DEFAULT_TINYCLOUD_MCP_AUDIENCE },
     ]) {

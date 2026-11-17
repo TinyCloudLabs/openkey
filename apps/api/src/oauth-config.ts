@@ -35,21 +35,8 @@ export const TINYCLOUD_CANONICAL_IDENTITY_CLAIM =
   'https://tinycloud.xyz/canonical_identity';
 export const DEFAULT_TINYCLOUD_MCP_AUDIENCE = 'https://mcp.tinycloud.xyz/mcp';
 export const CHATGPT_TINYCLOUD_MCP_AUDIENCE = 'https://mcp.tinycloud.xyz/chatgpt/mcp';
-/**
- * The restricted personal-record resources that other assistants' directories list, one per assistant so a
- * change one directory's review demands does not alter what another lists.
- */
-export const DIRECTORY_TINYCLOUD_MCP_AUDIENCES = [
-  'https://mcp.tinycloud.xyz/claude/mcp',
-  'https://mcp.tinycloud.xyz/grok/mcp',
-  'https://mcp.tinycloud.xyz/muse/mcp',
-] as const;
 /** The hosted MCP resources. */
-export const MCP_AUDIENCES = [
-  DEFAULT_TINYCLOUD_MCP_AUDIENCE,
-  CHATGPT_TINYCLOUD_MCP_AUDIENCE,
-  ...DIRECTORY_TINYCLOUD_MCP_AUDIENCES,
-] as const;
+export const MCP_AUDIENCES = [DEFAULT_TINYCLOUD_MCP_AUDIENCE, CHATGPT_TINYCLOUD_MCP_AUDIENCE] as const;
 
 /** An access token's lifetime for every audience except the hosted MCP's. */
 export const DEFAULT_ACCESS_TOKEN_EXPIRES_IN = 5 * 60;
@@ -102,7 +89,12 @@ export const DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES = OAUTH_SCOPES.filter(
 
 export function oauthValidAudiences(baseURL: string, configured = process.env.OAUTH_VALID_AUDIENCES): string[] {
   const values = configured?.split(',').map((value) => value.trim()).filter(Boolean) ?? [];
-  return Array.from(new Set([baseURL, ...MCP_AUDIENCES, ...values]));
+  return Array.from(new Set([
+    baseURL,
+    DEFAULT_TINYCLOUD_MCP_AUDIENCE,
+    CHATGPT_TINYCLOUD_MCP_AUDIENCE,
+    ...values,
+  ]));
 }
 
 export function dynamicClientRegistrationEnabled(

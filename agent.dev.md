@@ -110,12 +110,6 @@ bun dev:portless
   API and web deployment are both needed. This does not change sign-in methods
   or remove consent. Default-branch merges and deployment require explicit
   owner approval; no auto-merge or deployment bypass.
-- The Claude, Grok and Muse directory listings each use their own restricted
-  resource, `https://mcp.tinycloud.xyz/{claude,grok,muse}/mcp`, with the exact
-  callback `https://mcp.tinycloud.xyz/{claude,grok,muse}/connect/callback`. They
-  follow the ChatGPT rules above: exact entries only, API and web deployment both
-  needed. The connector's token-status client must also be registered for the
-  new resources (`docs/resource-server-token-status.md`).
 - Ordinary `/delegate` links may supply one canonical `requesterOrigin`:
   HTTPS, or HTTP on exactly localhost, 127.0.0.1 or [::1]. The API binds its
   host (including nondefault port) into the prepared SIWE and authorization
