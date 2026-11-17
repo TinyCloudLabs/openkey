@@ -118,7 +118,7 @@ async function lockOwner(tx: Transaction, userId: string, wait = true) {
  */
 export async function reserveRenewalLease(
   db: Pick<PrismaClient, '$transaction'>,
-  input: { approvalRequestId: string; userId: string; sessionId: string | null; nodeOrigin: string; stage: RenewalStage },
+  input: { approvalRequestId: string | null; userId: string; sessionId: string | null; nodeOrigin: string; stage: RenewalStage },
   deps: Pick<LeaseRevocationDeps, 'seal'> = defaultDeps,
 ): Promise<void> {
   const { stage } = input;

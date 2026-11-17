@@ -143,6 +143,9 @@ import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
 import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, confirmBoundRenewal, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
+import { bindSignInRenewalRequest, finishSignInLease, setUpSignInLease, signInRenewalFailure, takePendingSignInLease, type SignInLease } from '../services/signin-renewal';
+import type { SignInRenewalRequest } from '../services/authorization-signing';
+import { parseRenewalChoice, renewalLeasesEnabled, signLease } from '../services/renewal-lease';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
   activePreparedHandoffService = service;
@@ -2641,6 +2644,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     requestOrigin?: string;
     /** TC-2272: the app sends `expiryChangeable: true` when it accepts a different signed expiry. */
     expiryChangeable?: unknown;
+    /** The app's renewal ask for this sign-in (`{ version: 1, leaseLifetimeSeconds }`); ignored while leases are off. */
+    renewal?: unknown;
     requesterOrigin?: unknown;
     ticket?: string;
     transportVersion?: number;
@@ -3022,6 +3027,16 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     );
   }
 
+  let signInRenewal: SignInRenewalRequest | undefined;
+  try {
+    signInRenewal = bindSignInRenewalRequest(body.renewal, {
+      host: typeof body.host === 'string' ? body.host : '', handoff: Boolean(ticket), expiryChangeable: body.expiryChangeable === true,
+    });
+  } catch (error) {
+    const refused = signInRenewalFailure(error);
+    return c.json(refused.body, refused.status);
+  }
+
   let issued: AuthorizationContextToken;
   try {
     issued = issueAuthorizationContext({
@@ -3045,6 +3060,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       appOrigin: normalizeAppOrigin(body.reportedOrigin) ?? undefined,
       admittedAppKeys,
       expiryChangeable: body.expiryChangeable === true,
+      signInRenewal,
     });
   } catch (issueErr) {
     logError('warn', 'delegate_authorization_context_issue_failed', issueErr);
@@ -3074,6 +3090,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     // render trust from THIS value, not from the envelope it forwarded.
     metadataTrust: issued.metadataTrust,
     verifiedManifest: issued.verifiedManifest,
+    // The renewal box is offered only when the ask is bound: leases on, and a node OpenKey sets leases up on.
+    ...(signInRenewal ? { renewal: { leaseLifetimeSeconds: signInRenewal.leaseLifetimeSeconds } } : {}),
   });
 });
 
@@ -3136,6 +3154,8 @@ delegateRouter.post('/authorize-sign', async (c) => {
      * the peek+preview API (see /authorize-sign-preview).
      */
     externalSignature?: string;
+    /** Optional: repeats the renewal choice sealed with the preview; any other choice is refused. */
+    renewal?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
@@ -3486,6 +3506,13 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (!previewCheck.ok) {
     return c.json({ error: previewCheck.message, code: previewCheck.error }, 400);
   }
+  // The renewal choice sealed with the preview: the body may repeat it, never change it. A leased choice needs
+  // leases on, checked before anything is signed.
+  const sealedRenewal = previewCheck.renewal;
+  confirmBoundRenewal(body.renewal, sealedRenewal);
+  if (sealedRenewal?.choice === 'leased' && !renewalLeasesEnabled()) {
+    return c.json({ error: "Renewal isn't available for this sign-in.", code: 'renewal_disabled' }, 400);
+  }
 
   // External signatures must recover to the bound signer over these exact
   // bytes before either single-use token is consumed.
@@ -3596,6 +3623,28 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // Reference computePermissionKey so it doesn't get flagged as unused
   // during typecheck; permissionOptions may consume it in the future.
   void computePermissionKey;
+  // A leased sign-in returns the grant only with its admitted lease (or, for an external wallet, the lease it
+  // signs next): the grant is registered with its node, then the lease for exactly that grant is signed,
+  // recorded and admitted. If that fails no signature is returned.
+  let signInLease: SignInLease | undefined;
+  if (sealedRenewal?.choice === 'leased') {
+    try {
+      signInLease = await setUpSignInLease({
+        userId: user.id,
+        sessionId: c.get('session')?.id ?? null,
+        host: bound.host,
+        jwk: bound.jwk,
+        spaceId: bound.spaceId,
+        signedMessage,
+        signature,
+        leaseLifetimeSeconds: sealedRenewal.leaseLifetimeSeconds,
+        signOwner: isExternal ? undefined : (message) => signManagedKey(key, key.sealedBlob!, message),
+      });
+    } catch (error) {
+      const refused = signInRenewalFailure(error);
+      return c.json(refused.body, refused.status);
+    }
+  }
 
   const handoffDelivery = ticket
     ? await activePreparedHandoffService.completeSigning(ticket, user.id, body.authorizationContextToken, key.id)
@@ -3609,7 +3658,40 @@ delegateRouter.post('/authorize-sign', async (c) => {
     selectedActionKeys: effectiveSelectedActionKeys,
     permissions: effectiveGrants,
     ...(handoffDelivery ?? {}),
+    ...(sealedRenewal ? { renewalChoice: sealedRenewal.choice } : {}),
+    ...(signInLease ?? {}),
   });
+});
+
+/**
+ * POST /api/delegate/authorize-sign-renewal
+ *
+ * The external wallet's signature on the renewal lease of a leased sign-in, after /authorize-sign returned the
+ * signed grant with `renewalSignature`. The lease is taken once, only by the same user; the signature must
+ * recover to the grant's owner. The lease is then recorded, admitted and confirmed; the receipt is returned.
+ */
+delegateRouter.post('/authorize-sign-renewal', async (c) => {
+  if (!renewalLeasesEnabled()) return c.json({ error: "Renewal isn't available for this sign-in.", code: 'renewal_disabled' }, 400);
+  const user = c.get('user');
+  const body: unknown = await c.req.json().catch(() => null);
+  const fields = body !== null && typeof body === 'object' ? body as Record<string, unknown> : {};
+  if (typeof fields.signature !== 'string' || !fields.signature) {
+    return c.json({ error: 'A signature is required.', code: 'invalid_request' }, 400);
+  }
+  const pending = takePendingSignInLease(fields.renewalToken, user.id);
+  if (!pending) return c.json({ error: 'This renewal request expired. Sign in again to turn on renewal.', code: 'renewal_expired' }, 410);
+  let signer = '';
+  try { signer = verifyMessage(pending.stage.leaseSiwe, fields.signature); } catch { /* refused below */ }
+  if (signer.toLowerCase() !== pending.stage.ownerAddress.toLowerCase()) {
+    return c.json({ error: "That signature isn't from the wallet you signed in with. Sign with that wallet to turn on renewal.", code: 'invalid_signature' }, 400);
+  }
+  try {
+    const renewal = await finishSignInLease(pending, signLease(pending.stage, fields.signature));
+    return c.json({ renewalChoice: 'leased', renewal });
+  } catch (error) {
+    const refused = signInRenewalFailure(error);
+    return c.json(refused.body, refused.status);
+  }
 });
 
 /**
@@ -3638,6 +3720,8 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     expirationTime?: unknown;
     /** TC-2927: `{ allowed: ActionId[] }`, the extra permissions the owner explicitly allowed on the warning screen. */
     elevatedDecision?: unknown;
+    /** The owner's renewal choice, for a sign-in whose app asked for renewal: `{ choice: 'finite' }` or `{ choice: 'leased', leaseLifetimeSeconds }`. */
+    renewal?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
@@ -3676,6 +3760,14 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   // different user.
   if (bound.userId !== user.id) {
     return c.json({ error: 'Authorization context bound to a different user', code: 'user_mismatch' }, 400);
+  }
+  // The renewal box's state is sealed with this preview, so signing can only use what the owner saw here.
+  let renewalChoice: BoundRenewalChoice | undefined;
+  try {
+    renewalChoice = parseRenewalChoice(body.renewal, bound.signInRenewal) ?? undefined;
+  } catch (error) {
+    const refused = signInRenewalFailure(error);
+    return c.json(refused.body, refused.status);
   }
 
   let originalEntries: RecapEntry[];
@@ -3885,6 +3977,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     selectedActionIds,
     signedMessage: preparedSignedMessage,
     elevatedAllowed,
+    renewal: renewalChoice,
   });
 
   return c.json({
@@ -3901,5 +3994,6 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     previewApprovalToken: previewApproval.token,
     previewApprovalExpiresAt: previewApproval.expiresAt,
     signedMessageDigest: previewApproval.signedMessageDigest,
+    ...(renewalChoice ? { renewal: renewalChoice } : {}),
   });
 });
