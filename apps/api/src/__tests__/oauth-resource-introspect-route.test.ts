@@ -507,6 +507,7 @@ describe('rate limits', () => {
     expect((await call(token, { auth: basic('rs_fast', secrets.rs) })).status).toBe(429);
   });
 
+  // 3000 requests in a row: about 0.6 s here, but over bun's default 5 s on a loaded CI runner (TC-3142).
   test('the default is 3000 requests per client and 20 failures per address in a minute', async () => {
     router = makeRouter();
     const token = await mint();
@@ -517,7 +518,7 @@ describe('rate limits', () => {
     for (let i = 0; i < 21; i++) failures.push((await call(token, { auth: basic('rs_2', 'wrong'), headers: { 'x-forwarded-for': '198.51.100.9, 10.0.0.1' } })).status);
     expect(failures.slice(0, 20).every((status) => status === 401)).toBe(true);
     expect(failures[20]).toBe(429);
-  });
+  }, 30_000);
 });
 
 describe('a token revoked at /oauth2/revoke', () => {
