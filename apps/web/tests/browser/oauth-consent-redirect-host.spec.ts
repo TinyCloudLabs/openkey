@@ -77,13 +77,16 @@ test.describe('consent return host', () => {
 });
 
 test.describe('consent permission lines', () => {
-  const mcpLine = 'Use your TinyCloud through the MCP server';
-  const stayLine = 'Stay connected until you disconnect it';
+  const mcpLine = 'Connect to TinyCloud. You approve access to your data separately.';
+  const stayLine = 'Stay connected for up to 30 days, or until you disconnect it.';
 
   test('lists TinyCloud access and staying connected when both are requested', async ({ page }) => {
     await openConsent(page, { scope: 'openid email tinycloud:mcp offline_access', redirectUri: 'https://claude.ai/cb' });
+    await expect(page.getByText('wants to connect to your TinyCloud', { exact: true })).toBeVisible();
+    await expect(page.getByText('wants to verify your identity')).toHaveCount(0);
     await expect(page.getByText(mcpLine, { exact: true })).toBeVisible();
     await expect(page.getByText(stayLine, { exact: true })).toBeVisible();
+    await expect(page.getByText('This app gets only the access listed above.', { exact: true })).toBeVisible();
     await expect(page.getByText("This app can't sign anything or use your TinyCloud data.")).toHaveCount(0);
   });
 
@@ -93,10 +96,12 @@ test.describe('consent permission lines', () => {
     await expect(page.getByText(stayLine, { exact: true })).toHaveCount(0);
   });
 
-  test('identity-only consent shows neither line', async ({ page }) => {
+  test('identity-only consent shows neither line and keeps the identity header and note', async ({ page }) => {
     await openConsent(page, { scope: 'openid email tinycloud:identity', redirectUri: 'https://viewer.example.test/cb' });
     await expect(page.getByText(mcpLine, { exact: true })).toHaveCount(0);
     await expect(page.getByText(stayLine, { exact: true })).toHaveCount(0);
+    await expect(page.getByText('wants to verify your identity', { exact: true })).toBeVisible();
+    await expect(page.getByText('wants to connect to your TinyCloud')).toHaveCount(0);
     await expect(page.getByText("This app can't sign anything or use your TinyCloud data.", { exact: true })).toBeVisible();
   });
 });

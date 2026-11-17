@@ -184,7 +184,7 @@
 
       <div class="border-t border-surface-200 pt-6 mb-6">
         <p class="text-surface-600 mb-4 text-center">
-          wants to verify your identity
+          {requestedScopes.has('tinycloud:mcp') ? 'wants to connect to your TinyCloud' : 'wants to verify your identity'}
         </p>
 
         <div class="bg-surface-100 rounded-lg p-4">
@@ -219,7 +219,7 @@
               <svg class="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
               </svg>
-              Use your TinyCloud through the MCP server
+              Connect to TinyCloud. You approve access to your data separately.
             </li>
             {/if}
             {#if requestedScopes.has('offline_access')}
@@ -227,7 +227,7 @@
               <svg class="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
               </svg>
-              Stay connected until you disconnect it
+              Stay connected for up to 30 days, or until you disconnect it.
             </li>
             {/if}
           </ul>
@@ -236,7 +236,7 @@
           {#if identityOnlyConsent}
             This app can't sign anything or use your TinyCloud data.
           {:else}
-            This application may request access to your canonical OpenKey identity only through the scopes you approve.
+            This app gets only the access listed above.
           {/if}
         </p>
       </div>
