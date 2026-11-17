@@ -844,7 +844,9 @@ function schemaOnlyStatementText(
     return "Edit and delete this app's tables";
   }
   if (spaceName === "account" && grant.family === "bootstrap-sql") {
-    return "Edit and delete tables in your TinyCloud account";
+    return grant.ownedBySelf === null
+      ? "Edit and delete tables in the requested account"
+      : "Edit and delete tables in your TinyCloud account";
   }
   if (grant.family === "own-app-data" || grant.family === "cross-app-data") {
     return "Edit and delete tables in application data";
@@ -1535,7 +1537,10 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     (grant.family === "bootstrap-kv" || grant.family === "bootstrap-sql")
   ) {
     return {
-      primaryText: "Manage your TinyCloud account",
+      primaryText:
+        grant.ownedBySelf === null
+          ? "Manage the requested TinyCloud account"
+          : "Manage your TinyCloud account",
       service,
       resource,
     };
@@ -1569,14 +1574,25 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     if (verbs.hasWrite) {
       return {
         primaryText: verbs.hasRead
-          ? "Read and publish your public data"
-          : "Publish and update your public data",
+          ? grant.ownedBySelf === null
+            ? "Read and publish the requested public data"
+            : "Read and publish your public data"
+          : grant.ownedBySelf === null
+            ? "Publish and update the requested public data"
+            : "Publish and update your public data",
         service,
         resource,
       };
     }
     if (verbs.hasRead || verbs.hasList || verbs.hasMetadata) {
-      return { primaryText: "Read your public data", service, resource };
+      return {
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Read the requested public data"
+            : "Read your public data",
+        service,
+        resource,
+      };
     }
     return fallbackStatement(grant);
   }
@@ -1588,16 +1604,33 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
   ) {
     if (verbs.hasRead && verbs.hasWrite) {
       return {
-        primaryText: "Read and update your TinyCloud data",
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Read and update data in the requested account"
+            : "Read and update your TinyCloud data",
         service,
         resource,
       };
     }
     if (verbs.hasWrite) {
-      return { primaryText: "Update your TinyCloud data", service, resource };
+      return {
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Update data in the requested account"
+            : "Update your TinyCloud data",
+        service,
+        resource,
+      };
     }
     if (verbs.hasRead || verbs.hasList || verbs.hasMetadata) {
-      return { primaryText: "Read your TinyCloud data", service, resource };
+      return {
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Read data in the requested account"
+            : "Read your TinyCloud data",
+        service,
+        resource,
+      };
     }
     return fallbackStatement(grant);
   }
@@ -1740,7 +1773,10 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       );
     if (!allActionsRecognized) return fallbackStatement(grant);
     return {
-      primaryText: DELEGATION_LIST_STATEMENT,
+      primaryText:
+        grant.ownedBySelf === null
+          ? "See who has access to the requested data"
+          : DELEGATION_LIST_STATEMENT,
       service,
       resource,
     };
