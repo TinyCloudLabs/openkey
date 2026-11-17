@@ -1446,7 +1446,13 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     isSecretsSpace(space) &&
     (KV_SERVICES.has(service) || SQL_SERVICES.has(service))
   ) {
-    const secretOwner = grant.ownedBySelf === false ? "another user's" : "your";
+    // An unknown owner (null) never claims "your".
+    const secretOwner =
+      grant.ownedBySelf === false
+        ? "another user's"
+        : grant.ownedBySelf === true
+          ? "your"
+          : "the requested";
     // TinyCloud's secrets SQL database stores the secret catalog (scope,
     // name, provider, notes, and test metadata). Secret values live in KV.
     if (SQL_SERVICES.has(service)) {
