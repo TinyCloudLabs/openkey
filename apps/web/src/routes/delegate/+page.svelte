@@ -43,7 +43,7 @@
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
   import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
-  import { MAX_LEASE_MS, defaultLeaseMs, formatDuration, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
+  import { MAX_LEASE_MS, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -642,9 +642,10 @@
       host = request.nodeOrigin;
       requestedPermissions = request.permissions;
       requestReason = normalizeReason(request.reason);
-      // The requester signs its longest lifetime; the owner starts from its suggestion (the maximum when it gives none).
+      // The requester signs its longest lifetime; the owner starts from its suggestion or the maximum, never above one
+      // hour, and can still choose up to the maximum.
       expiryMaxMs = request.grantLifetimeSeconds * 1000;
-      expiryParam = `${request.suggestedLifetimeSeconds ?? request.grantLifetimeSeconds}s`;
+      expiryParam = `${approvalRequestStartSeconds(request.grantLifetimeSeconds, request.suggestedLifetimeSeconds)}s`;
       // The box only shows where this OpenKey has leases on (`renewalAvailable`); otherwise the plain line, and finite.
       if (request.renewal && result.renewalAvailable === true) {
         renewalMaxLeaseMs = Math.min(request.renewal.leaseLifetimeSeconds * 1000, MAX_LEASE_MS);
