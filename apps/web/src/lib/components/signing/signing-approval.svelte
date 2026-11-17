@@ -602,7 +602,7 @@
     {#if summaryStatements.length > 0}
       {#each summaryGroups as group (group.key)}
       <div role="group" aria-label={group.heading ?? undefined}>
-      {#if group.heading}<h3>{group.heading}</h3>{/if}
+      {#if group.heading}<h3 class="permissions-heading">{group.heading}</h3>{/if}
       <ul class="summary-statements">
         {#each group.rows as statement (statement.key)}
           <li
