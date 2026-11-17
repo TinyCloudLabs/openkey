@@ -1271,7 +1271,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
             ? "View another user's secret names and details"
             : grant.ownedBySelf === true
               ? "View your secret names and details"
-              : "View the requested secret names and details",
+              : "View secret names and details",
         service,
         resource,
       };
@@ -1282,12 +1282,12 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
           ? "View another user's entire secret catalog"
           : grant.ownedBySelf === true
             ? "View your entire secret catalog"
-            : "View the entire requested secret catalog"
+            : "View the entire secret catalog"
         : grant.ownedBySelf === false
           ? "Read all secret values in another user's vault"
           : grant.ownedBySelf === true
             ? "Read all secret values in your vault"
-            : "Read all secret values in the requested vault",
+            : "Read all secret values in the vault",
       service,
       resource,
     };
@@ -1351,7 +1351,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
             ? "Manage all secrets stored in another user's vault"
             : grant.ownedBySelf === true
               ? "Manage all secrets stored in your vault"
-              : "Manage all secrets stored in the requested vault",
+              : "Manage all secrets in the vault",
         service,
         resource,
       };
@@ -1363,7 +1363,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
             ? "Manage another user's entire secret catalog"
             : grant.ownedBySelf === true
               ? "Manage your entire secret catalog"
-              : "Manage the entire requested secret catalog",
+              : "Manage the entire secret catalog",
         service,
         resource,
       };
@@ -1807,13 +1807,23 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
         // "manage secret variables"-adjacent shape; keep the phrasing
         // truthful about mutation.
         return {
-          primaryText: "Manage secrets stored in your vault",
+          primaryText:
+            grant.ownedBySelf === false
+              ? "Manage secrets in another user's vault"
+              : grant.ownedBySelf === true
+                ? "Manage secrets stored in your vault"
+                : "Manage secrets in the vault",
           service,
           resource,
         };
       }
       return {
-        primaryText: "View secrets stored in your vault",
+        primaryText:
+          grant.ownedBySelf === false
+            ? "View secrets in another user's vault"
+            : grant.ownedBySelf === true
+              ? "View secrets stored in your vault"
+              : "View secrets in the vault",
         service,
         resource,
       };
