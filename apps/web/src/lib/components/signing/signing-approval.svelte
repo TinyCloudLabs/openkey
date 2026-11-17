@@ -73,7 +73,6 @@
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
   import { requestedExpiryMs } from "$lib/approval-expiry";
   import { isOnceTier } from "$lib/renewal-default";
-  import type { DelegateReceiver } from "$lib/delegate-link-policy";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -110,23 +109,6 @@
     context?: Snippet;
     /** Show which key signs; for users who chose one of several keys. */
     showSigner?: boolean;
-    /** A host named by an unsigned ordinary link, not a verified sender. */
-    linkNamedHost?: string | null;
-    /** An ordinary link: nothing about its sender is verified, so the warning shows. */
-    ordinaryLink?: boolean;
-    /**
-     * Shown instead of "Requested by …" when the request carries no signed
-     * requester details of its own (a device sign-in, an approval link).
-     * The signing domain is the server's fixed default, not who asked.
-     */
-    neutralRequesterLine?: string | null;
-    /** The server's code for a device sign-in, to compare with the terminal. */
-    neutralRequesterCode?: string | null;
-    /**
-     * Where an ordinary link's approval will be delivered, as OpenKey
-     * enforces it. Names a destination, never the requester.
-     */
-    receiver?: DelegateReceiver | null;
     /**
      * Lookup state for the node key on a host approval. Leave unset where the
      * key on the request is not a node (the `/delegate` session grant): the
@@ -176,11 +158,6 @@
     declining = false,
     context,
     showSigner = false,
-    linkNamedHost = null,
-    ordinaryLink = false,
-    neutralRequesterLine = null,
-    neutralRequesterCode = null,
-    receiver = null,
     peerRecognition = null,
     expiryMs = null,
     onExpiryChange,
@@ -240,7 +217,7 @@
   );
   const isMalformedRecap = $derived(model.protocol === "malformed-recap");
   const headline = $derived(PROTOCOL_HEADLINE[model.protocol]);
-  // (hint is derived below, after `identity`.)
+  const hint = $derived(PROTOCOL_HINT[model.protocol]);
 
   // Summary copy and the sensitive count describe only actions the user is
   // currently approving. Advanced details deliberately retains the baseline
@@ -266,21 +243,6 @@
   // App keys: the standing-access line follows the decrypt statements, and a
   // `key.delete` action is listed even though it is never selected.
   const identity = $derived(appKeyIdentity(model));
-  // "This app" only where signed app details name one; otherwise the request
-  // has no identified app (a link, a device sign-in, an approval link).
-  const unattributed = $derived(ordinaryLink || (!identity && !!neutralRequesterLine));
-  const hint = $derived(
-    unattributed && model.protocol === "tinycloud-siwe-recap"
-      ? "Review the access this request is asking for."
-      : PROTOCOL_HINT[model.protocol],
-  );
-  // On a link, the claimed host (or the server's default domain) is not a
-  // verified requester, so the row says so.
-  const requesterRowLabel = $derived(
-    ordinaryLink && linkNamedHost !== null ? "Named in the link (not verified)"
-    : unattributed ? "Default signing domain"
-    : "Requester",
-  );
   const originHost = $derived.by(() => {
     const origin = model.requester.verifiedOrigin;
     if (!origin) return null;
@@ -572,48 +534,17 @@
       {:else}
         <h2 id="signing-approval-headline" class="headline app-id-headline mono">{identity.appId}</h2>
       {/if}
+      <p class="requester-line">
+        Requested by <span class="requester-name">{requestedBy}</span>
+      </p>
     {:else}
       <h2 id="signing-approval-headline" class="headline">{headline}</h2>
+      <p class="requester-line">
+        Requested by <span class="requester-name">{requesterName}</span>
+      </p>
     {/if}
-    <p class="requester-line">
-      {#if linkNamedHost !== null}
-        From a link that names <span class="requester-name break-all">{linkNamedHost}</span>
-      {:else if ordinaryLink}
-        From a link
-      {:else if !identity && neutralRequesterLine}
-        {neutralRequesterLine}{#if neutralRequesterCode}{" "}(<span class="whitespace-nowrap">code {neutralRequesterCode}</span>){/if}
-      {:else}
-        Requested by <span class="requester-name">{identity ? requestedBy : requesterName}</span>
-      {/if}
-    </p>
     <p id="signing-approval-hint" class="hint">{hint}</p>
   </header>
-
-  {#if ordinaryLink}
-    <section class="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
-      <h3 class="font-semibold">OpenKey can't confirm who sent this request</h3>
-      <p class="mt-1 leading-relaxed">
-        {#if linkNamedHost !== null}
-          Anyone can make a link that names <span class="break-all">{linkNamedHost}</span>.
-        {:else}
-          Anyone can make a link like this.
-        {/if}
-        {#if receiver?.kind === "service"}
-          This request may come from someone else's {receiver.service} session.
-        {/if}
-        Approve only if you started this request yourself.
-      </p>
-      {#if receiver?.kind === "service"}
-        <p class="mt-2 leading-relaxed" data-testid="receiver-line">
-          Your approval will be delivered to the {receiver.service} service.
-        </p>
-      {:else if receiver?.kind === "device"}
-        <p class="mt-2 leading-relaxed" data-testid="receiver-line">
-          Your approval will be delivered to an app on this device (<span class="whitespace-nowrap">{receiver.address}</span>).
-        </p>
-      {/if}
-    </section>
-  {/if}
 
   {#if context}
     <div class="context">{@render context()}</div>
@@ -793,7 +724,7 @@
 
       <section class="identity" aria-label="Requester identity">
       <div class="row">
-        <span class="label">{requesterRowLabel}</span>
+        <span class="label">Requester</span>
         <span class="value">{requesterName}</span>
       </div>
 
@@ -816,7 +747,7 @@
           </span>
         </div>
       {/if}
-      {#if model.requester.domainWarning && !ordinaryLink}
+      {#if model.requester.domainWarning}
         <div class="row">
           <span class="warn" role="status">
             Domain warning: SIWE domain does not match the verified browser origin

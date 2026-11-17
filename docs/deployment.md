@@ -210,7 +210,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `BETTER_AUTH_URL` | `https://api.openkey.so` |
 | `APPROVAL_RESULT_RETENTION_SECONDS` | `600` (10 min, Sam 2026-10-29), fixed in production compose for collecting approved CLI results. The result deadline is capped by the signed grant expiry. |
 | `OAUTH_DYNAMIC_CLIENT_REGISTRATION` | Keep `true` for MCP clients that register automatically; set `false` only as an emergency disable |
-| `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs; code includes the exact broad `https://mcp.tinycloud.xyz/mcp` and public `https://mcp.tinycloud.xyz/chatgpt/mcp` audiences. Preserve any additional configured resources. |
+| `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs; code includes the exact broad `https://mcp.tinycloud.xyz/mcp`, the public `https://mcp.tinycloud.xyz/chatgpt/mcp`, and the directory `https://mcp.tinycloud.xyz/claude/mcp`, `/grok/mcp` and `/muse/mcp` audiences. Preserve any additional configured resources. |
 | `WEBAUTHN_RP_ID` | `openkey.so` |
 | `WEBAUTHN_ORIGIN` | `https://openkey.so` |
 | `CONSOLE_ORIGIN` | `https://console.openkey.so` |
@@ -371,6 +371,218 @@ don't count. That fails closed. To give them the same treatment as the
 backfill, run this once the new image serves traffic, with the time it went live:
 `UPDATE "passkey" SET "countsForStepUp" = true, "enrolledVia" = 'legacy' WHERE "enrolledVia" IS NULL AND "createdAt" < $1`.
 
+#### Hosted app-review accounts (TC-2775)
+
+Store reviewers (OpenAI's plugin review, Google) sign in with a fixed review
+code instead of an emailed one. Each store has one synthetic account on a
+reserved address (`openai-review@tinycloud.xyz`, `google-review@tinycloud.xyz`;
+`appreview@tinycloud.xyz` is reserved for Apple and stays disabled). The account
+owns no real data: its key is generated at provisioning and it can approve
+access only inside its own TinyCloud spaces.
+
+**Migration.** `20261111_0001_reviewer_accounts` is additive and may run while
+TC-488 stays parked. It reserves the three addresses and raises when a user
+already holds one. The deploy script counts such users before any migration is
+attempted and stops when the count is above zero; the message carries only the
+count. Before the deploy window, run the same read-only count against
+production and resolve any hit first:
+
+```sql
+SELECT count(*) FROM "user"
+WHERE lower(email) IN ('openai-review@tinycloud.xyz', 'google-review@tinycloud.xyz', 'appreview@tinycloud.xyz');
+```
+
+Deploy this migration in a quiet window. It runs as one transaction that takes
+exclusive locks on `user`, `session`, `oauth_consent` and
+`tinycloud_native_grant`. Unblocked it finishes in well under a second. Behind
+a long-running transaction that has touched one of those tables it waits while
+already holding the lock on `user`, and sign-ins wait with it; a transaction
+that reads `session` and then `user` can deadlock with it, in which case the
+migration is the one that fails. Close manual `psql` sessions first.
+
+If the migration fails part-way (a reserved address registered between the
+count and the migration, a deadlock, a hand-run `prisma migrate deploy` without
+the count), nothing was applied: `to_regclass('public.reviewer_account')` is
+still null and the previous image keeps serving. Prisma prints only
+`current transaction is aborted, commands ignored until end of transaction block`
+and leaves a history row with no `finished_at` and empty logs. Every later
+deploy then stops with
+`Production has unresolved failed migrations: 20261111_0001_reviewer_accounts`.
+To recover, resolve the cause, remove the failed attempt's row and redeploy:
+
+```sql
+DELETE FROM "_prisma_migrations"
+  WHERE migration_name = '20261111_0001_reviewer_accounts' AND finished_at IS NULL;
+```
+
+`prisma migrate resolve --rolled-back 20261111_0001_reviewer_accounts` also
+lets the deploy script continue, and the retry then succeeds, but it is not
+enough on its own: the rolled-back row still has no `finished_at`, and the new
+image's readiness check refuses any unfinished row of a migration it requires
+(`packages/db/src/schema-contract.ts` answers `migration-unfinished`, so
+`/health` stays 503) until that row is deleted with the statement above. Never
+use `--applied`.
+
+Rollback after this migration is the previous image, redeployed by hand; it
+does not read the added columns or the new table, and the new triggers do
+nothing for ordinary users. `gh run rerun <last good run>`, which the header of
+`deploy-api.yml` names, does not work here: an older checkout stops at the
+migration step with "Production contains migration history absent from this
+checkout", because `_prisma_migrations` already records this migration.
+
+The schema can be reverted as well, together with a code revert that removes
+the migration directory, its two checksum pins and the 25-column expectation in
+`scripts/native-delegation-schema-guards.ts`. Run the SQL below only after the
+previous image is the one serving: an image built from this change reads
+`user."reviewerHoldAt"` and `session."reviewerEpoch"`, so while it serves, every
+`user` and `session` read fails with `P2022` once those columns are dropped.
+
+```sql
+BEGIN;
+DELETE FROM ethereum_keys WHERE "userId" IN (SELECT "userId" FROM reviewer_account WHERE "userId" IS NOT NULL);
+DELETE FROM "user" WHERE id IN (SELECT "userId" FROM reviewer_account WHERE "userId" IS NOT NULL);
+DROP TRIGGER IF EXISTS session_reviewer_epoch ON session;
+DROP TRIGGER IF EXISTS consent_reviewer_epoch ON oauth_consent;
+DROP TRIGGER IF EXISTS native_grant_reviewer_epoch ON tinycloud_native_grant;
+DROP TRIGGER IF EXISTS access_token_reviewer_epoch ON oauth_access_token;
+DROP TRIGGER IF EXISTS refresh_token_reviewer_epoch ON oauth_refresh_token;
+DROP FUNCTION IF EXISTS check_reviewer_epoch();
+DROP FUNCTION IF EXISTS check_reviewer_token();
+DROP TABLE IF EXISTS reviewer_account;
+ALTER TABLE tinycloud_native_grant DROP COLUMN IF EXISTS "reviewerEpoch";
+ALTER TABLE oauth_consent DROP COLUMN IF EXISTS "reviewerEpoch";
+ALTER TABLE session DROP COLUMN IF EXISTS "reviewerEpoch";
+ALTER TABLE "user" DROP COLUMN IF EXISTS "reviewerHoldAt";
+DELETE FROM "_prisma_migrations" WHERE migration_name = '20261111_0001_reviewer_accounts';
+COMMIT;
+```
+
+**The migration file is frozen once deployed.** The column
+`reviewer_account."codeDigest"` (restart survival, below) is part of
+`20261111_0001_reviewer_accounts` itself, not a later migration. After the
+first production deploy, the migration file and its checksum in both
+registries (`scripts/deploy-production-migrations.ts` and
+`packages/db/src/schema-contract.ts`) must never be reverted or edited. A tree
+with another checksum stops every API deploy with
+`Stored migration checksum differs from the reviewed 20261111_0001_reviewer_accounts`,
+and its image reports `migration-checksum-mismatch`. In particular, do not
+`git revert` the commit that added the column.
+
+**Order of operations.** Every admin call below is
+`https://api.openkey.so/api/admin/review-accounts/...` with
+`Authorization: Bearer $ADMIN_API_KEY` and a JSON body. `<store>` is `openai`
+or `google`.
+
+1. Deploy the API and publish the web. Web production deploys are currently
+   frozen (Cloudflare Pages production deployments are disabled), so merging
+   to `main` does not publish the web: the release coordinator publishes it.
+   The API is deployed with `deploy-api.yml`. The review-code step cannot work
+   until both are live: the old web caps the code box at six characters, and
+   the old API refuses the sign-in.
+2. Provision: `POST /<store>/provision` with
+   `{"clientId": "<client id>", "nodeHost": "https://tee.node.tinycloud.xyz"}`.
+   `clientId` is the OAuth client id of the **published plugin's connection**:
+   the client ChatGPT registered when the published connector was connected,
+   which reviewers reuse. It must be enabled, hold `tinycloud:mcp` and have
+   exactly one redirect URI. `nodeHost` must be, character for character, the
+   node address the hosted MCP puts in its approval links (its `TC_HOST`,
+   `https://tee.node.tinycloud.xyz` in the production MCP deployment).
+   `https://node.tinycloud.xyz` is the same node, but an approval that names
+   a different address than the one provisioned is refused. Provisioning
+   creates the held account and its sealed key, hosts its `applications` and
+   `account` spaces on the node and writes the fixtures (apps `todos` and
+   `workouts`). Add `"reset": true` to replace an existing account; that
+   deletes the old synthetic user, and the new one needs steps 3 to 6 again.
+   Every failure answers `400 Reviewer provisioning did not complete`. A
+   provision that fails after its database step, for example because the node
+   could not be reached, leaves an account that is bound but not seeded; the
+   retry then needs `"reset": true`, and without it fails with the same 400.
+3. Learn the MCP session DID. The hosted MCP keeps one session key per signed-in
+   account, and it exists only after that account first reaches the MCP. Install
+   a temporary code (step 5), connect the connector as the review account and
+   ask it to connect to TinyCloud. Open the approval link it returns: it lands
+   on `openkey.so/delegate?did=…&host=…`. Copy the `did` value
+   (`did:key:z…`) and check that `host` equals the provisioned `nodeHost`. The
+   page itself shows an error at this point, because approvals are refused
+   until the audience is pinned.
+4. Pin the audience: `PUT /<store>/audience` with `{"sessionDid": "did:key:z…"}`.
+   This ends every session of the account and removes the installed code.
+5. Install the code: `PUT /<store>/code` with `{"code": "<review code>"}`. The
+   code is exactly 43 base64url characters encoding 32 random bytes. Generate
+   it randomly, exactly like this: `openssl rand -base64 32 | tr '+/' '-_' | tr -d '='`.
+   The server checks only the format, so the code is as strong as the way it
+   was generated. Only its SHA-256 digest is kept. The code has no expiry: it
+   stays valid, across API restarts too, until it is revoked or replaced.
+   OpenAI asks that the test account stay available for later reviews, so
+   leave it installed, and revoke it when the listing is withdrawn or the code
+   may have leaked.
+6. Verify as a reviewer would: connect from the store's client, sign in with
+   the review account, approve the connection and one app, and read a seeded
+   record. Then mark it ready: `PUT /<store>/ready` with
+   `{"seededReadVerified": true}`. `GET /` lists each account's `set`, `ready`
+   and `held` state.
+
+**Revoking and replacing the code.** `DELETE /<store>/code` revokes it;
+`PUT /<store>/code` with a new code replaces it (rotation). Either one ends
+every session, consent and refresh token of the account at once and makes
+OpenKey's token check, which the hosted MCP uses, report its access tokens
+inactive, so the connector stops working for the account. Neither recalls an
+approval that was already signed: the node honours each one until it expires,
+at most one hour after it was signed. Both also clear `ready`, so after a
+rotation repeat step 6 with the new code before handing it to the store; the
+pinned audience stays. Only a `200` from `DELETE /<store>/code` or
+`PUT /<store>/code` means the change took effect. Treat any other answer as not
+done and repeat the request until it returns `200`; until then the previous
+code, if there was one, still works. `GET /` shows the current state.
+
+**What a reviewer types.** In the sign-in window the connector opens, choose
+"Use a review code" (or type the review account into the email field), then
+enter the review account, for example `openai-review@tinycloud.xyz`, and the
+43-character review code. No email, SMS or second factor is involved.
+
+**Limits to put in the review notes.**
+
+- Sign-in works only from the connector's own OAuth window (the one the
+  store's client opens on Connect). The plain OpenKey sign-in page shows no
+  review-code option and refuses the review account, and an approval link opened
+  in a browser that is not signed in cannot sign in either. Open approval links
+  in the browser that completed the connector sign-in.
+- The sign-in session and its tokens end one hour after sign-in. After that the
+  reviewer connects again from the store's client and signs in again.
+- Each approval lasts one hour from the moment it is approved, not from
+  sign-in. An approval given late in a session therefore stays valid on the
+  node until up to about two hours after sign-in, although the connector can
+  use it only while it holds a live token.
+- Review cases use the apps `todos` and `workouts`, which are seeded. `workouts`
+  holds two records, 20 and 30 minutes at 09:00 Europe/London on 2026-10-18 and
+  2026-10-19, so "total my workout minutes for October 18–19, 2026" is 50. The
+  account may also create any other personal app in its own space; the catalog
+  apps `healthlog` and `recipes` and every other space stay refused.
+
+**Restarts.** The SHA-256 digest of the installed code is stored with the
+account (`reviewer_account.codeDigest`), never the code. On every API start
+(deploy, restart, crash) an account that has a digest and is neither held nor
+locked gets its code back: the reviewer's code keeps working and a live
+session continues until its own one-hour limit. Revoking the code, pinning a
+new audience, resetting the account and any hold clear the digest, so none of
+those is undone by a restart; an account without a digest is held on start as
+before. If the start-up step itself fails, the API still starts and logs
+`reviewer_boot_failed`; review accounts are refused until the next successful
+start or until the code is installed again. Start-up waits at most about two
+seconds for a lock on a review-account row (an open `psql` transaction, another
+process in the middle of an admin call) before it fails this way. Alert on
+`reviewer_boot_failed`: nothing else signals that review accounts are refused
+after a start.
+
+Turning restart survival off later is a code-only change: make
+`initializeReviewers` hold every account on start again, as it does today for
+an account without a digest. The `codeDigest` column stays in place, unused;
+see "The migration file is frozen once deployed" above.
+
+Logs: `reviewer_admin` (`installed`, `unset`, `boot_restored`, `boot_hold`,
+`reset`, `audience_pinned`, `ready`) and `reviewer_sign_in` (`success`,
+`failed`) carry the store name only.
+
 #### Trigger Conditions
 
 The release coordinator manually dispatches **Actions > Deploy API to Phala Cloud >
@@ -462,10 +674,13 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
      callback endpoints such as `https://mcp.staging.example/connect/callback`)
      and `VITE_DELEGATE_NODE_ORIGINS` (comma-separated HTTPS node origins).
      Production needs neither for the first-party MCP services: the exact
-     `/connect/callback` and `/chatgpt/connect/callback` endpoints on
+     `/connect/callback`, `/chatgpt/connect/callback`, `/claude/connect/callback`,
+     `/grok/connect/callback` and `/muse/connect/callback` endpoints on
      `https://mcp.tinycloud.xyz` and the `node`/`tee.node.tinycloud.xyz` nodes
-     are built in. The public ChatGPT candidate needs both this web registration
-     and the API audience update deployed; neither establishes ChatGPT acceptance. See
+     are built in. Each restricted address needs both this web registration
+     and the API audience update deployed, and the connector's token-status
+     client registered for it (`docs/resource-server-token-status.md`); none of
+     these establishes an assistant's acceptance. See
      `docs/share-device-authorization.md` ("Ordinary `/delegate` links").
 
 4. Deploy
