@@ -29,7 +29,7 @@ function stepUpRequest(path: string, body: unknown): Promise<Response> {
 
 export async function sendPasskeyStepUpCode(purpose: PasskeyStepUpPurpose): Promise<void> {
   const response = await stepUpRequest('email-otp/send', { purpose });
-  if (!response.ok) throw new Error('Could not send a verification code. Try again.');
+  if (!response.ok) throw new Error("Couldn't send a verification code. Try again.");
 }
 
 export async function verifyPasskeyStepUpCode(purpose: PasskeyStepUpPurpose, code: string): Promise<void> {
@@ -49,6 +49,6 @@ export async function verifyWithExistingPasskey(): Promise<void> {
   if (verified.ok) return;
   const body = await verified.json().catch(() => null) as { code?: string } | null;
   throw new Error(body?.code === 'passkey_not_step_up_capable'
-    ? 'That passkey was added without a verification step, so it cannot confirm this change. Use another passkey or an email code.'
+    ? "That passkey was added without a verification step, so it can't confirm this change. Use another passkey or an email code."
     : 'Passkey verification failed. Try again.');
 }

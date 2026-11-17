@@ -207,6 +207,6 @@ export async function requireFreshPasskey(
  * passkey routes answer `PASSKEY_STEP_UP_REQUIRED` instead (passkey-enrolment.ts).
  */
 export const ACCOUNT_PASSKEY_STEP_UP_REQUIRED = {
-  error: 'Verify with your passkey again to continue',
+  error: "Confirm with your passkey again to continue.",
   code: 'passkey_step_up_required',
 } as const;
