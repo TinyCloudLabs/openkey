@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { legacySignOrigin, legacySignReadyOrigin } from '$lib/legacy-sign-origin';
   import { tick, untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
@@ -14,6 +15,7 @@
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
+  import { serverActionId } from '$lib/delegate-review-selection';
   import { expiryAt, siweExpiration } from '$lib/approval-expiry';
   import { PREVIEW_EXPIRED_MESSAGE, signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
   import {
@@ -28,7 +30,7 @@
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
-import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
+  import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
   import { createFrameSettleGate, type FrameSettleGate } from '$lib/frame-settle-gate';
   import {
     createIframeLayoutGate,
@@ -76,6 +78,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   let reviewEditing = $state(false);
   let currentRequestId = $state<string | null>(null);
   let transport: WidgetTransport | null = null;
+  let legacyOrigin = $state<string | null>(null);
   let layoutReady = $state(false);
   let layoutError = $state('');
   let layoutGate: IframeLayoutGate | null = null;
@@ -125,6 +128,9 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   let previewing = $state(false);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
+  // TC-2927: the extra permissions (decrypt or key creation on the encryption network or on keys outside the app's own
+  // area) the owner allowed on the warning screen. The preview records them and signing refuses an undecided one.
+  let elevatedAllowed = $state<string[]>([]);
   // Sol MAJOR-3 (continuation): external-key review mode. See widget/sign.
   let externalSignMode = $state(false);
   let expiryChangeable = $state(false);
@@ -222,8 +228,8 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       // Emit legacy ready only under wildcard compat path so pre-
       // consolidation SDKs still bootstrap.
       if (origin === '*') {
-        const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
-        window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
+        const targetOrigin = legacySignReadyOrigin();
+        if (targetOrigin) window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
       }
     }
   });
@@ -370,7 +376,8 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
         }
         return;
       }
-      window.parent.postMessage({ type: 'openkey:resize', height }, origin);
+      const targetOrigin = legacyOrigin ?? (origin !== '*' ? origin : null);
+      if (targetOrigin) window.parent.postMessage({ type: 'openkey:resize', height }, targetOrigin);
     };
     const observer = new ResizeObserver(measure);
     observer.observe(content);
@@ -588,11 +595,14 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
     }
 
     if (event.data?.type === 'openkey:sign:request') {
+      const requestOrigin = legacySignOrigin(event.origin);
+      if (!requestOrigin || (legacyOrigin && legacyOrigin !== requestOrigin)) return;
       // Sol MAJOR-9: refuse overlapping legacy request.
       if (requestSealed) {
         console.warn('[embed sign widget] refusing overlapping legacy request');
         return;
       }
+      legacyOrigin = requestOrigin;
       keyReadGeneration++;
       key = null;
       keyOwnerToken = null;
@@ -791,7 +801,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   const previewInput = $derived.by(() =>
     key && canUseAuthorizeSignFn() && !siweRefusal
       ? JSON.stringify([currentRequestId, key.id, message,
-          [...currentSelectedActionIds()].sort(), expiryChoiceMs])
+          [...currentSelectedActionIds()].sort(), expiryChoiceMs, elevatedAllowed])
       : null,
   );
 
@@ -973,6 +983,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
+            ...(elevatedAllowed.length === 0 ? {} : { elevatedDecision: { allowed: elevatedAllowed } }),
             // TC-2272: only when the user changed it; the app's own expiry stays the default.
             ...(requestedExpiry === null ? {} : { expirationTime: requestedExpiry }),
           }),
@@ -1099,7 +1110,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
 
       // Exact-byte signing cannot narrow the request: show every parsed
       // action and report the full set rather than a UI-only selection.
-      const result = await api.signMessage(key.id, message, origin === '*' ? undefined : origin);
+      const result = await api.signMessage(key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0);
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
             service: grant.service,
@@ -1271,7 +1282,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       window.parent.postMessage(envelope, origin);
       return;
     }
-    window.parent.postMessage(data, origin);
+    if (legacyOrigin) window.parent.postMessage(data, legacyOrigin);
   }
 
   function sendClose() {
@@ -1280,11 +1291,12 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
     // Sol MAJOR-4 (continuation): correlate close messages to the active
     // request.
     const closeMsg: Record<string, unknown> = { type: 'openkey:close' };
+    const targetOrigin = currentRequestId ? origin : (legacyOrigin ?? (origin !== '*' ? origin : null));
     if (currentRequestId && messageProtocolVersion !== null) {
       closeMsg.requestId = currentRequestId;
       closeMsg.protocolVersion = messageProtocolVersion;
     }
-    window.parent.postMessage(closeMsg, origin);
+    if (targetOrigin) window.parent.postMessage(closeMsg, targetOrigin);
   }
 
 </script>
@@ -1385,6 +1397,16 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
                 },
               }
             : undefined,
+          // TC-2927: the warning screen for extra permissions. On the server-authoritative path the owner can reject one
+          // and approve the rest; the exact-byte path cannot be narrowed, so it is all or nothing. The allowed ids go into the
+          // next preview (or the exact-byte sign) and the server refuses to sign an extra permission that is not among them.
+          elevated: {
+            splittable: canUseAuthorizeSignFn(),
+            onDecide: (allowed) => {
+              elevatedAllowed = allowed.map(serverActionId).sort();
+              invalidatePreviewForSelectionEdit();
+            },
+          },
           invalidatePreview: invalidatePreviewForSelectionEdit,
         }}
       />

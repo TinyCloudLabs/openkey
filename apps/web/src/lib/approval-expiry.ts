@@ -22,6 +22,19 @@ export const EXPIRY_PRESETS: ReadonlyArray<{ label: string; ms: number }> = [
   { label: '30 days', ms: 30 * D },
 ];
 
+/**
+ * Where a signed approval request starts: the requester's suggestion when it is a whole value up to its signed
+ * maximum, otherwise the maximum, and never more than the shortest preset (one hour). A start, not a cap: the
+ * owner can still choose any time up to the maximum.
+ */
+export function approvalRequestStartSeconds(maxSeconds: number, suggestedSeconds?: number): number {
+  const asked =
+    typeof suggestedSeconds === 'number' && Number.isFinite(suggestedSeconds) && suggestedSeconds >= 1 && suggestedSeconds <= maxSeconds
+      ? suggestedSeconds
+      : maxSeconds;
+  return Math.min(asked, EXPIRY_PRESETS[0].ms / S);
+}
+
 /** Renewal lease lengths (spec D4): 90 days by default, 6 months or 1 year, never more than a year. */
 export const LEASE_PRESETS: ReadonlyArray<{ label: string; ms: number }> = [
   { label: '90 days', ms: 90 * D },

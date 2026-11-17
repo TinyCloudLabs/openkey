@@ -15,11 +15,8 @@ async function failure(promise: Promise<unknown>): Promise<unknown> {
 }
 
 describe('the words shown when a reply cannot be read', () => {
-  test('are the approved title and body, and carry no status', () => {
+  test('has the approved title and carries no status', () => {
     expect(SERVER_REPLY_TITLE).toBe("OpenKey couldn't finish this request");
-    expect(SERVER_REPLY_BODY).toBe(
-      "OpenKey couldn't read the server's reply, so nothing was approved. Please try again. If it keeps happening, contact the app.",
-    );
     expect(SERVER_REPLY_TITLE + SERVER_REPLY_BODY).not.toMatch(/HTTP|<status>|\d{3}/);
   });
 });

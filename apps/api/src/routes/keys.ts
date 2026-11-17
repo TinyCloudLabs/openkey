@@ -20,9 +20,10 @@ import {
   appKeyRefusalForMessage,
   appKeyRefusalStatus,
   blocksOutsideApps,
-  encryptionOutsideAppsRefusalForMessage,
+  exactShareKeyRefusalForMessage,
+  messageHasElevatedPermissions,
 } from '../services/app-key-refusal';
-import { isFirstPartyEncryptionOrigin } from '../services/first-party-origins';
+import { ELEVATED_NOT_DECIDED_CODE, elevatedNotDecidedBody } from '../services/elevated-decision';
 import { rejectNonBrowserControlRequest, rejectNonOpenKeySignRequest } from '../middleware/browser-control';
 
 import { log, logError } from '../log';
@@ -294,6 +295,8 @@ keysRouter.post('/:keyId/sign', async (c) => {
     format?: 'raw' | 'personal_sign'; // default: personal_sign
     /** Verified origin of the requesting site; required for SIWE-shaped messages. */
     requestOrigin?: string;
+    /** TC-2927: the owner allowed the extra permissions this message carries, on the warning screen. */
+    elevatedAcknowledged?: boolean;
   }>();
   const deviceUnsupported = deviceTransactionUnsupportedError(body);
   if (deviceUnsupported) return c.json(deviceUnsupported, 400);
@@ -318,15 +321,17 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (appKeyRefusal) {
     return c.json(appKeyRefusalBody(appKeyRefusal, 'non_browser'), appKeyRefusalStatus(appKeyRefusal));
   }
-  // TC-2247: decrypt or key.create on an encryption resource outside `apps/`, a bare network
-  // included, is signed only for a first-party site (services/first-party-origins.ts). The
-  // origin is the one TC-1486 verified above; an unattributed SIWE never gets this far. Text and
-  // `0x` hex are both read, and a ReCap that cannot be read is refused. Checked before unseal.
-  const encryptionRefusal = isFirstPartyEncryptionOrigin(body.requestOrigin)
-    ? null
-    : encryptionOutsideAppsRefusalForMessage(body.message);
-  if (encryptionRefusal) {
-    return c.json(appKeyRefusalBody(encryptionRefusal, 'browser'), appKeyRefusalStatus(encryptionRefusal));
+  // TC-2927: an exact share key (`share/<id>`) is signed only for an id OpenKey made for the request, for every
+  // site (text and `0x` hex are both read; a ReCap that cannot be read is refused). Checked before unseal.
+  const shareRefusal = exactShareKeyRefusalForMessage(body.message);
+  if (shareRefusal) {
+    return c.json(appKeyRefusalBody(shareRefusal, 'browser'), appKeyRefusalStatus(shareRefusal));
+  }
+  // TC-2927: `decrypt` or `key.create` on the encryption network, or on keys outside the site's own `apps/`, is
+  // signed only after the owner decided on it on the warning screen. These exact bytes cannot be narrowed, so the
+  // screen offers all or nothing and the request says it was shown (`elevatedAcknowledged`). Checked before unseal.
+  if (messageHasElevatedPermissions(body.message) && body.elevatedAcknowledged !== true) {
+    return c.json({ ...elevatedNotDecidedBody(), code: ELEVATED_NOT_DECIDED_CODE }, 403);
   }
 
   const key = await prisma.ethereumKey.findFirst({

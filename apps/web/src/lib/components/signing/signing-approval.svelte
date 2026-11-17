@@ -40,7 +40,7 @@
   // `showSigner` when the user picked one of several keys. Surfaces must not
   // render their own copy of `error`: it is shown once, above the buttons.
 
-  import type { Snippet } from "svelte";
+  import { tick, type Snippet } from "svelte";
   import type {
     CapabilityAction,
     CapabilityGrant,
@@ -69,10 +69,19 @@
     readSpaceHostFacts,
     renderSiweLiteral,
     splitStatementCode,
+    elevatedAbilityVerb,
+    elevatedCard,
+    elevatedKindOf,
+    elevatedNotApprovedRow,
+    elevatedRejectedCountAnnouncement,
+    elevatedWhere,
+    elevatedWhereText,
+    type ElevatedKind,
   } from "@openkey/capability-review";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
+  import ElevatedWarning from "$lib/components/signing/elevated-warning.svelte";
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
   import { ONCE_DEFAULT_EXPIRY_MS, onceDefaultExpiryMs, requestedExpiryMs } from "$lib/approval-expiry";
   import { isOnceTier } from "$lib/renewal-default";
@@ -140,6 +149,13 @@
     onceExpiryDefault?: boolean;
     /** The renewal checkbox (TC-2933); set only where the requester signed a renewal request. */
     renewal?: RenewalChoice | null;
+    /**
+     * The warning screen for extra permissions (TC-2927): decrypt or key creation on the encryption network, or on
+     * keys outside the app's own area. Set only by the signing pages that carry the owner's decision to the server.
+     * Approve opens the screen first when the selection carries one; `splittable` is false where the request cannot be
+     * narrowed (exact bytes): approve or cancel it whole. `onDecide` gets the action ids the owner allowed.
+     */
+    elevated?: { splittable: boolean; onDecide: (allowed: string[]) => void } | null;
     onApprove: () => void;
     onCancel: () => void;
     onRetry?: () => void;
@@ -173,6 +189,7 @@
     expiryMaxMs = null,
     onceExpiryDefault = false,
     renewal = null,
+    elevated = null,
     onApprove,
     onCancel,
     onRetry,
@@ -543,8 +560,104 @@
   // a script clears the `disabled` attribute.
   function handleApproveClick() {
     if (approveButtonDisabled) return;
+    // An extra permission (TC-2927) is approved only after its own decision: the screen opens first.
+    if (elevated && pendingElevatedGroups.length > 0) {
+      warningOpen = true;
+      return;
+    }
     onApprove();
   }
+
+  // --- The warning screen for extra permissions (TC-2927) ---------------------------------------------------------
+  interface ElevatedGroup {
+    id: string;
+    kind: ElevatedKind;
+    actionIds: string[];
+    decrypt: boolean;
+    create: boolean;
+    where: string | null;
+  }
+  // One group per selected grant that carries decrypt or key creation on the encryption network, or on keys outside
+  // the app's own `apps/` area. The same `elevatedKindOf` decides on the server, so both see the same permissions.
+  const elevatedGroups = $derived.by((): ElevatedGroup[] => {
+    if (!elevated) return [];
+    return selectedGrants.flatMap((grant): ElevatedGroup[] => {
+      const entry = { service: grant.service, space: grant.space, path: grant.path };
+      const picked = grant.actions.flatMap((action) => {
+        const kind = elevatedKindOf(entry, action.ability);
+        return kind === null ? [] : [{ action, kind }];
+      });
+      if (picked.length === 0) return [];
+      return [{
+        id: grant.id,
+        kind: picked[0]!.kind,
+        actionIds: picked.map(({ action }) => action.id),
+        decrypt: picked.some(({ action }) => elevatedAbilityVerb(action.ability) === "decrypt"),
+        create: picked.some(({ action }) => elevatedAbilityVerb(action.ability) === "key.create"),
+        where: elevatedWhere(entry),
+      }];
+    });
+  });
+  let allowedElevated = $state<Set<string>>(new Set());
+  let rejectedCards = $state<Array<{ heading: string; actionIds: string[] }>>([]);
+  let warningOpen = $state(false);
+  let awaitingApprove = $state(false);
+  const pendingElevatedGroups = $derived(
+    elevatedGroups.filter((group) => !group.actionIds.every((id) => allowedElevated.has(id))),
+  );
+  // The site named on the cards: the browser-verified origin (for an embedded sign-in, the page that embeds it),
+  // never a name the app supplies; "This request" where nothing is verified.
+  const elevatedSite = $derived(originHost ?? null);
+  const elevatedCards = $derived(
+    pendingElevatedGroups.map((group) => ({
+      id: group.id,
+      ...elevatedCard(group.kind, { decrypt: group.decrypt, create: group.create }, elevatedSite, elevatedWhereText(group.where)),
+    })),
+  );
+  const notApprovedRows = $derived(
+    rejectedCards.filter((card) => card.actionIds.every((id) => !selection.has(id))).map((card) => elevatedNotApprovedRow(card.heading)),
+  );
+
+  async function resolveElevated(allowedCardIds: string[]) {
+    const allowedGroups = pendingElevatedGroups.filter((group) => allowedCardIds.includes(group.id));
+    const rejectedGroups = pendingElevatedGroups.filter((group) => !allowedCardIds.includes(group.id));
+    const nextAllowed = new Set(allowedElevated);
+    for (const group of allowedGroups) for (const id of group.actionIds) nextAllowed.add(id);
+    allowedElevated = nextAllowed;
+    if (rejectedGroups.length > 0) {
+      const headings = new Map(elevatedCards.map((card) => [card.id, card.heading]));
+      rejectedCards = [
+        ...rejectedCards,
+        ...rejectedGroups.map((group) => ({ heading: headings.get(group.id) ?? "", actionIds: group.actionIds })),
+      ];
+      const next = new Set(selection);
+      for (const group of rejectedGroups) for (const id of group.actionIds) next.delete(id);
+      onSelectionChange(next);
+    }
+    // The allowed ids go into the next preview (or the exact-byte sign); Approve then continues on its own, once that
+    // preview is ready, so the owner's one tap on Approve is still the only approval.
+    elevated?.onDecide([...nextAllowed]);
+    warningOpen = false;
+    await tick();
+    awaitingApprove = true;
+    document.getElementById("signing-approval-headline")?.focus();
+  }
+
+  async function allowWholeElevated() {
+    const nextAllowed = new Set(allowedElevated);
+    for (const group of pendingElevatedGroups) for (const id of group.actionIds) nextAllowed.add(id);
+    allowedElevated = nextAllowed;
+    elevated?.onDecide([...nextAllowed]);
+    warningOpen = false;
+    await tick();
+    awaitingApprove = true;
+  }
+
+  $effect(() => {
+    if (!awaitingApprove || warningOpen || previewPending || approving || approveButtonDisabled) return;
+    awaitingApprove = false;
+    handleApproveClick();
+  });
 
   const nodeChecking = $derived(peerRecognition?.state === "checking");
   const approveDisabled = $derived(approving || isMalformedRecap);
@@ -562,6 +675,16 @@
   );
 </script>
 
+{#if warningOpen && elevated}
+  <ElevatedWarning
+    cards={elevatedCards}
+    site={elevatedSite}
+    splittable={elevated.splittable}
+    onResolve={resolveElevated}
+    onAllowWhole={allowWholeElevated}
+    onCancel={onCancel}
+  />
+{:else}
 <div
   class="signing-approval"
   class:sticky-actions={stickyActions}
@@ -575,16 +698,16 @@
     {#if identity}
       <!-- The app's name, then its id; the name never appears without the id. -->
       {#if identity.name}
-        <h2 id="signing-approval-headline" class="headline app-name">{identity.name}</h2>
+        <h2 id="signing-approval-headline" class="headline app-name" tabindex="-1">{identity.name}</h2>
         <p class="app-id mono">{identity.appId}</p>
       {:else}
-        <h2 id="signing-approval-headline" class="headline app-id-headline mono">{identity.appId}</h2>
+        <h2 id="signing-approval-headline" class="headline app-id-headline mono" tabindex="-1">{identity.appId}</h2>
       {/if}
       <p class="requester-line">
         Requested by <span class="requester-name">{requestedBy}</span>
       </p>
     {:else}
-      <h2 id="signing-approval-headline" class="headline">{headline}</h2>
+      <h2 id="signing-approval-headline" class="headline" tabindex="-1">{headline}</h2>
       <p class="requester-line">
         Requested by <span class="requester-name">{requesterName}</span>
       </p>
@@ -1080,7 +1203,7 @@
   {#if error}
     <p class="error" role="alert" aria-live="polite">{error}</p>
   {/if}
-  {#if approveBlockedReason}
+  {#if approveBlockedReason && approveBlockedReason !== error}
     <p class="approve-blocked" role="status" aria-live="polite">{approveBlockedReason}</p>
   {/if}
 
@@ -1095,6 +1218,14 @@
     >
       {cancelText}
     </button>
+  {/if}
+  {#if notApprovedRows.length > 0}
+    <ul class="not-approved" data-testid="elevated-not-approved">
+      {#each notApprovedRows as row (row)}
+        <li>{row}</li>
+      {/each}
+    </ul>
+    <p class="visually-hidden" role="status" aria-live="polite">{elevatedRejectedCountAnnouncement(notApprovedRows.length)}</p>
   {/if}
   <footer class="actions">
     {#if onDecline}
@@ -1134,6 +1265,7 @@
   </footer>
   </div>
 </div>
+{/if}
 
 <style>
   .signing-approval {
@@ -1304,6 +1436,25 @@
     font-size: 10px;
     font-weight: 700;
     line-height: 1.3;
+  }
+  .not-approved {
+    margin: 0;
+    padding: 0 0 0 18px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: #9f2424;
+    overflow-wrap: anywhere;
+  }
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
   .summary-empty {
     color: #475569;
