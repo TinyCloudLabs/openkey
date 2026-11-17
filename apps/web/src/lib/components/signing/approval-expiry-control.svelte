@@ -150,7 +150,7 @@
         </span>
       </label>
     {:else}
-      <p class="expiry-line" data-testid="approval-expiry-line">This permission expires in {formatDuration(shownMs)}</p>
+      <p class="expiry-line" data-testid="approval-expiry-line">{permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDuration(shownMs)}</p>
     {/if}
     <details class="expiry-fold">
       <summary>How long it lasts</summary>
