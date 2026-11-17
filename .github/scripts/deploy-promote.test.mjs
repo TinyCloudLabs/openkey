@@ -51,18 +51,22 @@ exit 0
 
 const GH = `#!/bin/bash
 echo "gh $*" >> "$STUB_LOG"
+jqarg=""; prev=""
+for a in "$@"; do [ "$prev" = --jq ] && jqarg="$a"; prev="$a"; done
+emit() { if [ -n "$jqarg" ]; then printf '%s' "$1" | jq -r "$jqarg"; else printf '%s' "$1"; fi; }
 case "$*" in
   *"-X POST"*"/statuses"*) exit 0 ;;
   *"-X POST"*"/deployments --input"*) cat >> "$STUB_STDIN"; echo 101; exit 0 ;;
-  *"/statuses"*) printf '%s' "$SUCCESS_COUNT"; exit 0 ;;
-  *"deployments?environment"*) printf '%s' "$DEPLOYMENT_IDS"; exit 0 ;;
+  *"/deployments/"*"/statuses"*) emit "$STATUSES_JSON"; exit 0 ;;
+  *"deployments?environment"*) emit "$DEPLOYMENTS_JSON"; exit 0 ;;
   *"/artifacts"*) printf '%s' "$ARTIFACTS"; exit 0 ;;
+  *"/actions/runs/"*) emit "$RUN_JSON"; exit 0 ;;
 esac
 if [ "$2" = list ]; then printf '%s' "$RUN_ID"; exit 0; fi
 exit 1
 `;
 
-function run(script, env = {}, recordedId = TESTED) {
+function run(script, env = {}, recordedId = TESTED, files = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'deploy-promote-'));
   try {
     mkdirSync(join(dir, 'bin'));
@@ -73,6 +77,10 @@ function run(script, env = {}, recordedId = TESTED) {
     }
     writeFileSync(join(dir, 'rt', 'api-image', 'api-image.tar.gz'), gzipSync('image'));
     writeFileSync(join(dir, 'rt', 'api-image', 'api-image.id'), recordedId + '\n');
+    for (const [name, body] of Object.entries(files)) {
+      mkdirSync(join(dir, name, '..'), { recursive: true });
+      writeFileSync(join(dir, name), body);
+    }
     writeFileSync(join(dir, 'log'), '');
     writeFileSync(join(dir, 'stdin'), '');
     writeFileSync(join(dir, 'out'), '');
@@ -186,10 +194,18 @@ test('the digest the compose file will pin is itself checked against the tested 
 });
 
 const rollback = stepScript('Roll back to a previously deployed image');
-const ROLLBACK = { ROLLBACK_DIGEST: DIGEST, ROLLBACK_REASON: 'sign-in regression in the new image', DEPLOYMENT_IDS: '7\n9', SUCCESS_COUNT: '1', TAG_EXISTS: '1' };
+const BOT = 'github-actions[bot]';
+const record = (over = {}) => JSON.stringify([{ id: 7, creator: { login: BOT }, payload: { digest: DIGEST, run: '900' }, ...over }]);
+const RUN_OK = JSON.stringify({ path: '.github/workflows/deploy-api.yml', head_branch: 'main', conclusion: 'success' });
+const ROLLBACK = {
+  ROLLBACK_DIGEST: DIGEST, ROLLBACK_REASON: 'sign-in regression in the new image', TAG_EXISTS: '1',
+  DEPLOYMENTS_JSON: record(), STATUSES_JSON: '[{"state":"success"}]', RUN_JSON: RUN_OK,
+};
+const NO_LIST = { '.github/deployed-api-images.txt': '# nothing listed\n' };
+const attempt = (env = {}, files = NO_LIST) => run(rollback, { ...ROLLBACK, ...env }, TESTED, files);
 
-test('rollback promotes only an image that was deployed before, with a reason', () => {
-  const ok = run(rollback, ROLLBACK);
+test('rollback promotes a digest the workflow itself deployed, with a reason, and builds nothing', () => {
+  const ok = attempt();
   assert.equal(ok.status, 0, ok.stderr);
   assert.equal(ok.out.trim(), `image_ref=skgbafa/openkey-api@${DIGEST}`);
   assert.match(ok.summary, /Reason: sign-in regression in the new image/);
@@ -197,29 +213,45 @@ test('rollback promotes only an image that was deployed before, with a reason', 
   assert.equal(pushes(ok.log), 0, 'a rollback never pushes or builds');
 
   for (const reason of ['', '   \n\t ']) {
-    const noReason = run(rollback, { ...ROLLBACK, ROLLBACK_REASON: reason });
+    const noReason = attempt({ ROLLBACK_REASON: reason });
     assert.notEqual(noReason.status, 0);
     assert.match(noReason.stderr, /rollback_reason is required/);
     assert.equal(noReason.out, '');
   }
   for (const digest of ['latest', 'sha256:abc', DIGEST.toUpperCase(), `${DIGEST}\nx`]) {
-    const bad = run(rollback, { ...ROLLBACK, ROLLBACK_DIGEST: digest });
+    const bad = attempt({ ROLLBACK_DIGEST: digest });
     assert.notEqual(bad.status, 0, digest);
     assert.equal(bad.out, '');
   }
-
-  const never = run(rollback, { ...ROLLBACK, DEPLOYMENT_IDS: '' });
-  assert.notEqual(never.status, 0, 'an image with no deployment record was never deployed');
-  assert.match(never.stderr, /never deployed/);
-  assert.equal(never.out, '');
-
-  const failed = run(rollback, { ...ROLLBACK, SUCCESS_COUNT: '0' });
-  assert.notEqual(failed.status, 0, 'a deployment that did not succeed does not count');
-  assert.equal(failed.out, '');
-
-  const gone = run(rollback, { ...ROLLBACK, TAG_EXISTS: '0' });
+  const gone = attempt({ TAG_EXISTS: '0' });
   assert.notEqual(gone.status, 0, 'an image no longer in the registry cannot be rolled back to');
   assert.equal(gone.out, '');
+});
+
+test('rollback refuses a digest the workflow never deployed, whoever made the record', () => {
+  const refused = (env, why, files) => {
+    const r = attempt(env, files);
+    assert.notEqual(r.status, 0, why);
+    assert.match(r.stderr, /was not deployed by this workflow/, why);
+    assert.equal(r.out, '', why);
+  };
+  refused({ DEPLOYMENTS_JSON: '[]' }, 'no record and not listed');
+  refused({ DEPLOYMENTS_JSON: record({ creator: { login: 'a-person-with-write-access' } }) }, 'a record made by hand');
+  refused({ DEPLOYMENTS_JSON: record({ payload: { digest: OTHER, run: '900' } }) }, 'a record for another image');
+  refused({ DEPLOYMENTS_JSON: record({ payload: 'not an object' }) }, 'a record with no digest payload');
+  refused({ STATUSES_JSON: '[{"state":"failure"}]' }, 'a deployment that did not succeed');
+  refused({ RUN_JSON: JSON.stringify({ path: '.github/workflows/deploy-api.yml', head_branch: 'main', conclusion: 'failure' }) }, 'a failed run');
+  refused({ RUN_JSON: JSON.stringify({ path: '.github/workflows/deploy-api.yml', head_branch: 'feature', conclusion: 'success' }) }, 'a run off main');
+  refused({ RUN_JSON: JSON.stringify({ path: '.github/workflows/other.yml', head_branch: 'main', conclusion: 'success' }) }, 'another workflow');
+  refused({ DEPLOYMENTS_JSON: record({ payload: { digest: DIGEST, run: 'x; rm -rf /' } }) }, 'a run id that is not a number');
+  refused({ DEPLOYMENTS_JSON: '[]' }, 'a different digest in the list', { '.github/deployed-api-images.txt': `${OTHER} # not this one\n` });
+});
+
+test('rollback accepts a digest from the reviewed list of images that ran before the records', () => {
+  const listed = attempt({ DEPLOYMENTS_JSON: '[]' }, { '.github/deployed-api-images.txt': `# header\n${DIGEST} # live before #551\n` });
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.equal(listed.out.trim(), `image_ref=skgbafa/openkey-api@${DIGEST}`);
+  assert.match(listed.summary, /deployed-api-images\.txt/);
 });
 
 test('the deployed digest is recorded for later rollbacks, with the reason on a rollback', () => {

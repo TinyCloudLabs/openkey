@@ -38,14 +38,11 @@ Cloudflare Pages deploys `main` on merge but only reports a check run, not a Dep
 
 ### Rollback
 
-`gh workflow run deploy-api.yml --ref main -f rollback_digest=sha256:<digest> -f rollback_reason='<why>'` puts an image that was already deployed back in production. It needs the reason (recorded in the run summary and in the Deployment record), refuses a digest that has no successful `openkey-api-image` deployment record (an image that never ran in production), refuses an image gone from the registry, and does not run migrations. Do not `gh run rerun` an older deploy run: it runs that run's own, older workflow. The digests that ran are the `payload.digest` of the records: `gh api 'repos/TinyCloudLabs/openkey/deployments?environment=openkey-api-image' --jq '.[] | [.created_at, .payload.digest, .payload.rollback] | @tsv'`.
+`gh workflow run deploy-api.yml --ref main -f rollback_digest=sha256:<digest> -f rollback_reason='<why>'` puts an image that was already deployed back in production. It needs the reason (in the run summary and the Deployment record), refuses an image gone from the registry, builds and pushes nothing, and does not run migrations. Do not `gh run rerun` an older deploy run: it runs that run's own, older workflow.
 
-Images deployed before these records existed have none, so record the one to return to first, by whoever owns the release, only for a digest known to have run in production (for example the compose the CVM runs, or `rollback_image` from `scripts/inspect-api-production.ts`):
-
-```
-id=$(gh api -X POST repos/TinyCloudLabs/openkey/deployments --input - --jq .id <<< '{"ref":"<commit>","environment":"openkey-api-image","auto_merge":false,"required_contexts":[],"description":"backfill","payload":{"digest":"sha256:<digest>","rollback":false,"reason":"backfill: ran in production before records"}}')
-gh api -X POST repos/TinyCloudLabs/openkey/deployments/$id/statuses -f state=success
-```
+It refuses a digest that was never deployed. "Deployed" is one of two things, and nothing made by hand counts:
+- a Deployment in the environment `openkey-api-image` made by `github-actions[bot]` (the deploy's "Record the deployed image" step), with a success status, whose `payload.run` is a successful `deploy-api.yml` run on `main`. List them with `gh api 'repos/TinyCloudLabs/openkey/deployments?environment=openkey-api-image' --jq '.[] | [.created_at, .payload.digest, .payload.rollback] | @tsv'`;
+- a line in `.github/deployed-api-images.txt`, the images that ran in production before the records existed (for example the live digest from `rollback_image` in `scripts/inspect-api-production.ts`). Add a line only by PR, for a digest known to have run.
 
 ## Review path
 

@@ -1,8 +1,8 @@
 # Deploys are manual: `gh workflow run deploy-api.yml --ref main`, run by the release coordinator.
 # Rollback: `gh workflow run deploy-api.yml --ref main -f rollback_digest=sha256:<digest> -f rollback_reason='<why>'`
-# promotes an image that was already deployed (see the "Roll back" step); it needs a reason and a deployment record
-# for that digest, and refuses anything never deployed. Do not `gh run rerun` an older run: it would run that
-# run's own, older workflow.
+# promotes an image that was already deployed (see the "Roll back" step); it needs a reason and a digest this
+# workflow deployed or .github/deployed-api-images.txt lists, and refuses anything never deployed. Do not
+# `gh run rerun` an older run: it would run that run's own, older workflow.
 name: Deploy API to Phala Cloud
 
 on:
@@ -190,9 +190,10 @@ jobs:
           echo "Deploying $DOCKER_IMAGE@$digest." >> "$GITHUB_STEP_SUMMARY"
           echo "image_ref=$DOCKER_IMAGE@$digest" >> "$GITHUB_OUTPUT"
 
-      # Rollback promotes an image that was deployed before, by digest, and nothing else: it needs a reason, and a
-      # successful deployment record (environment openkey-api-image, written by "Record the deployed image" below)
-      # for exactly this digest, so an image that never ran in production is refused. Migrations are not run.
+      # Rollback promotes an image that was deployed before, by digest, and nothing else: it needs a reason, and the
+      # digest must be in the reviewed list or have a deployment record made by this workflow's own successful
+      # run on main ("Record the deployed image" below), so an image that never ran in production is refused.
+      # Migrations are not run.
       - name: Roll back to a previously deployed image
         id: rollback
         if: inputs.rollback_digest != ''
@@ -210,14 +211,25 @@ jobs:
             echo "::error::rollback_reason is required with rollback_digest"
             exit 1
           fi
+          # Previously deployed means one of two things, and nothing a person can create by hand counts:
+          #  - the digest is in .github/deployed-api-images.txt (images that ran before the records; changed by PR), or
+          #  - a Deployment record made by github-actions[bot] (the "Record the deployed image" step) names it, its
+          #    status is success, and its payload.run is a successful deploy-api.yml run on main.
           deployed=""
-          for id in $(gh api --paginate "repos/$GITHUB_REPOSITORY/deployments?environment=openkey-api-image&per_page=100" \
-            --jq ".[] | select((.payload | type) == \"object\" and .payload.digest == \"$ROLLBACK_DIGEST\") | .id"); do
-            ok="$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --jq '[.[] | select(.state == "success")] | length')"
-            if [ "${ok:-0}" -gt 0 ]; then deployed="$id"; break; fi
-          done
+          if grep -Eq "^$ROLLBACK_DIGEST([[:space:]]|$)" .github/deployed-api-images.txt; then
+            deployed="the list in .github/deployed-api-images.txt"
+          else
+            while IFS=$'\t' read -r id run_id; do
+              [[ "$id" =~ ^[0-9]+$ && "$run_id" =~ ^[0-9]+$ ]] || continue
+              ok="$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --jq '[.[] | select(.state == "success")] | length')"
+              [ "${ok:-0}" -gt 0 ] || continue
+              prov="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '[(.path | split("@")[0]), .head_branch, .conclusion] | @tsv')"
+              if [ "$prov" = "$(printf '.github/workflows/deploy-api.yml\tmain\tsuccess')" ]; then deployed="deployment record $id (run $run_id)"; break; fi
+            done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/deployments?environment=openkey-api-image&per_page=100" \
+              --jq ".[] | select(.creator.login == \"github-actions[bot]\" and (.payload | type) == \"object\" and .payload.digest == \"$ROLLBACK_DIGEST\") | [.id, .payload.run] | @tsv")
+          fi
           if [ -z "$deployed" ]; then
-            echo "::error::$ROLLBACK_DIGEST has no successful deployment record, so it was never deployed through this workflow. Refusing to deploy it. If it ran in production before the records existed, record it first (docs/releases.md)."
+            echo "::error::$ROLLBACK_DIGEST was not deployed by this workflow and is not in .github/deployed-api-images.txt. Refusing to deploy it. An image that ran in production before the records existed is added to that file by PR."
             exit 1
           fi
           ref="$DOCKER_IMAGE@$ROLLBACK_DIGEST"
@@ -228,7 +240,7 @@ jobs:
           {
             echo "### Rollback"
             echo ""
-            echo "Image: \`$ref\` (deployment record $deployed)"
+            echo "Image: \`$ref\` ($deployed)"
             echo "Reason: $ROLLBACK_REASON"
             echo "Requested by: ${GITHUB_ACTOR}"
           } >> "$GITHUB_STEP_SUMMARY"
