@@ -86,6 +86,18 @@ export const FILES_FOR_YOU_STATEMENT =
   "Read and change files shared with you";
 
 /**
+ * Consent sentences of the three grants a feed connect step makes on the
+ * signer's own `applications` space (see feed-grant.ts), one per grant:
+ * SQL read, write and schema on the registry database, SQL read, write and
+ * schema on the per-agent card databases, and notifications on those
+ * databases. `schema` is the ability to create and edit tables, so the first
+ * two say "set up".
+ */
+export const FEED_REGISTRY_STATEMENT = "Set up and use your TinyCloud One agent list";
+export const FEED_CARDS_STATEMENT = "Set up and use cards and answers in TinyCloud One";
+export const FEED_NOTIFY_STATEMENT = "Get notified of changes to your TinyCloud One feed";
+
+/**
  * Consent sentence of the `tinycloud.capabilities/read` grant: the requester
  * can inspect which permissions the signer has already granted. Title stays
  * "Permission check — <space>".
