@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { legacySignOrigin, legacySignReadyOrigin } from '$lib/legacy-sign-origin';
   import { untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
@@ -13,6 +14,7 @@
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
+  import { serverActionId } from '$lib/delegate-review-selection';
   import { expiryAt, siweExpiration } from '$lib/approval-expiry';
   import { PREVIEW_EXPIRED_MESSAGE, signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
   import {
@@ -27,7 +29,7 @@
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
-import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
+  import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
   import {
     createWidgetTransport,
     type WidgetRequest,
@@ -70,6 +72,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   // path (compat) does not carry a requestId — it uses direct postMessage.
   let currentRequestId = $state<string | null>(null);
   let transport: WidgetTransport | null = null;
+  let legacyOrigin = $state<string | null>(null);
   // Sol MAJOR-9 (per-request immutable state): once a request lands we
   // never mutate its bound state. A follow-up transport request creates
   // a NEW logical request. If a versioned request is already in-flight
@@ -87,6 +90,9 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   let previewing = $state(false);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
+  // TC-2927: the extra permissions (decrypt or key creation on the encryption network or on keys outside the app's own
+  // area) the owner allowed on the warning screen. The preview records them and signing refuses an undecided one.
+  let elevatedAllowed = $state<string[]>([]);
   // Sol MAJOR-3 (continuation): when the SDK passes `externalSign: true`
   // on the sign request, the widget MUST NOT call /authorize-sign at
   // approval time. Instead it emits an `openkey:externalSign:approve`
@@ -181,10 +187,10 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       // the unversioned envelope. Only emit under the wildcard-origin
       // compatibility path — versioned callers get the transport's ready.
       if (origin === '*') {
-        const targetOrigin = new URL(window.location.href).searchParams.get('origin') || '*';
-        if (window.opener) {
+        const targetOrigin = legacySignReadyOrigin();
+        if (targetOrigin && window.opener) {
           window.opener.postMessage({ type: 'openkey:ready' }, targetOrigin);
-        } else if (window.parent !== window) {
+        } else if (targetOrigin && window.parent !== window) {
           window.parent.postMessage({ type: 'openkey:ready' }, targetOrigin);
         }
       }
@@ -441,11 +447,14 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
 
     console.log('[sign widget] received message:', event.data?.type, event.data);
     if (event.data?.type === 'openkey:sign:request') {
+      const requestOrigin = legacySignOrigin(event.origin);
+      if (!requestOrigin || (legacyOrigin && legacyOrigin !== requestOrigin)) return;
       // Sol MAJOR-9: refuse overlapping legacy request too.
       if (requestSealed) {
         console.warn('[sign widget] refusing overlapping legacy request');
         return;
       }
+      legacyOrigin = requestOrigin;
       console.log('[sign widget] sign request received, message:', event.data.message?.substring(0, 100), 'keyId:', event.data.keyId);
       message = event.data.message;
       messageProtocolVersion = incomingProtocolVersion;
@@ -687,7 +696,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
   const previewInput = $derived.by(() =>
     key && canUseAuthorizeSignFn() && !siweRefusal
       ? JSON.stringify([currentRequestId, key.id, message,
-          [...currentSelectedActionIds()].sort(), expiryChoiceMs])
+          [...currentSelectedActionIds()].sort(), expiryChoiceMs, elevatedAllowed])
       : null,
   );
 
@@ -869,6 +878,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
+            ...(elevatedAllowed.length === 0 ? {} : { elevatedDecision: { allowed: elevatedAllowed } }),
             // TC-2272: only when the user changed it; the app's own expiry stays the default.
             ...(requestedExpiry === null ? {} : { expirationTime: requestedExpiry }),
           }),
@@ -1001,7 +1011,7 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       // Legacy exact-byte path: signs the caller's exact `message`. The
       // capabilities in the response are the caller's original set (no
       // narrowing happened server-side).
-      const result = await api.signMessage(key.id, message, origin === '*' ? undefined : origin);
+      const result = await api.signMessage(key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0);
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
             service: grant.service,
@@ -1183,11 +1193,12 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
       }
       return;
     }
-    // Legacy compatibility path (wildcard origin or unversioned caller).
+    // Legacy replies stay bound to the first accepted request's browser origin.
+    if (!legacyOrigin) return;
     if (window.opener) {
-      window.opener.postMessage(data, origin);
+      window.opener.postMessage(data, legacyOrigin);
     } else if (window.parent !== window) {
-      window.parent.postMessage(data, origin);
+      window.parent.postMessage(data, legacyOrigin);
     }
   }
 
@@ -1198,15 +1209,16 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
     // request so the SDK doesn't tear down a subsequent request when a
     // stale close arrives late.
     const closeMsg: Record<string, unknown> = { type: 'openkey:close' };
+    const targetOrigin = currentRequestId ? origin : (legacyOrigin ?? (origin !== '*' ? origin : null));
     if (currentRequestId && messageProtocolVersion !== null) {
       closeMsg.requestId = currentRequestId;
       closeMsg.protocolVersion = messageProtocolVersion;
     }
     if (window.opener) {
-      window.opener.postMessage(closeMsg, origin);
+      if (targetOrigin) window.opener.postMessage(closeMsg, targetOrigin);
       window.close();
     } else if (window.parent !== window) {
-      window.parent.postMessage(closeMsg, origin);
+      if (targetOrigin) window.parent.postMessage(closeMsg, targetOrigin);
     }
   }
 
@@ -1303,6 +1315,16 @@ import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError
               },
             }
           : undefined,
+        // TC-2927: the warning screen for extra permissions. On the server-authoritative path the owner can reject one
+        // and approve the rest; the exact-byte path cannot be narrowed, so it is all or nothing. The allowed ids go into the
+        // next preview (or the exact-byte sign) and the server refuses to sign an extra permission that is not among them.
+        elevated: {
+          splittable: canUseAuthorizeSignFn(),
+          onDecide: (allowed) => {
+            elevatedAllowed = allowed.map(serverActionId).sort();
+            invalidatePreviewForSelectionEdit();
+          },
+        },
         invalidatePreview: invalidatePreviewForSelectionEdit,
       }}
     />

@@ -105,12 +105,15 @@ import {
   appKeyRefusalCode,
   appKeyRefusalForSiwe,
   blockResourcesOutsideApps,
-  encryptionOutsideAppsRefusal,
+  exactShareKeyRefusal,
   appKeyRefusalMessage,
   appKeyRefusalStatus,
   appKeyResourcesOf,
   type AdmittedAppKey,
+  UNREADABLE_RECAP_MESSAGE,
 } from '../services/app-key-refusal';
+import { allowedElevatedIds, elevatedDecided, elevatedNotDecidedBody } from '../services/elevated-decision';
+import { elevatedActionsOf } from '@openkey/capability-review';
 import { admitAppKeys, appIdForOrigin, appKeyAdmissionRefusal, type ManifestKeys } from '../services/app-key-gate';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
@@ -866,6 +869,17 @@ function attenuationSubsetOrFailure(
  * the "allowed" set the /prepare context binds — /complete cannot select
  * anything outside this set.
  */
+/**
+ * The action ids the app-key "approved together" rule compares a selection against. The extra permissions of the warning
+ * screen (TC-2927) are decided one by one, and rejecting one must not count as dropping the rest of the request, so a
+ * browser request leaves them out. A prepared-handoff (command line) request keeps the whole set.
+ */
+function groupRuleActionIds(entries: RecapEntry[], ticket: unknown): Set<string> {
+  const ids = allowedActionIdSet(entries);
+  if (!ticket) for (const action of elevatedActionsOf(entries, computeActionKey)) ids.delete(action.actionId);
+  return ids;
+}
+
 function allowedActionIdSet(entries: RecapEntry[]): Set<string> {
   const set = new Set<string>();
   for (const entry of entries) {
@@ -2700,7 +2714,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   } catch (e) {
     return c.json(
       {
-        error: e instanceof Error ? e.message : 'Invalid SIWE recap',
+        error: UNREADABLE_RECAP_MESSAGE,
         code: 'invalid_siwe_recap',
       },
       400,
@@ -2728,11 +2742,12 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     }
     appKeyCandidate = true;
   }
-  // A website's own sign-in (no ticket) may name encryption `decrypt` or
-  // `key.create` only under its own `apps/` prefix. Anything else, a bare
-  // network included, is refused before a context is issued. A ticket request
-  // (the command line's `--keys <folder>`) is not checked here.
-  const prepareEncryptionRefusal = ticket ? null : encryptionOutsideAppsRefusal(body.siwe);
+  // A website's own sign-in (no ticket) may ask to `decrypt` or `key.create` on the encryption network, or on
+  // keys outside its own `apps/` prefix, with a per-permission warning the owner decides on (TC-2927); the
+  // decision is checked at the preview. What is never accepted from any app, ours included, is an exact share
+  // key (`share/<id>`) that OpenKey did not make for the request. A ticket request (the command line's
+  // `--keys <folder>`) is not checked here.
+  const prepareEncryptionRefusal = ticket ? null : exactShareKeyRefusal(body.siwe);
   if (prepareEncryptionRefusal) {
     return c.json(appKeyRefusalBody(prepareEncryptionRefusal, 'browser'), appKeyRefusalStatus(prepareEncryptionRefusal));
   }
@@ -3262,7 +3277,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   });
   if (appKeyGroupPartial(
     admittedAppKeyActionIds(originalEntries, bound.admittedAppKeys, computeActionKey),
-    allowedActionIdSet(originalEntries),
+    groupRuleActionIds(originalEntries, ticket),
     selectedActionIds,
   )) {
     return c.json({ error: APP_KEY_GROUP_PARTIAL_MESSAGE, code: APP_KEY_GROUP_PARTIAL_CODE }, 400);
@@ -3528,9 +3543,15 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (signedAppKeyRefusal) {
     return c.json(appKeyRefusalBody(signedAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(signedAppKeyRefusal));
   }
-  const signEncryptionRefusal = ticket ? null : encryptionOutsideAppsRefusal(signedMessage);
+  const signEncryptionRefusal = ticket ? null : exactShareKeyRefusal(signedMessage);
   if (signEncryptionRefusal) {
     return c.json(appKeyRefusalBody(signEncryptionRefusal, 'browser'), appKeyRefusalStatus(signEncryptionRefusal));
+  }
+  // The preview sealed which extra permissions the owner explicitly allowed (TC-2927). The bytes are the previewed
+  // ones, so this holds already; it is checked again here so no signature covers an elevated permission the owner
+  // did not decide on.
+  if (!ticket && !elevatedDecided(effectiveEntries, previewCheck.elevatedAllowed)) {
+    return c.json(elevatedNotDecidedBody(), 403);
   }
   // Both checked claims still have to reference the stored records. This
   // synchronous call compares both, checks both expiries, then deletes both
@@ -3615,6 +3636,8 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     selectedActionIds?: unknown;
     /** TC-2272: the approval expiry the user chose (ISO-8601 UTC); the app's own is the default. */
     expirationTime?: unknown;
+    /** TC-2927: `{ allowed: ActionId[] }`, the extra permissions the owner explicitly allowed on the warning screen. */
+    elevatedDecision?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
@@ -3699,7 +3722,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   }
   if (appKeyGroupPartial(
     admittedAppKeyActionIds(originalEntries, bound.admittedAppKeys, computeActionKey),
-    allowedActionIdSet(originalEntries),
+    groupRuleActionIds(originalEntries, ticket),
     selectedActionIds,
   )) {
     return c.json({ error: APP_KEY_GROUP_PARTIAL_MESSAGE, code: APP_KEY_GROUP_PARTIAL_CODE }, 400);
@@ -3833,10 +3856,14 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   if (previewAppKeyRefusal) {
     return c.json(appKeyRefusalBody(previewAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(previewAppKeyRefusal));
   }
-  const previewEncryptionRefusal = ticket ? null : encryptionOutsideAppsRefusal(preparedSignedMessage);
+  const previewEncryptionRefusal = ticket ? null : exactShareKeyRefusal(preparedSignedMessage);
   if (previewEncryptionRefusal) {
     return c.json(appKeyRefusalBody(previewEncryptionRefusal, 'browser'), appKeyRefusalStatus(previewEncryptionRefusal));
   }
+  // The extra permissions of the warning screen (TC-2927) are decided after this preview is first fetched, so the
+  // preview records which ones the owner allowed and /authorize-sign refuses to sign any the preview did not
+  // record as allowed. A rejected one is not in these bytes, so it needs nothing.
+  const elevatedAllowed = ticket ? new Set<string>() : allowedElevatedIds(body.elevatedDecision);
   const previewGrants = previewEntries.map((entry) => ({
     service: canonicalizeServiceName(entry.service),
     space: entry.space,
@@ -3857,6 +3884,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     keyAddress: ensureEip55(bound.keyAddress),
     selectedActionIds,
     signedMessage: preparedSignedMessage,
+    elevatedAllowed,
   });
 
   return c.json({
