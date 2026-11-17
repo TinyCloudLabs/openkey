@@ -110,6 +110,12 @@ bun dev:portless
   API and web deployment are both needed. This does not change sign-in methods
   or remove consent. Default-branch merges and deployment require explicit
   owner approval; no auto-merge or deployment bypass.
+- The Claude, Grok and Muse directory listings each use their own restricted
+  resource, `https://mcp.tinycloud.xyz/{claude,grok,muse}/mcp`, with the exact
+  callback `https://mcp.tinycloud.xyz/{claude,grok,muse}/connect/callback`. They
+  follow the ChatGPT rules above: exact entries only, API and web deployment both
+  needed. The connector's token-status client must also be registered for the
+  new resources (`docs/resource-server-token-status.md`).
 - Never bump `@phala/dstack-sdk` or change `createProductionClient` in `packages/tee` without
   reading `docs/tee-overview.md` "Frozen key derivation". The SDK is pinned exactly; in SDK 0.6
   `DstackClient` derives different keys, which would make every sealed key unrecoverable. The
