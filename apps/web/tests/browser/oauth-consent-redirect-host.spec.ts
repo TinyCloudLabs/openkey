@@ -96,6 +96,13 @@ test.describe('consent permission lines', () => {
     await expect(page.getByText(stayLine, { exact: true })).toHaveCount(0);
   });
 
+  test('a scope appended after the signature does not change what is shown', async ({ page }) => {
+    await openConsent(page, { scope: 'openid', unsigned: '&scope=tinycloud:mcp%20offline_access' });
+    await expect(page.getByText('wants to verify your identity', { exact: true })).toBeVisible();
+    await expect(page.getByText(mcpLine, { exact: true })).toHaveCount(0);
+    await expect(page.getByText(stayLine, { exact: true })).toHaveCount(0);
+  });
+
   test('identity-only consent shows neither line and keeps the identity header and note', async ({ page }) => {
     await openConsent(page, { scope: 'openid email tinycloud:identity', redirectUri: 'https://viewer.example.test/cb' });
     await expect(page.getByText(mcpLine, { exact: true })).toHaveCount(0);

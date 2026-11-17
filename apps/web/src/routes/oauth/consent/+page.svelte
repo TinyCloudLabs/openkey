@@ -19,15 +19,6 @@
   let error = $state('');
   let fetched = $state(false);
 
-  // Get OAuth parameters from URL
-  const clientId = $page.url.searchParams.get('client_id');
-  const nativeRequest = clientId ? $page.url.searchParams.get('tinycloud_request') : null;
-  const scope = $page.url.searchParams.get('scope') || 'openid';
-  const requestedScopes = new Set(scope.split(/\s+/).filter(Boolean));
-  const identityOnlyConsent = requestedScopes.has('tinycloud:identity')
-    && !['keys', 'tinycloud:manage-key', 'tinycloud:delegation', 'tinycloud:session', 'tinycloud:mcp']
-      .some((capability) => requestedScopes.has(capability));
-
   // The signed query params (up to and including sig); the consent endpoint verifies them.
   function signedOAuthParams(search: string): URLSearchParams | undefined {
     const params = new URLSearchParams(search);
@@ -44,10 +35,19 @@
     return signedOAuthParams(window.location.search)?.toString();
   }
 
-  // Where the app returns the owner. Only the signed part of the query is trusted:
-  // the authorize endpoint matched redirect_uri to the client's registered URIs
-  // before sending the owner here, and a changed value fails the signature on Allow.
-  const redirectHost = redirectHostForDisplay(signedOAuthParams($page.url.search)?.get('redirect_uri'));
+  // Get OAuth parameters from URL. What the page tells the owner they are granting (scope)
+  // and where they return to (redirect_uri) comes only from the signed part of the query:
+  // the authorize endpoint matched redirect_uri to the client's registered URIs before
+  // sending the owner here, and a changed value fails the signature on Allow.
+  const signedParams = signedOAuthParams($page.url.search);
+  const clientId = $page.url.searchParams.get('client_id');
+  const nativeRequest = clientId ? $page.url.searchParams.get('tinycloud_request') : null;
+  const scope = (signedParams ?? $page.url.searchParams).get('scope') || 'openid';
+  const requestedScopes = new Set(scope.split(/\s+/).filter(Boolean));
+  const identityOnlyConsent = requestedScopes.has('tinycloud:identity')
+    && !['keys', 'tinycloud:manage-key', 'tinycloud:delegation', 'tinycloud:session', 'tinycloud:mcp']
+      .some((capability) => requestedScopes.has(capability));
+  const redirectHost = redirectHostForDisplay(signedParams?.get('redirect_uri'));
 
   async function fetchClientInfo() {
     if (!clientId) {
