@@ -513,7 +513,8 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
   });
 
   test('on a link, where nothing verifies who asked, the note says "This request"', () => {
-    const { target, cleanup } = mounted(modelOf([decrypt]), { ordinaryLink: true });
+    const model = modelOf([decrypt]);
+    const { target, cleanup } = mounted({ ...model, requester: { ...model.requester, verifiedOrigin: null } });
     expect(noteText(target)?.startsWith('This request asked for 7 days.')).toBe(true);
     cleanup();
   });

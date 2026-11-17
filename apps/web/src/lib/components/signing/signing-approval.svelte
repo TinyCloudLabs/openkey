@@ -299,7 +299,7 @@
   const requestedBy = $derived(originHost ?? requesterName);
   // The note under the expiry line names who asked as the screen does: the verified origin, or "This request" where
   // nothing identifies the requester (a link, a device sign-in, an approval link).
-  const onceNoteSite = $derived(unattributed || !requestedBy ? "This request" : requestedBy);
+  const onceNoteSite = $derived(originHost ?? "This request");
   // Beside the renewal box a fixed end date is wrong (ticked) or repeats the box (unticked), so it is not shown there.
   const appKeyAccessLine = $derived(
     !renewal && selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatAccessEnd) : null,
