@@ -110,6 +110,7 @@ import {
   appKeyRefusalStatus,
   appKeyResourcesOf,
   type AdmittedAppKey,
+  UNREADABLE_RECAP_MESSAGE,
 } from '../services/app-key-refusal';
 import { allowedElevatedIds, elevatedDecided, elevatedNotDecidedBody } from '../services/elevated-decision';
 import { elevatedActionsOf } from '@openkey/capability-review';
@@ -2713,7 +2714,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   } catch (e) {
     return c.json(
       {
-        error: e instanceof Error ? e.message : 'Invalid SIWE recap',
+        error: UNREADABLE_RECAP_MESSAGE,
         code: 'invalid_siwe_recap',
       },
       400,
