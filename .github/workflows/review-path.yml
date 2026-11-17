@@ -76,7 +76,7 @@ jobs:
           echo "REVIEW_PATH_REPORT=$RUNNER_TEMP/review-path-report.json" >> "$GITHUB_ENV"
 
       - name: Test the workflow's own scripts
-        run: node --test .github/scripts/review-path-scope.test.mjs
+        run: node --test .github/scripts/review-path-scope.test.mjs .github/scripts/deploy-promote.test.mjs
 
       - name: Decide whether the change touches what the Review path exercises
         id: relevance

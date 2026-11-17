@@ -128,6 +128,15 @@ async function main() {
     });
     if (!install.ok) throw new Error(`review code install failed: HTTP ${install.status} ${(await install.text()).slice(0, 300)}`);
 
+    // The account the specs run against, read back after the code install: no signing on its own and no
+    // TinyCloud key management, as the production reviewer fixture has it. Fail the seed, not the specs.
+    const owner = await prisma.user.findUniqueOrThrow({
+      where: { id: 'review-path-owner' }, select: { autoSignEnabled: true, tinyCloudManageKeyEnabled: true },
+    });
+    if (owner.autoSignEnabled || owner.tinyCloudManageKeyEnabled) {
+      throw new Error('the review account must have autoSignEnabled and tinyCloudManageKeyEnabled off, as production does');
+    }
+
     writeFileSync(fixturePath, JSON.stringify({
       email: EMAIL, code, clientId, redirectUri: REDIRECT_URI, resource: RESOURCE, callbackUri: CALLBACK_URI, nodeHost, address,
       sessionDid, sessionPublicJwk: { kty: publicJwk.kty, crv: publicJwk.crv, x: publicJwk.x },
