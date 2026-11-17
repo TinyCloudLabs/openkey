@@ -1,0 +1,244 @@
+# "Review path": the app-review sign-in and approval path, run against a REAL stack on every pull request
+# and every main push: the exact API image built from the commit (Dockerfile, GIT_SHA=<sha>), a throwaway
+# Postgres with the repo's migrations, a seeded review account, the web app (vite dev, same-origin /api
+# proxy) and a real Chromium. The job is named "Review path" so it can be made a required check.
+#
+# Covers sign-in with a review code -> OAuth consent -> token -> the approval screen -> Approve, and the
+# refusals reachable without the hosted MCP (wrong code, forged query, Deny, other space/path/node, a review
+# session reaching anything but the connector flow). It does NOT cover the hosted MCP cases against a real
+# TinyCloud node (js-sdk review-evidence.json P01-P05, N01-N03): they need a staging API, which does not
+# exist yet. Each spec names the case whose OpenKey half it covers.
+#
+# HERMETIC: no secrets, no registry, no Cloudflare/Phala, no TinyCloud node. The API runs with throwaway
+# literals below. Only the connector's redirect target, its approval callback and a local node address are
+# answered inside the browser (apps/web/tests/review-path/review-path.spec.ts).
+#
+# NOT a required check yet: making it required is a repository-settings step (branch protection or a
+# ruleset on main), not part of this file.
+#
+# No `paths:` filter: the workflow always runs and reports (a required check must). The relevance step
+# decides whether the real steps run and fails OPEN (.github/scripts/review-path-scope.mjs).
+name: Review path
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: review-path-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The web origin the browser uses. 5779 is the default in apps/web/tests/browser/e2e-port.ts.
+  REVIEW_PATH_ORIGIN: http://localhost:5779
+  REVIEW_PATH_API: http://127.0.0.1:3001
+  # Throwaway values for a database and API that live for this job only.
+  REVIEW_PATH_DATABASE_URL: postgres://postgres:review-path@127.0.0.1:5432/openkey
+  REVIEW_PATH_ADMIN_API_KEY: review-path-throwaway-admin
+  REVIEW_PATH_AUTH_SECRET: review-path-throwaway-secret-0123456789abcdef
+  REVIEW_PATH_SEALING_KEY: openkey-dev-sealing-key-32bytes!
+  API_IMAGE: openkey-api:${{ github.sha }}
+
+jobs:
+  review-path:
+    name: Review path
+    # Pinned for the same reason as web-browser-tests.yml: ubuntu-latest cannot install Playwright's Chromium.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: review-path
+          POSTGRES_DB: openkey
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      # Full history: the relevance step diffs the pull request's base against the merge commit, and the
+      # release note diffs the push's previous head against its new one.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Choose the fixture and report paths
+        run: |
+          echo "REVIEW_PATH_FIXTURE=$RUNNER_TEMP/review-path-fixture.json" >> "$GITHUB_ENV"
+          echo "REVIEW_PATH_REPORT=$RUNNER_TEMP/review-path-report.json" >> "$GITHUB_ENV"
+
+      - name: Test the workflow's own scripts
+        run: node --test .github/scripts/review-path-scope.test.mjs
+
+      - name: Decide whether the change touches what the Review path exercises
+        id: relevance
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.sha }}
+        run: |
+          out="$(node .github/scripts/review-path-scope.mjs relevance)" || out=$'relevant=true\nreason=the relevance script failed, so the check runs'
+          echo "$out" >> "$GITHUB_OUTPUT"
+          echo "Review path: $(sed -n 's/^reason=//p' <<< "$out")" >> "$GITHUB_STEP_SUMMARY"
+
+      # The one-line release note for what this push publishes to main, from the diff of the push.
+      # Fails open: "yes" whenever the diff cannot be read.
+      - name: Release note
+        if: github.event_name == 'push'
+        env:
+          BASE: ${{ github.event.before }}
+          HEAD: ${{ github.sha }}
+        run: |
+          note="$(node .github/scripts/review-path-scope.mjs note)" || note='touches sign-in/approval: yes (the note script failed, so assume it does)'
+          echo "Release note: $note" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup Bun
+        if: steps.relevance.outputs.relevant == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2 (the commit tc-492-production-cutover.yml pins)
+        with:
+          bun-version: 1.3.14
+
+      - name: Cache Bun dependencies
+        if: steps.relevance.outputs.relevant == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      - name: Install dependencies
+        if: steps.relevance.outputs.relevant == 'true'
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      # The seed script and the web app load @openkey/db, @openkey/tee and @openkey/capability-review from
+      # their dist/, and @openkey/db needs the generated Prisma client. The API itself runs from the image.
+      - name: Build packages
+        if: steps.relevance.outputs.relevant == 'true'
+        run: |
+          bun run db:generate
+          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review
+
+      - name: Set up Docker Buildx
+        if: steps.relevance.outputs.relevant == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      # The image the check runs is built from the Dockerfile with GIT_SHA=<this commit>, the same
+      # build deploy-api.yml ships; /health reports the commit, which the next steps check.
+      - name: Build the API image
+        if: steps.relevance.outputs.relevant == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          push: false
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=openkey-api-image
+          cache-to: ${{ github.event_name == 'push' && 'type=gha,mode=max,scope=openkey-api-image' || '' }}
+          tags: ${{ env.API_IMAGE }}
+
+      # The tracked migrations, in order, as production has them: the parked TC-488 migration is skipped
+      # (see the script), and each is recorded with its checksum so the API's readiness check passes.
+      - name: Apply the migrations
+        if: steps.relevance.outputs.relevant == 'true'
+        env:
+          DATABASE_URL: ${{ env.REVIEW_PATH_DATABASE_URL }}
+          PGOPTIONS: -c client_min_messages=warning
+        run: scripts/review-path/apply-migrations.sh
+
+      # The image's own defaults (NODE_ENV=production, TEE_MODE=development) are refused at boot, so the
+      # run overrides both, as a developer's local API does. No TinyCloud node is reached: the bootstrap
+      # sweep is off and the seeded node address is a local port nothing listens on.
+      - name: Start the API from the image
+        if: steps.relevance.outputs.relevant == 'true'
+        run: |
+          docker run -d --name openkey-api --network host \
+            -e NODE_ENV=development -e TEE_MODE=development -e "DEV_SEALING_KEY=$REVIEW_PATH_SEALING_KEY" \
+            -e "DATABASE_URL=$REVIEW_PATH_DATABASE_URL" -e API_PORT=3001 \
+            -e WEBAUTHN_RP_ID=localhost -e "WEBAUTHN_ORIGIN=$REVIEW_PATH_ORIGIN" -e "BETTER_AUTH_URL=$REVIEW_PATH_ORIGIN" \
+            -e "CORS_ORIGIN=$REVIEW_PATH_ORIGIN" -e "BETTER_AUTH_SECRET=$REVIEW_PATH_AUTH_SECRET" \
+            -e "ADMIN_API_KEY=$REVIEW_PATH_ADMIN_API_KEY" -e TINYCLOUD_BOOTSTRAP_SWEEP=off \
+            "$API_IMAGE"
+
+      - name: Seed the review account
+        if: steps.relevance.outputs.relevant == 'true'
+        env:
+          DATABASE_URL: ${{ env.REVIEW_PATH_DATABASE_URL }}
+          TEE_MODE: development
+          NODE_ENV: development
+          DEV_SEALING_KEY: ${{ env.REVIEW_PATH_SEALING_KEY }}
+          ADMIN_API_KEY: ${{ env.REVIEW_PATH_ADMIN_API_KEY }}
+          REVIEW_PATH_NODE_HOST: http://127.0.0.1:3499
+        run: bun scripts/review-path/seed.ts
+
+      # Proves the check runs the commit under test: the running image reports the commit it was built from.
+      - name: Check the running image is this commit
+        if: steps.relevance.outputs.relevant == 'true'
+        run: |
+          health="$(curl -fsS "$REVIEW_PATH_API/health")"
+          jq -e --arg sha "$GITHUB_SHA" '.status == "ok" and .commit == $sha' <<< "$health" > /dev/null \
+            || { echo "::error::the API image does not report commit $GITHUB_SHA: $health"; exit 1; }
+          echo "Review path ran on image $API_IMAGE (commit $GITHUB_SHA)." >> "$GITHUB_STEP_SUMMARY"
+
+      # Restored and saved separately, with a key of its own: this cache holds chromium only.
+      - name: Restore Playwright browsers
+        id: playwright-cache
+        if: steps.relevance.outputs.relevant == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-review-path-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      - name: Install Playwright browsers
+        id: playwright-install
+        if: steps.relevance.outputs.relevant == 'true'
+        timeout-minutes: 15
+        working-directory: apps/web
+        run: |
+          printf 'Acquire::Retries "3";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nDPkg::Lock::Timeout "180";\n' | sudo tee /etc/apt/apt.conf.d/99-ci-timeouts > /dev/null
+          for attempt in 1 2 3; do
+            bunx playwright install --with-deps chromium && exit 0
+            echo "Playwright install attempt $attempt failed" >&2
+            sleep 15
+          done
+          exit 1
+
+      - name: Save Playwright browsers
+        if: steps.playwright-install.conclusion == 'success' && steps.playwright-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-review-path-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      # No retries: a red case here is a real regression in the review path, not a flake to absorb.
+      # IPv4 first makes `localhost` mean 127.0.0.1, where the API listens (as in web-browser-tests.yml).
+      - name: Run the Review path specs
+        if: steps.relevance.outputs.relevant == 'true'
+        timeout-minutes: 10
+        working-directory: apps/web
+        env:
+          NODE_OPTIONS: --dns-result-order=ipv4first
+          API_PORT: '3001'
+        run: bunx playwright test --config tests/review-path/playwright.config.ts
+
+      - name: API log
+        if: failure() && steps.relevance.outputs.relevant == 'true'
+        run: docker logs --tail 300 openkey-api || true
+
+      - name: Upload the report and the failure context
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: review-path-report
+          path: |
+            ${{ runner.temp }}/review-path-report.json
+            apps/web/test-results
+          if-no-files-found: ignore
+          retention-days: 7
