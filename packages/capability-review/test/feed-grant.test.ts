@@ -48,7 +48,7 @@ const rows = (resources: Record<string, string[]>): string[] => summary(resource
 
 const FEED_ROWS = [
   "Set up and use the agent list in your Feed",
-  "Set up and use cards and answers in your Feed",
+  "Set up and use all cards and answers in your Feed",
   "Get notified of changes in your TinyCloud One Feed",
 ];
 

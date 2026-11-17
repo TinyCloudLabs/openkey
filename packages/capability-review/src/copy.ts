@@ -94,7 +94,7 @@ export const FILES_FOR_YOU_STATEMENT =
  * two say "set up".
  */
 export const FEED_REGISTRY_STATEMENT = "Set up and use the agent list in your Feed";
-export const FEED_CARDS_STATEMENT = "Set up and use cards and answers in your Feed";
+export const FEED_CARDS_STATEMENT = "Set up and use all cards and answers in your Feed";
 export const FEED_NOTIFY_STATEMENT = "Get notified of changes in your TinyCloud One Feed";
 
 /**
