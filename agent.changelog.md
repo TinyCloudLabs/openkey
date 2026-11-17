@@ -23,15 +23,6 @@ Track changes to agent-facing development guidance for OpenKey. Add a concise en
   test also runs against a throwaway Postgres (`OPENKEY_TEST_POSTGRES_URL`), for lock and race
   cases PGlite cannot show. Noted in `CLAUDE.md` under API Tests. Tracked in TC-2946.
 
-## 2026-11-12
-
-- Ordinary consent accepts a canonical requester origin and binds its host
-  into the prepared SIWE, managed signing, wallet completion and refreshed
-  review. The UI distinguishes MCP, CLI and custom hosts while retaining the
-  caller-reported / no-signed-manifest disclosure. Documented validation,
-  protected-flow exclusions and the coordinated SDK deployment dependency.
-  Local signing and browser smoke passed; no production deployment occurred.
-
 ## 2026-11-11
 
 - Added administrator-managed hosted app-review sign-in and fixture account operations

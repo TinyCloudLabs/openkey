@@ -116,15 +116,6 @@ bun dev:portless
   follow the ChatGPT rules above: exact entries only, API and web deployment both
   needed. The connector's token-status client must also be registered for the
   new resources (`docs/resource-server-token-status.md`).
-- Ordinary `/delegate` links may supply one canonical `requesterOrigin`:
-  HTTPS, or HTTP on exactly localhost, 127.0.0.1 or [::1]. The API binds its
-  host (including nondefault port) into the prepared SIWE and authorization
-  context; the UI derives its label from that message, including after edits
-  and context refresh. It is caller-reported, not verified origin/manifest
-  identity. Missing origin retains the CLI domain; device, signed-request and
-  prepared-handoff flows reject this override. Callback/node policies stay
-  unchanged. Deploy matching API/web support before the SDK's hosted-MCP
-  requester-origin change, only with explicit owner authorization.
 - Never bump `@phala/dstack-sdk` or change `createProductionClient` in `packages/tee` without
   reading `docs/tee-overview.md` "Frozen key derivation". The SDK is pinned exactly; in SDK 0.6
   `DstackClient` derives different keys, which would make every sealed key unrecoverable. The
