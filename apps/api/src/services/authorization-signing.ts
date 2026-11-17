@@ -950,6 +950,8 @@ interface StoredPreviewApproval {
   selectedActionIds: string[]; // sorted for stable comparison
   signedMessageDigest: string;
   signedMessage: string;
+  /** The elevated action ids (TC-2927) the owner explicitly allowed on the warning screen; sorted. */
+  elevatedAllowed: string[];
 }
 
 const previewApprovals = new Map<string, StoredPreviewApproval>();
@@ -966,6 +968,8 @@ export interface PreviewApprovalIssueInput {
   keyAddress: string;
   selectedActionIds: Set<string>;
   signedMessage: string;
+  /** The elevated action ids the owner explicitly allowed (TC-2927). The preview refused anything else. */
+  elevatedAllowed?: Iterable<string>;
 }
 
 export interface PreviewApprovalToken {
@@ -991,6 +995,7 @@ export function issuePreviewApproval(
     selectedActionIds: [...input.selectedActionIds].sort(),
     signedMessageDigest: digest,
     signedMessage: input.signedMessage,
+    elevatedAllowed: [...new Set(input.elevatedAllowed ?? [])].sort(),
   };
   previewApprovals.set(token, stored);
   return {
@@ -1043,6 +1048,8 @@ export interface PreviewApprovalCheckSuccess {
   signedMessage: string;
   selectedActionIds: Set<string>;
   keyAddress: string;
+  /** The elevated action ids the owner allowed at the preview (TC-2927). */
+  elevatedAllowed: Set<string>;
   claim: PreviewApprovalClaim;
 }
 
@@ -1138,6 +1145,7 @@ export function checkPreviewApproval(
     signedMessage: stored.signedMessage,
     selectedActionIds: new Set(stored.selectedActionIds),
     keyAddress: stored.keyAddress,
+    elevatedAllowed: new Set(stored.elevatedAllowed),
     claim: { token: input.token, record: stored },
   };
 }

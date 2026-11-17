@@ -267,10 +267,12 @@ export const api = {
     keyId: string,
     message: string,
     requestOrigin?: string,
+    /** TC-2927: the owner allowed the extra permissions this exact message carries, on the warning screen. */
+    elevatedAcknowledged?: boolean,
   ): Promise<{ signature: string; address: string }> {
     return fetchAPI(`/api/keys/${keyId}/sign`, {
       method: 'POST',
-      body: JSON.stringify({ message, requestOrigin }),
+      body: JSON.stringify({ message, requestOrigin, ...(elevatedAcknowledged ? { elevatedAcknowledged: true } : {}) }),
     });
   },
 
