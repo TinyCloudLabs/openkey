@@ -475,6 +475,8 @@ or `google`.
 1. Deploy the API and publish the web. Web production deploys are currently
    frozen (Cloudflare Pages production deployments are disabled), so merging
    to `main` does not publish the web: the release coordinator publishes it.
+   `pages-openkey` records mirror Pages check runs on `main`
+   (`record-pages-deployments.yml`); they do not mean production changed.
    The API is deployed with `deploy-api.yml`. The review-code step cannot work
    until both are live: the old web caps the code box at six characters, and
    the old API refuses the sign-in.
