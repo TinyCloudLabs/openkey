@@ -395,7 +395,6 @@
   const deviceTransactionId = approvalRequestMode ? '' : $page.url.searchParams.get('deviceTransactionId') || '';
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
   const deviceUserCode = $page.url.searchParams.get('deviceUserCode') || '';
-  let deviceAcknowledged = $state(false);
   const relayJwkB64 = $page.url.searchParams.get('relayJwk') || '';
 
   // Decode JWK from base64url
@@ -1071,10 +1070,6 @@
 
   function approveDelegate() {
     if (approveBlockedByFailure) return;
-    if (deviceTransactionId && !deviceAcknowledged) {
-      error = 'Confirm that you started this request yourself, on a device you control.';
-      return;
-    }
     if (hostNeedsAcknowledgment && !hostAcknowledged) {
       error = 'Confirm that you run or trust this TinyCloud node.';
       return;
@@ -1969,7 +1964,7 @@
         {/if}
 
         {#if deviceTransactionId}
-          <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} bind:acknowledged={deviceAcknowledged} />
+          <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} />
         {:else}
           <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
         {/if}

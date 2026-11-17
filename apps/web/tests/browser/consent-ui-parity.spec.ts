@@ -246,7 +246,6 @@ async function openDeviceRelayReview(
   });
   await page.goto(`/delegate?${params}`);
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
-  await page.getByRole('checkbox', { name: 'I started this request myself, on a device I control.' }).check();
 }
 
 test('a prepare fetch failure uses fixed text, not the browser error message', async ({ page }) => {
@@ -347,6 +346,22 @@ test('device relay network failure has no status suffix', async ({ page }) => {
   await openDeviceRelayReview(page, { relayStatus: 'network' });
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveText("You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again.");
+});
+
+test('the device-link review has no self-started notice or checkbox, and Approve sends without either', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openDeviceRelayReview(page, { relayStatus: 200 });
+  const approve = page.getByRole('button', { name: 'Approve', exact: true });
+  await expect(approve).toBeEnabled();
+  await expect(page.getByRole('region', { name: 'Device request' })).toContainText('https://node.tinycloud.xyz');
+  await expect(page.getByText('Only approve if you started this on your own device.')).toHaveCount(0);
+  await expect(page.getByText('Approving hands this access to the terminal that showed you the code.')).toHaveCount(0);
+  await expect(page.getByText('I started this request myself, on a device I control.')).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: /I started this request myself/ })).toHaveCount(0);
+  const approved = page.waitForRequest((req) => req.url().includes('/api/device-authorizations/tx_1/approve') && req.method() === 'POST');
+  await approve.click();
+  await approved;
+  await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
 // TC-2984: a device link's lifetime default comes from the verified server
