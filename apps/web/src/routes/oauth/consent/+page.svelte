@@ -49,17 +49,18 @@
       .some((capability) => requestedScopes.has(capability));
   const redirectHost = redirectHostForDisplay(signedParams?.get('redirect_uri'));
 
-  // Scopes with their own row below. Every other granted scope gets a plain row, so the note
-  // under the list ("only the access listed above") is true whatever the client asked for.
+  // Scopes with their own row below. Every other scope that can be described in a line gets a
+  // plain row. A scope with no plain description still gets a row naming it, and then the note
+  // under the list ("only the access listed above") is not shown, because it would not be true.
   const SCOPES_WITH_OWN_ROW = new Set(['openid', 'tinycloud:identity', 'tinycloud:manage-key', 'tinycloud:mcp', 'offline_access']);
   const OTHER_SCOPE_ROWS: Record<string, string> = {
     email: 'See your email address',
-    profile: 'See your profile name',
-    keys: 'See your account keys',
+    keys: 'See the addresses of your OpenKey keys',
+    'tinycloud:session': 'Request one-hour TinyCloud sessions (read and write key-value data) signed by your OpenKey key',
   };
-  const otherScopeRows = [...requestedScopes]
-    .filter((requested) => !SCOPES_WITH_OWN_ROW.has(requested))
-    .map((requested) => (Object.hasOwn(OTHER_SCOPE_ROWS, requested) ? OTHER_SCOPE_ROWS[requested]! : `Access named “${requested}”`));
+  const otherScopes = [...requestedScopes].filter((requested) => !SCOPES_WITH_OWN_ROW.has(requested));
+  const otherScopeRows = otherScopes.map((requested) => (Object.hasOwn(OTHER_SCOPE_ROWS, requested) ? OTHER_SCOPE_ROWS[requested]! : `Use the “${requested}” permission`));
+  const everyScopeDescribed = otherScopes.every((requested) => Object.hasOwn(OTHER_SCOPE_ROWS, requested));
 
   async function fetchClientInfo() {
     if (!clientId) {
@@ -239,7 +240,7 @@
               <svg class="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
               </svg>
-              {requestedScopes.has('tinycloud:mcp') ? 'Stay connected for up to 30 days, or until you disconnect it.' : 'Stay connected until you disconnect it or it expires.'}
+              {requestedScopes.has('tinycloud:mcp') ? 'Stay connected for up to 30 days, or until you disconnect it.' : 'Stay connected until the connection expires or you disconnect it.'}
             </li>
             {/if}
             {#each otherScopeRows as row}
@@ -252,13 +253,15 @@
             {/each}
           </ul>
         </div>
-        <p class="mt-3 text-xs text-surface-500">
-          {#if identityOnlyConsent}
-            This app can't sign anything or use your TinyCloud data.
-          {:else}
-            This app gets only the access listed above.
-          {/if}
-        </p>
+        {#if everyScopeDescribed}
+          <p class="mt-3 text-xs text-surface-500">
+            {#if identityOnlyConsent}
+              This app can't sign anything or use your TinyCloud data.
+            {:else}
+              This app gets only the access listed above.
+            {/if}
+          </p>
+        {/if}
       </div>
 
       {#if redirectHost}

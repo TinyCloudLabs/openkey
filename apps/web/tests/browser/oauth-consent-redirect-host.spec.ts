@@ -96,17 +96,28 @@ test.describe('consent permission lines', () => {
     await expect(page.getByText(stayLine, { exact: true })).toHaveCount(0);
   });
 
-  test('every granted scope gets a row, so "only the access listed above" is true', async ({ page }) => {
-    await openConsent(page, { scope: 'openid email profile keys tinycloud:session vendor:custom', redirectUri: 'https://app.example.test/cb' });
-    for (const row of ['See your email address', 'See your profile name', 'See your account keys', 'Access named “tinycloud:session”', 'Access named “vendor:custom”']) {
+  test('every scope with a plain description gets its row and the note says only that access is listed', async ({ page }) => {
+    await openConsent(page, { scope: 'openid email keys tinycloud:session', redirectUri: 'https://app.example.test/cb' });
+    for (const row of [
+      'See your email address',
+      'See the addresses of your OpenKey keys',
+      'Request one-hour TinyCloud sessions (read and write key-value data) signed by your OpenKey key',
+    ]) {
       await expect(page.getByText(row, { exact: true })).toBeVisible();
     }
     await expect(page.getByText('This app gets only the access listed above.', { exact: true })).toBeVisible();
   });
 
+  test('a scope with no plain description is named and the "only the access listed" note is dropped', async ({ page }) => {
+    await openConsent(page, { scope: 'openid email vendor:custom', redirectUri: 'https://app.example.test/cb' });
+    await expect(page.getByText('Use the “vendor:custom” permission', { exact: true })).toBeVisible();
+    await expect(page.getByText('This app gets only the access listed above.')).toHaveCount(0);
+    await expect(page.getByText("This app can't sign anything or use your TinyCloud data.")).toHaveCount(0);
+  });
+
   test('without tinycloud:mcp the stay-connected row makes no 30-day claim', async ({ page }) => {
     await openConsent(page, { scope: 'openid offline_access', redirectUri: 'https://app.example.test/cb' });
-    await expect(page.getByText('Stay connected until you disconnect it or it expires.', { exact: true })).toBeVisible();
+    await expect(page.getByText('Stay connected until the connection expires or you disconnect it.', { exact: true })).toBeVisible();
     await expect(page.getByText(/30 days/)).toHaveCount(0);
   });
 
