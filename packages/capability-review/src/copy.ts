@@ -152,14 +152,6 @@ export const OWN_KEY_PREFIX_STATEMENTS = {
  */
 export const SHARE_KEY_PREFIX_CREATE_STATEMENT = "Create keys for files you share";
 
-/** Decrypt on one exact shared file (`share/<id>`) of the owner's default network. */
-export const SHARE_FILE_DECRYPT_STATEMENT = "Open this shared file";
-
-/** The one summary row for decrypt on `count` exact shared files (TC-3204): the row is never repeated. */
-export function shareFilesDecryptStatement(count: number): string {
-  return count === 1 ? SHARE_FILE_DECRYPT_STATEMENT : `Open ${count} shared files`;
-}
-
 /**
  * Escape controls, markup and non-ASCII characters as `\uXXXX`, so
  * resource text cannot alter the displayed consent sentence. Cap raw text

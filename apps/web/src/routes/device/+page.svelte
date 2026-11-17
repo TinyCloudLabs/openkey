@@ -9,7 +9,6 @@
     deviceRequestReason,
     deviceRequestTtlSeconds,
     encodeBase64UrlJson,
-    isDeviceShareDecryptEntry,
     lookupDeviceRequest,
     type DeviceRequestRecord,
   } from '$lib/device-authorization';
@@ -19,10 +18,8 @@
     classifyRecapEntry,
     classifySeverityFromActions,
     permissionId,
-    shareFilesDecryptStatement,
     splitStatementCode,
     type CapabilityGrant,
-    type SummaryStatement,
   } from '@openkey/capability-review';
 
   const session = authClient.useSession();
@@ -42,9 +39,7 @@
   const displayReason = $derived(request?.reason ? cleanConsentText(request.reason) : '');
   const summaryRows = $derived.by(() => {
     if (!request) return [];
-    // A shared-file decrypt names no owner until a key signs it, so its row is built here, once for all files (TC-3204).
-    const sharedFiles = request.permissions.filter(isDeviceShareDecryptEntry).length;
-    const grants: CapabilityGrant[] = request.permissions.filter((permission) => !isDeviceShareDecryptEntry(permission)).map((permission) => {
+    const grants: CapabilityGrant[] = request.permissions.map((permission) => {
       const classified = classifyRecapEntry(permission);
       return {
         ...permission,
@@ -67,12 +62,7 @@
         })),
       };
     });
-    const rows = buildSummaryStatements(grants);
-    if (sharedFiles === 0) return rows;
-    const text = shareFilesDecryptStatement(sharedFiles);
-    const shared: SummaryStatement = { key: text, primaryText: text, severity: 'sensitive', unmapped: false, codeSpans: false };
-    const firstUnmapped = rows.findIndex((row) => row.unmapped);
-    return firstUnmapped === -1 ? [...rows, shared] : [...rows.slice(0, firstUnmapped), shared, ...rows.slice(firstUnmapped)];
+    return buildSummaryStatements(grants);
   });
 
   function normalizedCode(value: string): string {

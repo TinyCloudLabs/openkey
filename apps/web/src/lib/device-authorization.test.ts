@@ -78,18 +78,17 @@ describe('approvedDevicePermissions', () => {
 describe('device encryption entry', () => {
   const alice = { address: '0x00000000000000000000000000000000000000Aa', chainId: 1 };
   const bob = { address: '0x00000000000000000000000000000000000000bB', chainId: 1 };
-  const share = 'share/3f9c1a7e5b2d48a09c6e1f7a2b4d8c03';
-  const device: DevicePermission[] = [{ service: 'tinycloud.encryption', space: 'default', path: share, actions: ['tinycloud.encryption/decrypt'] }];
-  // A relayed raw grant: short service name, space `encryption`, the shared file on the signer's own default network.
+  const device: DevicePermission[] = [{ service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] }];
+  // A relayed raw network grant: short service name, space `encryption`, the signer's own default network.
   const networkGrant = (address: string, overrides: Record<string, unknown> = {}) => ({
     service: 'encryption',
     space: 'encryption',
-    path: `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default/${share}`,
+    path: `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default`,
     actions: ['tinycloud.encryption/decrypt'],
     ...overrides,
   });
 
-  test('approves the shared file on the signer own default network in the request form', () => {
+  test('approves the signer own default network grant in the request form', () => {
     expect(approvedDevicePermissions(device, [networkGrant(alice.address)], alice)).toEqual(device);
   });
 
@@ -104,12 +103,12 @@ describe('device encryption entry', () => {
   });
 
   test('refuses the same account on another chain', () => {
-    const otherChain = networkGrant(alice.address, { path: `urn:tinycloud:encryption:did:pkh:eip155:10:${alice.address}:default/${share}` });
+    const otherChain = networkGrant(alice.address, { path: `urn:tinycloud:encryption:did:pkh:eip155:10:${alice.address}:default` });
     expect(() => approvedDevicePermissions(device, [otherChain], alice)).toThrow('The approved delegation exceeds the device request.');
   });
 
   test('refuses another network name', () => {
-    const secrets = networkGrant(alice.address, { path: `urn:tinycloud:encryption:did:pkh:eip155:1:${alice.address}:secrets/${share}` });
+    const secrets = networkGrant(alice.address, { path: `urn:tinycloud:encryption:did:pkh:eip155:1:${alice.address}:secrets` });
     expect(() => approvedDevicePermissions(device, [secrets], alice)).toThrow('The approved delegation exceeds the device request.');
   });
 

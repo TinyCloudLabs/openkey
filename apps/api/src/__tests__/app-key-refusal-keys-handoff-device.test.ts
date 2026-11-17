@@ -196,15 +196,11 @@ describe('device sign-in request', () => {
   const entry = (over: Record<string, unknown>) => ({
     service: 'tinycloud.encryption',
     space: 'default',
-    path: 'share/3f9c1a7e5b2d48a09c6e1f7a2b4d8c03',
+    path: '',
     actions: ['tinycloud.encryption/decrypt'],
     ...over,
   });
   const NON_BROWSER = "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request.";
-
-  test('accepts a shared-file decrypt request', () => {
-    expect(deviceRequestPermissions([entry({})])).toHaveLength(1);
-  });
 
   test.each([
     ['an apps/ key path', entry({ path: 'apps/xyz.tinycloud.listen/k' })],
@@ -218,11 +214,11 @@ describe('device sign-in request', () => {
   });
 
   test.each([
-    ['key.create on a shared file', entry({ actions: ['tinycloud.encryption/key.create'] })],
-    ['key.delete on a shared file', entry({ actions: ['tinycloud.encryption/key.delete'] })],
+    ['key.create on the default network', entry({ actions: ['tinycloud.encryption/key.create'] })],
+    ['key.delete on the default network', entry({ actions: ['tinycloud.encryption/key.delete'] })],
     ['block and decrypt together', entry({ actions: ['tinycloud.encryption/key.block', 'tinycloud.encryption/decrypt'] })],
   ])('refuses %s', (_name, permission) => {
-    expect(() => deviceRequestPermissions([permission])).toThrow('actions must be exactly tinycloud.encryption/decrypt');
+    expect(() => deviceRequestPermissions([permission])).toThrow("device sign-in can't grant tinycloud.encryption");
   });
 
   test('an apps/ path on a kv entry is an ordinary path', () => {

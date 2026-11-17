@@ -520,35 +520,8 @@ function assertRawEncryptionPermission(
   }
 }
 
-/** Service name of the device authorization encryption entry, exact on the wire. */
+/** Device authorization grants no encryption ability (TC-3204). */
 const DEVICE_ENCRYPTION_SERVICE = 'tinycloud.encryption';
-/** Space name of the approving account's own default encryption network. */
-const DEVICE_ENCRYPTION_SPACE = 'default';
-/** One shared file's key, as `deviceRequestPermissions` admits it (TC-3204). */
-const DEVICE_SHARE_DECRYPT_PATH = /^share\/[a-z0-9][a-z0-9-]{15,35}$/;
-
-/**
- * URN of the signer's own `default` encryption network. Owner DID uses the
- * signer's chain and EIP-55 address.
- */
-export function defaultEncryptionNetworkUrn(signer: { address: string; chainId: number }): string {
-  return `${RAW_ENCRYPTION_PREFIX}did:pkh:eip155:${signer.chainId}:${getAddress(signer.address)}:default`;
-}
-
-/**
- * A device authorization encryption entry: service `tinycloud.encryption`,
- * space `default`, path `share/<id>` (one shared file), and only the decrypt
- * action (TC-3204).
- */
-export function isDeviceShareDecryptEntry(entry: DelegationPermissionEntry): boolean {
-  return (
-    entry.service === DEVICE_ENCRYPTION_SERVICE &&
-    entry.space === DEVICE_ENCRYPTION_SPACE &&
-    DEVICE_SHARE_DECRYPT_PATH.test(entry.path) &&
-    entry.actions.length === 1 &&
-    entry.actions[0] === ENCRYPTION.DECRYPT
-  );
-}
 
 /**
  * Translate CLI permission entries into the ability maps `prepareSession()`
@@ -558,10 +531,8 @@ export function isDeviceShareDecryptEntry(entry: DelegationPermissionEntry): boo
  * network. Actions stay fully-qualified (`tinycloud.sql/read`) because the
  * SIWE recap stores them that way.
  *
- * With `deviceTransaction`, a shared-file entry (see `isDeviceShareDecryptEntry`)
- * resolves to that key on the signer's own default network, and any other
- * `tinycloud.encryption` entry is refused: a device approval never signs decrypt
- * on the whole network, a folder, or another key (TC-3204).
+ * With `deviceTransaction`, any `tinycloud.encryption` entry, in any spelling,
+ * is refused: a device approval never signs decrypt (TC-3204).
  */
 export function sessionAbilitiesFromPermissions(
   permissions: DelegationPermissionEntry[],
@@ -571,18 +542,12 @@ export function sessionAbilitiesFromPermissions(
   const entries: RecapEntry[] = [];
   const rawAbilities: RawAbilitiesMap = Object.create(null);
   permissions.forEach((entry, index) => {
-    if (options.deviceTransaction && canonicalizeServiceName(entry.service) === DEVICE_ENCRYPTION_SERVICE) {
-      if (!isDeviceShareDecryptEntry(entry)) {
-        throw new DelegateRequestError(
-          'invalid_permissions',
-          `permissions[${index}] is not a shared file; a device request decrypts only share/<id> on the default network`,
-          [{ path: `permissions[${index}].path`, message: 'Expected share/<id> in space default, decrypt only', value: entry.path }],
-        );
-      }
-      const resource = `${defaultEncryptionNetworkUrn(signer)}/${entry.path}`;
-      assertRawEncryptionPermission({ ...entry, space: 'encryption', path: resource }, index, signer);
-      addActions(rawAbilities, resource, [ENCRYPTION.DECRYPT]);
-      return;
+    if (options.deviceTransaction && canonicalizeServiceName(entry.service.toLowerCase()) === DEVICE_ENCRYPTION_SERVICE) {
+      throw new DelegateRequestError(
+        'invalid_permissions',
+        `permissions[${index}] asks to decrypt, and a device approval can't grant tinycloud.encryption. Start a new sign-in.`,
+        [{ path: `permissions[${index}].service`, message: 'Device approvals grant no tinycloud.encryption ability', value: entry.service }],
+      );
     }
     if (isRawEncryptionPermission(entry)) {
       assertRawEncryptionPermission(entry, index, signer);
@@ -628,8 +593,7 @@ export interface PrepareDelegationSessionInput {
    */
   permissions?: DelegationPermissionEntry[];
   /**
-   * Device authorization context. Only then does a shared-file entry
-   * (`share/<id>` in space `default`) resolve to the signer's own network.
+   * Device authorization context. Then any encryption entry is refused.
    */
   deviceTransaction?: boolean;
   /** Pre-validated, clamped delegation lifetime in milliseconds. */

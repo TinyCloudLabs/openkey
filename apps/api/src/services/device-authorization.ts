@@ -18,8 +18,6 @@ export const DEVICE_AUTH_POLL_INTERVAL_SECONDS = 2;
 export const DEVICE_AUTH_START_LIMIT = 5;
 export const DEVICE_AUTH_START_WINDOW_MS = 10 * 60 * 1000;
 export const DEVICE_AUTH_MAX_PERMISSIONS = 16;
-/** Most exact shared-file decrypt entries (`share/<id>`) one device request may carry (TC-3204). */
-export const DEVICE_AUTH_MAX_SHARE_DECRYPTS = 4;
 export const DEVICE_AUTH_MAX_REASON_LENGTH = 200;
 /** Tolerance for clock differences between API instances when signing. */
 export const DEVICE_AUTH_CLOCK_SKEW_MS = 5_000;
@@ -60,25 +58,14 @@ export const SHARE_DEVICE_PERMISSIONS: readonly DevicePermission[] = Object.free
  *   no `.`/`..` segments, no `secrets/` or `vault/` roots) and no KV path may
  *   cover another (Node grants cover every path beneath a granted path);
  *   capabilities grants are space-wide (empty path);
- *   device sessions may decrypt only exact shared-file keys of the approving account's own `default` network:
- *   space `default`, path `share/<id>`, only `tinycloud.encryption/decrypt`, at most
- *   `DEVICE_AUTH_MAX_SHARE_DECRYPTS` per request; every other encryption key or prefix is refused (TC-3204);
  * - `tinycloud.capabilities/read` is required: every OpenKey delegation
- *   carries it, so it is never optional at consent. One exception: a
- *   decrypt-only request carries no capabilities entry, and the requirement
- *   follows the request baseline as in TC-658 (`delegate-session.ts:236-258`).
+ *   carries it, so it is never optional at consent.
  */
 export const DEVICE_FLOW_ABILITIES: Readonly<Record<string, readonly string[]>> = Object.freeze({
   'tinycloud.kv': ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata', 'tinycloud.kv/put', 'tinycloud.kv/del'],
   'tinycloud.capabilities': ['tinycloud.capabilities/read'],
-  'tinycloud.encryption': ['tinycloud.encryption/decrypt'],
 });
 const DEVICE_FLOW_DENIED_SPACES: Record<string, true> = { account: true, applications: true, secrets: true };
-/**
- * One shared file's key on the approving account's `default` network, with the id shape the Share SDK puts on the
- * network (`NETWORK_SAFE_SHARE_ID`, js-sdk share-sdk/src/share-network.ts).
- */
-const DEVICE_SHARE_DECRYPT_PATH = /^share\/[a-z0-9][a-z0-9-]{15,35}$/;
 const DEVICE_PERMISSION_FIELDS: Record<string, true> = { service: true, space: true, path: true, actions: true };
 const DEVICE_SPACE_NAME = '[A-Za-z0-9][A-Za-z0-9._-]{0,63}';
 const DEVICE_SHORT_SPACE = new RegExp(`^${DEVICE_SPACE_NAME}$`);
@@ -435,8 +422,6 @@ function assertDevicePath(service: string, path: string, label: string): void {
     if (path !== '') throw scopeError(`${label} must be empty for ${service}`);
     return;
   }
-  // Checked whole in `deviceRequestPermissions`: an exact `share/<id>` key.
-  if (service === 'tinycloud.encryption') return;
   if (path.length === 0) throw scopeError(`${label} must name an explicit path; whole-space grants are not available over device authorization`);
   if (path.length > TINYCLOUD_DELEGATED_PATH_MAX_LENGTH || !TINYCLOUD_DELEGATED_PATH.test(path)) throw scopeError(`${label} must be a relative path without wildcards or empty segments`);
   if (hasDotSegment(path)) throw scopeError(`${label} must not contain . or .. segments`);
@@ -457,7 +442,6 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
     throw scopeError(`permissions must list between 1 and ${DEVICE_AUTH_MAX_PERMISSIONS} explicit capabilities`);
   }
   let requestSpace: string | undefined;
-  let shareDecrypts = 0;
   const granted: Array<{ service: string; segments: string[]; index: number }> = [];
   const permissions = value.map((raw, index) => {
     const label = `permissions[${index}]`;
@@ -466,24 +450,16 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
     const unknownField = Object.keys(entry).find((field) => !Object.hasOwn(DEVICE_PERMISSION_FIELDS, field));
     if (unknownField) throw scopeError(`${label}.${unknownField} is not a permission field`);
     const { service, space, path, actions } = entry;
-    if (typeof service !== 'string' || !Object.hasOwn(DEVICE_FLOW_ABILITIES, service)) {
-      throw scopeError(`${label}.service is not available over device authorization`);
-    }
-    if (service === 'tinycloud.encryption') {
-      if (space !== 'default') throw scopeError(`${label}.space must be default for tinycloud.encryption`);
+    if (typeof service !== 'string') throw scopeError(`${label}.service is not available over device authorization`);
+    // Any spelling of the encryption service: device sign-in can't grant decrypt (TC-3204).
+    if (/^(?:tinycloud\.)?encryption$/i.test(service)) {
       if (typeof path === 'string' && /^(?:apps(?:\/|$)|urn:tinycloud:encryption:)/i.test(path)) {
         throw scopeError(appKeyRefusalMessage({ reason: 'apps_key' }, 'non_browser'));
       }
-      if (!Array.isArray(actions) || actions.length !== 1 || actions[0] !== 'tinycloud.encryption/decrypt') {
-        throw scopeError(`${label}.actions must be exactly tinycloud.encryption/decrypt`);
-      }
-      if (typeof path !== 'string' || !DEVICE_SHARE_DECRYPT_PATH.test(path)) {
-        throw scopeError(`${label}.path must name one shared file, share/<id>; device authorization can't decrypt the whole network, a folder, or another key`);
-      }
-      shareDecrypts += 1;
-      if (shareDecrypts > DEVICE_AUTH_MAX_SHARE_DECRYPTS) {
-        throw scopeError(`permissions allows at most ${DEVICE_AUTH_MAX_SHARE_DECRYPTS} shared files to decrypt`);
-      }
+      throw scopeError(`${label} asks to decrypt, and device sign-in can't grant tinycloud.encryption. Sign in from a browser instead.`);
+    }
+    if (!Object.hasOwn(DEVICE_FLOW_ABILITIES, service)) {
+      throw scopeError(`${label}.service is not available over device authorization`);
     }
     if (typeof space !== 'string') throw scopeError(`${label}.space is required`);
     const spaceIdentity = deviceSpaceIdentity(space);
@@ -518,8 +494,6 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
     }
     return { service, space, path, actions: [...unique] };
   });
-  // A decrypt-only request carries no capabilities entry.
-  if (permissions.every((permission) => permission.service === 'tinycloud.encryption')) return permissions;
   if (!permissions.some((permission) => permission.service === 'tinycloud.capabilities')) {
     throw scopeError(
       'permissions must include tinycloud.capabilities/read with path "" in the requested space; every OpenKey delegation carries it and it cannot be unchecked',
@@ -575,7 +549,7 @@ function approvedPermissionSubset(requested: DevicePermission[], value: unknown)
     const actions = approvedByResource.get(resourceKey(permission));
     return actions ? [{ ...permission, actions: permission.actions.filter((action) => actions.has(action)) }] : [];
   });
-  if (!requested.every((permission) => permission.service === 'tinycloud.encryption') && !canonical.some((permission) => permission.service === 'tinycloud.capabilities')) {
+  if (!canonical.some((permission) => permission.service === 'tinycloud.capabilities')) {
     throw new DeviceAuthorizationError('invalid_result', 'approved permissions must keep tinycloud.capabilities/read', 400);
   }
   if (!jsonEqual(canonical, value)) {

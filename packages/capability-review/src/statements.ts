@@ -32,8 +32,6 @@ import {
   OWN_KEY_PREFIX_STATEMENTS,
   SENDER_HISTORY_STATEMENT,
   SHARE_KEY_PREFIX_CREATE_STATEMENT,
-  SHARE_FILE_DECRYPT_STATEMENT,
-  shareFilesDecryptStatement,
   appFolderDeleteStatement,
   appKeyStatementText,
   renderLiteral,
@@ -731,7 +729,7 @@ function buildNamedKeyStatement(
   }
   if (parsed.kind === "key" && parsed.network === "default" &&
     /^share\/[^/]+$/.test(parsed.keyPath) && verb === "decrypt") {
-    return { primaryText: SHARE_FILE_DECRYPT_STATEMENT, service: grant.service, resource };
+    return { primaryText: "Open this shared file", service: grant.service, resource };
   }
   if (parsed.kind === "prefix" && parsed.network === "default" &&
     parsed.keyPath === "share/" && verb === "decrypt") {
@@ -1903,18 +1901,14 @@ const SUMMARY_SEVERITY_RANK: Record<PermissionSeverity, number> = { standard: 0,
 /**
  * The rows of the approval summary for the grants currently selected. Repeated
  * sentences collapse into one row at the strongest severity; unmapped rows
- * come last. Decrypt on several exact shared files is one row that counts the
- * files (`shareFilesDecryptStatement`). The Sensitive header counts these rows
- * (`sensitiveSummaryCount`), so what the header says always matches the rows
- * marked Sensitive.
+ * come last. The Sensitive header counts these rows (`sensitiveSummaryCount`),
+ * so what the header says always matches the rows marked Sensitive.
  */
 export function buildSummaryStatements(grants: readonly CapabilityGrant[]): SummaryStatement[] {
   const grouped = new Map<string, SummaryStatement>();
-  const sharedFiles = new Set<string>();
   const courier = grants.filter(grant => grant.family === "courier").sort((a, b) => COURIER_CATALOG.findIndex(row => row.path === a.path) - COURIER_CATALOG.findIndex(row => row.path === b.path));
   for (const grant of [...courier, ...grants.filter(grant => grant.family !== "courier")]) {
     for (const statement of buildStatements(grant)) {
-      if (statement.primaryText === SHARE_FILE_DECRYPT_STATEMENT) sharedFiles.add(statement.resource);
       const existing = grouped.get(statement.primaryText);
       const rowSeverity = statement.severity ?? grant.severity;
       if (existing) {
@@ -1932,8 +1926,6 @@ export function buildSummaryStatements(grants: readonly CapabilityGrant[]): Summ
       }
     }
   }
-  const sharedRow = grouped.get(SHARE_FILE_DECRYPT_STATEMENT);
-  if (sharedRow) sharedRow.key = sharedRow.primaryText = shareFilesDecryptStatement(sharedFiles.size);
   return [...grouped.values()].sort((left, right) => Number(left.unmapped) - Number(right.unmapped));
 }
 
