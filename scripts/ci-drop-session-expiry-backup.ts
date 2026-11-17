@@ -14,12 +14,26 @@
  * Afterwards a separate read-only transaction confirms the table is gone and reports whether the
  * schema was dropped or kept.
  *
+ * Two modes (first argument):
+ *   backup  read-only: checks the table exists and holds exactly one row, writes that row (JSON) to
+ *           BACKUP_FILE, prints `backup-digest: <sha256 of the row text>`. The workflow encrypts and
+ *           uploads it before the drop step is allowed to run.
+ *   drop    the steps above, and additionally refuses unless the row still hashes to BACKUP_DIGEST.
+ *
  * Env:
  *   DATABASE_URL   Postgres connection string (required)
  *   DROP_CONFIRM   Must equal `drop-ops_backup.session_expires_20261026` (required)
+ *   BACKUP_FILE    backup mode: path the row is written to, must not exist (required)
+ *   BACKUP_DIGEST  drop mode: the digest printed by the backup step (required)
  *
- * Output: the row count, column names, and fixed text. No row values, no connection strings.
+ * Output: the row count, column names, and fixed text. No row values, no connection strings. The one
+ * exception is `backup` mode, which writes the row to BACKUP_FILE (never to the log).
  */
+
+import { createHash } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+
+const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 
 export const BACKUP_SCHEMA = 'ops_backup';
 export const BACKUP_NAME = 'session_expires_20261026';
@@ -40,6 +54,8 @@ export const SQL = {
   // The only statements that change anything. Neither has CASCADE: a dependent object makes them fail.
   dropTable: `DROP TABLE ${BACKUP_TABLE}`,
   dropSchema: `DROP SCHEMA ${BACKUP_SCHEMA}`,
+  // Read-only: the one row as JSON text, for the backup and for proving the drop sees the same row.
+  rowJson: `SELECT row_to_json(t)::text AS row FROM ${BACKUP_TABLE} t`,
 } as const;
 
 /** What the script needs from a database: a transaction that rolls back when the callback throws. */
@@ -63,7 +79,13 @@ export interface DropResult {
   schemaObjects?: number;
 }
 
-export async function dropBackup(client: SqlClient, log: (line: string) => void): Promise<DropResult> {
+export type BackupResult = { present: false } | { present: true; row: string; digest: string };
+
+export function rowDigest(row: string): string {
+  return createHash('sha256').update(row).digest('hex');
+}
+
+export async function dropBackup(client: SqlClient, log: (line: string) => void, options: { expectedDigest?: string } = {}): Promise<DropResult> {
   const result = await client.transaction<DropResult>(async (transaction) => {
     const [found] = await transaction.rows<{ kind: string }>(SQL.relkind);
     if (!found) {
@@ -79,6 +101,13 @@ export async function dropBackup(client: SqlClient, log: (line: string) => void)
     log(`rows: ${rows}`);
     // Fail closed: anything but exactly the expected count, including an unreadable count, is refused.
     if (rows !== EXPECTED_ROWS) throw new DropRefused(`${BACKUP_TABLE} holds ${Number.isFinite(rows) ? rows : 'an unknown number of'} rows, not ${EXPECTED_ROWS}; nothing was changed`);
+    // The row must be the one the backup step saved: refuse on any difference, before anything is dropped.
+    if (options.expectedDigest !== undefined) {
+      if (rowDigest(await readRow(transaction)) !== options.expectedDigest) {
+        throw new DropRefused(`${BACKUP_TABLE} no longer matches the backup taken in this run; nothing was changed`);
+      }
+      log('row matches the backup taken in this run');
+    }
 
     await transaction.execute(SQL.dropTable);
     const [left] = await transaction.rows<{ n: number }>(SQL.schemaObjects);
@@ -113,18 +142,54 @@ export async function dropBackup(client: SqlClient, log: (line: string) => void)
 }
 
 /**
+ * Reads the one row, read-only, for the backup step. The row text is what `row_to_json` returns and the
+ * digest is its SHA-256, so the drop can prove it is dropping exactly the row that was backed up.
+ * Same refusals as the drop: a table that is not an ordinary table, or any count but one, changes nothing.
+ */
+export async function backupRow(client: SqlClient, log: (line: string) => void): Promise<BackupResult> {
+  return client.transaction<BackupResult>(async (transaction) => {
+    const [found] = await transaction.rows<{ kind: string }>(SQL.relkind);
+    if (!found) {
+      log(`${BACKUP_TABLE} does not exist: already gone, nothing to back up`);
+      return { present: false };
+    }
+    if (found.kind !== 'r') throw new DropRefused(`${BACKUP_TABLE} is not an ordinary table; nothing was changed`);
+    const [counted] = await transaction.rows<{ n: number }>(SQL.count);
+    const rows = Number(counted?.n);
+    log(`rows: ${rows}`);
+    if (rows !== EXPECTED_ROWS) throw new DropRefused(`${BACKUP_TABLE} holds ${Number.isFinite(rows) ? rows : 'an unknown number of'} rows, not ${EXPECTED_ROWS}; nothing was changed`);
+    const row = await readRow(transaction);
+    return { present: true, row, digest: rowDigest(row) };
+  });
+}
+
+async function readRow(transaction: SqlTransaction): Promise<string> {
+  const read = await transaction.rows<{ row: string }>(SQL.rowJson);
+  if (read.length !== EXPECTED_ROWS || typeof read[0]?.row !== 'string') throw new DropRefused(`${BACKUP_TABLE} row could not be read; nothing was changed`);
+  return read[0].row;
+}
+
+/**
  * The exit code and the one line printed for a failure. Only our own refusals print their
  * message (fixed text and counts); any other error, a database driver's included, can carry a
  * host name or connection details, so it prints a fixed line.
  */
 export function describeFailure(error: unknown): { exitCode: number; line: string } {
   if (error instanceof DropRefused) return { exitCode: 2, line: `Refused: ${error.message}` };
-  return { exitCode: 1, line: 'Error: the drop failed; if the log above does not say committed, nothing was changed' };
+  return { exitCode: 1, line: 'Error: the run failed; if the log above does not say committed, nothing was changed' };
 }
 
 async function main() {
+  const mode = process.argv[2];
+  if (mode !== 'backup' && mode !== 'drop') throw new DropRefused('the first argument must be backup or drop');
   if (process.env.DROP_CONFIRM !== CONFIRM_PHRASE) throw new DropRefused(`DROP_CONFIRM must be ${CONFIRM_PHRASE}`);
   if (!process.env.DATABASE_URL?.trim()) throw new DropRefused('DATABASE_URL is required');
+  const backupFile = process.env.BACKUP_FILE?.trim();
+  const expectedDigest = process.env.BACKUP_DIGEST?.trim();
+  if (mode === 'backup' && !backupFile) throw new DropRefused('BACKUP_FILE is required');
+  if (mode === 'drop' && !(expectedDigest && DIGEST_PATTERN.test(expectedDigest))) {
+    throw new DropRefused('BACKUP_DIGEST (the digest printed by the backup step) is required');
+  }
 
   // Dynamic on purpose: the exported functions (and the tests) load without Prisma or a database, and a refusal above never loads it.
   const { createPrismaClient } = await import('../packages/db/src/index');
@@ -139,7 +204,17 @@ async function main() {
     ),
   };
   try {
-    await dropBackup(client, (line) => console.log(line));
+    if (mode === 'backup') {
+      const backup = await backupRow(client, (line) => console.log(line));
+      if (backup.present) {
+        // `wx`: never overwrite; 0600: the row is the only copy of the data, readable by this job only.
+        writeFileSync(backupFile!, backup.row, { flag: 'wx', mode: 0o600 });
+        console.log(`backup-digest: ${backup.digest}`);
+      }
+      console.log(`backup-present: ${backup.present}`);
+    } else {
+      await dropBackup(client, (line) => console.log(line), { expectedDigest });
+    }
     console.log('done');
   } finally {
     await prisma.$disconnect();

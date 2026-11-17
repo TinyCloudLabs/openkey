@@ -4,6 +4,8 @@
 import './tc1777-test-env';
 import { describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
+import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -24,9 +26,10 @@ interface DropModule {
   SQL: { dropTable: string; dropSchema: string };
   DropRefused: new (message: string) => Error;
   describeFailure(error: unknown): { exitCode: number; line: string };
-  dropBackup(client: SqlClient, log: (line: string) => void): Promise<{ outcome: string; schema?: string; schemaObjects?: number }>;
+  dropBackup(client: SqlClient, log: (line: string) => void, options?: { expectedDigest?: string }): Promise<{ outcome: string; schema?: string; schemaObjects?: number }>;
+  backupRow(client: SqlClient, log: (line: string) => void): Promise<{ present: false } | { present: true; row: string; digest: string }>;
 }
-const { BACKUP_TABLE, CONFIRM_PHRASE, SQL, DropRefused, describeFailure, dropBackup } = (await import(pathToFileURL(script).href)) as DropModule;
+const { BACKUP_TABLE, CONFIRM_PHRASE, SQL, DropRefused, describeFailure, dropBackup, backupRow } = (await import(pathToFileURL(script).href)) as DropModule;
 
 /** A database shaped like production after the backfill: the backup table with `rows` rows (values are secrets-shaped on purpose). */
 async function database(rows: number, extra: string[] = []): Promise<PGlite> {
@@ -196,6 +199,72 @@ describe('dropBackup', () => {
   });
 });
 
+describe('backup before the drop', () => {
+  test('backupRow returns the one row and its digest, changes nothing, and logs no row value', async () => {
+    const db = await database(1);
+    const before = await state(db);
+    const { printed, log } = lines();
+
+    const backup = await backupRow(clientFor(db), log);
+
+    expect(backup.present).toBe(true);
+    if (!backup.present) throw new Error('unreachable');
+    expect(JSON.parse(backup.row)).toEqual({ id: 'secret-session-0', expiresAt: '2026-10-26T00:00:00' });
+    expect(backup.digest).toBe(createHash('sha256').update(backup.row).digest('hex'));
+    expect(await state(db)).toEqual(before);
+    expect((await db.query(`SELECT 1 FROM ${BACKUP_TABLE}`)).rows.length).toBe(1);
+    expect(printed.join('\n')).not.toContain('secret-session');
+  });
+
+  test.each([0, 2])('backupRow with %i rows is refused and changes nothing', async (rows) => {
+    const db = await database(rows);
+    await expect(backupRow(clientFor(db), () => {})).rejects.toBeInstanceOf(DropRefused);
+    expect((await db.query(`SELECT 1 FROM ${BACKUP_TABLE}`)).rows.length).toBe(rows);
+  });
+
+  test('backupRow on a missing table reports "already gone" and creates nothing', async () => {
+    const db = new PGlite();
+    const { printed, log } = lines();
+    expect(await backupRow(clientFor(db), log)).toEqual({ present: false });
+    expect(printed).toEqual([`${BACKUP_TABLE} does not exist: already gone, nothing to back up`]);
+  });
+
+  test('the drop goes ahead when the row still hashes to the backed-up one', async () => {
+    const db = await database(1);
+    const backup = await backupRow(clientFor(db), () => {});
+    if (!backup.present) throw new Error('unreachable');
+    const { printed, log } = lines();
+
+    expect(await dropBackup(clientFor(db), log, { expectedDigest: backup.digest })).toEqual({ outcome: 'dropped', schema: 'dropped' });
+
+    expect(await state(db)).toEqual({ relations: [], schema: false });
+    expect(printed).toContain('row matches the backup taken in this run');
+  });
+
+  test('the row changed after the backup: refused, nothing dropped', async () => {
+    const db = await database(1);
+    const backup = await backupRow(clientFor(db), () => {});
+    if (!backup.present) throw new Error('unreachable');
+    await db.exec(`UPDATE ${BACKUP_TABLE} SET "expiresAt" = '2026-11-01 00:00:00'`);
+
+    await expect(dropBackup(clientFor(db), () => {}, { expectedDigest: backup.digest })).rejects.toBeInstanceOf(DropRefused);
+
+    expect(await state(db)).toEqual({ relations: ['ops_backup.session_expires_20261026'], schema: true });
+  });
+
+  test('the row was replaced by another single row after the backup: refused, nothing dropped', async () => {
+    const db = await database(1);
+    const backup = await backupRow(clientFor(db), () => {});
+    if (!backup.present) throw new Error('unreachable');
+    await db.exec(`DELETE FROM ${BACKUP_TABLE}`);
+    await db.query(`INSERT INTO ${BACKUP_TABLE} VALUES ($1, '2026-10-26 00:00:00')`, ['another-session']);
+
+    await expect(dropBackup(clientFor(db), () => {}, { expectedDigest: backup.digest })).rejects.toBeInstanceOf(DropRefused);
+
+    expect((await db.query(`SELECT id FROM ${BACKUP_TABLE}`)).rows).toEqual([{ id: 'another-session' }]);
+  });
+});
+
 describe('what is printed on failure', () => {
   test('a driver error carrying a connection string prints only the fixed line', () => {
     const { exitCode, line } = describeFailure(new Error('could not reach postgres://user:secret@db.example.neon.tech:5432/app'));
@@ -210,10 +279,18 @@ describe('what is printed on failure', () => {
 });
 
 describe('the script', () => {
-  async function run(env: Record<string, string | undefined>) {
-    const child = Bun.spawn([process.execPath, script], {
+  const DIGEST = '0'.repeat(64);
+  async function run(env: Record<string, string | undefined>, ...args: string[]) {
+    const child = Bun.spawn([process.execPath, script, ...args], {
       cwd: root,
-      env: { ...process.env, DATABASE_URL: 'postgresql://drop-user:drop-secret@127.0.0.1:1/openkey', DROP_CONFIRM: undefined, ...env } as unknown as Record<string, string>,
+      env: {
+        ...process.env,
+        DATABASE_URL: 'postgresql://drop-user:drop-secret@127.0.0.1:1/openkey',
+        DROP_CONFIRM: undefined,
+        BACKUP_FILE: undefined,
+        BACKUP_DIGEST: DIGEST,
+        ...env,
+      } as unknown as Record<string, string>,
       stdout: 'pipe',
       stderr: 'pipe',
     });
@@ -227,15 +304,29 @@ describe('the script', () => {
     ['the phrase with a suffix', { DROP_CONFIRM: `${CONFIRM_PHRASE} ` }],
     ['no database url', { DROP_CONFIRM: CONFIRM_PHRASE, DATABASE_URL: '' }],
   ] as Array<[string, Record<string, string>]>)('%s is refused before any connection', async (_name, env) => {
-    const result = await run(env);
+    const result = await run(env, 'drop');
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain('Refused');
     expect(result.stdout).toBe('');
     expect(result.stderr).not.toContain('drop-secret');
   }, 60_000);
 
-  test('a database that cannot be reached prints only the fixed line, never the address or the credentials', async () => {
-    const result = await run({ DROP_CONFIRM: CONFIRM_PHRASE });
+  test.each([
+    ['no mode', [], { DROP_CONFIRM: CONFIRM_PHRASE, BACKUP_FILE: '/nonexistent/backup.json' }],
+    ['an unknown mode', ['rollback'], { DROP_CONFIRM: CONFIRM_PHRASE, BACKUP_FILE: '/nonexistent/backup.json' }],
+    ['drop without the backup digest', ['drop'], { DROP_CONFIRM: CONFIRM_PHRASE, BACKUP_DIGEST: '' }],
+    ['drop with a malformed digest', ['drop'], { DROP_CONFIRM: CONFIRM_PHRASE, BACKUP_DIGEST: 'abc' }],
+    ['drop with an upper-case digest', ['drop'], { DROP_CONFIRM: CONFIRM_PHRASE, BACKUP_DIGEST: DIGEST.replace(/0/g, 'A') }],
+    ['backup without a file path', ['backup'], { DROP_CONFIRM: CONFIRM_PHRASE }],
+  ] as Array<[string, string[], Record<string, string>]>)('%s is refused before any connection', async (_name, args, env) => {
+    const result = await run(env, ...args);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain('Refused');
+    expect(result.stdout).toBe('');
+  }, 60_000);
+
+  test.each(['drop', 'backup'])('%s: a database that cannot be reached prints only the fixed line, never the address or the credentials', async (mode) => {
+    const result = await run({ DROP_CONFIRM: CONFIRM_PHRASE, BACKUP_FILE: join(tmpdir(), `tc2110-unreachable-${process.pid}.json`) }, mode);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toBe(`${describeFailure(new Error()).line}\n`);
     expect(result.stdout).toBe('');

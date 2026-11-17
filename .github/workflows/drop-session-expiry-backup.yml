@@ -4,16 +4,22 @@ name: Drop Session Expiry Backup
 # (backfill-session-expiry.yml, TC-2101, #364) left in place (TC-2110). The 30-day web session
 # cap stays, so the backup is not needed. Run it once, from main.
 #
-# In one transaction: refuses unless the table holds exactly one row (an absent table is
-# "already gone" and exits 0 without changes), drops the table, and drops the schema
-# ops_backup only if it is then empty. No CASCADE. Prints the row count, the column names and
-# fixed text only: no row values and no connection string.
+# Order: (1) read the one row read-only and encrypt it to the age recipient given as input,
+# uploaded as the artifact session-expires-20261026-backup on this run (kept 90 days); (2) only
+# after the upload, drop. The drop refuses unless the table holds exactly one row that still hashes
+# to the backed-up one (an absent table is "already gone" and exits 0 without changes). In one
+# transaction it drops the table, and drops the schema ops_backup only if it is then empty. No
+# CASCADE. The log prints the row count, the column names and the row's SHA-256 only: no row values and no
+# connection string.
 
 on:
   workflow_dispatch:
     inputs:
       confirm:
         description: 'Type exactly: drop-ops_backup.session_expires_20261026'
+        required: true
+      age_recipient:
+        description: 'age public recipient (age1...) the backup row is encrypted to; the matching private key is the only way to read it'
         required: true
 
 permissions:
@@ -40,7 +46,29 @@ jobs:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
 
-      - name: Drop session expiry backup
+      - name: Validate inputs
+        env:
+          DROP_CONFIRM: ${{ inputs.confirm }}
+          AGE_RECIPIENT: ${{ inputs.age_recipient }}
+        run: |
+          set -euo pipefail
+          if [ "$DROP_CONFIRM" != "drop-ops_backup.session_expires_20261026" ]; then
+            echo "confirm must be: drop-ops_backup.session_expires_20261026" >&2
+            exit 1
+          fi
+          [[ "$AGE_RECIPIENT" =~ ^age1[0-9a-z]+$ ]] || { echo "a valid age recipient is required" >&2; exit 1; }
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun node_modules/.bin/prisma generate --schema=./packages/db/prisma/schema.prisma
+          sudo apt-get install -y age
+
+      # Read-only. Writes the one row to the runner's temp directory (0600) and prints its SHA-256.
+      # Refuses unless the table holds exactly one row. An absent table is "already gone".
+      - name: Read the row for the backup
+        id: backup
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DROP_CONFIRM: ${{ inputs.confirm }}
@@ -51,10 +79,53 @@ jobs:
             echo "DATABASE_URL secret not set" >&2
             exit 1
           fi
-          if [ "$DROP_CONFIRM" != "drop-ops_backup.session_expires_20261026" ]; then
-            echo "confirm must be: drop-ops_backup.session_expires_20261026" >&2
-            exit 1
+          export BACKUP_FILE="$RUNNER_TEMP/session_expires_20261026.json"
+          bun run scripts/ci-drop-session-expiry-backup.ts backup | tee "$RUNNER_TEMP/backup-step.log"
+          present=$(awk '$1 == "backup-present:" { print $2 }' "$RUNNER_TEMP/backup-step.log")
+          [ "$present" = "true" ] || [ "$present" = "false" ] || { echo "backup step did not report whether the table exists" >&2; exit 1; }
+          echo "present=$present" >> "$GITHUB_OUTPUT"
+          if [ "$present" = "true" ]; then
+            digest=$(awk '$1 == "backup-digest:" { print $2 }' "$RUNNER_TEMP/backup-step.log")
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || { echo "backup step did not print a digest" >&2; exit 1; }
+            [ "$(sha256sum "$BACKUP_FILE" | awk '{print $1}')" = "$digest" ] || { echo "backup file does not match its digest" >&2; exit 1; }
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
           fi
-          bun install --frozen-lockfile
-          bun node_modules/.bin/prisma generate --schema=./packages/db/prisma/schema.prisma
-          bun run scripts/ci-drop-session-expiry-backup.ts
+
+      # The backup: age-encrypted to the recipient given as input, uploaded as a workflow artifact
+      # of this run. The plaintext row never leaves the runner and is removed right after.
+      - name: Encrypt the backup
+        if: steps.backup.outputs.present == 'true'
+        env:
+          AGE_RECIPIENT: ${{ inputs.age_recipient }}
+        run: |
+          set -euo pipefail
+          umask 077
+          age --recipient "$AGE_RECIPIENT" --output "$RUNNER_TEMP/session_expires_20261026.json.age" "$RUNNER_TEMP/session_expires_20261026.json"
+          test -s "$RUNNER_TEMP/session_expires_20261026.json.age"
+          rm -f "$RUNNER_TEMP/session_expires_20261026.json"
+
+      - name: Upload the encrypted backup
+        if: steps.backup.outputs.present == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: session-expires-20261026-backup
+          path: ${{ runner.temp }}/session_expires_20261026.json.age
+          if-no-files-found: error
+          retention-days: 90
+
+      # Runs only after the encrypted backup is uploaded; refuses unless the row still hashes to the
+      # backed-up one.
+      - name: Drop session expiry backup
+        if: steps.backup.outputs.present == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DROP_CONFIRM: ${{ inputs.confirm }}
+          BACKUP_DIGEST: ${{ steps.backup.outputs.digest }}
+        run: |
+          set -euo pipefail
+          bun run scripts/ci-drop-session-expiry-backup.ts drop
+
+      - name: Nothing to drop
+        if: steps.backup.outputs.present == 'false'
+        run: |
+          echo "ops_backup.session_expires_20261026 does not exist: already gone, nothing was changed"
