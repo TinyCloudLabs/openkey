@@ -21,6 +21,25 @@ export class ServerReplyError extends Error {
   }
 }
 
+/** The codes of the server's definite refusals of a sign-in (services/app-key-refusal.ts). Retrying the same request cannot succeed. */
+const REFUSAL_CODES: ReadonlySet<string> = new Set(['app_key_grant_refused', 'key_delete_not_grantable', 'invalid_siwe_recap']);
+
+/** Is this reply a definite refusal: a 400 or 403 carrying one of the refusal codes? */
+export const isDefiniteRefusal = (status: number, code: unknown): code is string =>
+  (status === 400 || status === 403) && typeof code === 'string' && REFUSAL_CODES.has(code);
+
+/** A 400 or 403 whose body carries one of the refusal codes. Keeps the server's words, the code and the status. */
+export class ServerRefusalError extends Error {
+  readonly status: number;
+  readonly code: string;
+  constructor(message: string, status: number, code: string) {
+    super(message);
+    this.name = 'ServerRefusalError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 // The pages read nested fields of a checked reply the way they read any parsed JSON.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type ReplyBody = Record<string, any>;
@@ -57,9 +76,9 @@ const TERMINAL_REFUSALS: Readonly<Record<string, string>> = {
 
 /** The server's text and the host identifier when `error` is a terminal refusal; otherwise null. */
 export function terminalRefusal(error: unknown): { text: string; hostMessage: string } | null {
-  if (!(error instanceof Error) || error instanceof ServerReplyError || !('code' in error)) return null;
-  const { code } = error;
-  if (typeof code !== 'string' || !Object.hasOwn(TERMINAL_REFUSALS, code)) return null;
+  if (!(error instanceof Error) || error instanceof ServerReplyError || !('code' in error) || !('status' in error)) return null;
+  const { code, status } = error;
+  if (typeof code !== 'string' || typeof status !== 'number' || !isDefiniteRefusal(status, code)) return null;
   return { text: error.message, hostMessage: TERMINAL_REFUSALS[code]! };
 }
 
@@ -79,9 +98,10 @@ export async function readReply(
       failure !== null && typeof failure === 'object' && 'error' in failure && typeof failure.error === 'string' && failure.error
         ? failure.error
         : `HTTP ${response.status}`;
-    // The server's `code` rides along so a refusal that cannot change on retry can be told from a temporary failure.
-    const code =
-      failure !== null && typeof failure === 'object' && 'code' in failure && typeof failure.code === 'string' ? failure.code : undefined;
+    const code = failure !== null && typeof failure === 'object' && 'code' in failure && typeof failure.code === 'string' ? failure.code : '';
+    if (isDefiniteRefusal(response.status, code)) {
+      throw new ServerRefusalError(text, response.status, code);
+    }
     throw Object.assign(new Error(text), { status: response.status, code });
   }
   let parsed: unknown;

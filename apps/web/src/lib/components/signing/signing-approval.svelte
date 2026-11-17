@@ -52,6 +52,7 @@
     appKeyIdentity,
     appRequestingLine,
     FAMILY_LABEL,
+    COURIER_HEADING,
     appKeyNotGrantableStatements,
     buildRenderPlan,
     buildSummaryStatements,
@@ -69,7 +70,9 @@
   } from "@openkey/capability-review";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
   import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
+  import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
   import { requestedExpiryMs } from "$lib/approval-expiry";
+  import { isOnceTier } from "$lib/renewal-default";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -127,6 +130,8 @@
     expiryBounded?: boolean;
     /** With `expiryBounded`: the most the requester signed, when that is more than the default it asked for. */
     expiryMaxMs?: number | null;
+    /** The renewal checkbox (TC-2933); set only where the requester signed a renewal request. */
+    renewal?: RenewalChoice | null;
     onApprove: () => void;
     onCancel: () => void;
     onRetry?: () => void;
@@ -158,6 +163,7 @@
     onExpiryChange,
     expiryBounded = false,
     expiryMaxMs = null,
+    renewal = null,
     onApprove,
     onCancel,
     onRetry,
@@ -172,15 +178,17 @@
   const requestedExpiry = $derived(
     requestedExpiryMs(model.immutable?.issuedAt, model.immutable?.expirationTime),
   );
+  const courierGrants = $derived(model.permissions.filter(grant => grant.family === "courier"));
   const permissionSections = $derived.by(() => {
     const reviewGrants = renderPlan
       .filter((bucket) => bucket.severity !== "standard")
-      .flatMap((bucket) => bucket.grants);
+      .flatMap((bucket) => bucket.grants).filter(grant => grant.family !== "courier");
     const standardGrants = renderPlan.find(
       (bucket) => bucket.severity === "standard",
-    )?.grants ?? [];
+    )?.grants.filter(grant => grant.family !== "courier") ?? [];
 
     return [
+      ...(courierGrants.length > 0 ? [{ key: "courier", severity: "review" as const, heading: COURIER_HEADING, hint: "", grants: courierGrants, defaultOpen: true }] : []),
       ...(reviewGrants.length > 0
         ? [{
             key: "review",
@@ -226,6 +234,10 @@
   // header, come from one function so the header always counts the rows marked
   // Sensitive below it (capability-review `buildSummaryStatements`).
   const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
+  const summaryGroups = $derived([
+    { key: "courier", heading: COURIER_HEADING, rows: buildSummaryStatements(selectedGrants.filter(grant => grant.family === "courier")) },
+    { key: "other", heading: null, rows: buildSummaryStatements(selectedGrants.filter(grant => grant.family !== "courier")) },
+  ].filter(group => group.rows.length > 0));
   const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
 
   // App keys: the standing-access line follows the decrypt statements, and a
@@ -245,8 +257,9 @@
   const requesterName = $derived(appDisplayName(model.requester.displayName) ?? originHost ?? "");
   const manifestNameShown = $derived(appDisplayName(model.requester.manifestName));
   const requestedBy = $derived(originHost ?? requesterName);
+  // Beside the renewal box a fixed end date is wrong (ticked) or repeats the box (unticked), so it is not shown there.
   const appKeyAccessLine = $derived(
-    selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatAccessEnd) : null,
+    !renewal && selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatAccessEnd) : null,
   );
   const notGrantableStatements = $derived.by(() => {
     const rows = model.permissions.flatMap(appKeyNotGrantableStatements);
@@ -587,8 +600,11 @@
       <p class="summary-lead">{appRequestingLine(identity.name)}</p>
     {/if}
     {#if summaryStatements.length > 0}
+      {#each summaryGroups as group (group.key)}
+      <div role="group" aria-label={group.heading ?? undefined}>
+      {#if group.heading}<h3>{group.heading}</h3>{/if}
       <ul class="summary-statements">
-        {#each summaryStatements as statement (statement.key)}
+        {#each group.rows as statement (statement.key)}
           <li
             class="summary-statement"
             data-severity={statement.severity}
@@ -602,6 +618,8 @@
           </li>
         {/each}
       </ul>
+      </div>
+      {/each}
     {:else if !isMalformedRecap}
       <p class="summary-empty">
         {model.permissions.length > 0
@@ -631,6 +649,9 @@
         maxMs={expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null}
         disabled={approving}
         onChange={onExpiryChange}
+        {renewal}
+        sensitive={isOnceTier(selectedGrants)}
+        {requestedBy}
       />
     {/if}
 

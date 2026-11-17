@@ -81,10 +81,11 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
+  approveBlockedReason={transport.approveBlockedReason ?? null}
   refused={transport.refused ?? false}
+  previewPending={transport.canUseAuthorizeSign && !transport.previewReady}
   {layoutBlocked}
   stickyActions
-  previewPending={transport.canUseAuthorizeSign && !transport.previewReady}
   {peerRecognition}
   expiryMs={transport.expiry?.chosenMs ?? null}
   onExpiryChange={transport.expiry?.onChange}

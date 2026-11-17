@@ -1,5 +1,7 @@
 import { createMiddleware } from 'hono/factory';
 import { isAccountOriginAllowed, resolveOriginPolicy } from '../origin-policy';
+import { recordAccountOriginRefused } from '../log';
+import { routePath } from 'hono/route';
 
 /**
  * OpenKey's own embedded widgets authenticate to key and account routes with a
@@ -39,7 +41,10 @@ export const requireAccountOriginForBearer = createMiddleware(async (c, next) =>
       ? null
       : 'Requests are accepted only from the OpenKey account origin')
     : bearerFromAccountOriginError(authorization, origin);
-  if (error) return c.json({ error }, 403);
+  if (error) {
+    recordAccountOriginRefused(routePath(c, -1), origin === undefined ? 'missing' : 'foreign');
+    return c.json({ error }, 403);
+  }
   await next();
 });
 // Keep protocol, sign-in and session-read endpoints outside this account-management list.

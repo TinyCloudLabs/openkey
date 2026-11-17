@@ -14,6 +14,8 @@ export type AppKeyRefusalReason =
   /** An `apps/` grant with no admission: the site does not list it, or the request is not one a site can make. */
   | 'apps_key'
   | 'apps_key_unparsed'
+  /** decrypt or key.create outside `apps/` from a site that is not first-party (TC-2247). Same code as `apps_key`, its own words. */
+  | 'encryption_outside_apps'
   /** The request did not come from a verified https origin of the app's own site. */
   | 'apps_key_origin'
   /** The app id does not belong to the requesting site's host. */
@@ -47,6 +49,7 @@ export interface RecapEntryLike {
 
 const NOT_DECLARED_MESSAGE =
   "This website doesn't list the key this app asked for, so OpenKey didn't approve it.";
+const ENCRYPTION_OUTSIDE_APPS_MESSAGE = "This site isn't allowed to request that access.";
 const ORIGIN_MESSAGE =
   "App keys can only be requested by the app's own website, so OpenKey didn't approve this request.";
 const APP_ID_MESSAGE =
@@ -228,7 +231,7 @@ export function encryptionOutsideAppsRefusal(siwe: string): AppKeyRefusal | null
       !isAppsKeyResource(resource) &&
       abilities.some(isEncryptionGrantAbility),
   );
-  return outside ? { reason: 'apps_key' } : null;
+  return outside ? { reason: 'encryption_outside_apps' } : null;
 }
 
 /** Same check for a message as the signer will cover it: as written, and as UTF-8 when it is `0x` hex. */
@@ -298,6 +301,7 @@ export function appKeyRefusalStatus(refusal: AppKeyRefusal): 400 | 403 {
 export function appKeyRefusalMessage(refusal: AppKeyRefusal, source: AppKeyRequestSource): string {
   if (refusal.reason === 'key_delete') return KEY_DELETE_MESSAGE;
   if (refusal.reason === 'recap_unreadable') return UNREADABLE_RECAP_MESSAGE;
+  if (refusal.reason === 'encryption_outside_apps') return ENCRYPTION_OUTSIDE_APPS_MESSAGE;
   if (source === 'browser' && refusal.reason === 'apps_key_origin') return ORIGIN_MESSAGE;
   if (source === 'browser' && refusal.reason === 'apps_key_app_id') return APP_ID_MESSAGE;
   if (source === 'browser' && refusal.reason === 'apps_key_manifest') return MANIFEST_MESSAGE;

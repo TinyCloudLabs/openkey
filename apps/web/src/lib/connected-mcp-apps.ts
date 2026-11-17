@@ -11,6 +11,18 @@ export const mcpAppCopy = {
   disconnected: 'Disconnected. The app will stop being able to use your TinyCloud through MCP, usually within a minute and always within 5 minutes.',
   failed: 'Could not disconnect the app. Try again.',
 } as const;
+export const identityAppCopy = {
+  title: 'Apps that can see your wallet address',
+  intro: "These apps can see your OpenKey wallet address. They can't sign anything or use your TinyCloud data. Disconnect an app to stop its future access.",
+  connected: 'Connected',
+  disconnect: 'Disconnect',
+  cancel: 'Cancel',
+  confirmAction: 'Disconnect app',
+  confirmTitle: (name: string) => `Disconnect ${name}?`,
+  confirmBody: "Within 5 minutes, the app won't be able to get your wallet address, but it keeps anything it already received. It can ask you to connect again later.",
+  disconnected: "Disconnected. Within 5 minutes the app can no longer get your wallet address. It keeps anything it already received.",
+  failed: "Couldn't disconnect the app. Try again.",
+} as const;
 
 const SCOPE_WORDS: Record<string, string> = {
   'tinycloud:mcp': 'Lets this app use your TinyCloud through the MCP server.',

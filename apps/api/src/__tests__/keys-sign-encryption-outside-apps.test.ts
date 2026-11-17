@@ -110,8 +110,8 @@ async function sign(body: Record<string, unknown>) {
 }
 const hex = (text: string) => `0x${Buffer.from(text, 'utf8').toString('hex')}`;
 
-const NOT_DECLARED = "This website doesn't list the key this app asked for, so OpenKey didn't approve it.";
-const REFUSED = { error: NOT_DECLARED, code: 'app_key_grant_refused' };
+// TC-2291: pin the own-sites refusal copy and its stable code.
+const REFUSED = { error: "This site isn't allowed to request that access.", code: 'app_key_grant_refused' };
 
 // The six shapes a site could use to reach decrypt or key.create outside apps/.
 const SHAPES: Array<[string, Record<string, string[]>]> = [
@@ -186,7 +186,7 @@ describe('a first-party origin', () => {
   const previews = FIRST_PARTY_PAGES_SUBDOMAINS.flatMap((name) => [`https://${name}.pages.dev`, `https://a1b2c3d4.${name}.pages.dev`, `https://feat-x.${name}.pages.dev`]);
   const origins = [...FIRST_PARTY_ENCRYPTION_ORIGINS, ...previews];
 
-  test('the list is the one briefed: seven production origins and our own Pages projects', () => {
+  test('the list is the one briefed: eight production origins and our own Pages projects', () => {
     expect([...FIRST_PARTY_ENCRYPTION_ORIGINS].sort()).toEqual([
       'http://tauri.localhost',
       'https://home.tinycloud.xyz',
@@ -194,6 +194,7 @@ describe('a first-party origin', () => {
       'https://secrets.tinycloud.xyz',
       'https://share.tinycloud.xyz',
       'https://tinycloud.chat',
+      'https://tinycloud.one',
       'tauri://localhost',
     ]);
     expect([...FIRST_PARTY_PAGES_SUBDOMAINS].sort()).toEqual(['openkey-tinycloud-demo', 'share-2fz', 'tinychat-4jq', 'tinycloud-secrets']);
@@ -223,6 +224,7 @@ describe('the TinyCloud Home sign-in', () => {
 
   test.each([
     ['https://tinycloud.chat'],
+    ['https://tinycloud.one'],
     [HOME],
   ])('%s signs the bare-network decrypt and network.create, as text and as 0x hex', async (origin) => {
     const siwe = siweWith(origin, SHAPES[1]![1]);
@@ -342,6 +344,13 @@ describe('the Inbox sign-in', () => {
 describe('look-alikes of a first-party origin are not first-party', () => {
   const lookAlikes = [
     'https://tinycloud.chat.evil.example',
+    'https://www.tinycloud.one',
+    'https://other.tinycloud.one',
+    'https://evil-tinycloud.one',
+    'https://tinycloud.one.evil.example',
+    'https://tinycloud.one:8443',
+    'http://tinycloud.one',
+    'https://TINYCLOUD.ONE',
     'https://evil-tinycloud.chat',
     'https://tinycloud.chat:8443',
     'http://tinycloud.chat',
@@ -389,8 +398,8 @@ describe('encryptionOutsideAppsRefusal', () => {
 
   test('names the resource shapes that need a first-party origin', () => {
     for (const [, raw] of SHAPES) {
-      expect(encryptionOutsideAppsRefusal(siweWith(THIRD_PARTY, raw))).toEqual({ reason: 'apps_key' });
-      expect(encryptionOutsideAppsRefusalForMessage(hex(siweWith(THIRD_PARTY, raw)))).toEqual({ reason: 'apps_key' });
+      expect(encryptionOutsideAppsRefusal(siweWith(THIRD_PARTY, raw))).toEqual({ reason: 'encryption_outside_apps' });
+      expect(encryptionOutsideAppsRefusalForMessage(hex(siweWith(THIRD_PARTY, raw)))).toEqual({ reason: 'encryption_outside_apps' });
     }
   });
 });

@@ -8,7 +8,7 @@ import { PrismaClient } from '@openkey/db';
 import { APPROVAL_CLAIM_LEASE_MS, ApprovalResultService, type ApprovalRequestRecord } from '../services/approval-results';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
 
-const MIGRATIONS = ['20261028_0001_approval_request_results', '20261103_0002_approval_request_denied', '20261109_0001_approval_request_approving']
+const MIGRATIONS = ['20261028_0001_approval_request_results', '20261103_0002_approval_request_denied', '20261109_0001_approval_request_approving', '20261113_0001_approval_request_renewal']
   .map((name) => new URL(`../../../../packages/db/prisma/migrations/${name}/migration.sql`, import.meta.url));
 const MINUTE = 60_000;
 const ID = 'abcdefghijklmnopqrstuvwxyz';

@@ -1,10 +1,15 @@
 // Account management routes
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { symmetricDecrypt } from 'better-auth/crypto';
 import { createPrismaClient } from '@openkey/db';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { parseAutoSignPreferencePatch } from './account-preferences';
-import { TINYCLOUD_DELEGATION_SCOPE, TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_MCP_SCOPE } from '../oauth-config';
+import {
+  TINYCLOUD_DELEGATION_SCOPE,
+  TINYCLOUD_IDENTITY_SCOPE,
+  TINYCLOUD_MANAGE_KEY_SCOPE,
+  TINYCLOUD_MCP_SCOPE,
+} from '../oauth-config';
 import {
   changeTinyCloudManageKeyGrant,
   changeTinyCloudManageKeyMode,
@@ -25,6 +30,8 @@ import {
 import { revokeAppleToken } from '../services/social-confirmation';
 import { revokeStoredAppleTokens } from '../services/apple-revocation';
 import { appleRelayEmailUndeliverable } from '../services/apple-notifications';
+import { liveLeaseWhere, revokeRenewalLeases, type LeaseRevocationReport } from '../services/renewal-lease-revocation';
+import { createRenewalLeaseRouter } from './renewal-leases';
 
 const prisma = createPrismaClient();
 
@@ -34,6 +41,7 @@ export const accountRouter = new Hono<SessionContext>();
 // from an OpenKey web origin (TC-688).
 accountRouter.use('*', requireAccountOriginForBearer);
 accountRouter.use('*', requireSession);
+accountRouter.route('/renewal-leases', createRenewalLeaseRouter(prisma));
 
 // Account deletion needs a fresh step-up on this session within the last five
 // minutes: a verification by a passkey that counts for step-up when the user
@@ -303,7 +311,7 @@ accountRouter.patch('/auto-sign', async (c) => {
 // preference or decision; callers cannot create preferences without consent.
 accountRouter.get('/tinycloud-apps', async (c) => {
   const user = c.get('user');
-  const [consents, preferences, decisions, userPreference, nativeGrants, mcpConsents] = await Promise.all([
+  const [consents, preferences, decisions, userPreference, nativeGrants, mcpConsents, identityConsents] = await Promise.all([
     prisma.oauthConsent.findMany({
       where: { userId: user.id, OR: [{ scopes: { has: TINYCLOUD_MANAGE_KEY_SCOPE } }, { scopes: { has: TINYCLOUD_DELEGATION_SCOPE } }] },
       select: { clientId: true, scopes: true },
@@ -326,6 +334,12 @@ accountRouter.get('/tinycloud-apps', async (c) => {
       orderBy: { createdAt: 'desc' },
       select: { id: true, clientId: true, scopes: true, createdAt: true },
     }),
+    // Identity-only consents are visible and disconnectable without signing access.
+    prisma.oauthConsent.findMany({
+      where: { userId: user.id, scopes: { has: TINYCLOUD_IDENTITY_SCOPE } },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, clientId: true, scopes: true, createdAt: true },
+    }),
   ]);
   const clientIds = [...new Set([
     ...consents.map((consent) => consent.clientId),
@@ -333,7 +347,11 @@ accountRouter.get('/tinycloud-apps', async (c) => {
     ...decisions.map((decision) => decision.clientId),
     ...nativeGrants.map((grant) => grant.clientId),
   ])];
-  const clientLookupIds = [...new Set([...clientIds, ...mcpConsents.map((consent) => consent.clientId)])];
+  const clientLookupIds = [...new Set([
+    ...clientIds,
+    ...mcpConsents.map((consent) => consent.clientId),
+    ...identityConsents.map((consent) => consent.clientId),
+  ])];
   const clients = clientLookupIds.length === 0 ? [] : await prisma.oauthClient.findMany({
     where: { clientId: { in: clientLookupIds } },
     select: { clientId: true, name: true, uri: true, icon: true, disabled: true },
@@ -367,6 +385,20 @@ accountRouter.get('/tinycloud-apps', async (c) => {
       const client = clientById.get(consent.clientId);
       return {
         kind: 'mcp' as const,
+        consentId: consent.id,
+        clientId: consent.clientId,
+        name: client?.name || consent.clientId,
+        uri: client?.uri || null,
+        host: hostnameOf(client?.uri),
+        icon: client?.icon || null,
+        connectedAt: consent.createdAt.toISOString(),
+        scopes: consent.scopes,
+      };
+    }),
+    identityApps: identityConsents.map((consent) => {
+      const client = clientById.get(consent.clientId);
+      return {
+        kind: 'identity' as const,
         consentId: consent.id,
         clientId: consent.clientId,
         name: client?.name || consent.clientId,
@@ -461,6 +493,27 @@ accountRouter.delete('/tinycloud-apps/mcp/:consentId', async (c) => {
   if (!disconnected) return c.json({ error: 'Connected MCP app not found' }, 404);
   return c.json({ consentId, disconnected: true });
 });
+// Disconnect an identity-only app and invalidate both provider token types.
+accountRouter.delete('/tinycloud-apps/identity/:consentId', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { confirmation?: unknown } | null;
+  if (body?.confirmation !== 'DISCONNECT') return c.json({ error: 'Type DISCONNECT to confirm' }, 400);
+  const userId = c.get('user').id;
+  const consentId = c.req.param('consentId');
+  const mine = { id: consentId, userId, scopes: { has: TINYCLOUD_IDENTITY_SCOPE } };
+  const disconnected = await prisma.$transaction(async (tx) => {
+    const consent = await tx.oauthConsent.findFirst({ where: mine, select: { clientId: true } });
+    if (!consent) return false;
+    const removed = await tx.oauthConsent.deleteMany({ where: mine });
+    if (removed.count !== 1) return false;
+    await tx.oauthAccessToken.deleteMany({ where: { userId, clientId: consent.clientId } });
+    await tx.oauthRefreshToken.deleteMany({ where: { userId, clientId: consent.clientId } });
+    return true;
+  });
+  if (!disconnected) return c.json({ error: 'Connected identity app not found' }, 404);
+  return c.json({ consentId, disconnected: true });
+});
 
 function hostnameOf(uri: string | null | undefined): string | null {
   if (!uri) return null;
@@ -471,6 +524,22 @@ const EMAIL_STEP_UP_REQUIRED = {
   error: 'Verify with an email code again to continue',
   code: 'email_step_up_required',
 } as const;
+
+/**
+ * Deletion refused because some renewal leases are still on. A wallet-signed lease needs that wallet's
+ * signature, so the owner stops it from Settings first; any other lease is retried by deleting again.
+ */
+function renewalLeasesNotStopped(c: Context<SessionContext>, notStopped: LeaseRevocationReport['notStopped']) {
+  const walletRequired = notStopped.filter((lease) => lease.reason === 'wallet_required').length;
+  return c.json({
+    error: walletRequired > 0
+      ? 'Some renewing permissions need your wallet to stop. Stop them under Renewing permissions in Settings, then delete your account. Nothing was deleted.'
+      : "OpenKey couldn't stop renewal for every permission. Nothing was deleted. Try again.",
+    code: 'renewal_leases_not_stopped',
+    walletRequired,
+    nodeUnavailable: notStopped.length - walletRequired,
+  }, 409);
+}
 
 // Delete account permanently
 // Requires: cookie session from an OpenKey origin, typed confirmation, and a
@@ -503,6 +572,11 @@ accountRouter.post('/delete', async (c) => {
     }, 400);
   }
 
+  // Stop every renewal lease before the keys go (TC-2946): once they are deleted nobody can revoke a lease
+  // OpenKey signed, and the node would keep renewing its grant. A lease counts as stopped only when its node
+  // confirmed; any other outcome deletes nothing, and a retry sends the ones still open again.
+  const leases = await revokeRenewalLeases(prisma, user.id, { kind: 'all' });
+  if (leases.notStopped.length > 0) return renewalLeasesNotStopped(c, leases.notStopped);
 
   // Count and delete every user key. TC-488 removed tenant-managed keys.
   const keyCount = await prisma.ethereumKey.count({
@@ -510,9 +584,11 @@ accountRouter.post('/delete', async (c) => {
   });
 
   // Delete all user data in transaction
-  let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | 'PASSKEY' | 'EMAIL';
+  let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | 'PASSKEY' | 'EMAIL' | 'LEASES';
   try { appleTokens = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${user.id} FOR UPDATE`;
+    // A lease approved since the revocations above would outlive the keys; a retry stops it first.
+    if (await tx.renewalLease.count({ where: liveLeaseWhere(user.id, { kind: 'all' }, new Date()) }) > 0) return 'LEASES';
     if (!passkeyStepUp) {
       // A passkey that counts, enrolled since the check, needs the passkey
       // step-up instead; the deletion code is spent only by a deletion that commits.
@@ -551,6 +627,7 @@ accountRouter.post('/delete', async (c) => {
   }
   if (appleTokens === 'PASSKEY') return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
   if (appleTokens === 'EMAIL') return c.json(EMAIL_STEP_UP_REQUIRED, 403);
+  if (appleTokens === 'LEASES') return c.json({ error: 'A permission started renewing meanwhile. Nothing was deleted. Try again.', code: 'renewal_leases_not_stopped' }, 409);
 
   await revokeStoredAppleTokens(appleTokens);
 
