@@ -73,7 +73,7 @@ async function main() {
         grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'],
       }),
     });
-    if (!registration.ok) throw new Error(`client registration failed: HTTP ${registration.status}`);
+    if (!registration.ok) throw new Error(`client registration failed: HTTP ${registration.status} ${(await registration.text()).slice(0, 300)}`);
     const registered: { client_id?: unknown } = await registration.json();
     if (typeof registered.client_id !== 'string') throw new Error('client registration returned no client id');
     const clientId = registered.client_id;
@@ -114,7 +114,7 @@ async function main() {
       headers: { 'content-type': 'application/json', authorization: `Bearer ${admin}` },
       body: JSON.stringify({ code }),
     });
-    if (!install.ok) throw new Error(`review code install failed: HTTP ${install.status}`);
+    if (!install.ok) throw new Error(`review code install failed: HTTP ${install.status} ${(await install.text()).slice(0, 300)}`);
 
     writeFileSync(fixturePath, JSON.stringify({
       email: EMAIL, code, clientId, redirectUri: REDIRECT_URI, resource: RESOURCE, callbackUri: CALLBACK_URI, nodeHost, address,
