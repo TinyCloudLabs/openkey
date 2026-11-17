@@ -1,7 +1,8 @@
-// TC-1953: approving a device request that carries the default decrypt entry
-// (service `tinycloud.encryption`, space `default`, empty path, decrypt only)
-// through the /delegate approval routes. The approval baseline is built with
-// the device transaction wherever the request names one, and only there.
+// TC-1953: approving a device request that carries a decrypt entry through the
+// /delegate approval routes. Since TC-3204 that entry names one shared file
+// (service `tinycloud.encryption`, space `default`, path `share/<id>`, decrypt
+// only). The approval baseline is built with the device transaction wherever
+// the request names one, and only there.
 
 import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createHash, generateKeyPairSync } from 'node:crypto';
@@ -39,8 +40,8 @@ const keyRecord = {
 };
 
 const DECRYPT = 'tinycloud.encryption/decrypt';
-const decryptEntry = { service: 'tinycloud.encryption', space: 'default', path: '', actions: [DECRYPT] };
-const networkUrn = `urn:tinycloud:encryption:did:pkh:eip155:1:${account.address}:default`;
+const decryptEntry = { service: 'tinycloud.encryption', space: 'default', path: 'share/3f9c1a7e5b2d48a09c6e1f7a2b4d8c03', actions: [DECRYPT] };
+const shareKeyUrn = `urn:tinycloud:encryption:did:pkh:eip155:1:${account.address}:default/share/3f9c1a7e5b2d48a09c6e1f7a2b4d8c03`;
 const SUBSET_ERROR = 'Edited permissions must be a subset of the original delegation request';
 
 const prisma = {
@@ -161,8 +162,8 @@ function managedApproval(prepared: { body: Record<string, any> }, device: boolea
   };
 }
 
-describe('device approval of the default decrypt entry (TC-1953)', () => {
-  test('managed key: /prepare then POST / with the device transaction signs the default network entry', async () => {
+describe('device approval of a shared-file decrypt entry (TC-1953, TC-3204)', () => {
+  test('managed key: /prepare then POST / with the device transaction signs that shared file on the signer network', async () => {
     const prepared = await prepare(true);
     const signed = await post('/', managedApproval(prepared, true));
     expect(signed.body.error).toBeUndefined();
@@ -171,7 +172,7 @@ describe('device approval of the default decrypt entry (TC-1953)', () => {
     expect(signed.body.permissions).toContainEqual({
       service: 'encryption',
       space: 'encryption',
-      path: networkUrn,
+      path: shareKeyUrn,
       actions: [DECRYPT],
     });
     expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
@@ -192,8 +193,8 @@ describe('device approval of the default decrypt entry (TC-1953)', () => {
     expect(res.status).toBe(200);
   });
 
-  test('a request without the device transaction is refused for the default network entry', async () => {
-    // The network entry is bound at /prepare with the device transaction; an
+  test('a request without the device transaction is refused for the shared-file entry', async () => {
+    // The shared-file entry is bound at /prepare with the device transaction; an
     // approval that does not name one is checked against the ordinary baseline.
     const prepared = await prepare(true);
     const withoutDevice = await post('/', managedApproval(prepared, false));
@@ -203,7 +204,7 @@ describe('device approval of the default decrypt entry (TC-1953)', () => {
     expect(activateSessionWithHost).not.toHaveBeenCalled();
   });
 
-  test('/complete without the device transaction is refused for the default network entry', async () => {
+  test('/complete without the device transaction is refused for the shared-file entry', async () => {
     const prepared = await prepare(true);
     const signature = await account.signMessage({ message: prepared.body.prepared.siwe });
     const res = await post('/complete', {
@@ -222,20 +223,20 @@ describe('device approval of the default decrypt entry (TC-1953)', () => {
     expect(prepared.body.prepared.siwe).not.toContain('urn:tinycloud:encryption:');
   });
 
-  test('legacy token-less POST / with the device transaction signs the default network entry', async () => {
+  test('legacy token-less POST / with the device transaction signs that shared file on the signer network', async () => {
     const res = await post('/', pageBody(true));
     expect(res.body.error).toBeUndefined();
     expect(res.status).toBe(200);
     expect(res.body.permissions).toContainEqual({
       service: 'encryption',
       space: 'encryption',
-      path: networkUrn,
+      path: shareKeyUrn,
       actions: [DECRYPT],
     });
   });
 
   test('legacy token-less POST / without the device transaction signs no network resource', async () => {
     const res = await post('/', pageBody(false));
-    expect(res.body.permissions ?? []).not.toContainEqual(expect.objectContaining({ path: networkUrn }));
+    expect(res.body.permissions ?? []).not.toContainEqual(expect.objectContaining({ path: shareKeyUrn }));
   });
 });

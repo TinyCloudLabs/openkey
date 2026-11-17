@@ -247,15 +247,16 @@ const ENCRYPTION_SERVICE = 'tinycloud.encryption';
 const DECRYPT_ABILITY = 'tinycloud.encryption/decrypt';
 
 /**
- * The device's encryption entry: the one `tinycloud.encryption/decrypt` grant
- * in the `default` space with an empty path. It stands for the approving
- * account's own default network, which the API resolves at prepare.
+ * A device encryption entry: `tinycloud.encryption/decrypt` in the `default`
+ * space on one shared file (`share/<id>`). It stands for that key on the
+ * approving account's own default network, which the API resolves at prepare
+ * (TC-3204).
  */
-function isDeviceEncryptionEntry(permission: DevicePermission): boolean {
+export function isDeviceShareDecryptEntry(permission: DevicePermission): boolean {
   return (
     permission.service === ENCRYPTION_SERVICE &&
     permission.space === 'default' &&
-    permission.path === '' &&
+    /^share\/[a-z0-9][a-z0-9-]{15,35}$/.test(permission.path) &&
     permission.actions.length === 1 &&
     permission.actions[0] === DECRYPT_ABILITY
   );
@@ -276,7 +277,8 @@ function defaultEncryptionNetworkUrn(signer: { address: string; chainId: number 
  * requested manifest permissions, keeping the request's spelling. Throws
  * when the delegation carries anything the device request did not ask for
  * or grants nothing. `signer` is the account that signed the delegation; a
- * raw encryption grant must name that account's own `default` network.
+ * raw encryption grant must name a requested shared file on that account's
+ * own `default` network.
  */
 export function approvedDevicePermissions(
   requested: DevicePermission[],
@@ -294,9 +296,10 @@ export function approvedDevicePermissions(
     const actions = Array.isArray(grant.actions) ? grant.actions : [];
     const source = service === ENCRYPTION_SERVICE
       ? requested.find((permission) =>
-          isDeviceEncryptionEntry(permission) &&
+          isDeviceShareDecryptEntry(permission) &&
           typeof grant.path === 'string' &&
-          grant.path.toLowerCase() === ownNetwork &&
+          grant.path.slice(0, ownNetwork.length).toLowerCase() === ownNetwork &&
+          grant.path.slice(ownNetwork.length) === `/${permission.path}` &&
           actions.length === 1 &&
           actions[0] === DECRYPT_ABILITY,
         )

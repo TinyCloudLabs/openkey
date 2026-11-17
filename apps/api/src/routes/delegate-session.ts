@@ -524,25 +524,27 @@ function assertRawEncryptionPermission(
 const DEVICE_ENCRYPTION_SERVICE = 'tinycloud.encryption';
 /** Space name of the approving account's own default encryption network. */
 const DEVICE_ENCRYPTION_SPACE = 'default';
+/** One shared file's key, as `deviceRequestPermissions` admits it (TC-3204). */
+const DEVICE_SHARE_DECRYPT_PATH = /^share\/[a-z0-9][a-z0-9-]{15,35}$/;
 
 /**
- * URN of the signer's own `default` encryption network. Single producer for the
- * device entry; owner DID uses the signer's chain and EIP-55 address.
+ * URN of the signer's own `default` encryption network. Owner DID uses the
+ * signer's chain and EIP-55 address.
  */
 export function defaultEncryptionNetworkUrn(signer: { address: string; chainId: number }): string {
   return `${RAW_ENCRYPTION_PREFIX}did:pkh:eip155:${signer.chainId}:${getAddress(signer.address)}:default`;
 }
 
 /**
- * The exact device authorization encryption entry: service `tinycloud.encryption`,
- * space `default`, path `""`, and only the decrypt action. Any other entry keeps
- * its existing handling.
+ * A device authorization encryption entry: service `tinycloud.encryption`,
+ * space `default`, path `share/<id>` (one shared file), and only the decrypt
+ * action (TC-3204).
  */
-export function isDeviceDefaultEncryptionEntry(entry: DelegationPermissionEntry): boolean {
+export function isDeviceShareDecryptEntry(entry: DelegationPermissionEntry): boolean {
   return (
     entry.service === DEVICE_ENCRYPTION_SERVICE &&
     entry.space === DEVICE_ENCRYPTION_SPACE &&
-    entry.path === '' &&
+    DEVICE_SHARE_DECRYPT_PATH.test(entry.path) &&
     entry.actions.length === 1 &&
     entry.actions[0] === ENCRYPTION.DECRYPT
   );
@@ -556,9 +558,10 @@ export function isDeviceDefaultEncryptionEntry(entry: DelegationPermissionEntry)
  * network. Actions stay fully-qualified (`tinycloud.sql/read`) because the
  * SIWE recap stores them that way.
  *
- * With `deviceTransaction`, the exact default encryption entry (see
- * `isDeviceDefaultEncryptionEntry`) resolves to the signer's own default
- * network. Every other entry is handled as before.
+ * With `deviceTransaction`, a shared-file entry (see `isDeviceShareDecryptEntry`)
+ * resolves to that key on the signer's own default network, and any other
+ * `tinycloud.encryption` entry is refused: a device approval never signs decrypt
+ * on the whole network, a folder, or another key (TC-3204).
  */
 export function sessionAbilitiesFromPermissions(
   permissions: DelegationPermissionEntry[],
@@ -567,18 +570,18 @@ export function sessionAbilitiesFromPermissions(
 ): SessionAbilities {
   const entries: RecapEntry[] = [];
   const rawAbilities: RawAbilitiesMap = Object.create(null);
-  let deviceDefaultSeen = false;
   permissions.forEach((entry, index) => {
-    if (options.deviceTransaction && isDeviceDefaultEncryptionEntry(entry)) {
-      if (deviceDefaultSeen) {
+    if (options.deviceTransaction && canonicalizeServiceName(entry.service) === DEVICE_ENCRYPTION_SERVICE) {
+      if (!isDeviceShareDecryptEntry(entry)) {
         throw new DelegateRequestError(
           'invalid_permissions',
-          `permissions[${index}] repeats the default encryption entry; a device request carries one`,
-          [{ path: `permissions[${index}]`, message: 'Only one default encryption entry is allowed' }],
+          `permissions[${index}] is not a shared file; a device request decrypts only share/<id> on the default network`,
+          [{ path: `permissions[${index}].path`, message: 'Expected share/<id> in space default, decrypt only', value: entry.path }],
         );
       }
-      deviceDefaultSeen = true;
-      addActions(rawAbilities, defaultEncryptionNetworkUrn(signer), [ENCRYPTION.DECRYPT]);
+      const resource = `${defaultEncryptionNetworkUrn(signer)}/${entry.path}`;
+      assertRawEncryptionPermission({ ...entry, space: 'encryption', path: resource }, index, signer);
+      addActions(rawAbilities, resource, [ENCRYPTION.DECRYPT]);
       return;
     }
     if (isRawEncryptionPermission(entry)) {
@@ -625,8 +628,8 @@ export interface PrepareDelegationSessionInput {
    */
   permissions?: DelegationPermissionEntry[];
   /**
-   * Device authorization context. Only then does the exact default encryption
-   * entry resolve to the signer's own network.
+   * Device authorization context. Only then does a shared-file entry
+   * (`share/<id>` in space `default`) resolve to the signer's own network.
    */
   deviceTransaction?: boolean;
   /** Pre-validated, clamped delegation lifetime in milliseconds. */
