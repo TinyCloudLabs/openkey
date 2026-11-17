@@ -291,6 +291,7 @@ test('a successful prepare after a terminal failure re-enables Approve', async (
   await approve.click();
   await expect(approve).toBeDisabled();
   await expect(page.getByTestId('approval-expiry-line')).toBeVisible();
+  await page.getByText('Advanced details', { exact: true }).click();
   await page.getByText('How long it lasts').click();
   await page.getByRole('button', { name: '24 hours', exact: true }).click();
   await expect(approve).toBeEnabled();
