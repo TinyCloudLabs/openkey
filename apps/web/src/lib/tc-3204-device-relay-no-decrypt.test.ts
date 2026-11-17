@@ -22,8 +22,9 @@ const cases: Array<[string, DevicePermission, Record<string, unknown>]> = [
   ['a space-scoped entry requested as written',
     { service: 'tinycloud.encryption', space, path: 'share/', actions: [DECRYPT] },
     { service: 'encryption', space, path: 'share/', actions: [DECRYPT] }],
-  ['an upper-case service',
-    { service: 'TINYCLOUD.ENCRYPTION', space, path: 'share/', actions: [DECRYPT] },
+  // The page prefixes names lacking a lower-case `tinycloud.`, so this request spelling would otherwise match.
+  ['an upper-case full service name',
+    { service: 'tinycloud.TINYCLOUD.ENCRYPTION', space, path: 'share/', actions: [DECRYPT] },
     { service: 'TINYCLOUD.ENCRYPTION', space, path: 'share/', actions: [DECRYPT] }],
 ];
 

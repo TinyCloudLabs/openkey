@@ -263,7 +263,8 @@ export function approvedDevicePermissions(
       ? `tinycloud.${grant.service}`
       : grant.service;
     const actions = Array.isArray(grant.actions) ? grant.actions : [];
-    const source = typeof service === 'string' && /^tinycloud\.encryption$/i.test(service)
+    // Full or short service name, in any case, as the API canonicalizes it.
+    const source = typeof grant.service === 'string' && /^(?:tinycloud\.)?encryption$/i.test(grant.service)
       ? undefined
       : requested.find((permission) =>
           permission.service === service &&
