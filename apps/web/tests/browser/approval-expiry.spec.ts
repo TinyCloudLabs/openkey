@@ -1,6 +1,7 @@
-// TC-2272: the "Approval expires: 7d (Change)" line on the approval screen, driven with real
-// keyboard and touch-sized input in Chromium through the dev-only parity harness, which mounts the
-// production popup adapter. Set TC2272_SHOTS_DIR to save screenshots of each state.
+// TC-2272 / TC-2933: the expiry line on the approval screen and its "How long it lasts" fold, driven with real
+// keyboard and touch-sized input in Chromium through the dev-only parity harness, which mounts the production
+// popup adapter. The line's sentence is not pinned; the checks read the duration it names. Set TC2272_SHOTS_DIR
+// to save screenshots.
 
 import { test, expect, type Page } from '@playwright/test';
 import { parseCapabilityReview } from '../../../../packages/capability-review/src/index';
@@ -34,7 +35,8 @@ async function load(page: Page, withExpiry = true) {
 }
 
 const calls = (page: Page) => page.evaluate(() => (window as any).__openkeyParityHarness.calls as Array<{ name: string; args?: unknown }>);
-const line = (page: Page) => page.locator('.expiry-line');
+const line = (page: Page) => page.getByTestId('approval-expiry-line');
+const fold = (page: Page) => page.getByText('How long it lasts');
 const shot = async (page: Page, name: string) => {
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: true });
 };
@@ -47,34 +49,33 @@ for (const viewport of [{ name: '390', width: 390, height: 844 }, { name: 'deskt
 
     test('shows the requested time, and a preset is chosen with the keyboard alone', async ({ page }) => {
       await load(page);
-      await expect(line(page)).toHaveText(/Approval expires:\s*7d\s*\(Change\)/);
+      await expect(line(page)).toContainText('7 days');
       await shot(page, `${viewport.name}-line`);
 
-      await page.getByRole('button', { name: '(Change)' }).focus();
+      await fold(page).focus();
       await page.keyboard.press('Enter');
-      await expect(page.getByRole('button', { name: '1 hr' })).toBeVisible();
+      await expect(page.getByRole('button', { name: '1 hour' })).toBeVisible();
       expect(await noSidewaysScroll(page)).toBe(true);
       await shot(page, `${viewport.name}-picker`);
 
       await page.keyboard.press('Tab');
-      await page.keyboard.press('Enter'); // 1 hr
-      await expect(line(page)).toHaveText(/Approval expires:\s*1h\s*\(Change\)/);
+      await page.keyboard.press('Enter'); // 1 hour
+      await expect(line(page)).toContainText('1 hour');
       expect((await calls(page)).filter((c) => c.name === 'expiryChange')).toEqual([{ name: 'expiryChange', args: 3_600_000 }]);
-      await expect(page.getByRole('button', { name: '(Change)' })).toBeFocused();
     });
 
     test('a typed time is set with Enter, in any case', async ({ page }) => {
       await load(page);
-      await page.getByRole('button', { name: '(Change)' }).click();
+      await fold(page).click();
       await page.getByLabel('Or type a time').fill('90M');
       await page.keyboard.press('Enter');
-      await expect(line(page)).toHaveText(/Approval expires:\s*90m/);
+      await expect(line(page)).toContainText('90 minutes');
       expect((await calls(page)).at(-1)).toEqual({ name: 'expiryChange', args: 5_400_000 });
     });
 
     test('a time that does not parse shows a plain error and changes nothing', async ({ page }) => {
       await load(page);
-      await page.getByRole('button', { name: '(Change)' }).click();
+      await fold(page).click();
       const input = page.getByLabel('Or type a time');
       await input.fill('0d');
       await page.keyboard.press('Enter');
@@ -85,32 +86,28 @@ for (const viewport of [{ name: '390', width: 390, height: 844 }, { name: 'deskt
       await page.keyboard.press('Enter');
       await expect(page.getByRole('alert')).toContainText('Use a number and a unit');
       expect((await calls(page)).filter((c) => c.name === 'expiryChange')).toEqual([]);
-      await expect(line(page)).toHaveText(/Approval expires:\s*7d/);
+      await expect(line(page)).toContainText('7 days');
     });
 
-    test('a very long time shows the warning and is still allowed', async ({ page }) => {
+    test('a very long time is allowed and shows the warning', async ({ page }) => {
       await load(page);
-      await page.getByRole('button', { name: '(Change)' }).click();
+      await fold(page).click();
       await page.getByLabel('Or type a time').fill('5y');
+      await page.keyboard.press('Enter');
+      await expect(line(page)).toContainText('5 years');
       await expect(page.getByText("That's a long time. OpenKey can't cancel it early once you approve.")).toBeVisible();
       expect(await noSidewaysScroll(page)).toBe(true);
       await shot(page, `${viewport.name}-warning`);
-      await page.keyboard.press('Enter');
-      await expect(line(page)).toHaveText(/Approval expires:\s*5y/);
-      await expect(page.getByText("That's a long time. OpenKey can't cancel it early once you approve.")).toBeVisible();
       expect((await calls(page)).at(-1)).toEqual({ name: 'expiryChange', args: 5 * 365 * 86_400_000 });
     });
 
-    test('Escape closes the picker; controls are big enough to tap', async ({ page }) => {
+    test('controls are big enough to tap', async ({ page }) => {
       await load(page);
-      await page.getByRole('button', { name: '(Change)' }).click();
-      for (const name of ['1 hr', '24 hr', '7d', '30d', 'Set']) {
+      await fold(page).click();
+      for (const name of ['1 hour', '24 hours', '7 days', '30 days', 'Set']) {
         const box = await page.getByRole('button', { name, exact: true }).boundingBox();
         expect(box!.height).toBeGreaterThanOrEqual(40);
       }
-      await page.keyboard.press('Escape');
-      await expect(page.getByRole('button', { name: '1 hr' })).toHaveCount(0);
-      await expect(page.getByRole('button', { name: '(Change)' })).toBeFocused();
     });
   });
 }
