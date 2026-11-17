@@ -1,8 +1,8 @@
 // The approval page's sign path answers 409 or 410 in the owner's words: any
 // 409 says the request is already being approved, a 410 says it has already
 // been answered or has ended, and the server's own text is never shown. Other
-// statuses keep the server text. The screenshots (SHOT_DIR) are the 390px
-// phone width.
+// statuses use safe status/code fallback text. The screenshots (SHOT_DIR) are
+// the 390px phone width.
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
 
@@ -37,7 +37,7 @@ function prepared() {
 }
 
 const BUSY = 'This request is already being approved. Wait a moment.';
-const ENDED = 'This request has already been answered or has ended.';
+const ENDED = 'This request has already been answered or has ended. Return to the app or command and start a new one.';
 
 /** Answers the page's calls. `delegate` answers the POST /api/delegate (Approve). */
 async function serve(page: Page, options: { delegate?: { status: number; body: unknown } } = {}) {
@@ -94,12 +94,63 @@ test.describe('Approve on the approval-request review page', () => {
     await expect(page.getByText('Approval request is no longer pending')).toHaveCount(0);
   });
 
-  test('other statuses show the generic line, not the server text', async ({ page }) => {
+  test('other statuses show the safe fallback line, not the server text', async ({ page }) => {
     await openReview(page, { delegate: { status: 500, body: { error: 'delegation service unavailable' } } });
     await approve(page).click();
-    await expect(page.getByRole('alert')).toHaveText('Delegation failed');
+    await expect(page.getByRole('alert')).toHaveText('Couldn\'t approve this request. Try again. (Error 500)');
     await expect(page.getByText('delegation service unavailable')).toHaveCount(0);
   });
+  for (const [name, delegate, message, image] of [
+    ['ended', { status: 400, body: { code: 'handoff_expired', error: 'private ended detail' } }, ENDED, 'b.png'],
+    ['changed', { status: 400, body: { code: 'key-mismatch', error: 'private mismatch detail' } }, "This request changed after you opened it, so OpenKey didn't approve it. Return to the app or command and start again.", 'c.png'],
+  ] as const) {
+    test(`${name} failures disable Approve but preserve Decline and Back`, async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await openReview(page, { delegate });
+      await approve(page).click();
+      await expect(page.getByRole('alert')).toHaveText(message);
+      await expect(approve(page)).toBeDisabled();
+      await expect(page.getByTestId('signing-decline')).toBeEnabled();
+      await expect(page.getByTestId('signing-dismiss')).toBeEnabled();
+      const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
+      if (shots) await page.screenshot({ path: `${shots}/${image}`, fullPage: false });
+    });
+  }
+
+  test('session-required failure leaves Approve enabled', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openReview(page, { delegate: { status: 401, body: { code: 'session_required', error: 'private session detail' } } });
+    await approve(page).click();
+    await expect(page.getByRole('alert')).toHaveText('Your OpenKey session ended. Sign in again, then approve the request again.');
+    await expect(approve(page)).toBeEnabled();
+    const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
+    if (shots) await page.screenshot({ path: `${shots}/a.png`, fullPage: false });
+  });
+
+  test('editable permission failure leaves Approve enabled', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openReview(page, { delegate: { status: 400, body: { code: 'empty_selection', error: 'private selection detail' } } });
+    const details = page.locator('details.advanced-details');
+    await details.locator(':scope > summary').click();
+    await details.getByRole('button', { name: 'Edit', exact: true }).click();
+    await approve(page).click();
+    await expect(page.getByRole('alert')).toHaveText("These permissions can't be approved as chosen. Change your selection and approve again.");
+    await expect(approve(page)).toBeEnabled();
+    const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
+    if (shots) await page.screenshot({ path: `${shots}/d.png`, fullPage: false });
+  });
+
+
+  test('safe fallback leaves Approve enabled', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await openReview(page, { delegate: { status: 503, body: { error: 'private server detail' } } });
+    await approve(page).click();
+    await expect(page.getByRole('alert')).toHaveText("Couldn't approve this request. Try again. (Error 503)");
+    await expect(approve(page)).toBeEnabled();
+    const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
+    if (shots) await page.screenshot({ path: `${shots}/fallback.png`, fullPage: false });
+  });
+
 });
 
 for (const [name, reply] of [

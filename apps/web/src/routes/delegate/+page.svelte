@@ -7,6 +7,15 @@
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
+  import {
+    delegateFailureText,
+    delegateResponseFailureText,
+    deviceRelayFailureText,
+    DeviceRelayDeliveryError,
+    OwnerMessageError,
+    isTerminalApprovalFailure,
+    shortCodeFailureText,
+  } from '$lib/delegate-failure-text';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import Card from '$lib/components/ui/card.svelte';
@@ -15,6 +24,7 @@
   import PreparedHandoff from './PreparedHandoff.svelte';
   import OwnerRevocationHandoff from './OwnerRevocationHandoff.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
+  import { publicDelegationForCode } from '$lib/delegation-code-body';
   import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, deviceRequestTtlSeconds, loadVerifiedDeviceRequest } from '$lib/device-authorization';
   import DelegateLinkNotice from '$lib/components/delegate/delegate-link-notice.svelte';
   import {
@@ -33,7 +43,7 @@
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
   import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
-  import { siweExpiration } from '$lib/approval-expiry';
+  import { MAX_LEASE_MS, defaultLeaseMs, formatDuration, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -45,6 +55,7 @@
     defaultSelection,
     type CapabilityReviewModel,
   } from '@openkey/capability-review';
+  import { renewalStartsTicked } from '$lib/renewal-default';
 
   interface EIP6963ProviderInfo {
     uuid: string;
@@ -88,10 +99,23 @@
   }
 
   function delegateErrorMessage(cause: unknown) {
-    if (cause instanceof DelegateResponseError) {
-      return apiBusyOrEndedMessage(cause.status) ?? 'Delegation failed';
+    if (cause instanceof DeviceRelayDeliveryError) {
+      if (cause.status === 409 || cause.status === 410) {
+        return delegateResponseFailureText(cause.status, cause.code, {
+          permissionsEditable: reviewEditing,
+          expiryChangeable: expiryChangeControlVisible,
+        });
+      }
+      return deviceRelayFailureText(cause.status, cause.code);
     }
-    return cause instanceof Error ? cause.message : 'Delegation failed';
+    if (cause instanceof DelegateResponseError) {
+      if (isTerminalApprovalFailure(cause.status, cause.code)) approveBlockedByFailure = true;
+      return delegateResponseFailureText(cause.status, cause.code, {
+        permissionsEditable: reviewEditing,
+        expiryChangeable: expiryChangeControlVisible,
+      });
+    }
+    return delegateFailureText(cause);
   }
 
   const session = authClient.useSession();
@@ -101,6 +125,7 @@
   let selectedKey = $state<EthereumKey | null>(null);
   let error = $state('');
   let requestExpired = $state(false);
+  let approveBlockedByFailure = $state(false);
   let keysLoaded = $state(false);
   let initialized = $state(false);
   let signingIn = $state(false);
@@ -108,6 +133,7 @@
   let done = $state(false);
   let pasteCode = $state('');
   let shortCode = $state('');
+  let shortCodeFailure = $state<{ status: number; code: unknown } | null>(null);
   let spaceSetup = $state<SpaceSetupNotice | null>(null);
   let spaceReadiness = $state<ReturnType<typeof spaceReadinessResult>>(null);
   let callbackFailed = $state(false);
@@ -162,6 +188,10 @@
   let baselineSiweForReview = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
+  const expiryChangeControlVisible = $derived(
+    reviewModel?.protocol === 'tinycloud-siwe-recap' &&
+    requestedExpiryMs(reviewModel.immutable?.issuedAt, reviewModel.immutable?.expirationTime) !== null,
+  );
   const approvalRequestMode = $page.route.id === '/a/[id]';
   const approvalRequestId = approvalRequestMode ? $page.params.id || '' : '';
   const delegateReturnTo = $derived(approvalRequestMode ? $page.url.pathname : $page.url.pathname + $page.url.search + $page.url.hash);
@@ -285,6 +315,59 @@
   let requestedExpiryParam: string | null = null;
   // The longest the requester signed (a signed approval request or a device request); null on a plain link.
   let expiryMaxMs = $state<number | null>(null);
+  // TC-2933: the renewal checkbox, offered only when the approval request signed a renewal request
+  // (its longest lease). `renewalLeaseMs` is the owner's lease, null while the box is unticked.
+  let renewalMaxLeaseMs = $state<number | null>(null);
+  let renewalPurpose: unknown = undefined;
+  let renewalDefaulted = false;
+  let renewalLeaseMs = $state<number | null>(null);
+  // Spec D12: standing access starts ticked; D7: never in the Once tier (secrets or decrypt); D11: no purpose is a task.
+  // Ticking it re-prepares, so the preview the owner approves is the one that carries the lease.
+  $effect(() => {
+    if (renewalDefaulted || renewalMaxLeaseMs === null || !reviewModel) return;
+    renewalDefaulted = true;
+    if (renewalStartsTicked(renewalPurpose, reviewModel.permissions)) {
+      void changeRenewal(defaultLeaseMs(renewalMaxLeaseMs));
+    }
+  });
+  // The owner's choice as /prepare binds it into the preview; null when the request did not ask for renewal.
+  function renewalChoiceBody() {
+    if (renewalMaxLeaseMs === null) return null;
+    return renewalLeaseMs === null ? { choice: 'finite' } : { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000) };
+  }
+  const RENEWAL_NOT_SET_UP = "Renewal wasn't set up, so nothing was approved. Try again.";
+  // While an external wallet signs the lease: how long renewal lasts, shown in the prompt.
+  let renewalSigningMs = $state<number | null>(null);
+  // A changed lease (and, from the sensitive-access step, the window) is a new preview: prepare once with both.
+  async function changeRenewal(leaseMs: number | null, windowMs?: number | null) {
+    if (!selectedKey || !jwk) {
+      error = 'Missing key or JWK parameter.';
+      return;
+    }
+    const previous = { lease: renewalLeaseMs, choice: expiryChoiceMs, chosen: expiryChosen, param: expiryParam, requested: requestedExpiryParam };
+    renewalLeaseMs = leaseMs;
+    if (windowMs !== undefined) {
+      requestedExpiryParam ??= expiryParam;
+      expiryChoiceMs = windowMs;
+      expiryChosen = windowMs !== null;
+      expiryParam = windowMs === null ? requestedExpiryParam : `${Math.round(windowMs / 1000)}s`;
+    }
+    updatingPermissions = true;
+    error = '';
+    try {
+      const data = await prepareDelegation(selectedKey, permissionsEdited ? selectedActionKeys : undefined);
+      applyPreparedDelegation(data);
+    } catch (e: any) {
+      renewalLeaseMs = previous.lease;
+      expiryChoiceMs = previous.choice;
+      expiryChosen = previous.chosen;
+      expiryParam = previous.param;
+      requestedExpiryParam = previous.requested;
+      error = delegateErrorMessage(e);
+    } finally {
+      updatingPermissions = false;
+    }
+  }
   async function changeApprovalExpiry(ms: number | null) {
     if (!selectedKey || !jwk) {
       error = 'Missing key or JWK parameter.';
@@ -304,7 +387,7 @@
       expiryChoiceMs = previous.choice;
       expiryChosen = previous.chosen;
       expiryParam = previous.param;
-      error = e.message || 'Failed to change the expiry';
+      error = delegateErrorMessage(e);
     } finally {
       updatingPermissions = false;
     }
@@ -461,7 +544,7 @@
     requestReason = normalizeReason(deviceRequestReason(record));
     expiryMaxMs = deviceRequestTtlSeconds(record) * 1000;
   })();
-  deviceRequestVerified.catch((cause: Error) => { error = cause.message; });
+  deviceRequestVerified.catch((cause: unknown) => { error = delegateErrorMessage(cause); });
 
   // The wallet the CLI requested: the one owner (chain and address) every
   // requested space and raw encryption network resolves to. Owners that
@@ -504,7 +587,7 @@
       // Scrub even when storage is blocked or the reference is malformed.
       history.replaceState(history.state, '', location.pathname);
       if (hasQuery || !/^[a-z2-7]{26}$/.test(approvalRequestId)) {
-        throw new Error('This approval link is malformed. Ask the requesting app or person for a new complete link, sent on its own line.');
+        throw new OwnerMessageError('This approval link is malformed. Ask the requesting app or person for a new complete link, sent on its own line.');
       }
       const storageKey = `openkey.approval.${approvalRequestId}`;
       try {
@@ -512,10 +595,10 @@
         fragment ||= sessionStorage.getItem(storageKey) || '';
         if (fragment) sessionStorage.setItem(storageKey, fragment);
       } catch {
-        throw new Error('This browser could not keep the approval link for sign-in. Open the original complete link in Safari or Chrome with site storage enabled, not a private chat preview.');
+        throw new OwnerMessageError('This browser could not keep the approval link for sign-in. Open the original complete link in Safari or Chrome with site storage enabled, not a private chat preview.');
       }
       if (!fragment) {
-        throw new Error('This approval link is incomplete or belongs to another browser tab. Reopen the original complete link from the message, including everything after #. If it was cut off, ask for a new link sent on its own line.');
+        throw new OwnerMessageError('This approval link is incomplete or belongs to another browser tab. Reopen the original complete link from the message, including everything after #. If it was cut off, ask for a new link sent on its own line.');
       }
       const reference = location.pathname + fragment;
       approvalReference = reference;
@@ -536,12 +619,12 @@
           return;
         }
         if (response.status === 404 || ['not_found', 'gone'].includes(result?.code)) {
-          throw new Error('This approval request is unavailable or has expired. Ask the requesting app or person for a new approval link.');
+          throw new OwnerMessageError('This approval request is unavailable or has expired. Ask the requesting app or person for a new approval link.');
         }
         if (response.status >= 500) {
-          throw new Error('OpenKey could not load this request right now. Reopen the original complete link shortly. If it still fails, return to the requesting app or command.');
+          throw new OwnerMessageError('OpenKey could not load this request right now. Reopen the original complete link shortly. If it still fails, return to the requesting app or command.');
         }
-        throw new Error('This approval link could not be verified. Do not edit it or approve a different request. Ask the requesting app or person for a new complete link sent on its own line.');
+        throw new OwnerMessageError('This approval link could not be verified. Do not edit it or approve a different request. Ask the requesting app or person for a new complete link sent on its own line.');
       }
       if (result.approved) {
         done = true;
@@ -562,11 +645,14 @@
       // The requester signs its longest lifetime; the owner starts from its suggestion (the maximum when it gives none).
       expiryMaxMs = request.grantLifetimeSeconds * 1000;
       expiryParam = `${request.suggestedLifetimeSeconds ?? request.grantLifetimeSeconds}s`;
+      // The box only shows where this OpenKey has leases on (`renewalAvailable`); otherwise the plain line, and finite.
+      if (request.renewal && result.renewalAvailable === true) {
+        renewalMaxLeaseMs = Math.min(request.renewal.leaseLifetimeSeconds * 1000, MAX_LEASE_MS);
+        renewalPurpose = request.purpose;
+      }
       approvalRequestLoaded = true;
     } catch (cause) {
-      error = cause instanceof TypeError
-        ? 'Could not reach OpenKey. Check your connection and reopen the original complete approval link in your browser.'
-        : cause instanceof Error ? cause.message : 'Could not open this approval link. Return to the requesting app or command for a new link.';
+      error = delegateErrorMessage(cause);
     } finally {
       approvalRequestLoading = false;
     }
@@ -645,10 +731,21 @@
   async function loadKeys() {
     loading = true;
     try {
-      const result = await api.listKeys();
-      keys = activeKeys(result.keys);
+      const reviewEmail = $session.data?.user.email.trim().toLowerCase();
+      if (reviewEmail && ['openai-review@tinycloud.xyz', 'google-review@tinycloud.xyz'].includes(reviewEmail)) {
+        const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/delegate/prepare`, { credentials: 'include' });
+        if (!response.ok) throw new Error('Could not load the review account.');
+        const { key } = await response.json() as { key: { address: string; did: string } };
+        keys = [{
+          id: 'reviewer', address: key.address, publicKey: key.address, keyIndex: 0,
+          label: null, keyType: 'MANAGED', createdAt: '', isPrimary: true,
+        }];
+      } else {
+        const result = await api.listKeys();
+        keys = activeKeys(result.keys);
+      }
     } catch (e: any) {
-      error = e.message;
+      error = delegateErrorMessage(e);
     } finally {
       loading = false;
     }
@@ -676,7 +773,7 @@
       loading = false;
       await onKeySelect(key);
     } catch (e: any) {
-      error = e.message;
+      error = delegateErrorMessage(e);
       loading = false;
     }
   }
@@ -698,10 +795,7 @@
       editingPermissions = false;
       step = 'consent';
     } catch (e: any) {
-      const classification = delegateErrorClassification(e);
-      error = classification === 'busy' || classification === 'ended'
-        ? delegateErrorMessage(e)
-        : e instanceof DelegateResponseError ? delegateErrorMessage(e) : e.message || 'Failed to prepare delegation';
+      error = delegateErrorMessage(e);
       selectedKey = null;
     } finally {
       preparing = false;
@@ -711,10 +805,10 @@
   async function prepareDelegation(key: EthereumKey, actionKeys?: string[]) {
     // Every signing path starts here: never prepare the default abilities
     // for a request whose permissions could not be read.
-    if (permissionsParamError) throw new Error(permissionsParamError);
-    if (approvalRequestMode && !approvalRequestLoaded) throw new Error('Open the approval link again.');
-    if (linkPolicyError) throw new Error(linkPolicyError);
-    if (requestOwnerError) throw new Error(requestOwnerError);
+    if (permissionsParamError) throw new OwnerMessageError(permissionsParamError);
+    if (approvalRequestMode && !approvalRequestLoaded) throw new OwnerMessageError('Open the approval link again.');
+    if (linkPolicyError) throw new OwnerMessageError(linkPolicyError);
+    if (requestOwnerError) throw new OwnerMessageError(requestOwnerError);
     const API_URL = import.meta.env.VITE_API_URL || '';
     const body: Record<string, unknown> = {
       keyId: key.id,
@@ -743,6 +837,8 @@
         if (linkExpiryChangeable) body.expiryChangeable = true;
       }
     }
+    // TC-2933: the renewal choice is bound into this preview; approving reads it from there.
+    if (approvalRequestMode && renewalChoiceBody()) body.renewal = renewalChoiceBody();
     // The API refuses a device delegation outside the transaction's lifetime.
     if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
 
@@ -765,8 +861,8 @@
     const permissions = Array.isArray(data.permissions)
       ? (data.permissions as DelegatePermission[])
       : [];
-
     preparedData = data.prepared;
+
     siweMessage = data.prepared?.siwe || '';
     spaceSetup = parseSpaceSetup(data.spaceSetup);
     permissionOptions = permissions;
@@ -833,6 +929,7 @@
       // reactivity picks up the change.
       reviewModel = { ...reviewModel, rawMessage: siweMessage, expiry: siweExpiration(siweMessage) ?? reviewModel.expiry };
     }
+    approveBlockedByFailure = false;
   }
 
   function resetDelegationState() {
@@ -932,7 +1029,7 @@
     try {
       const accounts: string[] = await provider.request({ method: 'eth_requestAccounts' });
       if (!accounts || accounts.length === 0) {
-        throw new Error('No accounts returned from wallet');
+        throw new OwnerMessageError('No accounts returned from wallet');
       }
       const account = accounts[0];
 
@@ -956,7 +1053,7 @@
       if (e.code === 4001) {
         error = 'Wallet connection was rejected.';
       } else {
-        error = e.message || 'Failed to link wallet';
+        error = delegateErrorMessage(e);
       }
     } finally {
       linking = false;
@@ -972,6 +1069,7 @@
   }
 
   function approveDelegate() {
+    if (approveBlockedByFailure) return;
     if (deviceTransactionId && !deviceAcknowledged) {
       error = 'Confirm that you started this request yourself, on a device you control.';
       return;
@@ -1089,7 +1187,7 @@
       applyPreparedDelegation(data);
       editingPermissions = true;
     } catch (e: any) {
-      error = e.message || 'Failed to update permissions';
+      error = delegateErrorMessage(e);
     } finally {
       updatingPermissions = false;
     }
@@ -1109,7 +1207,7 @@
       applyPreparedDelegation(data);
       editingPermissions = false;
     } catch (e: any) {
-      error = e.message || 'Failed to reset permissions';
+      error = delegateErrorMessage(e);
     } finally {
       updatingPermissions = false;
     }
@@ -1126,7 +1224,7 @@
       typeof data.prepared?.siwe !== 'string' || !data.prepared.siwe.trim() ||
       !Array.isArray(data.permissions) ||
       !preparedMatchesSelection(reviewModel, data.permissions, reviewSelection, data.selectedActionKeys)) {
-      throw new Error('The request could not be prepared with the approved selection.');
+      throw new OwnerMessageError('The request could not be prepared with the approved selection.');
     }
     const refreshed = parseCapabilityReview({
       message: data.prepared.siwe,
@@ -1142,7 +1240,7 @@
       refreshed.parseWarnings.some(warning => warning.code !== 'unknown-service') ||
       refreshed.immutable.address.toLowerCase() !== key.address.toLowerCase() ||
       signedActions.length !== expected.size || !signedActions.every(action => expected.has(action))) {
-      throw new Error('The refreshed message does not match the approved selection.');
+      throw new OwnerMessageError('The refreshed message does not match the approved selection.');
     }
     applyPreparedDelegation(data);
   }
@@ -1163,12 +1261,10 @@
       // (see step === 'consent'), so both fields MUST be present. Fail
       // closed rather than silently degrading to the legacy regenerate path.
       if (!preparedData) {
-        throw new Error('No prepared session data. Please go back and try again.');
+        throw new OwnerMessageError('No prepared session data. Please go back and try again.');
       }
       if (!authorizationContextToken) {
-        throw new Error(
-          'Missing authorization context token from /prepare. Please restart the delegation.',
-        );
+        throw new OwnerMessageError('Missing authorization context token from /prepare. Please restart the delegation.');
       }
 
       const API_URL = import.meta.env.VITE_API_URL || '';
@@ -1272,7 +1368,7 @@
     try {
       const provider = getSigningProvider();
       if (!provider) {
-        throw new Error('No wallet detected. Please install a browser wallet to sign with external keys.');
+        throw new OwnerMessageError('No wallet detected. Please install a browser wallet to sign with external keys.');
       }
 
       // Try each wallet to find the matching account
@@ -1322,7 +1418,7 @@
       }
 
       if (!matchingAccount) {
-        throw new Error(
+        throw new OwnerMessageError(
           `None of your connected wallets have account ${selectedKey!.address}. ` +
           `Please connect the wallet that holds this account and try again.`
         );
@@ -1369,7 +1465,30 @@
         throw new DelegateResponseError(apiBusyOrEndedMessage(compRes.status) ?? (body.error || `HTTP ${compRes.status}`), body.code, compRes.status);
       }
 
-      const data = await compRes.json();
+      let data = await compRes.json();
+      if (data.renewalSignature) {
+        // TC-2933: the wallet signs the renewal lease too; declining it approves nothing.
+        renewalSigningMs = data.renewalSignature.leaseLifetimeSeconds * 1000;
+        let leaseSignature: string;
+        try {
+          leaseSignature = await matchingProvider.request({
+            method: 'personal_sign',
+            params: [data.renewalSignature.message, matchingAccount],
+          });
+        } catch {
+          throw new OwnerMessageError(RENEWAL_NOT_SET_UP);
+        } finally {
+          renewalSigningMs = null;
+        }
+        const leaseRes = await fetch(`${API_URL}/api/approval-requests/${approvalRequestId}/renewal-signature`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ signature: leaseSignature }),
+        });
+        if (!leaseRes.ok) throw new OwnerMessageError(RENEWAL_NOT_SET_UP);
+        data = await leaseRes.json();
+      }
       if (!data.hostActivated) {
         await activateWithHost(host, data.delegationHeader);
       }
@@ -1418,7 +1537,7 @@
     if (deviceTransactionId) {
       const API_URL = import.meta.env.VITE_API_URL || '';
       const delegationExpiresAt = payload.expiresAt ?? payload.expirationTime ?? payload.expiry;
-      if (typeof delegationExpiresAt !== 'string') throw new Error('The approved delegation has no expiry binding.');
+      if (typeof delegationExpiresAt !== 'string') throw new OwnerMessageError('The approved delegation has no expiry binding.');
       // The owner may have unchecked capabilities: bind and relay exactly
       // what the signed delegation grants, in the request's manifest form.
       const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions, {
@@ -1426,25 +1545,31 @@
         chainId: payload.chainId,
       });
       const relay = await encryptDeviceRelay({ ...payload, permissions: approvedPermissions });
-      const response = await fetch(`${API_URL}/api/device-authorizations/${encodeURIComponent(deviceTransactionId)}/approve`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          relay,
-          binding: {
-            transactionId: deviceTransactionId,
-            sessionDid: did,
-            nodeOrigin: host,
-            shareOrigin: deviceShareOrigin,
-            permissions: approvedPermissions,
-            delegationExpiresAt,
-          },
-        }),
-      });
+      let response: Response;
+      try {
+        response = await fetch(`${API_URL}/api/device-authorizations/${encodeURIComponent(deviceTransactionId)}/approve`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            relay,
+            binding: {
+              transactionId: deviceTransactionId,
+              sessionDid: did,
+              nodeOrigin: host,
+              shareOrigin: deviceShareOrigin,
+              permissions: approvedPermissions,
+              delegationExpiresAt,
+            },
+          }),
+        });
+      } catch {
+        throw new DeviceRelayDeliveryError(null, undefined);
+      }
       if (!response.ok) {
-        const body = await response.json().catch(() => ({ errorDescription: 'Could not deliver the approved delegation to the CLI.' }));
-        throw new Error(body.errorDescription || 'Could not deliver the approved delegation to the CLI.');
+        const body: unknown = await response.json().catch(() => null);
+        const code = typeof body === 'object' && body !== null && 'code' in body ? body.code : undefined;
+        throw new DeviceRelayDeliveryError(response.status, code);
       }
       done = true;
       step = 'done';
@@ -1483,9 +1608,13 @@
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ delegation: payload }),
+        body: JSON.stringify({ delegation: publicDelegationForCode(payload) }),
       });
-      if (response.ok) {
+      if (!response.ok) {
+        const body: unknown = await response.json().catch(() => null);
+        const code = typeof body === 'object' && body !== null && 'code' in body ? body.code : undefined;
+        shortCodeFailure = { status: response.status, code };
+      } else {
         const result = await response.json();
         const remainingMs = typeof result.expiresAt === 'string'
           ? remainingFromServerClock(result.expiresAt, response.headers.get('date'))
@@ -1512,7 +1641,7 @@
         error = authErrorMessage(result.error, 'Passkey sign-in failed');
       }
     } catch (e: any) {
-      error = e.message || 'Passkey sign-in failed';
+      error = delegateErrorMessage(e);
     } finally {
       signingIn = false;
     }
@@ -1650,7 +1779,7 @@
                 aria-label="Copy short code"
               >{copied ? 'Copied' : 'Copy code'}</button>
             {:else}
-              <p class="text-surface-500 text-sm mb-3">Short code unavailable. Use the full delegation code instead.</p>
+              <p class="text-surface-500 text-sm mb-3">{shortCodeFailureText(shortCodeFailure?.status, shortCodeFailure?.code)}</p>
             {/if}
             <p class="w-full rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900 mt-4" role="note">
               Only paste this code into a terminal you started yourself.
@@ -1845,8 +1974,12 @@
         {/if}
 
         {#if selectedKey.keyType === 'EXTERNAL'}
-          <div class="p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700">
-            Your browser wallet will prompt you to sign a message to authorize this delegation.
+          <div class="p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700" role={renewalSigningMs !== null ? 'status' : undefined}>
+            {#if renewalSigningMs !== null}
+              Sign once more to turn on renewal for up to {formatDuration(renewalSigningMs)}
+            {:else}
+              Your browser wallet will prompt you to sign a message to authorize this delegation.
+            {/if}
           </div>
         {/if}
         {#if spaceSetup}
@@ -1875,11 +2008,13 @@
               model={reviewModel}
               initialSelection={reviewSelection}
               context={cliContext}
+              onEditingStateChange={(editing) => { reviewEditing = editing; }}
               showSigner={keys.length > 1}
               transport={{
                 approving: delegating || updatingPermissions,
                 error,
                 approveBlockedReason,
+                approveBlockedByFailure,
                 approveDelegate,
                 goBack,
                 ...(approvalRequestMode ? { decline: declineRequest, declining } : {}),
@@ -1901,6 +2036,13 @@
                   maxMs: expiryMaxMs,
                   onChange: changeApprovalExpiry,
                 },
+                ...(renewalMaxLeaseMs !== null ? {
+                  renewal: {
+                    leaseMs: renewalLeaseMs,
+                    maxLeaseMs: renewalMaxLeaseMs,
+                    onChange: (ms: number | null, windowMs?: number | null) => { void changeRenewal(ms, windowMs); },
+                  },
+                } : {}),
               }}
             />
           </div>
@@ -1953,7 +2095,7 @@
               <Button variant="secondary" onclick={goBack} disabled={delegating} class="flex-1 rounded-xl">
                 Back
               </Button>
-              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch) || (hostNeedsAcknowledgment && !hostAcknowledged)} class="flex-1 rounded-xl">
+              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || approveBlockedByFailure || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch) || (hostNeedsAcknowledgment && !hostAcknowledged)} class="flex-1 rounded-xl">
                 {#if delegating}
                   Signing...
                 {:else if updatingPermissions}

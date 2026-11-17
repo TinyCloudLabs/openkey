@@ -6,7 +6,7 @@
 
   let { children }: { children: Snippet } = $props();
 
-  let isEmbed = $derived($page.url.pathname.startsWith('/widget/embed'));
+  let isWidget = $derived($page.url.pathname === '/widget' || $page.url.pathname.startsWith('/widget/'));
   let isFullScreen = $derived(
     $page.url.pathname === '/' ||
     $page.url.pathname.startsWith('/auth/') ||
@@ -14,12 +14,13 @@
     // auth sheets; the account chrome must not wrap them.
     $page.url.pathname.startsWith('/oauth/') ||
     $page.url.pathname.startsWith('/delegate') ||
+    $page.route.id === '/a/[id]' ||
     $page.url.pathname.startsWith('/console') ||
     // The dev-only parity harness route hosts a bare adapter mount so
     // Playwright tests can drive it without surrounding chrome
     // interfering with focus order.
     $page.url.pathname.startsWith('/__parity_harness') ||
-    isEmbed
+    isWidget
   );
 </script>
 

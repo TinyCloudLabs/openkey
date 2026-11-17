@@ -19,6 +19,11 @@ export const FIRST_PARTY_ENCRYPTION_ORIGINS: ReadonlySet<string> = new Set([
   // tinychat: backend/src/cors-origins.ts:14 (HOME_WEB_ORIGIN), .github/workflows/deploy-production.yml:198.
   // Its Pages project's own `*.pages.dev` hosts are deliberately not first-party.
   'https://home.tinycloud.xyz',
+  // The Home app on tinycloud.one: the same tinychat web build as the two origins above, served from
+  // its own origin, so it asks for the same sign-in (the tinychat files above). Exact origin only:
+  // `www.tinycloud.one` and other subdomains, ports and `http://` are not first-party.
+  // tinychat: backend/src/cors-origins.ts (TINYCLOUD_ONE_WEB_ORIGIN).
+  'https://tinycloud.one',
   // tinychat desktop (Exo) on macOS and Linux. tinychat: backend/src/cors-origins.ts:2; the
   // SIWE origin guard special-cases it (services/siwe-origin.ts, APP_SHELL_ORIGINS).
   'tauri://localhost',

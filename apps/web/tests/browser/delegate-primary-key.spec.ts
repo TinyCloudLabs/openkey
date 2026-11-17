@@ -141,8 +141,10 @@ test.describe('TC-703 primary key picker', () => {
     expect(payload.primary).toBe(true);
   });
 
-  test('the CLI callback receives the primary flag from the API unchanged', async ({ page }) => {
-    await mock(page, threeKeys, { primary: false });
+  test('the CLI callback receives the primary flag and full readiness metadata from the API unchanged', async ({ page }) => {
+    const requestedSpaces = ['tinycloud:pkh:eip155:1:0xd559ccd9eb87c530a9a349262669386de93cf412:default'];
+    const fullJwk = { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', kid: 'delegate-key', alg: 'EdDSA', ext: true, key_ops: ['verify'] };
+    await mock(page, threeKeys, { primary: false, requestedSpaces, jwk: fullJwk });
     let delivered: Record<string, unknown> | null = null;
     await page.route('http://127.0.0.1:47123/callback', (route) => {
       if (route.request().method() === 'POST') delivered = route.request().postDataJSON() as Record<string, unknown>;
@@ -154,6 +156,8 @@ test.describe('TC-703 primary key picker', () => {
     await expect(page.getByText('You can close this window and return to the CLI.')).toBeVisible();
     expect(delivered).not.toBeNull();
     expect(delivered!.primary).toBe(false);
+    expect(delivered!.requestedSpaces).toEqual(requestedSpaces);
+    expect(delivered!.jwk).toEqual(fullJwk);
   });
 
   test('archiving key zero leaves the sole nonzero primary as the signer', async ({ page }) => {

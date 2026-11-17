@@ -28,7 +28,7 @@
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
-  import { hasSignResult, hasText, readReply, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
+import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
   import { createFrameSettleGate, type FrameSettleGate } from '$lib/frame-settle-gate';
   import {
     createIframeLayoutGate,
@@ -1004,7 +1004,8 @@
       };
     } catch (e: any) {
       if (!isCurrent()) return;
-      if (e instanceof ServerReplyError) unreadableReply(e.status);
+      if (e instanceof ServerRefusalError) refuse(e);
+      else if (e instanceof ServerReplyError) unreadableReply(e.status);
       else if (!refuse(e)) error = e.message || 'Preview failed';
       previewToken = null;
       heldPreview = null;
@@ -1120,7 +1121,8 @@
       });
       sendClose();
     } catch (e: any) {
-      if (e instanceof ServerReplyError) unreadableReply(e.status);
+      if (e instanceof ServerRefusalError) refuse(e);
+      else if (e instanceof ServerReplyError) unreadableReply(e.status);
       else if (!refuse(e)) error = e.message || 'Signing failed';
     } finally {
       signing = false;
@@ -1163,6 +1165,9 @@
 
   // A reply that cannot be read leaves nothing approved: show the refusal and
   // tell the host once, without any reply content.
+
+  let refusalMessage = $state<string | null>(null);
+
   function unreadableReply(status: number) {
     replyFailureStatus = status;
     error = '';
@@ -1178,6 +1183,7 @@
   function refuse(failure: unknown): boolean {
     const terminal = terminalRefusal(failure);
     if (!terminal) return false;
+    refusalMessage = terminal.text;
     refused = true;
     error = terminal.text;
     previewToken = null;
@@ -1359,6 +1365,7 @@
           approving: signing,
           host: messageHost,
           error: error || layoutError,
+          approveBlockedReason: refusalMessage,
           refused,
           canUseAuthorizeSign: canUseAuthorizeSignFn(),
           previewReady: currentPreview() !== null,
