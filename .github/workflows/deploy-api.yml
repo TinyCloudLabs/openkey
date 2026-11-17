@@ -192,7 +192,8 @@ jobs:
 
       # Rollback promotes an image that was deployed before, by digest, and nothing else: it needs a reason, and the
       # digest must be in the reviewed list or have a deployment record made by this workflow's own successful
-      # run on main ("Record the deployed image" below), so an image that never ran in production is refused.
+      # run on main that uploaded an artifact naming this digest ("Record the deployed image" below), so an image that
+      # never ran in production is refused.
       # Migrations are not run.
       - name: Roll back to a previously deployed image
         id: rollback
@@ -214,7 +215,8 @@ jobs:
           # Previously deployed means one of two things, and nothing a person can create by hand counts:
           #  - the digest is in .github/deployed-api-images.txt with a reason (images that ran before the records; changed by PR), or
           #  - a Deployment record made by github-actions[bot] (the "Record the deployed image" step) names it, its
-          #    status is success, and its payload.run is a successful deploy-api.yml run on main.
+          #    status is success, its payload.run is a successful deploy-api.yml run on main, and that run's own
+          #    artifact deployed-api-image-<digest> (uploaded below) names the same digest.
           deployed=""
           if grep -Eq "^$ROLLBACK_DIGEST[[:space:]]+[^[:space:]]" .github/deployed-api-images.txt; then
             deployed="the list in .github/deployed-api-images.txt"
@@ -224,7 +226,12 @@ jobs:
               ok="$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --jq '[.[] | select(.state == "success")] | length')"
               [ "${ok:-0}" -gt 0 ] || continue
               prov="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '[(.path | split("@")[0]), .head_branch, .conclusion] | @tsv')"
-              if [ "$prov" = "$(printf '.github/workflows/deploy-api.yml\tmain\tsuccess')" ]; then deployed="deployment record $id (run $run_id)"; break; fi
+              [ "$prov" = "$(printf '.github/workflows/deploy-api.yml\tmain\tsuccess')" ] || continue
+              # That run must itself have deployed this digest: it uploaded an artifact named for it. Any workflow's
+              # token shows up as github-actions[bot] and can cite a real run id, but cannot add artifacts to that run.
+              named="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" \
+                --jq "[.artifacts[] | select(.name == \"deployed-api-image-${ROLLBACK_DIGEST#sha256:}\" and (.expired | not))] | length")"
+              if [ "${named:-0}" -gt 0 ]; then deployed="deployment record $id (run $run_id)"; break; fi
             done < <(gh api --paginate "repos/$GITHUB_REPOSITORY/deployments?environment=openkey-api-image&per_page=100" \
               --jq ".[] | select(.creator.login == \"github-actions[bot]\" and (.payload | type) == \"object\" and .payload.digest == \"$ROLLBACK_DIGEST\") | [.id, .payload.run] | @tsv")
           fi
@@ -309,6 +316,7 @@ jobs:
       # The digest that ran is recorded as a Deployment (environment openkey-api-image) so a later rollback can be
       # limited to images that were deployed. The payload carries the digest, the commit, the run and any reason.
       - name: Record the deployed image
+        id: record
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE_REF: ${{ steps.promote.outputs.image_ref || steps.rollback.outputs.image_ref }}
@@ -317,12 +325,23 @@ jobs:
         run: |
           set -euo pipefail
           digest="${IMAGE_REF#*@}"
+          # The artifact below is named for the digest: only this run can add it, and a rollback reads it back.
+          printf '%s\n' "$digest" > "$RUNNER_TEMP/deployed-api-image.txt"
+          echo "artifact=deployed-api-image-${digest#sha256:}" >> "$GITHUB_OUTPUT"
           body="$(jq -n --arg ref "$GITHUB_SHA" --arg digest "$digest" --arg run "$GITHUB_RUN_ID" --arg actor "$GITHUB_ACTOR" \
             --arg reason "$ROLLBACK_REASON" --argjson rollback "$IS_ROLLBACK" \
             '{ref: $ref, environment: "openkey-api-image", auto_merge: false, required_contexts: [], transient_environment: false,
               description: ("API image " + $digest), payload: {digest: $digest, run: $run, actor: $actor, rollback: $rollback, reason: $reason}}')"
           id="$(printf '%s' "$body" | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)"
           gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=success -f description="API image $digest deployed" > /dev/null
+
+      - name: Name the deployed image in an artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.record.outputs.artifact }}
+          path: ${{ runner.temp }}/deployed-api-image.txt
+          retention-days: 90
+          if-no-files-found: error
 
       - name: Record deployed commit
         env:

@@ -59,7 +59,7 @@ case "$*" in
   *"-X POST"*"/deployments --input"*) cat >> "$STUB_STDIN"; echo 101; exit 0 ;;
   *"/deployments/"*"/statuses"*) emit "$STATUSES_JSON"; exit 0 ;;
   *"deployments?environment"*) emit "$DEPLOYMENTS_JSON"; exit 0 ;;
-  *"/artifacts"*) printf '%s' "$ARTIFACTS"; exit 0 ;;
+  *"/artifacts"*) if [ -n "$ARTIFACTS_JSON" ]; then emit "$ARTIFACTS_JSON"; else printf '%s' "$ARTIFACTS"; fi; exit 0 ;;
   *"/actions/runs/"*) emit "$RUN_JSON"; exit 0 ;;
 esac
 if [ "$2" = list ]; then printf '%s' "$RUN_ID"; exit 0; fi
@@ -197,9 +197,10 @@ const rollback = stepScript('Roll back to a previously deployed image');
 const BOT = 'github-actions[bot]';
 const record = (over = {}) => JSON.stringify([{ id: 7, creator: { login: BOT }, payload: { digest: DIGEST, run: '900' }, ...over }]);
 const RUN_OK = JSON.stringify({ path: '.github/workflows/deploy-api.yml', head_branch: 'main', conclusion: 'success' });
+const artifactsFor = (digest, over = {}) => JSON.stringify({ artifacts: [{ name: `deployed-api-image-${digest.slice('sha256:'.length)}`, expired: false, ...over }] });
 const ROLLBACK = {
   ROLLBACK_DIGEST: DIGEST, ROLLBACK_REASON: 'sign-in regression in the new image', TAG_EXISTS: '1',
-  DEPLOYMENTS_JSON: record(), STATUSES_JSON: '[{"state":"success"}]', RUN_JSON: RUN_OK,
+  DEPLOYMENTS_JSON: record(), STATUSES_JSON: '[{"state":"success"}]', RUN_JSON: RUN_OK, ARTIFACTS_JSON: artifactsFor(DIGEST),
 };
 const NO_LIST = { '.github/deployed-api-images.txt': '# nothing listed\n' };
 const attempt = (env = {}, files = NO_LIST) => run(rollback, { ...ROLLBACK, ...env }, TESTED, files);
@@ -244,6 +245,10 @@ test('rollback refuses a digest the workflow never deployed, whoever made the re
   refused({ RUN_JSON: JSON.stringify({ path: '.github/workflows/deploy-api.yml', head_branch: 'feature', conclusion: 'success' }) }, 'a run off main');
   refused({ RUN_JSON: JSON.stringify({ path: '.github/workflows/other.yml', head_branch: 'main', conclusion: 'success' }) }, 'another workflow');
   refused({ DEPLOYMENTS_JSON: record({ payload: { digest: DIGEST, run: 'x; rm -rf /' } }) }, 'a run id that is not a number');
+  // A bot token from any workflow can cite a real run id; only the cited run can have uploaded its own artifact.
+  refused({ ARTIFACTS_JSON: '{"artifacts":[]}' }, 'a cited run that uploaded no artifact');
+  refused({ ARTIFACTS_JSON: artifactsFor(OTHER) }, 'a cited run whose artifact names another digest');
+  refused({ ARTIFACTS_JSON: artifactsFor(DIGEST, { expired: true }) }, 'a cited run whose artifact has expired');
   refused({ DEPLOYMENTS_JSON: '[]' }, 'a different digest in the list', { '.github/deployed-api-images.txt': `${OTHER} # not this one\n` });
   refused({ DEPLOYMENTS_JSON: '[]' }, 'a listed digest with no reason', { '.github/deployed-api-images.txt': `${DIGEST}\n${DIGEST}   \n` });
 });
@@ -265,6 +270,7 @@ test('the deployed digest is recorded for later rollbacks, with the reason on a 
   assert.deepEqual(body.required_contexts, []);
   assert.equal(body.payload.digest, DIGEST);
   assert.equal(body.payload.rollback, false);
+  assert.equal(deploy.out.trim(), `artifact=deployed-api-image-${DIGEST.slice('sha256:'.length)}`, 'the artifact name is the one a rollback looks for');
   assert.match(deploy.log, /deployments\/101\/statuses.*state=success/);
 
   const back = JSON.parse(run(record, { ...env, ROLLBACK_REASON: 'bad release', IS_ROLLBACK: 'true' }).stdin);
@@ -277,4 +283,10 @@ test('the deploy summary prints the digest that runs, not only a tag', () => {
   assert.equal(summary.status, 0, summary.stderr);
   assert.match(summary.summary, new RegExp(`Image: \`skgbafa/openkey-api@${DIGEST}\``));
   assert.doesNotMatch(summary.summary, new RegExp(`skgbafa/openkey-api:${SHA}`));
+});
+
+test('every line of the committed rollback list is a full digest with a reason', () => {
+  const lines = readFileSync(new URL('../deployed-api-images.txt', import.meta.url), 'utf8').split('\n').filter((l) => l.trim() && !l.startsWith('#'));
+  assert.ok(lines.length > 0, 'the live image is listed');
+  for (const line of lines) assert.match(line, /^sha256:[0-9a-f]{64} \S/, line);
 });
