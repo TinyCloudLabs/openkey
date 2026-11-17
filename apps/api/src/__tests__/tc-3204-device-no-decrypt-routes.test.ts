@@ -56,7 +56,8 @@ const prisma = {
 };
 
 const activateSessionWithHost = mock(async () => ({ success: true }));
-const deviceService = new DeviceAuthorizationService(new MemoryDeviceAuthorizationStore(), {
+const store = new MemoryDeviceAuthorizationStore();
+const deviceService = new DeviceAuthorizationService(store, {
   verificationOrigin: 'https://openkey.so',
   encryptionSecret: 'test-device-authorization-secret-is-long-enough',
 });
@@ -148,20 +149,23 @@ describe('a device request approved with an added decrypt (TC-3204)', () => {
       const page = { keyId: keyRecord.id, jwk, host, prefix: 'default', permissions, expiry: '3600s', deviceTransactionId: transactionId };
       const prepared = await post('/prepare', page);
       expect(prepared.status).toBe(400);
+      expect(prepared.body).toMatchObject({ code: 'invalid_permissions' });
       expect(prepared.body.prepared).toBeUndefined();
 
       const legacy = await post('/', page);
       expect(legacy.status).toBe(400);
+      expect(legacy.body).toMatchObject({ code: 'invalid_permissions' });
       expect(legacy.body.delegationHeader).toBeUndefined();
 
       // A wallet that signed the wider bytes (prepared without the device id) is refused at /complete.
       const unnamed = await post('/prepare', { ...page, deviceTransactionId: undefined });
-      if (unnamed.status === 200) {
-        const signature = await account.signMessage({ message: unnamed.body.prepared.siwe });
-        const completed = await post('/complete', { prepared: unnamed.body.prepared, signature, host, jwk, permissions, deviceTransactionId: transactionId });
-        expect(completed.status).toBe(400);
-        expect(completed.body.delegationHeader).toBeUndefined();
-      }
+      expect(unnamed.status).toBe(200);
+      const signature = await account.signMessage({ message: unnamed.body.prepared.siwe });
+      const completed = await post('/complete', { prepared: unnamed.body.prepared, signature, host, jwk, permissions, deviceTransactionId: transactionId });
+      expect(completed.status).toBe(400);
+      // /complete reports the refusal without a code field.
+      expect(completed.body.error).toBe("permissions[2] asks to decrypt, and a device approval can't grant tinycloud.encryption. Start a new sign-in.");
+      expect(completed.body.delegationHeader).toBeUndefined();
       expect(activateSessionWithHost).not.toHaveBeenCalled();
     });
   }
@@ -171,5 +175,53 @@ describe('a device request approved with an added decrypt (TC-3204)', () => {
     expect(signed.status).toBe(200);
     expect(signed.body.delegationHeader).toBeDefined();
     expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a pending device request recorded with decrypt before TC-3204 (TC-3204)', () => {
+  // The base device flow stored this entry; records started before the deploy may still hold it.
+  const recordedDecrypt = { service: 'tinycloud.encryption', space: 'default', path: '', actions: [DECRYPT] };
+
+  beforeEach(async () => {
+    const record = await store.findById(transactionId);
+    if (!record) throw new Error('device record missing');
+    record.permissions = [...record.permissions, recordedDecrypt];
+  });
+
+  test('a kv + capabilities body is refused at /prepare, legacy POST /, token POST / and /complete, and nothing is activated', async () => {
+    const page = { keyId: keyRecord.id, jwk, host, prefix: 'default', permissions: requested, expiry: '3600s', deviceTransactionId: transactionId };
+    const prepared = await post('/prepare', page);
+    expect(prepared.status).toBe(400);
+    expect(prepared.body).toMatchObject({ code: 'signed_exceeds_request' });
+
+    const legacy = await post('/', page);
+    expect(legacy.status).toBe(400);
+    expect(legacy.body).toMatchObject({ code: 'signed_exceeds_request' });
+    expect(legacy.body.delegationHeader).toBeUndefined();
+
+    // Bytes prepared without the device id, then signed with it.
+    const unnamed = await post('/prepare', { ...page, deviceTransactionId: undefined });
+    expect(unnamed.status).toBe(200);
+    const token = await post('/', {
+      keyId: keyRecord.id,
+      jwk,
+      host,
+      prepared: unnamed.body.prepared,
+      authorizationContextToken: unnamed.body.authorizationContext.token,
+      selectedActionIds: unnamed.body.selectedActionKeys,
+      protocolVersion: 1,
+      deviceTransactionId: transactionId,
+      permissions: requested,
+    });
+    expect(token.status).toBe(400);
+    expect(token.body).toMatchObject({ code: 'signed_exceeds_request' });
+    expect(token.body.delegationHeader).toBeUndefined();
+
+    const signature = await account.signMessage({ message: unnamed.body.prepared.siwe });
+    const completed = await post('/complete', { prepared: unnamed.body.prepared, signature, host, jwk, permissions: requested, deviceTransactionId: transactionId });
+    expect(completed.status).toBe(400);
+    expect(completed.body).toMatchObject({ code: 'signed_exceeds_request' });
+    expect(completed.body.delegationHeader).toBeUndefined();
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
   });
 });
