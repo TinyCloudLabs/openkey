@@ -132,8 +132,17 @@ jobs:
         run: |
           set -euo pipefail
           gunzip -c "$RUNNER_TEMP/api-image/api-image.tar.gz" | docker load
+          # The loaded image must be the one the build produced and the Review path ran: its id equals the id
+          # review-path.yml recorded right after the build. The GIT_SHA label is a second check, not the binding.
+          expected="$(cat "$RUNNER_TEMP/api-image/api-image.id")"
+          loaded="$(docker image inspect --format '{{.Id}}' "openkey-api:$GITHUB_SHA")"
+          if [ -z "$expected" ] || [ "$loaded" != "$expected" ]; then
+            echo "::error::the downloaded image is $loaded, not the image the Review path ran ($expected)"
+            exit 1
+          fi
           docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "openkey-api:$GITHUB_SHA" | grep -qx "GIT_SHA=$GITHUB_SHA" \
             || { echo "::error::the downloaded image was not built from $GITHUB_SHA"; exit 1; }
+          echo "Promoting image $loaded (the one the Review path ran) as $DOCKER_IMAGE:$GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
           docker tag "openkey-api:$GITHUB_SHA" "$DOCKER_IMAGE:$GITHUB_SHA"
           docker push "$DOCKER_IMAGE:$GITHUB_SHA"
 

@@ -132,6 +132,7 @@ jobs:
       # The image the check runs is built from the Dockerfile with GIT_SHA=<this commit>, the same
       # build deploy-api.yml ships; /health reports the commit, which the next steps check.
       - name: Build the API image
+        id: build
         if: steps.relevance.outputs.relevant == 'true'
         uses: docker/build-push-action@v5
         with:
@@ -230,6 +231,25 @@ jobs:
 
       # Build once, promote the same artifact: the image that just passed is saved as it is, and
       # deploy-api.yml pushes this exact image (commit tag only, never `latest`) instead of rebuilding.
+      # The saved image is bound to the build by its id, not by a label: the steps above run third-party
+      # code (bun install, playwright, the specs) after the build, so the tag must still be the image the
+      # build step produced. This check runs on every relevant run (so a PR proves the id comparison works);
+      # only a push to main saves and uploads, and the id travels with the tarball.
+      - name: Check the tested image is the image the build produced
+        if: steps.relevance.outputs.relevant == 'true'
+        env:
+          BUILT_IMAGE_ID: ${{ steps.build.outputs.imageid }}
+        run: |
+          set -euo pipefail
+          [ -n "$BUILT_IMAGE_ID" ] || { echo "::error::the build step reported no image id"; exit 1; }
+          current="$(docker image inspect --format '{{.Id}}' "$API_IMAGE")"
+          if [ "$current" != "$BUILT_IMAGE_ID" ]; then
+            echo "::error::$API_IMAGE is $current, not the image the build produced ($BUILT_IMAGE_ID)"
+            exit 1
+          fi
+          printf '%s\n' "$BUILT_IMAGE_ID" > "$RUNNER_TEMP/api-image.id"
+          echo "Review path ran image $BUILT_IMAGE_ID." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Save the image that passed, for deploy-api.yml to promote
         if: github.event_name == 'push' && steps.relevance.outputs.relevant == 'true'
         run: docker save "$API_IMAGE" | gzip -1 > "$RUNNER_TEMP/api-image.tar.gz"
@@ -239,7 +259,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: api-image-${{ github.sha }}
-          path: ${{ runner.temp }}/api-image.tar.gz
+          path: |
+            ${{ runner.temp }}/api-image.tar.gz
+            ${{ runner.temp }}/api-image.id
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
