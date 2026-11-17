@@ -4,7 +4,7 @@ name: Drop Session Expiry Backup
 # (backfill-session-expiry.yml, TC-2101, #364) left in place (TC-2110). The 30-day web session
 # cap stays, so the backup is not needed. Run it once, from main.
 #
-# Order: (1) read the one row read-only and encrypt it to the age recipient given as input,
+# Order: (1) read the one row read-only and encrypt it to the pinned age recipient (AGE_RECIPIENT below),
 # uploaded as the artifact session-expires-20261026-backup on this run (kept 30 days); (2) only
 # after the upload, drop. The drop refuses unless the table holds exactly one row that still hashes
 # to the backed-up one (an absent table is "already gone" and exits 0 without changes). In one
@@ -18,12 +18,14 @@ on:
       confirm:
         description: 'Type exactly: drop-ops_backup.session_expires_20261026'
         required: true
-      age_recipient:
-        description: 'age public recipient (age1...) the backup row is encrypted to; the matching private key is the only way to read it'
-        required: true
 
 permissions:
   contents: read
+
+env:
+  # Pinned, not a dispatch input: registry backup key 2. The private half is held by Amos on the host
+  # (single copy, not yet escrowed; the same open escrow item as the registry backups).
+  AGE_RECIPIENT: age1jdhzw3vqk2dz5k7csh364gek3g6azq36j6rf2sk3vl285mwalskss7m4vj
 
 jobs:
   drop:
@@ -49,14 +51,13 @@ jobs:
       - name: Validate inputs
         env:
           DROP_CONFIRM: ${{ inputs.confirm }}
-          AGE_RECIPIENT: ${{ inputs.age_recipient }}
         run: |
           set -euo pipefail
           if [ "$DROP_CONFIRM" != "drop-ops_backup.session_expires_20261026" ]; then
             echo "confirm must be: drop-ops_backup.session_expires_20261026" >&2
             exit 1
           fi
-          [[ "$AGE_RECIPIENT" =~ ^age1[0-9a-z]+$ ]] || { echo "a valid age recipient is required" >&2; exit 1; }
+          [[ "$AGE_RECIPIENT" =~ ^age1[0-9a-z]+$ ]] || { echo "the pinned age recipient is not a valid age1... key" >&2; exit 1; }
 
       - name: Install dependencies
         run: |
@@ -91,12 +92,10 @@ jobs:
             echo "digest=$digest" >> "$GITHUB_OUTPUT"
           fi
 
-      # The backup: age-encrypted to the recipient given as input, uploaded as a workflow artifact
+      # The backup: age-encrypted to the pinned recipient, uploaded as a workflow artifact
       # of this run. The plaintext row never leaves the runner and is removed right after.
       - name: Encrypt the backup
         if: steps.backup.outputs.present == 'true'
-        env:
-          AGE_RECIPIENT: ${{ inputs.age_recipient }}
         run: |
           set -euo pipefail
           umask 077
