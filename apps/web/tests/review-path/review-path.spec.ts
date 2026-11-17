@@ -10,6 +10,12 @@
 // connector's approval callback and the (local, never real) TinyCloud node. The API, the database, the
 // sign-in, the consent and the signing are real.
 //
+// Not covered, by design of the seed (scripts/review-path/seed.ts): it writes the reviewer's user, key and
+// binding rows directly instead of running provisioning, so the trusted-node-host check, the audience pin
+// (pinReviewerAudience) and the ready flow are not exercised here; the reviewer's own flags match production
+// (auto-sign and TinyCloud key management off). Route-by-route reach of a reviewer session is proved in
+// apps/api/src/__tests__/reviewer-accounts.integration.test.ts; the N03 cases below sample it over HTTP.
+//
 // The cases share one reviewer account and its consent, so they run in file order against a fresh database.
 // A second run against the same database sees the first run's consent and the N01 case fails.
 

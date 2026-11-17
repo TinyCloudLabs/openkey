@@ -3,7 +3,7 @@ import type { PrismaClient } from '@openkey/db';
 import { logReviewer } from '../log';
 import { REVIEWER_MAX_SECONDS, captureReviewer, reviewerActive, reviewerForUser, reviewerForEmail } from '../services/reviewer-accounts';
 
-const ROUTES = new Set([
+export const REVIEWER_ROUTES = new Set([
   'GET /api/auth/get-session', 'POST /api/auth/sign-out',
   'POST /api/auth/sign-in/reviewer', 'POST /api/auth/sign-in/email-otp',
   'GET /api/auth/oauth2/authorize', 'GET /api/auth/oauth2/public-client',
@@ -24,7 +24,7 @@ export function createReviewerRouteGuard(
     const principals = await resolve(c.req.raw.headers);
     const bindings = await Promise.all(principals.map((principal) => reviewerForUser(database, principal.userId)));
     if (!bindings.some(Boolean)) return next();
-    const allowed = ROUTES.has(`${c.req.method} ${c.req.path.replace(/\/$/, '')}`);
+    const allowed = REVIEWER_ROUTES.has(`${c.req.method} ${c.req.path.replace(/\/$/, '')}`);
     let captured = false;
     for (const [index, principal] of principals.entries()) {
       // A reviewer credential beside any other account's credential is refused outright.

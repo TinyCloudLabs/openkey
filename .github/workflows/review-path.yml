@@ -154,9 +154,10 @@ jobs:
           PGOPTIONS: -c client_min_messages=warning
         run: scripts/review-path/apply-migrations.sh
 
-      # The image's own defaults (NODE_ENV=production, TEE_MODE=development) are refused at boot, so the
-      # run overrides both, as a developer's local API does. No TinyCloud node is reached: the bootstrap
-      # sweep is off and the seeded node address is a local port nothing listens on.
+      # The image's own defaults (NODE_ENV=production, TEE_MODE=production) need a real TEE and its sealing
+      # key, so this run, and only this run, overrides both at runtime, as a developer's local API does. The
+      # image is not changed: it is saved as built, still defaulting to production. No TinyCloud node is
+      # reached: the bootstrap sweep is off and the seeded node address is a local port nothing listens on.
       - name: Start the API from the image
         if: steps.relevance.outputs.relevant == 'true'
         run: |

@@ -88,7 +88,11 @@ async function main() {
 
     // Held until the code is installed (the admin route lifts the hold), as in production.
     await prisma.user.create({
-      data: { id: 'review-path-owner', email: EMAIL, emailVerified: true, name: 'App review', reviewerHoldAt: new Date() },
+      data: {
+        id: 'review-path-owner', email: EMAIL, emailVerified: true, name: 'App review', reviewerHoldAt: new Date(),
+        // As the production reviewer fixture (reviewer-fixtures.ts): not the schema's default of true.
+        autoSignEnabled: false, tinyCloudManageKeyEnabled: false,
+      },
     });
     const privateKey = generatePrivateKey();
     const address = getAddressFromPrivateKey(privateKey);
