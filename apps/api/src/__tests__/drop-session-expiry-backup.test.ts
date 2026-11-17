@@ -23,7 +23,7 @@ interface SqlClient {
 interface DropModule {
   BACKUP_TABLE: string;
   CONFIRM_PHRASE: string;
-  SQL: { dropTable: string; dropSchema: string };
+  SQL: { count: string; lock: string; rowJson: string; dropTable: string; dropSchema: string };
   DropRefused: new (message: string) => Error;
   describeFailure(error: unknown): { exitCode: number; line: string };
   dropBackup(client: SqlClient, log: (line: string) => void, options?: { expectedDigest?: string }): Promise<{ outcome: string; schema?: string; schemaObjects?: number }>;
@@ -185,17 +185,47 @@ describe('dropBackup', () => {
     expect(await state(db)).toEqual({ relations: ['ops_backup.session_expires_20261026'], schema: true });
   });
 
-  test('the statements that change anything are exactly the two drops, without CASCADE', async () => {
+  test('the statements executed are the table lock and the two drops, without CASCADE', async () => {
     const db = await database(1);
-    const changing: string[] = [];
+    const executed: string[] = [];
     const recording: SqlClient = {
       transaction: (run) => clientFor(db).transaction((transaction) => run({
         rows: transaction.rows,
-        execute: (sql) => { changing.push(sql); return transaction.execute(sql); },
+        execute: (sql) => { executed.push(sql); return transaction.execute(sql); },
       })),
     };
     await dropBackup(recording, () => {});
-    expect(changing).toEqual([`DROP TABLE ${BACKUP_TABLE}`, 'DROP SCHEMA ops_backup']);
+    expect(executed).toEqual([`LOCK TABLE ${BACKUP_TABLE} IN ACCESS EXCLUSIVE MODE`, `DROP TABLE ${BACKUP_TABLE}`, 'DROP SCHEMA ops_backup']);
+  });
+
+  test('the table is locked before the row count and the row are read, so nothing can change between the checks and the drop', async () => {
+    const db = await database(1);
+    const backup = await backupRow(clientFor(db), () => {});
+    if (!backup.present) throw new Error('unreachable');
+    const order: string[] = [];
+    const recording: SqlClient = {
+      transaction: (run) => clientFor(db).transaction((transaction) => run({
+        rows: (sql) => { order.push(sql === SQL.count ? 'count' : sql === SQL.rowJson ? 'row' : 'other-read'); return transaction.rows(sql); },
+        execute: (sql) => { order.push(sql === SQL.lock ? 'lock' : 'other-execute'); return transaction.execute(sql); },
+      })),
+    };
+    await dropBackup(recording, () => {}, { expectedDigest: backup.digest });
+    expect(order.indexOf('lock')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('lock')).toBeLessThan(order.indexOf('count'));
+    expect(order.indexOf('lock')).toBeLessThan(order.indexOf('row'));
+  });
+
+  test('a missing table is reported without trying to lock it', async () => {
+    const db = new PGlite();
+    const executed: string[] = [];
+    const recording: SqlClient = {
+      transaction: (run) => clientFor(db).transaction((transaction) => run({
+        rows: transaction.rows,
+        execute: (sql) => { executed.push(sql); return transaction.execute(sql); },
+      })),
+    };
+    expect(await dropBackup(recording, () => {})).toEqual({ outcome: 'gone' });
+    expect(executed).toEqual([]);
   });
 });
 

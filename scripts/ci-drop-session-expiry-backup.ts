@@ -51,7 +51,9 @@ export const SQL = {
   // collations, text search objects, extended statistics and so on all have one. Run after the table drop, in its transaction.
   schemaObjects: `SELECT count(*)::int AS n FROM pg_depend WHERE refclassid = 'pg_namespace'::regclass AND refobjid = (SELECT oid FROM pg_namespace WHERE nspname = '${BACKUP_SCHEMA}') AND deptype = 'n'`,
   schemaExists: `SELECT count(*)::int AS n FROM pg_namespace WHERE nspname = '${BACKUP_SCHEMA}'`,
-  // The only statements that change anything. Neither has CASCADE: a dependent object makes them fail.
+  // The lock is taken first in the drop transaction (it changes no data); the two DROPs are the only statements that change
+  // anything. Neither has CASCADE: a dependent object makes them fail.
+  lock: `LOCK TABLE ${BACKUP_TABLE} IN ACCESS EXCLUSIVE MODE`,
   dropTable: `DROP TABLE ${BACKUP_TABLE}`,
   dropSchema: `DROP SCHEMA ${BACKUP_SCHEMA}`,
   // Read-only: the one row as JSON text, for the backup and for proving the drop sees the same row.
@@ -93,6 +95,8 @@ export async function dropBackup(client: SqlClient, log: (line: string) => void,
       return { outcome: 'gone' };
     }
     if (found.kind !== 'r') throw new DropRefused(`${BACKUP_TABLE} is not an ordinary table; nothing was changed`);
+    // Held until the transaction ends: no write can land between the checks below and the drop.
+    await transaction.execute(SQL.lock);
 
     const columns = await transaction.rows<{ name: string }>(SQL.columns);
     log(`columns: ${columns.map((column) => column.name).join(', ')}`);

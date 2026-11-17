@@ -5,10 +5,10 @@ name: Drop Session Expiry Backup
 # cap stays, so the backup is not needed. Run it once, from main.
 #
 # Order: (1) read the one row read-only and encrypt it to the age recipient given as input,
-# uploaded as the artifact session-expires-20261026-backup on this run (kept 90 days); (2) only
+# uploaded as the artifact session-expires-20261026-backup on this run (kept 30 days); (2) only
 # after the upload, drop. The drop refuses unless the table holds exactly one row that still hashes
 # to the backed-up one (an absent table is "already gone" and exits 0 without changes). In one
-# transaction it drops the table, and drops the schema ops_backup only if it is then empty. No
+# transaction it takes an ACCESS EXCLUSIVE lock on the table, drops it, and drops the schema ops_backup only if it is then empty. No
 # CASCADE. The log prints the row count, the column names and the row's SHA-256 only: no row values and no
 # connection string.
 
@@ -111,7 +111,7 @@ jobs:
           name: session-expires-20261026-backup
           path: ${{ runner.temp }}/session_expires_20261026.json.age
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 30
 
       # Runs only after the encrypted backup is uploaded; refuses unless the row still hashes to the
       # backed-up one.
