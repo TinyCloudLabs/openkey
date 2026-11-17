@@ -725,7 +725,7 @@
     {#if summaryStatements.length > 0}
       {#each summaryGroups as group (group.key)}
       <div role="group" aria-label={group.heading ?? undefined}>
-      {#if group.heading}<h3>{group.heading}</h3>{/if}
+      {#if group.heading}<h3 class="summary-group-heading">{group.heading}</h3>{/if}
       <ul class="summary-statements">
         {#each group.rows as statement (statement.key)}
           <li
@@ -1325,6 +1325,16 @@
     background: #f8fafc;
     border: 1px solid #e2e8f0;
     border-radius: 14px;
+  }
+  /* Group label inside the summary card: smaller than the rows it introduces and divided from them by the same 1px line the rows use. */
+  .summary-group-heading {
+    margin: 0;
+    padding-bottom: 7px;
+    border-bottom: 1px solid #e2e8f0;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.4;
+    color: #475569;
   }
   .summary-statements {
     list-style: none;
