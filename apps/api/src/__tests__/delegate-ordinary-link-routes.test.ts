@@ -270,6 +270,58 @@ describe('ordinary requester attribution', () => {
   });
 });
 
+// A link can name any website as its requester, and the node trusts a signed
+// website name as the owner of `apps/<id>` keys (a `urn:tinycloud:encryption:`
+// key resource). OpenKey must never turn a link into such a grant, whatever
+// website the link names, at either step.
+describe('app keys through an ordinary link', () => {
+  const LISTEN = 'https://listen.tinycloud.xyz';
+  const KEY_URN = 'urn:tinycloud:encryption:';
+  const listenKey = (address: string) => `${KEY_URN}did:pkh:eip155:1:${address}:default/apps/xyz.tinycloud.listen/k`;
+  const askForListenKey = (space: string) => post('/prepare', {
+    keyId: externalKey.id, jwk, host, requesterOrigin: LISTEN,
+    permissions: [{
+      service: 'tinycloud.encryption', space, path: 'apps/xyz.tinycloud.listen/k',
+      actions: ['tinycloud.encryption/decrypt'],
+    }],
+  });
+
+  test('cannot ask for the app\'s own key by its key resource', async () => {
+    const result = await askForListenKey(`${KEY_URN}did:pkh:eip155:1:${wallet.address}:default`);
+    expect(result.status).toBe(400);
+    expect(result.body.authorizationContext).toBeUndefined();
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
+  test('a link that names the app\'s website never gets a key resource into the message', async () => {
+    const result = await askForListenKey('default');
+    expect(result.status).toBe(200);
+    expect(result.body.prepared.siwe).not.toContain(KEY_URN);
+    const token = /urn:recap:(\S+)/.exec(result.body.prepared.siwe)?.[1];
+    expect(Buffer.from(token!, 'base64url').toString('utf8')).not.toContain(KEY_URN);
+  });
+
+  test('refuses at completion a signed message that adds the app\'s key', async () => {
+    const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host, requesterOrigin: LISTEN });
+    expect(prepared.status).toBe(200);
+    const body = await webCompleteBody(prepared);
+    const siwe: string = body.prepared.siwe;
+    const token = /urn:recap:(\S+)/.exec(siwe)?.[1];
+    expect(token).toBeString();
+    const recap = JSON.parse(Buffer.from(token!, 'base64url').toString('utf8')) as { att: Record<string, unknown> };
+    recap.att[listenKey(wallet.address)] = { 'tinycloud.encryption/decrypt': [{}] };
+    const widened = siwe.replace(token!, Buffer.from(JSON.stringify(recap)).toString('base64url'));
+    expect(widened).not.toBe(siwe);
+    const refused = await post('/complete', {
+      ...body, prepared: { ...body.prepared, siwe: widened },
+      signature: await wallet.signMessage({ message: widened }),
+    });
+    expect(refused.status).toBe(403);
+    expect(refused.body.code).toBe('app_key_grant_refused');
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+});
+
 describe('ordinary delegation lifetime', () => {
   test('/prepare caps a requested lifetime at 30 days and keeps shorter ones', async () => {
     const expiresIn = async (expiry: string) => {

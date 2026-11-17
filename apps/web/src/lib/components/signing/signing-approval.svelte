@@ -70,7 +70,9 @@
   } from "@openkey/capability-review";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
   import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
+  import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
   import { requestedExpiryMs } from "$lib/approval-expiry";
+  import { isOnceTier } from "$lib/renewal-default";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -128,6 +130,8 @@
     expiryBounded?: boolean;
     /** With `expiryBounded`: the most the requester signed, when that is more than the default it asked for. */
     expiryMaxMs?: number | null;
+    /** The renewal checkbox (TC-2933); set only where the requester signed a renewal request. */
+    renewal?: RenewalChoice | null;
     onApprove: () => void;
     onCancel: () => void;
     onRetry?: () => void;
@@ -159,6 +163,7 @@
     onExpiryChange,
     expiryBounded = false,
     expiryMaxMs = null,
+    renewal = null,
     onApprove,
     onCancel,
     onRetry,
@@ -252,8 +257,9 @@
   const requesterName = $derived(appDisplayName(model.requester.displayName) ?? originHost ?? "");
   const manifestNameShown = $derived(appDisplayName(model.requester.manifestName));
   const requestedBy = $derived(originHost ?? requesterName);
+  // Beside the renewal box a fixed end date is wrong (ticked) or repeats the box (unticked), so it is not shown there.
   const appKeyAccessLine = $derived(
-    selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatAccessEnd) : null,
+    !renewal && selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatAccessEnd) : null,
   );
   const notGrantableStatements = $derived.by(() => {
     const rows = model.permissions.flatMap(appKeyNotGrantableStatements);
@@ -643,6 +649,9 @@
         maxMs={expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null}
         disabled={approving}
         onChange={onExpiryChange}
+        {renewal}
+        sensitive={isOnceTier(selectedGrants)}
+        {requestedBy}
       />
     {/if}
 
