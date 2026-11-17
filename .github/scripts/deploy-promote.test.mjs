@@ -36,7 +36,8 @@ const DOCKER = `#!/bin/bash
 echo "docker $*" >> "$STUB_LOG"
 if [ "$1 $2 $3" = "buildx imagetools inspect" ]; then
   if [[ "$*" == *--raw* ]]; then
-    if [ -n "$REGISTRY_CONFIG" ]; then echo "{\\"config\\":{\\"digest\\":\\"$REGISTRY_CONFIG\\"}}"; else echo '{"manifests":[]}'; fi
+    if [[ "$*" == *@sha256:* ]]; then CFG="\${PINNED_CONFIG-$REGISTRY_CONFIG}"; else CFG="$REGISTRY_CONFIG"; fi
+    if [ -n "$CFG" ]; then echo "{\\"config\\":{\\"digest\\":\\"$CFG\\"}}"; else echo '{"manifests":[]}'; fi
   elif [[ "$*" == *Manifest.Digest* ]]; then echo "\\"$DIGEST\\""
   else [ "$TAG_EXISTS" = 1 ]; fi
   exit $?
@@ -50,8 +51,14 @@ exit 0
 
 const GH = `#!/bin/bash
 echo "gh $*" >> "$STUB_LOG"
+case "$*" in
+  *"-X POST"*"/statuses"*) exit 0 ;;
+  *"-X POST"*"/deployments --input"*) cat >> "$STUB_STDIN"; echo 101; exit 0 ;;
+  *"/statuses"*) printf '%s' "$SUCCESS_COUNT"; exit 0 ;;
+  *"deployments?environment"*) printf '%s' "$DEPLOYMENT_IDS"; exit 0 ;;
+  *"/artifacts"*) printf '%s' "$ARTIFACTS"; exit 0 ;;
+esac
 if [ "$2" = list ]; then printf '%s' "$RUN_ID"; exit 0; fi
-if [ "$1" = api ]; then printf '%s' "$ARTIFACTS"; exit 0; fi
 exit 1
 `;
 
@@ -67,6 +74,7 @@ function run(script, env = {}, recordedId = TESTED) {
     writeFileSync(join(dir, 'rt', 'api-image', 'api-image.tar.gz'), gzipSync('image'));
     writeFileSync(join(dir, 'rt', 'api-image', 'api-image.id'), recordedId + '\n');
     writeFileSync(join(dir, 'log'), '');
+    writeFileSync(join(dir, 'stdin'), '');
     writeFileSync(join(dir, 'out'), '');
     writeFileSync(join(dir, 'summary'), '');
     const result = spawnSync('bash', ['-c', script], {
@@ -74,14 +82,15 @@ function run(script, env = {}, recordedId = TESTED) {
       encoding: 'utf8',
       env: {
         PATH: `${join(dir, 'bin')}:${process.env.PATH}`, HOME: dir,
-        STUB_LOG: join(dir, 'log'), GITHUB_OUTPUT: join(dir, 'out'), GITHUB_STEP_SUMMARY: join(dir, 'summary'),
-        RUNNER_TEMP: join(dir, 'rt'), GITHUB_SHA: SHA, GITHUB_REPOSITORY: 'TinyCloudLabs/openkey',
+        STUB_LOG: join(dir, 'log'), STUB_STDIN: join(dir, 'stdin'), GITHUB_OUTPUT: join(dir, 'out'), GITHUB_STEP_SUMMARY: join(dir, 'summary'),
+        RUNNER_TEMP: join(dir, 'rt'), GITHUB_SHA: SHA, GITHUB_REPOSITORY: 'TinyCloudLabs/openkey', GITHUB_ACTOR: 'release-coordinator', GITHUB_RUN_ID: '555',
         DOCKER_IMAGE: 'skgbafa/openkey-api', DIGEST, GIT_SHA_LABEL: SHA, ...env,
       },
     });
     return {
       status: result.status, stderr: result.stdout + result.stderr,
       log: readFileSync(join(dir, 'log'), 'utf8'), out: readFileSync(join(dir, 'out'), 'utf8'),
+      stdin: readFileSync(join(dir, 'stdin'), 'utf8'), summary: readFileSync(join(dir, 'summary'), 'utf8'),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -124,7 +133,8 @@ test('a fresh image is pushed only if its loaded id is the recorded id, then pin
   assert.notEqual(mislabeled.status, 0, 'the GIT_SHA label stays a second check');
   assert.equal(pushes(mislabeled.log), 0);
 
-  const fresh = run(promote, { TAG_EXISTS: '0', LOADED_ID: TESTED });
+  // After the push the registry serves the tested image under the tag.
+  const fresh = run(promote, { TAG_EXISTS: '0', LOADED_ID: TESTED, REGISTRY_CONFIG: TESTED });
   assert.equal(fresh.status, 0, fresh.stderr);
   assert.equal(pushes(fresh.log), 1);
   assert.match(fresh.log, new RegExp(`docker push skgbafa/openkey-api:${SHA}`));
@@ -158,4 +168,80 @@ test('the compose file runs the image by digest, with no tag left', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('the digest the compose file will pin is itself checked against the tested image, on both paths', () => {
+  // The tag moved to another image between the tag checks and the digest lookup.
+  const pushed = run(promote, { TAG_EXISTS: '0', LOADED_ID: TESTED, PINNED_CONFIG: OTHER });
+  assert.notEqual(pushed.status, 0);
+  assert.match(pushed.stderr, /refusing to deploy it/);
+  assert.equal(pushed.out, '', 'no image_ref is handed to the compose step');
+
+  const reused = run(promote, { TAG_EXISTS: '1', REGISTRY_CONFIG: TESTED, PINNED_CONFIG: OTHER });
+  assert.notEqual(reused.status, 0);
+  assert.equal(reused.out, '');
+
+  const index = run(promote, { TAG_EXISTS: '1', REGISTRY_CONFIG: TESTED, PINNED_CONFIG: '' });
+  assert.notEqual(index.status, 0, 'a digest that is not a single image is refused');
+});
+
+const rollback = stepScript('Roll back to a previously deployed image');
+const ROLLBACK = { ROLLBACK_DIGEST: DIGEST, ROLLBACK_REASON: 'sign-in regression in the new image', DEPLOYMENT_IDS: '7\n9', SUCCESS_COUNT: '1', TAG_EXISTS: '1' };
+
+test('rollback promotes only an image that was deployed before, with a reason', () => {
+  const ok = run(rollback, ROLLBACK);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.out.trim(), `image_ref=skgbafa/openkey-api@${DIGEST}`);
+  assert.match(ok.summary, /Reason: sign-in regression in the new image/);
+  assert.match(ok.summary, new RegExp(DIGEST));
+  assert.equal(pushes(ok.log), 0, 'a rollback never pushes or builds');
+
+  for (const reason of ['', '   \n\t ']) {
+    const noReason = run(rollback, { ...ROLLBACK, ROLLBACK_REASON: reason });
+    assert.notEqual(noReason.status, 0);
+    assert.match(noReason.stderr, /rollback_reason is required/);
+    assert.equal(noReason.out, '');
+  }
+  for (const digest of ['latest', 'sha256:abc', DIGEST.toUpperCase(), `${DIGEST}\nx`]) {
+    const bad = run(rollback, { ...ROLLBACK, ROLLBACK_DIGEST: digest });
+    assert.notEqual(bad.status, 0, digest);
+    assert.equal(bad.out, '');
+  }
+
+  const never = run(rollback, { ...ROLLBACK, DEPLOYMENT_IDS: '' });
+  assert.notEqual(never.status, 0, 'an image with no deployment record was never deployed');
+  assert.match(never.stderr, /never deployed/);
+  assert.equal(never.out, '');
+
+  const failed = run(rollback, { ...ROLLBACK, SUCCESS_COUNT: '0' });
+  assert.notEqual(failed.status, 0, 'a deployment that did not succeed does not count');
+  assert.equal(failed.out, '');
+
+  const gone = run(rollback, { ...ROLLBACK, TAG_EXISTS: '0' });
+  assert.notEqual(gone.status, 0, 'an image no longer in the registry cannot be rolled back to');
+  assert.equal(gone.out, '');
+});
+
+test('the deployed digest is recorded for later rollbacks, with the reason on a rollback', () => {
+  const record = stepScript('Record the deployed image');
+  const env = { IMAGE_REF: `skgbafa/openkey-api@${DIGEST}`, ROLLBACK_REASON: '', IS_ROLLBACK: 'false' };
+  const deploy = run(record, env);
+  assert.equal(deploy.status, 0, deploy.stderr);
+  const body = JSON.parse(deploy.stdin);
+  assert.equal(body.environment, 'openkey-api-image');
+  assert.deepEqual(body.required_contexts, []);
+  assert.equal(body.payload.digest, DIGEST);
+  assert.equal(body.payload.rollback, false);
+  assert.match(deploy.log, /deployments\/101\/statuses.*state=success/);
+
+  const back = JSON.parse(run(record, { ...env, ROLLBACK_REASON: 'bad release', IS_ROLLBACK: 'true' }).stdin);
+  assert.equal(back.payload.rollback, true);
+  assert.equal(back.payload.reason, 'bad release');
+});
+
+test('the deploy summary prints the digest that runs, not only a tag', () => {
+  const summary = run(stepScript('Record deployed commit'), { IMAGE_REF: `skgbafa/openkey-api@${DIGEST}`, GITHUB_SERVER_URL: 'https://github.com' });
+  assert.equal(summary.status, 0, summary.stderr);
+  assert.match(summary.summary, new RegExp(`Image: \`skgbafa/openkey-api@${DIGEST}\``));
+  assert.doesNotMatch(summary.summary, new RegExp(`skgbafa/openkey-api:${SHA}`));
 });

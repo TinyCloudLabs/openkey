@@ -1,5 +1,8 @@
 # Deploys are manual: `gh workflow run deploy-api.yml --ref main`, run by the release coordinator.
-# Rollback: `gh run rerun <last good run>`.
+# Rollback: `gh workflow run deploy-api.yml --ref main -f rollback_digest=sha256:<digest> -f rollback_reason='<why>'`
+# promotes an image that was already deployed (see the "Roll back" step); it needs a reason and a deployment record
+# for that digest, and refuses anything never deployed. Do not `gh run rerun` an older run: it would run that
+# run's own, older workflow.
 name: Deploy API to Phala Cloud
 
 on:
@@ -9,6 +12,14 @@ on:
         description: Inspect serving instances, rollback image, and migration state without changes
         type: boolean
         default: false
+      rollback_digest:
+        description: "Roll back to an image that was already deployed, by digest (sha256:...). Needs rollback_reason. Leave empty to deploy this commit's image"
+        type: string
+        default: ''
+      rollback_reason:
+        description: Required with rollback_digest. Why; it is recorded with the deployment
+        type: string
+        default: ''
 
 concurrency:
   group: production-api
@@ -58,6 +69,8 @@ jobs:
       contents: read
       # Reads the Review path run for this commit and downloads its image artifact.
       actions: read
+      # Records each deployed image digest (a Deployment in environment openkey-api-image) for audited rollback.
+      deployments: write
     steps:
       # Full history: the release note diffs the commit live in production against this one.
       - uses: actions/checkout@v4
@@ -85,6 +98,7 @@ jobs:
       # The one-line release note for this publish: the diff from the commit production reports on
       # /health to the commit being deployed. Fails open: "yes" whenever either commit is unknown.
       - name: Release note
+        if: inputs.rollback_digest == ''
         run: |
           live="$(curl -fsS --max-time 20 https://api.openkey.so/health | jq -r '.commit // empty' || true)"
           if [[ ! "$live" =~ ^[0-9a-f]{40}$ ]] || ! git cat-file -e "$live^{commit}" 2>/dev/null; then live=""; fi
@@ -104,6 +118,7 @@ jobs:
       # id), so a tag from the old build-and-push path, or an overwritten one, is refused, not deployed.
       - name: Find the image that passed the Review path
         id: image
+        if: inputs.rollback_digest == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -122,6 +137,7 @@ jobs:
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
 
       - name: Download the image that passed the Review path
+        if: inputs.rollback_digest == ''
         uses: actions/download-artifact@v4
         with:
           name: api-image-${{ github.sha }}
@@ -133,6 +149,7 @@ jobs:
       # for the reused tag), so neither a mutable tag nor an overwrite between here and the deploy can change it.
       - name: Push that image under its commit tag and pin its digest
         id: promote
+        if: inputs.rollback_digest == ''
         run: |
           set -euo pipefail
           ref="$DOCKER_IMAGE:$GITHUB_SHA"
@@ -163,13 +180,66 @@ jobs:
           fi
           digest="$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest.Digest}}' | jq -r '. // empty')"
           if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then echo "::error::could not resolve the digest of $ref"; exit 1; fi
+          # The digest the compose file will pin must itself be the tested image, whatever the tag moved to
+          # between the checks above and this lookup.
+          pinned="$(docker buildx imagetools inspect --raw "$DOCKER_IMAGE@$digest" | jq -r '.config.digest // empty')"
+          if [ "$pinned" != "$expected" ]; then
+            echo "::error::$DOCKER_IMAGE@$digest is image ${pinned:-<not a single image>}, not the image the Review path ran ($expected); refusing to deploy it"
+            exit 1
+          fi
           echo "Deploying $DOCKER_IMAGE@$digest." >> "$GITHUB_STEP_SUMMARY"
           echo "image_ref=$DOCKER_IMAGE@$digest" >> "$GITHUB_OUTPUT"
 
+      # Rollback promotes an image that was deployed before, by digest, and nothing else: it needs a reason, and a
+      # successful deployment record (environment openkey-api-image, written by "Record the deployed image" below)
+      # for exactly this digest, so an image that never ran in production is refused. Migrations are not run.
+      - name: Roll back to a previously deployed image
+        id: rollback
+        if: inputs.rollback_digest != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROLLBACK_DIGEST: ${{ inputs.rollback_digest }}
+          ROLLBACK_REASON: ${{ inputs.rollback_reason }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$ROLLBACK_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::rollback_digest must be sha256:<64 hex>, got '$ROLLBACK_DIGEST'"
+            exit 1
+          fi
+          if [ -z "$(printf '%s' "$ROLLBACK_REASON" | tr -d '[:space:]')" ]; then
+            echo "::error::rollback_reason is required with rollback_digest"
+            exit 1
+          fi
+          deployed=""
+          for id in $(gh api --paginate "repos/$GITHUB_REPOSITORY/deployments?environment=openkey-api-image&per_page=100" \
+            --jq ".[] | select((.payload | type) == \"object\" and .payload.digest == \"$ROLLBACK_DIGEST\") | .id"); do
+            ok="$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --jq '[.[] | select(.state == "success")] | length')"
+            if [ "${ok:-0}" -gt 0 ]; then deployed="$id"; break; fi
+          done
+          if [ -z "$deployed" ]; then
+            echo "::error::$ROLLBACK_DIGEST has no successful deployment record, so it was never deployed through this workflow. Refusing to deploy it. If it ran in production before the records existed, record it first (docs/releases.md)."
+            exit 1
+          fi
+          ref="$DOCKER_IMAGE@$ROLLBACK_DIGEST"
+          if ! docker buildx imagetools inspect "$ref" > /dev/null 2>&1; then
+            echo "::error::$ref is no longer in the registry"
+            exit 1
+          fi
+          {
+            echo "### Rollback"
+            echo ""
+            echo "Image: \`$ref\` (deployment record $deployed)"
+            echo "Reason: $ROLLBACK_REASON"
+            echo "Requested by: ${GITHUB_ACTOR}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "image_ref=$ref" >> "$GITHUB_OUTPUT"
+
       - name: Update compose with the image digest
         env:
-          IMAGE_REF: ${{ steps.promote.outputs.image_ref }}
+          IMAGE_REF: ${{ steps.promote.outputs.image_ref || steps.rollback.outputs.image_ref }}
         run: |
+          set -euo pipefail
+          [ -n "$IMAGE_REF" ] || { echo "::error::no image to deploy"; exit 1; }
           sed -i "s|\${DOCKER_IMAGE}|$IMAGE_REF|g" docker-compose.prod.yml
 
       # Apply the tracked migrations before shipping the code. Raw migration SQL
@@ -186,6 +256,7 @@ jobs:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - name: Deploy and verify production migrations
+        if: inputs.rollback_digest == ''
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
@@ -223,12 +294,32 @@ jobs:
             exit 1
           fi
 
+      # The digest that ran is recorded as a Deployment (environment openkey-api-image) so a later rollback can be
+      # limited to images that were deployed. The payload carries the digest, the commit, the run and any reason.
+      - name: Record the deployed image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_REF: ${{ steps.promote.outputs.image_ref || steps.rollback.outputs.image_ref }}
+          ROLLBACK_REASON: ${{ inputs.rollback_reason }}
+          IS_ROLLBACK: ${{ inputs.rollback_digest != '' }}
+        run: |
+          set -euo pipefail
+          digest="${IMAGE_REF#*@}"
+          body="$(jq -n --arg ref "$GITHUB_SHA" --arg digest "$digest" --arg run "$GITHUB_RUN_ID" --arg actor "$GITHUB_ACTOR" \
+            --arg reason "$ROLLBACK_REASON" --argjson rollback "$IS_ROLLBACK" \
+            '{ref: $ref, environment: "openkey-api-image", auto_merge: false, required_contexts: [], transient_environment: false,
+              description: ("API image " + $digest), payload: {digest: $digest, run: $run, actor: $actor, rollback: $rollback, reason: $reason}}')"
+          id="$(printf '%s' "$body" | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=success -f description="API image $digest deployed" > /dev/null
+
       - name: Record deployed commit
+        env:
+          IMAGE_REF: ${{ steps.promote.outputs.image_ref || steps.rollback.outputs.image_ref }}
         run: |
           {
             echo "### Production API deployed"
             echo ""
             echo "Commit: [\`${GITHUB_SHA::7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})"
-            echo "Image: \`${{ env.DOCKER_IMAGE }}:${GITHUB_SHA}\` (built once by review-path.yml, not rebuilt here)"
+            echo "Image: \`${IMAGE_REF}\` (the digest running in production; built once by review-path.yml, not rebuilt here)"
             echo "Deployments: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/deployments/production"
           } >> "$GITHUB_STEP_SUMMARY"
