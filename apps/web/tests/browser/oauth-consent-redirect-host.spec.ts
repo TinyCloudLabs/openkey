@@ -101,7 +101,7 @@ test.describe('consent permission lines', () => {
     for (const row of [
       'See your email address',
       'See the addresses of your OpenKey keys',
-      'Request one-hour TinyCloud sessions (read and write key-value data) signed by your OpenKey key',
+      "Read and save this app's data in your TinyCloud, up to an hour at a time",
     ]) {
       await expect(page.getByText(row, { exact: true })).toBeVisible();
     }

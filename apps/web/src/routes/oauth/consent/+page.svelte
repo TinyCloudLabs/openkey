@@ -56,7 +56,7 @@
   const OTHER_SCOPE_ROWS: Record<string, string> = {
     email: 'See your email address',
     keys: 'See the addresses of your OpenKey keys',
-    'tinycloud:session': 'Request one-hour TinyCloud sessions (read and write key-value data) signed by your OpenKey key',
+    'tinycloud:session': "Read and save this app's data in your TinyCloud, up to an hour at a time",
   };
   const otherScopes = [...requestedScopes].filter((requested) => !SCOPES_WITH_OWN_ROW.has(requested));
   const otherScopeRows = otherScopes.map((requested) => (Object.hasOwn(OTHER_SCOPE_ROWS, requested) ? OTHER_SCOPE_ROWS[requested]! : `Use the “${requested}” permission`));
