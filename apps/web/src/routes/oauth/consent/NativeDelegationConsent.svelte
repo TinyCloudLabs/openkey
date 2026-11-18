@@ -1,6 +1,7 @@
 <script lang="ts">
   import { API_BASE } from '$lib/auth-client';
   import { safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
+  import { daysOverTwoDays } from '$lib/approval-expiry';
   import NativeShell from '$lib/components/auth/native-shell.svelte';
   import { nativeAccessSummary } from '$lib/native-access';
   import {
@@ -123,7 +124,9 @@
     if (model) prepare(reviewSelectionToActionKeys(model, baselineOptions, next));
   }
   const duration = (seconds: number) => {
-    const [count, unit] = seconds % 86400 === 0 ? [seconds / 86400, 'day']
+    const days = daysOverTwoDays(seconds * 1000);
+    const [count, unit] = days !== null ? [days, 'day']
+      : seconds % 86400 === 0 ? [seconds / 86400, 'day']
       : seconds % 3600 === 0 ? [seconds / 3600, 'hour'] : [Math.round(seconds / 60), 'minute'];
     return `${count} ${unit}${count === 1 ? '' : 's'}`;
   };

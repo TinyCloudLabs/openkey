@@ -5,6 +5,8 @@ import {
   LONG_EXPIRY_WARNING,
   ONCE_DEFAULT_EXPIRY_MS,
   expiryAt,
+  daysOverTwoDays,
+  formatDuration,
   formatExpiry,
   onceDefaultExpiryMs,
   parseExpiry,
@@ -171,5 +173,49 @@ describe('approvalRequestStartSeconds', () => {
     expect(approvalRequestStartSeconds(30 * 86_400, 7 * 86_400)).toBe(3600);
     expect(approvalRequestStartSeconds(7200, 30 * 86_400)).toBe(3600);
     expect(approvalRequestStartSeconds(900, 30 * 86_400)).toBe(900);
+  });
+});
+
+describe('formatDuration over two days', () => {
+  const over: Array<[number, string]> = [
+    [700 * H, '29 days'],
+    [745 * H, '31 days'],
+    [720 * H, '30 days'],
+    [49 * H, '2 days'],
+    [3 * D, '3 days'],
+    [(30 * D) + (5 * H) + (7 * M), '30 days'],
+    [400 * D, '400 days'],
+    [365 * D, '1 year'],
+    [730 * D, '2 years'],
+  ];
+  for (const [ms, label] of over) {
+    test(`${ms} ms reads as ${label}`, () => {
+      expect(formatDuration(ms)).toBe(label);
+    });
+  }
+
+  const within: Array<[number, string]> = [
+    [47 * H, '47 hours'],
+    [36 * H, '36 hours'],
+    [90 * M, '90 minutes'],
+    [H, '1 hour'],
+    [45 * S, '45 seconds'],
+  ];
+  for (const [ms, label] of within) {
+    test(`${ms} ms, two days or less, keeps its smaller unit: ${label}`, () => {
+      expect(formatDuration(ms)).toBe(label);
+    });
+  }
+
+  test('no duration over two days is ever worded in hours', () => {
+    for (let hours = 49; hours <= 24 * 400; hours += 7) {
+      expect(formatDuration(hours * H)).not.toMatch(/hour|minute|second/);
+    }
+  });
+
+  test('daysOverTwoDays is null for two days or less and floors the rest', () => {
+    expect(daysOverTwoDays(2 * D)).toBeNull();
+    expect(daysOverTwoDays(2 * D + 1)).toBe(2);
+    expect(daysOverTwoDays(700 * H)).toBe(29);
   });
 });

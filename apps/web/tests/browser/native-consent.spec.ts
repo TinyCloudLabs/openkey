@@ -102,6 +102,23 @@ test.describe('compact native consent', () => {
     await page.waitForURL('https://example.test/callback?code=code');
   });
 
+  test('a lifetime that is not a whole number of days reads in days, never in hours', async ({ page }) => {
+    await page.route('**/api/**', route => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/api/auth/get-session') return json(route, sessionBody);
+      if (path === '/api/oauth/tinycloud/clients/exo-native/branding') return json(route, EXO_BRANDING);
+      if (path.endsWith('/prepare')) {
+        return json(route, { ...base, grantLifetimeSeconds: 700 * 3600, revision: 1, digest: 'digest-1', sessionSiwe: siwe(true), selectedActionKeys: selected });
+      }
+      return json(route, { error: `unmocked ${path}` }, 404);
+    });
+    await page.route('https://tinycloud.chat/**', route => route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>' }));
+    await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
+
+    await expect(page.getByText('Access lasts up to 29 days and renews automatically while you use Exo.')).toBeVisible();
+    await expect(page.getByText(/700 hours/)).toHaveCount(0);
+  });
+
   test('a failed branding fetch keeps the dark shell and the consent still works', async ({ page }) => {
     await page.route('**/api/**', route => {
       const path = new URL(route.request().url()).pathname;

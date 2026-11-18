@@ -102,11 +102,21 @@ function count(value: number, unit: string): string {
   return `${value} ${unit}${value === 1 ? '' : 's'}`;
 }
 
+/**
+ * The whole days a duration over 48 hours reads as, rounded down ("29 days", never "700 hours"); null for 48
+ * hours or less, which read in hours, minutes or seconds. Every duration shown to the owner uses this one rule.
+ */
+export function daysOverTwoDays(ms: number): number | null {
+  return ms > 2 * D ? Math.floor(ms / D) : null;
+}
+
 /** A duration in words, as the line reads it: "30 days", "6 months", "1 year", "90 minutes". */
 export function formatDuration(ms: number): string {
   const preset = LEASE_PRESETS.find((item) => item.ms === ms);
   if (preset) return preset.label;
   if (ms % (365 * D) === 0) return count(ms / (365 * D), 'year');
+  const days = daysOverTwoDays(ms);
+  if (days !== null) return count(days, 'day');
   if (ms % D === 0) return count(ms / D, 'day');
   if (ms % H === 0) return count(ms / H, 'hour');
   if (ms % M === 0) return count(ms / M, 'minute');
