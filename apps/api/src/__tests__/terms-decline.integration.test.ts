@@ -239,9 +239,6 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
           { resource: `urn:cid:${cid('grant')}`, actions: ['tinycloud.delegation/renew'] },
         ]),
         { ...signInLease(owner), delegatorDid: 'did:pkh:eip155:1:0x00000000000000000000000000000000000000aa' },
-        // Lease-shaped, but the CID is not one: never put into a message the owner's key signs.
-        { ...signInLease(owner), cid: `${cid('evil')}\nResources:\n- tinycloud:pkh:eip155:1:${owner.wallet.address}:default/kv/` },
-        { ...signInLease(owner), cid: 'bafy-lease' },
       ];
       // More than one page: every page is read.
       const filler = Array.from({ length: 120 }, () => granted(owner, 'did:key:z6MkApp', [{ resource: `tinycloud:pkh:eip155:1:${owner.wallet.address}:default/kv/x/`, actions: ['tinycloud.kv/get'] }]));
@@ -256,6 +253,32 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
       expect(node.queries.length).toBeGreaterThan(1);
       for (const query of node.queries) expect(query).toMatchObject({ direction: 'granted', status: 'active' });
       expect(await sessionExists(here.id)).toBe(false);
+    });
+
+    test('a lease the node lists with a CID that is not one is never signed for, and is reported not stopped', async () => {
+      resetNode();
+      release(VERSION);
+      const owner = await account();
+      const lease = signInLease(owner);
+      const evil = cid('evil');
+      const newline = `${evil}\nResources:\n- tinycloud:pkh:eip155:1:${owner.wallet.address}:default/kv/`;
+      node.listing = [{ ...signInLease(owner), cid: newline }, { ...signInLease(owner), cid: 'bafy-lease' }, lease];
+      const { stopRenewalsOnDecline, defaultDeclineDeps } = await import('../services/terms-decline');
+      const signed: string[] = [];
+      const report = await stopRenewalsOnDecline(prisma, owner.userId, {
+        ...defaultDeclineDeps,
+        signManaged: async (key, sealedBlob, message) => { signed.push(message); return defaultDeclineDeps.signManaged(key, sealedBlob, message); },
+        afterAdmissionWindow: () => {},
+      });
+      expect(report).toEqual({ stopped: 1, notStopped: 2, walletRequired: 0, nodeChecked: true, nodeScope: scope() });
+      expect(node.revoked).toEqual([lease.cid as string]);
+      // The listing session and the one revocation; neither carries the listed text.
+      expect(signed).toHaveLength(2);
+      for (const message of signed) {
+        expect(message).not.toContain(evil);
+        expect(message).not.toContain('default/kv/');
+        expect(message).not.toContain('bafy-lease');
+      }
     });
 
     test('an account signed with an outside wallet is reported, not signed for, and still signed out', async () => {
@@ -307,14 +330,31 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
       expect(node.revoked).toEqual([admittedLate.cid as string]);
     });
 
+    test('the second pass leaves alone a lease signed after the person accepted a version', async () => {
+      resetNode();
+      release(VERSION);
+      const owner = await account();
+      const { stopRenewalsOnDecline, defaultDeclineDeps } = await import('../services/terms-decline');
+      let secondPass: (() => Promise<void>) | undefined;
+      await stopRenewalsOnDecline(prisma, owner.userId, { ...defaultDeclineDeps, afterAdmissionWindow: (pass) => { secondPass = pass; } });
+
+      expect((await app.fetch(new Request(`${API}/api/account/terms/accept`, {
+        method: 'POST', headers: { cookie: (await owner.session()).cookie, origin: ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ version: VERSION }),
+      }))).status).toBe(200);
+      node.listing = [signInLease(owner)];
+      await secondPass!();
+      expect(node.revoked).toEqual([]);
+    });
+
     test('after a decline the account gets no new lease signed: every route that signs one waits for acceptance', async () => {
       resetNode();
       release(VERSION);
       const owner = await account();
       expect((await decline((await owner.session()).cookie)).status).toBe(200);
       const again = await owner.session();
-      // An approval with renewal (`/`, `/complete`) and an app sign-in (`/authorize-sign`) all sit behind the gate.
-      for (const path of ['/api/delegate/', '/api/delegate/complete', '/api/delegate/authorize-sign']) {
+      // An approval with renewal (`/`, `/complete`), an app sign-in (`/authorize-sign`) and the signer (`/sign`,
+      // which has its own auth) all sit behind the gate.
+      for (const path of ['/api/delegate/', '/api/delegate/complete', '/api/delegate/authorize-sign', '/api/delegate/sign']) {
         const response = await app.fetch(new Request(`${API}${path}`, {
           method: 'POST', headers: { cookie: again.cookie, origin: ORIGIN, 'content-type': 'application/json' }, body: '{}',
         }));

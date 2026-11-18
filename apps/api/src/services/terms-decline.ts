@@ -9,7 +9,8 @@
 // answers within a budget; whatever is still under way then finishes on its own. No new lease can be signed
 // while the account hasn't accepted (every route that signs one is behind the Terms gate), but an app admits a
 // sign-in lease a few seconds after the sign-in that signed it, so one admitted just after the listing would be
-// missed: a second pass runs once that window has passed.
+// missed: a second pass runs once that window has passed. It is in-process (a restart drops it) and is skipped
+// if the account has accepted by then, so a lease signed after accepting is not revoked.
 import type { PrismaClient } from '@openkey/db';
 import { TCWSessionManager, completeSessionSetup, ensureEip55, invoke, prepareSession } from '@tinycloud/node-sdk-wasm';
 import { SIWE_DOMAIN } from '../routes/delegate-session';
@@ -17,6 +18,7 @@ import { signManagedKey } from './managed-key-signing';
 import { discoverRenewalNodeIdentity } from './renewal-lease';
 import { liveLeaseWhere, revokeRenewalLeases, revokeUnrecordedLease } from './renewal-lease-revocation';
 import { trustedTinyCloudBootstrapHost } from './tinycloud-bootstrap';
+import { hasAcceptedTerms } from './terms';
 
 /** How long the decline's answer waits; stopping carries on after that. */
 const DECLINE_STOP_BUDGET_MS = 3_000;
@@ -37,7 +39,10 @@ const CID = /^b[a-z2-7]{58,118}$/;
 export interface DeclineRenewalsReport {
   /** Leases the node confirmed stopped. */
   stopped: number;
-  /** Leases found that the node did not confirm stopped, including recorded ones the budget ran out on. */
+  /**
+   * Leases found that the node did not confirm stopped: recorded ones the budget ran out on, and lease-shaped
+   * entries the node listed with a CID that is not one (never signed for).
+   */
   notStopped: number;
   /** Recorded leases an outside wallet signed: only that wallet can stop them. */
   walletRequired: number;
@@ -47,7 +52,7 @@ export interface DeclineRenewalsReport {
   nodeScope: { node: string; chainIds: number[] } | null;
 }
 
-type DeclineDatabase = Pick<PrismaClient, 'renewalLease' | 'ethereumKey' | '$transaction'>;
+type DeclineDatabase = Pick<PrismaClient, 'renewalLease' | 'ethereumKey' | 'termsAcceptance' | '$transaction'>;
 type ManagedKey = { address: string; userId: string | null; sealingContext: string | null; sealedBlob: string };
 
 export interface DeclineDeps {
@@ -86,9 +91,12 @@ function ownerAddress(did: unknown): string | null {
   return typeof did === 'string' ? OWNER_DID.exec(did)?.[1]?.toLowerCase() ?? null : null;
 }
 
-/** A renewal lease the owner granted the node's renewer: one `urn:cid:` resource, `renew` only. */
-function isRenewalLease(item: ListedGrant, address: string, renewerDid: string): item is ListedGrant & { cid: string; delegatorDid: string } {
-  if (item.status !== 'active' || typeof item.cid !== 'string' || !CID.test(item.cid)) return false;
+/**
+ * A renewal lease the owner granted the node's renewer: one `urn:cid:` resource, `renew` only. Its own CID is
+ * checked apart (`CID`): a lease-shaped entry whose CID is not a CID is never put into a message the owner signs.
+ */
+function isRenewalLease(item: ListedGrant, address: string, renewerDid: string): item is ListedGrant & { delegatorDid: string } {
+  if (item.status !== 'active') return false;
   if (ownerAddress(item.delegatorDid) !== address.toLowerCase() || item.delegateDid !== renewerDid) return false;
   if (!Array.isArray(item.resources) || item.resources.length !== 1) return false;
   const [resource] = item.resources as Array<{ resource?: unknown; actions?: unknown }>;
@@ -100,15 +108,22 @@ async function nodeCall(deps: DeclineDeps, url: string, init: RequestInit): Prom
   return deps.fetch(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(NODE_CALL_TIMEOUT_MS) });
 }
 
+interface ListedLeases {
+  /** Leases with a well-formed CID: these are revoked. */
+  leases: Array<{ cid: string; ownerDid: string }>;
+  /** Lease-shaped entries whose CID is not a CID: never signed for, so reported not stopped. */
+  malformed: number;
+  /** False when the node's answers stop short of the last page; what was found before that is still stopped. */
+  complete: boolean;
+}
+
 /**
  * The active renewal leases `key`'s owner granted at `host`. The listing is signed by a session the owner key
  * delegates `tinycloud.delegation/list` on its account space for a few minutes: the node lists an account's
- * grants only to a session of that account. `complete` is false when the node's answers stop short of the last
- * page; the leases found before that are still returned, to be stopped.
+ * grants only to a session of that account.
  */
-async function listedLeases(host: string, key: ManagedKey, renewerDid: string, deps: DeclineDeps): Promise<{ leases: Array<{ cid: string; ownerDid: string }>; complete: boolean }> {
-  const leases: Array<{ cid: string; ownerDid: string }> = [];
-  const partial = { leases, complete: false };
+async function listedLeases(host: string, key: ManagedKey, renewerDid: string, deps: DeclineDeps): Promise<ListedLeases> {
+  const partial: ListedLeases = { leases: [], malformed: 0, complete: false };
   const address = ensureEip55(key.address);
   const manager = new TCWSessionManager();
   const jwkText = manager.jwk(manager.createSessionKey('terms-decline'));
@@ -143,9 +158,11 @@ async function listedLeases(host: string, key: ManagedKey, renewerDid: string, d
       const body = await response.json() as { items?: unknown; nextCursor?: unknown };
       if (!Array.isArray(body.items)) return partial;
       for (const item of body.items as ListedGrant[]) {
-        if (item && typeof item === 'object' && isRenewalLease(item, address, renewerDid)) leases.push({ cid: item.cid, ownerDid: item.delegatorDid });
+        if (!item || typeof item !== 'object' || !isRenewalLease(item, address, renewerDid)) continue;
+        if (typeof item.cid === 'string' && CID.test(item.cid)) partial.leases.push({ cid: item.cid, ownerDid: item.delegatorDid });
+        else partial.malformed++;
       }
-      if (body.nextCursor === undefined) return { leases, complete: true };
+      if (body.nextCursor === undefined) return { ...partial, complete: true };
       if (typeof body.nextCursor !== 'string' || cursors.has(body.nextCursor)) return partial;
       cursors.add(body.nextCursor);
       cursor = body.nextCursor;
@@ -180,8 +197,9 @@ async function stopOnce(database: DeclineDatabase, userId: string, deps: Decline
     progress.nodeScope = { node: host, chainIds: [LISTED_CHAIN_ID] };
     let complete = managed.length === keys.length;
     for (const key of managed) {
-      const listed = await listedLeases(host, key, renewerDid, deps).catch(() => ({ leases: [], complete: false }));
+      const listed: ListedLeases = await listedLeases(host, key, renewerDid, deps).catch(() => ({ leases: [], malformed: 0, complete: false }));
       if (!listed.complete) complete = false;
+      progress.notStopped += listed.malformed;
       if (listed.leases.length === 0) continue;
       // A lease OpenKey recorded is stopped by its record, which also marks it stopped in Settings.
       const known = new Set((await database.renewalLease.findMany({
@@ -210,7 +228,11 @@ export async function stopRenewalsOnDecline(database: DeclineDatabase, userId: s
   const progress = fresh();
   const liveRecorded = await database.renewalLease.count({ where: liveLeaseWhere(userId, { kind: 'all' }, deps.now()) }).catch(() => 0);
   const firstPass = stopOnce(database, userId, deps, progress);
-  void firstPass.then(() => deps.afterAdmissionWindow(() => stopOnce(database, userId, deps, fresh())));
+  void firstPass.then(() => deps.afterAdmissionWindow(async () => {
+    // Accepted since: a lease signed now is one the person agreed to. Unknown: stop, the safe side.
+    if (await hasAcceptedTerms(database, userId).catch(() => false)) return;
+    await stopOnce(database, userId, deps, fresh());
+  }));
 
   const { promise: timedOut, resolve: timeUp } = Promise.withResolvers<'timeout'>();
   const timer = setTimeout(() => timeUp('timeout'), DECLINE_STOP_BUDGET_MS);
