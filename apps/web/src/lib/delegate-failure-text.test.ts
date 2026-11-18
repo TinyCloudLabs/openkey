@@ -21,8 +21,10 @@ const mappedCodes: Array<[string, string]> = [
     'authorization_context_missing_original_siwe',
   ].map((code) => [code, changedRequest] as [string, string]),
   ...[
-    'app_key_grant_refused', 'key_delete_not_grantable', 'invalid_siwe_recap', 'invalid_permissions',
+    'app_key_grant_refused', 'invalid_permissions',
   ].map((code) => [code, "OpenKey can't approve this kind of access. The app or command needs to ask for something different."] as [string, string]),
+  ['key_delete_not_grantable', "Apps can't be given permission to delete keys. Nothing was approved. Ask the app or command to send a new request without it."],
+  ['invalid_siwe_recap', "This request's permission list can't be read. Nothing was approved. Ask the app or command to send a new request."],
   ['rate_limited', 'Too many attempts. Wait five minutes, then try again.'],
   ...['key_not_found', 'key_state_invalid'].map((code) => [code, "This key isn't available on your account. Choose a key you own and try again."] as [string, string]),
 ];
