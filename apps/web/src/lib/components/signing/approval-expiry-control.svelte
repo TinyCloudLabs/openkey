@@ -17,7 +17,7 @@
     formatDurationWithEnd,
     leaseLimitNote,
   } from "$lib/approval-expiry";
-  import { formatAccessEnd } from "$lib/access-end";
+  import { formatLocalAccessEnd } from "$lib/access-end";
   import DurationChoice from "$lib/components/signing/duration-choice.svelte";
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
 
@@ -167,7 +167,7 @@
         <DurationChoice
           id="approval-expiry"
           legend="Expires after"
-          detail={endsAt ? formatAccessEnd(endsAt) : null}
+          detail={endsAt ? formatLocalAccessEnd(endsAt) : null}
           presets={EXPIRY_PRESETS}
           valueMs={shownMs}
           {maxMs}

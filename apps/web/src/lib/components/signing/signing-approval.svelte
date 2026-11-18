@@ -44,7 +44,7 @@
     CapabilityGrant,
     CapabilityReviewModel,
   } from "@openkey/capability-review";
-  import { formatAccessEnd } from "$lib/access-end";
+  import { formatLocalAccessEnd } from "$lib/access-end";
   import {
     APP_KEY_GROUP_NOTE,
     appDisplayName,
@@ -319,7 +319,7 @@
   const onceNoteSite = $derived(originHost ?? "This request");
   // Beside the renewal box a fixed end date is wrong (ticked) or repeats the box (unticked), so it is not shown there.
   const appKeyAccessLine = $derived(
-    !renewal && selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatAccessEnd) : null,
+    !renewal && selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatLocalAccessEnd) : null,
   );
   const notGrantableStatements = $derived.by(() => {
     const rows = model.permissions.flatMap(appKeyNotGrantableStatements);
