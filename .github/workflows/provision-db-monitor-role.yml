@@ -1,0 +1,113 @@
+name: Provision DB monitor role
+
+# Manual only. Creates, or removes, the read-only connection-count monitor in the production database (TC-3067):
+#   openkey_monitor_owner  NOLOGIN, member only of one statistics role, pg_read_all_stats by default or pg_monitor when
+#                          the owner_stats_role input says so (only after the pg_read_all_stats grant was refused;
+#                          there is no automatic fallback); owns schema `monitor` and one function
+#   openkey_monitor        LOGIN, two connections, may only run monitor.connection_counts()
+# monitor.connection_counts() returns six aggregate numbers for this database (connections, active, idle in
+# transaction, lock waiters, max_connections, oldest transaction age). No query text, no identity.
+#
+# This is not a migration and must not ride an app deploy: the schema `monitor` is outside Prisma's managed
+# `public` schema, so migrations and `db:migrate:verify-schema` ignore it. ops/db-monitor/ holds the SQL and
+# the script; .github/workflows/db-monitor-role-test.yml runs the same script on PostgreSQL 15, 16 and 17 for
+# every change to it: provision, post-checks, drop, nothing left.
+#
+# provision  Generates the monitor role's password in the runner (masked), creates or refreshes both roles
+#            and the function in one transaction, runs the post-checks as openkey_monitor, and only if they
+#            all pass writes the monitor connection URL as an age-encrypted artifact for the given public
+#            key. Running it again rotates the password and produces a new artifact.
+# drop       Removes the function, the schema and both roles, then checks that nothing is left.
+#
+# The artifact holds only ciphertext for the age recipient, so a public download is harmless. Decrypt it with
+# the matching private key into memory-backed storage (/dev/shm), hand the URL straight to `gh secret set`,
+# and delete both.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'provision (create or refresh, rotate the password) or drop (remove everything)'
+        required: true
+        type: choice
+        options:
+          - provision
+          - drop
+      confirm:
+        description: 'Type provision-db-monitor-role or drop-db-monitor-role, matching the mode'
+        required: true
+        type: string
+      age_recipient:
+        description: 'provision only: the age public key (age1...) the connection URL is encrypted to'
+        required: false
+        type: string
+      owner_stats_role:
+        description: 'provision only: the one statistics role the NOLOGIN owner role joins. pg_read_all_stats unless that grant was refused'
+        required: false
+        type: choice
+        default: pg_read_all_stats
+        options:
+          - pg_read_all_stats
+          - pg_monitor
+
+concurrency:
+  group: db-monitor-role
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  monitor-role:
+    name: ${{ inputs.mode }} the DB monitor role
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Check typed confirmation and inputs
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+          AGE_RECIPIENT: ${{ inputs.age_recipient }}
+        run: |
+          if [ "$CONFIRM" != "$MODE-db-monitor-role" ]; then
+            echo "Confirmation did not match $MODE-db-monitor-role; the database was not changed" >&2
+            exit 1
+          fi
+          if [ "$MODE" = provision ] && ! printf '%s' "$AGE_RECIPIENT" | grep -Eq '^age1[a-z0-9]{58}$'; then
+            echo "provision needs age_recipient: an age public key (age1 followed by 58 characters)" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          # This job holds the production database login: the token is not left on disk.
+          persist-credentials: false
+
+      - name: Install age
+        if: inputs.mode == 'provision'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq age
+
+      - name: Run
+        env:
+          MODE: ${{ inputs.mode }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENKEY_AGE_RECIPIENT: ${{ inputs.mode == 'provision' && inputs.age_recipient || '' }}
+          OPENKEY_OWNER_STATS_ROLE: ${{ inputs.owner_stats_role }}
+          OPENKEY_MONITOR_URL_OUT: ${{ runner.temp }}/openkey-db-monitor-url.age
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "DATABASE_URL secret not set; the database was not changed" >&2
+            exit 1
+          fi
+          ops/db-monitor/db-monitor-role.sh "$MODE"
+
+      - name: Upload the encrypted monitor URL
+        if: inputs.mode == 'provision'
+        uses: actions/upload-artifact@v4
+        with:
+          name: openkey-db-monitor-url
+          path: ${{ runner.temp }}/openkey-db-monitor-url.age
+          retention-days: 1
+          if-no-files-found: error
