@@ -1,6 +1,7 @@
 // TC-3232: leaving the Terms without agreeing. It first tells whoever sent the account there that the
 // answer is no (an OAuth or native app, an approval link, a device sign-in), then signs out. Telling the
 // requester no is best effort and never stops the leaving.
+import { DELETE_ACCOUNT_PATH } from './account-deletion';
 import { API_BASE, authClient } from './auth-client';
 import { safeOAuthNavigationUrl } from './safe-oauth-url';
 import { signedOAuthQuery } from './terms';
@@ -79,6 +80,16 @@ export function optionsHref(termsPage: string): string {
 /** Page 3, Disconnect apps: apps, renewals and deletion. */
 export function disconnectHref(termsPage: string): string {
   return `/auth/terms/leave?returnTo=${encodeURIComponent(termsPage)}`;
+}
+
+/** Delete account, from a ways-out page; leaving it without deleting goes back to that page. */
+export function deleteAccountHref(waysOutPage: string): string {
+  return `${DELETE_ACCOUNT_PATH}?from=${encodeURIComponent(waysOutPage)}`;
+}
+
+/** The ways-out page the delete page was opened from, never anywhere else; null when it came from Settings. */
+export function waysOutPageFrom(from: string | null): string | null {
+  return from && /^\/auth\/terms\/(?:options|leave)(?:\?|$)/.test(from) ? from : null;
 }
 
 export interface DeclineDeps {

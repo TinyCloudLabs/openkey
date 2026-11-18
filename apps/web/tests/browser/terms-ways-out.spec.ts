@@ -74,6 +74,8 @@ async function mockApi(page: Page, overrides: Record<string, (route: Route) => u
       return json(route, { stopped: true });
     }
     if (path === '/api/account/step-up/email-otp/send') return json(route, { status: true });
+    // Like the API: before acceptance, everything but the ways out answers terms_required.
+    if (!state.accepted) return json(route, { error: 'terms_required', terms_url: `${ORIGIN}/auth/terms` }, 403);
     return json(route, { error: `unmocked ${path}` }, 404);
   });
   return { calls, state };
@@ -196,4 +198,31 @@ test('the pages lead back the way they came, and an account that has agreed goes
     await page.goto(path);
     await expect(page).toHaveURL('/dashboard/settings');
   }
+});
+
+test('leaving the delete page without deleting goes back to the ways-out page it came from', async ({ page }) => {
+  await mockApi(page);
+  await page.goto(`/auth/terms?${SIGNED}`);
+  await page.getByTestId('terms-other-options').click();
+  await expect(page.getByRole('heading', { name: 'Other options' })).toBeVisible();
+  const options = page.url();
+  await page.getByRole('link', { name: 'Delete account…' }).click();
+  await page.getByRole('link', { name: 'Keep my account' }).click();
+  await expect(page).toHaveURL(options);
+  await expect(page.getByRole('heading', { name: 'Other options' })).toBeVisible();
+
+  await page.getByRole('link', { name: 'Disconnect apps or stop renewals' }).click();
+  await expect(page.getByRole('heading', { name: 'Disconnect apps', exact: true })).toBeVisible();
+  const disconnect = page.url();
+  await page.getByRole('link', { name: 'Delete account…' }).click();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByLabel('Type DELETE MY ACCOUNT to confirm').fill('DELETE MY ACCOUNT');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('link', { name: 'Cancel' }).click();
+  await expect(page).toHaveURL(disconnect);
+  await expect(page.getByRole('heading', { name: 'Disconnect apps', exact: true })).toBeVisible();
+
+  await page.getByRole('link', { name: 'Delete account…' }).click();
+  await page.getByRole('link', { name: '← Disconnect apps' }).click();
+  await expect(page).toHaveURL(disconnect);
 });

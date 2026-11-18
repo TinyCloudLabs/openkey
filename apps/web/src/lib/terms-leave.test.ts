@@ -2,7 +2,8 @@
 // no, then signs out. Telling the requester no never stands in the way of leaving.
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { declineTerms, disconnectHref, optionsHref, originOfTermsPage, termsOrigin, termsPageFor, termsPageFrom, type TermsOrigin } from './terms-leave';
+import { declineTerms, deleteAccountHref, disconnectHref, optionsHref, originOfTermsPage, termsOrigin, termsPageFor, termsPageFrom, waysOutPageFrom, type TermsOrigin } from './terms-leave';
+import { isPreTermsPage } from './terms';
 
 const API = 'https://api.openkey.test';
 const SIGNED = 'response_type=code&client_id=app-1&redirect_uri=https%3A%2F%2Fapp.test%2Fcb&state=s&exp=1&sig=abc';
@@ -84,6 +85,29 @@ describe('Other options and Disconnect apps', () => {
   test.each([null, '/dashboard', '/auth/terms/leave?returnTo=%2Fauth%2Fterms', '/auth/termsx', '//evil.test/auth/terms', 'https://evil.test/auth/terms'])(
     'they go back only to the Terms (%s goes to the plain Terms)',
     (returnTo: string | null) => expect(termsPageFrom(returnTo)).toBe('/auth/terms'),
+  );
+});
+
+describe('Delete account from the ways out', () => {
+  const fromOf = (href: string) => new URL(href, 'https://openkey.test').searchParams.get('from');
+
+  test.each([`/auth/terms/options?returnTo=${encodeURIComponent(`/auth/terms?${SIGNED}`)}`, `/auth/terms/leave?returnTo=%2Fauth%2Fterms`, '/auth/terms/leave'])(
+    'leaving the delete page goes back to %s, the page it came from',
+    (waysOut: string) => {
+      const href = deleteAccountHref(waysOut);
+      expect(href.startsWith('/dashboard/settings/delete-account?from=')).toBe(true);
+      expect(waysOutPageFrom(fromOf(href))).toBe(waysOut);
+    },
+  );
+
+  test.each([null, '', '/dashboard/settings', '/auth/terms', '/auth/terms/optionsx', '/auth/terms/leave/../../dashboard', '//evil.test/auth/terms/leave', 'https://evil.test/auth/terms/options'])(
+    'any other from (%s) is not a way back',
+    (from: string | null) => expect(waysOutPageFrom(from)).toBeNull(),
+  );
+
+  test.each([['/auth/login', true], ['/auth/terms/leave', true], ['/dashboard/settings/delete-account', true], ['/dashboard/settings', false], ['/dashboard/keys', false], ['/dashboard/settings/delete-accountx', false]] as const)(
+    'a refused call on %s opens the Terms unless it is a pre-Terms page (%s)',
+    (pathname: string, preTerms: boolean) => expect(isPreTermsPage(pathname)).toBe(preTerms),
   );
 });
 
