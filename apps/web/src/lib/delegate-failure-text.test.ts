@@ -169,7 +169,7 @@ test('wallet mismatch text names both shortened wallets', () => {
     '0xd559aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf412',
     '0x1234bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb9abc',
   )).toBe(
-    'This request is for wallet 0xd559…f412, but the key you picked is 0x1234…9abc. OpenKey can only approve it with that wallet. Choose a key for that wallet, or ask the app or command for a new request. Nothing was approved.',
+    'This request is for wallet 0xd559…f412, but the key you picked is for 0x1234…9abc. Choose a key for 0xd559…f412, or ask the app or command for a new request. Nothing was approved.',
   );
 });
 

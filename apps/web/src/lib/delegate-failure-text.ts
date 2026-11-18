@@ -130,7 +130,8 @@ function shortWallet(address: string): string {
 }
 
 export function walletMismatchFailureText(expected: string, picked: string): string {
-  return `This request is for wallet ${shortWallet(expected)}, but the key you picked is ${shortWallet(picked)}. OpenKey can only approve it with that wallet. Choose a key for that wallet, or ask the app or command for a new request. Nothing was approved.`;
+  const wanted = shortWallet(expected);
+  return `This request is for wallet ${wanted}, but the key you picked is for ${shortWallet(picked)}. Choose a key for ${wanted}, or ask the app or command for a new request. Nothing was approved.`;
 }
 
 export function delegateResponseFailureText(
