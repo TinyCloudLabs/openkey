@@ -144,8 +144,11 @@ if (process.env.OPENKEY_SIGNIN_STOP_CI_CHILD !== '1') {
   }
 
   let leaseCount = 0;
-  /** A lease as a sign-in records it: through `reserveRenewalLease`, with no approval request, before the app admits it. */
-  async function signInLease(owner: Awaited<ReturnType<typeof account>>, sessionId: string | null, node: NodeName = 'ok', signedAgoMs = 0) {
+  /**
+   * A lease as a sign-in records it: through `reserveRenewalLease`, with no approval request, before the app admits
+   * it. `signedAgoMs` is how long ago the lease was prepared, `recordedAgoMs` how long ago it was recorded.
+   */
+  async function signInLease(owner: Awaited<ReturnType<typeof account>>, sessionId: string | null, node: NodeName = 'ok', signedAgoMs = 0, recordedAgoMs = 0) {
     const { reserveRenewalLease } = await import('../services/renewal-lease-revocation');
     const leaseCid = `bafkr4i${(leaseCount++).toString().padStart(4, '0').replace(/\d/g, (d) => 'abcdefghij'[Number(d)]!)}${'b'.repeat(48)}`;
     const approvedAt = new Date(Date.now() - signedAgoMs);
@@ -155,6 +158,7 @@ if (process.env.OPENKEY_SIGNIN_STOP_CI_CHILD !== '1') {
       approvedLeaseLifetimeSeconds: 90 * 86_400, approvedAt: approvedAt.toISOString(), leaseExpiresAt: new Date(approvedAt.getTime() + 90 * 86_400_000).toISOString(),
     };
     await reserveRenewalLease(prisma, { approvalRequestId: null, userId: owner.userId, sessionId, nodeOrigin: nodes[node].origin, stage: stage as never });
+    if (recordedAgoMs) await prisma.renewalLease.update({ where: { leaseCid }, data: { createdAt: new Date(Date.now() - recordedAgoMs) } });
     return leaseCid;
   }
 
@@ -248,13 +252,22 @@ if (process.env.OPENKEY_SIGNIN_STOP_CI_CHILD !== '1') {
     expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(1);
   });
 
-  test('ten minutes after signing, a lease the node never admitted is settled as never admitted', async () => {
+  test('ten minutes after it was recorded, a lease the node never admitted is settled as never admitted', async () => {
     const owner = await account();
     const { cookie } = await owner.session();
-    const stale = await signInLease(owner, null, 'gone', 10 * 60_000 + 1_000);
+    const stale = await signInLease(owner, null, 'gone', 10 * 60_000 + 1_000, 10 * 60_000 + 1_000);
     expect((await call(cookie, `/api/account/renewal-leases/${stale}/stop`, 'POST', {})).status).toBe(200);
     const settled = await row(stale);
     expect([settled.neverAdmittedAt !== null, settled.revokedAt, settled.leaseAuthorization]).toEqual([true, null, null]);
+  });
+
+  test('a wallet lease recorded moments ago keeps its window, though its sign-in was prepared over ten minutes ago', async () => {
+    const owner = await account();
+    const { cookie } = await owner.session();
+    // The wallet signed just before its ten minutes ran out; the stop comes two seconds later.
+    const walletSigned = await signInLease(owner, null, 'gone', 10 * 60_000 + 1_000, 2_000);
+    expect((await call(cookie, `/api/account/renewal-leases/${walletSigned}/stop`, 'POST', {})).status).toBe(503);
+    expect(await row(walletSigned)).toMatchObject({ revokedAt: null, neverAdmittedAt: null });
   });
 
   async function appleLinked() {

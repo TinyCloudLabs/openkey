@@ -34,8 +34,9 @@ const NODE_CALL_TIMEOUT_MS = 5_000;
 /** How long a revocation message stays valid; the node checks it. */
 const REVOCATION_LIFETIME_MS = 5 * 60_000;
 /**
- * How long after signing a sign-in lease may still be admitted by its app: the node refusing it before then may only
- * mean the app hasn't registered the grant yet, so it is not settled as never admitted.
+ * How long after it is recorded (when it is returned to the app) a sign-in lease may still be admitted by its app:
+ * the node refusing it before then may only mean the app hasn't registered the grant yet, so it is not settled as
+ * never admitted. Counted from the record, not `approvedAt`: a wallet signs the lease up to ten minutes after that.
  */
 const SIGN_IN_ADMISSION_WINDOW_MS = 10 * 60_000;
 /** How long a best-effort stop (a sign-out, an account lock) waits for its leases; stopping carries on after that. */
@@ -245,7 +246,7 @@ async function settle(tx: Transaction, lease: LeaseRow, revocation: { siwe: stri
   // The node refused this attempt's admission and says itself that it holds no such lease: it can never renew.
   // Only for a lease no approval has confirmed, checked again in the write. A sign-in lease is not settled so while
   // its app may still be registering the grant and admitting it: it stays on, and the next stop sends it again.
-  const appMayAdmit = lease.approvalRequestId === null && deps.now().getTime() - lease.approvedAt.getTime() < SIGN_IN_ADMISSION_WINDOW_MS;
+  const appMayAdmit = lease.approvalRequestId === null && deps.now().getTime() - lease.createdAt.getTime() < SIGN_IN_ADMISSION_WINDOW_MS;
   if (!lease.admittedAt && replayed === 'refused' && revoked.notPresent && !appMayAdmit) {
     const settled = await tx.renewalLease.updateMany({
       where: { leaseCid: lease.leaseCid, revokedAt: null, neverAdmittedAt: null, admittedAt: null },
