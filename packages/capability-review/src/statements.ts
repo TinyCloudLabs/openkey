@@ -1104,8 +1104,8 @@ function allAppsStatementText(
     if (!verbs.every((verb) => verb === "read" || verb === "select" || verb === "write")) return null;
     // `write` reaches every row (read, insert, update, delete), so it states all three.
     return verbs.includes("write")
-      ? "Read, change and delete rows in all your apps"
-      : "Read data in all your apps";
+      ? "Read, change and delete records in all your apps"
+      : "Read records in all your apps";
   }
   return null;
 }

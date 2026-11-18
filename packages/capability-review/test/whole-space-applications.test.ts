@@ -67,7 +67,7 @@ describe("a grant on the whole applications space reaches every app", () => {
   it("marks SQL write across all apps as attention, in words that name every app", () => {
     expect(describeGrant(`${applications}/sql/`, ["tinycloud.sql/read", "tinycloud.sql/write"])).toEqual({
       severity: "attention",
-      rows: ["Read, change and delete rows in all your apps"],
+      rows: ["Read, change and delete records in all your apps"],
     });
   });
 
@@ -78,7 +78,7 @@ describe("a grant on the whole applications space reaches every app", () => {
     });
     expect(describeGrant(`${applications}/sql/`, ["tinycloud.sql/read"])).toEqual({
       severity: "standard",
-      rows: ["Read data in all your apps"],
+      rows: ["Read records in all your apps"],
     });
   });
 });
