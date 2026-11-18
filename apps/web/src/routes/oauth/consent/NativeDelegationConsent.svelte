@@ -2,7 +2,7 @@
   import { API_BASE } from '$lib/auth-client';
   import { safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
   import { daysOverTwoDays, formatDuration, formatEndDay } from '$lib/approval-expiry';
-  import { formatAccessEnd } from '$lib/access-end';
+  import { formatLocalAccessEnd } from '$lib/access-end';
   import NativeShell from '$lib/components/auth/native-shell.svelte';
   import { nativeAccessSummary } from '$lib/native-access';
   import {
@@ -177,7 +177,7 @@
           <dt>Returns to</dt><dd><code>{preview.redirectScheme}://</code></dd>
           <dt>Signing key</dt><dd>{model.signer.label} <code>{model.signer.address}</code></dd>
           <dt>App identity</dt><dd>{trustLabel[model.metadataTrust.status]}</dd>
-          {#if model.expiry}<dt>Expires</dt><dd>{formatAccessEnd(model.expiry)}</dd>{/if}
+          {#if model.expiry}<dt>Expires</dt><dd>{formatLocalAccessEnd(model.expiry)}</dd>{/if}
           <dt>Renewals</dt><dd>Each renewal lasts {duration(preview.ttlSeconds)} from approval.</dd>
         </dl>
         {#if model.metadataTrust.reason}

@@ -111,13 +111,20 @@ export function daysOverTwoDays(ms: number): number | null {
   return ms > 2 * D ? Math.ceil(ms / D) : null;
 }
 
-/** The day a window of `ms` starting at `now` ends, in UTC like the rest of the access end times: "17 Dec", or "17 Dec 2027" in another year. */
-export function formatEndDay(ms: number, now: number = Date.now()): string {
-  const end = new Date(now + ms);
-  const parts = new Intl.DateTimeFormat('en-US', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).formatToParts(end);
-  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? '';
-  const sameYear = end.getUTCFullYear() === new Date(now).getUTCFullYear();
-  return `${part('day')} ${part('month')}${sameYear ? '' : ` ${part('year')}`}`;
+/**
+ * The day a window of `ms` starting at `now` ends, month first like every other date on the page: "Dec 17", or
+ * "Jan 17, 2027" in another year. It is the owner's own day (the browser's time zone, or `timeZone` when given),
+ * because a UTC day can be a day off for them.
+ */
+export function formatEndDay(ms: number, now: number = Date.now(), timeZone?: string): string {
+  const yearOf = (at: number) => new Intl.DateTimeFormat('en-US', { year: 'numeric', timeZone }).format(at);
+  const end = now + ms;
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    ...(yearOf(end) === yearOf(now) ? {} : { year: 'numeric' as const }),
+    timeZone,
+  }).format(end);
 }
 
 /** A duration in words, as the line reads it: "30 days", "6 months", "1 year", "90 minutes". */
@@ -133,9 +140,9 @@ export function formatDuration(ms: number): string {
   return count(Math.round(ms / S), 'second');
 }
 
-/** The window as an expiry line says it: over two days the day it ends too ("29 days, on 17 Dec"); otherwise just the length ("45 minutes"). */
-export function formatDurationWithEnd(ms: number, now: number = Date.now()): string {
-  return daysOverTwoDays(ms) === null ? formatDuration(ms) : `${formatDuration(ms)}, on ${formatEndDay(ms, now)}`;
+/** The window as an expiry line says it: over two days the day it ends too ("29 days, on Dec 17"); otherwise just the length ("45 minutes"). */
+export function formatDurationWithEnd(ms: number, now: number = Date.now(), timeZone?: string): string {
+  return daysOverTwoDays(ms) === null ? formatDuration(ms) : `${formatDuration(ms)}, on ${formatEndDay(ms, now, timeZone)}`;
 }
 
 /**
