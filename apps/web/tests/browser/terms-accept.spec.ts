@@ -97,7 +97,7 @@ test('Don’t agree signs out and nothing is accepted', async ({ page }) => {
   const calls = await mockApi(page, FIRST);
   await page.goto(`/auth/terms?${SIGNED}`);
   await page.getByTestId('terms-other-options').click();
-  await page.getByRole('button', { name: 'Sign out' }).click();
+  await page.getByRole('region', { name: 'Sign out without agreeing' }).getByRole('button', { name: 'Sign out' }).click();
   await expect(page.getByRole('heading', { name: 'You’re signed out' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', `/auth/login?${SIGNED}`);
   expect(calls.map((call) => call.path)).toContain('/api/auth/sign-out');
