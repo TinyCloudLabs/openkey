@@ -2,9 +2,10 @@
 //
 // The app asks for renewal with its longest lease at /authorize-sign-prepare; the owner's choice is sealed with
 // the preview. A leased choice makes /authorize-sign also sign an owner lease for exactly the signed grant, or hand
-// the lease message to the owner's wallet for /authorize-sign-renewal. OpenKey returns the signed lease beside the
-// grant and keeps nothing: the app registers the grant with its node and has the node admit the lease, and the
-// node does all the renewing. While renewal leases are off nothing here runs: the ask is ignored.
+// the lease message to the owner's wallet for /authorize-sign-renewal. OpenKey records each lease it signs before
+// returning it beside the grant, so every stop (Settings, sign-out, account deletion) can revoke it at the node; the
+// app registers the grant with its node and has the node admit the lease, and the node does all the renewing.
+// While renewal leases are off nothing here runs: the ask is ignored.
 import { randomUUID } from 'node:crypto';
 import { completeSessionSetup } from '@tinycloud/node-sdk-wasm';
 import { verifyMessage } from 'ethers';
@@ -20,6 +21,8 @@ import {
   type ApprovalResultRenewal,
   type RenewalStage,
 } from './renewal-lease';
+import type { PrismaClient } from '@openkey/db';
+import { reserveRenewalLease } from './renewal-lease-revocation';
 import { logError, logSignInLeaseSigned } from '../log';
 import { isKnownTinyCloudActivationHost } from './tinycloud-hosts';
 import type { SignInRenewalRequest } from './authorization-signing';
@@ -49,8 +52,17 @@ export function bindSignInRenewalRequest(value: unknown, input: { host: string; 
   return { version: 1, leaseLifetimeSeconds: seconds };
 }
 
-interface PendingLease {
+/** Who signed in, kept with the lease that waits for their wallet, so its record names them. */
+interface SignInOwner {
   userId: string;
+  /** The OpenKey session that signed in: signing out of it stops the lease. */
+  sessionId: string | null;
+  /** The node the grant is registered with, which the lease is revoked at. */
+  host: string;
+}
+
+interface PendingLease {
+  owner: SignInOwner;
   stage: RenewalStage;
   expiresAt: number;
 }
@@ -71,12 +83,16 @@ export type SignInLease =
   | { renewalSignature: { message: string; leaseLifetimeSeconds: number; renewalToken: string } };
 
 /**
- * The signed lease in the shape of the js-sdk approval-renewal codec. Nothing has been sent to the node: the app
- * passes these fields, with its own grant, to `admitOwnerRenewalLease`, whose receipt carries the same values.
- * OpenKey keeps no other record of the lease, so its signing is logged: the lease CID and which key signed it.
+ * The signed lease in the shape of the js-sdk approval-renewal codec, recorded first. Nothing has been sent to the
+ * node: the app passes these fields, with its own grant, to `admitOwnerRenewalLease`, whose receipt carries the same
+ * values. The record holds the signed lease encrypted until a stop settles it at the node; if it can't be written,
+ * the lease is not returned. Each signing is also logged: the lease CID and which key signed it.
  */
-export function signedSignInLease(stage: RenewalStage, signer: 'managed' | 'wallet'): ApprovalResultRenewal {
+export async function recordedSignInLease(
+  db: Pick<PrismaClient, '$transaction'>, owner: SignInOwner, stage: RenewalStage, signer: 'managed' | 'wallet',
+): Promise<ApprovalResultRenewal> {
   if (!stage.leaseAuthorization || !stage.leaseCid) throw new RenewalLeaseError('lease_unsigned', 'Renewal lease is not signed', 409);
+  await reserveRenewalLease(db, { approvalRequestId: null, userId: owner.userId, sessionId: owner.sessionId, nodeOrigin: owner.host, stage });
   logSignInLeaseSigned(stage.leaseCid, signer, stage.approvedLeaseLifetimeSeconds);
   return {
     version: 1,
@@ -98,9 +114,7 @@ export function signedSignInLease(stage: RenewalStage, signer: 'managed' | 'wall
  * renewer). The node is only asked who its renewer is. `signOwner` signs the lease with the managed key; without it
  * the lease message is held for the owner's wallet, bound to this user, for one /authorize-sign-renewal call.
  */
-export async function setUpSignInLease(owner: {
-  userId: string;
-  host: string;
+export async function setUpSignInLease(db: Pick<PrismaClient, '$transaction'>, owner: SignInOwner & {
   jwk: unknown;
   signedMessage: string;
   signature: string;
@@ -109,6 +123,7 @@ export async function setUpSignInLease(owner: {
   signOwner?: (message: string) => Promise<string>;
 }): Promise<SignInLease> {
   if (!renewalLeasesEnabled()) throw new RenewalLeaseError('renewal_disabled', renewalUnavailableMessage('sign-in', 'after-signing'), 400);
+  const signedIn: SignInOwner = { userId: owner.userId, sessionId: owner.sessionId, host: owner.host };
   const session = completeSessionSetup({
     siwe: owner.signedMessage,
     jwk: targetJwk(owner.jwk),
@@ -133,10 +148,10 @@ export async function setUpSignInLease(owner: {
     const now = Date.now();
     for (const [token, pending] of pendingLeases) if (pending.expiresAt <= now) pendingLeases.delete(token);
     const renewalToken = `okr_${randomUUID().replace(/-/g, '')}${randomUUID().replace(/-/g, '')}`;
-    pendingLeases.set(renewalToken, { userId: owner.userId, stage, expiresAt: now + PENDING_LEASE_TTL_MS });
+    pendingLeases.set(renewalToken, { owner: signedIn, stage, expiresAt: now + PENDING_LEASE_TTL_MS });
     return { renewalSignature: { message: stage.leaseSiwe, leaseLifetimeSeconds: stage.approvedLeaseLifetimeSeconds, renewalToken } };
   }
-  return { renewal: signedSignInLease(signLease(stage, await owner.signOwner(stage.leaseSiwe)), 'managed') };
+  return { renewal: await recordedSignInLease(db, signedIn, signLease(stage, await owner.signOwner(stage.leaseSiwe)), 'managed') };
 }
 
 /**
@@ -144,10 +159,10 @@ export async function setUpSignInLease(owner: {
  * sign-in it belongs to, and only before it lapses. A signature from another wallet leaves it waiting for the right
  * one; a taken lease cannot be retried (the owner signs in again). Synchronous, so two requests can't both take it.
  */
-export function takePendingSignInLease(renewalToken: unknown, userId: string, signature: string): RenewalStage | 'expired' | 'wrong_signer' {
+export function takePendingSignInLease(renewalToken: unknown, userId: string, signature: string): { owner: SignInOwner; stage: RenewalStage } | 'expired' | 'wrong_signer' {
   if (typeof renewalToken !== 'string') return 'expired';
   const pending = pendingLeases.get(renewalToken);
-  if (!pending || pending.userId !== userId) return 'expired';
+  if (!pending || pending.owner.userId !== userId) return 'expired';
   if (pending.expiresAt <= Date.now()) {
     pendingLeases.delete(renewalToken);
     return 'expired';
@@ -156,7 +171,7 @@ export function takePendingSignInLease(renewalToken: unknown, userId: string, si
   try { signer = verifyMessage(pending.stage.leaseSiwe, signature); } catch { /* not the owner's: refused below */ }
   if (signer.toLowerCase() !== pending.stage.ownerAddress.toLowerCase()) return 'wrong_signer';
   pendingLeases.delete(renewalToken);
-  return pending.stage;
+  return { owner: pending.owner, stage: pending.stage };
 }
 
 /**

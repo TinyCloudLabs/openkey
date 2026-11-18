@@ -143,7 +143,7 @@ import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
 import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, confirmBoundRenewal, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
-import { bindSignInRenewalRequest, setUpSignInLease, signedSignInLease, signInRenewalFailure, takePendingSignInLease, type SignInLease } from '../services/signin-renewal';
+import { bindSignInRenewalRequest, recordedSignInLease, setUpSignInLease, signInRenewalFailure, takePendingSignInLease, type SignInLease } from '../services/signin-renewal';
 import type { SignInRenewalRequest } from '../services/authorization-signing';
 import { parseRenewalChoice, renewalLeasesEnabled, renewalUnavailableMessage, signLease } from '../services/renewal-lease';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
@@ -3624,13 +3624,14 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // during typecheck; permissionOptions may consume it in the future.
   void computePermissionKey;
   // A leased sign-in returns the grant only with the owner lease for exactly that grant (or, for an external
-  // wallet, the lease it signs next). OpenKey keeps nothing: the app registers the grant and has its node admit the
-  // lease. If the lease can't be prepared, no signature is returned.
+  // wallet, the lease it signs next). OpenKey records the signed lease so every stop can revoke it; the app registers
+  // the grant and has its node admit the lease. If the lease can't be prepared or recorded, no signature is returned.
   let signInLease: SignInLease | undefined;
   if (sealedRenewal?.choice === 'leased') {
     try {
-      signInLease = await setUpSignInLease({
+      signInLease = await setUpSignInLease(prisma, {
         userId: user.id,
+        sessionId: c.get('session')?.id ?? null,
         host: bound.host,
         jwk: bound.jwk,
         spaceId: bound.spaceId,
@@ -3667,8 +3668,8 @@ delegateRouter.post('/authorize-sign', async (c) => {
  *
  * The external wallet's signature on the renewal lease of a leased sign-in, after /authorize-sign returned the
  * signed grant with `renewalSignature`. The lease is taken once, only by the same user, with a signature that
- * recovers to the grant's owner; another wallet's signature leaves it waiting. The signed lease is returned for the
- * app to have its node admit; nothing is kept.
+ * recovers to the grant's owner; another wallet's signature leaves it waiting. The signed lease is recorded, so every
+ * stop can revoke it, and returned for the app to have its node admit.
  */
 delegateRouter.post('/authorize-sign-renewal', async (c) => {
   if (!renewalLeasesEnabled()) return c.json({ error: renewalUnavailableMessage('sign-in', 'after-signing'), code: 'renewal_disabled' }, 400);
@@ -3678,13 +3679,13 @@ delegateRouter.post('/authorize-sign-renewal', async (c) => {
   if (typeof fields.signature !== 'string' || !fields.signature) {
     return c.json({ error: 'A signature is required.', code: 'invalid_request' }, 400);
   }
-  const stage = takePendingSignInLease(fields.renewalToken, user.id, fields.signature);
-  if (stage === 'expired') return c.json({ error: 'This renewal request expired. Sign in again to turn on renewal.', code: 'renewal_expired' }, 410);
-  if (stage === 'wrong_signer') {
+  const pending = takePendingSignInLease(fields.renewalToken, user.id, fields.signature);
+  if (pending === 'expired') return c.json({ error: 'This renewal request expired. Sign in again to turn on renewal.', code: 'renewal_expired' }, 410);
+  if (pending === 'wrong_signer') {
     return c.json({ error: "That signature isn't from the wallet you signed in with. Sign with that wallet to turn on renewal.", code: 'invalid_signature' }, 400);
   }
   try {
-    return c.json({ renewalChoice: 'leased', renewal: signedSignInLease(signLease(stage, fields.signature), 'wallet') });
+    return c.json({ renewalChoice: 'leased', renewal: await recordedSignInLease(prisma, pending.owner, signLease(pending.stage, fields.signature), 'wallet') });
   } catch (error) {
     const refused = signInRenewalFailure(error);
     return c.json(refused.body, refused.status);

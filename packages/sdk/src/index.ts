@@ -210,9 +210,9 @@ export interface TinyCloudRenewalRequestV1 {
  * The owner-signed renewal lease for a renewing grant, in the shape of the js-sdk approval-renewal codec
  * (`parseApprovalRenewal` in `@tinycloud/share-envelope`). The lease lets the node's renewer renew exactly
  * `receipt.originalCid` until `receipt.leaseExpiresAt`, and nothing else. Signed, not admitted: OpenKey has not sent
- * it to the node and keeps no copy (`receipt` is the codec's field name). Once the grant is registered with its node,
- * the app has the node admit the lease by passing these fields to `admitOwnerRenewalLease` in `@tinycloud/sdk-core`,
- * which returns the same values. Until then nothing renews.
+ * it to the node, and records it so the owner's stops can revoke it (`receipt` is the codec's field name). Once the
+ * grant is registered with its node, the app has the node admit the lease by passing these fields to
+ * `admitOwnerRenewalLease` in `@tinycloud/sdk-core`, which returns the same values. Until then nothing renews.
  */
 export interface TinyCloudSignedRenewalLeaseV1 {
   version: 1;

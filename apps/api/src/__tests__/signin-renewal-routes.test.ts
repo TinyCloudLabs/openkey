@@ -1,7 +1,8 @@
 // TC-2872: renewal at an app sign-in (the renewal checkbox on OpenKey's own sign-in window). The delegate routes run
 // in-process with a managed key that really signs, and a loopback stand-in node. OpenKey only asks the node who its
-// renewer is and keeps nothing: any lease-table access or node write fails the test. The returned lease is then
-// admitted the way the app does it, by the real sdk-core admission code.
+// renewer is, and records each lease it signs (so every stop can revoke it) before returning it; any other
+// lease-table access or node write fails the test. The returned lease is then admitted the way the app does it, by
+// the real sdk-core admission code. Stopping recorded sign-in leases: signin-renewal-lease-stop.integration.test.ts.
 import { beforeAll, afterAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { verifyMessage } from 'ethers';
@@ -38,11 +39,14 @@ const prisma = {
   },
   user: { findUnique: mock(async () => ({ autoSignEnabled: true })) },
   tinyCloudBootstrapState: {},
-  // A sign-in keeps no lease record.
+  // A sign-in records its lease only through `reserveRenewalLease` (mocked below), never directly.
   get renewalLease(): never { throw new Error('a sign-in touched the renewal lease table'); },
   $transaction: () => { throw new Error('a sign-in opened a database transaction'); },
 };
 const signManagedMessage = mock(async (message: string) => account.signMessage({ message }));
+type Reservation = { approvalRequestId: string | null; userId: string; sessionId: string | null; nodeOrigin: string; stage: { leaseCid: string; leaseAuthorization: string } };
+const reserveRenewalLease = mock(async (_db: unknown, _input: Reservation): Promise<void> => undefined);
+const reservations = () => reserveRenewalLease.mock.calls.map(([, input]) => input);
 
 replaceModules({
   '../middleware/session': () => ({
@@ -62,6 +66,7 @@ await mockModules({
     generatePrivateKey: () => '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     getAddressFromPrivateKey: () => account.address,
   }),
+  '../services/renewal-lease-revocation': () => ({ reserveRenewalLease }),
 });
 
 // The stand-in node. OpenKey may only read its identity; `/delegate` answers only while the app admits a lease
@@ -100,6 +105,7 @@ beforeAll(async () => {
   setSignerAuth(createMiddleware(async (c, next) => {
     c.set('user', currentUser);
     c.set('delegateSignerPrincipal', { kind: 'session', userId: currentUser.id });
+    c.set('session', { id: `session_${currentUser.id}`, userId: currentUser.id, expiresAt: new Date(Date.now() + 60_000) });
     c.set('delegateSignerOauthContext', null);
     c.set('delegateSignerAuthFailure', null);
     await next();
@@ -120,6 +126,8 @@ beforeEach(() => {
   identityAnswer = undefined;
   appAdmitting = false;
   signManagedMessage.mockClear();
+  reserveRenewalLease.mockClear();
+  reserveRenewalLease.mockImplementation(async () => undefined);
   node();
 });
 
@@ -214,6 +222,7 @@ describe('while renewal leases are off', () => {
     expect(Object.keys(signed.body).sort()).toEqual(['address', 'permissions', 'protocolVersion', 'selectedActionKeys', 'signature', 'signedMessage']);
     expect(signManagedMessage).toHaveBeenCalledTimes(1);
     expect(nodeCalls).toEqual([]);
+    expect(reserveRenewalLease).not.toHaveBeenCalled();
   });
 
   test('a leased choice is refused at the preview, and the wallet step is refused outright', async () => {
@@ -291,6 +300,29 @@ describe('a managed key with renewal turned on', () => {
     expect(receipt).toEqual(signed.body.renewal.receipt);
   });
 
+  test('records the lease for its owner and signing session before returning it, with no approval request', async () => {
+    const asked = await prepare();
+    let returned = false;
+    reserveRenewalLease.mockImplementation(async () => { expect(returned).toBe(false); });
+    const signed = await sign(asked, (await preview(asked, LEASED)).body);
+    returned = true;
+    expect(signed.status).toBe(200);
+    expect(reservations()).toHaveLength(1);
+    const [recorded] = reservations();
+    expect(recorded).toMatchObject({ approvalRequestId: null, userId: owner.id, sessionId: `session_${owner.id}`, nodeOrigin: NODE });
+    expect(recorded!.stage.leaseCid).toBe(signed.body.renewal.receipt.leaseCid);
+    expect(recorded!.stage.leaseAuthorization).toBe(signed.body.renewal.receipt.leaseAuthorization);
+  });
+
+  test('a lease that cannot be recorded is not returned, and neither is the grant\'s signature', async () => {
+    reserveRenewalLease.mockImplementation(async () => { throw new Error('database unavailable'); });
+    const asked = await prepare();
+    const signed = await sign(asked, (await preview(asked, LEASED)).body);
+    expect(signed).toMatchObject({ status: 503, body: { code: 'renewal_failed' } });
+    expect(signed.body).not.toHaveProperty('signature');
+    expect(signed.body).not.toHaveProperty('renewal');
+  });
+
   test('left unticked, the sign-in is finite: no lease and no node call', async () => {
     const asked = await prepare();
     const shown = await preview(asked, { choice: 'finite' });
@@ -300,6 +332,7 @@ describe('a managed key with renewal turned on', () => {
     expect(signed.body).not.toHaveProperty('renewal');
     expect(signManagedMessage).toHaveBeenCalledTimes(1);
     expect(nodeCalls).toEqual([]);
+    expect(reserveRenewalLease).not.toHaveBeenCalled();
   });
 
   test('the choice is the one sealed with the preview: it cannot be added, changed or lengthened later', async () => {
@@ -394,6 +427,10 @@ describe('an external wallet with renewal turned on', () => {
     expect(await appAdmits(grant, done.body.renewal)).toEqual(done.body.renewal.receipt);
     // Taken once.
     expect((await post('/authorize-sign-renewal', { renewalToken, signature: await account.signMessage({ message }) })).status).toBe(410);
+    // Recorded once, when the owner signed it: not while it waited for the wallet.
+    expect(reservations()).toHaveLength(1);
+    expect(reservations()[0]).toMatchObject({ approvalRequestId: null, userId: owner.id, sessionId: `session_${owner.id}`, nodeOrigin: NODE });
+    expect(reservations()[0]!.stage.leaseCid).toBe(done.body.renewal.receipt.leaseCid);
   });
 
   test('another account gets no lease; another wallet\'s signature gets none either, and leaves it for the owner', async () => {
@@ -405,8 +442,17 @@ describe('an external wallet with renewal turned on', () => {
     const wrong = await post('/authorize-sign-renewal', { renewalToken, signature: await stranger.signMessage({ message }) });
     expect(wrong).toMatchObject({ status: 400, body: { code: 'invalid_signature' } });
     expect(wrong.body).not.toHaveProperty('renewal');
+    expect(reserveRenewalLease).not.toHaveBeenCalled();
     const done = await post('/authorize-sign-renewal', { renewalToken, signature: await account.signMessage({ message }) });
     expect(done).toMatchObject({ status: 200, body: { renewalChoice: 'leased' } });
+  });
+
+  test('a wallet-signed lease that cannot be recorded is not returned; the owner signs in again', async () => {
+    const { renewalSignature: { message, renewalToken } } = await signedGrant();
+    reserveRenewalLease.mockImplementation(async () => { throw new Error('database unavailable'); });
+    const failed = await post('/authorize-sign-renewal', { renewalToken, signature: await account.signMessage({ message }) });
+    expect(failed).toMatchObject({ status: 503, body: { code: 'renewal_failed' } });
+    expect(failed.body).not.toHaveProperty('renewal');
   });
 
   test('the owner\'s signature on one sign-in\'s lease does not take another\'s', async () => {

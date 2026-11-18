@@ -7,6 +7,7 @@ import type { AuthEndpointContext } from '@better-auth/core/context';
 import type { PrismaClient } from '@openkey/db';
 import { Resend } from 'resend';
 import { log } from '../log';
+import { stopRenewalLeasesBestEffort } from './renewal-lease-revocation';
 
 const COOKIE = '__Host-openkey_social_email_review';
 const PREFIX = 'openkey-social-email-review:';
@@ -122,6 +123,9 @@ export function socialMailboxReview(database: PrismaClient): BetterAuthPlugin {
         ctx.setCookie(COOKIE, '', { httpOnly: true, secure: true, sameSite: 'lax', path: '/', maxAge: 0 });
         if (body.decision === 'not_mine') {
           log('info', 'auth_social_email_review_refused');
+          // The account is locked and its sessions ended: its renewal leases stop too, after the commit released the
+          // user row the stop locks. One the node doesn't confirm stays recorded for the next stop to send again.
+          await stopRenewalLeasesBestEffort(database, row.userId, { kind: 'all' });
           return ctx.json({ success: true });
         }
         const user = await ctx.context.internalAdapter.findUserById(row.userId);
