@@ -81,6 +81,7 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     clientId = (await registration.json() as { client_id: string }).client_id;
     await database.user.create({ data: {
       id: 'reviewer-owner', email: 'openai-review@tinycloud.xyz', emailVerified: true, name: 'App review', reviewerHoldAt: new Date(),
+      autoSignEnabled: false,
     } });
     const tee = await import('@openkey/tee');
     const privateKey = tee.generatePrivateKey();
@@ -287,6 +288,8 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     const prepared = await call('/api/delegate/prepare', 'POST', body, { cookie });
     expect(prepared.status, await prepared.clone().text()).toBe(200);
     const preview = await prepared.json() as any;
+    // The fixture already hosts the bound space, so the approval page must not say it may not be set up.
+    expect(preview.spaceSetup).toBeNull();
     const signed = await call('/api/delegate', 'POST', {
       ...body, prepared: preview.prepared, authorizationContextToken: preview.authorizationContext.token,
       selectedActionIds: preview.selectedActionKeys, protocolVersion: 1,
