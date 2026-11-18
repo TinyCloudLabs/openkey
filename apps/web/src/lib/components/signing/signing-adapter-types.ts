@@ -77,6 +77,8 @@ export interface CliSigningTransport {
    */
   expiry?: {
     chosenMs: number | null;
+    /** A one-time approval (secrets or decrypt) starts at one hour here (TC-3111); set by the real signing pages, not harnesses. */
+    onceDefault?: boolean;
     bounded: boolean;
     /** The most the requester signed; the shown default can be shorter. Null: the default is the most. */
     maxMs?: number | null;
@@ -157,6 +159,8 @@ export interface WidgetSigningTransport {
    */
   expiry?: {
     chosenMs: number | null;
+    /** A one-time approval (secrets or decrypt) starts at one hour here (TC-3111); set by the real signing pages, not harnesses. */
+    onceDefault?: boolean;
     onChange: (ms: number | null) => void;
   };
   /**

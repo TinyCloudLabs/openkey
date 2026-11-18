@@ -1356,6 +1356,7 @@
         expiry: canUseAuthorizeSignFn() && expiryChangeable
           ? {
               chosenMs: expiryChoiceMs,
+              onceDefault: true,
               onChange: (ms) => {
                 expiryChoiceMs = ms;
                 invalidatePreviewForSelectionEdit();

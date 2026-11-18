@@ -102,6 +102,7 @@
   expiryMs={transport.expiry?.chosenMs ?? null}
   onExpiryChange={transport.expiry?.onChange}
   renewal={transport.renewal ?? null}
+  onceExpiryDefault={transport.expiry?.onceDefault ?? false}
   elevated={transport.elevated ?? null}
   {onApprove}
   {onCancel}

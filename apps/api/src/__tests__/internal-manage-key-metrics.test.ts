@@ -1,9 +1,18 @@
 import { expect, test } from 'bun:test';
-import { recordAccountOriginRefused } from '../log';
+import type * as Log from '../log';
 import { mockModules } from './mock-module';
 
+// Origin refusal counts are process-wide, so other files' refusals (route templates such as
+// /api/keys/:keyId/sign) would show here. The route reads this file's own instance of the
+// counter, loaded under a file-specific query (TC-2969).
+const isolatedLog = await import('../log?internal-manage-key-metrics' as string) as typeof Log;
+const { recordAccountOriginRefused } = isolatedLog;
 await mockModules({
   '@openkey/db': () => ({ createPrismaClient: () => ({}) }),
+  '../log': () => ({
+    recordAccountOriginRefused: isolatedLog.recordAccountOriginRefused,
+    getAccountOriginRefusals: isolatedLog.getAccountOriginRefusals,
+  }),
 });
 
 test('internal metrics expose aggregate manage-key health without identity material', async () => {
