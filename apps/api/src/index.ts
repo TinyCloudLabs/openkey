@@ -19,7 +19,7 @@ import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
 import { createAccountTermsRouter } from './routes/account-terms';
 import { termsRelease } from './services/terms';
-import { createTermsSessionGuard, createTermsSubjectGuard } from './middleware/terms';
+import { allowBeforeTerms, createTermsSessionGuard, createTermsSubjectGuard } from './middleware/terms';
 import { oauthAdminRouter } from './routes/oauth-admin';
 import { createResourceIntrospectRouter } from './routes/oauth-resource-introspect';
 import { MCP_AUDIENCES, oauthValidAudiences } from './oauth-config';
@@ -273,12 +273,12 @@ app.use('/api/auth/oauth2/userinfo', createMcpUserinfoGuard({
 app.use('/api/auth/oauth2/userinfo', createLockedSubjectGuard(authPrisma));
 app.use('/api/auth/oauth2/introspect', createLockedSubjectGuard(authPrisma));
 // TC-3232: until the account accepts the Terms, its tokens get no userinfo answer, and no consent or
-// postLogin continue goes ahead.
+// postLogin continue goes ahead. Declining a consent stays open: leaving never requires agreeing.
 app.use('/api/auth/oauth2/userinfo', createTermsSubjectGuard(authPrisma));
-const termsSessionGuard = createTermsSessionGuard(authPrisma, async (headers) =>
-  (await auth.api.getSession({ headers, query: { disableRefresh: true } }))?.user.id ?? null);
-app.use('/api/auth/oauth2/consent', termsSessionGuard);
-app.use('/api/auth/oauth2/continue', termsSessionGuard);
+const termsSessionUserId = async (headers: Headers) =>
+  (await auth.api.getSession({ headers, query: { disableRefresh: true } }))?.user.id ?? null;
+app.use('/api/auth/oauth2/consent', createTermsSessionGuard(authPrisma, termsSessionUserId, { allowDenial: true }));
+app.use('/api/auth/oauth2/continue', createTermsSessionGuard(authPrisma, termsSessionUserId));
 app.use('/api/auth/*', createRevokeDenylist({
   database: authPrisma,
   verify: createAccessTokenVerifier({ issuer: oauthIssuer, getJwks: readSigningKeys }),
@@ -309,6 +309,22 @@ app.post('/api/webhooks/apple', bodyLimit({
   maxSize: 32 * 1024,
   onError: (c) => c.json({ error: 'invalid_notification' }, 400),
 }), createAppleWebhookHandler({ database: authPrisma }));
+
+// Ways out (TC-3232): leaving never requires agreeing, so these answer for an account that hasn't accepted
+// the current Terms. Marked here, ahead of the routers that serve them, so their `requireSession` skips the
+// Terms check. Agreeing to anything still waits for acceptance.
+const WAYS_OUT: Array<['POST' | 'DELETE', string]> = [
+  ['POST', '/api/account/step-up/*'], // the step-up account deletion needs
+  ['POST', '/api/account/delete'],
+  ['DELETE', '/api/account/tinycloud-apps/*'], // disconnecting a TinyCloud, MCP or identity app
+  ['POST', '/api/account/renewal-leases/:leaseCid/stop'],
+  ['DELETE', '/api/keys/nostr/grants/:grantId'],
+  ['POST', '/api/delegate/owner-revocation/*'],
+  ['POST', '/api/delegate/handoffs/cancel-claimed'],
+  ['POST', '/api/approval-requests/:id/deny'],
+  ['POST', '/api/device-authorizations/:transactionId/deny'],
+];
+for (const [method, path] of WAYS_OUT) app.on(method, path, allowBeforeTerms);
 
 // Key management routes
 app.route('/api/keys', keysRouter);

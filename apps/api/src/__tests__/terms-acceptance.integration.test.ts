@@ -293,6 +293,98 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
     });
   });
 
+  // Leaving never requires agreeing: an account that hasn't accepted the current Terms can still delete itself,
+  // disconnect apps, stop renewals, revoke what it delegated, and deny what it is asked to approve.
+  describe('ways out', () => {
+    const send = (cookie: string, method: string, path: string, body?: unknown) => request(`${api}${path}`, {
+      method, ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+    }, cookie);
+    /** An account that accepted an earlier release, now asked to accept a new required one. */
+    async function behindNewTerms() {
+      release(VERSION);
+      const account = await signedIn();
+      expect((await accept(account.cookie)).status).toBe(200);
+      release('2026-12-15');
+      await expectTermsRequired(await send(account.cookie, 'GET', '/api/keys'));
+      return account;
+    }
+
+    test('the account can be deleted, with its email step-up', async () => {
+      const { cookie, userId, token } = await behindNewTerms();
+      const { id: sessionId } = await prisma.session.findFirstOrThrow({ where: { token } });
+      const { email } = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+      const { stepUpIdentifier } = await import('../services/email-otp-step-up');
+
+      // No mail service in this test: the send answers past the gate, and the code is the one it would store.
+      const sent = await send(cookie, 'POST', '/api/account/step-up/email-otp/send', { purpose: 'delete_account' });
+      expect(await sent.text()).not.toContain('terms_required');
+      await prisma.verification.deleteMany({ where: { identifier: stepUpIdentifier(sessionId, email, 'delete_account') } });
+      await prisma.verification.create({ data: {
+        id: randomUUID(), identifier: stepUpIdentifier(sessionId, email, 'delete_account'), value: '123456:0',
+        expiresAt: new Date(Date.now() + 300_000),
+      } });
+      const verified = await send(cookie, 'POST', '/api/account/step-up/email-otp/verify', { purpose: 'delete_account', code: '123456' });
+      expect(verified.status, await verified.clone().text()).toBe(200);
+
+      const deleted = await send(cookie, 'POST', '/api/account/delete', { confirmation: 'DELETE MY ACCOUNT' });
+      expect(deleted.status, await deleted.clone().text()).toBe(200);
+      expect(await prisma.user.findUnique({ where: { id: userId } })).toBeNull();
+    });
+
+    test('the passkey step-up answers past the gate', async () => {
+      const { cookie } = await behindNewTerms();
+      for (const path of ['/api/account/step-up/passkey/options', '/api/account/step-up/passkey/verify']) {
+        const response = await send(cookie, 'POST', path, {});
+        expect(response.status).not.toBe(401);
+        expect(await response.text()).not.toContain('terms_required');
+      }
+    });
+
+    type Consent = { id: string; clientId: string };
+    test.each([
+      ['a TinyCloud app', 'tinycloud:delegation', (consent: Consent) => `/api/account/tinycloud-apps/${consent.clientId}`],
+      ['an MCP app', 'tinycloud:mcp', (consent: Consent) => `/api/account/tinycloud-apps/mcp/${consent.id}`],
+      ['an identity app', 'tinycloud:identity', (consent: Consent) => `/api/account/tinycloud-apps/identity/${consent.id}`],
+    ])('%s can be disconnected', async (_name, scope, path) => {
+      const { cookie, userId } = await behindNewTerms();
+      const { clientId } = await register();
+      const consent = await prisma.oauthConsent.create({ data: { id: randomUUID(), userId, clientId, scopes: ['openid', scope] } });
+      const response = await send(cookie, 'DELETE', path(consent), { confirmation: 'DISCONNECT' });
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(await prisma.oauthConsent.findUnique({ where: { id: consent.id } })).toBeNull();
+    });
+
+    test('an OAuth consent can be denied; agreeing to it still cannot', async () => {
+      release(VERSION);
+      const { cookie } = await signedIn();
+      const { clientId, scope } = await register();
+      const oauthQuery = (await authorize(cookie, clientId, scope)).searchParams.toString();
+      const denied = await json(`${issuer}/oauth2/consent`, { accept: false, oauth_query: oauthQuery }, cookie);
+      expect(denied.status, await denied.clone().text()).toBe(200);
+      const back = new URL((await denied.json() as { url: string }).url);
+      expect(`${back.origin}${back.pathname}`).toBe(callback);
+      expect(back.searchParams.get('error')).toBe('access_denied');
+      expect(back.searchParams.get('code')).toBeNull();
+      await expectTermsRequired(await json(`${issuer}/oauth2/consent`, { accept: true, oauth_query: oauthQuery }, cookie));
+      await expectTermsRequired(await json(`${issuer}/oauth2/continue`, { accept: false, postLogin: true, oauth_query: oauthQuery }, cookie));
+    });
+
+    test.each([
+      ['stopping a renewal lease', 'POST', '/api/account/renewal-leases/no-such-lease/stop', {}],
+      ['revoking a Nostr signing grant', 'DELETE', '/api/keys/nostr/grants/no-such-grant', undefined],
+      ['preparing an owner revocation', 'POST', '/api/delegate/owner-revocation/prepare', {}],
+      ['signing an owner revocation', 'POST', '/api/delegate/owner-revocation/sign', {}],
+      ['cancelling a claimed handoff', 'POST', '/api/delegate/handoffs/cancel-claimed', {}],
+      ['denying an approval request', 'POST', '/api/approval-requests/no-such-request/deny', {}],
+      ['denying a device sign-in', 'POST', '/api/device-authorizations/no-such-transaction/deny', {}],
+    ])('%s answers past the gate', async (_name, method, path, body) => {
+      const { cookie } = await behindNewTerms();
+      const response = await send(cookie, method, path, body);
+      expect(response.status).not.toBe(401);
+      expect(await response.text()).not.toContain('terms_required');
+    });
+  });
+
   describe('native renew', () => {
     // A native grant as PAR, approve and the code exchange leave it, with the app's session key.
     async function nativeGrant(userId: string) {
