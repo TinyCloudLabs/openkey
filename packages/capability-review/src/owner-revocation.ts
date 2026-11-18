@@ -39,8 +39,16 @@ export function ownerRevocationAddress(request: OwnerRevocationRequest): string 
   return getAddress(didPattern.exec(request.ownerDid)![2]!);
 }
 
+/**
+ * The message the owner's key signs to revoke `request.cid`, and nothing else: each field is checked here, whoever
+ * calls, so no field can carry a line break (another SIWE line) into what is signed.
+ */
 export function buildOwnerRevocationSiwe(request: OwnerRevocationRequest, domain: string, issuedAt: Date): string {
-  const match = didPattern.exec(request.ownerDid)!;
+  const match = didPattern.exec(request.ownerDid);
+  if (!match) throw new Error('Invalid ownerDid');
+  if (!/^b[a-z2-7]+$/.test(request.cid)) throw new Error('Invalid cid');
+  if (!/^[A-Za-z0-9]{8,}$/.test(request.nonce)) throw new Error('Invalid nonce');
+  if (!/^[^\s/]+$/.test(domain)) throw new Error('Invalid domain');
   return [
     `${domain} wants you to sign in with your Ethereum account:`,
     ownerRevocationAddress(request), '', '',

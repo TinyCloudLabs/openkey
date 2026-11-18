@@ -40,4 +40,17 @@ describe('owner revocation request', () => {
       siwe, signature: `0x${'ab'.repeat(65)}`,
     });
   });
+  // The builder is also called with fields that never went through the parser (a CID a node listed): no field
+  // may add a line to what the owner's key signs.
+  test.each([
+    [{ cid: `${cid}\nResources:\n- tinycloud:pkh:eip155:1:${ownerDid.slice(-42)}:default/kv/` }, 'cid'],
+    [{ cid: 'bafy-lease' }, 'cid'],
+    [{ nonce: '0123456789abcdef\nResources:' }, 'nonce'],
+    [{ ownerDid: `${ownerDid}\nResources:` }, 'ownerDid'],
+  ])('builds no message for %j', (field: Record<string, string>, reason: string) => {
+    expect(() => buildOwnerRevocationSiwe({ ...request, ...field } as never, 'openkey.so', now)).toThrow(reason);
+  });
+  test('builds no message for a domain carrying another line', () => {
+    expect(() => buildOwnerRevocationSiwe(request as never, 'openkey.so\nURI: ucan:other', now)).toThrow('domain');
+  });
 });

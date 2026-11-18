@@ -62,11 +62,12 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
   release(null);
   await mockModules({ '../terms-release.json': () => ({ default: releaseFile }) });
 
-  // The stand-in node. `listing` is what `POST /delegation/query` lists (in pages of the asked limit); `revoked` the
-  // lease CIDs it was asked to revoke, read from the owner's signed revocation; `queries` each listing's body.
+  // The stand-in node. `listing` is what `POST /delegation/query` lists (in pages of the asked limit; from page
+  // `failPage` on it answers 503); `revoked` the lease CIDs it was asked to revoke, read from the owner's signed
+  // revocation; `queries` each listing's body.
   type Item = Record<string, unknown>;
   const node = {
-    server: undefined as Server | undefined, origin: '', up: true, delayMs: 0,
+    server: undefined as Server | undefined, origin: '', up: true, delayMs: 0, failPage: Infinity,
     listing: [] as Item[], revoked: [] as string[], queries: [] as Array<Record<string, unknown>>, activations: 0,
   };
 
@@ -94,6 +95,7 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
         node.queries.push(query);
         const start = query.cursor ? Number(query.cursor) : 0;
         const limit = query.limit ?? 100;
+        if (start / limit >= node.failPage) return reply(503, { error: 'busy' });
         const items = node.listing.slice(start, start + limit);
         const next = start + limit < node.listing.length ? String(start + limit) : undefined;
         return reply(200, { schemaVersion: 2, items, ...(next ? { nextCursor: next } : {}) });
@@ -138,7 +140,7 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
   });
 
   function resetNode() {
-    Object.assign(node, { up: true, delayMs: 0, listing: [], revoked: [], queries: [], activations: 0 });
+    Object.assign(node, { up: true, delayMs: 0, failPage: Infinity, listing: [], revoked: [], queries: [], activations: 0 });
   }
 
   async function account(keyType: 'MANAGED' | 'EXTERNAL' = 'MANAGED') {
@@ -163,8 +165,9 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
     return { userId, wallet, ownerDid: `did:pkh:eip155:1:${wallet.address}`, session };
   }
 
+  // CIDv1 base32, the length of a real one (59 characters); the kind and a counter keep them apart.
   let cids = 0;
-  const cid = (kind: string) => `bafkr4i${kind}${(cids++).toString().replace(/\d/g, (d) => 'abcdefghij'[Number(d)]!)}${'a'.repeat(40)}`;
+  const cid = (kind: string) => `bafkr4i${kind}${(cids++).toString().replace(/\d/g, (d) => 'abcdefghij'[Number(d)]!)}`.padEnd(59, 'a');
 
   /** A lease OpenKey recorded when an approval link was approved, admitted at the stand-in node. */
   async function recordedLease(owner: Awaited<ReturnType<typeof account>>, sessionId: string | null) {
@@ -195,6 +198,7 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
   }));
   const revokedAt = async (leaseCid: string) => (await prisma.renewalLease.findUnique({ where: { leaseCid } }))?.revokedAt ?? null;
   const sessionExists = async (id: string) => (await prisma.session.count({ where: { id } })) === 1;
+  const scope = () => ({ node: node.origin, chainIds: [1] });
 
   describe('declining the Terms', () => {
     test('stops every lease the account recorded, under any session, then signs this session out', async () => {
@@ -209,7 +213,7 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
 
       const response = await decline(here.cookie);
       expect(response.status, await response.clone().text()).toBe(200);
-      expect(await response.json()).toEqual({ signedOut: true, renewals: { stopped: 3, notStopped: 0, walletRequired: 0, nodeChecked: true } });
+      expect(await response.json()).toEqual({ signedOut: true, renewals: { stopped: 3, notStopped: 0, walletRequired: 0, nodeChecked: true, nodeScope: scope() } });
       for (const leaseCid of [mine, other, unbound]) expect(await revokedAt(leaseCid)).not.toBeNull();
       expect([...node.revoked].sort()).toEqual([mine, other, unbound].sort());
       // Only this session ends; the cookie is cleared.
@@ -235,6 +239,9 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
           { resource: `urn:cid:${cid('grant')}`, actions: ['tinycloud.delegation/renew'] },
         ]),
         { ...signInLease(owner), delegatorDid: 'did:pkh:eip155:1:0x00000000000000000000000000000000000000aa' },
+        // Lease-shaped, but the CID is not one: never put into a message the owner's key signs.
+        { ...signInLease(owner), cid: `${cid('evil')}\nResources:\n- tinycloud:pkh:eip155:1:${owner.wallet.address}:default/kv/` },
+        { ...signInLease(owner), cid: 'bafy-lease' },
       ];
       // More than one page: every page is read.
       const filler = Array.from({ length: 120 }, () => granted(owner, 'did:key:z6MkApp', [{ resource: `tinycloud:pkh:eip155:1:${owner.wallet.address}:default/kv/x/`, actions: ['tinycloud.kv/get'] }]));
@@ -242,7 +249,7 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
 
       const response = await decline(here.cookie);
       expect(response.status, await response.clone().text()).toBe(200);
-      expect(await response.json()).toEqual({ signedOut: true, renewals: { stopped: 3, notStopped: 0, walletRequired: 0, nodeChecked: true } });
+      expect(await response.json()).toEqual({ signedOut: true, renewals: { stopped: 3, notStopped: 0, walletRequired: 0, nodeChecked: true, nodeScope: scope() } });
       // The recorded lease once, by its record; the two sign-in leases by their listing; nothing else.
       expect([...node.revoked].sort()).toEqual([recorded, leases[0]!.cid as string, leases[1]!.cid as string].sort());
       expect(await revokedAt(recorded)).not.toBeNull();
@@ -261,11 +268,59 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
 
       const response = await decline(here.cookie);
       expect(response.status, await response.clone().text()).toBe(200);
-      expect(await response.json()).toEqual({ signedOut: true, renewals: { stopped: 0, notStopped: 0, walletRequired: 1, nodeChecked: false } });
+      expect(await response.json()).toEqual({ signedOut: true, renewals: { stopped: 0, notStopped: 0, walletRequired: 1, nodeChecked: false, nodeScope: null } });
       expect(node.revoked).toEqual([]);
       expect(node.queries).toEqual([]);
       expect(await revokedAt(recorded)).toBeNull();
       expect(await sessionExists(here.id)).toBe(false);
+    });
+
+    test('a node list that fails part way still stops the leases found before it failed, and says the list is incomplete', async () => {
+      resetNode();
+      release(VERSION);
+      const owner = await account();
+      const here = await owner.session();
+      const first = signInLease(owner);
+      const later = signInLease(owner);
+      const filler = Array.from({ length: 100 }, () => granted(owner, 'did:key:z6MkApp', [{ resource: `tinycloud:pkh:eip155:1:${owner.wallet.address}:default/kv/x/`, actions: ['tinycloud.kv/get'] }]));
+      node.listing = [first, ...filler, later];
+      node.failPage = 1;
+
+      const response = await decline(here.cookie);
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(await response.json()).toEqual({ signedOut: true, renewals: { stopped: 1, notStopped: 0, walletRequired: 0, nodeChecked: false, nodeScope: scope() } });
+      expect(node.revoked).toEqual([first.cid as string]);
+    });
+
+    test('a sign-in lease the app admits just after the node was listed is stopped by the second pass', async () => {
+      resetNode();
+      release(VERSION);
+      const owner = await account();
+      const { stopRenewalsOnDecline, defaultDeclineDeps } = await import('../services/terms-decline');
+      let secondPass: (() => Promise<void>) | undefined;
+      const report = await stopRenewalsOnDecline(prisma, owner.userId, { ...defaultDeclineDeps, afterAdmissionWindow: (pass) => { secondPass = pass; } });
+      expect(report).toEqual({ stopped: 0, notStopped: 0, walletRequired: 0, nodeChecked: true, nodeScope: scope() });
+
+      const admittedLate = signInLease(owner);
+      node.listing = [admittedLate];
+      await secondPass!();
+      expect(node.revoked).toEqual([admittedLate.cid as string]);
+    });
+
+    test('after a decline the account gets no new lease signed: every route that signs one waits for acceptance', async () => {
+      resetNode();
+      release(VERSION);
+      const owner = await account();
+      expect((await decline((await owner.session()).cookie)).status).toBe(200);
+      const again = await owner.session();
+      // An approval with renewal (`/`, `/complete`) and an app sign-in (`/authorize-sign`) all sit behind the gate.
+      for (const path of ['/api/delegate/', '/api/delegate/complete', '/api/delegate/authorize-sign']) {
+        const response = await app.fetch(new Request(`${API}${path}`, {
+          method: 'POST', headers: { cookie: again.cookie, origin: ORIGIN, 'content-type': 'application/json' }, body: '{}',
+        }));
+        expect(response.status, path).toBe(403);
+        expect(await response.json(), path).toMatchObject({ error: 'terms_required' });
+      }
     });
 
     test('is refused with a session token, once accepted, and with no Terms version set; nothing is stopped', async () => {
@@ -309,18 +364,19 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
       node.up = false;
       const refused = await decline(down.cookie);
       expect(refused.status, await refused.clone().text()).toBe(200);
-      expect(await refused.json()).toEqual({ signedOut: true, renewals: { stopped: 0, notStopped: 1, walletRequired: 0, nodeChecked: false } });
+      expect(await refused.json()).toEqual({ signedOut: true, renewals: { stopped: 0, notStopped: 1, walletRequired: 0, nodeChecked: false, nodeScope: null } });
       expect(await revokedAt(recorded)).toBeNull();
       expect(await sessionExists(down.id)).toBe(false);
 
-      // A node that answers too late: the answer comes within the budget and the session still ends.
+      // A node that answers too late: the answer comes within the budgets (3 s for the decline's stop, up to 3 s more
+      // for sign-out's own) and the session still ends.
       node.up = true;
       node.delayMs = 8_000;
       const slow = await owner.session();
       const started = Date.now();
       const late = await decline(slow.cookie);
       expect(late.status).toBe(200);
-      expect(Date.now() - started).toBeLessThan(6_000);
+      expect(Date.now() - started).toBeLessThan(7_000);
       expect(await late.json()).toMatchObject({ signedOut: true, renewals: { nodeChecked: false } });
       expect(await sessionExists(slow.id)).toBe(false);
       node.delayMs = 0;
