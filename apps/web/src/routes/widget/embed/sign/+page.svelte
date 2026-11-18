@@ -17,6 +17,8 @@
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import { serverActionId } from '$lib/delegate-review-selection';
   import { expiryAt, siweExpiration } from '$lib/approval-expiry';
+  import { MAX_LEASE_MS, defaultLeaseMs } from '$lib/approval-expiry';
+  import { renewalStartsTicked } from '$lib/renewal-default';
   import { PREVIEW_EXPIRED_MESSAGE, signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
   import {
     parseCapabilityReview,
@@ -39,6 +41,7 @@
     type WidgetRequest,
     type WidgetTransport,
   } from '$lib/widget-transport';
+  import type { WidgetRenewalAsk } from '$lib/widget-transport';
 
   const session = authClient.useSession();
   const inIframe = typeof window !== 'undefined' && isEmbedContext();
@@ -128,6 +131,40 @@
   let previewing = $state(false);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
+  // TC-2933: the app's renewal ask (only ever with expiryChangeable), sent at prepare. The box shows only where the
+  // prepare answer offers it (`renewalMaxLeaseMs`); `renewalLeaseMs` is the owner's lease, null while unticked.
+  let renewalAsk: WidgetRenewalAsk | null = null;
+  let renewalMaxLeaseMs = $state<number | null>(null);
+  let renewalLeaseMs = $state<number | null>(null);
+  let renewalDefaulted = false;
+  // The owner's choice as the preview seals it; null when the box is not offered.
+  function renewalChoiceBody() {
+    if (renewalMaxLeaseMs === null) return null;
+    return renewalLeaseMs === null ? { choice: 'finite' } : { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000) };
+  }
+  // Adopt the prepare answer's offer. The first offer sets the default tick (spec D11/D12, never the Once tier).
+  function adoptRenewalOffer(offer: unknown) {
+    const seconds = renewalAsk && offer && typeof offer === 'object' && 'leaseLifetimeSeconds' in offer
+      ? offer.leaseLifetimeSeconds
+      : undefined;
+    if (typeof seconds !== 'number' || !Number.isSafeInteger(seconds) || seconds <= 0) {
+      renewalMaxLeaseMs = null;
+      renewalLeaseMs = null;
+      return;
+    }
+    const maxLeaseMs = Math.min(seconds * 1000, MAX_LEASE_MS);
+    renewalMaxLeaseMs = maxLeaseMs;
+    if (renewalLeaseMs !== null) renewalLeaseMs = Math.min(renewalLeaseMs, maxLeaseMs);
+    if (renewalDefaulted) return;
+    renewalDefaulted = true;
+    if (reviewModel && renewalStartsTicked(renewalAsk?.purpose, reviewModel.permissions)) renewalLeaseMs = defaultLeaseMs(maxLeaseMs);
+  }
+  // A changed lease (and, from the sensitive-access step, the window) is a new preview carrying both.
+  function changeRenewal(leaseMs: number | null, windowMs?: number | null) {
+    renewalLeaseMs = leaseMs;
+    if (windowMs !== undefined) expiryChoiceMs = windowMs;
+    invalidatePreviewForSelectionEdit();
+  }
   // TC-2927: the extra permissions (decrypt or key creation on the encryption network or on keys outside the app's own
   // area) the owner allowed on the warning screen. The preview records them and signing refuses an undecided one.
   let elevatedAllowed = $state<string[]>([]);
@@ -312,6 +349,10 @@
     // TC-2272: only an SDK that accepts a different signed expiry sends this; without it the
     // approval shows no expiry control and the app's own expiry is signed.
     expiryChangeable = data.expiryChangeable === true;
+    renewalAsk = data.renewal && typeof data.renewal === 'object' ? (data.renewal as WidgetRenewalAsk) : null;
+    renewalMaxLeaseMs = null;
+    renewalLeaseMs = null;
+    renewalDefaulted = false;
     // Envelope (display-only). Widget transport already validated + size-
     // bounded the object. Trust decision is deferred to /authorize-sign-
     // prepare and populated into serverMetadataTrust below.
@@ -878,6 +919,8 @@
               requestOrigin: origin === '*' ? undefined : origin,
               // Bound into the authorization context: the server refuses a changed expiry unless the app opted in.
               ...(expiryChangeable ? { expiryChangeable: true } : {}),
+              // TC-2933: the app's renewal ask; the answer says whether the box is offered.
+              ...(renewalAsk ? { renewal: { version: 1, leaseLifetimeSeconds: renewalAsk.leaseLifetimeSeconds } } : {}),
             }),
           }),
         );
@@ -893,6 +936,7 @@
           : null;
         if (!token) throw new Error('authorize-sign-prepare did not return a context token');
         previewToken = token;
+        adoptRenewalOffer(prepareResult.renewal);
         // Adopt server trust decision + verified manifest fields.
         if (
           prepareResult.metadataTrust &&
@@ -986,6 +1030,8 @@
             ...(elevatedAllowed.length === 0 ? {} : { elevatedDecision: { allowed: elevatedAllowed } }),
             // TC-2272: only when the user changed it; the app's own expiry stays the default.
             ...(requestedExpiry === null ? {} : { expirationTime: requestedExpiry }),
+            // TC-2933: where the box is offered, its state is always sealed with the preview.
+            ...(renewalMaxLeaseMs === null ? {} : { renewal: renewalChoiceBody() }),
           }),
         }),
       );
@@ -1103,6 +1149,8 @@
           signedMessage: authorizeResult.signedMessage,
           selectedActionKeys: authorizeResult.selectedActionKeys,
           permissions: authorizeResult.permissions,
+          ...(authorizeResult.renewalChoice === undefined ? {} : { renewalChoice: authorizeResult.renewalChoice }),
+          ...(authorizeResult.renewal === undefined ? {} : { renewal: authorizeResult.renewal }),
         });
         sendClose();
         return;
@@ -1396,6 +1444,9 @@
                   invalidatePreviewForSelectionEdit();
                 },
               }
+            : undefined,
+          renewal: canUseAuthorizeSignFn() && renewalMaxLeaseMs !== null
+            ? { leaseMs: renewalLeaseMs, maxLeaseMs: renewalMaxLeaseMs, onChange: changeRenewal }
             : undefined,
           // TC-2927: the warning screen for extra permissions. On the server-authoritative path the owner can reject one
           // and approve the rest; the exact-byte path cannot be narrowed, so it is all or nothing. The allowed ids go into the

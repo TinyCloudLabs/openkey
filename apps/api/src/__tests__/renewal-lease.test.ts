@@ -69,7 +69,7 @@ describe('the owner renewal choice', () => {
   test('while leases are off, a renewal request is finite and a lease is refused', () => {
     expect(parseRenewalChoice(undefined, signed, false)).toEqual({ choice: 'finite' });
     expect(parseRenewalChoice({ choice: 'finite' }, signed, false)).toEqual({ choice: 'finite' });
-    expect(() => parseRenewalChoice({ choice: 'leased', leaseLifetimeSeconds: 90 * DAY }, signed, false)).toThrow('not available');
+    expect(() => parseRenewalChoice({ choice: 'leased', leaseLifetimeSeconds: 90 * DAY }, signed, false)).toThrow("isn't available");
   });
 });
 
