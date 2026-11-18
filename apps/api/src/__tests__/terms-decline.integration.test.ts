@@ -67,7 +67,7 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
   // revocation; `queries` each listing's body.
   type Item = Record<string, unknown>;
   const node = {
-    server: undefined as Server | undefined, origin: '', up: true, delayMs: 0, failPage: Infinity,
+    server: undefined as Server | undefined, origin: '', up: true, delayMs: 0, failPage: Infinity, refuseRevoke: false,
     listing: [] as Item[], revoked: [] as string[], queries: [] as Array<Record<string, unknown>>, activations: 0,
   };
 
@@ -101,6 +101,7 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
         return reply(200, { schemaVersion: 2, items, ...(next ? { nextCursor: next } : {}) });
       }
       if (request.url === '/revoke') {
+        if (node.refuseRevoke) return reply(503, { error: 'busy' });
         // The signed revocation is CBOR; its audience `ucan:<lease CID>` is a text string after its one-byte length.
         const signed = Buffer.from(authorization.replace(/^Bearer\s+/i, ''), 'base64url');
         const at = signed.indexOf('ucan:');
@@ -140,7 +141,7 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
   });
 
   function resetNode() {
-    Object.assign(node, { up: true, delayMs: 0, failPage: Infinity, listing: [], revoked: [], queries: [], activations: 0 });
+    Object.assign(node, { up: true, delayMs: 0, failPage: Infinity, refuseRevoke: false, listing: [], revoked: [], queries: [], activations: 0 });
   }
 
   async function account(keyType: 'MANAGED' | 'EXTERNAL' = 'MANAGED') {
@@ -328,6 +329,37 @@ if (process.env.OPENKEY_TERMS_DECLINE_TEST_CHILD !== '1') {
       node.listing = [admittedLate];
       await secondPass!();
       expect(node.revoked).toEqual([admittedLate.cid as string]);
+    });
+
+    test('a sign-in lease recorded but settled as never admitted, which its app admitted later, is stopped by its listing', async () => {
+      resetNode();
+      release(VERSION);
+      const owner = await account();
+      const { stopRenewalsOnDecline, defaultDeclineDeps } = await import('../services/terms-decline');
+      const deps = { ...defaultDeclineDeps, afterAdmissionWindow: () => undefined };
+      // A stop found nothing at the node more than ten minutes after signing; the app admitted the lease after that.
+      const settled = async () => {
+        const leaseCid = cid('settled');
+        await prisma.renewalLease.create({ data: {
+          leaseCid, userId: owner.userId, sessionId: null, approvalRequestId: null, ownerDid: owner.ownerDid,
+          originalCid: cid('original'), nodeOrigin: node.origin, nodeDid: NODE_DID, renewerDid: RENEWER_DID,
+          leaseLifetimeSeconds: 3600, approvedAt: new Date(Date.now() - 20 * 60_000), leaseExpiresAt: new Date(Date.now() + 3_600_000),
+          grantSiwe: 'the signed-in grant', neverAdmittedAt: new Date(Date.now() - 5 * 60_000),
+        } });
+        return leaseCid;
+      };
+
+      const refused = await settled();
+      node.listing = [{ ...signInLease(owner), cid: refused }];
+      node.refuseRevoke = true;
+      // Not stopped while the node refuses: the report says so, and never counts it stopped.
+      expect(await stopRenewalsOnDecline(prisma, owner.userId, deps)).toEqual({ stopped: 0, notStopped: 1, walletRequired: 0, nodeChecked: true, nodeScope: scope() });
+
+      node.refuseRevoke = false;
+      node.revoked = [];
+      const report = await stopRenewalsOnDecline(prisma, owner.userId, deps);
+      expect(node.revoked).toEqual([refused]);
+      expect(report).toEqual({ stopped: 1, notStopped: 0, walletRequired: 0, nodeChecked: true, nodeScope: scope() });
     });
 
     test('the second pass leaves alone a lease signed after the person accepted a version', async () => {

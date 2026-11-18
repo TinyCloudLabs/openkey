@@ -201,9 +201,11 @@ async function stopOnce(database: DeclineDatabase, userId: string, deps: Decline
       if (!listed.complete) complete = false;
       progress.notStopped += listed.malformed;
       if (listed.leases.length === 0) continue;
-      // A lease OpenKey recorded is stopped by its record, which also marks it stopped in Settings.
+      // A lease OpenKey recorded is stopped by its record (the other half of this pass), which also marks it stopped
+      // in Settings; one its record already revoked is stopped at the node. But a recorded lease settled as never
+      // admitted that the node lists was admitted after it was settled: only its listing can stop it.
       const known = new Set((await database.renewalLease.findMany({
-        where: { userId, leaseCid: { in: listed.leases.map((lease) => lease.cid) } }, select: { leaseCid: true },
+        where: { userId, neverAdmittedAt: null, leaseCid: { in: listed.leases.map((lease) => lease.cid) } }, select: { leaseCid: true },
       })).map((row) => row.leaseCid));
       for (const lease of listed.leases) {
         if (known.has(lease.cid)) continue;
