@@ -207,9 +207,11 @@ export interface TinyCloudRenewalRequestV1 {
 }
 
 /**
- * The owner lease the node admitted for a renewing grant: the js-sdk approval-renewal codec
+ * The owner-signed renewal lease for a renewing grant, in the shape of the js-sdk approval-renewal codec
  * (`parseApprovalRenewal` in `@tinycloud/share-envelope`). The lease lets the node's renewer renew exactly
- * `receipt.originalCid` until `receipt.leaseExpiresAt`, and nothing else.
+ * `receipt.originalCid` until `receipt.leaseExpiresAt`, and nothing else. OpenKey has not sent it to the node and
+ * keeps no copy: once the grant is registered with its node, the app has the node admit the lease
+ * (`admitOwnerRenewalLease` in `@tinycloud/sdk-core`), which returns the same values. Until then nothing renews.
  */
 export interface TinyCloudRenewalReceiptV1 {
   version: 1;
@@ -244,7 +246,8 @@ export interface TinyCloudAuthorizationResultV1 {
   }>;
   /**
    * Set when the request asked for renewal and OpenKey offered it: `'leased'` (the owner turned renewal on; `renewal`
-   * holds the admitted lease) or `'finite'` (the grant ends at its signed expiry). Unset when renewal was not offered.
+   * holds the signed lease for the app to have its node admit) or `'finite'` (the grant ends at its signed expiry).
+   * Unset when renewal was not offered.
    */
   renewalChoice?: 'finite' | 'leased';
   renewal?: TinyCloudRenewalReceiptV1;
@@ -1465,7 +1468,7 @@ export class OpenKey {
     };
   }
 
-  /** The wallet signs the renewal lease /authorize-sign returned; OpenKey then has the node admit it. */
+  /** The wallet signs the renewal lease /authorize-sign returned; OpenKey returns it signed, for the app to admit. */
   private async signExternalRenewalLease(
     provider: EIP1193Provider,
     walletAddress: string,

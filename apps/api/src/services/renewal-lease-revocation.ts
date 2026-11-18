@@ -67,7 +67,7 @@ async function secretKey() {
   return (await auth.$context).secretConfig;
 }
 
-export const defaultDeps: LeaseRevocationDeps = {
+const defaultDeps: LeaseRevocationDeps = {
   signManaged: signManagedKey,
   fetch,
   now: () => new Date(),
@@ -113,13 +113,12 @@ async function lockOwner(tx: Transaction, userId: string, wait = true) {
 
 /**
  * Records the signed lease for its owner before the node is asked to admit it, under the owner's user lock.
- * Idempotent per lease CID for an approval, so a retry after a crash finds the same record. A sign-in
- * (`approvalRequestId: null`) never resumes, so an existing record for its lease is a conflict. A lease already
- * settled (stopped, or refused by the node) is never admitted again: the approval fails and nothing is approved.
+ * Idempotent per lease CID, so a retry after a crash finds the same record. A lease already settled (stopped,
+ * or refused by the node) is never admitted again: the approval fails and nothing is approved.
  */
 export async function reserveRenewalLease(
   db: Pick<PrismaClient, '$transaction'>,
-  input: { approvalRequestId: string | null; userId: string; sessionId: string | null; nodeOrigin: string; stage: RenewalStage },
+  input: { approvalRequestId: string; userId: string; sessionId: string | null; nodeOrigin: string; stage: RenewalStage },
   deps: Pick<LeaseRevocationDeps, 'seal'> = defaultDeps,
 ): Promise<void> {
   const { stage } = input;
@@ -132,7 +131,7 @@ export async function reserveRenewalLease(
     await lockOwner(tx, input.userId);
     const existing = await tx.renewalLease.findUnique({ where: { leaseCid } });
     if (existing) {
-      if (existing.userId !== input.userId || existing.revokedAt || existing.neverAdmittedAt || input.approvalRequestId === null) {
+      if (existing.userId !== input.userId || existing.revokedAt || existing.neverAdmittedAt) {
         throw new RenewalLeaseError('renewal_stopped', 'Renewal was stopped for this lease', 409);
       }
       return;

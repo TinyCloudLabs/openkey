@@ -1,5 +1,5 @@
 // TC-2872: `authorizeTinyCloud({ renewal })`, the app's ask for the renewal checkbox on OpenKey's sign-in window.
-// The SDK forwards a well-formed ask to the widget, hands back the owner's choice and the admitted lease, and on
+// The SDK forwards a well-formed ask to the widget, hands back the owner's choice and the signed lease, and on
 // an external wallet has the wallet sign the lease after the grant; a declined lease fails the sign-in.
 
 // @ts-expect-error bun:test is a runtime-only module; tsc doesn't ship types
@@ -61,7 +61,7 @@ describe('the renewal ask', () => {
 });
 
 describe('the managed-key result', () => {
-  test('carries the owner\'s choice and the admitted lease from the widget', async () => {
+  test('carries the owner\'s choice and the signed lease from the widget', async () => {
     const leased = await authorize(openKeyWith('MANAGED', { ...grant, renewalChoice: 'leased', renewal: receipt }).openkey, { expiryChangeable: true, renewal: ASK });
     expect(leased).toMatchObject({ renewalChoice: 'leased', renewal: receipt });
     const finite = await authorize(openKeyWith('MANAGED', { ...grant, renewalChoice: 'finite' }).openkey, { expiryChangeable: true, renewal: ASK });
@@ -101,7 +101,7 @@ describe('an external wallet', () => {
     return { openkey, walletCalls, posts };
   }
 
-  test('signs the lease after the grant, and OpenKey admits it with that signature', async () => {
+  test('signs the lease after the grant, and OpenKey returns it with that signature', async () => {
     const { openkey, walletCalls, posts } = setUp({ lease: async () => '0xlease-signature' });
     const result = await authorize(openkey, { expiryChangeable: true, renewal: ASK });
     expect(result).toMatchObject({ signature: '0xsig', renewalChoice: 'leased', renewal: receipt });

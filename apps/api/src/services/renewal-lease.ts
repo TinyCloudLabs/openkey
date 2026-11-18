@@ -217,6 +217,8 @@ function leaseSiwe(stage: Pick<RenewalStage, 'originalCid' | 'ownerAddress' | 'c
 /**
  * The first stage for an approved grant: server time, the lease end and the lease
  * message, before anything is signed. `delegation` is the grant as the result carries it.
+ * `appAdmits`: the app registers the grant and has the node admit the lease itself (an app sign-in), so the node
+ * need not hold the grant yet.
  */
 export async function prepareRenewalStage(input: {
   userId: string;
@@ -225,13 +227,14 @@ export async function prepareRenewalStage(input: {
   delegation: Record<string, unknown>;
   now: Date;
   fetchImpl?: typeof fetch;
+  appAdmits?: boolean;
 }): Promise<RenewalStage> {
   const { delegation } = input;
   const header = delegation.delegationHeader as { Authorization?: unknown } | undefined;
   const originalCid = delegation.delegationCid;
   const signedSiwe = delegation.siwe;
-  if (delegation.hostActivated !== true) {
-    // The node must already hold the grant before it can admit a lease for it.
+  if (input.appAdmits !== true && delegation.hostActivated !== true) {
+    // OpenKey admits this lease, so the node must already hold the grant.
     throw new RenewalLeaseError('renewal_unavailable', 'The approved grant was not registered with its node');
   }
   if (typeof header?.Authorization !== 'string' || typeof originalCid !== 'string' || typeof signedSiwe !== 'string' ||
