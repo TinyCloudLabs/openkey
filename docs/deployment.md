@@ -217,7 +217,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
 | `APPLE_SIGN_IN_ENABLED` | Hardcoded `true` in production Compose; Apple is offered only when `APPLE_PRIVATE_KEY` is set in the encrypted env (TC-1188) |
-| `APPLE_NATIVE_SIGN_IN_ENABLED` | Hardcoded `false`; stock native ID-token sign-in is permanently disabled |
+| `APPLE_NATIVE_SIGN_IN_ENABLED` | Hardcoded `true` in `docker-compose.prod.yml`, matching the live CVM; the API does not read it |
 | `APPLE_CLIENT_ID` | Apple web Services ID (not a bundle identifier); fixed in production Compose, not set in the encrypted env |
 | `APPLE_TEAM_ID` | Apple Developer Team ID; fixed in production Compose, not set in the encrypted env |
 | `APPLE_KEY_ID` | Sign in with Apple private-key ID; fixed in production Compose, not set in the encrypted env |
