@@ -75,12 +75,12 @@ jobs:
             echo "Confirmation did not match $MODE-db-monitor-role; the database was not changed" >&2
             exit 1
           fi
-          if [ "$MODE" = provision ] && ! printf '%s' "$AGE_RECIPIENT" | grep -Eq '^age1[a-z0-9]{58}$'; then
+          if [ "$MODE" = provision ] && ! [[ "$AGE_RECIPIENT" =~ ^age1[a-z0-9]{58}$ ]]; then
             echo "provision needs age_recipient: an age public key (age1 followed by 58 characters)" >&2
             exit 1
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           # This job holds the production database login: the token is not left on disk.
           persist-credentials: false
@@ -105,7 +105,7 @@ jobs:
 
       - name: Upload the encrypted monitor URL
         if: inputs.mode == 'provision'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: openkey-db-monitor-url
           path: ${{ runner.temp }}/openkey-db-monitor-url.age

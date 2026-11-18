@@ -299,6 +299,31 @@ if command -v age >/dev/null && command -v age-keygen >/dev/null; then
   unset OPENKEY_AGE_RECIPIENT OPENKEY_MONITOR_URL_OUT
   run drop
   expect_status "drop after the encrypted-URL run" 0
+
+  # Right shape, wrong checksum: age refuses it, and that must be found before the password is rotated.
+  export OPENKEY_AGE_RECIPIENT=age1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq OPENKEY_MONITOR_URL_OUT=$tmp/bad.age
+  run provision
+  expect_status "a recipient age rejects stops provision" nonzero
+  if [ "$(super_sql -d postgres -c "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'openkey_monitor%'")" = 0 ] && [ ! -e "$tmp/bad.age" ]; then
+    ok "the rejected recipient rotated nothing and created nothing"
+  else
+    bad "the rejected recipient left a role or a file behind"
+  fi
+  unset OPENKEY_AGE_RECIPIENT OPENKEY_MONITOR_URL_OUT
+fi
+
+# A DATABASE_URL conn.py rejects must stop the script, even when the shell already holds PG* variables that would work.
+echo "=== conn.py failure"
+set +e
+out=$(PGHOST=$TEST_PGHOST PGPORT=$TEST_PGPORT PGUSER=$TEST_PGUSER PGPASSWORD=$TEST_PGPASSWORD PGDATABASE=postgres \
+  DATABASE_URL=not-a-url OPENKEY_MONITOR_PW=conn-test-pw "$script" provision 2>&1)
+status=$?
+set -e
+expect_status "an unreadable DATABASE_URL stops the script" nonzero
+if [ "$(super_sql -d postgres -c "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'openkey_monitor%'")" = 0 ]; then
+  ok "it did not fall back to the PG* variables in the shell"
+else
+  bad "it used the PG* variables in the shell"
 fi
 
 reset_server
