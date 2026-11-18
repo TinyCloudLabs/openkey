@@ -15,6 +15,7 @@
     OwnerMessageError,
     isTerminalApprovalFailure,
     shortCodeFailureText,
+    walletMismatchFailureText,
   } from '$lib/delegate-failure-text';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
@@ -110,6 +111,15 @@
     }
     if (cause instanceof DelegateResponseError) {
       if (isTerminalApprovalFailure(cause.status, cause.code)) approveBlockedByFailure = true;
+      if (
+        cause.status === 400 &&
+        cause.code === 'invalid_permissions' &&
+        expectedAddress &&
+        selectedKey &&
+        selectedKey.address.toLowerCase() !== expectedAddress.toLowerCase()
+      ) {
+        return walletMismatchFailureText(expectedAddress, selectedKey.address);
+      }
       return delegateResponseFailureText(cause.status, cause.code, {
         permissionsEditable: reviewEditing,
         expiryChangeable: expiryChangeControlVisible,
