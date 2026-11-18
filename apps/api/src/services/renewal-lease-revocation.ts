@@ -290,6 +290,25 @@ export async function revokeRenewalLeases(
   return report;
 }
 
+/**
+ * Revokes a lease OpenKey keeps no record of (a sign-in lease, listed at its node) with the owner's managed key:
+ * the same owner revocation a recorded lease gets. True once the node confirmed it.
+ */
+export async function revokeUnrecordedLease(
+  nodeOrigin: string,
+  lease: { ownerDid: string; leaseCid: string },
+  key: { userId: string | null; sealingContext: string | null; sealedBlob: string },
+  deps: Pick<LeaseRevocationDeps, 'signManaged' | 'fetch' | 'now'> = defaultDeps,
+): Promise<boolean> {
+  try {
+    const siwe = leaseRevocationSiwe(lease, deps.now());
+    const signature = await deps.signManaged(key, key.sealedBlob, siwe);
+    return (await callNode(deps, nodeOrigin, '/revoke', siweToDelegationHeaders({ siwe, signature }) as Record<string, string>)).answer === 'ok';
+  } catch {
+    return false;
+  }
+}
+
 export class LeaseRevocationError extends Error {
   constructor(readonly code: 'not_found' | 'invalid_signature' | 'node_unavailable', readonly status: 400 | 404 | 503) { super(code); }
 }

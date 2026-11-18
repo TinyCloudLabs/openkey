@@ -1,13 +1,15 @@
 import { Hono } from 'hono';
 import type { PrismaClient } from '@openkey/db';
+import { auth } from '../auth';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { requireSessionBeforeTerms, type SessionContext } from '../middleware/session';
-import { recordTermsAcceptance, termsRelease, termsStatus } from '../services/terms';
+import { hasAcceptedTerms, recordTermsAcceptance, termsRelease, termsStatus } from '../services/terms';
+import { stopRenewalsOnDecline } from '../services/terms-decline';
 
 /**
- * TC-3232: the required Terms screen's two calls. Mounted ahead of the account router, whose session check
- * refuses an account that has not accepted; these routes are what it accepts with. An acceptance is
- * recorded only from the browser (cookie session): a session token (widget, CLI) can't stand in for a person.
+ * TC-3232: the required Terms screen's calls. Mounted ahead of the account router, whose session check
+ * refuses an account that has not accepted; these routes are what it accepts or declines with. Both are
+ * answered only from the browser (cookie session): a session token (widget, CLI) can't stand in for a person.
  */
 export function createAccountTermsRouter(database: PrismaClient) {
   const router = new Hono<SessionContext>();
@@ -39,6 +41,19 @@ export function createAccountTermsRouter(database: PrismaClient) {
     }
     await recordTermsAcceptance(database, c.get('user').id, release, surface);
     return c.json({ accepted: true, version: release.version });
+  });
+
+  // Don't agree: the account's renewals stop at the node (best effort, within a budget), then this session signs
+  // out. Only while the account has a version to accept; stopping never keeps the person signed in.
+  router.post('/decline', async (c) => {
+    if (c.req.header('authorization')) return c.json({ error: 'Terms are declined in the browser' }, 403);
+    const userId = c.get('user').id;
+    if (await hasAcceptedTerms(database, userId)) return c.json({ error: 'terms_not_required' }, 409);
+    const renewals = await stopRenewalsOnDecline(database, userId);
+    const signedOut = await auth.api.signOut({ headers: c.req.raw.headers, asResponse: true });
+    for (const cookie of signedOut.headers.getSetCookie()) c.header('set-cookie', cookie, { append: true });
+    if (!signedOut.ok) return c.json({ error: 'sign_out_failed', renewals }, 500);
+    return c.json({ signedOut: true, renewals });
   });
 
   return router;
