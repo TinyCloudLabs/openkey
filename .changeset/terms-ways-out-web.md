@@ -4,7 +4,7 @@
 
 The ways out of the Terms screen (TC-3232).
 
-- On the web, the Terms screen has one button, Agree and continue, and a small "Other options" box that leads to the ways out that need no agreement, over two pages:
+- On the web, the Terms screen has one button, Agree and continue, and a small "Other options" link that leads to the ways out that need no agreement, over two pages:
   - Other options (`/auth/terms/options`): sign out without agreeing, or delete the account.
   - Disconnect apps (`/auth/terms/leave`): disconnect TinyCloud signing, MCP and identity apps, stop renewing permissions, or delete the account.
   An account that has agreed is sent to Settings, which has the same controls. Each page leads back to the one before, and to the same Terms request.

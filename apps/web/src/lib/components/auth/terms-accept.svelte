@@ -176,17 +176,9 @@
         </p>
 
         {#if otherOptions}
-          <a
-            href={otherOptions}
-            class="mt-7 flex items-center gap-3 rounded-xl border border-surface-200 bg-surface-50 px-4 py-3 text-sm text-surface-600 no-underline transition-colors hover:border-surface-400"
-            data-testid="terms-other-options"
-          >
-            <span class="flex min-w-0 flex-1 flex-col">
-              <span class="font-semibold text-surface-900">Other options</span>
-              <span>Sign out, disconnect apps or delete your account without agreeing.</span>
-            </span>
-            <span class="text-lg text-surface-400" aria-hidden="true">›</span>
-          </a>
+          <p class="mt-6 text-center">
+            <a href={otherOptions} class="text-xs text-surface-500 underline underline-offset-2 hover:text-surface-700" data-testid="terms-other-options">Other options</a>
+          </p>
         {/if}
       </Card>
 

@@ -88,11 +88,11 @@ async function shot(page: Page, name: string) {
   }
 }
 
-test('the Terms screen has one button; the ways out sit in a small Other options box', async ({ page }) => {
+test('the Terms screen has one button, and the ways out are a small "Other options" link', async ({ page }) => {
   await mockApi(page);
   await page.goto(`/auth/terms?${SIGNED}`);
   await expect(page.getByRole('button')).toHaveText(['Agree and continue']);
-  await expect(page.getByTestId('terms-other-options')).toContainText('Sign out, disconnect apps or delete your account without agreeing.');
+  await expect(page.getByTestId('terms-other-options')).toHaveText('Other options');
   await shot(page, '1-terms');
 });
 
