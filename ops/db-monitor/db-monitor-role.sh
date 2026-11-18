@@ -44,7 +44,14 @@ if [ "${psql_major:-0}" -lt 15 ]; then
 fi
 
 # The database owner's connection, as libpq environment variables.
-eval "$(python3 "$here/conn.py")"
+# Captured first: a failure of conn.py inside eval's argument would not stop the script, which would then use
+# whatever PG* variables the shell already holds.
+if ! conn_env=$(python3 "$here/conn.py"); then
+  echo "conn.py could not read DATABASE_URL; nothing was changed" >&2
+  exit 2
+fi
+eval "$conn_env"
+unset conn_env
 
 psql_admin() { psql -X -q -v ON_ERROR_STOP=1 "$@"; }
 psql_monitor() { PGUSER=openkey_monitor PGPASSWORD="$OPENKEY_MONITOR_PW" psql -X -q -v ON_ERROR_STOP=1 "$@"; }
@@ -210,6 +217,12 @@ if [ "$mode" = provision ]; then
 
   if [ -n "${OPENKEY_AGE_RECIPIENT:-}" ] && [ -z "${OPENKEY_MONITOR_URL_OUT:-}" ]; then
     echo "OPENKEY_AGE_RECIPIENT needs OPENKEY_MONITOR_URL_OUT" >&2
+    exit 2
+  fi
+  # A recipient that has the right shape can still be one age rejects. Found out here, before the password is
+  # rotated, not after it, when the old password is already dead and there is no artifact.
+  if [ -n "${OPENKEY_AGE_RECIPIENT:-}" ] && ! age -r "$OPENKEY_AGE_RECIPIENT" -o /dev/null </dev/null; then
+    echo "age does not accept OPENKEY_AGE_RECIPIENT; nothing was changed" >&2
     exit 2
   fi
 
