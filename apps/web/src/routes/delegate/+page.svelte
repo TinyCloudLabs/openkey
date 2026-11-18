@@ -2031,6 +2031,7 @@
                 },
                 expiry: {
                   chosenMs: expiryChoiceMs,
+                  onceDefault: true,
                   // The requester signed its longest time (signed request, device), or the link asked for exactly
                   // this much: a link without `expiryChangeable=true` is shorter-only.
                   bounded: approvalRequestMode || Boolean(deviceTransactionId) || !linkExpiryChangeable,
