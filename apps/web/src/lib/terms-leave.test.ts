@@ -1,5 +1,5 @@
-// "Don't agree" on the Terms screen: it tells whoever sent the account there that the answer is no, then
-// stops the account's renewals and signs it out. Telling the requester no never stands in the way of leaving.
+// Signing out without agreeing to the Terms: it tells whoever sent the account there that the answer is
+// no, then signs out. Telling the requester no never stands in the way of leaving.
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
 import { declineTerms, disconnectHref, optionsHref, originOfTermsPage, termsOrigin, termsPageFor, termsPageFrom, type TermsOrigin } from './terms-leave';
@@ -88,22 +88,22 @@ describe('Other options and Disconnect apps', () => {
 });
 
 describe('declineTerms', () => {
-  test('an OAuth request is denied first, then the account declines, and the app’s answer is where to go', async () => {
+  test('an OAuth request is denied first, then the account signs out, and the app’s answer is where to go', async () => {
     const api = fetchBy({ '/api/auth/oauth2/consent': [200, { url: 'https://app.test/cb?error=access_denied&state=s' }] });
     const { deps: d, signOuts } = deps(api.impl);
     const result = await declineTerms({ kind: 'oauth', oauthQuery: SIGNED, nativeRequestId: null }, d);
 
-    expect(api.paths()).toEqual(['/api/auth/oauth2/consent', '/api/account/terms/decline']);
+    expect(api.paths()).toEqual(['/api/auth/oauth2/consent']);
     expect(JSON.parse(String(api.calls[0]!.init?.body))).toEqual({ accept: false, oauth_query: SIGNED });
     expect(api.calls.every((call) => call.init?.method === 'POST' && call.init?.credentials === 'include')).toBe(true);
     expect(result).toEqual({ redirect: 'https://app.test/cb?error=access_denied&state=s' });
-    expect(signOuts()).toBe(0);
+    expect(signOuts()).toBe(1);
   });
 
   test('a native request is denied before the consent', async () => {
     const api = fetchBy({ '/api/auth/oauth2/consent': [200, { redirect: 'com.app.example:/cb?error=access_denied' }] });
     const result = await declineTerms({ kind: 'oauth', oauthQuery: SIGNED, nativeRequestId: 'req 9' }, deps(api.impl).deps);
-    expect(api.paths()).toEqual(['/api/oauth/tinycloud/requests/req%209/deny', '/api/auth/oauth2/consent', '/api/account/terms/decline']);
+    expect(api.paths()).toEqual(['/api/oauth/tinycloud/requests/req%209/deny', '/api/auth/oauth2/consent']);
     expect(result.redirect).toBe('com.app.example:/cb?error=access_denied');
   });
 
@@ -115,32 +115,36 @@ describe('declineTerms', () => {
   test('an approval link is declined with its kept reference, which is then forgotten', async () => {
     const api = fetchBy({});
     const storage = memoryStorage({ [`openkey.approval.${APPROVAL_ID}`]: '#tv1.secret' });
-    const result = await declineTerms({ kind: 'approval', requestId: APPROVAL_ID }, deps(api.impl, storage).deps);
+    const { deps: d, signOuts } = deps(api.impl, storage);
+    const result = await declineTerms({ kind: 'approval', requestId: APPROVAL_ID }, d);
 
-    expect(api.paths()).toEqual([`/api/approval-requests/${APPROVAL_ID}/deny`, '/api/account/terms/decline']);
+    expect(api.paths()).toEqual([`/api/approval-requests/${APPROVAL_ID}/deny`]);
     expect(JSON.parse(String(api.calls[0]!.init?.body))).toEqual({ reference: `/a/${APPROVAL_ID}#tv1.secret` });
     expect(storage.map.size).toBe(0);
     expect(result).toEqual({ redirect: null });
+    expect(signOuts()).toBe(1);
   });
 
   test('an approval link this tab no longer holds is left alone', async () => {
     const api = fetchBy({});
-    await declineTerms({ kind: 'approval', requestId: APPROVAL_ID }, deps(api.impl).deps);
-    expect(api.paths()).toEqual(['/api/account/terms/decline']);
+    const { deps: d, signOuts } = deps(api.impl);
+    await declineTerms({ kind: 'approval', requestId: APPROVAL_ID }, d);
+    expect(api.paths()).toEqual([]);
+    expect(signOuts()).toBe(1);
   });
 
   test('a device sign-in is denied', async () => {
     const api = fetchBy({});
     await declineTerms({ kind: 'device', transactionId: 'dt/1' }, deps(api.impl).deps);
-    expect(api.paths()).toEqual(['/api/device-authorizations/dt%2F1/deny', '/api/account/terms/decline']);
+    expect(api.paths()).toEqual(['/api/device-authorizations/dt%2F1/deny']);
   });
 
-  test('with no request, the account only declines', async () => {
+  test('with no request, the account only signs out', async () => {
     const api = fetchBy({});
     const { deps: d, signOuts } = deps(api.impl);
     expect(await declineTerms({ kind: 'none' }, d)).toEqual({ redirect: null });
-    expect(api.paths()).toEqual(['/api/account/terms/decline']);
-    expect(signOuts()).toBe(0);
+    expect(api.paths()).toEqual([]);
+    expect(signOuts()).toBe(1);
   });
 
   test.each<[string, Answer]>([
@@ -150,32 +154,18 @@ describe('declineTerms', () => {
     const origins: Array<[TermsOrigin, string]> = [
       [{ kind: 'oauth', oauthQuery: SIGNED, nativeRequestId: 'req-9' }, '/api/oauth/tinycloud/requests/req-9/deny'],
       [{ kind: 'device', transactionId: 'dt-1' }, '/api/device-authorizations/dt-1/deny'],
+      [{ kind: 'approval', requestId: APPROVAL_ID }, `/api/approval-requests/${APPROVAL_ID}/deny`],
     ];
     for (const [origin, denyPath] of origins) {
       const api = fetchBy({ [denyPath]: answer, '/api/auth/oauth2/consent': answer });
-      const { deps: d, signOuts } = deps(api.impl);
+      const { deps: d, signOuts } = deps(api.impl, memoryStorage({ [`openkey.approval.${APPROVAL_ID}`]: '#tv1.secret' }));
       expect(await declineTerms(origin, d)).toEqual({ redirect: null });
-      expect(api.paths().at(-1)).toBe('/api/account/terms/decline');
-      expect(signOuts()).toBe(0);
+      expect(signOuts()).toBe(1);
     }
   });
 
-  test.each<[string, Answer]>([
-    ['refused', [500, { error: 'sign_out_failed' }]],
-    ['refused as already accepted', [409, { error: 'terms_not_required' }]],
-    ['unreachable', 'network'],
-  ])('a decline that is %s still signs out', async (_name: string, answer: Answer) => {
-    const api = fetchBy({ '/api/account/terms/decline': answer });
-    const { deps: d, signOuts } = deps(api.impl);
-    await declineTerms({ kind: 'none' }, d);
-    expect(signOuts()).toBe(1);
-  });
-
   test('a sign-out that fails is reported, and no app redirect is taken', async () => {
-    const api = fetchBy({
-      '/api/auth/oauth2/consent': [200, { url: 'https://app.test/cb?error=access_denied' }],
-      '/api/account/terms/decline': 'network',
-    });
+    const api = fetchBy({ '/api/auth/oauth2/consent': [200, { url: 'https://app.test/cb?error=access_denied' }] });
     const d = { apiBase: API, fetch: api.impl, storage: memoryStorage(), signOut: async () => { throw new Error('offline'); } };
     await expect(declineTerms({ kind: 'oauth', oauthQuery: SIGNED, nativeRequestId: null }, d)).rejects.toThrow('offline');
   });

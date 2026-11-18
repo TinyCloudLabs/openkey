@@ -11,8 +11,8 @@
   import DeleteAccountSection from '../DeleteAccountSection.svelte';
 
   // TC-3232, page 2 of the ways out, from the Terms screen's "Other options": sign out without agreeing
-  // (the request that brought the account to the Terms is turned down, renewals stop), or delete the
-  // account. Disconnecting apps is page 3.
+  // (the request that brought the account to the Terms is turned down first), or delete the account.
+  // Disconnecting apps is page 3.
   const terms = termsPageFrom($page.url.searchParams.get('returnTo'));
   const origin = originOfTermsPage(terms);
   const termsUrl = new URL(terms, $page.url.origin);

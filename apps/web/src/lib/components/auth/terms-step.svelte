@@ -8,8 +8,8 @@
   // TC-3232: the required Terms step, wherever it is shown (its own page, or inline in sign-in and sign-up
   // so it comes before the passkey offer). Agree records the acceptance, then hands back to the caller.
   // On the web the ways out are on their own pages, reached from the "Other options" box. The native
-  // sheet keeps Don't agree here: it says no to the request that brought the account here, stops its
-  // renewals and signs it out; nothing is deleted.
+  // sheet keeps Don't agree here: it says no to the request that brought the account here and signs it
+  // out; nothing is deleted.
   interface Props {
     status: TermsStatus;
     surface: 'web' | 'native';

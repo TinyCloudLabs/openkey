@@ -1,6 +1,6 @@
-// TC-3232: "Don't agree" on the Terms screen. It first tells whoever sent the account there that the answer
-// is no (an OAuth or native app, an approval link, a device sign-in), then declines: the API stops the
-// account's renewals and signs it out. Telling the requester no is best effort and never stops the leaving.
+// TC-3232: leaving the Terms without agreeing. It first tells whoever sent the account there that the
+// answer is no (an OAuth or native app, an approval link, a device sign-in), then signs out. Telling the
+// requester no is best effort and never stops the leaving.
 import { API_BASE, authClient } from './auth-client';
 import { safeOAuthNavigationUrl } from './safe-oauth-url';
 import { signedOAuthQuery } from './terms';
@@ -86,7 +86,7 @@ export interface DeclineDeps {
   fetch: typeof fetch;
   /** Where an approval link keeps its reference across sign-in (the tab's sessionStorage). */
   storage: Pick<Storage, 'getItem' | 'removeItem'> | null;
-  /** The plain sign-out, used when the API's decline can't be reached or refuses. */
+  /** The plain sign-out. */
   signOut: () => Promise<void>;
 }
 
@@ -132,13 +132,12 @@ async function denyOrigin(origin: TermsOrigin, deps: DeclineDeps): Promise<strin
 }
 
 /**
- * Says no to the requester, then declines the Terms. Resolves once the account is signed out, with the
- * app's redirect to follow, if any; rejects only when signing out failed.
+ * Says no to the requester, then signs out. Resolves once the account is signed out, with the app's
+ * redirect to follow, if any; rejects only when signing out failed.
  */
 export async function declineTerms(origin: TermsOrigin, deps: DeclineDeps): Promise<{ redirect: string | null }> {
   const redirect = await denyOrigin(origin, deps).catch(() => null);
-  const declined = await post(deps, '/api/account/terms/decline').then((response) => response.ok, () => false);
-  if (!declined) await deps.signOut();
+  await deps.signOut();
   return { redirect };
 }
 

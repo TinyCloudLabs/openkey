@@ -54,7 +54,6 @@ async function mockApi(page: Page, overrides: Record<string, (route: Route) => u
     if (path === '/api/auth/sign-out') return json(route, { success: true });
     if (path === '/api/auth/oauth2/public-client') return json(route, { client_name: 'Test App' });
     if (path === '/api/account/terms') return json(route, state.accepted ? { ...FIRST, requiresAcceptance: false } : FIRST);
-    if (path === '/api/account/terms/decline') return json(route, { declined: true });
     if (path === '/api/account' && request.method() === 'GET') {
       return json(route, { user: { id: 'u', email: session.user.email, name: 'Sam', emailVerified: true, emailUndeliverable: false, stepUpPasskeys: 0, _count: { ethereumKeys: 1, passkeys: 0 } } });
     }
@@ -113,7 +112,7 @@ test('signing out from Other options tells the OAuth app no and goes back to it'
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page).toHaveURL('https://app.test/callback?error=access_denied&state=st-1');
   const paths = calls.map((call) => call.path);
-  expect(paths.indexOf('/api/auth/oauth2/consent')).toBeLessThan(paths.indexOf('/api/account/terms/decline'));
+  expect(paths.indexOf('/api/auth/oauth2/consent')).toBeLessThan(paths.indexOf('/api/auth/sign-out'));
   expect(calls.find((call) => call.path === '/api/auth/oauth2/consent')?.body).toEqual({ accept: false, oauth_query: SIGNED });
   expect(paths).not.toContain('/api/account/terms/accept');
 });
@@ -131,8 +130,7 @@ test('signing out from Other options declines the approval link, then shows the 
   await expect(page.getByRole('heading', { name: 'You’re signed out' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', `/auth/login?redirect=${encodeURIComponent(`/a/${APPROVAL_ID}`)}`);
   expect(calls.find((call) => call.path === `/api/approval-requests/${APPROVAL_ID}/deny`)?.body).toEqual({ reference: `/a/${APPROVAL_ID}#tv1.reference` });
-  expect(calls.map((call) => call.path)).toContain('/api/account/terms/decline');
-  expect(calls.map((call) => call.path)).not.toContain('/api/auth/sign-out');
+  expect(calls.map((call) => call.path)).toContain('/api/auth/sign-out');
 });
 
 test('without agreeing, Disconnect apps disconnects apps, stops renewals and reaches deletion', async ({ page }) => {
