@@ -56,6 +56,7 @@
     type CapabilityReviewModel,
   } from '@openkey/capability-review';
   import { renewalStartsTicked } from '$lib/renewal-default';
+  import { walletNotConnectedText } from '$lib/wallet-not-connected-text';
 
   interface EIP6963ProviderInfo {
     uuid: string;
@@ -2127,10 +2128,7 @@
           <div class="w-full bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
             <div class="font-medium mb-1">Wallet not connected</div>
             <p class="leading-relaxed">
-              This request is for wallet
-              <code class="font-mono text-xs">{expectedAddressShort}</code>.
-              That wallet isn't currently connected. Link it below, or switch
-              to a profile that uses a wallet you have here.
+              {walletNotConnectedText(expectedAddressShort, $session.data?.user.email ?? null)}
             </p>
           </div>
         {/if}
