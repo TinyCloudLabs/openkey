@@ -753,7 +753,13 @@ export function classifySeverityFromActions(
       // its authority is the whole space, not one named grant.
       return allVerbsIn(actions, DELEGATION_VERBS) ? "standard" : "sensitive";
     case "own-app-data":
-      return "standard";
+      // An empty path on the applications space is every app's data, not one
+      // app's folder, so a change or delete across it is flagged.
+      return hasMutation &&
+        scope?.path === "" &&
+        spaceNameFromSpace(scope.space) === "applications"
+        ? "attention"
+        : "standard";
     case "cross-app-data":
       return "attention";
     case "public-data":
