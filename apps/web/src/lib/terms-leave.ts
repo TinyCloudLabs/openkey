@@ -88,26 +88,32 @@ export interface DeclineDeps {
   storage: Pick<Storage, 'getItem' | 'removeItem'> | null;
   /** The plain sign-out. */
   signOut: () => Promise<void>;
+  /** How long telling the requester no may take before it is given up and the sign-out goes ahead. */
+  timeoutMs: number;
 }
 
-function post(deps: DeclineDeps, path: string, body?: unknown, init: RequestInit = {}): Promise<Response> {
+/** A stalled server must not keep the account on "Signing out…". */
+const DENY_TIMEOUT_MS = 4_000;
+
+function post(deps: DeclineDeps, signal: AbortSignal, path: string, body?: unknown, init: RequestInit = {}): Promise<Response> {
   return deps.fetch(`${deps.apiBase}${path}`, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body ?? {}),
+    signal,
     ...init,
   });
 }
 
 /** Denies the request; for OAuth, returns the app's answer to go to (its redirect with `access_denied`). */
-async function denyOrigin(origin: TermsOrigin, deps: DeclineDeps): Promise<string | null> {
+async function denyOrigin(origin: TermsOrigin, deps: DeclineDeps, signal: AbortSignal): Promise<string | null> {
   switch (origin.kind) {
     case 'oauth': {
       if (origin.nativeRequestId) {
-        await post(deps, `/api/oauth/tinycloud/requests/${encodeURIComponent(origin.nativeRequestId)}/deny`).catch(() => null);
+        await post(deps, signal, `/api/oauth/tinycloud/requests/${encodeURIComponent(origin.nativeRequestId)}/deny`).catch(() => null);
       }
-      const response = await post(deps, '/api/auth/oauth2/consent', { accept: false, oauth_query: origin.oauthQuery });
+      const response = await post(deps, signal, '/api/auth/oauth2/consent', { accept: false, oauth_query: origin.oauthQuery });
       if (!response.ok) return null;
       const data = await response.json().catch(() => ({}));
       return safeOAuthNavigationUrl(data.uri ?? data.url ?? (typeof data.redirect === 'string' ? data.redirect : undefined));
@@ -116,7 +122,7 @@ async function denyOrigin(origin: TermsOrigin, deps: DeclineDeps): Promise<strin
       const key = `openkey.approval.${origin.requestId}`;
       const fragment = deps.storage?.getItem(key);
       if (!fragment) return null;
-      const response = await post(deps, `/api/approval-requests/${origin.requestId}/deny`, { reference: `/a/${origin.requestId}${fragment}` }, {
+      const response = await post(deps, signal, `/api/approval-requests/${origin.requestId}/deny`, { reference: `/a/${origin.requestId}${fragment}` }, {
         redirect: 'error', cache: 'no-store', referrerPolicy: 'no-referrer',
       });
       // Declined now, approved already (409) or expired (410): the link has no further use in this tab.
@@ -124,7 +130,7 @@ async function denyOrigin(origin: TermsOrigin, deps: DeclineDeps): Promise<strin
       return null;
     }
     case 'device':
-      await post(deps, `/api/device-authorizations/${encodeURIComponent(origin.transactionId)}/deny`);
+      await post(deps, signal, `/api/device-authorizations/${encodeURIComponent(origin.transactionId)}/deny`);
       return null;
     case 'none':
       return null;
@@ -133,10 +139,13 @@ async function denyOrigin(origin: TermsOrigin, deps: DeclineDeps): Promise<strin
 
 /**
  * Says no to the requester, then signs out. Resolves once the account is signed out, with the app's
- * redirect to follow, if any; rejects only when signing out failed.
+ * redirect to follow, if any; rejects only when signing out failed. Saying no is cut off after
+ * `timeoutMs`, so it never holds up the sign-out.
  */
 export async function declineTerms(origin: TermsOrigin, deps: DeclineDeps): Promise<{ redirect: string | null }> {
-  const redirect = await denyOrigin(origin, deps).catch(() => null);
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), deps.timeoutMs);
+  const redirect = await denyOrigin(origin, deps, deadline.signal).catch(() => null).finally(() => clearTimeout(timer));
   await deps.signOut();
   return { redirect };
 }
@@ -157,5 +166,6 @@ export function declineHere(origin: TermsOrigin): Promise<{ redirect: string | n
       const result = await authClient.signOut();
       if (result?.error) throw new Error('sign-out failed');
     },
+    timeoutMs: DENY_TIMEOUT_MS,
   });
 }

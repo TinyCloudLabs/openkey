@@ -29,7 +29,7 @@ function memoryStorage(entries: Record<string, string> = {}) {
 function deps(fetchImpl: typeof fetch, storage = memoryStorage()) {
   let signedOut = 0;
   return {
-    deps: { apiBase: API, fetch: fetchImpl, storage, signOut: async () => { signedOut += 1; } },
+    deps: { apiBase: API, fetch: fetchImpl, storage, signOut: async () => { signedOut += 1; }, timeoutMs: 1_000 },
     signOuts: () => signedOut,
   };
 }
@@ -164,9 +164,36 @@ describe('declineTerms', () => {
     }
   });
 
+  test('a deny that never answers is given up after the timeout, and the account still signs out', async () => {
+    const signals: AbortSignal[] = [];
+    // Like fetch: it rejects once its signal aborts, at once if it already has.
+    const stalled = ((_url: string, init?: RequestInit) => {
+      const { promise, reject } = Promise.withResolvers<Response>();
+      const signal = init!.signal!;
+      signals.push(signal);
+      const abort = () => reject(new DOMException('aborted', 'AbortError'));
+      if (signal.aborted) abort();
+      else signal.addEventListener('abort', abort);
+      return promise;
+    }) as unknown as typeof fetch;
+    for (const origin of [
+      { kind: 'oauth', oauthQuery: SIGNED, nativeRequestId: 'req-9' },
+      { kind: 'device', transactionId: 'dt-1' },
+      { kind: 'approval', requestId: APPROVAL_ID },
+    ] satisfies TermsOrigin[]) {
+      const { deps: d, signOuts } = deps(stalled, memoryStorage({ [`openkey.approval.${APPROVAL_ID}`]: '#tv1.secret' }));
+      const started = Date.now();
+      expect(await declineTerms(origin, { ...d, timeoutMs: 30 })).toEqual({ redirect: null });
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(signOuts()).toBe(1);
+    }
+    expect(signals.length).toBe(4); // OAuth: the native request, then the consent
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+  });
+
   test('a sign-out that fails is reported, and no app redirect is taken', async () => {
     const api = fetchBy({ '/api/auth/oauth2/consent': [200, { url: 'https://app.test/cb?error=access_denied' }] });
-    const d = { apiBase: API, fetch: api.impl, storage: memoryStorage(), signOut: async () => { throw new Error('offline'); } };
+    const d = { apiBase: API, fetch: api.impl, storage: memoryStorage(), signOut: async () => { throw new Error('offline'); }, timeoutMs: 1_000 };
     await expect(declineTerms({ kind: 'oauth', oauthQuery: SIGNED, nativeRequestId: null }, d)).rejects.toThrow('offline');
   });
 });
