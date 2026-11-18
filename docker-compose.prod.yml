@@ -1,8 +1,8 @@
 services:
   api:
     image: ${DOCKER_IMAGE}
-    ports:
-      - "${API_PORT:-3001}:${API_PORT:-3001}"
+    # TC-1012: no host port. The ingress reaches api over the compose network;
+    # publishing it would expose the app via the Phala gateway, bypassing ingress.
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock
     environment:
@@ -15,7 +15,7 @@ services:
       # Apple web sign-in is on (TC-1188); offered only when the Apple
       # credentials are set in the encrypted env.
       - APPLE_SIGN_IN_ENABLED=true
-      - APPLE_NATIVE_SIGN_IN_ENABLED=false
+      - APPLE_NATIVE_SIGN_IN_ENABLED=true
       - APPLE_CLIENT_ID=so.openkey.signin
       - APPLE_TEAM_ID=R4QVKA785H
       - APPLE_KEY_ID=US5Z53MQVQ
