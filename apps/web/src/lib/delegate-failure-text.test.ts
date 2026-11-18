@@ -23,7 +23,7 @@ const mappedCodes: Array<[string, string]> = [
   ...[
     'app_key_grant_refused', 'invalid_permissions',
   ].map((code) => [code, "OpenKey can't approve this kind of access. The app or command needs to ask for something different."] as [string, string]),
-  ['key_delete_not_grantable', "Apps can't be given permission to delete keys. Nothing was approved. Ask the app or command to send a new request without it."],
+  ['key_delete_not_grantable', "Apps and commands can't be given permission to delete keys. Nothing was approved. Ask the app or command to send a new request without that permission."],
   ['invalid_siwe_recap', "This request's permission list can't be read. Nothing was approved. Ask the app or command to send a new request."],
   ['rate_limited', 'Too many attempts. Wait five minutes, then try again.'],
   ...['key_not_found', 'key_state_invalid'].map((code) => [code, "This key isn't available on your account. Choose a key you own and try again."] as [string, string]),
@@ -123,6 +123,11 @@ describe('delegateFailureText code mappings', () => {
   });
   test.each(terminalCodes)('marks terminal code %s', (code: string) => {
     expect(isTerminalApprovalFailure(400, code)).toBe(true);
+  });
+
+  test.each([400, 403])('marks key_delete_not_grantable and invalid_siwe_recap terminal for HTTP %i', (status: number) => {
+    expect(isTerminalApprovalFailure(status, 'key_delete_not_grantable')).toBe(true);
+    expect(isTerminalApprovalFailure(status, 'invalid_siwe_recap')).toBe(true);
   });
 
   test('marks HTTP 410 terminal and keeps all non-B/C failures enabled', () => {
