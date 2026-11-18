@@ -9,33 +9,14 @@ import type { BetterAuthPlugin } from 'better-auth';
 import { createAuthMiddleware, getSessionFromCtx } from 'better-auth/api';
 import { defineRequestState } from '@better-auth/core/context';
 import type { PrismaClient } from '@openkey/db';
-import { liveLeaseWhere, revokeRenewalLeases, type LeaseRevocationReport, type LeaseScope } from './renewal-lease-revocation';
+import { revokeRenewalLeases, stopRenewalLeasesBestEffort, type LeaseScope } from './renewal-lease-revocation';
 
 const SIGN_OUT_PATHS = new Set(['/sign-out', '/revoke-session', '/revoke-sessions', '/revoke-other-sessions']);
-
-/** How long a sign-out's answer waits for its leases; stopping them carries on after that. */
-const SIGN_OUT_STOP_BUDGET_MS = 3_000;
 
 /** Whose leases this sign-out covers, read before its sessions end. */
 const signOutLeaseScope = defineRequestState<{ userId: string; scope: LeaseScope } | undefined>(() => undefined);
 
 export function renewalLeaseSignOutPlugin(database: PrismaClient, revoke = revokeRenewalLeases) {
-  /**
-   * Stops the leases best effort, without waiting for the owner's lock, and answers within the budget; never throws.
-   * A lease not confirmed stopped by then is reported not stopped; if stopping is still under way it finishes later.
-   */
-  async function stopLeases(userId: string, scope: LeaseScope): Promise<LeaseRevocationReport> {
-    const live = await database.renewalLease.findMany({ where: liveLeaseWhere(userId, scope, new Date()), select: { leaseCid: true } })
-      .catch(() => []);
-    if (live.length === 0) return { stopped: [], notStopped: [] };
-    const stopping = revoke(database, userId, scope, undefined, { waitForLock: false }).catch(() => null);
-    const { promise: timedOut, resolve: timeUp } = Promise.withResolvers<null>();
-    const timer = setTimeout(() => timeUp(null), SIGN_OUT_STOP_BUDGET_MS);
-    const report = await Promise.race([stopping, timedOut]);
-    clearTimeout(timer);
-    return report ?? { stopped: [], notStopped: live.map(({ leaseCid }) => ({ leaseCid, reason: 'node_unavailable' as const })) };
-  }
-
   return {
     id: 'openkey-renewal-lease-sign-out',
     hooks: {
@@ -71,7 +52,7 @@ export function renewalLeaseSignOutPlugin(database: PrismaClient, revoke = revok
           const returned = ctx.context.returned;
           // Only after a sign-out that succeeded: its sessions have already ended.
           if (!covered || !returned || typeof returned !== 'object' || returned instanceof Response || returned instanceof Error) return;
-          const report = await stopLeases(covered.userId, covered.scope);
+          const report = await stopRenewalLeasesBestEffort(database, covered.userId, covered.scope, revoke);
           // A sign-out with no lease in scope answers exactly as before.
           if (report.stopped.length + report.notStopped.length === 0) return;
           const walletRequired = report.notStopped.filter((lease) => lease.reason === 'wallet_required').length;

@@ -670,7 +670,7 @@
       : approving
         ? "Signing…"
         : previewPending && !onRetry && !refused
-          ? "Getting ready..."
+          ? "Getting ready…"
           : approveText,
   );
 </script>
@@ -823,6 +823,7 @@
         sensitive={isOnceTier(selectedGrants)}
         {requestedBy}
         chooser={false}
+        permissionCount={summaryStatements.length}
       />
     {/if}
 
