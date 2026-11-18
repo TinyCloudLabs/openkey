@@ -21,6 +21,7 @@ import {
 } from './delegate-validation';
 import { logPermissionEntryUnknownFields } from '../log';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
+import { DEVICE_FLOW_ABILITIES } from '../services/device-flow-abilities';
 
 export type DelegationJwk = { kty: string; crv: string; x: string };
 export type AbilitiesMap = Record<string, Record<string, string[]>>;
@@ -524,6 +525,36 @@ function assertRawEncryptionPermission(
 const DEVICE_ENCRYPTION_SERVICE = 'tinycloud.encryption';
 
 /**
+ * A device approval signs only what device start admits: an exact `DEVICE_FLOW_ABILITIES` service and its actions.
+ * The encryption service, in its short or any-case spelling, gets its own refusal (TC-3204).
+ */
+function assertDeviceFlowEntry(entry: DelegationPermissionEntry, index: number): void {
+  if (canonicalizeServiceName(entry.service.toLowerCase()) === DEVICE_ENCRYPTION_SERVICE) {
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      `permissions[${index}] asks to decrypt, and a device approval can't grant tinycloud.encryption. Start a new sign-in.`,
+      [{ path: `permissions[${index}].service`, message: 'Device approvals grant no tinycloud.encryption ability', value: entry.service }],
+    );
+  }
+  if (!Object.hasOwn(DEVICE_FLOW_ABILITIES, entry.service)) {
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      `permissions[${index}].service is not available over device authorization`,
+      [{ path: `permissions[${index}].service`, message: 'Not a device-flow service', value: entry.service }],
+    );
+  }
+  const allowed = DEVICE_FLOW_ABILITIES[entry.service]!;
+  const refused = entry.actions.find(action => !allowed.includes(action));
+  if (refused !== undefined) {
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      `permissions[${index}].actions contains an ability that is not available over device authorization`,
+      [{ path: `permissions[${index}].actions`, message: 'Not a device-flow ability', value: refused }],
+    );
+  }
+}
+
+/**
  * Translate CLI permission entries into the ability maps `prepareSession()`
  * signs. Space abilities are keyed by short service name (`kv`, `sql`, …),
  * then `path → actions[]`; raw encryption entries become top-level
@@ -531,8 +562,8 @@ const DEVICE_ENCRYPTION_SERVICE = 'tinycloud.encryption';
  * network. Actions stay fully-qualified (`tinycloud.sql/read`) because the
  * SIWE recap stores them that way.
  *
- * With `deviceTransaction`, any `tinycloud.encryption` entry, in any spelling,
- * is refused: a device approval never signs decrypt (TC-3204).
+ * With `deviceTransaction`, only device-flow services and actions are signed
+ * (`DEVICE_FLOW_ABILITIES`), so no device approval signs decrypt (TC-3204).
  */
 export function sessionAbilitiesFromPermissions(
   permissions: DelegationPermissionEntry[],
@@ -542,13 +573,7 @@ export function sessionAbilitiesFromPermissions(
   const entries: RecapEntry[] = [];
   const rawAbilities: RawAbilitiesMap = Object.create(null);
   permissions.forEach((entry, index) => {
-    if (options.deviceTransaction && canonicalizeServiceName(entry.service.toLowerCase()) === DEVICE_ENCRYPTION_SERVICE) {
-      throw new DelegateRequestError(
-        'invalid_permissions',
-        `permissions[${index}] asks to decrypt, and a device approval can't grant tinycloud.encryption. Start a new sign-in.`,
-        [{ path: `permissions[${index}].service`, message: 'Device approvals grant no tinycloud.encryption ability', value: entry.service }],
-      );
-    }
+    if (options.deviceTransaction) assertDeviceFlowEntry(entry, index);
     if (isRawEncryptionPermission(entry)) {
       assertRawEncryptionPermission(entry, index, signer);
       addActions(rawAbilities, entry.path, entry.actions);
