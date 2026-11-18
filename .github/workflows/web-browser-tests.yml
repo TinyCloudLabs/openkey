@@ -67,7 +67,7 @@ jobs:
 
       - name: Cache Bun dependencies
         if: steps.relevance.outputs.relevant == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -103,8 +103,11 @@ jobs:
       # downloaded from the runner's Ubuntu mirror on every run, which is what timed out (TC-3298). apt's
       # download directory is moved to ~/.cache/apt-archives and cached, so a warm run installs them from
       # disk. The key carries the ISO week so the archive is refreshed weekly as the mirror moves on, and a
-      # restore of an older week (restore-keys) still saves a fresh archive. apt only reuses a file whose
-      # version and checksum match its package index, so a stale archive cannot install a wrong package.
+      # restore of an older week (restore-keys) still saves a fresh archive. apt does NOT verify a cached
+      # .deb against its package index (it accepts an existing archive file by size), so the safety of this
+      # cache rests on cache scoping alone: a pull request writes only its own refs/pull/N/merge scope, and
+      # only a push to main writes the scope that every branch reads. Do not restore this cache in a job that
+      # holds secrets or publishes, and do not widen the scope.
       - name: Read the cache week
         id: cache-week
         if: steps.relevance.outputs.relevant == 'true'
