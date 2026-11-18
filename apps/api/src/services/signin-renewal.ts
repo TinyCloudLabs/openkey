@@ -7,6 +7,7 @@
 // node does all the renewing. While renewal leases are off nothing here runs: the ask is ignored.
 import { randomUUID } from 'node:crypto';
 import { completeSessionSetup } from '@tinycloud/node-sdk-wasm';
+import { verifyMessage } from 'ethers';
 import { SiweMessage } from 'siwe';
 import {
   MAX_LEASE_SECONDS,
@@ -19,7 +20,7 @@ import {
   type ApprovalResultRenewal,
   type RenewalStage,
 } from './renewal-lease';
-import { logError } from '../log';
+import { logError, logSignInLeaseSigned } from '../log';
 import { isKnownTinyCloudActivationHost } from './tinycloud-hosts';
 import type { SignInRenewalRequest } from './authorization-signing';
 
@@ -72,9 +73,11 @@ export type SignInLease =
 /**
  * The signed lease in the shape of the js-sdk approval-renewal codec. Nothing has been sent to the node: the app
  * passes these fields, with its own grant, to `admitOwnerRenewalLease`, whose receipt carries the same values.
+ * OpenKey keeps no other record of the lease, so its signing is logged: the lease CID and which key signed it.
  */
-export function signedSignInLease(stage: RenewalStage): ApprovalResultRenewal {
+export function signedSignInLease(stage: RenewalStage, signer: 'managed' | 'wallet'): ApprovalResultRenewal {
   if (!stage.leaseAuthorization || !stage.leaseCid) throw new RenewalLeaseError('lease_unsigned', 'Renewal lease is not signed', 409);
+  logSignInLeaseSigned(stage.leaseCid, signer, stage.approvedLeaseLifetimeSeconds);
   return {
     version: 1,
     approvedLeaseLifetimeSeconds: stage.approvedLeaseLifetimeSeconds,
@@ -133,19 +136,26 @@ export async function setUpSignInLease(owner: {
     pendingLeases.set(renewalToken, { userId: owner.userId, stage, expiresAt: now + PENDING_LEASE_TTL_MS });
     return { renewalSignature: { message: stage.leaseSiwe, leaseLifetimeSeconds: stage.approvedLeaseLifetimeSeconds, renewalToken } };
   }
-  return { renewal: signedSignInLease(signLease(stage, await owner.signOwner(stage.leaseSiwe))) };
+  return { renewal: signedSignInLease(signLease(stage, await owner.signOwner(stage.leaseSiwe)), 'managed') };
 }
 
 /**
- * The lease an external wallet is asked to sign, taken once: only by the user whose sign-in it belongs to, and only
- * before it lapses. A taken lease cannot be retried; the owner signs in again.
+ * The lease an external wallet is asked to sign, taken with the owner's signature on it: only by the user whose
+ * sign-in it belongs to, and only before it lapses. A signature from another wallet leaves it waiting for the right
+ * one; a taken lease cannot be retried (the owner signs in again). Synchronous, so two requests can't both take it.
  */
-export function takePendingSignInLease(renewalToken: unknown, userId: string): RenewalStage | null {
-  if (typeof renewalToken !== 'string') return null;
+export function takePendingSignInLease(renewalToken: unknown, userId: string, signature: string): RenewalStage | 'expired' | 'wrong_signer' {
+  if (typeof renewalToken !== 'string') return 'expired';
   const pending = pendingLeases.get(renewalToken);
-  if (!pending || pending.userId !== userId) return null;
+  if (!pending || pending.userId !== userId) return 'expired';
+  if (pending.expiresAt <= Date.now()) {
+    pendingLeases.delete(renewalToken);
+    return 'expired';
+  }
+  let signer = '';
+  try { signer = verifyMessage(pending.stage.leaseSiwe, signature); } catch { /* not the owner's: refused below */ }
+  if (signer.toLowerCase() !== pending.stage.ownerAddress.toLowerCase()) return 'wrong_signer';
   pendingLeases.delete(renewalToken);
-  if (pending.expiresAt <= Date.now()) return null;
   return pending.stage;
 }
 

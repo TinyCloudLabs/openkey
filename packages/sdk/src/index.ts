@@ -209,11 +209,12 @@ export interface TinyCloudRenewalRequestV1 {
 /**
  * The owner-signed renewal lease for a renewing grant, in the shape of the js-sdk approval-renewal codec
  * (`parseApprovalRenewal` in `@tinycloud/share-envelope`). The lease lets the node's renewer renew exactly
- * `receipt.originalCid` until `receipt.leaseExpiresAt`, and nothing else. OpenKey has not sent it to the node and
- * keeps no copy: once the grant is registered with its node, the app has the node admit the lease
- * (`admitOwnerRenewalLease` in `@tinycloud/sdk-core`), which returns the same values. Until then nothing renews.
+ * `receipt.originalCid` until `receipt.leaseExpiresAt`, and nothing else. Signed, not admitted: OpenKey has not sent
+ * it to the node and keeps no copy (`receipt` is the codec's field name). Once the grant is registered with its node,
+ * the app has the node admit the lease by passing these fields to `admitOwnerRenewalLease` in `@tinycloud/sdk-core`,
+ * which returns the same values. Until then nothing renews.
  */
-export interface TinyCloudRenewalReceiptV1 {
+export interface TinyCloudSignedRenewalLeaseV1 {
   version: 1;
   approvedLeaseLifetimeSeconds: number;
   approvedAt: string;
@@ -223,7 +224,8 @@ export interface TinyCloudRenewalReceiptV1 {
     leaseAuthorization: string;
     leaseExpiresAt: string;
     leaseGeneration: 1;
-    nodeIdentity: { nodeDid: string; renewerDid: string };
+    /** The node's renewer identity as it publishes it at `/.well-known/tinycloud/node-keys`. */
+    nodeIdentity: { nodeDid: string; renewerDid: string; renewerPublicKey: string; renewerEpoch: number };
   };
 }
 
@@ -250,7 +252,7 @@ export interface TinyCloudAuthorizationResultV1 {
    * Unset when renewal was not offered.
    */
   renewalChoice?: 'finite' | 'leased';
-  renewal?: TinyCloudRenewalReceiptV1;
+  renewal?: TinyCloudSignedRenewalLeaseV1;
 }
 
 const MAX_RENEWAL_LEASE_SECONDS = 365 * 86_400;
@@ -276,11 +278,11 @@ function renewalRequestField(request: Pick<TinyCloudAuthorizationRequestV1, 'ren
 function signInRenewalResult(raw: { renewalChoice?: unknown; renewal?: unknown }): Pick<TinyCloudAuthorizationResultV1, 'renewalChoice' | 'renewal'> {
   if (raw.renewalChoice === 'finite') return { renewalChoice: 'finite' };
   if (raw.renewalChoice !== 'leased') return {};
-  const renewal = raw.renewal as Partial<TinyCloudRenewalReceiptV1> | null | undefined;
+  const renewal = raw.renewal as Partial<TinyCloudSignedRenewalLeaseV1> | null | undefined;
   if (renewal?.version !== 1 || typeof renewal.receipt?.leaseAuthorization !== 'string' || typeof renewal.receipt.originalCid !== 'string') {
     throw new Error('authorizeTinyCloud: OpenKey turned renewal on but returned no renewal lease');
   }
-  return { renewalChoice: 'leased', renewal: renewal as TinyCloudRenewalReceiptV1 };
+  return { renewalChoice: 'leased', renewal: renewal as TinyCloudSignedRenewalLeaseV1 };
 }
 
 export interface CapabilityPresentationEnvelopeV1 {
@@ -1274,7 +1276,7 @@ export class OpenKey {
       selectedActionKeys?: string[];
       permissions?: TinyCloudAuthorizationResultV1['permissions'];
       renewalChoice?: TinyCloudAuthorizationResultV1['renewalChoice'];
-      renewal?: TinyCloudRenewalReceiptV1;
+      renewal?: TinyCloudSignedRenewalLeaseV1;
     }>(
       'sign',
       {

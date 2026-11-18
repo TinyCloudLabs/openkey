@@ -5,9 +5,10 @@
 //
 // The lease has one ability, `tinycloud.delegation/renew` on `urn:cid:<original CID>`,
 // and its audience is the renewer the node itself advertises at its own origin; nothing
-// the requester sent chooses it. Each step is saved on the approval request before the
-// next network call, so a retry reuses the saved grant and lease instead of signing new
-// ones, and the result is only produced once the node has admitted the lease.
+// the requester sent chooses it. For an approval request, each step is saved on the request before the next network
+// call, so a retry reuses the saved grant and lease instead of signing new ones, and the result is only produced once
+// the node has admitted the lease. At an app sign-in (`signin-renewal.ts`, `appAdmits`) the lease is only signed and
+// returned: nothing is saved, and the app has the node admit it.
 import { randomBytes } from 'node:crypto';
 import { completeSessionSetup, ensureEip55, prepareSession } from '@tinycloud/node-sdk-wasm';
 import {

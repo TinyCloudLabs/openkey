@@ -2,7 +2,7 @@
 // in-process with a managed key that really signs, and a loopback stand-in node. OpenKey only asks the node who its
 // renewer is and keeps nothing: any lease-table access or node write fails the test. The returned lease is then
 // admitted the way the app does it, by the real sdk-core admission code.
-import { beforeAll, afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeAll, afterAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { verifyMessage } from 'ethers';
 import { SiweMessage } from 'siwe';
@@ -328,6 +328,44 @@ describe('a managed key with renewal turned on', () => {
     // Only the grant was signed.
     expect(signManagedMessage).toHaveBeenCalledTimes(1);
   });
+
+  test('a lease the managed key fails to sign gets no lease, and no signature is returned', async () => {
+    const asked = await prepare();
+    const shown = await preview(asked, LEASED);
+    let calls = 0;
+    signManagedMessage.mockImplementation(async (message: string) => {
+      if (++calls > 1) throw new Error('signer unavailable');
+      return account.signMessage({ message });
+    });
+    try {
+      const signed = await sign(asked, shown.body);
+      expect(signed).toMatchObject({ status: 503, body: { code: 'renewal_failed' } });
+      expect(signed.body).not.toHaveProperty('signature');
+      expect(signed.body).not.toHaveProperty('renewal');
+      expect(calls).toBe(2);
+    } finally {
+      signManagedMessage.mockImplementation(async (message: string) => account.signMessage({ message }));
+    }
+  });
+
+  test('a shorter renewal chosen at the preview signs the shorter lease', async () => {
+    const asked = await prepare();
+    const shorter = { choice: 'leased', leaseLifetimeSeconds: 30 * DAY };
+    const signed = await sign(asked, (await preview(asked, shorter)).body);
+    expect(signed.status).toBe(200);
+    const { renewal } = signed.body;
+    expect(renewal.approvedLeaseLifetimeSeconds).toBe(30 * DAY);
+    expect(Date.parse(renewal.receipt.leaseExpiresAt) - Date.parse(renewal.approvedAt)).toBe(30 * DAY * 1000);
+  });
+
+  test('a sign-in that never asked for renewal refuses one at signing, and signs nothing', async () => {
+    const plain = await prepare({ expiryChangeable: true });
+    const signed = await sign(plain, (await preview(plain)).body, { renewal: LEASED });
+    expect(signed).toMatchObject({ status: 400, body: { code: 'request_binding' } });
+    expect(signed.body).not.toHaveProperty('signature');
+    expect(signManagedMessage).not.toHaveBeenCalled();
+    expect(nodeCalls).toEqual([]);
+  });
 });
 
 describe('an external wallet with renewal turned on', () => {
@@ -358,7 +396,7 @@ describe('an external wallet with renewal turned on', () => {
     expect((await post('/authorize-sign-renewal', { renewalToken, signature: await account.signMessage({ message }) })).status).toBe(410);
   });
 
-  test('another wallet\'s signature, or another account, gets no lease', async () => {
+  test('another account gets no lease; another wallet\'s signature gets none either, and leaves it for the owner', async () => {
     const grant = await signedGrant();
     const { message, renewalToken } = grant.renewalSignature;
     currentUser = other;
@@ -367,5 +405,36 @@ describe('an external wallet with renewal turned on', () => {
     const wrong = await post('/authorize-sign-renewal', { renewalToken, signature: await stranger.signMessage({ message }) });
     expect(wrong).toMatchObject({ status: 400, body: { code: 'invalid_signature' } });
     expect(wrong.body).not.toHaveProperty('renewal');
+    const done = await post('/authorize-sign-renewal', { renewalToken, signature: await account.signMessage({ message }) });
+    expect(done).toMatchObject({ status: 200, body: { renewalChoice: 'leased' } });
+  });
+
+  test('the owner\'s signature on one sign-in\'s lease does not take another\'s', async () => {
+    const first = await signedGrant();
+    const second = await signedGrant();
+    const firstSignature = await account.signMessage({ message: first.renewalSignature.message });
+    const crossed = await post('/authorize-sign-renewal', { renewalToken: second.renewalSignature.renewalToken, signature: firstSignature });
+    expect(crossed).toMatchObject({ status: 400, body: { code: 'invalid_signature' } });
+    expect((await post('/authorize-sign-renewal', { renewalToken: first.renewalSignature.renewalToken, signature: firstSignature })).status).toBe(200);
+  });
+
+  test('requests racing to take the same lease: exactly one gets it', async () => {
+    const { renewalSignature: { message, renewalToken } } = await signedGrant();
+    const signature = await account.signMessage({ message });
+    const answers = await Promise.all([1, 2, 3].map(() => post('/authorize-sign-renewal', { renewalToken, signature })));
+    expect(answers.map((answer) => answer.status).sort()).toEqual([200, 410, 410]);
+  });
+
+  test('a lease not signed within ten minutes has lapsed', async () => {
+    const { renewalSignature: { message, renewalToken } } = await signedGrant();
+    const signature = await account.signMessage({ message });
+    const now = Date.now();
+    const clock = spyOn(Date, 'now').mockReturnValue(now + 10 * 60 * 1000 + 1);
+    try {
+      expect((await post('/authorize-sign-renewal', { renewalToken, signature })).status).toBe(410);
+    } finally {
+      clock.mockRestore();
+    }
+    expect((await post('/authorize-sign-renewal', { renewalToken, signature })).status).toBe(410);
   });
 });

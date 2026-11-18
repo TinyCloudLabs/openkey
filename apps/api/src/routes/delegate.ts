@@ -3666,8 +3666,9 @@ delegateRouter.post('/authorize-sign', async (c) => {
  * POST /api/delegate/authorize-sign-renewal
  *
  * The external wallet's signature on the renewal lease of a leased sign-in, after /authorize-sign returned the
- * signed grant with `renewalSignature`. The lease is taken once, only by the same user; the signature must
- * recover to the grant's owner. The signed lease is returned for the app to have its node admit; nothing is kept.
+ * signed grant with `renewalSignature`. The lease is taken once, only by the same user, with a signature that
+ * recovers to the grant's owner; another wallet's signature leaves it waiting. The signed lease is returned for the
+ * app to have its node admit; nothing is kept.
  */
 delegateRouter.post('/authorize-sign-renewal', async (c) => {
   if (!renewalLeasesEnabled()) return c.json({ error: renewalUnavailableMessage('sign-in', 'after-signing'), code: 'renewal_disabled' }, 400);
@@ -3677,15 +3678,13 @@ delegateRouter.post('/authorize-sign-renewal', async (c) => {
   if (typeof fields.signature !== 'string' || !fields.signature) {
     return c.json({ error: 'A signature is required.', code: 'invalid_request' }, 400);
   }
-  const stage = takePendingSignInLease(fields.renewalToken, user.id);
-  if (!stage) return c.json({ error: 'This renewal request expired. Sign in again to turn on renewal.', code: 'renewal_expired' }, 410);
-  let signer = '';
-  try { signer = verifyMessage(stage.leaseSiwe, fields.signature); } catch { /* refused below */ }
-  if (signer.toLowerCase() !== stage.ownerAddress.toLowerCase()) {
+  const stage = takePendingSignInLease(fields.renewalToken, user.id, fields.signature);
+  if (stage === 'expired') return c.json({ error: 'This renewal request expired. Sign in again to turn on renewal.', code: 'renewal_expired' }, 410);
+  if (stage === 'wrong_signer') {
     return c.json({ error: "That signature isn't from the wallet you signed in with. Sign with that wallet to turn on renewal.", code: 'invalid_signature' }, 400);
   }
   try {
-    return c.json({ renewalChoice: 'leased', renewal: signedSignInLease(signLease(stage, fields.signature)) });
+    return c.json({ renewalChoice: 'leased', renewal: signedSignInLease(signLease(stage, fields.signature), 'wallet') });
   } catch (error) {
     const refused = signInRenewalFailure(error);
     return c.json(refused.body, refused.status);
