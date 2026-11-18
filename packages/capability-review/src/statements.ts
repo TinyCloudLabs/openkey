@@ -1766,18 +1766,26 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     }
     // 3b. Vault secret reads
     if (isSecretsVaultPath(path)) {
+      // Whose vault it is, said only as far as it is known (the same three-way
+      // wording as the "all secret values" rows below).
+      const vaultOwner =
+        grant.ownedBySelf === false
+          ? "another user's"
+          : grant.ownedBySelf === true
+            ? "your"
+            : "the requested";
       if (verbs.hasWrite) {
         // The contract only lists vault reads. A vault write is still a
         // "manage secret variables"-adjacent shape; keep the phrasing
         // truthful about mutation.
         return {
-          primaryText: "Manage secrets stored in your vault",
+          primaryText: `Manage secrets stored in ${vaultOwner} vault`,
           service,
           resource,
         };
       }
       return {
-        primaryText: "View secrets stored in your vault",
+        primaryText: `View secrets stored in ${vaultOwner} vault`,
         service,
         resource,
       };
