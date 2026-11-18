@@ -38,7 +38,7 @@ jobs:
     name: Web browser specs
     # Pinned: ubuntu-latest is Ubuntu 26.04, where Playwright cannot install Chromium. Unpin per TC-3071.
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       # Full history: the relevance step diffs the pull request's base against the merge commit.
       - uses: actions/checkout@v4
@@ -82,23 +82,31 @@ jobs:
         if: steps.relevance.outputs.relevant == 'true'
         run: bun run build --filter @openkey/capability-review --filter @openkey/sdk
 
-      # Restored and saved separately: a job that fails (a red spec) skips a plain cache step's
-      # save, and the browser download is the slow, variable part of this job.
+      - name: Read the Playwright version
+        id: playwright-version
+        if: steps.relevance.outputs.relevant == 'true'
+        working-directory: apps/web
+        run: echo "version=$(bunx playwright --version | sed 's/^Version //')" >> "$GITHUB_OUTPUT"
+
+      # The browser download is the slow, variable part of this job, so it is cached by the Playwright
+      # version, not by the whole lockfile (any dependency change would otherwise miss the cache). It is
+      # restored and saved separately: a job that fails (a red spec) skips a plain cache step's save.
       - name: Restore Playwright browsers
         id: playwright-cache
         if: steps.relevance.outputs.relevant == 'true'
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
 
-      # `--with-deps` runs apt, and a runner's Azure Ubuntu mirror is sometimes slow or stalls. apt gets
-      # short connection timeouts, retries and a wait for the dpkg lock; a failed install is retried
-      # (never killed halfway: a killed apt keeps the lock); the step has its own time limit.
+      # `--with-deps` runs apt (about 150 packages for webkit), and a runner's Ubuntu mirror is sometimes
+      # slow. apt gets short connection timeouts, retries and a wait for the dpkg lock; a failed install is
+      # retried (never killed halfway: a killed apt keeps the lock). The step's time limit is a backstop: a
+      # cold run on a slow mirror took more than the old 15 minutes three times (TC-3241).
       - name: Install Playwright browsers
         id: playwright-install
         if: steps.relevance.outputs.relevant == 'true'
-        timeout-minutes: 15
+        timeout-minutes: 25
         working-directory: apps/web
         run: |
           printf 'Acquire::Retries "3";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nDPkg::Lock::Timeout "180";\n' | sudo tee /etc/apt/apt.conf.d/99-ci-timeouts > /dev/null
@@ -114,7 +122,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
 
       # CI=true makes the config retry a failed test once. The step ends green but KEEPS Playwright's
       # exit status in `exit_code`: the summary step below reads it with the JSON report and decides the
