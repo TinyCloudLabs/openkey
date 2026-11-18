@@ -60,7 +60,7 @@ test.describe('compact native consent', () => {
     await expect(page.locator('.nb-icon')).toHaveCSS('border-radius', '22.5%');
     await expect(page.getByRole('heading', { name: 'Exo wants access' })).toHaveCSS('font-size', '32px');
     await expect(page.getByText('Exo will be able to read and save your Exo data.')).toBeVisible();
-    await expect(page.getByText('Access lasts up to 30 days and renews automatically while you use Exo.')).toBeVisible();
+    await expect(page.getByText(/^Access lasts up to 30 days, until \d{1,2} [A-Z][a-z]{2}( \d{4})?, and renews automatically while you use Exo\.$/)).toBeVisible();
     await expect(page.getByText(/First sign-in: this also lets your TinyCloud node host your data/)).toBeVisible();
     await expect(page.getByText('Signed in as')).toContainText('sam@example.test');
     await expect(page.getByRole('button', { name: 'Not you?' })).toHaveCount(0);
@@ -102,7 +102,7 @@ test.describe('compact native consent', () => {
     await page.waitForURL('https://example.test/callback?code=code');
   });
 
-  test('a lifetime that is not a whole number of days reads in days, never in hours', async ({ page }) => {
+  test('a lifetime that is not a whole number of days reads in whole days with its end day, never in hours', async ({ page }) => {
     await page.route('**/api/**', route => {
       const path = new URL(route.request().url()).pathname;
       if (path === '/api/auth/get-session') return json(route, sessionBody);
@@ -115,8 +115,11 @@ test.describe('compact native consent', () => {
     await page.route('https://tinycloud.chat/**', route => route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>' }));
     await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
 
-    await expect(page.getByText('Access lasts up to 29 days and renews automatically while you use Exo.')).toBeVisible();
-    await expect(page.getByText(/700 hours/)).toHaveCount(0);
+    await expect(page.getByText(/^Access lasts up to 30 days, until \d{1,2} [A-Z][a-z]{2}( \d{4})?, and renews automatically while you use Exo\.$/)).toBeVisible();
+    await expect(page.getByText(/700 hours|29 days/)).toHaveCount(0);
+    // The Expires row in Details is a readable date (the exact message below it keeps its own timestamp).
+    await page.getByText('Details', { exact: true }).click();
+    await expect(page.getByText('Oct 7, 2026, 5:00 AM UTC')).toBeVisible();
   });
 
   test('a failed branding fetch keeps the dark shell and the consent still works', async ({ page }) => {

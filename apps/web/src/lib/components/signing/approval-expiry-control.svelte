@@ -14,6 +14,7 @@
     defaultLeaseMs,
     expiryLimitNote,
     formatDuration,
+    formatDurationWithEnd,
     leaseLimitNote,
   } from "$lib/approval-expiry";
   import { formatAccessEnd } from "$lib/access-end";
@@ -148,12 +149,12 @@
           {#if renews}
             This permission renews automatically for up to {formatDuration(renewal.leaseMs!)}
           {:else}
-            This permission expires in {formatDuration(shownMs)}
+            This permission expires in {formatDurationWithEnd(shownMs)}
           {/if}
         </span>
       </label>
     {:else}
-      <p class="expiry-line" data-testid="approval-expiry-line">This permission expires in {formatDuration(shownMs)}</p>
+      <p class="expiry-line" data-testid="approval-expiry-line">This permission expires in {formatDurationWithEnd(shownMs)}</p>
     {/if}
     {#if onceSite !== null && requestedMs !== null}
       <p class="expiry-once-note" data-testid="approval-expiry-once-note">

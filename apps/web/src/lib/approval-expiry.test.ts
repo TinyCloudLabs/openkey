@@ -7,6 +7,7 @@ import {
   expiryAt,
   daysOverTwoDays,
   formatDuration,
+  formatDurationWithEnd,
   formatExpiry,
   onceDefaultExpiryMs,
   parseExpiry,
@@ -178,12 +179,12 @@ describe('approvalRequestStartSeconds', () => {
 
 describe('formatDuration over two days', () => {
   const over: Array<[number, string]> = [
-    [700 * H, '29 days'],
-    [745 * H, '31 days'],
+    [700 * H, '30 days'],
+    [745 * H, '32 days'],
     [720 * H, '30 days'],
-    [49 * H, '2 days'],
+    [49 * H, '3 days'],
     [3 * D, '3 days'],
-    [(30 * D) + (5 * H) + (7 * M), '30 days'],
+    [(30 * D) + (5 * H) + (7 * M), '31 days'],
     [400 * D, '400 days'],
     [365 * D, '1 year'],
     [730 * D, '2 years'],
@@ -213,9 +214,42 @@ describe('formatDuration over two days', () => {
     }
   });
 
-  test('daysOverTwoDays is null for two days or less and floors the rest', () => {
+  test('the days shown never cover less time than the grant', () => {
+    for (let minutes = 2 * 24 * 60 + 1; minutes <= 400 * 24 * 60; minutes += 977) {
+      const ms = minutes * M;
+      expect(daysOverTwoDays(ms)! * D).toBeGreaterThanOrEqual(ms);
+    }
+  });
+
+  test('daysOverTwoDays is null for two days or less and rounds the rest up', () => {
     expect(daysOverTwoDays(2 * D)).toBeNull();
-    expect(daysOverTwoDays(2 * D + 1)).toBe(2);
-    expect(daysOverTwoDays(700 * H)).toBe(29);
+    expect(daysOverTwoDays(2 * D + 1)).toBe(3);
+    expect(daysOverTwoDays(700 * H)).toBe(30);
+  });
+});
+
+describe('formatDurationWithEnd', () => {
+  const now = Date.UTC(2026, 10, 18, 4, 30);
+
+  test('over two days names the length and the day it ends, in UTC', () => {
+    expect(formatDurationWithEnd(30 * D, now)).toBe('30 days, on 18 Dec');
+    expect(formatDurationWithEnd(700 * H, now)).toBe('30 days, on 17 Dec');
+  });
+
+  test('the day follows the instant, not the rounded days', () => {
+    // 23:30 UTC plus 30 days is still the 18th; plus 30 days 1 hour is the 19th.
+    const late = Date.UTC(2026, 10, 18, 23, 30);
+    expect(formatDurationWithEnd(30 * D, late)).toBe('30 days, on 18 Dec');
+    expect(formatDurationWithEnd(30 * D + H, late)).toBe('31 days, on 19 Dec');
+  });
+
+  test('a day in another year carries the year', () => {
+    expect(formatDurationWithEnd(60 * D, now)).toBe('60 days, on 17 Jan 2027');
+    expect(formatDurationWithEnd(365 * D, now)).toBe('1 year, on 18 Nov 2027');
+  });
+
+  test('two days or less has no date', () => {
+    expect(formatDurationWithEnd(36 * H, now)).toBe('36 hours');
+    expect(formatDurationWithEnd(H, now)).toBe('1 hour');
   });
 });

@@ -103,11 +103,21 @@ function count(value: number, unit: string): string {
 }
 
 /**
- * The whole days a duration over 48 hours reads as, rounded down ("29 days", never "700 hours"); null for 48
- * hours or less, which read in hours, minutes or seconds. Every duration shown to the owner uses this one rule.
+ * The whole days a duration over 48 hours reads as, rounded UP ("30 days" for 29 days 4 hours, never "700 hours"):
+ * a consent screen never shows less than what is granted. Null for 48 hours or less, which read in hours, minutes or
+ * seconds. Every duration shown to the owner uses this one rule.
  */
 export function daysOverTwoDays(ms: number): number | null {
-  return ms > 2 * D ? Math.floor(ms / D) : null;
+  return ms > 2 * D ? Math.ceil(ms / D) : null;
+}
+
+/** The day a window of `ms` starting at `now` ends, in UTC like the rest of the access end times: "17 Dec", or "17 Dec 2027" in another year. */
+export function formatEndDay(ms: number, now: number = Date.now()): string {
+  const end = new Date(now + ms);
+  const parts = new Intl.DateTimeFormat('en-US', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).formatToParts(end);
+  const part = (type: string) => parts.find((item) => item.type === type)?.value ?? '';
+  const sameYear = end.getUTCFullYear() === new Date(now).getUTCFullYear();
+  return `${part('day')} ${part('month')}${sameYear ? '' : ` ${part('year')}`}`;
 }
 
 /** A duration in words, as the line reads it: "30 days", "6 months", "1 year", "90 minutes". */
@@ -121,6 +131,11 @@ export function formatDuration(ms: number): string {
   if (ms % H === 0) return count(ms / H, 'hour');
   if (ms % M === 0) return count(ms / M, 'minute');
   return count(Math.round(ms / S), 'second');
+}
+
+/** The window as an expiry line says it: over two days the day it ends too ("29 days, on 17 Dec"); otherwise just the length ("45 minutes"). */
+export function formatDurationWithEnd(ms: number, now: number = Date.now()): string {
+  return daysOverTwoDays(ms) === null ? formatDuration(ms) : `${formatDuration(ms)}, on ${formatEndDay(ms, now)}`;
 }
 
 /**

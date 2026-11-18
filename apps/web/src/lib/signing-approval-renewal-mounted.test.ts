@@ -182,11 +182,14 @@ function typeLease(t: HTMLElement, value: string) {
   flushSync();
 }
 
+// Over two days the line also names the day it ends ("…30 days, on 18 Dec").
+const EXPIRES_IN_30_DAYS = /^This permission expires in 30 days, on \d{1,2} [A-Z][a-z]{2}( \d{4})?$/;
+
 describe('where the requester cannot use renewal', () => {
   test('there is no box, only how long it lasts', () => {
     const { target, cleanup } = render({ renewal: false });
     expect(box(target)).toBeNull();
-    expect(line(target)).toBe('This permission expires in 30 days');
+    expect(line(target)).toMatch(EXPIRES_IN_30_DAYS);
     expect(text(target.querySelector('.expiry-fold > summary'))).toBe('How long it lasts');
     expect(target.querySelector('#approval-lease-custom')).toBeNull();
     cleanup();
@@ -204,7 +207,7 @@ describe('the renewal box', () => {
   test('unticked, it says when the permission expires', () => {
     const { target, cleanup } = render({ leaseMs: null });
     expect(box(target)!.checked).toBe(false);
-    expect(line(target)).toBe('This permission expires in 30 days');
+    expect(line(target)).toMatch(EXPIRES_IN_30_DAYS);
     cleanup();
   });
 
@@ -227,7 +230,7 @@ describe('the renewal box', () => {
 
   test('a lease no longer than the window never renews, so the line says it expires (spec D6 rule 4)', () => {
     const { target, cleanup } = render({ leaseMs: 30 * D });
-    expect(line(target)).toBe('This permission expires in 30 days');
+    expect(line(target)).toMatch(EXPIRES_IN_30_DAYS);
     cleanup();
   });
 
