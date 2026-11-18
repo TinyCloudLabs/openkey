@@ -176,8 +176,8 @@
         </p>
 
         {#if otherOptions}
-          <p class="mt-6 text-center">
-            <a href={otherOptions} class="text-xs text-surface-500 underline underline-offset-2 hover:text-surface-700" data-testid="terms-other-options">Other options</a>
+          <p class="mt-3 text-center">
+            <a href={otherOptions} class="inline-block py-3 text-xs text-surface-500 underline underline-offset-2 hover:text-surface-700" data-testid="terms-other-options">Other options</a>
           </p>
         {/if}
       </Card>
