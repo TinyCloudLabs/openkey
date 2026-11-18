@@ -9,6 +9,7 @@
   import { classifyDelegateError } from '$lib/delegate-error-classification';
   import {
     delegateFailureText,
+    delegateServerMessage,
     delegateResponseFailureText,
     deviceRelayFailureText,
     DeviceRelayDeliveryError,
@@ -86,10 +87,12 @@
   class DelegateResponseError extends Error {
     readonly code: unknown;
     readonly status: number;
-    constructor(message: string, code: unknown, status: number) {
+    readonly serverMessage: string | undefined;
+    constructor(message: string, code: unknown, status: number, serverMessage?: string) {
       super(message);
       this.code = code;
       this.status = status;
+      this.serverMessage = serverMessage;
     }
   }
   function delegateErrorClassification(cause: unknown, refreshAttempted = false) {
@@ -113,6 +116,7 @@
       return delegateResponseFailureText(cause.status, cause.code, {
         permissionsEditable: reviewEditing,
         expiryChangeable: expiryChangeControlVisible,
+        serverMessage: cause.serverMessage,
       });
     }
     return delegateFailureText(cause);
@@ -842,7 +846,7 @@
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-      throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status);
+      throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status, delegateServerMessage(body));
     }
 
     return res.json();
@@ -1301,7 +1305,7 @@
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status);
+        throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status, delegateServerMessage(body));
       }
 
       const data = await res.json();
@@ -1453,7 +1457,7 @@
 
       if (!compRes.ok) {
         const body = await compRes.json().catch(() => ({ error: 'Unknown error' }));
-        throw new DelegateResponseError(apiBusyOrEndedMessage(compRes.status) ?? (body.error || `HTTP ${compRes.status}`), body.code, compRes.status);
+        throw new DelegateResponseError(apiBusyOrEndedMessage(compRes.status) ?? (body.error || `HTTP ${compRes.status}`), body.code, compRes.status, delegateServerMessage(body));
       }
 
       let data = await compRes.json();

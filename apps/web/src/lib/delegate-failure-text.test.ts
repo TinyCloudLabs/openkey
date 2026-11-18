@@ -163,3 +163,33 @@ test('formats device relay delivery failures without server text', () => {
     expect(deviceRelayFailureText(500, code)).toBe(`${prefix} (Error 500)`);
   }
 });
+
+const genericRefusal = "OpenKey can't approve this kind of access. The app or command needs to ask for something different.";
+
+test('shows the server sentence for app key refusals when present', () => {
+  const sentence = "This website doesn't list the key this app asked for, so OpenKey didn't approve it.";
+  expect(delegateResponseFailureText(403, 'app_key_grant_refused', { serverMessage: sentence })).toBe(sentence);
+  expect(delegateResponseFailureText(403, 'app_key_grant_refused')).toBe(genericRefusal);
+  expect(delegateResponseFailureText(403, 'app_key_grant_refused', { serverMessage: '' })).toBe(genericRefusal);
+});
+
+test('appends the server reason for invalid permissions', () => {
+  expect(delegateResponseFailureText(400, 'invalid_permissions', { serverMessage: 'Requested spaces must belong to the signing account' }))
+    .toBe(`${genericRefusal} Reason: Requested spaces must belong to the signing account.`);
+  for (const end of ['.', '!', '?']) {
+    expect(delegateResponseFailureText(400, 'invalid_permissions', { serverMessage: `Nope${end}` }))
+      .toBe(`${genericRefusal} Reason: Nope${end}`);
+  }
+  expect(delegateResponseFailureText(400, 'invalid_permissions')).toBe(genericRefusal);
+});
+
+test('caps long server messages and ignores them for other codes', () => {
+  const long = 'x'.repeat(500);
+  expect(delegateResponseFailureText(400, 'invalid_permissions', { serverMessage: long }))
+    .toBe(`${genericRefusal} Reason: ${'x'.repeat(300)}.`);
+  expect(delegateResponseFailureText(403, 'app_key_grant_refused', { serverMessage: long })).toBe('x'.repeat(300));
+  expect(delegateResponseFailureText(400, 'key_not_found', { serverMessage: 'ignored' }))
+    .toBe("This key isn't available on your account. Choose a key you own and try again.");
+  expect(delegateResponseFailureText(400, 'unknown_code', { serverMessage: 'ignored' }))
+    .toBe(`${approvalCannotProceed} (Error 400 · unknown_code)`);
+});
