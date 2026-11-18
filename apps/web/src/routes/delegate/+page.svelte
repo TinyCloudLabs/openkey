@@ -42,7 +42,7 @@
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
-  import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
+  import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
   import { MAX_LEASE_MS, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
@@ -149,8 +149,6 @@
   let codeDeadline = $state<number | null>(null);
   let codeCountdown = $state<CodeCountdownSnapshot | null>(null);
   let codeAnnouncement = $state('');
-  let closeStuck = $state(false);
-  let cancelCloseAttempt: (() => void) | null = null;
 
   // Countdown for the short code. Stopped when the deadline changes or the page is destroyed.
   $effect(() => {
@@ -166,15 +164,6 @@
     });
   });
 
-  // Cancels a pending Close check when the page is destroyed.
-  $effect(() => () => cancelCloseAttempt?.());
-
-  function requestClose() {
-    cancelCloseAttempt?.();
-    cancelCloseAttempt = closeThisTab(browserCloseEnvironment(), () => {
-      closeStuck = true;
-    });
-  }
   let updatingPermissions = $state(false);
   let permissionsEdited = $state(false);
   let authorizationContextToken = $state<string | null>(null);
@@ -1704,8 +1693,9 @@
     {error || (approvalRequestLoading ? 'Checking request…' : 'This approval link is unavailable.')}
   </div>
 {:else if declined}
-  <div role="status" class="min-h-screen flex items-center justify-center px-4 text-center">
-    Declined. You can close this page.
+  <div data-testid="declined" class="min-h-screen flex flex-col items-center justify-center px-4 text-center">
+    <p role="status">Declined. You can close this window.</p>
+    <CloseTabButton />
   </div>
 {:else if !dispatchReady && !preparedTransport}
   <div role="status" class="min-h-screen flex items-center justify-center">Loading delegation request…</div>
@@ -1801,17 +1791,11 @@
                 aria-label="Copy full delegation code"
               >{copied ? 'Copied' : 'Copy full code'}</button>
             </details>
-            {#if closeStuck}
-              <p class="text-surface-600 text-sm mt-4">You can close this tab.</p>
-            {:else}
-              <button
-                class="mt-4 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100"
-                onclick={requestClose}
-              >Close</button>
-            {/if}
+            <CloseTabButton allowBack />
           {:else}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
             <p class="text-surface-500 text-sm">You can close this window and return to the CLI.</p>
+            <CloseTabButton />
           {/if}
         </div>
 
