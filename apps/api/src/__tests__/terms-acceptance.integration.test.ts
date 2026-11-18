@@ -4,7 +4,7 @@
 // accepts the current version. Runs in a child process, as the other full-API tests do.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
-import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -367,6 +367,49 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
       expect(back.searchParams.get('code')).toBeNull();
       await expectTermsRequired(await json(`${issuer}/oauth2/consent`, { accept: true, oauth_query: oauthQuery }, cookie));
       await expectTermsRequired(await json(`${issuer}/oauth2/continue`, { accept: false, postLogin: true, oauth_query: oauthQuery }, cookie));
+    });
+
+    test('a consent body too large to read stays gated, denial or not', async () => {
+      release(VERSION);
+      const { cookie } = await signedIn();
+      const { clientId, scope } = await register();
+      const oauthQuery = (await authorize(cookie, clientId, scope)).searchParams.toString();
+      await expectTermsRequired(await json(`${issuer}/oauth2/consent`, { accept: false, oauth_query: oauthQuery, padding: 'x'.repeat(64 * 1024) }, cookie));
+    });
+
+    // Only deleting the account is a way out; the other step-up purposes manage the account.
+    test.each([
+      ['send', { purpose: 'link' }],
+      ['send', {}],
+      ['send', { purpose: 'passkey_register' }],
+      ['send', { purpose: 'passkey_remove' }],
+      ['verify', { purpose: 'link', code: '123456' }],
+      ['verify', { code: '123456' }],
+    ])('an email step-up to %s for anything but deleting the account stays gated (%j)', async (step, body) => {
+      const { cookie } = await behindNewTerms();
+      await expectTermsRequired(await send(cookie, 'POST', `/api/account/step-up/email-otp/${step}`, body));
+    });
+
+    test('an owner-revocation handoff can be claimed; a sign-in handoff cannot', async () => {
+      const { cookie } = await behindNewTerms();
+      const secret = () => randomBytes(32).toString('base64url');
+      const delivery = () => ({ handoffId: secret(), state: secret(), cancelSecret: secret() });
+      const revocation = {
+        transportVersion: 2,
+        request: {
+          kind: 'owner-revocation',
+          ownerDid: 'did:pkh:eip155:1:0x1111111111111111111111111111111111111111',
+          cid: 'bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgzz7nazxe',
+          nonce: randomUUID().replaceAll('-', ''),
+          expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
+        },
+        delivery: delivery(),
+      };
+      const claimed = await send(cookie, 'POST', '/api/delegate/handoffs/claim', revocation);
+      expect(claimed.status, await claimed.clone().text()).toBe(201);
+
+      const signIn = { transportVersion: 2, request: { protocolVersion: 1, siwe: 'x', jwk: {}, host: 'https://node.example', sessionDid: 'did:key:z' }, delivery: delivery() };
+      await expectTermsRequired(await send(cookie, 'POST', '/api/delegate/handoffs/claim', signIn));
     });
 
     test.each([

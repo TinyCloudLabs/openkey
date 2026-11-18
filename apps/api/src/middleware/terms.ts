@@ -19,6 +19,21 @@ export const allowBeforeTerms = createMiddleware<SessionContext>(async (c, next)
 });
 
 /**
+ * Marks a way out only when its JSON body says it is one: for a route that also serves account management.
+ * Reads a copy of at most `maxBytes`; a larger or unparseable body is not marked and stays gated.
+ */
+export function allowBeforeTermsWhen(maxBytes: number, isWayOut: (body: Record<string, unknown>) => boolean) {
+  return createMiddleware<SessionContext>(async (c, next) => {
+    const body = await readJsonObject(c.req.raw, maxBytes);
+    if (body && isWayOut(body)) c.set('leaving', true);
+    await next();
+  });
+}
+
+/** Consent bodies are an `accept` flag and the signed authorize query; anything larger is not a denial. */
+const CONSENT_BODY_MAX_BYTES = 16 * 1024;
+
+/**
  * POST /oauth2/consent and /oauth2/continue. `continue {postLogin: true}` resumes an authorization without
  * asking postLogin again, so the session's account is checked here first. A request with no session is the
  * provider's to refuse. With `allowDenial` (consent only), a consent the user declines goes through: the
@@ -32,20 +47,42 @@ export function createTermsSessionGuard(
 ): MiddlewareHandler {
   return async (c, next) => {
     if (c.req.method !== 'POST') return next();
-    if (options.allowDenial && await isDenial(c.req.raw)) return next();
+    if (options.allowDenial) {
+      const body = await readJsonObject(c.req.raw, CONSENT_BODY_MAX_BYTES);
+      if (body && body.accept !== true) return next();
+    }
     const userId = await getSessionUserId(c.req.raw.headers);
     if (userId && !await hasAcceptedTerms(database, userId)) return c.json(termsRequired(), 403, NO_STORE);
     await next();
   };
 }
 
-/** A JSON body whose `accept` is anything but `true`. Read from a copy; the provider reads the original. */
-async function isDenial(request: Request): Promise<boolean> {
+/**
+ * A JSON object body, read from a copy (the handler reads the original) and decoded as `Request.json()` does.
+ * Undefined when the body is over `maxBytes`, is not JSON, or is not an object.
+ */
+async function readJsonObject(request: Request, maxBytes: number): Promise<Record<string, unknown> | undefined> {
+  if (Number(request.headers.get('content-length')) > maxBytes) return undefined;
+  const stream = request.clone().body;
+  if (!stream) return undefined;
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel();
+      return undefined;
+    }
+    chunks.push(value);
+  }
   try {
-    const body: unknown = await request.clone().json();
-    return !!body && typeof body === 'object' && !Array.isArray(body) && (body as { accept?: unknown }).accept !== true;
+    const body: unknown = JSON.parse(new TextDecoder().decode(Buffer.concat(chunks)));
+    return body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
