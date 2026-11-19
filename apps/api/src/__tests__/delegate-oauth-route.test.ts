@@ -77,7 +77,7 @@ let transactionTail: Promise<void> = Promise.resolve();
 let storedOauthTokens = new Map<string, any>();
 let registeredOauthClients = new Map<string, any>();
 let consentedClientIds = new Set<string>();
-let resolvedOauthUser: { id: string; emailVerified: boolean } | null = {
+let resolvedOauthUser: { id: string; emailVerified: boolean; lockedAt?: Date | null } | null = {
   id: 'user_1',
   emailVerified: true,
 };
@@ -528,6 +528,14 @@ test('tinycloud:manage-key fails closed when the user disables that OAuth app', 
   expect(signerCalls).toBe(0);
 });
 
+test('tinycloud:identity tokens cannot sign even when the registered client has manage-key', async () => {
+  token.scopes = ['openid', 'email', 'tinycloud:identity'];
+  client.scopes = ['openid', 'email', 'tinycloud:identity', 'tinycloud:manage-key'];
+
+  await expectRouteDenial(signingBody(), 403, 'missing_scope');
+  expect(signerCalls).toBe(0);
+});
+
 test('two independent confidential OAuth clients resolve one user to the same canonical TinyCloud identity', async () => {
   const firstRawBearer = 'independent-confidential-client-one';
   const secondRawBearer = 'independent-confidential-client-two';
@@ -815,6 +823,9 @@ describe('CoordinationOS OAuth signer route', () => {
       client.tinycloudSessionPolicy = 'unknown-policy';
     }, 'client_misconfigured'],
     ['missing user', () => { resolvedOauthUser = null; }, 'user_not_found'],
+    ['locked user (R9)', () => {
+      resolvedOauthUser = { id: 'user_1', emailVerified: true, lockedAt: new Date() };
+    }, 'user_not_found'],
     ['unverified user', () => {
       resolvedOauthUser = { id: 'user_1', emailVerified: false };
     }, 'email_not_verified'],
@@ -1171,6 +1182,7 @@ describe('CoordinationOS OAuth signer route', () => {
       missing_scope: 403,
       user_not_found: 403,
       email_not_verified: 403,
+      terms_required: 403,
       key_not_found: 403,
       wrong_user: 403,
       external_key_denied: 403,

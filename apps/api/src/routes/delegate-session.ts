@@ -21,6 +21,7 @@ import {
 } from './delegate-validation';
 import { logPermissionEntryUnknownFields } from '../log';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
+import { DEVICE_FLOW_ABILITIES } from '../services/device-flow-abilities';
 
 export type DelegationJwk = { kty: string; crv: string; x: string };
 export type AbilitiesMap = Record<string, Record<string, string[]>>;
@@ -90,8 +91,7 @@ export interface DelegationPermissionEntry {
   actions: string[];
 }
 
-// SIWE domain identifies the requestor (the CLI). Duplicated (rather than
-// re-exported from delegate.ts) to keep this module standalone.
+// Default requester for CLI links that do not supply an explicit origin.
 export const SIWE_DOMAIN = 'cli.tinycloud.xyz';
 
 // Capability URNs come from the TC-112 registry constants published by
@@ -521,32 +521,37 @@ function assertRawEncryptionPermission(
   }
 }
 
-/** Service name of the device authorization encryption entry, exact on the wire. */
+/** Device authorization grants no encryption ability (TC-3204). */
 const DEVICE_ENCRYPTION_SERVICE = 'tinycloud.encryption';
-/** Space name of the approving account's own default encryption network. */
-const DEVICE_ENCRYPTION_SPACE = 'default';
 
 /**
- * URN of the signer's own `default` encryption network. Single producer for the
- * device entry; owner DID uses the signer's chain and EIP-55 address.
+ * A device approval signs only what device start admits: an exact `DEVICE_FLOW_ABILITIES` service and its actions.
+ * The encryption service, in its short or any-case spelling, gets its own refusal (TC-3204).
  */
-export function defaultEncryptionNetworkUrn(signer: { address: string; chainId: number }): string {
-  return `${RAW_ENCRYPTION_PREFIX}did:pkh:eip155:${signer.chainId}:${getAddress(signer.address)}:default`;
-}
-
-/**
- * The exact device authorization encryption entry: service `tinycloud.encryption`,
- * space `default`, path `""`, and only the decrypt action. Any other entry keeps
- * its existing handling.
- */
-export function isDeviceDefaultEncryptionEntry(entry: DelegationPermissionEntry): boolean {
-  return (
-    entry.service === DEVICE_ENCRYPTION_SERVICE &&
-    entry.space === DEVICE_ENCRYPTION_SPACE &&
-    entry.path === '' &&
-    entry.actions.length === 1 &&
-    entry.actions[0] === ENCRYPTION.DECRYPT
-  );
+function assertDeviceFlowEntry(entry: DelegationPermissionEntry, index: number): void {
+  if (canonicalizeServiceName(entry.service.toLowerCase()) === DEVICE_ENCRYPTION_SERVICE) {
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      `permissions[${index}] asks to decrypt, and a device approval can't grant tinycloud.encryption. Start a new sign-in.`,
+      [{ path: `permissions[${index}].service`, message: 'Device approvals grant no tinycloud.encryption ability', value: entry.service }],
+    );
+  }
+  if (!Object.hasOwn(DEVICE_FLOW_ABILITIES, entry.service)) {
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      `permissions[${index}].service is not available over device authorization`,
+      [{ path: `permissions[${index}].service`, message: 'Not a device-flow service', value: entry.service }],
+    );
+  }
+  const allowed = DEVICE_FLOW_ABILITIES[entry.service]!;
+  const refused = entry.actions.find(action => !allowed.includes(action));
+  if (refused !== undefined) {
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      `permissions[${index}].actions contains an ability that is not available over device authorization`,
+      [{ path: `permissions[${index}].actions`, message: 'Not a device-flow ability', value: refused }],
+    );
+  }
 }
 
 /**
@@ -557,9 +562,8 @@ export function isDeviceDefaultEncryptionEntry(entry: DelegationPermissionEntry)
  * network. Actions stay fully-qualified (`tinycloud.sql/read`) because the
  * SIWE recap stores them that way.
  *
- * With `deviceTransaction`, the exact default encryption entry (see
- * `isDeviceDefaultEncryptionEntry`) resolves to the signer's own default
- * network. Every other entry is handled as before.
+ * With `deviceTransaction`, only device-flow services and actions are signed
+ * (`DEVICE_FLOW_ABILITIES`), so no device approval signs decrypt (TC-3204).
  */
 export function sessionAbilitiesFromPermissions(
   permissions: DelegationPermissionEntry[],
@@ -568,20 +572,8 @@ export function sessionAbilitiesFromPermissions(
 ): SessionAbilities {
   const entries: RecapEntry[] = [];
   const rawAbilities: RawAbilitiesMap = Object.create(null);
-  let deviceDefaultSeen = false;
   permissions.forEach((entry, index) => {
-    if (options.deviceTransaction && isDeviceDefaultEncryptionEntry(entry)) {
-      if (deviceDefaultSeen) {
-        throw new DelegateRequestError(
-          'invalid_permissions',
-          `permissions[${index}] repeats the default encryption entry; a device request carries one`,
-          [{ path: `permissions[${index}]`, message: 'Only one default encryption entry is allowed' }],
-        );
-      }
-      deviceDefaultSeen = true;
-      addActions(rawAbilities, defaultEncryptionNetworkUrn(signer), [ENCRYPTION.DECRYPT]);
-      return;
-    }
+    if (options.deviceTransaction) assertDeviceFlowEntry(entry, index);
     if (isRawEncryptionPermission(entry)) {
       assertRawEncryptionPermission(entry, index, signer);
       addActions(rawAbilities, entry.path, entry.actions);
@@ -601,7 +593,8 @@ export function resolvePermissionSpace(space: string, signer: { address: string;
   if (!space.startsWith('tinycloud:')) return makeSpaceId(signer.address, signer.chainId, space);
   const pkh = /^tinycloud:pkh:eip155:([1-9][0-9]*):(0x[0-9a-fA-F]{40}):([^:/]+)$/.exec(space);
   if (!pkh || pkh[1] !== String(signer.chainId) || pkh[2]!.toLowerCase() !== signer.address.toLowerCase()) {
-    throw new DelegateRequestError('invalid_permissions', 'Requested spaces must belong to the signing account');
+    const owner = pkh && pkh[2]!.toLowerCase() !== signer.address.toLowerCase() ? pkh[2] : undefined;
+    throw new DelegateRequestError('invalid_permissions', 'Requested spaces must belong to the signing account', undefined, owner);
   }
   return makeSpaceId(signer.address, signer.chainId, pkh[3]!);
 }
@@ -626,8 +619,7 @@ export interface PrepareDelegationSessionInput {
    */
   permissions?: DelegationPermissionEntry[];
   /**
-   * Device authorization context. Only then does the exact default encryption
-   * entry resolve to the signer's own network.
+   * Device authorization context. Then any encryption entry is refused.
    */
   deviceTransaction?: boolean;
   /** Pre-validated, clamped delegation lifetime in milliseconds. */

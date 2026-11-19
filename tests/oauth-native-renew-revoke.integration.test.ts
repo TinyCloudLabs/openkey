@@ -37,6 +37,7 @@ if (!backend) {
   let clientId: string;
   let address: string;
   let cookie: string;
+  let sessionToken: string;
   const API = 'https://api.openkey.test';
   const ISSUER = `${API}/api/auth`;
   const RENEW = '/api/auth/oauth2/tinycloud/renew';
@@ -125,7 +126,7 @@ if (!backend) {
     const { auth } = await import('../apps/api/src/auth');
     app = (await import('../apps/api/src/index')).default;
     await prisma.user.create({ data: { id: USER, email: 'o5@example.test', name: 'O5', emailVerified: true } });
-    const sessionToken = randomUUID();
+    sessionToken = randomUUID();
     await prisma.session.create({ data: { id: 'o5-session', token: sessionToken, userId: USER, expiresAt: new Date(Date.now() + 3_600_000) } });
     const context = await auth.$context;
     cookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, sessionToken, context.secret)).split(';')[0]!;
@@ -152,7 +153,11 @@ if (!backend) {
     await prisma.$executeRawUnsafe(`TRUNCATE TABLE "oauth_refresh_token", "oauth_access_token", "native_session_proof_jti", "oauth_consent",
       "tinycloud_native_grant", "tinycloud_native_request", "tinycloud_native_consent_generation",
       "tinycloud_manage_key_app_preference", "tinycloud_manage_key_signing_decision" CASCADE`);
-    await prisma.user.update({ where: { id: USER }, data: { tinyCloudManageKeyMode: 'APP_MANAGED' } });
+    await prisma.user.update({ where: { id: USER }, data: { tinyCloudManageKeyMode: 'APP_MANAGED', lockedAt: null } });
+    await prisma.account.deleteMany({ where: { userId: USER } });
+    await prisma.session.upsert({ where: { id: 'o5-session' }, update: {}, create: {
+      id: 'o5-session', token: sessionToken, userId: USER, expiresAt: new Date(Date.now() + 3_600_000),
+    } });
     await prisma.oauthClient.update({ where: { clientId }, data: { disabled: false, scopes: ['openid', 'offline_access', DELEGATION], tinycloudNativeDelegation: ceiling } });
     await prisma.oauthConsent.create({ data: { id: 'o5-consent', userId: USER, clientId, scopes: ['openid', 'offline_access', DELEGATION] } });
     await prisma.tinyCloudNativeConsentGeneration.create({ data: { userId: USER, clientId, generation: 0n } });
@@ -613,6 +618,57 @@ if (!backend) {
     }));
     expect(response.status).toBe(404);
     expect(await prisma.oauthConsent.findUnique({ where: { id: 'o5-consent' } })).not.toBeNull();
+  });
+
+  test(`a locked user's live session, provider refresh and native renewal are refused (R9, TC-1231) (${backend})`, async () => {
+    const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
+    const webClient = { clientId: `r9-web-${randomUUID()}`, clientSecret: randomUUID() };
+    await prisma.oauthClient.create({ data: { id: randomUUID(), clientId: webClient.clientId, clientSecret: hash(webClient.clientSecret),
+      name: 'R9 web', redirectUris: ['https://web.example/callback'], scopes: ['openid', 'offline_access'], type: 'web', public: false,
+      tokenEndpointAuthMethod: 'client_secret_basic', contacts: [] } });
+    await prisma.oauthConsent.create({ data: { id: 'r9-consent', userId: USER, clientId: webClient.clientId, scopes: ['openid', 'offline_access'] } });
+    const refreshRow = (token: string) => prisma.oauthRefreshToken.create({ data: { id: randomUUID(), token: hash(token), clientId: webClient.clientId,
+      userId: USER, scopes: ['openid', 'offline_access'], expiresAt: new Date(Date.now() + 86_400_000) } });
+    const providerRefresh = (token: string) => app.fetch(new Request(`${API}/api/auth/oauth2/token`, { method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded',
+        Authorization: `Basic ${Buffer.from(`${webClient.clientId}:${webClient.clientSecret}`).toString('base64')}` },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: token }).toString() }));
+    const getSession = () => app.fetch(new Request(`${API}/api/auth/get-session`, { headers: { cookie } }))
+      .then(async (response) => (await response.json() as { user?: { id: string } } | null)?.user?.id ?? null);
+
+    await refreshRow('r9-control');
+    const control = await providerRefresh('r9-control');
+    expect(control.status, await control.clone().text()).toBe(200);
+    expect(await getSession()).toBe(USER);
+
+    await refreshRow('r9-locked');
+    await prisma.user.update({ where: { id: USER }, data: { lockedAt: new Date() } });
+    expect(await getSession()).toBeNull();
+    const refreshed = await providerRefresh('r9-locked');
+    expect(refreshed.status).toBe(400);
+    expect(await error(refreshed)).toBe('invalid_grant');
+    const renewed = await renew(key, 'token-a');
+    expect(renewed.status).toBe(400); expect(await error(renewed)).toBe('access_denied');
+    expect((await prisma.tinyCloudManageKeySigningDecision.findFirstOrThrow({ where: { userId: USER }, orderBy: { createdAt: 'desc' } })).reason).toBe('account_locked');
+    expect((await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).refreshTokenHash).toBe(hash('token-a'));
+    await prisma.oauthClient.delete({ where: { clientId: webClient.clientId } });
+  });
+
+  test(`after an Apple consent-revoked notification the native grant cannot renew (TC-1231) (${backend})`, async () => {
+    const key = sessionKey(); await seedDevice('device-a', key, 'token-a');
+    await prisma.account.create({ data: { id: randomUUID(), userId: USER, providerId: 'apple', accountId: 'o5-apple-sub' } });
+    const { processAppleNotification } = await import('../apps/api/src/services/apple-notifications');
+    expect(await processAppleNotification(prisma, {
+      jti: randomUUID(), rawType: 'consent-revoked', type: 'consent-revoked', sub: 'o5-apple-sub', eventTimeMs: Date.now(),
+    })).toBe('revoked');
+    expect((await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'device-a' } })).status).toBe('REVOKED');
+    expect(await prisma.oauthRefreshToken.count({ where: { userId: USER } })).toBe(0);
+    expect(await prisma.session.count({ where: { userId: USER } })).toBe(0);
+    const renewed = await renew(key, 'token-a');
+    expect(renewed.status).not.toBe(200);
+    expect(await error(renewed)).toBe('invalid_grant');
+    expect(await prisma.ethereumKey.count({ where: { userId: USER } })).toBe(1);
+    expect(await prisma.user.count({ where: { id: USER } })).toBe(1);
   });
 
   if (backend === 'postgres') {

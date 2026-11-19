@@ -10,3 +10,22 @@ export function formatAccessEnd(iso: string): string {
   // Newer ICU data puts a narrow no-break space before AM/PM.
   return `${text.replace(/\s/g, ' ')} UTC`;
 }
+
+/**
+ * The same end in the viewer's own time zone, with its abbreviation, e.g. `Oct 7, 2026, 1:00 AM EDT`. For the
+ * consent screens, whose other dates ("expires in 30 days, on Dec 17") are the owner's own day. `timeZone` is for tests.
+ */
+export function formatLocalAccessEnd(iso: string, timeZone?: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const text = new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+    timeZone,
+  }).format(date);
+  return text.replace(/\s/g, ' ');
+}

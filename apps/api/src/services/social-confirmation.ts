@@ -63,6 +63,8 @@ export async function revokeAppleToken(token: string | undefined, clientId: stri
   try {
     const response = await fetch('https://appleid.apple.com/auth/revoke', {
       method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      // A stalled Apple call must not hold the caller (deletion awaits it).
+      signal: AbortSignal.timeout(5_000),
       body: new URLSearchParams({
         token, token_type_hint: 'refresh_token', client_id: clientId,
         client_secret: await generateAppleClientSecret(

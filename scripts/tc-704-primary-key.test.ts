@@ -70,6 +70,7 @@ if (!backend) {
   let auth: typeof AuthModule.auth;
   let authPrisma: DatabaseModule.PrismaClient;
   let buildClaim: typeof AuthModule.buildCanonicalTinyCloudIdentityClaim;
+  let buildKeyList: typeof AuthModule.buildKeyClaims;
   let keysRouter: typeof KeysModule.keysRouter;
   let delegateRouter: typeof DelegateModule.delegateRouter;
   let tee: TeeModule.TeeClient;
@@ -139,7 +140,7 @@ if (!backend) {
     ({ createPrismaClient } = await import('@openkey/db'));
     prisma = createPrismaClient();
     ({ setPrimaryKey, PrimaryKeyConflictError } = await import('../apps/api/src/services/primary-key'));
-    ({ auth, prisma: authPrisma, buildCanonicalTinyCloudIdentityClaim: buildClaim } = await import('../apps/api/src/auth'));
+    ({ auth, prisma: authPrisma, buildCanonicalTinyCloudIdentityClaim: buildClaim, buildKeyClaims: buildKeyList } = await import('../apps/api/src/auth'));
     ({ keysRouter } = await import('../apps/api/src/routes/keys'));
     ({ delegateRouter } = await import('../apps/api/src/routes/delegate'));
     const teeModule = await import('@openkey/tee');
@@ -399,6 +400,35 @@ if (!backend) {
     });
   });
 
+  test('identity-only claims contain the canonical address without key or space details', async () => {
+    const confidential = {
+      id: clientId, type: 'web', public: false, tokenEndpointAuthMethod: 'client_secret_basic',
+    };
+    const primary = accounts.old!.address;
+    expect(await buildClaim({ id: userId }, ['openid', 'tinycloud:identity'], confidential, prisma)).toEqual({
+      version: 'v1', address: primary, chainId: 1, did: `did:pkh:eip155:1:${primary}`,
+    });
+    expect(await buildClaim({ id: userId }, ['openid', 'tinycloud:identity', 'tinycloud:manage-key'], confidential, prisma)).toEqual({
+      version: 'v1', keyId: 'old', address: primary, chainId: 1,
+      did: `did:pkh:eip155:1:${primary}`,
+      spaceId: `tinycloud:pkh:eip155:1:${primary}:applications`,
+    });
+    expect(await buildClaim({ id: userId }, ['openid'], confidential, prisma)).toBeUndefined();
+    expect(await buildClaim({ id: userId }, ['openid', 'tinycloud:identity'], {
+      ...confidential, public: true,
+    }, prisma)).toBeUndefined();
+    expect(await buildClaim({ id: userId }, ['openid', 'tinycloud:identity'], undefined, prisma)).toBeUndefined();
+    const identityWithKeys = ['openid', 'tinycloud:identity', 'keys'];
+    expect(await buildKeyList(
+      { id: userId, email: '', emailVerified: true },
+      identityWithKeys,
+      confidential,
+      prisma,
+    )).toBeUndefined();
+    expect(await buildClaim({ id: userId }, identityWithKeys, confidential, prisma)).toEqual({
+      version: 'v1', address: primary, chainId: 1, did: `did:pkh:eip155:1:${primary}`,
+    });
+  });
   test('canonical identity and real delegate/sign follow the change; old-owner SIWE is rejected', async () => {
     function requestBody(owner: string) {
       const address = accounts[owner]!.address;
@@ -434,7 +464,9 @@ if (!backend) {
       });
     }
     const policy = await policySnapshot();
-    const before = await buildClaim({ id: userId }, scopes, { id: clientId }, prisma);
+    const before = await buildClaim({ id: userId }, scopes, {
+      id: clientId, type: 'web', public: false, tokenEndpointAuthMethod: 'client_secret_basic',
+    }, prisma);
     expect(before).toMatchObject({ keyId: 'old', address: accounts.old!.address });
     await assertUserInfoClaim(before);
     const oldRequest = requestBody('old');
@@ -442,7 +474,9 @@ if (!backend) {
     expect(oldSignature.status).toBe(200);
     expect(await recoverMessageAddress({ message: oldRequest.message, signature: oldSignature.body.signature! })).toBe(accounts.old!.address);
     expect((await postPrimary('next')).status).toBe(200);
-    const after = await buildClaim({ id: userId }, scopes, { id: clientId }, prisma);
+    const after = await buildClaim({ id: userId }, scopes, {
+      id: clientId, type: 'web', public: false, tokenEndpointAuthMethod: 'client_secret_basic',
+    }, prisma);
     expect(after).toEqual({
       version: 'v1', keyId: 'next', address: accounts.next!.address, chainId: 1,
       did: `did:pkh:eip155:1:${accounts.next!.address}`,
@@ -515,6 +549,61 @@ if (!backend) {
     });
   });
 
+  test('a confidential identity-only authorization signs the reduced canonical claim in its ID token', async () => {
+    const identityScopes = ['openid', 'tinycloud:identity'];
+    const clientSecret = 'tc704-identity-only-client-secret';
+    await prisma.oauthClient.update({ where: { clientId }, data: {
+      clientSecret: new Bun.CryptoHasher('sha256').update(clientSecret).digest('base64url'),
+      scopes: identityScopes, grantTypes: ['authorization_code'],
+      tokenEndpointAuthMethod: 'client_secret_basic',
+    } });
+    await prisma.oauthConsent.update({ where: { id: 'consent' }, data: { scopes: identityScopes } });
+    const verifier = randomUUID() + randomUUID();
+    const callback = 'https://app.example.test/callback';
+    const query = new URLSearchParams({
+      client_id: clientId, response_type: 'code', redirect_uri: callback, scope: identityScopes.join(' '), state: randomUUID(),
+      code_challenge: new Bun.CryptoHasher('sha256').update(verifier).digest('base64url'),
+      code_challenge_method: 'S256',
+    });
+    const authorize = await auth.handler(new Request(`http://localhost:3000/api/auth/oauth2/authorize?${query}`, {
+      headers: { cookie },
+    }));
+    const location = authorize.headers.get('location');
+    expect(location, await authorize.text()).toStartWith(callback);
+    const code = new URL(location!).searchParams.get('code');
+    expect(code).toBeTruthy();
+
+    const token = await auth.handler(new Request('http://localhost:3000/api/auth/oauth2/token', {
+      method: 'POST',
+      headers: {
+        authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code', code: code!, code_verifier: verifier, redirect_uri: callback,
+      }),
+    }));
+    const tokens = await token.json() as { access_token: string; id_token: string };
+    expect(token.status).toBe(200);
+    const jwksResponse = await auth.handler(new Request('http://localhost:3000/api/auth/jwks'));
+    const jwks = createLocalJWKSet(await jwksResponse.json() as Parameters<typeof createLocalJWKSet>[0]);
+    const { payload } = await jwtVerify(tokens.id_token, jwks, {
+      audience: clientId, issuer: (await auth.$context).baseURL,
+    });
+    const primary = accounts.old!.address;
+    expect(payload['https://tinycloud.xyz/canonical_identity']).toEqual({
+      version: 'v1', address: primary, chainId: 1, did: `did:pkh:eip155:1:${primary}`,
+    });
+    const userinfo = await auth.handler(new Request('http://localhost:3000/api/auth/oauth2/userinfo', {
+      headers: { authorization: `Bearer ${tokens.access_token}` },
+    }));
+    expect(userinfo.status).toBe(200);
+    expect(await userinfo.json()).toMatchObject({
+      'https://tinycloud.xyz/canonical_identity': {
+        version: 'v1', address: primary, chainId: 1, did: `did:pkh:eip155:1:${primary}`,
+      },
+    });
+  });
   test.skipIf(backend !== 'postgres')('competing switches wait for the user lock and commit exactly one primary', async () => {
     const blocker = new Client({ connectionString });
     const inspector = new Client({ connectionString });

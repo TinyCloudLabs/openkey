@@ -24,6 +24,7 @@ export const SEVERITY_HINT: Record<PermissionSeverity, string> = {
 };
 
 export const FAMILY_LABEL: Record<CapabilityFamily, string> = {
+  courier: "Courier",
   "bootstrap-kv": "Key-value storage",
   "bootstrap-sql": "SQL database",
   "bootstrap-capabilities": "Capability metadata",
@@ -83,6 +84,18 @@ export const SENDER_HISTORY_STATEMENT =
  */
 export const FILES_FOR_YOU_STATEMENT =
   "Read and change files shared with you";
+
+/**
+ * Consent sentences of the three grants a feed connect step makes on the
+ * signer's own `applications` space (see feed-grant.ts), one per grant:
+ * SQL read, write and schema on the registry database, SQL read, write and
+ * schema on the per-agent card databases, and notifications on those
+ * databases. `schema` is the ability to create and edit tables, so the first
+ * two say "set up".
+ */
+export const FEED_REGISTRY_STATEMENT = "Set up and use the agent list in your Feed";
+export const FEED_CARDS_STATEMENT = "Set up and use all cards and answers in your Feed";
+export const FEED_NOTIFY_STATEMENT = "Get notified of changes in your TinyCloud One Feed";
 
 /**
  * Consent sentence of the `tinycloud.capabilities/read` grant: the requester

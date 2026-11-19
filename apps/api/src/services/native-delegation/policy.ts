@@ -9,6 +9,7 @@ import {
 
 const KV_ACTIONS = new Set(['get', 'put', 'list', 'del', 'metadata']);
 const SQL_ACTIONS = new Set(['read', 'write', 'schema']);
+const HOOK_ACTIONS = new Set(['subscribe']);
 const PATH_SEGMENT = /^[A-Za-z0-9._~@+=,:-]+$/;
 const APP_ID = /^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$/;
 const DNS_NAME = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/;
@@ -25,8 +26,16 @@ export interface NativeDelegationConfig {
   version: 1;
   appId: string;
   tinycloudHost: string;
-  kv: { paths: string[]; actions: string[] };
-  sql: { databases: string[]; actions: string[] } | null;
+  /** `root: true` also admits the whole applications-space KV (path `""`), as the web Home grant does. */
+  kv: { paths: string[]; actions: string[]; root?: true };
+  /**
+   * `databases`: exact databases under the appId. `prefixes`: `<appId>/<name>/`
+   * database prefixes. `foreignDatabases`: exact `<otherAppId>/<name>` databases,
+   * each named explicitly.
+   */
+  sql: { databases: string[]; actions: string[]; prefixes?: string[]; foreignDatabases?: string[] } | null;
+  /** Hook subscriptions, only on `sql/<database or prefix>` paths the SQL ceiling already holds. */
+  hooks?: { paths: string[]; actions: string[] };
   maxDelegationTtlSeconds: number;
   grantLifetimeSeconds: number;
   siweDomain?: string;
@@ -106,6 +115,15 @@ function sqlDatabase(path: string, appId: string): boolean {
   return PATH_SEGMENT.test(name) && name !== '.' && name !== '..';
 }
 
+/** An exact database in another app's folder: `<otherAppId>/<name>`, never a secrets root or this app's own. */
+function foreignSqlDatabase(path: string, appId: string): boolean {
+  const slash = path.indexOf('/');
+  if (slash <= 0) return false;
+  const owner = path.slice(0, slash);
+  return owner !== appId && owner.length <= 128 && APP_ID.test(owner) &&
+    !Object.hasOwn(TINYCLOUD_DENIED_PATH_ROOTS, owner.toLowerCase()) && sqlDatabase(path, owner);
+}
+
 /**
  * The only way a delegation ceiling is accepted. Enablement is limited to
  * enabled native public clients without a secret, and KV paths and SQL
@@ -124,7 +142,7 @@ export function validateNativeDelegationConfig(
   }
   if (client.disabled === true) reject('TinyCloud delegation cannot be enabled on a disabled client');
   const value = object(input, 'tinycloudNativeDelegation', [
-    'version', 'appId', 'tinycloudHost', 'kv', 'sql', 'maxDelegationTtlSeconds', 'grantLifetimeSeconds', 'siweDomain',
+    'version', 'appId', 'tinycloudHost', 'kv', 'sql', 'hooks', 'maxDelegationTtlSeconds', 'grantLifetimeSeconds', 'siweDomain',
   ]);
   if (value.version !== 1) reject('tinycloudNativeDelegation.version must be 1');
   if (typeof value.appId !== 'string' || value.appId.length > 128 || !APP_ID.test(value.appId) ||
@@ -134,19 +152,44 @@ export function validateNativeDelegationConfig(
   const appId = value.appId;
   const host = trustedHost(value.tinycloudHost, allowLocalHosts);
 
-  const kv = object(value.kv, 'kv', ['paths', 'actions']);
+  const kv = object(value.kv, 'kv', ['paths', 'actions', 'root']);
   const paths = strings(kv.paths, 'kv.paths');
   if (paths.some((path) => !kvPath(path, appId))) reject('kv.paths must be relative paths under the appId');
-  const parsedKv = { paths, actions: actions(kv.actions, 'kv.actions', KV_ACTIONS) };
+  if (kv.root !== undefined && kv.root !== true) reject('kv.root must be true when present');
+  const parsedKv: NativeDelegationConfig['kv'] = {
+    paths, actions: actions(kv.actions, 'kv.actions', KV_ACTIONS), ...(kv.root === true ? { root: true as const } : {}),
+  };
 
   let parsedSql: NativeDelegationConfig['sql'] = null;
   if (value.sql !== null && value.sql !== undefined) {
-    const sql = object(value.sql, 'sql', ['databases', 'actions']);
+    const sql = object(value.sql, 'sql', ['databases', 'actions', 'prefixes', 'foreignDatabases']);
     const databases = strings(sql.databases, 'sql.databases');
     if (databases.some((path) => !sqlDatabase(path, appId))) {
       reject('sql.databases must name exact databases under the appId');
     }
-    parsedSql = { databases, actions: actions(sql.actions, 'sql.actions', SQL_ACTIONS) };
+    const prefixes = sql.prefixes === undefined ? undefined : strings(sql.prefixes, 'sql.prefixes');
+    if (prefixes?.some((path) => !path.endsWith('/') || !sqlDatabase(path.slice(0, -1), appId))) {
+      reject('sql.prefixes must be <appId>/<name>/ database prefixes');
+    }
+    const foreignDatabases = sql.foreignDatabases === undefined ? undefined : strings(sql.foreignDatabases, 'sql.foreignDatabases');
+    if (foreignDatabases?.some((path) => !foreignSqlDatabase(path, appId))) {
+      reject('sql.foreignDatabases must name exact databases in another app folder');
+    }
+    parsedSql = {
+      databases, actions: actions(sql.actions, 'sql.actions', SQL_ACTIONS),
+      ...(prefixes ? { prefixes } : {}), ...(foreignDatabases ? { foreignDatabases } : {}),
+    };
+  }
+
+  let parsedHooks: NativeDelegationConfig['hooks'];
+  if (value.hooks !== undefined) {
+    const hooks = object(value.hooks, 'hooks', ['paths', 'actions']);
+    const hookPaths = strings(hooks.paths, 'hooks.paths');
+    const targets = parsedSql ? [...parsedSql.databases, ...(parsedSql.prefixes ?? []), ...(parsedSql.foreignDatabases ?? [])] : [];
+    if (hookPaths.some((path) => !path.startsWith('sql/') || !targets.includes(path.slice('sql/'.length)))) {
+      reject('hooks.paths must be sql/<database or prefix> already in the SQL ceiling');
+    }
+    parsedHooks = { paths: hookPaths, actions: actions(hooks.actions, 'hooks.actions', HOOK_ACTIONS) };
   }
   const maxDelegationTtlSeconds = seconds(
     value.maxDelegationTtlSeconds, 'maxDelegationTtlSeconds', 300, 86400, DEFAULT_MAX_DELEGATION_TTL_SECONDS,
@@ -159,6 +202,7 @@ export function validateNativeDelegationConfig(
   }
   return {
     version: 1, appId, tinycloudHost: host, kv: parsedKv, sql: parsedSql,
+    ...(parsedHooks ? { hooks: parsedHooks } : {}),
     maxDelegationTtlSeconds, grantLifetimeSeconds,
     ...(value.siweDomain === undefined ? {} : { siweDomain: value.siweDomain as string }),
   };

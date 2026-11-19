@@ -731,6 +731,7 @@ function buildGrants(
     const { family, displayLabel } = classifyRecapEntry({
       ...entry,
       signerAddress,
+      signerChainId: signer.chainId,
     });
     const severity = classifySeverityFromActions(family, entry.actions, {
       service: entry.service,

@@ -145,8 +145,8 @@ describe('POST /api/keys/:keyId/sign with key.block or key.unblock outside apps/
     expect(calls).toEqual([]);
   });
 
-  test('still signs decrypt on the same key', async () => {
-    const response = await sign({ message: siweWith({ [urn('/secrets/k')]: ['tinycloud.encryption/decrypt'] }) });
+  test('still signs decrypt on the same key once the owner decided on it', async () => {
+    const response = await sign({ message: siweWith({ [urn('/secrets/k')]: ['tinycloud.encryption/decrypt'] }), elevatedAcknowledged: true });
     expect(response.status).toBe(200);
     expect(calls).toEqual(['bootstrap', 'sign']);
   });
