@@ -5,7 +5,7 @@
   // line that says how long it lasts, and the renewal box, are in
   // approval-expiry-control.svelte; a screen puts this inside a fold of its own.
   import { EXPIRY_PRESETS, LEASE_PRESETS, MAX_LEASE_MS, expiryLimitNote, leaseLimitNote } from "$lib/approval-expiry";
-  import { formatAccessEnd } from "$lib/access-end";
+  import { formatLocalAccessEnd } from "$lib/access-end";
   import DurationChoice from "$lib/components/signing/duration-choice.svelte";
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
 
@@ -39,7 +39,7 @@
     <DurationChoice
       id="approval-expiry"
       legend="Expires after"
-      detail={endsAt ? formatAccessEnd(endsAt) : null}
+      detail={endsAt ? formatLocalAccessEnd(endsAt) : null}
       presets={EXPIRY_PRESETS}
       valueMs={shownMs}
       {maxMs}

@@ -4,7 +4,7 @@
 // accepts the current version. Runs in a child process, as the other full-API tests do.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
-import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -290,6 +290,230 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
       const { cookie } = await signedIn();
       const response = await send(cookie, 'POST', '/api/oauth/tinycloud/requests/no-such-request/deny', {});
       expect(await response.text()).not.toContain('terms_required');
+    });
+  });
+
+  // Leaving never requires agreeing: an account that hasn't accepted the current Terms can still delete itself,
+  // disconnect apps, stop renewals, revoke what it delegated, and deny what it is asked to approve.
+  describe('ways out', () => {
+    const send = (cookie: string, method: string, path: string, body?: unknown) => request(`${api}${path}`, {
+      method, ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+    }, cookie);
+    /** An account that accepted an earlier release, now asked to accept a new required one. */
+    async function behindNewTerms() {
+      release(VERSION);
+      const account = await signedIn();
+      expect((await accept(account.cookie)).status).toBe(200);
+      release('2026-12-15');
+      await expectTermsRequired(await send(account.cookie, 'GET', '/api/keys'));
+      return account;
+    }
+
+    test('the account can be deleted, with its email step-up', async () => {
+      const { cookie, userId, token } = await behindNewTerms();
+      const { id: sessionId } = await prisma.session.findFirstOrThrow({ where: { token } });
+      const { email } = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+      const { stepUpIdentifier } = await import('../services/email-otp-step-up');
+
+      // No mail service in this test: the send answers past the gate, and the code is the one it would store.
+      const sent = await send(cookie, 'POST', '/api/account/step-up/email-otp/send', { purpose: 'delete_account' });
+      expect(await sent.text()).not.toContain('terms_required');
+      await prisma.verification.deleteMany({ where: { identifier: stepUpIdentifier(sessionId, email, 'delete_account') } });
+      await prisma.verification.create({ data: {
+        id: randomUUID(), identifier: stepUpIdentifier(sessionId, email, 'delete_account'), value: '123456:0',
+        expiresAt: new Date(Date.now() + 300_000),
+      } });
+      const verified = await send(cookie, 'POST', '/api/account/step-up/email-otp/verify', { purpose: 'delete_account', code: '123456' });
+      expect(verified.status, await verified.clone().text()).toBe(200);
+
+      const deleted = await send(cookie, 'POST', '/api/account/delete', { confirmation: 'DELETE MY ACCOUNT' });
+      expect(deleted.status, await deleted.clone().text()).toBe(200);
+      expect(await prisma.user.findUnique({ where: { id: userId } })).toBeNull();
+    });
+
+    test('the passkey step-up answers past the gate', async () => {
+      const { cookie } = await behindNewTerms();
+      for (const path of ['/api/account/step-up/passkey/options', '/api/account/step-up/passkey/verify']) {
+        const response = await send(cookie, 'POST', path, {});
+        expect(response.status).not.toBe(401);
+        expect(await response.text()).not.toContain('terms_required');
+      }
+    });
+
+    type Consent = { id: string; clientId: string };
+    test.each([
+      ['a TinyCloud app', 'tinycloud:delegation', (consent: Consent) => `/api/account/tinycloud-apps/${consent.clientId}`],
+      ['an MCP app', 'tinycloud:mcp', (consent: Consent) => `/api/account/tinycloud-apps/mcp/${consent.id}`],
+      ['an identity app', 'tinycloud:identity', (consent: Consent) => `/api/account/tinycloud-apps/identity/${consent.id}`],
+    ])('%s can be disconnected', async (_name, scope, path) => {
+      const { cookie, userId } = await behindNewTerms();
+      const { clientId } = await register();
+      const consent = await prisma.oauthConsent.create({ data: { id: randomUUID(), userId, clientId, scopes: ['openid', scope] } });
+      const response = await send(cookie, 'DELETE', path(consent), { confirmation: 'DISCONNECT' });
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(await prisma.oauthConsent.findUnique({ where: { id: consent.id } })).toBeNull();
+    });
+
+    test('an OAuth consent can be denied; agreeing to it still cannot', async () => {
+      release(VERSION);
+      const { cookie } = await signedIn();
+      const { clientId, scope } = await register();
+      const oauthQuery = (await authorize(cookie, clientId, scope)).searchParams.toString();
+      const denied = await json(`${issuer}/oauth2/consent`, { accept: false, oauth_query: oauthQuery }, cookie);
+      expect(denied.status, await denied.clone().text()).toBe(200);
+      const back = new URL((await denied.json() as { url: string }).url);
+      expect(`${back.origin}${back.pathname}`).toBe(callback);
+      expect(back.searchParams.get('error')).toBe('access_denied');
+      expect(back.searchParams.get('code')).toBeNull();
+      await expectTermsRequired(await json(`${issuer}/oauth2/consent`, { accept: true, oauth_query: oauthQuery }, cookie));
+      await expectTermsRequired(await json(`${issuer}/oauth2/continue`, { accept: false, postLogin: true, oauth_query: oauthQuery }, cookie));
+    });
+
+    test('a consent body too large to read stays gated, denial or not', async () => {
+      release(VERSION);
+      const { cookie } = await signedIn();
+      const { clientId, scope } = await register();
+      const oauthQuery = (await authorize(cookie, clientId, scope)).searchParams.toString();
+      await expectTermsRequired(await json(`${issuer}/oauth2/consent`, { accept: false, oauth_query: oauthQuery, padding: 'x'.repeat(64 * 1024) }, cookie));
+    });
+
+    // Only deleting the account is a way out; the other step-up purposes manage the account.
+    test.each([
+      ['send', { purpose: 'link' }],
+      ['send', {}],
+      ['send', { purpose: 'passkey_register' }],
+      ['send', { purpose: 'passkey_remove' }],
+      ['verify', { purpose: 'link', code: '123456' }],
+      ['verify', { code: '123456' }],
+    ])('an email step-up to %s for anything but deleting the account stays gated (%j)', async (step, body) => {
+      const { cookie } = await behindNewTerms();
+      await expectTermsRequired(await send(cookie, 'POST', `/api/account/step-up/email-otp/${step}`, body));
+    });
+
+    test('an owner-revocation handoff can be claimed; a sign-in handoff cannot', async () => {
+      const { cookie } = await behindNewTerms();
+      const secret = () => randomBytes(32).toString('base64url');
+      const delivery = () => ({ handoffId: secret(), state: secret(), cancelSecret: secret() });
+      const revocation = {
+        transportVersion: 2,
+        request: {
+          kind: 'owner-revocation',
+          ownerDid: 'did:pkh:eip155:1:0x1111111111111111111111111111111111111111',
+          cid: 'bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgzz7nazxe',
+          nonce: randomUUID().replaceAll('-', ''),
+          expiresAt: new Date(Date.now() + 9 * 60_000).toISOString(),
+        },
+        delivery: delivery(),
+      };
+      const claimed = await send(cookie, 'POST', '/api/delegate/handoffs/claim', revocation);
+      expect(claimed.status, await claimed.clone().text()).toBe(201);
+
+      const signIn = { transportVersion: 2, request: { protocolVersion: 1, siwe: 'x', jwk: {}, host: 'https://node.example', sessionDid: 'did:key:z' }, delivery: delivery() };
+      await expectTermsRequired(await send(cookie, 'POST', '/api/delegate/handoffs/claim', signIn));
+    });
+
+    test.each([
+      ['stopping a renewal lease', 'POST', '/api/account/renewal-leases/no-such-lease/stop', {}],
+      ['revoking a Nostr signing grant', 'DELETE', '/api/keys/nostr/grants/no-such-grant', undefined],
+      ['preparing an owner revocation', 'POST', '/api/delegate/owner-revocation/prepare', {}],
+      ['signing an owner revocation', 'POST', '/api/delegate/owner-revocation/sign', {}],
+      ['cancelling a claimed handoff', 'POST', '/api/delegate/handoffs/cancel-claimed', {}],
+      ['denying an approval request', 'POST', '/api/approval-requests/no-such-request/deny', {}],
+      ['denying a device sign-in', 'POST', '/api/device-authorizations/no-such-transaction/deny', {}],
+    ])('%s answers past the gate', async (_name, method, path, body) => {
+      const { cookie } = await behindNewTerms();
+      const response = await send(cookie, method, path, body);
+      expect(response.status).not.toBe(401);
+      expect(await response.text()).not.toContain('terms_required');
+    });
+  });
+
+  // What an account already handed out stops working for it, and nothing extends it, until it accepts.
+  describe('access granted before the gate', () => {
+    const sign = (headers: Record<string, string>) => request(`${api}/api/delegate/sign`, {
+      method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: '{}',
+    });
+
+    test('an app\'s OAuth token no longer signs, until the account accepts', async () => {
+      release(VERSION);
+      const { cookie, userId } = await signedIn();
+      const clientId = `terms-signer-${randomUUID()}`;
+      await prisma.oauthClient.create({ data: {
+        id: clientId, clientId, name: 'Terms signer', type: 'web', public: false, tokenEndpointAuthMethod: 'client_secret_basic',
+        grantTypes: ['authorization_code'], responseTypes: ['code'], scopes: ['openid', 'email', 'tinycloud:manage-key'],
+      } });
+      await prisma.oauthConsent.create({ data: { id: randomUUID(), userId, clientId, scopes: ['openid', 'email', 'tinycloud:manage-key'] } });
+      const bearer = `terms-signer-token-${randomUUID()}`;
+      await prisma.oauthAccessToken.create({ data: {
+        id: randomUUID(), token: createHash('sha256').update(bearer).digest('base64url'), clientId, userId,
+        scopes: ['tinycloud:manage-key'], createdAt: new Date(), expiresAt: new Date(Date.now() + 300_000),
+      } });
+
+      const refused = await sign({ authorization: `Bearer ${bearer}` });
+      expect(refused.status, await refused.clone().text()).toBe(403);
+      expect(await refused.json()).toMatchObject({ approved: false, code: 'terms_required' });
+
+      expect((await accept(cookie)).status).toBe(200);
+      expect(await (await sign({ authorization: `Bearer ${bearer}` })).text()).not.toContain('terms_required');
+    });
+
+    test('signing in the browser answers terms_required, so the page can send the account to the Terms', async () => {
+      release(VERSION);
+      const { cookie } = await signedIn();
+      await expectTermsRequired(await sign({ cookie, origin: web }));
+      expect((await accept(cookie)).status).toBe(200);
+      expect(await (await sign({ cookie, origin: web })).text()).not.toContain('terms_required');
+    });
+
+    test('a refused MCP refresh leaves the web session as it was', async () => {
+      release(null);
+      const { cookie, userId } = await signedIn();
+      const resource = 'https://mcp.tinycloud.xyz/mcp';
+      const scope = 'openid email offline_access tinycloud:mcp';
+      const { clientId } = await register(scope);
+      const query = new URLSearchParams({
+        client_id: clientId, response_type: 'code', redirect_uri: callback, scope, resource, state: 'state',
+        code_challenge: await generateCodeChallenge(verifier), code_challenge_method: 'S256',
+      });
+      const consentUrl = new URL((await request(`${issuer}/oauth2/authorize?${query}`, {}, cookie)).headers.get('location')!, issuer);
+      const approve = await json(`${issuer}/oauth2/consent`, { accept: true, oauth_query: consentUrl.searchParams.toString() }, cookie);
+      const code = new URL((await approve.json() as { url: string }).url).searchParams.get('code')!;
+      const exchanged = await form('/oauth2/token', {
+        client_id: clientId, grant_type: 'authorization_code', code, redirect_uri: callback, code_verifier: verifier, resource,
+      });
+      expect(exchanged.status, await exchanged.clone().text()).toBe(200);
+      const { refresh_token } = await exchanged.json() as { refresh_token: string };
+
+      release(VERSION);
+      const session = await prisma.session.findFirstOrThrow({ where: { userId } });
+      const expiresAt = new Date(Date.now() + 3_600_000);
+      await prisma.session.update({ where: { id: session.id }, data: { expiresAt } });
+      const refused = await form('/oauth2/token', { client_id: clientId, grant_type: 'refresh_token', refresh_token, resource });
+      expect(refused.status).toBe(400);
+      expect(await refused.json()).toMatchObject({ error: 'invalid_grant', terms_url: TERMS_URL });
+      expect((await prisma.session.findUniqueOrThrow({ where: { id: session.id } })).expiresAt).toEqual(expiresAt);
+    });
+
+    test('an acceptance is recorded only from the browser, never with a session token', async () => {
+      release(VERSION);
+      const { token, userId } = await signedIn();
+      const response = await request(`${api}/api/account/terms/accept`, {
+        method: 'POST', headers: { authorization: `Bearer ${token}`, origin: web, 'content-type': 'application/json' },
+        body: JSON.stringify({ version: VERSION }),
+      });
+      expect(response.status).toBe(403);
+      expect(await rows(userId)).toEqual([]);
+    });
+
+    test('an acceptance cannot be deleted while its account exists, and goes with the account', async () => {
+      release(VERSION);
+      const { cookie, userId } = await signedIn();
+      await accept(cookie);
+      const [row] = await rows(userId);
+      expect(await prisma.termsAcceptance.delete({ where: { id: row!.id } }).then(() => 'deleted', () => 'refused')).toBe('refused');
+      expect(await rows(userId)).toEqual([row!]);
+      await prisma.user.delete({ where: { id: userId } });
+      expect(await rows(userId)).toEqual([]);
     });
   });
 

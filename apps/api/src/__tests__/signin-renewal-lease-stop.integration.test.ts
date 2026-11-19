@@ -194,26 +194,26 @@ if (process.env.OPENKEY_SIGNIN_STOP_CI_CHILD !== '1') {
     expect(settled.leaseAuthorization).toBeNull();
   });
 
-  test('signing out of the session that signed in stops it; signing out another, others or everywhere stops theirs', async () => {
+  test('no way of signing out stops a sign-in lease: this session, a named one, other sessions or everywhere; each answers as before', async () => {
     const owner = await account();
     const [here, there, elsewhere] = [await owner.session(), await owner.session(), await owner.session()];
     const hereLease = await signInLease(owner, here.id);
     const thereLease = await signInLease(owner, there.id);
     const elsewhereLease = await signInLease(owner, elsewhere.id);
 
-    expect((await call(here.cookie, '/api/auth/revoke-session', 'POST', { token: there.token })).status).toBe(200);
-    expect([await stopped(hereLease), await stopped(thereLease), await stopped(elsewhereLease)]).toEqual([false, true, false]);
-    expect((await call(here.cookie, '/api/auth/revoke-other-sessions', 'POST')).status).toBe(200);
-    expect([await stopped(hereLease), await stopped(elsewhereLease)]).toEqual([false, true]);
+    const named = await call(here.cookie, '/api/auth/revoke-session', 'POST', { token: there.token });
+    expect([named.status, await named.json()]).toEqual([200, { status: true }]);
+    const others = await call(here.cookie, '/api/auth/revoke-other-sessions', 'POST');
+    expect([others.status, await others.json()]).toEqual([200, { status: true }]);
     const signedOut = await call(here.cookie, '/api/auth/sign-out', 'POST');
-    expect(await signedOut.json()).toMatchObject({ success: true, renewalLeases: { stopped: 1, notStopped: 0 } });
-    expect(await stopped(hereLease)).toBe(true);
+    expect([signedOut.status, await signedOut.json()]).toEqual([200, { success: true }]);
 
     const second = await account();
     const one = await second.session();
     const leases = [await signInLease(second, one.id), await signInLease(second, (await second.session()).id), await signInLease(second, null)];
-    expect((await call(one.cookie, '/api/auth/revoke-sessions', 'POST')).status).toBe(200);
-    expect(await Promise.all(leases.map(stopped))).toEqual([true, true, true]);
+    const everywhere = await call(one.cookie, '/api/auth/revoke-sessions', 'POST');
+    expect([everywhere.status, await everywhere.json()]).toEqual([200, { status: true }]);
+    expect(await Promise.all([hereLease, thereLease, elsewhereLease, ...leases].map(stopped))).toEqual(Array(6).fill(false));
   });
 
   test('deleting the account stops it first, then deletes', async () => {
