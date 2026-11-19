@@ -156,11 +156,16 @@ import {
   type ApprovalBinding,
 } from '../services/approval-passkey';
 
-/** TC-3442: a passkey on an authorize-sign approval confirms this authorization context and these exact bytes. */
-function authorizeSignPasskeyBinding(authorizationContextToken: string, keyAddress: string, signedMessage: string): ApprovalBinding {
+/**
+ * TC-3442: a passkey on an authorize-sign approval confirms this authorization context, these exact bytes and the
+ * preview-approval token, which seals everything else the approval acts on (selection, elevated choices, renewal).
+ */
+function authorizeSignPasskeyBinding(
+  authorizationContextToken: string, previewApprovalToken: string, keyAddress: string, signedMessage: string,
+): ApprovalBinding {
   return {
     purpose: 'authorize_sign',
-    requestDigest: approvalRequestDigest(authorizationContextToken, keyAddress.toLowerCase(), signedMessage),
+    requestDigest: approvalRequestDigest(authorizationContextToken, previewApprovalToken, keyAddress.toLowerCase(), signedMessage),
   };
 }
 
@@ -3700,7 +3705,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
     const passkeyRefusal = await checkApprovalPasskey(
       prisma,
       { userId: user.id, sessionId: c.get('session')?.id ?? null },
-      authorizeSignPasskeyBinding(body.authorizationContextToken, boundAddress, signedMessage),
+      authorizeSignPasskeyBinding(body.authorizationContextToken, body.previewApprovalToken!, boundAddress, signedMessage),
       messageApprovalSensitivity(signedMessage, boundAddress),
       body.passkeyAssertion,
     );
@@ -4114,7 +4119,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     : await approvalPasskeyOffer(
       prisma,
       { userId: user.id, sessionId: c.get('session')?.id ?? null },
-      authorizeSignPasskeyBinding(body.authorizationContextToken!, ensureEip55(bound.keyAddress), preparedSignedMessage),
+      authorizeSignPasskeyBinding(body.authorizationContextToken!, previewApproval.token, ensureEip55(bound.keyAddress), preparedSignedMessage),
       messageApprovalSensitivity(preparedSignedMessage, bound.keyAddress),
     );
 

@@ -363,7 +363,7 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
   });
 
   describe('POST /api/delegate/authorize-sign', () => {
-    async function preview(owner: Account) {
+    async function prepareContext(owner: Account) {
       const { prepareSession } = await import('@tinycloud/node-sdk-wasm');
       const jwk = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
       const sessionJwk = { kty: 'OKP', crv: 'Ed25519', x: jwk.x };
@@ -374,13 +374,14 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
         expirationTime: new Date(now.getTime() + 3_600_000).toISOString(), spaceId, jwk: sessionJwk,
         abilities: { kv: { [spaceId]: ['tinycloud.kv/get'] }, capabilities: { [spaceId]: ['tinycloud.capabilities/read'] } },
       } as Parameters<typeof prepareSession>[0]);
-      const auth = { cookie: owner.cookie };
-      const prepared = await post('/api/delegate/authorize-sign-prepare', auth,
+      const prepared = await post('/api/delegate/authorize-sign-prepare', { cookie: owner.cookie },
         { keyId: owner.keyId, siwe, jwk: sessionJwk, host: 'https://node.example.test', requestOrigin: web });
       expect(prepared.status, await prepared.clone().text()).toBe(200);
-      const { authorizationContextToken, allowedActionIds } = await prepared.json() as
-        { authorizationContextToken: string; allowedActionIds: string[] };
-      const previewed = await post('/api/delegate/authorize-sign-preview', auth,
+      return await prepared.json() as { authorizationContextToken: string; allowedActionIds: string[] };
+    }
+    async function previewOf(owner: Account, context: { authorizationContextToken: string; allowedActionIds: string[] }) {
+      const { authorizationContextToken, allowedActionIds } = context;
+      const previewed = await post('/api/delegate/authorize-sign-preview', { cookie: owner.cookie },
         { authorizationContextToken, selectedActionIds: allowedActionIds });
       expect(previewed.status, await previewed.clone().text()).toBe(200);
       const body = await previewed.json() as { previewApprovalToken: string; signedMessage: string; passkey: Offer };
@@ -393,6 +394,7 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
         signedMessage: body.signedMessage,
       };
     }
+    const preview = async (owner: Account) => previewOf(owner, await prepareContext(owner));
 
     test('the preview carries the challenge for its bytes; Approve without it spends nothing, and with it signs', async () => {
       const owner = await account();
@@ -412,6 +414,25 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
       const signed = await post('/api/delegate/authorize-sign', auth, { ...first.approval, passkeyAssertion: assertion });
       expect(signed.status, await signed.clone().text()).toBe(200);
       expect(await signed.json()).toMatchObject({ signedMessage: first.signedMessage });
+    });
+
+    test('a passkey confirms one preview: a re-preview of the same request needs its own', async () => {
+      const owner = await account();
+      const passkey = await createSoftPasskey(prisma, owner.userId, true, web);
+      await prisma.user.update({ where: { id: owner.userId }, data: { passkeyApprovalMode: 'ALWAYS' } });
+      const auth = { cookie: owner.cookie };
+      const context = await prepareContext(owner);
+      const first = await previewOf(owner, context);
+      const again = await previewOf(owner, context);
+      if (!first.passkey.required || !again.passkey.required) throw new Error('ALWAYS asks for every approval');
+      expect(again.signedMessage).toBe(first.signedMessage);
+
+      const forFirst = { challengeToken: first.passkey.challengeToken, response: passkey.assert(first.passkey.options) };
+      await expectRefusal(await post('/api/delegate/authorize-sign', auth, { ...again.approval, passkeyAssertion: forFirst }),
+        'passkey_approval_invalid');
+      const forAgain = { challengeToken: again.passkey.challengeToken, response: passkey.assert(again.passkey.options) };
+      const signed = await post('/api/delegate/authorize-sign', auth, { ...again.approval, passkeyAssertion: forAgain });
+      expect(signed.status, await signed.clone().text()).toBe(200);
     });
 
     test('SENSITIVE signs standard access without asking', async () => {
