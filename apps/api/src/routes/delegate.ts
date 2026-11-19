@@ -1660,7 +1660,7 @@ delegateRouter.post('/', async (c) => {
       assertBaselineSubset(preparedEntries, baseline);
       assertRequiredActions(preparedEntries, baseline);
     } catch (e) {
-      return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
+      return c.json(delegateErrorResponse(e, 'Invalid delegation', 'invalid_permissions'), 400);
     }
 
     // Sol MAJOR-5: derive the EXACT set of action IDs encoded in the
@@ -2049,7 +2049,7 @@ delegateRouter.post('/prepare', async (c) => {
   });
 
   if (!key) {
-    return c.json({ error: 'Key not found' }, 404);
+    return c.json({ error: 'Key not found', code: 'key_not_found' }, 404);
   }
 
   const address = ensureEip55(key.address);
@@ -2345,7 +2345,7 @@ delegateRouter.post('/complete', async (c) => {
     assertBaselineSubset(entries, baseline);
     assertRequiredActions(entries, baseline);
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
+    return c.json(delegateErrorResponse(e, 'Invalid delegation', 'invalid_permissions'), 400);
   }
 
   const preparedAddress = signedFields.address;
