@@ -24,7 +24,7 @@ const backend = process.env.OPENKEY_RENEWAL_STOP_BACKEND === 'postgres' ? 'postg
 
 if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
   for (const engine of ['pglite', 'postgres'] as const) {
-    test.skipIf(engine === 'postgres' && !postgresUrl)(`renewal leases: dashboard stop, sign-out scopes, deletion and wallet stops (${engine})`, async () => {
+    test.skipIf(engine === 'postgres' && !postgresUrl)(`renewal leases: dashboard stop, sign-out keeps them, deletion and wallet stops (${engine})`, async () => {
       const child = Bun.spawn([process.execPath, 'test', import.meta.path], {
         cwd: root,
         env: {
@@ -282,54 +282,98 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     expect(await stopped(otherLease)).toBe(false);
   });
 
-  test('signing out stops this session\'s leases; other sessions stops all but this one\'s; everywhere stops all', async () => {
+  test('no way of signing out stops an approved permission\'s lease: this session, a named one, other sessions or everywhere; each answers as before', async () => {
     const owner = await account();
     const [here, there, elsewhere] = [await owner.session(), await owner.session(), await owner.session()];
-    const hereLease = await lease(owner, here.id);
-    const thereLease = await lease(owner, there.id);
-    const orphanLease = await lease(owner, randomUUID());
-    const elsewhereLease = await lease(owner, elsewhere.id);
+    const leases = [await lease(owner, here.id), await lease(owner, there.id), await lease(owner, elsewhere.id), await lease(owner, null), await lease(owner, randomUUID())];
+    const revocationsBefore = nodes.ok.revocations;
 
+    const named = await call(here.cookie, '/api/auth/revoke-session', 'POST', { token: there.token });
+    expect([named.status, await named.json()]).toEqual([200, { status: true }]);
     const others = await call(here.cookie, '/api/auth/revoke-other-sessions', 'POST');
-    expect(others.status).toBe(200);
-    expect(await others.json()).toEqual({ status: true, renewalLeases: { stopped: 3, notStopped: 0, walletRequired: 0 } });
-    expect([await stopped(hereLease), await stopped(thereLease), await stopped(orphanLease), await stopped(elsewhereLease)]).toEqual([false, true, true, true]);
-
+    expect([others.status, await others.json()]).toEqual([200, { status: true }]);
     const signedOut = await call(here.cookie, '/api/auth/sign-out', 'POST');
-    expect(signedOut.status).toBe(200);
-    expect(await signedOut.json()).toMatchObject({ success: true, renewalLeases: { stopped: 1, notStopped: 0 } });
-    expect(await stopped(hereLease)).toBe(true);
+    expect([signedOut.status, await signedOut.json()]).toEqual([200, { success: true }]);
+    expect(await prisma.session.count({ where: { userId: owner.userId } })).toBe(0);
 
-    // Signing out one named session stops only its leases.
     const second = await account();
-    const [one, two] = [await second.session(), await second.session()];
-    const oneLease = await lease(second, one.id);
-    const twoLease = await lease(second, two.id);
-    const named = await call(one.cookie, '/api/auth/revoke-session', 'POST', { token: two.token });
-    expect(named.status).toBe(200);
-    expect([await stopped(oneLease), await stopped(twoLease)]).toEqual([false, true]);
+    const one = await second.session();
+    const secondLeases = [await lease(second, one.id), await lease(second, (await second.session()).id), await lease(second, null)];
+    const everywhere = await call(one.cookie, '/api/auth/revoke-sessions', 'POST');
+    expect([everywhere.status, await everywhere.json()]).toEqual([200, { status: true }]);
+    expect(await prisma.session.count({ where: { userId: second.userId } })).toBe(0);
 
-    const third = await account();
-    const three = await third.session();
-    const leases = [await lease(third, three.id), await lease(third, (await third.session()).id), await lease(third, null)];
-    const everywhere = await call(three.cookie, '/api/auth/revoke-sessions', 'POST');
-    expect(everywhere.status).toBe(200);
-    expect(await Promise.all(leases.map(stopped))).toEqual([true, true, true]);
+    // Every lease is still live and renewing: none was revoked, and the node was never asked.
+    expect(await Promise.all([...leases, ...secondLeases].map(stopped))).toEqual(Array(8).fill(false));
+    expect(await prisma.renewalLease.count({ where: { leaseCid: { in: [...leases, ...secondLeases] }, revokedAt: null, neverAdmittedAt: null } })).toBe(8);
+    expect(nodes.ok.revocations).toBe(revocationsBefore);
+
+    // Signed in again, the owner still sees every lease and stops them in Settings.
+    const back = await owner.session();
+    const listed = await (await call(back.cookie, '/api/account/renewal-leases', 'GET')).json() as { leases: Array<{ leaseCid: string }> };
+    expect(listed.leases.map((row) => row.leaseCid).sort()).toEqual([...leases].sort());
+    for (const leaseCid of leases) expect((await call(back.cookie, `/api/account/renewal-leases/${leaseCid}/stop`, 'POST', {})).status).toBe(200);
+    expect(await Promise.all(leases.map(stopped))).toEqual(Array(5).fill(true));
   });
 
-  test('sign-out goes ahead when a lease stays on, and says so; a sign-out with no leases answers as before', async () => {
+  test('an app signing its session out stops only that session\'s sign-in lease; ending sessions from elsewhere stops none', async () => {
     const owner = await account();
-    const here = await owner.session();
-    const leaseCid = await lease(owner, here.id, 'down');
-    const signedOut = await call(here.cookie, '/api/auth/sign-out', 'POST');
-    expect(signedOut.status).toBe(200);
-    expect(await signedOut.json()).toMatchObject({ success: true, renewalLeases: { stopped: 0, notStopped: 1, walletRequired: 0 } });
-    expect(await prisma.session.count({ where: { id: here.id } })).toBe(0);
-    expect(await stopped(leaseCid)).toBe(false);
+    const [app, other] = [await owner.session(), await owner.session()];
+    const appSignIn = await lease(owner, app.id, 'ok', 3_600_000, false, false);
+    // Reserved at sign-in, admission not yet confirmed: replayed, then revoked.
+    const appReserved = await lease(owner, app.id, 'ok', 3_600_000, true, false);
+    const appApproved = await lease(owner, app.id);
+    const otherSignIn = await lease(owner, other.id, 'ok', 3_600_000, false, false);
+    const unrecorded = await lease(owner, null, 'ok', 3_600_000, false, false);
+    const revocationsBefore = nodes.ok.revocations;
 
-    const plain = await (await account()).session();
-    const quiet = await call(plain.cookie, '/api/auth/sign-out', 'POST');
-    expect(await quiet.json()).toEqual({ success: true });
+    const signedOut = await call(app.cookie, '/api/auth/sign-out', 'POST');
+    expect([signedOut.status, await signedOut.json()]).toEqual([200, { success: true }]);
+    expect(await Promise.all([appSignIn, appReserved, appApproved, otherSignIn, unrecorded].map(stopped))).toEqual([true, true, false, false, false]);
+    expect(nodes.ok.revocations - revocationsBefore).toBe(2);
+
+    // Ending the other session from a third one, or every session, stops no sign-in lease.
+    const third = await owner.session();
+    expect((await call(third.cookie, '/api/auth/revoke-session', 'POST', { token: other.token })).status).toBe(200);
+    expect((await call(third.cookie, '/api/auth/revoke-sessions', 'POST')).status).toBe(200);
+    expect(await Promise.all([otherSignIn, unrecorded, appApproved].map(stopped))).toEqual([false, false, false]);
+    expect(nodes.ok.revocations - revocationsBefore).toBe(2);
+  });
+
+  test('the dashboard signing out leaves an embedded app session\'s sign-in lease on; that session\'s own sign-out stops it', async () => {
+    const owner = await account();
+    const [dashboard, embedded] = [await owner.session(), await owner.session()];
+    const embeddedSignIn = await lease(owner, embedded.id, 'ok', 3_600_000, false, false);
+    const embeddedApproved = await lease(owner, embedded.id);
+    const revocationsBefore = nodes.ok.revocations;
+
+    // The dashboard signs out with the browser's cookie session.
+    const dashboardOut = await call(dashboard.cookie, '/api/auth/sign-out', 'POST');
+    expect([dashboardOut.status, await dashboardOut.json()]).toEqual([200, { success: true }]);
+    expect(await Promise.all([embeddedSignIn, embeddedApproved].map(stopped))).toEqual([false, false]);
+    expect(nodes.ok.revocations).toBe(revocationsBefore);
+
+    // The app's embedded frame signs its own session out with its bearer token, no cookie.
+    const embeddedOut = await app.fetch(new Request('https://api.openkey.test/api/auth/sign-out', {
+      method: 'POST', headers: { authorization: `Bearer ${embedded.token}`, origin: ORIGIN },
+    }));
+    expect([embeddedOut.status, await embeddedOut.json()]).toEqual([200, { success: true }]);
+    expect(await prisma.session.count({ where: { id: embedded.id } })).toBe(0);
+    expect(await Promise.all([embeddedSignIn, embeddedApproved].map(stopped))).toEqual([true, false]);
+    expect(nodes.ok.revocations - revocationsBefore).toBe(1);
+  });
+
+  test('an app\'s sign-out answers as before when its sign-in lease can\'t be stopped; the lease stays listed', async () => {
+    const owner = await account();
+    const app = await owner.session();
+    const appSignIn = await lease(owner, app.id, 'down', 3_600_000, false, false);
+    const signedOut = await call(app.cookie, '/api/auth/sign-out', 'POST');
+    expect([signedOut.status, await signedOut.json()]).toEqual([200, { success: true }]);
+    expect(await prisma.session.count({ where: { id: app.id } })).toBe(0);
+    expect(await stopped(appSignIn)).toBe(false);
+    const back = await owner.session();
+    const listed = await (await call(back.cookie, '/api/account/renewal-leases', 'GET')).json() as { leases: Array<{ leaseCid: string }> };
+    expect(listed.leases.map((row) => row.leaseCid)).toEqual([appSignIn]);
   });
 
   test('deletion stops every lease first; until every one is confirmed nothing is deleted', async () => {
@@ -463,46 +507,28 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(0);
   });
 
-  test('sign-out ends the session even when stopping its leases fails, and the leases stay on for the next attempt', async () => {
+  test('after the owner signed out, account deletion still stops every lease, sign-in leases included, before anything goes', async () => {
+    const { writeStepUpMarker } = await import('../services/email-otp-step-up');
     const owner = await account();
-    const here = await owner.session();
-    const leaseCid = await lease(owner, here.id);
-    // Break the key lookup that stopping a lease needs, as a database failure would.
-    await prisma.$executeRawUnsafe('ALTER TABLE "ethereum_keys" RENAME COLUMN "address" TO "address_unavailable"');
-    let signedOut: Response;
-    try {
-      signedOut = await call(here.cookie, '/api/auth/sign-out', 'POST');
-    } finally {
-      await prisma.$executeRawUnsafe('ALTER TABLE "ethereum_keys" RENAME COLUMN "address_unavailable" TO "address"');
-    }
-    expect(signedOut.status).toBe(200);
-    expect(await signedOut.json()).toMatchObject({ success: true, renewalLeases: { stopped: 0, notStopped: 1 } });
-    expect(await prisma.session.count({ where: { id: here.id } })).toBe(0);
-    expect(await stopped(leaseCid)).toBe(false);
-  });
+    const signedOut = await owner.session();
+    const leases = [
+      await lease(owner, signedOut.id),
+      // A sign-in lease: no approval request produced it.
+      await lease(owner, null, 'ok', 3_600_000, false, false),
+      // Reserved at sign-in, admission never confirmed.
+      await lease(owner, null, 'ok', 3_600_000, true, false),
+    ];
+    expect((await call(signedOut.cookie, '/api/auth/sign-out', 'POST')).status).toBe(200);
+    expect(await Promise.all(leases.map(stopped))).toEqual([false, false, false]);
 
-  test('sign-out answers within its budget while a slow node is still being asked; stopping finishes afterwards', async () => {
-    const owner = await account();
     const here = await owner.session();
-    const leaseCid = await lease(owner, here.id, 'slow', 3_600_000, true);
-    nodes.slow.delayMs = 2_500;
-    let signedOut: Response;
-    let seconds: number;
-    try {
-      const started = Date.now();
-      signedOut = await call(here.cookie, '/api/auth/sign-out', 'POST');
-      seconds = (Date.now() - started) / 1000;
-      expect(signedOut.status).toBe(200);
-      expect(seconds).toBeLessThan(4.5);
-      expect(await signedOut.json()).toMatchObject({ success: true, renewalLeases: { stopped: 0, notStopped: 1 } });
-      expect(await prisma.session.count({ where: { id: here.id } })).toBe(0);
-      // The replay and the revocation (2.5 s each) complete after the answer, and settle the lease.
-      for (let attempt = 0; attempt < 40 && !await stopped(leaseCid); attempt++) await delay(250);
-      expect(await stopped(leaseCid)).toBe(true);
-    } finally {
-      nodes.slow.delayMs = 0;
-    }
-  }, 30_000);
+    await writeStepUpMarker(prisma, 'delete_account', here.id, 'email');
+    const revocationsBefore = nodes.ok.revocations;
+    const deleted = await call(here.cookie, '/api/account/delete', 'POST', { confirmation: 'DELETE MY ACCOUNT' });
+    expect(deleted.status).toBe(200);
+    expect(nodes.ok.revocations - revocationsBefore).toBe(3);
+    expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(0);
+  });
 
   test('a bare 403 from something in front of the node never settles a lease as never admitted', async () => {
     const owner = await account();
@@ -663,37 +689,6 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     expect(result.savedStep).not.toContain(result.signedLease);
     expect(result.savedStepAfter).not.toContain(result.signedLease);
   }, 30_000);
-
-  test.skipIf(backend !== 'postgres')('sign-out never waits behind another request holding the account (a slow deletion): the session ends, the leases stay on', async () => {
-    const { writeStepUpMarker } = await import('../services/email-otp-step-up');
-    const owner = await account();
-    const here = await owner.session();
-    const other = await owner.session();
-    await writeStepUpMarker(prisma, 'delete_account', other.id, 'email');
-    // Three unconfirmed leases on a node that answers only after 6 s: deletion's settle holds the user lock for a long time.
-    const leases = [await lease(owner, here.id, 'slow', 3_600_000, true), await lease(owner, null, 'slow', 3_600_000, true), await lease(owner, null, 'slow', 3_600_000, true)];
-    nodes.slow.delayMs = 6_000;
-    let signOut: Response;
-    let seconds: number;
-    let deleting: Promise<Response> | undefined;
-    try {
-      deleting = Promise.resolve(call(other.cookie, '/api/account/delete', 'POST', { confirmation: 'DELETE MY ACCOUNT' }));
-      await delay(500);
-      const started = Date.now();
-      signOut = await call(here.cookie, '/api/auth/sign-out', 'POST');
-      seconds = (Date.now() - started) / 1000;
-    } finally {
-      await deleting;
-      nodes.slow.delayMs = 0;
-    }
-    expect(signOut.status).toBe(200);
-    // Well inside the sign-out's 3 s answer budget: it gives up on the busy lock at once instead of waiting.
-    expect(seconds).toBeLessThan(2);
-    expect(await signOut.json()).toMatchObject({ success: true, renewalLeases: { stopped: 0 } });
-    expect(await prisma.session.count({ where: { id: here.id } })).toBe(0);
-    // The node never answered in time, so none of them was settled: all still on, for the next attempt.
-    expect(await prisma.renewalLease.count({ where: { leaseCid: { in: leases }, revokedAt: null, neverAdmittedAt: null } })).toBe(3);
-  }, 120_000);
 
   test.skipIf(backend !== 'postgres')('an approval confirming a lease while it is being settled is never overwritten as never admitted', async () => {
     const { createPrismaApprovalRequestStore } = await import('../services/approval-request-store');

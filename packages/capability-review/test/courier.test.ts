@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseCapabilityReview, buildSummaryStatements } from "../src/index.js";
+import { parseCapabilityReview, buildSummaryStatements, sensitiveSummaryCount } from "../src/index.js";
 import { makeRecapResource, siweWithResources } from "./fixtures/index.js";
 import { courierContext, courierMessage, courierSpace, courierTuples } from "./fixtures/courier.js";
 
@@ -70,5 +70,27 @@ describe("Courier capability review", () => {
     expect(model.permissions.filter(grant => grant.family === "courier")).toHaveLength(8);
     expect(model.permissions.find(grant => grant.family === "unknown")?.severity).toBe("sensitive");
     expect(buildSummaryStatements(model.permissions).some(row => row.severity === "sensitive")).toBe(true);
+  });
+  test("every Sensitive Courier grant keeps its Sensitive summary row, and the header count matches", () => {
+    const model = parseCapabilityReview(courierContext());
+    for (const suffix of ["to/", "me/peers/", "me/mirror/", "me/"]) {
+      const grant = model.permissions.find(candidate => candidate.path === `xyz.tinycloud.courier/${suffix}`);
+      expect(grant).toBeDefined();
+      const rows = buildSummaryStatements(grant ? [grant] : []);
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every(row => row.severity === "sensitive")).toBe(true);
+    }
+    const rows = buildSummaryStatements(model.permissions);
+    expect(sensitiveSummaryCount(rows)).toBe(rows.filter(row => row.severity === "sensitive").length);
+    expect(sensitiveSummaryCount(rows)).toBeGreaterThanOrEqual(4);
+  });
+  test("Courier rows follow the request's own order, as every other app's do", () => {
+    const reversed = [...courierTuples].reverse();
+    const model = parseCapabilityReview(courierContext(courierMessage(reversed)));
+    const expected: string[] = [];
+    for (const grant of model.permissions) {
+      for (const row of buildSummaryStatements([grant])) if (!expected.includes(row.key)) expected.push(row.key);
+    }
+    expect(buildSummaryStatements(model.permissions).map(row => row.key)).toEqual(expected);
   });
 });

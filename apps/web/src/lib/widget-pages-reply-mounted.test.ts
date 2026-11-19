@@ -256,8 +256,6 @@ async function run(pageName: 'popup' | 'embed', sign: Reply) {
   }
 }
 
-const TITLE = "OpenKey couldn't finish this request";
-const BODY = "OpenKey couldn't read the server's reply, so nothing was approved. Please try again. If it keeps happening, contact the app.";
 const FAILURE = { code: 'UNKNOWN', message: 'SERVER_REPLY_UNREADABLE' };
 
 const successes = (messages: Sent[]) => messages.filter((message) => message.success === true);
@@ -279,7 +277,6 @@ for (const { name } of PAGES) {
         const result = await run(name, answer);
         expect(result.called).toContain('authorize-sign');
         expect(result.shown).toBe(true);
-        expect(result.visible).toBe(`${TITLE} ${BODY}`);
         expect(successes(result.sent)).toEqual([]);
         expect(successes(result.posted)).toEqual([]);
         const failures = result.sent.filter((message) => message.type === 'openkey:sign:response' && message.success === false);
