@@ -279,9 +279,9 @@
     <p class="m-0 mb-2.5 text-[11.5px] font-semibold tracking-[0.09em] text-surface-500 uppercase">{REVOKE_REVIEW.eyebrow}</p>
     <h1 class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950">{REVOKE_REVIEW.heading}</h1>
     {#if error}
-      <div role="alert" class="mt-0.5 mb-3.5 grid grid-cols-[16px_1fr] gap-[9px] rounded-[11px] border border-red-line bg-red-wash px-3 py-[9px] text-[13.5px] leading-[1.45] text-[#7a1a12]">
+      <div class="mt-0.5 mb-3.5 grid grid-cols-[16px_1fr] gap-[9px] rounded-[11px] border border-red-line bg-red-wash px-3 py-[9px] text-[13.5px] leading-[1.45] text-[#7a1a12]">
         <Icon name="alert" class="mt-0.5 h-4 w-4" />
-        <span>{error}</span>
+        <span role="alert">{error}</span>
       </div>
     {/if}
     {#if !key}
