@@ -7,7 +7,7 @@
 // ReCap cannot be read exactly is refused.
 
 import { elevatedKindOf } from '@openkey/capability-review';
-import { isAppsKeyResource, isKeyDeleteAbility, keyPathOfAnyResource, KEY_RESOURCE_PREFIX, parseKeyResource } from './key-resource';
+import { isAppsKeyResource, isEncryptionResource, isKeyDeleteAbility, keyPathOfAnyResource, parseKeyResource } from './key-resource';
 import { decodeHexUtf8, isSiweShaped } from './siwe-origin';
 
 export type AppKeyRefusalReason =
@@ -203,7 +203,7 @@ function isKeyBlockAbility(ability: string): boolean {
 export function blockResourcesOutsideApps(siwe: string): Array<[string, string[]]> {
   return (recapResources(siwe) ?? []).filter(
     ([resource, abilities]) =>
-      resource.slice(0, KEY_RESOURCE_PREFIX.length).toLowerCase() === KEY_RESOURCE_PREFIX &&
+      isEncryptionResource(resource) &&
       !isAppsKeyResource(resource) &&
       abilities.some(isKeyBlockAbility),
   );

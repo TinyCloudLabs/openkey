@@ -6,7 +6,7 @@
 import { describe, expect, test } from 'bun:test';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { parsePreparedRecap, prepareDelegationSession } from '../routes/delegate-session';
-import { appKeyRefusalForMessage, appKeyRefusalForSiwe, exactShareKeyRefusal } from '../services/app-key-refusal';
+import { appKeyRefusalForMessage, appKeyRefusalForSiwe, blockResourcesOutsideApps, exactShareKeyRefusal } from '../services/app-key-refusal';
 import { isAppsKeyResource, isEncryptionResource, keyPathOfAnyResource, parseKeyResource } from '../services/key-resource';
 
 const ADDRESS = '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed';
@@ -216,5 +216,22 @@ test('the share-key check recognises both encryption resource forms', () => {
   }
   for (const service of ['kv', 'sql']) {
     expect(exactShareKeyRefusal(withResource(`${SPACE}/${service}/share/TestKey`, DECRYPT))).toBeNull();
+  }
+});
+
+test('the key block check recognises both forms outside app keys', () => {
+  for (const resource of [
+    `urn:tinycloud:encryption:${OWNER}:default`,
+    `${SPACE}/encryption`,
+    `${SPACE}/encryption/shared/`,
+    `${SPACE}/TINYCLOUD.EnCrYpTiOn/shared/TestKey`,
+  ]) {
+    for (const verb of ['key.block', 'key.unblock']) {
+      const ability = `tinycloud.encryption/${verb}`;
+      expect(blockResourcesOutsideApps(withResource(resource, ability))).toEqual([[resource, [ability]]]);
+    }
+  }
+  for (const resource of [`${SPACE}/encryption/apps/a/key`, `${SPACE}/kv/shared/key`, `${SPACE}/sql/shared/key`]) {
+    expect(blockResourcesOutsideApps(withResource(resource, 'tinycloud.encryption/key.block'))).toEqual([]);
   }
 });
