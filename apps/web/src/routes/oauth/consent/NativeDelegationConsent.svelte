@@ -3,6 +3,7 @@
   import { safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
   import { daysOverTwoDays, formatDuration, formatEndDay } from '$lib/approval-expiry';
   import { formatLocalAccessEnd } from '$lib/access-end';
+  import { isTermsRequired, sendToTerms } from '$lib/terms';
   import NativeShell from '$lib/components/auth/native-shell.svelte';
   import { nativeAccessSummary } from '$lib/native-access';
   import {
@@ -47,6 +48,7 @@
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const data = await response.json().catch(() => ({}));
+    if (isTermsRequired(response.status, data)) sendToTerms();
     if (!response.ok) throw new Error(data.error_description ?? data.error ?? `${action} failed (${response.status})`);
     return data;
   }
