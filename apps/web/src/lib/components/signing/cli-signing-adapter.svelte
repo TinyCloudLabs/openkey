@@ -96,8 +96,10 @@
   {context}
   expiryMs={transport.expiry?.chosenMs ?? null}
   onExpiryChange={transport.expiry?.onChange}
+  onceExpiryDefault={transport.expiry?.onceDefault ?? false}
   expiryBounded={transport.expiry?.bounded ?? false}
   expiryMaxMs={transport.expiry?.maxMs ?? null}
+  renewal={transport.renewal ?? null}
   {showSigner}
   {onApprove}
   {onCancel}

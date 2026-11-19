@@ -30,6 +30,7 @@ function fixture(codeStore?: ApprovalCodeStore) {
     async admit() { throw new Error('not used in read/ACK regression'); },
     async release() { throw new Error('not used in read/ACK regression'); },
     async approve() { throw new Error('not used in read/ACK regression'); },
+    async saveRenewal() { throw new Error('not used in read/ACK regression'); },
     async acknowledge(ref, ackId, now) {
       if (ref !== record.resultRef || record.resultExpiresAt! <= now || (record.ackId && record.ackId !== ackId)) return null;
       record.ackId = ackId; record.acknowledgedAt ??= now; record.encryptedResult = null;

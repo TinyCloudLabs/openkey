@@ -5,14 +5,15 @@
 //
 // A revocation keeps the OpenKey account, its keys and the Apple link (D5): it
 // wipes the stored Apple tokens and ends every OpenKey session, native grant and
-// OAuth token the user holds. Delegations already issued stay valid until their
-// own signed expiry.
+// OAuth token the user holds, then stops the user's renewal leases. Delegations
+// already issued stay valid until their own signed expiry.
 
 import { createRemoteJWKSet, errors as joseErrors, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import type { Context } from 'hono';
 import type { PrismaClient } from '@openkey/db';
 import { configuredSocialProviderIds } from '../social-providers';
 import { log, logError } from '../log';
+import { stopRenewalLeasesBestEffort, type LeaseRevocationDatabase } from './renewal-lease-revocation';
 
 export const APPLE_NOTIFICATION_ISSUER = 'https://appleid.apple.com';
 const APPLE_KEYS_URL = new URL('https://appleid.apple.com/auth/keys');
@@ -38,7 +39,7 @@ export type AppleNotification = {
 export type AppleNotificationOutcome =
   | 'duplicate' | 'unknown_subject' | 'ignored_type' | 'stale_revocation' | 'revoked' | 'email_updated' | 'email_ignored';
 
-type ProcessDatabase = Pick<PrismaClient, '$transaction'>;
+type ProcessDatabase = LeaseRevocationDatabase;
 type Transaction = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
 
 /** The primary App ID notifications are addressed to, or null while the endpoint is off. */
@@ -166,7 +167,7 @@ export async function appleRelayEmailUndeliverable(
 
 type LockedAccount = EmailState & { id: string; userId: string; appleRestoredAt: Date | null };
 
-async function applyEvent(tx: Transaction, event: AppleNotification, now: Date): Promise<AppleNotificationOutcome> {
+async function applyEvent(tx: Transaction, event: AppleNotification, now: Date, revoked: (userId: string) => void): Promise<AppleNotificationOutcome> {
   const linked = await tx.account.findUnique({
     where: { providerId_accountId: { providerId: 'apple', accountId: event.sub } },
     select: { userId: true },
@@ -203,24 +204,32 @@ async function applyEvent(tx: Transaction, event: AppleNotification, now: Date):
     },
   });
   await revokeUserAccess(tx, account.userId, event.type === 'account-deleted' ? 'apple_account_deleted' : 'apple_consent_revoked', now);
+  revoked(account.userId);
   return 'revoked';
 }
 
-/** Applies one verified notification exactly once; the `jti` row commits with its effects. */
+/**
+ * Applies one verified notification exactly once; the `jti` row commits with its effects. A revocation then stops
+ * the user's renewal leases, after the commit (the node calls take the user lock this transaction held), best effort:
+ * a lease the node doesn't confirm stopped stays recorded, so the next stop or deletion sends it again.
+ */
 export async function processAppleNotification(
   database: ProcessDatabase, event: AppleNotification, now = new Date(),
 ): Promise<AppleNotificationOutcome> {
-  return database.$transaction(async (tx) => {
+  let revokedUserId: string | undefined;
+  const outcome = await database.$transaction(async (tx) => {
     await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
     const recorded = await tx.appleNotification.createMany({
       data: [{ jti: event.jti, eventType: event.rawType, eventTime: new Date(event.eventTimeMs), outcome: 'pending' }],
       skipDuplicates: true,
     });
     if (recorded.count !== 1) return 'duplicate';
-    const outcome = await applyEvent(tx, event, now);
-    await tx.appleNotification.update({ where: { jti: event.jti }, data: { outcome } });
-    return outcome;
+    const applied = await applyEvent(tx, event, now, (userId) => { revokedUserId = userId; });
+    await tx.appleNotification.update({ where: { jti: event.jti }, data: { outcome: applied } });
+    return applied;
   }, { timeout: 15_000 });
+  if (outcome === 'revoked' && revokedUserId) await stopRenewalLeasesBestEffort(database, revokedUserId, { kind: 'all' });
+  return outcome;
 }
 
 export type AppleWebhookOptions = {
