@@ -18,11 +18,11 @@ import {
 const ORIGIN = 'https://openkey.so';
 const callback = (query: string) => parseSocialCallback(new URL(`${ORIGIN}/auth/social/callback?${query}`));
 
-function fetchReturning(status: number, body: unknown) {
+function fetchReturning(status: number, body: unknown, headers: Record<string, string> = {}) {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const impl = (async (url: string, init?: RequestInit) => {
     calls.push({ url, init });
-    return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+    return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
   }) as unknown as typeof fetch;
   return { impl, calls };
 }
@@ -146,14 +146,14 @@ describe('loadSocialContinuation', () => {
 
 describe('confirmSocialContinuation', () => {
   test('returns the session token and posts the bound native query', async () => {
-    const { impl, calls } = fetchReturning(200, { token: 'session-1', user: {} });
-    expect(await confirmSocialContinuation({ token: 'tok', provider: 'apple', oauthQuery: 'client_id=exo' }, impl)).toBe('session-1');
+    const { impl, calls } = fetchReturning(200, { token: 'raw', user: {} }, { 'set-auth-token': 'session-1.sig' });
+    expect(await confirmSocialContinuation({ token: 'tok', provider: 'apple', oauthQuery: 'client_id=exo' }, impl)).toBe('session-1.sig');
     expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ continuation: 'tok', oauthQuery: 'client_id=exo' });
     expect(calls[0]!.init?.method).toBe('POST');
   });
 
   test('the web confirm sends no oauthQuery', async () => {
-    const { impl, calls } = fetchReturning(200, { token: 'session-1' });
+    const { impl, calls } = fetchReturning(200, { token: 'raw' }, { 'set-auth-token': 'session-1.sig' });
     await confirmSocialContinuation({ token: 'tok', provider: 'apple' }, impl);
     expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ continuation: 'tok' });
   });
@@ -169,6 +169,11 @@ describe('confirmSocialContinuation', () => {
 
   test('a 200 without a token is not a session', async () => {
     const { impl } = fetchReturning(200, {});
+    await expect(confirmSocialContinuation({ token: 'tok', provider: 'google' }, impl)).rejects.toThrow('Start Google sign-in again');
+  });
+
+  test('a session token in the body without the set-auth-token header is not a session', async () => {
+    const { impl } = fetchReturning(200, { token: 'raw-session', user: {} });
     await expect(confirmSocialContinuation({ token: 'tok', provider: 'google' }, impl)).rejects.toThrow('Start Google sign-in again');
   });
 });

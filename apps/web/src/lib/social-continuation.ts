@@ -170,7 +170,8 @@ export async function confirmSocialContinuation(
     throw new Error('Could not reach OpenKey. Check your connection and try again.');
   }
   const body = await response.json().catch(() => null) as Record<string, unknown> | null;
-  if (response.ok && typeof body?.token === 'string' && body.token) return body.token;
+  const sessionToken = response.headers.get('set-auth-token');
+  if (response.ok && sessionToken) return sessionToken;
   const name = socialProviderName(input.provider);
   if (body?.code === 'ACCOUNT_ALREADY_EXISTS') {
     throw new Error(`An OpenKey account already uses this email. Sign in to it, then add ${name} in Settings.`);

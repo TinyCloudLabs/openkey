@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mockModules } from './mock-module';
 
+// The route captures this client when it loads; tests fill it in per case.
+const emptyDatabase = () => ({ $queryRaw: async () => [] });
+const routeDatabase: Record<string, unknown> = emptyDatabase();
 await mockModules({
-  '@openkey/db': () => ({ createPrismaClient: () => ({ $queryRaw: async () => [] }) }),
+  '@openkey/db': () => ({ createPrismaClient: () => routeDatabase }),
 });
 
-const { countAppUsers, countProtocolUsers, exclusionsFromEnv, fetchNodeOwners, resetScoreboardRateLimitForTests, scoreboardMetricsRouter } = await import(
+const { countAppUsers, countProtocolUsers, fetchNodeOwners, resetScoreboardRateLimitForTests, scoreboardMetricsRouter } = await import(
   '../routes/scoreboard-metrics?tc1483' as string
 );
 
@@ -85,13 +88,8 @@ test('app users: excluded accounts and excluded OAuth clients are removed', asyn
   expect(result).toEqual({ total: 2, active7d: 2 });
 });
 
-test('exclusion lists come from config', () => {
-  const { userIds, clientIds } = exclusionsFromEnv({ SCOREBOARD_EXCLUDE_USER_IDS: ' a, b ,,', SCOREBOARD_EXCLUDE_CLIENT_IDS: 'c' });
-  expect([...userIds]).toEqual(['a', 'b']);
-  expect([...clientIds]).toEqual(['c']);
-});
 
-const envKeys = ['OPENKEY_METRICS_READ_TOKEN', 'INTERNAL_METRICS_TOKEN', 'NODE_STATS_URL', 'NODE_STATS_READ_TOKEN'] as const;
+const envKeys = ['SCOREBOARD_EXCLUSIONS', 'SCOREBOARD_EXCLUDE_CLIENT_IDS', 'OPENKEY_METRICS_READ_TOKEN', 'INTERNAL_METRICS_TOKEN', 'NODE_STATS_URL', 'NODE_STATS_READ_TOKEN'] as const;
 const savedEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
 const realFetch = globalThis.fetch;
 beforeEach(() => {
@@ -105,6 +103,8 @@ afterEach(() => {
     if (savedEnv[key] === undefined) delete process.env[key]; else process.env[key] = savedEnv[key];
   }
   globalThis.fetch = realFetch;
+  for (const key of Object.keys(routeDatabase)) delete routeDatabase[key];
+  Object.assign(routeDatabase, emptyDatabase());
 });
 
 const getProtocolUsers = () => scoreboardMetricsRouter.request('/protocol-users', { headers: { Authorization: 'Bearer read-token' } });
@@ -234,4 +234,55 @@ test('protocol-users is capped at 30 calls a minute per process (429), and each 
   expect(audit[31]).toMatchObject({ status: 429 });
   expect(lines.join('')).not.toContain('00000000000000000000000000000000000000aa');
   expect(lines.join('')).not.toContain('read-token');
+});
+
+const accounts = [
+  { id: 'u1', email: 'one@example.com', ethereumKeys: [] },
+  { id: 'u2', email: 'two@example.com', ethereumKeys: [] },
+  { id: 'qa', email: 'qa@example.org', ethereumKeys: [] },
+];
+const useRouteDatabase = (db: ReturnType<typeof database>) =>
+  Object.assign(routeDatabase, db, { user: { findMany: async () => accounts } });
+
+test('app-users route: the configured exclusions drop the excluded account and client from the count', async () => {
+  process.env.SCOREBOARD_EXCLUSIONS = JSON.stringify([{ kind: 'email', value: 'QA@example.org' }]);
+  process.env.SCOREBOARD_EXCLUDE_CLIENT_IDS = 'qa-client';
+  useRouteDatabase(database({
+    access: [{ userId: 'u1', clientId: 'real', createdAt: daysAgo(1) }, { userId: 'u2', clientId: 'qa-client', createdAt: daysAgo(1) }],
+    signIn: [{ userId: 'qa', day: daysAgo(1) }, { userId: 'u1', day: daysAgo(1) }],
+  }));
+  const res = await scoreboardMetricsRouter.request('/app-users', { headers: { Authorization: 'Bearer read-token' } });
+  expect(res.status).toBe(200);
+  // u1, u2 and qa touched the app; qa is excluded by email and u2 only used the excluded client.
+  expect(await res.json()).toMatchObject({ total: 1 });
+});
+
+test('protocol-users route: the configured exclusions drop the excluded account from the count', async () => {
+  process.env.SCOREBOARD_EXCLUSIONS = JSON.stringify([{ kind: 'email', value: 'qa@example.org' }]);
+  const keys = [
+    { userId: 'u1', address: '0x0000000000000000000000000000000000000001' },
+    { userId: 'qa', address: '0x0000000000000000000000000000000000000002' },
+  ];
+  useRouteDatabase(database({}, keys));
+  stubNode(() => Response.json({ owners: keys.map((key) => key.address) }));
+  const res = await getProtocolUsers();
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ count: 1 }); // two owners, one excluded
+});
+
+test('the scoreboard routes fail closed, without echoing the list, when the exclusions are invalid', async () => {
+  process.env.SCOREBOARD_EXCLUSIONS = JSON.stringify([{ kind: 'email', value: 'leaky-value' }]);
+  useRouteDatabase(database({}));
+  stubNode(() => Response.json({ owners: [] }));
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    for (const path of ['/app-users', '/protocol-users']) {
+      const res = await scoreboardMetricsRouter.request(path, { headers: { Authorization: 'Bearer read-token' } });
+      expect(res.status).toBe(500);
+      expect(await res.text()).not.toContain('leaky-value');
+    }
+  } finally {
+    console.error = quiet;
+  }
 });
