@@ -32,6 +32,12 @@ export const LOADER = {
   },
 } as const;
 
+/** The starting window and its upper limit on a signed approval request. */
+export const APPROVAL_EXPIRY = {
+  onceStart: '1 hour is the most for a request that includes secrets or decryption.',
+  shortenLimit: 'This approval can last up to {duration}.',
+} as const;
+
 export const CLOSE_TAB = 'Close this tab';
 export const TAB_KEPT_OPEN = 'Your browser kept this tab open. Close it from your browser.';
 
