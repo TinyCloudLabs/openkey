@@ -302,14 +302,6 @@ export const STOPS = {
     buttons: [],
     support: statusAndReply,
   },
-  /** With nothing ticked. */
-  nothingTicked: {
-    placement: 'inline',
-    title: '',
-    body: 'Tick at least one permission. With nothing ticked there is nothing to approve.',
-    buttons: [],
-    support: null,
-  },
 } as const satisfies Record<string, Stop | InlineLines>;
 
 export type StopId = keyof typeof STOPS;

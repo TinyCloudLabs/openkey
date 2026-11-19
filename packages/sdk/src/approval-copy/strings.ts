@@ -161,7 +161,6 @@ export const CODE = {
 export const DEVICE = {
   eyebrow: 'Sign-in request from a device',
   headingCode: 'Does your terminal show this code?',
-  codeLabel: 'Code {first}, {second}',
   asksLabel: 'What it asks for',
   yesSignedOut: 'Yes, it matches. Sign in to review',
   yesSignedIn: 'Yes, it matches. Review the request',
