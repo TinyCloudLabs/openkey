@@ -96,10 +96,18 @@
         loadArchivedKeys();
         loadAutoSignPreference();
         loadTinyCloudManageKeyPreference();
-        loadRenewalLeases();
+        loadRenewalLeases().then(showRenewalLeasesFromLink);
       }
     }
   });
+
+  // The dashboard's "Stop renewals" link opens this page at Renewing permissions. The card renders only once
+  // the leases have loaded, after the browser looked for the anchor, so scroll to it then.
+  async function showRenewalLeasesFromLink() {
+    if (window.location.hash !== '#renewing-permissions' || !renewalLeasesShown) return;
+    await tick();
+    document.getElementById('renewing-permissions')?.scrollIntoView();
+  }
 
   async function loadRenewalLeases() {
     renewalLeasesError = '';

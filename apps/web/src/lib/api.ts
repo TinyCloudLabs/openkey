@@ -354,7 +354,8 @@ export const api = {
   },
 
   async listRenewalLeases(): Promise<{ leases: RenewalLease[] }> {
-    return fetchAPI('/api/account/renewal-leases', {}, true);
+    // A read, so an embedded frame (the in-app sign-out confirm) may send its token.
+    return fetchAPI('/api/account/renewal-leases');
   },
   /**
    * Stop one lease. `{ walletMessage }` when an external wallet must sign the stop: call again with
