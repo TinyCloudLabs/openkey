@@ -8,7 +8,6 @@ import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 const keyAddress = '0x1111111111111111111111111111111111111111';
 const otherAddress = '0x2222222222222222222222222222222222222222';
 const KV_GET = 'tinycloud.kv/get';
-const GENERIC = "OpenKey can't approve this kind of access. The app or command needs to ask for something different.";
 const SERVER_MESSAGE = 'Requested spaces must belong to the signing account <b id="injected">bold</b>';
 
 const json = (route: Route, status: number, body: unknown) =>
@@ -43,34 +42,28 @@ async function openDelegate(page: Page, owner: string) {
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}&permissions=${encodeBase64UrlJson({ permissions })}`);
 }
 
-test('a refusal at key selection shows a closed Details with the server message', async ({ page }) => {
-  await mockApi(page);
+test('a refusal at key selection shows the server message as plain text', async ({ page }) => {
+  const prepares: string[] = [];
+  await mockApi(page, prepares);
   await openDelegate(page, keyAddress);
-  await page.getByRole('button', { name: /Main/ }).first().click();
 
-  const alert = page.getByRole('alert').filter({ hasText: GENERIC });
-  await expect(alert).toBeVisible();
-  const details = page.locator('details.error-detail');
-  await expect(details).toHaveCount(1);
-  await expect(details.locator('summary')).toHaveText('Details');
-  expect(await details.evaluate((el: HTMLDetailsElement) => el.open)).toBe(false);
-  // The disclosure sits directly under the error line.
-  expect(await alert.evaluate((el) => el.nextElementSibling?.matches('details.error-detail'))).toBe(true);
-
-  await details.locator('summary').click();
-  await expect(details.locator('p')).toContainText('Requested spaces must belong to the signing account');
+  const stop = page.getByTestId('stop-page');
+  await expect(stop.getByRole('heading', { name: 'The app’s request has a mistake in it' })).toBeVisible();
+  const details = stop.getByText('What OpenKey found', { exact: true }).locator('..');
+  await expect(details).toContainText('Requested spaces must belong to the signing account');
   await expect(details.locator('#injected')).toHaveCount(0);
-  await expect(details.locator('p')).toContainText('<b id="injected">bold</b>');
+  await expect(details).toContainText('<b id="injected">bold</b>');
+  expect(prepares).toEqual(['/api/delegate/prepare']);
   await page.screenshot({ path: '/var/tmp/shot-details-keyselect.png' });
 });
 
-test('a key for another wallet cannot be chosen, so no refusal or Details appears', async ({ page }) => {
+test('a request for another wallet stops before key selection', async ({ page }) => {
   const prepares: string[] = [];
   await mockApi(page, prepares);
   await openDelegate(page, otherAddress);
 
-  await expect(page.getByRole('button', { name: /Main/ }).first()).toBeDisabled();
+  await expect(page.getByRole('heading', { name: 'This request is for a wallet this account doesn’t have' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Main/ })).toHaveCount(0);
   expect(prepares).toEqual([]);
-  await expect(page.getByText(GENERIC)).toHaveCount(0);
-  await expect(page.locator('details.error-detail')).toHaveCount(0);
+  await expect(page.getByText('What OpenKey found', { exact: true })).toHaveCount(0);
 });

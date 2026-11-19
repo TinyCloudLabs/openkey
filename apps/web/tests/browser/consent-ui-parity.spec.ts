@@ -251,9 +251,9 @@ test('a prepare fetch failure uses fixed text, not the browser error message', a
   await mock(page);
   await page.route('**/api/delegate/prepare', (route) => route.abort('failed'));
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}&permissions=${encodeBase64UrlJson({ permissions: request, reason: 'Sync my notes' })}`);
-  const alert = page.getByRole('alert');
-  await expect(alert).toHaveText("Couldn't approve this request. Try again.");
-  await expect(alert).not.toContainText('Failed to fetch');
+  const stop = page.getByTestId('stop-page');
+  await expect(stop.getByRole('heading', { name: 'The approval didn’t go through' })).toBeVisible();
+  await expect(stop).not.toContainText('Failed to fetch');
   const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
   if (shots) await page.screenshot({ path: `${shots}/g-generic.png`, fullPage: false });
 });
@@ -266,13 +266,13 @@ test('expiry failure uses the editable expiry wording', async ({ page }) => {
   await expect(approve).toBeEnabled();
   await expect(page.getByTestId('approval-expiry-line')).toBeVisible();
   await approve.click();
-  await expect(page.getByRole('alert')).toHaveText("This access length can't be used. Choose a different one, or start again from the app or command.");
+  await expect(page.getByRole('alert')).toHaveText("This access length can’t be used. Choose a different one, or start again from the app or command.");
   await expect(approve).toBeEnabled();
   const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
   if (shots) await page.screenshot({ path: `${shots}/e.png`, fullPage: false });
 });
 
-test('a successful prepare after a terminal failure re-enables Approve', async ({ page }) => {
+test('a terminal key failure replaces the review controls', async ({ page }) => {
   await mock(page);
   await page.route('**/api/delegate/prepare', (route) => json(route, 200, prepared));
   await page.route('**/api/delegate', (route) => json(route, 400, { code: 'key-mismatch', error: 'private mismatch detail' }));
@@ -280,12 +280,10 @@ test('a successful prepare after a terminal failure re-enables Approve', async (
   const approve = page.getByRole('button', { name: 'Approve', exact: true });
   await expect(approve).toBeEnabled();
   await approve.click();
-  await expect(approve).toBeDisabled();
-  await expect(page.getByTestId('approval-expiry-line')).toBeVisible();
-  await page.getByText('Advanced details', { exact: true }).click();
-  await page.getByText('How long it lasts').click();
-  await page.getByRole('button', { name: '24 hours', exact: true }).click();
-  await expect(approve).toBeEnabled();
+  await expect(page.getByRole('heading', { name: 'The key changed partway through' })).toBeVisible();
+  await expect(approve).toHaveCount(0);
+  await expect(page.getByTestId('approval-expiry-line')).toHaveCount(0);
+  await expect(page.getByText('Advanced details', { exact: true })).toHaveCount(0);
 });
 
 
@@ -325,7 +323,7 @@ test('device relay failure shows only safe status and code and keeps Approve ava
   if (shots) await page.screenshot({ path: `${shots}/f-device-delivery.png`, fullPage: false });
 });
 
-test('device relay uses status only for the API error body and a later 410 uses ended copy', async ({ page }) => {
+test('device relay shows the safe API code and a later 410 stops approval', async ({ page }) => {
   await openDeviceRelayReview(page, {
     relayStatus: 500,
     relayBody: { error: 'invalid_result', errorDescription: 'private route message' },
@@ -333,12 +331,11 @@ test('device relay uses status only for the API error body and a later 410 uses 
   });
   const approve = page.getByRole('button', { name: 'Approve', exact: true });
   await approve.click();
-  await expect(page.getByRole('alert')).toHaveText("You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again. (Error 500)");
-  await expect(page.getByRole('alert')).not.toContainText('invalid_result');
+  await expect(page.getByRole('alert')).toHaveText("You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again. (Error 500 · invalid_result)");
   await expect(page.getByRole('alert')).not.toContainText('private route message');
   await expect(approve).toBeEnabled();
   await approve.click();
-  await expect(page.getByRole('alert')).toHaveText('This request has already been answered or has ended. Return to the app or command and start a new one.');
+  await expect(page.getByRole('heading', { name: 'This request was already answered' })).toBeVisible();
 });
 
 test('device relay network failure has no status suffix', async ({ page }) => {
@@ -408,8 +405,10 @@ async function openDeviceLinkDelegate(page: Page, options: { linkExpiry: string;
   return { events, prepares };
 }
 
-async function expectNoApproval(page: Page, prepares: unknown[]) {
-  await expect(page.getByRole('alert')).toBeVisible();
+async function expectNoApproval(page: Page, prepares: unknown[], heading: string, action: string) {
+  const stop = page.getByTestId('stop-page');
+  await expect(stop.getByRole('heading', { name: heading })).toBeVisible();
+  await expect(stop.getByText(action, { exact: true })).toBeVisible();
   await page.waitForTimeout(500);
   expect(prepares).toEqual([]);
   const approve = page.getByRole('button', { name: 'Approve', exact: true });
@@ -431,11 +430,11 @@ test.describe('TC-2984 device-link lifetime on /delegate', () => {
 
   test('a link longer than the request maximum never reaches prepare', async ({ page }) => {
     const { prepares } = await openDeviceLinkDelegate(page, { linkExpiry: '604801s' });
-    await expectNoApproval(page, prepares);
+    await expectNoApproval(page, prepares, 'This link doesn’t match the code request', 'Enter the code');
   });
 
   test('a failed verification never reaches prepare', async ({ page }) => {
     const { prepares } = await openDeviceLinkDelegate(page, { linkExpiry: '604800s', lookupStatus: 503 });
-    await expectNoApproval(page, prepares);
+    await expectNoApproval(page, prepares, 'The approval didn’t go through', 'Try again');
   });
 });

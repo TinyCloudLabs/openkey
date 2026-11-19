@@ -218,8 +218,8 @@
         retry = undefined;
       }, 300_000);
     } catch (cause) {
-      clearPending();
       stop = approvalStop(encoded ? 'S1' : 'S3');
+      clearPending();
     } finally {
       initialized = true;
     }

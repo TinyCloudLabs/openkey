@@ -36,8 +36,7 @@ function prepared() {
   };
 }
 
-const BUSY = 'This request is already being approved. Wait a moment.';
-const ENDED = 'This request has already been answered or has ended. Return to the app or command and start a new one.';
+const BUSY = 'This request is already being approved. Another tab or a second click got there first. Wait a moment, then press Approve again.';
 
 /** Answers the page's calls. `delegate` answers the POST /api/delegate (Approve). */
 async function serve(page: Page, options: { delegate?: { status: number; body: unknown } } = {}) {
@@ -90,28 +89,30 @@ test.describe('Approve on the approval-request review page', () => {
   test('a 410 with expired_request shows the ended wording, not the server text', async ({ page }) => {
     await openReview(page, { delegate: { status: 410, body: { code: 'expired_request', error: 'Approval request is no longer pending' } } });
     await approve(page).click();
-    await expect(page.getByRole('alert')).toHaveText(ENDED);
+    await expect(page.getByRole('heading', { name: /request expired$/i })).toBeVisible();
+    await expect(approve(page)).toHaveCount(0);
     await expect(page.getByText('Approval request is no longer pending')).toHaveCount(0);
   });
 
   test('other statuses show the safe fallback line, not the server text', async ({ page }) => {
     await openReview(page, { delegate: { status: 500, body: { error: 'delegation service unavailable' } } });
     await approve(page).click();
-    await expect(page.getByRole('alert')).toHaveText('Couldn\'t approve this request. Try again. (Error 500)');
+    await expect(page.getByRole('heading', { name: 'The approval didn’t go through' })).toBeVisible();
+    await expect(page.locator('[data-support-line]')).toHaveText('HTTP 500');
     await expect(page.getByText('delegation service unavailable')).toHaveCount(0);
   });
   for (const [name, delegate, message, image] of [
-    ['ended', { status: 400, body: { code: 'handoff_expired', error: 'private ended detail' } }, ENDED, 'b.png'],
-    ['changed', { status: 400, body: { code: 'immutable-fields-changed', error: 'private mismatch detail' } }, "This request changed after you opened it, so OpenKey didn't approve it. Return to the app or command and start again.", 'c.png'],
+    ['ended', { status: 400, body: { code: 'handoff_expired', error: 'private ended detail' } }, 'This request was already answered', 'b.png'],
+    ['changed', { status: 400, body: { code: 'immutable-fields-changed', error: 'private mismatch detail' } }, 'The request changed while you were reading it', 'c.png'],
   ] as const) {
-    test(`${name} failures disable Approve but preserve Decline and Back`, async ({ page }) => {
+    test(`${name} failures replace the review controls`, async ({ page }) => {
       await page.setViewportSize({ width: 390, height: 844 });
       await openReview(page, { delegate });
       await approve(page).click();
-      await expect(page.getByRole('alert')).toHaveText(message);
-      await expect(approve(page)).toBeDisabled();
-      await expect(page.getByTestId('signing-decline')).toBeEnabled();
-      await expect(page.getByTestId('signing-dismiss')).toBeEnabled();
+      await expect(page.getByRole('heading', { name: message })).toBeVisible();
+      await expect(approve(page)).toHaveCount(0);
+      await expect(page.getByTestId('signing-decline')).toHaveCount(0);
+      await expect(page.getByTestId('signing-dismiss')).toHaveCount(0);
       const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
       if (shots) await page.screenshot({ path: `${shots}/${image}`, fullPage: false });
     });
@@ -134,19 +135,19 @@ test.describe('Approve on the approval-request review page', () => {
     await details.locator(':scope > summary').click();
     await details.getByRole('button', { name: 'Edit', exact: true }).click();
     await approve(page).click();
-    await expect(page.getByRole('alert')).toHaveText("These permissions can't be approved as chosen. Change your selection and approve again.");
+    await expect(page.getByRole('alert')).toHaveText("These permissions can’t be approved as chosen. Change your selection and approve again.");
     await expect(approve(page)).toBeEnabled();
     const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
     if (shots) await page.screenshot({ path: `${shots}/d.png`, fullPage: false });
   });
 
 
-  test('safe fallback leaves Approve enabled', async ({ page }) => {
+  test('safe fallback offers Try again', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await openReview(page, { delegate: { status: 503, body: { error: 'private server detail' } } });
     await approve(page).click();
-    await expect(page.getByRole('alert')).toHaveText("Couldn't approve this request. Try again. (Error 503)");
-    await expect(approve(page)).toBeEnabled();
+    await expect(page.getByRole('heading', { name: 'The approval didn’t go through' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Try again' })).toBeEnabled();
     const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
     if (shots) await page.screenshot({ path: `${shots}/fallback.png`, fullPage: false });
   });
@@ -161,7 +162,8 @@ for (const [name, reply] of [
     await page.setViewportSize({ width: 390, height: 844 });
     await openReview(page, { delegate: reply });
     await approve(page).click();
-    await expect(page.getByRole('alert')).toBeVisible();
+    if (name === 'ended') await expect(page.getByRole('heading', { name: /request expired$/i })).toBeVisible();
+    else await expect(page.getByRole('alert')).toBeVisible();
     const shots = process.env.SHOT_DIR;
     if (shots) await page.screenshot({ path: `${shots}/approve-${name}-390.png`, fullPage: false });
   });

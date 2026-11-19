@@ -27,8 +27,8 @@ const key = { id: 'key-one', address, publicKey: '0x', keyIndex: 0, label: null,
 const rawResult = { protocolVersion: 1, address, signature: '0xsigned', signedMessage: siwe, selectedActionKeys: [fullKey, syncKey], permissions: [{ service: 'tinycloud.kv', space, path: 'notes/', actions: ['tinycloud.kv/get', 'tinycloud.kv/sync'] }] };
 const json = (route: Route, status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 
-const BUSY = 'This request is already being approved. Wait a moment.';
-const ENDED = 'This request has already been answered or has ended.';
+const BUSY = 'This request is already being approved. Another tab or a second click got there first. Wait a moment, then press Approve again.';
+const ENDED = 'This request expired';
 
 /** Opens the prepared page with `call` answered by `reply` instead of a normal response. */
 async function setup(page: Page, replyFor: { call: 'prepare' | 'preview' | 'sign' | 'cancel'; reply: { status: number; body: unknown } }) {
@@ -71,7 +71,8 @@ test.describe('the prepared CLI sign-in page when the request is already moving'
       await setup(page, { call: 'sign', reply });
       await page.getByRole('button', { name: 'Preview signing message' }).click();
       await page.getByRole('button', { name: 'Approve', exact: true }).click();
-      await expect(page.getByRole('alert')).toHaveText(reply.expect);
+      if (reply.status === 409) await expect(page.getByRole('alert')).toHaveText(reply.expect);
+      else await expect(page.getByRole('heading', { name: reply.expect })).toBeVisible();
       await expect(page.getByText(reply.server)).toHaveCount(0);
     });
   }
@@ -83,11 +84,13 @@ test.describe('the prepared CLI sign-in page when the request is already moving'
     await expect(page.getByText('Handoff is being signed')).toHaveCount(0);
   });
 
-  test('other statuses keep the server text', async ({ page }) => {
+  test('other statuses show the status on the Stop page', async ({ page }) => {
     await setup(page, { call: 'sign', reply: { status: 500, body: { error: 'signing service unavailable' } } });
     await page.getByRole('button', { name: 'Preview signing message' }).click();
     await page.getByRole('button', { name: 'Approve', exact: true }).click();
-    await expect(page.getByRole('alert')).toHaveText('signing service unavailable');
+    await expect(page.getByRole('heading', { name: 'The approval didn’t go through' })).toBeVisible();
+    await expect(page.locator('[data-support-line]')).toHaveText('HTTP 500');
+    await expect(page.getByText('signing service unavailable')).toHaveCount(0);
   });
 });
 
@@ -115,7 +118,7 @@ test('the owner revocation page shows the busy wording on a 409', async ({ page 
   });
   const request = { kind: 'owner-revocation', ownerDid: `did:pkh:eip155:1:${address}`, cid: 'bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgzz7nazxe', nonce: '0123456789abcdef0123456789abcdef', expiresAt: new Date(Date.now() + 590_000).toISOString() };
   await page.goto(`/delegate#tv2=${Buffer.from(JSON.stringify({ transportVersion: 2, request, delivery: { handoffId, state, cancelSecret } })).toString('base64url')}`);
-  await expect(page.getByRole('alert')).toHaveText('This permission is already being revoked. Wait a moment.');
+  await expect(page.getByRole('alert')).toHaveText(BUSY);
   await expect(page.getByText('Handoff is being signed')).toHaveCount(0);
   const shots = process.env.SHOT_DIR;
   if (shots) await page.screenshot({ path: `${shots}/revoke-busy-390.png`, fullPage: false });

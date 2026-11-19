@@ -173,17 +173,12 @@ test.describe('TC-703 primary key picker', () => {
 
   test('a signing key for a different wallet than the request names cannot approve, with no override', async ({ page }) => {
     await mock(page, []);
-    await page.route('**/api/keys/generate', (route) => json(route, 200, { key: second }));
-    await page.route('**/api/delegate/prepare', (route) => json(route, 200, preparedFor(second.address)));
     const space = `tinycloud:pkh:eip155:1:${primary.address}:default`;
     const permissions = [{ service: 'tinycloud.kv', space, path: 'notes/', actions: [KV_GET] }];
     await page.goto(`${noOwner}&permissions=${encodeBase64UrlJson({ permissions })}`);
-    await page.getByRole('button', { name: 'Generate Key' }).click();
-
-    await expect(page.getByText('Wallet mismatch', { exact: true }).first()).toBeVisible();
-    await expect(page.getByRole('alert').filter({ hasText: 'This request is for wallet 0xd559...f412, but the key you picked is for' }))
-      .toContainText('Choose a key for 0xd559...f412, or ask the app or command for a new request.');
-    await expect(approve(page)).toBeDisabled();
+    await expect(page.getByRole('heading', { name: 'This request is for a wallet this account doesn’t have' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Generate Key' })).toHaveCount(0);
+    await expect(approve(page)).toHaveCount(0);
     await expect(page.getByRole('button', { name: /different wallet anyway/ })).toHaveCount(0);
   });
 
@@ -192,7 +187,10 @@ test.describe('TC-703 primary key picker', () => {
     const space = `tinycloud:pkh:eip155:1:${primary.address}:default`;
     const permissions = [{ service: 'tinycloud.kv', space, path: 'notes/', actions: [KV_GET] }];
     await page.goto(`${noOwner}&permissions=${encodeBase64UrlJson({ permissions })}`);
-    await expect(keyButton(page, 'Key 1')).toBeDisabled();
+    const stop = page.getByTestId('stop-page');
+    await expect(stop.getByRole('heading', { name: 'This request is for a wallet this account doesn’t have' })).toBeVisible();
+    await expect(stop.getByTestId('wallet-comparison')).toContainText('0x2222…2222');
+    await expect(keyButton(page, 'Key 1')).toHaveCount(0);
     await expect(approve(page)).toHaveCount(0);
     expect(prepared).toEqual([]);
   });
