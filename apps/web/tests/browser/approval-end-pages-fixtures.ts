@@ -66,6 +66,10 @@ export interface MockOptions {
   sessionHeld?: Promise<void>;
   /** The key list waits for this. */
   keysHeld?: Promise<void>;
+  /** The approval link's (/a/…) load waits for this. */
+  loadHeld?: Promise<void>;
+  /** The legacy review's prepare call waits for this. */
+  prepareHeld?: Promise<void>;
   /** How the approve call of a prepared request answers. */
   signReply?: { status: number; body: unknown };
   /** How the approve call of an approval link (/a/…) answers. */
@@ -123,6 +127,7 @@ export async function mockApi(page: Page, options: MockOptions): Promise<MockSta
       return json(route, reply.status, reply.body);
     }
     if (path === `/api/approval-requests/${approvalId}/load`) {
+      await options.loadHeld;
       const request = {
         targetDid: 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK', targetPublicJwk: jwk, nodeOrigin: host,
         permissions: [{ service: 'tinycloud.kv', space, path: 'notes/', actions: ['tinycloud.kv/get'] }],
@@ -130,7 +135,10 @@ export async function mockApi(page: Page, options: MockOptions): Promise<MockSta
       };
       return json(route, 200, { requestId: approvalId, expiresAt: new Date(Date.now() + 3_600_000).toISOString(), approved: false, denied: false, request });
     }
-    if (path === '/api/delegate/prepare') return json(route, 200, legacyPrepared());
+    if (path === '/api/delegate/prepare') {
+      await options.prepareHeld;
+      return json(route, 200, legacyPrepared());
+    }
     if (path === '/api/delegate' && route.request().method() === 'POST') {
       const reply = options.approveReply ?? { status: 200, body: { hostActivated: true, delegationHeader: { Authorization: 'x' }, delegationCid: 'bafy-delegation' } };
       return json(route, reply.status, reply.body);
