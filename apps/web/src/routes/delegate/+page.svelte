@@ -26,6 +26,7 @@
     walletMismatchFailureText,
   } from '$lib/delegate-failure-text';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
+  import { PasskeyPromptError, answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyNeed } from '$lib/approval-passkey';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
@@ -122,6 +123,9 @@
       }
       return deviceRelayFailureText(cause.status, cause.code);
     }
+    // TC-3442: a dismissed passkey prompt and the API's passkey refusals each carry the words to show.
+    if (cause instanceof PasskeyPromptError) return cause.message;
+    if (cause instanceof DelegateResponseError && isPasskeyApprovalRefusal(cause)) return cause.message;
     if (cause instanceof DelegateResponseError) {
       if (isTerminalApprovalFailure(cause.status, cause.code)) approveBlockedByFailure = true;
       if (stopForReply({ status: cause.status, code: cause.code }) === 'S22') sessionEnded = true;
@@ -176,6 +180,8 @@
   let callbackInFlight = $state(false);
   let step = $state<'select-key' | 'link-wallet' | 'consent' | 'choose-wallet' | 'done'>('select-key');
   let preparedData = $state<any>(null);
+  // TC-3442: from the latest /prepare, whether Approve needs the passkey, with the challenge for that preview.
+  let passkeyNeed = $state<ApprovalPasskeyNeed | null>(null);
   let siweMessage = $state('');
   let preparing = $state(false);
   let permissionOptions = $state<DelegatePermission[]>([]);
@@ -911,6 +917,7 @@
       ? (data.permissions as DelegatePermission[])
       : [];
     preparedData = data.prepared;
+    passkeyNeed = data.passkey && typeof data.passkey === 'object' ? data.passkey as ApprovalPasskeyNeed : null;
 
     siweMessage = data.prepared?.siwe || '';
     spaceSetup = parseSpaceSetup(data.spaceSetup);
@@ -1320,6 +1327,7 @@
       }
 
       const API_URL = import.meta.env.VITE_API_URL || '';
+      const passkeyAssertion = await answerApprovalPasskey(passkeyNeed);
       const body: Record<string, unknown> = {
         keyId: selectedKey!.id,
         jwk,
@@ -1332,6 +1340,7 @@
         authorizationContextToken,
         selectedActionIds: selectedActionKeys,
         protocolVersion: 1,
+        ...(passkeyAssertion ? { passkeyAssertion } : {}),
       };
       if (approvalRequestMode) body.approvalRequestId = approvalRequestId;
       if (permissionsEdited) {
@@ -1390,6 +1399,12 @@
         await doManagedDelegate(true);
       } else {
         error = delegateErrorMessage(cause);
+        // The refused challenge is spent: prepare again for a new one, and keep the API's words on screen.
+        if (key && isPasskeyApprovalRefusal(cause)) {
+          const refusal = error;
+          try { await refreshAuthorizationContext(key, actions); } catch { /* the next Approve is refused with the API's words */ }
+          error = refusal;
+        }
       }
     } finally {
       delegating = false;
