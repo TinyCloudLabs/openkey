@@ -5,9 +5,10 @@
 //
 // The lease has one ability, `tinycloud.delegation/renew` on `urn:cid:<original CID>`,
 // and its audience is the renewer the node itself advertises at its own origin; nothing
-// the requester sent chooses it. Each step is saved on the approval request before the
-// next network call, so a retry reuses the saved grant and lease instead of signing new
-// ones, and the result is only produced once the node has admitted the lease.
+// the requester sent chooses it. For an approval request, each step is saved on the request before the next network
+// call, so a retry reuses the saved grant and lease instead of signing new ones, and the result is only produced once
+// the node has admitted the lease. At an app sign-in (`signin-renewal.ts`, `appAdmits`) the lease is only signed and
+// returned: nothing is saved, and the app has the node admit it.
 import { randomBytes } from 'node:crypto';
 import { completeSessionSetup, ensureEip55, prepareSession } from '@tinycloud/node-sdk-wasm';
 import {
@@ -57,6 +58,20 @@ export class RenewalLeaseError extends Error {
 /** Shown to the owner whenever a ticked renewal could not be set up: nothing is approved. */
 export const RENEWAL_FAILED_MESSAGE = "OpenKey couldn't set up renewal. Nothing was approved. Try again.";
 
+/** What renewal at an app sign-in or on an approval request is called in the owner's words. */
+export type RenewalSubject = 'sign-in' | 'request';
+
+/**
+ * Shown when renewal leases were turned off under an owner who chose renewal. Before anything is signed the box is
+ * still on screen, so unticking it approves without renewal; after signing, the sign-in or request can't finish.
+ */
+export function renewalUnavailableMessage(subject: RenewalSubject, stage: 'before-signing' | 'after-signing'): string {
+  if (stage === 'before-signing') return `Renewal isn't available for this ${subject}. Untick it to approve without renewal.`;
+  return subject === 'sign-in'
+    ? "Renewal stopped being available while you were approving, so this sign-in didn't finish. Sign in again."
+    : "Renewal stopped being available while you were approving, so this request didn't finish. Ask the app to send it again.";
+}
+
 export type RenewalChoice = { choice: 'finite' } | { choice: 'leased'; leaseLifetimeSeconds: number };
 
 /** The renewal request an approval request signed: its longest lease. */
@@ -71,7 +86,9 @@ export interface SignedRenewalRequest {
  * (never inferred from `renewal` or the lifetime); while they are off it shows no box, so it is finite,
  * and a leased choice is refused. A lease longer than the request or one year is refused.
  */
-export function parseRenewalChoice(value: unknown, signed: SignedRenewalRequest | undefined, enabled = renewalLeasesEnabled()): RenewalChoice | null {
+export function parseRenewalChoice(
+  value: unknown, signed: SignedRenewalRequest | undefined, enabled = renewalLeasesEnabled(), subject: RenewalSubject = 'request',
+): RenewalChoice | null {
   if (!signed) {
     if (value !== undefined) throw new RenewalLeaseError('request_binding', 'This request did not ask for renewal', 400);
     return null;
@@ -80,7 +97,7 @@ export function parseRenewalChoice(value: unknown, signed: SignedRenewalRequest 
   if (!value || typeof value !== 'object') throw new RenewalLeaseError('request_binding', 'A renewal choice is required', 400);
   const choice = value as Record<string, unknown>;
   if (choice.choice === 'finite' && Object.keys(choice).length === 1) return { choice: 'finite' };
-  if (!enabled) throw new RenewalLeaseError('renewal_disabled', 'Renewal is not available yet', 400);
+  if (!enabled) throw new RenewalLeaseError('renewal_disabled', renewalUnavailableMessage(subject, 'before-signing'), 400);
   const seconds = choice.leaseLifetimeSeconds;
   if (choice.choice !== 'leased' || Object.keys(choice).length !== 2 || typeof seconds !== 'number' || !Number.isSafeInteger(seconds) ||
     seconds <= 0 || seconds > signed.leaseLifetimeSeconds || seconds > MAX_LEASE_SECONDS) {
@@ -201,6 +218,8 @@ function leaseSiwe(stage: Pick<RenewalStage, 'originalCid' | 'ownerAddress' | 'c
 /**
  * The first stage for an approved grant: server time, the lease end and the lease
  * message, before anything is signed. `delegation` is the grant as the result carries it.
+ * `appAdmits`: the app registers the grant and has the node admit the lease itself (an app sign-in), so the node
+ * need not hold the grant yet.
  */
 export async function prepareRenewalStage(input: {
   userId: string;
@@ -209,13 +228,14 @@ export async function prepareRenewalStage(input: {
   delegation: Record<string, unknown>;
   now: Date;
   fetchImpl?: typeof fetch;
+  appAdmits?: boolean;
 }): Promise<RenewalStage> {
   const { delegation } = input;
   const header = delegation.delegationHeader as { Authorization?: unknown } | undefined;
   const originalCid = delegation.delegationCid;
   const signedSiwe = delegation.siwe;
-  if (delegation.hostActivated !== true) {
-    // The node must already hold the grant before it can admit a lease for it.
+  if (input.appAdmits !== true && delegation.hostActivated !== true) {
+    // OpenKey admits this lease, so the node must already hold the grant.
     throw new RenewalLeaseError('renewal_unavailable', 'The approved grant was not registered with its node');
   }
   if (typeof header?.Authorization !== 'string' || typeof originalCid !== 'string' || typeof signedSiwe !== 'string' ||

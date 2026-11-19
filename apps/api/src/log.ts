@@ -57,7 +57,8 @@ const EVENTS = {
   delegate_session_activation_warning: true, delegate_session_activation_failed: true,
   delegate_authorization_context_issue_failed: true, owner_revocation_sign_failed: true, delegate_space_setup_notice_failed: true, delegate_session_jwk: true,
   delegate_origin_bind_failed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true, key_quote_failed: true,
-  approval_code_allocation_failed: true, approval_code_cleanup_failed: true, approval_renewal_failed: true,
+  approval_code_allocation_failed: true, approval_code_cleanup_failed: true, approval_renewal_failed: true, signin_renewal_failed: true,
+  signin_renewal_lease_signed: true,
   native_consent_peer_lookup_failed: true, native_consent_key_unseal_failed: true,
   native_consent_activation_after_host_setup_failed: true, native_consent_host_delegation_rejected: true,
   native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true, native_consent_stale_session_revoke_failed: true,
@@ -294,6 +295,14 @@ export function logTinyCloudBootstrapSweep(
     skipped: fields.skipped,
     reaped: fields.reaped,
   });
+}
+
+/**
+ * A renewal lease signed at an app sign-in, which OpenKey keeps no other record of: its CID, whether OpenKey's managed
+ * key or the owner's wallet signed it, and its lifetime. Never the owner, the grant or the lease itself.
+ */
+export function logSignInLeaseSigned(leaseCid: string, signer: 'managed' | 'wallet', leaseLifetimeSeconds: number): void {
+  emit('info', 'signin_renewal_lease_signed', { lease_cid: leaseCid, signer, lease_lifetime_seconds: leaseLifetimeSeconds });
 }
 
 /** Approval delivery failures expose request identifiers and error class, never code or error details. */
