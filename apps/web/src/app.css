@@ -101,6 +101,11 @@ summary {
   outline-offset: 2px;
 }
 
+/* A heading that takes focus when a new state appears (tabindex -1) is announced, not outlined: no key reaches it. */
+h1[tabindex='-1']:focus-visible {
+  outline: none;
+}
+
 ::selection {
   background: rgba(42, 86, 246, 0.18);
 }

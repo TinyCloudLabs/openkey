@@ -107,7 +107,7 @@
 {#if waiting}
   {@const name = socialProviderName(waiting.provider)}
   <p class="m-0 mb-2.5 text-[11.5px] font-semibold tracking-[0.09em] text-surface-500 uppercase">{SIGN_IN.eyebrow}</p>
-  <h1 use:focusHeading class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950 outline-none">{fill(SIGN_IN.popupOpen.heading, { provider: name })}</h1>
+  <h1 use:focusHeading class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950">{fill(SIGN_IN.popupOpen.heading, { provider: name })}</h1>
   <p class="m-0 mb-3.5 text-pretty">{fill(SIGN_IN.popupOpen.line, { provider: name })}</p>
   <div role="status" class="flex items-center gap-3 rounded-[13px] border border-surface-300 bg-white px-[13px] py-[11px]">
     <span class="h-4 w-4 flex-none animate-spin rounded-full border-2 border-surface-300 border-t-surface-950" aria-hidden="true"></span>
@@ -119,7 +119,7 @@
   </div>
 {:else}
   <p class="m-0 mb-2.5 text-[11.5px] font-semibold tracking-[0.09em] text-surface-500 uppercase">{SIGN_IN.eyebrow}</p>
-  <h1 use:focusHeading class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950 outline-none">{signedOut ? SIGN_IN.signedOutPartway.heading : SIGN_IN.heading}</h1>
+  <h1 use:focusHeading class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950">{signedOut ? SIGN_IN.signedOutPartway.heading : SIGN_IN.heading}</h1>
   {#if shownError}
     <div role="alert" class="mt-0.5 mb-3.5 grid grid-cols-[16px_1fr] gap-[9px] rounded-[11px] border border-red-line bg-red-wash px-3 py-[9px] text-[13.5px] leading-[1.45] text-[#7a1a12]">
       <Icon name="alert" class="mt-0.5 h-4 w-4" />

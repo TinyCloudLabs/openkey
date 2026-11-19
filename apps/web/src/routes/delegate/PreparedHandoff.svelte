@@ -466,7 +466,7 @@
   {:else if signedInOn}
     <SignedInCard onReview={() => { loginRequired = false; }} onCancel={cancelPending} />
   {:else if cancelled}
-    <h1 use:focusHeading class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950 outline-none">{DONE.cancelled.heading}</h1>
+    <h1 use:focusHeading class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950">{DONE.cancelled.heading}</h1>
     <p class="m-0 text-pretty">{DONE.cancelled.line}</p>
   {:else}
     <div class="space-y-5">
