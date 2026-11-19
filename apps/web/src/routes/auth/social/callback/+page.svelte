@@ -1,8 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { authClient } from '$lib/auth-client';
+  import Icon from '$lib/components/approval/icon.svelte';
+  import Slip from '$lib/components/approval/slip.svelte';
+  import { focusHeading } from '$lib/components/approval/focus-heading';
   import { readSignedSessionToken } from '$lib/embed-passkey';
   import NewAccountConfirmation from '$lib/components/auth/new-account-confirmation.svelte';
+  import Button from '$lib/components/ui/button.svelte';
   import { safeSocialAuthorizationUrl } from '$lib/social-auth';
   import {
     accountExistsMessage,
@@ -14,21 +18,28 @@
     socialPopupReturnUrl,
     socialProviderName,
     type SocialContinuation,
+    type SocialProviderId,
   } from '$lib/social-continuation';
+  import { POPUP_WINDOW, fill } from '@openkey/sdk/approval-copy';
 
   // This page runs in the first-party popup the opener (login, register, the
   // embedded widget or Settings) opened. It starts the provider, shows any
   // choice the API asks for, and hands the session back through the single
   // `openkey:social:complete` message (social-auth.ts). Create runs here, never
   // in an embedded iframe, where the continuation cookie is partitioned.
-  let status = $state('Completing sign-in…');
+  // While it works, `status` is the heading; `done`, `lost` and `error` are its three ends.
+  let status = $state<string>(POPUP_WINDOW.working.completing);
   let error = $state('');
+  let done = $state(false);
+  // The window has no opener left to answer to.
+  let lost = $state(false);
+  let provider = $state<SocialProviderId | null>(null);
   let confirmation = $state<SocialContinuation | null>(null);
   let creating = $state(false);
 
   function finish(sessionToken: string) {
     window.opener.postMessage({ type: 'openkey:social:complete', sessionToken }, window.location.origin);
-    status = 'Sign-in complete. You can close this window.';
+    done = true;
     window.setTimeout(() => window.close(), 100);
   }
 
@@ -64,16 +75,17 @@
 
   onMount(async () => {
     if (!window.opener) {
-      error = 'This sign-in window is no longer connected to OpenKey. Close it and try again.';
+      lost = true;
       return;
     }
 
     const currentURL = new URL(window.location.href);
     const callback = parseSocialCallback(currentURL);
+    provider = callback.provider;
     try {
       if (callback.kind === 'start') {
         const providerName = socialProviderName(callback.provider);
-        status = `Connecting to ${providerName}…`;
+        status = fill(POPUP_WINDOW.working.connecting, { provider: providerName });
         const callbackURL = socialPopupReturnUrl(window.location.origin, callback.provider, callback.action);
         const input = {
           provider: callback.provider, callbackURL, errorCallbackURL: callbackURL, disableRedirect: true,
@@ -100,7 +112,7 @@
         // opener is OpenKey's own register page; any other opener (another
         // site calling window.open) gets the confirmation (R5).
         if (loaded.outcome === 'new_account' && callback.signupIntent && openedByRegister() && !relayNotice(loaded)) {
-          status = 'Creating your account…';
+          status = POPUP_WINDOW.working.creating;
           confirmation = null;
           const token = await confirmSocialContinuation({ token: loaded.token, provider: loaded.provider });
           authClient.$store.notify('$sessionSignal');
@@ -127,6 +139,12 @@
       );
     }
   });
+
+  const stopHeading = $derived(
+    lost ? POPUP_WINDOW.lost.heading
+      : provider ? fill(POPUP_WINDOW.failed.heading, { provider: socialProviderName(provider) })
+        : POPUP_WINDOW.failed.headingNoProvider,
+  );
 </script>
 
 <svelte:head>
@@ -134,41 +152,50 @@
   <title>Completing sign-in · OpenKey</title>
 </svelte:head>
 
-<div class="flex min-h-screen items-center justify-center bg-surface-50 px-4">
-  <div class="w-full max-w-sm rounded-2xl border border-surface-200 bg-white p-8 text-center shadow-sm">
-    <div class="mx-auto mb-5 inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-surface-900 text-white">
-      <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-        <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
-      </svg>
+<Slip steps={false} center>
+  {#if confirmation?.outcome === 'new_account'}
+    {#if error}<p class="mb-3 text-sm text-red-700" role="alert">{error}</p>{/if}
+    <NewAccountConfirmation
+      email={confirmation.email}
+      notice={relayNotice(confirmation)}
+      busy={creating}
+      {creating}
+      differentEmailLabel="Use email instead"
+      oncreate={createAccount}
+      ondifferentemail={() => returnToSignIn('Continue with your email instead.')}
+      onpasskey={() => returnToSignIn('Sign in with your passkey instead.')}
+      onrecover={() => returnToSignIn('Recover your existing OpenKey account instead.')}
+    />
+  {:else if confirmation?.outcome === 'account_exists'}
+    <div class="w-full" data-testid="social-account-exists">
+      <h1 class="mb-3 text-lg font-semibold text-surface-900">Account already exists</h1>
+      <p class="mb-5 break-words text-sm text-surface-600">{accountExistsMessage(confirmation.provider, confirmation.email)}</p>
+      <button
+        class="w-full rounded-xl bg-surface-900 px-4 py-3 text-sm font-medium text-white"
+        onclick={() => returnToSignIn(`Sign in to your existing account, then add ${socialProviderName(confirmation!.provider)} in Settings.`)}
+      >Return to sign-in</button>
     </div>
-    {#if confirmation?.outcome === 'new_account'}
-      {#if error}<p class="mb-3 text-sm text-red-700" role="alert">{error}</p>{/if}
-      <NewAccountConfirmation
-        email={confirmation.email}
-        notice={relayNotice(confirmation)}
-        busy={creating}
-        {creating}
-        differentEmailLabel="Use email instead"
-        oncreate={createAccount}
-        ondifferentemail={() => returnToSignIn('Continue with your email instead.')}
-        onpasskey={() => returnToSignIn('Sign in with your passkey instead.')}
-        onrecover={() => returnToSignIn('Recover your existing OpenKey account instead.')}
-      />
-    {:else if confirmation?.outcome === 'account_exists'}
-      <div data-testid="social-account-exists">
-        <h1 class="mb-3 text-lg font-semibold text-surface-900">Account already exists</h1>
-        <p class="mb-5 break-words text-sm text-surface-600">{accountExistsMessage(confirmation.provider, confirmation.email)}</p>
-        <button
-          class="w-full rounded-xl bg-surface-900 px-4 py-3 text-sm font-medium text-white"
-          onclick={() => returnToSignIn(`Sign in to your existing account, then add ${socialProviderName(confirmation!.provider)} in Settings.`)}
-        >Return to sign-in</button>
-      </div>
-    {:else if error}
-      <h1 class="mb-2 text-lg font-semibold text-surface-900">Sign-in failed</h1>
-      <p class="text-sm text-red-700" role="alert">{error}</p>
-    {:else}
-      <h1 class="mb-2 text-lg font-semibold text-surface-900">OpenKey</h1>
-      <p class="text-sm text-surface-500" role="status">{status}</p>
-    {/if}
-  </div>
-</div>
+  {:else if lost || error}
+    <div class="mt-1 mb-[18px] grid h-[52px] w-[52px] place-items-center rounded-full border border-red-line bg-red-wash text-[#b42318]">
+      <Icon name="x" class="h-[26px] w-[26px]" />
+    </div>
+    <h1 use:focusHeading class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950">{stopHeading}</h1>
+    <p class="m-0 text-pretty break-words">{lost ? POPUP_WINDOW.lost.line : error}</p>
+    <Button class="mt-5 w-full" onclick={() => window.close()}>{POPUP_WINDOW.close}</Button>
+  {:else if done}
+    <div class="mt-1 mb-[18px] grid h-[52px] w-[52px] place-items-center rounded-full border border-green-line bg-green-wash text-[#157f3c]">
+      <Icon name="check" class="h-[26px] w-[26px]" />
+    </div>
+    <h1 use:focusHeading class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950">{POPUP_WINDOW.done.heading}</h1>
+    <p class="m-0 text-pretty">{POPUP_WINDOW.done.line}</p>
+  {:else}
+    <div class="relative my-[26px] mb-[22px] grid h-16 w-16 place-items-center" aria-hidden="true">
+      <span class="absolute inset-0 animate-spin rounded-full border-2 border-surface-200 border-t-surface-950"></span>
+      <span class="grid h-10 w-10 place-items-center rounded-xl bg-linear-to-br from-surface-800 to-surface-950 text-white">
+        <Icon name="key" class="h-[22px] w-[22px]" />
+      </span>
+    </div>
+    <h1 class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950">{status}</h1>
+    <p class="m-0 text-pretty" role="status">{POPUP_WINDOW.working.line}</p>
+  {/if}
+</Slip>

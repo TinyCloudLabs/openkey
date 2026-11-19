@@ -229,7 +229,11 @@ export const POPUP_WINDOW = {
     heading: 'Signed in',
     line: 'This window will close. Go back to the other one.',
   },
-  failed: { heading: '{provider} sign-in didn’t finish' },
+  failed: {
+    heading: '{provider} sign-in didn’t finish',
+    /** When the return did not say which provider it came from. */
+    headingNoProvider: 'Sign-in didn’t finish',
+  },
   lost: {
     heading: 'This window lost its link to OpenKey',
     line: 'Close it and press the sign-in button again.',
@@ -250,6 +254,10 @@ export const REVOKE_REVIEW = {
     expires: 'Signature expires',
   },
   fold: 'Exact message to sign',
+  /** More than one of the account's keys owns the permission: the person picks the one to sign with. */
+  chooseKey: 'Choose the owner signing key',
+  /** A key with no name of its own. `{n}` is its index. */
+  keyFallback: 'Key {n}',
   cancel: 'Cancel',
   revoke: 'Revoke',
 } as const;

@@ -3,19 +3,22 @@
   import { afterNavigate, replaceState } from '$app/navigation';
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import { formatLocalAccessEnd } from '$lib/access-end';
   import { getSessionToken } from '$lib/embed-passkey';
   import { ownerRevocationCopy as text } from '$lib/owner-revocation-copy';
   import { deliverOwnerRevocation } from '$lib/owner-revocation-response';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import { ownerRevocationAddress, parseOwnerRevocationRequest, renderSiweLiteral, type OwnerRevocationRequest } from '@openkey/capability-review';
+  import Button from '$lib/components/ui/button.svelte';
   import CodeBox from '$lib/components/approval/code-box.svelte';
   import DonePage from '$lib/components/approval/done-page.svelte';
+  import Icon from '$lib/components/approval/icon.svelte';
   import Loader from '$lib/components/approval/loader.svelte';
   import SignInCard from '$lib/components/approval/sign-in-card.svelte';
   import SignedInCard from '$lib/components/approval/signed-in-card.svelte';
   import Slip from '$lib/components/approval/slip.svelte';
-  import { CODE, DONE, codeDestinationWord, fill } from '@openkey/sdk/approval-copy';
+  import { CODE, DONE, REVOKE_REVIEW, codeDestinationWord, fill } from '@openkey/sdk/approval-copy';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   // A 2xx reply that cannot be read: the server may have signed, so the owner must not sign again from this page.
@@ -242,6 +245,8 @@
   const signedInOn = $derived(!loaderOn && !ended && !!$session.data && loginRequired);
   const slipAt = $derived(loaderOn ? 0 : cardOn || signedInOn ? 1 : cancelled ? 3 : code ? (delivered ? 4 : 3) : 2);
   const slipLast = $derived(code && !delivered && !cancelled ? 'code' : 'terminal');
+  const expiresAt = $derived(siwe.match(/^Expiration Time: (.+)$/m)?.[1]);
+  const keyName = (choice: EthereumKey) => choice.label ?? fill(REVOKE_REVIEW.keyFallback, { n: choice.keyIndex });
   const shortCid = (cid: string) => `${cid.slice(0, 10)}…${cid.slice(-6)}`;
 </script>
 
@@ -270,30 +275,75 @@
       eyebrow={CODE.eyebrowRevoke}
       line={fill(delivery?.callback ? CODE.lineNotReached : CODE.lineRevoke, { destination: codeDestinationWord() })}
     />
+  {:else if request}
+    <p class="m-0 mb-2.5 text-[11.5px] font-semibold tracking-[0.09em] text-surface-500 uppercase">{REVOKE_REVIEW.eyebrow}</p>
+    <h1 class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950">{REVOKE_REVIEW.heading}</h1>
+    {#if error}
+      <div class="mt-0.5 mb-3.5 grid grid-cols-[16px_1fr] gap-[9px] rounded-[11px] border border-red-line bg-red-wash px-3 py-[9px] text-[13.5px] leading-[1.45] text-[#7a1a12]">
+        <Icon name="alert" class="mt-0.5 h-4 w-4" />
+        <span role="alert">{error}</span>
+      </div>
+    {/if}
+    {#if !key}
+      <h2 class="m-0 mt-1 mb-2.5 text-[15px] font-semibold text-surface-950">{REVOKE_REVIEW.chooseKey}</h2>
+      <div class="mb-4 grid gap-2">
+        {#each keys as choice (choice.id)}
+          <button
+            type="button"
+            class="grid w-full gap-0.5 rounded-[13px] border border-surface-300 bg-white px-[13px] py-[11px] text-left hover:border-surface-500 disabled:opacity-50"
+            disabled={busy}
+            onclick={() => chooseKey(choice)}
+          >
+            <span class="text-sm font-semibold text-surface-950">{keyName(choice)}</span>
+            <span class="font-mono text-xs break-all text-surface-500">{choice.address}</span>
+          </button>
+        {/each}
+      </div>
+    {/if}
+    <div class="mt-0.5 mb-3.5 grid grid-cols-[16px_1fr] gap-[9px] rounded-[11px] border border-red-line bg-red-wash px-3 py-[9px] text-[13.5px] leading-[1.45] text-[#7a1a12]">
+      <Icon name="alert" class="mt-0.5 h-4 w-4" />
+      <b class="font-semibold">{REVOKE_REVIEW.warning}</b>
+    </div>
+    <div class="rounded-xl border border-dashed border-surface-300 px-[13px] py-[11px]">
+      <p class="m-0 mb-[5px] text-[11px] font-semibold tracking-[0.09em] text-surface-500 uppercase">{REVOKE_REVIEW.fullId}</p>
+      <p class="m-0 font-mono text-[12.5px] leading-normal [overflow-wrap:anywhere] text-surface-950">{request.cid}</p>
+    </div>
+    <p class="m-0 mt-1.5 mb-3.5 text-[13px] leading-normal text-surface-500">{REVOKE_REVIEW.matchId}</p>
+    <dl class="m-0 grid gap-2 text-[13.5px]">
+      <div class="flex items-baseline justify-between gap-3.5">
+        <dt class="flex-none text-surface-500">{REVOKE_REVIEW.rows.owner}</dt>
+        <dd class="m-0 min-w-0 text-right font-mono text-[12.5px] [overflow-wrap:anywhere] text-surface-950">{ownerRevocationAddress(request)}</dd>
+      </div>
+      {#if key}
+        <div class="flex items-baseline justify-between gap-3.5">
+          <dt class="flex-none text-surface-500">{REVOKE_REVIEW.rows.signingWith}</dt>
+          <dd class="m-0 min-w-0 text-right [overflow-wrap:anywhere] text-surface-950">{keyName(key)}</dd>
+        </div>
+      {/if}
+      {#if expiresAt}
+        <div class="flex items-baseline justify-between gap-3.5">
+          <dt class="flex-none text-surface-500">{REVOKE_REVIEW.rows.expires}</dt>
+          <dd class="m-0 min-w-0 text-right [overflow-wrap:anywhere] text-surface-950">{formatLocalAccessEnd(expiresAt)}</dd>
+        </div>
+      {/if}
+    </dl>
+    {#if key && siwe}
+      <details open class="mt-3.5 text-[13px] text-surface-500">
+        <summary class="cursor-pointer">{REVOKE_REVIEW.fold}</summary>
+        <pre class="mt-2 whitespace-pre overflow-x-auto max-w-full min-w-0 rounded-lg bg-surface-50 p-3 text-xs text-surface-950">{renderSiweLiteral(siwe)}</pre>
+      </details>
+    {/if}
+    <div class="mt-5 grid gap-2.5 {key ? 'grid-cols-2' : ''}">
+      <Button variant="secondary" class="w-full" disabled={busy || submitted} onclick={cancel}>{REVOKE_REVIEW.cancel}</Button>
+      {#if key}
+        <Button class="w-full" disabled={busy || submitted} onclick={revoke}>{REVOKE_REVIEW.revoke}</Button>
+      {/if}
+    </div>
   {:else}
     <div class="space-y-5">
     <header><h1 class="text-xl font-semibold text-surface-900">{text.title}</h1></header>
     {#if error}<p role="alert" class="rounded-lg bg-red-50 p-3 text-red-800">{error}</p>{/if}
     {#if ended}<p>Start a new CLI revocation request.</p>
-    {:else if request}
-      <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">{text.warning}</p>
-      <dl class="space-y-2 text-sm break-all">
-        <div><dt class="font-semibold">{text.permission}</dt><dd><code>{shortCid(request.cid)}</code></dd></div>
-        <div><dt class="font-semibold">{text.fullCid}</dt><dd><input aria-label={text.fullCid} readonly value={request.cid} class="w-full rounded-lg border border-surface-200 bg-surface-50 p-2 font-mono text-xs" /><p class="mt-1">{text.matchCid}</p></dd></div>
-        <div><dt class="font-semibold">{text.owner}</dt><dd><code>{ownerRevocationAddress(request)}</code></dd></div>
-        {#if siwe}<div><dt class="font-semibold">{text.expires}</dt><dd>{siwe.match(/^Expiration Time: (.+)$/m)?.[1]}</dd></div>{/if}
-      </dl>
-      {#if !key}
-        <h2 class="font-semibold">Choose the owner signing key</h2>
-        {#each keys as choice (choice.id)}
-          <button class="block w-full rounded-lg border p-3 text-left text-sm break-all" disabled={busy} onclick={() => chooseKey(choice)}>{choice.label ?? `Key ${choice.keyIndex}`} · {choice.address}</button>
-        {/each}
-      {:else}
-        <h2 class="font-semibold">Exact message to sign</h2>
-        <pre class="whitespace-pre overflow-x-auto max-w-full min-w-0 rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(siwe)}</pre>
-        <button disabled={busy || submitted} onclick={revoke}>{text.revoke}</button>
-      {/if}
-      <button disabled={busy || submitted} onclick={cancel}>{text.cancel}</button>
     {/if}
     </div>
   {/if}
