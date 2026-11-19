@@ -85,7 +85,7 @@ export async function currentReviewerDelegate(database: PrismaClient, userId: st
 export async function assertReviewerSignedDelegation(database: PrismaClient, userId: string, message: string): Promise<void> {
   const binding = await currentReviewerDelegate(database, userId);
   if (!binding) return;
-  const key = await database.ethereumKey.findFirst({ where: { id: binding.keyId!, userId, archivedAt: null } });
+  const key = await database.ethereumKey.findFirst({ where: { custody: 'PERSONAL', id: binding.keyId!, userId, archivedAt: null } });
   const parsed = parseStrictSiwe(message);
   if (!key || !parsed.ok) refuse();
   const siwe = parsed.siwe;

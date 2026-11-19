@@ -30,7 +30,7 @@ export function createRenewalLeaseRouter(db: RenewalLeaseRouteDatabase, deps?: L
     const leases = await db.renewalLease.findMany({ where: liveLeaseWhere(userId, { kind: 'all' }, now()), orderBy: { approvedAt: 'desc' } });
     const [requests, keys] = await Promise.all([
       db.approvalRequest.findMany({ where: { id: { in: leases.flatMap((lease) => lease.approvalRequestId ?? []) } }, select: { id: true, request: true, delegationExpiresAt: true } }),
-      db.ethereumKey.findMany({ where: { userId }, select: { address: true, keyType: true } }),
+      db.ethereumKey.findMany({ where: { custody: 'PERSONAL', userId }, select: { address: true, keyType: true } }),
     ]);
     c.header('Cache-Control', 'no-store');
     return c.json({

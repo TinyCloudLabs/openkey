@@ -19,7 +19,7 @@ export async function recordReviewerWriter(tx: Prisma.TransactionClient, binding
 // deliberately survives deletion of the account. Never copy it back to a user.
 export async function retireReviewerOwner(tx: Prisma.TransactionClient, binding: ReviewerBinding) {
   if (!binding.userId || !binding.keyId || !binding.spaceId || !binding.nodeHost) throw new Error('Reviewer retirement refused');
-  const key = await tx.ethereumKey.findFirst({ where: { id: binding.keyId, userId: binding.userId } });
+  const key = await tx.ethereumKey.findFirst({ where: { custody: 'PERSONAL', id: binding.keyId, userId: binding.userId } });
   if (!key?.sealedBlob) throw new Error('Reviewer retirement key unavailable');
   const retiredAt = new Date();
   const tombstoneUntil = new Date(Math.max(retiredAt.getTime(), binding.writerExpiresAt?.getTime() ?? 0));

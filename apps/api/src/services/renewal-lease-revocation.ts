@@ -278,7 +278,7 @@ export async function revokeRenewalLeases(
   const candidates = await db.renewalLease.findMany({ where: liveLeaseWhere(userId, scope, deps.now()), select: { leaseCid: true } });
   if (candidates.length === 0) return report;
   const keys = await db.ethereumKey.findMany({
-    where: { userId },
+    where: { custody: 'PERSONAL', userId },
     select: { address: true, keyType: true, sealedBlob: true, userId: true, sealingContext: true },
   });
   await db.$transaction(async (tx) => {

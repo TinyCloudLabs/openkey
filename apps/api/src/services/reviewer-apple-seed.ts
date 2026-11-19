@@ -69,7 +69,7 @@ export async function reviewerSeedGrant(database: PrismaClient, request: SeedReq
     if ((!dryRun && binding.seedStartedAt && !prior) || run.installEpoch !== binding.installEpoch || run.requestId !== request.requestId
       || run.createdAt !== request.createdAt || run.sessionDid !== request.sessionDid || run.dryRun !== dryRun
       || Date.parse(run.expiresAt) <= Date.now()) throw new Error('Reviewer seed run ended; reset required');
-    const key = await tx.ethereumKey.findFirst({ where: { id: binding.keyId, userId: binding.userId, archivedAt: null } });
+    const key = await tx.ethereumKey.findFirst({ where: { custody: 'PERSONAL', id: binding.keyId, userId: binding.userId, archivedAt: null } });
     if (!key?.sealedBlob) throw new Error('Reviewer seed key unavailable');
     if (!dryRun) await tx.reviewerAccount.update({ where: { store: 'apple' }, data: { seedRun: run, seedStartedAt: binding.seedStartedAt ?? new Date() } });
     const expiresAt = new Date(run.expiresAt);
@@ -98,7 +98,7 @@ export async function verifyReviewerSeed(database: PrismaClient, report: any) {
   if (!appleReviewEnabled()) throw new Error('Reviewer seed verification refused');
   const binding = await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'apple' }, include: { user: true } });
   const run = binding.seedRun as SeedRun | null;
-  const key = binding.keyId ? await database.ethereumKey.findFirst({ where: { id: binding.keyId, userId: binding.userId } }) : null;
+  const key = binding.keyId ? await database.ethereumKey.findFirst({ where: { custody: 'PERSONAL', id: binding.keyId, userId: binding.userId } }) : null;
   if (!key?.sealedBlob || !binding.user?.reviewerHoldAt || !binding.spaceId || !binding.nodeHost || binding.seededAt
     || !run || run.dryRun || run.installEpoch !== binding.installEpoch || Date.parse(run.expiresAt) <= Date.now()
     || !report || report.seed !== 'tinychat-reviewer-seed' || report.revision !== 1

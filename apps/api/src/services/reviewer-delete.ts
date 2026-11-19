@@ -45,7 +45,7 @@ export function reviewerDeleteEndpoints(database: PrismaClient, origin: string) 
           // Tombstone is committed before the live owner/key can disappear.
           await retireReviewerOwner(tx, binding);
           await holdReviewer(tx, binding);
-          await tx.ethereumKey.deleteMany({ where: { userId: binding.userId! } });
+          await tx.ethereumKey.deleteMany({ where: { custody: 'PERSONAL', userId: binding.userId! } });
           await tx.user.delete({ where: { id: binding.userId! } });
           await tx.reviewerAccount.update({ where: { store: 'apple' }, data: { userId: null, keyId: null, spaceId: null,
             seededAt: null, seedStartedAt: null, writerExpiresAt: null } });

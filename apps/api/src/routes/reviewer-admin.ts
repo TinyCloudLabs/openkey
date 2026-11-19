@@ -46,7 +46,7 @@ export function createReviewerAdminRouter(database: PrismaClient) {
   router.get('/apple/seed-target', async c => {
     const { appleReviewEnabled } = await import('../services/reviewer-apple-policy');
     const binding = await database.reviewerAccount.findUnique({ where: { store: 'apple' }, include: { user: true } });
-    const key = binding?.keyId ? await database.ethereumKey.findFirst({ where: { id: binding.keyId, userId: binding.userId } }) : null;
+    const key = binding?.keyId ? await database.ethereumKey.findFirst({ where: { custody: 'PERSONAL', id: binding.keyId, userId: binding.userId } }) : null;
     if (!appleReviewEnabled() || !binding?.user?.reviewerHoldAt || binding.seededAt || !binding.spaceId || !binding.nodeHost || !key) return c.json({ error: 'Reviewer seed unavailable' }, 400);
     return c.json({ spaceId: binding.spaceId, ownerDid: `did:pkh:eip155:1:${key.address}`, nodeHost: binding.nodeHost });
   });
