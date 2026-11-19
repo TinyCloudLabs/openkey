@@ -93,6 +93,28 @@ describe('closeThisTab', () => {
     expect(stuck).toBe(false);
   });
 
+  test('allowBack false: window.close is ignored with history present: reports stuck without going back', () => {
+    const win = fakeWindow({ closeWorks: false, historyLength: 5, backWorks: true });
+    let stuck = false;
+    closeThisTab(win.env, () => {
+      stuck = true;
+    }, { allowBack: false });
+    win.advance(CLOSE_CHECK_MS);
+    expect(stuck).toBe(true);
+    expect(win.calls).toEqual(['close']);
+  });
+
+  test('allowBack false: window.close succeeds: no fallback', () => {
+    const win = fakeWindow({ closeWorks: true, historyLength: 5, backWorks: false });
+    let stuck = false;
+    closeThisTab(win.env, () => {
+      stuck = true;
+    }, { allowBack: false });
+    win.advance(CLOSE_CHECK_MS * 3);
+    expect(stuck).toBe(false);
+    expect(win.calls).toEqual(['close']);
+  });
+
   test('window.close is ignored, history exists, and back does nothing: reports stuck after 600 ms', () => {
     const win = fakeWindow({ closeWorks: false, historyLength: 3, backWorks: false });
     let stuck = false;
