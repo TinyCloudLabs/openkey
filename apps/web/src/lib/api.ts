@@ -3,6 +3,7 @@ import { getSessionToken, isEmbedContext } from './embed-passkey';
 import { isDefiniteRefusal, ServerRefusalError } from './server-reply';
 import { isPreTermsPage, isTermsRequired, sendToTerms } from './terms';
 import type { RenewalLease } from './renewal-leases';
+import type { ApprovalPasskeyAssertion, ApprovalPasskeyOffer, PasskeyApprovalMode, PasskeyApprovalSetting } from './approval-passkey';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -309,6 +310,22 @@ export const api = {
     return fetchAPI('/api/account/auto-sign', {
       method: 'PATCH',
       body: JSON.stringify({ autoSignEnabled }),
+    }, true);
+  },
+
+  async getPasskeyApprovalSetting(): Promise<PasskeyApprovalSetting> {
+    return fetchAPI('/api/account/passkey-approval', {}, true);
+  },
+
+  /** A challenge bound to `mode`, for lowering the setting to it. */
+  async passkeyApprovalSettingOffer(mode: PasskeyApprovalMode): Promise<ApprovalPasskeyOffer> {
+    return fetchAPI('/api/account/passkey-approval/options', { method: 'POST', body: JSON.stringify({ mode }) }, true);
+  },
+
+  async updatePasskeyApprovalSetting(mode: PasskeyApprovalMode, passkeyAssertion?: ApprovalPasskeyAssertion): Promise<PasskeyApprovalSetting> {
+    return fetchAPI('/api/account/passkey-approval', {
+      method: 'PATCH',
+      body: JSON.stringify({ mode, passkeyAssertion }),
     }, true);
   },
 

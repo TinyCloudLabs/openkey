@@ -23,6 +23,8 @@ model User {
   tinyCloudManageKeyEnabled Boolean @default(true)
   tinyCloudManageKeyMode String @default("APP_MANAGED")
   tinyCloudManageKeyPolicyEpoch BigInt @default(0)
+  // TC-3442: ALWAYS, SENSITIVE or NEVER: which approvals need a passkey assertion bound to the request.
+  passkeyApprovalMode String @default("SENSITIVE")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
