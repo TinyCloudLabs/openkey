@@ -364,9 +364,9 @@ if (!backend) {
         ['opaque Origin', { cookie, origin: 'null' }, 403],
         ['session bearer', { origin, authorization: `Bearer ${signedSessionBearer}` }, 403],
         ['cookie plus session bearer', { cookie, origin, authorization: `Bearer ${signedSessionBearer}` }, 403],
-        // Better Auth interprets the bearer as a session credential before
-        // the route guard: an OAuth token cannot authenticate that session.
-        ['cookie plus OAuth bearer', { cookie, origin, authorization: `Bearer ${rawBearer}` }, 401],
+        // Better Auth takes only a signed bearer as a session, so the cookie
+        // authenticates and the route guard refuses any bearer.
+        ['cookie plus OAuth bearer', { cookie, origin, authorization: `Bearer ${rawBearer}` }, 403],
       ];
       for (const [category, headers, status] of denials) {
         const response = await postPrimary('next', headers);
