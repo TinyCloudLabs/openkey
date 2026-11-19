@@ -7,6 +7,7 @@ import { makeRecapResource } from '../../../../packages/capability-review/test/f
 import { generateKeyPairSync } from 'node:crypto';
 import { PUBLIC_DELEGATION_FIELDS } from '@openkey/delegation-code-fields';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { fullCodeFromBox, recordClipboard } from './approval-code-fixtures';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
 const space = `tinycloud:pkh:eip155:1:${address}:default`;
@@ -99,6 +100,7 @@ test.describe('TC-659 CLI /delegate consent parity', () => {
 });
 
 test('manual OpenKey login mints a short code from public fields and keeps the full delegation', async ({ page }) => {
+  await recordClipboard(page);
   await mock(page);
   const delegation = {
     delegationHeader: { Authorization: 'Bearer signed' },
@@ -123,8 +125,8 @@ test('manual OpenKey login mints a short code from public fields and keeps the f
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   await expect(page.getByText('SF23-22CS')).toBeVisible();
-  await page.getByText('Use full delegation code instead').click();
-  const fullCode = await page.getByRole('textbox', { name: 'Full delegation code' }).inputValue();
+  await page.getByRole('button', { name: 'Use the full delegation code instead' }).click();
+  const fullCode = await fullCodeFromBox(page);
   expect(JSON.parse(Buffer.from(fullCode, 'base64').toString('utf8'))).toEqual(delegation);
 });
 
@@ -303,8 +305,8 @@ test('short-code API failure shows safe status and code', async ({ page }) => {
   await page.route('**/api/delegation-codes', (route) => json(route, 503, { code: 'short_code_failed', error: 'private broker detail' }));
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
-  const failure = "Couldn't create a short code. Use the full delegation code instead. (Error 503 · short_code_failed)";
-  await expect(page.getByText(failure, { exact: true })).toBeVisible();
+  await expect(page.getByText('OpenKey couldn’t make a short code, so here is the full one. It works the same way.', { exact: true })).toBeVisible();
+  await expect(page.locator('[data-support-line]')).toHaveText('HTTP 503 · short_code_failed');
   const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
   if (shots) await page.screenshot({ path: `${shots}/shortcode.png`, fullPage: false });
 });

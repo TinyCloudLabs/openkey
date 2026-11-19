@@ -97,6 +97,8 @@ export const DONE = {
     heading: 'Signed. Go back to your terminal.',
     line: 'Your terminal has your signature and will finish revoking the permission.',
   },
+  /** The approved /delegate page with no code says this in place of `approved.line`: `{returnTo}` is where the person goes back to (the CLI, Claude…). */
+  returnTo: 'You can close this window and return to {returnTo}.',
   receipt: {
     access: 'Access',
     ends: 'Ends',
@@ -112,6 +114,18 @@ export const DONE = {
       terminalThatShowedCode: 'The terminal that showed the code',
       requester: '{requester}',
     },
+  },
+  /**
+   * How the app's TinyCloud space came out, in a quiet box under the line. `{space}` is the space's short name.
+   * `failed` comes with the server's reason in a fold named `details`.
+   */
+  spaceNote: {
+    ready: 'Your ‘{space}’ space in TinyCloud is ready.',
+    pending: 'Your ‘{space}’ space in TinyCloud is being set up. This can take a minute. The app will continue when it’s ready.',
+    unknown: 'OpenKey couldn’t confirm that your ‘{space}’ space in TinyCloud is set up. The app will tell you what to do.',
+    failed: 'Setting up your ‘{space}’ space in TinyCloud didn’t finish. The app will tell you what to do.',
+    notReady: 'Your ‘{space}’ space in TinyCloud isn’t set up yet. The app will tell you what to do.',
+    details: 'Details',
   },
 } as const;
 
@@ -152,9 +166,16 @@ export const CODE = {
   expired: {
     eyebrow: 'Approved, but not delivered',
     heading: 'This code ran out of time',
-    line: 'Codes last 5 minutes and this one wasn’t used, so no access was handed over. Run the command again to get a new request.',
+    /** The approval is still good, so a new code can be made for it. */
+    lineNewCode: 'Code expired. Get a new code, or start again in the CLI.',
+    /** The approval has ended too: no new code can be made. */
+    lineApprovalEnded: 'Code expired, and so has this approval. Start again in the CLI.',
     box: 'Expired',
+    newCode: 'Get a new code',
+    newCodeFailed: 'Couldn’t get a new code. Try again, or start again in the CLI.',
   },
+  /** Read out once, when a minute is left. */
+  oneMinuteLeft: '1 minute left to use this code.',
 } as const;
 
 /** /device. */

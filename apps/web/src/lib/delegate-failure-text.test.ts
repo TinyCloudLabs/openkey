@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { delegateFailureDetail, delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, isTerminalApprovalFailure, OwnerMessageError, refusalIgnoresKeyChoice, shortCodeFailureText, walletMismatchFailureText } from './delegate-failure-text';
+import { delegateFailureDetail, delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, isTerminalApprovalFailure, OwnerMessageError, refusalIgnoresKeyChoice, walletMismatchFailureText } from './delegate-failure-text';
 
 const changedRequest = "This request changed after you opened it, so OpenKey didn't approve it. Return to the app or command and start again.";
 const approvalCannotProceed = "Couldn't approve this request. Try again.";
@@ -177,19 +177,6 @@ describe('delegateFailureText code mappings', () => {
 
 });
 
-describe('shortCodeFailureText', () => {
-  test('formats coded, status-only, and no-status failures exactly', () => {
-    expect(shortCodeFailureText(503, 'some_code')).toBe(
-      "Couldn't create a short code. Use the full delegation code instead. (Error 503 · some_code)",
-    );
-    expect(shortCodeFailureText(500)).toBe(
-      "Couldn't create a short code. Use the full delegation code instead. (Error 500)",
-    );
-    expect(shortCodeFailureText()).toBe(
-      "Couldn't create a short code. Use the full delegation code instead.",
-    );
-  });
-});
 test('formats device relay delivery failures without server text', () => {
   const prefix = "You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again.";
   expect(deviceRelayFailureText(503, 'some_code')).toBe(`${prefix} (Error 503 · some_code)`);

@@ -95,10 +95,10 @@ test('an expired short code can be re-minted for the same approval', async ({ pa
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   await expect(page.getByText('AAAA-BBBB')).toBeVisible();
-  const copy = page.getByRole('button', { name: 'Copy short code', exact: true });
+  const copy = page.getByRole('button', { name: 'Copy code', exact: true });
   await expect(copy).toHaveCount(1);
   await expect(page.getByRole('button', { name: 'Get a new code' })).toHaveCount(0);
-  await expect(page.getByRole('timer')).toContainText('Code valid for');
+  await expect(page.getByRole('timer')).toContainText('Valid for');
   await expect(copy).toHaveText('Copy code');
 
   const copyBox = await copy.boundingBox();
@@ -112,15 +112,15 @@ test('an expired short code can be re-minted for the same approval', async ({ pa
   const showBox = await showAgain.boundingBox();
   expect(showBox).not.toBeNull();
   expect(copyBox).not.toBeNull();
-  expect(showBox!.y).toBe(copyBox!.y);
+  expect(showBox!.width).toBe(copyBox!.width);
   expect(showBox!.height).toBe(copyBox!.height);
   expect(showBox!.x + showBox!.width / 2).toBeCloseTo(copyBox!.x + copyBox!.width / 2, 0);
   await expect(page.getByText('AAAA-BBBB')).toHaveClass(/line-through/);
   await showAgain.dblclick();
   await expect(page.getByText('CCCC-DDDD')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Copy short code', exact: true })).toHaveText('Copy code');
+  await expect(page.getByRole('button', { name: 'Copy code', exact: true })).toHaveText('Copy code');
   await expect(page.getByRole('button', { name: 'Get a new code' })).toHaveCount(0);
-  await expect(page.getByRole('timer')).toContainText('Code valid for');
+  await expect(page.getByRole('timer')).toContainText('Valid for');
   expect(codeCalls).toHaveLength(2);
   expect(codeCalls[1]).toEqual(codeCalls[0]);
   expect(codeBodies[1]).toBe(codeBodies[0]);
@@ -152,10 +152,10 @@ test('a failed re-mint keeps the expired code and allows retry', async ({ page }
   await showAgain.click();
   await expect(page.getByRole('button', { name: 'Get a new code', exact: true })).toBeVisible();
   await expect(page.getByText('AAAA-BBBB')).toHaveClass(/line-through/);
-  await expect(page.getByText("Couldn't get a new code. Try again, or start again in the CLI.", { exact: true })).toBeVisible();
+  await expect(page.getByText('Couldn’t get a new code. Try again, or start again in the CLI.', { exact: true })).toBeVisible();
   await expect(showAgain).toBeEnabled();
   await showAgain.click();
-  await expect(page.getByText("Couldn't get a new code. Try again, or start again in the CLI.", { exact: true })).toBeVisible();
+  await expect(page.getByText('Couldn’t get a new code. Try again, or start again in the CLI.', { exact: true })).toBeVisible();
   await expect(showAgain).toBeEnabled();
   expect(minted).toBe(3);
 });
@@ -179,7 +179,7 @@ test('an expired approval cannot re-mint its short code', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Get a new code' })).toHaveCount(0);
   await expect(page.getByRole('timer')).toHaveText('Code expired, and so has this approval. Start again in the CLI.');
   await expect(page.getByRole('status').filter({ hasText: 'Code expired, and so has this approval. Start again in the CLI.' })).toHaveCount(1);
-  await expect(page.getByRole('button', { name: 'Copy short code' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Copy code' })).toHaveCount(0);
   expect(minted).toBe(1);
 });
 
@@ -192,7 +192,7 @@ test('a missing or invalid server date uses the five-minute receipt deadline', a
   await page.route('**/api/delegation-codes', (route) => json(route, 201, { code: 'AAAA-BBBB', expiresAt: 'invalid' }));
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
-  await expect(page.getByRole('timer')).toContainText('Code valid for');
+  await expect(page.getByRole('timer')).toContainText('Valid for');
   await expect(page.getByRole('button', { name: 'Get a new code' })).toHaveCount(0);
   await page.clock.fastForward(300_001);
   await expect(page.getByRole('button', { name: 'Get a new code', exact: true })).toBeVisible();
