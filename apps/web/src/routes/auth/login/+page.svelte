@@ -38,6 +38,8 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
+  import TermsStep from '$lib/components/auth/terms-step.svelte';
+  import { oauthClientName, pendingTerms, type TermsStatus } from '$lib/terms';
 
   // 'passkey' is the enrolment offer; 'passkeySignIn' and 'social' are native-mode landing steps.
   // 'social' is the frame shown while opening a provider or checking its return.
@@ -99,6 +101,38 @@
   // A native Google or Apple return that needs a choice (TC-1188 R3/R5).
   let socialConfirmation = $state<SocialContinuation | null>(null);
   const socialName = $derived(socialProvider ? socialProviderName(socialProvider) : null);
+  // TC-3232: an account that has not accepted the current Terms sees them right after signing in,
+  // before the passkey offer or anything else; `afterTerms` is where sign-in was headed.
+  let terms = $state<{ status: TermsStatus; email: string; appName: string | null } | null>(null);
+  let afterTerms: (() => void | Promise<void>) | null = null;
+
+  async function askTermsFirst(next: () => void | Promise<void>): Promise<boolean> {
+    const status = await pendingTerms();
+    if (!status) return false;
+    const session = await authClient.getSession().catch(() => null);
+    const clientId = getOAuthQuery() ? new URLSearchParams(getOAuthQuery()).get('client_id') : null;
+    terms = { status, email: session?.data?.user.email ?? email, appName: clientId ? await oauthClientName(clientId) : null };
+    afterTerms = next;
+    return true;
+  }
+
+  async function termsAccepted() {
+    const next = afterTerms;
+    // Held while the Terms were pending, it can only be the provider's own Terms step: authorize
+    // again from the signed query instead, now that the account has accepted.
+    oauthRedirectUrl = undefined;
+    terms = null;
+    afterTerms = null;
+    await next?.();
+  }
+
+  function signInAgain() {
+    terms = null;
+    afterTerms = null;
+    otp = '';
+    error = '';
+    step = 'email';
+  }
 
   function getOAuthQuery(): string | undefined {
     return safeOAuthAuthorizeQuery($page.url.searchParams);
@@ -121,7 +155,12 @@
     return true;
   }
 
-  function handlePostSignIn() {
+  async function handlePostSignIn() {
+    if (await askTermsFirst(leaveSignIn)) return;
+    leaveSignIn();
+  }
+
+  function leaveSignIn() {
     if (oauthRedirectUrl && navigateToOAuthRedirect(oauthRedirectUrl)) return;
     const oauthQuery = getOAuthQuery();
     const redirect = normalizeAuthReturnTo(
@@ -404,6 +443,7 @@
   }
 
   async function continueAfterEmailSignIn() {
+    if (await askTermsFirst(continueAfterEmailSignIn)) return;
     // The API normally provisions a key in its user hook; this keeps the user
     // moving if that non-critical hook needs to be retried.
     try {
@@ -534,7 +574,17 @@
   <meta name="referrer" content="no-referrer" />
 </svelte:head>
 
-{#if native}
+{#if terms}
+  <TermsStep
+    status={terms.status}
+    surface={native ? 'native' : 'web'}
+    email={terms.email}
+    clientId={native?.clientId ?? null}
+    appName={terms.appName}
+    onaccepted={termsAccepted}
+    onsignin={signInAgain}
+  />
+{:else if native}
   <NativeShell clientId={native.clientId} heading={(name) => `Sign in to ${name}`}>
     {#if error}
       <div class="nb-error" role="alert">{error}</div>

@@ -59,6 +59,7 @@ import { betterAuthLog, log, logError } from './log';
 import { withReviewerDatabase } from './services/reviewer-database';
 import { reviewerAuth } from './services/reviewer-auth';
 import { REVIEWER_MAX_SECONDS, capturedReviewer, reviewerActive, reviewerForUser } from './services/reviewer-accounts';
+import { hasAcceptedTerms, termsRequired } from './services/terms';
 import { capSessionRefresh } from './services/session-cap';
 import { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS } from './services/session-lifetime';
 import { renewalLeaseSignOutPlugin } from './services/renewal-lease-sign-out';
@@ -459,6 +460,14 @@ export const auth = betterAuth({
       requestUriResolver: ({ requestUri, clientId }) => resolveRequestUri(prisma, requestUri, clientId),
       loginPage: `${origin}/auth/login`,
       consentPage: `${origin}/oauth/consent`,
+      // TC-3232: an account that has not accepted the current Terms is sent to the Terms screen before
+      // consent or a code, and resumes with POST /oauth2/continue {postLogin: true}.
+      postLogin: {
+        page: `${origin}/auth/terms`,
+        shouldRedirect: async ({ user }: { user: { id: string } }) => !await hasAcceptedTerms(prisma, user.id),
+        // Consents are not scoped by a reference; the provider's type requires the hook.
+        consentReferenceId: () => undefined,
+      },
       allowDynamicClientRegistration: dynamicClientRegistrationEnabled(),
       allowUnauthenticatedClientRegistration: dynamicClientRegistrationEnabled(),
       validAudiences: oauthValidAudiences(baseURL),
@@ -477,6 +486,12 @@ export const auth = betterAuth({
         // locked user, whatever was authorized before the lock.
         if (user && (await prisma.user.findUnique({ where: { id: user.id }, select: { lockedAt: true } }))?.lockedAt) {
           throw new APIError('BAD_REQUEST', { error: 'invalid_grant', error_description: 'The account is locked' });
+        }
+        // TC-3232: no grant issues tokens until the account accepts the Terms. This runs before the provider
+        // rotates a refresh token, so a refused refresh leaves the token usable once the account accepts.
+        if (user && !await hasAcceptedTerms(prisma, user.id)) {
+          const { error_description, terms_url } = termsRequired();
+          throw new APIError('BAD_REQUEST', { error: 'invalid_grant', error_description, terms_url });
         }
         if (user) {
           const reviewer = await reviewerForUser(prisma, user.id);

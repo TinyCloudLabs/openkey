@@ -17,6 +17,7 @@ import { enabledNativeDelegation } from './policy';
 import { storedToken } from './provider-tokens';
 import { NATIVE_DELEGATION_ENDPOINT_PATHS, OPENKEY_SESSION_PROOF_HEADER } from './public-protocol';
 import { credentialHash, SESSION_PROOF_MAX_SKEW_SECONDS, sessionProofJtiHash, verifySessionProofClaims } from './session-proof';
+import { hasAcceptedTerms, termsRequired } from '../terms';
 import { logError, withScheduledLogContext } from '../../log';
 
 const REFRESH_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
@@ -150,6 +151,14 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
     });
     if (consumed.count !== 1) return invalidProof();
     await startSessionProofJtiSweep(db);
+    // TC-3232: like a refresh, a renewal waits for the account to accept the current Terms. The grant and
+    // its token stay as they are, so the app renews once the user has agreed. Revoking stays open.
+    if (operation === 'renew' && !await hasAcceptedTerms(db, candidate.userId)) {
+      const { error_description, terms_url } = termsRequired();
+      return Response.json({ error: 'invalid_grant', error_description, terms_url }, {
+        status: 400, headers: { 'Cache-Control': 'no-store', 'Pragma': 'no-cache' },
+      });
+    }
 
     const nonce = params.get('siwe_nonce');
     let preflightFailure: ReturnType<typeof fail> | null = null;

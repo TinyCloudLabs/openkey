@@ -4,6 +4,7 @@ import { Prisma, type PrismaClient } from '@openkey/db';
 import { enabledNativeDelegation } from './native-delegation/policy';
 import { appleReviewEnabled, APPLE_REVIEW_CLIENT_ID } from './reviewer-apple-policy';
 import { log, logReviewer } from '../log';
+import { recordTermsAcceptance, termsRelease } from './terms';
 
 export const REVIEWER_MAX_SECONDS = 3600;
 export const REVIEWER_STORES = ['openai', 'google', 'apple'] as const;
@@ -180,6 +181,7 @@ export async function initializeReviewers(database: PrismaClient) {
       }
     }
   });
+  await seedReviewerTerms(database);
   for (const store of REVIEWER_STORES) {
     const verifier = restored.get(store);
     if (verifier) verifiers.set(store, verifier);
@@ -195,6 +197,18 @@ export async function initializeReviewersAtBoot(database: PrismaClient) {
     verifiers.clear();
     log('error', 'reviewer_boot_failed');
   }
+}
+
+/**
+ * TC-3232: app-review accounts have no owner to accept the Terms, and store review would stop at the screen.
+ * Each bound account is recorded as accepting the current version, marked as seeded. Runs at every start, so
+ * a new version is seeded when it is deployed.
+ */
+export async function seedReviewerTerms(database: Pick<PrismaClient, 'reviewerAccount' | 'termsAcceptance'>) {
+  const release = termsRelease();
+  if (!release) return;
+  const bindings = await database.reviewerAccount.findMany({ where: { userId: { not: null } }, select: { userId: true } });
+  for (const { userId } of bindings) await recordTermsAcceptance(database, userId!, release, 'reviewer_seed');
 }
 
 export function reviewerStatus(binding: ReviewerBinding) {
