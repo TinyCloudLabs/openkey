@@ -6,7 +6,8 @@ import { recordTermsAcceptance, termsRelease, termsStatus } from '../services/te
 
 /**
  * TC-3232: the required Terms screen's two calls. Mounted ahead of the account router, whose session check
- * refuses an account that has not accepted; these routes are what it accepts with.
+ * refuses an account that has not accepted; these routes are what it accepts with. An acceptance is
+ * recorded only from the browser (cookie session): a session token (widget, CLI) can't stand in for a person.
  */
 export function createAccountTermsRouter(database: PrismaClient) {
   const router = new Hono<SessionContext>();
@@ -20,6 +21,7 @@ export function createAccountTermsRouter(database: PrismaClient) {
 
   // Only the version the screen showed, and only while it is current, is recorded.
   router.post('/accept', async (c) => {
+    if (c.req.header('authorization')) return c.json({ error: 'Terms are accepted in the browser' }, 403);
     const body = await c.req.json().catch(() => null) as { version?: unknown; surface?: unknown; clientId?: unknown } | null;
     const release = termsRelease();
     if (!release || body?.version !== release.version) {

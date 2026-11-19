@@ -11,7 +11,9 @@
   import { socialProviderName } from '$lib/social-continuation';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
   import {
+    delegateFailureDetail,
     delegateFailureText,
+    delegateServerMessage,
     delegateResponseFailureText,
     deviceRelayFailureText,
     DeviceRelayDeliveryError,
@@ -91,10 +93,12 @@
   class DelegateResponseError extends Error {
     readonly code: unknown;
     readonly status: number;
-    constructor(message: string, code: unknown, status: number) {
+    readonly serverMessage: string | undefined;
+    constructor(message: string, code: unknown, status: number, serverMessage?: string) {
       super(message);
       this.code = code;
       this.status = status;
+      this.serverMessage = serverMessage;
     }
   }
   function delegateErrorClassification(cause: unknown, refreshAttempted = false) {
@@ -104,6 +108,7 @@
   }
 
   function delegateErrorMessage(cause: unknown) {
+    errorDetailFor = null;
     if (cause instanceof DeviceRelayDeliveryError) {
       if (cause.status === 409 || cause.status === 410) {
         return delegateResponseFailureText(cause.status, cause.code, {
@@ -124,10 +129,14 @@
       ) {
         return walletMismatchFailureText(expectedAddress, selectedKey.address);
       }
-      return delegateResponseFailureText(cause.status, cause.code, {
+      const text = delegateResponseFailureText(cause.status, cause.code, {
         permissionsEditable: reviewEditing,
         expiryChangeable: expiryChangeControlVisible,
+        serverMessage: cause.serverMessage,
       });
+      const detail = delegateFailureDetail(cause.status, cause.code, cause.serverMessage);
+      if (detail) errorDetailFor = { text, detail };
+      return text;
     }
     return delegateFailureText(cause);
   }
@@ -138,6 +147,9 @@
   let loading = $state(true);
   let selectedKey = $state<EthereumKey | null>(null);
   let error = $state('');
+  // Developer-facing server reason for the message currently in `error`; null unless that message came with one.
+  let errorDetailFor = $state<{ text: string; detail: string } | null>(null);
+  const errorDetail = $derived(errorDetailFor && errorDetailFor.text === error ? errorDetailFor.detail : null);
   let requestExpired = $state(false);
   let approveBlockedByFailure = $state(false);
   let keysLoaded = $state(false);
@@ -855,7 +867,7 @@
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-      throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status);
+      throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status, delegateServerMessage(body));
     }
 
     return res.json();
@@ -1320,7 +1332,7 @@
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status);
+        throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status, delegateServerMessage(body));
       }
 
       const data = await res.json();
@@ -1472,7 +1484,7 @@
 
       if (!compRes.ok) {
         const body = await compRes.json().catch(() => ({ error: 'Unknown error' }));
-        throw new DelegateResponseError(apiBusyOrEndedMessage(compRes.status) ?? (body.error || `HTTP ${compRes.status}`), body.code, compRes.status);
+        throw new DelegateResponseError(apiBusyOrEndedMessage(compRes.status) ?? (body.error || `HTTP ${compRes.status}`), body.code, compRes.status, delegateServerMessage(body));
       }
 
       let data = await compRes.json();
@@ -2046,6 +2058,7 @@
               transport={{
                 approving: delegating || updatingPermissions,
                 error,
+                errorDetail,
                 approveBlockedReason,
                 approveBlockedByFailure,
                 approveDelegate,
