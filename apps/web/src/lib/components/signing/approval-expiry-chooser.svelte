@@ -16,6 +16,7 @@
     chosenMs: number | null;
     /** The longest the requester allows; null when the user may pick any time. */
     maxMs?: number | null;
+    limitNote?: (ms: number) => string;
     disabled?: boolean;
     onChange: (ms: number | null) => void;
     /** Set only when the requester signed a renewal request and can use a lease. */
@@ -24,7 +25,7 @@
     endsAt?: string | null;
   }
 
-  let { requestedMs, chosenMs, maxMs = null, disabled = false, onChange, renewal = null, endsAt = null }: Props = $props();
+  let { requestedMs, chosenMs, maxMs = null, limitNote = expiryLimitNote, disabled = false, onChange, renewal = null, endsAt = null }: Props = $props();
 
   const shownMs = $derived(chosenMs ?? requestedMs);
   const leaseMaxMs = $derived(renewal ? Math.min(renewal.maxLeaseMs, MAX_LEASE_MS) : MAX_LEASE_MS);
@@ -43,7 +44,7 @@
       presets={EXPIRY_PRESETS}
       valueMs={shownMs}
       {maxMs}
-      limitNote={expiryLimitNote}
+      {limitNote}
       {disabled}
       onChoose={chooseWindow}
     />

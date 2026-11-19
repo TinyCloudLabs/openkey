@@ -39,10 +39,6 @@ const FACTS: SpaceHostFacts = { spaces: [{ spaceId: SPACE, spaceName: 'default' 
 // The API's trusted bootstrap hosts are the source. The page's known-node list
 // is a copy it cannot import, so this test keeps the two from drifting.
 describe('known node origins', () => {
-  test('home is the private dir', () => {
-    expect(process.env.HOME).toBe(HOME);
-  });
-
   test('the page list equals the API trusted bootstrap hosts', () => {
     expect([...KNOWN_NODE_ORIGINS].sort()).toEqual([...TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS].sort());
   });

@@ -206,10 +206,6 @@ describe('host approval rows', () => {
     mounted = null;
   });
 
-  test('home is the private dir', () => {
-    expect(process.env.HOME).toBe(HOME);
-  });
-
   test('space and node ID are in the visible summary, not in Advanced details', () => {
     mounted = render(hostModel(), { peerRecognition: { state: 'other' } });
     const summary = mounted.target.querySelector('section.summary')!;

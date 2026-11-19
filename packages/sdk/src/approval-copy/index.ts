@@ -3,6 +3,7 @@
 export { fill } from './fill';
 export type { FillValues } from './fill';
 export {
+  APPROVAL_EXPIRY,
   CLOSE_TAB,
   CODE,
   DEVICE,

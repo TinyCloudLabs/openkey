@@ -44,7 +44,8 @@ globalThis.fetch = Object.assign(function fetchWithRequestId(input: Parameters<t
 }, originalFetch);
 
 const EVENTS = {
-  better_auth: true, otp_delivery_unconfigured: true, auth_key_generated: true, auth_key_generation_failed: true,
+  better_auth: true, otp_delivery_unconfigured: true, otp_delivery_failed: true, auth_key_generated: true,
+  auth_key_generation_failed: true,
   auth_email_signup_confirmation_required: true, auth_email_signup_confirmed: true, auth_email_signup_refused: true,
   auth_social_continuation_cleanup_failed: true, auth_social_token_revoke_failed: true, auth_social_signup_confirmed: true,
   auth_social_notice_failed: true, auth_social_email_review_required: true, auth_apple_revoke_failed: true,
@@ -73,6 +74,8 @@ const EVENTS = {
   tinycloud_bootstrap_sweep_still_failed: true, tinycloud_bootstrap_sweep_exhausted: true,
   tinycloud_bootstrap_sweep_reaped: true,
   tinycloud_bootstrap_sweep_failed: true,
+  renewal_lease_sweep_stopped: true, renewal_lease_sweep_wallet_required: true,
+  renewal_lease_sweep_not_stopped: true, renewal_lease_sweep_failed: true,
   tinycloud_bootstrap_space_registry_completed: true, native_par_valid_request_volume_threshold_reached: true,
   native_par_request_cleanup_failed: true, native_session_proof_cleanup_failed: true,
   scoreboard_protocol_users_call: true, app_sign_in_record_failed: true, permission_entry_unknown_field: true,
@@ -331,6 +334,26 @@ export function logApprovalCodeCleanupFailure(approvalRequestId: string, error: 
   emit('warn', 'approval_code_cleanup_failed', {
     approval_request_id: approvalRequestId,
     error_name: safeErrorFields(error).error_name ?? 'Unknown',
+  });
+}
+
+const PROVIDER_ERROR_NAMES: Record<string, true> = {
+  invalid_idempotency_key: true, validation_error: true, missing_api_key: true, restricted_api_key: true,
+  invalid_api_key: true, not_found: true, method_not_allowed: true, invalid_idempotent_request: true,
+  concurrent_idempotent_requests: true, invalid_attachment: true, invalid_from_address: true, invalid_access: true,
+  invalid_parameter: true, invalid_region: true, missing_required_field: true, monthly_quota_exceeded: true,
+  daily_quota_exceeded: true, rate_limit_exceeded: true, security_error: true, application_error: true,
+  internal_server_error: true,
+};
+
+/** Email provider failure: its error name (closed set, else `other`) and HTTP status only. */
+export function logOtpDeliveryFailed(error: unknown): void {
+  const { name, statusCode } = (typeof error === 'object' && error !== null ? error : {}) as Record<string, unknown>;
+  emit('error', 'otp_delivery_failed', {
+    error_name: typeof name === 'string' && Object.hasOwn(PROVIDER_ERROR_NAMES, name) ? name : 'other',
+    status: typeof statusCode === 'number' && Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599
+      ? statusCode
+      : undefined,
   });
 }
 

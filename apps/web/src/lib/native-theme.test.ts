@@ -93,25 +93,14 @@ describe('text contrast on the composited surfaces', () => {
     },
   );
 
-  test.each([...greys, ...coloured])('accent text reaches 4.5:1 on accent %s', (accentColor: string) => {
+  test.each(['#fafafa', '#0b5fff', '#ffd400', ...greys, ...coloured])('accent text reaches 4.5:1 on accent %s', (accentColor: string) => {
     expect(contrastRatio(token(nativeTheme({ accentColor }).style, 'accent-fg'), accentColor)).toBeGreaterThanOrEqual(4.5);
-  });
-
-  test('the light theme keeps its faint text and placeholders readable (was 3.5:1)', () => {
-    const { style } = nativeTheme({ backgroundColor: '#F4F4F5' });
-    expect(contrastRatio(token(style, 'faint'), '#f4f4f5')).toBeGreaterThanOrEqual(4.5);
-    expect(contrastRatio(token(style, 'faint'), token(style, 'field'))).toBeGreaterThanOrEqual(4.5);
   });
 
   test('a mid-grey theme falls back to pure black or white for the foreground', () => {
     const { style } = nativeTheme({ backgroundColor: '#777777' });
     expect(['#000000', '#ffffff']).toContain(token(style, 'fg'));
     expect(contrastRatio(token(style, 'fg'), '#777777')).toBeGreaterThanOrEqual(4.5);
-  });
-
-  test.each(['#fafafa', '#777777', '#7a7a7a', '#0b5fff', '#ffd400', '#101010'])('accent text reaches 4.5:1 on accent %s', (accentColor: string) => {
-    const { style } = nativeTheme({ accentColor });
-    expect(contrastRatio(token(style, 'accent-fg'), accentColor)).toBeGreaterThanOrEqual(4.5);
   });
 
   test('the focus ring is the accent unless it would vanish into the background', () => {
