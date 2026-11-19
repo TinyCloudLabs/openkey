@@ -130,7 +130,7 @@ test('v2 warns when the exact SIWE has no expiration rather than implying the ti
 
 test('v2 explains an unavailable API before claiming and never enters legacy signing', async ({ page }) => {
   const calls = await setup(page, { authenticated: false });
-  await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
   let claims = 0;
   await page.route('**/api/delegate/handoffs/available', route => json(route, 404, { error: 'Not found' }));
   await page.route('**/api/delegate/handoffs/claim', route => {
@@ -150,7 +150,7 @@ test('v2 explains an unavailable API before claiming and never enters legacy sig
 
 test('v2 keeps the cleared fragment only in tab storage through sign-in and removes it after claim', async ({ page }) => {
   const calls = await setup(page, { authenticated: false });
-  await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).not.toBeNull();
   expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
@@ -164,7 +164,7 @@ test('v2 keeps the cleared fragment only in tab storage through sign-in and remo
 for (const continuation of ['same-tab', 'auth-return'] as const) {
   test(`auth refresh on a signed-out request waits for deliberate ${continuation} continuation`, async ({ page }) => {
     const calls = await setup(page, { authenticated: false });
-    await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
     await page.route('**/api/auth/get-session', route => json(route, 200, {
       session: { id: 's', userId: 'u', expiresAt: '2026-10-16T18:00:00.000Z' },
       user: { id: 'u', email: 'owner@example.test' },
@@ -174,10 +174,10 @@ for (const continuation of ['same-tab', 'auth-return'] as const) {
       const { authClient } = await import(modulePath);
       authClient.$store.notify('$sessionSignal');
     });
-    await expect(page.getByRole('button', { name: 'Continue to approval' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Review the request' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Cancel this request' })).toBeVisible();
     expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
-    if (continuation === 'same-tab') await page.getByRole('button', { name: 'Continue to approval' }).click();
+    if (continuation === 'same-tab') await page.getByRole('button', { name: 'Review the request' }).click();
     else await page.goto('/delegate?transportVersion=2');
     await expect(page.getByText('Only approve if you started this sign-in yourself on your own computer.')).toBeVisible();
     expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(1);
@@ -197,7 +197,7 @@ for (const entry of ['client', 'hash', 'conflict'] as const) {
 
 test('an explicit v1 link replaces pending v2 after sign-in', async ({ page }) => {
   await setup(page, { authenticated: false });
-  await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
   const legacyJwk = Buffer.from(JSON.stringify(jwk)).toString('base64url');
   await page.goto(`/delegate?did=did:key:z6MkLegacy&jwk=${legacyJwk}`);
   await expect.poll(() => page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
@@ -245,7 +245,7 @@ test('a newly navigated v2 fragment replaces the previous pending request', asyn
     document.body.append(link);
   }, fragment);
   await page.locator('#replacement-v2-link').click();
-  await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBe(fragment);
 });
@@ -300,9 +300,9 @@ test('the document bootstrap also discards a previous request when storage repla
 
 test('cancel before authenticated claim clears only tab-scoped request data', async ({ page }) => {
   const calls = await setup(page, { authenticated: false });
-  await expect(page.getByText('Sign in to review this request.')).toBeVisible();
-  await page.getByRole('button', { name: 'Cancel' }).click();
-  await expect(page.getByRole('alert')).toContainText('Approval cancelled');
+  await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel this request' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Cancelled. Nothing was approved.' })).toBeVisible();
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
   expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
   await page.reload();
@@ -319,7 +319,7 @@ test('invalid fragments fail explicitly and leave no pending request', async ({ 
 
 test('an unauthenticated pending request is erased when its five-minute claim window expires', async ({ page }) => {
   await setup(page, { authenticated: false });
-  await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
   await page.clock.fastForward(300_001);
   await expect(page.getByRole('alert')).toContainText(/expired|restart/i);
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
@@ -328,7 +328,7 @@ test('an unauthenticated pending request is erased when its five-minute claim wi
 for (const fullReload of [false, true]) {
   test(`pending v2 tab data expires during ${fullReload ? 'full-document' : 'client'} sign-in navigation`, async ({ page }) => {
     const calls = await setup(page, { authenticated: false });
-    await expect(page.getByText('Sign in to review this request.')).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
     if (!fullReload) await page.evaluate(() => { (window as Window & { __sameDocument?: boolean }).__sameDocument = true; });
     await page.getByRole('link', { name: 'Continue with email' }).click();
     await expect(page).toHaveURL(/\/auth\/login\?redirect=/);

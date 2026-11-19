@@ -4,7 +4,7 @@
   import { onMount } from 'svelte';
   import { authClient, API_BASE, authErrorMessage, confirmEmailSignUp } from '$lib/auth-client';
   import { api } from '$lib/api';
-  import { setSessionToken } from '$lib/embed-passkey';
+  import { readSignedSessionToken, setSessionToken } from '$lib/embed-passkey';
   import { newAccountSignupToken } from '$lib/email-signup';
   import {
     loadConfiguredSocialProviders,
@@ -90,16 +90,7 @@
   }
 
   async function readSessionToken() {
-    const sessionRes = await fetch(`${API_BASE}/api/auth/get-session`, {
-      method: 'GET',
-      credentials: 'include',
-      headers: { 'Accept': 'application/json' },
-    });
-    const sessionBody = await sessionRes.json().catch(() => null);
-    const sessionToken =
-      sessionRes.headers.get('set-auth-token') ||
-      sessionBody?.session?.token ||
-      sessionBody?.token;
+    const sessionToken = await readSignedSessionToken();
     if (!sessionToken) {
       throw new Error('Passkey registered, but no session token was returned.');
     }
