@@ -4,6 +4,9 @@
   import { tick, untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import {
+    answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed,
+  } from '$lib/approval-passkey';
   import { ARCHIVED_KEY_MESSAGE, autoSelectKey, signingKeyChoices } from '$lib/delegate-key-selection';
   import { parseSIWE } from '$lib/siwe-parser';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
@@ -121,8 +124,12 @@
   // must NOT overwrite an in-flight one — the response would escape to
   // the wrong parent.
   let requestSealed = $state(false);
-  // Background previews seal the current selection and exact bytes before Approve is enabled.
-  let heldPreview = $state<SigningPreview | null>(null);
+  // Background previews seal the current selection and exact bytes before Approve is enabled. TC-3442: each carries
+  // the API's passkey offer for those bytes (null when the reply had none: Approve then goes without an assertion).
+  type HeldPreview = SigningPreview & { passkey: ApprovalPasskeyNeed | null };
+  let heldPreview = $state<HeldPreview | null>(null);
+  // TC-3442: a passkey refusal's text stays on screen while the next preview fetches a new offer.
+  let keepPasskeyRefusal = false;
   const previewSignedMessage = $derived(heldPreview?.signedMessage ?? null);
   let previewToken = $state<string | null>(null);
   let contextDeadline = 0;
@@ -861,7 +868,29 @@
     return () => clearTimeout(timer);
   });
 
-  function currentPreview(): SigningPreview | null {
+  // TC-3442: the exact-byte path asks whether Approve needs the passkey for exactly this key, message and site. An
+  // external key never gets an offer; a passkey refusal spends the challenge, so the revision fetches a new one.
+  const exactBytePasskeyInput = $derived.by(() =>
+    key && key.keyType === 'MANAGED' && !externalSignMode && message && reviewModel && !siweRefusal && !canUseAuthorizeSignFn()
+      ? JSON.stringify([key.id, message, origin === '*' ? null : origin])
+      : null,
+  );
+  let exactBytePasskey = $state<{ input: string; need: ApprovalPasskeyNeed } | null>(null);
+  let exactBytePasskeyRevision = $state(0);
+  $effect(() => {
+    const input = exactBytePasskeyInput;
+    void exactBytePasskeyRevision;
+    if (input === null) return;
+    const [offerKeyId, offerMessage, offerOrigin] = JSON.parse(input) as [string, string, string | null];
+    let current = true;
+    // A failed fetch leaves the offer unknown: Approve goes without an assertion and a refusal fetches again.
+    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined)
+      .then((need) => { if (current) exactBytePasskey = { input, need }; })
+      .catch(() => {});
+    return () => { current = false; };
+  });
+
+  function currentPreview(): HeldPreview | null {
     const preview = heldPreview;
     return !previewStopped && !signing && !previewing && preview &&
       preview.input === previewInput && preview.revision === previewRevision &&
@@ -897,7 +926,8 @@
     const selectedIds = currentSelectedActionIds();
     const requestedExpiry = expiryChoiceMs === null ? null : expiryAt(expiryChoiceMs);
     previewing = true;
-    error = '';
+    if (keepPasskeyRefusal) keepPasskeyRefusal = false;
+    else error = '';
     try {
       let token = performance.now() < contextDeadline ? previewToken : null;
       if (!token) {
@@ -1058,6 +1088,10 @@
         input, revision, authorizationContextToken: token,
         previewApprovalToken: previewResult.previewApprovalToken,
         signedMessage: previewResult.signedMessage, selectedActionIds: selectedIds, deadline,
+        // TC-3442: the API's passkey offer for these bytes; a reply without one leaves it unknown (null).
+        passkey: typeof (previewResult.passkey as { required?: unknown } | null | undefined)?.required === 'boolean'
+          ? previewResult.passkey as ApprovalPasskeyNeed
+          : null,
       };
     } catch (e: any) {
       if (!isCurrent()) return;
@@ -1095,8 +1129,24 @@
       if (!previewing) invalidatePreviewForSelectionEdit();
       return;
     }
+    const passkeyNeed = externalSignMode
+      ? null
+      : approved
+        ? approved.passkey
+        : exactBytePasskey?.input === exactBytePasskeyInput ? exactBytePasskey.need : null;
     signing = true;
     error = '';
+    // TC-3442: the passkey prompt comes first, straight from the tap. A dismissed prompt reached nothing: the same
+    // offer (and preview) stays for the next tap.
+    let passkeyAssertion: ApprovalPasskeyAssertion | undefined;
+    try {
+      passkeyAssertion = await answerApprovalPasskey(passkeyNeed);
+    } catch (e: unknown) {
+      error = (e as Error).message;
+      signing = false;
+      return;
+    }
+    let passkeyRefused = false;
     try {
       if (approved) {
         const { authorizationContextToken, previewApprovalToken, signedMessage } = approved;
@@ -1130,6 +1180,7 @@
               previewApprovalToken,
               selectedActionIds,
               protocolVersion: 1,
+              passkeyAssertion,
             }),
           }),
         );
@@ -1158,7 +1209,9 @@
 
       // Exact-byte signing cannot narrow the request: show every parsed
       // action and report the full set rather than a UI-only selection.
-      const result = await api.signMessage(key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0);
+      const result = await api.signMessage(
+        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion,
+      );
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
             service: grant.service,
@@ -1183,12 +1236,22 @@
       if (e instanceof ServerRefusalError) refuse(e);
       else if (e instanceof ServerReplyError) unreadableReply(e.status);
       else if (!refuse(e)) error = e.message || 'Signing failed';
+      // TC-3442: the API refused over the passkey; its text is shown and the spent challenge is replaced below.
+      passkeyRefused = isPasskeyApprovalRefusal(e);
     } finally {
       signing = false;
       if (approved && !previewStopped) {
         previewToken = null;
         contextDeadline = 0;
         heldPreview = null;
+        if (passkeyRefused) {
+          keepPasskeyRefusal = true;
+          invalidatePreviewForSelectionEdit();
+        }
+      }
+      if (!approved && passkeyRefused) {
+        exactBytePasskey = null;
+        exactBytePasskeyRevision++;
       }
     }
   }
