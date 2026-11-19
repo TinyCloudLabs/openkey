@@ -22,7 +22,7 @@ test.each([3599, 3600, 3601])('the Hono guard independently enforces reviewer ag
     createdAt: new Date(now - age * 1000), expiresAt: new Date(now + 7 * 86400_000),
   }) } } as unknown as PrismaClient;
   const app = new Hono();
-  app.use('/api/*', createReviewerRouteGuard(database, async () => ({ userId: binding.userId, sessionId: 'session' })));
+  app.use('/api/*', createReviewerRouteGuard(database, async () => [{ userId: binding.userId, sessionId: 'session' }]));
   // No delegation resolver or Better Auth hook runs behind this guard.
   app.post('/api/delegate/prepare', (c) => c.json({ reached: true }));
   const response = await app.request('/api/delegate/prepare', { method: 'POST' });
