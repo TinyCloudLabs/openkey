@@ -6,7 +6,7 @@
   import Icon from '$lib/components/approval/icon.svelte';
   import Slip from '$lib/components/approval/slip.svelte';
   import { focusHeading } from '$lib/components/approval/focus-heading';
-  import { browserCloseEnvironment, closeThisTab } from '$lib/delegate-close-tab';
+  import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
   import {
     cleanConsentText,
     deviceRequestDefaultSeconds,
@@ -27,7 +27,7 @@
     splitStatementCode,
     type CapabilityGrant,
   } from '@openkey/capability-review';
-  import { DEVICE, TAB_KEPT_OPEN } from '@openkey/sdk/approval-copy';
+  import { DEVICE } from '@openkey/sdk/approval-copy';
 
   const session = authClient.useSession();
   let userCode = $state($page.url.searchParams.get('user_code') ?? '');
@@ -41,9 +41,6 @@
   let expired = $state(false);
   /** "No, it's different": nothing is sent, the request runs out by itself. */
   let saidNo = $state(false);
-  let tabKept = $state(false);
-  let tabKeptLine = $state<HTMLParagraphElement | null>(null);
-  let cancelClose: (() => void) | null = null;
   /** The CLI's requested lifetime, fixed when the request is looked up. */
   let maxLifetimeSeconds = $state(0);
   let lifetimeSeconds = $state(0);
@@ -133,18 +130,6 @@
     request = null;
   }
 
-  function closeTab() {
-    cancelClose?.();
-    cancelClose = closeThisTab(browserCloseEnvironment(), () => { tabKept = true; });
-  }
-
-  // A pending close check is cancelled when the page goes.
-  $effect(() => () => cancelClose?.());
-
-  $effect(() => {
-    if (tabKept) tabKeptLine?.focus();
-  });
-
   // Look up a code from the link once on load; a typed code only on submit,
   // so partial codes never hit the API or show an error (TC-660).
   // svelte-ignore state_referenced_locally
@@ -169,13 +154,9 @@
     </div>
     <h1 use:focusHeading class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950">{DEVICE.noHeading}</h1>
     <p class="m-0 mb-3.5 text-pretty">{DEVICE.noLine}</p>
-    <div class="mt-1.5 grid w-full gap-2.5">
-      {#if tabKept}
-        <p bind:this={tabKeptLine} tabindex="-1" role="status" class="m-0 text-[13px] leading-normal text-surface-500 outline-none">{TAB_KEPT_OPEN}</p>
-      {:else}
-        <Button class="w-full" onclick={closeTab}>{DEVICE.noClose}</Button>
-      {/if}
-      <Button variant="ghost" class="w-full" onclick={() => { saidNo = false; tabKept = false; }}>{DEVICE.noMisread}</Button>
+    <div class="grid w-full gap-2.5">
+      <CloseTabButton />
+      <Button variant="ghost" class="w-full" onclick={() => { saidNo = false; }}>{DEVICE.noMisread}</Button>
     </div>
   {:else}
     <p class="m-0 mb-2.5 text-[11.5px] font-semibold tracking-[0.09em] text-surface-500 uppercase">{DEVICE.eyebrow}</p>
