@@ -16,10 +16,14 @@
   import PasskeyStepUpDialog from '$lib/components/auth/passkey-step-up-dialog.svelte';
   import { passkeyStepUpMethods, type PasskeyStepUpMethod, type PasskeyStepUpPurpose } from '$lib/passkey-step-up';
   import {
+    answerApprovalPasskey,
     confirmWithPasskey,
+    isPasskeyApprovalRefusal,
     lowersPasskeyApprovalMode,
     passkeyApprovalCopy,
     passkeyApprovalSettingError,
+    type ApprovalPasskeyAssertion,
+    type ApprovalPasskeyNeed,
     type PasskeyApprovalMode,
     type PasskeyApprovalSetting,
   } from '$lib/approval-passkey';
@@ -89,6 +93,11 @@
   let tinyCloudConfirmationDialog = $state<HTMLDivElement | null>(null);
   let tinyCloudConfirmationInput = $state<HTMLInputElement | null>(null);
   let tinyCloudConfirmationReturnFocus = $state<HTMLElement | null>(null);
+  // TC-3442: taking shared control and allowing an app may need the passkey. The confirm step holds the offer for its
+  // change: null until it arrives, when the fetch failed (the API's refusal then says why), or for a disconnect.
+  let tinyCloudPasskeyNeed = $state<ApprovalPasskeyNeed | null>(null);
+  let tinyCloudPasskeyRequest = 0;
+  let tinyCloudConfirmationError = $state('');
 
   // Edit state
   let editingId = $state<string | null>(null);
@@ -260,16 +269,37 @@
   function openTinyCloudConfirmation(confirmation: NonNullable<typeof tinyCloudConfirmation>) {
     tinyCloudConfirmationReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     tinyCloudConfirmationText = '';
+    tinyCloudConfirmationError = '';
     tinyCloudConfirmation = confirmation;
+    loadTinyCloudPasskey(confirmation);
     void tick().then(() => tinyCloudConfirmationInput?.focus());
+  }
+
+  function loadTinyCloudPasskey(confirmation: NonNullable<typeof tinyCloudConfirmation>) {
+    const request = ++tinyCloudPasskeyRequest;
+    tinyCloudPasskeyNeed = null;
+    const offer = confirmation.kind === 'mode'
+      ? api.tinyCloudManageKeyPasskey(confirmation.mode, tinyCloudManageKeyPolicyEpoch)
+      : confirmation.kind === 'app'
+        ? api.tinyCloudManageKeyAppPasskey(confirmation.app.clientId, confirmation.enabled, tinyCloudManageKeyPolicyEpoch)
+        : null;
+    offer?.then((need) => { if (request === tinyCloudPasskeyRequest) tinyCloudPasskeyNeed = need; }, () => {});
   }
 
   function dismissTinyCloudConfirmation() {
     const returnFocus = tinyCloudConfirmationReturnFocus;
     tinyCloudConfirmation = null;
     tinyCloudConfirmationText = '';
+    tinyCloudConfirmationError = '';
     tinyCloudConfirmationReturnFocus = null;
+    tinyCloudPasskeyRequest++;
+    tinyCloudPasskeyNeed = null;
     void tick().then(() => returnFocus?.focus());
+  }
+
+  /** The API's passkey refusals speak of an Approve button; Settings has none, so it shows its own line for them. */
+  function tinyCloudChangeError(e: any, fallback: string): string {
+    return isPasskeyApprovalRefusal(e) ? passkeyApprovalCopy.cancelled : e?.message || fallback;
   }
 
   function handleTinyCloudConfirmationKeydown(event: KeyboardEvent) {
@@ -292,7 +322,9 @@
     focusable[nextIndex].focus();
   }
 
-  async function setTinyCloudManageKeyPreference(mode: TinyCloudManageKeyPreference['mode']) {
+  async function setTinyCloudManageKeyPreference(
+    mode: TinyCloudManageKeyPreference['mode'], passkeyAssertion?: ApprovalPasskeyAssertion,
+  ) {
     if (loadingTinyCloudManageKey || savingTinyCloudManageKey) return;
     const previous = tinyCloudManageKeyEnabled;
     const previousMode = tinyCloudManageKeyMode;
@@ -301,14 +333,14 @@
     savingTinyCloudManageKey = true;
     tinyCloudManageKeyError = '';
     try {
-      const result = await api.updateTinyCloudManageKeyPreference(mode, tinyCloudManageKeyPolicyEpoch, 'TAKE CONTROL');
+      const result = await api.updateTinyCloudManageKeyPreference(mode, tinyCloudManageKeyPolicyEpoch, 'TAKE CONTROL', passkeyAssertion);
       tinyCloudManageKeyEnabled = result.tinyCloudManageKeyEnabled;
       tinyCloudManageKeyMode = result.mode;
       tinyCloudManageKeyPolicyEpoch = result.policyEpoch;
     } catch (e: any) {
       tinyCloudManageKeyEnabled = previous;
       tinyCloudManageKeyMode = previousMode;
-      tinyCloudManageKeyError = e.message || 'Failed to update TinyCloud signing preference';
+      tinyCloudManageKeyError = tinyCloudChangeError(e, 'Failed to update TinyCloud signing preference');
       if (e.status === 409) await loadTinyCloudManageKeyPreference();
     } finally {
       savingTinyCloudManageKey = false;
@@ -336,7 +368,9 @@
     }
   }
 
-  async function setTinyCloudManageKeyApp(app: TinyCloudManageKeyApp, enabled: boolean) {
+  async function setTinyCloudManageKeyApp(
+    app: TinyCloudManageKeyApp, enabled: boolean, passkeyAssertion?: ApprovalPasskeyAssertion,
+  ) {
     if (savingTinyCloudAppId || app.disabled) return;
     const previous = app.enabled;
     tinyCloudApps = tinyCloudApps.map((candidate) => candidate.clientId === app.clientId
@@ -345,7 +379,7 @@
     savingTinyCloudAppId = app.clientId;
     tinyCloudAppSaveError = '';
     try {
-      const result = await api.updateTinyCloudManageKeyApp(app.clientId, enabled, tinyCloudManageKeyPolicyEpoch, 'TAKE CONTROL');
+      const result = await api.updateTinyCloudManageKeyApp(app.clientId, enabled, tinyCloudManageKeyPolicyEpoch, 'TAKE CONTROL', passkeyAssertion);
       tinyCloudApps = tinyCloudApps.map((candidate) => candidate.clientId === result.clientId
         ? { ...candidate, enabled: result.enabled }
       : candidate);
@@ -355,7 +389,7 @@
       tinyCloudApps = tinyCloudApps.map((candidate) => candidate.clientId === app.clientId
         ? { ...candidate, enabled: previous }
         : candidate);
-      tinyCloudAppSaveError = e.message || 'Failed to update TinyCloud app permission';
+      tinyCloudAppSaveError = tinyCloudChangeError(e, 'Failed to update TinyCloud app permission');
       if (e.status === 409) await loadTinyCloudManageKeyApps();
     } finally {
       savingTinyCloudAppId = null;
@@ -378,9 +412,18 @@
   async function confirmTinyCloudChange() {
     if (!tinyCloudConfirmation || tinyCloudConfirmationText !== (tinyCloudConfirmation.kind === 'disconnect' ? tinyCloudDisconnectCopy.confirmation : 'TAKE CONTROL')) return;
     const action = tinyCloudConfirmation;
+    let passkeyAssertion: ApprovalPasskeyAssertion | undefined;
+    try {
+      // First, before any other await: the passkey prompt needs the tap's user gesture.
+      passkeyAssertion = await answerApprovalPasskey(tinyCloudPasskeyNeed);
+    } catch (e) {
+      // Nothing reached the API: the confirm step stays, and the same offer can be tried again.
+      tinyCloudConfirmationError = (e as Error).message;
+      return;
+    }
     dismissTinyCloudConfirmation();
-    if (action.kind === 'mode') await setTinyCloudManageKeyPreference(action.mode);
-    else if (action.kind === 'app') await setTinyCloudManageKeyApp(action.app, action.enabled);
+    if (action.kind === 'mode') await setTinyCloudManageKeyPreference(action.mode, passkeyAssertion);
+    else if (action.kind === 'app') await setTinyCloudManageKeyApp(action.app, action.enabled, passkeyAssertion);
     else await disconnectTinyCloudApp(action.app);
   }
 
@@ -861,6 +904,9 @@
           class="flex h-10 w-full rounded-xl border border-surface-200 bg-white px-3 py-2 text-sm text-surface-900 placeholder:text-surface-400 focus-visible:outline-none focus-visible:border-primary-500 focus-visible:ring-2 focus-visible:ring-primary-200"
         />
         <p class="mt-2 text-xs text-surface-500">{tinyCloudDisconnectCopy.sessionNote}</p>
+        {#if tinyCloudConfirmationError}
+          <p class="mt-3 text-sm text-red-600" role="alert">{tinyCloudConfirmationError}</p>
+        {/if}
         <div class="mt-6 flex justify-end gap-3">
           <Button variant="secondary" onclick={dismissTinyCloudConfirmation}>Cancel</Button>
           <Button onclick={confirmTinyCloudChange} disabled={tinyCloudConfirmationText !== (tinyCloudConfirmation.kind === 'disconnect' ? tinyCloudDisconnectCopy.confirmation : 'TAKE CONTROL')}>
