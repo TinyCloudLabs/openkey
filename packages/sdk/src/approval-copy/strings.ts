@@ -119,10 +119,10 @@ export const DONE = {
    */
   spaceNote: {
     ready: 'Your ‘{space}’ space in TinyCloud is ready.',
-    pending: 'Your ‘{space}’ space in TinyCloud is being set up. This can take a minute. The app will continue when it\'s ready.',
-    unknown: 'OpenKey couldn\'t confirm that your ‘{space}’ space in TinyCloud is set up. The app will tell you what to do.',
-    failed: 'Setting up your ‘{space}’ space didn\'t finish. The app will tell you what to do.',
-    notReady: 'Your ‘{space}’ space in TinyCloud isn\'t set up yet. The app will tell you what to do.',
+    pending: 'Your ‘{space}’ space in TinyCloud is being set up. This can take a minute. The app will continue when it’s ready.',
+    unknown: 'OpenKey couldn’t confirm that your ‘{space}’ space in TinyCloud is set up. The app will tell you what to do.',
+    failed: 'Setting up your ‘{space}’ space in TinyCloud didn’t finish. The app will tell you what to do.',
+    notReady: 'Your ‘{space}’ space in TinyCloud isn’t set up yet. The app will tell you what to do.',
     details: 'Details',
   },
 } as const;
