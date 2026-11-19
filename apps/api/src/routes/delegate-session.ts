@@ -593,7 +593,8 @@ export function resolvePermissionSpace(space: string, signer: { address: string;
   if (!space.startsWith('tinycloud:')) return makeSpaceId(signer.address, signer.chainId, space);
   const pkh = /^tinycloud:pkh:eip155:([1-9][0-9]*):(0x[0-9a-fA-F]{40}):([^:/]+)$/.exec(space);
   if (!pkh || pkh[1] !== String(signer.chainId) || pkh[2]!.toLowerCase() !== signer.address.toLowerCase()) {
-    throw new DelegateRequestError('invalid_permissions', 'Requested spaces must belong to the signing account');
+    const owner = pkh && pkh[2]!.toLowerCase() !== signer.address.toLowerCase() ? pkh[2] : undefined;
+    throw new DelegateRequestError('invalid_permissions', 'Requested spaces must belong to the signing account', undefined, owner);
   }
   return makeSpaceId(signer.address, signer.chainId, pkh[3]!);
 }

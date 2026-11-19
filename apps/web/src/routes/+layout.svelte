@@ -15,6 +15,8 @@
     $page.url.pathname.startsWith('/oauth/') ||
     $page.url.pathname.startsWith('/delegate') ||
     $page.route.id === '/a/[id]' ||
+    // The device page draws its own frame, like the other approval pages.
+    $page.url.pathname === '/device' ||
     $page.url.pathname.startsWith('/console') ||
     // The dev-only parity harness route hosts a bare adapter mount so
     // Playwright tests can drive it without surrounding chrome

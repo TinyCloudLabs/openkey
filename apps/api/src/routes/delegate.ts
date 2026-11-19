@@ -1696,7 +1696,7 @@ delegateRouter.post('/', async (c) => {
       assertBaselineSubset(preparedEntries, baseline);
       assertRequiredActions(preparedEntries, baseline);
     } catch (e) {
-      return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
+      return c.json(delegateErrorResponse(e, 'Invalid delegation', 'invalid_permissions'), 400);
     }
 
     // Sol MAJOR-5: derive the EXACT set of action IDs encoded in the
@@ -1908,7 +1908,7 @@ delegateRouter.post('/', async (c) => {
       return c.json(await saveApprovalDelegation(body, user.id, delegation, { renewal: bound.renewal, host, sessionId: c.get('session')?.id ?? null, signOwner: (message) => signManagedKey(key, ownerSealedBlob, message) }));
     } catch (error) {
       if (body.approvalRequestId !== undefined && (hostActivated || activationMayStillApply)) {
-        // A timeout also sends a best-effort revoke (TC-2795).
+        // A timeout also sends a best-effort revoke, which can land before a late activation (TC-2795).
         await revokeActivatedManagedDelegation(host, key, key.sealedBlob, ownerDid, session.delegationCid);
       }
       throw error;
@@ -2104,7 +2104,7 @@ delegateRouter.post('/prepare', async (c) => {
   });
 
   if (!key) {
-    return c.json({ error: 'Key not found' }, 404);
+    return c.json({ error: 'Key not found', code: 'key_not_found' }, 404);
   }
 
   const address = ensureEip55(key.address);
@@ -2412,7 +2412,7 @@ delegateRouter.post('/complete', async (c) => {
     assertBaselineSubset(entries, baseline);
     assertRequiredActions(entries, baseline);
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
+    return c.json(delegateErrorResponse(e, 'Invalid delegation', 'invalid_permissions'), 400);
   }
 
   const preparedAddress = signedFields.address;
@@ -2683,7 +2683,7 @@ delegateRouter.post('/complete', async (c) => {
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
   };
-  // External-wallet approvals: OpenKey holds neither the wallet key nor the session key, so this path doesn't revoke (TC-2795).
+  // External-wallet approvals: OpenKey holds neither the wallet key nor the session key, so this path doesn't revoke. The grant's lifetime is whatever the owner chose, with no 24 h bound or 30-day cap (TC-2795).
   return c.json(await saveApprovalDelegation(body, user.id, delegation, { renewal: boundRenewal, host: body.host, sessionId: c.get('session')?.id ?? null }));
   } catch (error) {
     await releaseApprovalDelegation(body);
