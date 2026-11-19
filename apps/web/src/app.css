@@ -25,6 +25,14 @@
   --color-surface-900: #1a1c21;
   --color-surface-950: #0f1115;
 
+  /* The approval pages: a notice's tint and its border. */
+  --color-green-wash: #effaf3;
+  --color-green-line: #b7e4c7;
+  --color-red-wash: #fef4f2;
+  --color-red-line: #f5c6c0;
+  --color-amber-wash: #fff8ea;
+  --color-amber-line: #f0d59b;
+
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Monaco, Consolas, monospace;
 }
