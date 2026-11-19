@@ -1,6 +1,7 @@
 import { randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Resend } from 'resend';
 import type { PrismaClient } from '@openkey/db';
+import { stepUpCodeDigest } from './email-code-storage';
 
 const TTL_MS = 5 * 60 * 1000;
 const ATTEMPTS = 3;
@@ -76,13 +77,14 @@ export async function sendAccountStepUpCode(
   const identifier = stepUpIdentifier(sessionId, email, purpose);
   const now = new Date();
   const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+  const digest = stepUpCodeDigest(identifier, code);
   const issued = await database.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "session" WHERE id = ${sessionId} FOR UPDATE`;
     const existing = await tx.verification.findFirst({ where: { identifier, expiresAt: { gt: now } } });
     if (existing) return false;
     await tx.verification.deleteMany({ where: { identifier } });
     await tx.verification.create({ data: {
-      id: randomUUID(), identifier, value: `${code}:0`,
+      id: randomUUID(), identifier, value: `${digest}:0`,
       expiresAt: new Date(now.getTime() + TTL_MS),
     } });
     return true;
@@ -98,7 +100,7 @@ export async function sendAccountStepUpCode(
       });
       if (result.error) throw result.error;
     } catch {
-      await database.verification.deleteMany({ where: { identifier, value: `${code}:0` } });
+      await database.verification.deleteMany({ where: { identifier, value: `${digest}:0` } });
       return 'unavailable';
     }
   }
@@ -123,7 +125,9 @@ export async function verifyAccountStepUpCode(
     const stored = row.value.slice(0, separator);
     const attempts = Number(row.value.slice(separator + 1));
     if (attempts >= ATTEMPTS) return false;
-    if (!timingSafeEqual(Buffer.from(code), Buffer.from(stored))) {
+    const expected = Buffer.from(stepUpCodeDigest(identifier, code));
+    const actual = Buffer.from(stored);
+    if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
       await tx.verification.update({ where: { id: row.id }, data: { value: `${stored}:${attempts + 1}` } });
       return false;
     }

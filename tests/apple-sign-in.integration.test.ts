@@ -147,11 +147,8 @@ if (!backend) {
   }
   async function stepUp(cookie: string, userId: string): Promise<void> {
     expect((await post('/api/account/step-up/email-otp/send', {}, cookie)).status).toBe(200);
-    const session = await prisma.session.findFirstOrThrow({ where: { userId }, orderBy: { createdAt: 'desc' } });
-    const verification = await prisma.verification.findFirstOrThrow({
-      where: { identifier: { startsWith: `openkey-account-step-up-otp:${session.id}:` } },
-    });
-    expect((await post('/api/account/step-up/email-otp/verify', { code: verification.value.split(':')[0] }, cookie)).status).toBe(200);
+    const code = /<p>(\d{6})<\/p>/.exec(mail.at(-1)?.html ?? '')?.[1];
+    expect((await post('/api/account/step-up/email-otp/verify', { code }, cookie)).status).toBe(200);
   }
   async function newContinuation(sub: string, email: string) {
     const { response } = await appleCallback(profile(sub, email));

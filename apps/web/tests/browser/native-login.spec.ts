@@ -520,7 +520,7 @@ test.describe('native login', () => {
       let confirm: unknown = null;
       await page.route('**/api/auth/social/confirm', (route) => {
         confirm = route.request().postDataJSON();
-        return json(route, { token: 'session' });
+        return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'set-auth-token': 'session' }, body: JSON.stringify({ token: 'session' }) });
       });
       await page.route('**/api/auth/oauth2/authorize**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<p>authorize</p>' }));
       await page.goto(appleReturn({ error: 'new_account', continuation: CONTINUATION }));

@@ -40,11 +40,12 @@ jobs:
 
       # The API imports @openkey/db and @openkey/tee from their built dist/,
       # and @openkey/db needs the generated Prisma client. The tests that drive
-      # the signing pages' own code load @openkey/capability-review from its dist/.
+      # the signing pages' own code load @openkey/capability-review from its dist/,
+      # and the approval pages' texts from @openkey/sdk/approval-copy.
       - name: Build packages
         run: |
           bun run db:generate
-          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review
+          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review --filter @openkey/sdk
 
       - name: API tests
         run: bun test apps/api/src/__tests__ scripts/deploy-production-migrations.test.ts scripts/oauth-client-branding.test.ts
