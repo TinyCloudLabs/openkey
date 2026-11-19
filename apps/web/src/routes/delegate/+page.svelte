@@ -6,15 +6,22 @@
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
+  import SocialButtons from '$lib/components/auth/social-buttons.svelte';
+  import { loadConfiguredSocialProviders, signInWithSocialPopup, type SocialProviderId } from '$lib/social-auth';
+  import { socialProviderName } from '$lib/social-continuation';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
   import {
+    delegateFailureDetail,
     delegateFailureText,
+    delegateServerMessage,
     delegateResponseFailureText,
     deviceRelayFailureText,
     DeviceRelayDeliveryError,
     OwnerMessageError,
     isTerminalApprovalFailure,
+    refusalIgnoresKeyChoice,
     shortCodeFailureText,
+    walletMismatchFailureText,
   } from '$lib/delegate-failure-text';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
@@ -25,7 +32,7 @@
   import OwnerRevocationHandoff from './OwnerRevocationHandoff.svelte';
   import DeviceRequestNotice from '$lib/components/device/device-request-notice.svelte';
   import { publicDelegationForCode } from '$lib/delegation-code-body';
-  import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestReason, deviceRequestTtlSeconds, loadVerifiedDeviceRequest } from '$lib/device-authorization';
+  import { approvedDevicePermissions, cleanConsentText, delegationPasteCode, readDelegatePermissionsParam, deviceRequestDefaultSeconds, deviceRequestReason, deviceRequestTtlSeconds, loadVerifiedDeviceRequest } from '$lib/device-authorization';
   import DelegateLinkNotice from '$lib/components/delegate/delegate-link-notice.svelte';
   import {
     KNOWN_NODE_ORIGINS,
@@ -42,8 +49,8 @@
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
-  import { closeThisTab, browserCloseEnvironment } from '$lib/delegate-close-tab';
-  import { requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
+  import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
+  import { MAX_LEASE_MS, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -55,6 +62,8 @@
     defaultSelection,
     type CapabilityReviewModel,
   } from '@openkey/capability-review';
+  import { renewalStartsTicked } from '$lib/renewal-default';
+  import { walletNotConnectedText } from '$lib/wallet-not-connected-text';
 
   interface EIP6963ProviderInfo {
     uuid: string;
@@ -85,10 +94,12 @@
   class DelegateResponseError extends Error {
     readonly code: unknown;
     readonly status: number;
-    constructor(message: string, code: unknown, status: number) {
+    readonly serverMessage: string | undefined;
+    constructor(message: string, code: unknown, status: number, serverMessage?: string) {
       super(message);
       this.code = code;
       this.status = status;
+      this.serverMessage = serverMessage;
     }
   }
   function delegateErrorClassification(cause: unknown, refreshAttempted = false) {
@@ -98,6 +109,7 @@
   }
 
   function delegateErrorMessage(cause: unknown) {
+    errorDetailFor = null;
     if (cause instanceof DeviceRelayDeliveryError) {
       if (cause.status === 409 || cause.status === 410) {
         return delegateResponseFailureText(cause.status, cause.code, {
@@ -109,10 +121,23 @@
     }
     if (cause instanceof DelegateResponseError) {
       if (isTerminalApprovalFailure(cause.status, cause.code)) approveBlockedByFailure = true;
-      return delegateResponseFailureText(cause.status, cause.code, {
+      if (
+        cause.status === 400 &&
+        cause.code === 'invalid_permissions' &&
+        expectedAddress &&
+        selectedKey &&
+        selectedKey.address.toLowerCase() !== expectedAddress.toLowerCase()
+      ) {
+        return walletMismatchFailureText(expectedAddress, selectedKey.address);
+      }
+      const text = delegateResponseFailureText(cause.status, cause.code, {
         permissionsEditable: reviewEditing,
         expiryChangeable: expiryChangeControlVisible,
+        serverMessage: cause.serverMessage,
       });
+      const detail = delegateFailureDetail(cause.status, cause.code, cause.serverMessage);
+      if (detail) errorDetailFor = { text, detail };
+      return text;
     }
     return delegateFailureText(cause);
   }
@@ -123,11 +148,19 @@
   let loading = $state(true);
   let selectedKey = $state<EthereumKey | null>(null);
   let error = $state('');
+  // Developer-facing server reason for the message currently in `error`; null unless that message came with one.
+  let errorDetailFor = $state<{ text: string; detail: string } | null>(null);
+  const errorDetail = $derived(errorDetailFor && errorDetailFor.text === error ? errorDetailFor.detail : null);
   let requestExpired = $state(false);
   let approveBlockedByFailure = $state(false);
+  // The person whose key choice drew a refusal that is the same for every key; the key list is hidden for them.
+  let keyChoiceRefusedFor = $state<string | null>(null);
+  const keyChoiceRefused = $derived(keyChoiceRefusedFor !== null && keyChoiceRefusedFor === $session.data?.user.id);
   let keysLoaded = $state(false);
   let initialized = $state(false);
   let signingIn = $state(false);
+  let socialProvider = $state<SocialProviderId | null>(null);
+  let socialProviders = $state<SocialProviderId[]>([]);
   let delegating = $state(false);
   let done = $state(false);
   let pasteCode = $state('');
@@ -148,8 +181,6 @@
   let codeDeadline = $state<number | null>(null);
   let codeCountdown = $state<CodeCountdownSnapshot | null>(null);
   let codeAnnouncement = $state('');
-  let closeStuck = $state(false);
-  let cancelCloseAttempt: (() => void) | null = null;
 
   // Countdown for the short code. Stopped when the deadline changes or the page is destroyed.
   $effect(() => {
@@ -165,15 +196,6 @@
     });
   });
 
-  // Cancels a pending Close check when the page is destroyed.
-  $effect(() => () => cancelCloseAttempt?.());
-
-  function requestClose() {
-    cancelCloseAttempt?.();
-    cancelCloseAttempt = closeThisTab(browserCloseEnvironment(), () => {
-      closeStuck = true;
-    });
-  }
   let updatingPermissions = $state(false);
   let permissionsEdited = $state(false);
   let authorizationContextToken = $state<string | null>(null);
@@ -314,6 +336,59 @@
   let requestedExpiryParam: string | null = null;
   // The longest the requester signed (a signed approval request or a device request); null on a plain link.
   let expiryMaxMs = $state<number | null>(null);
+  // TC-2933: the renewal checkbox, offered only when the approval request signed a renewal request
+  // (its longest lease). `renewalLeaseMs` is the owner's lease, null while the box is unticked.
+  let renewalMaxLeaseMs = $state<number | null>(null);
+  let renewalPurpose: unknown = undefined;
+  let renewalDefaulted = false;
+  let renewalLeaseMs = $state<number | null>(null);
+  // Spec D12: standing access starts ticked; D7: never in the Once tier (secrets or decrypt); D11: no purpose is a task.
+  // Ticking it re-prepares, so the preview the owner approves is the one that carries the lease.
+  $effect(() => {
+    if (renewalDefaulted || renewalMaxLeaseMs === null || !reviewModel) return;
+    renewalDefaulted = true;
+    if (renewalStartsTicked(renewalPurpose, reviewModel.permissions)) {
+      void changeRenewal(defaultLeaseMs(renewalMaxLeaseMs));
+    }
+  });
+  // The owner's choice as /prepare binds it into the preview; null when the request did not ask for renewal.
+  function renewalChoiceBody() {
+    if (renewalMaxLeaseMs === null) return null;
+    return renewalLeaseMs === null ? { choice: 'finite' } : { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000) };
+  }
+  const RENEWAL_NOT_SET_UP = "Renewal wasn't set up, so nothing was approved. Try again.";
+  // While an external wallet signs the lease: how long renewal lasts, shown in the prompt.
+  let renewalSigningMs = $state<number | null>(null);
+  // A changed lease (and, from the sensitive-access step, the window) is a new preview: prepare once with both.
+  async function changeRenewal(leaseMs: number | null, windowMs?: number | null) {
+    if (!selectedKey || !jwk) {
+      error = 'Missing key or JWK parameter.';
+      return;
+    }
+    const previous = { lease: renewalLeaseMs, choice: expiryChoiceMs, chosen: expiryChosen, param: expiryParam, requested: requestedExpiryParam };
+    renewalLeaseMs = leaseMs;
+    if (windowMs !== undefined) {
+      requestedExpiryParam ??= expiryParam;
+      expiryChoiceMs = windowMs;
+      expiryChosen = windowMs !== null;
+      expiryParam = windowMs === null ? requestedExpiryParam : `${Math.round(windowMs / 1000)}s`;
+    }
+    updatingPermissions = true;
+    error = '';
+    try {
+      const data = await prepareDelegation(selectedKey, permissionsEdited ? selectedActionKeys : undefined);
+      applyPreparedDelegation(data);
+    } catch (e: any) {
+      renewalLeaseMs = previous.lease;
+      expiryChoiceMs = previous.choice;
+      expiryChosen = previous.chosen;
+      expiryParam = previous.param;
+      requestedExpiryParam = previous.requested;
+      error = delegateErrorMessage(e);
+    } finally {
+      updatingPermissions = false;
+    }
+  }
   async function changeApprovalExpiry(ms: number | null) {
     if (!selectedKey || !jwk) {
       error = 'Missing key or JWK parameter.';
@@ -341,7 +416,6 @@
   const deviceTransactionId = approvalRequestMode ? '' : $page.url.searchParams.get('deviceTransactionId') || '';
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
   const deviceUserCode = $page.url.searchParams.get('deviceUserCode') || '';
-  let deviceAcknowledged = $state(false);
   const relayJwkB64 = $page.url.searchParams.get('relayJwk') || '';
 
   // Decode JWK from base64url
@@ -489,6 +563,7 @@
     });
     requestReason = normalizeReason(deviceRequestReason(record));
     expiryMaxMs = deviceRequestTtlSeconds(record) * 1000;
+    expiryParam = `${deviceRequestDefaultSeconds(record)}s`;
   })();
   deviceRequestVerified.catch((cause: unknown) => { error = delegateErrorMessage(cause); });
 
@@ -510,9 +585,6 @@
   // True once we've completed the auto-select attempt for the expected wallet.
   // Used to avoid showing the "wallet not connected" warning before keys load.
   let preselectAttempted = $state(false);
-  // True when the user has explicitly chosen to proceed with a non-matching
-  // wallet via the override path on the key picker.
-  let overrideMismatch = $state(false);
   // With no wallet named, KeyPicker offers the primary key; the other keys
   // (separate account owners) stay hidden until the user asks for them.
   let showOtherKeys = $state(false);
@@ -588,9 +660,15 @@
       host = request.nodeOrigin;
       requestedPermissions = request.permissions;
       requestReason = normalizeReason(request.reason);
-      // The requester signs its longest lifetime; the owner starts from its suggestion (the maximum when it gives none).
+      // The requester signs its longest lifetime; the owner starts from its suggestion or the maximum, never above one
+      // hour, and can still choose up to the maximum.
       expiryMaxMs = request.grantLifetimeSeconds * 1000;
-      expiryParam = `${request.suggestedLifetimeSeconds ?? request.grantLifetimeSeconds}s`;
+      expiryParam = `${approvalRequestStartSeconds(request.grantLifetimeSeconds, request.suggestedLifetimeSeconds)}s`;
+      // The box only shows where this OpenKey has leases on (`renewalAvailable`); otherwise the plain line, and finite.
+      if (request.renewal && result.renewalAvailable === true) {
+        renewalMaxLeaseMs = Math.min(request.renewal.leaseLifetimeSeconds * 1000, MAX_LEASE_MS);
+        renewalPurpose = request.purpose;
+      }
       approvalRequestLoaded = true;
     } catch (cause) {
       error = delegateErrorMessage(cause);
@@ -672,8 +750,19 @@
   async function loadKeys() {
     loading = true;
     try {
-      const result = await api.listKeys();
-      keys = activeKeys(result.keys);
+      const reviewEmail = $session.data?.user.email.trim().toLowerCase();
+      if (reviewEmail && ['openai-review@tinycloud.xyz', 'google-review@tinycloud.xyz'].includes(reviewEmail)) {
+        const response = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/delegate/prepare`, { credentials: 'include' });
+        if (!response.ok) throw new Error('Could not load the review account.');
+        const { key } = await response.json() as { key: { address: string; did: string } };
+        keys = [{
+          id: 'reviewer', address: key.address, publicKey: key.address, keyIndex: 0,
+          label: null, keyType: 'MANAGED', createdAt: '', isPrimary: true,
+        }];
+      } else {
+        const result = await api.listKeys();
+        keys = activeKeys(result.keys);
+      }
     } catch (e: any) {
       error = delegateErrorMessage(e);
     } finally {
@@ -700,6 +789,7 @@
     error = '';
     try {
       const { key } = await api.generateKey();
+      if (!keys.some((k) => k.id === key.id)) keys = [...keys, key];
       loading = false;
       await onKeySelect(key);
     } catch (e: any) {
@@ -715,6 +805,7 @@
     }
 
     selectedKey = key;
+    keyChoiceRefusedFor = null;
     error = '';
     preparing = true;
 
@@ -727,6 +818,9 @@
     } catch (e: any) {
       error = delegateErrorMessage(e);
       selectedKey = null;
+      if (e instanceof DelegateResponseError && refusalIgnoresKeyChoice(e.status, e.code)) {
+        keyChoiceRefusedFor = $session.data?.user.id ?? null;
+      }
     } finally {
       preparing = false;
     }
@@ -767,6 +861,8 @@
         if (linkExpiryChangeable) body.expiryChangeable = true;
       }
     }
+    // TC-2933: the renewal choice is bound into this preview; approving reads it from there.
+    if (approvalRequestMode && renewalChoiceBody()) body.renewal = renewalChoiceBody();
     // The API refuses a device delegation outside the transaction's lifetime.
     if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
 
@@ -779,7 +875,7 @@
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-      throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status);
+      throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status, delegateServerMessage(body));
     }
 
     return res.json();
@@ -891,6 +987,7 @@
 
   function goBack() {
     selectedKey = null;
+    keyChoiceRefusedFor = null;
     step = 'select-key';
     error = '';
     resetDelegationState();
@@ -998,10 +1095,6 @@
 
   function approveDelegate() {
     if (approveBlockedByFailure) return;
-    if (deviceTransactionId && !deviceAcknowledged) {
-      error = 'Confirm that you started this request yourself, on a device you control.';
-      return;
-    }
     if (hostNeedsAcknowledgment && !hostAcknowledged) {
       error = 'Confirm that you run or trust this TinyCloud node.';
       return;
@@ -1024,8 +1117,8 @@
     }
     // Defense-in-depth: the Approve button is already disabled in this case,
     // but block here too so a stray invocation can't slip through.
-    if (!selectedMatchesExpected && !overrideMismatch) {
-      error = `This CLI requested wallet ${expectedAddressShort}. Pick that wallet or explicitly override.`;
+    if (walletMismatchReason) {
+      error = walletMismatchReason;
       return;
     }
 
@@ -1079,11 +1172,17 @@
   // from it (a narrowing /prepare failed or never ran), block approval until
   // a /prepare for the visible selection succeeds. While one is in flight,
   // `approving` already disables Approve.
+  const walletMismatchReason = $derived(
+    expectedAddress && !selectedMatchesExpected
+      ? `This request is for wallet ${expectedAddressShort}. Choose a key for that wallet, or ask the app or command for a new request.`
+      : null,
+  );
   const approveBlockedReason = $derived(
-    reviewModel && !updatingPermissions &&
+    walletMismatchReason ??
+    (reviewModel && !updatingPermissions &&
       !preparedMatchesSelection(reviewModel, permissionOptions, reviewSelection, selectedActionKeys)
       ? 'The permissions shown have not been prepared for signing. Change a permission or Reset to try again.'
-      : null,
+      : null),
   );
 
   async function toggleAction(action: DelegatePermissionAction) {
@@ -1238,7 +1337,7 @@
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status);
+        throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status, delegateServerMessage(body));
       }
 
       const data = await res.json();
@@ -1390,10 +1489,33 @@
 
       if (!compRes.ok) {
         const body = await compRes.json().catch(() => ({ error: 'Unknown error' }));
-        throw new DelegateResponseError(apiBusyOrEndedMessage(compRes.status) ?? (body.error || `HTTP ${compRes.status}`), body.code, compRes.status);
+        throw new DelegateResponseError(apiBusyOrEndedMessage(compRes.status) ?? (body.error || `HTTP ${compRes.status}`), body.code, compRes.status, delegateServerMessage(body));
       }
 
-      const data = await compRes.json();
+      let data = await compRes.json();
+      if (data.renewalSignature) {
+        // TC-2933: the wallet signs the renewal lease too; declining it approves nothing.
+        renewalSigningMs = data.renewalSignature.leaseLifetimeSeconds * 1000;
+        let leaseSignature: string;
+        try {
+          leaseSignature = await matchingProvider.request({
+            method: 'personal_sign',
+            params: [data.renewalSignature.message, matchingAccount],
+          });
+        } catch {
+          throw new OwnerMessageError(RENEWAL_NOT_SET_UP);
+        } finally {
+          renewalSigningMs = null;
+        }
+        const leaseRes = await fetch(`${API_URL}/api/approval-requests/${approvalRequestId}/renewal-signature`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ signature: leaseSignature }),
+        });
+        if (!leaseRes.ok) throw new OwnerMessageError(RENEWAL_NOT_SET_UP);
+        data = await leaseRes.json();
+      }
       if (!data.hostActivated) {
         await activateWithHost(host, data.delegationHeader);
       }
@@ -1445,10 +1567,7 @@
       if (typeof delegationExpiresAt !== 'string') throw new OwnerMessageError('The approved delegation has no expiry binding.');
       // The owner may have unchecked capabilities: bind and relay exactly
       // what the signed delegation grants, in the request's manifest form.
-      const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions, {
-        address: payload.address,
-        chainId: payload.chainId,
-      });
+      const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions);
       const relay = await encryptDeviceRelay({ ...payload, permissions: approvedPermissions });
       let response: Response;
       try {
@@ -1552,6 +1671,25 @@
     }
   }
 
+  // Google and Apple sign in through a popup, so this page and the #fragment on its link stay in place. The popup
+  // asks for any new-account or existing-account choice itself and reports a choice that sends the person back to
+  // email or passkey as an error line, shown here like the passkey and email failures.
+  async function signInWithSocial(provider: SocialProviderId) {
+    socialProvider = provider;
+    error = '';
+    try {
+      await signInWithSocialPopup(provider);
+    } catch (e: any) {
+      error = e.message || `${socialProviderName(provider)} sign-in failed`;
+    } finally {
+      socialProvider = null;
+    }
+  }
+
+  onMount(async () => {
+    socialProviders = await loadConfiguredSocialProviders().catch(() => []);
+  });
+
   async function activateWithHost(
     targetHost: string,
     delegationHeader: { Authorization: string }
@@ -1607,8 +1745,9 @@
     {error || (approvalRequestLoading ? 'Checking request…' : 'This approval link is unavailable.')}
   </div>
 {:else if declined}
-  <div role="status" class="min-h-screen flex items-center justify-center px-4 text-center">
-    Declined. You can close this page.
+  <div data-testid="declined" class="min-h-screen flex flex-col items-center justify-center px-4 text-center">
+    <p role="status">Declined. You can close this window.</p>
+    <CloseTabButton />
   </div>
 {:else if !dispatchReady && !preparedTransport}
   <div role="status" class="min-h-screen flex items-center justify-center">Loading delegation request…</div>
@@ -1704,18 +1843,22 @@
                 aria-label="Copy full delegation code"
               >{copied ? 'Copied' : 'Copy full code'}</button>
             </details>
-            {#if closeStuck}
-              <p class="text-surface-600 text-sm mt-4">You can close this tab.</p>
-            {:else}
-              <button
-                class="mt-4 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100"
-                onclick={requestClose}
-              >Close</button>
-            {/if}
+            <CloseTabButton allowBack />
           {:else}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
             <p class="text-surface-500 text-sm">You can close this window and return to the CLI.</p>
+            <CloseTabButton />
           {/if}
+        </div>
+
+      {:else if $session.isPending}
+        <!-- The session answer has not arrived: neither the sign-in prompt nor the review fits yet. -->
+        <div class="flex flex-col items-center justify-center text-center text-surface-400 py-8" role="status">
+          <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          <span class="text-sm text-surface-500">Checking your OpenKey account…</span>
         </div>
 
       {:else if !$session.data}
@@ -1732,10 +1875,20 @@
             </div>
           {/if}
 
-          <Button onclick={() => { window.location.href = emailSignInHref; }} disabled={signingIn} class="w-full rounded-xl">
+          <Button onclick={() => { window.location.href = emailSignInHref; }} disabled={signingIn || socialProvider !== null} class="w-full rounded-xl">
             Continue with email
           </Button>
-          <Button onclick={signInWithPasskey} variant="secondary" disabled={signingIn} class="mt-3 w-full rounded-xl">
+          {#if socialProviders.length > 0}
+            <div class="mt-3 w-full">
+              <SocialButtons
+                providers={socialProviders}
+                loadingProvider={socialProvider}
+                disabled={signingIn || socialProvider !== null}
+                onsignin={signInWithSocial}
+              />
+            </div>
+          {/if}
+          <Button onclick={signInWithPasskey} variant="secondary" disabled={signingIn || socialProvider !== null} class="mt-3 w-full rounded-xl">
             {signingIn ? 'Signing in…' : 'Use a passkey instead'}
           </Button>
         </div>
@@ -1856,11 +2009,13 @@
           <div class="w-full bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl text-sm" role="alert">
             <div class="font-medium mb-1">Wallet mismatch</div>
             <p class="leading-relaxed">
-              This CLI requested a delegation from
+              This request is for wallet
               <code class="font-mono text-xs">{expectedAddressShort}</code>,
-              but you're about to sign with
+              but the key you picked is for
               <code class="font-mono text-xs">{formatAddress(selectedKey.address)}</code>.
-              The CLI will reject the resulting delegation.
+              Choose a key for
+              <code class="font-mono text-xs">{expectedAddressShort}</code>,
+              or ask the app or command for a new request.
             </p>
             <button
               type="button"
@@ -1873,14 +2028,18 @@
         {/if}
 
         {#if deviceTransactionId}
-          <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} bind:acknowledged={deviceAcknowledged} />
+          <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} />
         {:else}
           <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
         {/if}
 
         {#if selectedKey.keyType === 'EXTERNAL'}
-          <div class="p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700">
-            Your browser wallet will prompt you to sign a message to authorize this delegation.
+          <div class="p-3 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700" role={renewalSigningMs !== null ? 'status' : undefined}>
+            {#if renewalSigningMs !== null}
+              Sign once more to turn on renewal for up to {formatDuration(renewalSigningMs)}
+            {:else}
+              Your browser wallet will prompt you to sign a message to authorize this delegation.
+            {/if}
           </div>
         {/if}
         {#if spaceSetup}
@@ -1914,6 +2073,7 @@
               transport={{
                 approving: delegating || updatingPermissions,
                 error,
+                errorDetail,
                 approveBlockedReason,
                 approveBlockedByFailure,
                 approveDelegate,
@@ -1930,6 +2090,7 @@
                 },
                 expiry: {
                   chosenMs: expiryChoiceMs,
+                  onceDefault: true,
                   // The requester signed its longest time (signed request, device), or the link asked for exactly
                   // this much: a link without `expiryChangeable=true` is shorter-only.
                   bounded: approvalRequestMode || Boolean(deviceTransactionId) || !linkExpiryChangeable,
@@ -1937,6 +2098,13 @@
                   maxMs: expiryMaxMs,
                   onChange: changeApprovalExpiry,
                 },
+                ...(renewalMaxLeaseMs !== null ? {
+                  renewal: {
+                    leaseMs: renewalLeaseMs,
+                    maxLeaseMs: renewalMaxLeaseMs,
+                    onChange: (ms: number | null, windowMs?: number | null) => { void changeRenewal(ms, windowMs); },
+                  },
+                } : {}),
               }}
             />
           </div>
@@ -1989,12 +2157,12 @@
               <Button variant="secondary" onclick={goBack} disabled={delegating} class="flex-1 rounded-xl">
                 Back
               </Button>
-              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || approveBlockedByFailure || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch) || (hostNeedsAcknowledgment && !hostAcknowledged)} class="flex-1 rounded-xl">
+              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || approveBlockedByFailure || selectedActionKeys.length === 0 || !selectedMatchesExpected || (hostNeedsAcknowledgment && !hostAcknowledged)} class="flex-1 rounded-xl">
                 {#if delegating}
                   Signing...
                 {:else if updatingPermissions}
                   Updating...
-                {:else if !selectedMatchesExpected && !overrideMismatch}
+                {:else if !selectedMatchesExpected}
                   Wallet mismatch
                 {:else}
                   Approve
@@ -2024,28 +2192,33 @@
         <!-- Key selection -->
         <header class="mb-5">
           <h1 class="text-lg font-semibold text-surface-900">TinyCloud access request</h1>
-          <p class="text-surface-500 text-sm mt-1">Select a key to review the requested access</p>
+          {#if !keyChoiceRefused}
+            <p class="text-surface-500 text-sm mt-1">Select a key to review the requested access</p>
+          {/if}
         </header>
 
         {#if error}
           <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
             {error}
           </div>
+          {#if errorDetail}
+            <details class="error-detail">
+              <summary>Details</summary>
+              <p>{errorDetail}</p>
+            </details>
+          {/if}
         {/if}
 
         {#if expectedAddress && preselectAttempted && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
           <div class="w-full bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
             <div class="font-medium mb-1">Wallet not connected</div>
             <p class="leading-relaxed">
-              This request is for wallet
-              <code class="font-mono text-xs">{expectedAddressShort}</code>.
-              That wallet isn't currently connected. Link it below, or switch
-              to a profile that uses a wallet you have here.
+              {walletNotConnectedText(expectedAddressShort, $session.data?.user.email ?? null)}
             </p>
           </div>
         {/if}
 
-        {#if keys.length === 0}
+        {#if keys.length === 0 && !keyChoiceRefused}
           <div class="flex flex-col items-center justify-center text-center py-4">
             <p class="text-surface-500 text-sm mb-5">No keys found. Generate your first key to connect.</p>
             <Button onclick={generateAndSelect} class="w-full rounded-xl">
@@ -2055,11 +2228,10 @@
               Link External Wallet
             </Button>
           </div>
-        {:else}
+        {:else if !keyChoiceRefused}
           <KeyPicker
             {keys}
             {expectedAddress}
-            {overrideMismatch}
             bind:showOtherKeys
             onselect={onKeySelect}
             primaryHeading="Sign in with your primary key:"
@@ -2067,15 +2239,6 @@
             otherKeysWarning="Each key is a separate account owner, with its own data and spaces. Signing in with a different key does not give the CLI the data in your primary key."
           >
             {#snippet actions()}
-              {#if expectedAddress && !overrideMismatch && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
-                <button
-                  type="button"
-                  class="text-xs text-surface-500 hover:text-surface-900 transition-colors bg-transparent border-none cursor-pointer underline self-start"
-                  onclick={() => (overrideMismatch = true)}
-                >
-                  Continue with a different wallet anyway
-                </button>
-              {/if}
               <Button variant="secondary" onclick={showLinkWallet} class="rounded-xl">
                 Link External Wallet
               </Button>
@@ -2092,7 +2255,7 @@
       >
         Sign out
       </button>
-    {:else if !$session.data}
+    {:else if !$session.isPending && !$session.data}
       <div class="flex items-center gap-3 text-sm">
         <a href={registerHref} class="text-surface-500 hover:text-surface-700 transition-colors">Register</a>
         <span class="text-surface-300">|</span>
@@ -2112,6 +2275,19 @@
 {/if}
 
 <style>
+  .error-detail {
+    color: #9f2424;
+    font-size: 12px;
+    line-height: 1.45;
+    margin: -8px 0 16px;
+  }
+  .error-detail summary {
+    cursor: pointer;
+  }
+  .error-detail p {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+  }
   @media (max-width: 480px) {
     .expired-request {
       padding-top: 1rem;

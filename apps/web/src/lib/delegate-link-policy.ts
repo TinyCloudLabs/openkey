@@ -12,11 +12,15 @@
  * that may receive a delegation through a `/delegate` callback. Register an
  * app by adding its endpoint here, or, for another deployment, to
  * `VITE_DELEGATE_CALLBACK_URLS`.
- *  - Broad hosted TinyCloud MCP and the public personal-records plugin.
+ *  - Broad hosted TinyCloud MCP, the public personal-records plugin, and the
+ *    personal-records addresses listed in the Claude, Grok and Muse directories.
  */
 export const REGISTERED_CALLBACK_ENDPOINTS: readonly string[] = [
   'https://mcp.tinycloud.xyz/connect/callback',
   'https://mcp.tinycloud.xyz/chatgpt/connect/callback',
+  'https://mcp.tinycloud.xyz/claude/connect/callback',
+  'https://mcp.tinycloud.xyz/grok/connect/callback',
+  'https://mcp.tinycloud.xyz/muse/connect/callback',
 ];
 
 /**

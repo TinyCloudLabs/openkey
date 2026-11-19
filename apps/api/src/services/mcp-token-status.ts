@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@openkey/db';
+import { REVIEWER_MAX_SECONDS } from './reviewer-accounts';
 
 /**
  * Whether the user's connection that a token belongs to still stands. One
@@ -29,13 +30,17 @@ export async function mcpTokenStatus(database: McpTokenStatusDatabase, subject: 
   if (!sessionId) return { active: false, reason: 'session' };
   const [client, consent, session] = await Promise.all([
     database.oauthClient.findUnique({ where: { clientId }, select: { disabled: true } }),
-    database.oauthConsent.findUnique({ where: { userId_clientId: { userId, clientId } }, select: { scopes: true, createdAt: true } }),
+    database.oauthConsent.findUnique({ where: { userId_clientId: { userId, clientId } }, select: { scopes: true, createdAt: true, reviewerEpoch: true } }),
     // A locked user's session no longer stands (R9, TC-1231).
-    database.session.findFirst({ where: { id: sessionId, userId, expiresAt: { gt: now }, user: { lockedAt: null } }, select: { id: true } }),
+    database.session.findFirst({ where: { id: sessionId, userId, expiresAt: { gt: now }, user: { lockedAt: null, reviewerHoldAt: null } }, select: { id: true, createdAt: true, reviewerEpoch: true, user: { select: { reviewerBinding: true } } } }),
   ]);
   if (!client || client.disabled) return { active: false, reason: 'client' };
   if (!consent) return { active: false, reason: 'consent' };
   if (!session) return { active: false, reason: 'session' };
+  const binding = session.user?.reviewerBinding;
+  if (binding && (session.reviewerEpoch !== binding.installEpoch || consent.reviewerEpoch !== binding.installEpoch
+    || session.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000 <= now.getTime()
+    || binding.clientId !== clientId || binding.store === 'apple')) return { active: false, reason: 'session' };
   // Every scope must still be in the user's consent.
   const consented = new Set(consent.scopes);
   if (!scopes.every((granted) => consented.has(granted))) return { active: false, reason: 'scope' };
