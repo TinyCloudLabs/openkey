@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { requireSession } from '../middleware/session';
-import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import {
   DeviceAuthorizationError,
   DeviceAuthorizationService,
@@ -75,7 +75,7 @@ export function createDeviceAuthorizationRouter(input: {
 
   // Approval is a signed-in user action from the OpenKey /delegate page. A
   // bearer session token is accepted only from an OpenKey web origin (TC-688).
-  router.post('/:transactionId/approve', requireOpenKeyOriginForBearer as any, input.sessionMiddleware ?? requireSession as any, async (c) => {
+  router.post('/:transactionId/approve', requireAccountOriginForBearer as any, input.sessionMiddleware ?? requireSession as any, async (c) => {
     const originRefusal = rejectNonOpenKeySignRequest(c);
     if (originRefusal) return originRefusal;
     try {
@@ -88,7 +88,7 @@ export function createDeviceAuthorizationRouter(input: {
   });
 
   // Declining is a signed-in user action, like approving. The device's poll then answers access_denied.
-  router.post('/:transactionId/deny', requireOpenKeyOriginForBearer as any, input.sessionMiddleware ?? requireSession as any, async (c) => {
+  router.post('/:transactionId/deny', requireAccountOriginForBearer as any, input.sessionMiddleware ?? requireSession as any, async (c) => {
     try {
       return c.json(await input.service.deny(c.req.param('transactionId')));
     } catch (error) {

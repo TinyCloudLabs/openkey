@@ -42,7 +42,7 @@ test('revocation signing is limited to the web signing origin, not the console o
     method: 'POST', headers: { Origin: 'https://console.openkey.so', 'Content-Type': 'application/json' },
     body: JSON.stringify({ ticket, keyId: 'owner-key', authorizationContextToken }),
   });
-  expect(consoleSign.status).toBe(410);
+  expect(consoleSign.status).toBe(403);
   const webSign = await router.request('/sign', {
     method: 'POST', headers: { Origin: 'https://openkey.so', 'Content-Type': 'application/json' },
     body: JSON.stringify({ ticket, keyId: 'owner-key', authorizationContextToken }),

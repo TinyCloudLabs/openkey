@@ -17,6 +17,7 @@ import {
   type UnsignedNostrEvent,
 } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { rejectNonOpenKeySignRequest } from '../middleware/browser-control';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 
@@ -35,6 +36,7 @@ const MAX_GRANT_TTL_SECONDS = 60 * 60 * 24; // 24h ceiling regardless of request
 
 export const nostrKeysRouter = new Hono<SessionContext>();
 
+nostrKeysRouter.use('*', requireAccountOriginForBearer);
 nostrKeysRouter.use('*', requireSession);
 
 function digestEvent(event: UnsignedNostrEvent): string {

@@ -6,6 +6,8 @@ export type ExpirationOverride = { ok: true; value: string } | { ok: false; reas
 
 /** The shortest approval the server previews: the one-minute floor the clients enforce, less 10 s for clock skew and network delay. */
 export const MIN_EXPIRATION_LEAD_MS = 50_000;
+/** Minimum grant lifetime enforced by delegate requests. */
+export const MIN_DELEGATION_EXPIRY_MS = 60 * 1000;
 
 /** Maximum lifetime for any TinyCloud delegation SIWE signed or approved by OpenKey. */
 export const MAX_DELEGATION_CEILING_YEARS = 10;
@@ -114,4 +116,3 @@ export function expirationTimeOf(siwe: string): string | undefined {
   if (!layout || layout.expirationIndex === undefined) return undefined;
   return siwe.split('\n')[layout.expirationIndex]!.slice('Expiration Time: '.length).trim();
 }
-

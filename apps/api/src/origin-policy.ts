@@ -44,55 +44,10 @@ export function corsOriginPolicy(
 }
 
 /**
- * Filters a resolved origin list for signing. Malformed allowlist entries are
- * preserved unchanged; malformed console origins fail closed.
+ * Resolves account-facing browser origins without inheriting CORS-only origins.
+ * The console is accepted only when it is itself the account origin.
  */
-export function filterSigningOrigins(
-  allowlist: string[],
-  accountOrigins: string[],
-  consoleOrigin: string | undefined,
-): string[] {
-  let normalizedConsoleOrigin: string | undefined;
-  if (consoleOrigin !== undefined) {
-    try {
-      normalizedConsoleOrigin = new URL(consoleOrigin.trim()).origin;
-      if (normalizedConsoleOrigin === 'null') throw new Error();
-    } catch {
-      throw new TypeError('CONSOLE_ORIGIN must be a valid absolute URL');
-    }
-  }
-
-  const normalizedAccountOrigins = new Set<string>();
-  for (const origin of accountOrigins) {
-    try {
-      const normalized = new URL(origin.trim()).origin;
-      if (normalized !== 'null') normalizedAccountOrigins.add(normalized);
-    } catch {
-      // An invalid account-origin value cannot preserve an allowlist entry.
-    }
-  }
-
-  return allowlist.flatMap((origin) => {
-    if (origin.trim() === 'null') return [];
-    try {
-      const normalized = new URL(origin.trim()).origin;
-      if (normalized === 'null') return [];
-      if (
-        normalized === normalizedConsoleOrigin
-        && !normalizedAccountOrigins.has(normalized)
-      ) return [];
-      return [normalized];
-    } catch {
-      return [origin];
-    }
-  });
-}
-
-/**
- * Managed-key signing excludes the configured console origin unless it is
- * also an account origin. CORS and Better Auth keep using the broader policy.
- */
-export function resolveSigningOriginPolicy(
+export function resolveAccountOriginPolicy(
   defaultOrigin: string,
   env: OriginPolicyEnvironment = process.env,
 ): string[] {
@@ -100,9 +55,27 @@ export function resolveSigningOriginPolicy(
   if (!isProduction(env)) {
     accountOrigins.push(...defaultOrigin.split(',').map((origin) => origin.trim()));
   }
-  return filterSigningOrigins(
-    resolveOriginPolicy(defaultOrigin, env),
-    accountOrigins,
-    resolveConsoleOrigin(env),
-  );
+  return [...new Set(accountOrigins.flatMap((origin) => {
+    try {
+      const canonical = new URL(origin.trim()).origin;
+      return canonical === 'null' ? [] : [canonical];
+    } catch {
+      return [];
+    }
+  }))];
+}
+
+
+export function isAccountOriginAllowed(
+  origin: string | undefined,
+  defaultOrigin: string,
+  env: OriginPolicyEnvironment = process.env,
+): boolean {
+  if (!origin) return false;
+  try {
+    const canonical = new URL(origin).origin;
+    return canonical !== 'null' && resolveAccountOriginPolicy(defaultOrigin, env).includes(canonical);
+  } catch {
+    return false;
+  }
 }

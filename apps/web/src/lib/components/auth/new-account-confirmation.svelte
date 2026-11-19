@@ -13,9 +13,15 @@
     onpasskey?: () => void;
     /** Omitted where no recovery page can be opened. */
     onrecover?: () => void;
+    /** A line shown above the choices, such as Apple's Hide My Email notice (TC-1232, R4). */
+    notice?: string | null;
+    differentEmailLabel?: string;
   }
 
-  let { email, busy = false, creating = false, oncreate, ondifferentemail, onpasskey, onrecover }: Props = $props();
+  let {
+    email, busy = false, creating = false, oncreate, ondifferentemail, onpasskey, onrecover,
+    notice = null, differentEmailLabel = 'Use a different email',
+  }: Props = $props();
 
   const alternatives = $derived(
     onpasskey && onrecover
@@ -32,6 +38,9 @@
   <h2 class="text-base font-semibold text-surface-900">
     No OpenKey account for <span class="block break-words">{email}</span>
   </h2>
+  {#if notice}
+    <p class="rounded-xl border border-surface-200 bg-surface-50 px-3 py-2 text-left text-sm text-surface-700" data-testid="new-account-notice">{notice}</p>
+  {/if}
   <p class="mb-2 text-sm text-surface-500">Create a new account, or {alternatives}?</p>
   <Button onclick={oncreate} disabled={busy} aria-busy={creating} class="w-full rounded-xl">
     {creating ? 'Creating account…' : 'Create a new account'}
@@ -52,6 +61,6 @@
     disabled={busy}
     class="mt-1 text-sm font-medium text-surface-500 hover:text-surface-900 disabled:opacity-50"
   >
-    Use a different email
+    {differentEmailLabel}
   </button>
 </div>

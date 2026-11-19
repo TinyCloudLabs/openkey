@@ -29,6 +29,9 @@ export const appleCallbackProfile = defineRequestState<AppleCallbackProfile | un
 // Set only after the Apple token-endpoint claims pass validation. Better Auth's
 // linked-account token refresh invokes Account.update without a provider ID.
 export const appleTokenClientId = defineRequestState<string | undefined>(() => undefined);
+// The validated Apple `sub` and its id_token `iat` (seconds): a sign-in by that
+// `sub` restores it, so earlier Apple revocation notifications are ignored.
+export const appleTokenSignIn = defineRequestState<{ sub: string; issuedAt: number } | undefined>(() => undefined);
 
 type ProviderEnvironment = OriginPolicyEnvironment;
 type PersistedAppleUser = {
@@ -287,6 +290,8 @@ export function createSocialProviders(
         const user = result?.user;
         if (result && await hasRequestState()) {
           await appleTokenClientId.set(clientId);
+          // resolveAppleUserInfo returns a result only for a numeric, recent iat.
+          await appleTokenSignIn.set({ sub: result.user.id, issuedAt: Number(result.data.iat) });
           if (user?.emailVerified && user.email) {
             await appleCallbackProfile.set({
               id: user.id,

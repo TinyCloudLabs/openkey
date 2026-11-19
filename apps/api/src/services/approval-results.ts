@@ -3,10 +3,13 @@ import { assertWithinDelegationCeiling } from './approval-expiry';
 import { createHash, randomBytes } from 'node:crypto';
 import { SiweMessage } from 'siwe';
 import { verifyMessage } from 'ethers';
-import type { OpenKeyApprovalRequestV1 } from '@tinycloud/share-envelope/links';
+import { parseApprovalRenewal, type OpenKeyApprovalRequestV1 } from '@tinycloud/share-envelope/links';
 import { strictSessionDid, type DeviceRelayEnvelope } from './device-authorization';
 import { hasPrivateJwkMember } from './authorization-signing';
 import { verifySessionProofClaims } from './native-delegation/session-proof';
+import { allocateDelegationCode, delegationClaimHash, type ApprovalCode, type ApprovalCodeDelivery, type ApprovalCodeStore } from '../routes/delegation-codes';
+import { logApprovalCodeAllocationFailure, logApprovalCodeCleanupFailure } from '../log';
+import type { ApprovalResultRenewal, RenewalStage } from './renewal-lease';
 
 export interface ApprovalRequestRecord {
   id: string;
@@ -25,6 +28,8 @@ export interface ApprovalRequestRecord {
   acknowledgedAt?: Date | null;
   deniedAt?: Date | null;
   approvingAt?: Date | null;
+  /** The renewal lease in progress or done for this request (TC-2933), saved at each step. */
+  renewal?: RenewalStage | null;
 }
 
 export interface ApprovalRequestStore {
@@ -41,11 +46,31 @@ export interface ApprovalRequestStore {
   /**
    * Saves the result. With the marker from `admit` the save needs that exact marker (a deny or a re-admission replaces it),
    * and a request that expired no more than one lease ago. Without it the request must be unexpired and have no live marker.
+   * With `lease`, the node-admitted renewal lease is recorded in the same transaction, only if this save wins.
    */
-  approve(id: string, result: { resultRef: string; approvedByUserId: string; ownerDid: string; encryptedResult: string; delegationExpiresAt: Date; resultExpiresAt: Date }, now: Date, marker?: Date): Promise<boolean>;
+  approve(id: string, result: { resultRef: string; approvedByUserId: string; ownerDid: string; encryptedResult: string; delegationExpiresAt: Date; resultExpiresAt: Date; lease?: RenewalLeaseRecord }, now: Date, marker?: Date): Promise<boolean>;
+  /** Saves the renewal stage while this exact admission marker holds and the request has no result. */
+  saveRenewal(id: string, stage: RenewalStage, marker: Date): Promise<boolean>;
   acknowledge(ref: string, ackId: string, now: Date): Promise<ApprovalRequestRecord | null>;
   /** Marks a pending, unexpired request denied. False when it is approved, denied, expired, unknown or being approved. */
   deny(id: string, now: Date): Promise<boolean>;
+}
+
+/** The lasting record of a node-admitted owner renewal lease (TC-2933), kept so the owner can see and stop it. */
+export interface RenewalLeaseRecord {
+  leaseCid: string;
+  userId: string;
+  /** The OpenKey session that completed the approval. */
+  sessionId: string | null;
+  approvalRequestId: string;
+  ownerDid: string;
+  originalCid: string;
+  nodeOrigin: string;
+  nodeDid: string;
+  renewerDid: string;
+  leaseLifetimeSeconds: number;
+  approvedAt: Date;
+  leaseExpiresAt: Date;
 }
 
 /** How long an `approving` marker holds off deny and other approvals, so an abandoned one cannot block a request for good. */
@@ -91,6 +116,7 @@ export class ApprovalResultService {
     apiOrigin: string;
     retentionSeconds: number;
     now?: () => Date;
+    codeStore?: ApprovalCodeStore;
   }) {
     if (!Number.isSafeInteger(options.retentionSeconds) || options.retentionSeconds <= 0) {
       throw new Error('Approval result retention must be an explicit positive number of seconds');
@@ -135,11 +161,23 @@ export class ApprovalResultService {
     return record;
   }
 
-  /** Called only by the existing authenticated delegate completion handlers. */
-  async approve(id: string, userId: string, body: { jwk: unknown; host: unknown; permissions: unknown }, delegation: Record<string, unknown>, marker?: Date): Promise<void> {
+  /**
+   * Called only by the existing authenticated delegate completion handlers. For a request that signed a
+   * renewal request, `renewal` is the owner's choice: finite, or leased with the node-admitted lease, which is
+   * also recorded for the owner (with the session that completed the approval).
+   */
+  async approve(id: string, userId: string, body: { jwk: unknown; host: unknown; permissions: unknown }, delegation: Record<string, unknown>, marker?: Date,
+    renewal?: { choice: 'finite' } | { choice: 'leased'; renewal: ApprovalResultRenewal; sessionId: string | null }): Promise<ApprovalCode | null> {
     const signedSiwe = delegation.siwe ?? delegation.signedMessage;
     if (typeof signedSiwe !== 'string' || typeof delegation.signature !== 'string') throw new ApprovalResultError('invalid_delegation', 'Signed delegation proof is required', 400);
     const record = await this.assertDelegationWindow(id, { ...body, signedSiwe }, marker !== undefined);
+    if (Boolean(record.request.renewal) !== Boolean(renewal)) {
+      throw new ApprovalResultError('request_binding', 'Renewal choice does not match the approval request', 400);
+    }
+    if (renewal?.choice === 'leased') {
+      // The requester's codec refuses a malformed renewal; refuse it here first, before anything is saved.
+      try { parseApprovalRenewal(renewal.renewal); } catch { throw new ApprovalResultError('invalid_delegation', 'Renewal lease metadata is invalid', 400); }
+    }
     const siwe = new SiweMessage(signedSiwe);
     const ownerDid = `did:pkh:eip155:${siwe.chainId}:${siwe.address}`;
     const jwk = delegation.jwk;
@@ -160,6 +198,7 @@ export class ApprovalResultService {
       targetDid: record.request.targetDid,
       delegationExpiresAt: delegationExpiresAt.toISOString(),
       delegation,
+      ...(renewal?.choice === 'leased' ? { renewalChoice: 'leased', renewal: renewal.renewal } : renewal ? { renewalChoice: 'finite' } : {}),
     };
     const recipient = await crypto.subtle.importKey('jwk', record.request.resultEncryptionPublicJwk, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
     const ephemeral = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
@@ -170,8 +209,40 @@ export class ApprovalResultService {
     const nonce = crypto.getRandomValues(new Uint8Array(12));
     const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: context }, key, new TextEncoder().encode(JSON.stringify(payload)));
     const envelope: DeviceRelayEnvelope = { version: 1, algorithm: 'ECDH-P256-A256GCM', ephemeralPublicJwk: await crypto.subtle.exportKey('jwk', ephemeral.publicKey) as DeviceRelayEnvelope['ephemeralPublicJwk'], nonce: Buffer.from(nonce).toString('base64url'), ciphertext: Buffer.from(ciphertext).toString('base64url') };
-    if (!await this.store.approve(id, { resultRef: randomBytes(24).toString('base64url'), approvedByUserId: userId, ownerDid, encryptedResult: JSON.stringify(envelope), delegationExpiresAt, resultExpiresAt }, this.options.now?.() ?? new Date(), marker)) {
+    const resultRef = randomBytes(24).toString('base64url');
+    const lease: RenewalLeaseRecord | undefined = renewal?.choice === 'leased' ? {
+      leaseCid: renewal.renewal.receipt.leaseCid,
+      userId,
+      sessionId: renewal.sessionId,
+      approvalRequestId: record.id,
+      ownerDid,
+      originalCid: renewal.renewal.receipt.originalCid,
+      nodeOrigin: record.request.nodeOrigin,
+      nodeDid: renewal.renewal.receipt.nodeIdentity.nodeDid,
+      renewerDid: renewal.renewal.receipt.nodeIdentity.renewerDid,
+      leaseLifetimeSeconds: renewal.renewal.approvedLeaseLifetimeSeconds,
+      approvedAt: new Date(renewal.renewal.approvedAt),
+      leaseExpiresAt: new Date(renewal.renewal.receipt.leaseExpiresAt),
+    } : undefined;
+    if (!await this.store.approve(id, { resultRef, approvedByUserId: userId, ownerDid, encryptedResult: JSON.stringify(envelope), delegationExpiresAt, resultExpiresAt, ...(lease ? { lease } : {}) }, this.options.now?.() ?? new Date(), marker)) {
       throw new ApprovalResultError('expired_request', 'Approval request expired or was already approved', 410);
+    }
+    // Approval is already saved. A delivery failure must not ask the owner to approve twice.
+    if (!this.options.codeStore) return null;
+    const codeExpiresAt = new Date(Math.min(resultExpiresAt.getTime(), now.getTime() + 5 * 60_000));
+    const delivery: ApprovalCodeDelivery = { kind: 'approval-result', requestId: record.id, bodyCid: record.bodyCid, resultRef, expiresAt: codeExpiresAt.toISOString() };
+    try {
+      const code = await allocateDelegationCode(this.options.codeStore, delivery, codeExpiresAt, now);
+      if (!code) return null;
+      const latest = await this.store.findById(id);
+      if (!latest || latest.ackId || !latest.encryptedResult) {
+        await this.options.codeStore.invalidateApproval(resultRef);
+        return null;
+      }
+      return code;
+    } catch (error) {
+      logApprovalCodeAllocationFailure(record.id, error);
+      return null;
     }
   }
 
@@ -197,21 +268,42 @@ export class ApprovalResultService {
     await this.store.release(id, marker);
   }
 
-  private authenticate(record: ApprovalRequestRecord, action: 'discover' | 'fetch' | 'ack', proof: string | undefined, ref = '', ackId = ''): void {
+  /** Saves a renewal step under the caller's admission; refused once the request is settled or re-admitted. */
+  async saveRenewal(id: string, stage: RenewalStage, marker: Date): Promise<void> {
+    if (!await this.store.saveRenewal(id, stage, marker)) {
+      throw new ApprovalResultError('expired_request', 'Approval request expired or was already approved', 410);
+    }
+  }
+
+  private authenticate(record: ApprovalRequestRecord, action: 'discover' | 'fetch' | 'ack', proof: string | undefined, ref = '', ackId = '', codeBinding?: [string, string]): void {
     const jwk = record.request.targetPublicJwk;
     const jkt = createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x: jwk.x })).digest('base64url');
     const path = action === 'discover' ? `/api/approval-requests/${record.id}/result` : `/api/approval-results/${ref}/${action}`;
-    if (!verifySessionProofClaims(proof, { sessionJwk: jwk, sessionJkt: jkt, htu: this.options.apiOrigin + path, clientId: 'openkey-approval-result-v1', credential: JSON.stringify([action, record.id, record.bodyCid, ref, ackId]) }, (this.options.now?.() ?? new Date()).getTime())) {
+    if (!verifySessionProofClaims(proof, { sessionJwk: jwk, sessionJkt: jkt, htu: this.options.apiOrigin + path, clientId: 'openkey-approval-result-v1', credential: JSON.stringify([action, record.id, record.bodyCid, ref, ackId, ...(codeBinding ?? [])]) }, (this.options.now?.() ?? new Date()).getTime())) {
       throw new ApprovalResultError('invalid_proof', 'Requester proof is invalid', 401);
     }
   }
 
-  async discover(id: string, body: { bodyCid: string }, proof: string | undefined): Promise<{ status: 'pending' } | { status: 'approved'; resultRef: string; expiresAt: string }> {
+  async discover(id: string, body: { bodyCid: string; approvalCode?: unknown }, proof: string | undefined, claim?: string): Promise<{ status: 'pending' } | { status: 'approved'; resultRef: string; expiresAt: string }> {
     const record = await this.store.findById(id);
     if (!record) throw new ApprovalResultError('not_found', 'Approval request not found', 404);
     if (record.bodyCid !== body.bodyCid) throw new ApprovalResultError('request_binding', 'Request binding is invalid', 400);
-    this.authenticate(record, 'discover', proof);
+    const code = typeof body.approvalCode === 'string' ? body.approvalCode.trim().toLowerCase() : '';
+    const claimHash = delegationClaimHash(claim);
+    if (body.approvalCode !== undefined && !claimHash) throw new ApprovalResultError('invalid_claim', 'A saved code claim intent is required', 400);
+    this.authenticate(record, 'discover', proof, '', '', body.approvalCode === undefined ? undefined : [
+      createHash('sha256').update(code).digest('base64url'), claimHash!,
+    ]);
     if (record.deniedAt) throw deniedError(record.deniedAt);
+    if (body.approvalCode !== undefined) {
+      const now = this.options.now?.() ?? new Date();
+      if (record.ackId) throw new ApprovalResultError('acknowledged', 'Approval result was acknowledged', 409);
+      if (record.resultRef && record.resultExpiresAt! <= now) throw new ApprovalResultError('expired_result', 'Result retention expired', 410);
+      if (!/^[a-z2-7]{4}-[a-z2-7]{4}$/.test(code) || !record.resultRef || !this.options.codeStore ||
+        !await this.options.codeStore.claim(code, claimHash!, now, { requestId: record.id, bodyCid: record.bodyCid, resultRef: record.resultRef })) {
+        throw new ApprovalResultError('approval_code_unavailable', 'Approval code is unavailable for this saved request', 404);
+      }
+    }
     if (record.resultRef) {
       if (record.resultExpiresAt! <= (this.options.now?.() ?? new Date())) throw new ApprovalResultError('expired_result', 'Result retention expired', 410);
       return { status: 'approved', resultRef: record.resultRef, expiresAt: record.resultExpiresAt!.toISOString() };
@@ -263,6 +355,13 @@ export class ApprovalResultService {
     await this.result(ref, body, 'ack', proof, body.ackId);
     const record = await this.store.acknowledge(ref, body.ackId, this.options.now?.() ?? new Date());
     if (!record) throw new ApprovalResultError('ack_conflict', 'Result ACK intent conflicts with the saved ACK', 409);
+    try {
+      await this.options.codeStore?.invalidateApproval(ref);
+    } catch (error) {
+      logApprovalCodeCleanupFailure(record.id, error);
+      // The durable ACK is authoritative for every collection path. Code expiry
+      // bounds optional broker cleanup even when that storage is unavailable.
+    }
     return { ackId: record.ackId!, status: 'acknowledged' as const };
   }
 }

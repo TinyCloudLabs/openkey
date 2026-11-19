@@ -1,6 +1,11 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { createPrismaClient, Prisma, type PrismaClient } from '@openkey/db';
+import {
+  PUBLIC_DELEGATION_FIELDS as PUBLIC_DELEGATION_FIELD_LIST,
+  PUBLIC_JWK_FIELDS as PUBLIC_JWK_FIELD_LIST,
+} from '@openkey/delegation-code-fields';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 
 // Codes are stored and looked up in lower case, the form every CLI since the
 // broker shipped lower-cases to before its GET, so codes issued before codes
@@ -13,31 +18,26 @@ const CLAIM_RETENTION_MS = 5 * 60 * 1000;
 // A client-chosen secret of at least 128 bits, base64url. It binds a redeemed code to the redeemer.
 const CLAIM_HEADER = 'OpenKey-Delegation-Claim';
 const CLAIM_PATTERN = /^[A-Za-z0-9_-]{22,128}$/;
-const PUBLIC_DELEGATION_FIELDS: Record<string, true> = {
-  delegationHeader: true,
-  delegationCid: true,
-  spaceId: true,
-  ownerDid: true,
-  verificationMethod: true,
-  jwk: true,
-  address: true,
-  chainId: true,
-  hostActivated: true,
-  spaceReady: true,
-  spaceError: true,
-  spacePending: true,
-  primary: true,
-  edited: true,
-  reason: true,
-  expirationTime: true,
-  expiresAt: true,
-  expiry: true,
-  siwe: true,
-  signature: true,
-  signedMessage: true,
-  permissions: true,
-};
-const PUBLIC_JWK_FIELDS: Record<string, true> = { kty: true, crv: true, x: true, kid: true };
+
+// Sets, not plain objects: an object lookup would also accept inherited names such as `constructor` and `__proto__`.
+export const PUBLIC_DELEGATION_FIELDS: ReadonlySet<string> = new Set(PUBLIC_DELEGATION_FIELD_LIST);
+export const PUBLIC_JWK_FIELDS: ReadonlySet<string> = new Set(PUBLIC_JWK_FIELD_LIST);
+
+export interface ApprovalCodeBinding {
+  requestId: string;
+  bodyCid: string;
+  resultRef: string;
+}
+
+export interface ApprovalCode {
+  code: string;
+  expiresAt: string;
+}
+
+export interface ApprovalCodeDelivery extends ApprovalCodeBinding {
+  kind: 'approval-result';
+  expiresAt: string;
+}
 
 export interface DelegationCodeStore {
   create(code: string, delegation: unknown, expiresAt: Date): Promise<boolean>;
@@ -45,10 +45,37 @@ export interface DelegationCodeStore {
   consume(code: string): Promise<{ delegation: unknown; expiresAt: Date } | null>;
   // Redeems for the holder of `claimHash`: the first call takes the code (atomic, one winner); the same
   // claim gets the delegation again until it is acknowledged or its retention ends. Anyone else gets null.
-  claim(code: string, claimHash: string, now: Date): Promise<{ delegation: unknown } | null>;
+  claim(code: string, claimHash: string, now: Date, approval?: ApprovalCodeBinding): Promise<{ delegation: unknown } | null>;
   // Clears the delegation for the claim holder. Repeating it succeeds; any other claim gets false.
   acknowledge(code: string, claimHash: string, now: Date): Promise<boolean>;
   deleteExpired(before: Date): Promise<void>;
+}
+
+export interface ApprovalCodeStore extends DelegationCodeStore {
+  invalidateApproval(resultRef: string): Promise<void>;
+}
+
+/** Allocate both delivery kinds from the same one-time code namespace. */
+export async function allocateDelegationCode(store: DelegationCodeStore, delivery: unknown, expiresAt: Date, now: Date): Promise<ApprovalCode | null> {
+  await store.deleteExpired(now);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const characters = randomBytes(8);
+    const code = `${Array.from(characters.subarray(0, 4), (byte) => CODE_ALPHABET[byte & 31]).join('')}-${Array.from(characters.subarray(4), (byte) => CODE_ALPHABET[byte & 31]).join('')}`;
+    if (await store.create(code, delivery, expiresAt)) return { code: code.toUpperCase(), expiresAt: expiresAt.toISOString() };
+  }
+  return null;
+}
+
+export function delegationClaimHash(claim: string | undefined): string | null {
+  return claim !== undefined && CLAIM_PATTERN.test(claim) ? createHash('sha256').update(claim).digest('base64url') : null;
+}
+
+function matchesDelivery(value: unknown, now: Date, approval?: ApprovalCodeBinding): boolean {
+  const delivery = value as Partial<ApprovalCodeDelivery> | null;
+  if (!approval) return delivery?.kind !== 'approval-result';
+  return delivery?.kind === 'approval-result' && delivery.requestId === approval.requestId &&
+    delivery.bodyCid === approval.bodyCid && delivery.resultRef === approval.resultRef &&
+    typeof delivery.expiresAt === 'string' && Date.parse(delivery.expiresAt) > now.getTime();
 }
 
 const LOOKUP_LIMIT_PER_MINUTE = 60;
@@ -86,14 +113,14 @@ export function createDelegationCodeRouter(input: {
     return CLAIM_PATTERN.test(header) ? createHash('sha256').update(header).digest('base64url') : null;
   };
 
-  router.post('/', input.sessionMiddleware, async (c) => {
+  router.post('/', requireAccountOriginForBearer, input.sessionMiddleware, async (c) => {
     const body = await c.req.json().catch(() => null);
     const delegation = body?.delegation;
     const jwk = delegation?.jwk;
     const serialized = JSON.stringify(delegation);
     if (
       !delegation || typeof delegation !== 'object' || Array.isArray(delegation) ||
-      Object.keys(delegation).some((field) => !PUBLIC_DELEGATION_FIELDS[field]) ||
+      Object.keys(delegation).some((field) => !PUBLIC_DELEGATION_FIELDS.has(field)) ||
       typeof delegation.delegationHeader?.Authorization !== 'string' ||
       !delegation.delegationHeader.Authorization ||
       Object.keys(delegation.delegationHeader).some((field) => field !== 'Authorization') ||
@@ -102,7 +129,7 @@ export function createDelegationCodeRouter(input: {
       typeof delegation.verificationMethod !== 'string' || !delegation.verificationMethod ||
       !jwk || typeof jwk !== 'object' || Array.isArray(jwk) ||
       jwk.kty !== 'OKP' || jwk.crv !== 'Ed25519' || typeof jwk.x !== 'string' ||
-      Object.keys(jwk).some((field) => !PUBLIC_JWK_FIELDS[field]) ||
+      Object.keys(jwk).some((field) => !PUBLIC_JWK_FIELDS.has(field)) ||
       (delegation.primary !== undefined && typeof delegation.primary !== 'boolean') ||
       (delegation.spacePending !== undefined && delegation.spacePending !== true) ||
       serialized.length > 128 * 1024
@@ -110,17 +137,11 @@ export function createDelegationCodeRouter(input: {
       return c.json({ error: 'Invalid public delegation' }, 400);
     }
 
-    const expiresAt = new Date(now().getTime() + CODE_TTL_MS);
-    await input.store.deleteExpired(now());
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const characters = randomBytes(8);
-      const code = `${Array.from(characters.subarray(0, 4), (byte) => CODE_ALPHABET[byte & 31]).join('')}-${Array.from(characters.subarray(4), (byte) => CODE_ALPHABET[byte & 31]).join('')}`;
-      if (await input.store.create(code, delegation, expiresAt)) {
-        c.header('Cache-Control', 'no-store');
-        return c.json({ code: code.toUpperCase(), expiresAt: expiresAt.toISOString() }, 201);
-      }
-    }
-    return c.json({ error: 'Could not allocate delegation code' }, 503);
+    const current = now();
+    const allocated = await allocateDelegationCode(input.store, delegation, new Date(current.getTime() + CODE_TTL_MS), current);
+    if (!allocated) return c.json({ error: 'Could not allocate delegation code' }, 503);
+    c.header('Cache-Control', 'no-store');
+    return c.json(allocated, 201);
   });
 
   router.get('/:code', async (c) => {
@@ -178,7 +199,7 @@ function sameClaim(stored: string, given: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-export function createPrismaDelegationCodeStore(prisma: PrismaClient = createPrismaClient()): DelegationCodeStore {
+export function createPrismaDelegationCodeStore(prisma: PrismaClient = createPrismaClient()): ApprovalCodeStore {
   return {
     async create(code, delegation, expiresAt) {
       try {
@@ -190,21 +211,22 @@ export function createPrismaDelegationCodeStore(prisma: PrismaClient = createPri
       }
     },
     async consume(code) {
-      try {
-        return await prisma.delegationCode.delete({ where: { code }, select: { delegation: true, expiresAt: true } });
-      } catch (error) {
-        if (error && typeof error === 'object' && 'code' in error && error.code === 'P2025') return null;
-        throw error;
-      }
+      return prisma.$transaction(async (tx) => {
+        const row = await tx.delegationCode.findUnique({ where: { code }, select: { delegation: true, expiresAt: true } });
+        if (!row || !matchesDelivery(row.delegation, new Date())) return null;
+        if ((await tx.delegationCode.deleteMany({ where: { code } })).count !== 1) return null;
+        return row;
+      });
     },
-    async claim(code, claimHash, now) {
+    async claim(code, claimHash, now, approval) {
       return prisma.$transaction(async (tx) => {
         const held = await tx.delegationCodeClaim.findUnique({ where: { code } });
-        if (held?.delegation && !held.acknowledgedAt && held.redeemedAt.getTime() > now.getTime() - CLAIM_RETENTION_MS && sameClaim(held.claimHash, claimHash)) {
+        if (held?.delegation && !held.acknowledgedAt && held.redeemedAt.getTime() > now.getTime() - CLAIM_RETENTION_MS &&
+          sameClaim(held.claimHash, claimHash) && matchesDelivery(held.delegation, now, approval)) {
           return { delegation: held.delegation };
         }
         const row = await tx.delegationCode.findFirst({ where: { code, expiresAt: { gt: now } } });
-        if (!row) return null;
+        if (!row || !matchesDelivery(row.delegation, now, approval)) return null;
         // Of concurrent redeems only the one that deletes the row takes the code.
         if ((await tx.delegationCode.deleteMany({ where: { code } })).count !== 1) return null;
         const claim = { claimHash, delegation: row.delegation as object, redeemedAt: now, acknowledgedAt: null };
@@ -221,6 +243,16 @@ export function createPrismaDelegationCodeStore(prisma: PrismaClient = createPri
         data: { acknowledgedAt: now, delegation: Prisma.DbNull },
       });
       return true;
+    },
+    async invalidateApproval(resultRef) {
+      const where = { AND: [
+        { delegation: { path: ['kind'], equals: 'approval-result' } },
+        { delegation: { path: ['resultRef'], equals: resultRef } },
+      ] };
+      await prisma.$transaction([
+        prisma.delegationCode.deleteMany({ where }),
+        prisma.delegationCodeClaim.deleteMany({ where }),
+      ]);
     },
     async deleteExpired(before) {
       await prisma.delegationCode.deleteMany({ where: { expiresAt: { lte: before } } });

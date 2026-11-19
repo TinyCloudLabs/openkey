@@ -6,13 +6,11 @@
   import type { Snippet } from 'svelte';
   import type { EthereumKey } from '$lib/api';
   import { keyPickerLayout } from '$lib/delegate-key-selection';
-  import { copyText } from '$lib/clipboard';
 
   let {
     keys,
     onselect,
     expectedAddress = null,
-    overrideMismatch = false,
     selectedId = null,
     compact = false,
     listHeading,
@@ -25,7 +23,6 @@
     onselect: (key: EthereumKey) => void;
     /** Lower-cased wallet address the request names, if any. */
     expectedAddress?: string | null;
-    overrideMismatch?: boolean;
     /** Key to mark as chosen (connect widgets); omit when selection navigates away. */
     selectedId?: string | null;
     compact?: boolean;
@@ -39,8 +36,6 @@
 
   const layout = $derived(keyPickerLayout(keys, expectedAddress));
 
-  let copiedId = $state<string | null>(null);
-  let copyStatus = $state('');
 </script>
 
 {#snippet keyButton(key: EthereumKey)}
@@ -56,15 +51,15 @@
     class:bg-surface-50={isExpected || isSelected}
     class:border-surface-200={!isExpected && !isSelected}
     class:hover:border-surface-900={!isMismatch}
-    class:opacity-60={isMismatch && !overrideMismatch}
+    class:opacity-60={isMismatch}
   >
     <button
       type="button"
-      class="flex min-h-16 min-w-0 flex-1 items-center p-4 pr-2 text-left text-surface-900 transition-colors hover:bg-surface-50 active:bg-surface-100 focus-visible:outline-2 focus-visible:outline-surface-900 disabled:cursor-not-allowed"
+      class="flex min-h-16 min-w-0 flex-1 items-center p-4 pr-12 text-left text-surface-900 transition-colors hover:bg-surface-50 active:bg-surface-100 focus-visible:outline-2 focus-visible:outline-surface-900 disabled:cursor-not-allowed"
       aria-pressed={isSelected}
       aria-label={name}
       title={key.address}
-      disabled={isMismatch && !overrideMismatch}
+      disabled={isMismatch}
       onclick={() => onselect(key)}
     >
       <span class="min-w-0 flex flex-wrap items-center gap-2 font-medium" class:text-sm={compact}>
@@ -84,19 +79,6 @@
           <path stroke-linecap="round" stroke-linejoin="round" d={isSelected ? 'M5 12l4 4L19 6' : 'M9 5l7 7-7 7'} />
         </svg>
       </span>
-    </button>
-    <button
-      type="button"
-      class="mr-11 min-h-11 w-14 shrink-0 self-center rounded-lg border border-surface-200 bg-white px-2 text-xs font-medium text-surface-600 hover:bg-surface-50 hover:text-surface-900 focus-visible:outline-2 focus-visible:outline-surface-900"
-      title={key.address}
-      aria-label={`Copy address of ${name}`}
-      onclick={async () => {
-        const copied = await copyText(key.address);
-        copiedId = copied ? key.id : null;
-        copyStatus = copied ? 'Address copied.' : 'Could not copy the address.';
-      }}
-    >
-      {copiedId === key.id ? 'Copied' : 'Copy'}
     </button>
   </div>
 {/snippet}
@@ -132,4 +114,3 @@
     {@render actions?.()}
   </div>
 {/if}
-<p class="sr-only" role="status">{copyStatus}</p>

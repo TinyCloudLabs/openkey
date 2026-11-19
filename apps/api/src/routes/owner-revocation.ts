@@ -3,7 +3,7 @@ import { Hono, type MiddlewareHandler } from 'hono';
 import { verifyMessage } from 'ethers';
 import { buildOwnerRevocationSiwe, ownerRevocationAddress, ownerRevocationResult } from '@openkey/capability-review';
 import { logError } from '../log';
-import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import type { SessionContext } from '../middleware/session';
 import { resolveOriginPolicy } from '../origin-policy';
 import { PreparedHandoffError, type PreparedHandoffService } from '../services/prepared-handoff';
@@ -20,7 +20,7 @@ export function createOwnerRevocationRouter(service: PreparedHandoffService, dep
     if (error instanceof PreparedHandoffError) return c.json({ code: error.code, error: error.message }, error.status);
     throw error;
   });
-  router.use('*', requireOpenKeyOriginForBearer, sessionMiddleware);
+  router.use('*', requireAccountOriginForBearer, sessionMiddleware);
 
   router.post('/prepare', async c => {
     const body: unknown = await c.req.json().catch(() => null);

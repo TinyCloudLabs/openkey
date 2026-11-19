@@ -1,5 +1,9 @@
 import { assertWithinDelegationCeiling } from '../approval-expiry';
-
+import { lockNativeReviewer } from '../reviewer-native';
+import { reviewerActive } from '../reviewer-accounts';
+import { recordReviewerWriter } from '../reviewer-cleanup';
+import { APPLE_REVIEW_CLIENT_ID } from '../reviewer-apple-policy';
+import { sameTinyCloudHost } from '../tinycloud-hosts';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { generateRandomString } from 'better-auth/crypto';
 import type { PrismaClient } from '@openkey/db';
@@ -15,6 +19,7 @@ import { enabledNativeDelegation } from './policy';
 import { storedToken } from './provider-tokens';
 import { NATIVE_DELEGATION_ENDPOINT_PATHS, OPENKEY_SESSION_PROOF_HEADER } from './public-protocol';
 import { credentialHash, SESSION_PROOF_MAX_SKEW_SECONDS, sessionProofJtiHash, verifySessionProofClaims } from './session-proof';
+import { hasAcceptedTerms, termsRequired } from '../terms';
 import { logError, withScheduledLogContext } from '../../log';
 
 const REFRESH_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
@@ -72,7 +77,8 @@ function respond(result: Exclude<Result, { needsUnseal: true }>): Response {
 function permissionSubset(requested: NativePermission[], approved: NativePermission[]): boolean {
   return requested.every((entry) => {
     const parent = approved.find((candidate) => candidate.service === entry.service && candidate.space === entry.space &&
-      (candidate.path === entry.path || (candidate.service === 'tinycloud.kv' && candidate.path.endsWith('/') && entry.path.startsWith(candidate.path))));
+      (candidate.path === entry.path || ((candidate.service === 'tinycloud.kv' || candidate.service === 'tinycloud.sql') &&
+        candidate.path.endsWith('/') && entry.path.startsWith(candidate.path))));
     return !!parent && entry.actions.every((action) => parent.actions.includes(action));
   });
 }
@@ -147,6 +153,14 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
     });
     if (consumed.count !== 1) return invalidProof();
     await startSessionProofJtiSweep(db);
+    // TC-3232: like a refresh, a renewal waits for the account to accept the current Terms. The grant and
+    // its token stay as they are, so the app renews once the user has agreed. Revoking stays open.
+    if (operation === 'renew' && !await hasAcceptedTerms(db, candidate.userId)) {
+      const { error_description, terms_url } = termsRequired();
+      return Response.json({ error: 'invalid_grant', error_description, terms_url }, {
+        status: 400, headers: { 'Cache-Control': 'no-store', 'Pragma': 'no-cache' },
+      });
+    }
 
     const nonce = params.get('siwe_nonce');
     let preflightFailure: ReturnType<typeof fail> | null = null;
@@ -190,6 +204,7 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
       try {
         return await db.$transaction(async (tx) => {
           await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
+          const reviewer = await lockNativeReviewer(tx, candidate.userId);
           // The user row comes before the native rows: account deletion takes it
           // before cascading through consent, grants and tokens.
           await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${candidate.userId} FOR SHARE`;
@@ -235,17 +250,21 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
               return fail('invalid_grant', 400);
             }
           }
-          const user = await tx.user.findUnique({ where: { id: grant.userId }, select: { tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true } });
+          const user = await tx.user.findUnique({ where: { id: grant.userId }, select: { tinyCloudManageKeyMode: true, tinyCloudManageKeyPolicyEpoch: true, lockedAt: true, reviewerHoldAt: true, reviewerBinding: true } });
           if (!user) return fail('invalid_grant', 400);
           const epoch = user.tinyCloudManageKeyPolicyEpoch;
           const deny = async (code: 'consent_required' | 'access_denied', reason: string) => {
             await recordDecision(tx, grant, epoch, false, reason);
             return fail(code, 400);
           };
-          if (now.getTime() >= grant.absoluteExpiresAt.getTime() - RENEWAL_CUTOFF_MS) return deny('consent_required', 'grant_expired');
+          // R9 (TC-1231): a locked account's native grants never renew.
+          if (user.lockedAt || user.reviewerHoldAt || (reviewer && (reviewer.store !== 'apple' || !reviewerActive(reviewer, grant.reviewerEpoch)
+            || grant.clientId !== APPLE_REVIEW_CLIENT_ID || grant.clientId !== reviewer.clientId
+            || grant.spaceId !== reviewer.spaceId || grant.keyId !== reviewer.keyId || grant.tinycloudHost !== reviewer.nodeHost))) return deny('access_denied', 'account_locked');
+          if (now.getTime() >= grant.absoluteExpiresAt.getTime() - (reviewer ? 0 : RENEWAL_CUTOFF_MS)) return deny('consent_required', 'grant_expired');
           const client = await tx.oauthClient.findUnique({ where: { clientId: grant.clientId } });
           const ceiling = client && enabledNativeDelegation(client);
-          if (!ceiling || ceiling.tinycloudHost !== grant.tinycloudHost) return deny('consent_required', 'ceiling_changed');
+          if (!ceiling || !sameTinyCloudHost(ceiling.tinycloudHost, grant.tinycloudHost)) return deny('consent_required', 'ceiling_changed');
           const approved = grant.approvedPermissions as NativePermission[];
           let permissions: NativePermission[];
           try {
@@ -288,7 +307,8 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
           const delegation = completeSessionSetup({ ...prepared.prepared, signature });
           const newToken = generateRandomString(32, 'A-Z', 'a-z');
           const newHash = await storedToken({ storeTokens: 'hashed' }, newToken, 'refresh_token');
-          const expiresAt = new Date(now.getTime() + REFRESH_LIFETIME_SECONDS * 1000);
+          const expiresAt = new Date(Math.min(now.getTime() + REFRESH_LIFETIME_SECONDS * 1000, reviewer ? grant.absoluteExpiresAt.getTime() : Infinity));
+          if (reviewer) await recordReviewerWriter(tx, reviewer, new Date(now.getTime() + ttlSeconds * 1000));
           if (recoveringLostResponse) {
             const rowsToDelete = [row.id, previousRow!.id];
             await tx.oauthAccessToken.deleteMany({ where: { refreshId: { in: rowsToDelete } } });
@@ -311,7 +331,7 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
               siwe: prepared.prepared.siwe, signature, delegationHeader: delegation.delegationHeader,
               delegationCid: delegation.delegationCid, issuedAt: now.toISOString(),
               expiresAt: new Date(now.getTime() + ttlSeconds * 1000).toISOString(),
-              renewableUntil: new Date(grant.absoluteExpiresAt.getTime() - RENEWAL_CUTOFF_MS).toISOString(),
+              renewableUntil: new Date(grant.absoluteExpiresAt.getTime() - (reviewer ? 0 : RENEWAL_CUTOFF_MS)).toISOString(),
               permissions, tinycloudHost: grant.tinycloudHost, hosting: 'existing', address: grant.address,
               chainId: 1, ownerDid: `did:pkh:eip155:1:${grant.address}`, spaceId: grant.spaceId,
             },
