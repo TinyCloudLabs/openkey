@@ -423,8 +423,7 @@
       return;
     }
     requestedExpiryParam ??= expiryParam;
-    const previous = { choice: expiryChoiceMs, chosen: expiryChosen, param: expiryParam };
-    expiryChoiceMs = ms;
+    const previous = { chosen: expiryChosen, param: expiryParam };
     expiryChosen = ms !== null;
     expiryParam = ms === null ? requestedExpiryParam : `${Math.round(ms / 1000)}s`;
     updatingPermissions = true;
@@ -432,8 +431,8 @@
     try {
       const data = await prepareDelegation(selectedKey, permissionsEdited ? selectedActionKeys : undefined);
       applyPreparedDelegation(data);
+      expiryChoiceMs = ms;
     } catch (e: any) {
-      expiryChoiceMs = previous.choice;
       expiryChosen = previous.chosen;
       expiryParam = previous.param;
       error = delegateErrorMessage(e);
