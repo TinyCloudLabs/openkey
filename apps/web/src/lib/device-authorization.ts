@@ -368,6 +368,9 @@ export function devicePermissionSummary(permission: DevicePermission, lifetimeSe
   const name = /^vault\/secrets\/([A-Z][A-Z0-9_]{0,63})$/.exec(permission.path)?.[1];
   const verbs = DEVICE.secretAccess;
   if (!name || !permission.actions.length || !permission.actions.every((ability) => Object.hasOwn(verbs, ability))) return null;
-  const access = permission.actions.map((ability) => verbs[ability as keyof typeof verbs]).join(', ');
+  const access = Object.entries(verbs)
+    .filter(([ability]) => permission.actions.includes(ability))
+    .map(([, label]) => label)
+    .join(', ');
   return fill(DEVICE.namedSecret, { name, access });
 }

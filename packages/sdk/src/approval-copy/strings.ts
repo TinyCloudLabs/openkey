@@ -164,6 +164,7 @@ export const DEVICE = {
   asksLabel: 'What it asks for',
   namedSecret: '{name} · {access}',
   secretNames: 'See the names of all your secrets (not their contents)',
+  // Display order for the named secret actions.
   secretAccess: {
     'tinycloud.kv/get': 'Read',
     'tinycloud.kv/put': 'Write',

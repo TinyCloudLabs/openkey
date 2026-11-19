@@ -64,7 +64,7 @@ test('accepts one namespace list alone with capabilities/read or beside named en
     expect(deviceRequestPermissions(permissions)).toEqual(permissions);
   }
   expect(() => deviceRequestPermissions([names])).toThrow(/must include tinycloud.capabilities\/read/);
-  expect(() => deviceRequestPermissions([capabilities, names, names])).toThrow(/one secrets list entry/);
+  expect(() => deviceRequestPermissions([capabilities, names, names])).toThrow('permissions can include only one secrets list entry');
   expect(() => deviceRequestPermissions([{ ...names, space: 'default' }])).toThrow(/must not address secrets/);
   for (const path of ['vault/', 'vault/secrets', 'vault/secrets/**']) {
     expect(() => deviceRequestPermissions([capabilities, { ...names, path }])).toThrow(/one named secret/);

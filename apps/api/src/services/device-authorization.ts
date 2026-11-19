@@ -493,7 +493,7 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
         if (!Array.isArray(actions) || actions.length !== 1 || actions[0] !== 'tinycloud.kv/list') {
           throw scopeError(`${label}.actions must be exactly tinycloud.kv/list for vault/secrets/`);
         }
-        if (secretListSeen) throw scopeError('permissions allows one secrets list entry');
+        if (secretListSeen) throw scopeError('permissions can include only one secrets list entry');
         secretListSeen = true;
         return { service, space, path, actions: [...actions] };
       }
