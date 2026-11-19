@@ -19,6 +19,7 @@
   import { formatLocalAccessEnd } from '$lib/access-end';
   import CodeBox from '$lib/components/approval/code-box.svelte';
   import DonePage, { type ReceiptRow } from '$lib/components/approval/done-page.svelte';
+  import { PasskeyPromptError, answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyNeed } from '$lib/approval-passkey';
   import Loader from '$lib/components/approval/loader.svelte';
   import SignInCard from '$lib/components/approval/sign-in-card.svelte';
   import SignedInCard from '$lib/components/approval/signed-in-card.svelte';
@@ -101,6 +102,7 @@
   let selected = $state(new Set<string>());
   let contextToken = $state('');
   let previewToken = $state('');
+  let passkeyNeed = $state<ApprovalPasskeyNeed | null>(null);
   let previewMessage = $state('');
   let previewActions = $state<string[]>([]);
   let code = $state('');
@@ -405,6 +407,8 @@
       previewToken = candidate.previewApprovalToken;
       previewMessage = candidate.signedMessage;
       previewActions = actions;
+      // TC-3442: whether Approve needs the passkey, with the challenge for this preview.
+      passkeyNeed = isRecord(candidate.passkey) ? candidate.passkey as ApprovalPasskeyNeed : null;
       phase = 'preview';
     } catch (cause) {
       report(cause, preview);
@@ -424,7 +428,10 @@
     busy = true;
     error = '';
     try {
-      const body: Record<string, unknown> = { ticket, authorizationContextToken: contextToken, previewApprovalToken: previewToken, selectedActionIds: previewActions, protocolVersion: 1 };
+      // TC-3442: the passkey prompt comes first, while the tap still counts as the user's gesture. Without one the tap
+      // stays synchronous up to `submitted`, so a deadline passing mid-tap can't throw the handoff away.
+      const passkeyAssertion = key.keyType === 'EXTERNAL' || !passkeyNeed?.required ? undefined : await answerApprovalPasskey(passkeyNeed);
+      const body: Record<string, unknown> = { ticket, authorizationContextToken: contextToken, previewApprovalToken: previewToken, selectedActionIds: previewActions, protocolVersion: 1, ...(passkeyAssertion ? { passkeyAssertion } : {}) };
       if (key.keyType === 'EXTERNAL') {
         const provider = (window as Window & { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
         if (!provider) throw new OwnerMessageError(STOPS.S32.lines.noWallet);
@@ -476,8 +483,16 @@
         } catch { callbackFailed = true; }
       }
     } catch (cause) {
-      if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 4001) error = STOPS.S32.lines.walletDeclined;
-      else {
+      if (cause instanceof PasskeyPromptError) {
+        error = cause.message;
+      } else if (cause instanceof ApprovalReplyError && isPasskeyApprovalRefusal(cause)) {
+        // The refused challenge is spent: preview again before the next Approve.
+        busy = false;
+        await preview();
+        if (!stop) error = cause.message;
+      } else if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 4001) {
+        error = STOPS.S32.lines.walletDeclined;
+      } else {
         report(cause, submitted ? undefined : approve);
         cancelReleasedSigning = releasedSigningCancellation(cause,
           () => post('handoffs/cancel-claimed', { ticket }, undefined, undefined, true));

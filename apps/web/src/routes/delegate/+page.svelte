@@ -23,6 +23,7 @@
     OwnerMessageError,
   } from '$lib/delegate-failure-text';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
+  import { PasskeyPromptError, answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyNeed } from '$lib/approval-passkey';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
   import CliSigningAdapter from '$lib/components/signing/cli-signing-adapter.svelte';
@@ -135,6 +136,9 @@
       }
       return deviceRelayFailureText(cause.status, cause.code);
     }
+    // TC-3442: a dismissed passkey prompt and the API's passkey refusals each carry the words to show.
+    if (cause instanceof PasskeyPromptError) return cause.message;
+    if (cause instanceof DelegateResponseError && isPasskeyApprovalRefusal(cause)) return cause.message;
     if (cause instanceof DelegateResponseError) {
       const refusedOwner = cause.requestedSpaceOwner ? shortWallet(cause.requestedSpaceOwner) : '';
       const options = {
@@ -160,8 +164,9 @@
     const body = await response.json().catch(() => null);
     if (isTermsRequired(response.status, body)) sendToTerms();
     const owner = body?.requestedSpaceOwner;
+    const passkeyMessage = isPasskeyApprovalRefusal(body) && typeof body?.error === 'string' ? body.error : undefined;
     return new DelegateResponseError(
-      apiBusyOrEndedMessage(response.status) ?? `HTTP ${response.status}`,
+      passkeyMessage ?? apiBusyOrEndedMessage(response.status) ?? `HTTP ${response.status}`,
       body?.code, response.status, delegateServerMessage(body),
       typeof owner === 'string' && /^0x[0-9a-fA-F]{40}$/.test(owner) ? owner : undefined,
     );
@@ -192,6 +197,8 @@
   let callbackInFlight = $state(false);
   let step = $state<'select-key' | 'link-wallet' | 'consent' | 'choose-wallet' | 'done'>('select-key');
   let preparedData = $state<any>(null);
+  // TC-3442: from the latest /prepare, whether Approve needs the passkey, with the challenge for that preview.
+  let passkeyNeed = $state<ApprovalPasskeyNeed | null>(null);
   let siweMessage = $state('');
   let preparing = $state(false);
   let permissionOptions = $state<DelegatePermission[]>([]);
@@ -931,6 +938,7 @@
       ? (data.permissions as DelegatePermission[])
       : [];
     preparedData = data.prepared;
+    passkeyNeed = data.passkey && typeof data.passkey === 'object' ? data.passkey as ApprovalPasskeyNeed : null;
 
     siweMessage = data.prepared?.siwe || '';
     spaceSetup = parseSpaceSetup(data.spaceSetup);
@@ -1339,6 +1347,7 @@
       }
 
       const API_URL = import.meta.env.VITE_API_URL || '';
+      const passkeyAssertion = await answerApprovalPasskey(passkeyNeed);
       const body: Record<string, unknown> = {
         keyId: selectedKey!.id,
         jwk,
@@ -1351,6 +1360,7 @@
         authorizationContextToken,
         selectedActionIds: selectedActionKeys,
         protocolVersion: 1,
+        ...(passkeyAssertion ? { passkeyAssertion } : {}),
       };
       if (approvalRequestMode) body.approvalRequestId = approvalRequestId;
       if (permissionsEdited) {
@@ -1406,6 +1416,12 @@
         await doManagedDelegate(true);
       } else {
         error = delegateErrorMessage(cause, () => doManagedDelegate());
+        // The refused challenge is spent: prepare again for a new one, and keep the API's words on screen.
+        if (key && isPasskeyApprovalRefusal(cause)) {
+          const refusal = error;
+          try { await refreshAuthorizationContext(key, actions); } catch { /* the next Approve is refused with the API's words */ }
+          error = refusal;
+        }
       }
     } finally {
       delegating = false;
