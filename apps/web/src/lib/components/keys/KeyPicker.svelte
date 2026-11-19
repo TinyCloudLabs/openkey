@@ -11,7 +11,6 @@
     keys,
     onselect,
     expectedAddress = null,
-    overrideMismatch = false,
     selectedId = null,
     compact = false,
     listHeading,
@@ -24,7 +23,6 @@
     onselect: (key: EthereumKey) => void;
     /** Lower-cased wallet address the request names, if any. */
     expectedAddress?: string | null;
-    overrideMismatch?: boolean;
     /** Key to mark as chosen (connect widgets); omit when selection navigates away. */
     selectedId?: string | null;
     compact?: boolean;
@@ -53,7 +51,7 @@
     class:bg-surface-50={isExpected || isSelected}
     class:border-surface-200={!isExpected && !isSelected}
     class:hover:border-surface-900={!isMismatch}
-    class:opacity-60={isMismatch && !overrideMismatch}
+    class:opacity-60={isMismatch}
   >
     <button
       type="button"
@@ -61,7 +59,7 @@
       aria-pressed={isSelected}
       aria-label={name}
       title={key.address}
-      disabled={isMismatch && !overrideMismatch}
+      disabled={isMismatch}
       onclick={() => onselect(key)}
     >
       <span class="min-w-0 flex flex-wrap items-center gap-2 font-medium" class:text-sm={compact}>

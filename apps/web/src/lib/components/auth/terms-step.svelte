@@ -1,13 +1,15 @@
 <script lang="ts">
-  import { authClient } from '$lib/auth-client';
-  import Button from '$lib/components/ui/button.svelte';
-  import Card from '$lib/components/ui/card.svelte';
+  import { page } from '$app/stores';
   import TermsAccept from '$lib/components/auth/terms-accept.svelte';
+  import TermsSignedOut from '$lib/components/auth/terms-signed-out.svelte';
   import { TermsVersionMismatch, acceptTerms, loadTermsStatus, type TermsStatus } from '$lib/terms';
+  import { declineEffect, declineHere, optionsHref, termsOrigin, termsPageFor } from '$lib/terms-leave';
 
   // TC-3232: the required Terms step, wherever it is shown (its own page, or inline in sign-in and sign-up
-  // so it comes before the passkey offer). Agree records the acceptance, then hands back to the caller;
-  // Don't agree is a plain sign-out: nothing is deleted.
+  // so it comes before the passkey offer). Agree records the acceptance, then hands back to the caller.
+  // On the web the ways out are on their own pages, reached from the "Other options" box. The native
+  // sheet keeps Don't agree here: it says no to the request that brought the account here and signs it
+  // out; nothing is deleted.
   interface Props {
     status: TermsStatus;
     surface: 'web' | 'native';
@@ -15,6 +17,8 @@
     /** The native sheet's OAuth client: branding, and the surface recorded with the acceptance. */
     clientId?: string | null;
     appName?: string | null;
+    /** The page the account was on its way to, if any: an approval link or device sign-in is declined too. */
+    returnTo?: string | null;
     /** Runs once the acceptance is recorded; the screen stays busy until it navigates away. */
     onaccepted: () => void | Promise<void>;
     /** Where "Sign in" goes after Don't agree; `onsignin` instead when the caller is the sign-in page. */
@@ -22,7 +26,10 @@
     onsignin?: () => void;
   }
 
-  let { status, surface, email, clientId = null, appName = null, onaccepted, signInHref = '/auth/login', onsignin }: Props = $props();
+  let { status, surface, email, clientId = null, appName = null, returnTo = null, onaccepted, signInHref = '/auth/login', onsignin }: Props = $props();
+
+  const origin = $derived(termsOrigin($page.url.search, returnTo));
+  const otherOptions = $derived(surface === 'web' ? optionsHref(termsPageFor($page.url.search, returnTo)) : null);
 
   // svelte-ignore state_referenced_locally
   let release = $state(status);
@@ -64,8 +71,11 @@
     busy = 'decline';
     error = null;
     try {
-      const result = await authClient.signOut();
-      if (result?.error) throw new Error('sign-out failed');
+      const { redirect } = await declineHere(origin);
+      if (redirect) {
+        window.location.href = redirect;
+        return;
+      }
       signedOut = true;
     } catch {
       error = 'Couldn’t sign you out. Try again.';
@@ -76,17 +86,7 @@
 </script>
 
 {#if signedOut}
-  <div class="flex min-h-screen items-center justify-center bg-surface-50 px-4 py-12">
-    <Card class="w-full max-w-md p-8 text-center sm:p-10" data-testid="terms-result">
-      <h1 class="mb-2 text-2xl font-bold text-surface-900">You’re signed out</h1>
-      <p class="mb-7 text-sm text-surface-500">To use OpenKey again, sign in and agree to the Terms of Service.</p>
-      {#if onsignin}
-        <Button onclick={onsignin} class="w-full">Sign in</Button>
-      {:else}
-        <Button href={signInHref} class="w-full">Sign in</Button>
-      {/if}
-    </Card>
-  </div>
+  <TermsSignedOut {signInHref} {onsignin} />
 {:else}
   <TermsAccept
     kind={release.previouslyAccepted ? 'updated' : 'first'}
@@ -97,6 +97,8 @@
     {appName}
     {busy}
     {error}
+    {otherOptions}
+    declineNote={`We’ll sign you out. ${declineEffect(origin, appName)}`}
     onaccept={accept}
     ondecline={decline}
   />

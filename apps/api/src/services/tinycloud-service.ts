@@ -1,10 +1,51 @@
 // TinyCloud service - manages TinyCloud sessions and operations on behalf of users
-import { TinyCloudNode } from '@tinycloud/node-sdk';
+import { TinyCloudNode, type Manifest } from '@tinycloud/node-sdk';
 import { SECRETS_SPACE } from '@tinycloud/bootstrap';
 import { Wallet } from 'ethers';
 
 const TINYCLOUD_URL = process.env.TINYCLOUD_URL || 'https://node.tinycloud.xyz';
 export const OPENKEY_LEGACY_SPACE = 'openkey';
+
+// The sessions are cached per user for the life of the process (see `sessions`) and never signed out, so this is
+// how long one can act after sign-in. It is the SDK's former implicit default, kept as is.
+export const SESSION_EXPIRATION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * The exact permissions each session uses (TC-3443). Without a manifest the SDK grants every kv, sql, duckdb and
+ * hooks action on the whole space, kv on `secrets` `vault/secrets/`, and decrypt on the default encryption network.
+ * - `openkey`: the variables below, all under `variables` (the node matches whole path segments, and listing
+ *   invokes `variables` itself).
+ * - `secrets`: node-sdk 2.11's vault is network-encrypted. `put` writes `vault/secrets/<name>` (sealed to the
+ *   owner's default network, which needs no permission); `list`, `get` and `delete` read and remove it; `get`
+ *   decrypts through that network. `unlock` touches no storage, and nothing is written under `keys/` or to the
+ *   public space. The SDK adds `network.create` for the owner's own network, as it did without a manifest.
+ * The SDK adds capabilities read on each space.
+ */
+export function sessionManifest(prefix: string, address: string): Manifest {
+  const base = { name: 'OpenKey', space: prefix, prefix: '', defaults: false, includePublicSpace: false } as const;
+  if (prefix === OPENKEY_LEGACY_SPACE) {
+    return {
+      ...base,
+      app_id: 'so.openkey.variables',
+      permissions: [{ service: 'tinycloud.kv', path: 'variables', actions: ['get', 'put', 'del', 'list'] }],
+    };
+  }
+  if (prefix === SECRETS_SPACE) {
+    return {
+      ...base,
+      app_id: 'so.openkey.secrets',
+      permissions: [
+        { service: 'tinycloud.kv', path: 'vault/secrets/', actions: ['get', 'put', 'del', 'list'] },
+        {
+          service: 'tinycloud.encryption',
+          path: `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default`,
+          actions: ['decrypt'],
+        },
+      ],
+    };
+  }
+  throw new Error(`No TinyCloud session manifest for space ${prefix}`);
+}
 
 // node-sdk >= 2.11 adds the `account` registry space (kv, sql, delegation/list,
 // capabilities) to the sign-in SIWE unless this is false. These sessions only
@@ -22,6 +63,8 @@ export function createSessionNode(privateKey: string, prefix: string): TinyCloud
     host: TINYCLOUD_URL,
     privateKey,
     prefix,
+    manifest: sessionManifest(prefix, new Wallet(`0x${privateKey}`).address),
+    sessionExpirationMs: SESSION_EXPIRATION_MS,
     autoCreateSpace: true,
     includeAccountRegistryPermissions: false,
     ...({ autoBootstrapAccount: false } as object),
