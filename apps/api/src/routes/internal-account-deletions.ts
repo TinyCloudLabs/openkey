@@ -41,11 +41,11 @@ export function createInternalAccountDeletionsRouter(getDatabase: () => AccountD
     }
 
     // The cursor is (deletedAt, id). With `since` alone: receipts strictly after that time. With `since` and
-    // `after_id`: receipts strictly after that (deletedAt, id) pair, so a page that cuts between receipts sharing
+    // `after`: receipts strictly after that (deletedAt, id) pair, so a page that cuts between receipts sharing
     // a deletedAt loses none. A caller continues from the last row it received; a full page means more may follow.
-    const afterId = c.req.query('after_id');
+    const afterId = c.req.query('after');
     if (afterId !== undefined && (since === undefined || afterId.length === 0 || afterId.length > 64)) {
-      return c.json({ error: 'Invalid after_id' }, 400);
+      return c.json({ error: 'Invalid after' }, 400);
     }
     const where = since === undefined
       ? {}

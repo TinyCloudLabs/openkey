@@ -258,7 +258,7 @@ END $$`);
       expect(rest.map((row) => row.receiptId)).toEqual(['r1000']);
     });
 
-    test('a page that cuts between receipts sharing a deletedAt loses none when the caller sends after_id', async () => {
+    test('a page that cuts between receipts sharing a deletedAt loses none when the caller sends after', async () => {
       const base = Date.UTC(2026, 10, 19, 0, 0, 0);
       // 999 earlier receipts, then 3 sharing one deletedAt: the first page of 1000 ends inside the shared three.
       await prisma.accountDeletionReceipt.createMany({ data: [
@@ -269,19 +269,19 @@ END $$`);
       expect(first).toHaveLength(1000);
       expect(first[999]!.receiptId).toBe('s1');
       const last = first[999]!;
-      const rest = await (await exportReceipts(`?since=${encodeURIComponent(last.deletedAt)}&after_id=${last.receiptId}`)).json() as { receiptId: string }[];
+      const rest = await (await exportReceipts(`?since=${encodeURIComponent(last.deletedAt)}&after=${last.receiptId}`)).json() as { receiptId: string }[];
       expect(rest.map((row) => row.receiptId)).toEqual(['s2', 's3']);
       // `since` alone is strictly after the time, so it would have skipped them.
       const skipped = await (await exportReceipts(`?since=${encodeURIComponent(last.deletedAt)}`)).json() as { receiptId: string }[];
       expect(skipped).toEqual([]);
     });
 
-    test('after_id needs since and a plausible id', async () => {
-      expect((await exportReceipts('?after_id=a')).status).toBe(400);
+    test('after needs since and a plausible id', async () => {
+      expect((await exportReceipts('?after=a')).status).toBe(400);
       const since = encodeURIComponent('2026-11-19T00:00:00Z');
-      expect((await exportReceipts(`?since=${since}&after_id=`)).status).toBe(400);
-      expect((await exportReceipts(`?since=${since}&after_id=${'x'.repeat(65)}`)).status).toBe(400);
-      expect((await exportReceipts(`?since=${since}&after_id=a`)).status).toBe(200);
+      expect((await exportReceipts(`?since=${since}&after=`)).status).toBe(400);
+      expect((await exportReceipts(`?since=${since}&after=${'x'.repeat(65)}`)).status).toBe(400);
+      expect((await exportReceipts(`?since=${since}&after=a`)).status).toBe(200);
     });
   });
 }
