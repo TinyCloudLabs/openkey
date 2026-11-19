@@ -277,6 +277,8 @@ await mockModules({
   '../routes/approval-requests': () => ({
     admitApprovalDelegation: async () => {},
     checkApprovalDelegation: async () => {},
+    bindApprovalRenewal: async () => undefined,
+    confirmBoundRenewal: () => {},
     releaseApprovalDelegation,
     saveApprovalDelegation: async (_body: unknown, _userId: string, delegation: Record<string, unknown>) => {
       if (failApprovalSave) throw new Error('approval save failed');
