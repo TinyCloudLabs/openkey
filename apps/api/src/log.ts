@@ -79,6 +79,7 @@ const EVENTS = {
   third_party_console: true, uncaught_exception: true, unhandled_rejection: true, config_invalid: true,
   account_origin_refused: true,
   sign_origin_refused: true,
+  approval_passkey_verified: true, approval_passkey_refused: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;
 type EventName = keyof typeof EVENTS;
@@ -91,6 +92,7 @@ const ERROR_CODES: Record<string, true> = {
   tinycloud_bootstrap_expired_request: true, BETTER_AUTH_URL: true, signup_token_invalid: true,
   signup_account_exists: true, quote_report_data_mismatch: true, quote_key_custody_mismatch: true,
   quote_format_invalid: true, TERMS_RELEASE: true,
+  passkey_approval_required: true, passkey_approval_invalid: true, passkey_not_step_up_capable: true,
 };
 const LEVELS: Record<string, true> = { debug: true, info: true, warn: true, error: true };
 const METHODS: Record<string, true> = {

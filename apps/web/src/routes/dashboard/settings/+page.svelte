@@ -15,6 +15,14 @@
   import LinkedAccounts from '$lib/components/auth/linked-accounts.svelte';
   import PasskeyStepUpDialog from '$lib/components/auth/passkey-step-up-dialog.svelte';
   import { passkeyStepUpMethods, type PasskeyStepUpMethod, type PasskeyStepUpPurpose } from '$lib/passkey-step-up';
+  import {
+    confirmWithPasskey,
+    lowersPasskeyApprovalMode,
+    passkeyApprovalCopy,
+    passkeyApprovalSettingError,
+    type PasskeyApprovalMode,
+    type PasskeyApprovalSetting,
+  } from '$lib/approval-passkey';
 
   const session = authClient.useSession();
 
@@ -39,6 +47,12 @@
   let autoSignKnown = $state(false);
   let loadingAutoSign = $state(true);
   let savingAutoSign = $state(false);
+  let passkeyApproval = $state<PasskeyApprovalSetting | null>(null);
+  // The checked choice; follows `passkeyApproval.mode`, and goes back to it when a change is refused.
+  let passkeyApprovalChoice = $state<PasskeyApprovalMode | null>(null);
+  let loadingPasskeyApproval = $state(false);
+  let savingPasskeyApproval = $state(false);
+  let passkeyApprovalError = $state('');
   let tinyCloudManageKeyEnabled = $state(true);
   let tinyCloudManageKeyMode = $state<TinyCloudManageKeyPreference['mode']>('APP_MANAGED');
   let tinyCloudManageKeyPolicyEpoch = $state(0);
@@ -121,6 +135,8 @@
       } else {
         passkeys = result.data || [];
         passkeysLoaded = true;
+        // Whether a passkey can confirm approvals follows the passkey list.
+        loadPasskeyApprovalSetting();
       }
     } catch (e: any) {
       error = e.message || 'Failed to load passkeys';
@@ -172,6 +188,39 @@
       error = e.message || 'Failed to update Auto-Sign preference';
     } finally {
       savingAutoSign = false;
+    }
+  }
+
+  async function loadPasskeyApprovalSetting() {
+    loadingPasskeyApproval = true;
+    passkeyApprovalError = '';
+    try {
+      passkeyApproval = await api.getPasskeyApprovalSetting();
+      passkeyApprovalChoice = passkeyApproval.mode;
+    } catch {
+      passkeyApprovalError = passkeyApprovalCopy.loadFailed;
+    } finally {
+      loadingPasskeyApproval = false;
+    }
+  }
+
+  // Asking for the passkey on fewer approvals needs the passkey itself, bound to the new choice (TC-3442).
+  async function setPasskeyApprovalMode(mode: PasskeyApprovalMode) {
+    const current = passkeyApproval;
+    if (!current || savingPasskeyApproval || mode === current.mode) return;
+    savingPasskeyApproval = true;
+    passkeyApprovalError = '';
+    try {
+      const assertion = lowersPasskeyApprovalMode(current.mode, mode)
+        ? await confirmWithPasskey(await api.passkeyApprovalSettingOffer(mode))
+        : undefined;
+      passkeyApproval = await api.updatePasskeyApprovalSetting(mode, assertion);
+    } catch (e) {
+      // A dismissed passkey prompt has no code; a refusal from the API has one.
+      passkeyApprovalError = passkeyApprovalSettingError(e);
+    } finally {
+      passkeyApprovalChoice = passkeyApproval?.mode ?? null;
+      savingPasskeyApproval = false;
     }
   }
 
@@ -560,6 +609,37 @@
 
   <!-- The live count, so adding or removing a passkey here updates whether an unlink is allowed. -->
   <LinkedAccounts passkeyCount={passkeysLoaded ? passkeys.length : null} />
+
+  <Card id="passkey-approvals" class="mt-6">
+    <fieldset disabled={!passkeyApproval || savingPasskeyApproval || passkeyApproval.stepUpPasskeys === 0}>
+      <legend class="text-xl font-semibold text-surface-900">{passkeyApprovalCopy.title}</legend>
+      <p class="text-sm text-surface-500 mt-1">{passkeyApprovalCopy.help}</p>
+      <div class="mt-4 flex flex-col gap-2">
+        {#each passkeyApprovalCopy.choices as choice}
+          <label class="flex items-center gap-3 text-sm text-surface-900">
+            <input
+              type="radio"
+              name="passkey-approval-mode"
+              value={choice.mode}
+              bind:group={passkeyApprovalChoice}
+              onchange={() => setPasskeyApprovalMode(choice.mode)}
+            />
+            {choice.label}
+          </label>
+        {/each}
+      </div>
+    </fieldset>
+    {#if loadingPasskeyApproval}
+      <p class="mt-3 text-sm text-surface-400">Loading...</p>
+    {:else if passkeyApproval && passkeyApproval.stepUpPasskeys === 0}
+      <p class="mt-3 text-sm text-surface-500">{passkeyApprovalCopy.needsPasskey}</p>
+    {:else if passkeyApproval?.mode === 'NEVER'}
+      <p class="mt-3 text-sm text-amber-700">{passkeyApprovalCopy.neverWarning}</p>
+    {/if}
+    {#if passkeyApprovalError}
+      <p class="mt-3 text-sm text-red-600" role="alert">{passkeyApprovalError}</p>
+    {/if}
+  </Card>
 
   <Card class="mt-6">
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
