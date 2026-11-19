@@ -362,6 +362,9 @@ export function devicePermissionSummary(permission: DevicePermission, lifetimeSe
   }
   if (permission.service !== 'tinycloud.kv' || permission.space.split(':').at(-1) !== 'secrets') return null;
 
+  if (permission.path === 'vault/secrets/' && permission.actions.length === 1 && permission.actions[0] === 'tinycloud.kv/list') {
+    return DEVICE.secretNames;
+  }
   const name = /^vault\/secrets\/([A-Z][A-Z0-9_]{0,63})$/.exec(permission.path)?.[1];
   const verbs = DEVICE.secretAccess;
   if (!name || !permission.actions.length || !permission.actions.every((ability) => Object.hasOwn(verbs, ability))) return null;

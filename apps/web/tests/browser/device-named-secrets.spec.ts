@@ -7,6 +7,7 @@ test('the device screen lists each named secret and the decrypt lifetime', async
     { service: 'tinycloud.capabilities', space: 'secrets', path: '', actions: ['tinycloud.capabilities/read'] },
     { service: 'tinycloud.kv', space: 'secrets', path: 'vault/secrets/FIRST_KEY', actions: ['tinycloud.kv/get'] },
     { service: 'tinycloud.kv', space: 'secrets', path: 'vault/secrets/SECOND_KEY', actions: ['tinycloud.kv/put', 'tinycloud.kv/list'] },
+    { service: 'tinycloud.kv', space: 'secrets', path: 'vault/secrets/', actions: ['tinycloud.kv/list'] },
     { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] },
   ];
   await page.route('**/api/**', async (route) => {
@@ -27,8 +28,9 @@ test('the device screen lists each named secret and the decrypt lifetime', async
 
   await page.goto('/device?user_code=ABCD-EFGH');
   const access = page.getByRole('list', { name: 'Requested access' }).getByRole('listitem');
-  await expect(access).toHaveCount(4);
+  await expect(access).toHaveCount(5);
   await expect(access.nth(0)).toContainText('FIRST_KEY · Read');
   await expect(access.nth(1)).toContainText('SECOND_KEY · Write, List');
-  await expect(access.nth(2)).toContainText('Decrypt protected data for 30 minutes');
+  await expect(access.nth(2)).toContainText('See the names of all your secrets (not their contents)');
+  await expect(access.nth(3)).toContainText('Decrypt protected data for 30 minutes');
 });

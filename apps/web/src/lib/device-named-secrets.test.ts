@@ -17,3 +17,12 @@ test('the device asks list labels each named secret and the current decrypt life
   expect(devicePermissionSummary(permissions[2]!, 3_600)).toBe('Decrypt protected data for 1 hour');
   expect(devicePermissionSummary({ ...permissions[2]!, path: 'other' }, 3_600)).toBeNull();
 });
+
+test('the exact list prefix describes names only', () => {
+  const list: DevicePermission = {
+    service: 'tinycloud.kv', space: 'secrets', path: 'vault/secrets/', actions: ['tinycloud.kv/list'],
+  };
+  expect(devicePermissionSummary(list, 3_600)).toBe('See the names of all your secrets (not their contents)');
+  expect(devicePermissionSummary({ ...list, path: 'vault/secrets' }, 3_600)).toBeNull();
+  expect(devicePermissionSummary({ ...list, actions: [...list.actions, 'tinycloud.kv/get'] }, 3_600)).toBeNull();
+});

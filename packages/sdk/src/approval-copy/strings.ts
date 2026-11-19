@@ -163,6 +163,7 @@ export const DEVICE = {
   headingCode: 'Does your terminal show this code?',
   asksLabel: 'What it asks for',
   namedSecret: '{name} · {access}',
+  secretNames: 'See the names of all your secrets (not their contents)',
   secretAccess: {
     'tinycloud.kv/get': 'Read',
     'tinycloud.kv/put': 'Write',

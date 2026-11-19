@@ -25,6 +25,7 @@ const deviceService = new DeviceAuthorizationService(new MemoryDeviceAuthorizati
 });
 const capabilities = { service: 'tinycloud.capabilities', space: 'secrets', path: '', actions: ['tinycloud.capabilities/read'] };
 const named = { service: 'tinycloud.kv', space: 'secrets', path: 'vault/secrets/FIRST_KEY', actions: ['tinycloud.kv/get', 'tinycloud.kv/put', 'tinycloud.kv/list'] };
+const names = { ...named, path: 'vault/secrets/', actions: ['tinycloud.kv/list'] };
 const decrypt = { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] };
 const secretsSpaceId = `tinycloud:pkh:eip155:1:${account.address}:secrets`;
 const permissions = [capabilities, named, decrypt];
@@ -125,8 +126,23 @@ test('prepares and signs a write-only secret from a manifest', async () => {
   expect(signed.body.permissions).toHaveLength(2);
 });
 
+test('prepares and signs a names-only request in the secrets space', async () => {
+  const { request } = await startRequest([capabilities, names]);
+  const prepared = await post('/prepare', request);
+  expect(prepared.status, JSON.stringify(prepared.body)).toBe(200);
+  const signed = await post('/', { ...request, ...managedApproval(prepared.body) });
+  expect(signed.status, JSON.stringify(signed.body)).toBe(200);
+  expect(signed.body.spaceId).toBe(secretsSpaceId);
+  expect(signed.body.permissions).toEqual(expect.arrayContaining([
+    { ...capabilities, service: 'capabilities', space: secretsSpaceId },
+    { ...names, service: 'kv', space: secretsSpaceId },
+  ]));
+  expect(signed.body.permissions).toHaveLength(2);
+});
+
 test.each(['secrets', secretsSpaceId])('prepares, signs and relays a CLI request for %s', async (space) => {
-  const requested = [{ ...capabilities, space }, { ...named, space }, decrypt];
+  const second = { ...named, space, path: 'vault/secrets/SECOND_KEY', actions: ['tinycloud.kv/put'] };
+  const requested = [{ ...capabilities, space }, { ...named, space }, second, { ...names, space }, decrypt];
   const { request, poll } = await startRequest(requested);
   const prepared = await post('/prepare', request);
   expect(prepared.status, JSON.stringify(prepared.body)).toBe(200);
@@ -136,12 +152,14 @@ test.each(['secrets', secretsSpaceId])('prepares, signs and relays a CLI request
   expect(signed.body.spaceId).toBe(secretsSpaceId);
   expect(signed.body.permissions).toEqual(expect.arrayContaining([
     { ...capabilities, service: 'capabilities', space: secretsSpaceId },
+    { ...second, service: 'kv', space: secretsSpaceId },
+    { ...names, service: 'kv', space: secretsSpaceId },
     { service: 'encryption', space: 'encryption', path: `urn:tinycloud:encryption:did:pkh:eip155:1:${account.address}:default`, actions: decrypt.actions },
   ]));
-  const signedNamed = signed.body.permissions.find((entry: { service: string }) => entry.service === 'kv');
+  const signedNamed = signed.body.permissions.find((entry: { path: string }) => entry.path === named.path);
   expect(signedNamed).toEqual({ ...named, service: 'kv', space: secretsSpaceId, actions: expect.arrayContaining(named.actions) });
   expect(signedNamed.actions).toHaveLength(named.actions.length);
-  expect(signed.body.permissions).toHaveLength(3);
+  expect(signed.body.permissions).toHaveLength(5);
 
   const ephemeralPublicJwk = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ format: 'jwk' });
   await deviceService.approve(poll.transactionId, user.id, {
@@ -166,28 +184,29 @@ test.each(['secrets', secretsSpaceId])('prepares, signs and relays a CLI request
   });
 });
 
-test('refuses a device baseline with an out-of-policy ability even if it is unchecked', async () => {
+test('refuses out-of-policy named and prefix abilities even if they are unchecked', async () => {
   signMessage.mockClear();
   activateSessionWithHost.mockClear();
   const { request } = await startRequest();
   const prepared = await post('/prepare', request);
   expect(prepared.status, JSON.stringify(prepared.body)).toBe(200);
-  const altered = {
-    ...request,
-    permissions: [capabilities, { ...named, actions: [...named.actions, 'tinycloud.kv/del'] }, decrypt],
-    actionKeys: prepared.body.selectedActionKeys,
-  };
   const approval = managedApproval(prepared.body);
   const signature = await account.signMessage({ message: approval.prepared.siwe });
 
-  for (const refused of [
-    await post('/prepare', altered),
-    await post('/', altered),
-    await post('/', { ...altered, ...approval }),
-    await post('/complete', { ...altered, ...approval, signature }),
+  for (const permissions of [
+    [capabilities, { ...named, actions: [...named.actions, 'tinycloud.kv/del'] }, decrypt],
+    [capabilities, named, { ...names, actions: ['tinycloud.kv/get'] }, decrypt],
   ]) {
-    expect(refused.status).toBe(400);
-    expect(refused.body.code).toBe('invalid_permissions');
+    const altered = { ...request, permissions, actionKeys: prepared.body.selectedActionKeys };
+    for (const refused of [
+      await post('/prepare', altered),
+      await post('/', altered),
+      await post('/', { ...altered, ...approval }),
+      await post('/complete', { ...altered, ...approval, signature }),
+    ]) {
+      expect(refused.status).toBe(400);
+      expect(refused.body.code).toBe('invalid_permissions');
+    }
   }
   expect(signMessage).not.toHaveBeenCalled();
   expect(activateSessionWithHost).not.toHaveBeenCalled();

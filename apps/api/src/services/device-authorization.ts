@@ -58,7 +58,8 @@ export const SHARE_DEVICE_PERMISSIONS: readonly DevicePermission[] = Object.free
  *   no `.`/`..` segments, no `secrets/` or `vault/` roots) and no KV path may
  *   cover another (Node grants cover every path beneath a granted path);
  *   capabilities grants are space-wide (empty path). In the `secrets` space,
- *   KV get/list/put is available only on a named `vault/secrets/NAME` entry;
+ *   KV get/list/put is available on a named `vault/secrets/NAME` entry, and
+ *   list alone is available at `vault/secrets/`;
  *   the single encryption grant is the approving account's own `default`
  *   network: space `default`, empty path, and only `tinycloud.encryption/decrypt`;
  * - `tinycloud.capabilities/read` is required for data requests and is never
@@ -70,6 +71,7 @@ export const DEVICE_FLOW_ABILITIES: Readonly<Record<string, readonly string[]>> 
   'tinycloud.encryption': ['tinycloud.encryption/decrypt'],
 });
 const DEVICE_FLOW_DENIED_SPACES: Record<string, true> = { account: true, applications: true, secrets: true };
+const DEVICE_SECRET_LIST_PATH = 'vault/secrets/';
 const DEVICE_SECRET_PATH = /^vault\/secrets\/[A-Z][A-Z0-9_]{0,63}$/;
 const DEVICE_SECRET_ACTIONS = ['tinycloud.kv/get', 'tinycloud.kv/put', 'tinycloud.kv/list'];
 const DEVICE_PERMISSION_FIELDS: Record<string, true> = { service: true, space: true, path: true, actions: true };
@@ -449,6 +451,7 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
   }
   let requestSpace: NonNullable<ReturnType<typeof deviceSpaceIdentity>> | undefined;
   let defaultDecrypt = false;
+  let secretListSeen = false;
   const granted: Array<{ service: string; segments: string[]; index: number }> = [];
   const permissions = value.map((raw, index) => {
     const label = `permissions[${index}]`;
@@ -483,8 +486,17 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
     if (!requestSpace) requestSpace = spaceIdentity;
     else if (spaceIdentity.key !== requestSpace.key) throw scopeError('device authorization accepts one space per request');
     if (typeof path !== 'string') throw scopeError(`${label}.path is required`);
-    const namedSecret = inSecrets && service === 'tinycloud.kv';
-    if (namedSecret) {
+    const secretKv = inSecrets && service === 'tinycloud.kv';
+    if (secretKv) {
+      // The names list can accompany any named entry for the same space.
+      if (path === DEVICE_SECRET_LIST_PATH) {
+        if (!Array.isArray(actions) || actions.length !== 1 || actions[0] !== 'tinycloud.kv/list') {
+          throw scopeError(`${label}.actions must be exactly tinycloud.kv/list for vault/secrets/`);
+        }
+        if (secretListSeen) throw scopeError('permissions allows one secrets list entry');
+        secretListSeen = true;
+        return { service, space, path, actions: [...actions] };
+      }
       if (!DEVICE_SECRET_PATH.test(path)) {
         throw scopeError(`${label} must request KV access to one named secret (vault/secrets/NAME)`);
       }
@@ -502,7 +514,7 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
     });
     if (covering) throw scopeError(`${label}.path overlaps permissions[${covering.index}].path; a granted path covers every path beneath it`);
     granted.push({ service, segments, index });
-    const allowed = namedSecret ? DEVICE_SECRET_ACTIONS : DEVICE_FLOW_ABILITIES[service]!;
+    const allowed = secretKv ? DEVICE_SECRET_ACTIONS : DEVICE_FLOW_ABILITIES[service]!;
     if (!Array.isArray(actions) || actions.length === 0) throw scopeError(`${label}.actions must be a non-empty list`);
     const unique = new Set<string>();
     for (const action of actions) {
@@ -517,7 +529,7 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
   if (!requestSpace) return permissions;
   if (requestSpace.name === 'secrets') {
     if (!permissions.some((permission) => permission.service === 'tinycloud.kv')) {
-      throw scopeError('permissions must include KV access to at least one named secret');
+      throw scopeError('permissions must include KV access to a named secret or the secrets list');
     }
   } else if (defaultDecrypt && requestSpace.key !== 'default') {
     throw scopeError('device authorization accepts one space per request');
