@@ -62,7 +62,7 @@ export const reviewerCleanupNode: ReviewerCleanupAdapter = {
       }
       if (page === 99) throw new Error('Cleanup budget exceeded');
     }
-    // The named DBs, including both fixed seed feed DBs (TC-2817).
+    // Only the listed DBs, including both fixed seed feed DBs: empty() mustn't treat this as complete or allow destroying the key (TC-2817).
     const names = [...sql.filter(p => !p.path.endsWith('/')).map(p => p.path),
       'xyz.tinycloud.tinychat/feed/feed_output_home_tour', 'xyz.tinycloud.tinychat/feed/feed_responses_home_tour'];
     for (const name of names) {
