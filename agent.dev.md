@@ -110,8 +110,27 @@ bun dev:portless
   API and web deployment are both needed. This does not change sign-in methods
   or remove consent. Default-branch merges and deployment require explicit
   owner approval; no auto-merge or deployment bypass.
+- The Claude, Grok and Muse directory listings each use their own restricted
+  resource, `https://mcp.tinycloud.xyz/{claude,grok,muse}/mcp`, with the exact
+  callback `https://mcp.tinycloud.xyz/{claude,grok,muse}/connect/callback`. They
+  follow the ChatGPT rules above: exact entries only, API and web deployment both
+  needed. The connector's token-status client must also be registered for the
+  new resources (`docs/resource-server-token-status.md`).
 - Never bump `@phala/dstack-sdk` or change `createProductionClient` in `packages/tee` without
   reading `docs/tee-overview.md` "Frozen key derivation". The SDK is pinned exactly; in SDK 0.6
   `DstackClient` derives different keys, which would make every sealed key unrecoverable. The
   known-answer test `packages/tee/tests/dstack-key-derivation.kat.test.ts` must pass unchanged
   (TC-964).
+- Hosted app-review accounts use administrator-managed bindings and the normal OAuth consent
+  flow (TC-2775). Review operations include explicit provisioning, credential installation,
+  audience pinning and status. Apple integration is tracked separately under TC-2780.
+  Operator steps are in `docs/deployment.md` under "Hosted app-review accounts".
+- A migration's SHA-256 is pinned in two registries that must agree with the file:
+  `scripts/deploy-production-migrations.ts` and `packages/db/src/schema-contract.ts`. A migration
+  that adds a column to a table counted by `scripts/native-delegation-schema-guards.ts` must
+  update that count too, or the production deploy fails after applying it. A migration that can
+  raise on existing data gets a count-only preflight in the deploy script (TC-2775).
+- Once a migration has been applied to production, its file and both checksum pins are
+  frozen: never edit or revert them, even when reverting the feature that added a column
+  to it. Back a feature out in code and leave the column unused. `codeDigest` in
+  `20261111_0001_reviewer_accounts` is such a column (TC-2775).

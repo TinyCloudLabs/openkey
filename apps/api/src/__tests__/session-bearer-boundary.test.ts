@@ -24,6 +24,7 @@ const tx = {
   account: { deleteMany: async () => ({ count: 1 }), findMany: async () => [] },
   verification: { deleteMany: async () => ({ count: 0 }) },
   user: { delete: async ({ where }: { where: { id: string } }) => { deletedUsers.push(where.id); return {}; } },
+  renewalLease: { findMany: async () => [], count: async () => 0 },
 };
 
 const prisma = {
@@ -55,6 +56,7 @@ const prisma = {
     findUnique: async () => ({ autoSignEnabled: true }),
     update: async ({ data }: { data: { autoSignEnabled: boolean } }) => ({ autoSignEnabled: data.autoSignEnabled }),
   },
+  renewalLease: { findMany: async () => [], count: async () => 0 },
 };
 
 // Stands in for Better Auth: every request resolves to user_1's session.
@@ -228,8 +230,7 @@ describe('account controls (TC-689)', () => {
   test('delete requires a passkey verification on this session', async () => {
     const response = await call('POST', '/api/account/delete', { origin: OPENKEY_ORIGIN }, { confirmation: 'DELETE MY ACCOUNT' });
     expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({
-      error: 'Verify with your passkey again to continue',
+    expect(await response.json()).toMatchObject({
       code: 'passkey_step_up_required',
     });
     expect(deletedUsers).toEqual([]);

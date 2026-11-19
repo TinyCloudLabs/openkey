@@ -72,12 +72,12 @@ test('an opt-in of anything but true shows no control', async ({ page }) => {
 
 test('with the opt-in the control shows, and a changed expiry is what the preview asks the server to sign', async ({ page }) => {
   const { frame, previews } = await open(page, { expiryChangeable: true });
-  await expect.poll(() => previews.length).toBe(1);
+  await expect.poll(() => previews.length).toBe(2);
   const before = Date.now();
-  await frame.getByRole('button', { name: '(Change)' }).click();
+  await frame.getByText('How long it lasts', { exact: true }).click();
   await frame.getByLabel('Or type a time').fill('90m');
   await frame.getByLabel('Or type a time').press('Enter');
-  await expect(frame.locator('.expiry-line')).toHaveText(/90m/);
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('90 minutes');
   await expect.poll(() => previews.length).toBeGreaterThan(1);
   const latest = previews.at(-1)!;
   const asked = Date.parse(String(latest.expirationTime));
@@ -95,11 +95,50 @@ test('the "This access lasts until" line follows the pick before anything is app
   const access = frame.locator('.summary-note');
   await expect(access).toContainText('This access lasts until');
   const before = (await access.innerText()).trim();
-  await frame.getByRole('button', { name: '(Change)' }).click();
+  await frame.getByText('How long it lasts', { exact: true }).click();
   await frame.getByLabel('Or type a time').fill('30d');
   await page.keyboard.press('Enter');
-  await expect(frame.locator('.expiry-line')).toHaveText(/30d/);
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('30 days');
   await expect(access).not.toHaveText(before);
   const date = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(Date.now() + 30 * 86_400_000));
   await expect(access).toContainText(date);
+});
+
+// TC-3111: a one-time approval (secrets or decrypt) that asks for longer than an hour starts at one hour.
+test('a secret or decrypt request that asks for 7 days is prepared with one hour, and says so', async ({ page }) => {
+  const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
+  const att = { [`urn:tinycloud:encryption:${owner}:default/apps/xyz.tinycloud.listen/`]: { 'tinycloud.encryption/decrypt': [{}] } };
+  const decrypt = siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
+  const before = Date.now();
+  const { frame, previews } = await open(page, { expiryChangeable: true }, decrypt);
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
+  await expect(frame.getByTestId('approval-expiry-once-note')).toContainText('asked for 7 days');
+  const latest = previews.at(-1)!;
+  const asked = Date.parse(String(latest.expirationTime));
+  expect(asked).toBeGreaterThanOrEqual(before + 60 * 60_000 - 1000);
+  expect(asked).toBeLessThanOrEqual(Date.now() + 60 * 60_000 + 1000);
+});
+
+test('ordinary data keeps what the app asked for, with no note', async ({ page }) => {
+  const kv = siweWithResources([makeRecapResource({ [FIXTURE_META.ownSpace]: { 'tinycloud.kv/get': [{}] } })], { domain: HOST, uri: ORIGIN });
+  const { frame, previews } = await open(page, { expiryChangeable: true }, kv);
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('7 days');
+  await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+  await expect.poll(() => previews.length).toBe(1);
+  expect(previews[0]).not.toHaveProperty('expirationTime');
+});
+
+test('the owner can choose longer than the hour, and the choice is what is prepared', async ({ page }) => {
+  const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
+  const att = { [`urn:tinycloud:encryption:${owner}:default/apps/xyz.tinycloud.listen/`]: { 'tinycloud.encryption/decrypt': [{}] } };
+  const decrypt = siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
+  const { frame, previews } = await open(page, { expiryChangeable: true }, decrypt);
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
+  await frame.getByText('How long it lasts', { exact: true }).click();
+  await frame.getByLabel('Or type a time').fill('2d');
+  await frame.getByLabel('Or type a time').press('Enter');
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('2 days');
+  await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+  const asked = Date.parse(String(previews.at(-1)!.expirationTime));
+  expect(asked).toBeGreaterThanOrEqual(Date.now() + 2 * 86_400_000 - 5000);
 });

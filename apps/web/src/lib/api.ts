@@ -1,5 +1,8 @@
 // API client for key management
 import { getSessionToken, isEmbedContext } from './embed-passkey';
+import { isDefiniteRefusal, ServerRefusalError } from './server-reply';
+import { isTermsRequired, sendToTerms } from './terms';
+import type { RenewalLease } from './renewal-leases';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -32,7 +35,12 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly =
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: 'Unknown error' }));
     const detail = error?.error;
+    // TC-3232: the account has not accepted the current Terms. The sign-in pages ask first; anywhere
+    // else the Terms screen is shown, and brings the user back here.
+    if (isTermsRequired(res.status, error) && !window.location.pathname.startsWith('/auth/')) sendToTerms();
     const message = typeof detail === 'string' ? detail : detail?.message;
+    // A definite refusal of a sign-in keeps its code so the widget can tell the app (TC-2291).
+    if (isDefiniteRefusal(res.status, error?.code)) throw new ServerRefusalError(message || `HTTP ${res.status}`, res.status, error.code);
     const failure = new Error(message || `HTTP ${res.status}`);
     Object.assign(failure, {
       code: detail?.code ?? (typeof error?.code === 'string' ? error.code : undefined),
@@ -115,9 +123,22 @@ export interface TinyCloudManageKeyApp {
   status?: 'ENABLED' | 'DISABLED' | 'PENDING_USER_APPROVAL' | 'CONSENT_WITHDRAWN';
 }
 
-/** An MCP app the account has connected; `consentId` addresses the Disconnect call. */
+/** An MCP app the account has connected; `consentId` addresses its Disconnect call. */
 export interface ConnectedMcpApp {
   kind: 'mcp';
+  consentId: string;
+  clientId: string;
+  name: string;
+  uri: string | null;
+  host: string | null;
+  icon: string | null;
+  connectedAt: string;
+  scopes: string[];
+}
+
+/** An app that can read the owner's canonical wallet address. */
+export interface ConnectedIdentityApp {
+  kind: 'identity';
   consentId: string;
   clientId: string;
   name: string;
@@ -140,6 +161,7 @@ export interface TinyCloudManageKeyActivity {
 export interface TinyCloudManageKeyAppsResponse {
   apps: TinyCloudManageKeyApp[];
   mcpApps: ConnectedMcpApp[];
+  identityApps: ConnectedIdentityApp[];
   activity: TinyCloudManageKeyActivity[];
   mode: TinyCloudManageKeyPreference['mode'];
   policyEpoch: number;
@@ -249,10 +271,12 @@ export const api = {
     keyId: string,
     message: string,
     requestOrigin?: string,
+    /** TC-2927: the owner allowed the extra permissions this exact message carries, on the warning screen. */
+    elevatedAcknowledged?: boolean,
   ): Promise<{ signature: string; address: string }> {
     return fetchAPI(`/api/keys/${keyId}/sign`, {
       method: 'POST',
-      body: JSON.stringify({ message, requestOrigin }),
+      body: JSON.stringify({ message, requestOrigin, ...(elevatedAcknowledged ? { elevatedAcknowledged: true } : {}) }),
     });
   },
 
@@ -322,6 +346,31 @@ export const api = {
     return fetchAPI(`/api/account/tinycloud-apps/mcp/${encodeURIComponent(consentId)}`, {
       method: 'DELETE', body: JSON.stringify({ confirmation: 'DISCONNECT' }),
     }, true);
+  },
+  async disconnectIdentityApp(consentId: string): Promise<{ consentId: string; disconnected: boolean }> {
+    return fetchAPI(`/api/account/tinycloud-apps/identity/${encodeURIComponent(consentId)}`, {
+      method: 'DELETE', body: JSON.stringify({ confirmation: 'DISCONNECT' }),
+    }, true);
+  },
+
+  async listRenewalLeases(): Promise<{ leases: RenewalLease[] }> {
+    return fetchAPI('/api/account/renewal-leases', {}, true);
+  },
+  /**
+   * Stop one lease. `{ walletMessage }` when an external wallet must sign the stop: call again with
+   * `{ siwe: walletMessage, signature }`.
+   */
+  async stopRenewalLease(leaseCid: string, signed?: { siwe: string; signature: string }): Promise<{ stopped: true } | { walletMessage: string }> {
+    const res = await fetch(`${API_URL}/api/account/renewal-leases/${encodeURIComponent(leaseCid)}/stop`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(signed ?? {}),
+    });
+    const body = await res.json().catch(() => null) as { stopped?: boolean; code?: string; siwe?: string; error?: string } | null;
+    if (res.ok && body?.stopped === true) return { stopped: true };
+    if (res.status === 409 && body?.code === 'wallet_required' && typeof body.siwe === 'string') return { walletMessage: body.siwe };
+    throw Object.assign(new Error(typeof body?.error === 'string' ? body.error : `HTTP ${res.status}`), { code: body?.code, status: res.status });
   },
 
   async getLinkChallenge(): Promise<{ message: string; nonce: string }> {

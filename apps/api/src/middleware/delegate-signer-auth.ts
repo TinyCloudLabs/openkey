@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import type { SessionContext } from './session';
-import { TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_SESSION_SCOPE } from '../oauth-config';
+import { isConfidentialWebClient, TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_SESSION_SCOPE } from '../oauth-config';
 import { rejectNonOpenKeySignRequest } from './browser-control';
 
 export type DelegateSignerPrincipal =
@@ -117,9 +117,7 @@ function sameStringSet(actual: string[], expected: readonly string[]): boolean {
 }
 
 function isConfidentialPersonalWebClient(client: NonNullable<CoordinationosOauthContext['client']>): boolean {
-  return client.type === 'web'
-    && !client.public
-    && client.tokenEndpointAuthMethod === 'client_secret_basic'
+  return isConfidentialWebClient(client)
     && sameStringSet(client.grantTypes, ['authorization_code'])
     && sameStringSet(client.responseTypes, ['code']);
 }
@@ -226,12 +224,12 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
     }),
     database.user.findUnique({
       where: { id: token.userId },
-      select: { id: true, emailVerified: true, lockedAt: true },
+      select: { id: true, emailVerified: true, lockedAt: true, reviewerHoldAt: true, reviewerBinding: true },
     }),
   ]);
   // A locked account (R9, TC-1231) is refused exactly like a deleted one: its
   // OAuth tokens never authorize signing.
-  const user = userRow && !userRow.lockedAt ? { id: userRow.id, emailVerified: userRow.emailVerified } : null;
+  const user = userRow && !userRow.lockedAt && !userRow.reviewerHoldAt && !userRow.reviewerBinding ? { id: userRow.id, emailVerified: userRow.emailVerified } : null;
   const context: CoordinationosOauthContext = { token, client, user };
   c.set('delegateSignerOauthContext', context);
   const failure = (code: DelegateSignerAuthCode): DelegateSignerAuthFailure => ({

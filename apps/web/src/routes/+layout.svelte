@@ -1,12 +1,12 @@
 <script lang="ts">
   import '../app.css';
   import { page } from '$app/stores';
-  import { consoleHref } from '$lib/console-host';
+  import AdminConsoleLink from '$lib/components/admin-console-link.svelte';
   import type { Snippet } from 'svelte';
 
   let { children }: { children: Snippet } = $props();
 
-  let isEmbed = $derived($page.url.pathname.startsWith('/widget/embed'));
+  let isWidget = $derived($page.url.pathname === '/widget' || $page.url.pathname.startsWith('/widget/'));
   let isFullScreen = $derived(
     $page.url.pathname === '/' ||
     $page.url.pathname.startsWith('/auth/') ||
@@ -14,12 +14,13 @@
     // auth sheets; the account chrome must not wrap them.
     $page.url.pathname.startsWith('/oauth/') ||
     $page.url.pathname.startsWith('/delegate') ||
+    $page.route.id === '/a/[id]' ||
     $page.url.pathname.startsWith('/console') ||
     // The dev-only parity harness route hosts a bare adapter mount so
     // Playwright tests can drive it without surrounding chrome
     // interfering with focus order.
     $page.url.pathname.startsWith('/__parity_harness') ||
-    isEmbed
+    isWidget
   );
 </script>
 
@@ -45,14 +46,7 @@
           <a href="/dashboard/api-keys" class="rounded-full px-3 py-1.5 text-sm text-surface-500 no-underline transition-colors hover:bg-surface-100 hover:text-surface-900">
             API keys
           </a>
-          <a
-            href={consoleHref('/console')}
-            class="inline-flex items-center gap-1.5 rounded-full border border-primary-200 bg-primary-50 px-3 py-1.5 text-sm font-semibold text-primary-700 no-underline transition-colors hover:bg-primary-100"
-            aria-label="OpenKey Admin console"
-          >
-            Admin console
-            <span aria-hidden="true">↗</span>
-          </a>
+          <AdminConsoleLink />
         </div>
       </nav>
     </header>
