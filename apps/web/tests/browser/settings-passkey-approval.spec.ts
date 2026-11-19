@@ -1,6 +1,9 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { ORIGIN } from './e2e-port';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { PASSKEY_APPROVAL_SETTING_SHOWN } from '../../src/lib/approval-passkey';
+
+test.skip(!PASSKEY_APPROVAL_SETTING_SHOWN, 'The Settings card is hidden.');
 
 // TC-3442: Settings chooses which approvals need a passkey. Asking on more approvals saves at once; asking on fewer
 // goes through the passkey prompt and sends its assertion with the change. Without a passkey that can confirm
