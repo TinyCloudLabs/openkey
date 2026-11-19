@@ -74,6 +74,7 @@ test('with the opt-in the control shows, and a changed expiry is what the previe
   const { frame, previews } = await open(page, { expiryChangeable: true });
   await expect.poll(() => previews.length).toBe(2);
   const before = Date.now();
+  await frame.getByText('Advanced details', { exact: true }).click();
   await frame.getByText('How long it lasts', { exact: true }).click();
   await frame.getByLabel('Or type a time').fill('90m');
   await frame.getByLabel('Or type a time').press('Enter');
@@ -95,6 +96,7 @@ test('the "This access lasts until" line follows the pick before anything is app
   const access = frame.locator('.summary-note');
   await expect(access).toContainText('This access lasts until');
   const before = (await access.innerText()).trim();
+  await frame.getByText('Advanced details', { exact: true }).click();
   await frame.getByText('How long it lasts', { exact: true }).click();
   await frame.getByLabel('Or type a time').fill('30d');
   await page.keyboard.press('Enter');
@@ -134,6 +136,7 @@ test('the owner can choose longer than the hour, and the choice is what is prepa
   const decrypt = siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
   const { frame, previews } = await open(page, { expiryChangeable: true }, decrypt);
   await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
+  await frame.getByText('Advanced details', { exact: true }).click();
   await frame.getByText('How long it lasts', { exact: true }).click();
   await frame.getByLabel('Or type a time').fill('2d');
   await frame.getByLabel('Or type a time').press('Enter');
@@ -141,4 +144,36 @@ test('the owner can choose longer than the hour, and the choice is what is prepa
   await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
   const asked = Date.parse(String(previews.at(-1)!.expirationTime));
   expect(asked).toBeGreaterThanOrEqual(Date.now() + 2 * 86_400_000 - 5000);
+});
+
+// TC-3154: the chooser is in Advanced details. Picking the app's own time there after the one-hour start keeps it.
+test('picking what the app asked for in Advanced details after the one-hour start does not bring the hour back', async ({ page }) => {
+  const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
+  const att = { [`urn:tinycloud:encryption:${owner}:default/apps/xyz.tinycloud.listen/`]: { 'tinycloud.encryption/decrypt': [{}] } };
+  const decrypt = siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
+  const { frame, previews } = await open(page, { expiryChangeable: true }, decrypt);
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
+  await expect(frame.getByText('How long it lasts', { exact: true })).toBeHidden();
+  await frame.getByText('Advanced details', { exact: true }).click();
+  await frame.getByText('How long it lasts', { exact: true }).click();
+  await frame.getByRole('button', { name: '7 days', exact: true }).click();
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('7 days');
+  await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+  // Give a wrongly re-sent default time to arrive; the face and the last preview must both still be the app's own time.
+  await page.waitForTimeout(1000);
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('7 days');
+  expect(previews.at(-1)).not.toHaveProperty('expirationTime');
+});
+
+test('picking the hour itself in Advanced details counts as the owner\'s choice, so the one-hour note goes', async ({ page }) => {
+  const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
+  const att = { [`urn:tinycloud:encryption:${owner}:default/apps/xyz.tinycloud.listen/`]: { 'tinycloud.encryption/decrypt': [{}] } };
+  const decrypt = siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
+  const { frame } = await open(page, { expiryChangeable: true }, decrypt);
+  await expect(frame.getByTestId('approval-expiry-once-note')).toBeVisible();
+  await frame.getByText('Advanced details', { exact: true }).click();
+  await frame.getByText('How long it lasts', { exact: true }).click();
+  await frame.getByRole('button', { name: '1 hour', exact: true }).click();
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
+  await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
 });

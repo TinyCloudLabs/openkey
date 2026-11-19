@@ -8,12 +8,21 @@
   import ConnectedMcpApps from './ConnectedMcpApps.svelte';
   import DeleteAccountEntry from './DeleteAccountEntry.svelte';
   import RenewalLeases from './RenewalLeases.svelte';
+  import { tinyCloudDisconnectCopy } from '$lib/connected-tinycloud-apps';
   import { renewalLeaseCopy, type RenewalLease } from '$lib/renewal-leases';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
   import LinkedAccounts from '$lib/components/auth/linked-accounts.svelte';
   import PasskeyStepUpDialog from '$lib/components/auth/passkey-step-up-dialog.svelte';
   import { passkeyStepUpMethods, type PasskeyStepUpMethod, type PasskeyStepUpPurpose } from '$lib/passkey-step-up';
+  import {
+    confirmWithPasskey,
+    lowersPasskeyApprovalMode,
+    passkeyApprovalCopy,
+    passkeyApprovalSettingError,
+    type PasskeyApprovalMode,
+    type PasskeyApprovalSetting,
+  } from '$lib/approval-passkey';
 
   const session = authClient.useSession();
 
@@ -38,6 +47,12 @@
   let autoSignKnown = $state(false);
   let loadingAutoSign = $state(true);
   let savingAutoSign = $state(false);
+  let passkeyApproval = $state<PasskeyApprovalSetting | null>(null);
+  // The checked choice; follows `passkeyApproval.mode`, and goes back to it when a change is refused.
+  let passkeyApprovalChoice = $state<PasskeyApprovalMode | null>(null);
+  let loadingPasskeyApproval = $state(false);
+  let savingPasskeyApproval = $state(false);
+  let passkeyApprovalError = $state('');
   let tinyCloudManageKeyEnabled = $state(true);
   let tinyCloudManageKeyMode = $state<TinyCloudManageKeyPreference['mode']>('APP_MANAGED');
   let tinyCloudManageKeyPolicyEpoch = $state(0);
@@ -120,6 +135,8 @@
       } else {
         passkeys = result.data || [];
         passkeysLoaded = true;
+        // Whether a passkey can confirm approvals follows the passkey list.
+        loadPasskeyApprovalSetting();
       }
     } catch (e: any) {
       error = e.message || 'Failed to load passkeys';
@@ -171,6 +188,39 @@
       error = e.message || 'Failed to update Auto-Sign preference';
     } finally {
       savingAutoSign = false;
+    }
+  }
+
+  async function loadPasskeyApprovalSetting() {
+    loadingPasskeyApproval = true;
+    passkeyApprovalError = '';
+    try {
+      passkeyApproval = await api.getPasskeyApprovalSetting();
+      passkeyApprovalChoice = passkeyApproval.mode;
+    } catch {
+      passkeyApprovalError = passkeyApprovalCopy.loadFailed;
+    } finally {
+      loadingPasskeyApproval = false;
+    }
+  }
+
+  // Asking for the passkey on fewer approvals needs the passkey itself, bound to the new choice (TC-3442).
+  async function setPasskeyApprovalMode(mode: PasskeyApprovalMode) {
+    const current = passkeyApproval;
+    if (!current || savingPasskeyApproval || mode === current.mode) return;
+    savingPasskeyApproval = true;
+    passkeyApprovalError = '';
+    try {
+      const assertion = lowersPasskeyApprovalMode(current.mode, mode)
+        ? await confirmWithPasskey(await api.passkeyApprovalSettingOffer(mode))
+        : undefined;
+      passkeyApproval = await api.updatePasskeyApprovalSetting(mode, assertion);
+    } catch (e) {
+      // A dismissed passkey prompt has no code; a refusal from the API has one.
+      passkeyApprovalError = passkeyApprovalSettingError(e);
+    } finally {
+      passkeyApprovalChoice = passkeyApproval?.mode ?? null;
+      savingPasskeyApproval = false;
     }
   }
 
@@ -319,14 +369,14 @@
       await api.disconnectTinyCloudApp(app.clientId);
       await loadTinyCloudManageKeyApps();
     } catch (e: any) {
-      tinyCloudAppSaveError = e.message || 'Failed to disconnect TinyCloud app';
+      tinyCloudAppSaveError = e.message || tinyCloudDisconnectCopy.failed;
     } finally {
       savingTinyCloudAppId = null;
     }
   }
 
   async function confirmTinyCloudChange() {
-    if (!tinyCloudConfirmation || tinyCloudConfirmationText !== (tinyCloudConfirmation.kind === 'disconnect' ? 'DISCONNECT' : 'TAKE CONTROL')) return;
+    if (!tinyCloudConfirmation || tinyCloudConfirmationText !== (tinyCloudConfirmation.kind === 'disconnect' ? tinyCloudDisconnectCopy.confirmation : 'TAKE CONTROL')) return;
     const action = tinyCloudConfirmation;
     dismissTinyCloudConfirmation();
     if (action.kind === 'mode') await setTinyCloudManageKeyPreference(action.mode);
@@ -560,6 +610,37 @@
   <!-- The live count, so adding or removing a passkey here updates whether an unlink is allowed. -->
   <LinkedAccounts passkeyCount={passkeysLoaded ? passkeys.length : null} />
 
+  <Card id="passkey-approvals" class="mt-6">
+    <fieldset disabled={!passkeyApproval || savingPasskeyApproval || passkeyApproval.stepUpPasskeys === 0}>
+      <legend class="text-xl font-semibold text-surface-900">{passkeyApprovalCopy.title}</legend>
+      <p class="text-sm text-surface-500 mt-1">{passkeyApprovalCopy.help}</p>
+      <div class="mt-4 flex flex-col gap-2">
+        {#each passkeyApprovalCopy.choices as choice}
+          <label class="flex items-center gap-3 text-sm text-surface-900">
+            <input
+              type="radio"
+              name="passkey-approval-mode"
+              value={choice.mode}
+              bind:group={passkeyApprovalChoice}
+              onchange={() => setPasskeyApprovalMode(choice.mode)}
+            />
+            {choice.label}
+          </label>
+        {/each}
+      </div>
+    </fieldset>
+    {#if loadingPasskeyApproval}
+      <p class="mt-3 text-sm text-surface-400">Loading...</p>
+    {:else if passkeyApproval && passkeyApproval.stepUpPasskeys === 0}
+      <p class="mt-3 text-sm text-surface-500">{passkeyApprovalCopy.needsPasskey}</p>
+    {:else if passkeyApproval?.mode === 'NEVER'}
+      <p class="mt-3 text-sm text-amber-700">{passkeyApprovalCopy.neverWarning}</p>
+    {/if}
+    {#if passkeyApprovalError}
+      <p class="mt-3 text-sm text-red-600" role="alert">{passkeyApprovalError}</p>
+    {/if}
+  </Card>
+
   <Card class="mt-6">
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
       <div class="max-w-xl">
@@ -631,7 +712,7 @@
     <div class="mb-5">
       <h2 class="text-xl font-semibold text-surface-900">Connected TinyCloud apps</h2>
       <p class="text-sm text-surface-500 mt-1">
-        Block an app to stop new TinyCloud signatures and renewals. Disconnect to withdraw its consent and end its device grants.
+        Block an app to stop new TinyCloud signatures for it. Permissions you set to renew keep renewing until you stop them under Renewing permissions. Disconnect to withdraw its consent and end its device grants.
       </p>
     </div>
 
@@ -643,7 +724,7 @@
         <button onclick={loadTinyCloudManageKeyApps} class="mt-2 font-medium underline hover:text-red-700">Try again</button>
       </div>
     {:else if tinyCloudApps.length === 0}
-      <p class="py-4 text-sm text-surface-500">No connected apps can request TinyCloud signatures.</p>
+      <p class="py-4 text-sm text-surface-500">{tinyCloudDisconnectCopy.empty}</p>
     {:else}
       {#if tinyCloudAppSaveError}
         <p class="mb-3 text-sm text-red-600" role="alert">{tinyCloudAppSaveError}</p>
@@ -678,12 +759,12 @@
               ></span>
             </button>
             <span id={`tinycloud-app-status-${app.clientId}`} class="text-xs text-surface-500">
-              {app.disabled ? 'Disabled by the app owner' : app.status === 'PENDING_USER_APPROVAL' ? 'Waiting for your approval' : app.status === 'CONSENT_WITHDRAWN' ? 'OAuth consent withdrawn' : app.enabled ? app.nativeDelegation ? `${app.activeNativeGrants} active device grant${app.activeNativeGrants === 1 ? '' : 's'}` : 'Allowed to request new signatures' : 'Blocked from new signatures and renewals'}
+              {app.disabled ? 'Disabled by the app owner' : app.status === 'PENDING_USER_APPROVAL' ? 'Waiting for your approval' : app.status === 'CONSENT_WITHDRAWN' ? 'OAuth consent withdrawn' : app.enabled ? app.nativeDelegation ? `${app.activeNativeGrants} active device grant${app.activeNativeGrants === 1 ? '' : 's'}` : 'Allowed to request new signatures' : 'Blocked from new signatures'}
             </span>
             {#if app.nativeDelegation}
               <button type="button" onclick={() => requestTinyCloudDisconnect(app)} disabled={savingTinyCloudAppId === app.clientId}
                 class="rounded-lg border border-surface-300 bg-white px-3 py-1.5 text-sm font-medium text-surface-700 hover:border-surface-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-surface-900 disabled:cursor-not-allowed disabled:opacity-60">
-                Disconnect
+                {tinyCloudDisconnectCopy.disconnect}
               </button>
             {/if}
             </div>
@@ -750,7 +831,7 @@
                 ? 'Block every connected app'
                 : 'Return to shared TinyCloud signing'
             : tinyCloudConfirmation.kind === 'disconnect'
-              ? `Disconnect ${tinyCloudConfirmation.app.name}`
+              ? tinyCloudDisconnectCopy.title(tinyCloudConfirmation.app.name)
             : tinyCloudConfirmation.enabled
               ? `Allow ${tinyCloudConfirmation.app.name}`
               : `Block ${tinyCloudConfirmation.app.name}`}
@@ -763,14 +844,14 @@
           {:else if tinyCloudConfirmation.kind === 'mode'}
             This returns to shared control, but does not re-enable any app. Allow each app explicitly when you are ready.
           {:else if tinyCloudConfirmation.kind === 'disconnect'}
-            This withdraws the app’s OAuth consent and revokes its device grants and tokens. Already issued delegations remain usable until they expire.
+            {tinyCloudDisconnectCopy.body}
           {:else if tinyCloudConfirmation.enabled}
             This app may request new TinyCloud signatures while shared control is active. It does not receive or renew any delegation automatically.
           {:else}
             This stops this app from requesting new TinyCloud signatures. It does not revoke delegations already issued to the app.
           {/if}
         </p>
-        <label class="mt-5 block text-sm font-medium text-surface-800" for="tinycloud-confirmation-input">Type {tinyCloudConfirmation.kind === 'disconnect' ? 'DISCONNECT' : 'TAKE CONTROL'} to confirm</label>
+        <label class="mt-5 block text-sm font-medium text-surface-800" for="tinycloud-confirmation-input">Type {tinyCloudConfirmation.kind === 'disconnect' ? tinyCloudDisconnectCopy.confirmation : 'TAKE CONTROL'} to confirm</label>
         <input
           bind:this={tinyCloudConfirmationInput}
           id="tinycloud-confirmation-input"
@@ -779,11 +860,11 @@
           spellcheck={false}
           class="flex h-10 w-full rounded-xl border border-surface-200 bg-white px-3 py-2 text-sm text-surface-900 placeholder:text-surface-400 focus-visible:outline-none focus-visible:border-primary-500 focus-visible:ring-2 focus-visible:ring-primary-200"
         />
-        <p class="mt-2 text-xs text-surface-500">This change is authorized by your signed-in OpenKey session. Passkeys remain available as optional account protection.</p>
+        <p class="mt-2 text-xs text-surface-500">{tinyCloudDisconnectCopy.sessionNote}</p>
         <div class="mt-6 flex justify-end gap-3">
           <Button variant="secondary" onclick={dismissTinyCloudConfirmation}>Cancel</Button>
-          <Button onclick={confirmTinyCloudChange} disabled={tinyCloudConfirmationText !== (tinyCloudConfirmation.kind === 'disconnect' ? 'DISCONNECT' : 'TAKE CONTROL')}>
-            {tinyCloudConfirmation.kind === 'disconnect' ? 'Disconnect app' : tinyCloudConfirmation.kind === 'app' ? (tinyCloudConfirmation.enabled ? 'Allow app' : 'Block app') : 'Confirm change'}
+          <Button onclick={confirmTinyCloudChange} disabled={tinyCloudConfirmationText !== (tinyCloudConfirmation.kind === 'disconnect' ? tinyCloudDisconnectCopy.confirmation : 'TAKE CONTROL')}>
+            {tinyCloudConfirmation.kind === 'disconnect' ? tinyCloudDisconnectCopy.action : tinyCloudConfirmation.kind === 'app' ? (tinyCloudConfirmation.enabled ? 'Allow app' : 'Block app') : 'Confirm change'}
           </Button>
         </div>
       </div>

@@ -472,9 +472,10 @@ and its image reports `migration-checksum-mismatch`. In particular, do not
 `Authorization: Bearer $ADMIN_API_KEY` and a JSON body. `<store>` is `openai`
 or `google`.
 
-1. Deploy the API and publish the web. Web production deploys are currently
-   frozen (Cloudflare Pages production deployments are disabled), so merging
-   to `main` does not publish the web: the release coordinator publishes it.
+1. Deploy the API and publish the web. Merging to `main` doesn't publish the
+   web. Cloudflare Pages production deployments are turned off, and the
+   release coordinator publishes the web by retrying the skipped production
+   deployment in Cloudflare Pages.
    The API is deployed with `deploy-api.yml`. The review-code step cannot work
    until both are live: the old web caps the code box at six characters, and
    the old API refuses the sign-in.
@@ -609,6 +610,67 @@ dispatch `deploy-api.yml` after the merge: its migration step runs
 `/health` is ready and verify the v2 claim flow before relying on v2 sign-in.
 To require API-before-web with this main-only workflow, split the API/database
 and web changes into separate merges.
+
+#### Release order when web and API ship together
+
+When one release changes both the web and the API, release them as a pair, in
+this order: the web first, then the API. The web is built ahead from the exact
+commit, and the rollback is recorded before anything changes. Each step below
+has a check, and each check has a stop point.
+
+Record first, before anything changes:
+
+- The `main` commit SHA being released.
+- The web now serving production: the Pages deployment, and the
+  `_app/version.json` value and entry file name that `https://openkey.so`
+  serves.
+- The API image now serving production, by digest: the `rollback_image` in the
+  output of `gh workflow run deploy-api.yml --ref main -f preflight_only=true`.
+
+Order:
+
+1. Prebuild the web from that exact commit. Record its Pages deployment and
+   the `_app/version.json` value its preview serves. Stop if it wasn't built
+   from the recorded commit.
+2. Run the preflight and read it. Stop and resolve any unexpected difference
+   in the live configuration, the environment key names or the pending
+   migrations first. Record the pending migrations from the preflight. Then
+   record whether the recorded API image can be a rollback target. Additive
+   migrations aren't enough on their own: a new trigger that fires for every
+   row or a stricter schema guard can stop the old image, and an image that
+   checks the schema shape at startup fails that check once the migrations
+   have run. Image rollback is allowed only with proof that the old API image
+   starts and passes its startup guards on the post-migration schema;
+   otherwise fix forward. Write the answer in the record before deploying
+   anything.
+3. Have the rollback ready: the recorded Pages deployment and the recorded API
+   image digest, with the commands to use them.
+4. Promote the prebuilt web to production.
+5. Check the new web with the previous API still serving: `_app/version.json`
+   and the entry file name served by `https://openkey.so` match the prebuilt
+   deployment, `/delegate` loads, and a sign-in through the encryption
+   network completes. If a check fails, promote the recorded Pages deployment
+   back. The API hasn't changed, so nothing else changes.
+6. Deploy the API: `gh workflow run deploy-api.yml --ref main`.
+7. Check again with both new: `/health` reports the released commit and is
+   ready, the preflight shows the new image and migration state, `/delegate`
+   loads, and a sign-in through the encryption network completes. If a check
+   fails, run the rollback below.
+
+Step 5 checks the new web with the previous API, and an API rollback returns
+to that pairing. The new API with the previous web isn't a checked pairing,
+because the new API needs what the new web sends. That's why the web goes
+first.
+
+Don't relax a refusal the API makes, or skip a check, to shorten the time
+between steps, in the deploy or in the rollback.
+
+Rollback after the API deploy: the API first, then the web if needed. If step
+2 recorded that image rollback is allowed, redeploy the recorded API image and
+confirm `/health`. Then, if the previous web is wanted, promote the recorded
+Pages deployment and check `_app/version.json`. If image rollback isn't
+allowed, fix forward. Don't roll the web back alone while the new API is
+serving.
 
 ### Manual Deploy
 
