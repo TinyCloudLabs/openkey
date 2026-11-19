@@ -100,6 +100,7 @@
   onceExpiryDefault={transport.expiry?.onceDefault ?? false}
   expiryBounded={transport.expiry?.bounded ?? false}
   expiryMaxMs={transport.expiry?.maxMs ?? null}
+  shortenOnlyExpiry={transport.expiry?.shortenOnly ?? null}
   renewal={transport.renewal ?? null}
   {showSigner}
   {onApprove}
