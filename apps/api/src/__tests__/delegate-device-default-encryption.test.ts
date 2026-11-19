@@ -57,26 +57,26 @@ describe('sessionAbilitiesFromPermissions — device default encryption entry (T
 
   test('refuses a second exact entry in the same device request', () => {
     expect(() => sessionAbilitiesFromPermissions([device, device], { address: signerChecksum, chainId }, { deviceTransaction: true })).toThrow(DelegateRequestError);
-    expect(() => sessionAbilitiesFromPermissions([device, device], { address: signerChecksum, chainId }, { deviceTransaction: true })).toThrow('repeats the default encryption entry');
+    expect(() => sessionAbilitiesFromPermissions([device, device], { address: signerChecksum, chainId }, { deviceTransaction: true })).toThrow('allows one tinycloud.encryption entry');
   });
 
 
   test('a different path on the device route is unchanged', () => {
     const other = { ...device, path: 'x' };
-    expect(sessionAbilitiesFromPermissions([other], { address: signerChecksum, chainId }, { deviceTransaction: true }))
-      .toEqual(sessionAbilitiesFromPermissions([other], { address: signerChecksum, chainId }));
+    expect(() => sessionAbilitiesFromPermissions([other], { address: signerChecksum, chainId }, { deviceTransaction: true })).toThrow(DelegateRequestError);
+    expect(() => sessionAbilitiesFromPermissions([other], { address: signerChecksum, chainId }, { deviceTransaction: true })).toThrow('path must be empty');
   });
 
   test('a different space on the device route is unchanged', () => {
     const other = { ...device, space: 'encryption' };
-    expect(sessionAbilitiesFromPermissions([other], { address: signerChecksum, chainId }, { deviceTransaction: true }))
-      .toEqual(sessionAbilitiesFromPermissions([other], { address: signerChecksum, chainId }));
+    expect(() => sessionAbilitiesFromPermissions([other], { address: signerChecksum, chainId }, { deviceTransaction: true })).toThrow(DelegateRequestError);
+    expect(() => sessionAbilitiesFromPermissions([other], { address: signerChecksum, chainId }, { deviceTransaction: true })).toThrow('space must be default');
   });
 
   test('a different ability set on the device route is unchanged', () => {
     const other = { ...device, actions: [DECRYPT, 'tinycloud.encryption/encrypt'] };
-    expect(sessionAbilitiesFromPermissions([other], { address: signerChecksum, chainId }, { deviceTransaction: true }))
-      .toEqual(sessionAbilitiesFromPermissions([other], { address: signerChecksum, chainId }));
+    expect(() => sessionAbilitiesFromPermissions([other], { address: signerChecksum, chainId }, { deviceTransaction: true })).toThrow(DelegateRequestError);
+    expect(() => sessionAbilitiesFromPermissions([other], { address: signerChecksum, chainId }, { deviceTransaction: true })).toThrow('actions must be exactly tinycloud.encryption/decrypt');
   });
 });
 
