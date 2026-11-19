@@ -1,8 +1,7 @@
 import { createHmac } from 'node:crypto';
-import { symmetricDecrypt, symmetricEncrypt } from 'better-auth/crypto';
 
 /**
- * Email codes are stored encrypted or hashed.
+ * Email codes are stored as a keyed hash under the server secret.
  */
 function emailCodeSecret(): string {
   const configured = process.env.BETTER_AUTH_SECRET;
@@ -14,20 +13,12 @@ function emailCodeSecret(): string {
 }
 
 /**
- * Better Auth sign-in codes are encrypted rather than hashed so that a resend
- * inside the five-minute window can mail the same code again (TC-13). A stored
- * value that does not decrypt is treated as no code: it never matches, and the
- * next send replaces it.
+ * Better Auth sign-in codes are stored as a keyed hash, so the database never holds a usable code. A hash cannot
+ * be mailed again, so each resend sends a new code and the earlier one stops working. A stored value from before
+ * (plain or encrypted) never matches, and the next send replaces it.
  */
 export const signInCodeStorage = {
-  encrypt: (otp: string) => symmetricEncrypt({ key: emailCodeSecret(), data: otp }),
-  async decrypt(stored: string) {
-    try {
-      return await symmetricDecrypt({ key: emailCodeSecret(), data: stored });
-    } catch {
-      return '';
-    }
-  },
+  hash: async (otp: string) => createHmac('sha256', emailCodeSecret()).update(`openkey-sign-in-code\0${otp}`).digest('hex'),
 };
 
 /** The stored form of an account step-up code, bound to its verification identifier. */

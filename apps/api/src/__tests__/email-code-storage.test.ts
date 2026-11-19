@@ -1,13 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { serializeSignedCookie } from 'better-call';
 import type { PrismaClient } from '@openkey/db';
 
-// Email sign-in and step-up codes are stored encrypted or hashed. Real auth,
+// Email sign-in and step-up codes are stored as a keyed hash. Real auth,
 // real routes and tracked migrations run in a separate process because API
 // unit tests replace modules process-wide.
 const root = resolve(import.meta.dir, '../../../..');
@@ -108,16 +108,24 @@ if (process.env.OPENKEY_EMAIL_CODE_TEST_CHILD !== '1') {
   };
 
   describe('sign-in codes', () => {
-    test('the stored value does not contain the mailed code, and the code signs in', async () => {
+    test('the stored value is neither the mailed code nor its unkeyed hash, and the code signs in', async () => {
       const code = await sendSignInCode();
-      expect(await storedValue(signInIdentifier)).not.toContain(code);
+      const stored = await storedValue(signInIdentifier);
+      expect(stored).not.toContain(code);
+      for (const encoding of ['hex', 'base64url'] as const) {
+        expect(stored).not.toContain(createHash('sha256').update(code).digest(encoding));
+      }
       expect((await post('/api/auth/sign-in/email-otp', { email, otp: code })).status).toBe(200);
     });
 
-    test('a resend inside the window mails the same code', async () => {
+    test('a resend inside the window invalidates the earlier code', async () => {
       const first = await sendSignInCode();
-      expect(await sendSignInCode()).toBe(first);
-      expect((await post('/api/auth/sign-in/email-otp', { email, otp: first })).status).toBe(200);
+      let latest = await sendSignInCode();
+      // Two random six-digit codes coincide one time in a million; a third send settles it.
+      if (latest === first) latest = await sendSignInCode();
+      expect(latest).not.toBe(first);
+      expect((await post('/api/auth/sign-in/email-otp', { email, otp: first })).status).toBe(400);
+      expect((await post('/api/auth/sign-in/email-otp', { email, otp: latest })).status).toBe(200);
     });
 
     test('a code stored in plain text is refused, and the next send replaces it', async () => {

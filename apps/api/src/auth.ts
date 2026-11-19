@@ -427,9 +427,9 @@ export const auth = betterAuth({
       },
       otpLength: 6,
       expiresIn: 300, // 5 minutes
-      // Repeated requests during the active window must not invalidate a code
-      // that may still be arriving or grouped into the same email thread.
-      resendStrategy: 'reuse',
+      // Codes are stored hashed, so a resend mails a new code and the earlier
+      // one stops working; the sign-in page asks for the latest email.
+      resendStrategy: 'rotate',
       storeOTP: signInCodeStorage,
     }),
     emailSignupConfirmation(prisma),
