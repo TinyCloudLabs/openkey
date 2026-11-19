@@ -1,5 +1,6 @@
 // TC-3232: the required Terms acceptance. The API is the gate and the only source of the release
 // (version, effective date, what changed); the web bundle holds nothing but the two document links.
+import { DELETE_ACCOUNT_PATH } from './account-deletion';
 import { API_BASE } from './auth-client';
 
 export const TERMS_URL = 'https://tinycloud.xyz/terms';
@@ -65,6 +66,14 @@ export async function acceptTerms(version: string, nativeClientId?: string | nul
 /** True for the API's refusal of an account that has not accepted the current Terms. */
 export function isTermsRequired(status: number, body: unknown): boolean {
   return status === 403 && typeof body === 'object' && body !== null && (body as { error?: unknown }).error === 'terms_required';
+}
+
+/**
+ * Pages an account uses before it accepts: sign-in, the Terms and their ways out, and deleting the account.
+ * A refused call made on one (the header's, say) never sends it to the Terms.
+ */
+export function isPreTermsPage(pathname: string): boolean {
+  return pathname.startsWith('/auth/') || pathname === DELETE_ACCOUNT_PATH;
 }
 
 /** Sends the browser to the Terms screen, which brings it back to this page once the account accepts. */

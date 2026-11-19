@@ -113,7 +113,7 @@ test.describe('TC-703 primary key picker', () => {
     await expect(page.getByText('Select a key to authorize:')).toBeVisible();
     await expect(keyButton(page, 'Key 1')).toContainText('Requested');
     await expect(keyButton(page, 'Key 0')).toContainText('Primary');
-    // The named-owner path keeps its own override; no primary-key gate.
+    // The named-owner path has no primary-key gate and no override.
     await expect(keyButton(page, 'Key 0')).toBeDisabled();
     await expect(page.getByRole('button', { name: 'Use a different key' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Generate/ })).toHaveCount(0);
@@ -167,6 +167,22 @@ test.describe('TC-703 primary key picker', () => {
     await expect(approve(page)).toBeEnabled();
     expect(prepared).toEqual([active.id]);
     await expect(keyButton(page, 'Key 0')).toHaveCount(0);
+  });
+
+  test('a signing key for a different wallet than the request names cannot approve, with no override', async ({ page }) => {
+    await mock(page, []);
+    await page.route('**/api/keys/generate', (route) => json(route, 200, { key: second }));
+    await page.route('**/api/delegate/prepare', (route) => json(route, 200, preparedFor(second.address)));
+    const space = `tinycloud:pkh:eip155:1:${primary.address}:default`;
+    const permissions = [{ service: 'tinycloud.kv', space, path: 'notes/', actions: [KV_GET] }];
+    await page.goto(`${noOwner}&permissions=${encodeBase64UrlJson({ permissions })}`);
+    await page.getByRole('button', { name: 'Generate Key' }).click();
+
+    await expect(page.getByText('Wallet mismatch', { exact: true }).first()).toBeVisible();
+    await expect(page.getByRole('alert').filter({ hasText: 'This request is for wallet 0xd559...f412, but the key you picked is for' }))
+      .toContainText('Choose a key for 0xd559...f412, or ask the app or command for a new request.');
+    await expect(approve(page)).toBeDisabled();
+    await expect(page.getByRole('button', { name: /different wallet anyway/ })).toHaveCount(0);
   });
 
   test('an archived requested owner is not replaced by the active primary', async ({ page }) => {

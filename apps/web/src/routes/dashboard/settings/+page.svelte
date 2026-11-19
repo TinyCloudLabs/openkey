@@ -8,6 +8,7 @@
   import ConnectedMcpApps from './ConnectedMcpApps.svelte';
   import DeleteAccountEntry from './DeleteAccountEntry.svelte';
   import RenewalLeases from './RenewalLeases.svelte';
+  import { tinyCloudDisconnectCopy } from '$lib/connected-tinycloud-apps';
   import { renewalLeaseCopy, type RenewalLease } from '$lib/renewal-leases';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
@@ -319,14 +320,14 @@
       await api.disconnectTinyCloudApp(app.clientId);
       await loadTinyCloudManageKeyApps();
     } catch (e: any) {
-      tinyCloudAppSaveError = e.message || 'Failed to disconnect TinyCloud app';
+      tinyCloudAppSaveError = e.message || tinyCloudDisconnectCopy.failed;
     } finally {
       savingTinyCloudAppId = null;
     }
   }
 
   async function confirmTinyCloudChange() {
-    if (!tinyCloudConfirmation || tinyCloudConfirmationText !== (tinyCloudConfirmation.kind === 'disconnect' ? 'DISCONNECT' : 'TAKE CONTROL')) return;
+    if (!tinyCloudConfirmation || tinyCloudConfirmationText !== (tinyCloudConfirmation.kind === 'disconnect' ? tinyCloudDisconnectCopy.confirmation : 'TAKE CONTROL')) return;
     const action = tinyCloudConfirmation;
     dismissTinyCloudConfirmation();
     if (action.kind === 'mode') await setTinyCloudManageKeyPreference(action.mode);
@@ -643,7 +644,7 @@
         <button onclick={loadTinyCloudManageKeyApps} class="mt-2 font-medium underline hover:text-red-700">Try again</button>
       </div>
     {:else if tinyCloudApps.length === 0}
-      <p class="py-4 text-sm text-surface-500">No connected apps can request TinyCloud signatures.</p>
+      <p class="py-4 text-sm text-surface-500">{tinyCloudDisconnectCopy.empty}</p>
     {:else}
       {#if tinyCloudAppSaveError}
         <p class="mb-3 text-sm text-red-600" role="alert">{tinyCloudAppSaveError}</p>
@@ -683,7 +684,7 @@
             {#if app.nativeDelegation}
               <button type="button" onclick={() => requestTinyCloudDisconnect(app)} disabled={savingTinyCloudAppId === app.clientId}
                 class="rounded-lg border border-surface-300 bg-white px-3 py-1.5 text-sm font-medium text-surface-700 hover:border-surface-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-surface-900 disabled:cursor-not-allowed disabled:opacity-60">
-                Disconnect
+                {tinyCloudDisconnectCopy.disconnect}
               </button>
             {/if}
             </div>
@@ -750,7 +751,7 @@
                 ? 'Block every connected app'
                 : 'Return to shared TinyCloud signing'
             : tinyCloudConfirmation.kind === 'disconnect'
-              ? `Disconnect ${tinyCloudConfirmation.app.name}`
+              ? tinyCloudDisconnectCopy.title(tinyCloudConfirmation.app.name)
             : tinyCloudConfirmation.enabled
               ? `Allow ${tinyCloudConfirmation.app.name}`
               : `Block ${tinyCloudConfirmation.app.name}`}
@@ -763,14 +764,14 @@
           {:else if tinyCloudConfirmation.kind === 'mode'}
             This returns to shared control, but does not re-enable any app. Allow each app explicitly when you are ready.
           {:else if tinyCloudConfirmation.kind === 'disconnect'}
-            This withdraws the app’s OAuth consent and revokes its device grants and tokens. Already issued delegations remain usable until they expire.
+            {tinyCloudDisconnectCopy.body}
           {:else if tinyCloudConfirmation.enabled}
             This app may request new TinyCloud signatures while shared control is active. It does not receive or renew any delegation automatically.
           {:else}
             This stops this app from requesting new TinyCloud signatures. It does not revoke delegations already issued to the app.
           {/if}
         </p>
-        <label class="mt-5 block text-sm font-medium text-surface-800" for="tinycloud-confirmation-input">Type {tinyCloudConfirmation.kind === 'disconnect' ? 'DISCONNECT' : 'TAKE CONTROL'} to confirm</label>
+        <label class="mt-5 block text-sm font-medium text-surface-800" for="tinycloud-confirmation-input">Type {tinyCloudConfirmation.kind === 'disconnect' ? tinyCloudDisconnectCopy.confirmation : 'TAKE CONTROL'} to confirm</label>
         <input
           bind:this={tinyCloudConfirmationInput}
           id="tinycloud-confirmation-input"
@@ -779,11 +780,11 @@
           spellcheck={false}
           class="flex h-10 w-full rounded-xl border border-surface-200 bg-white px-3 py-2 text-sm text-surface-900 placeholder:text-surface-400 focus-visible:outline-none focus-visible:border-primary-500 focus-visible:ring-2 focus-visible:ring-primary-200"
         />
-        <p class="mt-2 text-xs text-surface-500">This change is authorized by your signed-in OpenKey session. Passkeys remain available as optional account protection.</p>
+        <p class="mt-2 text-xs text-surface-500">{tinyCloudDisconnectCopy.sessionNote}</p>
         <div class="mt-6 flex justify-end gap-3">
           <Button variant="secondary" onclick={dismissTinyCloudConfirmation}>Cancel</Button>
-          <Button onclick={confirmTinyCloudChange} disabled={tinyCloudConfirmationText !== (tinyCloudConfirmation.kind === 'disconnect' ? 'DISCONNECT' : 'TAKE CONTROL')}>
-            {tinyCloudConfirmation.kind === 'disconnect' ? 'Disconnect app' : tinyCloudConfirmation.kind === 'app' ? (tinyCloudConfirmation.enabled ? 'Allow app' : 'Block app') : 'Confirm change'}
+          <Button onclick={confirmTinyCloudChange} disabled={tinyCloudConfirmationText !== (tinyCloudConfirmation.kind === 'disconnect' ? tinyCloudDisconnectCopy.confirmation : 'TAKE CONTROL')}>
+            {tinyCloudConfirmation.kind === 'disconnect' ? tinyCloudDisconnectCopy.action : tinyCloudConfirmation.kind === 'app' ? (tinyCloudConfirmation.enabled ? 'Allow app' : 'Block app') : 'Confirm change'}
           </Button>
         </div>
       </div>
