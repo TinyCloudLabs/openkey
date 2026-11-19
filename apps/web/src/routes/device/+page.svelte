@@ -2,7 +2,7 @@
   import { page } from '$app/stores';
   import { API_BASE, authClient } from '$lib/auth-client';
   import Button from '$lib/components/ui/button.svelte';
-  import Card from '$lib/components/ui/card.svelte';
+  import Slip from '$lib/components/approval/slip.svelte';
   import {
     cleanConsentText,
     deviceRequestDefaultSeconds,
@@ -132,8 +132,7 @@
   <title>Review a sign-in request — OpenKey</title>
 </svelte:head>
 
-<main class="mx-auto max-w-2xl px-4 py-6 sm:py-10">
-  <Card class="w-full p-6 sm:p-8">
+<Slip at={$session.data ? 2 : 1} last="terminal" email={$session.data?.user.email ?? null} onSignOut={() => { void authClient.signOut(); }}>
     <h1 class="mb-3 text-2xl font-semibold text-surface-900">Review a sign-in request</h1>
     <svelte:boundary>
       {#if codeFromLink}
@@ -170,7 +169,6 @@
 
       {#if request}
         <section class="mt-6 flex flex-col gap-5">
-          <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm font-medium text-amber-900" role="note">Approve only if you started this on your own device.</p>
           {#if displayReason}
             <div class="text-sm">
               <blockquote class="break-words text-surface-900">“{displayReason}”</blockquote>
@@ -221,5 +219,4 @@
         </div>
       {/snippet}
     </svelte:boundary>
-  </Card>
-</main>
+</Slip>

@@ -46,11 +46,13 @@ import {
   socialProviderTrustedOrigins,
 } from './social-providers';
 import { appleRelayEmailUndeliverable } from './services/apple-notifications';
+import { signInCodeStorage } from './services/email-code-storage';
 import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
 import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { emailSignupConfirmation } from './services/email-signup-confirmation';
+import { sessionTokenPlugin } from './services/session-token';
 import { hasFreshEmailStepUp } from './services/email-otp-step-up';
 import { confirmedSocialProvider, socialConfirmation } from './services/social-confirmation';
 import { assertCurrentSocialLink, socialLinkStatePlugin } from './services/social-link-state';
@@ -62,6 +64,7 @@ import { REVIEWER_MAX_SECONDS, capturedReviewer, reviewerActive, reviewerForUser
 import { hasAcceptedTerms, termsRequired } from './services/terms';
 import { capSessionRefresh } from './services/session-cap';
 import { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS } from './services/session-lifetime';
+import { signInLeaseSignOutPlugin } from './services/signin-lease-sign-out';
 
 export const prisma: PrismaClient = createPrismaClient();
 const tee = createTeeClient();
@@ -269,7 +272,12 @@ function withMcpAccessTokenLifetime<T extends ReturnType<typeof oauthProvider>>(
   const cappedLifetime = (seconds: number) => {
     const reviewer = capturedReviewer();
     if (!reviewer) return seconds;
-    const remaining = Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
+    // Native provider tokens use an integral iat sampled before this getter.
+    // Avoid subtracting the fractional second twice while keeping exp <= the
+    // source deadline (the database adapter also caps every row).
+    const remaining = reviewer.store === 'apple'
+      ? Math.floor((reviewer.deadline ?? Date.now()) / 1000) - Math.floor(Date.now() / 1000)
+      : Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
     return Math.max(0, Math.min(REVIEWER_MAX_SECONDS, seconds, remaining));
   };
   Object.defineProperty(plugin.options, 'accessTokenExpiresIn', {
@@ -368,6 +376,8 @@ export const auth = betterAuth({
         }),
       },
     },
+    // An app signing out of its OpenKey session stops that sign-in's own renewal lease, and nothing else.
+    signInLeaseSignOutPlugin(prisma),
     passkeyFreshnessPlugin,
     // TC-1198: passkey enrolment and removal need a fresh step-up.
     passkeyEnrolmentPlugin(prisma, (headers): Promise<ResolvedSession | null> => auth.api.getSession({ headers })),
@@ -423,14 +433,17 @@ export const auth = betterAuth({
       },
       otpLength: 6,
       expiresIn: 300, // 5 minutes
-      // Repeated requests during the active window must not invalidate a code
-      // that may still be arriving or grouped into the same email thread.
-      resendStrategy: 'reuse',
+      // Codes are stored hashed, so a resend mails a new code and the earlier
+      // one stops working; the sign-in page asks for the latest email.
+      resendStrategy: 'rotate',
+      storeOTP: signInCodeStorage,
     }),
     emailSignupConfirmation(prisma),
 
-    // Bearer plugin - returns session token in set-auth-token header
-    bearer(),
+    // Bearer plugin - returns the signed session token in the set-auth-token header, and accepts
+    // only that signed form back. OpenKey's pages read it through /session-token after a redirect.
+    bearer({ requireSignature: true }),
+    sessionTokenPlugin(),
 
     // JWT plugin (required for OAuth provider)
     jwt(),
@@ -493,7 +506,8 @@ export const auth = betterAuth({
               throw new APIError('BAD_REQUEST', { error: 'invalid_grant' });
             }
             const source = await prisma.session.findFirst({
-              where: { id: captured.sessionId, userId: user.id, reviewerEpoch: captured.epoch, expiresAt: { gt: new Date() } },
+              where: { id: captured.sessionId, userId: user.id, reviewerEpoch: captured.epoch, expiresAt: { gt: new Date() },
+                createdAt: { gt: new Date(Date.now() - REVIEWER_MAX_SECONDS * 1000) } },
             });
             if (!source) throw new APIError('BAD_REQUEST', { error: 'invalid_grant' });
             await prisma.reviewerAccount.updateMany({

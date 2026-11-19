@@ -1,8 +1,9 @@
 // API client for key management
 import { getSessionToken, isEmbedContext } from './embed-passkey';
 import { isDefiniteRefusal, ServerRefusalError } from './server-reply';
-import { isTermsRequired, sendToTerms } from './terms';
+import { isPreTermsPage, isTermsRequired, sendToTerms } from './terms';
 import type { RenewalLease } from './renewal-leases';
+import type { ApprovalPasskeyAssertion, ApprovalPasskeyOffer, PasskeyApprovalMode, PasskeyApprovalSetting } from './approval-passkey';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -35,9 +36,9 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly =
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: 'Unknown error' }));
     const detail = error?.error;
-    // TC-3232: the account has not accepted the current Terms. The sign-in pages ask first; anywhere
-    // else the Terms screen is shown, and brings the user back here.
-    if (isTermsRequired(res.status, error) && !window.location.pathname.startsWith('/auth/')) sendToTerms();
+    // TC-3232: the account has not accepted the current Terms. The sign-in pages and the ways out (deletion
+    // included) work before it does; anywhere else the Terms screen is shown, and brings the user back here.
+    if (isTermsRequired(res.status, error) && !isPreTermsPage(window.location.pathname)) sendToTerms();
     const message = typeof detail === 'string' ? detail : detail?.message;
     // A definite refusal of a sign-in keeps its code so the widget can tell the app (TC-2291).
     if (isDefiniteRefusal(res.status, error?.code)) throw new ServerRefusalError(message || `HTTP ${res.status}`, res.status, error.code);
@@ -312,6 +313,22 @@ export const api = {
     }, true);
   },
 
+  async getPasskeyApprovalSetting(): Promise<PasskeyApprovalSetting> {
+    return fetchAPI('/api/account/passkey-approval', {}, true);
+  },
+
+  /** A challenge bound to `mode`, for lowering the setting to it. */
+  async passkeyApprovalSettingOffer(mode: PasskeyApprovalMode): Promise<ApprovalPasskeyOffer> {
+    return fetchAPI('/api/account/passkey-approval/options', { method: 'POST', body: JSON.stringify({ mode }) }, true);
+  },
+
+  async updatePasskeyApprovalSetting(mode: PasskeyApprovalMode, passkeyAssertion?: ApprovalPasskeyAssertion): Promise<PasskeyApprovalSetting> {
+    return fetchAPI('/api/account/passkey-approval', {
+      method: 'PATCH',
+      body: JSON.stringify({ mode, passkeyAssertion }),
+    }, true);
+  },
+
   async getTinyCloudManageKeyPreference(): Promise<TinyCloudManageKeyPreference> {
     return fetchAPI('/api/account/tinycloud-manage-key');
   },
@@ -354,7 +371,8 @@ export const api = {
   },
 
   async listRenewalLeases(): Promise<{ leases: RenewalLease[] }> {
-    return fetchAPI('/api/account/renewal-leases', {}, true);
+    // A read, so an embedded frame (the in-app sign-out confirm) may send its token.
+    return fetchAPI('/api/account/renewal-leases');
   },
   /**
    * Stop one lease. `{ walletMessage }` when an external wallet must sign the stop: call again with

@@ -17,14 +17,17 @@
  * Two modes (first argument):
  *   backup  read-only: checks the table exists and holds exactly one row, writes that row (JSON) to
  *           BACKUP_FILE, prints `backup-digest: <sha256 of the row text>`. The workflow encrypts and
- *           uploads it before the drop step is allowed to run.
- *   drop    the steps above, and additionally refuses unless the row still hashes to BACKUP_DIGEST.
+ *           uploads it. Its `backup-only` dispatch runs this mode alone; a `drop` dispatch runs it first.
+ *   drop    the steps above, and additionally refuses unless the backup taken in this run has the digest
+ *           the operator verified from a backup-only run (EXPECTED_SHA256), and the row still hashes to it.
  *
  * Env:
- *   DATABASE_URL   Postgres connection string (required)
- *   DROP_CONFIRM   Must equal `drop-ops_backup.session_expires_20261026` (required)
- *   BACKUP_FILE    backup mode: path the row is written to, must not exist (required)
- *   BACKUP_DIGEST  drop mode: the digest printed by the backup step (required)
+ *   DATABASE_URL     Postgres connection string (required)
+ *   DROP_CONFIRM     drop mode: must equal `drop-ops_backup.session_expires_20261026` (required)
+ *   BACKUP_FILE      backup mode: path the row is written to, must not exist (required)
+ *   BACKUP_DIGEST    drop mode: the digest printed by this run's backup step (required)
+ *   EXPECTED_SHA256  drop mode: the digest from the backup-only run, verified against the decrypted
+ *                    artifact (required, must equal BACKUP_DIGEST)
  *
  * Output: the row count, column names, and fixed text. No row values, no connection strings. The one
  * exception is `backup` mode, which writes the row to BACKUP_FILE (never to the log).
@@ -186,13 +189,20 @@ export function describeFailure(error: unknown): { exitCode: number; line: strin
 async function main() {
   const mode = process.argv[2];
   if (mode !== 'backup' && mode !== 'drop') throw new DropRefused('the first argument must be backup or drop');
-  if (process.env.DROP_CONFIRM !== CONFIRM_PHRASE) throw new DropRefused(`DROP_CONFIRM must be ${CONFIRM_PHRASE}`);
+  if (mode === 'drop' && process.env.DROP_CONFIRM !== CONFIRM_PHRASE) throw new DropRefused(`DROP_CONFIRM must be ${CONFIRM_PHRASE}`);
   if (!process.env.DATABASE_URL?.trim()) throw new DropRefused('DATABASE_URL is required');
   const backupFile = process.env.BACKUP_FILE?.trim();
   const expectedDigest = process.env.BACKUP_DIGEST?.trim();
+  const operatorDigest = process.env.EXPECTED_SHA256?.trim();
   if (mode === 'backup' && !backupFile) throw new DropRefused('BACKUP_FILE is required');
   if (mode === 'drop' && !(expectedDigest && DIGEST_PATTERN.test(expectedDigest))) {
     throw new DropRefused('BACKUP_DIGEST (the digest printed by the backup step) is required');
+  }
+  if (mode === 'drop' && !(operatorDigest && DIGEST_PATTERN.test(operatorDigest))) {
+    throw new DropRefused('EXPECTED_SHA256 (the backup-digest of a backup-only run, 64 lowercase hex) is required');
+  }
+  if (mode === 'drop' && operatorDigest !== expectedDigest) {
+    throw new DropRefused('the backup taken in this run does not match EXPECTED_SHA256; nothing was changed');
   }
 
   // Dynamic on purpose: the exported functions (and the tests) load without Prisma or a database, and a refusal above never loads it.

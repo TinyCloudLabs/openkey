@@ -6,9 +6,10 @@
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
-  import SocialButtons from '$lib/components/auth/social-buttons.svelte';
-  import { loadConfiguredSocialProviders, signInWithSocialPopup, type SocialProviderId } from '$lib/social-auth';
-  import { socialProviderName } from '$lib/social-continuation';
+  import Loader from '$lib/components/approval/loader.svelte';
+  import SignInCard from '$lib/components/approval/sign-in-card.svelte';
+  import Slip from '$lib/components/approval/slip.svelte';
+  import { stopForReply } from '@openkey/sdk/approval-copy';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
   import {
     delegateFailureDetail,
@@ -19,6 +20,7 @@
     DeviceRelayDeliveryError,
     OwnerMessageError,
     isTerminalApprovalFailure,
+    refusalIgnoresKeyChoice,
     shortCodeFailureText,
     walletMismatchFailureText,
   } from '$lib/delegate-failure-text';
@@ -120,6 +122,7 @@
     }
     if (cause instanceof DelegateResponseError) {
       if (isTerminalApprovalFailure(cause.status, cause.code)) approveBlockedByFailure = true;
+      if (stopForReply({ status: cause.status, code: cause.code }) === 'S22') sessionEnded = true;
       if (
         cause.status === 400 &&
         cause.code === 'invalid_permissions' &&
@@ -152,11 +155,14 @@
   const errorDetail = $derived(errorDetailFor && errorDetailFor.text === error ? errorDetailFor.detail : null);
   let requestExpired = $state(false);
   let approveBlockedByFailure = $state(false);
+  // The person whose key choice drew a refusal that is the same for every key; the key list is hidden for them.
+  let keyChoiceRefusedFor = $state<string | null>(null);
+  const keyChoiceRefused = $derived(keyChoiceRefusedFor !== null && keyChoiceRefusedFor === $session.data?.user.id);
   let keysLoaded = $state(false);
   let initialized = $state(false);
   let signingIn = $state(false);
-  let socialProvider = $state<SocialProviderId | null>(null);
-  let socialProviders = $state<SocialProviderId[]>([]);
+  // The server answered 401 to an approval call: the sign-in card comes back with the signed-out heading.
+  let sessionEnded = $state(false);
   let delegating = $state(false);
   let done = $state(false);
   let pasteCode = $state('');
@@ -412,7 +418,6 @@
   const deviceTransactionId = approvalRequestMode ? '' : $page.url.searchParams.get('deviceTransactionId') || '';
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
   const deviceUserCode = $page.url.searchParams.get('deviceUserCode') || '';
-  let deviceAcknowledged = $state(false);
   const relayJwkB64 = $page.url.searchParams.get('relayJwk') || '';
 
   // Decode JWK from base64url
@@ -546,6 +551,8 @@
   // carries must come from (or equal) the server's pending request. Key
   // selection waits for this check.
   if (deviceTransactionId) requestReason = '';
+  // True while a device link is checked against the server's own record.
+  let deviceLinkPending = $state(!!deviceTransactionId);
   const deviceRequestVerified = (async () => {
     if (approvalRequestMode || !deviceTransactionId) return;
     const record = await loadVerifiedDeviceRequest(import.meta.env.VITE_API_URL || '', deviceUserCode, {
@@ -563,6 +570,7 @@
     expiryParam = `${deviceRequestDefaultSeconds(record)}s`;
   })();
   deviceRequestVerified.catch((cause: unknown) => { error = delegateErrorMessage(cause); });
+  deviceRequestVerified.then(() => { deviceLinkPending = false; }, () => { deviceLinkPending = false; });
 
   // The wallet the CLI requested: the one owner (chain and address) every
   // requested space and raw encryption network resolves to. Owners that
@@ -802,6 +810,7 @@
     }
 
     selectedKey = key;
+    keyChoiceRefusedFor = null;
     error = '';
     preparing = true;
 
@@ -814,6 +823,9 @@
     } catch (e: any) {
       error = delegateErrorMessage(e);
       selectedKey = null;
+      if (e instanceof DelegateResponseError && refusalIgnoresKeyChoice(e.status, e.code)) {
+        keyChoiceRefusedFor = $session.data?.user.id ?? null;
+      }
     } finally {
       preparing = false;
     }
@@ -980,6 +992,7 @@
 
   function goBack() {
     selectedKey = null;
+    keyChoiceRefusedFor = null;
     step = 'select-key';
     error = '';
     resetDelegationState();
@@ -1087,10 +1100,6 @@
 
   function approveDelegate() {
     if (approveBlockedByFailure) return;
-    if (deviceTransactionId && !deviceAcknowledged) {
-      error = 'Confirm that you started this request yourself, on a device you control.';
-      return;
-    }
     if (hostNeedsAcknowledgment && !hostAcknowledged) {
       error = 'Confirm that you run or trust this TinyCloud node.';
       return;
@@ -1563,7 +1572,10 @@
       if (typeof delegationExpiresAt !== 'string') throw new OwnerMessageError('The approved delegation has no expiry binding.');
       // The owner may have unchecked capabilities: bind and relay exactly
       // what the signed delegation grants, in the request's manifest form.
-      const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions);
+      const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions, {
+        address: payload.address,
+        chainId: payload.chainId,
+      });
       const relay = await encryptDeviceRelay({ ...payload, permissions: approvedPermissions });
       let response: Response;
       try {
@@ -1659,6 +1671,8 @@
       const result = await authClient.signIn.passkey();
       if (result.error) {
         error = authErrorMessage(result.error, 'Passkey sign-in failed');
+      } else {
+        sessionEnded = false;
       }
     } catch (e: any) {
       error = delegateErrorMessage(e);
@@ -1666,25 +1680,6 @@
       signingIn = false;
     }
   }
-
-  // Google and Apple sign in through a popup, so this page and the #fragment on its link stay in place. The popup
-  // asks for any new-account or existing-account choice itself and reports a choice that sends the person back to
-  // email or passkey as an error line, shown here like the passkey and email failures.
-  async function signInWithSocial(provider: SocialProviderId) {
-    socialProvider = provider;
-    error = '';
-    try {
-      await signInWithSocialPopup(provider);
-    } catch (e: any) {
-      error = e.message || `${socialProviderName(provider)} sign-in failed`;
-    } finally {
-      socialProvider = null;
-    }
-  }
-
-  onMount(async () => {
-    socialProviders = await loadConfiguredSocialProviders().catch(() => []);
-  });
 
   async function activateWithHost(
     targetHost: string,
@@ -1718,6 +1713,24 @@
   function formatAddress(address: string): string {
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   }
+
+  // What the page shows while it waits, and where it is in the three steps.
+  type LoaderPhase = 'link' | 'session' | 'keys' | 'prepare';
+  const loaderPhases: readonly LoaderPhase[] = approvalRequestMode || deviceTransactionId
+    ? ['link', 'session', 'keys', 'prepare']
+    : ['session', 'keys', 'prepare'];
+  const showLoader = $derived(
+    step !== 'done' && (deviceLinkPending || $session.isPending || (!!$session.data && !sessionEnded && (loading || preparing))),
+  );
+  const showSignIn = $derived(step !== 'done' && !showLoader && (!$session.data || sessionEnded));
+  const loaderLit: LoaderPhase = $derived(
+    deviceLinkPending || (approvalRequestMode && approvalRequestLoading) ? 'link'
+      : !dispatchReady || $session.isPending ? 'session'
+      : preparing ? 'prepare' : 'keys',
+  );
+  const slipAt = $derived(showLoader ? 0 : showSignIn ? 1 : step === 'done' ? (pasteCode ? 3 : 4) : 2);
+  const slipLast = $derived(step === 'done' && pasteCode ? 'code' : deviceTransactionId ? 'terminal' : 'agent');
+  const chipEmail = $derived(!showLoader && !showSignIn && step !== 'done' ? ($session.data?.user.email ?? null) : null);
 </script>
 
 {#if requestExpired}
@@ -1736,9 +1749,13 @@
       </Card>
     </div>
   </section>
+{:else if approvalRequestMode && !approvalRequestLoaded && approvalRequestLoading && !error}
+  <Slip at={0} center>
+    <Loader phases={loaderPhases} lit="link" />
+  </Slip>
 {:else if approvalRequestMode && !approvalRequestLoaded}
   <div role={error ? 'alert' : 'status'} class="min-h-screen flex items-center justify-center px-4 text-center">
-    {error || (approvalRequestLoading ? 'Checking request…' : 'This approval link is unavailable.')}
+    {error || 'This approval link is unavailable.'}
   </div>
 {:else if declined}
   <div data-testid="declined" class="min-h-screen flex flex-col items-center justify-center px-4 text-center">
@@ -1746,7 +1763,9 @@
     <CloseTabButton />
   </div>
 {:else if !dispatchReady && !preparedTransport}
-  <div role="status" class="min-h-screen flex items-center justify-center">Loading delegation request…</div>
+  <Slip at={0} center>
+    <Loader phases={loaderPhases} lit={loaderLit} />
+  </Slip>
 {:else if preparedStorageError}
   <div role="alert" class="min-h-screen flex items-center justify-center">Couldn't save this request. Restart the CLI command.</div>
 {:else if preparedMode}
@@ -1766,17 +1785,7 @@
     </div>
   </div>
 {:else}
-<div class="min-h-screen bg-[#fafafa] flex flex-col items-center justify-center px-4 py-8">
-  <div class="w-full max-w-sm flex flex-col items-center gap-6">
-    <!-- Logo mark -->
-    <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-surface-800 to-surface-900 flex items-center justify-center shadow-sm">
-      <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
-      </svg>
-    </div>
-
-    <!-- Main card -->
-    <Card class="w-full p-6">
+<Slip at={slipAt} last={slipLast} center={showLoader} email={chipEmail} onSignOut={() => { void authClient.signOut(); }}>
       {#if step === 'done'}
         <div class="flex flex-col items-center justify-center text-center py-4">
           <svg class="w-12 h-12 text-green-500 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -1847,56 +1856,20 @@
           {/if}
         </div>
 
-      {:else if $session.isPending}
-        <!-- The session answer has not arrived: neither the sign-in prompt nor the review fits yet. -->
-        <div class="flex flex-col items-center justify-center text-center text-surface-400 py-8" role="status">
-          <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-          </svg>
-          <span class="text-sm text-surface-500">Checking your OpenKey account…</span>
-        </div>
+      {:else if showLoader}
+        <Loader phases={loaderPhases} lit={loaderLit} />
 
-      {:else if !$session.data}
-        <header class="mb-5">
-          <h1 class="text-lg font-semibold text-surface-900">TinyCloud access request</h1>
-          <p class="text-surface-500 text-sm mt-1">Sign in to review the requested access</p>
-        </header>
-
-        <div class="flex flex-col items-center justify-center text-center py-4">
-
-          {#if error}
-            <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
-              {error}
-            </div>
-          {/if}
-
-          <Button onclick={() => { window.location.href = emailSignInHref; }} disabled={signingIn || socialProvider !== null} class="w-full rounded-xl">
-            Continue with email
-          </Button>
-          {#if socialProviders.length > 0}
-            <div class="mt-3 w-full">
-              <SocialButtons
-                providers={socialProviders}
-                loadingProvider={socialProvider}
-                disabled={signingIn || socialProvider !== null}
-                onsignin={signInWithSocial}
-              />
-            </div>
-          {/if}
-          <Button onclick={signInWithPasskey} variant="secondary" disabled={signingIn || socialProvider !== null} class="mt-3 w-full rounded-xl">
-            {signingIn ? 'Signing in…' : 'Use a passkey instead'}
-          </Button>
-        </div>
-
-      {:else if loading || preparing}
-        <div class="flex flex-col items-center justify-center text-center text-surface-400 py-8">
-          <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-          </svg>
-          <span class="text-sm text-surface-500">{preparing ? 'Preparing delegation...' : 'Loading your keys...'}</span>
-        </div>
+      {:else if showSignIn}
+        <SignInCard
+          emailHref={emailSignInHref}
+          {registerHref}
+          error={sessionEnded ? '' : error}
+          {signingIn}
+          signedOut={sessionEnded}
+          onPasskey={signInWithPasskey}
+          onBegin={() => { error = ''; }}
+          onSignedIn={() => { sessionEnded = false; }}
+        />
 
       {:else if step === 'link-wallet'}
         <!-- Link external wallet -->
@@ -2024,7 +1997,7 @@
         {/if}
 
         {#if deviceTransactionId}
-          <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} bind:acknowledged={deviceAcknowledged} />
+          <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} />
         {:else}
           <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
         {/if}
@@ -2188,13 +2161,21 @@
         <!-- Key selection -->
         <header class="mb-5">
           <h1 class="text-lg font-semibold text-surface-900">TinyCloud access request</h1>
-          <p class="text-surface-500 text-sm mt-1">Select a key to review the requested access</p>
+          {#if !keyChoiceRefused}
+            <p class="text-surface-500 text-sm mt-1">Select a key to review the requested access</p>
+          {/if}
         </header>
 
         {#if error}
           <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
             {error}
           </div>
+          {#if errorDetail}
+            <details class="error-detail">
+              <summary>Details</summary>
+              <p>{errorDetail}</p>
+            </details>
+          {/if}
         {/if}
 
         {#if expectedAddress && preselectAttempted && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
@@ -2206,7 +2187,7 @@
           </div>
         {/if}
 
-        {#if keys.length === 0}
+        {#if keys.length === 0 && !keyChoiceRefused}
           <div class="flex flex-col items-center justify-center text-center py-4">
             <p class="text-surface-500 text-sm mb-5">No keys found. Generate your first key to connect.</p>
             <Button onclick={generateAndSelect} class="w-full rounded-xl">
@@ -2216,7 +2197,7 @@
               Link External Wallet
             </Button>
           </div>
-        {:else}
+        {:else if !keyChoiceRefused}
           <KeyPicker
             {keys}
             {expectedAddress}
@@ -2234,35 +2215,23 @@
           </KeyPicker>
         {/if}
       {/if}
-    </Card>
-
-    {#if $session.data && step !== 'done'}
-      <button
-        onclick={() => authClient.signOut()}
-        class="text-xs text-surface-400 hover:text-surface-600 transition-colors bg-transparent border-none cursor-pointer"
-      >
-        Sign out
-      </button>
-    {:else if !$session.isPending && !$session.data}
-      <div class="flex items-center gap-3 text-sm">
-        <a href={registerHref} class="text-surface-500 hover:text-surface-700 transition-colors">Register</a>
-        <span class="text-surface-300">|</span>
-        <a href="/auth/recover" class="text-surface-500 hover:text-surface-700 transition-colors">Recover account</a>
-      </div>
-    {/if}
-
-    <!-- Trust badge -->
-    <div class="flex items-center gap-1.5 text-surface-400">
-      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
-      </svg>
-      <span class="text-xs">Protected by TEE hardware security</span>
-    </div>
-  </div>
-</div>
+</Slip>
 {/if}
 
 <style>
+  .error-detail {
+    color: #9f2424;
+    font-size: 12px;
+    line-height: 1.45;
+    margin: -8px 0 16px;
+  }
+  .error-detail summary {
+    cursor: pointer;
+  }
+  .error-detail p {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+  }
   @media (max-width: 480px) {
     .expired-request {
       padding-top: 1rem;

@@ -16,6 +16,7 @@ import type * as Terms from '../services/terms';
 import { mockModules } from './mock-module';
 import { NATIVE_DELEGATION_ENDPOINT_PATHS, OPENKEY_SESSION_PROOF_HEADER } from '../services/native-delegation/public-protocol';
 import { credentialHash } from '../services/native-delegation/session-proof';
+import { stepUpCodeDigest } from '../services/email-code-storage';
 
 const root = resolve(import.meta.dir, '../../../..');
 if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
@@ -130,7 +131,8 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
     await prisma.ethereumKey.create({ data: { userId, address: `0x${n.toString(16).padStart(40, '0')}`, publicKey: '0x1', keyType: 'EXTERNAL' } });
     await prisma.session.create({ data: { id: `terms-session-${n}`, userId, token, expiresAt: new Date(Date.now() + 86_400_000) } });
     const cookie = (await serializeSignedCookie(cookieName, token, secret)).split(';')[0]!;
-    return { userId, token, cookie };
+    // A bearer is the signed session token, as `set-auth-token` hands it out.
+    return { userId, token, cookie, bearer: cookie.slice(cookie.indexOf('=') + 1) };
   }
 
   async function expectTermsRequired(response: Response) {
@@ -248,7 +250,7 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
 
   describe('session routes', () => {
     const gated: Array<[string, string, string, unknown]> = [
-      ['account', 'GET', '/api/account/renewal-leases', undefined],
+      ['account', 'GET', '/api/account/auto-sign', undefined],
       ['keys', 'GET', '/api/keys', undefined],
       ['delegate', 'POST', '/api/delegate/prepare', {}],
       ['device approve', 'POST', '/api/device-authorizations/no-such-transaction/approve', {}],
@@ -271,8 +273,8 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
 
     test('a bearer session token (CLI, widget) gets the same refusal with the URL to open', async () => {
       release(VERSION);
-      const { token } = await signedIn();
-      const response = await request(`${api}/api/keys`, { headers: { authorization: `Bearer ${token}`, origin: web } });
+      const { bearer } = await signedIn();
+      const response = await request(`${api}/api/keys`, { headers: { authorization: `Bearer ${bearer}`, origin: web } });
       expect(response.status).toBe(403);
       expect(await response.json()).toEqual({
         error: 'terms_required', error_description: `Open ${TERMS_URL} to accept the Terms of Service.`, terms_url: TERMS_URL,
@@ -320,7 +322,8 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
       expect(await sent.text()).not.toContain('terms_required');
       await prisma.verification.deleteMany({ where: { identifier: stepUpIdentifier(sessionId, email, 'delete_account') } });
       await prisma.verification.create({ data: {
-        id: randomUUID(), identifier: stepUpIdentifier(sessionId, email, 'delete_account'), value: '123456:0',
+        id: randomUUID(), identifier: stepUpIdentifier(sessionId, email, 'delete_account'),
+        value: `${stepUpCodeDigest(stepUpIdentifier(sessionId, email, 'delete_account'), '123456')}:0`,
         expiresAt: new Date(Date.now() + 300_000),
       } });
       const verified = await send(cookie, 'POST', '/api/account/step-up/email-otp/verify', { purpose: 'delete_account', code: '123456' });
@@ -352,6 +355,17 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
       const response = await send(cookie, 'DELETE', path(consent), { confirmation: 'DISCONNECT' });
       expect(response.status, await response.clone().text()).toBe(200);
       expect(await prisma.oauthConsent.findUnique({ where: { id: consent.id } })).toBeNull();
+    });
+
+    test.each([
+      ['the account', '/api/account', (body: Record<string, unknown>) => expect(body.user).toHaveProperty('email')],
+      ['its connected apps', '/api/account/tinycloud-apps', (body: Record<string, unknown>) => expect(body).toMatchObject({ apps: [], mcpApps: [], identityApps: [] })],
+      ['its renewing permissions', '/api/account/renewal-leases', (body: Record<string, unknown>) => expect(body).toHaveProperty('leases')],
+    ])('%s can be read, so the page offering the ways out can show them', async (_name, path, check) => {
+      const { cookie } = await behindNewTerms();
+      const response = await send(cookie, 'GET', path);
+      expect(response.status, await response.clone().text()).toBe(200);
+      check(await response.json() as Record<string, unknown>);
     });
 
     test('an OAuth consent can be denied; agreeing to it still cannot', async () => {
@@ -496,9 +510,9 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
 
     test('an acceptance is recorded only from the browser, never with a session token', async () => {
       release(VERSION);
-      const { token, userId } = await signedIn();
+      const { bearer, userId } = await signedIn();
       const response = await request(`${api}/api/account/terms/accept`, {
-        method: 'POST', headers: { authorization: `Bearer ${token}`, origin: web, 'content-type': 'application/json' },
+        method: 'POST', headers: { authorization: `Bearer ${bearer}`, origin: web, 'content-type': 'application/json' },
         body: JSON.stringify({ version: VERSION }),
       });
       expect(response.status).toBe(403);
@@ -574,6 +588,23 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
       const response = await call('revoke');
       expect(await response.clone().text()).not.toContain('terms_url');
       expect(response.status, await response.clone().text()).toBe(200);
+      expect((await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: grant.id } })).status).not.toBe('ACTIVE');
+    });
+
+    test('an app disconnected before acceptance can no longer renew what it was granted, once the account accepts', async () => {
+      release(VERSION);
+      const { cookie, userId } = await signedIn();
+      const { grant, call } = await nativeGrant(userId);
+      await prisma.oauthConsent.create({ data: { id: randomUUID(), userId, clientId: grant.clientId, scopes: ['openid', 'tinycloud:delegation'] } });
+      const disconnected = await request(`${api}/api/account/tinycloud-apps/${grant.clientId}`, {
+        method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirmation: 'DISCONNECT' }),
+      }, cookie);
+      expect(disconnected.status, await disconnected.clone().text()).toBe(200);
+
+      expect((await accept(cookie)).status).toBe(200);
+      const renewed = await call('renew');
+      expect(renewed.status).toBe(400);
+      expect(await renewed.json()).not.toHaveProperty('terms_url');
       expect((await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: grant.id } })).status).not.toBe('ACTIVE');
     });
   });

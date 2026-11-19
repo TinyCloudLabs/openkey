@@ -99,8 +99,12 @@ Optional (features degrade gracefully without these):
 | `INTERNAL_METRICS_TOKEN` | Protect internal metrics endpoints |
 | `OPENKEY_METRICS_READ_TOKEN` | Bearer for `/api/internal/scoreboard/*` (TC-1483); aggregate counts only |
 | `NODE_STATS_URL` / `NODE_STATS_READ_TOKEN` | Node `GET /admin/stats` URL and read-only bearer, used by `/api/internal/scoreboard/protocol-users` (TC-1483). Counts owners with data beyond the automatic `account` space; account-only owners are excluded. Must be `https:`; `http://localhost`/`127.0.0.1` allowed only with `NODE_ENV=development` |
-| `SCOREBOARD_EXCLUDE_USER_IDS` / `SCOREBOARD_EXCLUDE_CLIENT_IDS` | Comma-separated team/QA/agent user ids and internal OAuth client ids excluded from scoreboard counts |
-| `SCOREBOARD_EXCLUDE_EMAIL_PREFIXES` | Comma-separated email-address prefixes (case-insensitive) whose accounts are excluded from scoreboard counts, added to the built-in `qa-sm-smoke-` |
+| `SCOREBOARD_EXCLUSIONS` | JSON identities from `scripts/scoreboard-exclusions.py` using `kind,value,evidence` list rows, including explicitly listed exact email domains. Every list row applies; patterns/unsure files are not read or applied. See deployment docs. Empty list excludes nobody. Feeds `accounts.real`/`excluded`, the scoreboard counts and the `explicit_exclusions` bucket of `/api/internal/metrics` `users`. Details: TC-1480 |
+| `SCOREBOARD_EXCLUDE_USER_IDS` | Keep alongside the new env for older releases during rollback; the scoreboard counts and `accounts.*` ignore it. The `explicit_exclusions` bucket of `/api/internal/metrics` `users` still reads it, in addition to `SCOREBOARD_EXCLUSIONS`. Details: TC-1480 |
+| `SCOREBOARD_EXCLUDE_CLIENT_IDS` | Comma-separated OAuth client ids omitted from app-user counts. Details: TC-1480 |
+| `SCOREBOARD_EXCLUDE_EMAIL_PREFIXES` | Comma-separated email prefixes matched case-insensitively by `/api/internal/scoreboard/app-users` and `/api/internal/scoreboard/protocol-users`. Both endpoints always exclude the built-in `qa-sm-smoke-` prefix. |
+| `SCOREBOARD_EXCLUDE_ADDRESSES` | Comma-separated team EVM wallet addresses (lowercase compare), mapped through `ethereum_keys.address` to accounts excluded from the `users` block of `/api/internal/metrics` |
+| `SCOREBOARD_DISPOSABLE_DOMAINS` | Comma-separated extra disposable-mail domains (added to the built-in list; subdomains match) for the `disposable_mail_domain` bucket of `/api/internal/metrics` `users`. Use it when a rotating provider such as mail.tm changes domain. |
 | `TINYCLOUD_BOOTSTRAP_HOST` | TinyCloud node used to bootstrap a user's canonical signer space |
 | `VITE_CONSOLE_ORIGIN` | Optional console origin. Leave unset locally to keep the account and console journey on one Vite host; set to `https://console.openkey.so` in production. |
 | `VITE_ACCOUNT_ORIGIN` | Set alongside `VITE_CONSOLE_ORIGIN` only when testing the split-host journey locally (the portless example supplies both). |

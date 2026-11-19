@@ -39,18 +39,20 @@ const REVOCATION_LIFETIME_MS = 5 * 60_000;
  * never admitted. Counted from the record, not `approvedAt`: a wallet signs the lease up to ten minutes after that.
  */
 const SIGN_IN_ADMISSION_WINDOW_MS = 10 * 60_000;
-/** How long a best-effort stop (an account lock) waits for its leases; stopping carries on after that. */
+/** How long a best-effort stop (an app's sign-out, an account lock) waits for its leases; stopping carries on after that. */
 const BEST_EFFORT_STOP_BUDGET_MS = 3_000;
 const OWNER_DID = /^did:pkh:eip155:([1-9][0-9]*):(0x[0-9a-fA-F]{40})$/;
 
 export type LeaseRevocationDatabase = Pick<PrismaClient, 'renewalLease' | 'ethereumKey' | '$transaction'>;
 
 /**
- * Which of the account's leases to stop. Signing out stops none: a lease stops only from Settings, on account
- * deletion, or when the account is locked (an Apple revocation, a "not mine" report).
+ * Which of the account's leases to stop. Signing out stops no permission the owner approved: those stop only from
+ * Settings, on account deletion, or when the account is locked (an Apple revocation, a "not mine" report). A session
+ * signing itself out stops only the sign-in leases recorded under it (`sign-in`): the app that signed in drops its key.
  */
 export type LeaseScope =
   | { kind: 'lease'; leaseCid: string }
+  | { kind: 'sign-in'; sessionId: string }
   | { kind: 'all' };
 
 /**
@@ -74,7 +76,7 @@ export interface LeaseRevocationDeps {
 }
 
 async function secretKey() {
-  // Loaded on use: auth.ts loads this module (its Apple and mailbox-review hooks), and its context holds the at-rest secret.
+  // Loaded on use: auth.ts loads this module (its sign-out, Apple and mailbox-review hooks), and its context holds the at-rest secret.
   const { auth } = await import('../auth');
   return (await auth.$context).secretConfig;
 }
@@ -90,6 +92,7 @@ const defaultDeps: LeaseRevocationDeps = {
 function scopeWhere(scope: LeaseScope) {
   switch (scope.kind) {
     case 'lease': return { leaseCid: scope.leaseCid };
+    case 'sign-in': return { sessionId: scope.sessionId, approvalRequestId: null };
     case 'all': return {};
   }
 }
@@ -304,10 +307,10 @@ export async function revokeRenewalLeases(
 }
 
 /**
- * Stops the leases in `scope` best effort, for an action that has already ended the owner's access (an account
- * lock): never waits for the owner's lock, answers within a budget and never throws. A lease not confirmed stopped
- * by then is reported not stopped; if stopping is still under way it finishes later, and any lease left on stays
- * recorded, so the next stop or deletion sends it again.
+ * Stops the leases in `scope` best effort, for an action that has already ended the owner's access or session (an
+ * account lock, an app's sign-out): never waits for the owner's lock, answers within a budget and never throws. A
+ * lease not confirmed stopped by then is reported not stopped; if stopping is still under way it finishes later, and
+ * any lease left on stays recorded, so the next stop or deletion sends it again.
  */
 export async function stopRenewalLeasesBestEffort(
   db: LeaseRevocationDatabase,
