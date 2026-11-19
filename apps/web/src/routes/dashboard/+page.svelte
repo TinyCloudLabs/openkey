@@ -1,7 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { authClient } from '$lib/auth-client';
-  import { signOutRenewalNotice } from '$lib/renewal-leases';
+  import { renewalLeaseCopy, signOutKeepsRenewalNote } from '$lib/renewal-leases';
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
@@ -18,9 +18,9 @@
   // Redirect if not logged in, load keys when session is ready
   $effect(() => {
     if (!$session.isPending) {
-      if (!$session.data && !signOutNotice) {
+      if (!$session.data) {
         goto('/auth/login');
-      } else if ($session.data && keys.length === 0 && loading) {
+      } else if (keys.length === 0 && loading) {
         loadKeys();
       }
     }
@@ -52,17 +52,8 @@
     }
   }
 
-  // TC-2946: signing out stops the renewing permissions this session approved. If a node didn't
-  // confirm (or a wallet must sign), say so here instead of leaving silently.
-  let signOutNotice = $state('');
-
   async function signOut() {
-    const { data } = await authClient.signOut() as { data?: { renewalLeases?: { notStopped?: number } } };
-    const notStopped = data?.renewalLeases?.notStopped ?? 0;
-    if (notStopped > 0) {
-      signOutNotice = signOutRenewalNotice(notStopped);
-      return;
-    }
+    await authClient.signOut();
     goto('/');
   }
 
@@ -85,12 +76,6 @@
 </script>
 
 <div class="mx-auto max-w-3xl px-4 py-10">
-  {#if signOutNotice}
-    <div role="alert" class="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-      {signOutNotice}
-      <a href="/" class="mt-2 block font-medium underline">Continue</a>
-    </div>
-  {:else}
   <!-- Header -->
   <div class="mb-8">
     {#if $session.data}
@@ -108,6 +93,13 @@
     <Button variant="secondary" size="sm" href="/dashboard/settings">Settings</Button>
     <Button variant="secondary" size="sm" onclick={signOut}>Sign Out</Button>
   </div>
+  {#if signOutKeepsRenewalNote}
+    <!-- Signing out leaves renewing permissions on: this line points to where they stop. -->
+    <p class="-mt-6 mb-8 text-sm text-surface-500">
+      {signOutKeepsRenewalNote}
+      <a href="/dashboard/settings#renewing-permissions" class="font-medium underline">{renewalLeaseCopy.title}</a>
+    </p>
+  {/if}
 
   <!-- Error -->
   {#if error}
@@ -206,5 +198,4 @@
       </Button>
     </div>
   </Card>
-  {/if}
 </div>

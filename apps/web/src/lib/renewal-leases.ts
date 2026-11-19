@@ -62,9 +62,9 @@ export function nodeHost(origin: string): string {
   try { return new URL(origin).host; } catch { return origin; }
 }
 
-/** After a sign-out whose renewing permissions were not all stopped. */
-export function signOutRenewalNotice(notStopped: number): string {
-  return notStopped === 1
-    ? "You're signed out, but 1 permission is still renewing. Sign in again and stop it under Renewing permissions in Settings."
-    : `You're signed out, but ${notStopped} permissions are still renewing. Sign in again and stop them under Renewing permissions in Settings.`;
-}
+/**
+ * The one line the dashboard shows beside Sign Out, followed by a link to Renewing permissions in Settings: signing
+ * out leaves renewing permissions on, and they stop only there or when the account is deleted. Empty, and so not
+ * shown, until its wording is approved.
+ */
+export const signOutKeepsRenewalNote = '';
