@@ -35,18 +35,34 @@ export type ScoreboardDatabase = {
   appSignInDay: DistinctUsers;
 };
 
-export type ScoreboardExclusions = { userIds: ReadonlySet<string>; clientIds: ReadonlySet<string> };
+/** `emailPrefixes` are lowercase; an account whose email starts with one is excluded. Optional: a caller may leave it out. */
+export type ScoreboardExclusions = { userIds: ReadonlySet<string>; clientIds: ReadonlySet<string>; emailPrefixes?: ReadonlySet<string> };
 
 function parseList(value: string | undefined): Set<string> {
   return new Set((value ?? '').split(',').map((item) => item.trim()).filter(Boolean));
 }
 
-/** Team, QA and agent accounts: config lists, never returned by the API. */
+/**
+ * Accounts the smoke test and QA runs create get an email address starting with one of these, so they
+ * stay out of the counts even when nobody has listed their user ids. `SCOREBOARD_EXCLUDE_EMAIL_PREFIXES`
+ * adds more. Matched case-insensitively against the start of the address; the secret-manager prompt
+ * smoke registers `qa-sm-smoke-<random>@<inbox domain>`.
+ */
+export const QA_EMAIL_PREFIXES: readonly string[] = ['qa-sm-smoke-'];
+
+/** Team, QA and agent accounts: config lists and the QA address prefixes, never returned by the API. */
 export function exclusionsFromEnv(env: Record<string, string | undefined> = process.env): ScoreboardExclusions {
   return {
     userIds: parseList(env.SCOREBOARD_EXCLUDE_USER_IDS),
     clientIds: parseList(env.SCOREBOARD_EXCLUDE_CLIENT_IDS),
+    emailPrefixes: new Set([...QA_EMAIL_PREFIXES, ...parseList(env.SCOREBOARD_EXCLUDE_EMAIL_PREFIXES)].map((prefix) => prefix.toLowerCase())),
   };
+}
+
+function hasExcludedEmail(email: string | null | undefined, prefixes: ReadonlySet<string> | undefined): boolean {
+  if (!email || !prefixes) return false;
+  const lowered = email.toLowerCase();
+  return [...prefixes].some((prefix) => lowered.startsWith(prefix));
 }
 
 function authorized(authHeader: string | undefined): boolean {
@@ -66,10 +82,14 @@ export async function countProtocolUsers(
   const lowered = [...new Set(addresses.map((address) => address.toLowerCase()))];
   if (lowered.length === 0) return 0;
   // Includes archived keys: their data still exists. Orphan keys (userId NULL) are dropped.
-  const rows = await database.$queryRaw<UserIdRow[]>`
-    SELECT DISTINCT "userId" FROM ethereum_keys
-    WHERE "userId" IS NOT NULL AND lower(address) = ANY(${lowered})`;
-  return new Set(rows.map((row) => row.userId).filter((id) => !exclusions.userIds.has(id))).size;
+  // The email is read only to apply the prefix exclusion here; it is never returned or logged.
+  const rows = await database.$queryRaw<Array<UserIdRow & { email?: string | null }>>`
+    SELECT DISTINCT k."userId" AS "userId", u.email AS email FROM ethereum_keys k
+    JOIN "user" u ON u.id = k."userId"
+    WHERE k."userId" IS NOT NULL AND lower(k.address) = ANY(${lowered})`;
+  return new Set(
+    rows.filter((row) => !hasExcludedEmail(row.email, exclusions.emailPrefixes)).map((row) => row.userId).filter((id) => !exclusions.userIds.has(id)),
+  ).size;
 }
 
 /**
@@ -185,7 +205,11 @@ export async function countAppUsers(
 ): Promise<{ total: number; active7d: number }> {
   const since = new Date(now.getTime() - ACTIVE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const sinceDay = new Date(Date.UTC(since.getUTCFullYear(), since.getUTCMonth(), since.getUTCDate()));
-  const userNotExcluded = { userId: { notIn: [...exclusions.userIds] } };
+  const emailPrefixes = [...(exclusions.emailPrefixes ?? [])];
+  const userNotExcluded = {
+    userId: { notIn: [...exclusions.userIds] },
+    ...(emailPrefixes.length === 0 ? {} : { user: { NOT: emailPrefixes.map((prefix) => ({ email: { startsWith: prefix, mode: 'insensitive' } })) } }),
+  };
   const oauthWhere = { ...userNotExcluded, clientId: { notIn: [...exclusions.clientIds] } };
   const select = { userId: true };
   const distinct = ['userId'];
