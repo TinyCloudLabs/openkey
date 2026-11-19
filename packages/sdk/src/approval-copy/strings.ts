@@ -186,13 +186,24 @@ export const CODE = {
 
 /** /device. */
 export const DEVICE = {
+  /** The browser tab's title. */
+  title: 'Review a sign-in request — OpenKey',
   eyebrow: 'Sign-in request from a device',
   headingCode: 'Does your terminal show this code?',
+  /** The code tiles' label: `{first}` and `{second}` are the code's halves, one character at a time ("W D J B"). */
+  codeLabel: 'Code {first}, {second}',
   asksLabel: 'What it asks for',
+  reasonNote: 'This reason comes from the caller and isn’t verified.',
+  /** The list of what is asked for. */
+  asksList: 'Requested access',
+  sensitive: 'Sensitive',
   yesSignedOut: 'Yes, it matches. Sign in to review',
   yesSignedIn: 'Yes, it matches. Review the request',
   no: 'No, it’s different',
   advanced: 'Advanced details',
+  /** Inside the fold. */
+  shareOrigin: 'Share origin',
+  nodeOrigin: 'Node origin',
   noHeading: 'Stopped. Nothing was approved.',
   noLine: 'The code here didn’t match your terminal, so this request may have been started by someone else. It has been left unanswered and will expire by itself.',
   noClose: CLOSE_TAB,
