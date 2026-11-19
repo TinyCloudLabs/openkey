@@ -11,7 +11,7 @@
 // The web screen and the API guard both call `elevatedKindOf`, so the screen can never decide on a different set of
 // permissions than the server later checks. This file has no imports beyond the key-resource helpers.
 
-import { isAppsKeyResource, keyPathOfResource, KEY_RESOURCE_PREFIX } from "./key-resource.js";
+import { isAppsKeyResource, keyPathOfAnyResource, keyPathOfResource, KEY_RESOURCE_PREFIX } from "./key-resource.js";
 
 /** A whole encryption network, or keys and prefixes outside `apps/`. */
 export type ElevatedKind = "encryption-network" | "encryption-keys";
@@ -65,7 +65,7 @@ export function elevatedWhere(entry: ElevatedEntryLike): string | null {
 }
 
 /** An exact share key: `share/<id>`, one segment under `share/`. */
-const EXACT_SHARE_KEY = /^share\/[^/]+$/;
+const EXACT_SHARE_KEY = /^share\/[^/]+$/i;
 
 /**
  * Is this ability on this entry a `decrypt` or `key.create` on an exact share key (`share/<id>`)? The id of a share is
@@ -73,10 +73,11 @@ const EXACT_SHARE_KEY = /^share\/[^/]+$/;
  * (TC-2927, for every app). The prefix `share/` and the whole network are not exact keys.
  */
 export function isExactShareKeyGrant(entry: ElevatedEntryLike, ability: string): boolean {
-  if (!isEncryptionService(entry.service)) return false;
+  if (!isEncryptionService(entry.service?.toLowerCase())) return false;
   if (!ELEVATED_VERBS.has(elevatedAbilityVerb(ability))) return false;
-  const resource = encryptionResourceOfEntry(entry);
-  const path = resource === null ? null : keyPathOfResource(resource);
+  const resource = encryptionResourceOfEntry(entry) ?? (entry.path || entry.space);
+  const path = keyPathOfAnyResource(resource)
+    ?? keyPathOfAnyResource(`${entry.space}/${entry.service}/${entry.path}`);
   return path !== null && EXACT_SHARE_KEY.test(path);
 }
 

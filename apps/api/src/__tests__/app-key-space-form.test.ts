@@ -6,7 +6,7 @@
 import { describe, expect, test } from 'bun:test';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { parsePreparedRecap, prepareDelegationSession } from '../routes/delegate-session';
-import { appKeyRefusalForMessage, appKeyRefusalForSiwe } from '../services/app-key-refusal';
+import { appKeyRefusalForMessage, appKeyRefusalForSiwe, exactShareKeyRefusal } from '../services/app-key-refusal';
 import { isAppsKeyResource, isEncryptionResource, keyPathOfAnyResource, parseKeyResource } from '../services/key-resource';
 
 const ADDRESS = '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed';
@@ -196,4 +196,25 @@ describe('isEncryptionResource', () => {
   ])('%s is %s', (resource, expected) => {
     expect(isEncryptionResource(resource)).toBe(expected);
   });
+});
+
+function withResource(resource: string, ability: string): string {
+  const sample = preparedWith(encryptionEntry('sample'));
+  const recap = Buffer.from(JSON.stringify({ att: { [resource]: { [ability]: [{}] } }, prf: [] })).toString('base64url');
+  return sample.replace(/^- urn:recap:.+$/m, `- urn:recap:${recap}`);
+}
+
+test('the share-key check recognises both encryption resource forms', () => {
+  for (const resource of [
+    `urn:tinycloud:encryption:${OWNER}:default/share/TestKey`,
+    `${SPACE}/eNcrYpTioN/ShArE/TestKey`,
+    `${SPACE}/TINYcloud.Encryption/SHARE/TestKey`,
+  ]) {
+    for (const verb of ['decrypt', 'key.create']) {
+      expect(exactShareKeyRefusal(withResource(resource, `tinycloud.encryption/${verb}`))?.reason).toBe('share_key_not_minted');
+    }
+  }
+  for (const service of ['kv', 'sql']) {
+    expect(exactShareKeyRefusal(withResource(`${SPACE}/${service}/share/TestKey`, DECRYPT))).toBeNull();
+  }
 });

@@ -7,7 +7,7 @@
 // ReCap cannot be read exactly is refused.
 
 import { elevatedKindOf } from '@openkey/capability-review';
-import { isAppsKeyResource, isKeyDeleteAbility, keyPathOfResource, KEY_RESOURCE_PREFIX, parseKeyResource } from './key-resource';
+import { isAppsKeyResource, isKeyDeleteAbility, keyPathOfAnyResource, KEY_RESOURCE_PREFIX, parseKeyResource } from './key-resource';
 import { decodeHexUtf8, isSiweShaped } from './siwe-origin';
 
 export type AppKeyRefusalReason =
@@ -231,7 +231,7 @@ export function exactShareKeyRefusal(siwe: string): AppKeyRefusal | null {
   const resources = recapResources(siwe);
   if (resources === null) return { reason: 'recap_unreadable' };
   const exact = resources.some(([resource, abilities]) => {
-    const path = keyPathOfResource(resource);
+    const path = keyPathOfAnyResource(resource);
     return path !== null && EXACT_SHARE_KEY.test(path) && abilities.some(isEncryptionGrantAbility);
   });
   return exact ? { reason: 'share_key_not_minted' } : null;
