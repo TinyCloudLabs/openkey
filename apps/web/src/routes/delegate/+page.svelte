@@ -8,6 +8,7 @@
   import Button from '$lib/components/ui/button.svelte';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
   import {
+    delegateFailureDetail,
     delegateFailureText,
     delegateServerMessage,
     delegateResponseFailureText,
@@ -102,6 +103,7 @@
   }
 
   function delegateErrorMessage(cause: unknown) {
+    errorDetailFor = null;
     if (cause instanceof DeviceRelayDeliveryError) {
       if (cause.status === 409 || cause.status === 410) {
         return delegateResponseFailureText(cause.status, cause.code, {
@@ -113,11 +115,14 @@
     }
     if (cause instanceof DelegateResponseError) {
       if (isTerminalApprovalFailure(cause.status, cause.code)) approveBlockedByFailure = true;
-      return delegateResponseFailureText(cause.status, cause.code, {
+      const text = delegateResponseFailureText(cause.status, cause.code, {
         permissionsEditable: reviewEditing,
         expiryChangeable: expiryChangeControlVisible,
         serverMessage: cause.serverMessage,
       });
+      const detail = delegateFailureDetail(cause.status, cause.code, cause.serverMessage);
+      if (detail) errorDetailFor = { text, detail };
+      return text;
     }
     return delegateFailureText(cause);
   }
@@ -128,6 +133,9 @@
   let loading = $state(true);
   let selectedKey = $state<EthereumKey | null>(null);
   let error = $state('');
+  // Developer-facing server reason for the message currently in `error`; null unless that message came with one.
+  let errorDetailFor = $state<{ text: string; detail: string } | null>(null);
+  const errorDetail = $derived(errorDetailFor && errorDetailFor.text === error ? errorDetailFor.detail : null);
   let requestExpired = $state(false);
   let approveBlockedByFailure = $state(false);
   let keysLoaded = $state(false);
@@ -2000,6 +2008,7 @@
               transport={{
                 approving: delegating || updatingPermissions,
                 error,
+                errorDetail,
                 approveBlockedReason,
                 approveBlockedByFailure,
                 approveDelegate,

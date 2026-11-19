@@ -25,6 +25,11 @@ export function delegateServerMessage(body: unknown): string | undefined {
   return typeof message === 'string' && message.trim() ? message.slice(0, SERVER_MESSAGE_MAX) : undefined;
 }
 
+export function delegateFailureDetail(status: number, code: unknown, serverMessage: unknown): string | null {
+  if (status !== 400 || code !== 'invalid_permissions') return null;
+  return delegateServerMessage({ message: serverMessage }) ?? null;
+}
+
 type MappedMessage = string | ((options: DelegateFailureTextOptions) => string);
 
 const CODE_MESSAGES: Record<string, MappedMessage> = {
@@ -145,9 +150,6 @@ export function delegateResponseFailureText(
   const codeText = safeCode(code);
   const serverMessage = delegateServerMessage({ message: options.serverMessage });
   if (serverMessage && codeText === 'app_key_grant_refused') return serverMessage;
-  if (serverMessage && codeText === 'invalid_permissions') {
-    return `${CODE_MESSAGES.invalid_permissions} Reason: ${serverMessage}${/[.!?]$/.test(serverMessage) ? '' : '.'}`;
-  }
   const mappedMessage = codeText ? CODE_MESSAGES[codeText] : undefined;
   if (typeof mappedMessage === 'function') return mappedMessage(options);
   if (mappedMessage) return mappedMessage;

@@ -68,6 +68,8 @@ export interface CliSigningTransport {
 
   /** Latest error string, or null. */
   error: string | null;
+  /** Server-supplied reason for `error`, shown collapsed under it; absent or null when there is none. */
+  errorDetail?: string | null;
 
   /**
    * How long the approval lasts (TC-2272, TC-2933). `bounded` is true for a signed

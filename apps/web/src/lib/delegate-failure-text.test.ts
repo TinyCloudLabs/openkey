@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, isTerminalApprovalFailure, OwnerMessageError, shortCodeFailureText } from './delegate-failure-text';
+import { delegateFailureDetail, delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, isTerminalApprovalFailure, OwnerMessageError, shortCodeFailureText } from './delegate-failure-text';
 
 const changedRequest = "This request changed after you opened it, so OpenKey didn't approve it. Return to the app or command and start again.";
 const approvalCannotProceed = "Couldn't approve this request. Try again.";
@@ -173,20 +173,25 @@ test('shows the server sentence for app key refusals when present', () => {
   expect(delegateResponseFailureText(403, 'app_key_grant_refused', { serverMessage: '' })).toBe(genericRefusal);
 });
 
-test('appends the server reason for invalid permissions', () => {
+test('keeps the server message off the main line for invalid permissions', () => {
   expect(delegateResponseFailureText(400, 'invalid_permissions', { serverMessage: 'Requested spaces must belong to the signing account' }))
-    .toBe(`${genericRefusal} Reason: Requested spaces must belong to the signing account.`);
-  for (const end of ['.', '!', '?']) {
-    expect(delegateResponseFailureText(400, 'invalid_permissions', { serverMessage: `Nope${end}` }))
-      .toBe(`${genericRefusal} Reason: Nope${end}`);
-  }
+    .toBe(genericRefusal);
   expect(delegateResponseFailureText(400, 'invalid_permissions')).toBe(genericRefusal);
+});
+
+test('delegateFailureDetail returns the capped message only for 400 invalid_permissions', () => {
+  const msg = 'Requested spaces must belong to the signing account';
+  expect(delegateFailureDetail(400, 'invalid_permissions', msg)).toBe(msg);
+  expect(delegateFailureDetail(400, 'invalid_permissions', 'x'.repeat(500))).toBe('x'.repeat(300));
+  expect(delegateFailureDetail(400, 'invalid_permissions', undefined)).toBeNull();
+  expect(delegateFailureDetail(400, 'invalid_permissions', '')).toBeNull();
+  expect(delegateFailureDetail(400, 'invalid_permissions', 42)).toBeNull();
+  expect(delegateFailureDetail(403, 'invalid_permissions', msg)).toBeNull();
+  expect(delegateFailureDetail(400, 'app_key_grant_refused', msg)).toBeNull();
 });
 
 test('caps long server messages and ignores them for other codes', () => {
   const long = 'x'.repeat(500);
-  expect(delegateResponseFailureText(400, 'invalid_permissions', { serverMessage: long }))
-    .toBe(`${genericRefusal} Reason: ${'x'.repeat(300)}.`);
   expect(delegateResponseFailureText(403, 'app_key_grant_refused', { serverMessage: long })).toBe('x'.repeat(300));
   expect(delegateResponseFailureText(400, 'key_not_found', { serverMessage: 'ignored' }))
     .toBe("This key isn't available on your account. Choose a key you own and try again.");

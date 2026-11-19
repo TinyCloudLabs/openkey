@@ -89,6 +89,8 @@
     editing: boolean;
     approving?: boolean;
     error?: string | null;
+    /** Server-supplied reason for `error`; shown as plain text in a closed "Details" disclosure under it. */
+    errorDetail?: string | null;
     /**
      * When set, Approve is disabled and this reason is shown; unlike
      * `approving`, the selection controls stay usable so the caller can
@@ -166,6 +168,7 @@
     editing,
     approving = false,
     error = null,
+    errorDetail = null,
     approveBlockedReason = null,
     approveBlockedByFailure = false,
     layoutBlocked = false,
@@ -1185,6 +1188,12 @@
   <div class="action-region">
   {#if error}
     <p class="error" role="alert" aria-live="polite">{error}</p>
+    {#if errorDetail}
+      <details class="error-detail">
+        <summary>Details</summary>
+        <p>{errorDetail}</p>
+      </details>
+    {/if}
   {/if}
   {#if approveBlockedReason && approveBlockedReason !== error}
     <p class="approve-blocked" role="status" aria-live="polite">{approveBlockedReason}</p>
@@ -1942,6 +1951,19 @@
     line-height: 1.45;
     margin: 0;
     border: 1px solid #f2c0c0;
+  }
+  .error-detail {
+    color: #9f2424;
+    font-size: 12px;
+    line-height: 1.45;
+    margin: -4px 0 0;
+  }
+  .error-detail summary {
+    cursor: pointer;
+  }
+  .error-detail p {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
   }
   .approve-blocked {
     color: #7c4a03;
