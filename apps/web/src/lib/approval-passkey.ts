@@ -40,8 +40,7 @@ export async function confirmWithPasskey(offer: ApprovalPasskeyOffer): Promise<A
   return { challengeToken: offer.challengeToken, response };
 }
 
-// TC-3442 texts. Settings-only lines (`cancelled`, `loadFailed`) and the API's "changed in another session" line await
-// product sign-off; any wording change goes back to product.
+// TC-3442 texts. Any wording change goes back to product sign-off.
 export const passkeyApprovalCopy = {
   title: 'Passkey for approvals',
   help: 'When OpenKey asks for your passkey as you tap Approve. Revoking access never asks.',
