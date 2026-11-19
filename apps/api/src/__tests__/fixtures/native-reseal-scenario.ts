@@ -88,6 +88,7 @@ const tx = {
   tinyCloudNativePreparation: { findUnique: async () => revision },
   oauthClient: { findUniqueOrThrow: async () => client, findUnique: async () => client },
   user: { findUnique: async () => ({ tinyCloudManageKeyMode: 'OPENKEY_MANAGED', tinyCloudManageKeyPolicyEpoch: 0n }) },
+  reviewerAccount: { findUnique: async () => null },
   tinyCloudNativeGrant: { findUnique: async () => grant, update: async () => grant },
   tinyCloudManageKeyAppPreference: { findUnique: async () => null },
   tinyCloudManageKeySigningDecision: { create: async () => ({}) },
