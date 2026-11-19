@@ -124,6 +124,16 @@ export class OwnerMessageError extends Error {}
 export function delegateFailureText(cause: unknown): string {
   return cause instanceof OwnerMessageError ? cause.message : APPROVAL_FAILURE_MESSAGE;
 }
+
+function shortWallet(address: string): string {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
+export function walletMismatchFailureText(expected: string, picked: string): string {
+  const wanted = shortWallet(expected);
+  return `This request is for wallet ${wanted}, but the key you picked is for ${shortWallet(picked)}. Choose a key for ${wanted}, or ask the app or command for a new request. Nothing was approved.`;
+}
+
 export function delegateResponseFailureText(
   status: number,
   code: unknown,

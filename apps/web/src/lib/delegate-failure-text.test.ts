@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, isTerminalApprovalFailure, OwnerMessageError, shortCodeFailureText } from './delegate-failure-text';
+import { delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, isTerminalApprovalFailure, OwnerMessageError, shortCodeFailureText, walletMismatchFailureText } from './delegate-failure-text';
 
 const changedRequest = "This request changed after you opened it, so OpenKey didn't approve it. Return to the app or command and start again.";
 const approvalCannotProceed = "Couldn't approve this request. Try again.";
@@ -162,4 +162,19 @@ test('formats device relay delivery failures without server text', () => {
   for (const code of ['has spaces', 'x'.repeat(65), {}]) {
     expect(deviceRelayFailureText(500, code)).toBe(`${prefix} (Error 500)`);
   }
+});
+
+test('wallet mismatch text names both shortened wallets', () => {
+  expect(walletMismatchFailureText(
+    '0xd559aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf412',
+    '0x1234bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb9abc',
+  )).toBe(
+    'This request is for wallet 0xd559…f412, but the key you picked is for 0x1234…9abc. Choose a key for 0xd559…f412, or ask the app or command for a new request. Nothing was approved.',
+  );
+});
+
+test('other invalid_permissions failures keep the generic line', () => {
+  const generic = "OpenKey can't approve this kind of access. The app or command needs to ask for something different.";
+  expect(delegateResponseFailureText(400, 'invalid_permissions')).toBe(generic);
+  expect(delegateResponseFailureText(400, 'invalid_permissions', { permissionsEditable: true })).toBe(generic);
 });
