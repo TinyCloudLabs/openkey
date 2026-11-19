@@ -1846,6 +1846,16 @@
           {/if}
         </div>
 
+      {:else if $session.isPending}
+        <!-- The session answer has not arrived: neither the sign-in prompt nor the review fits yet. -->
+        <div class="flex flex-col items-center justify-center text-center text-surface-400 py-8" role="status">
+          <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          <span class="text-sm text-surface-500">Checking your OpenKey account…</span>
+        </div>
+
       {:else if !$session.data}
         <header class="mb-5">
           <h1 class="text-lg font-semibold text-surface-900">TinyCloud access request</h1>
@@ -2232,7 +2242,7 @@
       >
         Sign out
       </button>
-    {:else if !$session.data}
+    {:else if !$session.isPending && !$session.data}
       <div class="flex items-center gap-3 text-sm">
         <a href={registerHref} class="text-surface-500 hover:text-surface-700 transition-colors">Register</a>
         <span class="text-surface-300">|</span>
