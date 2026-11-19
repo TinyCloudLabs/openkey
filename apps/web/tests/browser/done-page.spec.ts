@@ -29,7 +29,8 @@ async function approveWithCallback(page: Page, body: unknown = delegation) {
 
 test('a /delegate approval the terminal on this device received: heading, receipt, nothing to copy', async ({ page }) => {
   await approveWithCallback(page);
-  await expect(page.getByText('Your approval was sent to TinyCloud CLI. There is nothing to copy.', { exact: false })).toBeVisible();
+  await expect(page.getByText('You can close this window and return to the CLI.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Your approval was sent to')).toHaveCount(0);
   await expect(receipt(page, 'Access')).toHaveText('1 permission in default');
   await expect(receipt(page, 'Ends')).toHaveText(signedEnd);
   await expect(receipt(page, 'Sent to')).toHaveText('Your terminal, this device');

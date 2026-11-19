@@ -1869,7 +1869,7 @@
           spaceNote={spaceReadiness}
         />
       {:else if step === 'done'}
-        <DonePage outcome="approved" requester={requesterName} rows={receiptRows} spaceNote={spaceReadiness} />
+        <DonePage outcome="approved" requester={requesterName} returnTo={requester.returnTo} rows={receiptRows} spaceNote={spaceReadiness} />
 
       {:else if showLoader}
         <Loader phases={loaderPhases} lit={loaderLit} />

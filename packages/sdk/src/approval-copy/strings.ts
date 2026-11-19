@@ -97,6 +97,8 @@ export const DONE = {
     heading: 'Signed. Go back to your terminal.',
     line: 'Your terminal has your signature and will finish revoking the permission.',
   },
+  /** The approved /delegate page with no code says this in place of `approved.line`: `{returnTo}` is where the person goes back to (the CLI, Claude…). */
+  returnTo: 'You can close this window and return to {returnTo}.',
   receipt: {
     access: 'Access',
     ends: 'Ends',
@@ -170,7 +172,7 @@ export const CODE = {
     lineApprovalEnded: 'Code expired, and so has this approval. Start again in the CLI.',
     box: 'Expired',
     newCode: 'Get a new code',
-    newCodeFailed: "Couldn't get a new code. Try again, or start again in the CLI.",
+    newCodeFailed: 'Couldn’t get a new code. Try again, or start again in the CLI.',
   },
   /** Read out once, when a minute is left. */
   oneMinuteLeft: '1 minute left to use this code.',
