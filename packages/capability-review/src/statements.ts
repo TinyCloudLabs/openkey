@@ -845,7 +845,9 @@ function schemaOnlyStatementText(
     return "Edit and delete this app's tables";
   }
   if (spaceName === "account" && grant.family === "bootstrap-sql") {
-    return "Edit and delete tables in your TinyCloud account";
+    return grant.ownedBySelf === null
+      ? "Edit and delete account tables"
+      : "Edit and delete tables in your TinyCloud account";
   }
   if (grant.family === "own-app-data" || grant.family === "cross-app-data") {
     return "Edit and delete tables in application data";
@@ -1452,7 +1454,13 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     isSecretsSpace(space) &&
     (KV_SERVICES.has(service) || SQL_SERVICES.has(service))
   ) {
-    const secretOwner = grant.ownedBySelf === false ? "another user's" : "your";
+    // An unknown owner (null) never claims "your".
+    const secretOwner =
+      grant.ownedBySelf === false
+        ? "another user's"
+        : grant.ownedBySelf === true
+          ? "your"
+          : "the";
     // TinyCloud's secrets SQL database stores the secret catalog (scope,
     // name, provider, notes, and test metadata). Secret values live in KV.
     if (SQL_SERVICES.has(service)) {
@@ -1535,7 +1543,10 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     (grant.family === "bootstrap-kv" || grant.family === "bootstrap-sql")
   ) {
     return {
-      primaryText: "Manage your TinyCloud account",
+      primaryText:
+        grant.ownedBySelf === null
+          ? "Manage a TinyCloud account"
+          : "Manage your TinyCloud account",
       service,
       resource,
     };
@@ -1569,14 +1580,25 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     if (verbs.hasWrite) {
       return {
         primaryText: verbs.hasRead
-          ? "Read and publish your public data"
-          : "Publish and update your public data",
+          ? grant.ownedBySelf === null
+            ? "Read and publish public data"
+            : "Read and publish your public data"
+          : grant.ownedBySelf === null
+            ? "Publish and update public data"
+            : "Publish and update your public data",
         service,
         resource,
       };
     }
     if (verbs.hasRead || verbs.hasList || verbs.hasMetadata) {
-      return { primaryText: "Read your public data", service, resource };
+      return {
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Read public data"
+            : "Read your public data",
+        service,
+        resource,
+      };
     }
     return fallbackStatement(grant);
   }
@@ -1588,16 +1610,33 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
   ) {
     if (verbs.hasRead && verbs.hasWrite) {
       return {
-        primaryText: "Read and update your TinyCloud data",
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Read and update data"
+            : "Read and update your TinyCloud data",
         service,
         resource,
       };
     }
     if (verbs.hasWrite) {
-      return { primaryText: "Update your TinyCloud data", service, resource };
+      return {
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Update data"
+            : "Update your TinyCloud data",
+        service,
+        resource,
+      };
     }
     if (verbs.hasRead || verbs.hasList || verbs.hasMetadata) {
-      return { primaryText: "Read your TinyCloud data", service, resource };
+      return {
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Read data"
+            : "Read your TinyCloud data",
+        service,
+        resource,
+      };
     }
     return fallbackStatement(grant);
   }
@@ -1740,7 +1779,10 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       );
     if (!allActionsRecognized) return fallbackStatement(grant);
     return {
-      primaryText: DELEGATION_LIST_STATEMENT,
+      primaryText:
+        grant.ownedBySelf === null
+          ? "See who has access to data"
+          : DELEGATION_LIST_STATEMENT,
       service,
       resource,
     };
