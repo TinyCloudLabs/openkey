@@ -181,7 +181,7 @@ const openkey = new OpenKeyRN({
   openBrowser: (url, redirectUri) =>
     WebBrowser.openAuthSessionAsync(url, redirectUri),
   delegation: {
-    tinycloudHost: 'https://tee.node.tinycloud.xyz',
+    tinycloudHost: 'https://node.tinycloud.xyz',
     permissions: [
       {
         service: 'tinycloud.kv',

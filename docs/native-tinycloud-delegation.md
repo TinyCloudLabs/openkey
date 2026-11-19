@@ -142,7 +142,7 @@ can set it, and the request can never exceed it.
 {
   "version": 1,
   "appId": "xyz.tinycloud.tinychat",
-  "tinycloudHost": "https://tee.node.tinycloud.xyz",
+  "tinycloudHost": "https://node.tinycloud.xyz",
   "kv": {
     "paths": ["xyz.tinycloud.tinychat/threads/", "xyz.tinycloud.tinychat/connectors/"],
     "actions": ["get", "put", "list", "del", "metadata"]
@@ -495,7 +495,7 @@ older revision is never changed.
   "sessionDid": "did:key:z6Mk…",
   "sessionSiwe": "<exact SIWE bytes to be signed>",
   "permissions": [ … ],
-  "tinycloudHost": "https://tee.node.tinycloud.xyz",
+  "tinycloudHost": "https://node.tinycloud.xyz",
   "ttlSeconds": 3600,
   "grantLifetimeSeconds": 2592000,
   "hostPlan": null
@@ -767,7 +767,7 @@ Success (`Cache-Control: no-store`):
     "expiresAt": "2026-10-07T13:00:00.000Z",
     "renewableUntil": "2026-11-06T11:55:00.000Z",
     "permissions": [ … approved entries … ],
-    "tinycloudHost": "https://tee.node.tinycloud.xyz",
+    "tinycloudHost": "https://node.tinycloud.xyz",
     "hosting": "existing"
   }
 }
@@ -929,7 +929,7 @@ Processing:
     "expiresAt": "…",
     "renewableUntil": "<unchanged>",
     "permissions": [ … ],
-    "tinycloudHost": "https://tee.node.tinycloud.xyz",
+    "tinycloudHost": "https://node.tinycloud.xyz",
     "hosting": "existing",
     "address": "0x…",
     "chainId": 1,

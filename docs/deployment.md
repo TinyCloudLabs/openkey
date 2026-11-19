@@ -479,14 +479,14 @@ or `google`.
    until both are live: the old web caps the code box at six characters, and
    the old API refuses the sign-in.
 2. Provision: `POST /<store>/provision` with
-   `{"clientId": "<client id>", "nodeHost": "https://tee.node.tinycloud.xyz"}`.
+   `{"clientId": "<client id>", "nodeHost": "https://node.tinycloud.xyz"}`.
    `clientId` is the OAuth client id of the **published plugin's connection**:
    the client ChatGPT registered when the published connector was connected,
    which reviewers reuse. It must be enabled, hold `tinycloud:mcp` and have
    exactly one redirect URI. `nodeHost` must be, character for character, the
    node address the hosted MCP puts in its approval links (its `TC_HOST`,
-   `https://tee.node.tinycloud.xyz` in the production MCP deployment).
-   `https://node.tinycloud.xyz` is the same node, but an approval that names
+   `https://node.tinycloud.xyz` in the production MCP deployment).
+   `https://tee.node.tinycloud.xyz` is the same node, but an approval that names
    a different address than the one provisioned is refused. Provisioning
    creates the held account and its sealed key, hosts its `applications` and
    `account` spaces on the node and writes the fixtures (apps `todos` and

@@ -32,7 +32,7 @@ const openkey = new OpenKeyNative({
   clientId: 'exo-native',
   redirectUri: 'xyz.tinycloud.exo://openkey/callback',
   issuer: 'https://api.openkey.so/api/auth',
-  tinycloudHost: 'https://tee.node.tinycloud.xyz',
+  tinycloudHost: 'https://node.tinycloud.xyz',
   ephemeralSession: true,
   browserTheme: { toolbarColor: '#09090B', colorScheme: 'dark' },
 });
