@@ -194,7 +194,7 @@ if (process.env.OPENKEY_SIGNIN_STOP_CI_CHILD !== '1') {
     expect(settled.leaseAuthorization).toBeNull();
   });
 
-  test('no way of signing out stops a sign-in lease: this session, a named one, other sessions or everywhere; each answers as before', async () => {
+  test('signing out of the session that signed in stops it; signing out a named one, other sessions or everywhere stops none; each answers as before', async () => {
     const owner = await account();
     const [here, there, elsewhere] = [await owner.session(), await owner.session(), await owner.session()];
     const hereLease = await signInLease(owner, here.id);
@@ -205,15 +205,17 @@ if (process.env.OPENKEY_SIGNIN_STOP_CI_CHILD !== '1') {
     expect([named.status, await named.json()]).toEqual([200, { status: true }]);
     const others = await call(here.cookie, '/api/auth/revoke-other-sessions', 'POST');
     expect([others.status, await others.json()]).toEqual([200, { status: true }]);
+    expect(await Promise.all([hereLease, thereLease, elsewhereLease].map(stopped))).toEqual([false, false, false]);
     const signedOut = await call(here.cookie, '/api/auth/sign-out', 'POST');
     expect([signedOut.status, await signedOut.json()]).toEqual([200, { success: true }]);
+    expect(await Promise.all([hereLease, thereLease, elsewhereLease].map(stopped))).toEqual([true, false, false]);
 
     const second = await account();
     const one = await second.session();
     const leases = [await signInLease(second, one.id), await signInLease(second, (await second.session()).id), await signInLease(second, null)];
     const everywhere = await call(one.cookie, '/api/auth/revoke-sessions', 'POST');
     expect([everywhere.status, await everywhere.json()]).toEqual([200, { status: true }]);
-    expect(await Promise.all([hereLease, thereLease, elsewhereLease, ...leases].map(stopped))).toEqual(Array(6).fill(false));
+    expect(await Promise.all(leases.map(stopped))).toEqual([false, false, false]);
   });
 
   test('deleting the account stops it first, then deletes', async () => {

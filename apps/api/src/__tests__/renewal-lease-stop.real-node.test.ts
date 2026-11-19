@@ -156,8 +156,9 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
    * An OpenKey account whose managed key approved one renewal, recorded the way the approval records it: reserved
    * before admission, then confirmed once the approval is saved. `unconfirmed`: admitted, but the approval was
    * never saved (a crash after admission). `unadmitted`: reserved and signed, but the node was never asked.
+   * `signIn`: the lease an app's sign-in asked for, recorded under the signing-in session with no approval request.
    */
-  async function ownerWithLease(label: string, mode: 'confirmed' | 'unconfirmed' | 'unadmitted' = 'confirmed') {
+  async function ownerWithLease(label: string, mode: 'confirmed' | 'unconfirmed' | 'unadmitted' = 'confirmed', signIn = false) {
     // Imported here, after beforeAll set DATABASE_URL: the API modules open their database when loaded.
     const { TinyCloudNode } = await import('@tinycloud/node-sdk');
     const { privateKeyToAccount } = await import('viem/accounts');
@@ -188,8 +189,8 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
     const delegation = { delegationHeader: session.delegationHeader, delegationCid: session.delegationCid, spaceId: session.spaceId, siwe: session.siwe, hostActivated: true };
     let stage = await prepareRenewalStage({ userId, host, leaseLifetimeSeconds: LEASE_SECONDS, delegation, now: new Date() });
     stage = signLease(stage, await account.signMessage({ message: stage.leaseSiwe }));
-    const approvalRequestId = randomBytes(16).toString('hex');
-    await prisma.approvalRequest.create({ data: {
+    const approvalRequestId = signIn ? null : randomBytes(16).toString('hex');
+    if (approvalRequestId !== null) await prisma.approvalRequest.create({ data: {
       id: approvalRequestId, bodyCid: 'body', issuer: 'did:key:requester', expiresAt: new Date(Date.now() + 600_000),
       request: { reason: `Keep ${label}'s notes in sync`, permissions: [{ service: 'tinycloud.kv', space: session.spaceId, path: '', actions: ['tinycloud.kv/get'] }] },
     } });
@@ -216,7 +217,7 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
 
   const revokedAt = async (leaseCid: string) => (await prisma.renewalLease.findUnique({ where: { leaseCid } }))?.revokedAt ?? null;
 
-  test('after a real renewal, the owner stops leases from the dashboard and by deleting the account; signing out leaves them renewing; others are refused', async () => {
+  test('after a real renewal, the owner stops leases from the dashboard and by deleting the account; signing out leaves them renewing, except an app\'s own sign-in lease; others are refused', async () => {
     const dashboard = await ownerWithLease('dashboard');
     const signOut = await ownerWithLease('sign-out');
     const deletion = await ownerWithLease('deletion');
@@ -225,7 +226,9 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
     const unconfirmed = await ownerWithLease('unconfirmed', 'unconfirmed');
     // Reserved and signed, never admitted: nothing renews it, and once its original lapses the node can never admit it.
     const unadmitted = await ownerWithLease('unadmitted', 'unadmitted');
-    const owners = [dashboard, signOut, deletion, control, unconfirmed];
+    // An app's sign-in lease, recorded under the session the app signed in with: the app signing out stops it.
+    const appSignIn = await ownerWithLease('app-sign-in', 'confirmed', true);
+    const owners = [dashboard, signOut, deletion, control, unconfirmed, appSignIn];
 
     // Another account sees none of these leases and can't stop one.
     const foreign = await ownerWithLease('foreign');
@@ -269,6 +272,11 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
     expect(await revokedAt(signOut.leaseCid)).toBeNull();
     expect(await prisma.session.count({ where: { id: signOut.sessionId } })).toBe(0);
 
+    // The app signs its own session out: its sign-in lease is revoked at the node, and the sign-out answers as before.
+    const appSignedOut = await call(appSignIn.cookie, '/api/auth/sign-out', 'POST');
+    expect([appSignedOut.status, await appSignedOut.json()]).toEqual([200, { success: true }]);
+    expect(await revokedAt(appSignIn.leaseCid)).not.toBeNull();
+
     // Deletion while the node can't answer: nothing is deleted. The retry stops the lease, then deletes.
     const { writeStepUpMarker } = await import('../services/email-otp-step-up');
     await writeStepUpMarker(prisma, 'delete_account', deletion.sessionId, 'email');
@@ -296,6 +304,7 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
     expect(await reads(deletion)).toBe(false);
     expect(await reads(control)).toBe(true);
     expect(await reads(unconfirmed)).toBe(false);
+    expect(await reads(appSignIn)).toBe(false);
     expect(await revokedAt(control.leaseCid)).toBeNull();
     expect(await revokedAt(signOut.leaseCid)).toBeNull();
 
