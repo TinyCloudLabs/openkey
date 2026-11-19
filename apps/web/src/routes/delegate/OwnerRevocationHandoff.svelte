@@ -10,6 +10,7 @@
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import { ownerRevocationAddress, parseOwnerRevocationRequest, renderSiweLiteral, type OwnerRevocationRequest } from '@openkey/capability-review';
+  import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   // A 2xx reply that cannot be read: the server may have signed, so the owner must not sign again from this page.
@@ -243,7 +244,7 @@
       <button onclick={() => { loginRequired = false; }}>Continue to approval</button>
       <button onclick={cancel}>{text.cancel}</button>
     {:else if code}
-      {#if delivered}<p role="status">{text.signed} You can close this window.</p>
+      {#if delivered}<p role="status">{text.signed} You can close this window.</p><CloseTabButton />
       {:else}
         <p>{text.paste}</p>
         <textarea readonly aria-label="Full revocation code" class="w-full h-28 break-all rounded-lg border p-2 font-mono text-xs" value={code}></textarea>

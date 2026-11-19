@@ -33,24 +33,31 @@
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import { newAccountSignupToken } from '$lib/email-signup';
   import NewAccountConfirmation from '$lib/components/auth/new-account-confirmation.svelte';
+  import PasskeyStepUpDialog from '$lib/components/auth/passkey-step-up-dialog.svelte';
+  import { passkeyStepUpMethods, type PasskeyStepUpMethod } from '$lib/passkey-step-up';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
+  import TermsStep from '$lib/components/auth/terms-step.svelte';
+  import { oauthClientName, pendingTerms, type TermsStatus } from '$lib/terms';
 
   // 'passkey' is the enrolment offer; 'passkeySignIn' and 'social' are native-mode landing steps.
   // 'social' is the frame shown while opening a provider or checking its return.
   // 'newAccount' follows a verified code for an email with no account (TC-1114).
-  type Step = 'email' | 'otp' | 'newAccount' | 'socialNewAccount' | 'socialAccountExists' | 'passkey' | 'passkeySignIn' | 'social';
+  type Step = 'reviewer' | 'email' | 'otp' | 'newAccount' | 'socialNewAccount' | 'socialAccountExists' | 'passkey' | 'passkeySignIn' | 'social';
 
   // Native mode: the signed authorize query carries `tinycloud_request`, so the
   // sign-in is running in a system sheet opened by a native app.
   const native = nativeSignIn($page.url.searchParams);
+  // Where this sign-in is headed, for the Terms step: an approval link or device sign-in it declines too.
+  const termsReturnTo = normalizeAuthReturnTo($page.url.searchParams.get('redirect'), $page.url.origin, undefined, { consoleOrigin: consoleOrigin() || undefined });
   // `passkeys=false` comes from clients that cannot use WebAuthn.
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
   function initialStep(): Step {
     if (!native) return 'email';
     if (native.socialError) return native.socialError.continuation ? 'social' : 'email';
+    if (native.method === 'email' && native.hint?.trim().toLowerCase() === 'appreview@tinycloud.xyz') return 'email';
     if (native.method === 'email' && native.hint) return 'otp';
     if (native.method === 'passkey' && passkeysSupported) return 'passkeySignIn';
     if (native.method === 'google' || native.method === 'apple') return 'social';
@@ -66,6 +73,7 @@
 
   let email = $state(native?.hint ?? '');
   let otp = $state('');
+  let reviewCode = $state('');
   let step = $state<Step>(initialStep());
   let codeSent = $state(false);
   // A code was requested by an earlier load of this page; delivery is unconfirmed.
@@ -82,6 +90,7 @@
   let resendIn = $state(0);
   let resendTimer: ReturnType<typeof setInterval> | undefined;
   let providers = $state<SocialProviderId[]>([]);
+  let appReviewEnabled = $state(false);
   let loadingProvider = $state<SocialProviderId | null>(null);
   // In OAuth flows the API answers sign-in/email-otp with its own redirect
   // URL (the consent page, or the client's redirect_uri when consent can be
@@ -94,6 +103,38 @@
   // A native Google or Apple return that needs a choice (TC-1188 R3/R5).
   let socialConfirmation = $state<SocialContinuation | null>(null);
   const socialName = $derived(socialProvider ? socialProviderName(socialProvider) : null);
+  // TC-3232: an account that has not accepted the current Terms sees them right after signing in,
+  // before the passkey offer or anything else; `afterTerms` is where sign-in was headed.
+  let terms = $state<{ status: TermsStatus; email: string; appName: string | null } | null>(null);
+  let afterTerms: (() => void | Promise<void>) | null = null;
+
+  async function askTermsFirst(next: () => void | Promise<void>): Promise<boolean> {
+    const status = await pendingTerms();
+    if (!status) return false;
+    const session = await authClient.getSession().catch(() => null);
+    const clientId = getOAuthQuery() ? new URLSearchParams(getOAuthQuery()).get('client_id') : null;
+    terms = { status, email: session?.data?.user.email ?? email, appName: clientId ? await oauthClientName(clientId) : null };
+    afterTerms = next;
+    return true;
+  }
+
+  async function termsAccepted() {
+    const next = afterTerms;
+    // Held while the Terms were pending, it can only be the provider's own Terms step: authorize
+    // again from the signed query instead, now that the account has accepted.
+    oauthRedirectUrl = undefined;
+    terms = null;
+    afterTerms = null;
+    await next?.();
+  }
+
+  function signInAgain() {
+    terms = null;
+    afterTerms = null;
+    otp = '';
+    error = '';
+    step = 'email';
+  }
 
   function getOAuthQuery(): string | undefined {
     return safeOAuthAuthorizeQuery($page.url.searchParams);
@@ -116,7 +157,12 @@
     return true;
   }
 
-  function handlePostSignIn() {
+  async function handlePostSignIn() {
+    if (await askTermsFirst(leaveSignIn)) return;
+    leaveSignIn();
+  }
+
+  function leaveSignIn() {
     if (oauthRedirectUrl && navigateToOAuthRedirect(oauthRedirectUrl)) return;
     const oauthQuery = getOAuthQuery();
     const redirect = normalizeAuthReturnTo(
@@ -139,7 +185,10 @@
   }
 
   onMount(() => {
-    const providersLoaded = loadConfiguredSocialProviders().catch((): SocialProviderId[] => []);
+    const providersLoaded = loadConfiguredSocialProviders(undefined, (enabled) => {
+      appReviewEnabled = enabled;
+      if (enabled && native?.method === 'email' && native.hint === 'appreview@tinycloud.xyz') step = 'reviewer';
+    }).catch((): SocialProviderId[] => []);
     providersLoaded.then((loaded) => { providers = loaded; });
     if (native) {
       // Coming back from the provider via the browser's back button restores
@@ -223,7 +272,47 @@
     }
   }
 
+  async function signInReviewer() {
+    loading = true;
+    error = '';
+    try {
+      const result = await authClient.$fetch('/sign-in/reviewer', {
+        method: 'POST',
+        body: { email, code: reviewCode, oauth_query: getOAuthQuery() },
+        onSuccess: keepOAuthRedirect,
+      });
+      reviewCode = '';
+      if (result.error) {
+        error = "Couldn't sign in with those details. Check the review account and code, then try again.";
+        return;
+      }
+      authClient.$store.notify('$sessionSignal');
+      handlePostSignIn();
+    } catch {
+      reviewCode = '';
+      error = "Couldn't sign in with those details. Check the review account and code, then try again.";
+    } finally {
+      loading = false;
+    }
+  }
+
   async function sendOTP(): Promise<boolean> {
+    if (appReviewEnabled && email.trim().toLowerCase() === 'appreview@tinycloud.xyz') {
+      if (!native && $page.url.searchParams.get('redirect') === '/dashboard/settings/delete-account') {
+        await goto('/auth/review/delete');
+      } else { step = 'reviewer'; error = ''; }
+      return true;
+    }
+    if (!native && ['openai-review@tinycloud.xyz', 'google-review@tinycloud.xyz'].includes(email.trim().toLowerCase())) {
+      // Review sign-in is refused without a signed OAuth authorize query, and no code is ever emailed.
+      if (!getOAuthQuery()) {
+        error = "Review accounts sign in from the app's own connect window. Start from the app's Connect button, then try again.";
+        return false;
+      }
+      step = 'reviewer';
+      error = '';
+      return true;
+    }
     loading = true;
     error = '';
     try {
@@ -356,6 +445,7 @@
   }
 
   async function continueAfterEmailSignIn() {
+    if (await askTermsFirst(continueAfterEmailSignIn)) return;
     // The API normally provisions a key in its user hook; this keeps the user
     // moving if that non-critical hook needs to be retried.
     try {
@@ -434,12 +524,19 @@
     }
   }
 
+  // TC-1198: the email sign-in that led here is a five-minute, single-use
+  // proof; past it, the API asks for a fresh step-up before enrolment.
+  let passkeyStepUpOffered = $state<PasskeyStepUpMethod[] | null>(null);
+
   async function registerPasskey() {
     loading = true;
     error = '';
     try {
       const result = await authClient.passkey.addPasskey();
-      if (result?.error) {
+      const methods = passkeyStepUpMethods(result?.error);
+      if (methods) {
+        passkeyStepUpOffered = methods;
+      } else if (result?.error) {
         error = authErrorMessage(result.error, 'Failed to create passkey');
       } else {
         handlePostSignIn();
@@ -466,11 +563,31 @@
   }
 </script>
 
+{#if passkeyStepUpOffered}
+  <PasskeyStepUpDialog
+    purpose="passkey_register"
+    methods={passkeyStepUpOffered}
+    onverified={() => { passkeyStepUpOffered = null; void registerPasskey(); }}
+    oncancel={() => { passkeyStepUpOffered = null; }}
+  />
+{/if}
+
 <svelte:head>
   <meta name="referrer" content="no-referrer" />
 </svelte:head>
 
-{#if native}
+{#if terms}
+  <TermsStep
+    status={terms.status}
+    surface={native ? 'native' : 'web'}
+    email={terms.email}
+    clientId={native?.clientId ?? null}
+    appName={terms.appName}
+    returnTo={termsReturnTo}
+    onaccepted={termsAccepted}
+    onsignin={signInAgain}
+  />
+{:else if native}
   <NativeShell clientId={native.clientId} heading={(name) => `Sign in to ${name}`}>
     {#if error}
       <div class="nb-error" role="alert">{error}</div>
@@ -504,6 +621,16 @@
           <button type="button" class="nb-button" onclick={signInWithPasskey}>Sign in with a passkey</button>
         {/if}
       </div>
+    {:else if step === 'reviewer'}
+      <p class="nb-lede">Enter the review code for <strong>{email}</strong>.</p>
+      {#if error}<p class="nb-error" role="alert">{error}</p>{/if}
+      <form onsubmit={(event) => { event.preventDefault(); signInReviewer(); }} class="nb-stack">
+        <label for="native-review-code">Review code</label>
+        <input id="native-review-code" class="nb-input" type="password" bind:value={reviewCode}
+          autocomplete="current-password" maxlength={128} required disabled={loading} />
+        <button type="submit" class="nb-button nb-primary" disabled={loading}>Sign in</button>
+        <button type="button" class="nb-link" onclick={() => { reviewCode = ''; error = ''; email = ''; step = 'email'; }} disabled={loading}>Use a different email</button>
+      </form>
     {:else if step === 'otp'}
       <p class="nb-lede">
         {#if codeSent}
@@ -717,6 +844,30 @@
           {loading ? 'Waiting for passkey…' : 'Use a passkey instead'}
         </Button>
         {/if}
+        {#if !native && getOAuthQuery()}
+        <button type="button" class="mt-5 w-full text-center text-sm text-surface-500 hover:text-surface-900"
+          onclick={() => { step = 'reviewer'; error = ''; }} disabled={loading}>Use a review code</button>
+        {/if}
+      {:else if step === 'reviewer'}
+        <h1 class="mb-7 text-center text-2xl font-bold text-surface-900">App review sign-in</h1>
+        {#if error}
+          <p class="mb-6 text-sm text-red-700" role="alert">{error}</p>
+        {/if}
+        <form onsubmit={(event) => { event.preventDefault(); signInReviewer(); }} class="flex flex-col gap-4">
+          <div>
+            <label for="review-email" class="mb-2 block text-sm font-medium text-surface-700">Review account</label>
+            <Input id="review-email" type="email" bind:value={email} autocomplete="username"
+              autocapitalize="none" spellcheck={false} required disabled={loading} />
+          </div>
+          <div>
+            <label for="review-code" class="mb-2 block text-sm font-medium text-surface-700">Review code</label>
+            <Input id="review-code" type="password" bind:value={reviewCode} autocomplete="current-password"
+              maxlength={128} required disabled={loading} />
+          </div>
+          <Button type="submit" disabled={loading} class="w-full">Sign in</Button>
+        </form>
+        <button type="button" class="mt-4 w-full text-center text-sm text-surface-500 hover:text-surface-900"
+          onclick={() => { reviewCode = ''; error = ''; step = 'email'; }} disabled={loading}>Back</button>
       {:else if step === 'otp'}
         <h1 class="mb-2 text-center text-2xl font-bold text-surface-900">Check your email</h1>
         <p class="mb-7 text-center text-sm text-surface-500">

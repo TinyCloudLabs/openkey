@@ -41,3 +41,14 @@ export function safeOAuthNavigationUrl(value: unknown): string | null {
     ? value
     : null;
 }
+
+/**
+ * The host (with any non-default port) an https or loopback-http `redirect_uri`
+ * returns to, for showing to the owner; `null` when it does not parse or is not
+ * such a URL. Never the path or query: the query holds the authorization state.
+ * An internationalized host comes back in its punycode form.
+ */
+export function redirectHostForDisplay(value: unknown): string | null {
+  const safe = safeExternalHttpUrl(value);
+  return safe ? new URL(safe).host : null;
+}

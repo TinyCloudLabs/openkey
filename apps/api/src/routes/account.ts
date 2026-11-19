@@ -1,17 +1,34 @@
 // Account management routes
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { symmetricDecrypt } from 'better-auth/crypto';
 import { createPrismaClient } from '@openkey/db';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { parseAutoSignPreferencePatch } from './account-preferences';
-import { TINYCLOUD_DELEGATION_SCOPE, TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_MCP_SCOPE } from '../oauth-config';
+import {
+  TINYCLOUD_DELEGATION_SCOPE,
+  TINYCLOUD_IDENTITY_SCOPE,
+  TINYCLOUD_MANAGE_KEY_SCOPE,
+  TINYCLOUD_MCP_SCOPE,
+} from '../oauth-config';
 import {
   changeTinyCloudManageKeyGrant,
   changeTinyCloudManageKeyMode,
   controlMutationError,
 } from '../services/tinycloud-manage-key-control';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
-import { requireFreshPasskey } from '../services/passkey-freshness';
+import { ACCOUNT_PASSKEY_STEP_UP_REQUIRED, requireFreshPasskey } from '../services/passkey-freshness';
+import { createPasskeyStepUpChallenge, verifyPasskeyStepUp } from '../services/passkey-enrolment';
+import {
+  approvalRequestDigest,
+  createApprovalPasskeyChallenge,
+  lowersPasskeyApprovalMode,
+  parsePasskeyApprovalMode,
+  passkeyApprovalModes,
+  PASSKEY_APPROVAL_INVALID,
+  PASSKEY_APPROVAL_NOT_STEP_UP,
+  PASSKEY_APPROVAL_REQUIRED,
+  verifyApprovalPasskey,
+} from '../services/approval-passkey';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
 import {
@@ -24,6 +41,8 @@ import {
 import { revokeAppleToken } from '../services/social-confirmation';
 import { revokeStoredAppleTokens } from '../services/apple-revocation';
 import { appleRelayEmailUndeliverable } from '../services/apple-notifications';
+import { liveLeaseWhere, revokeRenewalLeases, type LeaseRevocationReport } from '../services/renewal-lease-revocation';
+import { createRenewalLeaseRouter } from './renewal-leases';
 
 const prisma = createPrismaClient();
 
@@ -33,21 +52,32 @@ export const accountRouter = new Hono<SessionContext>();
 // from an OpenKey web origin (TC-688).
 accountRouter.use('*', requireAccountOriginForBearer);
 accountRouter.use('*', requireSession);
+accountRouter.route('/renewal-leases', createRenewalLeaseRouter(prisma));
 
 // Account deletion needs a fresh step-up on this session within the last five
-// minutes: a passkey verification when the user has a passkey (TC-689), else a
-// deletion-purpose email code (TC-1231, plan TC-1188 D6).
+// minutes: a verification by a passkey that counts for step-up when the user
+// has one (TC-689, TC-1198), else a deletion-purpose email code (TC-1231,
+// plan TC-1188 D6).
 const ACCOUNT_DELETE_PASSKEY_MAX_AGE_MS = 5 * 60 * 1000;
+
+// The same relying party Better Auth's passkey plugin verifies against.
+const RELYING_PARTY = { rpID: process.env.WEBAUTHN_RP_ID!, origin: process.env.WEBAUTHN_ORIGIN! };
+
 accountRouter.post('/step-up/email-otp/send', async (c) => {
   const rejected = rejectNonBrowserControlRequest(c);
   if (rejected) return rejected;
   const body = await c.req.json().catch(() => null) as { purpose?: unknown } | null;
   const purpose = parseStepUpPurpose(body?.purpose);
   if (!purpose) return c.json({ error: 'Unknown verification purpose' }, 400);
-  // A user with a passkey deletes with a fresh passkey, never a deletion code
-  // (D6; passkey enrolment rules are TC-1198).
-  if (purpose === 'delete_account' && await prisma.passkey.count({ where: { userId: c.get('user').id } }) > 0) {
-    return c.json({ error: 'Verify with your passkey again to continue', code: 'passkey_step_up_required' }, 403);
+  const userId = c.get('user').id;
+  // A mailbox never stands in for a passkey that counts for step-up: such a
+  // user deletes with that passkey (D6), and an email code only removes a
+  // passkey that does not count (TC-1198).
+  if (purpose === 'delete_account' && await prisma.passkey.count({ where: { userId, countsForStepUp: true } }) > 0) {
+    return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
+  }
+  if (purpose === 'passkey_remove' && await prisma.passkey.count({ where: { userId, countsForStepUp: false } }) === 0) {
+    return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
   }
   const result = await sendAccountStepUpCode(prisma, c.get('session').id, c.get('user').email, purpose);
   if (result === 'unavailable') return c.json({ error: 'Email delivery unavailable' }, 503);
@@ -62,6 +92,29 @@ accountRouter.post('/step-up/email-otp/verify', async (c) => {
   if (!purpose) return c.json({ error: 'Unknown verification purpose' }, 400);
   const valid = await verifyAccountStepUpCode(prisma, c.get('session').id, c.get('user').email, body?.code, purpose);
   if (!valid) return c.json({ error: 'Invalid or expired account verification code' }, 400);
+  return c.json({ status: true });
+});
+
+// Passkey step-up on the current session (TC-1198). Better Auth's passkey
+// sign-in creates a new session; this verifies an assertion by one of the
+// user's passkeys that counts for step-up and stamps this session instead.
+accountRouter.post('/step-up/passkey/options', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const challenge = await createPasskeyStepUpChallenge(prisma, c.get('session').id, c.get('user').id, RELYING_PARTY);
+  if (!challenge) return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
+  return c.json(challenge);
+});
+
+accountRouter.post('/step-up/passkey/verify', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { challengeToken?: unknown; response?: unknown } | null;
+  const result = await verifyPasskeyStepUp(prisma, c.get('session').id, c.get('user').id, body, RELYING_PARTY);
+  if (result === 'not_step_up') {
+    return c.json({ error: "This passkey was added without a verification step, so it can't confirm this action.", code: 'passkey_not_step_up_capable' }, 403);
+  }
+  if (result !== 'verified') return c.json({ error: 'Passkey verification failed' }, 400);
   return c.json({ status: true });
 });
 
@@ -181,7 +234,9 @@ accountRouter.get('/', async (c) => {
   // An Apple relay address whose forwarding Apple reported off cannot receive
   // email codes; Settings suggests re-enabling it or adding a passkey.
   const emailUndeliverable = userData ? await appleRelayEmailUndeliverable(prisma, user.id, userData.email) : false;
-  return c.json({ user: userData && { ...userData, emailUndeliverable } });
+  // Passkeys that can confirm deletion and passkey changes (TC-1198).
+  const stepUpPasskeys = userData ? await prisma.passkey.count({ where: { userId: user.id, countsForStepUp: true } }) : 0;
+  return c.json({ user: userData && { ...userData, emailUndeliverable, stepUpPasskeys } });
 });
 
 // Global stop control for OAuth tinycloud:manage-key signing. This is kept
@@ -262,12 +317,72 @@ accountRouter.patch('/auto-sign', async (c) => {
   return c.json({ autoSignEnabled: preference.autoSignEnabled });
 });
 
+// TC-3442: which approvals need a passkey. The mode applies only while the account has a passkey that counts for
+// step-up; without one it is NEVER in force and cannot be changed. Asking for the passkey on fewer approvals needs
+// an assertion bound to the new mode, so a session alone cannot turn the gate off.
+const PASSKEY_APPROVAL_MODE_PURPOSE = 'passkey_approval_mode';
+const PASSKEY_APPROVAL_NEEDS_PASSKEY = { error: 'Add a passkey to use this.', code: 'passkey_approval_needs_passkey' } as const;
+
+accountRouter.get('/passkey-approval', async (c) => {
+  const modes = await passkeyApprovalModes(prisma, c.get('user').id);
+  if (!modes) return c.json({ error: 'User not found' }, 404);
+  return c.json(modes);
+});
+
+accountRouter.post('/passkey-approval/options', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { mode?: unknown } | null;
+  const mode = parsePasskeyApprovalMode(body?.mode);
+  if (!mode) return c.json({ error: 'mode must be ALWAYS, SENSITIVE or NEVER' }, 400);
+  const offer = await createApprovalPasskeyChallenge(
+    prisma,
+    { sessionId: c.get('session').id, userId: c.get('user').id },
+    { purpose: PASSKEY_APPROVAL_MODE_PURPOSE, requestDigest: approvalRequestDigest(mode) },
+  );
+  if (!offer) return c.json(PASSKEY_APPROVAL_NEEDS_PASSKEY, 409);
+  return c.json(offer);
+});
+
+accountRouter.patch('/passkey-approval', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { mode?: unknown; passkeyAssertion?: unknown } | null;
+  const mode = parsePasskeyApprovalMode(body?.mode);
+  if (!mode) return c.json({ error: 'mode must be ALWAYS, SENSITIVE or NEVER' }, 400);
+  const userId = c.get('user').id;
+  const current = await passkeyApprovalModes(prisma, userId);
+  if (!current) return c.json({ error: 'User not found' }, 404);
+  if (current.stepUpPasskeys === 0) return c.json(PASSKEY_APPROVAL_NEEDS_PASSKEY, 409);
+  if (lowersPasskeyApprovalMode(current.mode, mode)) {
+    const result = await verifyApprovalPasskey(
+      prisma,
+      { sessionId: c.get('session').id, userId },
+      { purpose: PASSKEY_APPROVAL_MODE_PURPOSE, requestDigest: approvalRequestDigest(mode) },
+      body?.passkeyAssertion,
+    );
+    if (result !== 'verified') {
+      const refusal = body?.passkeyAssertion == null ? PASSKEY_APPROVAL_REQUIRED
+        : result === 'not_step_up' ? PASSKEY_APPROVAL_NOT_STEP_UP : PASSKEY_APPROVAL_INVALID;
+      return c.json(refusal, 403);
+    }
+  }
+  // Changed only from the mode the check above read, so a concurrent change cannot slip past it.
+  const updated = await prisma.user.updateMany({
+    where: { id: userId, passkeyApprovalMode: current.mode }, data: { passkeyApprovalMode: mode },
+  });
+  if (updated.count !== 1) {
+    return c.json({ error: 'This setting changed in another session. Reload and try again.', code: 'passkey_approval_changed' }, 409);
+  }
+  return c.json({ ...current, mode, effectiveMode: mode });
+});
+
 // List apps with a TinyCloud signing or native delegation consent and the
 // user's per-app stop control. The client is resolved from a consent, grant,
 // preference or decision; callers cannot create preferences without consent.
 accountRouter.get('/tinycloud-apps', async (c) => {
   const user = c.get('user');
-  const [consents, preferences, decisions, userPreference, nativeGrants, mcpConsents] = await Promise.all([
+  const [consents, preferences, decisions, userPreference, nativeGrants, mcpConsents, identityConsents] = await Promise.all([
     prisma.oauthConsent.findMany({
       where: { userId: user.id, OR: [{ scopes: { has: TINYCLOUD_MANAGE_KEY_SCOPE } }, { scopes: { has: TINYCLOUD_DELEGATION_SCOPE } }] },
       select: { clientId: true, scopes: true },
@@ -290,6 +405,12 @@ accountRouter.get('/tinycloud-apps', async (c) => {
       orderBy: { createdAt: 'desc' },
       select: { id: true, clientId: true, scopes: true, createdAt: true },
     }),
+    // Identity-only consents are visible and disconnectable without signing access.
+    prisma.oauthConsent.findMany({
+      where: { userId: user.id, scopes: { has: TINYCLOUD_IDENTITY_SCOPE } },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, clientId: true, scopes: true, createdAt: true },
+    }),
   ]);
   const clientIds = [...new Set([
     ...consents.map((consent) => consent.clientId),
@@ -297,7 +418,11 @@ accountRouter.get('/tinycloud-apps', async (c) => {
     ...decisions.map((decision) => decision.clientId),
     ...nativeGrants.map((grant) => grant.clientId),
   ])];
-  const clientLookupIds = [...new Set([...clientIds, ...mcpConsents.map((consent) => consent.clientId)])];
+  const clientLookupIds = [...new Set([
+    ...clientIds,
+    ...mcpConsents.map((consent) => consent.clientId),
+    ...identityConsents.map((consent) => consent.clientId),
+  ])];
   const clients = clientLookupIds.length === 0 ? [] : await prisma.oauthClient.findMany({
     where: { clientId: { in: clientLookupIds } },
     select: { clientId: true, name: true, uri: true, icon: true, disabled: true },
@@ -331,6 +456,20 @@ accountRouter.get('/tinycloud-apps', async (c) => {
       const client = clientById.get(consent.clientId);
       return {
         kind: 'mcp' as const,
+        consentId: consent.id,
+        clientId: consent.clientId,
+        name: client?.name || consent.clientId,
+        uri: client?.uri || null,
+        host: hostnameOf(client?.uri),
+        icon: client?.icon || null,
+        connectedAt: consent.createdAt.toISOString(),
+        scopes: consent.scopes,
+      };
+    }),
+    identityApps: identityConsents.map((consent) => {
+      const client = clientById.get(consent.clientId);
+      return {
+        kind: 'identity' as const,
         consentId: consent.id,
         clientId: consent.clientId,
         name: client?.name || consent.clientId,
@@ -425,6 +564,27 @@ accountRouter.delete('/tinycloud-apps/mcp/:consentId', async (c) => {
   if (!disconnected) return c.json({ error: 'Connected MCP app not found' }, 404);
   return c.json({ consentId, disconnected: true });
 });
+// Disconnect an identity-only app and invalidate both provider token types.
+accountRouter.delete('/tinycloud-apps/identity/:consentId', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { confirmation?: unknown } | null;
+  if (body?.confirmation !== 'DISCONNECT') return c.json({ error: 'Type DISCONNECT to confirm' }, 400);
+  const userId = c.get('user').id;
+  const consentId = c.req.param('consentId');
+  const mine = { id: consentId, userId, scopes: { has: TINYCLOUD_IDENTITY_SCOPE } };
+  const disconnected = await prisma.$transaction(async (tx) => {
+    const consent = await tx.oauthConsent.findFirst({ where: mine, select: { clientId: true } });
+    if (!consent) return false;
+    const removed = await tx.oauthConsent.deleteMany({ where: mine });
+    if (removed.count !== 1) return false;
+    await tx.oauthAccessToken.deleteMany({ where: { userId, clientId: consent.clientId } });
+    await tx.oauthRefreshToken.deleteMany({ where: { userId, clientId: consent.clientId } });
+    return true;
+  });
+  if (!disconnected) return c.json({ error: 'Connected identity app not found' }, 404);
+  return c.json({ consentId, disconnected: true });
+});
 
 function hostnameOf(uri: string | null | undefined): string | null {
   if (!uri) return null;
@@ -436,18 +596,35 @@ const EMAIL_STEP_UP_REQUIRED = {
   code: 'email_step_up_required',
 } as const;
 
+/**
+ * Deletion refused because some renewal leases are still on. A wallet-signed lease needs that wallet's
+ * signature, so the owner stops it from Settings first; any other lease is retried by deleting again.
+ */
+function renewalLeasesNotStopped(c: Context<SessionContext>, notStopped: LeaseRevocationReport['notStopped']) {
+  const walletRequired = notStopped.filter((lease) => lease.reason === 'wallet_required').length;
+  return c.json({
+    error: walletRequired > 0
+      ? 'Some renewing permissions need your wallet to stop. Stop them under Renewing permissions in Settings, then delete your account. Nothing was deleted.'
+      : "OpenKey couldn't stop renewal for every permission. Nothing was deleted. Try again.",
+    code: 'renewal_leases_not_stopped',
+    walletRequired,
+    nodeUnavailable: notStopped.length - walletRequired,
+  }, 409);
+}
+
 // Delete account permanently
 // Requires: cookie session from an OpenKey origin, typed confirmation, and a
-// fresh step-up on this session: a passkey verification for a user with a
-// passkey, else a deletion-purpose email code. After commit, every stored Apple
-// refresh token is revoked with its issuing client; a revoke failure never
-// restores the account.
+// fresh step-up on this session: a verification by a passkey that counts for
+// step-up when the user has one, else a deletion-purpose email code. A passkey
+// that does not count (enrolled by email while another counted) never forces
+// or satisfies the passkey path. After commit, every stored Apple refresh token
+// is revoked with its issuing client; a revoke failure never restores the account.
 accountRouter.post('/delete', async (c) => {
   const user = c.get('user');
   const sessionId = c.get('session').id;
   const rejected = rejectNonBrowserControlRequest(c);
   if (rejected) return rejected;
-  const passkeyStepUp = await prisma.passkey.count({ where: { userId: user.id } }) > 0;
+  const passkeyStepUp = await prisma.passkey.count({ where: { userId: user.id, countsForStepUp: true } }) > 0;
   if (passkeyStepUp) {
     const stale = await requireFreshPasskey(c, ACCOUNT_DELETE_PASSKEY_MAX_AGE_MS, prisma);
     if (stale) return stale;
@@ -466,6 +643,11 @@ accountRouter.post('/delete', async (c) => {
     }, 400);
   }
 
+  // Stop every renewal lease before the keys go (TC-2946): once they are deleted nobody can revoke a lease
+  // OpenKey signed, and the node would keep renewing its grant. A lease counts as stopped only when its node
+  // confirmed; any other outcome deletes nothing, and a retry sends the ones still open again.
+  const leases = await revokeRenewalLeases(prisma, user.id, { kind: 'all' });
+  if (leases.notStopped.length > 0) return renewalLeasesNotStopped(c, leases.notStopped);
 
   // Count and delete every user key. TC-488 removed tenant-managed keys.
   const keyCount = await prisma.ethereumKey.count({
@@ -473,13 +655,15 @@ accountRouter.post('/delete', async (c) => {
   });
 
   // Delete all user data in transaction
-  let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | 'PASSKEY' | 'EMAIL';
+  let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | 'PASSKEY' | 'EMAIL' | 'LEASES';
   try { appleTokens = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${user.id} FOR UPDATE`;
+    // A lease approved since the revocations above would outlive the keys; a retry stops it first.
+    if (await tx.renewalLease.count({ where: liveLeaseWhere(user.id, { kind: 'all' }, new Date()) }) > 0) return 'LEASES';
     if (!passkeyStepUp) {
-      // A passkey enrolled since the check needs the passkey step-up instead;
-      // the deletion code is spent only by a deletion that commits.
-      if (await tx.passkey.count({ where: { userId: user.id } }) > 0) return 'PASSKEY';
+      // A passkey that counts, enrolled since the check, needs the passkey
+      // step-up instead; the deletion code is spent only by a deletion that commits.
+      if (await tx.passkey.count({ where: { userId: user.id, countsForStepUp: true } }) > 0) return 'PASSKEY';
       if (!await consumeDeleteStepUp(tx, sessionId)) return 'EMAIL';
     }
     // Read under the user lock, before the rows go: the issuing client is
@@ -512,10 +696,9 @@ accountRouter.post('/delete', async (c) => {
     if (unavailable) return unavailable;
     throw error;
   }
-  if (appleTokens === 'PASSKEY') {
-    return c.json({ error: 'Verify with your passkey again to continue', code: 'passkey_step_up_required' }, 403);
-  }
+  if (appleTokens === 'PASSKEY') return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
   if (appleTokens === 'EMAIL') return c.json(EMAIL_STEP_UP_REQUIRED, 403);
+  if (appleTokens === 'LEASES') return c.json({ error: 'A permission started renewing meanwhile. Nothing was deleted. Try again.', code: 'renewal_leases_not_stopped' }, 409);
 
   await revokeStoredAppleTokens(appleTokens);
 

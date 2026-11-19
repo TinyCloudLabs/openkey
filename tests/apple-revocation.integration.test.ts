@@ -342,10 +342,11 @@ if (!backend) {
       expect(revoked).toHaveLength(0);
     });
 
-    test('a user with a passkey still needs a fresh passkey; a mailbox code cannot delete', async () => {
+    test('a user with a step-up passkey still needs a fresh passkey; a mailbox code cannot delete', async () => {
       const { user, cookie } = await appleUser('passkey-delete-sub', 'passkey-delete@openkey.test');
-      await prisma.passkey.create({ data: {
+      const passkey = await prisma.passkey.create({ data: {
         id: randomUUID(), userId: user.id, publicKey: 'pk', credentialID: randomUUID(), deviceType: 'singleDevice', backedUp: false,
+        countsForStepUp: true, enrolledVia: 'account_creation',
       } });
       const send = await post('/api/account/step-up/email-otp/send', { purpose: 'delete_account' }, cookie);
       expect(send.status).toBe(403);
@@ -360,7 +361,10 @@ if (!backend) {
       expect(refused.status).toBe(403);
       expect((await refused.json() as { code: string }).code).toBe('passkey_step_up_required');
       expect(await prisma.user.count({ where: { id: user.id } })).toBe(1);
+      // TC-1198: freshness counts only with the passkey that produced it.
       await prisma.session.update({ where: { id: session.id }, data: { lastPasskeyAt: new Date() } });
+      expect((await post('/api/account/delete', { confirmation: 'DELETE MY ACCOUNT' }, cookie)).status).toBe(403);
+      await prisma.session.update({ where: { id: session.id }, data: { lastPasskeyAt: new Date(), lastPasskeyId: passkey.id } });
       expect((await post('/api/account/delete', { confirmation: 'DELETE MY ACCOUNT' }, cookie)).status).toBe(200);
       expect(await prisma.user.count({ where: { id: user.id } })).toBe(0);
     });

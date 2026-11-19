@@ -199,7 +199,7 @@
   {:else}
     {#if owner?.emailUndeliverable}
       <p class="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" data-testid="email-undeliverable">
-        Apple has stopped forwarding email to {owner.email}, so OpenKey codes can't reach you. Turn forwarding back on in your Apple ID settings, or add a passkey so you can still sign in.
+        Apple has stopped forwarding email to {owner.email}, so OpenKey codes can't reach you. Turn forwarding back on in your Apple ID settings. Adding a passkey needs an email code or one of your existing passkeys.
       </p>
     {:else if relayEmail}
       <p class="mb-4 rounded-xl border border-surface-200 bg-surface-50 px-4 py-3 text-sm text-surface-700" data-testid="email-relay">

@@ -47,17 +47,17 @@ afterAll(() => {
   }
 });
 
-async function request(path: string, headers: Record<string, string>) {
+async function request(path: string, headers: Record<string, string>, method = 'PATCH', body: unknown = {
+  mode: 'USER_CONTROLLED_SHARED',
+  enabled: true,
+  expectedEpoch: 0,
+  confirmation: 'TAKE CONTROL',
+}) {
   const { accountRouter } = await import('../routes/account?tinycloud-control-auth-test' as string);
   return accountRouter.request(path, {
-    method: 'PATCH',
+    method,
     headers: { 'content-type': 'application/json', ...headers },
-    body: JSON.stringify({
-      mode: 'USER_CONTROLLED_SHARED',
-      enabled: true,
-      expectedEpoch: 0,
-      confirmation: 'TAKE CONTROL',
-    }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -72,6 +72,13 @@ describe('TinyCloud signing control authentication boundary', () => {
       expect(await response.json()).toEqual({ error: 'Bearer tokens cannot change TinyCloud signing controls' });
     },
   );
+  test('rejects an OAuth bearer token on identity-app disconnect', async () => {
+    const response = await request('/tinycloud-apps/identity/consent-1', {
+      origin: 'https://openkey.test', authorization: 'Bearer oauth-access-token',
+    }, 'DELETE', { confirmation: 'DISCONNECT' });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'Bearer tokens cannot change TinyCloud signing controls' });
+  });
 
   test('rejects a cookie-session control mutation without a same-site origin', async () => {
     const response = await request('/tinycloud-manage-key', {});

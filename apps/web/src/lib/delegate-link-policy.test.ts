@@ -20,6 +20,9 @@ describe('checkDelegateCallback', () => {
       'http://[::1]:9000/callback',
       'https://mcp.tinycloud.xyz/connect/callback?state=t.n.sig',
       'https://mcp.tinycloud.xyz/chatgpt/connect/callback?state=t.n.sig',
+      'https://mcp.tinycloud.xyz/claude/connect/callback?state=t.n.sig',
+      'https://mcp.tinycloud.xyz/grok/connect/callback?state=t.n.sig',
+      'https://mcp.tinycloud.xyz/muse/connect/callback?state=t.n.sig',
     ]) {
       expect(accepted(callback)).toEqual({ ok: true, callback: new URL(callback).href });
     }
@@ -41,6 +44,9 @@ describe('checkDelegateCallback', () => {
       'https://mcp.tinycloud.xyz/connect/callback/extra',
       'https://mcp.tinycloud.xyz/chatgpt/connect/callback/extra',
       'https://mcp.tinycloud.xyz/chatgpt/connect/other',
+      'https://mcp.tinycloud.xyz/claude/connect/callback/extra',
+      'https://mcp.tinycloud.xyz/claude/connect',
+      'https://mcp.tinycloud.xyz/gemini/connect/callback',
       'https://mcp.tinycloud.xyz/',
       'https://user:pass@127.0.0.1/callback',
       'javascript:alert(1)',
