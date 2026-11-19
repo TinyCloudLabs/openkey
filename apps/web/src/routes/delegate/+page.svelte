@@ -1805,6 +1805,7 @@
     if (preparedStorageError) return approvalStop('S2');
     if (preparedMode) return null;
     if (preparedTransport) {
+      if ($page.url.search === '?transportVersion=2') return approvalStop('S3');
       const version = safeCode($page.url.searchParams.get('transportVersion'));
       return approvalStop('S12', { values: version ? { value: version } : {} });
     }
@@ -1874,7 +1875,7 @@
   <Slip at={0} center>
     <Loader phases={loaderPhases} lit="link" />
   </Slip>
-{:else if !dispatchReady && !preparedTransport}
+{:else if !dispatchReady}
   <Slip at={0} center>
     <Loader phases={loaderPhases} lit={loaderLit} />
   </Slip>
