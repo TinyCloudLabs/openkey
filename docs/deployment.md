@@ -656,10 +656,10 @@ Order:
    loads, and a sign-in through the encryption network completes. If a check
    fails, run the rollback below.
 
-The pairing step 5 checks is the new web with the previous API, and it is the
-one an API rollback returns to. The new API with the previous web is not a
-checked pairing: by design, the new API refuses the elevated flow from a web
-that doesn't send the new decision. That is why the web goes first.
+Step 5 checks the new web with the previous API, and an API rollback returns
+to that pairing. The new API with the previous web isn't a checked pairing:
+the new API refuses the elevated flow from a web that doesn't send the new
+decision. That's why the web goes first.
 
 Don't relax a refusal the API makes, or skip a check, to shorten the time
 between steps, in the deploy or in the rollback.
