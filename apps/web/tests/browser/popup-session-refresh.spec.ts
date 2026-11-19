@@ -69,6 +69,9 @@ test('after the Google popup signs a new user in, this tab leaves the signed-out
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
   await expect(page.getByText('Sign in to review the requested access')).toBeVisible();
   await page.getByRole('link', { name: 'Register', exact: true }).click();
+  // The signed-out /delegate card also offers "Continue with Google" (TC-3333), so wait for the Register page itself;
+  // otherwise the click can land on the card's button while the navigation is still in flight.
+  await expect(page.getByRole('heading', { name: 'Create an account' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
   await page.getByRole('button', { name: 'Continue with Google' }).click();
   // Back on /delegate, signed in: the approval, not the signed-out card.
