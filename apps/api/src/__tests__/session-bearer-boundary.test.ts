@@ -18,7 +18,7 @@ let sessionLookups: unknown[] = [];
 
 const tx = {
   $queryRaw: async () => [],
-  ethereumKey: { deleteMany: async () => ({ count: 1 }) },
+  ethereumKey: { findMany: async () => [], deleteMany: async () => ({ count: 1 }) },
   passkey: { deleteMany: async () => ({ count: 1 }) },
   session: { deleteMany: async () => ({ count: 1 }) },
   account: { deleteMany: async () => ({ count: 1 }), findMany: async () => [] },
