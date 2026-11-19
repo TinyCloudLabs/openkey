@@ -1863,7 +1863,7 @@ delegateRouter.post('/', async (c) => {
       return c.json(await saveApprovalDelegation(body, user.id, delegation, { renewal: bound.renewal, host, sessionId: c.get('session')?.id ?? null, signOwner: (message) => signManagedKey(key, ownerSealedBlob, message) }));
     } catch (error) {
       if (body.approvalRequestId !== undefined && (hostActivated || activationMayStillApply)) {
-        // A timeout also sends a best-effort revoke; if it lands before a late activation, the grant can still go live (TC-2795).
+        // A timeout also sends a best-effort revoke (TC-2795).
         await revokeActivatedManagedDelegation(host, key, key.sealedBlob, ownerDid, session.delegationCid);
       }
       throw error;
@@ -2616,7 +2616,7 @@ delegateRouter.post('/complete', async (c) => {
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
   };
-  // OpenKey holds neither the wallet key nor the session key, so a save failure after confirmed activation cannot be revoked here. The owner-signed grant lives for the lifetime the owner chose and saw (the suggested lifetime if provided, otherwise grantLifetimeSeconds; no 24-hour bound or 30-day cap; TC-2795).
+  // External-wallet approvals: OpenKey holds neither the wallet key nor the session key, so this path doesn't revoke (TC-2795).
   return c.json(await saveApprovalDelegation(body, user.id, delegation, { renewal: boundRenewal, host: body.host, sessionId: c.get('session')?.id ?? null }));
   } catch (error) {
     await releaseApprovalDelegation(body);

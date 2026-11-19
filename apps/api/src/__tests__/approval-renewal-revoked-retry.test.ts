@@ -1,4 +1,4 @@
-// TC-2789 (Naomi's ruling c″): on the managed path a save that fails after activation revokes the grant (delegate.ts).
+// TC-2789: on the managed path a save that fails after activation revokes the grant (delegate.ts).
 // When the failure is the node refusing the signed renewal lease, the saved lease step still names that revoked grant,
 // so the retry is refused (start a new request) and never hands the revoked grant over. The lease reservation is kept
 // as it was (TC-2946).
