@@ -632,7 +632,7 @@
     <div class="mb-5">
       <h2 class="text-xl font-semibold text-surface-900">Connected TinyCloud apps</h2>
       <p class="text-sm text-surface-500 mt-1">
-        Block an app to stop new TinyCloud signatures and renewals. Disconnect to withdraw its consent and end its device grants.
+        Block an app to stop new TinyCloud signatures for it. Permissions you set to renew keep renewing until you stop them under Renewing permissions. Disconnect to withdraw its consent and end its device grants.
       </p>
     </div>
 
@@ -679,7 +679,7 @@
               ></span>
             </button>
             <span id={`tinycloud-app-status-${app.clientId}`} class="text-xs text-surface-500">
-              {app.disabled ? 'Disabled by the app owner' : app.status === 'PENDING_USER_APPROVAL' ? 'Waiting for your approval' : app.status === 'CONSENT_WITHDRAWN' ? 'OAuth consent withdrawn' : app.enabled ? app.nativeDelegation ? `${app.activeNativeGrants} active device grant${app.activeNativeGrants === 1 ? '' : 's'}` : 'Allowed to request new signatures' : 'Blocked from new signatures and renewals'}
+              {app.disabled ? 'Disabled by the app owner' : app.status === 'PENDING_USER_APPROVAL' ? 'Waiting for your approval' : app.status === 'CONSENT_WITHDRAWN' ? 'OAuth consent withdrawn' : app.enabled ? app.nativeDelegation ? `${app.activeNativeGrants} active device grant${app.activeNativeGrants === 1 ? '' : 's'}` : 'Allowed to request new signatures' : 'Blocked from new signatures'}
             </span>
             {#if app.nativeDelegation}
               <button type="button" onclick={() => requestTinyCloudDisconnect(app)} disabled={savingTinyCloudAppId === app.clientId}
