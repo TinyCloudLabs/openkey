@@ -37,6 +37,12 @@ export const renewalLeaseCopy = {
   walletDeclined: "You didn't sign, so renewal is still on.",
   failed: "Couldn't stop renewal, so it's still on. Try again.",
   loadFailed: "Couldn't load your renewing permissions. Reload to try again.",
+  /** By a sign-out button, shown only while the account has renewing permissions. */
+  signOutKeepsRenewing: 'Signing out doesn’t stop apps renewing the access you approved.',
+  /** The dashboard's link to Renewing permissions in Settings. */
+  stopRenewalsLink: 'Stop renewals',
+  /** Inside apps, where Settings is a step away. */
+  stopRenewalsInSettings: 'You can stop renewals in OpenKey Settings.',
 } as const;
 
 /**
@@ -60,11 +66,4 @@ export function leaseStatements(grantSiwe: string): string[] {
 
 export function nodeHost(origin: string): string {
   try { return new URL(origin).host; } catch { return origin; }
-}
-
-/** After a sign-out whose renewing permissions were not all stopped. */
-export function signOutRenewalNotice(notStopped: number): string {
-  return notStopped === 1
-    ? "You're signed out, but 1 permission is still renewing. Sign in again and stop it under Renewing permissions in Settings."
-    : `You're signed out, but ${notStopped} permissions are still renewing. Sign in again and stop them under Renewing permissions in Settings.`;
 }

@@ -17,7 +17,7 @@
 // decryption) is used by the native access summary. UI callers route through these rather
 // than composing the sentence themselves.
 
-import { courierTexts, COURIER_CATALOG } from "./courier.js";
+import { courierTexts } from "./courier.js";
 import type { CapabilityAction, CapabilityGrant, CapabilityReviewModel, PermissionSeverity } from "./model.js";
 import { appDisplayName } from "./app-identity.js";
 import {
@@ -845,7 +845,9 @@ function schemaOnlyStatementText(
     return "Edit and delete this app's tables";
   }
   if (spaceName === "account" && grant.family === "bootstrap-sql") {
-    return "Edit and delete tables in your TinyCloud account";
+    return grant.ownedBySelf === null
+      ? "Edit and delete account tables"
+      : "Edit and delete tables in your TinyCloud account";
   }
   if (grant.family === "own-app-data" || grant.family === "cross-app-data") {
     return "Edit and delete tables in application data";
@@ -1275,7 +1277,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
             ? "View another user's secret names and details"
             : grant.ownedBySelf === true
               ? "View your secret names and details"
-              : "View the requested secret names and details",
+              : "View secret names and details",
         service,
         resource,
       };
@@ -1286,12 +1288,12 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
           ? "View another user's entire secret catalog"
           : grant.ownedBySelf === true
             ? "View your entire secret catalog"
-            : "View the entire requested secret catalog"
+            : "View the entire secret catalog"
         : grant.ownedBySelf === false
           ? "Read all secret values in another user's vault"
           : grant.ownedBySelf === true
             ? "Read all secret values in your vault"
-            : "Read all secret values in the requested vault",
+            : "Read all secret values in the vault",
       service,
       resource,
     };
@@ -1355,7 +1357,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
             ? "Manage all secrets stored in another user's vault"
             : grant.ownedBySelf === true
               ? "Manage all secrets stored in your vault"
-              : "Manage all secrets stored in the requested vault",
+              : "Manage all secrets in the vault",
         service,
         resource,
       };
@@ -1367,7 +1369,7 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
             ? "Manage another user's entire secret catalog"
             : grant.ownedBySelf === true
               ? "Manage your entire secret catalog"
-              : "Manage the entire requested secret catalog",
+              : "Manage the entire secret catalog",
         service,
         resource,
       };
@@ -1452,7 +1454,13 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     isSecretsSpace(space) &&
     (KV_SERVICES.has(service) || SQL_SERVICES.has(service))
   ) {
-    const secretOwner = grant.ownedBySelf === false ? "another user's" : "your";
+    // An unknown owner (null) never claims "your".
+    const secretOwner =
+      grant.ownedBySelf === false
+        ? "another user's"
+        : grant.ownedBySelf === true
+          ? "your"
+          : "the";
     // TinyCloud's secrets SQL database stores the secret catalog (scope,
     // name, provider, notes, and test metadata). Secret values live in KV.
     if (SQL_SERVICES.has(service)) {
@@ -1535,7 +1543,10 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     (grant.family === "bootstrap-kv" || grant.family === "bootstrap-sql")
   ) {
     return {
-      primaryText: "Manage your TinyCloud account",
+      primaryText:
+        grant.ownedBySelf === null
+          ? "Manage a TinyCloud account"
+          : "Manage your TinyCloud account",
       service,
       resource,
     };
@@ -1569,14 +1580,25 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     if (verbs.hasWrite) {
       return {
         primaryText: verbs.hasRead
-          ? "Read and publish your public data"
-          : "Publish and update your public data",
+          ? grant.ownedBySelf === null
+            ? "Read and publish public data"
+            : "Read and publish your public data"
+          : grant.ownedBySelf === null
+            ? "Publish and update public data"
+            : "Publish and update your public data",
         service,
         resource,
       };
     }
     if (verbs.hasRead || verbs.hasList || verbs.hasMetadata) {
-      return { primaryText: "Read your public data", service, resource };
+      return {
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Read public data"
+            : "Read your public data",
+        service,
+        resource,
+      };
     }
     return fallbackStatement(grant);
   }
@@ -1588,16 +1610,33 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
   ) {
     if (verbs.hasRead && verbs.hasWrite) {
       return {
-        primaryText: "Read and update your TinyCloud data",
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Read and update data"
+            : "Read and update your TinyCloud data",
         service,
         resource,
       };
     }
     if (verbs.hasWrite) {
-      return { primaryText: "Update your TinyCloud data", service, resource };
+      return {
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Update data"
+            : "Update your TinyCloud data",
+        service,
+        resource,
+      };
     }
     if (verbs.hasRead || verbs.hasList || verbs.hasMetadata) {
-      return { primaryText: "Read your TinyCloud data", service, resource };
+      return {
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Read data"
+            : "Read your TinyCloud data",
+        service,
+        resource,
+      };
     }
     return fallbackStatement(grant);
   }
@@ -1740,7 +1779,10 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       );
     if (!allActionsRecognized) return fallbackStatement(grant);
     return {
-      primaryText: DELEGATION_LIST_STATEMENT,
+      primaryText:
+        grant.ownedBySelf === null
+          ? "See who has access to data"
+          : DELEGATION_LIST_STATEMENT,
       service,
       resource,
     };
@@ -1771,13 +1813,23 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
         // "manage secret variables"-adjacent shape; keep the phrasing
         // truthful about mutation.
         return {
-          primaryText: "Manage secrets stored in your vault",
+          primaryText:
+            grant.ownedBySelf === false
+              ? "Manage secrets in another user's vault"
+              : grant.ownedBySelf === true
+                ? "Manage secrets stored in your vault"
+                : "Manage secrets in the vault",
           service,
           resource,
         };
       }
       return {
-        primaryText: "View secrets stored in your vault",
+        primaryText:
+          grant.ownedBySelf === false
+            ? "View secrets in another user's vault"
+            : grant.ownedBySelf === true
+              ? "View secrets stored in your vault"
+              : "View secrets in the vault",
         service,
         resource,
       };
@@ -1912,8 +1964,7 @@ const SUMMARY_SEVERITY_RANK: Record<PermissionSeverity, number> = { standard: 0,
  */
 export function buildSummaryStatements(grants: readonly CapabilityGrant[]): SummaryStatement[] {
   const grouped = new Map<string, SummaryStatement>();
-  const courier = grants.filter(grant => grant.family === "courier").sort((a, b) => COURIER_CATALOG.findIndex(row => row.path === a.path) - COURIER_CATALOG.findIndex(row => row.path === b.path));
-  for (const grant of [...courier, ...grants.filter(grant => grant.family !== "courier")]) {
+  for (const grant of grants) {
     for (const statement of buildStatements(grant)) {
       const existing = grouped.get(statement.primaryText);
       const rowSeverity = statement.severity ?? grant.severity;

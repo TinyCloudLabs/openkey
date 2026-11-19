@@ -1,6 +1,8 @@
 <script lang="ts">
   import { API_BASE } from '$lib/auth-client';
   import { safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
+  import { daysOverTwoDays, formatDuration, formatEndDay } from '$lib/approval-expiry';
+  import { formatLocalAccessEnd } from '$lib/access-end';
   import { isTermsRequired, sendToTerms } from '$lib/terms';
   import NativeShell from '$lib/components/auth/native-shell.svelte';
   import { nativeAccessSummary } from '$lib/native-access';
@@ -9,6 +11,7 @@
     type CapabilityAction, type CapabilityGrant, type CapabilityReviewModel,
   } from '@openkey/capability-review';
   import { reviewSelectionToActionKeys, preparedMatchesSelection, type ServerPermissionOption } from '$lib/delegate-review-selection';
+  import { answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyNeed } from '$lib/approval-passkey';
 
   let { requestId, clientId, email, ready }: {
     requestId: string; clientId: string; email?: string;
@@ -21,6 +24,8 @@
     client: { name: string; icon?: string | null; organization?: string | null };
     address: string; keyId: string; redirectScheme: string; tinycloudHost: string;
     ttlSeconds: number; grantLifetimeSeconds: number; permissionOptions: ServerPermissionOption[]; selectedActionKeys: string[];
+    /** TC-3442: whether Approve needs the passkey, with the challenge for this revision. */
+    passkey?: ApprovalPasskeyNeed;
   };
   let preview = $state<Preview | null>(null);
   let model = $state<CapabilityReviewModel | null>(null);
@@ -47,7 +52,10 @@
     });
     const data = await response.json().catch(() => ({}));
     if (isTermsRequired(response.status, data)) sendToTerms();
-    if (!response.ok) throw new Error(data.error_description ?? data.error ?? `${action} failed (${response.status})`);
+    if (!response.ok) {
+      const failure = new Error(data.error_description ?? data.error ?? `${action} failed (${response.status})`);
+      throw Object.assign(failure, { code: typeof data.code === 'string' ? data.code : undefined });
+    }
     return data;
   }
   async function prepare(actionKeys?: string[]) {
@@ -97,14 +105,23 @@
       if (!approved) {
         const current = preview;
         if (!current) throw new Error('Preparation missing');
+        // TC-3442: the passkey prompt comes first, while the tap still counts as the user's gesture.
+        const passkeyAssertion = await answerApprovalPasskey(current.passkey);
         await route('approve', { revision: current.revision, digest: current.digest,
-          sessionSiwe: current.sessionSiwe, ...(current.hostPlan ? { hostSiwe: current.hostPlan.hostSiwe } : {}) });
+          sessionSiwe: current.sessionSiwe, ...(current.hostPlan ? { hostSiwe: current.hostPlan.hostSiwe } : {}),
+          ...(passkeyAssertion ? { passkeyAssertion } : {}) });
         approved = true;
       }
       await providerConsent(true);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Approval failed';
       if (error === 'preparation_superseded') await prepare(reviewSelectionToActionKeys(model!, baselineOptions, selection));
+      // The refused challenge is spent: prepare again for a new one, and keep the API's words on screen.
+      else if (isPasskeyApprovalRefusal(cause)) {
+        const refusal = error;
+        await prepare(reviewSelectionToActionKeys(model!, baselineOptions, selection));
+        error = refusal;
+      }
       submitting = false;
     }
   }
@@ -124,11 +141,10 @@
     selection = next;
     if (model) prepare(reviewSelectionToActionKeys(model, baselineOptions, next));
   }
-  const duration = (seconds: number) => {
-    const [count, unit] = seconds % 86400 === 0 ? [seconds / 86400, 'day']
-      : seconds % 3600 === 0 ? [seconds / 3600, 'hour'] : [Math.round(seconds / 60), 'minute'];
-    return `${count} ${unit}${count === 1 ? '' : 's'}`;
-  };
+  const duration = (seconds: number) => formatDuration(seconds * 1000);
+  // Over two days the day the longest grant ends too: "30 days, until 17 Dec,".
+  const lifetime = (seconds: number) =>
+    daysOverTwoDays(seconds * 1000) === null ? duration(seconds) : `${duration(seconds)}, until ${formatEndDay(seconds * 1000)},`;
   let started = false;
   $effect(() => { if (ready && !started) { started = true; prepare(); } });
   const summary = $derived(model && preview ? nativeAccessSummary(model, selection, preview.client.name) : null);
@@ -161,7 +177,7 @@
       {#each summary.warnings as warning}
         <p class="note warning" role="status">{warning}</p>
       {/each}
-      <p class="note">Access lasts up to {duration(preview.grantLifetimeSeconds)} and renews automatically while you use {preview.client.name}.</p>
+      <p class="note">Access lasts up to {lifetime(preview.grantLifetimeSeconds)} and renews automatically while you use {preview.client.name}.</p>
       {#if preview.hostPlan}
         <p class="note">First sign-in: this also lets your TinyCloud node host your data.</p>
       {/if}
@@ -178,7 +194,7 @@
           <dt>Returns to</dt><dd><code>{preview.redirectScheme}://</code></dd>
           <dt>Signing key</dt><dd>{model.signer.label} <code>{model.signer.address}</code></dd>
           <dt>App identity</dt><dd>{trustLabel[model.metadataTrust.status]}</dd>
-          {#if model.expiry}<dt>Expires</dt><dd>{model.expiry}</dd>{/if}
+          {#if model.expiry}<dt>Expires</dt><dd>{formatLocalAccessEnd(model.expiry)}</dd>{/if}
           <dt>Renewals</dt><dd>Each renewal lasts {duration(preview.ttlSeconds)} from approval.</dd>
         </dl>
         {#if model.metadataTrust.reason}

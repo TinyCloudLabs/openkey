@@ -63,7 +63,10 @@ async function mockApi(page: Page, account: Account) {
     if (path === '/api/auth/email-otp/send-verification-otp') return json(route, 200, { success: true });
     if (path === '/api/auth/sign-in/email-otp') {
       account.signedIn = true;
-      return json(route, 200, { token: 'embedded-session', user: { id: 'u' } });
+      return route.fulfill({
+        status: 200, contentType: 'application/json', headers: { 'set-auth-token': 'embedded-session' },
+        body: JSON.stringify({ token: 'embedded-session', user: { id: 'u' } }),
+      });
     }
     if (path === '/api/keys') {
       if (!account.signedIn) return json(route, 401, { error: 'Unauthorized' });

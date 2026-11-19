@@ -49,7 +49,7 @@ for (const signedIn of [false, true]) {
 
 test('server-confirmed admins retain their console navigation', async ({ page }) => {
   await deviceApi(page, { signedIn: true, admin: true });
-  await page.goto('/device');
+  await page.goto('/dashboard/api-keys');
   await expect(page.getByRole('link', { name: 'OpenKey Admin console' })).toBeVisible();
 });
 
@@ -64,6 +64,15 @@ for (const [max, suggested, expected] of [[604_800, undefined, 3_600], [604_800,
     expect(expected).toBeLessThanOrEqual(max);
   });
 }
+
+test('the device summary shows the request without a self-started notice', async ({ page }) => {
+  await deviceApi(page, { reason: 'Publish notes from my laptop' });
+  await page.goto('/device?user_code=ABCD-EFGH');
+  await expect(page.locator('a[href^="/delegate?"]')).toBeVisible();
+  await expect(page.getByText('Publish notes from my laptop')).toBeVisible();
+  await expect(page.getByText(/started this on your own device/)).toHaveCount(0);
+  await expect(page.getByRole('note')).toHaveCount(0);
+});
 
 test('a transient lookup failure offers recovery without exposing the upstream detail', async ({ page }) => {
   const options = { lookupStatus: 503 };
@@ -128,7 +137,7 @@ test('a stale admin answer never restores console navigation', async ({ page }) 
     }
     return route.fulfill({ json: {} });
   });
-  await page.goto('/device');
+  await page.goto('/dashboard/api-keys');
   await expect.poll(() => calls).toBe(1);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect.poll(() => calls).toBeGreaterThanOrEqual(2);

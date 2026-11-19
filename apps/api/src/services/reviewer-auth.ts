@@ -1,3 +1,5 @@
+import { reviewerDeleteEndpoints } from './reviewer-delete';
+import { reviewerNativeQuery } from './reviewer-native';
 import type { BetterAuthPlugin } from 'better-auth';
 import { APIError, createAuthEndpoint, createAuthMiddleware, getSessionFromCtx } from 'better-auth/api';
 import { setSessionCookie } from 'better-auth/cookies';
@@ -54,6 +56,10 @@ export function reviewerQueryMatches(binding: ReviewerBinding, query: URLSearchP
     && scopes.every((scope) => ['openid', 'email', 'offline_access', 'tinycloud:mcp'].includes(scope));
 }
 
+async function reviewerContinuationMatches(database: PrismaClient, binding: ReviewerBinding, query: URLSearchParams, allowApproved = false) {
+  return binding.store === 'apple' ? reviewerNativeQuery(database, binding, query, allowApproved) : reviewerQueryMatches(binding, query);
+}
+
 export function reviewerAuth(database: PrismaClient, origin: string): BetterAuthPlugin {
   async function signIn(ctx: any, earlyResponse = false) {
     const binding = await reviewerForEmail(database, ctx.body?.email);
@@ -68,7 +74,7 @@ export function reviewerAuth(database: PrismaClient, origin: string): BetterAuth
       throw refused();
     }
     const query = await signedReviewerQuery(ctx.body?.oauth_query, ctx.context.secret);
-    if (!binding || !query || !reviewerQueryMatches(binding, query) || !reviewerCodeMatches(binding, ctx.body?.code ?? ctx.body?.otp)) {
+    if (!binding || !query || !await reviewerContinuationMatches(database, binding, query) || !reviewerCodeMatches(binding, ctx.body?.code ?? ctx.body?.otp)) {
       await reviewerFailure(binding);
       throw refused();
     }
@@ -94,6 +100,7 @@ export function reviewerAuth(database: PrismaClient, origin: string): BetterAuth
 
   return {
     id: 'openkey-reviewer-auth',
+    rateLimit: [{ pathMatcher: (path) => ['/sign-in/reviewer', '/reviewer/delete-intent', '/reviewer/delete'].includes(path), window: 60, max: 3 }],
     schema: {
       oauthConsent: { fields: { reviewerEpoch: { type: 'number', required: false, input: false, returned: false } } },
     },
@@ -101,6 +108,7 @@ export function reviewerAuth(database: PrismaClient, origin: string): BetterAuth
       before: [{
         matcher: () => true,
         handler: createAuthMiddleware(async (ctx) => {
+          if (['/reviewer/delete-intent', '/reviewer/delete'].includes(ctx.path)) return;
           const body = ctx.body as Record<string, unknown> | undefined;
           const binding = (body?.email ? await reviewerForEmail(database, body.email) : null)
             ?? (body?.newEmail ? await reviewerForEmail(database, body.newEmail) : null);
@@ -120,18 +128,26 @@ export function reviewerAuth(database: PrismaClient, origin: string): BetterAuth
           if (!reviewerActive(reviewer, source?.reviewerEpoch ?? null)
             || !source || source.expiresAt.getTime() <= Date.now()
             || source.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000 <= Date.now()
-            || !ALLOWED_AUTH_PATHS.has(ctx.path)) throw refused();
+            || (!ALLOWED_AUTH_PATHS.has(ctx.path) && !(reviewer.store === 'apple' && ctx.request?.method === 'POST'
+              && ['/oauth2/tinycloud/renew', '/oauth2/tinycloud/revoke'].includes(ctx.path)))) throw refused();
           captureReviewer(reviewer, session.session.id, source!.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000);
+          if (ctx.path === '/oauth2/public-client') {
+            const url = ctx.request && new URL(ctx.request.url);
+            if (ctx.request?.method !== 'GET' || url?.pathname !== '/api/auth/oauth2/public-client'
+              || url.searchParams.getAll('client_id').length !== 1
+              || url.searchParams.get('client_id') !== reviewer.clientId) throw refused();
+          }
           if (['/oauth2/authorize', '/oauth2/consent', '/oauth2/continue'].includes(ctx.path)) {
             const query = ctx.path === '/oauth2/authorize'
               ? new URLSearchParams(ctx.query as Record<string, string>)
               : await signedReviewerQuery(body?.oauth_query, ctx.context.secret);
-            if (!query || !reviewerQueryMatches(reviewer, query)) throw refused();
+            if (!query || !await reviewerContinuationMatches(database, reviewer, query, true)) throw refused();
           }
         }),
       }],
     },
     endpoints: {
+      ...reviewerDeleteEndpoints(database, origin),
       signInReviewer: createAuthEndpoint('/sign-in/reviewer', { method: 'POST', requireHeaders: true }, (ctx) => signIn(ctx)),
     },
     init: () => ({

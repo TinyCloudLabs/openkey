@@ -14,10 +14,26 @@ import {
   changeTinyCloudManageKeyGrant,
   changeTinyCloudManageKeyMode,
   controlMutationError,
+  isTinyCloudManageKeyMode,
+  type TinyCloudManageKeyMode,
 } from '../services/tinycloud-manage-key-control';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { ACCOUNT_PASSKEY_STEP_UP_REQUIRED, requireFreshPasskey } from '../services/passkey-freshness';
 import { createPasskeyStepUpChallenge, verifyPasskeyStepUp } from '../services/passkey-enrolment';
+import {
+  approvalPasskeyOffer,
+  approvalRequestDigest,
+  checkApprovalPasskey,
+  createApprovalPasskeyChallenge,
+  lowersPasskeyApprovalMode,
+  parsePasskeyApprovalMode,
+  passkeyApprovalModes,
+  PASSKEY_APPROVAL_INVALID,
+  PASSKEY_APPROVAL_NOT_STEP_UP,
+  PASSKEY_APPROVAL_REQUIRED,
+  verifyApprovalPasskey,
+  type ApprovalBinding,
+} from '../services/approval-passkey';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
 import {
@@ -244,6 +260,44 @@ accountRouter.get('/tinycloud-manage-key', async (c) => {
   });
 });
 
+// TC-3442: turning TinyCloud signing back on lets apps sign later without a button, so the passkey setting treats it
+// as sensitive; the passkey confirms this mode at this policy epoch. Stopping signing never asks.
+function manageKeyModePasskeyBinding(mode: string, expectedEpoch: number): ApprovalBinding {
+  return { purpose: 'manage_key_mode', requestDigest: approvalRequestDigest(mode, String(expectedEpoch)) };
+}
+
+function manageKeyAppPasskeyBinding(clientId: string, expectedEpoch: number): ApprovalBinding {
+  return { purpose: 'manage_key_app_enable', requestDigest: approvalRequestDigest(clientId, String(expectedEpoch)) };
+}
+
+accountRouter.post('/tinycloud-manage-key/passkey', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { mode?: unknown; expectedEpoch?: unknown } | null;
+  if (!isTinyCloudManageKeyMode(body?.mode) || !Number.isSafeInteger(body?.expectedEpoch)) {
+    return c.json({ error: 'mode and expectedEpoch are required' }, 400);
+  }
+  if (body.mode === 'USER_CONTROLLED_EXCLUSIVE') return c.json({ required: false });
+  return c.json(await approvalPasskeyOffer(
+    prisma, { userId: c.get('user').id, sessionId: c.get('session')?.id ?? null },
+    manageKeyModePasskeyBinding(body.mode, body.expectedEpoch as number), 'sensitive',
+  ));
+});
+
+accountRouter.post('/tinycloud-apps/:clientId/passkey', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { enabled?: unknown; expectedEpoch?: unknown } | null;
+  if (typeof body?.enabled !== 'boolean' || !Number.isSafeInteger(body.expectedEpoch)) {
+    return c.json({ error: 'enabled and expectedEpoch are required' }, 400);
+  }
+  if (!body.enabled) return c.json({ required: false });
+  return c.json(await approvalPasskeyOffer(
+    prisma, { userId: c.get('user').id, sessionId: c.get('session')?.id ?? null },
+    manageKeyAppPasskeyBinding(c.req.param('clientId'), body.expectedEpoch as number), 'sensitive',
+  ));
+});
+
 accountRouter.patch('/tinycloud-manage-key', async (c) => {
   const user = c.get('user');
   const rejected = rejectNonBrowserControlRequest(c);
@@ -256,9 +310,18 @@ accountRouter.patch('/tinycloud-manage-key', async (c) => {
   }
   const error = controlMutationError(body);
   if (error) return c.json({ error }, 400);
-  const patch = body as { mode: string; expectedEpoch: number };
+  const patch = body as { mode: TinyCloudManageKeyMode; expectedEpoch: number; passkeyAssertion?: unknown };
+  if (patch.mode !== 'USER_CONTROLLED_EXCLUSIVE') {
+    const passkeyRefusal = await checkApprovalPasskey(
+      prisma, { userId: user.id, sessionId: c.get('session')?.id ?? null },
+      manageKeyModePasskeyBinding(patch.mode, patch.expectedEpoch), 'sensitive', patch.passkeyAssertion,
+    );
+    if (passkeyRefusal) return c.json(passkeyRefusal, 403);
+  }
+  // The assertion is not part of the change: a replay of the same change is recognised whichever assertion it carried.
+  const { passkeyAssertion: _assertion, ...request } = patch;
   const result = await changeTinyCloudManageKeyMode(prisma, user.id, {
-    mode: patch.mode as any, expectedEpoch: patch.expectedEpoch, request: body,
+    mode: patch.mode, expectedEpoch: patch.expectedEpoch, request,
   });
   if (result.kind === 'not_found') return c.json({ error: 'User not found' }, 404);
   if (result.kind === 'stale') return c.json({ error: 'TinyCloud signing policy changed in another session', policyEpoch: result.epoch }, 409);
@@ -304,6 +367,66 @@ accountRouter.patch('/auto-sign', async (c) => {
   });
 
   return c.json({ autoSignEnabled: preference.autoSignEnabled });
+});
+
+// TC-3442: which approvals need a passkey. The mode applies only while the account has a passkey that counts for
+// step-up; without one it is NEVER in force and cannot be changed. Asking for the passkey on fewer approvals needs
+// an assertion bound to the new mode, so a session alone cannot turn the gate off.
+const PASSKEY_APPROVAL_MODE_PURPOSE = 'passkey_approval_mode';
+const PASSKEY_APPROVAL_NEEDS_PASSKEY = { error: 'Add a passkey to use this.', code: 'passkey_approval_needs_passkey' } as const;
+
+accountRouter.get('/passkey-approval', async (c) => {
+  const modes = await passkeyApprovalModes(prisma, c.get('user').id);
+  if (!modes) return c.json({ error: 'User not found' }, 404);
+  return c.json(modes);
+});
+
+accountRouter.post('/passkey-approval/options', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { mode?: unknown } | null;
+  const mode = parsePasskeyApprovalMode(body?.mode);
+  if (!mode) return c.json({ error: 'mode must be ALWAYS, SENSITIVE or NEVER' }, 400);
+  const offer = await createApprovalPasskeyChallenge(
+    prisma,
+    { sessionId: c.get('session').id, userId: c.get('user').id },
+    { purpose: PASSKEY_APPROVAL_MODE_PURPOSE, requestDigest: approvalRequestDigest(mode) },
+  );
+  if (!offer) return c.json(PASSKEY_APPROVAL_NEEDS_PASSKEY, 409);
+  return c.json(offer);
+});
+
+accountRouter.patch('/passkey-approval', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { mode?: unknown; passkeyAssertion?: unknown } | null;
+  const mode = parsePasskeyApprovalMode(body?.mode);
+  if (!mode) return c.json({ error: 'mode must be ALWAYS, SENSITIVE or NEVER' }, 400);
+  const userId = c.get('user').id;
+  const current = await passkeyApprovalModes(prisma, userId);
+  if (!current) return c.json({ error: 'User not found' }, 404);
+  if (current.stepUpPasskeys === 0) return c.json(PASSKEY_APPROVAL_NEEDS_PASSKEY, 409);
+  if (lowersPasskeyApprovalMode(current.mode, mode)) {
+    const result = await verifyApprovalPasskey(
+      prisma,
+      { sessionId: c.get('session').id, userId },
+      { purpose: PASSKEY_APPROVAL_MODE_PURPOSE, requestDigest: approvalRequestDigest(mode) },
+      body?.passkeyAssertion,
+    );
+    if (result !== 'verified') {
+      const refusal = body?.passkeyAssertion == null ? PASSKEY_APPROVAL_REQUIRED
+        : result === 'not_step_up' ? PASSKEY_APPROVAL_NOT_STEP_UP : PASSKEY_APPROVAL_INVALID;
+      return c.json(refusal, 403);
+    }
+  }
+  // Changed only from the mode the check above read, so a concurrent change cannot slip past it.
+  const updated = await prisma.user.updateMany({
+    where: { id: userId, passkeyApprovalMode: current.mode }, data: { passkeyApprovalMode: mode },
+  });
+  if (updated.count !== 1) {
+    return c.json({ error: 'This setting changed in another session. Reload and try again.', code: 'passkey_approval_changed' }, 409);
+  }
+  return c.json({ ...current, mode, effectiveMode: mode });
 });
 
 // List apps with a TinyCloud signing or native delegation consent and the
@@ -434,13 +557,23 @@ accountRouter.patch('/tinycloud-apps/:clientId', async (c) => {
     return c.json({ error: error instanceof Error ? error.message : 'Invalid request body' }, 400);
   }
   if (!body || typeof body !== 'object' || Array.isArray(body)) return c.json({ error: 'Request body must be an object' }, 400);
-  const patch = body as { enabled?: unknown; expectedEpoch?: unknown; confirmation?: unknown };
+  const patch = body as { enabled?: unknown; expectedEpoch?: unknown; confirmation?: unknown; passkeyAssertion?: unknown };
   if (typeof patch.enabled !== 'boolean' || !Number.isSafeInteger(patch.expectedEpoch) || (patch.expectedEpoch as number) < 0 || patch.confirmation !== 'TAKE CONTROL') {
     return c.json({ error: 'enabled, expectedEpoch, and typed confirmation "TAKE CONTROL" are required' }, 400);
   }
   const clientId = c.req.param('clientId');
+  // TC-3442: enabling an app lets it sign later without a button, so the passkey setting treats it as sensitive.
+  // Disabling never asks.
+  if (patch.enabled) {
+    const passkeyRefusal = await checkApprovalPasskey(
+      prisma, { userId: user.id, sessionId: c.get('session')?.id ?? null },
+      manageKeyAppPasskeyBinding(clientId, patch.expectedEpoch as number), 'sensitive', patch.passkeyAssertion,
+    );
+    if (passkeyRefusal) return c.json(passkeyRefusal, 403);
+  }
+  const { passkeyAssertion: _assertion, ...request } = patch;
   const result = await changeTinyCloudManageKeyGrant(prisma, user.id, clientId, {
-    enabled: patch.enabled, expectedEpoch: patch.expectedEpoch as number, request: body,
+    enabled: patch.enabled, expectedEpoch: patch.expectedEpoch as number, request,
   });
   if (result.kind === 'not_found') return c.json({ error: 'User not found' }, 404);
   if (result.kind === 'missing_consent') return c.json({ error: 'TinyCloud signing consent not found' }, 404);

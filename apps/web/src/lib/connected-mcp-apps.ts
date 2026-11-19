@@ -30,7 +30,7 @@ const SCOPE_WORDS: Record<string, string> = {
   email: 'Lets this app see your email address.',
   profile: 'Lets this app see your profile name.',
   keys: 'Lets this app see your account keys.',
-  offline_access: 'Lets this app stay connected until you disconnect it.',
+  offline_access: 'Lets this app stay connected for up to 30 days, or until you disconnect it.',
 };
 
 /** Only https icons are rendered; anything else (data:, javascript:, http:) is skipped. */

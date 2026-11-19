@@ -1,8 +1,8 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { authClient } from '$lib/auth-client';
-  import { signOutRenewalNotice } from '$lib/renewal-leases';
   import { api, type EthereumKey } from '$lib/api';
+  import { renewalLeaseCopy } from '$lib/renewal-leases';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
@@ -14,17 +14,32 @@
   let generating = $state(false);
   let error = $state('');
   let copiedId = $state<string | null>(null);
+  // Whether the account has renewing permissions: only then does the note by Sign Out show.
+  let renewing = $state(false);
+  let renewingChecked = false;
 
   // Redirect if not logged in, load keys when session is ready
   $effect(() => {
     if (!$session.isPending) {
-      if (!$session.data && !signOutNotice) {
+      if (!$session.data) {
         goto('/auth/login');
-      } else if ($session.data && keys.length === 0 && loading) {
-        loadKeys();
+      } else {
+        if (!renewingChecked) {
+          renewingChecked = true;
+          checkRenewing();
+        }
+        if (keys.length === 0 && loading) loadKeys();
       }
     }
   });
+
+  async function checkRenewing() {
+    try {
+      renewing = (await api.listRenewalLeases()).leases.length > 0;
+    } catch {
+      // Without the list the note stays hidden; signing out is unaffected.
+    }
+  }
 
   async function loadKeys() {
     loading = true;
@@ -52,17 +67,8 @@
     }
   }
 
-  // TC-2946: signing out stops the renewing permissions this session approved. If a node didn't
-  // confirm (or a wallet must sign), say so here instead of leaving silently.
-  let signOutNotice = $state('');
-
   async function signOut() {
-    const { data } = await authClient.signOut() as { data?: { renewalLeases?: { notStopped?: number } } };
-    const notStopped = data?.renewalLeases?.notStopped ?? 0;
-    if (notStopped > 0) {
-      signOutNotice = signOutRenewalNotice(notStopped);
-      return;
-    }
+    await authClient.signOut();
     goto('/');
   }
 
@@ -85,12 +91,6 @@
 </script>
 
 <div class="mx-auto max-w-3xl px-4 py-10">
-  {#if signOutNotice}
-    <div role="alert" class="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-      {signOutNotice}
-      <a href="/" class="mt-2 block font-medium underline">Continue</a>
-    </div>
-  {:else}
   <!-- Header -->
   <div class="mb-8">
     {#if $session.data}
@@ -104,9 +104,17 @@
   </div>
 
   <!-- Actions row -->
-  <div class="mb-8 flex items-center gap-3">
-    <Button variant="secondary" size="sm" href="/dashboard/settings">Settings</Button>
-    <Button variant="secondary" size="sm" onclick={signOut}>Sign Out</Button>
+  <div class="mb-8">
+    <div class="flex items-center gap-3">
+      <Button variant="secondary" size="sm" href="/dashboard/settings">Settings</Button>
+      <Button variant="secondary" size="sm" onclick={signOut}>Sign Out</Button>
+    </div>
+    {#if renewing}
+      <p class="mt-2 text-sm text-surface-500" data-testid="sign-out-renewal-note">
+        {renewalLeaseCopy.signOutKeepsRenewing}
+        <a href="/dashboard/settings#renewing-permissions" class="font-semibold text-surface-900 underline underline-offset-2">{renewalLeaseCopy.stopRenewalsLink}</a>
+      </p>
+    {/if}
   </div>
 
   <!-- Error -->
@@ -206,5 +214,4 @@
       </Button>
     </div>
   </Card>
-  {/if}
 </div>

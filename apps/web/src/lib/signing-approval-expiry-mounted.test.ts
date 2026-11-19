@@ -507,7 +507,7 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
   test('the note names the verified site, what it asked for and the hour, and where the fold is', () => {
     const { target, cleanup } = mounted(modelOf([decrypt]));
     expect(noteText(target)).toBe(
-      'listen.tinycloud.xyz asked for 7 days. Access to secrets or encrypted data starts at 1 hour. You can choose longer under How long it lasts.',
+      'listen.tinycloud.xyz asked for 7 days. Access to secrets or encrypted data starts at 1 hour. You can choose longer in Advanced details.',
     );
     cleanup();
   });

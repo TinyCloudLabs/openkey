@@ -104,11 +104,14 @@ test('ongoing access starts ticked, and its preview carries the 90-day lease', a
   expect(approvals(calls)[0]!.body).not.toHaveProperty('renewal');
 });
 
+// Over two days the line also names the day it ends ("…30 days, on Dec 18").
+const EXPIRES_IN_30_DAYS = /^This permission expires in 30 days, on [A-Z][a-z]{2} \d{1,2}(, \d{4})?$/;
+
 test('unticked, it says when it expires, and its preview is finite', async ({ page }) => {
   const calls = await open(page, { purpose: 'standing' });
   await expect(box(page)).toBeChecked();
   await box(page).uncheck();
-  await expect(line(page)).toHaveText('This permission expires in 30 days');
+  await expect(line(page)).toHaveText(EXPIRES_IN_30_DAYS);
   await expect.poll(() => lastPrepare(calls)).toMatchObject({ renewal: { choice: 'finite' } });
 });
 
@@ -124,20 +127,21 @@ test('a task, or a request without a purpose, starts unticked with a finite prev
 test('a request that did not ask for renewal shows no box and sends no choice', async ({ page }) => {
   const calls = await open(page, { renewal: false, purpose: 'standing' });
   await expect(box(page)).toHaveCount(0);
-  await expect(line(page)).toHaveText('This permission expires in 30 days');
+  await expect(line(page)).toHaveText(EXPIRES_IN_30_DAYS);
   expect(lastPrepare(calls)).not.toHaveProperty('renewal');
 });
 
 test('while this OpenKey has leases off, a renewal request shows no box and sends no choice', async ({ page }) => {
   const calls = await open(page, { purpose: 'standing', leasesOff: true });
   await expect(box(page)).toHaveCount(0);
-  await expect(line(page)).toHaveText('This permission expires in 30 days');
+  await expect(line(page)).toHaveText(EXPIRES_IN_30_DAYS);
   expect(lastPrepare(calls)).not.toHaveProperty('renewal');
 });
 
 test('the lease is changed under the fold, as a new preview', async ({ page }) => {
   const calls = await open(page, { purpose: 'standing' });
   await expect(box(page)).toBeChecked();
+  await page.getByText('Advanced details', { exact: true }).click();
   await page.getByText('How long it lasts').click();
   await page.getByRole('button', { name: '1 year' }).click();
   await expect(line(page)).toHaveText('This permission renews automatically for up to 1 year');
@@ -216,6 +220,7 @@ for (const [name, viewport] of [['390', { width: 390, height: 844 }], ['1280', {
     await box(page).uncheck();
     await shot('2-unticked');
     await box(page).check();
+    await page.getByText('Advanced details', { exact: true }).click();
     await page.getByText('How long it lasts').click();
     await page.getByRole('button', { name: '1 year' }).scrollIntoViewIfNeeded();
     await shot('3-fold-open');

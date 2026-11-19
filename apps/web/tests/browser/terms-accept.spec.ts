@@ -96,11 +96,13 @@ test('an updated release shows what changed only when the API has it', async ({ 
 test('Don’t agree signs out and nothing is accepted', async ({ page }) => {
   const calls = await mockApi(page, FIRST);
   await page.goto(`/auth/terms?${SIGNED}`);
-  await page.getByRole('button', { name: 'Don’t agree and sign out' }).click();
+  await page.getByTestId('terms-other-options').click();
+  await page.getByRole('region', { name: 'Sign out without agreeing' }).getByRole('button', { name: 'Sign out' }).click();
   await expect(page.getByRole('heading', { name: 'You’re signed out' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', `/auth/login?${SIGNED}`);
   expect(calls.map((call) => call.path)).toContain('/api/auth/sign-out');
   expect(calls.map((call) => call.path)).not.toContain('/api/account/terms/accept');
+  expect(calls.find((call) => call.path === '/api/auth/oauth2/consent')?.body).toEqual({ accept: false, oauth_query: SIGNED });
 });
 
 test('a refused API call opens the Terms, and Agree returns to the page', async ({ page }) => {
