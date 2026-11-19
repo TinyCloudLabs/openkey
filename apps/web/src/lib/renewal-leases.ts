@@ -61,10 +61,3 @@ export function leaseStatements(grantSiwe: string): string[] {
 export function nodeHost(origin: string): string {
   try { return new URL(origin).host; } catch { return origin; }
 }
-
-/**
- * The one line the dashboard shows beside Sign Out, followed by a link to Renewing permissions in Settings: signing
- * out leaves renewing permissions on, and they stop only there or when the account is deleted. Empty, and so not
- * shown, until its wording is approved.
- */
-export const signOutKeepsRenewalNote = '';

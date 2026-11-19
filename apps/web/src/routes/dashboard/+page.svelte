@@ -1,7 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { authClient } from '$lib/auth-client';
-  import { renewalLeaseCopy, signOutKeepsRenewalNote } from '$lib/renewal-leases';
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
@@ -93,13 +92,6 @@
     <Button variant="secondary" size="sm" href="/dashboard/settings">Settings</Button>
     <Button variant="secondary" size="sm" onclick={signOut}>Sign Out</Button>
   </div>
-  {#if signOutKeepsRenewalNote}
-    <!-- Signing out leaves renewing permissions on: this line points to where they stop. -->
-    <p class="-mt-6 mb-8 text-sm text-surface-500">
-      {signOutKeepsRenewalNote}
-      <a href="/dashboard/settings#renewing-permissions" class="font-medium underline">{renewalLeaseCopy.title}</a>
-    </p>
-  {/if}
 
   <!-- Error -->
   {#if error}
