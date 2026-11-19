@@ -3,7 +3,9 @@ import { getSessionToken, isEmbedContext } from './embed-passkey';
 import { isDefiniteRefusal, ServerRefusalError } from './server-reply';
 import { isPreTermsPage, isTermsRequired, sendToTerms } from './terms';
 import type { RenewalLease } from './renewal-leases';
-import type { ApprovalPasskeyAssertion, ApprovalPasskeyOffer, PasskeyApprovalMode, PasskeyApprovalSetting } from './approval-passkey';
+import type {
+  ApprovalPasskeyAssertion, ApprovalPasskeyNeed, ApprovalPasskeyOffer, PasskeyApprovalMode, PasskeyApprovalSetting,
+} from './approval-passkey';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -201,8 +203,20 @@ export const api = {
     async createGrant(
       keyId: string,
       input: { clientOrigin: string; kinds: number[]; relayUrl?: string; ttlSeconds?: number },
+      passkeyAssertion?: ApprovalPasskeyAssertion,
     ): Promise<{ grant: NostrGrant }> {
       return fetchAPI(`/api/keys/nostr/${encodeURIComponent(keyId)}/grants`, {
+        method: 'POST',
+        body: JSON.stringify({ ...input, passkeyAssertion }),
+      });
+    },
+
+    /** TC-3442: whether approving this grant needs the passkey, with the challenge for exactly this grant. */
+    async createGrantPasskey(
+      keyId: string,
+      input: { clientOrigin: string; kinds: number[]; relayUrl?: string; ttlSeconds?: number },
+    ): Promise<ApprovalPasskeyNeed> {
+      return fetchAPI(`/api/keys/nostr/${encodeURIComponent(keyId)}/grants/passkey`, {
         method: 'POST',
         body: JSON.stringify(input),
       });
@@ -274,18 +288,41 @@ export const api = {
     requestOrigin?: string,
     /** TC-2927: the owner allowed the extra permissions this exact message carries, on the warning screen. */
     elevatedAcknowledged?: boolean,
+    passkeyAssertion?: ApprovalPasskeyAssertion,
   ): Promise<{ signature: string; address: string }> {
     return fetchAPI(`/api/keys/${keyId}/sign`, {
       method: 'POST',
-      body: JSON.stringify({ message, requestOrigin, ...(elevatedAcknowledged ? { elevatedAcknowledged: true } : {}) }),
+      body: JSON.stringify({
+        message, requestOrigin, ...(elevatedAcknowledged ? { elevatedAcknowledged: true } : {}), passkeyAssertion,
+      }),
+    });
+  },
+
+  /** TC-3442: whether approving this signature needs the passkey, with the challenge for exactly this message. */
+  async signMessagePasskey(keyId: string, message: string, requestOrigin?: string): Promise<ApprovalPasskeyNeed> {
+    return fetchAPI(`/api/keys/${keyId}/sign/passkey`, {
+      method: 'POST',
+      body: JSON.stringify({ message, requestOrigin }),
     });
   },
 
   async signTypedData(
     keyId: string,
-    data: { domain: any; types: any; primaryType: string; message: any }
+    data: { domain: any; types: any; primaryType: string; message: any },
+    passkeyAssertion?: ApprovalPasskeyAssertion,
   ): Promise<{ signature: string; address: string }> {
     return fetchAPI(`/api/keys/${keyId}/sign-typed-data`, {
+      method: 'POST',
+      body: JSON.stringify({ ...data, passkeyAssertion }),
+    });
+  },
+
+  /** TC-3442: whether approving this typed data needs the passkey, with the challenge for exactly this data. */
+  async signTypedDataPasskey(
+    keyId: string,
+    data: { domain: any; types: any; primaryType: string; message: any },
+  ): Promise<ApprovalPasskeyNeed> {
+    return fetchAPI(`/api/keys/${keyId}/sign-typed-data/passkey`, {
       method: 'POST',
       body: JSON.stringify(data),
     });
@@ -333,10 +370,21 @@ export const api = {
     return fetchAPI('/api/account/tinycloud-manage-key');
   },
 
-  async updateTinyCloudManageKeyPreference(mode: TinyCloudManageKeyPreference['mode'], policyEpoch: number, confirmation: string): Promise<TinyCloudManageKeyPreference> {
+  async updateTinyCloudManageKeyPreference(
+    mode: TinyCloudManageKeyPreference['mode'], policyEpoch: number, confirmation: string,
+    passkeyAssertion?: ApprovalPasskeyAssertion,
+  ): Promise<TinyCloudManageKeyPreference> {
     return fetchAPI('/api/account/tinycloud-manage-key', {
       method: 'PATCH',
-      body: JSON.stringify({ mode, expectedEpoch: policyEpoch, confirmation }),
+      body: JSON.stringify({ mode, expectedEpoch: policyEpoch, confirmation, passkeyAssertion }),
+    }, true);
+  },
+
+  /** TC-3442: whether this TinyCloud key management change needs the passkey, with its challenge. */
+  async tinyCloudManageKeyPasskey(mode: TinyCloudManageKeyPreference['mode'], policyEpoch: number): Promise<ApprovalPasskeyNeed> {
+    return fetchAPI('/api/account/tinycloud-manage-key/passkey', {
+      method: 'POST',
+      body: JSON.stringify({ mode, expectedEpoch: policyEpoch }),
     }, true);
   },
 
@@ -344,12 +392,23 @@ export const api = {
     return fetchAPI('/api/account/tinycloud-apps');
   },
 
-  async updateTinyCloudManageKeyApp(clientId: string, enabled: boolean, policyEpoch: number, confirmation: string): Promise<{
+  async updateTinyCloudManageKeyApp(
+    clientId: string, enabled: boolean, policyEpoch: number, confirmation: string,
+    passkeyAssertion?: ApprovalPasskeyAssertion,
+  ): Promise<{
     clientId: string; enabled: boolean; status: string; policyEpoch: number;
   }> {
     return fetchAPI(`/api/account/tinycloud-apps/${encodeURIComponent(clientId)}`, {
       method: 'PATCH',
-      body: JSON.stringify({ enabled, expectedEpoch: policyEpoch, confirmation }),
+      body: JSON.stringify({ enabled, expectedEpoch: policyEpoch, confirmation, passkeyAssertion }),
+    }, true);
+  },
+
+  /** TC-3442: whether turning this app's signing on needs the passkey, with its challenge. */
+  async tinyCloudManageKeyAppPasskey(clientId: string, enabled: boolean, policyEpoch: number): Promise<ApprovalPasskeyNeed> {
+    return fetchAPI(`/api/account/tinycloud-apps/${encodeURIComponent(clientId)}/passkey`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled, expectedEpoch: policyEpoch }),
     }, true);
   },
 

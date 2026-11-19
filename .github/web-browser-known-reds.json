@@ -6,24 +6,5 @@
     "webkit-sign-handshake"
   ],
   "knownReds": [],
-  "knownSkipped": [
-    {
-      "project": "chromium",
-      "file": "settings-passkey-approval.spec.ts",
-      "title": "asking on more approvals saves at once; asking on fewer sends a passkey assertion for the new choice",
-      "reason": "Settings doesn't show the \"Passkey for approvals\" card, so these tests skip until it is shown again."
-    },
-    {
-      "project": "chromium",
-      "file": "settings-passkey-approval.spec.ts",
-      "title": "without a passkey that can confirm approvals the choices are disabled",
-      "reason": "Settings doesn't show the \"Passkey for approvals\" card, so these tests skip until it is shown again."
-    },
-    {
-      "project": "chromium",
-      "file": "settings-passkey-approval.spec.ts",
-      "title": "a passkey the API does not accept leaves the choice where it was, with the Settings line",
-      "reason": "Settings doesn't show the \"Passkey for approvals\" card, so these tests skip until it is shown again."
-    }
-  ]
+  "knownSkipped": []
 }
