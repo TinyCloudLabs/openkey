@@ -679,7 +679,7 @@
               ></span>
             </button>
             <span id={`tinycloud-app-status-${app.clientId}`} class="text-xs text-surface-500">
-              {app.disabled ? 'Disabled by the app owner' : app.status === 'PENDING_USER_APPROVAL' ? 'Waiting for your approval' : app.status === 'CONSENT_WITHDRAWN' ? 'OAuth consent withdrawn' : app.enabled ? app.nativeDelegation ? `${app.activeNativeGrants} active device grant${app.activeNativeGrants === 1 ? '' : 's'}` : 'Allowed to request new signatures' : 'Blocked from new signatures and renewals'}
+              {app.disabled ? 'Disabled by the app owner' : app.status === 'PENDING_USER_APPROVAL' ? 'Waiting for your approval' : app.status === 'CONSENT_WITHDRAWN' ? 'OAuth consent withdrawn' : app.enabled ? app.nativeDelegation ? `${app.activeNativeGrants} active device grant${app.activeNativeGrants === 1 ? '' : 's'}` : 'Allowed to request new signatures' : 'Blocked from new signatures'}
             </span>
             {#if app.nativeDelegation}
               <button type="button" onclick={() => requestTinyCloudDisconnect(app)} disabled={savingTinyCloudAppId === app.clientId}
