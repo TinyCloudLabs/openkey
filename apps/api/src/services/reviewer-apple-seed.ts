@@ -112,8 +112,11 @@ export async function verifyReviewerSeed(database: PrismaClient, report: any) {
   }
   const { TinyCloudNode } = await import('@tinycloud/node-sdk');
   const { unsealManagedKey } = await import('./managed-key-signing');
+  // Its one read (TC-3443): the reviewer-seed marker in TinyChat's threads database.
   const node = new TinyCloudNode({ host: binding.nodeHost, privateKey: await unsealManagedKey(key, key.sealedBlob),
     prefix: 'applications', sessionExpirationMs: 60_000, autoCreateSpace: false,
+    manifest: { app_id: 'so.openkey.reviewer', name: 'OpenKey', space: 'applications', prefix: '', defaults: false,
+      includePublicSpace: false, permissions: [{ service: 'tinycloud.sql', path: 'xyz.tinycloud.tinychat/threads', actions: ['read'] }] },
     autoBootstrapAccount: false, enablePublicSpace: false, includeAccountRegistryPermissions: false, autoDiscoverLocalNode: false });
   await node.signIn();
   const result = await node.sqlForSpace(binding.spaceId).db('xyz.tinycloud.tinychat/threads')
