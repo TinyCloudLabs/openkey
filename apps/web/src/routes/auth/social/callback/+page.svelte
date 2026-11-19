@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { authClient, API_BASE } from '$lib/auth-client';
+  import { authClient } from '$lib/auth-client';
+  import { readSignedSessionToken } from '$lib/embed-passkey';
   import NewAccountConfirmation from '$lib/components/auth/new-account-confirmation.svelte';
   import { safeSocialAuthorizationUrl } from '$lib/social-auth';
   import {
@@ -112,16 +113,8 @@
       if (callback.kind === 'error') {
         throw new Error(socialErrorMessage(callback.provider, callback.code));
       }
-      const response = await fetch(`${API_BASE}/api/auth/get-session`, {
-        credentials: 'include',
-        headers: { Accept: 'application/json' },
-      });
-      const body = await response.json().catch(() => null);
-      const sessionToken =
-        response.headers.get('set-auth-token')
-        || body?.session?.token
-        || body?.token;
-      if (!response.ok || !sessionToken) {
+      const sessionToken = await readSignedSessionToken();
+      if (!sessionToken) {
         throw new Error('OpenKey could not read the completed session. Please try again.');
       }
 
