@@ -47,11 +47,11 @@ test('a Google return with an error code names Google in the heading and tells t
   await noApi(page);
   const popup = await openFromOpener(page, '/auth/social/callback?via=google&error=server_error');
   await expect(popup.getByRole('heading', { level: 1, name: 'Google sign-in didn’t finish' })).toBeVisible();
-  await expect(popup.getByText('Google could not complete sign-in. Please try again.')).toBeVisible();
+  await expect(popup.getByText('Google sign-in couldn\'t be completed. Try again.')).toBeVisible();
   await expect(popup.getByRole('button', { name: 'Close this window' })).toBeVisible();
   await expect(popup.getByRole('list', { name: 'Progress' })).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => Reflect.get(window, 'messages')))
-    .toEqual([{ type: 'openkey:social:error', message: 'Google could not complete sign-in. Please try again.' }]);
+    .toEqual([{ type: 'openkey:social:error', message: 'Google sign-in couldn\'t be completed. Try again.' }]);
 
   const closed = popup.waitForEvent('close');
   await popup.getByRole('button', { name: 'Close this window' }).click();
