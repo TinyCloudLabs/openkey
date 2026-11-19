@@ -4,7 +4,6 @@
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
-  import { copyText } from '$lib/clipboard';
   import { buildStatements, parseEncryptionResource, parseCapabilityReview, defaultSelection, renderLiteral, renderSiweLiteral, splitStatementCode, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
   import { requestedActionIds } from '$lib/widget-selection';
@@ -15,7 +14,15 @@
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import { expiryAtCapped, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import ApprovalExpiryControl from '$lib/components/signing/approval-expiry-control.svelte';
-  import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
+  import { formatLocalAccessEnd } from '$lib/access-end';
+  import CodeBox from '$lib/components/approval/code-box.svelte';
+  import DonePage, { type ReceiptRow } from '$lib/components/approval/done-page.svelte';
+  import { answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyNeed } from '$lib/approval-passkey';
+  import Loader from '$lib/components/approval/loader.svelte';
+  import SignInCard from '$lib/components/approval/sign-in-card.svelte';
+  import SignedInCard from '$lib/components/approval/signed-in-card.svelte';
+  import Slip from '$lib/components/approval/slip.svelte';
+  import { CODE, DONE, codeDestinationWord, fill } from '@openkey/sdk/approval-copy';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   const session = authClient.useSession();
@@ -82,6 +89,8 @@
   });
   let key = $state<EthereumKey | null>(null);
   let keyChoices = $state<KeyChoice[]>([]);
+  // How many keys the account has: the receipt names the signing key only when there was a choice.
+  let accountKeyCount = $state(0);
   let model = $state<CapabilityReviewModel | null>(null);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
@@ -91,6 +100,7 @@
   let selected = $state(new Set<string>());
   let contextToken = $state('');
   let previewToken = $state('');
+  let passkeyNeed = $state<ApprovalPasskeyNeed | null>(null);
   let previewMessage = $state('');
   let previewActions = $state<string[]>([]);
   let code = $state('');
@@ -101,6 +111,7 @@
   let replyFailureStatus = $state<number | null>(null);
   let busy = $state(false);
   let loginRequired = $state(false);
+  let cancelled = $state(false);
   let loaded = $state(false);
   let submitted = $state(false);
   let signingIn = $state(false);
@@ -162,7 +173,7 @@
   function cancelPending(): void {
     pending = null;
     clearPending();
-    error = 'Approval cancelled. Restart the CLI command for a new sign-in.';
+    cancelled = true;
   }
 
   function expireHandoff(): void {
@@ -198,7 +209,10 @@
     if (path === 'handoffs/claim' && response.status === 404 && record.error === 'Not found') {
       throw new Error('Prepared CLI sign-in is not available yet. Restart the CLI command after OpenKey is updated.');
     }
-    if (!response.ok) throw new Error(apiBusyOrEndedMessage(response.status) ?? (typeof record.error === 'string' ? record.error : `HTTP ${response.status}`));
+    if (!response.ok) {
+      const failure = new Error(apiBusyOrEndedMessage(response.status) ?? (typeof record.error === 'string' ? record.error : `HTTP ${response.status}`));
+      throw Object.assign(failure, { code: typeof record.code === 'string' ? record.code : undefined });
+    }
     return record;
   }
 
@@ -265,6 +279,7 @@
       const chain = /^Chain ID: ([1-9][0-9]*)$/m.exec(resolved.request.siwe);
       if (!match || !chain) throw new Error('The prepared SIWE does not name a valid signer and chain.');
       const { keys } = await api.listKeys();
+      accountKeyCount = keys.length;
       const candidates = keys.filter(item => item.address.toLowerCase() === match[2]!.toLowerCase() && (!resolved.request.keyId || item.id === resolved.request.keyId));
       if (!candidates.length) throw new Error('Requested signing key is not available for this SIWE account and chain.');
       const choices = candidates.map(candidate => {
@@ -331,6 +346,8 @@
       previewToken = candidate.previewApprovalToken;
       previewMessage = candidate.signedMessage;
       previewActions = actions;
+      // TC-3442: whether Approve needs the passkey, with the challenge for this preview.
+      passkeyNeed = isRecord(candidate.passkey) ? candidate.passkey as ApprovalPasskeyNeed : null;
       phase = 'preview';
     } catch (cause) {
       if (cause instanceof ServerReplyError) unreadableReply(cause.status);
@@ -351,7 +368,10 @@
     busy = true;
     error = '';
     try {
-      const body: Record<string, unknown> = { ticket, authorizationContextToken: contextToken, previewApprovalToken: previewToken, selectedActionIds: previewActions, protocolVersion: 1 };
+      // TC-3442: the passkey prompt comes first, while the tap still counts as the user's gesture. Without one the tap
+      // stays synchronous up to `submitted`, so a deadline passing mid-tap can't throw the handoff away.
+      const passkeyAssertion = key.keyType === 'EXTERNAL' || !passkeyNeed?.required ? undefined : await answerApprovalPasskey(passkeyNeed);
+      const body: Record<string, unknown> = { ticket, authorizationContextToken: contextToken, previewApprovalToken: previewToken, selectedActionIds: previewActions, protocolVersion: 1, ...(passkeyAssertion ? { passkeyAssertion } : {}) };
       if (key.keyType === 'EXTERNAL') {
         const provider = (window as Window & { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
         if (!provider) throw new Error('No browser wallet is available for this external key.');
@@ -400,6 +420,13 @@
     } catch (cause) {
       if (cause instanceof ServerReplyError) unreadableReply(cause.status);
       else error = cause instanceof Error ? cause.message : 'Signing failed. Restart the CLI command.';
+      // The refused challenge is spent: preview again for a new one, and keep the API's words on screen.
+      if (isPasskeyApprovalRefusal(cause)) {
+        busy = false;
+        const refusal = error;
+        await preview();
+        error = refusal;
+      }
     } finally { busy = false; }
   }
 
@@ -415,7 +442,7 @@
       previewToken = '';
       previewMessage = '';
       phase = 'review';
-      error = 'Approval cancelled. Restart the CLI command for a new sign-in.';
+      cancelled = true;
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not cancel sign-in.';
     } finally { busy = false; }
@@ -430,10 +457,57 @@
     } catch (cause) { error = cause instanceof Error ? cause.message : 'Passkey sign-in failed'; }
     finally { signingIn = false; }
   }
+  // What the page shows: a loader, the sign-in card, the signed-in card, or the request itself.
+  const ended = $derived(initialized && (cancelled || (!!error && !handoff && !pending)));
+  const loaderOn = $derived(
+    !initialized ||
+    (!ended && ($session.isPending || (!!$session.data && !loginRequired && !handoff && !code && (busy || pending !== null)))),
+  );
+  const loaderLit = $derived(!initialized || $session.isPending ? 'session' : 'request');
+  const cardOn = $derived(initialized && !ended && !$session.isPending && !$session.data);
+  const signedInOn = $derived(initialized && !ended && !$session.isPending && !!$session.data && loginRequired);
+  const slipAt = $derived(loaderOn ? 0 : cardOn || signedInOn ? 1 : cancelled ? 3 : handoff && phase === 'done' ? (delivered ? 4 : 3) : 2);
+  const slipLast = $derived(handoff && phase === 'done' && !delivered && !cancelled ? 'code' : 'terminal');
+  // The end pages: who asked, and what the receipt can say for certain.
+  const requester = $derived(model?.requester.displayName ?? '');
+  const receiptRows = $derived.by(() => {
+    const rows: ReceiptRow[] = [];
+    const ends = siweExpiration(previewMessage);
+    if (ends) rows.push({ label: DONE.receipt.ends, value: formatLocalAccessEnd(ends) });
+    if (key && accountKeyCount > 1) {
+      rows.push({ label: DONE.receipt.signedWith, value: `${key.label ?? `Key ${key.keyIndex}`} ${key.address.slice(0, 6)}...${key.address.slice(-4)}` });
+    }
+    return rows;
+  });
 </script>
 
-<div class="min-h-screen bg-[#fafafa] flex items-center justify-center px-4 py-8">
-  <main class="w-full max-w-xl rounded-xl border border-surface-200 bg-white p-6 shadow-sm space-y-5">
+<Slip at={slipAt} last={slipLast} center={loaderOn || cancelled || (!!handoff && phase === 'done')}>
+  {#if loaderOn}
+    <Loader phases={['session', 'request']} lit={loaderLit} />
+  {:else if cardOn}
+    <SignInCard
+      emailHref={`/auth/login?redirect=${encodeURIComponent('/delegate?transportVersion=2')}`}
+      registerHref={`/auth/register?returnTo=${encodeURIComponent('/delegate?transportVersion=2')}`}
+      {error}
+      {signingIn}
+      onPasskey={signIn}
+      onBegin={() => { error = ''; }}
+      onCancel={cancelPending}
+    />
+  {:else if signedInOn}
+    <SignedInCard onReview={() => { loginRequired = false; }} onCancel={cancelPending} />
+  {:else if cancelled}
+    <DonePage outcome="cancelled" />
+  {:else if handoff && phase === 'done' && delivered}
+    <DonePage outcome="signedIn" {requester} rows={receiptRows} />
+  {:else if handoff && phase === 'done'}
+    <CodeBox
+      fullCode={code}
+      eyebrow={CODE.eyebrow}
+      line={callbackFailed ? fill(CODE.lineNotReached, { destination: codeDestinationWord() }) : fill(CODE.line, { requester })}
+    />
+  {:else}
+    <div class="space-y-5">
     <header><h1 class="text-xl font-semibold text-surface-900">Prepared CLI sign-in</h1></header>
     {#if error}<p role="alert" class="rounded-lg bg-red-50 p-3 text-red-800">{error}</p>{/if}
     {#if replyFailureStatus !== null}
@@ -446,30 +520,8 @@
         </details>
       </div>
     {/if}
-    {#if !initialized}
-      <p>Loading prepared sign-in…</p>
-    {:else if error && !handoff && !pending}
+    {#if error && !handoff && !pending}
       <p>Start a new CLI sign-in to review a new request.</p>
-    {:else if $session.isPending}
-      <p>Checking your OpenKey account…</p>
-    {:else if !$session.data}
-      <p>Sign in to review this request.</p>
-      <a href={`/auth/login?redirect=${encodeURIComponent('/delegate?transportVersion=2')}`}>Continue with email</a>
-      <button disabled={signingIn} onclick={signIn}>Use a passkey instead</button>
-      <button onclick={cancelPending}>Cancel</button>
-    {:else if loginRequired}
-      <p>Sign-in completed in this tab. Continue to review the prepared request.</p>
-      <button onclick={() => { loginRequired = false; }}>Continue to approval</button>
-      <button onclick={cancelPending}>Cancel</button>
-    {:else if busy && !handoff && !code}<p>Loading prepared sign-in…</p>
-    {:else if handoff && phase === 'done'}
-      {#if delivered}<p role="status">CLI accepted your sign-in. You can close this window.</p><CloseTabButton />
-      {:else}
-        <p>{callbackFailed ? 'Could not reach the CLI automatically. Paste this same response in your CLI.' : 'Paste this response in your CLI to complete sign-in.'}</p>
-        <p>Only paste this code into a terminal you started yourself.</p>
-        <textarea readonly aria-label="Full delegation code" class="w-full h-28 break-all rounded-lg border p-2 font-mono text-xs" value={code}></textarea>
-        <button onclick={() => copyText(code)}>Copy full code</button>
-      {/if}
     {:else if handoff && keyChoices.length > 1 && !key}
       <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">Only approve if you started this sign-in yourself on your own computer.</p>
       <dl class="space-y-2 text-sm break-all">
@@ -558,5 +610,6 @@
       {/if}
       <button disabled={busy || submitted} onclick={cancel}>Cancel</button>
     {/if}
-  </main>
-</div>
+    </div>
+  {/if}
+</Slip>

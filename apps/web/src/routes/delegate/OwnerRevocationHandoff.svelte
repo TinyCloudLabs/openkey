@@ -3,14 +3,19 @@
   import { afterNavigate, replaceState } from '$app/navigation';
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { copyText } from '$lib/clipboard';
   import { getSessionToken } from '$lib/embed-passkey';
   import { ownerRevocationCopy as text } from '$lib/owner-revocation-copy';
   import { deliverOwnerRevocation } from '$lib/owner-revocation-response';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import { ownerRevocationAddress, parseOwnerRevocationRequest, renderSiweLiteral, type OwnerRevocationRequest } from '@openkey/capability-review';
-  import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
+  import CodeBox from '$lib/components/approval/code-box.svelte';
+  import DonePage from '$lib/components/approval/done-page.svelte';
+  import Loader from '$lib/components/approval/loader.svelte';
+  import SignInCard from '$lib/components/approval/sign-in-card.svelte';
+  import SignedInCard from '$lib/components/approval/signed-in-card.svelte';
+  import Slip from '$lib/components/approval/slip.svelte';
+  import { CODE, DONE, codeDestinationWord, fill } from '@openkey/sdk/approval-copy';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   // A 2xx reply that cannot be read: the server may have signed, so the owner must not sign again from this page.
@@ -36,6 +41,7 @@
   let submitted = $state(false);
   let signingIn = $state(false);
   let loginRequired = $state(false);
+  let cancelled = $state(false);
   let pendingTimeout: ReturnType<typeof setTimeout> | undefined;
   let routerReady = false;
   let markerNeeded = false;
@@ -204,14 +210,14 @@
 
   async function cancel() {
     if (busy || submitted) return;
-    if (!ticket) { pending = null; clearPending(); error = 'Approval cancelled. Restart the CLI command.'; return; }
+    if (!ticket) { pending = null; clearPending(); cancelled = true; return; }
     busy = true;
     try {
       const result = await post('handoffs/cancel-claimed', { ticket });
       if (result.cancelled !== true) throw new Error('The handoff was not cancelled.');
       request = null;
       delivery = null;
-      error = 'Approval cancelled. Restart the CLI command.';
+      cancelled = true;
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not cancel the handoff.';
     } finally { busy = false; }
@@ -226,34 +232,53 @@
     } catch (cause) { error = cause instanceof Error ? cause.message : 'Passkey sign-in failed'; }
     finally { signingIn = false; }
   }
+  // What the page shows: a loader, the sign-in card, the signed-in card, or the request itself.
+  const ended = $derived(initialized && !$session.isPending && (cancelled || (!!error && !request && !pending)));
+  const loaderOn = $derived(
+    !initialized || $session.isPending || (!ended && !!$session.data && !loginRequired && !code && !request),
+  );
+  const loaderLit = $derived(!initialized || $session.isPending ? 'session' : 'request');
+  const cardOn = $derived(!loaderOn && !ended && !$session.data);
+  const signedInOn = $derived(!loaderOn && !ended && !!$session.data && loginRequired);
+  const slipAt = $derived(loaderOn ? 0 : cardOn || signedInOn ? 1 : cancelled ? 3 : code ? (delivered ? 4 : 3) : 2);
+  const slipLast = $derived(code && !delivered && !cancelled ? 'code' : 'terminal');
+  const shortCid = (cid: string) => `${cid.slice(0, 10)}…${cid.slice(-6)}`;
 </script>
 
-<div class="min-h-screen bg-[#fafafa] flex items-center justify-center px-4 py-8">
-  <main class="w-full max-w-xl rounded-xl border border-surface-200 bg-white p-6 shadow-sm space-y-5">
+<Slip at={slipAt} last={slipLast} center={loaderOn || cancelled || !!code}>
+  {#if loaderOn}
+    <Loader phases={['session', 'request']} lit={loaderLit} />
+  {:else if cardOn}
+    <SignInCard
+      emailHref={`/auth/login?redirect=${encodeURIComponent('/delegate?transportVersion=2')}`}
+      registerHref={`/auth/register?returnTo=${encodeURIComponent('/delegate?transportVersion=2')}`}
+      {error}
+      {signingIn}
+      onPasskey={signIn}
+      onBegin={() => { error = ''; }}
+      onCancel={cancel}
+    />
+  {:else if signedInOn}
+    <SignedInCard onReview={() => { loginRequired = false; }} onCancel={cancel} />
+  {:else if cancelled}
+    <DonePage outcome="cancelled" />
+  {:else if code && delivered && request}
+    <DonePage outcome="signed" rows={[{ label: DONE.receipt.permission, value: shortCid(request.cid), mono: true }]} />
+  {:else if code}
+    <CodeBox
+      fullCode={code}
+      eyebrow={CODE.eyebrowRevoke}
+      line={fill(delivery?.callback ? CODE.lineNotReached : CODE.lineRevoke, { destination: codeDestinationWord() })}
+    />
+  {:else}
+    <div class="space-y-5">
     <header><h1 class="text-xl font-semibold text-surface-900">{text.title}</h1></header>
     {#if error}<p role="alert" class="rounded-lg bg-red-50 p-3 text-red-800">{error}</p>{/if}
-    {#if !initialized || $session.isPending}<p>Checking your OpenKey account…</p>
-    {:else if error && !request && !pending}<p>Start a new CLI revocation request.</p>
-    {:else if !$session.data}
-      <p>Sign in to review this request.</p>
-      <a href={`/auth/login?redirect=${encodeURIComponent('/delegate?transportVersion=2')}`}>Continue with email</a>
-      <button disabled={signingIn} onclick={signIn}>Use a passkey instead</button>
-      <button onclick={cancel}>{text.cancel}</button>
-    {:else if loginRequired}
-      <p>Sign-in completed in this tab. Continue to review the prepared request.</p>
-      <button onclick={() => { loginRequired = false; }}>Continue to approval</button>
-      <button onclick={cancel}>{text.cancel}</button>
-    {:else if code}
-      {#if delivered}<p role="status">{text.signed} You can close this window.</p><CloseTabButton />
-      {:else}
-        <p>{text.paste}</p>
-        <textarea readonly aria-label="Full revocation code" class="w-full h-28 break-all rounded-lg border p-2 font-mono text-xs" value={code}></textarea>
-        <button onclick={() => copyText(code)}>Copy full code</button>
-      {/if}
+    {#if ended}<p>Start a new CLI revocation request.</p>
     {:else if request}
       <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">{text.warning}</p>
       <dl class="space-y-2 text-sm break-all">
-        <div><dt class="font-semibold">{text.permission}</dt><dd><code>{request.cid.slice(0, 10)}…{request.cid.slice(-6)}</code></dd></div>
+        <div><dt class="font-semibold">{text.permission}</dt><dd><code>{shortCid(request.cid)}</code></dd></div>
         <div><dt class="font-semibold">{text.fullCid}</dt><dd><input aria-label={text.fullCid} readonly value={request.cid} class="w-full rounded-lg border border-surface-200 bg-surface-50 p-2 font-mono text-xs" /><p class="mt-1">{text.matchCid}</p></dd></div>
         <div><dt class="font-semibold">{text.owner}</dt><dd><code>{ownerRevocationAddress(request)}</code></dd></div>
         {#if siwe}<div><dt class="font-semibold">{text.expires}</dt><dd>{siwe.match(/^Expiration Time: (.+)$/m)?.[1]}</dd></div>{/if}
@@ -269,6 +294,7 @@
         <button disabled={busy || submitted} onclick={revoke}>{text.revoke}</button>
       {/if}
       <button disabled={busy || submitted} onclick={cancel}>{text.cancel}</button>
-    {:else}<p>Loading prepared revocation…</p>{/if}
-  </main>
-</div>
+    {/if}
+    </div>
+  {/if}
+</Slip>

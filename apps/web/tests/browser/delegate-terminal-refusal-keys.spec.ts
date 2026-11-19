@@ -49,6 +49,7 @@ test.describe('TC-3343 terminal refusal at the key step', () => {
     await expect(page.getByRole('button', { name: 'Use a different key' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Link External Wallet' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Generate/ })).toHaveCount(0);
+    await page.locator('[data-account-menu] button').first().click();
     await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
     await page.screenshot({ path: '/var/tmp/shot-terminal-keys.png', fullPage: true });
   });
@@ -61,6 +62,7 @@ test.describe('TC-3343 terminal refusal at the key step', () => {
     await expect(page.getByRole('alert').filter({ hasText: 'This request has already been answered or has ended.' })).toBeVisible();
     await expect(keyButton(page, 'Key 0')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Link External Wallet' })).toHaveCount(0);
+    await page.locator('[data-account-menu] button').first().click();
     await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
   });
 

@@ -41,12 +41,19 @@ services:
       - OPENKEY_METRICS_READ_TOKEN=${OPENKEY_METRICS_READ_TOKEN:-}
       - NODE_STATS_URL=${NODE_STATS_URL:-}
       - NODE_STATS_READ_TOKEN=${NODE_STATS_READ_TOKEN:-}
+      - SCOREBOARD_EXCLUSIONS=${SCOREBOARD_EXCLUSIONS:-}
       - SCOREBOARD_EXCLUDE_USER_IDS=${SCOREBOARD_EXCLUDE_USER_IDS:-}
+      - SCOREBOARD_EXCLUDE_ADDRESSES=${SCOREBOARD_EXCLUDE_ADDRESSES:-}
+      - SCOREBOARD_DISPOSABLE_DOMAINS=${SCOREBOARD_DISPOSABLE_DOMAINS:-}
       - SCOREBOARD_EXCLUDE_CLIENT_IDS=${SCOREBOARD_EXCLUDE_CLIENT_IDS:-}
+      - SCOREBOARD_EXCLUDE_EMAIL_PREFIXES=${SCOREBOARD_EXCLUDE_EMAIL_PREFIXES:-}
       - OPENKEY_NATIVE_RENEW_DISABLED=${OPENKEY_NATIVE_RENEW_DISABLED:-}
-      - OPENKEY_RENEWAL_LEASES=${OPENKEY_RENEWAL_LEASES:-}
-      - OPENKEY_RENEWAL_NODE_DID=${OPENKEY_RENEWAL_NODE_DID:-}
-      - OPENKEY_RENEWAL_RENEWER_DID=${OPENKEY_RENEWAL_RENEWER_DID:-}
+      # Renewal leases: public settings, written here rather than sealed, so turning them on or off is a
+      # reviewed compose change and never touches the sealed environment. The DIDs are the production node's,
+      # as https://node.tinycloud.xyz/.well-known/tinycloud/node-keys advertises them (nodeDid, renewerDid).
+      - OPENKEY_RENEWAL_LEASES=enabled
+      - OPENKEY_RENEWAL_NODE_DID=did:key:z6MkjHi79SMX4doJyo2w7jDTM6Fa7iX6EVZWXNbJ6RzBm3Wi
+      - OPENKEY_RENEWAL_RENEWER_DID=did:key:z6MkgWpiYdQV8pAr3dtHLdQsoZR3wF5wsS7fpkzAuX6q1PZj
     restart: unless-stopped
     healthcheck:
       # Keep this aligned with the API's configurable listener. `$$` defers

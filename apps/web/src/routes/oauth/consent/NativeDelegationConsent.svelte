@@ -11,6 +11,7 @@
     type CapabilityAction, type CapabilityGrant, type CapabilityReviewModel,
   } from '@openkey/capability-review';
   import { reviewSelectionToActionKeys, preparedMatchesSelection, type ServerPermissionOption } from '$lib/delegate-review-selection';
+  import { answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyNeed } from '$lib/approval-passkey';
 
   let { requestId, clientId, email, ready }: {
     requestId: string; clientId: string; email?: string;
@@ -23,6 +24,8 @@
     client: { name: string; icon?: string | null; organization?: string | null };
     address: string; keyId: string; redirectScheme: string; tinycloudHost: string;
     ttlSeconds: number; grantLifetimeSeconds: number; permissionOptions: ServerPermissionOption[]; selectedActionKeys: string[];
+    /** TC-3442: whether Approve needs the passkey, with the challenge for this revision. */
+    passkey?: ApprovalPasskeyNeed;
   };
   let preview = $state<Preview | null>(null);
   let model = $state<CapabilityReviewModel | null>(null);
@@ -49,7 +52,10 @@
     });
     const data = await response.json().catch(() => ({}));
     if (isTermsRequired(response.status, data)) sendToTerms();
-    if (!response.ok) throw new Error(data.error_description ?? data.error ?? `${action} failed (${response.status})`);
+    if (!response.ok) {
+      const failure = new Error(data.error_description ?? data.error ?? `${action} failed (${response.status})`);
+      throw Object.assign(failure, { code: typeof data.code === 'string' ? data.code : undefined });
+    }
     return data;
   }
   async function prepare(actionKeys?: string[]) {
@@ -99,14 +105,23 @@
       if (!approved) {
         const current = preview;
         if (!current) throw new Error('Preparation missing');
+        // TC-3442: the passkey prompt comes first, while the tap still counts as the user's gesture.
+        const passkeyAssertion = await answerApprovalPasskey(current.passkey);
         await route('approve', { revision: current.revision, digest: current.digest,
-          sessionSiwe: current.sessionSiwe, ...(current.hostPlan ? { hostSiwe: current.hostPlan.hostSiwe } : {}) });
+          sessionSiwe: current.sessionSiwe, ...(current.hostPlan ? { hostSiwe: current.hostPlan.hostSiwe } : {}),
+          ...(passkeyAssertion ? { passkeyAssertion } : {}) });
         approved = true;
       }
       await providerConsent(true);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Approval failed';
       if (error === 'preparation_superseded') await prepare(reviewSelectionToActionKeys(model!, baselineOptions, selection));
+      // The refused challenge is spent: prepare again for a new one, and keep the API's words on screen.
+      else if (isPasskeyApprovalRefusal(cause)) {
+        const refusal = error;
+        await prepare(reviewSelectionToActionKeys(model!, baselineOptions, selection));
+        error = refusal;
+      }
       submitting = false;
     }
   }

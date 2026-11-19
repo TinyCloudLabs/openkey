@@ -48,6 +48,20 @@ describe('embedded email OTP', () => {
     )).rejects.toThrow('no embedded session token');
   });
 
+  test('a session token in the body without the set-auth-token header is not accepted', async () => {
+    let persisted = '';
+    const fetchImpl = (async () => Response.json(
+      { token: 'raw-session', session: { token: 'raw-session' }, user: { id: 'user-1' } },
+    )) as typeof fetch;
+    await expect(embedVerifyEmailOtp(
+      'person@example.test',
+      '123456',
+      fetchImpl,
+      (value) => { persisted = value; },
+    )).rejects.toThrow('no embedded session token');
+    expect(persisted).toBe('');
+  });
+
   test('a verified code for a new email returns the sign-up token and signs nobody in', async () => {
     let persisted = '';
     const fetchImpl = (async () => new Response(

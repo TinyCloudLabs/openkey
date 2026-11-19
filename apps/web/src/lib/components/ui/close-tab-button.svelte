@@ -1,11 +1,19 @@
 <script lang="ts">
-  // A Close button for the pages that end an approval. `window.close()` only works for a
+  // "Close this tab" for the pages that end an approval. `window.close()` only works for a
   // window a script opened; when the browser refuses (a tab the owner opened), the button
   // is replaced by a line saying what happened. Focus moves to that line, and it is a
   // status (announced once), not an alert.
+  import Button from '$lib/components/ui/button.svelte';
   import { browserCloseEnvironment, closeThisTab } from '$lib/delegate-close-tab';
+  import { CLOSE_TAB, TAB_KEPT_OPEN } from '@openkey/sdk/approval-copy';
 
-  let { allowBack = false }: { allowBack?: boolean } = $props();
+  interface Props {
+    allowBack?: boolean;
+    /** `button`: the page's main button. `link`: a quiet link in a line of links. */
+    look?: 'button' | 'link';
+  }
+
+  let { allowBack = false, look = 'button' }: Props = $props();
 
   let stuck = $state(false);
   let refusal = $state<HTMLParagraphElement | null>(null);
@@ -25,11 +33,13 @@
 </script>
 
 {#if stuck}
-  <p bind:this={refusal} tabindex="-1" role="status" class="text-surface-600 text-sm mt-4 outline-none">Your browser kept this tab open. Close it from your browser.</p>
-{:else}
+  <p bind:this={refusal} tabindex="-1" role="status" class="m-0 text-[13px] leading-normal text-surface-500 outline-none {look === 'button' ? 'mt-4' : ''}">{TAB_KEPT_OPEN}</p>
+{:else if look === 'link'}
   <button
     type="button"
-    class="mt-4 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100"
+    class="cursor-pointer border-0 bg-transparent p-0 font-semibold text-surface-950 underline decoration-surface-300 underline-offset-[3px]"
     onclick={close}
-  >Close</button>
+  >{CLOSE_TAB}</button>
+{:else}
+  <Button class="mt-5 w-full" onclick={close}>{CLOSE_TAB}</Button>
 {/if}

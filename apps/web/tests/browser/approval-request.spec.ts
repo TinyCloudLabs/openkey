@@ -32,14 +32,14 @@ async function serve(page: Page, response: { status?: number; body?: unknown } =
 test('complete short link survives sign-in navigation and repeated previews without authorizing', async ({ page }) => {
   const calls = await serve(page);
   await page.goto(path + fragment);
-  await expect(page.getByRole('button', { name: 'Continue with email' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Continue with email' })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
   expect(await page.evaluate(key => sessionStorage.getItem(key), storageKey)).toBe(fragment);
-  await page.getByRole('button', { name: 'Continue with email' }).click();
+  await page.getByRole('link', { name: 'Continue with email' }).click();
   await expect(page).toHaveURL(new RegExp('/auth/login\\?redirect='));
   expect(new URL(page.url()).searchParams.get('redirect')).toBe(path);
   await page.goto(path);
-  await expect(page.getByRole('button', { name: 'Continue with email' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Continue with email' })).toBeVisible();
   expect(calls.filter(value => value === `/api/approval-requests/${id}/load`)).toHaveLength(2);
   expect(calls.filter(value => value.startsWith('/api/delegate') || value.startsWith('/api/approval-results'))).toEqual([]);
 });
@@ -48,7 +48,7 @@ test('a preview without a fragment cannot load or consume approval', async ({ pa
   const calls = await serve(page);
   await page.goto(path);
   await expect(page.getByRole('alert')).toContainText('Reopen the original complete link');
-  await expect(page.getByRole('button', { name: 'Continue with email' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Continue with email' })).toHaveCount(0);
   expect(calls.filter(value => value.includes('approval') || value.includes('delegate'))).toEqual([]);
 });
 
@@ -73,7 +73,7 @@ for (const scenario of [
     await serve(page, { status: scenario.status, body: { code: scenario.code, error: 'opaque decoder details' } });
     await page.goto(path + fragment);
     await expect(page.getByRole('alert')).not.toContainText('opaque decoder details');
-    await expect(page.getByRole('button', { name: 'Continue with email' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Continue with email' })).toHaveCount(0);
     if (scenario.code === 'expired') expect(await page.evaluate(key => sessionStorage.getItem(key), storageKey)).toBeNull();
   });
 }
@@ -83,14 +83,14 @@ test('legacy truncated link stops before sign-in or key selection', async ({ pag
   await page.goto('/delegate?did=did:key:requester');
   await expect(page.getByRole('heading', { name: 'Incomplete approval link' })).toBeVisible();
   await expect(page.getByRole('alert')).toContainText('new complete link');
-  await expect(page.getByRole('button', { name: 'Continue with email' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Continue with email' })).toHaveCount(0);
   expect(calls.filter(value => value === '/api/keys' || value.startsWith('/api/delegate'))).toEqual([]);
 });
 
 test('client navigation to another request never reuses the previous approval', async ({ page }) => {
   const calls = await serve(page);
   await page.goto(path + fragment);
-  await expect(page.getByRole('button', { name: 'Continue with email' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Continue with email' })).toBeVisible();
   const nextPath = `/a/${'b'.repeat(26)}`;
   await page.evaluate(target => {
     const link = document.createElement('a');
@@ -101,7 +101,7 @@ test('client navigation to another request never reuses the previous approval', 
   }, nextPath);
   await page.locator('#next-approval').click();
   await expect(page.getByRole('alert')).toContainText('Reopen the original complete link');
-  await expect(page.getByRole('button', { name: 'Continue with email' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Continue with email' })).toHaveCount(0);
   expect(calls.filter(value => value === `/api/approval-requests/${id}/load`)).toHaveLength(1);
 });
 
