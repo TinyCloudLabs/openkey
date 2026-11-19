@@ -54,6 +54,8 @@ if (!process.env.TC_SIGN_ORIGIN_CHILD) {
     await prisma.session.create({ data: { id: randomUUID(), userId, token, expiresAt: new Date(Date.now() + 3600_000) } });
     const authContext = await auth.$context;
     const cookie = (await serializeSignedCookie(authContext.authCookies.sessionToken.name, token, authContext.secret)).split(';')[0]!;
+    // A bearer is the signed session token, as `set-auth-token` hands it out.
+    const bearer = cookie.slice(cookie.indexOf('=') + 1);
 
     // The account and console origins are on the credentialed CORS allowlist.
     const OPENKEY = 'https://openkey.example';
@@ -189,7 +191,7 @@ if (!process.env.TC_SIGN_ORIGIN_CHILD) {
 
     const widgetBearer = await sign(
       { message: siweFor(EMBEDDER), requestOrigin: EMBEDDER },
-      { authorization: `Bearer ${token}`, origin: OPENKEY },
+      { authorization: `Bearer ${bearer}`, origin: OPENKEY },
     );
     expect(widgetBearer.status).toBe(200);
 
@@ -197,7 +199,7 @@ if (!process.env.TC_SIGN_ORIGIN_CHILD) {
     expect(typedPanel.status).toBe(200);
     const typedBearer = await signTyped(
       typedData,
-      { authorization: `Bearer ${token}`, origin: OPENKEY },
+      { authorization: `Bearer ${bearer}`, origin: OPENKEY },
     );
     expect(typedBearer.status).toBe(200);
 
