@@ -657,9 +657,9 @@ Order:
    fails, run the rollback below.
 
 Step 5 checks the new web with the previous API, and an API rollback returns
-to that pairing. The new API with the previous web isn't a checked pairing:
-the new API refuses the elevated flow from a web that doesn't send the new
-decision. That's why the web goes first.
+to that pairing. The new API with the previous web isn't a checked pairing,
+because the new API needs what the new web sends. That's why the web goes
+first.
 
 Don't relax a refusal the API makes, or skip a check, to shorten the time
 between steps, in the deploy or in the rollback.
