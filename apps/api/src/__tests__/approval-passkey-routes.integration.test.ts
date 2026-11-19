@@ -240,7 +240,7 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
       const passkey = await createSoftPasskey(prisma, owner.userId, true, web);
       const path = `/api/keys/${owner.keyId}/sign-typed-data`;
 
-      const auths: Record<string, string>[] = [{ cookie: owner.cookie }, { authorization: `Bearer ${owner.token}` }];
+      const auths: Record<string, string>[] = [{ cookie: owner.cookie }, { authorization: `Bearer ${owner.cookie.slice(owner.cookie.indexOf('=') + 1)}` }];
       for (const auth of auths) {
         await expectRefusal(await post(path, auth, typedData), 'passkey_approval_required');
         const otherData = { ...typedData, message: { contents: 'bye' } };
