@@ -26,4 +26,3 @@ export * from "./elevated.js";
 export * from "./elevated-copy.js";
 export * from "./owner-revocation.js";
 
-export { COURIER_HEADING } from "./courier.js";
