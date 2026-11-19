@@ -5,7 +5,9 @@
 // measured on the monotonic clock (performance.now()), so the displayed time
 // does not move with wall-clock changes after receipt.
 
-export const CODE_EXPIRED_TEXT = 'Code expired: start again in the CLI.';
+export const CODE_EXPIRED_TEXT = 'Code expired. Get a new code, or start again in the CLI.';
+// When the approval has ended too, no new code can be minted.
+export const CODE_AND_APPROVAL_EXPIRED_TEXT = 'Code expired, and so has this approval. Start again in the CLI.';
 export const CODE_ONE_MINUTE_ANNOUNCEMENT = '1 minute left to use this code.';
 
 const ONE_MINUTE_MS = 60_000;

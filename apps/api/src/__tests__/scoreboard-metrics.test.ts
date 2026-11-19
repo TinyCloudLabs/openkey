@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mockModules } from './mock-module';
 
 // The route captures this client when it loads; tests fill it in per case.
-const emptyDatabase = () => ({ $queryRaw: async () => [] });
+const emptyDatabase = () => ({ $queryRaw: async () => [], user: { findMany: async () => [] } });
 const routeDatabase: Record<string, unknown> = emptyDatabase();
 await mockModules({
   '@openkey/db': () => ({ createPrismaClient: () => routeDatabase }),
@@ -89,13 +89,14 @@ test('app users: excluded accounts and excluded OAuth clients are removed', asyn
 });
 
 
-const envKeys = ['SCOREBOARD_EXCLUSIONS', 'SCOREBOARD_EXCLUDE_CLIENT_IDS', 'OPENKEY_METRICS_READ_TOKEN', 'INTERNAL_METRICS_TOKEN', 'NODE_STATS_URL', 'NODE_STATS_READ_TOKEN'] as const;
+const envKeys = ['SCOREBOARD_EXCLUSIONS', 'SCOREBOARD_EXCLUDE_CLIENT_IDS', 'SCOREBOARD_EXCLUDE_EMAIL_PREFIXES', 'SCOREBOARD_EXCLUDE_USER_IDS', 'OPENKEY_METRICS_READ_TOKEN', 'INTERNAL_METRICS_TOKEN', 'NODE_STATS_URL', 'NODE_STATS_READ_TOKEN'] as const;
 const savedEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
 const realFetch = globalThis.fetch;
 beforeEach(() => {
   process.env.OPENKEY_METRICS_READ_TOKEN = 'read-token';
   process.env.NODE_STATS_URL = 'https://node.example/admin/stats';
   process.env.NODE_STATS_READ_TOKEN = 'node-token';
+  delete process.env.SCOREBOARD_EXCLUDE_EMAIL_PREFIXES;
   resetScoreboardRateLimitForTests();
 });
 afterEach(() => {
@@ -285,4 +286,35 @@ test('the scoreboard routes fail closed, without echoing the list, when the excl
   } finally {
     console.error = quiet;
   }
+});
+
+test('scoreboard routes exclude built-in and configured email prefixes alongside shared identities', async () => {
+  process.env.SCOREBOARD_EXCLUSIONS = JSON.stringify([{ kind: 'user_id', value: 'shared' }]);
+  process.env.SCOREBOARD_EXCLUDE_EMAIL_PREFIXES = ' QA-Extra- , , unused- ';
+  process.env.SCOREBOARD_EXCLUDE_USER_IDS = 'real';
+  const users = [
+    { id: 'smoke', email: 'QA-SM-SMOKE-run@example.com', ethereumKeys: [] },
+    { id: 'configured', email: 'qa-extra-run@example.com', ethereumKeys: [] },
+    { id: 'shared', email: 'shared@example.com', ethereumKeys: [] },
+    { id: 'real', email: 'real-qa-sm-smoke-run@example.com', ethereumKeys: [] },
+  ];
+  const keys = users.map(({ id: userId }, index) => ({
+    userId, address: '0x' + String(index + 1).padStart(40, '0'),
+  }));
+  const recent = new Date();
+  useRouteDatabase(database({
+    access: [{ userId: 'smoke', createdAt: recent }, { userId: 'real', createdAt: recent }],
+    refresh: [{ userId: 'configured', createdAt: recent }],
+    consent: [{ userId: 'shared', createdAt: recent }],
+    signIn: [{ userId: 'smoke', day: recent }],
+  }, keys));
+  routeDatabase.user = { findMany: async () => users };
+  stubNode(() => Response.json({ owners: keys.map((key) => key.address) }));
+
+  const app = await scoreboardMetricsRouter.request('/app-users', { headers: { Authorization: 'Bearer read-token' } });
+  expect(app.status).toBe(200);
+  expect(await app.json()).toMatchObject({ total: 1, active7d: 1 });
+  const protocol = await getProtocolUsers();
+  expect(protocol.status).toBe(200);
+  expect(await protocol.json()).toEqual({ count: 1 });
 });
