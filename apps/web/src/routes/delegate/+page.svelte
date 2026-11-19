@@ -45,7 +45,7 @@
   import { activeKeys, autoSelectKey } from '$lib/delegate-key-selection';
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
-  import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
+  import { startCodeCountdown, remainingFromServerClock, CODE_AND_APPROVAL_EXPIRED_TEXT, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
   import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
   import { MAX_LEASE_MS, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import {
@@ -181,7 +181,11 @@
       deadline,
       onUpdate: (snapshot) => {
         codeCountdown = snapshot;
-        if (snapshot.announcement) codeAnnouncement = snapshot.announcement;
+        if (snapshot.announcement) {
+          // Read at expiry: the approval-expiry effect below updates `delegationExpired` only after this tick.
+          const approvalEnded = snapshot.expired && !(Number.isFinite(delegationExpiry) && delegationExpiry > Date.now());
+          codeAnnouncement = approvalEnded ? CODE_AND_APPROVAL_EXPIRED_TEXT : snapshot.announcement;
+        }
       },
     });
   });
@@ -1828,7 +1832,7 @@
               <div class="w-full rounded-xl bg-surface-50 border border-surface-200 px-3 py-4">
                 <div class="font-mono text-2xl font-semibold tracking-widest select-all {codeCountdown?.expired ? 'text-surface-400 line-through' : 'text-surface-900'}">{shortCode}</div>
                 {#if codeCountdown}
-                  <p role="timer" aria-live="off" class="text-sm mt-2 {codeCountdown.expired ? 'font-medium text-amber-900' : 'text-surface-600'}">{codeCountdown.text}</p>
+                  <p role="timer" aria-live="off" class="text-sm mt-2 {codeCountdown.expired ? 'font-medium text-amber-900' : 'text-surface-600'}">{codeCountdown.expired && delegationExpired ? CODE_AND_APPROVAL_EXPIRED_TEXT : codeCountdown.text}</p>
                   {#if !codeCountdown.expired}
                     <p class="text-surface-500 text-xs mt-1">Works once.</p>
                   {/if}

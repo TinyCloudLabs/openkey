@@ -106,7 +106,7 @@ test('an expired short code can be re-minted for the same approval', async ({ pa
   await page.clock.fastForward(300_001);
   const showAgain = page.getByRole('button', { name: 'Get a new code', exact: true });
   await expect(showAgain).toBeVisible();
-  await expect(page.getByRole('timer')).toHaveText('Code expired. Get a new code here, or start again in the CLI.');
+  await expect(page.getByRole('timer')).toHaveText('Code expired. Get a new code, or start again in the CLI.');
   await expect(page.getByText('Works once.', { exact: true })).toHaveCount(0);
   await expect(copy).toHaveCount(0);
   const showBox = await showAgain.boundingBox();
@@ -177,6 +177,8 @@ test('an expired approval cannot re-mint its short code', async ({ page }) => {
   await expect(page.getByText('AAAA-BBBB')).toBeVisible();
   await page.clock.fastForward(300_001);
   await expect(page.getByRole('button', { name: 'Get a new code' })).toHaveCount(0);
+  await expect(page.getByRole('timer')).toHaveText('Code expired, and so has this approval. Start again in the CLI.');
+  await expect(page.getByRole('status').filter({ hasText: 'Code expired, and so has this approval. Start again in the CLI.' })).toHaveCount(1);
   await expect(page.getByRole('button', { name: 'Copy short code' })).toHaveCount(0);
   expect(minted).toBe(1);
 });
