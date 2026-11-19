@@ -1038,6 +1038,6 @@ model ReviewerCleanup {
   retryAt DateTime @default(now())
   leaseUntil DateTime?
   attempts Int @default(0)
-  @@index([retryAt, completedAt])
+  @@index([retryAt, completedAt], map: "reviewer_cleanup_due")
   @@map("reviewer_cleanup")
 }
