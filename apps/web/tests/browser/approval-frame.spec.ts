@@ -36,7 +36,7 @@ for (const width of [390, 1280]) {
 
 test('the account chip is hidden while signed out', async ({ page }) => {
   await open(page, delegateLink, false);
-  await expect(page.getByRole('button', { name: 'Continue with email' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Continue with email' })).toBeVisible();
   await expect(page.locator('[data-account-menu]')).toHaveCount(0);
 });
 
