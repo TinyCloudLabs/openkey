@@ -460,3 +460,6 @@ export default {
   port,
   fetch: app.fetch,
 };
+
+// The route table, for the test that every route outside the reviewer allowlist refuses a reviewer.
+export { app };

@@ -24,7 +24,7 @@ Hardware fuses + Code measurement + Path
 
 1. App calls `dstack.deriveKey("openkey/user/123/keys")` via Unix socket (`/var/run/dstack.sock`)
 2. dstack KMS (running in TEE) verifies the caller is an attested app (code hash matches)
-3. KMS derives key using HKDF from: **master secret** (hardware-bound) + **app identity** (compose hash) + **path** (user-specific)
+3. KMS derives key using HKDF from: **master secret** (hardware-bound) + **app identity** (the app id, which stays the same across deploys; not the compose hash, which changes with every deploy while keys survive) + **path** (user-specific)
 4. Returns 32-byte key. Same inputs → same output. **Nothing stored.**
 
 **OpenKey's usage:**

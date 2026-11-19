@@ -1,0 +1,5 @@
+# Digests of API images that ran in production before deploy-api.yml recorded its deployments.
+# One per line: `sha256:<64 hex> <reason>` (the reason is required; a bare digest does not count). These are the
+# images rollback_digest may restore besides the ones deploy-api.yml recorded itself. Add a line only by PR, for a
+# digest known to have run in production, saying where it ran (for example `live 2025-11 before #551`).
+sha256:826ceab4ebbff8e31792cbb25dfaff71f052523da28c51d2fcb869b1c85ba4a1 live in production before #551 (deploy run 44082702520, commit 53687cec6068c284d1f5d86e488b6822651a42c1, 2026-11-17 12:23Z); the registry tag for that commit resolved to this digest on 2026-11-17

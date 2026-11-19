@@ -3,7 +3,7 @@ import type { PrismaClient } from '@openkey/db';
 import { logReviewer } from '../log';
 import { REVIEWER_MAX_SECONDS, captureReviewer, reviewerActive, reviewerForUser, reviewerForEmail } from '../services/reviewer-accounts';
 
-const ROUTES = new Set([
+export const REVIEWER_ROUTES = new Set([
   'POST /api/review-account/delete-intent', 'POST /api/review-account/delete',
   // TC-3232: with a Terms release configured, a reviewer must be able to read and accept the Terms.
   'GET /api/account/terms', 'POST /api/account/terms/accept',
@@ -27,7 +27,7 @@ export function createReviewerRouteGuard(
     const principals = await resolve(c.req.raw.headers);
     const bindings = await Promise.all(principals.map((principal) => reviewerForUser(database, principal.userId)));
     if (!bindings.some(Boolean)) return next();
-    const listed = ROUTES.has(`${c.req.method} ${c.req.path.replace(/\/$/, '')}`);
+    const listed = REVIEWER_ROUTES.has(`${c.req.method} ${c.req.path.replace(/\/$/, '')}`);
     const nativeConsentRoute = c.req.method === 'POST'
       && (/^\/api\/oauth\/tinycloud\/requests\/[^/]+\/(prepare|approve|deny)$/.test(c.req.path)
         || ['/api/auth/oauth2/tinycloud/renew', '/api/auth/oauth2/tinycloud/revoke'].includes(c.req.path));

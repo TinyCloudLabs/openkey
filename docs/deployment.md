@@ -424,10 +424,11 @@ use `--applied`.
 
 Rollback after this migration is the previous image, redeployed by hand; it
 does not read the added columns or the new table, and the new triggers do
-nothing for ordinary users. `gh run rerun <last good run>`, which the header of
-`deploy-api.yml` names, does not work here: an older checkout stops at the
-migration step with "Production contains migration history absent from this
-checkout", because `_prisma_migrations` already records this migration.
+nothing for ordinary users. `gh run rerun <last good run>` does not work here:
+an older checkout stops at the migration step with "Production contains
+migration history absent from this checkout", because `_prisma_migrations`
+already records this migration. The `rollback_digest` input of `deploy-api.yml`
+(docs/releases.md, "Rollback") does not run migrations, so it is not affected.
 
 The schema can be reverted as well, together with a code revert that removes
 the migration directory, its two checksum pins and the 25-column expectation in
@@ -476,6 +477,8 @@ or `google`.
    web. Cloudflare Pages production deployments are turned off, and the
    release coordinator publishes the web by retrying the skipped production
    deployment in Cloudflare Pages.
+   The `pages-openkey` records mirror Pages check runs on `main`
+   (`record-pages-deployments.yml`); they do not mean production changed.
    The API is deployed with `deploy-api.yml`. The review-code step cannot work
    until both are live: the old web caps the code box at six characters, and
    the old API refuses the sign-in.

@@ -287,6 +287,38 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     expect((await call('/api/organizations', 'POST', {}, { cookie })).status).toBe(403);
   });
 
+  test('every route outside the reviewer allowlist refuses a reviewer cookie and a reviewer bearer', async () => {
+    const { app: hono } = await import('../index');
+    const { REVIEWER_ROUTES } = await import('../middleware/reviewer');
+    const { auth } = await import('../auth');
+    const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+    const routes = new Map<string, { method: string; path: string }>();
+    // Hono's own routes (middleware entries are the `ALL` and wildcard ones), and the endpoints better-auth
+    // serves under the `/api/auth/*` catch-all.
+    for (const route of hono.routes) {
+      if (route.path.includes('*') || !methods.includes(route.method)) continue;
+      routes.set(`${route.method} ${route.path}`, { method: route.method, path: route.path });
+    }
+    for (const endpoint of Object.values(auth.api) as Array<{ path?: string; options?: { method?: string | string[] } }>) {
+      if (!endpoint.path) continue;
+      for (const method of [endpoint.options?.method ?? 'GET'].flat()) {
+        if (methods.includes(method)) routes.set(`${method} /api/auth${endpoint.path}`, { method, path: `/api/auth${endpoint.path}` });
+      }
+    }
+    const probed = [...routes.entries()].filter(([key, route]) => route.path.startsWith('/api/') && !REVIEWER_ROUTES.has(key));
+    // A guard that stopped covering a router would leave this list short, so the floor is part of the proof.
+    expect(probed.length).toBeGreaterThan(100);
+    const open: string[] = [];
+    for (const [key, route] of probed) {
+      const path = route.path.replace(/:[A-Za-z0-9_]+(\{[^}]*\})?\??/g, 'x');
+      for (const credential of [{ cookie }, { authorization: 'Bearer ' + accessToken }]) {
+        const response = await call(path, route.method, route.method === 'GET' ? undefined : {}, credential);
+        if (response.status !== 403) open.push(`${key} with ${Object.keys(credential)[0]} -> ${response.status}`);
+      }
+    }
+    expect(open).toEqual([]);
+  }, 120_000);
+
   test('reviewer key metadata is public and other signing surfaces are denied', async () => {
     const display = await call('/api/delegate/prepare', 'GET', undefined, { cookie });
     expect(display.status).toBe(200);
