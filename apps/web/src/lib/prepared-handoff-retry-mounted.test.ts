@@ -224,7 +224,7 @@ describe('the prepared handoff page after a signing that fails', () => {
     expect(page.alert()).toBe('TEE unavailable');
     expect(page.button('Approve')!.disabled).toBe(false);
     expect(page.button('Cancel')!.disabled).toBe(false);
-    await page.approve(() => page.target.textContent!.includes('Paste this response in your CLI'));
+    await page.approve(() => page.target.textContent!.includes('Paste this into your terminal'));
     expect(page.alert()).toBeNull();
     page.close();
   });
@@ -286,7 +286,7 @@ describe('the prepared handoff page and the server clock', () => {
       flushSync();
       expect(page.alert()).toBeNull();
       signing.resolve();
-      await until(() => page.target.textContent!.includes('Paste this response in your CLI'), 'the signed result');
+      await until(() => page.target.textContent!.includes('Paste this into your terminal'), 'the signed result');
       expect(page.alert()).toBeNull();
       page.close();
     } finally {

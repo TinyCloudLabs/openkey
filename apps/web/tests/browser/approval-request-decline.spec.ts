@@ -119,8 +119,8 @@ test.describe('Decline on the approval-request review page', () => {
     const calls = await openReview(page);
     await decline(page).dblclick();
     await expect(declined(page)).toBeVisible();
-    // The declined page ends with a Close button (its wording is not pinned here).
-    await expect(declined(page).getByRole('button', { name: 'Close', exact: true })).toBeVisible();
+    // The declined page ends with Close this tab.
+    await expect(declined(page).getByRole('button', { name: 'Close this tab', exact: true })).toBeVisible();
     expect(denies(calls)).toHaveLength(1);
     expect(denies(calls)[0]!.body).toEqual({ reference: path + fragment });
     // The key fragment never travels in a URL.

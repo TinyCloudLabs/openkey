@@ -4,12 +4,14 @@
   import { page } from '$app/stores';
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
+  import CodeBox from '$lib/components/approval/code-box.svelte';
+  import DonePage, { type ReceiptRow } from '$lib/components/approval/done-page.svelte';
   import Loader from '$lib/components/approval/loader.svelte';
   import SignInCard from '$lib/components/approval/sign-in-card.svelte';
   import Slip from '$lib/components/approval/slip.svelte';
-  import { APPROVAL_EXPIRY, fill, stopForReply } from '@openkey/sdk/approval-copy';
+  import { APPROVAL_EXPIRY, CODE, DONE, codeDestinationWord, fill, stopForReply, supportLine } from '@openkey/sdk/approval-copy';
+  import { formatLocalAccessEnd } from '$lib/access-end';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
   import {
     delegateFailureDetail,
@@ -21,7 +23,6 @@
     OwnerMessageError,
     isTerminalApprovalFailure,
     refusalIgnoresKeyChoice,
-    shortCodeFailureText,
     walletMismatchFailureText,
   } from '$lib/delegate-failure-text';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
@@ -44,6 +45,7 @@
     checkDelegateHost,
     isCanonicalHttpsEndpoint,
     isCanonicalHttpsOrigin,
+    isLoopbackHostname,
     withConfiguredEntries,
   } from '$lib/delegate-link-policy';
   import { preparedMatchesSelection, reviewSelectionToActionKeys, selectedServerActionIds } from '$lib/delegate-review-selection';
@@ -52,7 +54,6 @@
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, CODE_AND_APPROVAL_EXPIRED_TEXT, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
-  import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
   import { MAX_LEASE_MS, MIN_EXPIRY_MS, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
@@ -177,7 +178,6 @@
   let spaceReadiness = $state<ReturnType<typeof spaceReadinessResult>>(null);
   let callbackFailed = $state(false);
   let callbackInFlight = $state(false);
-  let copied = $state(false);
   let step = $state<'select-key' | 'link-wallet' | 'consent' | 'choose-wallet' | 'done'>('select-key');
   let preparedData = $state<any>(null);
   // TC-3442: from the latest /prepare, whether Approve needs the passkey, with the challenge for that preview.
@@ -192,7 +192,7 @@
   let codeAnnouncement = $state('');
   let delegationPayload = $state.raw<any>(null);
   let codeRenewing = $state(false);
-  let codeRenewError = $state('');
+  let codeRenewFailed = $state(false);
   let approvalExpiryNow = $state(Date.now());
   const delegationExpiry = $derived(Date.parse(delegationPayload?.expirationTime ?? delegationPayload?.expiresAt ?? delegationPayload?.expiry ?? ''));
   const delegationExpired = $derived(!Number.isFinite(delegationExpiry) || delegationExpiry <= approvalExpiryNow);
@@ -1593,7 +1593,7 @@
   // Mints a short code for this delegation. The first mint records a refusal for the
   // fallback text; a renewal (reportError) shows its own retry line instead.
   async function mintShortCode(payload: any, reportError = false) {
-    codeRenewError = '';
+    codeRenewFailed = false;
     try {
       const API_URL = import.meta.env.VITE_API_URL || '';
       const response = await fetch(`${API_URL}/api/delegation-codes`, {
@@ -1616,13 +1616,12 @@
         ? remainingFromServerClock(result.expiresAt, response.headers.get('date'))
         : null;
       shortCode = result.code.toUpperCase();
-      copied = false;
       codeCountdown = null;
       // Read at receipt: the countdown runs on the monotonic clock from here.
       codeDeadline = performance.now() + (remainingMs ?? 300_000);
     } catch {
       // The full delegation remains available when the broker is unreachable.
-      if (reportError) codeRenewError = "Couldn't get a new code. Try again, or start again in the CLI.";
+      if (reportError) codeRenewFailed = true;
     }
   }
 
@@ -1756,16 +1755,42 @@
     }
   }
 
-  async function copyCode(value: string) {
-    if (!(await copyText(value))) {
-      error = 'Failed to copy code. Select the code and copy it manually.';
-      return;
+  // The end pages. `requesterName` is the app or command the review named.
+  const requesterName = $derived(expiredRequesterName || requester.displayName);
+  // The full code was opened in place of the short one; its countdown no longer ends the page.
+  let fullCodeOpen = $state(false);
+  const codeExpired = $derived(!!shortCode && !!codeCountdown?.expired && !fullCodeOpen);
+  const codeLine = $derived(
+    callbackFailed ? fill(CODE.lineNotReached, { destination: codeDestinationWord() })
+      : !shortCode ? CODE.lineNoShortCode
+      : fill(CODE.line, { requester: requesterName }),
+  );
+  const codeSupport = $derived(!shortCode && shortCodeFailure ? supportLine(shortCodeFailure) : '');
+  // Only what this page knows for certain: what was signed, with which key, and where it went.
+  const receiptRows = $derived.by(() => {
+    const words = DONE.receipt;
+    const rows: ReceiptRow[] = [];
+    const count = selectedActionKeys.length;
+    if (count > 0) {
+      const permissions = fill(count === 1 ? words.permissions.one : words.permissions.other, { n: count });
+      const spaces = new Set(selectedActionKeys.map((key) => key.split('\0')[1]));
+      const spaceId = typeof preparedData?.spaceId === 'string' ? preparedData.spaceId : '';
+      const space = spaces.size === 1 && spaces.has(spaceId) ? spaceId.split(':').at(-1) : '';
+      rows.push({ label: words.access, value: space ? fill(words.inSpace, { permissions, space }) : permissions });
     }
-
-    error = '';
-    copied = true;
-    setTimeout(() => { copied = false; }, 2000);
-  }
+    if (delegationExpiresAt) rows.push({ label: words.ends, value: formatLocalAccessEnd(delegationExpiresAt) });
+    if (selectedKey && keys.length > 1) {
+      rows.push({ label: words.signedWith, value: `${selectedKey.label ?? `Key ${selectedKey.keyIndex}`} ${formatAddress(selectedKey.address)}` });
+    }
+    const sentTo = approvalRequestMode ? fill(words.sentToValues.requester, { requester: requesterName })
+      : deviceTransactionId ? words.sentToValues.terminalThatShowedCode
+      : approvedCallback ? (isLoopbackHostname(new URL(approvedCallback).hostname)
+        ? words.sentToValues.terminalThisDevice
+        : fill(words.sentToValues.host, { host: new URL(approvedCallback).host }))
+      : '';
+    if (sentTo) rows.push({ label: words.sentTo, value: sentTo });
+    return rows;
+  });
 
   function formatAddress(address: string): string {
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
@@ -1815,10 +1840,9 @@
     {error || 'This approval link is unavailable.'}
   </div>
 {:else if declined}
-  <div data-testid="declined" class="min-h-screen flex flex-col items-center justify-center px-4 text-center">
-    <p role="status">Declined. You can close this window.</p>
-    <CloseTabButton />
-  </div>
+  <Slip at={3} last="agent" center>
+    <DonePage outcome="declined" requester={requesterName} />
+  </Slip>
 {:else if !dispatchReady && !preparedTransport}
   <Slip at={0} center>
     <Loader phases={loaderPhases} lit={loaderLit} />
@@ -1842,92 +1866,26 @@
     </div>
   </div>
 {:else}
-<Slip at={slipAt} last={slipLast} center={showLoader} email={chipEmail} onSignOut={() => { void authClient.signOut(); }}>
-      {#if step === 'done'}
-        <div class="flex flex-col items-center justify-center text-center py-4">
-          <svg class="w-12 h-12 text-green-500 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-
-          {#if spaceReadiness}
-            <div class={`w-full rounded-xl border px-3 py-2 text-sm mb-4 ${spaceReadiness.kind === 'ready' ? 'border-green-300 bg-green-50 text-green-900' : spaceReadiness.kind === 'pending' ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-amber-300 bg-amber-50 text-amber-900'}`} role="status">
-              <p>{spaceReadiness.text}</p>
-              {#if spaceReadiness.detail}
-                <details class="mt-2 text-left">
-                  <summary class="cursor-pointer font-medium">Details</summary>
-                  <pre class="mt-2 whitespace-pre-wrap break-words text-xs">{spaceReadiness.detail}</pre>
-                </details>
-              {/if}
-            </div>
-          {/if}
-
-          {#if pasteCode}
-            <h2 class="text-lg font-semibold text-surface-900 mb-2">Delegation Created</h2>
-            {#if callbackFailed}
-              <p class="text-surface-500 text-sm mb-4">Could not reach the CLI automatically. Enter the code below in your CLI to finish signing in.</p>
-            {:else}
-              <p class="text-surface-500 text-sm mb-4">Enter this code in the CLI to finish signing in:</p>
-            {/if}
-            {#if shortCode}
-              <div class="w-full rounded-xl bg-surface-50 border border-surface-200 px-3 py-4">
-                <div class="font-mono text-2xl font-semibold tracking-widest select-all {codeCountdown?.expired ? 'text-surface-400 line-through' : 'text-surface-900'}">{shortCode}</div>
-                {#if codeCountdown}
-                  <p role="timer" aria-live="off" class="text-sm mt-2 {codeCountdown.expired ? 'font-medium text-amber-900' : 'text-surface-600'}">{codeCountdown.expired && delegationExpired ? CODE_AND_APPROVAL_EXPIRED_TEXT : codeCountdown.text}</p>
-                  {#if !codeCountdown.expired}
-                    <p class="text-surface-500 text-xs mt-1">Works once.</p>
-                  {/if}
-                {:else}
-                  <p class="text-surface-600 text-sm mt-2">Use within 5 minutes. Works once.</p>
-                {/if}
-              </div>
-              <p class="sr-only" role="status" aria-live="polite">{codeAnnouncement}</p>
-              {#if codeCountdown?.expired}
-                {#if !delegationExpired}
-                  <button
-                    type="button"
-                    class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-50"
-                    onclick={getNewCode}
-                    disabled={codeRenewing}
-                  >Get a new code</button>
-                {/if}
-              {:else}
-                <button
-                  class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-50"
-                  onclick={() => copyCode(shortCode)}
-                  aria-label="Copy short code"
-                >{copied ? 'Copied' : 'Copy code'}</button>
-              {/if}
-              {#if codeRenewError}
-                <p class="text-red-700 text-sm mt-2" role="alert">{codeRenewError}</p>
-              {/if}
-            {:else}
-              <p class="text-surface-500 text-sm mb-3">{shortCodeFailureText(shortCodeFailure?.status, shortCodeFailure?.code)}</p>
-            {/if}
-            <p class="w-full rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900 mt-4" role="note">
-              Only paste this code into a terminal you started yourself.
-            </p>
-            <details class="w-full mt-4 text-left" open={!shortCode}>
-              <summary class="cursor-pointer text-sm font-medium text-surface-700">Use full delegation code instead</summary>
-              <textarea
-                readonly
-                aria-label="Full delegation code"
-                class="w-full h-24 mt-2 p-3 bg-surface-50 border border-surface-200 rounded-xl text-xs font-mono resize-none"
-                value={pasteCode}
-                onfocus={(e) => (e.target as HTMLTextAreaElement).select()}
-              ></textarea>
-              <button
-                class="mt-2 rounded-lg border border-surface-200 bg-surface-50 px-3 py-1.5 text-sm text-surface-900 hover:bg-surface-100"
-                onclick={() => copyCode(pasteCode)}
-                aria-label="Copy full delegation code"
-              >{copied ? 'Copied' : 'Copy full code'}</button>
-            </details>
-            <CloseTabButton allowBack />
-          {:else}
-            <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
-            <p class="text-surface-500 text-sm">You can close this window and return to {requester.returnTo}.</p>
-            <CloseTabButton />
-          {/if}
-        </div>
+<Slip at={slipAt} last={slipLast} stopped={codeExpired && delegationExpired} center={showLoader || step === 'done'} email={chipEmail} onSignOut={() => { void authClient.signOut(); }}>
+      {#if step === 'done' && pasteCode}
+        <CodeBox
+          {shortCode}
+          fullCode={pasteCode}
+          eyebrow={CODE.eyebrow}
+          line={codeLine}
+          countdown={codeCountdown}
+          announcement={codeAnnouncement}
+          expired={codeExpired}
+          approvalEnded={delegationExpired}
+          onNewCode={getNewCode}
+          newCodeBusy={codeRenewing}
+          newCodeFailed={codeRenewFailed}
+          bind:showFull={fullCodeOpen}
+          support={codeSupport}
+          spaceNote={spaceReadiness}
+        />
+      {:else if step === 'done'}
+        <DonePage outcome="approved" requester={requesterName} returnTo={requester.returnTo} rows={receiptRows} spaceNote={spaceReadiness} />
 
       {:else if showLoader}
         <Loader phases={loaderPhases} lit={loaderLit} />
