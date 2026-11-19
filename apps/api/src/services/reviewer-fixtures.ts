@@ -1,8 +1,12 @@
+import { appleReviewEnabled, APPLE_REVIEW_CLIENT_ID } from './reviewer-apple-policy';
+import { enabledNativeDelegation } from './native-delegation/policy';
+import { retireReviewerOwner } from './reviewer-cleanup';
+import { TINYCLOUD_BOOTSTRAP_VERSION } from './tinycloud-bootstrap';
 import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
-import { TinyCloudNode } from '@tinycloud/node-sdk';
+import { TinyCloudNode, type Manifest } from '@tinycloud/node-sdk';
 import { createTeeClient, generatePrivateKey, getAddressFromPrivateKey, seal } from '@openkey/tee';
-import type { PrismaClient } from '@openkey/db';
+import { Prisma, type PrismaClient } from '@openkey/db';
 import { createSealingContext } from './key-sealing';
 import { lockReviewer, holdReviewer, settleReviewerVerifier, seedReviewerTerms } from './reviewer-accounts';
 import { TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
@@ -41,17 +45,36 @@ export const REVIEWER_FIXTURES = [
   }],
 ] as const;
 
+/**
+ * The provisioning session's exact permissions (TC-3443): put and read back each fixture in `applications`. The
+ * Apple reviewer writes no fixture, so its session only reads capabilities; hosting the spaces is signed by the
+ * owner key itself and needs no session permission.
+ */
+export function reviewerManifest(store: string): Manifest {
+  return {
+    app_id: 'so.openkey.reviewer', name: 'OpenKey', space: 'applications', prefix: '', defaults: false,
+    includePublicSpace: false,
+    permissions: store === 'apple'
+      ? [{ service: 'tinycloud.capabilities', path: '', actions: ['read'] }]
+      : REVIEWER_FIXTURES.map(([path]) => ({ service: 'tinycloud.kv', path, actions: ['put', 'get'] })),
+  };
+}
+
 export async function provisionReviewer(
   database: PrismaClient,
   store: string,
-  config: { clientId: string; nodeHost: string },
+  config: { clientId: string; nodeHost: string; redirectUri?: string },
   reset: boolean,
 ) {
-  if (!['openai', 'google'].includes(store) || !TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS.has(config.nodeHost)) {
+  if ((!['openai', 'google', 'apple'].includes(store) || (store === 'apple' && !appleReviewEnabled())) || !TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS.has(config.nodeHost)) {
     throw new Error('Reviewer configuration refused');
   }
   const client = await database.oauthClient.findUnique({ where: { clientId: config.clientId } });
-  if (!client || client.disabled || !client.scopes?.includes('tinycloud:mcp') || client.redirectUris.length !== 1) {
+  const native = client && enabledNativeDelegation(client);
+  const redirectUri = config.redirectUri ?? (client?.redirectUris.length === 1 ? client.redirectUris[0] : undefined);
+  if (!client || client.disabled || !redirectUri || !client.redirectUris.includes(redirectUri)
+    || (store === 'apple' ? client.clientId !== APPLE_REVIEW_CLIENT_ID || !native || native.tinycloudHost !== config.nodeHost
+      : !client.scopes?.includes('tinycloud:mcp') || client.redirectUris.length !== 1)) {
     throw new Error('Reviewer configuration refused');
   }
   const privateKey = generatePrivateKey();
@@ -67,6 +90,7 @@ export async function provisionReviewer(
     if (before.userId && !reset) throw new Error('Use explicit reset for an existing reviewer');
     const held = await holdReviewer(transaction, before);
     if (before.userId) {
+      if (store === 'apple') await retireReviewerOwner(transaction, before);
       await transaction.ethereumKey.deleteMany({ where: { userId: before.userId } });
       await transaction.user.delete({ where: { id: before.userId } });
       wasReset = true;
@@ -80,9 +104,10 @@ export async function provisionReviewer(
       isCanonicalTinyCloud: true, keyIndex: 0, label: 'App review',
     } });
     return transaction.reviewerAccount.update({ where: { store }, data: {
-      userId: user.id, keyId: key.id, spaceId, clientId: config.clientId, redirectUri: client.redirectUris[0],
-      resource, callbackUri, nodeHost: config.nodeHost, sessionDid: null, seededAt: null, readyAt: null,
+      userId: user.id, keyId: key.id, spaceId, clientId: config.clientId, redirectUri,
+      resource: store === 'apple' ? null : resource, callbackUri: store === 'apple' ? null : callbackUri, nodeHost: config.nodeHost, sessionDid: null, seededAt: null, readyAt: null,
       grantSessionId: null, installEpoch: held.installEpoch,
+      seedRun: Prisma.DbNull, seedStartedAt: null, writerExpiresAt: null,
     } });
   });
   // The new account is reviewed as soon as its code is installed: it never sees the Terms screen.
@@ -91,12 +116,25 @@ export async function provisionReviewer(
   if (wasReset) logReviewer('reviewer_admin', 'reset', store);
   const node = new TinyCloudNode({
     host: config.nodeHost, privateKey, prefix: 'applications', sessionExpirationMs: 3600_000,
+    manifest: reviewerManifest(store),
     autoCreateSpace: true, autoBootstrapAccount: false, enablePublicSpace: false,
     includeAccountRegistryPermissions: false, autoDiscoverLocalNode: false,
   });
   await node.signIn();
   const hosted = await node.ensureOwnedSpaceHosted('applications');
   if (hosted !== spaceId) throw new Error('Reviewer space mismatch');
+  if (store === 'apple') {
+    await database.$transaction(async transaction => {
+      const current = await lockReviewer(transaction, store);
+      if (current.userId !== binding.userId || current.installEpoch !== binding.installEpoch) throw new Error('Reviewer fixture was superseded');
+      await transaction.tinyCloudBootstrapState.create({ data: {
+        userId: binding.userId!, keyId: binding.keyId!, address, chainId: 1,
+        tinycloudHost: config.nodeHost, bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION,
+        status: 'complete', checkedAt: new Date(), completedAt: new Date(),
+      } });
+    });
+    return;
+  }
   // The hosted MCP's first connect reads the account registry, so that space must be hosted too.
   const account = await node.ensureOwnedSpaceHosted('account');
   if (account !== spaceId.replace(/:applications$/, ':account')) throw new Error('Reviewer space mismatch');

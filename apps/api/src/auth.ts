@@ -272,7 +272,12 @@ function withMcpAccessTokenLifetime<T extends ReturnType<typeof oauthProvider>>(
   const cappedLifetime = (seconds: number) => {
     const reviewer = capturedReviewer();
     if (!reviewer) return seconds;
-    const remaining = Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
+    // Native provider tokens use an integral iat sampled before this getter.
+    // Avoid subtracting the fractional second twice while keeping exp <= the
+    // source deadline (the database adapter also caps every row).
+    const remaining = reviewer.store === 'apple'
+      ? Math.floor((reviewer.deadline ?? Date.now()) / 1000) - Math.floor(Date.now() / 1000)
+      : Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
     return Math.max(0, Math.min(REVIEWER_MAX_SECONDS, seconds, remaining));
   };
   Object.defineProperty(plugin.options, 'accessTokenExpiresIn', {
@@ -501,7 +506,8 @@ export const auth = betterAuth({
               throw new APIError('BAD_REQUEST', { error: 'invalid_grant' });
             }
             const source = await prisma.session.findFirst({
-              where: { id: captured.sessionId, userId: user.id, reviewerEpoch: captured.epoch, expiresAt: { gt: new Date() } },
+              where: { id: captured.sessionId, userId: user.id, reviewerEpoch: captured.epoch, expiresAt: { gt: new Date() },
+                createdAt: { gt: new Date(Date.now() - REVIEWER_MAX_SECONDS * 1000) } },
             });
             if (!source) throw new APIError('BAD_REQUEST', { error: 'invalid_grant' });
             await prisma.reviewerAccount.updateMany({

@@ -3,6 +3,7 @@ import { getSessionToken, isEmbedContext } from './embed-passkey';
 import { isDefiniteRefusal, ServerRefusalError } from './server-reply';
 import { isPreTermsPage, isTermsRequired, sendToTerms } from './terms';
 import type { RenewalLease } from './renewal-leases';
+import type { ApprovalPasskeyAssertion, ApprovalPasskeyOffer, PasskeyApprovalMode, PasskeyApprovalSetting } from './approval-passkey';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -312,6 +313,22 @@ export const api = {
     }, true);
   },
 
+  async getPasskeyApprovalSetting(): Promise<PasskeyApprovalSetting> {
+    return fetchAPI('/api/account/passkey-approval', {}, true);
+  },
+
+  /** A challenge bound to `mode`, for lowering the setting to it. */
+  async passkeyApprovalSettingOffer(mode: PasskeyApprovalMode): Promise<ApprovalPasskeyOffer> {
+    return fetchAPI('/api/account/passkey-approval/options', { method: 'POST', body: JSON.stringify({ mode }) }, true);
+  },
+
+  async updatePasskeyApprovalSetting(mode: PasskeyApprovalMode, passkeyAssertion?: ApprovalPasskeyAssertion): Promise<PasskeyApprovalSetting> {
+    return fetchAPI('/api/account/passkey-approval', {
+      method: 'PATCH',
+      body: JSON.stringify({ mode, passkeyAssertion }),
+    }, true);
+  },
+
   async getTinyCloudManageKeyPreference(): Promise<TinyCloudManageKeyPreference> {
     return fetchAPI('/api/account/tinycloud-manage-key');
   },
@@ -354,7 +371,8 @@ export const api = {
   },
 
   async listRenewalLeases(): Promise<{ leases: RenewalLease[] }> {
-    return fetchAPI('/api/account/renewal-leases', {}, true);
+    // A read, so an embedded frame (the in-app sign-out confirm) may send its token.
+    return fetchAPI('/api/account/renewal-leases');
   },
   /**
    * Stop one lease. `{ walletMessage }` when an external wallet must sign the stop: call again with
