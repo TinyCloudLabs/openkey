@@ -11,7 +11,7 @@ import { mockModules, replaceModules } from './mock-module';
 let database: PGlite;
 let prisma: PrismaClient;
 let sessionUserId = 'user-a';
-const savedEnv = { CORS_ORIGIN: process.env.CORS_ORIGIN, TEE_MODE: process.env.TEE_MODE };
+const savedEnv = { CORS_ORIGIN: process.env.CORS_ORIGIN, WEBAUTHN_ORIGIN: process.env.WEBAUTHN_ORIGIN, TEE_MODE: process.env.TEE_MODE };
 
 replaceModules({
   '../middleware/session': () => ({
@@ -34,6 +34,7 @@ await mockModules({
 
 beforeAll(async () => {
   process.env.CORS_ORIGIN = 'https://openkey.test';
+  process.env.WEBAUTHN_ORIGIN = 'https://openkey.test';
   process.env.TEE_MODE = 'production';
   const root = new URL('../../../../packages/db/prisma/migrations/', import.meta.url);
   const names = (await readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
@@ -53,6 +54,7 @@ afterAll(async () => {
 });
 
 const MCP = 'tinycloud:mcp';
+const IDENTITY = 'tinycloud:identity';
 const DELEGATION = 'tinycloud:delegation';
 const MANAGE_KEY = 'tinycloud:manage-key';
 
@@ -66,10 +68,12 @@ async function call<T = unknown>(method: string, path: string, body?: unknown, h
   return { status: response.status, body: await response.json() as T };
 }
 type McpApp = { kind: string; consentId: string; clientId: string; name: string; host: string | null; connectedAt: string; scopes: string[] };
+type IdentityApp = { kind: string; consentId: string; clientId: string; name: string; host: string | null; connectedAt: string; scopes: string[] };
 type App = { clientId: string };
-type ListBody = { apps: App[]; mcpApps: McpApp[]; activity: unknown[]; mode: string; policyEpoch: number };
+type ListBody = { apps: App[]; mcpApps: McpApp[]; identityApps: IdentityApp[]; activity: unknown[]; mode: string; policyEpoch: number };
 const list = () => call<ListBody>('GET', '/tinycloud-apps');
 const disconnectMcp = (consentId: string, body: unknown = { confirmation: 'DISCONNECT' }) => call('DELETE', `/tinycloud-apps/mcp/${consentId}`, body);
+const disconnectIdentity = (consentId: string, body: unknown = { confirmation: 'DISCONNECT' }) => call('DELETE', `/tinycloud-apps/identity/${consentId}`, body);
 
 async function reset() {
   await database.exec(`TRUNCATE "oauth_access_token", "oauth_refresh_token", "tinycloud_native_grant", "tinycloud_native_request",
@@ -253,5 +257,48 @@ describe('account connected MCP apps', () => {
     expect(await prisma.oauthConsent.count()).toBe(3);
     expect((await call('DELETE', '/tinycloud-apps/client-delegation', { confirmation: 'DISCONNECT' })).status).toBe(200);
     expect(await prisma.oauthConsent.count()).toBe(2);
+  });
+  test('identity consents are listed separately from signing and MCP apps', async () => {
+    await consent('c-identity', 'user-a', 'client-plain', ['openid', IDENTITY]);
+    await consent('c-manage', 'user-a', 'client-manage', ['openid', MANAGE_KEY]);
+
+    const result = await list();
+    expect(result.body.identityApps).toHaveLength(1);
+    expect(result.body.identityApps[0]).toMatchObject({
+      kind: 'identity', consentId: 'c-identity', clientId: 'client-plain', name: 'Plain App',
+      host: 'plain.example.test', scopes: ['openid', IDENTITY],
+    });
+    expect(Number.isNaN(Date.parse(result.body.identityApps[0]!.connectedAt))).toBe(false);
+    expect(result.body.apps.map((app) => app.clientId)).toEqual(['client-manage']);
+    expect(result.body.mcpApps).toEqual([]);
+  });
+
+  test('identity disconnect removes its consent and only its client tokens', async () => {
+    await consent('c-identity', 'user-a', 'client-plain', [IDENTITY]);
+    await consent('c-identity-other', 'user-b', 'client-plain', [IDENTITY]);
+    await plainTokens('user-a', 'client-plain', 'identity-a');
+    await plainTokens('user-b', 'client-plain', 'identity-b');
+    await plainTokens('user-a', 'client-manage', 'manage-a');
+
+    expect(await disconnectIdentity('c-identity')).toEqual({
+      status: 200, body: { consentId: 'c-identity', disconnected: true },
+    });
+    expect(await prisma.oauthConsent.count({ where: { id: 'c-identity' } })).toBe(0);
+    expect(await tokenRows('user-a', 'client-plain')).toEqual({ refresh: 0, access: 0 });
+    expect(await tokenRows('user-b', 'client-plain')).toEqual({ refresh: 1, access: 1 });
+    expect(await tokenRows('user-a', 'client-manage')).toEqual({ refresh: 1, access: 1 });
+  });
+
+  test('identity disconnect refuses unowned, non-identity, and unconfirmed requests', async () => {
+    await consent('c-identity-other', 'user-b', 'client-plain', [IDENTITY]);
+    await consent('c-plain', 'user-a', 'client-plain', ['openid']);
+    await plainTokens('user-b', 'client-plain', 'identity-other');
+    await plainTokens('user-a', 'client-plain', 'plain');
+
+    expect((await disconnectIdentity('c-identity-other')).status).toBe(404);
+    expect((await disconnectIdentity('c-plain')).status).toBe(404);
+    expect((await disconnectIdentity('c-plain', {})).status).toBe(400);
+    expect(await tokenRows('user-b', 'client-plain')).toEqual({ refresh: 1, access: 1 });
+    expect(await tokenRows('user-a', 'client-plain')).toEqual({ refresh: 1, access: 1 });
   });
 });

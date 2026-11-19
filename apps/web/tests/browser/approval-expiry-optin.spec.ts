@@ -21,7 +21,7 @@ async function open(page: Page, request: Record<string, unknown>, message: strin
     id: 'selected-key', address, publicKey: '0x02', keyIndex: 0, label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z',
   } } }));
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
-  await page.route('**/api/delegate/authorize-sign-prepare', (route) => route.fulfill({ json: { authorizationContextToken: 'context-token' } }));
+  await page.route('**/api/delegate/authorize-sign-prepare', (route) => route.fulfill({ headers: { Date: new Date().toUTCString() }, json: { authorizationContextToken: 'context-token', expiresAt: new Date(Date.now() + 300_000).toISOString() } }));
   await page.route('**/api/delegate/authorize-sign-preview', async (route) => {
     const body = route.request().postDataJSON() as Record<string, unknown>;
     previews.push(body);
@@ -30,7 +30,10 @@ async function open(page: Page, request: Record<string, unknown>, message: strin
       const [service, space, path, ability] = id.split('\0');
       return { service, space, path, actions: [ability] };
     });
-    await route.fulfill({ json: { signedMessage: siwe, previewApprovalToken: 'preview-token', selectedActionKeys: ids, permissions } });
+    const signedMessage = typeof body.expirationTime === 'string'
+      ? message.replace(/^Expiration Time:.*$/m, `Expiration Time: ${body.expirationTime}`)
+      : message;
+    await route.fulfill({ headers: { Date: new Date().toUTCString() }, json: { signedMessage, authorizationContextToken: 'context-token', previewApprovalToken: 'preview-token', previewApprovalExpiresAt: new Date(Date.now() + 60_000).toISOString(), selectedActionKeys: ids, permissions } });
   });
   await page.goto('/__parity_harness');
   await page.evaluate(() => {
@@ -55,28 +58,9 @@ async function open(page: Page, request: Record<string, unknown>, message: strin
   return { frame, previews };
 }
 
-async function approveOnce(page: Page, frame: ReturnType<Page['frameLocator']>) {
-  const approve = frame.getByRole('button', { name: 'Approve', exact: true });
-  // The frame asks the host to apply its height after every layout change (opening the picker is one);
-  // acknowledge the latest request until Approve is enabled.
-  await expect(async () => {
-    const resize = await page.evaluate(() => (window as unknown as { received: Array<{ type: string; height: number; layoutId: number }> }).received.filter((m) => m.type === 'openkey:resize').at(-1));
-    expect(resize).toBeTruthy();
-    await page.evaluate(({ height, layoutId }) => {
-      const iframe = document.querySelector<HTMLIFrameElement>('#sign');
-      const h = Math.min(height, Math.floor(window.innerHeight * 0.85));
-      if (iframe) iframe.style.height = `${h}px`;
-      iframe?.contentWindow?.postMessage({ type: 'openkey:layout-applied', requestId: 'optin', protocolVersion: 2, height: h, layoutId }, location.origin);
-    }, resize!);
-    await expect(approve).toBeEnabled({ timeout: 1500 });
-  }).toPass({ timeout: 20000 });
-  await approve.click();
-}
-
 test('without the opt-in there is no expiry control and the preview asks for no expiry', async ({ page }) => {
   const { frame, previews } = await open(page, {});
   await expect(frame.locator('.expiry')).toHaveCount(0);
-  await approveOnce(page, frame);
   await expect.poll(() => previews.length).toBe(1);
   expect(previews[0]).not.toHaveProperty('expirationTime');
 });
@@ -88,18 +72,19 @@ test('an opt-in of anything but true shows no control', async ({ page }) => {
 
 test('with the opt-in the control shows, and a changed expiry is what the preview asks the server to sign', async ({ page }) => {
   const { frame, previews } = await open(page, { expiryChangeable: true });
-  await expect(frame.locator('.expiry-line')).toHaveText(/Approval expires:\s*7d\s*\(Change\)/);
-  await frame.getByRole('button', { name: '(Change)' }).click();
+  await expect.poll(() => previews.length).toBe(2);
+  const before = Date.now();
+  await frame.getByText('Advanced details', { exact: true }).click();
+  await frame.getByText('How long it lasts', { exact: true }).click();
   await frame.getByLabel('Or type a time').fill('90m');
   await frame.getByLabel('Or type a time').press('Enter');
-  await expect(frame.locator('.expiry-line')).toHaveText(/90m/);
-  const before = Date.now();
-  await approveOnce(page, frame);
-  await expect.poll(() => previews.length).toBe(1);
-  const asked = Date.parse(String(previews[0]!.expirationTime));
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('90 minutes');
+  await expect.poll(() => previews.length).toBeGreaterThan(1);
+  const latest = previews.at(-1)!;
+  const asked = Date.parse(String(latest.expirationTime));
   expect(asked).toBeGreaterThanOrEqual(before + 90 * 60_000 - 1000);
   expect(asked).toBeLessThanOrEqual(Date.now() + 90 * 60_000 + 1000);
-  expect(String(previews[0]!.expirationTime)).toBe(new Date(asked).toISOString());
+  expect(String(latest.expirationTime)).toBe(new Date(asked).toISOString());
 });
 
 test('the "This access lasts until" line follows the pick before anything is approved', async ({ page }) => {
@@ -111,11 +96,84 @@ test('the "This access lasts until" line follows the pick before anything is app
   const access = frame.locator('.summary-note');
   await expect(access).toContainText('This access lasts until');
   const before = (await access.innerText()).trim();
-  await frame.getByRole('button', { name: '(Change)' }).click();
+  await frame.getByText('Advanced details', { exact: true }).click();
+  await frame.getByText('How long it lasts', { exact: true }).click();
   await frame.getByLabel('Or type a time').fill('30d');
   await page.keyboard.press('Enter');
-  await expect(frame.locator('.expiry-line')).toHaveText(/30d/);
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('30 days');
   await expect(access).not.toHaveText(before);
   const date = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(Date.now() + 30 * 86_400_000));
   await expect(access).toContainText(date);
+});
+
+// TC-3111: a one-time approval (secrets or decrypt) that asks for longer than an hour starts at one hour.
+test('a secret or decrypt request that asks for 7 days is prepared with one hour, and says so', async ({ page }) => {
+  const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
+  const att = { [`urn:tinycloud:encryption:${owner}:default/apps/xyz.tinycloud.listen/`]: { 'tinycloud.encryption/decrypt': [{}] } };
+  const decrypt = siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
+  const before = Date.now();
+  const { frame, previews } = await open(page, { expiryChangeable: true }, decrypt);
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
+  await expect(frame.getByTestId('approval-expiry-once-note')).toContainText('asked for 7 days');
+  const latest = previews.at(-1)!;
+  const asked = Date.parse(String(latest.expirationTime));
+  expect(asked).toBeGreaterThanOrEqual(before + 60 * 60_000 - 1000);
+  expect(asked).toBeLessThanOrEqual(Date.now() + 60 * 60_000 + 1000);
+});
+
+test('ordinary data keeps what the app asked for, with no note', async ({ page }) => {
+  const kv = siweWithResources([makeRecapResource({ [FIXTURE_META.ownSpace]: { 'tinycloud.kv/get': [{}] } })], { domain: HOST, uri: ORIGIN });
+  const { frame, previews } = await open(page, { expiryChangeable: true }, kv);
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('7 days');
+  await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+  await expect.poll(() => previews.length).toBe(1);
+  expect(previews[0]).not.toHaveProperty('expirationTime');
+});
+
+test('the owner can choose longer than the hour, and the choice is what is prepared', async ({ page }) => {
+  const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
+  const att = { [`urn:tinycloud:encryption:${owner}:default/apps/xyz.tinycloud.listen/`]: { 'tinycloud.encryption/decrypt': [{}] } };
+  const decrypt = siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
+  const { frame, previews } = await open(page, { expiryChangeable: true }, decrypt);
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
+  await frame.getByText('Advanced details', { exact: true }).click();
+  await frame.getByText('How long it lasts', { exact: true }).click();
+  await frame.getByLabel('Or type a time').fill('2d');
+  await frame.getByLabel('Or type a time').press('Enter');
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('2 days');
+  await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+  const asked = Date.parse(String(previews.at(-1)!.expirationTime));
+  expect(asked).toBeGreaterThanOrEqual(Date.now() + 2 * 86_400_000 - 5000);
+});
+
+// TC-3154: the chooser is in Advanced details. Picking the app's own time there after the one-hour start keeps it.
+test('picking what the app asked for in Advanced details after the one-hour start does not bring the hour back', async ({ page }) => {
+  const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
+  const att = { [`urn:tinycloud:encryption:${owner}:default/apps/xyz.tinycloud.listen/`]: { 'tinycloud.encryption/decrypt': [{}] } };
+  const decrypt = siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
+  const { frame, previews } = await open(page, { expiryChangeable: true }, decrypt);
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
+  await expect(frame.getByText('How long it lasts', { exact: true })).toBeHidden();
+  await frame.getByText('Advanced details', { exact: true }).click();
+  await frame.getByText('How long it lasts', { exact: true }).click();
+  await frame.getByRole('button', { name: '7 days', exact: true }).click();
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('7 days');
+  await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+  // Give a wrongly re-sent default time to arrive; the face and the last preview must both still be the app's own time.
+  await page.waitForTimeout(1000);
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('7 days');
+  expect(previews.at(-1)).not.toHaveProperty('expirationTime');
+});
+
+test('picking the hour itself in Advanced details counts as the owner\'s choice, so the one-hour note goes', async ({ page }) => {
+  const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
+  const att = { [`urn:tinycloud:encryption:${owner}:default/apps/xyz.tinycloud.listen/`]: { 'tinycloud.encryption/decrypt': [{}] } };
+  const decrypt = siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
+  const { frame } = await open(page, { expiryChangeable: true }, decrypt);
+  await expect(frame.getByTestId('approval-expiry-once-note')).toBeVisible();
+  await frame.getByText('Advanced details', { exact: true }).click();
+  await frame.getByText('How long it lasts', { exact: true }).click();
+  await frame.getByRole('button', { name: '1 hour', exact: true }).click();
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
+  await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
 });

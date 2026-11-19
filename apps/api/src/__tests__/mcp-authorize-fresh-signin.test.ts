@@ -264,8 +264,9 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
     });
 
     describe('the other ways a request is resumed on the sign-in the browser holds', () => {
-      const exchange = (clientId: string, code: string) => form('/oauth2/token', {
-        client_id: clientId, grant_type: 'authorization_code', code, redirect_uri: callback, code_verifier: verifier, resource,
+      const exchange = (clientId: string, code: string, audience: string | null = resource) => form('/oauth2/token', {
+        client_id: clientId, grant_type: 'authorization_code', code, redirect_uri: callback, code_verifier: verifier,
+        ...(audience === null ? {} : { resource: audience }),
       });
       const codeIn = (url: string) => new URL(url, issuer).searchParams.get('code');
       const issuedTokens = async () => (await prisma.oauthAccessToken.count()) + (await prisma.oauthRefreshToken.count());
@@ -388,7 +389,8 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
         const approved = await json('/oauth2/consent', { accept: true, oauth_query: consent.searchParams.toString() }, cookie);
         const code = codeIn(((await approved.json()) as { url?: string }).url ?? '');
         expect(code).toBeTruthy();
-        const exchanged = await exchange(clientId, code!);
+        // No resource: naming an MCP resource without the MCP scope is refused (TC-1366).
+        const exchanged = await exchange(clientId, code!, null);
         expect(exchanged.status, await exchanged.clone().text()).toBe(200);
       });
     });

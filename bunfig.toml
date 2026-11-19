@@ -22,3 +22,5 @@ ignore = [
   "scripts/authorize-sign-harness.test.ts",
   "scripts/vertical-happy-path-harness.test.ts",
 ]
+# Ends background TinyCloud setup a test leaves running, after every test (TC-2969).
+preload = ["./apps/api/src/__tests__/end-background-work.ts"]

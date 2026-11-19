@@ -56,6 +56,15 @@ export interface VerifiedManifestFields {
   };
 }
 
+/** The renewal choice bound into an approval-request context: finite, or leased for this many seconds. */
+export type BoundRenewalChoice = { choice: 'finite' } | { choice: 'leased'; leaseLifetimeSeconds: number };
+
+/** The renewal an app asked for at a widget sign-in: its longest lease. Bound only while leases are on. */
+export interface SignInRenewalRequest {
+  version: 1;
+  leaseLifetimeSeconds: number;
+}
+
 export interface AuthorizationContextIssueInput {
   userId: string;
   keyId: string;
@@ -110,6 +119,13 @@ export interface AuthorizationContextIssueInput {
   admittedAppKeys?: AdmittedAppKey[];
   /** The app's `expiryChangeable: true` opt-in, bound at prepare time (TC-2272). */
   expiryChangeable?: boolean;
+  /**
+   * The owner's renewal choice for an approval request that signed a renewal request (TC-2933), bound at
+   * prepare time with the preview, so a later step cannot add or lengthen a lease the owner did not see.
+   */
+  renewal?: BoundRenewalChoice;
+  /** The renewal the requesting app asked for at this sign-in; the owner's choice is sealed with the preview. */
+  signInRenewal?: SignInRenewalRequest;
 }
 
 interface StoredContext {
@@ -139,6 +155,8 @@ interface StoredContext {
   appOrigin?: string;
   admittedAppKeys?: AdmittedAppKey[];
   expiryChangeable?: boolean;
+  renewal?: BoundRenewalChoice;
+  signInRenewal?: SignInRenewalRequest;
 }
 
 const store = new Map<string, StoredContext>();
@@ -166,6 +184,43 @@ function sha256Hex(input: string): string {
 
 export function digestJwk(jwk: unknown): string {
   return sha256Hex(stableStringify(jwk));
+}
+
+/** The public members of each JWK key type (RFC 7517/7518/8037), plus `kid`. */
+const PUBLIC_JWK_MEMBERS: Record<string, readonly string[]> = {
+  OKP: ["kty", "crv", "x", "kid"],
+  EC: ["kty", "crv", "x", "y", "kid"],
+  RSA: ["kty", "n", "e", "kid"],
+};
+
+/**
+ * A copy of a session JWK with only the public members of its key type, each
+ * a string. Any other member, private or unknown, is dropped. Returns null,
+ * to be treated as a missing key, for anything else: a non-object, an array,
+ * a non-plain object, an unknown `kty`, or a kept member that is not a string.
+ */
+export function publicJwk(jwk: unknown): Record<string, string> | null {
+  if (!jwk || typeof jwk !== "object" || Array.isArray(jwk)) return null;
+  const prototype = Object.getPrototypeOf(jwk);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  const source = jwk as Record<string, unknown>;
+  if (typeof source.kty !== "string" || !Object.hasOwn(PUBLIC_JWK_MEMBERS, source.kty)) return null;
+  const result: Record<string, string> = {};
+  for (const member of PUBLIC_JWK_MEMBERS[source.kty]!) {
+    if (!Object.hasOwn(source, member)) continue;
+    const value = source[member];
+    if (typeof value !== "string") return null;
+    result[member] = value;
+  }
+  return result;
+}
+
+/** The private members of any JWK key type (RFC 7518 section 6, RFC 8037). */
+const PRIVATE_JWK_MEMBERS = ["d", "p", "q", "dp", "dq", "qi", "k", "oth"];
+
+/** Whether a JWK carries any private member, whatever its value. */
+export function hasPrivateJwkMember(jwk: unknown): boolean {
+  return !!jwk && typeof jwk === "object" && PRIVATE_JWK_MEMBERS.some((member) => Object.hasOwn(jwk, member));
 }
 
 export function digestAbilities(abilities: unknown): string {
@@ -320,7 +375,9 @@ export function issueAuthorizationContext(
   pruneExpired(now);
 
   const token = `oks_${randomUUID().replace(/-/g, "")}${randomUUID().replace(/-/g, "")}`;
-  const jwkDigest = digestJwk(input.jwk);
+  const jwk = publicJwk(input.jwk);
+  if (!jwk) throw new Error("Session JWK must be a public key");
+  const jwkDigest = digestJwk(jwk);
 
   const metadataTrust = input.metadataTrust ?? {
     status: "unsigned" as const,
@@ -335,7 +392,7 @@ export function issueAuthorizationContext(
     keyId: input.keyId,
     keyAddress: input.keyAddress.toLowerCase(),
     jwkDigest,
-    jwk: input.jwk,
+    jwk,
     host: input.host,
     spaceId: input.spaceId,
     baselineAbilitiesDigest: input.baselineAbilitiesDigest,
@@ -351,6 +408,8 @@ export function issueAuthorizationContext(
     appOrigin: input.appOrigin,
     admittedAppKeys: input.admittedAppKeys,
     expiryChangeable: input.expiryChangeable,
+    renewal: input.renewal,
+    signInRenewal: input.signInRenewal,
   };
   store.set(token, stored);
 
@@ -674,7 +733,7 @@ function evaluateContext(
   if (stored.keyAddress !== input.keyAddress.toLowerCase()) {
     return { ok: false, error: "key-mismatch", message: "Authorization context bound to a different key address." };
   }
-  const candidateJwkDigest = digestJwk(input.jwk);
+  const candidateJwkDigest = digestJwk(publicJwk(input.jwk));
   if (!constantTimeEqual(stored.jwkDigest, candidateJwkDigest)) {
     return { ok: false, error: "jwk-mismatch", message: "Session JWK does not match the prepared context." };
   }
@@ -807,6 +866,10 @@ export interface PeekSuccess {
     admittedAppKeys?: AdmittedAppKey[];
     /** The app opted in (`expiryChangeable: true`) to a signed expiry that differs from the one it sent. */
     expiryChangeable?: boolean;
+    /** The renewal choice bound with the preview (TC-2933). */
+    renewal?: BoundRenewalChoice;
+    /** The renewal the requesting app asked for at this sign-in. */
+    signInRenewal?: SignInRenewalRequest;
   };
 }
 
@@ -856,6 +919,8 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       appOrigin: stored.appOrigin,
       admittedAppKeys: stored.admittedAppKeys,
       expiryChangeable: stored.expiryChangeable,
+      renewal: stored.renewal,
+      signInRenewal: stored.signInRenewal,
     },
   };
 }
@@ -898,6 +963,10 @@ interface StoredPreviewApproval {
   selectedActionIds: string[]; // sorted for stable comparison
   signedMessageDigest: string;
   signedMessage: string;
+  /** The elevated action ids (TC-2927) the owner explicitly allowed on the warning screen; sorted. */
+  elevatedAllowed: string[];
+  /** The owner's renewal choice at this preview, for a sign-in whose app asked for renewal. */
+  renewal?: BoundRenewalChoice;
 }
 
 const previewApprovals = new Map<string, StoredPreviewApproval>();
@@ -914,6 +983,10 @@ export interface PreviewApprovalIssueInput {
   keyAddress: string;
   selectedActionIds: Set<string>;
   signedMessage: string;
+  /** The elevated action ids the owner explicitly allowed (TC-2927). The preview refused anything else. */
+  elevatedAllowed?: Iterable<string>;
+  /** The owner's renewal choice at this preview; sealed with the bytes, so signing uses exactly it. */
+  renewal?: BoundRenewalChoice;
 }
 
 export interface PreviewApprovalToken {
@@ -939,6 +1012,8 @@ export function issuePreviewApproval(
     selectedActionIds: [...input.selectedActionIds].sort(),
     signedMessageDigest: digest,
     signedMessage: input.signedMessage,
+    elevatedAllowed: [...new Set(input.elevatedAllowed ?? [])].sort(),
+    renewal: input.renewal,
   };
   previewApprovals.set(token, stored);
   return {
@@ -991,6 +1066,10 @@ export interface PreviewApprovalCheckSuccess {
   signedMessage: string;
   selectedActionIds: Set<string>;
   keyAddress: string;
+  /** The elevated action ids the owner allowed at the preview (TC-2927). */
+  elevatedAllowed: Set<string>;
+  /** The owner's renewal choice sealed with the preview, if the sign-in asked for renewal. */
+  renewal?: BoundRenewalChoice;
   claim: PreviewApprovalClaim;
 }
 
@@ -1086,6 +1165,8 @@ export function checkPreviewApproval(
     signedMessage: stored.signedMessage,
     selectedActionIds: new Set(stored.selectedActionIds),
     keyAddress: stored.keyAddress,
+    elevatedAllowed: new Set(stored.elevatedAllowed),
+    renewal: stored.renewal,
     claim: { token: input.token, record: stored },
   };
 }

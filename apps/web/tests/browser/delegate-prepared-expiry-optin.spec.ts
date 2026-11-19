@@ -43,16 +43,16 @@ async function open(page: Page, extraRequest: Record<string, unknown>) {
     delivery: { handoffId: 'B'.repeat(43), state: 'A'.repeat(43), cancelSecret: 'C'.repeat(43) },
   };
   await page.goto(`/delegate#tv2=${Buffer.from(JSON.stringify(input)).toString('base64url')}`);
-  await expect(page.getByText('Approval expires:')).toBeVisible();
+  await expect(page.getByTestId('approval-expiry-line')).toBeVisible();
   return previews;
 }
 
-const presets = (page: Page) => page.getByRole('button', { name: /^(1 hr|24 hr|7d|30d)$/ });
+const presets = (page: Page) => page.getByRole('button', { name: /^(1 hour|24 hours|7 days|30 days)$/ });
 
 test('a handoff that does not opt in keeps the shorter-only picker', async ({ page }) => {
   const previews = await open(page, {});
-  await page.getByRole('button', { name: '(Change)' }).click();
-  await expect(presets(page)).toHaveText(['1 hr', '24 hr', '7d']);
+  await page.getByText('How long it lasts', { exact: true }).click();
+  await expect(presets(page)).toHaveText(['1 hour', '24 hours', '7 days']);
   await page.getByLabel('Or type a time').fill('40d');
   await page.getByRole('button', { name: 'Set' }).click();
   await expect(page.getByRole('alert').filter({ hasText: /\S/ })).toHaveCount(1);
@@ -63,8 +63,9 @@ test('a handoff that does not opt in keeps the shorter-only picker', async ({ pa
 
 test('a handoff that opts in offers the longer presets and accepts a typed time beyond what the CLI asked for', async ({ page }) => {
   const previews = await open(page, { expiryChangeable: true });
-  await page.getByRole('button', { name: '(Change)' }).click();
-  await expect(presets(page)).toHaveText(['1 hr', '24 hr', '7d', '30d']);
+  await expect(page.getByText('This app asked for 7d. You can choose a longer time.')).toBeVisible();
+  await page.getByText('How long it lasts', { exact: true }).click();
+  await expect(presets(page)).toHaveText(['1 hour', '24 hours', '7 days', '30 days']);
   await page.getByLabel('Or type a time').fill('40d');
   await page.getByRole('button', { name: 'Set' }).click();
   await expect(page.getByRole('alert')).toHaveCount(0);
@@ -76,11 +77,11 @@ test('a handoff that opts in offers the longer presets and accepts a typed time 
 
 test('an opted-in handoff picks the 30-day preset and still refuses nonsense and the far future', async ({ page }) => {
   const previews = await open(page, { expiryChangeable: true });
-  await page.getByRole('button', { name: '(Change)' }).click();
+  await page.getByText('How long it lasts', { exact: true }).click();
   await page.getByLabel('Or type a time').fill('99999y');
   await page.getByRole('button', { name: 'Set' }).click();
   await expect(page.getByRole('alert')).toHaveCount(1);
-  await page.getByRole('button', { name: '30d' }).click();
+  await page.getByRole('button', { name: '30 days' }).click();
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await expect.poll(() => previews.length).toBe(1);
   expect(previews[0]!.expirationTime).toBe('2026-11-15T17:00:00.000Z');

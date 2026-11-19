@@ -117,3 +117,96 @@ test(`v2 review at ${viewport.width}px reads one owner key and waits for fresh h
   expect(signCalls).toBe(0); // A key read under the old owner cannot authorize the new owner.
 });
 }
+
+for (const surface of ['sign', 'embed/sign']) {
+  test(`${surface} offers active keys for an unpinned message and signs the owner's choice`, async ({ page }) => {
+    const primary = { ...key, id: 'primary-seven', keyIndex: 7, label: 'Primary QA', isPrimary: true };
+    const other = { ...key, id: 'other-eight', keyIndex: 8, label: 'Other QA', address: '0x8888888888888888888888888888888888888888' };
+    const signed: Array<{ keyId: string; message: string }> = [];
+    await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
+    await page.route('**/api/auth/get-session**', (route) => route.fulfill({
+      json: { session: { id: 's', userId: 'u' }, user: { id: 'u' } },
+    }));
+    await page.route('**/api/keys', (route) => route.fulfill({
+      json: { keys: [{ ...key, id: 'archived-zero', label: 'Archived QA', archivedAt: '2026-11-01T00:00:00Z' }, primary, other] },
+    }));
+    await page.route('**/api/keys/**', (route) => {
+      const keyId = new URL(route.request().url()).pathname.split('/')[3]!;
+      if (route.request().method() === 'POST') {
+        signed.push({ keyId, message: route.request().postDataJSON().message });
+        return route.fulfill({ json: { signature: '0x00', address: other.address } });
+      }
+      return route.fulfill({ json: { key: keyId === other.id ? other : primary } });
+    });
+    await page.goto('/__parity_harness');
+    await page.evaluate((surface) => {
+      const iframe = document.createElement('iframe');
+      iframe.id = 'choose-signing-key';
+      iframe.src = `/widget/${surface}?origin=${encodeURIComponent(location.origin)}`;
+      window.addEventListener('message', (event) => {
+        if (event.source === iframe.contentWindow && event.data?.type === 'openkey:ready') {
+          iframe.contentWindow?.postMessage({
+            type: 'openkey:sign:request', requestId: 'qa-choice', protocolVersion: 1,
+            message: 'Choose an account for this QA message',
+          }, location.origin);
+        }
+      });
+      document.body.append(iframe);
+    }, surface);
+    const frame = page.frameLocator('#choose-signing-key');
+    await expect(frame.getByRole('button', { name: 'Primary QA', exact: true })).toBeVisible();
+    await expect(frame.getByRole('button', { name: /Archived QA/ })).toHaveCount(0);
+    await expect(frame.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+    await frame.getByRole('button', { name: 'Use a different key' }).click();
+    await frame.getByRole('button', { name: 'Other QA', exact: true }).click();
+    await frame.getByRole('button', { name: 'Approve', exact: true }).click();
+    await expect.poll(() => signed).toEqual([{ keyId: other.id, message: 'Choose an account for this QA message' }]);
+  });
+
+  test(`${surface} keeps an unavailable SIWE owner bound instead of choosing another primary`, async ({ page }) => {
+    let signs = 0;
+    await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
+    await page.route('**/api/auth/get-session**', (route) => route.fulfill({
+      json: { session: { id: 's', userId: 'u' }, user: { id: 'u' } },
+    }));
+    await page.route('**/api/keys', (route) => route.fulfill({ json: { keys: [
+      { ...key, archivedAt: '2026-11-01T00:00:00Z' },
+      { ...key, id: 'new-primary', isPrimary: true, address: '0x7777777777777777777777777777777777777777' },
+    ] } }));
+    await page.route('**/api/keys/**', (route) => {
+      signs++;
+      return route.fulfill({ status: 500, json: { error: 'No signing expected' } });
+    });
+    await page.goto('/__parity_harness');
+    await page.evaluate(({ surface, message }) => {
+      const iframe = document.createElement('iframe');
+      iframe.id = 'bound-owner';
+      iframe.src = `/widget/${surface}?origin=${encodeURIComponent(location.origin)}`;
+      const host = window as Window & { boundRefusals?: unknown[] };
+      host.boundRefusals = [];
+      window.addEventListener('message', (event) => {
+        if (event.source !== iframe.contentWindow || event.origin !== location.origin) return;
+        if (event.data?.type === 'openkey:sign:response' || event.data?.type === 'openkey:close') {
+          host.boundRefusals?.push(event.data);
+          return;
+        }
+        if (event.data?.type === 'openkey:ready') {
+          iframe.contentWindow?.postMessage({
+            type: 'openkey:sign:request', requestId: 'qa-bound', protocolVersion: 1, message,
+          }, location.origin);
+        }
+      });
+      document.body.append(iframe);
+    }, { surface, message });
+    const frame = page.frameLocator('#bound-owner');
+    await expect(frame.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+    await frame.getByRole('button', { name: 'Back to app', exact: true }).click();
+    await expect.poll(() => page.evaluate(() =>
+      (window as Window & { boundRefusals?: unknown[] }).boundRefusals,
+    )).toMatchObject([
+      { type: 'openkey:sign:response', success: false, error: { code: 'NO_KEY' } },
+      { type: 'openkey:close' },
+    ]);
+    expect(signs).toBe(0);
+  });
+}

@@ -17,9 +17,9 @@
  *   CLIENT_ID             Existing enabled client to update branding only. In
  *                         update mode, empty branding values are unchanged;
  *                         use `none` to clear icon or theme colours.
- *   CLIENT_ICON           HTTPS icon URL (optional)
- *   CLIENT_THEME_BACKGROUND_COLOR  #rrggbb (optional)
- *   CLIENT_THEME_ACCENT_COLOR      #rrggbb (optional)
+ *   CLIENT_ICON           HTTPS icon URL (optional; `none` clears it on update)
+ *   CLIENT_THEME_BACKGROUND_COLOR  #rrggbb (optional; `none` clears it on update)
+ *   CLIENT_THEME_ACCENT_COLOR      #rrggbb (optional; `none` clears it on update)
  *   CLIENT_TINYCLOUD_NATIVE_DELEGATION
  *                         Native delegation ceiling JSON (optional; native
  *                         clients only). Adds tinycloud:delegation.
@@ -36,6 +36,7 @@ import {
   validateNativeDelegationConfig,
   type NativeDelegationConfig,
 } from '../apps/api/src/services/native-delegation/policy';
+import { createBranding, updateBranding } from './oauth-client-branding';
 
 const prisma = createPrismaClient();
 
@@ -63,28 +64,6 @@ function nativeDelegationConfig(type: string, raw: string | undefined): NativeDe
   return validateNativeDelegationConfig(parsed, { type, public: true, tokenEndpointAuthMethod: 'none' }, POLICY_OPTIONS);
 }
 
-function optionalHttpsIcon(emptyValue: undefined | null = null): string | null | undefined {
-  const rawValue = process.env.CLIENT_ICON?.trim();
-  if (!rawValue) return emptyValue;
-  if (rawValue.toLowerCase() === 'none') return null;
-  const value = rawValue;
-  let url: URL;
-  try { url = new URL(value); } catch { throw new Error('CLIENT_ICON must be an HTTPS URL'); }
-  if (url.protocol !== 'https:' || !url.hostname || url.username || url.password) {
-    throw new Error('CLIENT_ICON must be an HTTPS URL without credentials');
-  }
-  return value;
-}
-
-function themeColor(name: string, emptyValue: undefined | null = null): string | null | undefined {
-  const rawValue = process.env[name]?.trim();
-  if (!rawValue) return emptyValue;
-  if (rawValue.toLowerCase() === 'none') return null;
-  const value = rawValue;
-  if (!/^#[0-9a-fA-F]{6}$/.test(value)) throw new Error(`${name} must be #rrggbb or none`);
-  return value;
-}
-
 // Postgres JSONB reorders object keys, so compare both ceilings in the
 // validator's canonical form.
 function sameNativeDelegationConfig(
@@ -107,36 +86,48 @@ async function main() {
   const name = clientIdToUpdate ? process.env.CLIENT_NAME?.trim() || undefined : required('CLIENT_NAME');
   if (clientIdToUpdate) {
     const incompatible = [
-      ['CLIENT_TINYCLOUD_NATIVE_DELEGATION', process.env.CLIENT_TINYCLOUD_NATIVE_DELEGATION],
       ['CLIENT_REDIRECT_URIS', process.env.CLIENT_REDIRECT_URIS],
       ['CLIENT_URI', process.env.CLIENT_URI],
       ['CLIENT_TYPE', process.env.CLIENT_TYPE],
     ].filter(([, value]) => value?.trim());
     if (incompatible.length > 0) {
-      throw new Error(`client_id updates branding only; remove ${incompatible.map(([key]) => key).join(', ')}`);
+      throw new Error(`client_id updates branding and an existing delegation ceiling only; remove ${incompatible.map(([key]) => key).join(', ')}`);
     }
   }
   const redirectUris = clientIdToUpdate ? [] : required('CLIENT_REDIRECT_URIS')
     .split(',').map((uri) => uri.trim()).filter(Boolean);
   const type = process.env.CLIENT_TYPE?.trim() || 'native';
   const uri = process.env.CLIENT_URI?.trim() || null;
-  const icon = optionalHttpsIcon(clientIdToUpdate ? undefined : null);
-  const themeBackgroundColor = themeColor('CLIENT_THEME_BACKGROUND_COLOR', clientIdToUpdate ? undefined : null);
-  const themeAccentColor = themeColor('CLIENT_THEME_ACCENT_COLOR', clientIdToUpdate ? undefined : null);
 
   if (clientIdToUpdate) {
+    // Only the branding inputs that are set: an empty icon or theme colour keeps the stored value (TC-3268).
+    const branding = updateBranding(process.env);
     const existingClient = await prisma.oauthClient.findUnique({ where: { clientId: clientIdToUpdate } });
     if (!existingClient || existingClient.disabled) throw new Error(`Enabled OAuth client not found: ${clientIdToUpdate}`);
+    // A ceiling change replaces the ceiling of a client that already has delegation
+    // enabled; enabling delegation on an existing client stays an admin-route decision.
+    const rawCeiling = process.env.CLIENT_TINYCLOUD_NATIVE_DELEGATION?.trim();
+    let ceiling: NativeDelegationConfig | undefined;
+    if (rawCeiling) {
+      if (!existingClient.scopes.includes(TINYCLOUD_DELEGATION_SCOPE) || existingClient.tinycloudNativeDelegation == null) {
+        throw new Error('CLIENT_TINYCLOUD_NATIVE_DELEGATION with client_id only replaces an existing delegation ceiling');
+      }
+      let parsed: unknown;
+      try { parsed = JSON.parse(rawCeiling); } catch { throw new Error('CLIENT_TINYCLOUD_NATIVE_DELEGATION is not valid JSON'); }
+      ceiling = validateNativeDelegationConfig(parsed, existingClient, POLICY_OPTIONS);
+      // The ceiling is public client policy, never a secret: the run log is the before/after record.
+      console.log(`Delegation ceiling before: ${JSON.stringify(existingClient.tinycloudNativeDelegation)}`);
+      console.log(`Delegation ceiling after: ${JSON.stringify(ceiling)}`);
+    }
     await prisma.oauthClient.update({
       where: { clientId: clientIdToUpdate },
       data: {
         ...(name ? { name } : {}),
-        ...(icon !== undefined ? { icon } : {}),
-        ...(themeBackgroundColor !== undefined ? { themeBackgroundColor } : {}),
-        ...(themeAccentColor !== undefined ? { themeAccentColor } : {}),
+        ...branding,
+        ...(ceiling ? { tinycloudNativeDelegation: ceiling as unknown as Prisma.InputJsonObject } : {}),
       },
     });
-    console.log(`Branding updated for enabled OAuth client: ${name ?? clientIdToUpdate}`);
+    console.log(`Branding${ceiling ? ' and delegation ceiling' : ''} updated for enabled OAuth client: ${name ?? clientIdToUpdate}`);
     console.log(`CLIENT_ID=${clientIdToUpdate}`);
     return;
   }
@@ -181,9 +172,7 @@ async function main() {
       clientSecret: null,
       name: clientName,
       uri,
-      icon,
-      themeBackgroundColor,
-      themeAccentColor,
+      ...createBranding(process.env),
       redirectUris,
       scopes: ['openid', 'email', 'keys', 'offline_access', ...(nativeConfig ? [TINYCLOUD_DELEGATION_SCOPE] : [])],
       tinycloudNativeDelegation: nativeConfig ? nativeConfig as unknown as Prisma.InputJsonObject : undefined,

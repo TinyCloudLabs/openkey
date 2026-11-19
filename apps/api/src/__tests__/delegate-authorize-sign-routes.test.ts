@@ -1262,7 +1262,7 @@ describe('prepared handoff that opts in to a longer expiry (TC-2276)', () => {
 
   test('an opted-in handoff previews an expiry later than the CLI asked for, and the sealed message carries it', async () => {
     const { asked, preview } = await handoff({ expiryChangeable: true }, 41);
-    for (const later of [asked + 1, asked + 365 * 86_400_000, Date.UTC(2100, 0, 1)]) {
+    for (const later of [asked + 1, asked + 365 * 86_400_000, asked + 2 * 365 * 86_400_000]) {
       const result = await preview(later);
       expect(result.status, new Date(later).toISOString()).toBe(200);
       expect(expiryOf(result.body)).toBe(new Date(later).toISOString());
@@ -1284,7 +1284,7 @@ describe('prepared handoff that opts in to a longer expiry (TC-2276)', () => {
     }
   });
 
-  test('the flag lifts only the later-than-asked ceiling: past year 9999 and in the past are still refused', async () => {
+  test('the flag lifts only the later-than-asked ceiling: out-of-range times and times in the past are still refused', async () => {
     const { preview } = await handoff({ expiryChangeable: true }, 50);
     const farFuture = await preview(Date.UTC(9999, 11, 31, 23, 59, 59) + 86_400_000);
     expect(farFuture.status).toBe(400);

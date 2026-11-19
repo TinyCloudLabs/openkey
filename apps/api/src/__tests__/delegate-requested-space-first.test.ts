@@ -529,3 +529,33 @@ describe('TC-1608 a hung node call is aborted and releases the lock', () => {
     expect(state).toBeNull();
   });
 });
+
+// TC-2380: the node's fresh answer at approval time beats a cached `complete` row.
+describe('TC-2380 an approval whose space the node lists as skipped re-hosts it even when the row is complete', () => {
+  const completeRow = (): StateRow => ({ id: 'state_1', status: 'complete', attemptId: null, lockExpiresAt: null });
+
+  test('the node lists the space as skipped: the run hosts it and the approval reports it ready', async () => {
+    state = completeRow();
+
+    const approved = await approveDefault();
+
+    expect(approved.status).toBe(200);
+    expect(approved.body).toMatchObject({ hostActivated: true, spaceReady: true, spaceId: spaceId('default') });
+    expect(hostPostsFor('default')).toHaveLength(1);
+    expect(node.hosted.has(spaceId('default'))).toBe(true);
+    expect(signed.length).toBeGreaterThan(0);
+    await until(() => state?.status === 'complete' && node.hosted.size === SPACES.length, 'the rest of the setup');
+  });
+
+  test('the node already hosts the space: no host delegation and no peer request are sent', async () => {
+    state = completeRow();
+    node.hosted.add(spaceId('default'));
+
+    const approved = await approveDefault();
+
+    expect(approved.body).toMatchObject({ hostActivated: true, spaceReady: true });
+    expect(node.hostPosts).toHaveLength(0);
+    expect(node.peerGets).toHaveLength(0);
+    expect(state?.status).toBe('complete');
+  });
+});

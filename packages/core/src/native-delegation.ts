@@ -1,3 +1,4 @@
+import { sameTinyCloudHost } from './tinycloud-host';
 /**
  * Native TinyCloud delegation flow (TC-774 task S1).
  *
@@ -505,6 +506,10 @@ export function buildAuthorizationDetails(options: {
 
 // ======= PAR =======
 
+/** Initial sign-in UX hint for OpenKey's login page; never an authorization input. */
+export type NativeLoginMethod = 'email' | 'passkey' | 'google' | 'apple';
+const NATIVE_LOGIN_METHODS: readonly string[] = ['email', 'passkey', 'google', 'apple'] satisfies NativeLoginMethod[];
+
 export interface BuildParRequestOptions {
   clientId: string;
   redirectUri: string;
@@ -515,7 +520,8 @@ export interface BuildParRequestOptions {
   ttlSeconds?: number;
   siweNonce?: string;
   loginHint?: string;
-  loginMethod?: 'email' | 'passkey' | 'google';
+  /** Only `email` (or no method) may carry `loginHint`. */
+  loginMethod?: NativeLoginMethod;
   /** Extra scopes appended to `openid offline_access tinycloud:delegation`. */
   extraScopes?: string[];
 }
@@ -545,13 +551,13 @@ export function buildParRequest(options: BuildParRequestOptions): {
     'authorization_details',
     JSON.stringify(buildAuthorizationDetails(options)),
   );
-  if (options.loginMethod !== undefined && !['email', 'passkey', 'google'].includes(options.loginMethod)) {
+  if (options.loginMethod !== undefined && !NATIVE_LOGIN_METHODS.includes(options.loginMethod)) {
     throw new OpenKeyNativeError('INVALID_REQUEST', 'Invalid login_method');
   }
   if (options.loginHint !== undefined) {
     const hint = options.loginHint.trim();
     if (hint.length > 254 || /[\s\p{C}]/u.test(hint) || (hint.match(/@/g) ?? []).length !== 1 ||
-      hint.startsWith('@') || hint.endsWith('@') || options.loginMethod === 'passkey' || options.loginMethod === 'google') {
+      hint.startsWith('@') || hint.endsWith('@') || (options.loginMethod !== undefined && options.loginMethod !== 'email')) {
       throw new OpenKeyNativeError('INVALID_REQUEST', 'Invalid login_hint');
     }
     form.set('login_hint', hint.toLowerCase());
@@ -863,7 +869,7 @@ export interface ValidateDelegationOptions {
   /**
    * The TinyCloud node the client expects (spec: `tinycloudHost` must be
    * "the host it expects"). Required: validation fails closed without it.
-   * Exact-match against `delegation.tinycloudHost`.
+   * The two production node names match; other hosts require exact equality.
    */
   expectedTinycloudHost: string;
 }
@@ -964,7 +970,7 @@ export function validateTinyCloudDelegation(
       'expectedTinycloudHost is required to validate tinycloud_delegation',
     );
   }
-  if (delegation.tinycloudHost !== options.expectedTinycloudHost) {
+  if (!sameTinyCloudHost(delegation.tinycloudHost, options.expectedTinycloudHost)) {
     throw new OpenKeyNativeError(
       'SERVER',
       `tinycloud_delegation.tinycloudHost "${delegation.tinycloudHost}" is not the expected host "${options.expectedTinycloudHost}"`,
@@ -1082,7 +1088,7 @@ export interface ExchangeNativeCodeOptions {
   codeVerifier: string;
   sessionKey: NativeSessionKeypair;
   requestedPermissions: NativeDelegationPermission[];
-  /** Expected TinyCloud node, exact-matched against `tinycloudHost`. Required - fails closed. */
+  /** Expected TinyCloud node, accepting either production node name. Required - fails closed. */
   expectedTinycloudHost: string;
   fetchFn?: NativeFetch;
   sha256Fn?: SHA256Fn;
@@ -1226,7 +1232,7 @@ export interface RenewDelegationOptions {
    * field (PAR shape, same session key, no `ttl_seconds`).
    */
   permissionsSubset?: NativeDelegationPermission[];
-  /** Expected TinyCloud node, exact-matched against `tinycloudHost`. Required - fails closed. */
+  /** Expected TinyCloud node, accepting either production node name. Required - fails closed. */
   expectedTinycloudHost: string;
   fetchFn?: NativeFetch;
   sha256Fn?: SHA256Fn;

@@ -3,7 +3,8 @@
 // returned becomes an empty 200 (Content-Length 0, no Content-Type).
 
 import './tc1777-test-env';
-import { beforeAll, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, mock, test } from 'bun:test';
+import { Hono } from 'hono';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
@@ -15,6 +16,7 @@ const address = account.address;
 const user = { id: 'user_1', email: 'alice@example.test' };
 const jwk = { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' };
 const ORIGIN = 'https://listen.tinycloud.xyz';
+const previousOrigin = process.env.WEBAUTHN_ORIGIN;
 const OWNER = `did:pkh:eip155:1:${address}`;
 const SPACE = `tinycloud:pkh:eip155:1:${address}:default`;
 const urn = (rest: string) => `urn:tinycloud:encryption:${OWNER}:default${rest}`;
@@ -106,13 +108,18 @@ await mockModules({
 
 let router: typeof import('../routes/delegate')['delegateRouter'];
 beforeAll(async () => {
+  process.env.WEBAUTHN_ORIGIN = ORIGIN;
   ({ delegateRouter: router } = await import('../routes/delegate?unauthenticated' as string));
+});
+afterAll(() => {
+  if (previousOrigin === undefined) delete process.env.WEBAUTHN_ORIGIN;
+  else process.env.WEBAUTHN_ORIGIN = previousOrigin;
 });
 
 function call(path: string, headers: Record<string, string> = {}) {
   return router.request(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', origin: 'https://openkey.so', ...headers },
+    headers: { 'content-type': 'application/json', origin: ORIGIN, ...headers },
     body: '{}',
   });
 }
@@ -143,8 +150,31 @@ describe('delegate routes without a session', () => {
   test('a bearer token from a site that is not an OpenKey web origin answers 403', async () => {
     const res = await call('/authorize-sign-prepare', { authorization: 'Bearer any', origin: 'https://app.example' });
     expect(res.status).toBe(403);
-    await expect(res.json()).resolves.toEqual({ error: 'Bearer session tokens are accepted only from OpenKey' });
+    await expect(res.json()).resolves.toEqual({ error: 'Requests are accepted only from the OpenKey account origin' });
   });
+  test('a foreign Origin refusal logs the delegate route template once', async () => {
+    const output: string[] = [];
+    const write = process.stdout.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => { output.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    try {
+      const app = new Hono();
+      app.route('/api/delegate', router);
+      const res = await app.request('/api/delegate/prepare', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer any', origin: 'https://foreign.example' },
+        body: '{}',
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Requests are accepted only from the OpenKey account origin' });
+      const refusalLines = output.join('').split('\n').filter((line) => line.includes('account_origin_refused'));
+      expect(refusalLines).toHaveLength(1);
+      expect(refusalLines[0]!).not.toContain('https://foreign.example');
+      expect(JSON.parse(refusalLines[0]!)).toMatchObject({ route: '/api/delegate/prepare', reason: 'foreign' });
+    } finally {
+      process.stdout.write = write;
+    }
+  });
+
 });
 
 describe('delegate routes with a session', () => {
@@ -193,7 +223,7 @@ function realisticBody() {
 function callWithBody(path: string, headers: Record<string, string>) {
   return router.request(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', origin: 'https://openkey.so', ...headers },
+    headers: { 'content-type': 'application/json', origin: ORIGIN, ...headers },
     body: JSON.stringify(realisticBody()),
   });
 }

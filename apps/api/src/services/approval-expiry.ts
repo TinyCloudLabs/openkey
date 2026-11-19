@@ -6,9 +6,11 @@ export type ExpirationOverride = { ok: true; value: string } | { ok: false };
 
 /** The shortest approval the server previews: the one-minute floor the clients enforce, less 10 s for clock skew and network delay. */
 export const MIN_EXPIRATION_LEAD_MS = 50_000;
+/** Minimum grant lifetime enforced by delegate requests. */
+export const MIN_DELEGATION_EXPIRY_MS = 60 * 1000;
 
 /** The last second a SIWE timestamp (four-digit year) can name. */
-const LATEST_SIWE_TIME_MS = Date.UTC(9999, 11, 31, 23, 59, 59);
+export const LATEST_SIWE_TIME_MS = Date.UTC(9999, 11, 31, 23, 59, 59);
 
 /**
  * A chosen expiry must be an exact ISO-8601 UTC time (what `toISOString()`

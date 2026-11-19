@@ -95,12 +95,11 @@
     get error() {
       return rawGlobals?.error ?? null;
     },
-    requestPreview: () => record('requestPreview'),
     approveAndSign: () => record('approveAndSign'),
     cancel: () => record('cancel'),
     onSelectionEdited: (next) => record('onSelectionEdited', Array.from(next).sort()),
     invalidatePreview: () => record('invalidatePreview'),
-    // TC-2272: the "Approval expires" line, on when the spec sets `withExpiry`.
+    // TC-2272: the expiry line, on when the spec sets `withExpiry`.
     get expiry() {
       return rawGlobals?.withExpiry
         ? {

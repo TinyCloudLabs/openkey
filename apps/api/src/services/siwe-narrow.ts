@@ -38,7 +38,7 @@
 // block, ReCap resources appearing under Resources:) is rejected.
 
 import { prepareSession, parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
-import { isRawRecapEntry, type RecapEntry } from '../routes/delegate-session';
+import { entriesToSessionAbilities, type RecapEntry } from '../routes/delegate-session';
 
 export interface NarrowResult {
   siwe: string;
@@ -179,21 +179,7 @@ export function narrowSiwePreservingImmutable(input: NarrowInput): NarrowOutcome
       message: 'Original SIWE does not conform to the expected grammar (header/address/URI).',
     };
   }
-  // ReCap entries retain their originating space. A raw encryption network is
-  // a top-level resource, not an ability beneath the session's primary space.
-  // Recreate both maps separately so a partial selection does not change the
-  // resource being signed (including the CLI's bare and named-key rows).
-  const spaceAbilities: Record<string, Record<string, Record<string, string[]>>> = Object.create(null);
-  const rawAbilities: Record<string, string[]> = Object.create(null);
-  for (const entry of input.narrowedEntries) {
-    if (isRawRecapEntry(entry)) {
-      rawAbilities[entry.path] = [...entry.actions];
-      continue;
-    }
-    const abilities = spaceAbilities[entry.space] ?? (spaceAbilities[entry.space] = Object.create(null));
-    const paths = abilities[entry.service] ?? (abilities[entry.service] = Object.create(null));
-    paths[entry.path] = [...entry.actions];
-  }
+  const { spaceAbilities, rawAbilities } = entriesToSessionAbilities(input.narrowedEntries);
 
   let narrowedPrepared: { siwe: string } & Record<string, unknown>;
   try {

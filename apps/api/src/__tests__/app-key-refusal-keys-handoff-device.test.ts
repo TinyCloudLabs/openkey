@@ -101,7 +101,7 @@ describe('POST /api/keys/:keyId/sign', () => {
     const { keysRouter } = await import('../routes/keys?app-key-refusal-keys' as string);
     return keysRouter.request('/key_1/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ requestOrigin: ORIGIN, ...body }),
     });
   }
@@ -202,10 +202,6 @@ describe('device sign-in request', () => {
   });
   const NON_BROWSER = "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request.";
 
-  test('accepts the default-key decrypt request', () => {
-    expect(deviceRequestPermissions([entry({})])).toHaveLength(1);
-  });
-
   test.each([
     ['an apps/ key path', entry({ path: 'apps/xyz.tinycloud.listen/k' })],
     ['an apps/ prefix', entry({ path: 'apps/xyz.tinycloud.listen/', actions: ['tinycloud.encryption/key.create'] })],
@@ -222,7 +218,7 @@ describe('device sign-in request', () => {
     ['key.delete on the default network', entry({ actions: ['tinycloud.encryption/key.delete'] })],
     ['block and decrypt together', entry({ actions: ['tinycloud.encryption/key.block', 'tinycloud.encryption/decrypt'] })],
   ])('refuses %s', (_name, permission) => {
-    expect(() => deviceRequestPermissions([permission])).toThrow('actions must be exactly tinycloud.encryption/decrypt');
+    expect(() => deviceRequestPermissions([permission])).toThrow("device sign-in can't grant tinycloud.encryption");
   });
 
   test('an apps/ path on a kv entry is an ordinary path', () => {
