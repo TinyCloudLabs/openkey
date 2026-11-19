@@ -40,6 +40,21 @@ export async function recordClipboard(page: Page, fail = false) {
 
 export const lastCopied = (page: Page) => page.evaluate(() => (Reflect.get(window, '__copied') as string[]).at(-1) ?? null);
 
+/**
+ * The full code the code box holds, read whole from the page, after checking that copying the box puts exactly that
+ * text on the clipboard. The box must show the full code; call `recordClipboard` before the page loads.
+ */
+export async function fullCodeFromBox(page: Page): Promise<string> {
+  const box = page.locator('[data-code-box]');
+  const held = box.locator('> span').first();
+  await expect(held).toBeVisible();
+  const code = (await held.textContent()) ?? '';
+  expect(code).not.toBe('');
+  await box.click();
+  await expect.poll(() => lastCopied(page)).toBe(code);
+  return code;
+}
+
 /** /api/delegation-codes answers with this short code, valid for five minutes on the server's clock. */
 export async function mintShortCode(page: Page, code = 'sf23-22cs') {
   await page.route('**/api/delegation-codes', (route) => route.fulfill({

@@ -136,7 +136,7 @@ test('a refused signing shows the error, gives Revoke and Cancel back, and the n
     expect(button('Revoke')!.disabled).toBe(false);
     expect(button('Cancel')!.disabled).toBe(false);
     button('Revoke')!.click();
-    await until(() => target.textContent!.includes('Paste this response into the CLI'), 'the signed result');
+    await until(() => target.textContent!.includes('Paste this into your terminal'), 'the signed result');
     expect(calls.filter(path => path.endsWith('/owner-revocation/sign'))).toHaveLength(2);
   } finally {
     unmount(app);
