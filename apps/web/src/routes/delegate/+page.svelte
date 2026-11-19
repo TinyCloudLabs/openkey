@@ -39,6 +39,7 @@
     KNOWN_NODE_ORIGINS,
     REGISTERED_CALLBACK_ENDPOINTS,
     checkDelegateCallback,
+    delegateRequester,
     checkDelegateHost,
     isCanonicalHttpsEndpoint,
     isCanonicalHttpsOrigin,
@@ -540,6 +541,7 @@
     : hostCheck?.ok === false ? hostCheck.reason : '');
   $effect(() => { if (linkPolicyError) error = linkPolicyError; });
   const approvedCallback = $derived(callbackCheck?.ok ? callbackCheck.callback : null);
+  const requester = $derived(delegateRequester(approvedCallback));
   const showLoopbackHint = $derived(
     shouldShowLoopbackHint({ delegating, approvedCallback, deviceTransactionId, callbackInFlight, pasteCode }),
   );
@@ -927,7 +929,7 @@
           metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
           reason: { text: requestReason, source: requestReason ? 'caller' : 'none' },
           requester: {
-            displayName: 'TinyCloud CLI',
+            displayName: requester.displayName,
             verifiedOrigin: null,
             appId: null,
             manifestName: null,
@@ -1743,7 +1745,7 @@
       </div>
       <Card class="w-full p-6">
         <div class="text-center py-4">
-          <h1 class="text-[17px] font-semibold text-surface-900 mb-2">{expiredRequesterName ? `${expiredRequesterName}'s request expired` : 'Request expired'}</h1>
+          <h1 class="text-[17px] font-semibold text-surface-900 mb-2">{expiredRequesterName ? `This request from ${expiredRequesterName} expired.` : 'Request expired'}</h1>
           <p class="text-[15px] leading-6 text-[#71717a]">Ask your agent for a new link.</p>
         </div>
       </Card>
@@ -1851,7 +1853,7 @@
             <CloseTabButton allowBack />
           {:else}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
-            <p class="text-surface-500 text-sm">You can close this window and return to the CLI.</p>
+            <p class="text-surface-500 text-sm">You can close this window and return to {requester.returnTo}.</p>
             <CloseTabButton />
           {/if}
         </div>
