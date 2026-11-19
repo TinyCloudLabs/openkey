@@ -178,3 +178,29 @@ export function shortCodeFailureText(status?: number, code?: unknown): string {
     ? `${SHORT_CODE_FAILURE} (Error ${status} · ${codeText})`
     : `${SHORT_CODE_FAILURE} (Error ${status})`;
 }
+
+// Refusals that name the request or the account, not the key: choosing any other key repeats them.
+// Left out: key-mismatch, signature-mismatch and space-mismatch (they compare against the key),
+// authorization_context_failed (a server failure a retry can clear), and the codes that describe one
+// prepared context (choosing a key prepares a new one).
+const KEY_INDEPENDENT_REFUSAL_CODES: Record<string, true> = {
+  handoff_expired: true,
+  handoff_consumed: true,
+  handoff_replayed: true,
+  handoff_cancelled: true,
+  handoff_not_found: true,
+  handoff_claimed: true,
+  prepared_expired: true,
+  expired_request: true,
+  expired_result: true,
+  already_approved: true,
+  'user-mismatch': true,
+  request_binding: true,
+  key_delete_not_grantable: true,
+  invalid_siwe_recap: true,
+};
+
+export function refusalIgnoresKeyChoice(status: number, code: unknown): boolean {
+  const codeText = safeCode(code);
+  return status === 410 || (codeText !== null && KEY_INDEPENDENT_REFUSAL_CODES[codeText] === true);
+}

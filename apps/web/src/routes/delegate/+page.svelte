@@ -17,6 +17,7 @@
     DeviceRelayDeliveryError,
     OwnerMessageError,
     isTerminalApprovalFailure,
+    refusalIgnoresKeyChoice,
     shortCodeFailureText,
     walletMismatchFailureText,
   } from '$lib/delegate-failure-text';
@@ -140,6 +141,9 @@
   let error = $state('');
   let requestExpired = $state(false);
   let approveBlockedByFailure = $state(false);
+  // The person whose key choice drew a refusal that is the same for every key; the key list is hidden for them.
+  let keyChoiceRefusedFor = $state<string | null>(null);
+  const keyChoiceRefused = $derived(keyChoiceRefusedFor !== null && keyChoiceRefusedFor === $session.data?.user.id);
   let keysLoaded = $state(false);
   let initialized = $state(false);
   let signingIn = $state(false);
@@ -789,6 +793,7 @@
     }
 
     selectedKey = key;
+    keyChoiceRefusedFor = null;
     error = '';
     preparing = true;
 
@@ -801,6 +806,9 @@
     } catch (e: any) {
       error = delegateErrorMessage(e);
       selectedKey = null;
+      if (e instanceof DelegateResponseError && refusalIgnoresKeyChoice(e.status, e.code)) {
+        keyChoiceRefusedFor = $session.data?.user.id ?? null;
+      }
     } finally {
       preparing = false;
     }
@@ -967,6 +975,7 @@
 
   function goBack() {
     selectedKey = null;
+    keyChoiceRefusedFor = null;
     step = 'select-key';
     error = '';
     resetDelegationState();
@@ -2164,7 +2173,9 @@
         <!-- Key selection -->
         <header class="mb-5">
           <h1 class="text-lg font-semibold text-surface-900">TinyCloud access request</h1>
-          <p class="text-surface-500 text-sm mt-1">Select a key to review the requested access</p>
+          {#if !keyChoiceRefused}
+            <p class="text-surface-500 text-sm mt-1">Select a key to review the requested access</p>
+          {/if}
         </header>
 
         {#if error}
@@ -2182,7 +2193,7 @@
           </div>
         {/if}
 
-        {#if keys.length === 0}
+        {#if keys.length === 0 && !keyChoiceRefused}
           <div class="flex flex-col items-center justify-center text-center py-4">
             <p class="text-surface-500 text-sm mb-5">No keys found. Generate your first key to connect.</p>
             <Button onclick={generateAndSelect} class="w-full rounded-xl">
@@ -2192,7 +2203,7 @@
               Link External Wallet
             </Button>
           </div>
-        {:else}
+        {:else if !keyChoiceRefused}
           <KeyPicker
             {keys}
             {expectedAddress}

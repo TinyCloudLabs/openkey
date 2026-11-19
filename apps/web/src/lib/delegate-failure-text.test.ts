@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, isTerminalApprovalFailure, OwnerMessageError, shortCodeFailureText, walletMismatchFailureText } from './delegate-failure-text';
+import { delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, isTerminalApprovalFailure, OwnerMessageError, refusalIgnoresKeyChoice, shortCodeFailureText, walletMismatchFailureText } from './delegate-failure-text';
 
 const changedRequest = "This request changed after you opened it, so OpenKey didn't approve it. Return to the app or command and start again.";
 const approvalCannotProceed = "Couldn't approve this request. Try again.";
@@ -146,7 +146,34 @@ describe('delegateFailureText code mappings', () => {
     expect(isTerminalApprovalFailure(400, new Error('key-mismatch'))).toBe(false);
     expect(isTerminalApprovalFailure(400, new OwnerMessageError('owner copy'))).toBe(false);
   });
+  test.each([
+    'handoff_expired', 'handoff_consumed', 'handoff_replayed', 'handoff_cancelled', 'handoff_not_found',
+    'handoff_claimed', 'prepared_expired', 'expired_request', 'expired_result', 'already_approved',
+    'user-mismatch', 'request_binding', 'key_delete_not_grantable', 'invalid_siwe_recap',
+  ])('a refusal with code %s is the same whichever key is chosen', (code: string) => {
+    expect(refusalIgnoresKeyChoice(400, code)).toBe(true);
+    expect(refusalIgnoresKeyChoice(403, code)).toBe(true);
+  });
 
+  test('HTTP 410 is the same whichever key is chosen', () => {
+    expect(refusalIgnoresKeyChoice(410, undefined)).toBe(true);
+  });
+
+  test.each([
+    'key-mismatch', 'signature-mismatch', 'space-mismatch', 'authorization_context_failed',
+    'host-mismatch', 'jwk-mismatch', 'baseline-digest-mismatch', 'immutable-fields-changed',
+    'prepared_metadata_mismatch', 'prepared_siwe_mismatch', 'binding_mismatch', 'handoff-mismatch',
+    'invalid_permissions', 'app_key_grant_refused', 'key_not_found', 'key_state_invalid',
+    'invalid_expiry', 'rate_limited', 'session_required', 'approval_in_progress', 'unknown_code',
+  ])('a refusal with code %s can end differently with another key', (code: string) => {
+    expect(refusalIgnoresKeyChoice(400, code)).toBe(false);
+  });
+
+  test('a refusal with no readable code and a non-ended status keeps the list', () => {
+    for (const [status, code] of [[500, undefined], [404, undefined], [400, 'has spaces'], [400, {}]] as Array<[number, unknown]>) {
+      expect(refusalIgnoresKeyChoice(status, code)).toBe(false);
+    }
+  });
 
 });
 
