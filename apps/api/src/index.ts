@@ -325,7 +325,12 @@ const deleteAccountStepUp = allowBeforeTermsWhen(4 * 1024, (body) => body.purpos
 // and accepts no kind but owner-revocation); a sign-in handoff grants access.
 const ownerRevocationClaim = allowBeforeTermsWhen(6 * 1024, (body) =>
   !!body.request && typeof body.request === 'object' && !Array.isArray(body.request) && 'kind' in body.request);
-const WAYS_OUT: Array<['POST' | 'DELETE', string, MiddlewareHandler?]> = [
+const WAYS_OUT: Array<['GET' | 'POST' | 'DELETE', string, MiddlewareHandler?]> = [
+  // What the web's ways-out page reads to offer them: the account (the delete flow), its connected apps and its
+  // renewing permissions. Own-account reads with no side effects.
+  ['GET', '/api/account'],
+  ['GET', '/api/account/tinycloud-apps'],
+  ['GET', '/api/account/renewal-leases'],
   ['POST', '/api/account/step-up/email-otp/send', deleteAccountStepUp],
   ['POST', '/api/account/step-up/email-otp/verify', deleteAccountStepUp],
   ['POST', '/api/account/step-up/passkey/options'], // a passkey step-up proves what a passkey sign-in does

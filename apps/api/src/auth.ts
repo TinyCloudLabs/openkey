@@ -62,6 +62,7 @@ import { REVIEWER_MAX_SECONDS, capturedReviewer, reviewerActive, reviewerForUser
 import { hasAcceptedTerms, termsRequired } from './services/terms';
 import { capSessionRefresh } from './services/session-cap';
 import { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS } from './services/session-lifetime';
+import { signInLeaseSignOutPlugin } from './services/signin-lease-sign-out';
 
 export const prisma: PrismaClient = createPrismaClient();
 const tee = createTeeClient();
@@ -373,6 +374,8 @@ export const auth = betterAuth({
         }),
       },
     },
+    // An app signing out of its OpenKey session stops that sign-in's own renewal lease, and nothing else.
+    signInLeaseSignOutPlugin(prisma),
     passkeyFreshnessPlugin,
     // TC-1198: passkey enrolment and removal need a fresh step-up.
     passkeyEnrolmentPlugin(prisma, (headers): Promise<ResolvedSession | null> => auth.api.getSession({ headers })),

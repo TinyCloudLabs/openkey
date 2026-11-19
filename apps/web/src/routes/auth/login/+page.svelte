@@ -49,6 +49,8 @@
   // Native mode: the signed authorize query carries `tinycloud_request`, so the
   // sign-in is running in a system sheet opened by a native app.
   const native = nativeSignIn($page.url.searchParams);
+  // Where this sign-in is headed, for the Terms step: an approval link or device sign-in it declines too.
+  const termsReturnTo = normalizeAuthReturnTo($page.url.searchParams.get('redirect'), $page.url.origin, undefined, { consoleOrigin: consoleOrigin() || undefined });
   // `passkeys=false` comes from clients that cannot use WebAuthn.
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
@@ -581,6 +583,7 @@
     email={terms.email}
     clientId={native?.clientId ?? null}
     appName={terms.appName}
+    returnTo={termsReturnTo}
     onaccepted={termsAccepted}
     onsignin={signInAgain}
   />

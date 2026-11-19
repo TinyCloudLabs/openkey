@@ -19,6 +19,7 @@
     DeviceRelayDeliveryError,
     OwnerMessageError,
     isTerminalApprovalFailure,
+    refusalIgnoresKeyChoice,
     shortCodeFailureText,
     walletMismatchFailureText,
   } from '$lib/delegate-failure-text';
@@ -152,6 +153,9 @@
   const errorDetail = $derived(errorDetailFor && errorDetailFor.text === error ? errorDetailFor.detail : null);
   let requestExpired = $state(false);
   let approveBlockedByFailure = $state(false);
+  // The person whose key choice drew a refusal that is the same for every key; the key list is hidden for them.
+  let keyChoiceRefusedFor = $state<string | null>(null);
+  const keyChoiceRefused = $derived(keyChoiceRefusedFor !== null && keyChoiceRefusedFor === $session.data?.user.id);
   let keysLoaded = $state(false);
   let initialized = $state(false);
   let signingIn = $state(false);
@@ -786,6 +790,7 @@
     error = '';
     try {
       const { key } = await api.generateKey();
+      if (!keys.some((k) => k.id === key.id)) keys = [...keys, key];
       loading = false;
       await onKeySelect(key);
     } catch (e: any) {
@@ -801,6 +806,7 @@
     }
 
     selectedKey = key;
+    keyChoiceRefusedFor = null;
     error = '';
     preparing = true;
 
@@ -813,6 +819,9 @@
     } catch (e: any) {
       error = delegateErrorMessage(e);
       selectedKey = null;
+      if (e instanceof DelegateResponseError && refusalIgnoresKeyChoice(e.status, e.code)) {
+        keyChoiceRefusedFor = $session.data?.user.id ?? null;
+      }
     } finally {
       preparing = false;
     }
@@ -979,6 +988,7 @@
 
   function goBack() {
     selectedKey = null;
+    keyChoiceRefusedFor = null;
     step = 'select-key';
     error = '';
     resetDelegationState();
@@ -2187,13 +2197,21 @@
         <!-- Key selection -->
         <header class="mb-5">
           <h1 class="text-lg font-semibold text-surface-900">TinyCloud access request</h1>
-          <p class="text-surface-500 text-sm mt-1">Select a key to review the requested access</p>
+          {#if !keyChoiceRefused}
+            <p class="text-surface-500 text-sm mt-1">Select a key to review the requested access</p>
+          {/if}
         </header>
 
         {#if error}
           <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
             {error}
           </div>
+          {#if errorDetail}
+            <details class="error-detail">
+              <summary>Details</summary>
+              <p>{errorDetail}</p>
+            </details>
+          {/if}
         {/if}
 
         {#if expectedAddress && preselectAttempted && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
@@ -2205,7 +2223,7 @@
           </div>
         {/if}
 
-        {#if keys.length === 0}
+        {#if keys.length === 0 && !keyChoiceRefused}
           <div class="flex flex-col items-center justify-center text-center py-4">
             <p class="text-surface-500 text-sm mb-5">No keys found. Generate your first key to connect.</p>
             <Button onclick={generateAndSelect} class="w-full rounded-xl">
@@ -2215,7 +2233,7 @@
               Link External Wallet
             </Button>
           </div>
-        {:else}
+        {:else if !keyChoiceRefused}
           <KeyPicker
             {keys}
             {expectedAddress}
@@ -2262,6 +2280,19 @@
 {/if}
 
 <style>
+  .error-detail {
+    color: #9f2424;
+    font-size: 12px;
+    line-height: 1.45;
+    margin: -8px 0 16px;
+  }
+  .error-detail summary {
+    cursor: pointer;
+  }
+  .error-detail p {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+  }
   @media (max-width: 480px) {
     .expired-request {
       padding-top: 1rem;

@@ -16,7 +16,13 @@ test('Courier review on a phone preserves exact grants and requester status', as
   await page.screenshot({ path: `/var/tmp/tc-2905-${phase}-summary.png` });
   await page.screenshot({ path: `/var/tmp/tc-2905-${phase}-summary-full.png`, fullPage: true });
   if (!process.env.TC2905_BEFORE) {
-    await expect(page.getByText('Courier: send and receive messages with other agents', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('Courier: send and receive messages with other agents')).toHaveCount(0);
+    await expect(page.locator('.summary h3')).toHaveCount(0);
+    await expect(page.locator('.summary [role="group"]')).toHaveCount(0);
+    await expect(page.locator('.summary-statements')).toHaveCount(1);
+    const sensitiveRows = await page.locator('.summary-statement[data-severity="sensitive"]').count();
+    expect(sensitiveRows).toBeGreaterThanOrEqual(4);
+    await expect(page.locator('.summary-sensitive-pill')).toHaveCount(sensitiveRows);
     await expect(page.locator('.summary-statements').getByText('See all your Courier data, including your requests and approvals', { exact: true })).toBeVisible();
     await expect(page.getByText('Delete those saved copies', { exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);

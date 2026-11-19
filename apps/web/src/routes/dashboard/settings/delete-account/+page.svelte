@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { page } from '$app/stores';
   import { onDestroy, tick } from 'svelte';
   import { API_BASE, authClient } from '$lib/auth-client';
   import {
@@ -18,6 +19,7 @@
     type DeletionAccount,
   } from '$lib/account-deletion';
   import { isAppleRelayEmail } from '$lib/social-continuation';
+  import { waysOutPageFrom } from '$lib/terms-leave';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
 
@@ -41,6 +43,10 @@
   let resendTimer: ReturnType<typeof setInterval> | undefined;
   let started = false;
   let heading = $state<HTMLHeadingElement | null>(null);
+  // Opened from the Terms' ways out (before the account has agreed), leaving without deleting goes back there.
+  const waysOut = waysOutPageFrom($page.url.searchParams.get('from'));
+  const back = waysOut ?? '/dashboard/settings';
+  const backLabel = !waysOut ? 'Back to Settings' : waysOut.startsWith('/auth/terms/leave') ? 'Disconnect apps' : 'Other options';
 
   $effect(() => {
     if ($session.isPending || step === 'done') return;
@@ -173,8 +179,8 @@
 <div class="mx-auto max-w-xl px-4 py-8">
   {#if step !== 'done'}
     <div class="mb-6">
-      <a href="/dashboard/settings" class="text-sm text-surface-500 transition-colors hover:text-surface-700">
-        &larr; Back to Settings
+      <a href={back} class="text-sm text-surface-500 transition-colors hover:text-surface-700">
+        &larr; {backLabel}
       </a>
     </div>
   {/if}
@@ -211,7 +217,7 @@
         <p class="mt-4 text-sm text-surface-600" role="status">{PASSKEY_UNAVAILABLE}</p>
       {/if}
       <div class="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-        <Button variant="secondary" href="/dashboard/settings">Keep my account</Button>
+        <Button variant="secondary" href={back}>Keep my account</Button>
         {#if !passkeyBlocked}
           <Button onclick={() => go('confirm')}>Continue</Button>
         {/if}
@@ -297,7 +303,7 @@
         {/if}
       {/if}
       <div class="mt-4 flex justify-start">
-        <Button variant="ghost" size="sm" href="/dashboard/settings">Cancel</Button>
+        <Button variant="ghost" size="sm" href={back}>Cancel</Button>
       </div>
     {:else if step === 'done'}
       <h1 bind:this={heading} tabindex="-1" class="text-2xl font-bold text-surface-900 outline-none">Your account was deleted</h1>
