@@ -11,7 +11,9 @@
   //   2. A single top-level `<details>` labelled `Advanced details` contains:
   //      requester, verified browser origin, manifest name/appId/digest with
   //      HONEST trust/provenance label, reason (only when present), signing
-  //      identity, categorized exact-grant list, Edit/Reset controls, the
+  //      identity, the "How long it lasts" choices (where the surface lets the
+  //      owner change the time; the card keeps only the one expiry line),
+  //      categorized exact-grant list, Edit/Reset controls, the
   //      full raw message as `<pre>` (`user-select: text`; line feeds are line
   //      breaks, other control and invisible characters and runs of spaces are
   //      escaped by `renderSiweLiteral`) plus a
@@ -76,6 +78,7 @@
     type ElevatedKind,
   } from "@openkey/capability-review";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
+  import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
   import ElevatedWarning from "$lib/components/signing/elevated-warning.svelte";
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
@@ -810,6 +813,7 @@
         {renewal}
         sensitive={isOnceTier(selectedGrants)}
         {requestedBy}
+        chooser={false}
         permissionCount={summaryStatements.length}
       />
     {/if}
@@ -1009,6 +1013,20 @@
         {/if}
       </section>
     </details>
+
+    {#if onExpiryChange && model.protocol === "tinycloud-siwe-recap" && !onceDefaultPending && (expiryMs ?? requestedExpiry) !== null}
+      <details class="request-details expiry-fold">
+        <summary class="request-details-summary">How long it lasts</summary>
+        <ApprovalExpiryChooser
+          requestedMs={requestedExpiry}
+          chosenMs={expiryMs}
+          maxMs={expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null}
+          disabled={approving}
+          onChange={chooseExpiry}
+          {renewal}
+        />
+      </details>
+    {/if}
 
     {#if model.permissions.length > 0}
       <section class="permissions" aria-label="Exact grants">
