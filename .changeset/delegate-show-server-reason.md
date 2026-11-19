@@ -2,6 +2,6 @@
 "@openkey/web": patch
 ---
 
-The approval page now shows more about why OpenKey declined a request. When a website's key list doesn't match, the page shows OpenKey's own sentence. When the requested permissions are declined, the page keeps the usual line and adds a closed "Details" disclosure holding OpenKey's message.
+When OpenKey doesn't approve a request for an app key, the approval page now shows OpenKey's reason instead of the general line. When it doesn't approve the requested permissions, the page keeps the general line and adds a closed "Details" section with OpenKey's message.
 
 Details: TC-3330
