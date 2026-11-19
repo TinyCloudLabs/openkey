@@ -198,7 +198,7 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
     if (mode !== 'unadmitted') await admitLease(stage, { nodeOrigin: host, targetPublicJwk: { kty: 'OKP', crv: 'Ed25519', x: session.jwk.x } });
     if (mode === 'confirmed') await prisma.renewalLease.update({ where: { leaseCid: stage.leaseCid! }, data: { admittedAt: new Date(), leaseAuthorization: null } });
     const originalEnd = Date.parse(/^Expiration Time: (.+)$/m.exec(session.siwe)![1]!);
-    return { userId, sessionId, cookie, client, address: account.address, leaseCid: stage.leaseCid!, leaseAuthorization: stage.leaseAuthorization!, originalEnd, label };
+    return { userId, sessionId, token, cookie, client, address: account.address, leaseCid: stage.leaseCid!, leaseAuthorization: stage.leaseAuthorization!, originalEnd, label };
   }
 
   const call = (cookie: string, path: string, method: 'GET' | 'POST', body?: unknown) => app.fetch(new Request(`https://api.openkey.test${path}`, {
@@ -272,8 +272,11 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
     expect(await revokedAt(signOut.leaseCid)).toBeNull();
     expect(await prisma.session.count({ where: { id: signOut.sessionId } })).toBe(0);
 
-    // The app signs its own session out: its sign-in lease is revoked at the node, and the sign-out answers as before.
-    const appSignedOut = await call(appSignIn.cookie, '/api/auth/sign-out', 'POST');
+    // The app's embedded frame signs its own session out with its bearer token: its sign-in lease is revoked at the
+    // node, and the sign-out answers as before.
+    const appSignedOut = await app.fetch(new Request('https://api.openkey.test/api/auth/sign-out', {
+      method: 'POST', headers: { authorization: `Bearer ${appSignIn.token}`, origin: ORIGIN },
+    }));
     expect([appSignedOut.status, await appSignedOut.json()]).toEqual([200, { success: true }]);
     expect(await revokedAt(appSignIn.leaseCid)).not.toBeNull();
 
