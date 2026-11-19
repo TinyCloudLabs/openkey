@@ -91,6 +91,7 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
+  errorDetail={transport.errorDetail ?? null}
   approveBlockedReason={transport.approveBlockedReason ?? null}
   approveBlockedByFailure={transport.approveBlockedByFailure ?? false}
   {context}

@@ -345,12 +345,15 @@ async function finishManagedSpaceOnboarding(input: {
   ));
 }
 
-async function resolveBetterAuthSession(c: any): Promise<boolean> {
+// A session that has not accepted the current Terms gets the session check's own 403 `terms_required`, so the
+// page signing with it sends the account to the Terms screen; no session falls through to missing_authorization.
+async function resolveBetterAuthSession(c: any): Promise<boolean | Response> {
   let resolved = false;
-  await (requireSession as any)(c, async () => {
+  const refusal = await (requireSession as any)(c, async () => {
     resolved = true;
   });
-  return resolved;
+  if (resolved) return true;
+  return refusal instanceof Response && refusal.status === 403 ? refusal : false;
 }
 
 const defaultDelegateSignerAuth = createDelegateSignerAuth({

@@ -20,6 +20,7 @@ import {
   sessionDidForPublicJwk,
 } from '../services/device-authorization';
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
+import { createDelegationCodeRouter, type DelegationCodeStore } from '../routes/delegation-codes';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
 import { mockModules, replaceModules } from './mock-module';
 import { recapOf } from './fake-tinycloud-node';
@@ -187,6 +188,35 @@ test('managed approval save failure remains the error after timeout revoke fails
     else process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS = previousTimeout;
   }
 });
+import { NEVER_SENT_TO_BROKER_FIELDS, PUBLIC_DELEGATION_FIELDS, publicDelegationForCode } from '@openkey/delegation-code-fields';
+async function expectClassifiedCompletionFields(response: Record<string, unknown>) {
+  const allowed = new Set<string>([...PUBLIC_DELEGATION_FIELDS, ...NEVER_SENT_TO_BROKER_FIELDS]);
+  const unclassified = Object.keys(response).filter((field) => !allowed.has(field));
+  expect(
+    unclassified,
+    `Unclassified completion response key(s): ${unclassified.join(', ')}. Add each to a list in packages/delegation-code-fields with a reason.`,
+  ).toEqual([]);
+  const omitted = Object.keys(response).filter((field) => !PUBLIC_DELEGATION_FIELDS.includes(field as typeof PUBLIC_DELEGATION_FIELDS[number]));
+  expect(omitted).toEqual([...NEVER_SENT_TO_BROKER_FIELDS]);
+  const store: DelegationCodeStore = {
+    create: async () => true,
+    consume: async () => null,
+    claim: async () => null,
+    acknowledge: async () => false,
+    deleteExpired: async () => {},
+  };
+  const broker = createDelegationCodeRouter({
+    store,
+    sessionMiddleware: createMiddleware(async (_c, next) => next()),
+  });
+  const postToBroker = (delegation: Record<string, unknown>) => broker.request('/', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ delegation }),
+  });
+  expect((await postToBroker(publicDelegationForCode(response))).status).toBe(201);
+  expect((await postToBroker(response)).status).toBe(400);
+}
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
@@ -345,7 +375,11 @@ async function post(path: string, body: Record<string, unknown>) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  return { status: res.status, body: (await res.json()) as Record<string, any> };
+  const result = { status: res.status, body: (await res.json()) as Record<string, any> };
+  if (res.status === 200 && (path === '/' || path === '/complete')) {
+    await expectClassifiedCompletionFields(result.body);
+  }
+  return result;
 }
 
 async function prepare(extra: Record<string, unknown> = {}) {

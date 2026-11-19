@@ -3,7 +3,7 @@
 // The app asks for renewal with its longest lease at /authorize-sign-prepare; the owner's choice is sealed with
 // the preview. A leased choice makes /authorize-sign also sign an owner lease for exactly the signed grant, or hand
 // the lease message to the owner's wallet for /authorize-sign-renewal. OpenKey records each lease it signs before
-// returning it beside the grant, so every stop (Settings, sign-out, account deletion) can revoke it at the node; the
+// returning it beside the grant, so every stop (Settings, the app's sign-out, account deletion) can revoke it at the node; the
 // app registers the grant with its node and has the node admit the lease, and the node does all the renewing.
 // While renewal leases are off nothing here runs: the ask is ignored.
 import { randomUUID } from 'node:crypto';
@@ -55,7 +55,7 @@ export function bindSignInRenewalRequest(value: unknown, input: { host: string; 
 /** Who signed in, kept with the lease that waits for their wallet, so its record names them. */
 interface SignInOwner {
   userId: string;
-  /** The OpenKey session that signed in: signing out of it stops the lease. */
+  /** The OpenKey session that signed in: when that session signs itself out (the app's sign-out), the lease stops. */
   sessionId: string | null;
   /** The node the grant is registered with, which the lease is revoked at. */
   host: string;
