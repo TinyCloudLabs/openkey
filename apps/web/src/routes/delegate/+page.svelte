@@ -786,6 +786,7 @@
     error = '';
     try {
       const { key } = await api.generateKey();
+      if (!keys.some((k) => k.id === key.id)) keys = [...keys, key];
       loading = false;
       await onKeySelect(key);
     } catch (e: any) {
