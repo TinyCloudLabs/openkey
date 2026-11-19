@@ -72,14 +72,14 @@ describe('socialPopupReturnUrl', () => {
 describe('socialErrorMessage', () => {
   test.each([
     ['apple', 'apple_email_required', APPLE_EMAIL_REQUIRED_MESSAGE],
-    ['apple', 'account_not_linked', 'An OpenKey account already uses this email. Sign in to it and add Apple in Settings.'],
+    ['apple', 'account_not_linked', 'An OpenKey account already uses this email. Sign in to it, then add Apple in Settings.'],
     ['apple', 'user_cancelled_authorize', 'Apple sign-in was cancelled.'],
     ['google', 'access_denied', 'Google sign-in was cancelled.'],
     ['apple', 'account_already_linked_to_different_user', 'This Apple account is already linked to another OpenKey account.'],
     ['apple', 'unable_to_link_account', 'OpenKey could not link Apple. Verify a new email code in Settings and try again.'],
     ['apple', 'continuation_expired', 'This Apple confirmation expired. Start sign-in again.'],
-    ['apple', 'invalid_code', 'Apple could not complete sign-in. Please try again.'],
-    [null, 'invalid_code', 'Sign-in could not complete. Please try again.'],
+    ['apple', 'invalid_code', "Apple sign-in couldn't be completed. Try again."],
+    [null, 'invalid_code', "Sign-in couldn't be completed. Try again."],
     [null, 'cancelled', 'Sign-in was cancelled.'],
   ] as const)('%s %s', (provider: 'apple' | 'google' | null, code: string, message: string) => {
     expect(socialErrorMessage(provider, code)).toBe(message);
@@ -102,7 +102,7 @@ describe('relay copy (R4) and account exists (R3)', () => {
 
   test('account exists names the email and the provider', () => {
     expect(accountExistsMessage('apple', 'sam@example.test')).toBe(
-      'An OpenKey account already uses sam@example.test. Sign in to it and verify with an email code to add Apple in Settings.',
+      'An OpenKey account already uses sam@example.test. Sign in to it, then add Apple in Settings.',
     );
   });
 });
@@ -140,7 +140,7 @@ describe('loadSocialContinuation', () => {
     ['no email', { outcome: 'new_account', providerId: 'apple', email: '' }],
   ])('%s is refused, never shown', async (_label: string, body: unknown) => {
     const { impl } = fetchReturning(200, body);
-    await expect(loadSocialContinuation(input, impl)).rejects.toThrow('Apple could not complete sign-in. Please try again.');
+    await expect(loadSocialContinuation(input, impl)).rejects.toThrow("Apple sign-in couldn't be completed. Try again.");
   });
 });
 
@@ -159,7 +159,7 @@ describe('confirmSocialContinuation', () => {
   });
 
   test.each([
-    [{ code: 'ACCOUNT_ALREADY_EXISTS' }, 'An OpenKey account already uses this email. Sign in to it and add Apple in Settings.'],
+    [{ code: 'ACCOUNT_ALREADY_EXISTS' }, 'An OpenKey account already uses this email. Sign in to it, then add Apple in Settings.'],
     [{ code: 'ACCOUNT_ALREADY_LINKED' }, 'This Apple account is already linked to an OpenKey account. Sign in with Apple instead.'],
     [{ message: 'Invalid continuation' }, 'Could not create your account. Start Apple sign-in again.'],
   ])('maps %o', async (body: unknown, message: string) => {
