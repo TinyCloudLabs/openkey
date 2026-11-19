@@ -41,8 +41,8 @@
       <h1 class="mb-4 text-xl font-bold">Your app review account was deleted.</h1>
       <p>You can close this page.</p>
     {:else}
-      <h1 class="mb-4 text-xl font-bold">Delete OpenKey account</h1>
-      <p class="mb-6 text-sm text-surface-600">Deleting your OpenKey account does not delete data that apps keep with other services.</p>
+      <h1 class="mb-4 text-xl font-bold">Delete app review account</h1>
+      <p class="mb-6 text-sm text-surface-600">Deleting this account doesn't delete data that apps keep with other services.</p>
       {#if error}<p class="mb-4 text-sm text-red-700" role="alert">{error}</p>{/if}
       <form class="flex flex-col gap-4" onsubmit={(event) => { event.preventDefault(); remove(); }}>
         <label for="review-email">Review account</label>
@@ -51,7 +51,7 @@
         <Input id="review-code" type="password" bind:value={code} autocomplete="current-password" maxlength={128} required disabled={loading} />
         <label for="confirmation">Type DELETE MY ACCOUNT to confirm</label>
         <Input id="confirmation" bind:value={confirmation} autocomplete="off" required disabled={loading} />
-        <Button type="submit" disabled={loading || !ready || confirmation !== 'DELETE MY ACCOUNT'}>Verify and delete account</Button>
+        <Button type="submit" disabled={loading || !ready || confirmation !== 'DELETE MY ACCOUNT'}>Verify and delete</Button>
       </form>
       <a class="mt-4 block text-center text-sm text-surface-500" href="/auth/login">Back</a>
     {/if}

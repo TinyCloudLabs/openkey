@@ -59,7 +59,7 @@ test('native review code and fresh-browser account deletion use the dedicated sc
     await expect(page).toHaveURL(/\/auth\/review\/delete$/);
     await expect(page.getByLabel('Review account', { exact: true })).toBeVisible();
     await expect(page.getByLabel('Review code', { exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Verify and delete account' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Verify and delete', exact: true })).toBeDisabled();
     await expect.poll(() => deletionIntent).toBe(1);
     await expect(page.getByRole('alert')).toHaveCount(0);
     expect(otpSend).toBe(0);
