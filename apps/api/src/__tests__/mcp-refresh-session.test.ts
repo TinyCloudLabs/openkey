@@ -19,8 +19,9 @@ const mcpRow: Row = {
 type World = {
   row?: Row | null;
   client?: { disabled: boolean } | null;
-  consent?: { scopes: string[]; createdAt: Date } | null;
-  session?: { id: string } | null;
+  consent?: { scopes: string[]; createdAt: Date; reviewerEpoch?: number } | null;
+  session?: { id: string; createdAt?: Date; reviewerEpoch?: number;
+    user?: { reviewerBinding: { installEpoch: number; clientId: string; store: string } } } | null;
   fail?: 'row' | 'client' | 'consent' | 'session';
 };
 const live: World = {
@@ -50,7 +51,7 @@ describe('mcpRefreshRefusal: a found, unrevoked, unexpired MCP row of the reques
   test('a standing connection goes on to the provider; the session lookup is bound to the row\'s unlocked user and the clock', async () => {
     const { db, queries } = world(live);
     expect(await mcpRefreshRefusal(db, {}, 'refresh-token', 'app', null, NOW)).toBeNull();
-    expect(queries.session).toEqual([{ where: { id: 's', userId: 'u', expiresAt: { gt: NOW }, user: { lockedAt: null, reviewerHoldAt: null } }, select: { id: true, reviewerEpoch: true, user: { select: { reviewerBinding: true } } } }]);
+    expect(queries.session).toEqual([{ where: { id: 's', userId: 'u', expiresAt: { gt: NOW }, user: { lockedAt: null, reviewerHoldAt: null } }, select: { id: true, createdAt: true, reviewerEpoch: true, user: { select: { reviewerBinding: true } } } }]);
   });
 
   test.each([
@@ -125,6 +126,14 @@ describe('mcpTokenStatus, shared with the token status check', () => {
     expect(await status({}, ['tinycloud:mcp'], 1)).toEqual({ active: false, reason: 'older_than_consent' });
     expect(await mcpTokenStatus(world(live).db as McpTokenStatusDatabase, { userId: 'u', clientId: 'app', sessionId: null, scopes: [], issuedAtSeconds: 0 }, NOW))
       .toEqual({ active: false, reason: 'session' });
+  });
+
+  test.each([3599, 3600, 3601])('reviewer token status enforces age at %i seconds despite a later row expiry', async (age) => {
+    expect(await status({
+      consent: { ...live.consent!, reviewerEpoch: 1 },
+      session: { id: 's', createdAt: new Date(NOW.getTime() - age * 1000), reviewerEpoch: 1,
+        user: { reviewerBinding: { installEpoch: 1, clientId: 'app', store: 'openai' } } },
+    })).toEqual(age < 3600 ? { active: true } : { active: false, reason: 'session' });
   });
 });
 

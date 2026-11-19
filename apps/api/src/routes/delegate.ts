@@ -3,7 +3,7 @@ import { currentReviewerDelegate, reviewerSessionDid, assertReviewerSignedDelega
 import { reviewerForUser } from '../services/reviewer-accounts';
 import { isAccountOriginAllowed } from '../origin-policy';
 // Delegate route - creates TinyCloud delegation for CLI auth flow
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { routePath } from 'hono/route';
 import { createPrismaClient } from '@openkey/db';
@@ -23,7 +23,9 @@ import {
   ensureEip55,
   generateHostSIWEMessage,
   makeSpaceId,
+  siweToDelegationHeaders,
 } from '@tinycloud/node-sdk-wasm';
+import { buildOwnerRevocationSiwe } from '@openkey/capability-review';
 import {
   canonicalizeServiceName,
   entriesForSelectedActions,
@@ -60,7 +62,7 @@ import {
   type RecapEntry,
   type SessionAbilities,
 } from './delegate-session';
-import { log, logError, logSessionJwk, recordAccountOriginRefused } from '../log';
+import { log, logError, logMetric, logSessionJwk, recordAccountOriginRefused } from '../log';
 
 // Re-export the pure delegation helpers so existing external test files
 // (e.g. delegate-oauth-route.test.ts) that import them from this module
@@ -92,7 +94,7 @@ import {
   type AuthorizationContextClaim,
   type BoundRenewalChoice,
 } from '../services/authorization-signing';
-import { MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
+import { MIN_DELEGATION_EXPIRY_MS, MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSignedSubset, parseStrictSiwe, SIGNED_SUBSET_REFUSAL_CODE } from '../services/signed-subset';
 import { checkSiweOrigin } from '../services/siwe-origin';
@@ -147,6 +149,44 @@ import { bindSignInRenewalRequest, recordedSignInLease, setUpSignInLease, signIn
 import type { SignInRenewalRequest } from '../services/authorization-signing';
 import { parseRenewalChoice, renewalLeasesEnabled, renewalUnavailableMessage, signLease } from '../services/renewal-lease';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
+async function revokeActivatedManagedDelegation(
+  host: string,
+  key: Parameters<typeof signManagedKey>[0],
+  sealedBlob: string,
+  ownerDid: string,
+  delegationCid: string,
+): Promise<void> {
+  const now = new Date();
+  try {
+    const siwe = buildOwnerRevocationSiwe({
+      kind: 'owner-revocation',
+      ownerDid,
+      cid: delegationCid,
+      nonce: randomBytes(16).toString('hex'),
+      expiresAt: new Date(now.getTime() + 600_000).toISOString(),
+    }, SIWE_DOMAIN, now);
+    const signature = await signManagedKey(key, sealedBlob, siwe);
+    const response = await fetch(`${host.replace(/\/+$/, '')}/revoke`, {
+      method: 'POST',
+      headers: siweToDelegationHeaders({ siwe, signature }) as Record<string, string>,
+      redirect: 'error',
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      logMetric('warn', 'delegate_session_revoke_failed', { status: response.status });
+      return;
+    }
+    const result: unknown = await response.json().catch(() => null);
+    if (!result || typeof result !== 'object' ||
+        !('revoked' in result) || result.revoked !== true ||
+        !('cid' in result) || result.cid !== delegationCid) {
+      logMetric('warn', 'delegate_session_revoke_failed', { status: response.status });
+    }
+  } catch (error) {
+    logError('warn', 'delegate_session_revoke_failed', error);
+  }
+}
+
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
   activePreparedHandoffService = service;
 }
@@ -472,7 +512,6 @@ const DEFAULT_DELEGATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
  * states its own maximum and is held to it by its window check instead (TC-2274).
  */
 const MAX_DELEGATION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
-const MIN_DELEGATION_EXPIRY_MS = 60 * 1000; // 1 minute
 
 const MS_UNIT_FACTORS: Record<string, number> = {
   ms: 1,
@@ -1621,7 +1660,7 @@ delegateRouter.post('/', async (c) => {
       assertBaselineSubset(preparedEntries, baseline);
       assertRequiredActions(preparedEntries, baseline);
     } catch (e) {
-      return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
+      return c.json(delegateErrorResponse(e, 'Invalid delegation', 'invalid_permissions'), 400);
     }
 
     // Sol MAJOR-5: derive the EXACT set of action IDs encoded in the
@@ -1754,6 +1793,7 @@ delegateRouter.post('/', async (c) => {
     });
 
     let hostActivated = false;
+    let activationMayStillApply = false;
     const requestedSpaces = delegationSpaces(preparedEntries, baseline);
     let spaceReadiness = activationReadiness(requestedSpaces, preparedEntries);
     try {
@@ -1776,6 +1816,7 @@ delegateRouter.post('/', async (c) => {
         spaceReadiness = activationReadiness(requestedSpaces, preparedEntries, activationResult);
       }
     } catch (e) {
+      activationMayStillApply = true;
       logError('warn', 'delegate_session_activation_failed', e);
     }
 
@@ -1789,7 +1830,7 @@ delegateRouter.post('/', async (c) => {
 
     recordAppSignIn(prisma, user.id, bound.appOrigin);
     const ownerSealedBlob = key.sealedBlob;
-    return c.json(await saveApprovalDelegation(body, user.id, {
+    const delegation = {
       delegationHeader: session.delegationHeader,
       delegationCid: session.delegationCid,
       spaceId: bound.spaceId,
@@ -1817,7 +1858,16 @@ delegateRouter.post('/', async (c) => {
       signature,
       signedMessage: bound.originalSiwe,
       permissions: effectiveGrants,
-    }, { renewal: bound.renewal, host, sessionId: c.get('session')?.id ?? null, signOwner: (message) => signManagedKey(key, ownerSealedBlob, message) }));
+    };
+    try {
+      return c.json(await saveApprovalDelegation(body, user.id, delegation, { renewal: bound.renewal, host, sessionId: c.get('session')?.id ?? null, signOwner: (message) => signManagedKey(key, ownerSealedBlob, message) }));
+    } catch (error) {
+      if (body.approvalRequestId !== undefined && (hostActivated || activationMayStillApply)) {
+        // A timeout also sends a best-effort revoke (TC-2795).
+        await revokeActivatedManagedDelegation(host, key, key.sealedBlob, ownerDid, session.delegationCid);
+      }
+      throw error;
+    }
     } catch (error) {
       await releaseApprovalDelegation(body);
       throw error;
@@ -1999,7 +2049,7 @@ delegateRouter.post('/prepare', async (c) => {
   });
 
   if (!key) {
-    return c.json({ error: 'Key not found' }, 404);
+    return c.json({ error: 'Key not found', code: 'key_not_found' }, 404);
   }
 
   const address = ensureEip55(key.address);
@@ -2295,7 +2345,7 @@ delegateRouter.post('/complete', async (c) => {
     assertBaselineSubset(entries, baseline);
     assertRequiredActions(entries, baseline);
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
+    return c.json(delegateErrorResponse(e, 'Invalid delegation', 'invalid_permissions'), 400);
   }
 
   const preparedAddress = signedFields.address;
@@ -2535,7 +2585,7 @@ delegateRouter.post('/complete', async (c) => {
   }));
 
   recordAppSignIn(prisma, user.id, signInAppOrigin);
-  return c.json(await saveApprovalDelegation(body, user.id, {
+  const delegation = {
     delegationHeader: session.delegationHeader,
     delegationCid: session.delegationCid,
     spaceId,
@@ -2565,7 +2615,9 @@ delegateRouter.post('/complete', async (c) => {
     //   `permissions` is the effective grant set after any narrowing.
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
-  }, { renewal: boundRenewal, host: body.host, sessionId: c.get('session')?.id ?? null }));
+  };
+  // External-wallet approvals: OpenKey holds neither the wallet key nor the session key, so this path doesn't revoke (TC-2795).
+  return c.json(await saveApprovalDelegation(body, user.id, delegation, { renewal: boundRenewal, host: body.host, sessionId: c.get('session')?.id ?? null }));
   } catch (error) {
     await releaseApprovalDelegation(body);
     throw error;
