@@ -297,6 +297,19 @@ app.use('/api/auth/*', createProviderInterceptors({
   },
 }));
 
+// The session read answers without the session token. A bearer is the signed token, which OpenKey's
+// pages get from `set-auth-token` or /api/auth/session-token. Server-side `auth.api.getSession` is unaffected.
+app.get('/api/auth/get-session', async (c, next) => {
+  await next();
+  if (!c.res.headers.get('content-type')?.includes('application/json')) return;
+  const body = await c.res.clone().json().catch(() => null) as { session?: Record<string, unknown> } | null;
+  if (!body?.session || !('token' in body.session)) return;
+  delete body.session.token;
+  const headers = new Headers(c.res.headers);
+  headers.delete('content-length');
+  c.res = new Response(JSON.stringify(body), { status: c.res.status, headers });
+});
+
 // better-auth routes - mount at /api/auth
 // Avoid async/await wrapper to preserve AsyncLocalStorage context in Bun
 app.on(['POST', 'GET'], '/api/auth/*', (c) => {

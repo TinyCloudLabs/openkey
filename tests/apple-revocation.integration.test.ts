@@ -589,7 +589,7 @@ if (!backend) {
     test('a locked user\'s live cookie and bearer sessions are refused by session lookup and the signing routes', async () => {
       const { user, cookie } = await appleUser('locked-sub', 'locked@openkey.test');
       const key = await prisma.ethereumKey.findFirstOrThrow({ where: { userId: user.id } });
-      const token = (await latestSession(user.id)).token;
+      const token = (await (await get('/api/auth/session-token', cookie)).json() as { token: string }).token;
       const bearer = { authorization: `Bearer ${token}` };
       expect(await sessionUser('', bearer)).toBe(user.id);
       expect((await post(`/api/keys/${key.id}/sign`, { message: 'before lock' }, cookie)).status).toBe(200);

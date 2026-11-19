@@ -131,7 +131,8 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
     await prisma.ethereumKey.create({ data: { userId, address: `0x${n.toString(16).padStart(40, '0')}`, publicKey: '0x1', keyType: 'EXTERNAL' } });
     await prisma.session.create({ data: { id: `terms-session-${n}`, userId, token, expiresAt: new Date(Date.now() + 86_400_000) } });
     const cookie = (await serializeSignedCookie(cookieName, token, secret)).split(';')[0]!;
-    return { userId, token, cookie };
+    // A bearer is the signed session token, as `set-auth-token` hands it out.
+    return { userId, token, cookie, bearer: cookie.slice(cookie.indexOf('=') + 1) };
   }
 
   async function expectTermsRequired(response: Response) {
@@ -272,8 +273,8 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
 
     test('a bearer session token (CLI, widget) gets the same refusal with the URL to open', async () => {
       release(VERSION);
-      const { token } = await signedIn();
-      const response = await request(`${api}/api/keys`, { headers: { authorization: `Bearer ${token}`, origin: web } });
+      const { bearer } = await signedIn();
+      const response = await request(`${api}/api/keys`, { headers: { authorization: `Bearer ${bearer}`, origin: web } });
       expect(response.status).toBe(403);
       expect(await response.json()).toEqual({
         error: 'terms_required', error_description: `Open ${TERMS_URL} to accept the Terms of Service.`, terms_url: TERMS_URL,
@@ -509,9 +510,9 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
 
     test('an acceptance is recorded only from the browser, never with a session token', async () => {
       release(VERSION);
-      const { token, userId } = await signedIn();
+      const { bearer, userId } = await signedIn();
       const response = await request(`${api}/api/account/terms/accept`, {
-        method: 'POST', headers: { authorization: `Bearer ${token}`, origin: web, 'content-type': 'application/json' },
+        method: 'POST', headers: { authorization: `Bearer ${bearer}`, origin: web, 'content-type': 'application/json' },
         body: JSON.stringify({ version: VERSION }),
       });
       expect(response.status).toBe(403);
