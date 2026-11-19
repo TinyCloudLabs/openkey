@@ -164,6 +164,29 @@ END $$`);
       expect((await deleteAccount(owner.cookie)).status).toBe(200);
       expect(await prisma.accountDeletionReceipt.count()).toBe(1);
     });
+
+    test('a receipt insert that fails makes the route answer 500, deletes nothing, and the retry then succeeds', async () => {
+      const owner = await account(2);
+      await prisma.$executeRawUnsafe(`CREATE FUNCTION fail_receipt_insert_test() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'forced receipt failure';
+END $$`);
+      await prisma.$executeRawUnsafe('CREATE TRIGGER fail_receipt_insert_test BEFORE INSERT ON "account_deletion_receipt" FOR EACH ROW EXECUTE FUNCTION fail_receipt_insert_test()');
+      try {
+        const failed = await deleteAccount(owner.cookie);
+        expect(failed.status).toBe(500);
+        expect(await failed.json()).toEqual({ error: 'Internal server error' });
+      } finally {
+        await prisma.$executeRawUnsafe('DROP TRIGGER fail_receipt_insert_test ON "account_deletion_receipt"');
+        await prisma.$executeRawUnsafe('DROP FUNCTION fail_receipt_insert_test()');
+      }
+      expect(await prisma.accountDeletionReceipt.count()).toBe(0);
+      expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(1);
+      expect(await prisma.ethereumKey.count({ where: { userId: owner.userId } })).toBe(2);
+
+      expect((await deleteAccount(owner.cookie)).status).toBe(200);
+      expect(await prisma.accountDeletionReceipt.count()).toBe(1);
+    });
   });
 
   describe('append-only', () => {
