@@ -18,13 +18,21 @@ describe('ownerDigestFor', () => {
     expect(ownerDigestFor(CHECKSUM_ADDRESS.toLowerCase())).toBe(CHECKSUM_DIGEST);
   });
 
-  // The vector the node mirrors: a lowercase-stored address, the exact DID string it is hashed as, and the digest.
-  test('test vector: lowercase address, exact DID string, digest', () => {
-    const stored = '0xd8da6bf26964af9d7eed9e03e53415d37aa96045';
+  // The vector the node mirrors: one address in three casings, the exact DID string they are all hashed as, and the
+  // one digest. Mixed-case here is neither all-lowercase nor the checksum casing.
+  test('test vector: mixed-case, lowercase and checksum inputs give one DID string and one digest', () => {
+    const inputs = [
+      '0xD8da6bf26964af9d7eed9e03e53415d37aa96045',
+      '0xd8da6bf26964af9d7eed9e03e53415d37aa96045',
+      '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045',
+    ];
     const did = 'did:pkh:eip155:1:0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045';
-    expect(`did:pkh:eip155:1:${ensureEip55(stored)}`).toBe(did);
-    expect(createHash('sha256').update(did).digest('hex')).toBe('3ddb4996960256d28059a5e2d332bc2de767ad0d85b107f37dea23986d491530');
-    expect(ownerDigestFor(stored)).toBe('3ddb4996960256d28059a5e2d332bc2de767ad0d85b107f37dea23986d491530');
+    const digest = '3ddb4996960256d28059a5e2d332bc2de767ad0d85b107f37dea23986d491530';
+    expect(createHash('sha256').update(did).digest('hex')).toBe(digest);
+    for (const input of inputs) {
+      expect(`did:pkh:eip155:1:${ensureEip55(input)}`, input).toBe(did);
+      expect(ownerDigestFor(input), input).toBe(digest);
+    }
   });
 });
 
