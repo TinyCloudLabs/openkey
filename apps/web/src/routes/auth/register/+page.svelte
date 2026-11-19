@@ -17,6 +17,8 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
+  import TermsStep from '$lib/components/auth/terms-step.svelte';
+  import { pendingTerms, type TermsStatus } from '$lib/terms';
 
   let { data } = $props();
 
@@ -29,6 +31,22 @@
   let registeredSessionToken = $state<string | null>(null);
   let providers = $state<SocialProviderId[]>([]);
   let loadingProvider = $state<SocialProviderId | null>(null);
+  // TC-3232: a new account accepts the Terms before the passkey offer or anything else.
+  let terms = $state<{ status: TermsStatus; email: string; next: () => void | Promise<void> } | null>(null);
+
+  async function askTermsFirst(next: () => void | Promise<void>): Promise<boolean> {
+    const status = await pendingTerms();
+    if (!status) return false;
+    const session = await authClient.getSession().catch(() => null);
+    terms = { status, email: session?.data?.user.email ?? email, next };
+    return true;
+  }
+
+  async function termsAccepted() {
+    const next = terms?.next;
+    terms = null;
+    await next?.();
+  }
 
   // Detect if opened as a popup from the embed SDK flow
   const isEmbedPopup = $derived(typeof window !== 'undefined' && !!window.opener && data.isEmbed);
@@ -118,7 +136,7 @@
         : result;
       if (outcome.error) {
         error = authErrorMessage(outcome.error, 'Invalid code');
-      } else {
+      } else if (!await askTermsFirst(() => { step = 'passkey'; })) {
         step = 'passkey';
       }
     } catch (e: any) {
@@ -150,6 +168,7 @@
     try {
       // Explicit sign-up intent: the popup creates the account without asking again, unless Apple hides the email.
       await signInWithSocialPopup(provider, undefined, 'signup');
+      if (await askTermsFirst(async () => { await ensureKeyExists(); await continueAfterRegistration(); })) return;
       await ensureKeyExists();
       await continueAfterRegistration();
     } catch (e: any) {
@@ -272,6 +291,16 @@
   />
 {/if}
 
+{#if terms}
+  <TermsStep
+    status={terms.status}
+    surface="web"
+    returnTo={initialReturnTo}
+    email={terms.email}
+    onaccepted={termsAccepted}
+    onsignin={() => { terms = null; otp = ''; error = ''; step = 'email'; }}
+  />
+{:else}
 <div class="flex min-h-screen items-center justify-center bg-surface-50 px-4 py-12">
   <div class="w-full max-w-md">
     <!-- Logo mark -->
@@ -428,3 +457,4 @@
     </Card>
   </div>
 </div>
+{/if}

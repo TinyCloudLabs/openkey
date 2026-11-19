@@ -17,7 +17,7 @@
 // decryption) is used by the native access summary. UI callers route through these rather
 // than composing the sentence themselves.
 
-import { courierTexts, COURIER_CATALOG } from "./courier.js";
+import { courierTexts } from "./courier.js";
 import type { CapabilityAction, CapabilityGrant, CapabilityReviewModel, PermissionSeverity } from "./model.js";
 import { appDisplayName } from "./app-identity.js";
 import {
@@ -43,6 +43,7 @@ import type { EncryptionResource } from "./encryption-resource.js";
 import { ENCRYPTION_URN_PREFIX, parseEncryptionResource } from "./encryption-resource.js";
 import { isAppsKeyResource, parseKeyResource } from "./key-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
+import { feedGrantStatement } from "./feed-grant.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
   KV_SECRET_SERVICES_PROOF,
@@ -992,6 +993,8 @@ export function buildStatements(input: CapabilityGrant): StatementEntry[] {
       ...deletes.map((action) => buildStatement({ ...input, actions: [action] })),
     ];
   }
+  // One sentence per feed connect grant; schema is not split off it.
+  if (feedGrantStatement(input) !== null) return [buildStatement(input)];
   const view = canonicalEncryptionUrn(input);
   if (view.kind === "invalid") return [buildStatement(input)];
   const grant = view.kind === "urn" ? view.grant : input;
@@ -1128,6 +1131,9 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
   if (grant.serviceMismatch === true) {
     return fallbackStatement(grant);
   }
+  // A feed connect grant, recognized by its exact tuple (feed-grant.ts), reads as one sentence.
+  const feedText = feedGrantStatement(grant);
+  if (feedText !== null) return { primaryText: feedText, service, resource };
   // Key-shaped encryption grants render per-verb copy. A network URN falls
   // through to the network branches below.
   if (view.kind === "urn" && view.parsed.kind !== "network") {
@@ -1958,8 +1964,7 @@ const SUMMARY_SEVERITY_RANK: Record<PermissionSeverity, number> = { standard: 0,
  */
 export function buildSummaryStatements(grants: readonly CapabilityGrant[]): SummaryStatement[] {
   const grouped = new Map<string, SummaryStatement>();
-  const courier = grants.filter(grant => grant.family === "courier").sort((a, b) => COURIER_CATALOG.findIndex(row => row.path === a.path) - COURIER_CATALOG.findIndex(row => row.path === b.path));
-  for (const grant of [...courier, ...grants.filter(grant => grant.family !== "courier")]) {
+  for (const grant of grants) {
     for (const statement of buildStatements(grant)) {
       const existing = grouped.get(statement.primaryText);
       const rowSeverity = statement.severity ?? grant.severity;

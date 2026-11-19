@@ -18,6 +18,17 @@ import {
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { ACCOUNT_PASSKEY_STEP_UP_REQUIRED, requireFreshPasskey } from '../services/passkey-freshness';
 import { createPasskeyStepUpChallenge, verifyPasskeyStepUp } from '../services/passkey-enrolment';
+import {
+  approvalRequestDigest,
+  createApprovalPasskeyChallenge,
+  lowersPasskeyApprovalMode,
+  parsePasskeyApprovalMode,
+  passkeyApprovalModes,
+  PASSKEY_APPROVAL_INVALID,
+  PASSKEY_APPROVAL_NOT_STEP_UP,
+  PASSKEY_APPROVAL_REQUIRED,
+  verifyApprovalPasskey,
+} from '../services/approval-passkey';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
 import {
@@ -101,7 +112,7 @@ accountRouter.post('/step-up/passkey/verify', async (c) => {
   const body = await c.req.json().catch(() => null) as { challengeToken?: unknown; response?: unknown } | null;
   const result = await verifyPasskeyStepUp(prisma, c.get('session').id, c.get('user').id, body, RELYING_PARTY);
   if (result === 'not_step_up') {
-    return c.json({ error: 'This passkey was added without a verification step and cannot confirm this action', code: 'passkey_not_step_up_capable' }, 403);
+    return c.json({ error: "This passkey was added without a verification step, so it can't confirm this action.", code: 'passkey_not_step_up_capable' }, 403);
   }
   if (result !== 'verified') return c.json({ error: 'Passkey verification failed' }, 400);
   return c.json({ status: true });
@@ -304,6 +315,66 @@ accountRouter.patch('/auto-sign', async (c) => {
   });
 
   return c.json({ autoSignEnabled: preference.autoSignEnabled });
+});
+
+// TC-3442: which approvals need a passkey. The mode applies only while the account has a passkey that counts for
+// step-up; without one it is NEVER in force and cannot be changed. Asking for the passkey on fewer approvals needs
+// an assertion bound to the new mode, so a session alone cannot turn the gate off.
+const PASSKEY_APPROVAL_MODE_PURPOSE = 'passkey_approval_mode';
+const PASSKEY_APPROVAL_NEEDS_PASSKEY = { error: 'Add a passkey to use this.', code: 'passkey_approval_needs_passkey' } as const;
+
+accountRouter.get('/passkey-approval', async (c) => {
+  const modes = await passkeyApprovalModes(prisma, c.get('user').id);
+  if (!modes) return c.json({ error: 'User not found' }, 404);
+  return c.json(modes);
+});
+
+accountRouter.post('/passkey-approval/options', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { mode?: unknown } | null;
+  const mode = parsePasskeyApprovalMode(body?.mode);
+  if (!mode) return c.json({ error: 'mode must be ALWAYS, SENSITIVE or NEVER' }, 400);
+  const offer = await createApprovalPasskeyChallenge(
+    prisma,
+    { sessionId: c.get('session').id, userId: c.get('user').id },
+    { purpose: PASSKEY_APPROVAL_MODE_PURPOSE, requestDigest: approvalRequestDigest(mode) },
+  );
+  if (!offer) return c.json(PASSKEY_APPROVAL_NEEDS_PASSKEY, 409);
+  return c.json(offer);
+});
+
+accountRouter.patch('/passkey-approval', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { mode?: unknown; passkeyAssertion?: unknown } | null;
+  const mode = parsePasskeyApprovalMode(body?.mode);
+  if (!mode) return c.json({ error: 'mode must be ALWAYS, SENSITIVE or NEVER' }, 400);
+  const userId = c.get('user').id;
+  const current = await passkeyApprovalModes(prisma, userId);
+  if (!current) return c.json({ error: 'User not found' }, 404);
+  if (current.stepUpPasskeys === 0) return c.json(PASSKEY_APPROVAL_NEEDS_PASSKEY, 409);
+  if (lowersPasskeyApprovalMode(current.mode, mode)) {
+    const result = await verifyApprovalPasskey(
+      prisma,
+      { sessionId: c.get('session').id, userId },
+      { purpose: PASSKEY_APPROVAL_MODE_PURPOSE, requestDigest: approvalRequestDigest(mode) },
+      body?.passkeyAssertion,
+    );
+    if (result !== 'verified') {
+      const refusal = body?.passkeyAssertion == null ? PASSKEY_APPROVAL_REQUIRED
+        : result === 'not_step_up' ? PASSKEY_APPROVAL_NOT_STEP_UP : PASSKEY_APPROVAL_INVALID;
+      return c.json(refusal, 403);
+    }
+  }
+  // Changed only from the mode the check above read, so a concurrent change cannot slip past it.
+  const updated = await prisma.user.updateMany({
+    where: { id: userId, passkeyApprovalMode: current.mode }, data: { passkeyApprovalMode: mode },
+  });
+  if (updated.count !== 1) {
+    return c.json({ error: 'This setting changed in another session. Reload and try again.', code: 'passkey_approval_changed' }, 409);
+  }
+  return c.json({ ...current, mode, effectiveMode: mode });
 });
 
 // List apps with a TinyCloud signing or native delegation consent and the

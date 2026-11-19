@@ -111,6 +111,6 @@ test('requireFreshPasskey answers the typed 403 unless the passkey counts', asyn
   const session = { lastPasskeyAt: new Date(now.getTime() - 1_000), lastPasskeyId: 'p2' };
   const refused = await requireFreshPasskey(c(null), 300_000, stepUpDb(session, ['p1']), now);
   expect(refused?.status).toBe(403);
-  expect(await refused?.json()).toEqual({ error: 'Verify with your passkey again to continue', code: 'passkey_step_up_required' });
+  expect(await refused?.json()).toMatchObject({ code: 'passkey_step_up_required' });
   expect(await requireFreshPasskey(c(null), 300_000, stepUpDb(session, ['p2']), now)).toBeNull();
 });

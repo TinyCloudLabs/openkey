@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { parseLink, resolveLink, parseApprovalRequest, validateLinkHeader, verifyHeader, linkIssuerPublicKey } from '@tinycloud/share-envelope/links';
+import { LATEST_SIWE_TIME_MS, MIN_DELEGATION_EXPIRY_MS } from '../services/approval-expiry';
 import { ApprovalResultError, ApprovalResultService, linkRequiredError, type ApprovalRequestRecord } from '../services/approval-results';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
@@ -18,6 +19,7 @@ import {
   parseRenewalChoice,
   prepareRenewalStage,
   renewalLeasesEnabled,
+  renewalUnavailableMessage,
   signLease,
   type RenewalStage,
 } from '../services/renewal-lease';
@@ -56,6 +58,22 @@ async function fetchLink(input: Parameters<typeof fetch>[0], init?: Parameters<t
   return fetch(source, { ...init, redirect: 'error', credentials: 'omit' });
 }
 
+function validateGrantLifetime(value: unknown): asserts value is { grantLifetimeSeconds: number } {
+  let seconds: unknown;
+  if (value && typeof value === 'object' && 'grantLifetimeSeconds' in value) {
+    seconds = value.grantLifetimeSeconds;
+  }
+  if (typeof seconds !== 'number' || !Number.isSafeInteger(seconds) || seconds <= 0) {
+    throw new ApprovalResultError('invalid_request', 'grantLifetimeSeconds must be a positive safe integer with an expiry no later than year 9999', 400);
+  }
+  if (seconds * 1000 < MIN_DELEGATION_EXPIRY_MS) {
+    throw new ApprovalResultError('invalid_request', `grantLifetimeSeconds must be at least ${MIN_DELEGATION_EXPIRY_MS / 1000} seconds`, 400);
+  }
+  if (Date.now() + seconds * 1000 > LATEST_SIWE_TIME_MS) {
+    throw new ApprovalResultError('invalid_request', 'grantLifetimeSeconds must be a positive safe integer with an expiry no later than year 9999', 400);
+  }
+}
+
 export const approvalRequestRouter = new Hono();
 approvalRequestRouter.use('*', async (c, next) => { c.header('Cache-Control', 'no-store'); await next(); });
 approvalRequestRouter.onError((error, c) => {
@@ -78,6 +96,7 @@ approvalRequestRouter.post('/approval-requests/:id/load', async (c) => {
   }
   const opened = await resolveLink(link, { trustedOrigins: [viewerOrigin], apiOrigin: linksOrigin, fetch: Object.assign(fetchLink, { preconnect: fetch.preconnect }) });
   if (opened.type !== 'openkey-approval-request') throw new ApprovalResultError('invalid_request', 'Not an approval request', 400);
+  validateGrantLifetime(opened.value);
   const request = parseApprovalRequest(opened.value, { issuer: opened.header.issuer });
   const record = await store.register({ id, bodyCid: opened.header.bodyCid, issuer: opened.header.issuer, request, expiresAt: new Date(opened.header.expiresAt), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null });
   // `denied` is additive (TC-2459): a reopened declined link can say so. `approved` keeps its meaning.
@@ -251,9 +270,12 @@ export async function saveApprovalDelegation(
   // are off, a signed lease is never admitted and the request can't complete over it.
   // TC-2946: a signed step names its lease (`leaseCid`); the signed lease itself is kept only with its reservation.
   const signed = record.renewal?.leaseAuthorization || record.renewal?.leaseCid ? record.renewal : null;
-  if (signed && !renewalLeasesEnabled()) throw new ApprovalResultError('renewal_disabled', 'Renewal is not available yet', 400);
+  if (signed && !renewalLeasesEnabled()) throw new ApprovalResultError('renewal_disabled', renewalUnavailableMessage('request', 'after-signing'), 400);
   if (signed && marker) {
     if (signed.userId !== userId) throw new ApprovalResultError('request_binding', 'Another account is approving this request', 409);
+    // TC-2789: on the managed path a save that fails after activation revokes the grant this signed lease names
+    // (delegate.ts), so resuming it could only hand over a revoked grant. Fail closed: the owner starts a new request.
+    if (signOwner) throw new ApprovalResultError('renewal_failed', 'Renewal failed. Start a new request.', 409);
     if (choice?.choice !== 'leased' || choice.leaseLifetimeSeconds !== signed.approvedLeaseLifetimeSeconds) {
       throw new ApprovalResultError('renewal_already_signed', 'Renewal is already signed for this request. Approve it with the same renewal length.', 409,
         { leaseLifetimeSeconds: signed.approvedLeaseLifetimeSeconds });
@@ -319,7 +341,7 @@ async function finishLeasedApproval(id: string, userId: string, sessionId: strin
  * sign. Checked against the owner of the saved grant, then the lease is admitted and the result saved.
  */
 approvalRequestRouter.post('/approval-requests/:id/renewal-signature', requireAccountOriginForBearer, requireSession, async (c) => {
-  if (!renewalLeasesEnabled()) throw new ApprovalResultError('renewal_disabled', 'Renewal is not available yet', 400);
+  if (!renewalLeasesEnabled()) throw new ApprovalResultError('renewal_disabled', renewalUnavailableMessage('request', 'after-signing'), 400);
   const id = c.req.param('id');
   const userId: string = c.get('user').id;
   const body: unknown = await c.req.json().catch(() => null);
