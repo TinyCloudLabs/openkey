@@ -130,7 +130,13 @@
   {/if}
 
   <div class="mt-1.5 grid gap-2.5">
-    <Button onclick={() => { window.location.href = emailHref; }} disabled={busy} class="w-full">{SIGN_IN.email}</Button>
+    <!-- A link: it opens the email sign-in without a full page load. It reads as unavailable while a sign-in runs. -->
+    <Button
+      href={emailHref}
+      aria-disabled={busy || undefined}
+      tabindex={busy ? -1 : undefined}
+      class="w-full aria-disabled:pointer-events-none aria-disabled:opacity-50"
+    >{SIGN_IN.email}</Button>
     {#if providers.length > 0}
       <SocialButtons {providers} loadingProvider={provider} disabled={busy} onsignin={signInWithSocial} />
     {/if}
