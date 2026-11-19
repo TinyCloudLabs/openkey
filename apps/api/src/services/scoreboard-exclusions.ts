@@ -62,6 +62,7 @@ export function parseExclusions(raw: string | undefined): Rules {
 
 export function classifyExcludedAccounts(
   accounts: readonly Account[], rules: Rules, mappedKeyUsers?: ReadonlySet<string>,
+  emailPrefixes: readonly string[] = [],
 ): { userIds: Set<string>; domainOnly: number } {
   const userIds = new Set<string>();
   let domainOnly = 0;
@@ -69,6 +70,7 @@ export function classifyExcludedAccounts(
     const email = account.email.toLowerCase();
     const exact = rules.userIds.has(account.id) || mappedKeyUsers?.has(account.id)
       || rules.emails.has(email)
+      || emailPrefixes.some((prefix) => email.startsWith(prefix))
       || account.ethereumKeys.some((key) => rules.addresses.has(key.address.toLowerCase()));
     const domain = rules.domains.has(email.slice(email.lastIndexOf('@') + 1));
     if (exact || domain) {
@@ -82,11 +84,16 @@ export function classifyExcludedAccounts(
 export async function resolveScoreboardExclusions(
   database: ExclusionDatabase,
   env: Record<string, string | undefined> = process.env,
+  { includeEmailPrefixes = false }: { includeEmailPrefixes?: boolean } = {},
 ): Promise<{ userIds: ReadonlySet<string>; clientIds: ReadonlySet<string>; domainOnly: number }> {
   // The legacy env remains available for old releases; this resolver never falls back to it. Details: TC-1480
   const rules = parseExclusions(env.SCOREBOARD_EXCLUSIONS);
   const clientIds = new Set((env.SCOREBOARD_EXCLUDE_CLIENT_IDS ?? '').split(',').map((value) => value.trim()).filter(Boolean));
-  if (![rules.userIds, rules.emails, rules.domains, rules.addresses, rules.keyDids].some((values) => values.size)) {
+  const emailPrefixes = includeEmailPrefixes
+    ? ['qa-sm-smoke-', ...(env.SCOREBOARD_EXCLUDE_EMAIL_PREFIXES ?? '').split(',')]
+        .map((prefix) => prefix.trim().toLowerCase()).filter(Boolean)
+    : [];
+  if (emailPrefixes.length === 0 && ![rules.userIds, rules.emails, rules.domains, rules.addresses, rules.keyDids].some((values) => values.size)) {
     return { userIds: new Set(), clientIds, domainOnly: 0 };
   }
   // No archivedAt filter: archived account keys still identify their account. Details: TC-1480
@@ -104,5 +111,5 @@ export async function resolveScoreboardExclusions(
       UNION SELECT "userId" FROM tinycloud_native_grant WHERE "sessionDid" = ANY(${dids})`;
     mappedKeyUsers = new Set(rows.map((row) => row.userId));
   }
-  return { ...classifyExcludedAccounts(accounts, rules, mappedKeyUsers), clientIds };
+  return { ...classifyExcludedAccounts(accounts, rules, mappedKeyUsers, emailPrefixes), clientIds };
 }
