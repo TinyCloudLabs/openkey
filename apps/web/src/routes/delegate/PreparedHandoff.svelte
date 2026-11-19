@@ -11,7 +11,7 @@
   import { ServerReplyError, hasSignResult, hasText } from '$lib/server-reply';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
   import { remainingFromServerClock } from '$lib/delegate-code-countdown';
-  import { ApprovalReplyError, compareWallets, readHandoffReply, shortWallet, stopForApprovalError, stopKeyName } from '$lib/approval-stop';
+  import { ApprovalReplyError, compareWallets, readHandoffReply, releasedSigningCancellation, shortWallet, stopForApprovalError, stopKeyName } from '$lib/approval-stop';
   import { OwnerMessageError } from '$lib/delegate-failure-text';
   import StopPage from '$lib/components/approval/stop-page.svelte';
   import { expiryAtCapped, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
@@ -109,6 +109,7 @@
   let error = $state('');
   let stop = $state<StopView | null>(null);
   let retry = $state<(() => Promise<void>) | undefined>();
+  let cancelReleasedSigning = $state<(() => Promise<void>) | undefined>();
   let signedOut = $state(false);
   let retryClaimAfterSignIn = false;
   let wanted = $state('');
@@ -116,6 +117,7 @@
   const expiredStop = () => approvalStop('S4', { preparedSignIn: true });
 
   function report(cause: unknown, action?: () => Promise<void>, claiming = false) {
+    cancelReleasedSigning = undefined;
     const view = stopForApprovalError(cause, {
       phase: claiming ? 'claim' : 'approve', preparedSignIn: true,
       permissionsEditable: phase === 'review', expiryChangeable: phase === 'review',
@@ -142,6 +144,10 @@
     await action?.();
   }
 
+  function leaveRefusedSigning() {
+    void cancelOnClose?.();
+  }
+
   async function switchAccount() {
     const result = await authClient.signOut().catch(() => null);
     if (!result || result.error) return;
@@ -160,6 +166,7 @@
   let cancelled = $state(false);
   let loaded = $state(false);
   let submitted = $state(false);
+  const cancelOnClose = $derived(stop?.id === 'S26' && !submitted ? cancelReleasedSigning : undefined);
   let signingIn = $state(false);
   let phase = $state<'review' | 'preview' | 'done'>('review');
   function validCallback(callback: string): boolean {
@@ -217,6 +224,7 @@
       initialized = true;
     }
     return () => {
+      leaveRefusedSigning();
       if (pendingTimeout !== undefined) clearTimeout(pendingTimeout);
       if (handoffTimeout !== undefined) clearTimeout(handoffTimeout);
     };
@@ -243,9 +251,10 @@
   // `needs` names the fields a successful answer must carry as text. With it, a
   // 2xx answer that is empty, not JSON, or without those fields is an unreadable
   // reply and nothing is approved.
-  async function post(path: string, body: unknown, needs?: string[], valid?: (reply: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> {
+  async function post(path: string, body: unknown, needs?: string[], valid?: (reply: Record<string, unknown>) => boolean, keepalive = false): Promise<Record<string, unknown>> {
     const response = await fetch(`${apiUrl}/api/delegate/${path}`, {
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      keepalive,
     });
     serverDate = response.headers?.get('date') ?? null;
     return readHandoffReply(response, (reply) => (!needs || hasText(reply, ...needs)) && (!valid || valid(reply)));
@@ -468,7 +477,11 @@
       }
     } catch (cause) {
       if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 4001) error = STOPS.S32.lines.walletDeclined;
-      else report(cause, submitted ? undefined : approve);
+      else {
+        report(cause, submitted ? undefined : approve);
+        cancelReleasedSigning = releasedSigningCancellation(cause,
+          () => post('handoffs/cancel-claimed', { ticket }, undefined, undefined, true));
+      }
     } finally { busy = false; }
   }
 
@@ -523,12 +536,14 @@
   });
 </script>
 
+<svelte:window onpagehide={leaveRefusedSigning} />
+
 <Slip at={stop ? 2 : slipAt} last={slipLast} stopped={!!stop} email={stop && $session.data?.user.email}
   center={!stop && (loaderOn || cancelled || (!!handoff && phase === 'done'))}>
   {#if stop}
     {#key stop}
       <StopPage {stop} wanted={stop.id === 'S17' ? wanted : ''} compared={stop.id === 'S17' ? compared : []}
-        retry={retry ? retryStop : undefined} {switchAccount}
+        retry={retry ? retryStop : undefined} {switchAccount} {cancelOnClose}
         chooseKey={keyChoices.length > 1 ? () => { stop = null; key = null; phase = 'review'; } : undefined} />
     {/key}
   {:else if loaderOn}

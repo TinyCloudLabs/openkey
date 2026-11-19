@@ -7,7 +7,7 @@
   import { ownerRevocationCopy as text } from '$lib/owner-revocation-copy';
   import { deliverOwnerRevocation } from '$lib/owner-revocation-response';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
-  import { ApprovalReplyError, compareWallets, readHandoffReply, shortWallet, stopForApprovalError, stopKeyName } from '$lib/approval-stop';
+  import { ApprovalReplyError, compareWallets, readHandoffReply, releasedSigningCancellation, shortWallet, stopForApprovalError, stopKeyName } from '$lib/approval-stop';
   import { OwnerMessageError } from '$lib/delegate-failure-text';
   import { ServerReplyError } from '$lib/server-reply';
   import StopPage from '$lib/components/approval/stop-page.svelte';
@@ -38,12 +38,14 @@
   let error = $state('');
   let stop = $state<StopView | null>(null);
   let retry = $state<(() => Promise<void>) | undefined>();
+  let cancelReleasedSigning = $state<(() => Promise<void>) | undefined>();
   let signedOut = $state(false);
   let retryClaimAfterSignIn = false;
   let wanted = $state('');
   let compared = $state<ReturnType<typeof compareWallets>>([]);
 
   function report(cause: unknown, action?: () => Promise<void>, claiming = false) {
+    cancelReleasedSigning = undefined;
     const view = stopForApprovalError(cause, {
       phase: claiming ? 'claim' : 'approve',
       values: { email: $session.data?.user.email ?? '', keyName: key ? stopKeyName(key) : '' },
@@ -68,6 +70,10 @@
     await action?.();
   }
 
+  function leaveRefusedSigning() {
+    void cancelOnClose?.();
+  }
+
   async function switchAccount() {
     const result = await authClient.signOut().catch(() => null);
     if (!result || result.error) return;
@@ -85,6 +91,7 @@
   let loaded = $state(false);
   let busy = $state(false);
   let submitted = $state(false);
+  const cancelOnClose = $derived(stop?.id === 'S26' && !submitted ? cancelReleasedSigning : undefined);
   let signingIn = $state(false);
   let loginRequired = $state(false);
   let cancelled = $state(false);
@@ -142,15 +149,19 @@
       clearPending();
       stop = approvalStop(encoded ? 'S1' : 'S3');
     } finally { initialized = true; }
-    return () => { if (pendingTimeout !== undefined) clearTimeout(pendingTimeout); };
+    return () => {
+      leaveRefusedSigning();
+      if (pendingTimeout !== undefined) clearTimeout(pendingTimeout);
+    };
   });
 
-  async function post(path: string, body: unknown, valid?: (reply: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> {
+  async function post(path: string, body: unknown, valid?: (reply: Record<string, unknown>) => boolean, keepalive = false): Promise<Record<string, unknown>> {
     const token = getSessionToken();
     const response = await fetch(`${apiUrl}/api/delegate/${path}`, {
       method: 'POST', credentials: token ? 'omit' : 'include',
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify(body),
+      keepalive,
     });
     return readHandoffReply(response, valid);
   }
@@ -264,7 +275,11 @@
       delivered = result.delivered;
     } catch (cause) {
       if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 4001) error = STOPS.S32.lines.walletDeclined;
-      else report(cause, submitted ? undefined : revoke);
+      else {
+        report(cause, submitted ? undefined : revoke);
+        cancelReleasedSigning = releasedSigningCancellation(cause,
+          () => post('handoffs/cancel-claimed', { ticket }, undefined, true));
+      }
     } finally { busy = false; }
   }
 
@@ -305,12 +320,14 @@
   const shortCid = (cid: string) => `${cid.slice(0, 10)}…${cid.slice(-6)}`;
 </script>
 
+<svelte:window onpagehide={leaveRefusedSigning} />
+
 <Slip at={stop ? 2 : slipAt} last={slipLast} stopped={!!stop} email={stop && $session.data?.user.email}
   center={!stop && (loaderOn || cancelled || !!code)}>
   {#if stop}
     {#key stop}
       <StopPage {stop} wanted={stop.id === 'S17' ? wanted : ''} compared={stop.id === 'S17' ? compared : []}
-        retry={retry ? retryStop : undefined} {switchAccount}
+        retry={retry ? retryStop : undefined} {switchAccount} {cancelOnClose}
         chooseKey={keys.length > 1 ? () => { stop = null; key = null; contextToken = ''; siwe = ''; } : undefined} />
     {/key}
   {:else if loaderOn}

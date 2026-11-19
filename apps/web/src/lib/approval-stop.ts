@@ -10,6 +10,21 @@ export class ApprovalReplyError extends Error {
   }
 }
 
+/** Both signing routes answer sign_failed after releasing the claimed handoff. */
+export function releasedSigningCancellation(cause: unknown, cancel: () => Promise<unknown>) {
+  if (!(cause instanceof ApprovalReplyError) || cause.code !== 'sign_failed') return;
+
+  let pending: Promise<void> | undefined;
+  return () => pending ??= new Promise<void>((resolve) => {
+    const timeout = setTimeout(resolve, 300);
+    const finish = () => {
+      clearTimeout(timeout);
+      resolve();
+    };
+    void cancel().then(finish, finish);
+  });
+}
+
 export function stopForApprovalError(cause: unknown, context: ReplyInput) {
   if (cause instanceof ServerReplyError) return approvalStop('S27', { ...context, status: cause.status });
   if (cause instanceof ApprovalReplyError) {

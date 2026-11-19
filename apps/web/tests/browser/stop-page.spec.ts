@@ -79,6 +79,7 @@ test('a missing wallet shows both addresses and switches account without changin
   await expect(stop.getByRole('heading', { name: 'This request is for a wallet this account doesn’t have' })).toBeVisible();
   await expect(stop.getByTestId('wallet-comparison')).toContainText('0xd559…f412');
   await expect(stop.getByTestId('wallet-comparison')).toContainText('0x2222…2222');
+  await expect(stop.getByText('Go back to the app or terminal and start again with a different profile.')).toBeVisible();
   await stop.getByRole('button', { name: 'Switch account' }).click();
   await expect(page.getByRole('link', { name: 'Continue with email' })).toBeVisible();
   expect(new URL(page.url()).pathname + new URL(page.url()).search).toBe(walletLink);
@@ -169,4 +170,88 @@ test('a rate-limited prepared claim shows the shared Stop copy', async ({ page }
   await expect(page.getByText('Too many handoffs for this account')).toHaveCount(0);
   await expect(page.locator('[data-support-line]')).toHaveText('HTTP 429 · rate_limited');
   expect(calls.filter((path) => path.endsWith('/claim'))).toHaveLength(1);
+});
+
+const cancelClaimed = '/api/delegate/handoffs/cancel-claimed';
+
+async function openHandoffStop(page: Page, options: { revoke?: boolean; unreadable?: boolean } = {}) {
+  await page.addInitScript((path) => {
+    const fetchReply = window.fetch;
+    window.fetch = (input, init) => {
+      if (typeof input === 'string' && new URL(input, location.href).pathname === path) {
+        const attempts = JSON.parse(sessionStorage.getItem('test-cancel-attempts') ?? '[]');
+        attempts.push(init?.keepalive ?? false);
+        sessionStorage.setItem('test-cancel-attempts', JSON.stringify(attempts));
+      }
+      return fetchReply(input, init);
+    };
+  }, cancelClaimed);
+  const now = new Date();
+  const message = siwe(now);
+  const handoffId = 'B'.repeat(43);
+  const state = 'A'.repeat(43);
+  const expiresAt = new Date(now.getTime() + 300_000).toISOString();
+  const { revoke, unreadable } = options;
+  const calls = await mock(page, (path, route) => {
+    if (path.endsWith('/available')) return json(route, 200, { transportVersion: 2 });
+    if (path.endsWith('/claim')) return json(route, 201, { transportVersion: 2, ticket: handoffId, expiresAt });
+    if (path.endsWith('/authorize-sign-prepare') || path.endsWith('/owner-revocation/prepare')) {
+      return json(route, 200, { authorizationContextToken: 'bound-context', siwe: message });
+    }
+    if (path.endsWith('/authorize-sign-preview')) {
+      return json(route, 200, {
+        signedMessage: message, previewApprovalToken: 'preview', selectedActionKeys: [action],
+        permissions: [{ service: 'tinycloud.kv', space, path: 'notes/', actions: [ability] }],
+      });
+    }
+    if (path.endsWith('/authorize-sign') || path.endsWith('/owner-revocation/sign')) {
+      return unreadable ? json(route, 200, {}) : json(route, 500, { code: 'sign_failed' });
+    }
+    if (path === cancelClaimed) {
+      expect(route.request().postDataJSON()).toEqual({ ticket: handoffId });
+      return json(route, 503, {});
+    }
+  });
+  const request = revoke ? {
+    kind: 'owner-revocation', ownerDid: `did:pkh:eip155:1:${address}`,
+    cid: 'bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgzz7nazxe',
+    nonce: '0123456789abcdef0123456789abcdef', expiresAt,
+  } : {
+    protocolVersion: 1, siwe: message, host: 'https://node.example.test', sessionDid: 'did:key:requester',
+    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) },
+  };
+  const input = { transportVersion: 2, request, delivery: { handoffId, state, cancelSecret: 'C'.repeat(43) } };
+  await page.goto(`/delegate#tv2=${Buffer.from(JSON.stringify(input)).toString('base64url')}`);
+  if (!revoke) await page.getByRole('button', { name: 'Preview signing message' }).click();
+  await page.getByRole('button', { name: revoke ? 'Revoke' : 'Approve', exact: true }).click();
+  await expect(page.getByRole('heading', {
+    name: unreadable ? 'OpenKey couldn’t finish this request' : 'The approval didn’t go through',
+  })).toBeVisible();
+  return calls;
+}
+
+test('Close this tab cancels a released sign-in even if cancellation fails', async ({ page }) => {
+  const calls = await openHandoffStop(page);
+  const response = page.waitForResponse((reply) => new URL(reply.url()).pathname === cancelClaimed);
+  await page.getByRole('button', { name: 'Close this tab' }).click();
+  expect((await response).status()).toBe(503);
+  await expect(page.getByText('Your browser kept this tab open. Close it from your browser.')).toBeVisible();
+  await page.goto('/__parity_harness');
+  expect(calls.filter((path) => path === cancelClaimed)).toHaveLength(1);
+  expect(await page.evaluate(() => sessionStorage.getItem('test-cancel-attempts'))).toBe('[true]');
+});
+
+test('leaving a released revocation sends cancel-claimed with keepalive', async ({ page }) => {
+  await openHandoffStop(page, { revoke: true });
+  await page.goto('/__parity_harness');
+  expect(await page.evaluate(() => sessionStorage.getItem('test-cancel-attempts'))).toBe('[true]');
+});
+
+test('closing or leaving an unreadable signing reply never cancels the claim', async ({ page }) => {
+  const calls = await openHandoffStop(page, { unreadable: true });
+  await page.getByRole('button', { name: 'Close this tab' }).click();
+  await expect(page.getByText('Your browser kept this tab open. Close it from your browser.')).toBeVisible();
+  await page.goto('/__parity_harness');
+  expect(calls).not.toContain(cancelClaimed);
+  expect(await page.evaluate(() => sessionStorage.getItem('test-cancel-attempts'))).toBeNull();
 });

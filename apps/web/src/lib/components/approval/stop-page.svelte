@@ -14,11 +14,13 @@
     switchAccount?: () => void | Promise<void>;
     linkWallet?: () => void;
     chooseKey?: () => void;
+    cancelOnClose?: () => Promise<void>;
   }
 
-  let { stop, wanted = '', compared = [], retry, switchAccount, linkWallet, chooseKey }: Props = $props();
+  let { stop, wanted = '', compared = [], retry, switchAccount, linkWallet, chooseKey, cancelOnClose }: Props = $props();
   let copied = $state<'support' | 'developer' | null>(null);
   let switching = $state(false);
+  let closing = $state(false);
   let heading = $state<HTMLHeadingElement>();
   $effect(() => {
     const node = heading;
@@ -49,6 +51,11 @@
     } finally {
       switching = false;
     }
+  }
+
+  async function beforeClose() {
+    closing = true;
+    await cancelOnClose?.();
   }
 
   const actions = $derived({
@@ -105,11 +112,11 @@
     {#each buttons as button, index (button)}
       {@const variant = index === 0 ? 'default' : 'secondary'}
       {#if button === 'close'}
-        <CloseTabButton class="w-full" secondary={index !== 0} />
+        <CloseTabButton class="w-full" secondary={index !== 0} beforeClose={cancelOnClose ? beforeClose : undefined} />
       {:else if button === 'enter-code'}
         <Button {variant} href="/device" class="w-full">{labels[button]}</Button>
       {:else if button !== 'start-again'}
-        <Button {variant} class="w-full" onclick={actions[button]} disabled={switching}>{labels[button]}</Button>
+        <Button {variant} class="w-full" onclick={actions[button]} disabled={switching || closing}>{labels[button]}</Button>
       {/if}
     {/each}
   </div>

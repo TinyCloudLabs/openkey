@@ -71,5 +71,7 @@ describe('approval reply Stop content', () => {
       body: 'Start again from the app or command.',
       buttons: ['close'],
     });
+    expect(stopForReply({ status: 404, code: 'key_not_found' }).body)
+      .toBe('This key was archived or removed after you opened this page. Choose one of your other keys to continue.');
   });
 });

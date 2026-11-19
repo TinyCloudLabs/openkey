@@ -13,22 +13,32 @@
     look?: 'button' | 'link';
     secondary?: boolean;
     class?: string;
+    beforeClose?: () => Promise<void>;
   }
 
-  let { allowBack = false, look = 'button', secondary = false, class: className = 'mt-5 w-full' }: Props = $props();
+  let { allowBack = false, look = 'button', secondary = false, class: className = 'mt-5 w-full', beforeClose }: Props = $props();
 
   let stuck = $state(false);
+  let closing = $state(false);
   let refusal = $state<HTMLParagraphElement | null>(null);
   let cancelPending: (() => void) | null = null;
+  let destroyed = false;
 
   // A pending check is cancelled when the page is destroyed.
-  $effect(() => () => cancelPending?.());
+  $effect(() => () => {
+    destroyed = true;
+    cancelPending?.();
+  });
 
   $effect(() => {
     if (stuck) refusal?.focus();
   });
 
-  function close() {
+  async function close() {
+    if (closing) return;
+    closing = true;
+    if (beforeClose) await beforeClose();
+    if (destroyed) return;
     cancelPending?.();
     cancelPending = closeThisTab(browserCloseEnvironment(), () => { stuck = true; }, { allowBack });
   }
@@ -40,8 +50,9 @@
   <button
     type="button"
     class="cursor-pointer border-0 bg-transparent p-0 font-semibold text-surface-950 underline decoration-surface-300 underline-offset-[3px]"
+    disabled={closing}
     onclick={close}
   >{CLOSE_TAB}</button>
 {:else}
-  <Button class={className} variant={secondary ? 'secondary' : 'default'} onclick={close}>{CLOSE_TAB}</Button>
+  <Button class={className} variant={secondary ? 'secondary' : 'default'} onclick={close} disabled={closing}>{CLOSE_TAB}</Button>
 {/if}
