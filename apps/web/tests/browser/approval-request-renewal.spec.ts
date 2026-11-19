@@ -141,6 +141,7 @@ test('while this OpenKey has leases off, a renewal request shows no box and send
 test('the lease is changed under the fold, as a new preview', async ({ page }) => {
   const calls = await open(page, { purpose: 'standing' });
   await expect(box(page)).toBeChecked();
+  await page.getByText('Advanced details', { exact: true }).click();
   await page.getByText('How long it lasts').click();
   await page.getByRole('button', { name: '1 year' }).click();
   await expect(line(page)).toHaveText('This permission renews automatically for up to 1 year');
@@ -219,6 +220,7 @@ for (const [name, viewport] of [['390', { width: 390, height: 844 }], ['1280', {
     await box(page).uncheck();
     await shot('2-unticked');
     await box(page).check();
+    await page.getByText('Advanced details', { exact: true }).click();
     await page.getByText('How long it lasts').click();
     await page.getByRole('button', { name: '1 year' }).scrollIntoViewIfNeeded();
     await shot('3-fold-open');

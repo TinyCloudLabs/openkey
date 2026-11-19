@@ -19,6 +19,7 @@
     DeviceRelayDeliveryError,
     OwnerMessageError,
     isTerminalApprovalFailure,
+    refusalIgnoresKeyChoice,
     shortCodeFailureText,
     walletMismatchFailureText,
   } from '$lib/delegate-failure-text';
@@ -152,6 +153,9 @@
   const errorDetail = $derived(errorDetailFor && errorDetailFor.text === error ? errorDetailFor.detail : null);
   let requestExpired = $state(false);
   let approveBlockedByFailure = $state(false);
+  // The person whose key choice drew a refusal that is the same for every key; the key list is hidden for them.
+  let keyChoiceRefusedFor = $state<string | null>(null);
+  const keyChoiceRefused = $derived(keyChoiceRefusedFor !== null && keyChoiceRefusedFor === $session.data?.user.id);
   let keysLoaded = $state(false);
   let initialized = $state(false);
   let signingIn = $state(false);
@@ -412,7 +416,6 @@
   const deviceTransactionId = approvalRequestMode ? '' : $page.url.searchParams.get('deviceTransactionId') || '';
   const deviceShareOrigin = $page.url.searchParams.get('deviceShareOrigin') || '';
   const deviceUserCode = $page.url.searchParams.get('deviceUserCode') || '';
-  let deviceAcknowledged = $state(false);
   const relayJwkB64 = $page.url.searchParams.get('relayJwk') || '';
 
   // Decode JWK from base64url
@@ -786,6 +789,7 @@
     error = '';
     try {
       const { key } = await api.generateKey();
+      if (!keys.some((k) => k.id === key.id)) keys = [...keys, key];
       loading = false;
       await onKeySelect(key);
     } catch (e: any) {
@@ -801,6 +805,7 @@
     }
 
     selectedKey = key;
+    keyChoiceRefusedFor = null;
     error = '';
     preparing = true;
 
@@ -813,6 +818,9 @@
     } catch (e: any) {
       error = delegateErrorMessage(e);
       selectedKey = null;
+      if (e instanceof DelegateResponseError && refusalIgnoresKeyChoice(e.status, e.code)) {
+        keyChoiceRefusedFor = $session.data?.user.id ?? null;
+      }
     } finally {
       preparing = false;
     }
@@ -979,6 +987,7 @@
 
   function goBack() {
     selectedKey = null;
+    keyChoiceRefusedFor = null;
     step = 'select-key';
     error = '';
     resetDelegationState();
@@ -1086,10 +1095,6 @@
 
   function approveDelegate() {
     if (approveBlockedByFailure) return;
-    if (deviceTransactionId && !deviceAcknowledged) {
-      error = 'Confirm that you started this request yourself, on a device you control.';
-      return;
-    }
     if (hostNeedsAcknowledgment && !hostAcknowledged) {
       error = 'Confirm that you run or trust this TinyCloud node.';
       return;
@@ -1846,6 +1851,16 @@
           {/if}
         </div>
 
+      {:else if $session.isPending}
+        <!-- The session answer has not arrived: neither the sign-in prompt nor the review fits yet. -->
+        <div class="flex flex-col items-center justify-center text-center text-surface-400 py-8" role="status">
+          <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          <span class="text-sm text-surface-500">Checking your OpenKey account…</span>
+        </div>
+
       {:else if !$session.data}
         <header class="mb-5">
           <h1 class="text-lg font-semibold text-surface-900">TinyCloud access request</h1>
@@ -2013,7 +2028,7 @@
         {/if}
 
         {#if deviceTransactionId}
-          <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} bind:acknowledged={deviceAcknowledged} />
+          <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} />
         {:else}
           <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
         {/if}
@@ -2177,13 +2192,21 @@
         <!-- Key selection -->
         <header class="mb-5">
           <h1 class="text-lg font-semibold text-surface-900">TinyCloud access request</h1>
-          <p class="text-surface-500 text-sm mt-1">Select a key to review the requested access</p>
+          {#if !keyChoiceRefused}
+            <p class="text-surface-500 text-sm mt-1">Select a key to review the requested access</p>
+          {/if}
         </header>
 
         {#if error}
           <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
             {error}
           </div>
+          {#if errorDetail}
+            <details class="error-detail">
+              <summary>Details</summary>
+              <p>{errorDetail}</p>
+            </details>
+          {/if}
         {/if}
 
         {#if expectedAddress && preselectAttempted && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
@@ -2195,7 +2218,7 @@
           </div>
         {/if}
 
-        {#if keys.length === 0}
+        {#if keys.length === 0 && !keyChoiceRefused}
           <div class="flex flex-col items-center justify-center text-center py-4">
             <p class="text-surface-500 text-sm mb-5">No keys found. Generate your first key to connect.</p>
             <Button onclick={generateAndSelect} class="w-full rounded-xl">
@@ -2205,7 +2228,7 @@
               Link External Wallet
             </Button>
           </div>
-        {:else}
+        {:else if !keyChoiceRefused}
           <KeyPicker
             {keys}
             {expectedAddress}
@@ -2232,7 +2255,7 @@
       >
         Sign out
       </button>
-    {:else if !$session.data}
+    {:else if !$session.isPending && !$session.data}
       <div class="flex items-center gap-3 text-sm">
         <a href={registerHref} class="text-surface-500 hover:text-surface-700 transition-colors">Register</a>
         <span class="text-surface-300">|</span>
@@ -2252,6 +2275,19 @@
 {/if}
 
 <style>
+  .error-detail {
+    color: #9f2424;
+    font-size: 12px;
+    line-height: 1.45;
+    margin: -8px 0 16px;
+  }
+  .error-detail summary {
+    cursor: pointer;
+  }
+  .error-detail p {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+  }
   @media (max-width: 480px) {
     .expired-request {
       padding-top: 1rem;

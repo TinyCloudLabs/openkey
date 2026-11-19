@@ -5,6 +5,7 @@ import './tc1777-test-env';
 import { describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -259,6 +260,22 @@ describe('backup before the drop', () => {
     expect(printed).toEqual([`${BACKUP_TABLE} does not exist: already gone, nothing to back up`]);
   });
 
+  test('backupRow only reads: it executes nothing and every query is a SELECT, so a backup-only run cannot drop', async () => {
+    const db = await database(1);
+    const executed: string[] = [];
+    const reads: string[] = [];
+    const recording: SqlClient = {
+      transaction: (run) => clientFor(db).transaction((transaction) => run({
+        rows: (sql) => { reads.push(sql); return transaction.rows(sql); },
+        execute: (sql) => { executed.push(sql); return transaction.execute(sql); },
+      })),
+    };
+    expect((await backupRow(recording, () => {})).present).toBe(true);
+    expect(executed).toEqual([]);
+    for (const sql of reads) expect(sql).toMatch(/^SELECT /);
+    expect(await state(db)).toEqual({ relations: ['ops_backup.session_expires_20261026'], schema: true });
+  });
+
   test('the drop goes ahead when the row still hashes to the backed-up one', async () => {
     const db = await database(1);
     const backup = await backupRow(clientFor(db), () => {});
@@ -319,6 +336,7 @@ describe('the script', () => {
         DROP_CONFIRM: undefined,
         BACKUP_FILE: undefined,
         BACKUP_DIGEST: DIGEST,
+        EXPECTED_SHA256: DIGEST,
         ...env,
       } as unknown as Record<string, string>,
       stdout: 'pipe',
@@ -348,6 +366,9 @@ describe('the script', () => {
     ['drop with a malformed digest', ['drop'], { DROP_CONFIRM: CONFIRM_PHRASE, BACKUP_DIGEST: 'abc' }],
     ['drop with an upper-case digest', ['drop'], { DROP_CONFIRM: CONFIRM_PHRASE, BACKUP_DIGEST: DIGEST.replace(/0/g, 'A') }],
     ['backup without a file path', ['backup'], { DROP_CONFIRM: CONFIRM_PHRASE }],
+    ['drop without EXPECTED_SHA256', ['drop'], { DROP_CONFIRM: CONFIRM_PHRASE, EXPECTED_SHA256: '' }],
+    ['drop with a malformed EXPECTED_SHA256', ['drop'], { DROP_CONFIRM: CONFIRM_PHRASE, EXPECTED_SHA256: 'abc' }],
+    ['drop with an upper-case EXPECTED_SHA256', ['drop'], { DROP_CONFIRM: CONFIRM_PHRASE, EXPECTED_SHA256: 'A'.repeat(64) }],
   ] as Array<[string, string[], Record<string, string>]>)('%s is refused before any connection', async (_name, args, env) => {
     const result = await run(env, ...args);
     expect(result.exitCode).toBe(2);
@@ -355,10 +376,38 @@ describe('the script', () => {
     expect(result.stdout).toBe('');
   }, 60_000);
 
-  test.each(['drop', 'backup'])('%s: a database that cannot be reached prints only the fixed line, never the address or the credentials', async (mode) => {
-    const result = await run({ DROP_CONFIRM: CONFIRM_PHRASE, BACKUP_FILE: join(tmpdir(), `tc2110-unreachable-${process.pid}.json`) }, mode);
+  test('drop whose backup does not match EXPECTED_SHA256 is refused before any connection', async () => {
+    const result = await run({ DROP_CONFIRM: CONFIRM_PHRASE, EXPECTED_SHA256: '1'.repeat(64) }, 'drop');
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toBe('Refused: the backup taken in this run does not match EXPECTED_SHA256; nothing was changed\n');
+    expect(result.stdout).toBe('');
+  }, 60_000);
+
+  test.each([
+    ['drop with EXPECTED_SHA256 equal to the backup digest', 'drop', { DROP_CONFIRM: CONFIRM_PHRASE }],
+    ['backup without the drop confirmation', 'backup', { BACKUP_FILE: join(tmpdir(), `tc2110-unreachable-${process.pid}.json`) }],
+  ] as Array<[string, string, Record<string, string>]>)('%s passes every input check; a database that cannot be reached prints only the fixed line, never the address or the credentials', async (_name, mode, env) => {
+    const result = await run(env, mode);
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toBe(`${describeFailure(new Error()).line}\n`);
     expect(result.stdout).toBe('');
   }, 90_000);
+});
+
+describe('the workflow', () => {
+  interface Step { if?: string; run?: string; env?: Record<string, string> }
+  const workflow = Bun.YAML.parse(readFileSync(join(root, '.github/workflows/drop-session-expiry-backup.yml'), 'utf8')) as {
+    on: { workflow_dispatch: { inputs: Record<string, { default?: string; required?: boolean }> } };
+    jobs: { drop: { steps: Step[] } };
+  };
+
+  test('a dispatch defaults to backup-only and needs no confirmation; only a drop dispatch runs the drop, with the operator digest', () => {
+    const { inputs } = workflow.on.workflow_dispatch;
+    expect(inputs.mode?.default).toBe('backup-only');
+    expect(inputs.confirm?.required).toBe(false);
+    const dropSteps = workflow.jobs.drop.steps.filter((step) => /ci-drop-session-expiry-backup\.ts drop\b/.test(step.run ?? ''));
+    expect(dropSteps).toHaveLength(1);
+    expect(dropSteps[0]!.if).toStartWith("inputs.mode == 'drop' && ");
+    expect(dropSteps[0]!.env?.EXPECTED_SHA256).toBe('${{ inputs.expected_sha256 }}');
+  });
 });

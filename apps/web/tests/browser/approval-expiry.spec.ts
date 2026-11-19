@@ -32,6 +32,8 @@ async function load(page: Page, withExpiry = true) {
   }, { model: m, initialSelection, withExpiry, canUseAuthorizeSign: true });
   await page.goto('/__parity_harness');
   await page.waitForFunction(() => (window as any).__openkeyParityHarnessReady === true);
+  // "How long it lasts" is under Advanced details (TC-3154).
+  await page.getByText('Advanced details', { exact: true }).click();
 }
 
 const calls = (page: Page) => page.evaluate(() => (window as any).__openkeyParityHarness.calls as Array<{ name: string; args?: unknown }>);

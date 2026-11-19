@@ -1,5 +1,18 @@
 # @openkey/sdk
 
+## 0.13.0-beta.3
+
+### Minor Changes
+
+- cb63731: Signing requests the server refuses now reject with their own error code instead of `UNKNOWN`: `APP_KEY_GRANT_REFUSED` (the request asks for an encryption key this website can't be granted), `KEY_DELETE_NOT_GRANTABLE` or `INVALID_SIWE_RECAP`. The codes are exported as the `OpenKeyRefusalCode` type, and the messages are unchanged. Apps that check `code === 'UNKNOWN'` for these refusals need to check the new codes instead.
+
+  Details: TC-2928
+
+### Patch Changes
+
+- Updated dependencies [5ee1a51]
+  - @openkey/core@0.13.0-beta.3
+
 ## 0.13.0-beta.2
 
 ### Minor Changes

@@ -1,5 +1,12 @@
 # @openkey/cli
 
+## 0.1.6-beta.1
+
+### Patch Changes
+
+- Updated dependencies [5ee1a51]
+  - @openkey/core@0.13.0-beta.3
+
 ## 0.1.6-beta.0
 
 ### Patch Changes
