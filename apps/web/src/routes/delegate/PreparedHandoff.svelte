@@ -16,6 +16,7 @@
   import { expiryAtCapped, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import ApprovalExpiryControl from '$lib/components/signing/approval-expiry-control.svelte';
   import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
+  import { answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyNeed } from '$lib/approval-passkey';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   const session = authClient.useSession();
@@ -91,6 +92,7 @@
   let selected = $state(new Set<string>());
   let contextToken = $state('');
   let previewToken = $state('');
+  let passkeyNeed = $state<ApprovalPasskeyNeed | null>(null);
   let previewMessage = $state('');
   let previewActions = $state<string[]>([]);
   let code = $state('');
@@ -198,7 +200,10 @@
     if (path === 'handoffs/claim' && response.status === 404 && record.error === 'Not found') {
       throw new Error('Prepared CLI sign-in is not available yet. Restart the CLI command after OpenKey is updated.');
     }
-    if (!response.ok) throw new Error(apiBusyOrEndedMessage(response.status) ?? (typeof record.error === 'string' ? record.error : `HTTP ${response.status}`));
+    if (!response.ok) {
+      const failure = new Error(apiBusyOrEndedMessage(response.status) ?? (typeof record.error === 'string' ? record.error : `HTTP ${response.status}`));
+      throw Object.assign(failure, { code: typeof record.code === 'string' ? record.code : undefined });
+    }
     return record;
   }
 
@@ -331,6 +336,8 @@
       previewToken = candidate.previewApprovalToken;
       previewMessage = candidate.signedMessage;
       previewActions = actions;
+      // TC-3442: whether Approve needs the passkey, with the challenge for this preview.
+      passkeyNeed = isRecord(candidate.passkey) ? candidate.passkey as ApprovalPasskeyNeed : null;
       phase = 'preview';
     } catch (cause) {
       if (cause instanceof ServerReplyError) unreadableReply(cause.status);
@@ -351,7 +358,9 @@
     busy = true;
     error = '';
     try {
-      const body: Record<string, unknown> = { ticket, authorizationContextToken: contextToken, previewApprovalToken: previewToken, selectedActionIds: previewActions, protocolVersion: 1 };
+      // TC-3442: the passkey prompt comes first, while the tap still counts as the user's gesture.
+      const passkeyAssertion = key.keyType === 'EXTERNAL' ? undefined : await answerApprovalPasskey(passkeyNeed);
+      const body: Record<string, unknown> = { ticket, authorizationContextToken: contextToken, previewApprovalToken: previewToken, selectedActionIds: previewActions, protocolVersion: 1, ...(passkeyAssertion ? { passkeyAssertion } : {}) };
       if (key.keyType === 'EXTERNAL') {
         const provider = (window as Window & { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
         if (!provider) throw new Error('No browser wallet is available for this external key.');
@@ -400,6 +409,13 @@
     } catch (cause) {
       if (cause instanceof ServerReplyError) unreadableReply(cause.status);
       else error = cause instanceof Error ? cause.message : 'Signing failed. Restart the CLI command.';
+      // The refused challenge is spent: preview again for a new one, and keep the API's words on screen.
+      if (isPasskeyApprovalRefusal(cause)) {
+        busy = false;
+        const refusal = error;
+        await preview();
+        error = refusal;
+      }
     } finally { busy = false; }
   }
 
