@@ -3,20 +3,19 @@
   import { afterNavigate, replaceState } from '$app/navigation';
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
-  import { copyText } from '$lib/clipboard';
   import { getSessionToken } from '$lib/embed-passkey';
   import { ownerRevocationCopy as text } from '$lib/owner-revocation-copy';
   import { deliverOwnerRevocation } from '$lib/owner-revocation-response';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import { ownerRevocationAddress, parseOwnerRevocationRequest, renderSiweLiteral, type OwnerRevocationRequest } from '@openkey/capability-review';
-  import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
+  import CodeBox from '$lib/components/approval/code-box.svelte';
+  import DonePage from '$lib/components/approval/done-page.svelte';
   import Loader from '$lib/components/approval/loader.svelte';
   import SignInCard from '$lib/components/approval/sign-in-card.svelte';
   import SignedInCard from '$lib/components/approval/signed-in-card.svelte';
   import Slip from '$lib/components/approval/slip.svelte';
-  import { focusHeading } from '$lib/components/approval/focus-heading';
-  import { DONE } from '@openkey/sdk/approval-copy';
+  import { CODE, DONE, codeDestinationWord, fill } from '@openkey/sdk/approval-copy';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   // A 2xx reply that cannot be read: the server may have signed, so the owner must not sign again from this page.
@@ -218,7 +217,7 @@
       if (result.cancelled !== true) throw new Error('The handoff was not cancelled.');
       request = null;
       delivery = null;
-      error = 'Approval cancelled. Restart the CLI command.';
+      cancelled = true;
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not cancel the handoff.';
     } finally { busy = false; }
@@ -243,9 +242,10 @@
   const signedInOn = $derived(!loaderOn && !ended && !!$session.data && loginRequired);
   const slipAt = $derived(loaderOn ? 0 : cardOn || signedInOn ? 1 : cancelled ? 3 : code ? (delivered ? 4 : 3) : 2);
   const slipLast = $derived(code && !delivered && !cancelled ? 'code' : 'terminal');
+  const shortCid = (cid: string) => `${cid.slice(0, 10)}…${cid.slice(-6)}`;
 </script>
 
-<Slip at={slipAt} last={slipLast} center={loaderOn}>
+<Slip at={slipAt} last={slipLast} center={loaderOn || cancelled || !!code}>
   {#if loaderOn}
     <Loader phases={['session', 'request']} lit={loaderLit} />
   {:else if cardOn}
@@ -261,24 +261,24 @@
   {:else if signedInOn}
     <SignedInCard onReview={() => { loginRequired = false; }} onCancel={cancel} />
   {:else if cancelled}
-    <h1 use:focusHeading class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950">{DONE.cancelled.heading}</h1>
-    <p class="m-0 text-pretty">{DONE.cancelled.line}</p>
+    <DonePage outcome="cancelled" />
+  {:else if code && delivered && request}
+    <DonePage outcome="signed" rows={[{ label: DONE.receipt.permission, value: shortCid(request.cid), mono: true }]} />
+  {:else if code}
+    <CodeBox
+      fullCode={code}
+      eyebrow={CODE.eyebrowRevoke}
+      line={fill(delivery?.callback ? CODE.lineNotReached : CODE.lineRevoke, { destination: codeDestinationWord() })}
+    />
   {:else}
     <div class="space-y-5">
     <header><h1 class="text-xl font-semibold text-surface-900">{text.title}</h1></header>
     {#if error}<p role="alert" class="rounded-lg bg-red-50 p-3 text-red-800">{error}</p>{/if}
     {#if ended}<p>Start a new CLI revocation request.</p>
-    {:else if code}
-      {#if delivered}<p role="status">{text.signed} You can close this window.</p><CloseTabButton />
-      {:else}
-        <p>{text.paste}</p>
-        <textarea readonly aria-label="Full revocation code" class="w-full h-28 break-all rounded-lg border p-2 font-mono text-xs" value={code}></textarea>
-        <button onclick={() => copyText(code)}>Copy full code</button>
-      {/if}
     {:else if request}
       <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">{text.warning}</p>
       <dl class="space-y-2 text-sm break-all">
-        <div><dt class="font-semibold">{text.permission}</dt><dd><code>{request.cid.slice(0, 10)}…{request.cid.slice(-6)}</code></dd></div>
+        <div><dt class="font-semibold">{text.permission}</dt><dd><code>{shortCid(request.cid)}</code></dd></div>
         <div><dt class="font-semibold">{text.fullCid}</dt><dd><input aria-label={text.fullCid} readonly value={request.cid} class="w-full rounded-lg border border-surface-200 bg-surface-50 p-2 font-mono text-xs" /><p class="mt-1">{text.matchCid}</p></dd></div>
         <div><dt class="font-semibold">{text.owner}</dt><dd><code>{ownerRevocationAddress(request)}</code></dd></div>
         {#if siwe}<div><dt class="font-semibold">{text.expires}</dt><dd>{siwe.match(/^Expiration Time: (.+)$/m)?.[1]}</dd></div>{/if}

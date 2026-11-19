@@ -4,7 +4,6 @@
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
-  import { copyText } from '$lib/clipboard';
   import { buildStatements, parseEncryptionResource, parseCapabilityReview, defaultSelection, renderLiteral, renderSiweLiteral, splitStatementCode, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
   import { requestedActionIds } from '$lib/widget-selection';
@@ -15,13 +14,14 @@
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import { expiryAtCapped, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import ApprovalExpiryControl from '$lib/components/signing/approval-expiry-control.svelte';
-  import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
+  import { formatLocalAccessEnd } from '$lib/access-end';
+  import CodeBox from '$lib/components/approval/code-box.svelte';
+  import DonePage, { type ReceiptRow } from '$lib/components/approval/done-page.svelte';
   import Loader from '$lib/components/approval/loader.svelte';
   import SignInCard from '$lib/components/approval/sign-in-card.svelte';
   import SignedInCard from '$lib/components/approval/signed-in-card.svelte';
   import Slip from '$lib/components/approval/slip.svelte';
-  import { focusHeading } from '$lib/components/approval/focus-heading';
-  import { DONE } from '@openkey/sdk/approval-copy';
+  import { CODE, DONE, codeDestinationWord, fill } from '@openkey/sdk/approval-copy';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   const session = authClient.useSession();
@@ -88,6 +88,8 @@
   });
   let key = $state<EthereumKey | null>(null);
   let keyChoices = $state<KeyChoice[]>([]);
+  // How many keys the account has: the receipt names the signing key only when there was a choice.
+  let accountKeyCount = $state(0);
   let model = $state<CapabilityReviewModel | null>(null);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
@@ -272,6 +274,7 @@
       const chain = /^Chain ID: ([1-9][0-9]*)$/m.exec(resolved.request.siwe);
       if (!match || !chain) throw new Error('The prepared SIWE does not name a valid signer and chain.');
       const { keys } = await api.listKeys();
+      accountKeyCount = keys.length;
       const candidates = keys.filter(item => item.address.toLowerCase() === match[2]!.toLowerCase() && (!resolved.request.keyId || item.id === resolved.request.keyId));
       if (!candidates.length) throw new Error('Requested signing key is not available for this SIWE account and chain.');
       const choices = candidates.map(candidate => {
@@ -422,7 +425,7 @@
       previewToken = '';
       previewMessage = '';
       phase = 'review';
-      error = 'Approval cancelled. Restart the CLI command for a new sign-in.';
+      cancelled = true;
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Could not cancel sign-in.';
     } finally { busy = false; }
@@ -448,9 +451,20 @@
   const signedInOn = $derived(initialized && !ended && !$session.isPending && !!$session.data && loginRequired);
   const slipAt = $derived(loaderOn ? 0 : cardOn || signedInOn ? 1 : cancelled ? 3 : handoff && phase === 'done' ? (delivered ? 4 : 3) : 2);
   const slipLast = $derived(handoff && phase === 'done' && !delivered && !cancelled ? 'code' : 'terminal');
+  // The end pages: who asked, and what the receipt can say for certain.
+  const requester = $derived(model?.requester.displayName ?? '');
+  const receiptRows = $derived.by(() => {
+    const rows: ReceiptRow[] = [];
+    const ends = siweExpiration(previewMessage);
+    if (ends) rows.push({ label: DONE.receipt.ends, value: formatLocalAccessEnd(ends) });
+    if (key && accountKeyCount > 1) {
+      rows.push({ label: DONE.receipt.signedWith, value: `${key.label ?? `Key ${key.keyIndex}`} ${key.address.slice(0, 6)}...${key.address.slice(-4)}` });
+    }
+    return rows;
+  });
 </script>
 
-<Slip at={slipAt} last={slipLast} center={loaderOn}>
+<Slip at={slipAt} last={slipLast} center={loaderOn || cancelled || (!!handoff && phase === 'done')}>
   {#if loaderOn}
     <Loader phases={['session', 'request']} lit={loaderLit} />
   {:else if cardOn}
@@ -466,8 +480,15 @@
   {:else if signedInOn}
     <SignedInCard onReview={() => { loginRequired = false; }} onCancel={cancelPending} />
   {:else if cancelled}
-    <h1 use:focusHeading class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950">{DONE.cancelled.heading}</h1>
-    <p class="m-0 text-pretty">{DONE.cancelled.line}</p>
+    <DonePage outcome="cancelled" />
+  {:else if handoff && phase === 'done' && delivered}
+    <DonePage outcome="signedIn" {requester} rows={receiptRows} />
+  {:else if handoff && phase === 'done'}
+    <CodeBox
+      fullCode={code}
+      eyebrow={CODE.eyebrow}
+      line={callbackFailed ? fill(CODE.lineNotReached, { destination: codeDestinationWord() }) : fill(CODE.line, { requester })}
+    />
   {:else}
     <div class="space-y-5">
     <header><h1 class="text-xl font-semibold text-surface-900">Prepared CLI sign-in</h1></header>
@@ -484,14 +505,6 @@
     {/if}
     {#if error && !handoff && !pending}
       <p>Start a new CLI sign-in to review a new request.</p>
-    {:else if handoff && phase === 'done'}
-      {#if delivered}<p role="status">CLI accepted your sign-in. You can close this window.</p><CloseTabButton />
-      {:else}
-        <p>{callbackFailed ? 'Could not reach the CLI automatically. Paste this same response in your CLI.' : 'Paste this response in your CLI to complete sign-in.'}</p>
-        <p>Only paste this code into a terminal you started yourself.</p>
-        <textarea readonly aria-label="Full delegation code" class="w-full h-28 break-all rounded-lg border p-2 font-mono text-xs" value={code}></textarea>
-        <button onclick={() => copyText(code)}>Copy full code</button>
-      {/if}
     {:else if handoff && keyChoices.length > 1 && !key}
       <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">Only approve if you started this sign-in yourself on your own computer.</p>
       <dl class="space-y-2 text-sm break-all">
