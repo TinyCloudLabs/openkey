@@ -34,7 +34,7 @@ test('internal metrics expose aggregate manage-key health without identity mater
   expect(result).toEqual({
     generatedAt: '2026-08-05T21:00:00.000Z',
     originRefusals: { since: expect.any(String), counts: expect.any(Array) },
-    accounts: { total: 10, new24h: 2 },
+    accounts: { total: 10, new24h: 2, real: 10, excluded: 0, excludedDomainOnly: 0, exclusionCriteria: expect.any(String) },
     keys: { total: 12, active: 10, new24h: 3 },
     tinyCloudManageKey: {
       canonicalResolution: { eligibleUsers: 8, canonicalKeys: 8, missingCanonicalUsers: 1 },
@@ -49,10 +49,14 @@ test('internal metrics expose aggregate manage-key health without identity mater
 });
 test('internal metrics expose process-local origin refusal counts and preserve endpoint authorization statuses', async () => {
   const database = {
-    user: { count: async () => 0 },
-    ethereumKey: { count: async () => 0 },
+    user: { count: async () => 0, findMany: async () => [] },
+    ethereumKey: { count: async () => 0, findMany: async () => [] },
+    session: { groupBy: async () => [] },
+    oauthAccessToken: { findMany: async () => [] },
+    oauthClient: { findMany: async () => [] },
     tinyCloudManageKeySigningDecision: { count: async () => 0 },
     tinyCloudManageKeyAppPreference: { count: async () => 0 },
+    $queryRaw: async () => [],
   };
   const { createInternalMetricsRouter, collectInternalMetrics } = await import('../routes/internal-metrics?origin-refusals' as string);
   const route = '/api/internal/origin-refusal-metrics-test';

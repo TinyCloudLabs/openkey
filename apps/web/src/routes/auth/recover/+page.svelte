@@ -7,7 +7,7 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
-  import { setSessionToken } from '$lib/embed-passkey';
+  import { readSignedSessionToken, setSessionToken } from '$lib/embed-passkey';
   import { newAccountSignupToken } from '$lib/email-signup';
   import NewAccountConfirmation from '$lib/components/auth/new-account-confirmation.svelte';
   import PasskeyStepUpDialog from '$lib/components/auth/passkey-step-up-dialog.svelte';
@@ -93,16 +93,7 @@
   }
 
   async function readSessionToken() {
-    const sessionRes = await fetch(`${API_BASE}/api/auth/get-session`, {
-      method: 'GET',
-      credentials: 'include',
-      headers: { 'Accept': 'application/json' },
-    });
-    const sessionBody = await sessionRes.json().catch(() => null);
-    const sessionToken =
-      sessionRes.headers.get('set-auth-token') ||
-      sessionBody?.session?.token ||
-      sessionBody?.token;
+    const sessionToken = await readSignedSessionToken();
     if (!sessionToken) {
       throw new Error('Recovery succeeded, but no session token was returned.');
     }

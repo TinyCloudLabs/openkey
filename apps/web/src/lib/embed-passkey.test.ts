@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
   getSessionToken,
+  readSignedSessionToken,
   revokeEmbeddedSession,
   setSessionToken,
 } from './embed-passkey';
@@ -25,66 +26,65 @@ describe('revokeEmbeddedSession', () => {
   test('uses the bearer session and clears embedded state after successful revocation', async () => {
     installSessionStorage();
     setSessionToken('active-session');
-    const requests: Array<{ url: string; init?: RequestInit }> = [];
-
-    const revoked = await revokeEmbeddedSession(undefined, async (url, init) => {
-      requests.push({ url: String(url), init });
-      return requests.length === 1
-        ? new Response(null, { status: 200 })
-        : Response.json(null);
+    let signedOut = false;
+    const { impl, requests } = routedFetch({
+      '/api/auth/get-session': () => Response.json(signedOut ? null : { session: {}, user: { id: 'user-1' } }),
+      '/api/auth/sign-out': () => { signedOut = true; return new Response(null, { status: 200 }); },
     });
 
+    const revoked = await revokeEmbeddedSession(undefined, impl);
+
     expect(revoked).toBe(true);
-    expect(requests).toHaveLength(2);
-    expect(requests[0]?.url).toEndWith('/api/auth/sign-out');
-    expect(requests[0]?.init?.method).toBe('POST');
+    expect(requests).toHaveLength(3);
+    expect(requests[0]?.url).toEndWith('/api/auth/get-session?disableRefresh=true');
+    expect(requests[0]?.init?.credentials).toBe('omit');
     expect(requests[0]?.init?.headers).toEqual({ Authorization: 'Bearer active-session' });
-    expect(requests[1]?.url).toEndWith('/api/auth/get-session?disableRefresh=true');
-    expect(requests[1]?.init?.credentials).toBe('omit');
+    expect(requests[1]?.url).toEndWith('/api/auth/sign-out');
+    expect(requests[1]?.init?.method).toBe('POST');
     expect(requests[1]?.init?.headers).toEqual({ Authorization: 'Bearer active-session' });
+    expect(requests[2]?.url).toEndWith('/api/auth/get-session?disableRefresh=true');
+    expect(requests[2]?.init?.credentials).toBe('omit');
+    expect(requests[2]?.init?.headers).toEqual({ Authorization: 'Bearer active-session' });
     expect(getSessionToken()).toBeNull();
   });
 
   test('captures and verifies the cookie session token before signing out', async () => {
     installSessionStorage();
-    const requests: Array<{ url: string; init?: RequestInit }> = [];
-
-    const revoked = await revokeEmbeddedSession(null, async (url, init) => {
-      requests.push({ url: String(url), init });
-      if (requests.length === 1) {
-        return Response.json({ session: { token: 'cookie-session' }, user: { id: 'user-1' } });
-      }
-      return requests.length === 2
-        ? Response.json({ success: true })
-        : Response.json(null);
+    let signedOut = false;
+    const { impl, requests } = routedFetch({
+      '/api/auth/session-token': () => Response.json({ token: 'cookie-session.sig' }),
+      '/api/auth/get-session': () => Response.json(signedOut ? null : { session: {}, user: { id: 'user-1' } }),
+      '/api/auth/sign-out': () => { signedOut = true; return Response.json({ success: true }); },
     });
 
+    const revoked = await revokeEmbeddedSession(null, impl);
+
     expect(revoked).toBe(true);
-    expect(requests).toHaveLength(3);
-    expect(requests[0]?.url).toEndWith('/api/auth/get-session?disableRefresh=true');
+    expect(requests).toHaveLength(4);
+    expect(requests[0]?.url).toEndWith('/api/auth/session-token');
     expect(requests[0]?.init?.credentials).toBe('include');
-    expect(requests[1]?.url).toEndWith('/api/auth/sign-out');
-    expect(requests[1]?.init?.headers).toEqual({ Authorization: 'Bearer cookie-session' });
-    expect(requests[2]?.url).toEndWith('/api/auth/get-session?disableRefresh=true');
-    expect(requests[2]?.init?.credentials).toBe('omit');
-    expect(requests[2]?.init?.headers).toEqual({ Authorization: 'Bearer cookie-session' });
+    expect(requests[1]?.url).toEndWith('/api/auth/get-session?disableRefresh=true');
+    expect(requests[1]?.init?.credentials).toBe('omit');
+    expect(requests[1]?.init?.headers).toEqual({ Authorization: 'Bearer cookie-session.sig' });
+    expect(requests[2]?.url).toEndWith('/api/auth/sign-out');
+    expect(requests[2]?.init?.headers).toEqual({ Authorization: 'Bearer cookie-session.sig' });
+    expect(requests[3]?.url).toEndWith('/api/auth/get-session?disableRefresh=true');
+    expect(requests[3]?.init?.credentials).toBe('omit');
+    expect(requests[3]?.init?.headers).toEqual({ Authorization: 'Bearer cookie-session.sig' });
   });
 
   test('does not claim cookie-session revocation when the captured token survives', async () => {
     installSessionStorage();
-    let requestCount = 0;
-
-    const revoked = await revokeEmbeddedSession(null, async () => {
-      requestCount += 1;
-      if (requestCount === 1) {
-        return Response.json({ session: { token: 'cookie-session' }, user: { id: 'user-1' } });
-      }
-      return requestCount === 2
-        ? Response.json({ success: true })
-        : Response.json({ session: { token: 'cookie-session' }, user: { id: 'user-1' } });
+    const { impl, requests } = routedFetch({
+      '/api/auth/session-token': () => Response.json({ token: 'cookie-session.sig' }),
+      '/api/auth/get-session': () => Response.json({ session: {}, user: { id: 'user-1' } }),
+      '/api/auth/sign-out': () => Response.json({ success: true }),
     });
 
+    const revoked = await revokeEmbeddedSession(null, impl);
+
     expect(revoked).toBe(false);
+    expect(requests.filter((r) => r.url.includes('/get-session'))).toHaveLength(2);
   });
 
   test('still attempts cookie sign-out when the session-token preflight fails', async () => {
@@ -119,16 +119,15 @@ describe('revokeEmbeddedSession', () => {
   test('does not claim revocation while the old bearer still authenticates', async () => {
     installSessionStorage();
     setSessionToken('active-session');
-    let requestCount = 0;
-
-    const revoked = await revokeEmbeddedSession(undefined, async () => {
-      requestCount += 1;
-      return requestCount === 1
-        ? Response.json({ success: true })
-        : Response.json({ session: { token: 'active-session' }, user: { id: 'user-1' } });
+    const { impl, requests } = routedFetch({
+      '/api/auth/get-session': () => Response.json({ session: { token: 'active-session' }, user: { id: 'user-1' } }),
+      '/api/auth/sign-out': () => Response.json({ success: true }),
     });
 
+    const revoked = await revokeEmbeddedSession(undefined, impl);
+
     expect(revoked).toBe(false);
+    expect(requests.filter((r) => r.url.includes('/get-session'))).toHaveLength(2);
     expect(getSessionToken()).toBeNull();
   });
 
@@ -141,6 +140,67 @@ describe('revokeEmbeddedSession', () => {
     });
 
     expect(revoked).toBe(false);
+    expect(getSessionToken()).toBeNull();
+  });
+});
+
+type Route = (init?: RequestInit) => Response;
+
+function routedFetch(routes: Record<string, Route>) {
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+    requests.push({ url: String(url), init });
+    const path = new URL(String(url), 'https://api.example').pathname;
+    const route = routes[path];
+    if (!route) throw new Error(`unexpected request ${path}`);
+    return route(init);
+  }) as typeof fetch;
+  return { impl, requests };
+}
+
+describe('readSignedSessionToken', () => {
+  test('uses the signed token the API returns and reads nothing else', async () => {
+    const { impl, requests } = routedFetch({
+      '/api/auth/session-token': () => Response.json({ token: 'session-1.sig' }),
+    });
+    expect(await readSignedSessionToken(impl)).toBe('session-1.sig');
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.init?.credentials).toBe('include');
+  });
+
+  test('no session is no token, without reading the session another way', async () => {
+    const { impl, requests } = routedFetch({
+      '/api/auth/session-token': () => Response.json({ error: 'Unauthorized' }, { status: 401 }),
+    });
+    expect(await readSignedSessionToken(impl)).toBeNull();
+    expect(requests).toHaveLength(1);
+  });
+
+  test('an API without the route is read through get-session', async () => {
+    const { impl, requests } = routedFetch({
+      '/api/auth/session-token': () => new Response('Not Found', { status: 404 }),
+      '/api/auth/get-session': () => Response.json({ session: { token: 'session-1' }, user: { id: 'user-1' } }),
+    });
+    expect(await readSignedSessionToken(impl)).toBe('session-1');
+    expect(requests.map((r) => new URL(r.url, 'https://api.example').pathname))
+      .toEqual(['/api/auth/session-token', '/api/auth/get-session']);
+  });
+});
+
+describe('revokeEmbeddedSession with a token the API does not accept', () => {
+  test('signs out without it and does not claim revocation', async () => {
+    installSessionStorage();
+    setSessionToken('unaccepted-session');
+    const { impl, requests } = routedFetch({
+      '/api/auth/get-session': () => Response.json(null),
+      '/api/auth/sign-out': () => Response.json({ success: true }),
+    });
+
+    const revoked = await revokeEmbeddedSession(undefined, impl);
+
+    expect(revoked).toBe(false);
+    const signOut = requests.find((r) => r.url.endsWith('/api/auth/sign-out'));
+    expect(signOut?.init?.headers).toBeUndefined();
     expect(getSessionToken()).toBeNull();
   });
 });
