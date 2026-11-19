@@ -1,8 +1,6 @@
 import type { CapabilityGrant, PermissionSeverity } from "./model.js";
 
 // Signed resource catalog from js-sdk b7ba5e8cc9facc90a1644e3c153b1856ef1bb2cb, packages/courier/src/keys.ts. Details: TC-2905
-export const COURIER_HEADING = "Courier: send and receive messages with other agents";
-
 export const COURIER_CATALOG = [
   { path: "xyz.tinycloud.courier/me/", service: "tinycloud.kv", verbs: ["get", "list"], severity: "sensitive", text: "See all your Courier data, including your requests and approvals" },
   { path: "xyz.tinycloud.courier/to/", service: "tinycloud.kv", verbs: ["get", "put", "list", "del", "metadata"], severity: "sensitive", text: "Send messages, tasks and files to other agents, and see or delete what it sent" },

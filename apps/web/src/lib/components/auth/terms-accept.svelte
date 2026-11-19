@@ -5,8 +5,10 @@
   import { PRIVACY_URL, TERMS_URL, effectiveDate, type TermsStatus } from '$lib/terms';
 
   // Required screen: shown after sign-in, before anything else, to any account
-  // that has not accepted the CURRENT terms. It has no close, no skip and no
-  // way past it except Agree (continue) or Don't agree (sign out).
+  // that has not accepted the CURRENT terms. It has no close and no skip. Agree
+  // continues. On the web a small "Other options" box leads to the ways out that
+  // need no agreement (sign out, disconnect apps, delete the account); the native
+  // sheet has Don't agree (sign out) here instead.
   //   first   - the account has never accepted terms
   //   updated - the account accepted an older version and must accept the new one
   // The date and "What changed" come only from the API; when it has none, nothing is shown.
@@ -21,11 +23,15 @@
     appName?: string | null;
     busy?: 'accept' | 'decline' | null;
     error?: string | null;
+    /** Web: the Other options page (sign out, disconnect apps or delete the account without agreeing). */
+    otherOptions?: string | null;
+    /** Native: what Don't agree does. */
+    declineNote?: string;
     onaccept: () => void;
     ondecline: () => void;
   }
 
-  let { kind, surface, release, email, clientId = null, appName = null, busy = null, error = null, onaccept, ondecline }: Props = $props();
+  let { kind, surface, release, email, clientId = null, appName = null, busy = null, error = null, otherOptions = null, declineNote = '', onaccept, ondecline }: Props = $props();
 
   const title = $derived(
     kind === 'updated'
@@ -95,7 +101,7 @@
 
     <section class="decline" aria-labelledby="decline-heading">
       <h2 id="decline-heading" class="decline-title">If you don’t agree</h2>
-      <p class="nb-note">We’ll sign you out. You can’t use OpenKey or sign in to apps with it until you agree. Nothing is deleted. Apps keep the access you’ve already approved until it runs out, but they won’t renew it.</p>
+      <p class="nb-note">{declineNote}</p>
       <div class="nb-center">
         <button type="button" class="nb-link" onclick={ondecline} disabled={busy !== null}>
           {busy === 'decline' ? 'Signing out…' : 'Don’t agree and sign out'}
@@ -169,13 +175,11 @@
           By selecting Agree and continue, you agree to the Terms of Service and acknowledge the Privacy Policy.
         </p>
 
-        <section class="mt-7 border-t border-surface-200 pt-6" aria-labelledby="decline-heading">
-          <h2 id="decline-heading" class="mb-1 text-sm font-semibold text-surface-900">If you don’t agree</h2>
-          <p class="mb-3 text-sm text-surface-500">We’ll sign you out. You can’t use OpenKey or sign in to apps with it until you agree. Nothing is deleted. Apps keep the access you’ve already approved until it runs out, but they won’t renew it.</p>
-          <Button variant="secondary" onclick={ondecline} disabled={busy !== null} class="w-full">
-            {busy === 'decline' ? 'Signing out…' : 'Don’t agree and sign out'}
-          </Button>
-        </section>
+        {#if otherOptions}
+          <p class="mt-3 text-center">
+            <a href={otherOptions} class="inline-block py-3 text-xs text-surface-500 underline underline-offset-2 hover:text-surface-700" data-testid="terms-other-options">Other options</a>
+          </p>
+        {/if}
       </Card>
 
       <p class="mt-6 text-center text-xs text-surface-400">Signed in as {email}</p>
