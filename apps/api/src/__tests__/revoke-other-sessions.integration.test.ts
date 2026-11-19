@@ -221,7 +221,7 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
         expect(response.status, `${route.path} from ${origin}`).toBe(403);
         expect(await snapshot()).toEqual(before);
       }
-      const bearer = await request({ authorization: `Bearer ${token}` });
+      const bearer = await request({ authorization: `Bearer ${cookie.slice(cookie.indexOf('=') + 1)}` });
       expect(bearer.status, `${route.path} bearer without Origin`).toBe(403);
       expect(await snapshot()).toEqual(before);
 
@@ -310,6 +310,8 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
       ...(body ? { body: JSON.stringify(body) } : {}),
     }));
     const before = await prisma.oauthClient.findUnique({ where: { id: client.id } });
+    const removedCookie = await cookie(removedToken);
+    const removedBearer = removedCookie.slice(removedCookie.indexOf('=') + 1);
     for (const [path, body] of [
       ['/oauth2/update-client', { client_id: client.clientId, update: { client_name: 'Changed' } }],
       ['/oauth2/delete-client', { client_id: client.clientId }],
@@ -318,7 +320,7 @@ if (process.env.OPENKEY_REVOKE_TEST_CHILD !== '1') {
       expect((await call(path, 'POST', removedToken, body)).status).toBe(401);
       expect((await call(path, 'POST', adminToken, body)).status).toBe(401);
       const bearer = await app.fetch(new Request(`https://api.openkey.test/api/auth${path}`, {
-        method: 'POST', headers: { authorization: `Bearer ${removedToken}`, origin: 'https://openkey.test', 'content-type': 'application/json' },
+        method: 'POST', headers: { authorization: `Bearer ${removedBearer}`, origin: 'https://openkey.test', 'content-type': 'application/json' },
         body: JSON.stringify(body),
       }));
       expect(bearer.status, `${path} bearer`).toBe(401);
