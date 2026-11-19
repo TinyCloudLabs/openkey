@@ -15,6 +15,7 @@
     OwnerMessageError,
     isTerminalApprovalFailure,
     shortCodeFailureText,
+    walletMismatchFailureText,
   } from '$lib/delegate-failure-text';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
@@ -56,6 +57,7 @@
     type CapabilityReviewModel,
   } from '@openkey/capability-review';
   import { renewalStartsTicked } from '$lib/renewal-default';
+  import { walletNotConnectedText } from '$lib/wallet-not-connected-text';
 
   interface EIP6963ProviderInfo {
     uuid: string;
@@ -110,6 +112,15 @@
     }
     if (cause instanceof DelegateResponseError) {
       if (isTerminalApprovalFailure(cause.status, cause.code)) approveBlockedByFailure = true;
+      if (
+        cause.status === 400 &&
+        cause.code === 'invalid_permissions' &&
+        expectedAddress &&
+        selectedKey &&
+        selectedKey.address.toLowerCase() !== expectedAddress.toLowerCase()
+      ) {
+        return walletMismatchFailureText(expectedAddress, selectedKey.address);
+      }
       return delegateResponseFailureText(cause.status, cause.code, {
         permissionsEditable: reviewEditing,
         expiryChangeable: expiryChangeControlVisible,
@@ -554,9 +565,6 @@
   // True once we've completed the auto-select attempt for the expected wallet.
   // Used to avoid showing the "wallet not connected" warning before keys load.
   let preselectAttempted = $state(false);
-  // True when the user has explicitly chosen to proceed with a non-matching
-  // wallet via the override path on the key picker.
-  let overrideMismatch = $state(false);
   // With no wallet named, KeyPicker offers the primary key; the other keys
   // (separate account owners) stay hidden until the user asks for them.
   let showOtherKeys = $state(false);
@@ -1087,8 +1095,8 @@
     }
     // Defense-in-depth: the Approve button is already disabled in this case,
     // but block here too so a stray invocation can't slip through.
-    if (!selectedMatchesExpected && !overrideMismatch) {
-      error = `This CLI requested wallet ${expectedAddressShort}. Pick that wallet or explicitly override.`;
+    if (walletMismatchReason) {
+      error = walletMismatchReason;
       return;
     }
 
@@ -1142,11 +1150,17 @@
   // from it (a narrowing /prepare failed or never ran), block approval until
   // a /prepare for the visible selection succeeds. While one is in flight,
   // `approving` already disables Approve.
+  const walletMismatchReason = $derived(
+    expectedAddress && !selectedMatchesExpected
+      ? `This request is for wallet ${expectedAddressShort}. Choose a key for that wallet, or ask the app or command for a new request.`
+      : null,
+  );
   const approveBlockedReason = $derived(
-    reviewModel && !updatingPermissions &&
+    walletMismatchReason ??
+    (reviewModel && !updatingPermissions &&
       !preparedMatchesSelection(reviewModel, permissionOptions, reviewSelection, selectedActionKeys)
       ? 'The permissions shown have not been prepared for signing. Change a permission or Reset to try again.'
-      : null,
+      : null),
   );
 
   async function toggleAction(action: DelegatePermissionAction) {
@@ -1934,11 +1948,13 @@
           <div class="w-full bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl text-sm" role="alert">
             <div class="font-medium mb-1">Wallet mismatch</div>
             <p class="leading-relaxed">
-              This CLI requested a delegation from
+              This request is for wallet
               <code class="font-mono text-xs">{expectedAddressShort}</code>,
-              but you're about to sign with
+              but the key you picked is for
               <code class="font-mono text-xs">{formatAddress(selectedKey.address)}</code>.
-              The CLI will reject the resulting delegation.
+              Choose a key for
+              <code class="font-mono text-xs">{expectedAddressShort}</code>,
+              or ask the app or command for a new request.
             </p>
             <button
               type="button"
@@ -2079,12 +2095,12 @@
               <Button variant="secondary" onclick={goBack} disabled={delegating} class="flex-1 rounded-xl">
                 Back
               </Button>
-              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || approveBlockedByFailure || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch) || (hostNeedsAcknowledgment && !hostAcknowledged)} class="flex-1 rounded-xl">
+              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || approveBlockedByFailure || selectedActionKeys.length === 0 || !selectedMatchesExpected || (hostNeedsAcknowledgment && !hostAcknowledged)} class="flex-1 rounded-xl">
                 {#if delegating}
                   Signing...
                 {:else if updatingPermissions}
                   Updating...
-                {:else if !selectedMatchesExpected && !overrideMismatch}
+                {:else if !selectedMatchesExpected}
                   Wallet mismatch
                 {:else}
                   Approve
@@ -2127,10 +2143,7 @@
           <div class="w-full bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
             <div class="font-medium mb-1">Wallet not connected</div>
             <p class="leading-relaxed">
-              This request is for wallet
-              <code class="font-mono text-xs">{expectedAddressShort}</code>.
-              That wallet isn't currently connected. Link it below, or switch
-              to a profile that uses a wallet you have here.
+              {walletNotConnectedText(expectedAddressShort, $session.data?.user.email ?? null)}
             </p>
           </div>
         {/if}
@@ -2149,7 +2162,6 @@
           <KeyPicker
             {keys}
             {expectedAddress}
-            {overrideMismatch}
             bind:showOtherKeys
             onselect={onKeySelect}
             primaryHeading="Sign in with your primary key:"
@@ -2157,15 +2169,6 @@
             otherKeysWarning="Each key is a separate account owner, with its own data and spaces. Signing in with a different key does not give the CLI the data in your primary key."
           >
             {#snippet actions()}
-              {#if expectedAddress && !overrideMismatch && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
-                <button
-                  type="button"
-                  class="text-xs text-surface-500 hover:text-surface-900 transition-colors bg-transparent border-none cursor-pointer underline self-start"
-                  onclick={() => (overrideMismatch = true)}
-                >
-                  Continue with a different wallet anyway
-                </button>
-              {/if}
               <Button variant="secondary" onclick={showLinkWallet} class="rounded-xl">
                 Link External Wallet
               </Button>
