@@ -79,7 +79,7 @@ test.describe('the session check on /delegate', () => {
 
     await expect(page.locator('[role="status"] [aria-current="step"]')).toHaveText('Checking your OpenKey account');
     await expect(signInPrompt(page)).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Continue with email' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Continue with email' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Use a passkey instead' })).toHaveCount(0);
     await expect(page.getByRole('link', { name: 'Create an account' })).toHaveCount(0);
     await expect(page.getByRole('link', { name: 'Recover account' })).toHaveCount(0);
@@ -99,7 +99,7 @@ test.describe('the session check on /delegate', () => {
 
     releaseSession();
     await expect(signInPrompt(page)).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Continue with email' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Continue with email' })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Create an account' })).toBeVisible();
     await expect(page.getByText('Checking your OpenKey account', { exact: true })).toHaveCount(0);
   });
