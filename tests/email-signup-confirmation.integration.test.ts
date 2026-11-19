@@ -37,6 +37,7 @@ if (!backend) {
             CORS_ORIGIN: 'https://openkey.test',
             ADMIN_API_KEY: 'tc1114-admin-key',
             RESEND_API_KEY: '',
+            APPLE_SIGN_IN_ENABLED: 'false',
             GOOGLE_CLIENT_ID: '',
             GOOGLE_CLIENT_SECRET: '',
           },

@@ -6,6 +6,11 @@ name: Register OAuth Client
 # solely in the Phala CVM env — this workflow provides an auditable
 # registration path using the same DATABASE_URL secret the deploy workflow's
 # schema-sync step already uses. Client ids are public, so log output is safe.
+#
+# Update mode (client_id set) writes only the inputs that are set: an empty icon or theme color
+# leaves the stored value unchanged and `none` clears it. Before the TC-3268 fix an empty value
+# cleared it, so on a ref that does not contain that fix pass the icon and both theme colors
+# explicitly (a run that sets only the name clears them).
 
 on:
   workflow_dispatch:
@@ -27,7 +32,7 @@ on:
         description: 'Application website URL (optional)'
         required: false
       client_id:
-        description: 'Existing enabled client ID to update branding only (optional)'
+        description: 'Existing enabled client ID: update its branding, and with tinycloud_native_delegation replace its existing delegation ceiling (optional)'
         required: false
       icon:
         description: 'HTTPS icon URL (optional); on update, empty leaves unchanged and none clears'

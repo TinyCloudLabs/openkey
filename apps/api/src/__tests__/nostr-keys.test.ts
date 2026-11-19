@@ -136,7 +136,7 @@ async function createKey() {
 async function grant(r: Awaited<ReturnType<typeof router>>, keyId: string, body: Record<string, unknown>) {
   return r.request(`/${keyId}/grants`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
     body: JSON.stringify(body),
   });
 }
@@ -185,7 +185,7 @@ describe('sign-event grant enforcement', () => {
     const r = await router();
     const res = await r.request(`/${key.id}/sign-event`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({
         clientOrigin: 'http://localhost:3000',
         event: { pubkey: key.pubkeyHex, created_at: Math.floor(Date.now() / 1000), kind: 9, tags: [['h', 'dev']], content: 'hi' },
@@ -211,7 +211,7 @@ describe('sign-event grant enforcement', () => {
     };
     const res = await r.request(`/${key.id}/sign-event`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ clientOrigin: 'http://localhost:3000', event: unsignedEvent }),
     });
     expect(res.status).toBe(200);
@@ -236,7 +236,7 @@ describe('sign-event grant enforcement', () => {
     };
     const ok = await r.request(`/${key.id}/sign-event`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ clientOrigin: 'http://localhost:3000', event: goodEvent }),
     });
     expect(ok.status).toBe(200);
@@ -244,7 +244,7 @@ describe('sign-event grant enforcement', () => {
     const wrongRelay = { ...goodEvent, tags: [['relay', 'ws://evil.example.com'], ['challenge', 'abc']] };
     const bad = await r.request(`/${key.id}/sign-event`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ clientOrigin: 'http://localhost:3000', event: wrongRelay }),
     });
     expect(bad.status).toBe(403);
@@ -258,7 +258,7 @@ describe('sign-event grant enforcement', () => {
 
     const res = await r.request(`/${key.id}/sign-event`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({
         clientOrigin: 'http://localhost:3000',
         event: { pubkey: key.pubkeyHex, created_at: Math.floor(Date.now() / 1000), kind: 9, tags: [], content: 'x' },
@@ -276,7 +276,7 @@ describe('sign-event grant enforcement', () => {
     const event = { pubkey: key.pubkeyHex, created_at: Math.floor(Date.now() / 1000), kind: 9, tags: [], content: 'x' };
     const before = await r.request(`/${key.id}/sign-event`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ clientOrigin: 'http://localhost:3000', event }),
     });
     expect(before.status).toBe(200);
@@ -286,7 +286,7 @@ describe('sign-event grant enforcement', () => {
 
     const after = await r.request(`/${key.id}/sign-event`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ clientOrigin: 'http://localhost:3000', event: { ...event, created_at: Math.floor(Date.now() / 1000) } }),
     });
     expect(after.status).toBe(403);
@@ -299,7 +299,7 @@ describe('sign-event grant enforcement', () => {
 
     const res = await r.request(`/${key.id}/sign-event`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({
         clientOrigin: 'http://evil.example.com',
         event: { pubkey: key.pubkeyHex, created_at: Math.floor(Date.now() / 1000), kind: 9, tags: [], content: 'x' },
@@ -314,7 +314,7 @@ describe('sign-event grant enforcement', () => {
     await grant(r, key.id, { clientOrigin: 'http://localhost:3000', kinds: [9] });
     const res = await r.request(`/${key.id}/sign-event`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({
         clientOrigin: 'http://localhost:3000',
         event: { pubkey: key.pubkeyHex, created_at: Math.floor(Date.now() / 1000), kind: 0, tags: [], content: 'x' },
@@ -330,7 +330,7 @@ describe('sign-event grant enforcement', () => {
     const r = await router();
     const res = await r.request(`/${key.id}/sign-event`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({
         clientOrigin: 'http://localhost:3000',
         event: { pubkey: key.pubkeyHex, created_at: Math.floor(Date.now() / 1000), kind: 9, tags: [], content: 'x' },
@@ -352,7 +352,7 @@ describe('sign-event grant enforcement', () => {
     await grant(r, key.id, { clientOrigin: 'http://localhost:3000', kinds: [9] });
     const res = await r.request(`/${key.id}/sign-event`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({
         clientOrigin: 'http://localhost:3000',
         event: { pubkey: key.pubkeyHex, created_at: Math.floor(Date.now() / 1000) - 10_000, kind: 9, tags: [], content: 'x' },
@@ -378,7 +378,7 @@ describe('sign-event grant enforcement', () => {
     for (const tags of invalidTags) {
       const res = await r.request(`/${key.id}/sign-event`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
         body: JSON.stringify({
           clientOrigin: 'http://localhost:3000',
           event: {

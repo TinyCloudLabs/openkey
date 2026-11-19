@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test is a runtime-only module; tsc doesn't ship types
 import { describe, expect, test } from 'bun:test';
 import type { EthereumKey } from './api';
-import { autoSelectKey, keyPickerLayout, primaryKey } from './delegate-key-selection';
+import { autoSelectKey, keyPickerLayout, primaryKey, signingKeyChoices } from './delegate-key-selection';
 
 const key = (id: string, address: string, extra: Partial<EthereumKey> = {}): EthereumKey => ({
   id, address, publicKey: '0x', keyIndex: 0, label: null, keyType: 'MANAGED', createdAt: '', ...extra,
@@ -62,5 +62,36 @@ describe('keyPickerLayout (TC-703)', () => {
   });
   test('without a primary key, every key is listed', () => {
     expect(keyPickerLayout([a, b, external], null)).toEqual({ kind: 'list', keys: [a, b, external] });
+  });
+});
+
+describe('active signing keys (TC-1496)', () => {
+  const archived = { ...a, archivedAt: '2026-11-01T00:00:00Z', isPrimary: true };
+  const activePrimary = { ...primary, keyIndex: 7 };
+
+  test('an archived first key does not hide the sole active nonzero primary', () => {
+    expect(autoSelectKey([archived, activePrimary], null)).toBe(activePrimary);
+  });
+
+  test('an archived requested owner never falls back to another owner', () => {
+    expect(autoSelectKey([archived, activePrimary], archived.address.toLowerCase())).toBeNull();
+  });
+
+  test('the requested active owner takes precedence over the primary key', () => {
+    expect(autoSelectKey([archived, activePrimary, b], b.address.toLowerCase())).toBe(b);
+  });
+
+  test('an archived primary is neither suggested nor offered in the picker', () => {
+    expect(primaryKey([archived, b])).toBeNull();
+    expect(keyPickerLayout([archived, b], null)).toEqual({ kind: 'list', keys: [b] });
+  });
+
+  test('a missing requested owner does not choose the only remaining active key', () => {
+    expect(autoSelectKey([archived, activePrimary], b.address.toLowerCase())).toBeNull();
+  });
+
+  test('a signing choice is limited to active keys for the bound address and signing type', () => {
+    expect(signingKeyChoices([archived, activePrimary, b, external], b.address.toLowerCase(), 'MANAGED')).toEqual([b]);
+    expect(signingKeyChoices([archived, activePrimary, b, external], null, 'EXTERNAL')).toEqual([external]);
   });
 });

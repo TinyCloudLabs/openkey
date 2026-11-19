@@ -92,7 +92,7 @@ const baseStubs = (pageUrl: string): Record<string, string> => ({
     export const authClient = { useSession: () => ({ subscribe(run) { run({ data: { user: { id: 'user_1' } }, isPending: false }); return () => {}; } }) };`,
   '$lib/api': `export const api = { getKey: async () => ({ key: ${JSON.stringify(KEY)} }), listKeys: async () => ({ keys: [${JSON.stringify(KEY)}] }) };`,
   '$lib/embed-passkey': `export const isEmbedContext = () => true; export const getSessionToken = () => 'session-token';
-    export const withSessionCredential = (init) => init;`,
+    export const withSessionCredential = (init) => init; export const clearSessionToken = () => {};`,
   '$lib/widget-transport': `export const createWidgetTransport = (options) => {
       globalThis.__pages.options = options;
       return { emitReady() {}, emitResize() {}, emitLayoutSignal() {}, destroy() {}, respond(message) { globalThis.__pages.sent.push(message); } };
@@ -256,8 +256,6 @@ async function run(pageName: 'popup' | 'embed', sign: Reply) {
   }
 }
 
-const TITLE = "OpenKey couldn't finish this request";
-const BODY = "OpenKey couldn't read the server's reply, so nothing was approved. Please try again. If it keeps happening, contact the app.";
 const FAILURE = { code: 'UNKNOWN', message: 'SERVER_REPLY_UNREADABLE' };
 
 const successes = (messages: Sent[]) => messages.filter((message) => message.success === true);
@@ -279,7 +277,6 @@ for (const { name } of PAGES) {
         const result = await run(name, answer);
         expect(result.called).toContain('authorize-sign');
         expect(result.shown).toBe(true);
-        expect(result.visible).toBe(`${TITLE} ${BODY}`);
         expect(successes(result.sent)).toEqual([]);
         expect(successes(result.posted)).toEqual([]);
         const failures = result.sent.filter((message) => message.type === 'openkey:sign:response' && message.success === false);

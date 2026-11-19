@@ -34,6 +34,7 @@ function world(w: World) {
   const queries: { session: unknown[]; others: string[] } = { session: [], others: [] };
   const maybeFail = (what: NonNullable<World['fail']>) => { queries.others.push(what); if (w.fail === what) throw new Error('db down'); };
   const db = {
+    reviewerAccount: { findUnique: async () => null },
     oauthRefreshToken: { findUnique: async () => { maybeFail('row'); return w.row ?? null; } },
     oauthClient: { findUnique: async () => { maybeFail('client'); return w.client ?? null; } },
     oauthConsent: { findUnique: async () => { maybeFail('consent'); return w.consent ?? null; } },
@@ -46,10 +47,10 @@ const guard = (w: World, client: string | null = 'app', scope: string | null = n
 const ended = { status: 400, error: 'invalid_grant' };
 
 describe('mcpRefreshRefusal: a found, unrevoked, unexpired MCP row of the requesting client', () => {
-  test('a standing connection goes on to the provider; the session lookup is bound to the row\'s user and the clock', async () => {
+  test('a standing connection goes on to the provider; the session lookup is bound to the row\'s unlocked user and the clock', async () => {
     const { db, queries } = world(live);
     expect(await mcpRefreshRefusal(db, {}, 'refresh-token', 'app', null, NOW)).toBeNull();
-    expect(queries.session).toEqual([{ where: { id: 's', userId: 'u', expiresAt: { gt: NOW } }, select: { id: true } }]);
+    expect(queries.session).toEqual([{ where: { id: 's', userId: 'u', expiresAt: { gt: NOW }, user: { lockedAt: null, reviewerHoldAt: null } }, select: { id: true, reviewerEpoch: true, user: { select: { reviewerBinding: true } } } }]);
   });
 
   test.each([

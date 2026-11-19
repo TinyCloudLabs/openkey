@@ -1,21 +1,25 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createMiddleware } from 'hono/factory';
 import { Hono } from 'hono';
-import type { PrismaClient } from '@openkey/db';
+import { Prisma, type PrismaClient } from '@openkey/db';
 import { ensureEip55, generateHostSIWEMessage, completeSessionSetup, siweToDelegationHeaders } from '@tinycloud/node-sdk-wasm';
 import { activateSessionWithHost, submitHostDelegation } from '@tinycloud/sdk-core';
 import { createWalletFromPrivateKey } from '@openkey/tee';
 import type { SessionContext } from '../middleware/session';
 import { auth } from '../auth';
-import { resolveOriginPolicy } from '../origin-policy';
+import { isAccountOriginAllowed, resolveOriginPolicy } from '../origin-policy';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { primaryKeyWhere } from '../services/primary-key';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
 import { enabledNativeDelegation } from '../services/native-delegation/policy';
 import { nativeUserRetryAfter, type NativeUserAction } from '../services/native-delegation/user-rate-limit';
 import { ParError, validatePermissions, type NativePermission } from '../services/native-delegation/par';
+import { buildOwnerRevocationSiwe } from '@openkey/capability-review';
+import { RECLAIM_FAILED_CODE } from '../services/tinycloud-bootstrap';
 import { prepareDelegationSession, actionKey } from './delegate-session';
 
-import { log, logError } from '../log';
+import { log, logError, logMetric } from '../log';
 export class NativeConsentError extends Error {
   constructor(readonly status: 401 | 403 | 404 | 409 | 500 | 503, readonly code: string, readonly description?: string) { super(code); }
 }
@@ -76,6 +80,7 @@ export interface NativeConsentHostOps {
   fetchPeerId: (host: string, spaceId: string) => Promise<string>;
   activateSessionWithHost: typeof activateSessionWithHost;
   submitHostDelegation: typeof submitHostDelegation;
+  revokeDelegation: (host: string, headers: Record<string, string>) => Promise<{ ok: boolean; status: number }>;
 }
 async function fetchPeerId(host: string, spaceId: string): Promise<string> {
   const response = await fetch(`${host}/peer/generate/${encodeURIComponent(spaceId)}`, { signal: AbortSignal.timeout(5_000) });
@@ -83,6 +88,10 @@ async function fetchPeerId(host: string, spaceId: string): Promise<string> {
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${value.slice(0, 200)}`);
   if (!value.startsWith('did:key:')) throw new Error(`unexpected peer ID response: ${value.slice(0, 100)}`);
   return value;
+}
+async function revokeDelegation(host: string, headers: Record<string, string>): Promise<{ ok: boolean; status: number }> {
+  const response = await fetch(`${host}/revoke`, { method: 'POST', headers, signal: AbortSignal.timeout(5_000) });
+  return { ok: response.ok, status: response.status };
 }
 class NativeOperationTimeoutError extends Error {
   constructor(ms: number) { super(`operation timed out after ${ms} ms`); this.name = 'NativeOperationTimeoutError'; }
@@ -92,7 +101,7 @@ async function withinTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new NativeOperationTimeoutError(ms)), ms); })]); }
   finally { if (timer) clearTimeout(timer); }
 }
-const defaultHostOps: NativeConsentHostOps = { fetchPeerId, activateSessionWithHost, submitHostDelegation };
+const defaultHostOps: NativeConsentHostOps = { fetchPeerId, activateSessionWithHost, submitHostDelegation, revokeDelegation };
 export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: NativeConsentHostOps = defaultHostOps) {
   const router = new Hono<SessionContext>();
   router.use('*', async (c, next) => {
@@ -101,6 +110,13 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     if (c.req.header('authorization')) return c.json({ error: 'unauthorized' }, 401);
     await next();
   });
+  const requireAccountOrigin = createMiddleware(async (c, next) => {
+    if (!isAccountOriginAllowed(c.req.header('origin'), 'http://localhost:5173')) return c.json({ error: 'invalid_origin' }, 403);
+    await next();
+  });
+  router.use('/:id/prepare', requireAccountOrigin);
+  router.use('/:id/deny', requireAccountOriginForBearer);
+  router.use('/:id/approve', requireAccountOrigin);
   router.use('*', async (c, next) => {
     const session = await auth.api.getSession({ headers: c.req.raw.headers });
     if (!session) return c.json({ error: 'unauthorized' }, 401);
@@ -180,6 +196,19 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     }, { timeout: 15_000 });
     return c.json(result);
   });
+  // The node registered the skipped session delegation although the approval is being reopened. Revoke it,
+  // once and best-effort: the outcome never changes the restart.
+  async function revokeStaleSessionDelegation(artifact: { address: string; delegationCid: string; tinycloudHost: string }, domain: string, privateKey: `0x${string}`) {
+    try {
+      const now = new Date();
+      const address = ensureEip55(artifact.address);
+      const siwe = buildOwnerRevocationSiwe({ kind: 'owner-revocation', ownerDid: `did:pkh:eip155:1:${address}`, cid: artifact.delegationCid,
+        nonce: randomBytes(16).toString('hex'), expiresAt: new Date(now.getTime() + 600_000).toISOString() }, domain, now);
+      const signature = await createWalletFromPrivateKey(privateKey).signMessage({ message: siwe });
+      const response = await hostOps.revokeDelegation(artifact.tinycloudHost, siweToDelegationHeaders({ siwe, signature }) as Record<string, string>);
+      if (!response.ok) logMetric('warn', 'native_consent_stale_session_revoke_failed', { status: response.status });
+    } catch { log('warn', 'native_consent_stale_session_revoke_failed'); }
+  }
   router.post('/:id/approve', async c => {
     const body = await c.req.json().catch(() => null) as { revision?: number; digest?: string; sessionSiwe?: string; hostSiwe?: string } | null;
     const userId = c.get('user').id;
@@ -244,10 +273,11 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
         spaceId: delegation.spaceId, verificationMethod: delegation.verificationMethod, permissions,
         ttlSeconds: revisionTtl, tinycloudHost: ceiling.tinycloudHost };
       await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { status: 'APPROVED', approvedRevision: revision.revision, consentGeneration: generation, signature, delegation: artifact, hosting: 'failed' } });
-      return { alreadyApproved: false as const, rowId: row.id, revision: revision.revision, hostPlan, artifact, key };
+      return { alreadyApproved: false as const, rowId: row.id, revision: revision.revision, hostPlan, artifact, key, siweDomain: ceiling.siweDomain ?? 'openkey.so' };
     }, { timeout: 15_000 });
     if (result.alreadyApproved) return c.json({ status: 'APPROVED', revision: result.revision, hosting: result.hosting });
     let hosting: 'existing' | 'created' | 'failed' = 'failed';
+    let restart = false;
     try {
       const activated = await hostOps.activateSessionWithHost(result.artifact.tinycloudHost, result.artifact.delegationHeader);
       if (activated.success && activated.activated?.includes(result.artifact.spaceId)) hosting = 'existing';
@@ -268,10 +298,31 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
           else log('warn', 'native_consent_host_delegation_rejected');
         }
       }
+      else if (!result.hostPlan && activated.skipped?.includes(result.artifact.spaceId)) {
+        // The cached `complete` row was stale, so no hosting plan was shown or signed. Drop the cached bit and
+        // reopen the request on a new revision, so a replay of this approval is superseded: the next prepare plans hosting and shows it. The row is no longer `complete`, so
+        // that prepare always carries a plan and this branch cannot run for it again.
+        restart = await db.$transaction(async tx => {
+          const stale = await tx.tinyCloudBootstrapState.updateMany({
+            where: { keyId: result.key.id, chainId: 1, tinycloudHost: result.artifact.tinycloudHost, status: 'complete' },
+            data: { status: 'failed', failureCode: RECLAIM_FAILED_CODE, failureReason: 'TinyCloud node does not host the applications space.', attemptId: null, lockExpiresAt: null },
+          });
+          if (stale.count === 0) return false;
+          const reopened = await tx.tinyCloudNativeRequest.updateMany({
+            where: { id: result.rowId, status: 'APPROVED', approvedRevision: result.revision, currentRevision: result.revision, hostSignedAt: null },
+            data: { status: 'RESOLVED', currentRevision: { increment: 1 }, approvedRevision: null, consentGeneration: null, signature: null, delegation: Prisma.DbNull, hosting: null },
+          });
+          if (reopened.count !== 1) throw new Error('native request could not be reopened');
+          return true;
+        });
+        if (restart) await revokeStaleSessionDelegation(result.artifact, result.siweDomain, privateKey!);
+        else log('warn', 'native_consent_activation_did_not_host_space');
+      }
       else log('warn', 'native_consent_activation_did_not_host_space');
     } catch (error) {
       logError('warn', 'native_consent_host_activation_failed', error);
     }
+    if (restart) fail(409, 'preparation_superseded');
     await db.tinyCloudNativeRequest.update({ where: { id: result.rowId }, data: { hosting } });
     return c.json({ status: 'APPROVED', revision: result.revision, hosting });
   });

@@ -13,6 +13,11 @@ model User {
   email           String   @unique
   emailVerified   Boolean  @default(false)
   name            String?
+  socialCreatedProvider String?
+  socialEmailReviewedAt DateTime?
+  lockedAt DateTime?
+  reviewerHoldAt DateTime?
+  reviewerBinding ReviewerAccount?
   image           String?
   autoSignEnabled Boolean  @default(true)
   tinyCloudManageKeyEnabled Boolean @default(true)
@@ -28,6 +33,7 @@ model User {
   nostrSigningGrants             NostrSigningGrant[]
   tinyCloudBootstrapState        TinyCloudBootstrapState[]
   sessions                       Session[]
+  renewalLeases                  RenewalLease[]
   accounts                       Account[]
   userEncryptionKey              UserEncryptionKey?
   verification                   Verification[]
@@ -128,10 +134,51 @@ model ApprovalRequest {
   acknowledgedAt        DateTime?
   // Set when the owner refuses the request. Terminal: a denied request is never approved.
   deniedAt              DateTime?
+  // Set when an approval is admitted, before signing starts; counts for a short lease. Deny is refused meanwhile.
+  approvingAt           DateTime?
+  // The owner's renewal lease steps for this request (TC-2933): saved before each node call so a retry reuses them.
+  renewal               Json?
 
   @@index([expiresAt])
   @@index([resultExpiresAt])
   @@map("approval_request")
+}
+
+// An owner renewal lease OpenKey signed and the node admitted for an approval request (TC-2933). Written in the
+// same transaction as the approval it belongs to, so the owner can see and stop it later (TC-2946 sets revokedAt).
+model RenewalLease {
+  leaseCid             String    @id
+  userId               String
+  // The OpenKey session that completed the approval. Not a foreign key: it outlives the session.
+  sessionId            String?
+  // Null for a lease no approval request produced; Settings lists and stops it all the same.
+  approvalRequestId    String?   @unique
+  ownerDid             String
+  // The approved grant the lease renews.
+  originalCid          String
+  nodeOrigin           String
+  nodeDid              String
+  // The lease's audience: the node's renewer.
+  renewerDid           String
+  leaseLifetimeSeconds Int
+  approvedAt           DateTime
+  leaseExpiresAt       DateTime
+  createdAt            DateTime  @default(now())
+  revokedAt            DateTime?
+  // The approved grant's SIWE message text, as signed (no signature): Settings shows its permissions.
+  grantSiwe            String
+  // Set once the approval that admitted the lease is saved; until then the admission outcome is unknown.
+  admittedAt           DateTime?
+  // Set when the node refused to admit the lease and holds no lease to revoke: it can never renew.
+  neverAdmittedAt      DateTime?
+  // The signed lease, encrypted at rest, kept only while admission is unconfirmed (to replay it and revoke).
+  leaseAuthorization   String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([sessionId])
+  @@map("renewal_lease")
 }
 
 // Short-lived, ticket-only prepared SIWE handoff. No signed result is persisted.
@@ -168,6 +215,11 @@ model Session {
   ipAddress     String?
   userAgent     String?
   lastPasskeyAt DateTime?
+  // The passkey row whose assertion set lastPasskeyAt (TC-1198). Step-up
+  // accepts the assertion only while that passkey counts for step-up.
+  lastPasskeyId String?
+  lastEmailOtpAt DateTime?
+  reviewerEpoch Int?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -186,11 +238,21 @@ model Account {
   refreshTokenExpiresAt DateTime?
   scope                 String?
   idToken               String?
+  appleClientId         String?
+  // Apple server-to-server notification state (TC-1231). Revocation events
+  // older than appleRestoredAt are ignored; email events order by
+  // appleEmailEventAt in Apple event time, never by updatedAt.
+  appleRestoredAt         DateTime?
+  appleEmailEventAt       DateTime?
+  appleEmailUndeliverable Boolean   @default(false)
+  revokedAt               DateTime?
   password              String?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, accountId])
 
   @@map("account")
 }
@@ -210,6 +272,31 @@ model Verification {
   @@map("verification")
 }
 
+// Apple confirmation and revocation retries are owned by OpenKey, not Better
+// Auth's Verification expiry cleanup (which runs during unrelated OTP lookups).
+model AppleSocialContinuation {
+  id         String   @id
+  identifier String   @unique
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([expiresAt])
+  @@map("apple_social_continuation")
+}
+
+// One row per processed Apple server-to-server notification `jti`, kept
+// indefinitely so a replayed notification is never applied twice (TC-1231).
+model AppleNotification {
+  jti        String   @id
+  eventType  String
+  eventTime  DateTime
+  outcome    String
+  receivedAt DateTime @default(now())
+
+  @@map("apple_notification")
+}
+
 // better-auth Passkey credentials
 model Passkey {
   id           String   @id
@@ -223,6 +310,14 @@ model Passkey {
   transports   String?
   aaguid       String?
   createdAt    DateTime @default(now())
+  // Enrolment provenance (TC-1198). `enrolledVia` records how the enrolment
+  // was authorized: legacy, account_creation, email_sign_in, email_step_up or
+  // passkey_step_up. Only a passkey with `countsForStepUp` can authorize a
+  // passkey step-up (deletion, enrolment, removal). Stock Better Auth writes
+  // leave it false; OpenKey sets it only under a verified step-up.
+  enrolledVia      String?
+  enrolledStepUpAt DateTime?
+  countsForStepUp  Boolean   @default(false)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -568,6 +663,7 @@ model OauthRefreshToken {
 
 // User consent records
 model OauthConsent {
+  reviewerEpoch Int?
   id          String   @id
   userId      String
   clientId    String
@@ -652,6 +748,7 @@ model TinyCloudNativePreparation {
 // (the provider's stored token format). Revoked by the consent-withdrawal
 // triggers in the migration.
 model TinyCloudNativeGrant {
+  reviewerEpoch Int?
   id                       String   @id
   userId                   String
   clientId                 String
@@ -868,4 +965,27 @@ model RevokedAccessToken {
 
   @@index([expiresAt])
   @@map("revoked_access_token")
+}
+
+// Operator-owned bindings survive fixture account deletion.
+model ReviewerAccount {
+  store String @id
+  email String @unique
+  userId String? @unique
+  installEpoch Int @default(0)
+  clientId String?
+  redirectUri String?
+  resource String?
+  callbackUri String?
+  nodeHost String?
+  sessionDid String?
+  keyId String?
+  spaceId String?
+  seededAt DateTime?
+  readyAt DateTime?
+  grantSessionId String?
+  // SHA-256 (hex) of the installed review code; cleared by every hold. Never the code itself.
+  codeDigest String?
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  @@map("reviewer_account")
 }
