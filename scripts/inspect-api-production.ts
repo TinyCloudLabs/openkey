@@ -89,7 +89,9 @@ async function main() {
   const live = apiService(Bun.YAML.parse(composeText));
   const candidate = apiService(Bun.YAML.parse(await readFile(resolve(repoRoot, 'docker-compose.prod.yml'), 'utf8')));
   const image = text(live.image);
-  if (!/^skgbafa\/openkey-api(?::[A-Za-z0-9_.-]+|@sha256:[a-f0-9]{64})$/.test(image)) {
+  // Accept both registries while production moves from Docker Hub to GHCR.
+  const repository = /^(skgbafa\/openkey-api|ghcr\.io\/tinycloudlabs\/openkey-api)(?::[A-Za-z0-9_.-]+|@sha256:[a-f0-9]{64})$/.exec(image)?.[1];
+  if (!repository) {
     throw new Error('Unexpected production API image repository');
   }
   const inspection = command('docker', ['buildx', 'imagetools', 'inspect', image]);
@@ -107,7 +109,7 @@ async function main() {
   console.log(JSON.stringify({
     observed_at: new Date().toISOString(),
     image,
-    rollback_image: `skgbafa/openkey-api@${digest}`,
+    rollback_image: `${repository}@${digest}`,
     compose_sha256: createHash('sha256').update(composeText).digest('hex'),
     changed_environment_keys: changedEnvironmentKeys,
     live_audience_expression: publicAudience(liveEnvironment.get('OAUTH_VALID_AUDIENCES')),
