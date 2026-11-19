@@ -2224,7 +2224,8 @@ delegateRouter.post('/prepare', async (c) => {
 
   let spaceSetup: { space: string; plan: SpaceSetupPlan } | null = null;
   try {
-    const setup = await managedSpaceSetupPlan({
+    // A reviewer's spaces are hosted when the account is provisioned, so the notice would only mislead.
+    const setup = await reviewerForUser(prisma, user.id) ? null : await managedSpaceSetupPlan({
       userId: user.id,
       keyType: key.keyType,
       host,
