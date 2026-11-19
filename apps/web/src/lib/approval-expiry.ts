@@ -183,6 +183,11 @@ export function leaseLimitNote(maxMs: number): string {
   return `Renewal can last up to ${formatDuration(maxMs)}. Choose that or less.`;
 }
 
+/** The note under the picker when the requester said a longer time is fine (TC-2276). */
+export function expiryLongerNote(askedMs: number): string {
+  return `This app asked for ${formatExpiry(askedMs)}. You can choose a longer time.`;
+}
+
 /** Like `expiryAt`, but never later than `ceiling` (the time a requester asked for), when that is a valid time. */
 export function expiryAtCapped(ms: number, ceiling: string | null, now: number = Date.now()): string {
   const cap = ceiling === null ? Number.NaN : Date.parse(ceiling);

@@ -1,5 +1,4 @@
 import {
-  DEVICE_AUTH_MAX_DELEGATION_TTL_MS,
   type DeviceAuthorizationRecord,
   type DeviceAuthorizationStore,
   type DevicePermission,
@@ -35,12 +34,8 @@ export function encodeScope(scope: DeviceScope): StoredDeviceScope {
 
 export function decodeScope(value: { permissions: unknown; delegationExpiresAt: Date; transactionExpiresAt: Date }): DeviceScope {
   // Older rows did not store the TTL; they were created with
-  // delegationExpiresAt = transactionExpiresAt + TTL and allowed up to 90
-  // days, so clamp to today's 30-day maximum.
-  const derivedTtlSeconds = Math.min(
-    DEVICE_AUTH_MAX_DELEGATION_TTL_MS / 1000,
-    Math.floor((value.delegationExpiresAt.getTime() - value.transactionExpiresAt.getTime()) / 1000),
-  );
+  // delegationExpiresAt = transactionExpiresAt + TTL, so derive it as it is.
+  const derivedTtlSeconds = Math.floor((value.delegationExpiresAt.getTime() - value.transactionExpiresAt.getTime()) / 1000);
   if (Array.isArray(value.permissions)) {
     return { permissions: value.permissions as DevicePermission[], delegationTtlSeconds: derivedTtlSeconds };
   }

@@ -33,7 +33,8 @@ const MAX_TAG_VALUES = 20;
 const MAX_TAG_VALUE_LENGTH = 512;
 const MAX_TIMESTAMP_SKEW_SECONDS = 120;
 const DEFAULT_GRANT_TTL_SECONDS = 60 * 60 * 12; // 12h, local dev slice only
-const MAX_GRANT_TTL_SECONDS = 60 * 60 * 24; // 24h ceiling regardless of requested ttl
+// A grant is silent signing for a client origin, so it stays short. A longer ask is refused, never shortened.
+const MAX_GRANT_TTL_SECONDS = 60 * 60 * 24; // 24h
 
 export const nostrKeysRouter = new Hono<SessionContext>();
 
@@ -163,7 +164,7 @@ nostrKeysRouter.get('/', async (c) => {
 type GrantRequest = { clientOrigin: string; kinds: number[]; relayUrl: string | null; ttlSeconds: number };
 type GrantBody = { clientOrigin?: string; kinds?: number[]; relayUrl?: string; ttlSeconds?: number; passkeyAssertion?: unknown };
 
-function parseGrantRequest(body: GrantBody): { ok: true; grant: GrantRequest } | { ok: false; error: string } {
+function parseGrantRequest(body: GrantBody): { ok: true; grant: GrantRequest } | { ok: false; error: string; maxTtlSeconds?: number } {
   const clientOrigin = parseClientOrigin(body.clientOrigin);
   if (!clientOrigin) return { ok: false, error: 'Invalid clientOrigin' };
 
@@ -178,7 +179,17 @@ function parseGrantRequest(body: GrantBody): { ok: true; grant: GrantRequest } |
     if (!relayUrl) return { ok: false, error: 'relayUrl required and must be ws(s):// when granting kind 22242' };
   }
 
-  const ttlSeconds = Math.min(Math.max(1, body.ttlSeconds ?? DEFAULT_GRANT_TTL_SECONDS), MAX_GRANT_TTL_SECONDS);
+  const ttlSeconds: unknown = body.ttlSeconds === undefined ? DEFAULT_GRANT_TTL_SECONDS : body.ttlSeconds;
+  if (typeof ttlSeconds !== 'number' || !Number.isInteger(ttlSeconds) || ttlSeconds < 1) {
+    return { ok: false, error: 'ttlSeconds must be a whole number of seconds, at least 1' };
+  }
+  if (ttlSeconds > MAX_GRANT_TTL_SECONDS) {
+    return {
+      ok: false,
+      error: 'A Nostr signing grant lasts at most 24 hours. Ask for 24 hours or less.',
+      maxTtlSeconds: MAX_GRANT_TTL_SECONDS,
+    };
+  }
   return { ok: true, grant: { clientOrigin, kinds, relayUrl, ttlSeconds } };
 }
 
@@ -202,7 +213,7 @@ nostrKeysRouter.post('/:keyId/grants/passkey', async (c) => {
   const user = c.get('user');
   const keyId = c.req.param('keyId');
   const parsed = parseGrantRequest(await c.req.json<GrantBody>());
-  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  if (!parsed.ok) return c.json({ error: parsed.error, maxTtlSeconds: parsed.maxTtlSeconds }, 400);
   const key = await prisma.nostrKey.findFirst({ where: { id: keyId, userId: user.id, revokedAt: null }, select: { id: true } });
   if (!key) return c.json({ error: 'Key not found' }, 404);
   return c.json(await approvalPasskeyOffer(
@@ -225,7 +236,7 @@ nostrKeysRouter.post('/:keyId/grants', async (c) => {
   if (!key) return c.json({ error: 'Key not found' }, 404);
 
   const parsed = parseGrantRequest(body);
-  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  if (!parsed.ok) return c.json({ error: parsed.error, maxTtlSeconds: parsed.maxTtlSeconds }, 400);
   const { clientOrigin, kinds, relayUrl, ttlSeconds } = parsed.grant;
 
   // TC-3442: the account's passkey setting, before the grant exists.

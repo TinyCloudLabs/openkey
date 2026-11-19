@@ -13,7 +13,7 @@
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
   import { remainingFromServerClock } from '$lib/delegate-code-countdown';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
-  import { expiryAtCapped, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
+  import { expiryAtCapped, expiryLongerNote, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import ApprovalExpiryControl from '$lib/components/signing/approval-expiry-control.svelte';
   import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
   import { answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyNeed } from '$lib/approval-passkey';
@@ -27,7 +27,7 @@
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   const session = authClient.useSession();
   const apiUrl = import.meta.env.VITE_API_URL || '';
-  type Request = { protocolVersion: 1; siwe: string; jwk: Record<string, unknown>; host: string; sessionDid: string; keyId?: string; presentation?: Record<string, unknown> };
+  type Request = { protocolVersion: 1; siwe: string; jwk: Record<string, unknown>; host: string; sessionDid: string; keyId?: string; presentation?: Record<string, unknown>; expiryChangeable?: true };
   type Claim = { transportVersion: 2; request: Request; delivery: { handoffId: string; state: string; cancelSecret: string; callback?: string } };
   type Handoff = { request: Request; delivery: { callback?: string }; expiresAt: string };
   type Result = { protocolVersion: 1; address: string; signature: string; signedMessage: string; selectedActionKeys: string[]; permissions: unknown[] };
@@ -52,6 +52,7 @@
       typeof request.sessionDid === 'string' && isRecord(request.jwk) &&
       (request.keyId === undefined || typeof request.keyId === 'string') &&
       (request.presentation === undefined || isRecord(request.presentation)) &&
+      (request.expiryChangeable === undefined || request.expiryChangeable === true) &&
       opaque(delivery.handoffId) && opaque(delivery.state) && opaque(delivery.cancelSecret) &&
       (delivery.callback === undefined || (typeof delivery.callback === 'string' && validCallback(delivery.callback)));
   }
@@ -93,6 +94,8 @@
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
   const expiryRequestedMs = $derived(requestedExpiryMs(model?.immutable?.issuedAt, model?.immutable?.expirationTime));
+  // TC-2276: the CLI said it accepts a delegation longer than the time it asked for; without that the picker is shorter-only.
+  const expiryLonger = $derived(handoff?.request.expiryChangeable === true);
   // A choice after the preview is sealed would not be in what gets signed.
   const expiryEditable = $derived.by(() => phase === 'review' && !busy && !submitted);
   let selected = $state(new Set<string>());
@@ -337,7 +340,7 @@
       }
       const actions = selectedIds();
       if (!actions.length) throw new Error('Select at least one ability.');
-      const candidate = await post('authorize-sign-preview', { ticket, authorizationContextToken: contextToken, selectedActionIds: actions, ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAtCapped(expiryChoiceMs, siweExpiration(handoff.request.siwe)) }) }, ['signedMessage', 'previewApprovalToken']);
+      const candidate = await post('authorize-sign-preview', { ticket, authorizationContextToken: contextToken, selectedActionIds: actions, ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAtCapped(expiryChoiceMs, expiryLonger ? null : siweExpiration(handoff.request.siwe)) }) }, ['signedMessage', 'previewApprovalToken']);
       if (typeof candidate.previewApprovalToken !== 'string' || typeof candidate.signedMessage !== 'string') throw new Error('Missing sealed signing preview.');
       validatePreviewSelection(candidate, actions);
       previewToken = candidate.previewApprovalToken;
@@ -532,6 +535,9 @@
         listHeading="Choose which key signs this:"
         primaryHeading="Sign with your primary key:"
       />
+      {#if expiryLonger && expiryRequestedMs !== null}
+        <p class="text-xs text-surface-600">{expiryLongerNote(expiryRequestedMs)}</p>
+      {/if}
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each keyChoices[0].review.permissions as grant}
         <div class="rounded-lg border p-3 text-sm">
@@ -566,11 +572,14 @@
       <ApprovalExpiryControl
         requestedMs={expiryRequestedMs}
         chosenMs={expiryChoiceMs}
-        maxMs={expiryRequestedMs}
+        maxMs={expiryLonger ? null : expiryRequestedMs}
         disabled={!expiryEditable}
         onChange={(ms) => { if (expiryEditable) expiryChoiceMs = ms; }}
         endsAt={foldEndsAt}
       />
+      {#if expiryLonger && expiryRequestedMs !== null}
+        <p class="text-xs text-surface-600">{expiryLongerNote(expiryRequestedMs)}</p>
+      {/if}
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each model.permissions as grant}
         <div class="rounded-lg border p-3 text-sm">

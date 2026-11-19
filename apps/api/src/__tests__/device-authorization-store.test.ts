@@ -106,7 +106,7 @@ describe('Prisma device authorization store', () => {
     expect(result.status === 'approved' && JSON.stringify(result.relay)).toBe(encryptedResult);
   });
 
-  test('derives the lifetime of pending pre-TC-539 rows from their stored deadline, capped at 30 days', async () => {
+  test('derives the lifetime of pending pre-TC-539 rows from their stored deadline', async () => {
     const database = fakeDatabase();
     const store = createPrismaDeviceAuthorizationStore(database);
     const service = new DeviceAuthorizationService(store, {
@@ -120,8 +120,5 @@ describe('Prisma device authorization store', () => {
     // Pre-TC-539 rows: bare array, deadline = transaction deadline + TTL.
     Object.assign(row, { permissions: legacy });
     expect((await store.findById(transaction.transactionId))?.delegationTtlSeconds).toBe(7 * day);
-    // The old API allowed 90 days.
-    Object.assign(row, { delegationExpiresAt: new Date((row.transactionExpiresAt as Date).getTime() + 90 * day * 1000) });
-    expect((await store.findById(transaction.transactionId))?.delegationTtlSeconds).toBe(30 * day);
   });
 });

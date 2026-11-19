@@ -232,3 +232,32 @@ describe('prepared CLI handoff', () => {
     await expect(service.claim(input, 'owner')).rejects.toMatchObject({ code: 'prepared_expired' });
   });
 });
+
+// TC-2276 item 2: a CLI that accepts a longer signed expiry says so with `request.expiryChangeable: true`, strictly
+// the boolean true. The flag is stored with the handoff, so the server (not the preview body) is what decides.
+describe('prepared handoff expiry opt-in (TC-2276)', () => {
+  test('claims with expiryChangeable: true, and the stored request keeps it', async () => {
+    const { service, create } = setup();
+    const { ticket } = await create({ expiryChangeable: true });
+    expect(await service.expiryChangeable(ticket, 'owner')).toBe(true);
+  });
+
+  test('a handoff without the flag is not changeable', async () => {
+    const { service, create } = setup();
+    const { ticket } = await create();
+    expect(await service.expiryChangeable(ticket, 'owner')).toBe(false);
+  });
+
+  test('only the boolean true is accepted: false, strings, numbers and null are refused at claim', async () => {
+    const { create } = setup();
+    for (const value of [false, 'true', 1, 0, null, {}, []]) {
+      await expect(create({ expiryChangeable: value } as never), JSON.stringify(value)).rejects.toMatchObject({ code: 'invalid_request' });
+    }
+  });
+
+  test('another account cannot read the flag of a handoff it did not claim', async () => {
+    const { service, create } = setup();
+    const { ticket } = await create({ expiryChangeable: true });
+    await expect(service.expiryChangeable(ticket, 'stranger')).rejects.toMatchObject({ code: 'handoff_claimed' });
+  });
+});
