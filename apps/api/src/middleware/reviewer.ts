@@ -36,6 +36,9 @@ export function createReviewerRouteGuard(
         || session.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000 <= Date.now()) {
         return c.json({ error: 'Forbidden' }, 403);
       }
+      if (c.req.path.replace(/\/$/, '') === '/api/auth/oauth2/public-client'
+        && (c.req.path !== '/api/auth/oauth2/public-client' || c.req.queries('client_id')?.length !== 1
+          || c.req.query('client_id') !== binding.clientId)) return c.json({ error: 'Forbidden' }, 403);
       if (!captured) captureReviewer(binding, session.id, session.createdAt.getTime() + 3600_000);
       captured = true;
     }
