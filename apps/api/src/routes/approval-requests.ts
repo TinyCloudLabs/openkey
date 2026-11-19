@@ -273,6 +273,9 @@ export async function saveApprovalDelegation(
   if (signed && !renewalLeasesEnabled()) throw new ApprovalResultError('renewal_disabled', renewalUnavailableMessage('request', 'after-signing'), 400);
   if (signed && marker) {
     if (signed.userId !== userId) throw new ApprovalResultError('request_binding', 'Another account is approving this request', 409);
+    // TC-2789: on the managed path a save that fails after activation revokes the grant this signed lease names
+    // (delegate.ts), so resuming it could only hand over a revoked grant. Fail closed: the owner starts a new request.
+    if (signOwner) throw new ApprovalResultError('renewal_failed', 'Renewal failed. Start a new request.', 409);
     if (choice?.choice !== 'leased' || choice.leaseLifetimeSeconds !== signed.approvedLeaseLifetimeSeconds) {
       throw new ApprovalResultError('renewal_already_signed', 'Renewal is already signed for this request. Approve it with the same renewal length.', 409,
         { leaseLifetimeSeconds: signed.approvedLeaseLifetimeSeconds });
