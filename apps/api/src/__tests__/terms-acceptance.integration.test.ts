@@ -16,6 +16,7 @@ import type * as Terms from '../services/terms';
 import { mockModules } from './mock-module';
 import { NATIVE_DELEGATION_ENDPOINT_PATHS, OPENKEY_SESSION_PROOF_HEADER } from '../services/native-delegation/public-protocol';
 import { credentialHash } from '../services/native-delegation/session-proof';
+import { stepUpCodeDigest } from '../services/email-code-storage';
 
 const root = resolve(import.meta.dir, '../../../..');
 if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
@@ -320,7 +321,8 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
       expect(await sent.text()).not.toContain('terms_required');
       await prisma.verification.deleteMany({ where: { identifier: stepUpIdentifier(sessionId, email, 'delete_account') } });
       await prisma.verification.create({ data: {
-        id: randomUUID(), identifier: stepUpIdentifier(sessionId, email, 'delete_account'), value: '123456:0',
+        id: randomUUID(), identifier: stepUpIdentifier(sessionId, email, 'delete_account'),
+        value: `${stepUpCodeDigest(stepUpIdentifier(sessionId, email, 'delete_account'), '123456')}:0`,
         expiresAt: new Date(Date.now() + 300_000),
       } });
       const verified = await send(cookie, 'POST', '/api/account/step-up/email-otp/verify', { purpose: 'delete_account', code: '123456' });
