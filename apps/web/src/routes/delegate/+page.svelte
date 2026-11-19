@@ -6,6 +6,9 @@
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
+  import SocialButtons from '$lib/components/auth/social-buttons.svelte';
+  import { loadConfiguredSocialProviders, signInWithSocialPopup, type SocialProviderId } from '$lib/social-auth';
+  import { socialProviderName } from '$lib/social-continuation';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
   import {
     delegateFailureText,
@@ -140,6 +143,8 @@
   let keysLoaded = $state(false);
   let initialized = $state(false);
   let signingIn = $state(false);
+  let socialProvider = $state<SocialProviderId | null>(null);
+  let socialProviders = $state<SocialProviderId[]>([]);
   let delegating = $state(false);
   let done = $state(false);
   let pasteCode = $state('');
@@ -1649,6 +1654,25 @@
     }
   }
 
+  // Google and Apple sign in through a popup, so this page and the #fragment on its link stay in place. The popup
+  // asks for any new-account or existing-account choice itself and reports a choice that sends the person back to
+  // email or passkey as an error line, shown here like the passkey and email failures.
+  async function signInWithSocial(provider: SocialProviderId) {
+    socialProvider = provider;
+    error = '';
+    try {
+      await signInWithSocialPopup(provider);
+    } catch (e: any) {
+      error = e.message || `${socialProviderName(provider)} sign-in failed`;
+    } finally {
+      socialProvider = null;
+    }
+  }
+
+  onMount(async () => {
+    socialProviders = await loadConfiguredSocialProviders().catch(() => []);
+  });
+
   async function activateWithHost(
     targetHost: string,
     delegationHeader: { Authorization: string }
@@ -1824,10 +1848,20 @@
             </div>
           {/if}
 
-          <Button onclick={() => { window.location.href = emailSignInHref; }} disabled={signingIn} class="w-full rounded-xl">
+          <Button onclick={() => { window.location.href = emailSignInHref; }} disabled={signingIn || socialProvider !== null} class="w-full rounded-xl">
             Continue with email
           </Button>
-          <Button onclick={signInWithPasskey} variant="secondary" disabled={signingIn} class="mt-3 w-full rounded-xl">
+          {#if socialProviders.length > 0}
+            <div class="mt-3 w-full">
+              <SocialButtons
+                providers={socialProviders}
+                loadingProvider={socialProvider}
+                disabled={signingIn || socialProvider !== null}
+                onsignin={signInWithSocial}
+              />
+            </div>
+          {/if}
+          <Button onclick={signInWithPasskey} variant="secondary" disabled={signingIn || socialProvider !== null} class="mt-3 w-full rounded-xl">
             {signingIn ? 'Signing in…' : 'Use a passkey instead'}
           </Button>
         </div>
