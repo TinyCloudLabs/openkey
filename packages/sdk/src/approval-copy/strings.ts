@@ -113,6 +113,18 @@ export const DONE = {
       requester: '{requester}',
     },
   },
+  /**
+   * How the app's TinyCloud space came out, in a quiet box under the line. `{space}` is the space's short name.
+   * `failed` comes with the server's reason in a fold named `details`.
+   */
+  spaceNote: {
+    ready: 'Your ‘{space}’ space in TinyCloud is ready.',
+    pending: 'Your ‘{space}’ space in TinyCloud is being set up. This can take a minute. The app will continue when it\'s ready.',
+    unknown: 'OpenKey couldn\'t confirm that your ‘{space}’ space in TinyCloud is set up. The app will tell you what to do.',
+    failed: 'Setting up your ‘{space}’ space didn\'t finish. The app will tell you what to do.',
+    notReady: 'Your ‘{space}’ space in TinyCloud isn\'t set up yet. The app will tell you what to do.',
+    details: 'Details',
+  },
 } as const;
 
 /** Where a pasted code goes. Only the terminal has wording today. */
@@ -155,6 +167,8 @@ export const CODE = {
     line: 'Codes last 5 minutes and this one wasn’t used, so no access was handed over. Run the command again to get a new request.',
     box: 'Expired',
   },
+  /** Read out once, when a minute is left. */
+  oneMinuteLeft: '1 minute left to use this code.',
 } as const;
 
 /** /device. */
