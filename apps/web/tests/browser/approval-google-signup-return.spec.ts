@@ -54,7 +54,10 @@ async function mockApprovalAndGoogleSignup(page: Page) {
     if (pathname === '/api/auth/social/continuation') return json({ providerId: 'google', name: 'New User', outcome: 'new_account', email: 'new@example.test', isPrivateEmail: false });
     if (pathname === '/api/auth/social/confirm') {
       signedIn = true;
-      return json({ token: 'new-account-session', user: { id: 'new-user', email: 'new@example.test' } });
+      return route.fulfill({
+        headers: { 'set-auth-token': 'new-account-session' },
+        json: { token: 'new-account-session', user: { id: 'new-user', email: 'new@example.test' } },
+      });
     }
     if (pathname === '/api/keys') return json({ keys: [{ id: 'key-1', address, publicKey: '0x', keyIndex: 0, label: null, keyType: 'MANAGED', isPrimary: true, createdAt: new Date().toISOString() }] });
     if (pathname === '/api/auth/passkey/list-user-passkeys') return json([]);
@@ -85,8 +88,8 @@ test('Google signup from an approval link returns a new user to its consent scre
   });
 
   await page.goto(path + fragment);
-  await expect(page.getByRole('button', { name: 'Continue with email' })).toBeVisible();
-  await page.getByRole('link', { name: 'Register', exact: true }).click();
+  await expect(page.getByRole('link', { name: 'Continue with email' })).toBeVisible();
+  await page.getByRole('link', { name: 'Create an account', exact: true }).click();
   await expect(page).toHaveURL(/\/auth\/register\?/);
   expect(new URL(page.url()).searchParams.get('returnTo')).toBe(path);
   const popup = page.waitForEvent('popup');
