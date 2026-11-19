@@ -9,6 +9,8 @@ test('confirmed popup sign-out revokes even after losing its opener', async ({ p
     if (path === '/api/auth/sign-out') {
       revoked = true;
       await route.fulfill({ json: { success: true } });
+    } else if (path === '/api/auth/session-token') {
+      await route.fulfill({ json: { token: 'synthetic-session.sig' } });
     } else if (path === '/api/auth/get-session') {
       if (revoked) verified = true;
       await route.fulfill({ json: revoked ? null : { session: { token: 'synthetic-session' } } });
