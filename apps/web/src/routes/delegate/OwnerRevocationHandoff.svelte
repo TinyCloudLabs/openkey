@@ -238,8 +238,13 @@
         if (!Array.isArray(accounts) || !accounts.every(value => typeof value === 'string')) throw new Error('Owner wallet returned invalid accounts.');
         const account = accounts.find(value => value.toLowerCase() === key!.address.toLowerCase());
         if (!account) throw new OwnerMessageError(fill(STOPS.S32.lines.walletLacks, { short: shortWallet(key.address) }));
-        const signed = await provider.request({ method: 'personal_sign', params: [siwe, account] });
-        if (typeof signed !== 'string') throw new Error('Owner wallet did not return a signature.');
+        let signed: unknown;
+        try {
+          signed = await provider.request({ method: 'personal_sign', params: [siwe, account] });
+        } catch {
+          throw new OwnerMessageError(STOPS.S32.lines.walletDeclined);
+        }
+        if (typeof signed !== 'string') throw new OwnerMessageError(STOPS.S32.lines.walletDeclined);
         externalSignature = signed;
       }
       submitted = true;
