@@ -7,9 +7,6 @@ import {
   type PublicKeyCredentialRequestOptionsJSON,
 } from '@simplewebauthn/browser';
 
-/** Whether Settings shows the "Passkey for approvals" card. */
-export const PASSKEY_APPROVAL_SETTING_SHOWN = false;
-
 export type PasskeyApprovalMode = 'ALWAYS' | 'SENSITIVE' | 'NEVER';
 
 export interface PasskeyApprovalSetting {
@@ -41,6 +38,42 @@ export function lowersPasskeyApprovalMode(from: PasskeyApprovalMode, to: Passkey
 export async function confirmWithPasskey(offer: ApprovalPasskeyOffer): Promise<ApprovalPasskeyAssertion> {
   const response = await startAuthentication({ optionsJSON: offer.options });
   return { challengeToken: offer.challengeToken, response };
+}
+
+/** What an approval screen gets from the API before Approve: whether the tap needs the passkey, with its challenge. */
+export type ApprovalPasskeyNeed = { required: false } | ({ required: true } & ApprovalPasskeyOffer);
+
+/** The browser's passkey prompt was dismissed or failed. Nothing reached the API, so the same offer can be tried again. */
+export class PasskeyPromptError extends Error {
+  constructor(cause: unknown) {
+    super(passkeyApprovalCopy.cancelled, { cause });
+    this.name = 'PasskeyPromptError';
+  }
+}
+
+/**
+ * The `passkeyAssertion` an approval sends: undefined when the setting doesn't ask, else the answer to the offer.
+ * Call it straight from the Approve tap, before any other await, so the browser still sees the gesture.
+ * A dismissed or failed prompt throws `PasskeyPromptError`, whose message is the text to show.
+ */
+export async function answerApprovalPasskey(
+  need: ApprovalPasskeyNeed | null | undefined,
+): Promise<ApprovalPasskeyAssertion | undefined> {
+  if (!need?.required) return undefined;
+  try {
+    return await confirmWithPasskey(need);
+  } catch (error) {
+    throw new PasskeyPromptError(error);
+  }
+}
+
+/**
+ * Did the API refuse this approval over the passkey? Its message says to tap Approve again; the challenge is spent,
+ * so the screen fetches a new offer before the next tap.
+ */
+export function isPasskeyApprovalRefusal(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && PASSKEY_REFUSAL_CODES[code] === true;
 }
 
 // TC-3442 texts. Any wording change goes back to product sign-off.
