@@ -1,4 +1,7 @@
 ---
 "@openkey/capability-review": patch
 ---
-Describe secret catalog and vault sentences without "your" or "requested" when the owner is unknown, and with "another user's vault" when the vault belongs to someone else. Wording for the signer's own secrets is unchanged.
+
+Secret and vault permissions say "your" only for your own secrets. For an unknown owner they use no possessive, and a vault that belongs to someone else reads "another user's vault".
+
+Details: TC-3157
