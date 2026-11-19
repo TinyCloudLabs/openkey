@@ -1,5 +1,5 @@
-// TC-3441: a 409 is read by its code before its status, and the two codes that
-// had no sentence read as the permission-request refusal.
+// TC-3441: a 409 is read by its code before its status, and `delegation_prepare_failed`
+// and `signed_exceeds_request` read as the permission-request refusal.
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
 import { delegateResponseFailureText } from './delegate-failure-text';
