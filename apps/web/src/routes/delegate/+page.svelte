@@ -1592,7 +1592,8 @@
       }
       if (!response.ok) {
         const body: unknown = await response.json().catch(() => null);
-        const code = typeof body === 'object' && body !== null && 'code' in body ? body.code : undefined;
+        // The device router puts its code in `error`; other routes use `code`.
+        const code = typeof body !== 'object' || body === null ? undefined : 'code' in body ? body.code : 'error' in body ? body.error : undefined;
         throw new DeviceRelayDeliveryError(response.status, code);
       }
       done = true;
