@@ -16,6 +16,12 @@
   import { expiryAtCapped, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import ApprovalExpiryControl from '$lib/components/signing/approval-expiry-control.svelte';
   import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
+  import Loader from '$lib/components/approval/loader.svelte';
+  import SignInCard from '$lib/components/approval/sign-in-card.svelte';
+  import SignedInCard from '$lib/components/approval/signed-in-card.svelte';
+  import Slip from '$lib/components/approval/slip.svelte';
+  import { focusHeading } from '$lib/components/approval/focus-heading';
+  import { DONE } from '@openkey/sdk/approval-copy';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   const session = authClient.useSession();
@@ -101,6 +107,7 @@
   let replyFailureStatus = $state<number | null>(null);
   let busy = $state(false);
   let loginRequired = $state(false);
+  let cancelled = $state(false);
   let loaded = $state(false);
   let submitted = $state(false);
   let signingIn = $state(false);
@@ -162,7 +169,7 @@
   function cancelPending(): void {
     pending = null;
     clearPending();
-    error = 'Approval cancelled. Restart the CLI command for a new sign-in.';
+    cancelled = true;
   }
 
   function expireHandoff(): void {
@@ -430,10 +437,39 @@
     } catch (cause) { error = cause instanceof Error ? cause.message : 'Passkey sign-in failed'; }
     finally { signingIn = false; }
   }
+  // What the page shows: a loader, the sign-in card, the signed-in card, or the request itself.
+  const ended = $derived(initialized && (cancelled || (!!error && !handoff && !pending)));
+  const loaderOn = $derived(
+    !initialized ||
+    (!ended && ($session.isPending || (!!$session.data && !loginRequired && !handoff && !code && (busy || pending !== null)))),
+  );
+  const loaderLit = $derived(!initialized || $session.isPending ? 'session' : 'request');
+  const cardOn = $derived(initialized && !ended && !$session.isPending && !$session.data);
+  const signedInOn = $derived(initialized && !ended && !$session.isPending && !!$session.data && loginRequired);
+  const slipAt = $derived(loaderOn ? 0 : cardOn || signedInOn ? 1 : cancelled ? 3 : handoff && phase === 'done' ? (delivered ? 4 : 3) : 2);
+  const slipLast = $derived(handoff && phase === 'done' && !delivered && !cancelled ? 'code' : 'terminal');
 </script>
 
-<div class="min-h-screen bg-[#fafafa] flex items-center justify-center px-4 py-8">
-  <main class="w-full max-w-xl rounded-xl border border-surface-200 bg-white p-6 shadow-sm space-y-5">
+<Slip at={slipAt} last={slipLast} center={loaderOn}>
+  {#if loaderOn}
+    <Loader phases={['session', 'request']} lit={loaderLit} />
+  {:else if cardOn}
+    <SignInCard
+      emailHref={`/auth/login?redirect=${encodeURIComponent('/delegate?transportVersion=2')}`}
+      registerHref={`/auth/register?returnTo=${encodeURIComponent('/delegate?transportVersion=2')}`}
+      {error}
+      {signingIn}
+      onPasskey={signIn}
+      onBegin={() => { error = ''; }}
+      onCancel={cancelPending}
+    />
+  {:else if signedInOn}
+    <SignedInCard onReview={() => { loginRequired = false; }} onCancel={cancelPending} />
+  {:else if cancelled}
+    <h1 use:focusHeading class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950">{DONE.cancelled.heading}</h1>
+    <p class="m-0 text-pretty">{DONE.cancelled.line}</p>
+  {:else}
+    <div class="space-y-5">
     <header><h1 class="text-xl font-semibold text-surface-900">Prepared CLI sign-in</h1></header>
     {#if error}<p role="alert" class="rounded-lg bg-red-50 p-3 text-red-800">{error}</p>{/if}
     {#if replyFailureStatus !== null}
@@ -446,22 +482,8 @@
         </details>
       </div>
     {/if}
-    {#if !initialized}
-      <p>Loading prepared sign-in…</p>
-    {:else if error && !handoff && !pending}
+    {#if error && !handoff && !pending}
       <p>Start a new CLI sign-in to review a new request.</p>
-    {:else if $session.isPending}
-      <p>Checking your OpenKey account…</p>
-    {:else if !$session.data}
-      <p>Sign in to review this request.</p>
-      <a href={`/auth/login?redirect=${encodeURIComponent('/delegate?transportVersion=2')}`}>Continue with email</a>
-      <button disabled={signingIn} onclick={signIn}>Use a passkey instead</button>
-      <button onclick={cancelPending}>Cancel</button>
-    {:else if loginRequired}
-      <p>Sign-in completed in this tab. Continue to review the prepared request.</p>
-      <button onclick={() => { loginRequired = false; }}>Continue to approval</button>
-      <button onclick={cancelPending}>Cancel</button>
-    {:else if busy && !handoff && !code}<p>Loading prepared sign-in…</p>
     {:else if handoff && phase === 'done'}
       {#if delivered}<p role="status">CLI accepted your sign-in. You can close this window.</p><CloseTabButton />
       {:else}
@@ -558,5 +580,6 @@
       {/if}
       <button disabled={busy || submitted} onclick={cancel}>Cancel</button>
     {/if}
-  </main>
-</div>
+    </div>
+  {/if}
+</Slip>
