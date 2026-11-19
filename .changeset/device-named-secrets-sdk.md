@@ -2,6 +2,6 @@
 "@openkey/sdk": patch
 ---
 
-Device sign-in can request access to named secrets and list secret names.
+`@openkey/sdk/approval-copy` has the device sign-in labels for named secrets (Read, Write, List) and the secret-names line.
 
 Details: TC-3480
