@@ -24,6 +24,7 @@ async function serve(context: BrowserContext) {
     const path = new URL(route.request().url()).pathname;
     const json = (body: unknown) => route.fulfill({ json: body });
     if (path === '/api/auth/get-session') return json({ session: { id: 'layout-session', userId: 'layout-user', expiresAt: new Date(Date.now() + 3600_000).toISOString() }, user: { id: 'layout-user', email: 'owner@example.test', name: 'Owner' } });
+    if (path === '/api/organizations') return json({ organizations: [{ id: 'layout-organization', role: 'ADMIN' }] });
     if (path === '/api/keys') return json({ keys: [key] });
     if (path === '/api/keys/layout-key') return json({ key });
     if (path === `/api/approval-requests/${id}/load`) return json({ requestId: id, approved: false, expiresAt: new Date(Date.now() + 3600_000).toISOString(), request: { targetDid: 'did:key:requester', targetPublicJwk: jwk, nodeOrigin: 'https://node.tinycloud.xyz', permissions, grantLifetimeSeconds: 3600 } });

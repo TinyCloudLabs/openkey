@@ -153,7 +153,8 @@ test.describe('TC-703 primary key picker', () => {
     await page.goto(`${noOwner}&callback=${encodeURIComponent('http://127.0.0.1:47123/callback')}`);
     await keyButton(page, 'Key 0').click();
     await approve(page).click();
-    await expect.poll(() => delivered).not.toBeNull();
+    await expect(page.getByText('You can close this window and return to the CLI.')).toBeVisible();
+    expect(delivered).not.toBeNull();
     expect(delivered!.primary).toBe(false);
     expect(delivered!.requestedSpaces).toEqual(requestedSpaces);
     expect(delivered!.jwk).toEqual(fullJwk);
@@ -176,5 +177,49 @@ test.describe('TC-703 primary key picker', () => {
     await expect(keyButton(page, 'Key 1')).toBeDisabled();
     await expect(approve(page)).toHaveCount(0);
     expect(prepared).toEqual([]);
+  });
+});
+
+test.describe('Close button on the Authenticated page', () => {
+  const callback = 'http://127.0.0.1:47123/callback';
+  async function openAuthenticated(page: Page) {
+    await mock(page, [primary]);
+    await page.route('**/api/delegate/prepare', route => json(route, 200, preparedFor(primary.address)));
+    let delivered = false;
+    await page.route(`${callback}**`, (route) => {
+      if (route.request().method() === 'POST') delivered = true;
+      return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type' }, body: '{"success":true}' });
+    });
+    await page.goto(`${noOwner}&${new URLSearchParams({ callback })}`);
+    await approve(page).click();
+    await expect.poll(() => delivered).toBe(true);
+    await expect(page.getByRole('heading', { name: 'Authenticated' })).toBeVisible();
+  }
+
+  test('the browser closes the window: Close calls window.close and the page stays as it is', async ({ page }) => {
+    await page.addInitScript(() => {
+      let closed = false;
+      Reflect.set(window, '__closeCalls', 0);
+      window.close = () => { Reflect.set(window, '__closeCalls', Number(Reflect.get(window, '__closeCalls')) + 1); closed = true; };
+      Object.defineProperty(window, 'closed', { get: () => closed });
+    });
+    await openAuthenticated(page);
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => Number(Reflect.get(window, '__closeCalls')))).toBe(1);
+    // The window is gone, so nothing else is shown or needed; outlast the 300 ms check.
+    await page.waitForTimeout(600);
+    await expect(page.getByText('Your browser kept this tab open.')).toHaveCount(0);
+  });
+
+  test('the browser refuses (a tab the owner opened): the button is replaced by a status line and focus moves to it', async ({ page }) => {
+    await openAuthenticated(page);
+    // A top-level tab the owner opened: the browser ignores window.close().
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    const refusal = page.getByRole('status').filter({ hasText: 'Your browser kept this tab open. Close it from your browser.' });
+    await expect(refusal).toBeVisible();
+    await expect(refusal).toBeFocused();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Close', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Authenticated' })).toBeVisible();
   });
 });

@@ -1,13 +1,15 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
 import {
-  EXPIRY_PRESETS,
   LONG_EXPIRY_MS,
   LONG_EXPIRY_WARNING,
+  ONCE_DEFAULT_EXPIRY_MS,
   expiryAt,
   formatExpiry,
+  onceDefaultExpiryMs,
   parseExpiry,
   requestedExpiryMs,
+  approvalRequestStartSeconds,
 } from './approval-expiry';
 
 const S = 1000;
@@ -107,15 +109,6 @@ describe('requestedExpiryMs', () => {
 });
 
 describe('presets, warning and expiry time', () => {
-  test('presets are 1 hr, 24 hr, 7d, 30d', () => {
-    expect(EXPIRY_PRESETS).toEqual([
-      { label: '1 hr', ms: H },
-      { label: '24 hr', ms: 24 * H },
-      { label: '7d', ms: 7 * D },
-      { label: '30d', ms: 30 * D },
-    ]);
-  });
-
   test('the warning threshold is more than one year', () => {
     expect(LONG_EXPIRY_MS).toBe(365 * D);
     expect(LONG_EXPIRY_WARNING).toBe("That's a long time. OpenKey can't cancel it early once you approve.");
@@ -123,15 +116,6 @@ describe('presets, warning and expiry time', () => {
 
   test('expiryAt adds the duration to now, as an ISO string', () => {
     expect(expiryAt(7 * D, Date.UTC(2026, 9, 31))).toBe('2026-11-07T00:00:00.000Z');
-  });
-});
-
-describe('expiryLimitNote', () => {
-  test('names the longest time the request allows and how to get longer', async () => {
-    const { expiryLimitNote } = await import('./approval-expiry');
-    expect(expiryLimitNote(7 * D)).toBe(
-      'This app asked for up to 7d. To allow longer, start the request again with a longer expiry.',
-    );
   });
 });
 
@@ -155,5 +139,37 @@ describe('expiryAtCapped', () => {
     expect(expiryAtCapped(7 * D, '2026-11-05T00:00:00.000Z', now)).toBe('2026-11-05T00:00:00.000Z');
     expect(expiryAtCapped(H, null, now)).toBe('2026-10-31T01:00:00.000Z');
     expect(expiryAtCapped(H, 'not a time', now)).toBe('2026-10-31T01:00:00.000Z');
+  });
+});
+
+describe('onceDefaultExpiryMs (TC-3111)', () => {
+  test('a one-time request that asks for more than an hour starts at one hour', () => {
+    expect(ONCE_DEFAULT_EXPIRY_MS).toBe(H);
+    expect(onceDefaultExpiryMs(true, H + S)).toBe(H);
+    expect(onceDefaultExpiryMs(true, 7 * D)).toBe(H);
+  });
+
+  test('an hour or less, an unknown request, or a request that is not one-time keeps what the app asked for', () => {
+    expect(onceDefaultExpiryMs(true, H)).toBeNull();
+    expect(onceDefaultExpiryMs(true, 30 * M)).toBeNull();
+    expect(onceDefaultExpiryMs(true, null)).toBeNull();
+    expect(onceDefaultExpiryMs(false, 7 * D)).toBeNull();
+  });
+});
+
+describe('approvalRequestStartSeconds', () => {
+  test('a request that suggests nothing starts at one hour, however long its signed maximum', () => {
+    expect(approvalRequestStartSeconds(7 * 86_400)).toBe(3600);
+    expect(approvalRequestStartSeconds(8000 * 365 * 86_400)).toBe(3600);
+    expect(approvalRequestStartSeconds(7 * 86_400, 0)).toBe(3600);
+  });
+  test('a request for less than an hour starts at what it asked for', () => {
+    expect(approvalRequestStartSeconds(600)).toBe(600);
+    expect(approvalRequestStartSeconds(7 * 86_400, 1800)).toBe(1800);
+  });
+  test('a suggestion above an hour is not used as the start, and one above the maximum is ignored', () => {
+    expect(approvalRequestStartSeconds(30 * 86_400, 7 * 86_400)).toBe(3600);
+    expect(approvalRequestStartSeconds(7200, 30 * 86_400)).toBe(3600);
+    expect(approvalRequestStartSeconds(900, 30 * 86_400)).toBe(900);
   });
 });
