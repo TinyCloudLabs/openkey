@@ -40,10 +40,20 @@ export function createInternalAccountDeletionsRouter(getDatabase: () => AccountD
       if (since === undefined || Number.isNaN(since.getTime())) return c.json({ error: 'Invalid since' }, 400);
     }
 
-    // Strictly after `since`. A caller passes the last deletedAt it saw minus a small overlap and drops receipts
-    // it already holds by receiptId; a full page means more may follow.
+    // The cursor is (deletedAt, id). With `since` alone: receipts strictly after that time. With `since` and
+    // `after_id`: receipts strictly after that (deletedAt, id) pair, so a page that cuts between receipts sharing
+    // a deletedAt loses none. A caller continues from the last row it received; a full page means more may follow.
+    const afterId = c.req.query('after_id');
+    if (afterId !== undefined && (since === undefined || afterId.length === 0 || afterId.length > 64)) {
+      return c.json({ error: 'Invalid after_id' }, 400);
+    }
+    const where = since === undefined
+      ? {}
+      : afterId === undefined
+        ? { deletedAt: { gt: since } }
+        : { OR: [{ deletedAt: { gt: since } }, { deletedAt: since, id: { gt: afterId } }] };
     const receipts = await getDatabase().accountDeletionReceipt.findMany({
-      where: since ? { deletedAt: { gt: since } } : {},
+      where,
       orderBy: [{ deletedAt: 'asc' }, { id: 'asc' }],
       take: ACCOUNT_DELETIONS_PAGE_SIZE,
     });

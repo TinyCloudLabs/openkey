@@ -1,5 +1,7 @@
 // TC-3353: the owner digest and the receipt write, without a database.
 import { describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
+import { ensureEip55 } from '@tinycloud/node-sdk-wasm';
 import { ownerDigestFor, recordAccountDeletionReceipt } from '../services/account-deletion-receipt';
 
 // Computed independently: printf %s 'did:pkh:eip155:1:0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045' | sha256sum
@@ -14,6 +16,15 @@ describe('ownerDigestFor', () => {
 
   test('a lowercase stored address gives the same digest as its EIP-55 form', () => {
     expect(ownerDigestFor(CHECKSUM_ADDRESS.toLowerCase())).toBe(CHECKSUM_DIGEST);
+  });
+
+  // The vector the node mirrors: a lowercase-stored address, the exact DID string it is hashed as, and the digest.
+  test('test vector: lowercase address, exact DID string, digest', () => {
+    const stored = '0xd8da6bf26964af9d7eed9e03e53415d37aa96045';
+    const did = 'did:pkh:eip155:1:0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045';
+    expect(`did:pkh:eip155:1:${ensureEip55(stored)}`).toBe(did);
+    expect(createHash('sha256').update(did).digest('hex')).toBe('3ddb4996960256d28059a5e2d332bc2de767ad0d85b107f37dea23986d491530');
+    expect(ownerDigestFor(stored)).toBe('3ddb4996960256d28059a5e2d332bc2de767ad0d85b107f37dea23986d491530');
   });
 });
 
