@@ -30,7 +30,7 @@ const EXO_BRANDING = { clientId: 'exo-native', name: 'Exo', icon: 'https://tinyc
 const sessionBody = { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3600000).toISOString() }, user: { id: 'u', email: 'sam@example.test', name: 'Sam' } };
 
 test.describe('compact native consent', () => {
-  test.use({ viewport: { width: 390, height: 844 } });
+  test.use({ viewport: { width: 390, height: 844 }, timezoneId: 'America/New_York' });
 
   test('shows one sentence, collapsed details, re-prepares optional actions and echoes the approved revision', async ({ page }) => {
     const calls: Array<{ path: string; body: any }> = [];
@@ -60,7 +60,7 @@ test.describe('compact native consent', () => {
     await expect(page.locator('.nb-icon')).toHaveCSS('border-radius', '22.5%');
     await expect(page.getByRole('heading', { name: 'Exo wants access' })).toHaveCSS('font-size', '32px');
     await expect(page.getByText('Exo will be able to read and save your Exo data.')).toBeVisible();
-    await expect(page.getByText('Access lasts up to 30 days and renews automatically while you use Exo.')).toBeVisible();
+    await expect(page.getByText(/^Access lasts up to 30 days, until [A-Z][a-z]{2} \d{1,2}(, \d{4})?, and renews automatically while you use Exo\.$/)).toBeVisible();
     await expect(page.getByText(/First sign-in: this also lets your TinyCloud node host your data/)).toBeVisible();
     await expect(page.getByText('Signed in as')).toContainText('sam@example.test');
     await expect(page.getByRole('button', { name: 'Not you?' })).toHaveCount(0);
@@ -100,6 +100,26 @@ test.describe('compact native consent', () => {
     expect(approve).toMatchObject({ revision: 2, digest: 'digest-2', hostSiwe: 'host bytes', sessionSiwe: siwe(false) });
     await expect.poll(() => calls.some(c => c.path === '/api/auth/oauth2/consent' && c.body.accept === true)).toBe(true);
     await page.waitForURL('https://example.test/callback?code=code');
+  });
+
+  test('a lifetime that is not a whole number of days reads in whole days with its end day, never in hours', async ({ page }) => {
+    await page.route('**/api/**', route => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/api/auth/get-session') return json(route, sessionBody);
+      if (path === '/api/oauth/tinycloud/clients/exo-native/branding') return json(route, EXO_BRANDING);
+      if (path.endsWith('/prepare')) {
+        return json(route, { ...base, grantLifetimeSeconds: 700 * 3600, revision: 1, digest: 'digest-1', sessionSiwe: siwe(true), selectedActionKeys: selected });
+      }
+      return json(route, { error: `unmocked ${path}` }, 404);
+    });
+    await page.route('https://tinycloud.chat/**', route => route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>' }));
+    await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
+
+    await expect(page.getByText(/^Access lasts up to 30 days, until [A-Z][a-z]{2} \d{1,2}(, \d{4})?, and renews automatically while you use Exo\.$/)).toBeVisible();
+    await expect(page.getByText(/700 hours|29 days/)).toHaveCount(0);
+    // The Expires row in Details is the owner's own date and time with its zone (the exact message below it keeps its own timestamp).
+    await page.getByText('Details', { exact: true }).click();
+    await expect(page.getByText('Oct 7, 2026, 1:00 AM EDT')).toBeVisible();
   });
 
   test('a failed branding fetch keeps the dark shell and the consent still works', async ({ page }) => {

@@ -59,9 +59,10 @@ import { betterAuthLog, log, logError } from './log';
 import { withReviewerDatabase } from './services/reviewer-database';
 import { reviewerAuth } from './services/reviewer-auth';
 import { REVIEWER_MAX_SECONDS, capturedReviewer, reviewerActive, reviewerForUser } from './services/reviewer-accounts';
+import { hasAcceptedTerms, termsRequired } from './services/terms';
 import { capSessionRefresh } from './services/session-cap';
 import { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS } from './services/session-lifetime';
-import { renewalLeaseSignOutPlugin } from './services/renewal-lease-sign-out';
+import { signInLeaseSignOutPlugin } from './services/signin-lease-sign-out';
 
 export const prisma: PrismaClient = createPrismaClient();
 const tee = createTeeClient();
@@ -269,7 +270,12 @@ function withMcpAccessTokenLifetime<T extends ReturnType<typeof oauthProvider>>(
   const cappedLifetime = (seconds: number) => {
     const reviewer = capturedReviewer();
     if (!reviewer) return seconds;
-    const remaining = Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
+    // Native provider tokens use an integral iat sampled before this getter.
+    // Avoid subtracting the fractional second twice while keeping exp <= the
+    // source deadline (the database adapter also caps every row).
+    const remaining = reviewer.store === 'apple'
+      ? Math.floor((reviewer.deadline ?? Date.now()) / 1000) - Math.floor(Date.now() / 1000)
+      : Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
     return Math.max(0, Math.min(REVIEWER_MAX_SECONDS, seconds, remaining));
   };
   Object.defineProperty(plugin.options, 'accessTokenExpiresIn', {
@@ -368,8 +374,8 @@ export const auth = betterAuth({
         }),
       },
     },
-    // TC-2946: signing out stops the renewal leases approved under the sessions it ends.
-    renewalLeaseSignOutPlugin(prisma),
+    // An app signing out of its OpenKey session stops that sign-in's own renewal lease, and nothing else.
+    signInLeaseSignOutPlugin(prisma),
     passkeyFreshnessPlugin,
     // TC-1198: passkey enrolment and removal need a fresh step-up.
     passkeyEnrolmentPlugin(prisma, (headers): Promise<ResolvedSession | null> => auth.api.getSession({ headers })),
@@ -454,6 +460,14 @@ export const auth = betterAuth({
       requestUriResolver: ({ requestUri, clientId }) => resolveRequestUri(prisma, requestUri, clientId),
       loginPage: `${origin}/auth/login`,
       consentPage: `${origin}/oauth/consent`,
+      // TC-3232: an account that has not accepted the current Terms is sent to the Terms screen before
+      // consent or a code, and resumes with POST /oauth2/continue {postLogin: true}.
+      postLogin: {
+        page: `${origin}/auth/terms`,
+        shouldRedirect: async ({ user }: { user: { id: string } }) => !await hasAcceptedTerms(prisma, user.id),
+        // Consents are not scoped by a reference; the provider's type requires the hook.
+        consentReferenceId: () => undefined,
+      },
       allowDynamicClientRegistration: dynamicClientRegistrationEnabled(),
       allowUnauthenticatedClientRegistration: dynamicClientRegistrationEnabled(),
       validAudiences: oauthValidAudiences(baseURL),
@@ -473,6 +487,12 @@ export const auth = betterAuth({
         if (user && (await prisma.user.findUnique({ where: { id: user.id }, select: { lockedAt: true } }))?.lockedAt) {
           throw new APIError('BAD_REQUEST', { error: 'invalid_grant', error_description: 'The account is locked' });
         }
+        // TC-3232: no grant issues tokens until the account accepts the Terms. This runs before the provider
+        // rotates a refresh token, so a refused refresh leaves the token usable once the account accepts.
+        if (user && !await hasAcceptedTerms(prisma, user.id)) {
+          const { error_description, terms_url } = termsRequired();
+          throw new APIError('BAD_REQUEST', { error: 'invalid_grant', error_description, terms_url });
+        }
         if (user) {
           const reviewer = await reviewerForUser(prisma, user.id);
           if (reviewer) {
@@ -481,7 +501,8 @@ export const auth = betterAuth({
               throw new APIError('BAD_REQUEST', { error: 'invalid_grant' });
             }
             const source = await prisma.session.findFirst({
-              where: { id: captured.sessionId, userId: user.id, reviewerEpoch: captured.epoch, expiresAt: { gt: new Date() } },
+              where: { id: captured.sessionId, userId: user.id, reviewerEpoch: captured.epoch, expiresAt: { gt: new Date() },
+                createdAt: { gt: new Date(Date.now() - REVIEWER_MAX_SECONDS * 1000) } },
             });
             if (!source) throw new APIError('BAD_REQUEST', { error: 'invalid_grant' });
             await prisma.reviewerAccount.updateMany({

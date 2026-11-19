@@ -61,11 +61,11 @@ const EMAILS: Record<StepUpPurpose, { subject: string; html: (code: string) => s
   },
   passkey_register: {
     subject: 'Your code to add a passkey to your OpenKey account',
-    html: (code) => `<p>Use this code to add a new passkey to your OpenKey account:</p><p>${code}</p><p>It expires in 5 minutes. If you did not request this, do not share it and ignore this email.</p>`,
+    html: (code) => `<p>Use this code to add a new passkey to your OpenKey account:</p><p>${code}</p><p>It expires in 5 minutes. If you didn't ask for this, don't share the code. You can ignore this email.</p>`,
   },
   passkey_remove: {
     subject: 'Your code to remove a passkey from your OpenKey account',
-    html: (code) => `<p>Use this code to remove a passkey from your OpenKey account:</p><p>${code}</p><p>It expires in 5 minutes. If you did not request this, do not share it and ignore this email.</p>`,
+    html: (code) => `<p>Use this code to remove a passkey from your OpenKey account:</p><p>${code}</p><p>It expires in 5 minutes. If you didn't ask for this, don't share the code. You can ignore this email.</p>`,
   },
 };
 

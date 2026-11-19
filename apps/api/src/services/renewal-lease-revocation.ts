@@ -10,6 +10,10 @@
 // lease is settled by replaying its admission (the same signed bytes; idempotent at the node) and revoking it
 // straight after, both under the user lock that new reservations also take.
 //
+// A lease signed at an app sign-in (TC-2872) is recorded the same way, with no approval request, when OpenKey signs
+// it: the app, not OpenKey, has the node admit it, so its admission is never confirmed here and every stop replays
+// it before revoking.
+//
 // A lease is settled only by the node: `revokedAt` once its node answered the revocation with success, or
 // `neverAdmittedAt` once the node refused to admit it and held nothing to revoke. Anything else (timeout,
 // unreachable node, a wallet that must sign) leaves it unsettled, so a retry sends it again. Revoking an
@@ -29,16 +33,26 @@ import { isKnownTinyCloudActivationHost } from './tinycloud-hosts';
 const NODE_CALL_TIMEOUT_MS = 5_000;
 /** How long a revocation message stays valid; the node checks it. */
 const REVOCATION_LIFETIME_MS = 5 * 60_000;
+/**
+ * How long after it is recorded (when it is returned to the app) a sign-in lease may still be admitted by its app:
+ * the node refusing it before then may only mean the app hasn't registered the grant yet, so it is not settled as
+ * never admitted. Counted from the record, not `approvedAt`: a wallet signs the lease up to ten minutes after that.
+ */
+const SIGN_IN_ADMISSION_WINDOW_MS = 10 * 60_000;
+/** How long a best-effort stop (an app's sign-out, an account lock) waits for its leases; stopping carries on after that. */
+const BEST_EFFORT_STOP_BUDGET_MS = 3_000;
 const OWNER_DID = /^did:pkh:eip155:([1-9][0-9]*):(0x[0-9a-fA-F]{40})$/;
 
 export type LeaseRevocationDatabase = Pick<PrismaClient, 'renewalLease' | 'ethereumKey' | '$transaction'>;
 
-/** Which of the account's leases to stop. */
+/**
+ * Which of the account's leases to stop. Signing out stops no permission the owner approved: those stop only from
+ * Settings, on account deletion, or when the account is locked (an Apple revocation, a "not mine" report). A session
+ * signing itself out stops only the sign-in leases recorded under it (`sign-in`): the app that signed in drops its key.
+ */
 export type LeaseScope =
   | { kind: 'lease'; leaseCid: string }
-  | { kind: 'session'; sessionId: string }
-  /** Every lease not approved under the session that stays signed in (sign out other sessions). */
-  | { kind: 'other-sessions'; keepSessionId: string }
+  | { kind: 'sign-in'; sessionId: string }
   | { kind: 'all' };
 
 /**
@@ -62,7 +76,7 @@ export interface LeaseRevocationDeps {
 }
 
 async function secretKey() {
-  // Loaded on use: auth.ts loads this module (sign-out hooks), and its context holds the at-rest secret.
+  // Loaded on use: auth.ts loads this module (its sign-out, Apple and mailbox-review hooks), and its context holds the at-rest secret.
   const { auth } = await import('../auth');
   return (await auth.$context).secretConfig;
 }
@@ -78,8 +92,7 @@ const defaultDeps: LeaseRevocationDeps = {
 function scopeWhere(scope: LeaseScope) {
   switch (scope.kind) {
     case 'lease': return { leaseCid: scope.leaseCid };
-    case 'session': return { sessionId: scope.sessionId };
-    case 'other-sessions': return { OR: [{ sessionId: null }, { sessionId: { not: scope.keepSessionId } }] };
+    case 'sign-in': return { sessionId: scope.sessionId, approvalRequestId: null };
     case 'all': return {};
   }
 }
@@ -104,7 +117,7 @@ type Transaction = Parameters<Parameters<LeaseRevocationDatabase['$transaction']
 
 /**
  * Holds the owner's user row for the rest of the transaction: lease reservations and settling take it first.
- * `wait: false` gives up at once if another request holds it (sign-out must never wait behind a deletion).
+ * `wait: false` gives up at once if another request holds it (an account lock must never wait behind a deletion).
  */
 async function lockOwner(tx: Transaction, userId: string, wait = true) {
   if (wait) await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${userId} FOR UPDATE`;
@@ -114,11 +127,12 @@ async function lockOwner(tx: Transaction, userId: string, wait = true) {
 /**
  * Records the signed lease for its owner before the node is asked to admit it, under the owner's user lock.
  * Idempotent per lease CID, so a retry after a crash finds the same record. A lease already settled (stopped,
- * or refused by the node) is never admitted again: the approval fails and nothing is approved.
+ * or refused by the node) is never admitted again: the approval fails and nothing is approved. A sign-in lease has
+ * no approval request (`approvalRequestId: null`); it is recorded before it is returned to the app.
  */
 export async function reserveRenewalLease(
   db: Pick<PrismaClient, '$transaction'>,
-  input: { approvalRequestId: string; userId: string; sessionId: string | null; nodeOrigin: string; stage: RenewalStage },
+  input: { approvalRequestId: string | null; userId: string; sessionId: string | null; nodeOrigin: string; stage: RenewalStage },
   deps: Pick<LeaseRevocationDeps, 'seal'> = defaultDeps,
 ): Promise<void> {
   const { stage } = input;
@@ -231,8 +245,10 @@ async function settle(tx: Transaction, lease: LeaseRow, revocation: { siwe: stri
     return true;
   }
   // The node refused this attempt's admission and says itself that it holds no such lease: it can never renew.
-  // Only for a lease no approval has confirmed, checked again in the write.
-  if (!lease.admittedAt && replayed === 'refused' && revoked.notPresent) {
+  // Only for a lease no approval has confirmed, checked again in the write. A sign-in lease is not settled so while
+  // its app may still be registering the grant and admitting it: it stays on, and the next stop sends it again.
+  const appMayAdmit = lease.approvalRequestId === null && deps.now().getTime() - lease.createdAt.getTime() < SIGN_IN_ADMISSION_WINDOW_MS;
+  if (!lease.admittedAt && replayed === 'refused' && revoked.notPresent && !appMayAdmit) {
     const settled = await tx.renewalLease.updateMany({
       where: { leaseCid: lease.leaseCid, revokedAt: null, neverAdmittedAt: null, admittedAt: null },
       data: { neverAdmittedAt: at, leaseAuthorization: null },
@@ -288,6 +304,29 @@ export async function revokeRenewalLeases(
     }
   }, { timeout: settleTimeout(candidates.length), maxWait: options.waitForLock ? 10_000 : 2_000 });
   return report;
+}
+
+/**
+ * Stops the leases in `scope` best effort, for an action that has already ended the owner's access or session (an
+ * account lock, an app's sign-out): never waits for the owner's lock, answers within a budget and never throws. A
+ * lease not confirmed stopped by then is reported not stopped; if stopping is still under way it finishes later, and
+ * any lease left on stays recorded, so the next stop or deletion sends it again.
+ */
+export async function stopRenewalLeasesBestEffort(
+  db: LeaseRevocationDatabase,
+  userId: string,
+  scope: LeaseScope,
+  revoke: typeof revokeRenewalLeases = revokeRenewalLeases,
+): Promise<LeaseRevocationReport> {
+  const live = await db.renewalLease.findMany({ where: liveLeaseWhere(userId, scope, new Date()), select: { leaseCid: true } })
+    .catch(() => []);
+  if (live.length === 0) return { stopped: [], notStopped: [] };
+  const stopping = revoke(db, userId, scope, undefined, { waitForLock: false }).catch(() => null);
+  const { promise: timedOut, resolve: timeUp } = Promise.withResolvers<null>();
+  const timer = setTimeout(() => timeUp(null), BEST_EFFORT_STOP_BUDGET_MS);
+  const report = await Promise.race([stopping, timedOut]);
+  clearTimeout(timer);
+  return report ?? { stopped: [], notStopped: live.map(({ leaseCid }) => ({ leaseCid, reason: 'node_unavailable' as const })) };
 }
 
 export class LeaseRevocationError extends Error {

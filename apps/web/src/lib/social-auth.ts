@@ -156,6 +156,7 @@ export async function signInWithSocialRedirect(
 
 export async function loadConfiguredSocialProviders(
   fetchImpl: typeof fetch = fetch,
+  onAppReviewEnabled?: (enabled: boolean) => void,
 ): Promise<SocialProviderId[]> {
   // Public and cookie-free; the API answers it with `*` CORS so native apps can read it too.
   const response = await fetchImpl(`${API_BASE}/api/auth/providers`, {
@@ -164,6 +165,7 @@ export async function loadConfiguredSocialProviders(
   });
   if (!response.ok) return [];
   const body = await response.json().catch(() => null);
+  onAppReviewEnabled?.(body?.appleReviewEnabled === true);
   if (!Array.isArray(body?.providers)) return [];
   return body.providers.filter(
     (provider: unknown): provider is SocialProviderId =>
