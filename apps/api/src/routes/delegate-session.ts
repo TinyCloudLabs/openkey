@@ -20,6 +20,7 @@ import {
   shortServiceName,
 } from './delegate-validation';
 import { logPermissionEntryUnknownFields } from '../log';
+import { DeviceAuthorizationError, deviceRequestPermissions } from '../services/device-authorization';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 
 export type DelegationJwk = { kty: string; crv: string; x: string };
@@ -548,6 +549,15 @@ export function isDeviceDefaultEncryptionEntry(entry: DelegationPermissionEntry)
   );
 }
 
+function assertDevicePermissions(permissions: DelegationPermissionEntry[] | undefined): void {
+  try {
+    deviceRequestPermissions(permissions);
+  } catch (error) {
+    if (!(error instanceof DeviceAuthorizationError)) throw error;
+    throw new DelegateRequestError('invalid_permissions', error.message);
+  }
+}
+
 /**
  * Translate CLI permission entries into the ability maps `prepareSession()`
  * signs. Space abilities are keyed by short service name (`kv`, `sql`, …),
@@ -558,26 +568,18 @@ export function isDeviceDefaultEncryptionEntry(entry: DelegationPermissionEntry)
  *
  * With `deviceTransaction`, the exact default encryption entry (see
  * `isDeviceDefaultEncryptionEntry`) resolves to the signer's own default
- * network. Every other entry is handled as before.
+ * network. The same scope policy applies at device start and delegation.
  */
 export function sessionAbilitiesFromPermissions(
   permissions: DelegationPermissionEntry[],
   signer: { address: string; chainId: number },
   options: { deviceTransaction?: boolean } = {},
 ): SessionAbilities {
+  if (options.deviceTransaction) assertDevicePermissions(permissions);
   const entries: RecapEntry[] = [];
   const rawAbilities: RawAbilitiesMap = Object.create(null);
-  let deviceDefaultSeen = false;
   permissions.forEach((entry, index) => {
     if (options.deviceTransaction && isDeviceDefaultEncryptionEntry(entry)) {
-      if (deviceDefaultSeen) {
-        throw new DelegateRequestError(
-          'invalid_permissions',
-          `permissions[${index}] repeats the default encryption entry; a device request carries one`,
-          [{ path: `permissions[${index}]`, message: 'Only one default encryption entry is allowed' }],
-        );
-      }
-      deviceDefaultSeen = true;
       addActions(rawAbilities, defaultEncryptionNetworkUrn(signer), [ENCRYPTION.DECRYPT]);
       return;
     }
@@ -662,6 +664,7 @@ export function prepareDelegationSession({
   nonce,
   issuedAt,
 }: PrepareDelegationSessionInput): PrepareDelegationSessionResult {
+  if (deviceTransaction && permissions === undefined) assertDevicePermissions(permissions);
   const isCliBaseline = permissions !== undefined;
   const fallbackSpaceId = makeSpaceId(address, chainId, prefix);
   const baselineAbilities = isCliBaseline
