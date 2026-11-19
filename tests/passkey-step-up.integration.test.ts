@@ -379,7 +379,7 @@ if (!backend) {
       expect(await typed(await registerOptions(cookie))).toEqual({ status: 403, code: STEP_UP_REQUIRED, methods: ['passkey', 'email'] });
       const verify = await post('/api/auth/passkey/verify-registration', { response: attestation(newAuthenticator(), 'x') }, cookie);
       expect(await typed(verify)).toMatchObject({ status: 403, code: STEP_UP_REQUIRED });
-      const token = (await (await get('/api/auth/get-session', cookie)).json() as { session: { token: string } }).session.token;
+      const token = (await (await get('/api/auth/session-token', cookie)).json() as { token: string }).token;
       const proxied = await post('/api/passkey/generate-register-options', {}, '', { authorization: `Bearer ${token}` });
       expect(await typed(proxied)).toMatchObject({ status: 403, code: STEP_UP_REQUIRED });
       expect(await typed(await deletePasskey(cookie, passkey.id))).toEqual({ status: 403, code: STEP_UP_REQUIRED, methods: ['passkey'] });
@@ -584,7 +584,7 @@ if (!backend) {
 
     test('a bearer token cannot step up', async () => {
       const { cookie } = await appleUserWithPlainSession('bearer-sub', 'bearer@openkey.test');
-      const token = (await (await get('/api/auth/get-session', cookie)).json() as { session: { token: string } }).session.token;
+      const token = (await (await get('/api/auth/session-token', cookie)).json() as { token: string }).token;
       expect((await post('/api/account/step-up/passkey/options', {}, '', { authorization: `Bearer ${token}` })).status).toBe(403);
     });
   });

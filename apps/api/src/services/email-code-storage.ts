@@ -6,10 +6,9 @@ import { createHmac } from 'node:crypto';
 function emailCodeSecret(): string {
   const configured = process.env.BETTER_AUTH_SECRET;
   if (configured) return configured;
-  if (process.env.NODE_ENV === 'production' || process.env.TEE_MODE === 'production') {
-    throw new Error('BETTER_AUTH_SECRET is required');
-  }
-  return 'openkey-development-email-code-secret-only';
+  // Only tests run without a secret; every deploy, preview or not, must set its own.
+  if (process.env.NODE_ENV !== 'test') throw new Error('BETTER_AUTH_SECRET is required');
+  return 'openkey-test-email-code-secret-only';
 }
 
 /**
