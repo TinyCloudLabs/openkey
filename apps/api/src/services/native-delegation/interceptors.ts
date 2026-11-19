@@ -1,4 +1,4 @@
-import { captureReviewer, reviewerActive, reviewerForUser } from '../reviewer-accounts';
+import { REVIEWER_MAX_SECONDS, captureReviewer, reviewerActive, reviewerForUser } from '../reviewer-accounts';
 import type { Context, MiddlewareHandler } from 'hono';
 import type { PrismaClient } from '@openkey/db';
 import { ADMIN_MANAGED_SCOPES, TINYCLOUD_DELEGATION_SCOPE, TINYCLOUD_MCP_SCOPE } from '../../oauth-config';
@@ -417,8 +417,10 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
           const session = reviewerSubject.sessionId
             ? await database.session.findUnique({ where: { id: reviewerSubject.sessionId } }) : null;
           if (!reviewerActive(binding, session?.reviewerEpoch ?? null)
+            || !session || session.expiresAt.getTime() <= Date.now()
+            || session.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000 <= Date.now()
             || reviewerSubject.clientId !== binding.clientId || 'status' in clients || clients.effective !== binding.clientId
-            || params.get('resource') !== binding.resource
+            || (binding.store === 'apple' ? params.has('resource') || grantType !== 'authorization_code' : params.get('resource') !== binding.resource)
             || (grantType === 'authorization_code' && reviewerSubject.reviewerEpoch !== binding.installEpoch)
             || (grantType === 'refresh_token' && !reviewerSubject.scopes?.includes(TINYCLOUD_MCP_SCOPE))) {
             return { status: 400, error: 'invalid_grant', description: 'the review connection has ended' };
