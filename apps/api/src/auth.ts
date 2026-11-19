@@ -46,6 +46,7 @@ import {
   socialProviderTrustedOrigins,
 } from './social-providers';
 import { appleRelayEmailUndeliverable } from './services/apple-notifications';
+import { signInCodeStorage } from './services/email-code-storage';
 import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
 import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
@@ -429,6 +430,7 @@ export const auth = betterAuth({
       // Repeated requests during the active window must not invalidate a code
       // that may still be arriving or grouped into the same email thread.
       resendStrategy: 'reuse',
+      storeOTP: signInCodeStorage,
     }),
     emailSignupConfirmation(prisma),
 
