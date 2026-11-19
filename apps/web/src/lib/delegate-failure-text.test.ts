@@ -13,13 +13,15 @@ const mappedCodes: Array<[string, string]> = [
     'handoff_claimed', 'prepared_expired', 'expired_request', 'expired_result', 'already_approved',
   ].map((code) => [code, 'This request has already been answered or has ended. Return to the app or command and start a new one.'] as [string, string]),
   ...[
-    'key-mismatch', 'user-mismatch', 'host-mismatch', 'space-mismatch', 'jwk-mismatch', 'baseline-digest-mismatch',
+    'host-mismatch', 'space-mismatch', 'jwk-mismatch', 'baseline-digest-mismatch',
     'immutable-fields-changed', 'prepared_metadata_mismatch', 'prepared_siwe_mismatch',
     'selected_actions_missing_siwe_entries', 'selected_actions_exceed_siwe_entries', 'invalid_selected_action_ids',
     'handoff-mismatch', 'binding_mismatch', 'request_binding', 'signature-mismatch', 'bound_siwe_parse_failed',
     'authorization_context_failed', 'missing_authorization_context_token', 'missing_prepared',
     'authorization_context_missing_original_siwe',
   ].map((code) => [code, changedRequest] as [string, string]),
+  ['key-mismatch', "This request was prepared for a different key than the one you're approving with, so OpenKey didn't approve it. Return to the app or command and start again."],
+  ['user-mismatch', "This request was made for a different OpenKey account than the one you're signed in to, so OpenKey didn't approve it. Sign in with the account it was made for, or start again from the app or command."],
   ...[
     'app_key_grant_refused', 'invalid_permissions',
   ].map((code) => [code, "OpenKey can't approve this kind of access. The app or command needs to ask for something different."] as [string, string]),
