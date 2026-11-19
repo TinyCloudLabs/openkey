@@ -84,7 +84,7 @@ export function withConfiguredEntries(
 
 export type DelegateCallbackCheck =
   | { ok: true; callback: string | null }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; endpoint?: string };
 
 /**
  * Where the page may POST the signed delegation. No callback means the page
@@ -102,13 +102,14 @@ export function checkDelegateCallback(raw: string, registeredEndpoints: readonly
   }
   return {
     ok: false,
+    endpoint: `${url.origin}${url.pathname}`,
     reason: `This link asks OpenKey to send your delegation to ${url.origin}${url.pathname}, which is not a registered TinyCloud app. OpenKey only returns delegations to this device or to registered apps, so this request was refused.`,
   };
 }
 
 export type DelegateHostCheck =
   | { ok: true; host: string; recognized: boolean }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; hostname?: string };
 
 /**
  * The TinyCloud node the delegation is activated on, which receives it.
@@ -118,7 +119,7 @@ export type DelegateHostCheck =
 export function checkDelegateHost(raw: string, knownOrigins: readonly string[]): DelegateHostCheck {
   const url = parseUrl(raw);
   if (!url || !isSafeTransport(url)) {
-    return { ok: false, reason: 'This link names an invalid TinyCloud node. A node must be an HTTPS address. Restart the command or app that opened this page.' };
+    return { ok: false, hostname: url?.hostname, reason: 'This link names an invalid TinyCloud node. A node must be an HTTPS address. Restart the command or app that opened this page.' };
   }
   const bareOrigin = url.pathname === '/' && !url.search && !url.hash;
   const recognized = bareOrigin && (isLoopbackHostname(url.hostname) || knownOrigins.includes(url.origin));

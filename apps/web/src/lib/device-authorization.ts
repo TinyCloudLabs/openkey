@@ -90,13 +90,19 @@ export async function lookupDeviceRequest(apiBase: string, userCode: string): Pr
  * its `expiry` (`<seconds>s`) is within the requested lifetime, so a crafted
  * link cannot swap keys, origins, scope, reason, or lifetime.
  */
+export class DeviceLinkError extends Error {
+  constructor(readonly stopId: 'S4' | 'S28', message: string) {
+    super(message);
+  }
+}
+
 export async function loadVerifiedDeviceRequest(
   apiBase: string,
   userCode: string,
   link: DeviceDelegateLink,
 ): Promise<DeviceRequestRecord> {
   const record = userCode ? await lookupDeviceRequest(apiBase, userCode) : null;
-  if (!record) throw new Error('This device request is invalid or expired. Restart the CLI command and enter its code at /device.');
+  if (!record) throw new DeviceLinkError('S4', 'This device request is invalid or expired. Restart the CLI command and enter its code at /device.');
   const canonical = (value: unknown) => JSON.stringify(value, (_key, entry: unknown) =>
     entry && typeof entry === 'object' && !Array.isArray(entry)
       ? Object.fromEntries(Object.entries(entry).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)))
@@ -111,7 +117,7 @@ export async function loadVerifiedDeviceRequest(
     canonical(record.permissions) !== canonical(link.permissions) ||
     !(Number(/^(\d+)s$/.exec(link.expiry)?.[1]) <= deviceRequestTtlSeconds(record))
   ) {
-    throw new Error('This approval link does not match the device request. Enter the code from your terminal at /device.');
+    throw new DeviceLinkError('S28', 'This approval link does not match the device request. Enter the code from your terminal at /device.');
   }
   return record;
 }

@@ -115,7 +115,8 @@ test('one consent retains account discovery and Home/feed space identity through
   expect(await page.evaluate(() => ({ width: innerWidth, overflow: document.documentElement.scrollWidth > innerWidth }))).toEqual({ width: 390, overflow: false });
   if (process.env.TC2490_SCREEN_DIR) await page.screenshot({ path: `${process.env.TC2490_SCREEN_DIR}/consent-edited-390.png`, fullPage: true });
   await approve.click();
-  await expect(page.getByText('Couldn\'t approve this request. Try again. (Error 503)')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'The approval didn’t go through' })).toBeVisible();
+  await expect(page.locator('[data-support-line]')).toHaveText('HTTP 503');
   expect(approvals).toHaveLength(1);
   expect(approvals[0]).toMatchObject({ selectedActionIds: prepares.at(-1)!.actionKeys, actionKeys: prepares.at(-1)!.actionKeys, permissions: request, prepared: { siwe: message(restored), spaceId: spaceId('applications') }, authorizationContextToken: `context-${prepares.length}` });
   expect(errors).toEqual([]);

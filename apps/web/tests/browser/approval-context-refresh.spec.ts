@@ -16,7 +16,7 @@ const narrowed = [capabilities, read].map(keyFor);
 type Scenario = 'success' | 'expired-link' | 'direct-expired' | 'expired-token' | 'busy-expired-code' | 'busy-context-code' | 'refresh-prepare-context' | 'refused' | 'twice' | 'second-refused' | 'reject-signature' | 'changed-selection' | 'duplicate-selection' | 'missing-selection' | 'empty-siwe' | 'malformed-siwe' | 'changed-message' | 'mixed-recap' | 'malformed-caveat';
 type Call = { path: string; body: Record<string, unknown> };
 
-async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scenario, code = 'context-expired', lifetime = { grantLifetimeSeconds: 3_456_000, suggestedLifetimeSeconds: 604_800 }) {
+async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scenario, code = 'context-expired', lifetime: { grantLifetimeSeconds: number; suggestedLifetimeSeconds?: number } = { grantLifetimeSeconds: 3_456_000, suggestedLifetimeSeconds: 604_800 }) {
   const calls: Call[] = [];
   let prepares = 0;
   let approvals = 0;
@@ -153,30 +153,29 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
     test(`${keyType} ${scenario} ends recovery without another retry`, async ({ page }) => {
       const flow = await open(page, keyType, scenario);
       await page.getByRole('button', { name: 'Approve', exact: true }).click();
-      await expect(page.getByRole('alert')).toBeVisible();
-      if (scenario === 'direct-expired' || scenario === 'expired-link') {
-        // A 410 at the sign sites shows the ended wording, not the panel (the
-        // server's expired_request also covers answered/unknown requests).
-        await expect(page.getByRole('alert')).toHaveText('This request has already been answered or has ended. Return to the app or command and start a new one.');
-        await expect(page.getByText('Link expired')).toHaveCount(0);
-        await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);
-      } else if (scenario === 'busy-expired-code' || scenario === 'busy-context-code') {
-        await expect(page.getByRole('alert')).toHaveText('This request is already being approved. Wait a moment.');
-        await expect(page.locator('.expired-request')).toHaveCount(0);
-        await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);
-        expect(flow.counts()).toEqual({ prepares: 2, approvals: 1 });
+      const approve = page.getByRole('button', { name: 'Approve', exact: true });
+      const stop = page.getByTestId('stop-page');
+      if (scenario === 'direct-expired' || scenario === 'expired-link' || scenario === 'busy-expired-code' ||
+          scenario === 'twice' || scenario === 'refresh-prepare-context') {
+        await expect(stop.getByRole('heading', { name: /request expired$/i })).toBeVisible();
+        await expect(approve).toHaveCount(0);
+      } else if (scenario === 'busy-context-code') {
+        await expect(page.getByRole('alert')).toHaveText('This request is already being approved. Another tab or a second click got there first. Wait a moment, then press Approve again.');
+        await expect(stop).toHaveCount(0);
+        await expect(approve).toHaveCount(1);
       } else if (scenario === 'expired-token') {
-        await expect(page.getByRole('alert')).toHaveText('Couldn\'t approve this request. Try again. (Error 400 · expired_token)');
+        await expect(stop.getByRole('heading', { name: 'The approval didn’t go through' })).toBeVisible();
+        await expect(stop.locator('[data-support-line]')).toHaveText('HTTP 400 · expired_token');
         await expect(page.getByText('Device request expired')).toHaveCount(0);
-        await expect(page.locator('.expired-request')).toHaveCount(0);
-        await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);
-      } else if (scenario === 'twice' || scenario === 'refresh-prepare-context') {
-        await expect(page.locator('.expired-request')).toBeVisible();
-        await expect(page.locator('.expired-request')).not.toContainText('Authorization context expired');
-        await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+        await expect(approve).toHaveCount(0);
+      } else if (scenario === 'refused' || scenario === 'second-refused') {
+        await expect(stop.getByRole('heading', { name: 'This request belongs to another OpenKey account' })).toBeVisible();
+        await expect(stop.getByRole('button', { name: 'Switch account' })).toBeVisible();
+        await expect(approve).toHaveCount(0);
       } else {
+        await expect(page.getByRole('alert')).toBeVisible();
         await expect(page.locator('.expired-request')).toHaveCount(0);
-        await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(1);
+        await expect(approve).toHaveCount(1);
       }
       expect(flow.counts()).toEqual({ prepares: scenario === 'direct-expired' || scenario === 'expired-token' || scenario === 'busy-expired-code' || scenario === 'busy-context-code' ? 2 : 3, approvals: scenario === 'twice' || scenario === 'second-refused' ? 2 : 1 });
       if (keyType === 'EXTERNAL' && ['duplicate-selection', 'missing-selection', 'empty-siwe', 'malformed-siwe', 'changed-message', 'mixed-recap', 'malformed-caveat'].includes(scenario)) {
@@ -187,12 +186,12 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
         });
         expect(signatures).toBe(1);
       }
-      await expect(page.getByRole('alert')).not.toContainText('Authorization context');
+      await expect(page.locator('[data-testid="stop-page"], [role="alert"]')).not.toContainText('Authorization context');
     });
   }
 }
 test('an unsuggested one-hour request displays and signs its requested lifetime', async ({ page }) => {
-  const flow = await open(page, 'MANAGED', 'success', 'context-expired', { grantLifetimeSeconds: 3600, suggestedLifetimeSeconds: undefined });
+  const flow = await open(page, 'MANAGED', 'success', 'context-expired', { grantLifetimeSeconds: 3600 });
   await expect(page.locator('.expiry-line')).toHaveText(/These permissions expire in 1 hour/);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   await expect(page.getByRole('heading', { name: /Authenticated|Approved/ })).toBeVisible();

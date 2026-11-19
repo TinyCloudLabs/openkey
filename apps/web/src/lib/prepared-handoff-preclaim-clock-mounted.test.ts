@@ -170,7 +170,6 @@ async function until(condition: () => boolean, what: string): Promise<void> {
   throw new Error(`timed out waiting for ${what}: ${document.body.textContent?.slice(0, 300)}`);
 }
 
-const EXPIRED = 'Prepared sign-in request expired. Restart the CLI command.';
 
 describe('the prepared handoff page before the claim', () => {
   test('a fresh request is claimed when the device clock is an hour ahead of the server', async () => {
@@ -186,8 +185,10 @@ describe('the prepared handoff page before the claim', () => {
     const serverNow = new Date(Date.now() + 3_600_000);
     // Issued a minute ago on this device's clock; the server's clock puts it over an hour back.
     const page = await mountPage(new Date(Date.now() - 60_000), serverNow);
-    await until(() => page.alert() !== null, 'the expiry message');
-    expect(page.alert()).toBe(EXPIRED);
+    await until(() => !!page.target.querySelector('[data-testid="stop-page"]'), 'the expiry message');
+    const stop = page.target.querySelector('[data-testid="stop-page"]');
+    expect(stop?.querySelector('h1')?.textContent).toBe('This request expired');
+    expect(stop?.textContent).toContain('This sign-in was open for 5 minutes and ran out. Run the command again.');
     expect(page.calls).not.toContain('claim');
     page.close();
   });

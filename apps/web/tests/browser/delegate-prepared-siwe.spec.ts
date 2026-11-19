@@ -144,7 +144,8 @@ test('v2 explains an unavailable API before claiming and never enters legacy sig
     user: { id: 'u', email: 'owner@example.test' },
   }));
   await page.goto('/delegate?transportVersion=2');
-  await expect(page.getByRole('alert')).toContainText('Prepared CLI sign-in is not available yet');
+  await expect(page.getByRole('heading', { name: 'This request can’t be found' })).toBeVisible();
+  await expect(page.locator('[data-support-line]')).toHaveText('HTTP 404');
   expect(claims).toBe(0);
   expect(calls.filter(call => call.path === '/api/delegate/prepare' || call.path === '/api/delegate/authorize-sign')).toHaveLength(0);
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
@@ -271,12 +272,12 @@ test('a failed new-fragment storage write cannot resume the previous request', a
     document.body.append(link);
   }, { value: fragment, storageKey: pendingKey });
   await page.getByRole('link', { name: 'Replace prepared sign-in' }).click();
-  await expect(page.getByRole('alert')).toContainText(/couldn.t save this request|restart/i);
+  await expect(page.getByRole('heading', { name: 'This browser can’t hold on to the request' })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
   await expect.poll(() => page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey).catch(() => 'navigating')).toBeNull();
   expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
   await page.reload();
-  await expect(page.getByRole('alert')).toContainText(/couldn.t save this request|restart/i);
+  await expect(page.getByRole('heading', { name: 'This browser can’t hold on to the request' })).toBeVisible();
 });
 
 test('the document bootstrap also discards a previous request when storage replacement fails', async ({ page }) => {
@@ -294,7 +295,7 @@ test('the document bootstrap also discards a previous request when storage repla
     };
   }, { value: fragment, storageKey: pendingKey });
   await page.goto(`/delegate${fragment}`);
-  await expect(page.getByRole('alert')).toContainText(/couldn.t save this request|restart/i);
+  await expect(page.getByRole('heading', { name: 'This browser can’t hold on to the request' })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
   expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
@@ -308,13 +309,13 @@ test('cancel before authenticated claim clears only tab-scoped request data', as
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
   expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
   await page.reload();
-  await expect(page.getByRole('alert')).toContainText(/unsupported|restart/i);
+  await expect(page.getByRole('heading', { name: 'This link is missing its last part' })).toBeVisible();
 });
 
 test('invalid fragments fail explicitly and leave no pending request', async ({ page }) => {
   await page.route('**/api/auth/get-session', route => json(route, 200, { session: { id: 's', userId: 'u', expiresAt: '2026-10-16T18:00:00.000Z' }, user: { id: 'u' } }));
   await page.goto('/delegate#tv2=not-a-json-request');
-  await expect(page.getByRole('alert')).toContainText(/invalid|unsupported|restart/i);
+  await expect(page.getByRole('heading', { name: 'This link is cut off' })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
 });
@@ -323,7 +324,8 @@ test('an unauthenticated pending request is erased when its five-minute claim wi
   await setup(page, { authenticated: false });
   await expect(page.getByRole('heading', { level: 1, name: 'Sign in to review this request' })).toBeVisible();
   await page.clock.fastForward(300_001);
-  await expect(page.getByRole('alert')).toContainText(/expired|restart/i);
+  await expect(page.getByRole('heading', { name: 'This request expired' })).toBeVisible();
+  await expect(page.getByTestId('stop-page')).toContainText('This sign-in was open for 5 minutes and ran out. Run the command again.');
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
 });
 
@@ -342,7 +344,7 @@ for (const fullReload of [false, true]) {
     await page.clock.fastForward(300_001);
     await expect.poll(() => page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
     await page.goto(returnTo!);
-    await expect(page.getByRole('alert')).toContainText(/unsupported|restart/i);
+    await expect(page.getByRole('heading', { name: 'This link is missing its last part' })).toBeVisible();
     expect(calls.filter(call => call.path === '/api/delegate/handoffs/claim')).toHaveLength(0);
   });
 }
@@ -354,17 +356,18 @@ test('oversized fragment and retired ticket-query transport never fall through t
     return json(route, 200, { session: null });
   });
   await page.goto(`/delegate#tv2=${'A'.repeat(8193)}`);
-  await expect(page.getByRole('alert')).toContainText(/too large|restart/i);
+  await expect(page.getByRole('heading', { name: 'This link is cut off' })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
   expect(await page.evaluate(storageKey => sessionStorage.getItem(storageKey), pendingKey)).toBeNull();
   await page.goto('/delegate?transportVersion=2&ticket=retired-ticket');
-  await expect(page.getByRole('alert')).toContainText(/unsupported|restart/i);
+  await expect(page.getByRole('heading', { name: 'OpenKey doesn’t know this kind of link' })).toBeVisible();
   expect(paths).not.toContain('/api/delegate/prepare');
 });
 
 test('v2 rejects a different requested key rather than invoking legacy prepare', async ({ page }) => {
   const calls = await setup(page, { keyId: 'different-key' });
-  await expect(page.getByText(/requested signing key is not available/i)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'That key isn’t available any more' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Close this tab' })).toBeVisible();
   expect(calls.filter(c => c.path === '/api/delegate/prepare' || c.path === '/api/delegate/authorize-sign-prepare')).toHaveLength(0);
 });
 
@@ -528,7 +531,7 @@ test('v2 wallet rejection leaves the unsigned ticket cancellable', async ({ page
   const calls = await setup(page, { external: true });
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
-  await expect(page.getByText('User rejected wallet approval')).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveText('Your wallet turned down the signature. Nothing was approved. Press Approve to try again.');
   await page.getByRole('button', { name: 'Cancel' }).click();
   await expect(page.getByRole('heading', { name: 'Cancelled. Nothing was approved.' })).toBeVisible();
   expect(calls.filter(call => call.path === '/api/delegate/authorize-sign')).toHaveLength(0);

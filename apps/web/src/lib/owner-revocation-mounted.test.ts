@@ -177,7 +177,7 @@ test('owner review shows the revoke wording when the permission is already being
   const app = mount(Subject, { target, props: { encoded, onClear: () => {} } });
   try {
     await until(() => !!target.querySelector('[role="alert"]'), 'busy wording');
-    expect(target.querySelector('[role="alert"]')?.textContent).toBe('This permission is already being revoked. Wait a moment.');
+    expect(target.querySelector('[role="alert"]')?.textContent).toBe('This request is already being approved. Another tab or a second click got there first. Wait a moment, then press Approve again.');
     expect(target.textContent).not.toContain('Handoff is being signed');
   } finally {
     unmount(app);
