@@ -1,10 +1,12 @@
-// Close button for the CLI paste-code page.
+// Close button for the pages that end an approval.
 //
 // `window.close()` only works for windows the script opened, so the page
 // checks after CLOSE_CHECK_MS whether it is still open:
-//   1. still open and there is history: `history.back()`, then check again;
-//   2. still open with no history (or still open after going back): `onStuck`.
+//   1. still open and `allowBack` and there is history: `history.back()`, then check again;
+//   2. still open otherwise (or still open after going back): `onStuck`.
 // A closed window or a navigation away from the page cancels the pending checks.
+// The done pages pass `allowBack: false`: going back would show the finished
+// review again, so they just say the tab can be closed.
 
 export const CLOSE_CHECK_MS = 300;
 
@@ -18,7 +20,8 @@ export type CloseEnvironment = {
 };
 
 /** Returns a cancel function that clears any pending check. */
-export function closeThisTab(env: CloseEnvironment, onStuck: () => void): () => void {
+export function closeThisTab(env: CloseEnvironment, onStuck: () => void, options: { allowBack?: boolean } = {}): () => void {
+  const allowBack = options.allowBack ?? true;
   let handle: unknown = null;
   let cancelled = false;
 
@@ -30,7 +33,7 @@ export function closeThisTab(env: CloseEnvironment, onStuck: () => void): () => 
   };
   const afterClose = () => {
     if (cancelled || env.isClosed()) return;
-    if (env.historyLength() > 1) {
+    if (allowBack && env.historyLength() > 1) {
       env.back();
       later(afterBack);
     } else {

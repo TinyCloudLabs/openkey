@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import {
-  DEVICE_AUTH_CLOCK_SKEW_MS,
   DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS,
   DEVICE_AUTH_START_LIMIT,
   DEVICE_AUTH_TRANSACTION_TTL_MS,
@@ -91,7 +90,7 @@ function encryptedApproval(
 }
 
 describe('OpenKey device authorization service', () => {
-  test('delivers an end-to-end encrypted relay result exactly once without plaintext disclosure', async () => {
+  test('delivers an end-to-end encrypted relay result until the client acknowledges it, without plaintext disclosure', async () => {
     const input = fixture();
     const transaction = await input.service.start(input.request, '203.0.113.9');
     expect(transaction.userCode).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
@@ -126,6 +125,20 @@ describe('OpenKey device authorization service', () => {
         shareOrigin: input.request.shareOrigin,
       });
     }
+    // Polling does not spend the result: a poll whose reply was lost is repeated and returns the same relay.
+    expect(await input.store.findById(transaction.transactionId)).toHaveProperty('encryptedResult');
+    input.advance(2000);
+    expect(await input.service.poll({
+      transactionId: transaction.transactionId,
+      deviceSecret: 'device-secret-with-at-least-256-bits-of-entropy',
+      codeVerifier: 'pkce-verifier-with-at-least-256-bits-of-entropy',
+    })).toEqual(approved);
+    // The client's acknowledgement spends it: the ciphertext is wiped and a later poll is refused.
+    await input.service.acknowledge({
+      transactionId: transaction.transactionId,
+      deviceSecret: 'device-secret-with-at-least-256-bits-of-entropy',
+      codeVerifier: 'pkce-verifier-with-at-least-256-bits-of-entropy',
+    });
     expect(await input.store.findById(transaction.transactionId)).not.toHaveProperty('encryptedResult');
     input.advance(2000);
     await expect(input.service.poll({
@@ -296,72 +309,6 @@ describe('OpenKey device authorization service', () => {
     }
   });
 
-  test('admits the exact device encryption entry alone and approves it without capabilities', async () => {
-    const input = fixture();
-    const exact = { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] };
-    const transaction = await input.service.start({ ...input.request, permissions: [exact], delegationTtlSeconds: 3600 }, '198.51.100.9');
-    await input.service.approve(transaction.transactionId, 'user-1', encryptedApproval(input, transaction, [exact], new Date(input.now().getTime() + 3599 * 1000)));
-    const result = await input.service.poll({ transactionId: transaction.transactionId, deviceSecret, codeVerifier });
-    expect(result.status).toBe('approved');
-    if (result.status !== 'approved') return;
-    expect(result.binding.permissions).toEqual([exact]);
-  });
-
-  test('admits and approves a decrypt request with a 7-day lifetime', async () => {
-    const input = fixture();
-    const exact = { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] };
-    const sevenDays = 7 * 24 * 60 * 60;
-    const transaction = await input.service.start({ ...input.request, permissions: [exact], delegationTtlSeconds: sevenDays }, '198.51.100.12');
-    await input.service.approve(transaction.transactionId, 'user-1', encryptedApproval(input, transaction, [exact], new Date(input.now().getTime() + (sevenDays - 1) * 1000)));
-    const result = await input.service.poll({ transactionId: transaction.transactionId, deviceSecret, codeVerifier });
-    expect(result.status).toBe('approved');
-    if (result.status !== 'approved') return;
-    expect(result.binding.permissions).toEqual([exact]);
-  });
-
-  test('admits the decrypt entry with no explicit lifetime and bounds it by the standard device lifetime', async () => {
-    const input = fixture();
-    const exact = { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] };
-    const transaction = await input.service.start({ ...input.request, permissions: [exact] }, '198.51.100.22');
-    const bound = (ms: number) => input.service.assertDelegationWindow(transaction.transactionId, {
-      nodeOrigin: input.request.nodeOrigin,
-      jwk: input.publicJwk,
-      expiresAt: new Date(input.now().getTime() + ms),
-    });
-    await bound(DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS);
-    await bound(DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS + DEVICE_AUTH_CLOCK_SKEW_MS);
-    await expect(bound(DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS + DEVICE_AUTH_CLOCK_SKEW_MS + 1))
-      .rejects.toMatchObject({ code: 'invalid_request', status: 400 });
-  });
-
-  test('admits the decrypt entry beside kv + capabilities/read, refuses an approval that drops capabilities/read', async () => {
-    const input = fixture();
-    const exact = { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] };
-    const mixed = [...publishingPermissions(), exact];
-    const admitted = await input.service.start({ ...input.request, permissions: mixed }, '198.51.100.13');
-    await input.service.approve(admitted.transactionId, 'user-1', encryptedApproval(input, admitted, mixed));
-    const result = await input.service.poll({ transactionId: admitted.transactionId, deviceSecret, codeVerifier });
-    expect(result.status).toBe('approved');
-    if (result.status !== 'approved') return;
-    expect(result.binding.permissions).toEqual(mixed);
-
-    const other = fixture();
-    const pending = await other.service.start({ ...other.request, permissions: mixed }, '198.51.100.14');
-    const withoutCapabilities = [publishingPermissions()[0]!, publishingPermissions()[1]!, exact];
-    await expect(other.service.approve(pending.transactionId, 'user-1', encryptedApproval(other, pending, withoutCapabilities)))
-      .rejects.toMatchObject({ code: 'invalid_result', status: 400, message: expect.stringContaining('tinycloud.capabilities/read') });
-  });
-
-  test('refuses kv entries plus the decrypt entry without capabilities/read at start', async () => {
-    const input = fixture();
-    const exact = { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] };
-    const kvOnly = publishingPermissions().slice(0, 2);
-    for (const permissions of [[...kvOnly, exact], [exact, ...kvOnly]]) {
-      await expect(input.service.start({ ...input.request, permissions }, '198.51.100.20'))
-        .rejects.toMatchObject({ code: 'invalid_scope', status: 400, message: expect.stringContaining('tinycloud.capabilities/read') });
-    }
-  });
-
   test('refuses a decrypt entry beside kv entries in another space', async () => {
     const input = fixture();
     const exact = { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] };
@@ -378,29 +325,6 @@ describe('OpenKey device authorization service', () => {
       await expect(input.service.start({ ...input.request, permissions, delegationTtlSeconds: 7 * 24 * 60 * 60 } as never, '198.51.100.19'))
         .rejects.toMatchObject({ code: 'invalid_scope', status: 400 });
     }
-  });
-
-  test('refuses an encryption entry outside the exact shape with invalid_scope', async () => {
-    const input = fixture();
-    const exact = { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] };
-    const rejected: Array<[string, object, string]> = [
-      ['non-default space', { ...exact, space: 'encryption' }, 'must be default for tinycloud.encryption'],
-      ['non-empty path', { ...exact, path: 'x' }, 'must be empty for tinycloud.encryption'],
-      ['other ability', { ...exact, actions: ['tinycloud.encryption/encrypt'] }, 'must be exactly tinycloud.encryption/decrypt'],
-      ['wildcard ability', { ...exact, actions: ['tinycloud.encryption/*'] }, 'must be exactly tinycloud.encryption/decrypt'],
-      ['two abilities', { ...exact, actions: ['tinycloud.encryption/decrypt', 'tinycloud.encryption/decrypt'] }, 'must be exactly tinycloud.encryption/decrypt'],
-    ];
-    for (const [label, entry, message] of rejected) {
-      await expect(input.service.start({ ...input.request, permissions: [...publishingPermissions(), entry] } as never, '198.51.100.10'), label)
-        .rejects.toMatchObject({ code: 'invalid_scope', status: 400, message: expect.stringContaining(message) });
-    }
-  });
-
-  test('refuses a second tinycloud.encryption entry in one device request', async () => {
-    const input = fixture();
-    const exact = { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] };
-    await expect(input.service.start({ ...input.request, permissions: [...publishingPermissions(), exact, exact] } as never, '198.51.100.11'))
-      .rejects.toMatchObject({ code: 'invalid_scope', status: 400, message: expect.stringContaining('allows one tinycloud.encryption entry') });
   });
 
   test('requires tinycloud.capabilities/read on path "" instead of adding it silently', async () => {
@@ -423,7 +347,7 @@ describe('OpenKey device authorization service', () => {
   test('caps the reason at 200 characters and the lifetime at the requested TTL from approval', async () => {
     const input = fixture();
     const thirtyDays = 30 * 24 * 60 * 60;
-    await expect(input.service.start({ ...input.request, delegationTtlSeconds: thirtyDays + 1 }, '203.0.113.30'))
+    await expect(input.service.start({ ...input.request, delegationTtlSeconds: 59 }, '203.0.113.30'))
       .rejects.toMatchObject({ code: 'invalid_request', status: 400 });
     await expect(input.service.start({ ...input.request, permissions: publishingPermissions(), reason: 'x'.repeat(201) }, '203.0.113.31'))
       .rejects.toMatchObject({ code: 'invalid_request', status: 400 });

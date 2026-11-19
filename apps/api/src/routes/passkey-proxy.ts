@@ -4,6 +4,7 @@
 // where SameSite=Lax cookies are blocked.
 import { Hono } from 'hono';
 import { auth } from '../auth';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import {
   beginPasskeyCeremony,
   completePasskeyCeremony,
@@ -66,6 +67,8 @@ function extractSessionToken(headers: Headers): string | null {
 }
 
 export const passkeyProxyRouter = new Hono();
+
+passkeyProxyRouter.use('*', requireAccountOriginForBearer);
 
 // POST /generate-register-options
 // Proxies to GET /api/auth/passkey/generate-register-options

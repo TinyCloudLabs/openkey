@@ -1,10 +1,13 @@
 <script lang="ts">
   import { API_BASE } from '$lib/auth-client';
   import { safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
+  import { daysOverTwoDays, formatDuration, formatEndDay } from '$lib/approval-expiry';
+  import { formatLocalAccessEnd } from '$lib/access-end';
+  import { isTermsRequired, sendToTerms } from '$lib/terms';
   import NativeShell from '$lib/components/auth/native-shell.svelte';
   import { nativeAccessSummary } from '$lib/native-access';
   import {
-    parseCapabilityReview, defaultSelection, buildRenderPlan, grantHeading,
+    parseCapabilityReview, defaultSelection, buildRenderPlan, grantHeading, renderSiweLiteral,
     type CapabilityAction, type CapabilityGrant, type CapabilityReviewModel,
   } from '@openkey/capability-review';
   import { reviewSelectionToActionKeys, preparedMatchesSelection, type ServerPermissionOption } from '$lib/delegate-review-selection';
@@ -45,6 +48,7 @@
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const data = await response.json().catch(() => ({}));
+    if (isTermsRequired(response.status, data)) sendToTerms();
     if (!response.ok) throw new Error(data.error_description ?? data.error ?? `${action} failed (${response.status})`);
     return data;
   }
@@ -122,11 +126,10 @@
     selection = next;
     if (model) prepare(reviewSelectionToActionKeys(model, baselineOptions, next));
   }
-  const duration = (seconds: number) => {
-    const [count, unit] = seconds % 86400 === 0 ? [seconds / 86400, 'day']
-      : seconds % 3600 === 0 ? [seconds / 3600, 'hour'] : [Math.round(seconds / 60), 'minute'];
-    return `${count} ${unit}${count === 1 ? '' : 's'}`;
-  };
+  const duration = (seconds: number) => formatDuration(seconds * 1000);
+  // Over two days the day the longest grant ends too: "30 days, until 17 Dec,".
+  const lifetime = (seconds: number) =>
+    daysOverTwoDays(seconds * 1000) === null ? duration(seconds) : `${duration(seconds)}, until ${formatEndDay(seconds * 1000)},`;
   let started = false;
   $effect(() => { if (ready && !started) { started = true; prepare(); } });
   const summary = $derived(model && preview ? nativeAccessSummary(model, selection, preview.client.name) : null);
@@ -159,7 +162,7 @@
       {#each summary.warnings as warning}
         <p class="note warning" role="status">{warning}</p>
       {/each}
-      <p class="note">Access lasts up to {duration(preview.grantLifetimeSeconds)} and renews automatically while you use {preview.client.name}.</p>
+      <p class="note">Access lasts up to {lifetime(preview.grantLifetimeSeconds)} and renews automatically while you use {preview.client.name}.</p>
       {#if preview.hostPlan}
         <p class="note">First sign-in: this also lets your TinyCloud node host your data.</p>
       {/if}
@@ -176,7 +179,7 @@
           <dt>Returns to</dt><dd><code>{preview.redirectScheme}://</code></dd>
           <dt>Signing key</dt><dd>{model.signer.label} <code>{model.signer.address}</code></dd>
           <dt>App identity</dt><dd>{trustLabel[model.metadataTrust.status]}</dd>
-          {#if model.expiry}<dt>Expires</dt><dd>{model.expiry}</dd>{/if}
+          {#if model.expiry}<dt>Expires</dt><dd>{formatLocalAccessEnd(model.expiry)}</dd>{/if}
           <dt>Renewals</dt><dd>Each renewal lasts {duration(preview.ttlSeconds)} from approval.</dd>
         </dl>
         {#if model.metadataTrust.reason}
@@ -225,7 +228,7 @@
 
         <details class="raw">
           <summary>Exact message being signed</summary>
-          <pre>{model.rawMessage}</pre>
+          <pre>{renderSiweLiteral(model.rawMessage)}</pre>
         </details>
       </div>
     </details>
@@ -415,8 +418,7 @@
     padding: 12px;
     max-height: 240px;
     overflow: auto;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
+    white-space: pre;
     border-radius: 12px;
     background: var(--nb-field);
     color: var(--nb-muted);

@@ -3,7 +3,8 @@
 // binding and the relayed delegation must both state exactly the approved
 // subset, in the request's own manifest form, so the CLI can compare them.
 
-import { DECRYPT_DEFAULT_KEY_STATEMENT } from '@openkey/capability-review';
+import { formatAccessEnd } from './access-end';
+import { EXPIRY_PRESETS } from './approval-expiry';
 
 export interface DevicePermission {
   service: string;
@@ -32,6 +33,8 @@ export interface DeviceRequestRecord {
   reason?: string;
   shareOnly?: boolean;
   delegationTtlSeconds?: number;
+  /** The lifetime the requester suggests as the default; absent means `delegationTtlSeconds`. */
+  suggestedTtlSeconds?: number;
 }
 
 /** Values a `/delegate` device link carries that must equal the server's request. */
@@ -65,7 +68,9 @@ export async function lookupDeviceRequest(apiBase: string, userCode: string): Pr
     credentials: 'omit',
     headers: { accept: 'application/json' },
   });
-  return response.ok ? ((await response.json()) as DeviceRequestRecord) : null;
+  if (response.status === 404 || response.status === 410) return null;
+  if (!response.ok) throw new Error("Couldn't load this request.");
+  return (await response.json()) as DeviceRequestRecord;
 }
 
 /**
@@ -125,12 +130,31 @@ export function deviceRequestTtlSeconds(record: DeviceRequestRecord): number {
   return Math.min(2_592_000, Math.max(60, Number.isFinite(derived) ? derived : 60));
 }
 
-/** Lifetime choices up to (and ending with) the requested maximum. */
-export function deviceLifetimeOptions(maxSeconds: number): Array<{ seconds: number; label: string }> {
+/**
+ * The lifetime to select first: the requester's suggestion, never above its maximum
+ * (a missing, zero or too-large suggestion means the maximum).
+ */
+export function deviceRequestSuggestedSeconds(record: DeviceRequestRecord): number {
+  const max = deviceRequestTtlSeconds(record);
+  const suggested = record.suggestedTtlSeconds;
+  return typeof suggested === 'number' && Number.isFinite(suggested) && suggested >= 1 && suggested <= max ? suggested : max;
+}
+
+/** Start no longer than the shortest shared-review preset or the requester's own smaller choice. */
+export function deviceRequestDefaultSeconds(record: DeviceRequestRecord): number {
+  let seconds = deviceRequestSuggestedSeconds(record);
+  for (const preset of EXPIRY_PRESETS) seconds = Math.min(seconds, preset.ms / 1000);
+  return seconds;
+}
+
+/** Lifetime choices up to (and ending with) the requested maximum, with the suggestion marked. */
+export function deviceLifetimeOptions(maxSeconds: number, suggestedSeconds?: number): Array<{ seconds: number; label: string }> {
+  const suggested = suggestedSeconds !== undefined && suggestedSeconds < maxSeconds ? suggestedSeconds : null;
+  const steps = [...new Set([86_400, 604_800, 2_592_000, ...(suggested === null ? [] : [suggested])])]
+    .filter((seconds) => seconds < maxSeconds)
+    .sort((a, b) => a - b);
   return [
-    ...[86_400, 604_800, 2_592_000]
-      .filter((seconds) => seconds < maxSeconds)
-      .map((seconds) => ({ seconds, label: formatDeviceLifetime(seconds) })),
+    ...steps.map((seconds) => ({ seconds, label: `${formatDeviceLifetime(seconds)}${seconds === suggested ? ' (suggested)' : ''}` })),
     { seconds: maxSeconds, label: `${formatDeviceLifetime(maxSeconds)} (requested maximum)` },
   ];
 }
@@ -219,48 +243,19 @@ export function readDelegatePermissionsParam(params: URLSearchParams): { permiss
   return value === null ? null : decodeDelegatePermissionsParam(value);
 }
 
-const ENCRYPTION_SERVICE = 'tinycloud.encryption';
-const DECRYPT_ABILITY = 'tinycloud.encryption/decrypt';
-
-/**
- * The device's encryption entry: the one `tinycloud.encryption/decrypt` grant
- * in the `default` space with an empty path. It stands for the approving
- * account's own default network, which the API resolves at prepare.
- */
-function isDeviceEncryptionEntry(permission: DevicePermission): boolean {
-  return (
-    permission.service === ENCRYPTION_SERVICE &&
-    permission.space === 'default' &&
-    permission.path === '' &&
-    permission.actions.length === 1 &&
-    permission.actions[0] === DECRYPT_ABILITY
-  );
-}
-
-/**
- * Resource URN of the signer's own `default` encryption network, as the API
- * signs it. Lowercased: an EIP-55 address and its lowercase form name the same
- * account, so comparing lowercase is equality of the EIP-55 form.
- */
-function defaultEncryptionNetworkUrn(signer: { address: string; chainId: number }): string {
-  return `urn:tinycloud:encryption:did:pkh:eip155:${signer.chainId}:${signer.address}:default`.toLowerCase();
-}
-
 /**
  * Map the grants of a signed delegation (`/api/delegate` `permissions`,
  * ReCap form: short service names and full space URIs) back onto the
  * requested manifest permissions, keeping the request's spelling. Throws
  * when the delegation carries anything the device request did not ask for
- * or grants nothing. `signer` is the account that signed the delegation; a
- * raw encryption grant must name that account's own `default` network.
+ * or grants nothing. Device sign-in grants no encryption ability, so any
+ * encryption grant is refused (TC-3204).
  */
 export function approvedDevicePermissions(
   requested: DevicePermission[],
   granted: unknown,
-  signer: { address: string; chainId: number },
 ): DevicePermission[] {
   if (!Array.isArray(granted)) throw new Error('The approved delegation does not list its permissions.');
-  const ownNetwork = defaultEncryptionNetworkUrn(signer);
   const grantedActions = new Map<DevicePermission, Set<string>>();
   for (const raw of granted) {
     const grant = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
@@ -268,14 +263,9 @@ export function approvedDevicePermissions(
       ? `tinycloud.${grant.service}`
       : grant.service;
     const actions = Array.isArray(grant.actions) ? grant.actions : [];
-    const source = service === ENCRYPTION_SERVICE
-      ? requested.find((permission) =>
-          isDeviceEncryptionEntry(permission) &&
-          typeof grant.path === 'string' &&
-          grant.path.toLowerCase() === ownNetwork &&
-          actions.length === 1 &&
-          actions[0] === DECRYPT_ABILITY,
-        )
+    // Full or short service name, in any case, as the API canonicalizes it.
+    const source = typeof grant.service === 'string' && /^(?:tinycloud\.)?encryption$/i.test(grant.service)
+      ? undefined
       : requested.find((permission) =>
           permission.service === service &&
           permission.path === grant.path &&
@@ -300,6 +290,8 @@ export function approvedDevicePermissions(
 /** Human lifetime for a delegation that lasts `seconds`, rounded down. */
 export function formatDeviceLifetime(seconds: number): string {
   const days = Math.floor(seconds / 86_400);
+  // Two years or more read as years: a signed maximum can be far longer than 30 days.
+  if (days >= 730) return `${Math.floor(days / 365)} years`;
   if (days >= 1) return days === 1 ? '1 day' : `${days} days`;
   const hours = Math.floor(seconds / 3_600);
   if (hours >= 1) return hours === 1 ? '1 hour' : `${hours} hours`;
@@ -308,20 +300,9 @@ export function formatDeviceLifetime(seconds: number): string {
 }
 
 /**
- * The approver's own `default` network decrypt entry, the one encryption grant
- * a device request may carry, is labelled with the consent sentence and its
- * lifetime. Every other entry returns null and keeps its existing label.
+ * The end date of a lifetime chosen now, and whether it is longer than a year (the screen then adds the
+ * long-value warning). A requester can sign a maximum of years, so the owner sees when access stops.
  */
-export function decryptDefaultEntryLabel(
-  permission: DevicePermission,
-  lifetimeSeconds: number,
-): { statement: string; lifetime: string } | null {
-  const exact =
-    permission.service === 'tinycloud.encryption' &&
-    permission.space === 'default' &&
-    permission.path === '' &&
-    permission.actions.length === 1 &&
-    permission.actions[0] === 'tinycloud.encryption/decrypt';
-  if (!exact) return null;
-  return { statement: DECRYPT_DEFAULT_KEY_STATEMENT, lifetime: formatDeviceLifetime(lifetimeSeconds) };
+export function deviceLifetimeNotice(seconds: number, now: number = Date.now()): { ends: string; long: boolean } {
+  return { ends: formatAccessEnd(new Date(now + seconds * 1000).toISOString()), long: seconds > 365 * 86_400 };
 }

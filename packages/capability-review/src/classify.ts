@@ -22,15 +22,24 @@
 // the display label (see metadata.ts) but cannot flip a "sensitive" grant to
 // "standard".
 
+import { courierEntry } from "./courier.js";
 import type { CapabilityFamily, PermissionSeverity } from "./model.js";
 import { isSecretsSpace } from "./app-scope.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
+import {
+  DELEGATION_LIST_LABEL,
+  DELEGATION_REVOKE_LABEL,
+  FAMILY_LABEL,
+  FILES_FOR_YOU_STATEMENT,
+  SENDER_HISTORY_STATEMENT,
+} from "./copy.js";
+import { APPS_SEGMENT, parseKeyResource } from "./key-resource.js";
+import { plainSentence } from "./plain-words.js";
 import {
   SPACE_SERVICES,
   SQL_ADMIN_OPERATIONS,
   coreOperations,
   isCoreOperationService,
-  joinDistinct,
   type CoreOperation,
 } from "./core-operations.js";
 
@@ -40,6 +49,7 @@ interface RecapEntryLike {
   path: string;
   actions: string[];
   signerAddress?: string | null;
+  signerChainId?: number;
   /** Ability-derived and resource-derived services disagree on the wire. */
   serviceMismatch?: boolean;
 }
@@ -104,10 +114,17 @@ const SQL_NAMED_DATABASE_VERBS = new Set([
   ...SQL_ADMIN_VERBS,
 ]);
 const DELEGATION_VERBS = new Set(["list", "status"]);
+// Ending access the signer gave. Recognized alone, on the signer's own space.
+const DELEGATION_REVOKE_VERBS = new Set(["revoke"]);
 const ENCRYPTION_NETWORK_VERBS = new Set(["network.create", "network.revoke"]);
+const ENCRYPTION_KEY_VERBS = new Set(["key.create", "key.block", "key.unblock", "key.delete"]);
+// Creating, blocking and unblocking app keys reads nothing; every other
+// ability on an app key (decrypt, delete, unknown) is sensitive.
+const APP_KEY_MANAGEMENT_VERBS = new Set(["key.create", "key.block", "key.unblock"]);
 const ENCRYPTION_VERBS = new Set([
   ...ENCRYPTION_NETWORK_VERBS,
   ...DECRYPT_VERBS,
+  ...ENCRYPTION_KEY_VERBS,
 ]);
 
 // The verbs the secrets service is expected to carry. Any grant on
@@ -192,6 +209,27 @@ function allVerbsIn(actions: string[], allowed: ReadonlySet<string>): boolean {
   );
 }
 
+/** Every verb in `actions` and no others — the exact wire verb set. */
+function verbsExactly(actions: string[], required: ReadonlySet<string>): boolean {
+  return (
+    actions.length > 0 &&
+    actions.every((action) => required.has(verbOf(action))) &&
+    new Set(actions.map(verbOf)).size === required.size
+  );
+}
+
+// The KV path prefix Share's sender history lives under. A Share-style
+// request covers exactly `get`, `list`, `put`, `del` below this prefix: a
+// different verb set, the broader `vault/` prefix, or a v1 path is not the
+// sharing-history grant.
+const SENDER_HISTORY_PREFIX = "vault/sender-history/v2/records/";
+const SENDER_HISTORY_VERBS = new Set(["get", "list", "put", "del"]);
+
+// The files a Share-style request deposits for the recipient live in its
+// `files-for-you` space at exactly `v1/` with `get`, `list`, `put`.
+const FILES_FOR_YOU_PATH = "v1/";
+const FILES_FOR_YOU_VERBS = new Set(["get", "list", "put"]);
+
 function unknownActionLabel(service: string): {
   family: CapabilityFamily;
   displayLabel: string;
@@ -228,6 +266,21 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     spaceOwner !== null &&
     signerAddress !== null &&
     spaceOwner !== signerAddress;
+  // The space belongs to the signer, proven by both addresses. An unknown
+  // owner or signer is not proof, so it never counts as the signer's own.
+  const isOwnSpace =
+    spaceOwner !== null &&
+    signerAddress !== null &&
+    spaceOwner === signerAddress;
+
+  const courier = courierEntry(entry);
+  if (courier && isOwnSpace && space.startsWith(`tinycloud:pkh:eip155:${entry.signerChainId}:`)) {
+    return { family: "courier", displayLabel: new Set(entry.actions).size === courier.verbs.length ? ("exactText" in courier ? courier.exactText ?? courier.text : courier.text) : FAMILY_LABEL.courier };
+  }
+
+  if (spaceName === "agents" && (BOOTSTRAP_KV_SERVICES.has(service) || service === "tinycloud.hooks") && !path.startsWith("vault/secrets/") && !path.startsWith("secrets/")) {
+    return unknownActionLabel(service);
+  }
 
   // KV and SQL authority inside a TinyCloud secrets space reaches secret
   // data regardless of requester ownership. Classify it as a secret family
@@ -252,8 +305,8 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       return {
         family: "secret-namespace-list",
         displayLabel: isSecretValueRead(entry.actions)
-          ? "Secret data — (entire secrets namespace)"
-          : "Secret names and metadata — (entire secrets namespace)",
+          ? "Secret data — (all secrets)"
+          : "Secret names and metadata — (all secrets)",
       };
     }
     if (BOOTSTRAP_SQL_SERVICES.has(service)) {
@@ -293,7 +346,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       );
       const secretName =
         path.replace(/^vault\/secrets\/?/, "").replace(/^secrets\/?/, "") ||
-        "(entire secrets namespace)";
+        "(all secrets)";
       const isWholeNamespace =
         path === "vault/secrets" || path === "secrets";
       return {
@@ -306,8 +359,8 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
           ? `Named secret (mutate) — ${secretName}`
           : isWholeNamespace
             ? isSecretValueRead(entry.actions)
-              ? "Secret data — (entire secrets namespace)"
-              : "Secret names and metadata — (entire secrets namespace)"
+              ? "Secret data — (all secrets)"
+              : "Secret names and metadata — (all secrets)"
             : `Named secret (read) — ${secretName}`,
       };
     }
@@ -347,7 +400,35 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         return { family: "unknown", displayLabel: "Unrecognized account data" };
       }
     } else if (spaceName === "applications") {
-      knownTarget = { family: "own-app-data", displayLabel: "Application data" };
+      // A Share-style request's sender-history grant: the exact v2 records
+      // prefix with exactly `get`, `list`, `put`, `del`. Another user's space
+      // still falls through to the cross-app label below; a different verb
+      // set, the `vault/` prefix, or a v1 path keeps the generic app row.
+      knownTarget =
+        path.startsWith(SENDER_HISTORY_PREFIX) &&
+        verbsExactly(entry.actions, SENDER_HISTORY_VERBS)
+          ? { family: "own-app-data", displayLabel: SENDER_HISTORY_STATEMENT }
+          : { family: "own-app-data", displayLabel: "Application data" };
+    } else if (spaceName === "files-for-you") {
+      // The recipient-mailbox KV space of a Share-style request. The exact
+      // `v1/` + `get,list,put` shape earns its own label but stays in the
+      // fail-closed `unknown` family so `put` keeps Sensitive severity and
+      // every other verb set stays unrecognized. Another user's space keeps
+      // the unrecognized shape — no friendly label on borrowed trust.
+      if (
+        isOtherUser ||
+        path !== FILES_FOR_YOU_PATH ||
+        !verbsExactly(entry.actions, FILES_FOR_YOU_VERBS)
+      ) {
+        return {
+          family: "unknown",
+          displayLabel: "Unrecognized key-value data",
+        };
+      }
+      knownTarget = {
+        family: "unknown",
+        displayLabel: FILES_FOR_YOU_STATEMENT,
+      };
     } else if (spaceName === "public") {
       knownTarget = { family: "public-data", displayLabel: "Public data" };
     } else if (spaceName === "default") {
@@ -386,15 +467,22 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         if (!allVerbsIn(entry.actions, SQL_NAMED_DATABASE_VERBS)) {
           return unknownActionLabel(service);
         }
-        const label = joinDistinct(
-          entry.actions
-            .map((action) => SQL_ADMIN_OPERATIONS[verbOf(action)]?.label)
-            .filter((value): value is string => value !== undefined),
-          ", ",
-        );
+        const labels = [
+          ...new Set(
+            entry.actions
+              .map((action) => SQL_ADMIN_OPERATIONS[verbOf(action)]?.label)
+              .filter((value): value is string => value !== undefined),
+          ),
+        ];
+        // Several operations read as one plain line that keeps every consequence and the owner.
         return {
           family: "database-admin",
-          displayLabel: isOtherUser ? `${label} — another user's space` : label,
+          displayLabel:
+            labels.length > 1
+              ? plainSentence(entry.actions, entry.space, isOtherUser ? "another user's " : "your ")
+              : isOtherUser
+                ? `${labels[0]} — another user`
+                : labels[0]!,
         };
       }
       const allowed = scoped ? SQL_DATABASE_VERBS : SQL_DATA_VERBS;
@@ -449,10 +537,28 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     if (entry.serviceMismatch === true) {
       return unknownActionLabel(service);
     }
+    // Revoking names the space, not the app or link, so the row is only the
+    // label. It is not a read: it keeps its own verb set and stays sensitive
+    // (see classifySeverityFromActions). Anything else on another user's or
+    // an unproven space, or mixed with another verb, stays unrecognized.
+    if (allVerbsIn(entry.actions, DELEGATION_REVOKE_VERBS)) {
+      return isOwnSpace
+        ? { family: "bootstrap-delegation", displayLabel: DELEGATION_REVOKE_LABEL }
+        : unknownActionLabel(service);
+    }
     if (!allVerbsIn(entry.actions, DELEGATION_VERBS)) {
       return unknownActionLabel(service);
     }
     if (spaceName !== "account") {
+      // Reading which apps and links can reach the signer's own data: only
+      // `list` and `status` get here, and only on the signer's own
+      // `applications` space. Every other space stays unrecognized.
+      if (spaceName === "applications" && isOwnSpace) {
+        return {
+          family: "bootstrap-delegation",
+          displayLabel: DELEGATION_LIST_LABEL,
+        };
+      }
       return {
         family: "unknown",
         displayLabel: "Unrecognized delegation target",
@@ -466,7 +572,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     }
     return {
       family: "bootstrap-delegation",
-      displayLabel: "Connected access and sharing",
+      displayLabel: DELEGATION_LIST_LABEL,
     };
   }
   if (SECRETS_SERVICES.has(service)) {
@@ -491,8 +597,8 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       return {
         family: "secret-namespace-list",
         displayLabel: isSecretValueRead(entry.actions)
-          ? "Secret data — (entire secrets namespace)"
-          : "Secret names and metadata — (entire secrets namespace)",
+          ? "Secret data — (all secrets)"
+          : "Secret names and metadata — (all secrets)",
       };
     }
     return {
@@ -505,6 +611,12 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
   if (ENCRYPTION_SERVICES.has(service)) {
     if (entry.serviceMismatch === true) {
       return unknownActionLabel(service);
+    }
+    // A key or prefix under `apps/` is its own family. Other key resources
+    // keep the encryption classification below.
+    const keyResource = parseKeyResource(path === "" ? space : `${space}/${path}`);
+    if (keyResource && keyResource.keyPath.split("/")[0] === APPS_SEGMENT) {
+      return { family: "app-keys", displayLabel: FAMILY_LABEL["app-keys"] };
     }
     if (!allVerbsIn(entry.actions, ENCRYPTION_VERBS)) {
       return {
@@ -567,10 +679,13 @@ function classifyCoreOperation(
     return unknownActionLabel(service);
   }
   const family = dominantCoreFamily(operations);
-  const label = joinDistinct(
-    operations.map((operation) => operation.label),
-    ", ",
-  );
+  const labels = [...new Set(operations.map((operation) => operation.label))];
+  // Several operations read as one plain line that keeps every consequence and the owner.
+  const composed =
+    labels.length > 1
+      ? plainSentence(entry.actions, space, context.isOtherUser ? "another user's " : "your ")
+      : null;
+  const label = composed ?? labels[0]!;
 
   // Space operations address the space itself, not data inside it, so they
   // apply to any space name.
@@ -578,7 +693,7 @@ function classifyCoreOperation(
     if (family === "space-create") {
       return {
         family,
-        displayLabel: context.isOtherUser ? `${label} for another user` : label,
+        displayLabel: context.isOtherUser && composed === null ? `${label} for another user` : label,
       };
     }
     return context.isOtherUser
@@ -601,14 +716,14 @@ function classifyCoreOperation(
     // Never lower an administrative grant to the attention-level
     // cross-user family.
     return family === "database-admin"
-      ? { family, displayLabel: `${label} — another user's space` }
+      ? { family, displayLabel: composed ?? `${label} — another user` }
       : { family: "cross-app-data", displayLabel: "Another user's data" };
   }
   return { family, displayLabel: label };
 }
 
 function describeName(path: string): string {
-  if (!path) return "(entire secrets namespace)";
+  if (!path) return "(all secrets)";
   return path;
 }
 
@@ -626,12 +741,17 @@ export function classifySeverityFromActions(
   const hasDecrypt = verbs.some((v) => DECRYPT_VERBS.has(v));
 
   switch (family) {
+    case "courier":
+      return scope ? courierEntry({ ...scope, actions })?.severity ?? "sensitive" : "sensitive";
     case "bootstrap-kv":
     case "bootstrap-sql":
       return "standard";
     case "bootstrap-capabilities":
-    case "bootstrap-delegation":
       return "standard";
+    case "bootstrap-delegation":
+      // The reads are routine. Revoke cuts off access the signer gave, and
+      // its authority is the whole space, not one named grant.
+      return allVerbsIn(actions, DELEGATION_VERBS) ? "standard" : "sensitive";
     case "own-app-data":
       return "standard";
     case "cross-app-data":
@@ -649,6 +769,8 @@ export function classifySeverityFromActions(
         : "sensitive";
     case "encryption-decrypt":
       return hasDecrypt ? "sensitive" : "attention";
+    case "app-keys":
+      return allVerbsIn(actions, APP_KEY_MANAGEMENT_VERBS) ? "attention" : "sensitive";
     case "space-create":
     case "database-admin":
       return "sensitive";
@@ -659,6 +781,7 @@ export function classifySeverityFromActions(
     case "duckdb-data":
       return "standard";
     case "unknown":
+      if (scope && /(?:^|:)agents(?:[/:]|$)/.test(scope.space)) return "sensitive";
     default:
       // Fail-closed: an unknown service could be doing anything. Always
       // elevate at least to "attention"; if it also carries a mutation verb

@@ -43,6 +43,7 @@ export type {
   OpenKeyServerMetadata,
   NativeSessionKeypair,
   BuildParRequestOptions,
+  NativeLoginMethod,
   PushedAuthorizationResponse,
   NativeCallbackResult,
   SessionProofOptions,
@@ -83,3 +84,5 @@ export {
   parseRetryAfterSeconds,
   delegationNeedsRenewalNow,
 } from './native-delegation';
+
+export { sameTinyCloudHost } from './tinycloud-host';

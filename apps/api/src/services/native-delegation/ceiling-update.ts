@@ -83,8 +83,13 @@ function listFields(config: NativeDelegationConfig | null): Record<string, strin
   return {
     'kv.paths': config?.kv.paths ?? [],
     'kv.actions': config?.kv.actions ?? [],
+    'kv.root': config?.kv.root ? ['true'] : [],
     'sql.databases': config?.sql?.databases ?? [],
     'sql.actions': config?.sql?.actions ?? [],
+    'sql.prefixes': config?.sql?.prefixes ?? [],
+    'sql.foreignDatabases': config?.sql?.foreignDatabases ?? [],
+    'hooks.paths': config?.hooks?.paths ?? [],
+    'hooks.actions': config?.hooks?.actions ?? [],
   };
 }
 

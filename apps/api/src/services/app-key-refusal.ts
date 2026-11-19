@@ -6,10 +6,30 @@
 // does not depend on how the wasm parser presents a resource. A message whose
 // ReCap cannot be read exactly is refused.
 
-import { isAppsKeyResource, parseKeyResource } from './key-resource';
+import { elevatedKindOf } from '@openkey/capability-review';
+import { isAppsKeyResource, isKeyDeleteAbility, keyPathOfResource, KEY_RESOURCE_PREFIX, parseKeyResource } from './key-resource';
 import { decodeHexUtf8, isSiweShaped } from './siwe-origin';
 
-export type AppKeyRefusalReason = 'key_delete' | 'apps_key' | 'apps_key_unparsed' | 'recap_unreadable';
+export type AppKeyRefusalReason =
+  | 'key_delete'
+  /** An `apps/` grant with no admission: the site does not list it, or the request is not one a site can make. */
+  | 'apps_key'
+  | 'apps_key_unparsed'
+  /** decrypt or key.create on an exact share key (`share/<id>`) that OpenKey did not make for the request (TC-2927). Same code as `apps_key`, its own words. */
+  | 'share_key_not_minted'
+  /** The request did not come from a verified https origin of the app's own site. */
+  | 'apps_key_origin'
+  /** The app id does not belong to the requesting site's host. */
+  | 'apps_key_app_id'
+  /** The site's manifest could not be fetched and matched, or has no usable app id. */
+  | 'apps_key_manifest'
+  /** The site's `keys` block cannot be read. */
+  | 'apps_key_keys'
+  /** The message does not say when access ends. */
+  | 'apps_key_expiry'
+  /** The owner or network is not the signer's own account. */
+  | 'apps_key_account'
+  | 'recap_unreadable';
 
 export interface AppKeyRefusal {
   reason: AppKeyRefusalReason;
@@ -30,20 +50,28 @@ export interface RecapEntryLike {
 
 const NOT_DECLARED_MESSAGE =
   "This website doesn't list the key this app asked for, so OpenKey didn't approve it.";
+const SHARE_KEY_NOT_MINTED_MESSAGE = "This site isn't allowed to request that access.";
+const ORIGIN_MESSAGE =
+  "App keys can only be requested by the app's own website, so OpenKey didn't approve this request.";
+const APP_ID_MESSAGE =
+  "This app doesn't belong to this website, so OpenKey didn't approve its keys.";
+const MANIFEST_MESSAGE =
+  "OpenKey couldn't check this website's app details, so it didn't approve this request.";
+const EXPIRY_MESSAGE = "This request doesn't say when access ends, so OpenKey didn't approve it.";
+const ACCOUNT_MESSAGE = "This request doesn't match your account, so OpenKey didn't approve it.";
+const KEYS_MESSAGE =
+  "This website's list of app keys can't be read, so OpenKey didn't approve this request.";
+const GROUP_PARTIAL_MESSAGE =
+  "App keys can only be approved together, so OpenKey didn't approve this request.";
 const KEY_DELETE_MESSAGE =
   "Apps can't be given permission to delete keys, so OpenKey didn't approve this request.";
 const NON_BROWSER_MESSAGE =
-  'App keys can only be requested from a website, not from the command line or a device sign-in.';
+  "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request.";
 // The wording the delegate routes already use for a recap they cannot read.
-const UNREADABLE_RECAP_MESSAGE = 'Invalid SIWE recap';
+export const UNREADABLE_RECAP_MESSAGE = "This request's permission list can't be read, so OpenKey didn't approve it.";
 
 const RECAP_RESOURCE = /urn:recap:(\S*)/gi;
 const BASE64URL = /^[A-Za-z0-9_-]+={0,2}$/;
-
-/** `key.delete` under any namespace: the last `/`-separated part of the ability. */
-function isKeyDeleteAbility(ability: string): boolean {
-  return ability.slice(ability.lastIndexOf('/') + 1).toLowerCase() === 'key.delete';
-}
 
 /**
  * Does this JSON text repeat a key inside any one object? `JSON.parse` keeps
@@ -114,13 +142,122 @@ function recapAbilities(token: string): Record<string, string[]> | null {
   return abilities;
 }
 
-function refusalForResources(resources: Iterable<[string, readonly string[]]>): AppKeyRefusal | null {
+/** An `apps/` resource admitted for one sign-in message, as written, with the abilities admitted on it. */
+export interface AdmittedAppKey {
+  resource: string;
+  abilities: readonly string[];
+}
+
+function isAdmitted(
+  resource: string,
+  abilities: readonly string[],
+  admitted: readonly AdmittedAppKey[] | undefined,
+): boolean {
+  const grant = admitted?.find((candidate) => candidate.resource === resource);
+  return grant !== undefined && abilities.every((ability) => grant.abilities.includes(ability));
+}
+
+function refusalForResources(
+  resources: Iterable<[string, readonly string[]]>,
+  admitted?: readonly AdmittedAppKey[],
+): AppKeyRefusal | null {
   let appsKey: AppKeyRefusalReason | null = null;
   for (const [resource, abilities] of resources) {
     if (abilities.some(isKeyDeleteAbility)) return { reason: 'key_delete' };
-    if (isAppsKeyResource(resource)) appsKey = parseKeyResource(resource) ? 'apps_key' : 'apps_key_unparsed';
+    if (isAppsKeyResource(resource) && !isAdmitted(resource, abilities, admitted)) {
+      appsKey = parseKeyResource(resource) ? 'apps_key' : 'apps_key_unparsed';
+    }
   }
   return appsKey ? { reason: appsKey } : null;
+}
+
+/** Every resource of every `urn:recap:` resource of a SIWE message with its ability names, or `null` when a ReCap cannot be read exactly. */
+function recapResources(siwe: string): Array<[string, string[]]> | null {
+  const resources: Array<[string, string[]]> = [];
+  if (!isSiweShaped(siwe)) return resources;
+  for (const match of siwe.matchAll(RECAP_RESOURCE)) {
+    const abilities = recapAbilities(match[1]!);
+    if (!abilities) return null;
+    resources.push(...Object.entries(abilities));
+  }
+  return resources;
+}
+
+/** The `apps/` resources of a SIWE message with their abilities, as written. `null` when a ReCap cannot be read. */
+export function appKeyResourcesOf(siwe: string): Array<[string, string[]]> | null {
+  return recapResources(siwe)?.filter(([resource]) => isAppsKeyResource(resource)) ?? null;
+}
+
+/** `key.block` and `key.unblock` under any namespace, compared like `key.delete`. */
+function isKeyBlockAbility(ability: string): boolean {
+  const name = ability.slice(ability.lastIndexOf('/') + 1).toLowerCase();
+  return name === 'key.block' || name === 'key.unblock';
+}
+
+/**
+ * The encryption resources of a SIWE message outside `apps/` that carry
+ * `key.block` or `key.unblock`: a bare network, a key or a prefix. The node
+ * does not tie these two abilities to the requesting host, so a browser
+ * request may name them only under its own `apps/<app id>/`.
+ */
+export function blockResourcesOutsideApps(siwe: string): Array<[string, string[]]> {
+  return (recapResources(siwe) ?? []).filter(
+    ([resource, abilities]) =>
+      resource.slice(0, KEY_RESOURCE_PREFIX.length).toLowerCase() === KEY_RESOURCE_PREFIX &&
+      !isAppsKeyResource(resource) &&
+      abilities.some(isKeyBlockAbility),
+  );
+}
+
+/** `decrypt` and `key.create` under any namespace, compared like `key.block`. */
+function isEncryptionGrantAbility(ability: string): boolean {
+  const name = ability.slice(ability.lastIndexOf('/') + 1).toLowerCase();
+  return name === 'decrypt' || name === 'key.create';
+}
+
+/** An exact share key: `share/<id>`, one segment under `share/` (compared like the other key paths). */
+const EXACT_SHARE_KEY = /^share\/[^/]+$/i;
+
+/**
+ * Refusal for a SIWE message whose ReCap asks to `decrypt` or `key.create` on an exact share key (`share/<id>`).
+ * The id of a share is a value the requesting app chooses or guesses, which the owner cannot judge, so an exact
+ * share-key grant is accepted only for an id OpenKey made for the request (TC-2927; for every app, first-party
+ * included, and for every route that signs a message). Until the new-share approval mints ids, none is accepted. The
+ * prefix `share/` and the whole network are not exact keys: they go through the per-permission warning.
+ * A ReCap that cannot be read exactly is refused too, never passed. The prepared-handoff (command line) routes do
+ * not call this.
+ */
+export function exactShareKeyRefusal(siwe: string): AppKeyRefusal | null {
+  const resources = recapResources(siwe);
+  if (resources === null) return { reason: 'recap_unreadable' };
+  const exact = resources.some(([resource, abilities]) => {
+    const path = keyPathOfResource(resource);
+    return path !== null && EXACT_SHARE_KEY.test(path) && abilities.some(isEncryptionGrantAbility);
+  });
+  return exact ? { reason: 'share_key_not_minted' } : null;
+}
+
+/** Same check for a message as the signer will cover it: as written, and as UTF-8 when it is `0x` hex. */
+export function exactShareKeyRefusalForMessage(message: string): AppKeyRefusal | null {
+  const direct = exactShareKeyRefusal(message);
+  if (direct) return direct;
+  const decoded = decodeHexUtf8(message);
+  return decoded === null ? null : exactShareKeyRefusal(decoded);
+}
+
+/**
+ * Does this message ask for anything the extra warning screen covers: `decrypt` or `key.create` on a whole encryption
+ * network, or on a key or prefix outside `apps/` (`elevatedKindOf`, shared with the screen)? Text and `0x` hex are
+ * both read. A ReCap that cannot be read is not elevated here: the refusal checks report it.
+ */
+export function messageHasElevatedPermissions(message: string): boolean {
+  const hasElevated = (siwe: string): boolean =>
+    (recapResources(siwe) ?? []).some(([resource, abilities]) =>
+      abilities.some((ability) => elevatedKindOf({ service: 'encryption', space: 'encryption', path: resource }, ability) !== null),
+    );
+  if (hasElevated(message)) return true;
+  const decoded = decodeHexUtf8(message);
+  return decoded !== null && hasElevated(decoded);
 }
 
 /**
@@ -132,20 +269,22 @@ function refusalForResources(resources: Iterable<[string, readonly string[]]>): 
  * `entries` are the wasm-parsed entries of the same message, when the caller
  * has them: `space` and `path` of every entry, under any service name, get the
  * same check.
+ *
+ * `admitted` lists the `apps/` resources an earlier step admitted for this
+ * message. A resource is passed only when it is byte-equal to an admitted one
+ * and carries no ability the admission did not name.
  */
-export function appKeyRefusalForSiwe(siwe: string, entries?: readonly RecapEntryLike[]): AppKeyRefusal | null {
-  const resources: Array<[string, readonly string[]]> = [];
-  if (isSiweShaped(siwe)) {
-    for (const match of siwe.matchAll(RECAP_RESOURCE)) {
-      const abilities = recapAbilities(match[1]!);
-      if (!abilities) return { reason: 'recap_unreadable' };
-      resources.push(...Object.entries(abilities));
-    }
-  }
+export function appKeyRefusalForSiwe(
+  siwe: string,
+  entries?: readonly RecapEntryLike[],
+  admitted?: readonly AdmittedAppKey[],
+): AppKeyRefusal | null {
+  const resources = recapResources(siwe);
+  if (resources === null) return { reason: 'recap_unreadable' };
   for (const entry of entries ?? []) {
-    resources.push([entry.space, entry.actions], [entry.path, entry.actions]);
+    resources.push([entry.space, [...entry.actions]], [entry.path, [...entry.actions]]);
   }
-  return refusalForResources(resources);
+  return refusalForResources(resources, admitted);
 }
 
 /** Same check for a message as the signer will cover it: as written, and as UTF-8 when it is `0x` hex. */
@@ -154,6 +293,18 @@ export function appKeyRefusalForMessage(message: string): AppKeyRefusal | null {
   if (direct) return direct;
   const decoded = decodeHexUtf8(message);
   return decoded === null ? null : appKeyRefusalForSiwe(decoded);
+}
+
+/**
+ * Does a message, as written or as UTF-8 when it is `0x` hex, carry `key.block`
+ * or `key.unblock` on an encryption resource outside `apps/`? A route that
+ * signs a message without a manifest cannot tell which app asks, so it refuses
+ * these whatever the origin.
+ */
+export function blocksOutsideApps(message: string): boolean {
+  if (blockResourcesOutsideApps(message).length > 0) return true;
+  const decoded = decodeHexUtf8(message);
+  return decoded !== null && blockResourcesOutsideApps(decoded).length > 0;
 }
 
 export function appKeyRefusalCode(refusal: AppKeyRefusal): AppKeyRefusalCode {
@@ -168,6 +319,13 @@ export function appKeyRefusalStatus(refusal: AppKeyRefusal): 400 | 403 {
 export function appKeyRefusalMessage(refusal: AppKeyRefusal, source: AppKeyRequestSource): string {
   if (refusal.reason === 'key_delete') return KEY_DELETE_MESSAGE;
   if (refusal.reason === 'recap_unreadable') return UNREADABLE_RECAP_MESSAGE;
+  if (refusal.reason === 'share_key_not_minted') return SHARE_KEY_NOT_MINTED_MESSAGE;
+  if (source === 'browser' && refusal.reason === 'apps_key_origin') return ORIGIN_MESSAGE;
+  if (source === 'browser' && refusal.reason === 'apps_key_app_id') return APP_ID_MESSAGE;
+  if (source === 'browser' && refusal.reason === 'apps_key_manifest') return MANIFEST_MESSAGE;
+  if (source === 'browser' && refusal.reason === 'apps_key_keys') return KEYS_MESSAGE;
+  if (source === 'browser' && refusal.reason === 'apps_key_expiry') return EXPIRY_MESSAGE;
+  if (source === 'browser' && refusal.reason === 'apps_key_account') return ACCOUNT_MESSAGE;
   return source === 'non_browser' ? NON_BROWSER_MESSAGE : NOT_DECLARED_MESSAGE;
 }
 
@@ -177,4 +335,45 @@ export function appKeyRefusalBody(
   source: AppKeyRequestSource,
 ): { error: string; code: AppKeyRefusalCode } {
   return { error: appKeyRefusalMessage(refusal, source), code: appKeyRefusalCode(refusal) };
+}
+
+/** What the 400 for a partial app-key selection says. */
+export const APP_KEY_GROUP_PARTIAL_MESSAGE = GROUP_PARTIAL_MESSAGE;
+
+/** Code of the refusal for a narrowed selection that keeps an `apps/` row and drops anything else. */
+export const APP_KEY_GROUP_PARTIAL_CODE = 'app_key_group_partial';
+
+/**
+ * Selection rule for admitted `apps/` grants: the app-key rows are approved
+ * together with the rest of the request or removed as a unit. `appKeyIds` are
+ * the action ids of the admitted rows, `allowedIds` every action id of the
+ * request, `selectedIds` the selection. Returns true when the selection keeps
+ * an app-key row and drops any other action.
+ */
+export function appKeyGroupPartial(
+  appKeyIds: ReadonlySet<string>,
+  allowedIds: ReadonlySet<string>,
+  selectedIds: ReadonlySet<string>,
+): boolean {
+  if (appKeyIds.size === 0) return false;
+  const keepsAppKey = [...appKeyIds].some((id) => selectedIds.has(id));
+  if (!keepsAppKey) return false;
+  return [...allowedIds].some((id) => !selectedIds.has(id));
+}
+
+/**
+ * The action ids of the admitted `apps/` rows of a request: every action of an
+ * entry whose path is one of the admitted resources, byte for byte.
+ */
+export function admittedAppKeyActionIds<Entry extends { path: string; actions: readonly string[] }>(
+  entries: readonly Entry[],
+  admitted: readonly AdmittedAppKey[] | undefined,
+  actionId: (entry: Entry, action: string) => string,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    if (!admitted?.some((grant) => grant.resource === entry.path)) continue;
+    for (const action of entry.actions) ids.add(actionId(entry, action));
+  }
+  return ids;
 }

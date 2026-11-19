@@ -181,6 +181,10 @@ const signer = await ethersProvider.getSigner();
 
 ## Integration with TinyCloud
 
+Give `TinyCloudWeb` a `manifest` that lists what your app needs. A sign-in with **no** manifest asks for
+`decrypt` on the account's whole default encryption network, and OpenKey refuses that from any site that is not
+one of its own apps. List only what the app uses, and leave `tinycloud.encryption` out of the manifest.
+
 ```typescript
 import { OpenKey, OpenKeyEIP1193Provider } from '@openkey/sdk';
 import { TinyCloudWeb } from '@tinycloud/web-sdk';
@@ -193,6 +197,8 @@ const web3Provider = new providers.Web3Provider(eip1193Provider);
 
 const tcw = new TinyCloudWeb({
   providers: { web3: { driver: web3Provider } },
+  // Required: without it the sign-in requests whole-network decrypt and OpenKey refuses it.
+  manifest: { app_id: 'com.example.notes', name: 'Example Notes' },
 });
 
 await tcw.signIn();

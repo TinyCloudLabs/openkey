@@ -121,6 +121,78 @@ describe('confidential CoordinationOS OAuth client', () => {
     expect(fetchedPayload.client).not.toHaveProperty('clientSecret');
     expect(JSON.stringify(fetchedPayload)).not.toContain(payload.clientSecret);
   });
+  test('identity access is granted only with the exact identity scope set', async () => {
+    const publicResponse = await request('/clients', 'POST', {
+      name: 'public identity client', type: 'spa', redirectUris: ['https://app.example/callback'],
+      scopes: ['openid', 'email', 'tinycloud:identity'],
+    });
+    expect(publicResponse.status).toBe(400);
+    expect(create).not.toHaveBeenCalled();
+
+    const confidentialResponse = await request('/clients', 'POST', {
+      ...valid, scopes: ['openid', 'email', 'tinycloud:identity'],
+    });
+    expect(confidentialResponse.status).toBe(201);
+    expect(stored).toMatchObject({
+      type: 'web', public: false, tokenEndpointAuthMethod: 'client_secret_basic',
+      scopes: ['openid', 'email', 'tinycloud:identity'],
+    });
+  });
+  test.each([
+    { scopes: ['openid', 'email', 'tinycloud:identity', 'keys'] },
+    { scopes: ['openid', 'email', 'tinycloud:identity', 'tinycloud:session'] },
+    { scopes: ['openid', 'email', 'keys', 'tinycloud:session', 'tinycloud:identity'] },
+    { scopes: ['openid', 'email', 'tinycloud:identity', 'tinycloud:manage-key'] },
+    { scopes: ['openid', 'email', 'tinycloud:identity', 'tinycloud:delegation'] },
+    { scopes: ['openid', 'email', 'tinycloud:identity', 'tinycloud:mcp'] },
+    { scopes: ['openid', 'email', 'tinycloud:identity', 'offline_access'] },
+  ])('refuses identity registration with extra scopes %#', async ({ scopes }) => {
+    const response = await request('/clients', 'POST', { ...valid, scopes });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: 'tinycloud:identity requires exactly openid, email, and tinycloud:identity',
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+  test('public client scope updates cannot add identity access', async () => {
+    const created = await request('/clients', 'POST', {
+      name: 'Public client', type: 'spa', redirectUris: ['https://app.example/callback'],
+    });
+    expect(created.status).toBe(201);
+    const clientId = stored.clientId;
+    const response = await request(`/clients/${clientId}`, 'PATCH', { scopes: ['openid', 'tinycloud:identity'] });
+    expect(response.status).toBe(400);
+    expect(update).not.toHaveBeenCalled();
+  });
+  test.each([
+    { scopes: ['openid', 'email', 'tinycloud:identity', 'keys'] },
+    { scopes: ['openid', 'email', 'tinycloud:identity', 'tinycloud:session'] },
+    { scopes: ['openid', 'email', 'tinycloud:identity', 'tinycloud:manage-key'] },
+    { scopes: ['openid', 'email', 'tinycloud:identity', 'offline_access'] },
+  ])('refuses PATCH scope lists that combine identity with other capabilities %#', async ({ scopes }) => {
+    stored = {
+      id: 'identity-client-row', clientId: 'identity-client', type: 'web', public: false,
+      tokenEndpointAuthMethod: 'client_secret_basic', scopes: ['openid', 'email', 'tinycloud:identity'],
+      disabled: false, skipConsent: false,
+    };
+    const response = await request('/clients/identity-client', 'PATCH', { scopes });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: 'tinycloud:identity requires exactly openid, email, and tinycloud:identity',
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+  test('refuses adding identity to a client that already has other scopes', async () => {
+    await request('/clients', 'POST', valid);
+    const response = await request(`/clients/${stored.clientId}`, 'PATCH', {
+      scopes: ['openid', 'email', 'tinycloud:identity'],
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: 'tinycloud:identity cannot be added to an existing client',
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
 
   test.each([
     [{ ...valid, redirectUris: [] }],
@@ -283,6 +355,29 @@ describe('confidential CoordinationOS OAuth client', () => {
     const listedClient = (await listed.json() as any).clients[0];
     expect(listedClient).toMatchObject({ autoApprove: true });
     expect(JSON.stringify(listedClient)).not.toContain('clientSecret');
+  });
+  test('identity clients cannot be auto-approved on create or update', async () => {
+    const created = await request('/clients', 'POST', {
+      ...valid, scopes: ['openid', 'email', 'tinycloud:identity'], autoApprove: true,
+    });
+    expect(created.status).toBe(400);
+    expect(await created.json()).toEqual({ error: 'tinycloud:identity clients cannot be auto-approved' });
+    expect(create).not.toHaveBeenCalled();
+
+    await request('/clients', 'POST', { ...valid, scopes: ['openid', 'email', 'tinycloud:identity'] });
+    const enabling = await request(`/clients/${stored.clientId}`, 'PATCH', { autoApprove: true });
+    expect(enabling.status).toBe(400);
+    expect(await enabling.json()).toEqual({ error: 'tinycloud:identity clients cannot be auto-approved' });
+    expect(update).not.toHaveBeenCalled();
+  });
+  test('refuses adding identity to a client with auto-approval enabled', async () => {
+    await request('/clients', 'POST', { ...valid, autoApprove: true });
+    const response = await request(`/clients/${stored.clientId}`, 'PATCH', {
+      scopes: ['openid', 'email', 'tinycloud:identity'],
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'tinycloud:identity clients cannot be auto-approved' });
+    expect(update).not.toHaveBeenCalled();
   });
 
   test('auto approval cannot be enabled for public clients', async () => {

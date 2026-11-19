@@ -10,6 +10,11 @@ name: Register OAuth Client
 # deploy-api does): a dispatch waits for that environment's required reviewer,
 # and DATABASE_URL is read from the environment's secret of that name.
 # Client ids are public, so log output is safe.
+#
+# Update mode (client_id set) writes only the inputs that are set: an empty icon or theme color
+# leaves the stored value unchanged and `none` clears it. Before the TC-3268 fix an empty value
+# cleared it, so on a ref that does not contain that fix pass the icon and both theme colors
+# explicitly (a run that sets only the name clears them).
 
 on:
   workflow_dispatch:

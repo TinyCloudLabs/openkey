@@ -198,7 +198,7 @@ describe("Blocker 4 follow-up (Defect 1): service exactness", () => {
     expect(g.metadataLabel).toBeNull();
     expect(g.appScopeNearMiss).toBe(true);
     const stmt = buildStatement(g);
-    expect(stmt.primaryText).toBe("Perform kv/get on kv");
+    expect(stmt.primaryText).toBe("Read secrets");
     expect(stmt.primaryText).not.toContain("app secret");
   });
 
@@ -251,7 +251,7 @@ describe("Blocker 4 follow-up (Defect 2): path byte-exactness", () => {
     expect(g.appScopeNearMiss).toBe(true);
     const stmt = buildStatement(g);
     expect(stmt.primaryText).not.toContain("app secret");
-    expect(stmt.primaryText).toBe("Perform tinycloud.kv/get on tinycloud.kv");
+    expect(stmt.primaryText).toBe("Read secrets");
   });
 });
 
@@ -375,9 +375,9 @@ describe("Blocker 4 follow-up (Defect 4): widened near-miss detection", () => {
     const stmt = buildStatement(g);
     expect(stmt.primaryText).not.toContain("app secret");
     expect(stmt.primaryText).not.toContain("Read TinyCloud Secrets data");
-    // Literal fallback: `Perform tinycloud.sql/read on tinycloud.sql`.
+    // Literal fallback: `Read your secrets`.
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.sql/read on tinycloud.sql",
+      "Read secrets",
     );
   });
 
