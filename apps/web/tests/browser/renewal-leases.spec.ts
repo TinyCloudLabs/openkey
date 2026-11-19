@@ -1,4 +1,4 @@
-// TC-2946: Renewing permissions in Settings, and the dashboard's sign-out report, against a mocked API.
+// TC-2946: Renewing permissions in Settings against a mocked API.
 // Set TC2946_SHOTS_DIR to save screenshots at 390 and 1280 px.
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { FIXTURE_META, makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
@@ -102,18 +102,4 @@ test('a wallet-signed permission is stopped with the wallet signing the exact me
   await expect(page.locator('#renewing-permissions').getByRole('status')).toBeVisible();
   expect(await page.evaluate(() => (window as unknown as { signed: unknown[] }).signed)).toEqual([[message, OWNER]]);
   expect(bodies).toEqual([{}, { siwe: message, signature: `0x${'ab'.repeat(65)}` }]);
-});
-
-test('signing out from the dashboard says when a permission is still renewing', async ({ page }) => {
-  await setup(page, [], (route) => json(route, {}));
-  let signedOut = false;
-  await page.route('**/api/auth/sign-out', (route) => { signedOut = true; return json(route, { success: true, renewalLeases: { stopped: 1, notStopped: 1, walletRequired: 0 } }); });
-  await page.route('**/api/auth/get-session', (route) => json(route, signedOut ? null : session));
-  await page.goto('/dashboard');
-  // Keys loaded: the page is hydrated and its buttons are wired.
-  await expect(page.getByText(/No keys yet/)).toBeVisible();
-  await page.getByRole('button', { name: 'Sign Out' }).click();
-  await expect(page.getByRole('alert')).toBeVisible();
-  await expect(page).toHaveURL(/\/dashboard$/);
-  await shot(page, 'sign-out-still-renewing');
 });

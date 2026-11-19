@@ -8,6 +8,9 @@ const EXPIRY_CHANGEABLE_MESSAGE = "This access length can't be used. Choose a di
 const EXPIRY_NOT_CHANGEABLE_MESSAGE = "This access length can't be used. Start again from the app or command.";
 const SESSION_ENDED_MESSAGE = 'Your OpenKey session ended. Sign in again, then approve the request again.';
 const RATE_LIMITED_MESSAGE = 'Too many attempts. Wait five minutes, then try again.';
+const REQUEST_NOT_APPROVABLE_MESSAGE = "OpenKey can't approve this kind of access. The app or command needs to ask for something different.";
+// A 409 reads as "being approved" unless its code names a conflict that waiting cannot clear.
+const CONFLICTS_THAT_WAITING_DOES_NOT_CLEAR: Record<string, true> = { request_binding: true, renewal_already_signed: true };
 const SHORT_CODE_FAILURE = "Couldn't create a short code. Use the full delegation code instead.";
 const APPROVAL_BUSY_MESSAGE = apiBusyOrEndedMessage(409) ?? 'This request is already being approved. Wait a moment.';
 const APPROVAL_FAILURE_MESSAGE = "Couldn't approve this request. Try again.";
@@ -15,6 +18,19 @@ const APPROVAL_FAILURE_MESSAGE = "Couldn't approve this request. Try again.";
 export interface DelegateFailureTextOptions {
   permissionsEditable?: boolean;
   expiryChangeable?: boolean;
+  serverMessage?: string;
+}
+
+const SERVER_MESSAGE_MAX = 300;
+
+export function delegateServerMessage(body: unknown): string | undefined {
+  const message = (body as { message?: unknown } | null)?.message;
+  return typeof message === 'string' && message.trim() ? message.slice(0, SERVER_MESSAGE_MAX) : undefined;
+}
+
+export function delegateFailureDetail(status: number, code: unknown, serverMessage: unknown): string | null {
+  if (status !== 400 || code !== 'invalid_permissions') return null;
+  return delegateServerMessage({ message: serverMessage }) ?? null;
 }
 
 type MappedMessage = string | ((options: DelegateFailureTextOptions) => string);
@@ -67,7 +83,9 @@ const CODE_MESSAGES: Record<string, MappedMessage> = {
   app_key_grant_refused: "OpenKey can't approve this kind of access. The app or command needs to ask for something different.",
   key_delete_not_grantable: "Apps and commands can't be given permission to delete keys. Nothing was approved. Ask the app or command to send a new request without that permission.",
   invalid_siwe_recap: "This request's permission list can't be read. Nothing was approved. Ask the app or command to send a new request.",
-  invalid_permissions: "OpenKey can't approve this kind of access. The app or command needs to ask for something different.",
+  invalid_permissions: REQUEST_NOT_APPROVABLE_MESSAGE,
+  delegation_prepare_failed: REQUEST_NOT_APPROVABLE_MESSAGE,
+  signed_exceeds_request: REQUEST_NOT_APPROVABLE_MESSAGE,
   rate_limited: RATE_LIMITED_MESSAGE,
   key_not_found: "This key isn't available on your account. Choose a key you own and try again.",
   key_state_invalid: "This key isn't available on your account. Choose a key you own and try again.",
@@ -141,12 +159,14 @@ export function delegateResponseFailureText(
   code: unknown,
   options: DelegateFailureTextOptions = {},
 ): string {
-  if (status === 409) return APPROVAL_BUSY_MESSAGE;
+  const codeText = safeCode(code);
+  if (status === 409 && !(codeText && CONFLICTS_THAT_WAITING_DOES_NOT_CLEAR[codeText] === true)) return APPROVAL_BUSY_MESSAGE;
   if (status === 410) return ENDED_MESSAGE;
   if (status === 401) return SESSION_ENDED_MESSAGE;
   if (status === 429) return RATE_LIMITED_MESSAGE;
 
-  const codeText = safeCode(code);
+  const serverMessage = delegateServerMessage({ message: options.serverMessage });
+  if (serverMessage && codeText === 'app_key_grant_refused') return serverMessage;
   const mappedMessage = codeText ? CODE_MESSAGES[codeText] : undefined;
   if (typeof mappedMessage === 'function') return mappedMessage(options);
   if (mappedMessage) return mappedMessage;
@@ -177,4 +197,30 @@ export function shortCodeFailureText(status?: number, code?: unknown): string {
   return codeText
     ? `${SHORT_CODE_FAILURE} (Error ${status} · ${codeText})`
     : `${SHORT_CODE_FAILURE} (Error ${status})`;
+}
+
+// Refusals that name the request or the account, not the key: choosing any other key repeats them.
+// Left out: key-mismatch, signature-mismatch and space-mismatch (they compare against the key),
+// authorization_context_failed (a server failure a retry can clear), and the codes that describe one
+// prepared context (choosing a key prepares a new one).
+const KEY_INDEPENDENT_REFUSAL_CODES: Record<string, true> = {
+  handoff_expired: true,
+  handoff_consumed: true,
+  handoff_replayed: true,
+  handoff_cancelled: true,
+  handoff_not_found: true,
+  handoff_claimed: true,
+  prepared_expired: true,
+  expired_request: true,
+  expired_result: true,
+  already_approved: true,
+  'user-mismatch': true,
+  request_binding: true,
+  key_delete_not_grantable: true,
+  invalid_siwe_recap: true,
+};
+
+export function refusalIgnoresKeyChoice(status: number, code: unknown): boolean {
+  const codeText = safeCode(code);
+  return status === 410 || (codeText !== null && KEY_INDEPENDENT_REFUSAL_CODES[codeText] === true);
 }
