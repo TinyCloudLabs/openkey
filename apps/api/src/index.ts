@@ -17,6 +17,9 @@ import { createReviewerAdminRouter } from './routes/reviewer-admin';
 import { keysRouter } from './routes/keys';
 import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
+import { createAccountTermsRouter } from './routes/account-terms';
+import { termsRelease } from './services/terms';
+import { createTermsSessionGuard, createTermsSubjectGuard } from './middleware/terms';
 import { oauthAdminRouter } from './routes/oauth-admin';
 import { createResourceIntrospectRouter } from './routes/oauth-resource-introspect';
 import { MCP_AUDIENCES, oauthValidAudiences } from './oauth-config';
@@ -65,6 +68,13 @@ try {
   new URL(betterAuthUrl);
 } catch {
   logConfigInvalid('BETTER_AUTH_URL');
+  throw new Error('Invalid API configuration');
+}
+// A Terms release that is set but invalid would gate every account on a version no one can accept.
+try {
+  termsRelease();
+} catch {
+  logConfigInvalid('TERMS_RELEASE');
   throw new Error('Invalid API configuration');
 }
 
@@ -262,6 +272,13 @@ app.use('/api/auth/oauth2/userinfo', createMcpUserinfoGuard({
 // the lock filter in auth.ts can hide, so the provider's own answer is checked.
 app.use('/api/auth/oauth2/userinfo', createLockedSubjectGuard(authPrisma));
 app.use('/api/auth/oauth2/introspect', createLockedSubjectGuard(authPrisma));
+// TC-3232: until the account accepts the Terms, its tokens get no userinfo answer, and no consent or
+// postLogin continue goes ahead.
+app.use('/api/auth/oauth2/userinfo', createTermsSubjectGuard(authPrisma));
+const termsSessionGuard = createTermsSessionGuard(authPrisma, async (headers) =>
+  (await auth.api.getSession({ headers, query: { disableRefresh: true } }))?.user.id ?? null);
+app.use('/api/auth/oauth2/consent', termsSessionGuard);
+app.use('/api/auth/oauth2/continue', termsSessionGuard);
 app.use('/api/auth/*', createRevokeDenylist({
   database: authPrisma,
   verify: createAccessTokenVerifier({ issuer: oauthIssuer, getJwks: readSigningKeys }),
@@ -300,7 +317,9 @@ app.route('/api/keys', keysRouter);
 // separate from the Ethereum/ECDSA routes above)
 app.route('/api/keys/nostr', nostrKeysRouter);
 
-// Account management routes
+// Account management routes. The Terms routes come first: the account router refuses an account
+// that has not accepted them.
+app.route('/api/account/terms', createAccountTermsRouter(authPrisma));
 app.route('/api/account', accountRouter);
 
 // Passkey proxy routes (for iframe embed mode)
