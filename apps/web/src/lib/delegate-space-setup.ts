@@ -52,7 +52,7 @@ export function spaceReadinessResult(
     return notice
       ? {
           kind: 'unknown',
-          text: `Approved, but OpenKey couldn't confirm that your ‘${space}’ space in TinyCloud is set up. The app will tell you what to do.`,
+          text: `Approved. OpenKey has no new answer about your ‘${space}’ space in TinyCloud, so there's nothing to do here. The app will tell you if it needs anything.`,
         }
       : null;
   }
