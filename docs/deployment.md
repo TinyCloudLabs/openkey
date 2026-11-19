@@ -633,18 +633,18 @@ Order:
    from the recorded commit.
 2. Run the preflight and read it. Stop and resolve any unexpected difference
    in the live configuration, the environment key names or the pending
-   migrations first. Then record whether the recorded API image can be a
-   rollback target. Additive migrations aren't enough on their own: a new
-   trigger that fires for every row or a stricter schema guard can stop the
-   old image, and an image that checks the schema shape at startup fails that
-   check once the migrations have run. The image qualifies only if it has been
-   shown to start and pass its own schema guards against the schema as this
-   release migrates it. Write the answer in the record before deploying
-   anything. Without that proof there's no API image rollback, and the plan is
-   to fix forward.
+   migrations first. Record the pending migrations from the preflight. Then
+   record whether the recorded API image can be a rollback target. Additive
+   migrations aren't enough on their own: a new trigger that fires for every
+   row or a stricter schema guard can stop the old image, and an image that
+   checks the schema shape at startup fails that check once the migrations
+   have run. The image qualifies only if it has been shown to start and pass
+   its own schema guards against the schema as this release migrates it. Write
+   the answer in the record before deploying anything. Without that proof
+   there's no API image rollback, and the plan is to fix forward.
 3. Have the rollback ready: the recorded Pages deployment and the recorded API
    image digest, with the commands to use them.
-4. Publish the prebuilt web to production.
+4. Promote the prebuilt web to production.
 5. Check the new web with the previous API still serving: `_app/version.json`
    and the entry file name served by `https://openkey.so` match the prebuilt
    deployment, `/delegate` loads, and a sign-in through the encryption
@@ -657,11 +657,11 @@ Order:
    fails, run the rollback below.
 
 Don't relax a refusal the API makes, or skip a check, to shorten the time
-between steps.
+between steps, in the deploy or in the rollback.
 
-Rollback after the API deploy: the API first, then the web if needed. Redeploy
-the recorded API image and confirm `/health`, only if step 2 recorded that the
-image qualifies. Then, if the previous web is wanted, promote the recorded
+Rollback after the API deploy: the API first, then the web if needed. If step
+2 recorded that the image qualifies, redeploy the recorded API image and
+confirm `/health`. Then, if the previous web is wanted, promote the recorded
 Pages deployment and check `_app/version.json`. If the image doesn't qualify,
 there's no API image rollback and the plan is to fix forward. Don't roll the
 web back alone while the new API is serving.
