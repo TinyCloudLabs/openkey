@@ -2,11 +2,19 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import { activeKeys, ARCHIVED_KEY_MESSAGE } from '$lib/delegate-key-selection';
   import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
+  import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
+  import { originAuthority } from '$lib/requester-display';
+
+  type KeyCredential = { token: string | null; sessionId: string | null | undefined };
+  let keyReadCredential: KeyCredential | null = null;
+  let keyOwnerCredential: KeyCredential | null = null;
 
   const session = authClient.useSession();
   const inIframe = typeof window !== 'undefined' && isEmbedContext();
@@ -19,11 +27,12 @@
   } | null>(null);
   let keyId = $state<string | null>(null);
   let key = $state<EthereumKey | null>(null);
+  let keys = $state<EthereumKey[]>([]);
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
-  let sessionChecked = $state(false);
-  let keyFetched = $state(false);
+  let archivedKey = $state(false);
+  let requestVersion = $state(0);
   let initialized = $state(false);
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
@@ -33,6 +42,10 @@
   // Exact embedding origin; never '*' (TC-690).
   const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
+  const requester = originAuthority(origin ?? '');
+  const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
+  const refusalMessage = $derived(archivedKey ? ARCHIVED_KEY_MESSAGE :
+    error || (keyId ? 'Selected key could not be loaded.' : 'No active managed keys are available to sign this data.'));
 
   $effect(() => {
     if (typeof window !== 'undefined' && !initialized) {
@@ -55,55 +68,115 @@
     return () => observer.disconnect();
   });
 
-  // Reactively update loading state when session becomes available
+  // Load public metadata before allowing this request to reach signing review.
   $effect(() => {
-    if (isAuthenticated && !sessionChecked) {
-      sessionChecked = true;
+    const requestedKeyId = keyId;
+    const version = requestVersion;
+    if (!isAuthenticated) return;
+    if (!version) {
       loading = false;
+      return;
     }
+
+    let active = true;
+    loading = true;
+    key = null;
+    keys = [];
+    archivedKey = false;
+    error = '';
+    const credential = {
+      token: getSessionToken(),
+      sessionId: inIframe ? null : $session.data?.session?.id,
+    };
+    keyReadCredential = credential;
+    keyOwnerCredential = null;
+    void (async () => {
+      try {
+        if (requestedKeyId) {
+          const result = await api.getKey(requestedKeyId);
+          if (!active || version !== requestVersion) return;
+          if (!checkKeyCredential(credential)) return;
+          if (result.key.archivedAt != null) {
+            archivedKey = true;
+          } else if (result.key.keyType !== 'MANAGED') {
+            error = 'This key cannot sign typed data here. Reconnect to choose a managed key.';
+          } else {
+            key = result.key;
+            keyOwnerCredential = credential;
+          }
+        } else {
+          const result = await api.listKeys();
+          if (!active || version !== requestVersion) return;
+          if (!checkKeyCredential(credential)) return;
+          // External-wallet typed-data signing is handled separately by the SDK.
+          const usableKeys = activeKeys(result.keys).filter(candidate => candidate.keyType === 'MANAGED');
+          keys = usableKeys;
+          if (usableKeys.length === 1) chooseSigningKey(usableKeys[0]!);
+        }
+      } catch {
+        if (!active || version !== requestVersion) return;
+        if (!checkKeyCredential(credential)) return;
+        error = requestedKeyId ? 'Selected key could not be loaded.' : 'Keys could not be loaded. Reconnect to try again.';
+      } finally {
+        if (active && version === requestVersion) loading = false;
+      }
+    })();
+    return () => { active = false; };
   });
 
-  // Reactively fetch key when session becomes available and we have a keyId
-  $effect(() => {
-    if (isAuthenticated && keyId && !keyFetched && !key) {
-      keyFetched = true;
-      api.getKey(keyId).then(result => {
-        key = result.key;
-      }).catch(() => {
-        // Key not found
-      });
-    }
-  });
-
-  async function handleMessage(event: MessageEvent) {
+  function handleMessage(event: MessageEvent) {
     if (!isFromWidgetCounterparty(event, origin, window.parent)) return;
     if (event.data?.type === 'openkey:signTypedData:request') {
+      requestVersion += 1;
+      key = null;
+      keys = [];
+      keyReadCredential = null;
+      keyOwnerCredential = null;
+      archivedKey = false;
+      error = '';
+      signing = false;
+      loading = true;
       typedData = event.data.data;
       keyId = event.data.data?.keyId || null;
-      keyFetched = false;
       // A sessionToken in the message is ignored: the session comes only
       // from OpenKey-origin storage or cookies (TC-690).
-
-      if (keyId && isAuthenticated) {
-        try {
-          const result = await api.getKey(keyId);
-          key = result.key;
-          keyFetched = true;
-        } catch {
-          // Key not found
-        }
-      }
     }
   }
 
+  function checkKeyCredential(credential: KeyCredential | null): boolean {
+    if (credential && isAuthenticated && getSessionToken() === credential.token &&
+        (inIframe ? null : $session.data?.session?.id) === credential.sessionId) return true;
+    key = null;
+    keys = [];
+    keyReadCredential = null;
+    keyOwnerCredential = null;
+    archivedKey = false;
+    error = 'Signing session changed. Reconnect to choose a key.';
+    return false;
+  }
+
+  function chooseSigningKey(selected: EthereumKey) {
+    if (!checkKeyCredential(keyReadCredential)) return;
+    const choice = keys.find(candidate => candidate.id === selected.id);
+    if (!choice) return;
+    key = choice;
+    keyOwnerCredential = keyReadCredential;
+  }
+
   async function signTypedData() {
-    if (!key || !typedData) return;
+    if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing) return;
+
+    const credential = keyOwnerCredential;
+    if (!checkKeyCredential(credential)) return;
+    const version = requestVersion;
 
     signing = true;
     error = '';
 
     try {
       const result = await api.signTypedData(key.id, typedData);
+      if (version !== requestVersion) return;
+      if (!checkKeyCredential(credential)) return;
       sendResponse({
         type: 'openkey:signTypedData:response',
         success: true,
@@ -112,17 +185,28 @@
       });
       sendClose();
     } catch (e: any) {
-      error = e.message || 'Signing failed';
+      if (version === requestVersion && checkKeyCredential(credential)) error = e.message || 'Signing failed';
     } finally {
-      signing = false;
+      if (version === requestVersion) signing = false;
     }
+  }
+
+  function reconnect() {
+    sendResponse({
+      type: 'openkey:signTypedData:response',
+      success: false,
+      error: { code: 'NO_KEY', message: `${refusalMessage} ${reconnectHint}` },
+    });
+    sendClose();
   }
 
   function cancel() {
     sendResponse({
       type: 'openkey:signTypedData:response',
       success: false,
-      error: { code: 'USER_CANCELLED', message: 'User cancelled' },
+      error: archivedKey
+        ? { code: 'NO_KEY', message: ARCHIVED_KEY_MESSAGE }
+        : { code: 'USER_CANCELLED', message: 'User cancelled' },
     });
     sendClose();
   }
@@ -168,10 +252,21 @@
         </svg>
         <span class="text-sm text-surface-500">Loading...</span>
       </div>
-    {:else if !key}
-      <div class="flex flex-col items-center justify-center text-center text-surface-500 py-4">
-        <p class="text-sm">Please connect first to sign data.</p>
+    {:else if archivedKey}
+      <SigningKeyRefusal message={refusalMessage} {requester} onreconnect={reconnect} />
+    {:else if !key && !keyId && keys.length > 1}
+      <div class="flex flex-col gap-4">
+        <KeyPicker
+          {keys}
+          onselect={chooseSigningKey}
+          listHeading="Select a key to sign this data:"
+          primaryHeading="Sign with your primary key:"
+          compact={true}
+        />
+        <Button variant="secondary" onclick={cancel}>Cancel</Button>
       </div>
+    {:else if !key}
+      <SigningKeyRefusal message={refusalMessage} {requester} onreconnect={reconnect} />
     {:else if !typedData}
       <div class="flex flex-col items-center justify-center text-center text-surface-500 py-4">
         <p class="text-sm">No data to sign.</p>

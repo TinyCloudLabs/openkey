@@ -41,6 +41,17 @@ const PLAIN_URI_VALUE = /^[\x21-\x7e]+$/;
 // ported origin: nothing remote can be impersonated by a loopback page.
 const LOOPBACK_HOSTNAMES: Record<string, true | undefined> = { localhost: true, '127.0.0.1': true, '[::1]': true };
 
+// Exo's macOS app (Tauri) serves its bundled UI at this fixed custom-scheme
+// origin. URL parsing gives a custom scheme an opaque `null` origin, so it can
+// never pass canonicalOrigin; it is matched byte-exactly instead and checked as
+// the loopback host it serves. A message it gets signed must name the domain
+// `localhost` and a `did:`/`ucan:` URI, so it cannot claim a public site.
+// (Windows Tauri is `http://tauri.localhost`, which already passes.)
+type ExpectedOrigin = Pick<URL, 'origin' | 'host' | 'hostname' | 'port'>;
+const APP_SHELL_ORIGINS: Record<string, ExpectedOrigin | undefined> = {
+  'tauri://localhost': { origin: 'tauri://localhost', host: 'localhost', hostname: 'localhost', port: '' },
+};
+
 function refusal(code: SiweOriginRefusalCode, message: string): SiweOriginCheck {
   return { siwe: true, ok: false, code, message };
 }
@@ -83,7 +94,9 @@ export function checkSiweOrigin(text: string, requestOrigin: string | null | und
       'OpenKey cannot tell which site is asking, so it will not sign a sign-in (SIWE) message.',
     );
   }
-  const expected = canonicalOrigin(requestOrigin);
+  const expected: ExpectedOrigin | null = Object.hasOwn(APP_SHELL_ORIGINS, requestOrigin)
+    ? APP_SHELL_ORIGINS[requestOrigin]!
+    : canonicalOrigin(requestOrigin);
   if (!expected) {
     return refusal(
       'invalid-origin',

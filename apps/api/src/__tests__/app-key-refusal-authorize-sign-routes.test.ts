@@ -136,7 +136,7 @@ const APPS_PREFIX = { [urn('/apps/xyz.tinycloud.listen/')]: ['tinycloud.encrypti
 function post(path: string, body: unknown) {
   return router.request(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
     body: JSON.stringify(body),
   });
 }
@@ -195,12 +195,22 @@ describe('POST /authorize-sign-prepare', () => {
     await expect(res.json()).resolves.toMatchObject({ code: 'invalid_siwe' });
   });
 
-  test('still issues a context for a message with no app keys, and for default-network decrypt', async () => {
-    for (const raw of [{}, { [urn('')]: ['tinycloud.encryption/decrypt', 'tinycloud.encryption/network.create'] }, { [urn('/appsx/y')]: ['tinycloud.encryption/decrypt'] }]) {
-      const res = await post('/authorize-sign-prepare', { ...prepareBody(siweWith(raw)), requestOrigin: ORIGIN });
-      expect(res.status).toBe(200);
-      await expect(res.json()).resolves.toMatchObject({ authorizationContextToken: expect.stringMatching(/^oks_/) });
-    }
+  test('still issues a context for a message with no app keys', async () => {
+    const res = await post('/authorize-sign-prepare', { ...prepareBody(siweWith({})), requestOrigin: ORIGIN });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ authorizationContextToken: expect.stringMatching(/^oks_/) });
+  });
+
+  // TC-2927: decrypt outside the app's own apps/ prefix, the bare network included, reaches the warning screen: a
+  // context is issued and the owner's decision is checked when the request is signed.
+  test.each([
+    ['default-network decrypt', { [urn('')]: ['tinycloud.encryption/decrypt', 'tinycloud.encryption/network.create'] }],
+    ['decrypt on a key outside apps/', { [urn('/appsx/y')]: ['tinycloud.encryption/decrypt'] }],
+  ])('issues a context for %s; the owner decides on the warning screen', async (_name, raw) => {
+    const res = await post('/authorize-sign-prepare', { ...prepareBody(siweWith(raw)), requestOrigin: ORIGIN });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ authorizationContextToken: expect.stringMatching(/^oks_/) });
+    expect(signed).toEqual([]);
   });
 });
 
@@ -325,7 +335,7 @@ describe('POST /sign (session principal)', () => {
   test('refuses an app key', async () => {
     const res = await sign(siweWith(APPS_KEY));
     expect(res.status).toBe(403);
-    await expect(res.json()).resolves.toEqual({ approved: false, code: 'app_key_grant_refused', reason: 'App keys can only be requested from a website, not from the command line or a device sign-in.' });
+    await expect(res.json()).resolves.toEqual({ approved: false, code: 'app_key_grant_refused', reason: "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request." });
     expect(signed).toEqual([]);
   });
 

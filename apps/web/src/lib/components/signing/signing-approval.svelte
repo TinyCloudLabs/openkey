@@ -6,13 +6,17 @@
   //   1. Default view is small, deterministic, and derived from the actual
   //      SIWE/ReCap request PLUS explicitly provenance-labelled manifest
   //      data. It surfaces the requester, a short list of understandable
-  //      statements (from statements.ts), and a pinned sensitive callout
-  //      when any grant reaches secret data or decryption.
+  //      statements (from statements.ts), and a sensitive count when the
+  //      listed rows mix Sensitive badges with unbadged rows.
   //   2. A single top-level `<details>` labelled `Advanced details` contains:
   //      requester, verified browser origin, manifest name/appId/digest with
   //      HONEST trust/provenance label, reason (only when present), signing
-  //      identity, categorized exact-grant list, Edit/Reset controls, the
-  //      full raw message as `<pre>` (`user-select: text`) plus a
+  //      identity, the "How long it lasts" choices (where the surface lets the
+  //      owner change the time; the card keeps only the one expiry line),
+  //      categorized exact-grant list, Edit/Reset controls, the
+  //      full raw message as `<pre>` (`user-select: text`; line feeds are line
+  //      breaks, other control and invisible characters and runs of spaces are
+  //      escaped by `renderSiweLiteral`) plus a
   //      `Copy text` button that copies `model.rawMessage` UNMODIFIED.
   //   3. `originWarning` and `domainWarning` render distinctly — a concrete
   //      but mismatched origin MUST NOT hide the SIWE-domain mismatch.
@@ -36,21 +40,50 @@
   // `showSigner` when the user picked one of several keys. Surfaces must not
   // render their own copy of `error`: it is shown once, above the buttons.
 
-  import type { Snippet } from "svelte";
+  import { tick, type Snippet } from "svelte";
   import type {
     CapabilityAction,
     CapabilityGrant,
     CapabilityReviewModel,
   } from "@openkey/capability-review";
+  import { formatLocalAccessEnd } from "$lib/access-end";
   import {
+    APP_KEY_GROUP_NOTE,
+    appDisplayName,
+    appKeyAccessStatement,
+    appKeyIdentity,
+    appRequestingLine,
+    FAMILY_LABEL,
+    appKeyNotGrantableStatements,
     buildRenderPlan,
-    buildStatements,
-    grantReachesSecretDataOrDecryption,
+    buildSummaryStatements,
+    grantIsAppKeyDecrypt,
+    sensitiveSummaryCount,
     grantHeading,
     PROTOCOL_HEADLINE,
     PROTOCOL_HINT,
-    sensitiveCallout,
+    sensitiveRowsCallout,
+    abbreviateDid,
+    abbreviateSpaceId,
+    readSpaceHostFacts,
+    renderSiweLiteral,
+    splitStatementCode,
+    elevatedAbilityVerb,
+    elevatedCard,
+    elevatedKindOf,
+    elevatedNotApprovedRow,
+    elevatedRejectedCountAnnouncement,
+    elevatedWhere,
+    elevatedWhereText,
+    type ElevatedKind,
   } from "@openkey/capability-review";
+  import type { PeerRecognitionState } from "$lib/host-peer-recognition";
+  import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
+  import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
+  import ElevatedWarning from "$lib/components/signing/elevated-warning.svelte";
+  import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
+  import { ONCE_DEFAULT_EXPIRY_MS, onceDefaultExpiryMs, requestedExpiryMs } from "$lib/approval-expiry";
+  import { isOnceTier } from "$lib/renewal-default";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -58,24 +91,75 @@
     editing: boolean;
     approving?: boolean;
     error?: string | null;
+    /** Server-supplied reason for `error`; shown as plain text in a closed "Details" disclosure under it. */
+    errorDetail?: string | null;
     /**
      * When set, Approve is disabled and this reason is shown; unlike
      * `approving`, the selection controls stay usable so the caller can
      * re-prepare.
      */
     approveBlockedReason?: string | null;
+    /** Disable Approve after an API-declared terminal failure until re-preparation succeeds. */
+    approveBlockedByFailure?: boolean;
     /** Disable Approve while an embedding host is applying the review layout. */
     layoutBlocked?: boolean;
     stickyActions?: boolean;
-    finalPreview?: boolean;
+    /** The server refused in a way a retry cannot change: Approve stays disabled (Cancel still works). */
+    refused?: boolean;
+    /** Disable only Approve while the route prepares the current preview. */
+    previewPending?: boolean;
     approveText?: string;
     cancelText?: string;
+    /**
+     * Offered only on the approval-request review (TC-2459): a Decline button left of Approve, and the dismiss
+     * control becomes a text link above the pair. Widget surfaces leave it unset and keep their Cancel button.
+     */
+    onDecline?: () => void;
+    declineText?: string;
+    /** A decline is being sent: Decline, Approve and the dismiss control are off, so it cannot go twice. */
+    declining?: boolean;
     /** Surface-specific context rendered in a fixed slot under the header. */
     context?: Snippet;
     /** Show which key signs; for users who chose one of several keys. */
     showSigner?: boolean;
+    /**
+     * Lookup state for the node key on a host approval. Leave unset where the
+     * key on the request is not a node (the `/delegate` session grant): the
+     * view then shows the space only.
+     */
+    peerRecognition?: PeerRecognitionState | null;
+    /**
+     * The approval expiry the user chose, in ms from approval; null keeps what
+     * the app asked for. The line shows only on surfaces that pass
+     * `onExpiryChange`, i.e. those whose signing path writes the choice into
+     * the signed message.
+     */
+    expiryMs?: number | null;
+    onExpiryChange?: (ms: number | null) => void;
+    /**
+     * True where the requester signed the longest time it accepts (signed CLI
+     * and device requests): the picker then offers nothing longer than asked.
+     */
+    expiryBounded?: boolean;
+    /** With `expiryBounded`: the most the requester signed, when that is more than the default it asked for. */
+    expiryMaxMs?: number | null;
+    /**
+     * Set by the surfaces that write the choice into the signed message: a one-time approval (secrets or decrypt)
+     * that asks for longer than an hour starts at one hour, until the owner picks a time (TC-3111).
+     */
+    onceExpiryDefault?: boolean;
+    /** The renewal checkbox (TC-2933); set only where the requester signed a renewal request. */
+    renewal?: RenewalChoice | null;
+    /**
+     * The warning screen for extra permissions (TC-2927): decrypt or key creation on the encryption network, or on
+     * keys outside the app's own area. Set only by the signing pages that carry the owner's decision to the server.
+     * Approve opens the screen first when the selection carries one; `splittable` is false where the request cannot be
+     * narrowed (exact bytes): approve or cancel it whole. `onDecide` gets the action ids the owner allowed.
+     */
+    elevated?: { splittable: boolean; onDecide: (allowed: string[]) => void } | null;
     onApprove: () => void;
     onCancel: () => void;
+    onRetry?: () => void;
     onSelectionChange: (next: Set<string>) => void;
     onEditingChange: (next: boolean) => void;
   }
@@ -86,16 +170,31 @@
     editing,
     approving = false,
     error = null,
+    errorDetail = null,
     approveBlockedReason = null,
+    approveBlockedByFailure = false,
     layoutBlocked = false,
     stickyActions = false,
-    finalPreview = false,
+    refused = false,
+    previewPending = false,
     approveText = "Approve",
     cancelText = "Cancel",
+    onDecline,
+    declineText = "Decline",
+    declining = false,
     context,
     showSigner = false,
+    peerRecognition = null,
+    expiryMs = null,
+    onExpiryChange,
+    expiryBounded = false,
+    expiryMaxMs = null,
+    onceExpiryDefault = false,
+    renewal = null,
+    elevated = null,
     onApprove,
     onCancel,
+    onRetry,
     onSelectionChange,
     onEditingChange,
   }: Props = $props();
@@ -104,6 +203,9 @@
     `${model.signer.address.slice(0, 6)}...${model.signer.address.slice(-4)}`,
   );
   const renderPlan = $derived(buildRenderPlan(model.permissions));
+  const requestedExpiry = $derived(
+    requestedExpiryMs(model.immutable?.issuedAt, model.immutable?.expirationTime),
+  );
   const permissionSections = $derived.by(() => {
     const reviewGrants = renderPlan
       .filter((bucket) => bucket.severity !== "standard")
@@ -140,18 +242,8 @@
     model.permissions.some((grant) => grant.actions.some((action) => action.editable)),
   );
   const isMalformedRecap = $derived(model.protocol === "malformed-recap");
-  const headline = $derived(
-    isMalformedRecap
-      ? "Refusing to sign: malformed capability payload"
-      : PROTOCOL_HEADLINE[model.protocol],
-  );
-  const hint = $derived(
-    isMalformedRecap
-      ? "This message carries a capability payload we could not decode. Refusing to approve so the request cannot be silently degraded to an exact-byte SIWE signature."
-      : finalPreview && model.protocol === "tinycloud-siwe-recap"
-        ? "Review the server-prepared request. Approving signs the exact bytes shown in Advanced details."
-      : PROTOCOL_HINT[model.protocol],
-  );
+  const headline = $derived(PROTOCOL_HEADLINE[model.protocol]);
+  const hint = $derived(PROTOCOL_HINT[model.protocol]);
 
   // Summary copy and the sensitive count describe only actions the user is
   // currently approving. Advanced details deliberately retains the baseline
@@ -164,64 +256,122 @@
     }),
   );
 
-  function isUnmappedStatement(primaryText: string): boolean {
-    return primaryText.startsWith("Perform ") || primaryText.startsWith("Access ");
-  }
+  // Statements for the summary view. The rows, and the count in the Sensitive
+  // header, come from one function so the header always counts the rows marked
+  // Sensitive below it (capability-review `buildSummaryStatements`).
+  const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
+  const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
 
-  // Statements for the summary view. Group by primary text so repeated
-  // statements collapse into one visible row while preserving the strongest
-  // severity. Counts, services, resources, and requester provenance belong in
-  // Advanced details; the approval view stays understandable at a glance.
-  const summaryStatements = $derived.by(() => {
-    const severityRank: Record<CapabilityGrant["severity"], number> = {
-      standard: 0,
-      attention: 1,
-      sensitive: 2,
-    };
-
-    const grouped = new Map<
-      string,
-      {
-        key: string;
-        primaryText: string;
-        severity: CapabilityGrant["severity"];
-        unmapped: boolean;
-      }
-    >();
-
-    for (const grant of selectedGrants) {
-      for (const statement of buildStatements(grant)) {
-        const existing = grouped.get(statement.primaryText);
-        if (existing) {
-          if (severityRank[grant.severity] > severityRank[existing.severity]) {
-            existing.severity = grant.severity;
-          }
-        } else {
-          grouped.set(statement.primaryText, {
-            key: statement.primaryText,
-            primaryText: statement.primaryText,
-            severity: grant.severity,
-            unmapped: isUnmappedStatement(statement.primaryText),
-          });
-        }
-      }
-    }
-
-    return [...grouped.values()].sort(
-      (left, right) => Number(left.unmapped) - Number(right.unmapped),
-    );
-  });
-
-  const sensitiveCount = $derived(
-    selectedGrants.filter(grantReachesSecretDataOrDecryption).length,
+  // TC-3111: a one-time approval (secrets or decrypt) that asks for longer than an hour starts at one hour. It goes
+  // into the signed message through `onExpiryChange` like any pick, so what is signed is what the line says. The
+  // owner's own pick is never replaced, and a request that stops being one-time (a narrowing that drops the secret
+  // or decrypt access) goes back to what the app asked for.
+  const onceDefaultMs = $derived(
+    onceExpiryDefault && onExpiryChange && model.protocol === "tinycloud-siwe-recap"
+      ? onceDefaultExpiryMs(isOnceTier(selectedGrants), requestedExpiry)
+      : null,
   );
+  let ownerChoseExpiry = $state(false);
+  let onceDefaultSent = $state(false);
+  // Until the default has been applied the expiry line and its note are not shown and Approve waits, so neither a
+  // screen reader nor a click meets the app's longer time first (the surface re-prepares with the hour at once).
+  const onceDefaultPending = $derived(
+    onceDefaultMs !== null && !ownerChoseExpiry && !onceDefaultSent && expiryMs === null,
+  );
+  $effect(() => {
+    if (approving || previewPending || !onExpiryChange || ownerChoseExpiry) return;
+    if (onceDefaultMs !== null) {
+      if (expiryMs === null && !onceDefaultSent) {
+        onceDefaultSent = true;
+        onExpiryChange(onceDefaultMs);
+      }
+    } else if (onceDefaultSent) {
+      onceDefaultSent = false;
+      if (expiryMs === ONCE_DEFAULT_EXPIRY_MS) onExpiryChange(null);
+    }
+  });
+  function chooseExpiry(ms: number | null) {
+    ownerChoseExpiry = true;
+    onExpiryChange?.(ms);
+  }
+  const onceDefaultShown = $derived(onceDefaultMs !== null && !ownerChoseExpiry && expiryMs === onceDefaultMs);
+
+  // App keys: the standing-access line follows the decrypt statements, and a
+  // `key.delete` action is listed even though it is never selected.
+  const identity = $derived(appKeyIdentity(model));
+  const originHost = $derived.by(() => {
+    const origin = model.requester.verifiedOrigin;
+    if (!origin) return null;
+    try {
+      return new URL(origin).host;
+    } catch {
+      return origin;
+    }
+  });
+  // Names that come from a manifest are app-supplied text: they are shown only
+  // after the display rules (`appDisplayName`), everywhere on this view.
+  const requesterName = $derived(appDisplayName(model.requester.displayName) ?? originHost ?? "");
+  const manifestNameShown = $derived(appDisplayName(model.requester.manifestName));
+  const requestedBy = $derived(originHost ?? requesterName);
+  // The note under the expiry line names who asked as the screen does: the verified origin, or "This request" where
+  // nothing identifies the requester (a link, a device sign-in, an approval link).
+  const onceNoteSite = $derived(originHost ?? "This request");
+  // Beside the renewal box a fixed end date is wrong (ticked) or repeats the box (unticked), so it is not shown there.
+  const appKeyAccessLine = $derived(
+    !renewal && selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatLocalAccessEnd) : null,
+  );
+  const notGrantableStatements = $derived.by(() => {
+    const rows = model.permissions.flatMap(appKeyNotGrantableStatements);
+    return rows.filter((row, index) => rows.findIndex((other) => other.primaryText === row.primaryText) === index);
+  });
 
   function isSelected(action: CapabilityAction): boolean {
     return selection.has(action.id);
   }
 
+  // The app keys of a request are approved with the rest of it or removed as
+  // a unit: the server refuses a selection that keeps an app-key action and
+  // drops any other action, so no control changes one without the other.
+  const appKeyGrants = $derived(model.permissions.filter((grant) => grant.family === "app-keys"));
+  const appKeyActionIds = $derived(
+    new Set(appKeyGrants.flatMap((grant) => grant.actions.filter((action) => action.editable).map((action) => action.id))),
+  );
+  const firstAppKeyGrantId = $derived(appKeyGrants[0]?.id ?? null);
+
+  const appKeysSelected = $derived([...appKeyActionIds].some((id) => selection.has(id)));
+
+  function isLockedByAppKeys(action: CapabilityAction): boolean {
+    return appKeysSelected && !appKeyActionIds.has(action.id);
+  }
+
+  function toggleAppKeys() {
+    const next = new Set(selection);
+    if (appKeysSelected) {
+      for (const id of appKeyActionIds) next.delete(id);
+    } else {
+      for (const grant of model.permissions) {
+        for (const action of grant.actions) {
+          if (action.editable) next.add(action.id);
+        }
+      }
+    }
+    onSelectionChange(next);
+  }
+
+  function handleAppKeysKeydown(event: KeyboardEvent) {
+    if (event.key === " " || event.key === "Enter") {
+      event.preventDefault();
+      toggleAppKeys();
+    }
+  }
+
   function toggle(action: CapabilityAction) {
     if (!action.editable) return;
+    if (appKeyActionIds.has(action.id)) {
+      toggleAppKeys();
+      return;
+    }
+    if (isLockedByAppKeys(action)) return;
     const next = new Set(selection);
     if (next.has(action.id)) next.delete(action.id);
     else next.add(action.id);
@@ -348,8 +498,7 @@
     return copied;
   }
 
-  async function copyRawMessage() {
-    const text = model.rawMessage;
+  async function writeClipboard(text: string): Promise<boolean> {
     let copied = false;
     if (
       typeof navigator !== "undefined" &&
@@ -371,25 +520,167 @@
         copied = false;
       }
     }
+    return copied;
+  }
+
+  async function copyRawMessage() {
+    const copied = await writeClipboard(model.rawMessage);
     copyState = copied ? "copied" : "failed";
     setTimeout(() => {
       copyState = "idle";
     }, 2000);
   }
 
+  // Space and node rows on a host approval. Derived from the bytes that are
+  // signed (`model.rawMessage`), for the grants currently selected.
+  const COPY_SPACE_ID = "Copy space ID";
+  const COPY_NODE_ID = "Copy node ID";
+  const COPIED = "Copied";
+  const NODE_CHECKING = "Checking the node…";
+  const NODE_NOT_CONFIRMED = "Not confirmed as a known TinyCloud node";
+  const NODE_NOT_CONFIRMED_NOTE = "Approving lets this node store and serve your new space.";
+
+  const hostFacts = $derived(readSpaceHostFacts(model, selection));
+  let copiedValue = $state<string | null>(null);
+
+  async function copyValue(value: string) {
+    if (!(await writeClipboard(value))) return;
+    copiedValue = value;
+    setTimeout(() => {
+      if (copiedValue === value) copiedValue = null;
+    }, 2000);
+  }
+
+  // Approve is armed only when its button is enabled (settled layout, node checked, nothing blocking). A browser
+  // already ignores a click on a disabled button; this also refuses one that reaches the handler anyway, such as after
+  // a script clears the `disabled` attribute.
+  function handleApproveClick() {
+    if (approveButtonDisabled) return;
+    // An extra permission (TC-2927) is approved only after its own decision: the screen opens first.
+    if (elevated && pendingElevatedGroups.length > 0) {
+      warningOpen = true;
+      return;
+    }
+    onApprove();
+  }
+
+  // --- The warning screen for extra permissions (TC-2927) ---------------------------------------------------------
+  interface ElevatedGroup {
+    id: string;
+    kind: ElevatedKind;
+    actionIds: string[];
+    decrypt: boolean;
+    create: boolean;
+    where: string | null;
+  }
+  // One group per selected grant that carries decrypt or key creation on the encryption network, or on keys outside
+  // the app's own `apps/` area. The same `elevatedKindOf` decides on the server, so both see the same permissions.
+  const elevatedGroups = $derived.by((): ElevatedGroup[] => {
+    if (!elevated) return [];
+    return selectedGrants.flatMap((grant): ElevatedGroup[] => {
+      const entry = { service: grant.service, space: grant.space, path: grant.path };
+      const picked = grant.actions.flatMap((action) => {
+        const kind = elevatedKindOf(entry, action.ability);
+        return kind === null ? [] : [{ action, kind }];
+      });
+      if (picked.length === 0) return [];
+      return [{
+        id: grant.id,
+        kind: picked[0]!.kind,
+        actionIds: picked.map(({ action }) => action.id),
+        decrypt: picked.some(({ action }) => elevatedAbilityVerb(action.ability) === "decrypt"),
+        create: picked.some(({ action }) => elevatedAbilityVerb(action.ability) === "key.create"),
+        where: elevatedWhere(entry),
+      }];
+    });
+  });
+  let allowedElevated = $state<Set<string>>(new Set());
+  let rejectedCards = $state<Array<{ heading: string; actionIds: string[] }>>([]);
+  let warningOpen = $state(false);
+  let awaitingApprove = $state(false);
+  const pendingElevatedGroups = $derived(
+    elevatedGroups.filter((group) => !group.actionIds.every((id) => allowedElevated.has(id))),
+  );
+  // The site named on the cards: the browser-verified origin (for an embedded sign-in, the page that embeds it),
+  // never a name the app supplies; "This request" where nothing is verified.
+  const elevatedSite = $derived(originHost ?? null);
+  const elevatedCards = $derived(
+    pendingElevatedGroups.map((group) => ({
+      id: group.id,
+      ...elevatedCard(group.kind, { decrypt: group.decrypt, create: group.create }, elevatedSite, elevatedWhereText(group.where)),
+    })),
+  );
+  const notApprovedRows = $derived(
+    rejectedCards.filter((card) => card.actionIds.every((id) => !selection.has(id))).map((card) => elevatedNotApprovedRow(card.heading)),
+  );
+
+  async function resolveElevated(allowedCardIds: string[]) {
+    const allowedGroups = pendingElevatedGroups.filter((group) => allowedCardIds.includes(group.id));
+    const rejectedGroups = pendingElevatedGroups.filter((group) => !allowedCardIds.includes(group.id));
+    const nextAllowed = new Set(allowedElevated);
+    for (const group of allowedGroups) for (const id of group.actionIds) nextAllowed.add(id);
+    allowedElevated = nextAllowed;
+    if (rejectedGroups.length > 0) {
+      const headings = new Map(elevatedCards.map((card) => [card.id, card.heading]));
+      rejectedCards = [
+        ...rejectedCards,
+        ...rejectedGroups.map((group) => ({ heading: headings.get(group.id) ?? "", actionIds: group.actionIds })),
+      ];
+      const next = new Set(selection);
+      for (const group of rejectedGroups) for (const id of group.actionIds) next.delete(id);
+      onSelectionChange(next);
+    }
+    // The allowed ids go into the next preview (or the exact-byte sign); Approve then continues on its own, once that
+    // preview is ready, so the owner's one tap on Approve is still the only approval.
+    elevated?.onDecide([...nextAllowed]);
+    warningOpen = false;
+    await tick();
+    awaitingApprove = true;
+    document.getElementById("signing-approval-headline")?.focus();
+  }
+
+  async function allowWholeElevated() {
+    const nextAllowed = new Set(allowedElevated);
+    for (const group of pendingElevatedGroups) for (const id of group.actionIds) nextAllowed.add(id);
+    allowedElevated = nextAllowed;
+    elevated?.onDecide([...nextAllowed]);
+    warningOpen = false;
+    await tick();
+    awaitingApprove = true;
+  }
+
+  $effect(() => {
+    if (!awaitingApprove || warningOpen || previewPending || approving || approveButtonDisabled) return;
+    awaitingApprove = false;
+    handleApproveClick();
+  });
+
+  const nodeChecking = $derived(peerRecognition?.state === "checking");
   const approveDisabled = $derived(approving || isMalformedRecap);
-  const approveButtonDisabled = $derived(layoutBlocked || approveDisabled || Boolean(approveBlockedReason));
+  const approveButtonDisabled = $derived(
+    previewPending || onceDefaultPending || layoutBlocked || refused || approveDisabled || Boolean(approveBlockedReason) || approveBlockedByFailure || nodeChecking || declining,
+  );
   const approveLabel = $derived(
     isMalformedRecap
       ? "Cannot approve"
       : approving
         ? "Signing…"
-        : finalPreview
-          ? "Approve exact bytes"
+        : previewPending && !onRetry && !refused
+          ? "Getting ready…"
           : approveText,
   );
 </script>
 
+{#if warningOpen && elevated}
+  <ElevatedWarning
+    cards={elevatedCards}
+    site={elevatedSite}
+    splittable={elevated.splittable}
+    onResolve={resolveElevated}
+    onAllowWhole={allowWholeElevated}
+    onCancel={onCancel}
+  />
+{:else}
 <div
   class="signing-approval"
   class:sticky-actions={stickyActions}
@@ -400,10 +691,23 @@
   tabindex="-1"
 >
   <header class="header">
-    <h2 id="signing-approval-headline" class="headline">{headline}</h2>
-    <p class="requester-line">
-      Requested by <span class="requester-name">{model.requester.displayName}</span>
-    </p>
+    {#if identity}
+      <!-- The app's name, then its id; the name never appears without the id. -->
+      {#if identity.name}
+        <h2 id="signing-approval-headline" class="headline app-name" tabindex="-1">{identity.name}</h2>
+        <p class="app-id mono">{identity.appId}</p>
+      {:else}
+        <h2 id="signing-approval-headline" class="headline app-id-headline mono" tabindex="-1">{identity.appId}</h2>
+      {/if}
+      <p class="requester-line">
+        Requested by <span class="requester-name">{requestedBy}</span>
+      </p>
+    {:else}
+      <h2 id="signing-approval-headline" class="headline" tabindex="-1">{headline}</h2>
+      <p class="requester-line">
+        Requested by <span class="requester-name">{requesterName}</span>
+      </p>
+    {/if}
     <p id="signing-approval-hint" class="hint">{hint}</p>
   </header>
 
@@ -414,7 +718,7 @@
   <!-- Reason only when a reason actually exists. -->
   {#if model.reason.source !== "none" && model.reason.text}
     <section class="reason" aria-label="Reason for request">
-      <div class="reason-label">Reason provided by {model.reason.source === "caller" ? "the requester" : model.requester.displayName}</div>
+      <div class="reason-label">Reason provided by {model.reason.source === "caller" ? "the requester" : requesterName}</div>
       <p class="reason-body">{model.reason.text}</p>
       {#if model.reason.source === "caller"}
         <p class="reason-untrusted">
@@ -433,14 +737,22 @@
   {/if}
 
   <!--
-    Sensitive callout pinned at the top. Exact copy from the contract.
-    Rendered only when at least one grant reaches secret data or decryption.
+    Count the badged rows only when mixed with unbadged rows. Not-granted
+    informational rows are also unbadged; the individual badges always remain.
   -->
-  {#if sensitiveCount > 0}
+  {#if sensitiveCount > 0 && sensitiveCount < summaryStatements.length + notGrantableStatements.length}
     <p class="sensitive-callout" role="status" aria-live="polite">
-      {sensitiveCallout(sensitiveCount)}
+      {sensitiveRowsCallout(sensitiveCount)}
     </p>
   {/if}
+
+  {#snippet statementText(text: string, codeSpans: boolean)}
+    {#if codeSpans}
+      {#each splitStatementCode(text) as part}{#if part.code}<code class="mono">{part.text}</code>{:else}{part.text}{/if}{/each}
+    {:else}
+      {text}
+    {/if}
+  {/snippet}
 
   <!--
     Default summary: short list of deterministic statements.
@@ -449,6 +761,9 @@
     in Advanced details so the first viewport is useful to ordinary users.
   -->
   <section class="summary" aria-label="Requested access">
+    {#if identity && summaryStatements.length > 0}
+      <p class="summary-lead">{appRequestingLine(identity.name)}</p>
+    {/if}
     {#if summaryStatements.length > 0}
       <ul class="summary-statements">
         {#each summaryStatements as statement (statement.key)}
@@ -457,7 +772,7 @@
             data-severity={statement.severity}
           >
             <span class="statement-line">
-              <span class="statement-primary">{statement.primaryText}</span>
+              <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans)}</span>
               {#if statement.severity === "sensitive"}
                 <span class="summary-sensitive-pill">Sensitive</span>
               {/if}
@@ -471,6 +786,90 @@
           ? "No optional access selected."
           : "No capability payload — exact-byte signature only."}
       </p>
+    {/if}
+    {#if appKeyAccessLine}
+      <p class="summary-note">{appKeyAccessLine}</p>
+    {/if}
+    {#if notGrantableStatements.length > 0}
+      <ul class="summary-statements summary-not-granted">
+        {#each notGrantableStatements as statement (statement.primaryText)}
+          <li class="summary-statement" data-severity="sensitive">
+            <span class="statement-line">
+              <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans === true)}</span>
+            </span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    {#if onExpiryChange && model.protocol === "tinycloud-siwe-recap" && !onceDefaultPending}
+      <ApprovalExpiryControl
+        requestedMs={requestedExpiry}
+        chosenMs={expiryMs}
+        maxMs={expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null}
+        disabled={approving}
+        onChange={chooseExpiry}
+        onceSite={onceDefaultShown ? onceNoteSite : null}
+        {renewal}
+        sensitive={isOnceTier(selectedGrants)}
+        {requestedBy}
+        chooser={false}
+        permissionCount={summaryStatements.length}
+      />
+    {/if}
+
+    {#if hostFacts}
+      <dl class="host-facts">
+        {#each hostFacts.spaces as space (space.spaceId)}
+          <div class="host-fact">
+            <dt class="host-fact-label">Space</dt>
+            <dd class="host-fact-value">
+              {#if space.spaceName}
+                <span class="host-fact-name">{space.spaceName}</span>
+              {/if}
+              <code class="mono" title={space.spaceId}>{space.spaceName ? abbreviateSpaceId(space.spaceId) : space.spaceId}</code>
+              <button
+                type="button"
+                class="copy-btn"
+                aria-label={copiedValue === space.spaceId ? COPIED : COPY_SPACE_ID}
+                title={copiedValue === space.spaceId ? COPIED : COPY_SPACE_ID}
+                onclick={() => copyValue(space.spaceId)}
+              >
+                {copiedValue === space.spaceId ? COPIED : COPY_SPACE_ID}
+              </button>
+            </dd>
+          </div>
+        {/each}
+        {#if hostFacts.peerDid && peerRecognition}
+          <div class="host-fact">
+            <dt class="host-fact-label">Node ID</dt>
+            <dd class="host-fact-value">
+              <code class="mono" title={hostFacts.peerDid}>{abbreviateDid(hostFacts.peerDid)}</code>
+              <button
+                type="button"
+                class="copy-btn"
+                aria-label={copiedValue === hostFacts.peerDid ? COPIED : COPY_NODE_ID}
+                title={copiedValue === hostFacts.peerDid ? COPIED : COPY_NODE_ID}
+                onclick={() => copyValue(hostFacts.peerDid ?? "")}
+              >
+                {copiedValue === hostFacts.peerDid ? COPIED : COPY_NODE_ID}
+              </button>
+            </dd>
+          </div>
+        {/if}
+      </dl>
+      {#if hostFacts.peerDid && peerRecognition}
+        <div class="host-node-status" id="host-node-status" role="status" aria-live="polite" data-node-state={peerRecognition.state}>
+          {#if peerRecognition.state === "checking"}
+            <p class="host-marker">{NODE_CHECKING}</p>
+          {:else if peerRecognition.state === "known"}
+            <p class="host-marker">Known TinyCloud node at <span class="mono">{peerRecognition.origin}</span></p>
+          {:else}
+            <p class="host-marker">{NODE_NOT_CONFIRMED}</p>
+            <p class="host-marker-note">{NODE_NOT_CONFIRMED_NOTE}</p>
+          {/if}
+        </div>
+      {/if}
     {/if}
   </section>
 
@@ -489,7 +888,7 @@
       <section class="identity" aria-label="Requester identity">
       <div class="row">
         <span class="label">Requester</span>
-        <span class="value">{model.requester.displayName}</span>
+        <span class="value">{requesterName}</span>
       </div>
 
       {#if model.requester.verifiedOrigin}
@@ -528,10 +927,10 @@
         a trusted label. Server code never marks a caller-echoed name as
         origin-bound — see the popup/embed prepare handlers.
       -->
-      {#if model.requester.manifestName}
+      {#if manifestNameShown}
         <div class="row">
           <span class="label">Manifest name</span>
-          <span class="value">{model.requester.manifestName}</span>
+          <span class="value">{manifestNameShown}</span>
           <span
             class="provenance-tag"
             data-provenance={model.requester.manifestNameProvenance}
@@ -615,6 +1014,20 @@
       </section>
     </details>
 
+    {#if onExpiryChange && model.protocol === "tinycloud-siwe-recap" && !onceDefaultPending && (expiryMs ?? requestedExpiry) !== null}
+      <details class="request-details expiry-fold">
+        <summary class="request-details-summary">How long it lasts</summary>
+        <ApprovalExpiryChooser
+          requestedMs={requestedExpiry}
+          chosenMs={expiryMs}
+          maxMs={expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null}
+          disabled={approving}
+          onChange={chooseExpiry}
+          {renewal}
+        />
+      </details>
+    {/if}
+
     {#if model.permissions.length > 0}
       <section class="permissions" aria-label="Exact grants">
         <div class="permissions-header">
@@ -642,6 +1055,9 @@
           {/if}
         </div>
 
+        {#if editing && appKeyGrants.length > 0}
+          <p class="app-key-note">{APP_KEY_GROUP_NOTE}</p>
+        {/if}
         {#each permissionSections as bucket (bucket.key)}
           <details
             class="severity-bucket"
@@ -687,17 +1103,29 @@
                         This data belongs to another user.
                       </p>
                     {/if}
+                    {#if editing && grant.id === firstAppKeyGrantId}
+                      <label class="action-toggle app-key-group">
+                        <input
+                          type="checkbox"
+                          checked={appKeysSelected}
+                          onchange={toggleAppKeys}
+                          onkeydown={handleAppKeysKeydown}
+                          disabled={approveDisabled}
+                        />
+                        <span class="verb">{FAMILY_LABEL["app-keys"]}</span>
+                      </label>
+                    {/if}
                     <ul class="action-list">
                       {#each editing ? grant.actions : grant.actions.filter(isSelected) as action}
                         <li class="action">
-                          {#if editing && action.editable}
+                          {#if editing && action.editable && !appKeyActionIds.has(action.id)}
                             <label class="action-toggle">
                               <input
                                 type="checkbox"
                                 checked={isSelected(action)}
                                 onchange={() => toggle(action)}
                                 onkeydown={(e) => handleKeydown(e, action)}
-                                disabled={approveDisabled}
+                                disabled={approveDisabled || isLockedByAppKeys(action)}
                               />
                               <span class="verb">{action.verb}</span>
                             </label>
@@ -757,37 +1185,85 @@
               : "Copy text"}
         </button>
       </div>
-      <pre class="raw-bytes" aria-live="polite">{model.rawMessage}</pre>
+      <pre class="raw-bytes" aria-live="polite">{renderSiweLiteral(model.rawMessage)}</pre>
     </section>
   </details>
 
+  <!-- The message and the buttons travel together: with sticky actions the message is pinned just above them, so a
+       refusal is never left below the fold of a short frame while the buttons look unchanged. -->
+  <div class="action-region">
   {#if error}
     <p class="error" role="alert" aria-live="polite">{error}</p>
+    {#if errorDetail}
+      <details class="error-detail">
+        <summary>Details</summary>
+        <p>{errorDetail}</p>
+      </details>
+    {/if}
   {/if}
-  {#if approveBlockedReason}
+  {#if approveBlockedReason && approveBlockedReason !== error}
     <p class="approve-blocked" role="status" aria-live="polite">{approveBlockedReason}</p>
   {/if}
 
-  <footer class="actions">
+  {#if onDecline}
+    <!-- With Decline offered, going back is a quiet link above the Decline / Approve pair. -->
     <button
       type="button"
-      class="cancel"
+      class="dismiss-link"
+      data-testid="signing-dismiss"
       onclick={onCancel}
-      disabled={approving}
+      disabled={approving || declining}
     >
       {cancelText}
     </button>
+  {/if}
+  {#if notApprovedRows.length > 0}
+    <ul class="not-approved" data-testid="elevated-not-approved">
+      {#each notApprovedRows as row (row)}
+        <li>{row}</li>
+      {/each}
+    </ul>
+    <p class="visually-hidden" role="status" aria-live="polite">{elevatedRejectedCountAnnouncement(notApprovedRows.length)}</p>
+  {/if}
+  <footer class="actions">
+    {#if onDecline}
+      <button
+        type="button"
+        class="cancel decline"
+        data-testid="signing-decline"
+        onclick={onDecline}
+        disabled={approving || declining}
+      >
+        {declineText}
+      </button>
+    {:else}
+      <button
+        type="button"
+        class="cancel"
+        data-testid="signing-dismiss"
+        onclick={onCancel}
+        disabled={approving}
+      >
+        {cancelText}
+      </button>
+    {/if}
+    {#if onRetry}
+      <button type="button" class="cancel" onclick={onRetry} disabled={approving}>Try again</button>
+    {/if}
     <button
       type="button"
       class="approve"
-      onclick={onApprove}
+      onclick={handleApproveClick}
       disabled={approveButtonDisabled}
       aria-disabled={approveButtonDisabled}
+      aria-describedby={nodeChecking ? "host-node-status" : undefined}
     >
       {approveLabel}
     </button>
   </footer>
+  </div>
 </div>
+{/if}
 
 <style>
   .signing-approval {
@@ -822,6 +1298,28 @@
     color: #475569;
     margin: 0;
   }
+  .app-name,
+  .app-id-headline {
+    unicode-bidi: isolate;
+    overflow-wrap: anywhere;
+  }
+  .app-id {
+    font-size: 13px;
+    line-height: 1.3;
+    color: #475569;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .app-id-headline {
+    font-size: 17px;
+  }
+  .summary-lead {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 6px;
+    unicode-bidi: isolate;
+    overflow-wrap: anywhere;
+  }
   .requester-line {
     font-size: 13px;
     line-height: 1.45;
@@ -851,6 +1349,7 @@
   .reason .reason-body {
     font-size: 13px;
     color: #0f172a;
+    overflow-wrap: anywhere;
   }
   .signer-line {
     display: flex;
@@ -911,6 +1410,9 @@
     color: #7c4a03;
   }
   .statement-primary {
+    /* A long unbroken id (a 32-hex share key) wraps inside the row instead of pushing the Sensitive pill off the card. */
+    min-width: 0;
+    overflow-wrap: anywhere;
     font-size: 13px;
     line-height: 1.45;
     font-weight: 600;
@@ -933,7 +1435,102 @@
     font-weight: 700;
     line-height: 1.3;
   }
+  .not-approved {
+    margin: 0;
+    padding: 0 0 0 18px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: #9f2424;
+    overflow-wrap: anywhere;
+  }
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
   .summary-empty {
+    color: #475569;
+    font-size: 13px;
+    line-height: 1.45;
+    margin: 0;
+  }
+  .host-facts {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 0;
+    padding-top: 8px;
+    border-top: 1px solid #e2e8f0;
+  }
+  .host-fact {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 4px 10px;
+    align-items: start;
+  }
+  .host-fact-label {
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.6;
+    color: #475569;
+  }
+  .host-fact-value {
+    margin: 0;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 8px;
+    overflow-wrap: anywhere;
+  }
+  .host-fact-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: #0f172a;
+  }
+  .host-node-status {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 10px;
+    border: 1px solid #cbd5e1;
+    border-radius: 10px;
+    background: #fff;
+    font-size: 13px;
+    line-height: 1.45;
+    color: #0f172a;
+  }
+  .host-node-status[data-node-state="known"] {
+    border-color: #a7d7b8;
+    background: #f3fbf6;
+  }
+  .host-node-status[data-node-state="other"] {
+    border-color: #f1d28a;
+    background: #fffaf0;
+  }
+  .host-marker {
+    margin: 0;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  .host-marker-note {
+    margin: 0;
+    font-size: 12px;
+    color: #475569;
+  }
+  .app-key-note {
+    margin: 0 0 8px;
+    color: #475569;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .summary-note {
     color: #475569;
     font-size: 13px;
     line-height: 1.45;
@@ -945,11 +1542,12 @@
     border-radius: 14px;
     padding: 12px 14px;
     font-size: 13px;
+    display: block;
+  }
+  .advanced-details[open] {
     display: flex;
     flex-direction: column;
     gap: 10px;
-  }
-  .advanced-details[open] {
     background: #fbfdff;
     border-color: #cfd8e3;
   }
@@ -961,8 +1559,11 @@
     cursor: pointer;
     font-weight: 700;
     color: #0f172a;
-    padding: 2px 0 6px;
+    padding: 2px 0;
     list-style: none;
+  }
+  .advanced-details[open] > .advanced-summary {
+    padding-bottom: 6px;
   }
   .advanced-summary::-webkit-details-marker {
     display: none;
@@ -1087,6 +1688,7 @@
   .metadata-reason,
   .reason-body,
   .reason-untrusted {
+    overflow-wrap: anywhere;
     margin: 4px 0 0;
     font-size: 12px;
     line-height: 1.45;
@@ -1341,8 +1943,8 @@
     max-height: 180px;
     font-size: 12px;
     line-height: 1.5;
-    white-space: pre-wrap;
-    word-break: break-word;
+    white-space: pre;
+    word-break: normal;
     user-select: text;
     -webkit-user-select: text;
   }
@@ -1356,6 +1958,19 @@
     margin: 0;
     border: 1px solid #f2c0c0;
   }
+  .error-detail {
+    color: #9f2424;
+    font-size: 12px;
+    line-height: 1.45;
+    margin: -4px 0 0;
+  }
+  .error-detail summary {
+    cursor: pointer;
+  }
+  .error-detail p {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+  }
   .approve-blocked {
     color: #7c4a03;
     font-size: 12px;
@@ -1366,10 +1981,16 @@
     display: flex;
     gap: 10px;
   }
-  .sticky-actions .actions {
+  .action-region {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .sticky-actions .action-region {
     position: sticky;
     bottom: 0;
     z-index: 1;
+    gap: 8px;
     padding: 10px 0;
     background: #fff;
     box-shadow: 0 -8px 16px rgb(255 255 255 / 90%);
@@ -1398,6 +2019,24 @@
   .cancel:hover {
     background: #f8fafc;
   }
+  .dismiss-link {
+    align-self: flex-start;
+    padding: 4px 2px;
+    background: none;
+    border: 0;
+    color: #475569;
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .dismiss-link:hover {
+    color: #0f172a;
+  }
+  .dismiss-link:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
   .approve:hover {
     background: #111827;
   }
@@ -1408,6 +2047,7 @@
   }
   @media (max-width: 520px) {
     .signing-approval {
+      width: calc(100% - 24px);
       padding: 14px;
       border-radius: 14px;
     }

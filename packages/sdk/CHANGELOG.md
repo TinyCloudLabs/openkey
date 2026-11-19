@@ -1,5 +1,62 @@
 # @openkey/sdk
 
+## 0.13.0-beta.3
+
+### Minor Changes
+
+- cb63731: Signing requests the server refuses now reject with their own error code instead of `UNKNOWN`: `APP_KEY_GRANT_REFUSED` (the request asks for an encryption key this website can't be granted), `KEY_DELETE_NOT_GRANTABLE` or `INVALID_SIWE_RECAP`. The codes are exported as the `OpenKeyRefusalCode` type, and the messages are unchanged. Apps that check `code === 'UNKNOWN'` for these refusals need to check the new codes instead.
+
+  Details: TC-2928
+
+### Patch Changes
+
+- Updated dependencies [5ee1a51]
+  - @openkey/core@0.13.0-beta.3
+
+## 0.13.0-beta.2
+
+### Minor Changes
+
+- 4e43d91: `authorizeTinyCloud` takes `renewal: { version: 1, leaseLifetimeSeconds, purpose? }` beside `expiryChangeable: true` (TC-2872). It asks OpenKey's sign-in window to offer automatic renewal. The result carries the owner's `renewalChoice` and, when renewal was left on, the owner-signed lease as `renewal` (the approval-renewal codec). OpenKey doesn't send the lease to the node: the app registers the grant, then has the node admit the lease with `admitOwnerRenewalLease`. With an external wallet, the wallet signs the lease after the grant, and declining it fails the sign-in. A malformed ask, or one without `expiryChangeable: true`, throws before anything opens.
+
+### Patch Changes
+
+- ffa679d: The `expiryChangeable` doc now describes the approval screen's new line: OpenKey shows "This permission expires in …", with the time changed under "How long it lasts" (TC-2933). No code change.
+
+## 0.13.0-beta.1
+
+### Patch Changes
+
+- ccccb4e: Clear the cached connection when a validated widget response reports `NO_KEY`, and surface the widget's error code and message. An explicit `connect()` selects a new key; failed signing and authorization requests are not retried automatically, and caller-bound SIWE messages and explicit key selections are preserved.
+
+  Details: TC-1496.
+
+- Updated dependencies [6ff72e1]
+  - @openkey/core@0.13.0-beta.1
+
+## 0.13.0-beta.0
+
+### Minor Changes
+
+- e7f2d42: `authorizeTinyCloud` takes an optional `expiryChangeable: true` and forwards it to the sign widget (managed and external keys), only when it is literally `true`. Set it only when your app accepts a signed message whose `Expiration Time` differs from the SIWE you sent (shorter or longer) and reads the expiry from the returned `signedMessage`: OpenKey then shows "Approval expires … (Change)" and signs the time the user picks. Without it the widget shows no expiry control and your expiry is signed. Details: TC-2272
+
+### Patch Changes
+
+- 1f9316e: Correct the `manifestDigest` type comment: the app-key manifest at `/.well-known/openkey-manifest.json` is fetched from the app's origin and digest-checked, not signed, and it is optional for app keys. See docs/app-keys-for-builders.md.
+
+## 0.12.2
+
+### Patch Changes
+
+- 5e06b93: In popup mode `authorizeTinyCloud` opens its popup window in the call itself, blank, before the first await, and navigates it to the widget once the key is routed. The key list request and the routing that run first could outlast the click that asked for the popup, and a browser opens a popup only inside that click. The window is closed if the flow fails or takes the external-wallet route before the widget is shown. Iframe mode, `connect`, `signMessage` and the other flows are unchanged.
+- @openkey/core@0.12.2
+
+## 0.12.2-beta.0
+
+### Patch Changes
+
+- 5e06b93: In popup mode `authorizeTinyCloud` opens its popup window in the call itself, blank, before the first await, and navigates it to the widget once the key is routed. The key list request and the routing that run first could outlast the click that asked for the popup, and a browser opens a popup only inside that click. The window is closed if the flow fails or takes the external-wallet route before the widget is shown. Iframe mode, `connect`, `signMessage` and the other flows are unchanged.
+
 ## 0.12.1
 
 ### Patch Changes

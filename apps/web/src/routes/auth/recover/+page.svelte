@@ -9,6 +9,8 @@
   import { setSessionToken } from '$lib/embed-passkey';
   import { newAccountSignupToken } from '$lib/email-signup';
   import NewAccountConfirmation from '$lib/components/auth/new-account-confirmation.svelte';
+  import PasskeyStepUpDialog from '$lib/components/auth/passkey-step-up-dialog.svelte';
+  import { passkeyStepUpMethods, type PasskeyStepUpMethod } from '$lib/passkey-step-up';
 
   let { data } = $props();
 
@@ -131,12 +133,19 @@
     await goto(data.returnTo || '/dashboard');
   }
 
+  // TC-1198: the recovery email code grants a five-minute, single-use passkey
+  // enrolment; past it, the API asks for a fresh step-up first.
+  let passkeyStepUpOffered = $state<PasskeyStepUpMethod[] | null>(null);
+
   async function registerPasskey() {
     loading = true;
     error = '';
     try {
       const result = await authClient.passkey.addPasskey();
-      if (result?.error) {
+      const methods = passkeyStepUpMethods(result?.error);
+      if (methods) {
+        passkeyStepUpOffered = methods;
+      } else if (result?.error) {
         error = authErrorMessage(result.error, 'Failed to register passkey');
       } else {
         await completeRecovery();
@@ -160,6 +169,15 @@
     }
   }
 </script>
+
+{#if passkeyStepUpOffered}
+  <PasskeyStepUpDialog
+    purpose="passkey_register"
+    methods={passkeyStepUpOffered}
+    onverified={() => { passkeyStepUpOffered = null; void registerPasskey(); }}
+    oncancel={() => { passkeyStepUpOffered = null; }}
+  />
+{/if}
 
 <div class="flex min-h-screen items-center justify-center bg-surface-50 px-4 py-12">
   <div class="w-full max-w-md">

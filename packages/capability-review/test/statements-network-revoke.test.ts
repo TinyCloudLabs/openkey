@@ -103,15 +103,15 @@ describe("buildStatement — encryption network.revoke", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.encryption/decrypt, tinycloud.encryption/network.revoke on tinycloud.encryption",
+      "Decrypt and stop your decryption",
     );
     expect(stmt.primaryText).not.toBe("Decrypt protected data");
     expect(stmt.primaryText).not.toBe(
       "Create a decryption network and decrypt protected data",
     );
-    // Every raw ability must appear.
-    expect(stmt.primaryText).toContain("tinycloud.encryption/decrypt");
-    expect(stmt.primaryText).toContain("tinycloud.encryption/network.revoke");
+    // Every ability must appear, in plain words.
+    expect(stmt.primaryText).toContain("Decrypt");
+    expect(stmt.primaryText).toContain("stop your decryption");
   });
 
   it("[network.create, network.revoke] renders the literal fallback (revoke not swallowed)", () => {
@@ -129,14 +129,14 @@ describe("buildStatement — encryption network.revoke", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.encryption/network.create, tinycloud.encryption/network.revoke on tinycloud.encryption",
+      "Set up and stop your decryption",
     );
     expect(stmt.primaryText).not.toBe("Create a decryption network");
     expect(stmt.primaryText).not.toBe(
       "Create a decryption network and decrypt protected data",
     );
-    expect(stmt.primaryText).toContain("tinycloud.encryption/network.create");
-    expect(stmt.primaryText).toContain("tinycloud.encryption/network.revoke");
+    expect(stmt.primaryText).toContain("Set up");
+    expect(stmt.primaryText).toContain("stop your decryption");
   });
 
   it("[decrypt, network.create, network.revoke] renders the literal fallback", () => {
@@ -156,17 +156,17 @@ describe("buildStatement — encryption network.revoke", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.encryption/decrypt, tinycloud.encryption/network.create, tinycloud.encryption/network.revoke on tinycloud.encryption",
+      "Decrypt, set up and stop your decryption",
     );
     expect(stmt.primaryText).not.toBe(
       "Create a decryption network and decrypt protected data",
     );
     expect(stmt.primaryText).not.toBe("Decrypt protected data");
     expect(stmt.primaryText).not.toBe("Create a decryption network");
-    // Every raw ability must appear.
-    expect(stmt.primaryText).toContain("tinycloud.encryption/decrypt");
-    expect(stmt.primaryText).toContain("tinycloud.encryption/network.create");
-    expect(stmt.primaryText).toContain("tinycloud.encryption/network.revoke");
+    // Every ability must appear, in plain words.
+    expect(stmt.primaryText).toContain("Decrypt");
+    expect(stmt.primaryText).toContain("set up");
+    expect(stmt.primaryText).toContain("stop your decryption");
   });
 
   it("also explains the short-form `encryption/network.revoke` alias", () => {
@@ -197,7 +197,7 @@ describe("buildStatement — unknown-service app-data fails closed", () => {
       abilities: ["tinycloud.foo/get"],
     });
     const stmt = buildStatement(grant);
-    expect(stmt.primaryText).toBe("Perform tinycloud.foo/get on tinycloud.foo");
+    expect(stmt.primaryText).toBe("Unknown action: tinycloud.foo/get");
     expect(stmt.primaryText).not.toBe("Read this app's data");
     expect(stmt.primaryText).not.toBe("Update this app's data");
     expect(stmt.primaryText).not.toBe("Read and update this app's data");
@@ -215,7 +215,7 @@ describe("buildStatement — unknown-service app-data fails closed", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.foo/get, tinycloud.foo/put on tinycloud.foo",
+      "Unknown actions: tinycloud.foo/get, tinycloud.foo/put",
     );
     expect(stmt.primaryText).not.toBe("Read data outside this app");
     expect(stmt.primaryText).not.toBe("Update data outside this app");
@@ -238,7 +238,7 @@ describe("buildStatement — unknown-service app-data fails closed", () => {
     });
     const stmt = buildStatement(grant);
     expect(stmt.primaryText).toBe(
-      "Perform tinycloud.notes/get on tinycloud.notes",
+      "Unknown action: tinycloud.notes/get",
     );
     expect(stmt.primaryText).not.toBe("Read this app's data");
   });
@@ -290,7 +290,7 @@ describe("buildStatement — preserved known copy", () => {
       severity: "sensitive",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Set up encrypted data access",
+      "Set up encryption",
     );
   });
 
@@ -306,7 +306,7 @@ describe("buildStatement — preserved known copy", () => {
       severity: "sensitive",
     });
     expect(buildStatement(grant).primaryText).toBe(
-      "Set up encrypted data access and decrypt protected data",
+      "Set up encryption and decrypt protected data",
     );
   });
 });

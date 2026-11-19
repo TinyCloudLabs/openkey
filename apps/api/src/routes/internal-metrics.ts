@@ -1,18 +1,17 @@
 import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
-import { createPrismaClient } from '@openkey/db';
-
-const prisma = createPrismaClient();
+import { getPrisma } from '@openkey/db';
+import { getAccountOriginRefusals } from '../log';
 
 type MetricsCounter = { count(options?: Record<string, unknown>): Promise<number> };
+type RenewalGroup = { clientId: string; _count: { _all: number }; _max: { createdAt: Date | null } };
+type RenewalGrouping = { groupBy(options: Record<string, unknown>): Promise<RenewalGroup[]> };
 export type MetricsDatabase = {
   user: MetricsCounter;
   ethereumKey: MetricsCounter;
-  tinyCloudManageKeySigningDecision: MetricsCounter;
+  tinyCloudManageKeySigningDecision: MetricsCounter & RenewalGrouping;
   tinyCloudManageKeyAppPreference: MetricsCounter;
 };
-
-export const internalMetricsRouter = new Hono();
 
 function authorized(authHeader: string | undefined): boolean {
   const token = process.env.INTERNAL_METRICS_TOKEN;
@@ -69,17 +68,63 @@ export async function collectInternalMetrics(database: MetricsDatabase, now = ne
         denied: signingDenials24h,
       },
     },
+    // Process-local counts reset on restart and never include Origin values.
+    originRefusals: getAccountOriginRefusals(),
   };
 }
 
-internalMetricsRouter.get('/', async (c) => {
-  if (!process.env.INTERNAL_METRICS_TOKEN) {
-    return c.json({ error: 'Internal metrics are not configured' }, 503);
-  }
+export async function collectNativeRenewalMetrics(database: MetricsDatabase, now = new Date()) {
+  const since24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const since7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const where = { allowed: true, reason: { in: ['native_renew', 'native_renew_recovered'] } };
+  const [dayGroups, weekGroups] = await Promise.all([
+    database.tinyCloudManageKeySigningDecision.groupBy({
+      by: ['clientId'], where: { ...where, createdAt: { gte: since24h } },
+      _count: { _all: true }, _max: { createdAt: true },
+    }),
+    database.tinyCloudManageKeySigningDecision.groupBy({
+      by: ['clientId'], where: { ...where, createdAt: { gte: since7d } },
+      _count: { _all: true }, _max: { createdAt: true },
+    }),
+  ]);
+  return {
+    windowHours: [24, 168],
+    clients: weekGroups.map((week) => ({
+      clientId: week.clientId,
+      renewals24h: dayGroups.find((day) => day.clientId === week.clientId)?._count._all ?? 0,
+      renewals7d: week._count._all,
+      lastRenewalAt: week._max.createdAt
+        ? new Date(Math.floor(week._max.createdAt.getTime() / 3_600_000) * 3_600_000).toISOString()
+        : null,
+    })),
+  };
+}
 
-  if (!authorized(c.req.header('Authorization'))) {
-    return c.json({ error: 'Unauthorized' }, 401);
-  }
+export function createInternalMetricsRouter(getDatabase: () => MetricsDatabase) {
+  const router = new Hono();
 
-  return c.json(await collectInternalMetrics(prisma as unknown as MetricsDatabase));
-});
+  router.get('/native-renewals', async (c) => {
+    if (!process.env.INTERNAL_METRICS_TOKEN) return c.json({ error: 'Internal metrics are not configured' }, 503);
+    if (!authorized(c.req.header('Authorization'))) return c.json({ error: 'Unauthorized' }, 401);
+    c.header('Cache-Control', 'no-store');
+    return c.json(await collectNativeRenewalMetrics(getDatabase()));
+  });
+
+  router.get('/', async (c) => {
+    if (!process.env.INTERNAL_METRICS_TOKEN) {
+      return c.json({ error: 'Internal metrics are not configured' }, 503);
+    }
+
+    if (!authorized(c.req.header('Authorization'))) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    return c.json(await collectInternalMetrics(getDatabase()));
+  });
+
+  return router;
+}
+
+export const internalMetricsRouter = createInternalMetricsRouter(
+  () => getPrisma() as unknown as MetricsDatabase,
+);

@@ -1,16 +1,28 @@
 // API client for key management
-import { getSessionToken } from '$lib/embed-passkey';
+import { getSessionToken, isEmbedContext } from './embed-passkey';
+import { isDefiniteRefusal, ServerRefusalError } from './server-reply';
+import { isPreTermsPage, isTermsRequired, sendToTerms } from './terms';
+import type { RenewalLease } from './renewal-leases';
+import type { ApprovalPasskeyAssertion, ApprovalPasskeyOffer, PasskeyApprovalMode, PasskeyApprovalSetting } from './approval-passkey';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
-async function fetchAPI<T>(path: string, options: RequestInit = {}): Promise<T> {
+/**
+ * The stored session token is for an embedded frame, where third-party cookies are blocked. A top-level tab has the
+ * cookie session, and a leftover widget token there can belong to a different account than the cookie: using it
+ * would show one account's data and write to another. So outside an embedded frame every call uses the cookie.
+ *
+ * `cookieOnly`: never send the stored token, even in an embedded frame. The API refuses any request carrying an
+ * Authorization header when it changes a TinyCloud signing control (they are cookie-session only).
+ */
+async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly = false): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
   };
 
   // In embed context, use bearer token instead of cookies
-  const sessionToken = getSessionToken();
+  const sessionToken = cookieOnly || !isEmbedContext() ? null : getSessionToken();
   if (sessionToken) {
     headers['Authorization'] = `Bearer ${sessionToken}`;
   }
@@ -24,10 +36,15 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}): Promise<T> 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: 'Unknown error' }));
     const detail = error?.error;
+    // TC-3232: the account has not accepted the current Terms. The sign-in pages and the ways out (deletion
+    // included) work before it does; anywhere else the Terms screen is shown, and brings the user back here.
+    if (isTermsRequired(res.status, error) && !isPreTermsPage(window.location.pathname)) sendToTerms();
     const message = typeof detail === 'string' ? detail : detail?.message;
+    // A definite refusal of a sign-in keeps its code so the widget can tell the app (TC-2291).
+    if (isDefiniteRefusal(res.status, error?.code)) throw new ServerRefusalError(message || `HTTP ${res.status}`, res.status, error.code);
     const failure = new Error(message || `HTTP ${res.status}`);
     Object.assign(failure, {
-      code: detail?.code,
+      code: detail?.code ?? (typeof error?.code === 'string' ? error.code : undefined),
       status: res.status,
       policyEpoch: typeof error?.policyEpoch === 'number' ? error.policyEpoch : undefined,
     });
@@ -95,6 +112,7 @@ export interface TinyCloudManageKeyPreference {
 }
 
 export interface TinyCloudManageKeyApp {
+  kind?: 'tinycloud';
   clientId: string;
   name: string;
   uri: string | null;
@@ -104,6 +122,32 @@ export interface TinyCloudManageKeyApp {
   nativeDelegation: boolean;
   activeNativeGrants: number;
   status?: 'ENABLED' | 'DISABLED' | 'PENDING_USER_APPROVAL' | 'CONSENT_WITHDRAWN';
+}
+
+/** An MCP app the account has connected; `consentId` addresses its Disconnect call. */
+export interface ConnectedMcpApp {
+  kind: 'mcp';
+  consentId: string;
+  clientId: string;
+  name: string;
+  uri: string | null;
+  host: string | null;
+  icon: string | null;
+  connectedAt: string;
+  scopes: string[];
+}
+
+/** An app that can read the owner's canonical wallet address. */
+export interface ConnectedIdentityApp {
+  kind: 'identity';
+  consentId: string;
+  clientId: string;
+  name: string;
+  uri: string | null;
+  host: string | null;
+  icon: string | null;
+  connectedAt: string;
+  scopes: string[];
 }
 
 export interface TinyCloudManageKeyActivity {
@@ -117,6 +161,8 @@ export interface TinyCloudManageKeyActivity {
 
 export interface TinyCloudManageKeyAppsResponse {
   apps: TinyCloudManageKeyApp[];
+  mcpApps: ConnectedMcpApp[];
+  identityApps: ConnectedIdentityApp[];
   activity: TinyCloudManageKeyActivity[];
   mode: TinyCloudManageKeyPreference['mode'];
   policyEpoch: number;
@@ -200,7 +246,7 @@ export const api = {
   async setPrimaryKey(keyId: string): Promise<{ changed: boolean; key: EthereumKey }> {
     return fetchAPI(`/api/keys/${encodeURIComponent(keyId)}/primary`, {
       method: 'POST',
-    });
+    }, true);
   },
 
   async updateKey(keyId: string, label: string): Promise<{ success: boolean }> {
@@ -226,10 +272,12 @@ export const api = {
     keyId: string,
     message: string,
     requestOrigin?: string,
+    /** TC-2927: the owner allowed the extra permissions this exact message carries, on the warning screen. */
+    elevatedAcknowledged?: boolean,
   ): Promise<{ signature: string; address: string }> {
     return fetchAPI(`/api/keys/${keyId}/sign`, {
       method: 'POST',
-      body: JSON.stringify({ message, requestOrigin }),
+      body: JSON.stringify({ message, requestOrigin, ...(elevatedAcknowledged ? { elevatedAcknowledged: true } : {}) }),
     });
   },
 
@@ -262,7 +310,23 @@ export const api = {
     return fetchAPI('/api/account/auto-sign', {
       method: 'PATCH',
       body: JSON.stringify({ autoSignEnabled }),
-    });
+    }, true);
+  },
+
+  async getPasskeyApprovalSetting(): Promise<PasskeyApprovalSetting> {
+    return fetchAPI('/api/account/passkey-approval', {}, true);
+  },
+
+  /** A challenge bound to `mode`, for lowering the setting to it. */
+  async passkeyApprovalSettingOffer(mode: PasskeyApprovalMode): Promise<ApprovalPasskeyOffer> {
+    return fetchAPI('/api/account/passkey-approval/options', { method: 'POST', body: JSON.stringify({ mode }) }, true);
+  },
+
+  async updatePasskeyApprovalSetting(mode: PasskeyApprovalMode, passkeyAssertion?: ApprovalPasskeyAssertion): Promise<PasskeyApprovalSetting> {
+    return fetchAPI('/api/account/passkey-approval', {
+      method: 'PATCH',
+      body: JSON.stringify({ mode, passkeyAssertion }),
+    }, true);
   },
 
   async getTinyCloudManageKeyPreference(): Promise<TinyCloudManageKeyPreference> {
@@ -273,7 +337,7 @@ export const api = {
     return fetchAPI('/api/account/tinycloud-manage-key', {
       method: 'PATCH',
       body: JSON.stringify({ mode, expectedEpoch: policyEpoch, confirmation }),
-    });
+    }, true);
   },
 
   async listTinyCloudManageKeyApps(): Promise<TinyCloudManageKeyAppsResponse> {
@@ -286,13 +350,44 @@ export const api = {
     return fetchAPI(`/api/account/tinycloud-apps/${encodeURIComponent(clientId)}`, {
       method: 'PATCH',
       body: JSON.stringify({ enabled, expectedEpoch: policyEpoch, confirmation }),
-    });
+    }, true);
   },
 
   async disconnectTinyCloudApp(clientId: string): Promise<{ clientId: string; disconnected: boolean }> {
     return fetchAPI(`/api/account/tinycloud-apps/${encodeURIComponent(clientId)}`, {
       method: 'DELETE', body: JSON.stringify({ confirmation: 'DISCONNECT' }),
+    }, true);
+  },
+
+  async disconnectMcpApp(consentId: string): Promise<{ consentId: string; disconnected: boolean }> {
+    return fetchAPI(`/api/account/tinycloud-apps/mcp/${encodeURIComponent(consentId)}`, {
+      method: 'DELETE', body: JSON.stringify({ confirmation: 'DISCONNECT' }),
+    }, true);
+  },
+  async disconnectIdentityApp(consentId: string): Promise<{ consentId: string; disconnected: boolean }> {
+    return fetchAPI(`/api/account/tinycloud-apps/identity/${encodeURIComponent(consentId)}`, {
+      method: 'DELETE', body: JSON.stringify({ confirmation: 'DISCONNECT' }),
+    }, true);
+  },
+
+  async listRenewalLeases(): Promise<{ leases: RenewalLease[] }> {
+    return fetchAPI('/api/account/renewal-leases', {}, true);
+  },
+  /**
+   * Stop one lease. `{ walletMessage }` when an external wallet must sign the stop: call again with
+   * `{ siwe: walletMessage, signature }`.
+   */
+  async stopRenewalLease(leaseCid: string, signed?: { siwe: string; signature: string }): Promise<{ stopped: true } | { walletMessage: string }> {
+    const res = await fetch(`${API_URL}/api/account/renewal-leases/${encodeURIComponent(leaseCid)}/stop`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(signed ?? {}),
     });
+    const body = await res.json().catch(() => null) as { stopped?: boolean; code?: string; siwe?: string; error?: string } | null;
+    if (res.ok && body?.stopped === true) return { stopped: true };
+    if (res.status === 409 && body?.code === 'wallet_required' && typeof body.siwe === 'string') return { walletMessage: body.siwe };
+    throw Object.assign(new Error(typeof body?.error === 'string' ? body.error : `HTTP ${res.status}`), { code: body?.code, status: res.status });
   },
 
   async getLinkChallenge(): Promise<{ message: string; nonce: string }> {

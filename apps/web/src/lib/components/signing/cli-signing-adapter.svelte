@@ -39,9 +39,11 @@
     context?: Snippet;
     /** True when the user chose one of several keys. */
     showSigner?: boolean;
+    /** Reports whether editable permission checkboxes are visible. */
+    onEditingStateChange?: (editing: boolean) => void;
   }
 
-  let { model, initialSelection, transport, context, showSigner = false }: Props = $props();
+  let { model, initialSelection, transport, context, showSigner = false, onEditingStateChange }: Props = $props();
 
   // Internal review state. The adapter owns this because it is per-surface
   // presentational state — the route no longer touches it. We intentionally
@@ -62,12 +64,13 @@
 
   function onEditingChange(next: boolean) {
     editing = next;
+    onEditingStateChange?.(next);
   }
 
   function onApprove() {
     // Never approve a prepared authorization that differs from the visible
     // selection; SigningApproval also disables the button.
-    if (transport.approveBlockedReason) return;
+    if (transport.approveBlockedReason || transport.approveBlockedByFailure) return;
     // The CLI's approve is the delegate-submission path. The transport
     // handles managed vs external signing and delegation-token capture.
     void transport.approveDelegate();
@@ -75,6 +78,10 @@
 
   function onCancel() {
     transport.goBack();
+  }
+
+  function onDecline() {
+    void transport.decline?.();
   }
 </script>
 
@@ -84,11 +91,22 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
+  errorDetail={transport.errorDetail ?? null}
   approveBlockedReason={transport.approveBlockedReason ?? null}
+  approveBlockedByFailure={transport.approveBlockedByFailure ?? false}
   {context}
+  expiryMs={transport.expiry?.chosenMs ?? null}
+  onExpiryChange={transport.expiry?.onChange}
+  onceExpiryDefault={transport.expiry?.onceDefault ?? false}
+  expiryBounded={transport.expiry?.bounded ?? false}
+  expiryMaxMs={transport.expiry?.maxMs ?? null}
+  renewal={transport.renewal ?? null}
   {showSigner}
   {onApprove}
   {onCancel}
+  cancelText={transport.decline ? "Back" : undefined}
+  onDecline={transport.decline ? onDecline : undefined}
+  declining={transport.declining ?? false}
   {onSelectionChange}
   {onEditingChange}
 />

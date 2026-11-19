@@ -3,10 +3,14 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  assertMigrationRecorded,
+  assertNoDuplicateAccountIdentities,
   partitionPreTc488Migrations,
   selectProductionMigrationMode,
   type MigrationRow,
 } from './deploy-production-migrations';
+import { requiredRuntimeMigrationChecksums } from '../packages/db/src/schema-contract';
+import { assertNoReservedReviewerEmails } from './deploy-production-migrations';
 
 const baseline: MigrationRow = {
   migration_name: '20260714_origin_main_schema_catchup',
@@ -21,6 +25,7 @@ const native = '20261007_0001_tinycloud_native_foundation';
 const nativeHost = '20261007_0002_native_preparation_host';
 const nativeTokenGuard = '20261007_0003_tinycloud_native_token_guard';
 const signinPolish = '20261012_0001_signin_polish_hints_branding';
+const googleLinkStepUp = '20261015_0001_google_link_step_up';
 const tc492 = [
   '20260805_0001_canonical_tinycloud_key',
   '20260805_0002_tinycloud_manage_key_app_preferences',
@@ -150,6 +155,145 @@ describe('production migration deployment mode', () => {
     })).toThrow(`Stored migration checksum differs from the reviewed ${nativeTokenGuard}`);
   });
 
+  test('permits the reviewed Google linking migration while TC-488 remains parked', () => {
+    const directories = [baseline.migration_name, ...tc492, googleLinkStepUp];
+    expect(selectProductionMigrationMode({
+      migrations: [baseline], migrationDirectories: directories, managedAccountTableExists: true,
+    })).toBe('pre-tc488-additive');
+    expect(partitionPreTc488Migrations([...tc492, googleLinkStepUp])).toEqual({
+      apply: [...tc492.filter((name) => name !== tc488), googleLinkStepUp],
+      park: [tc488],
+    });
+    expect(() => selectProductionMigrationMode({
+      migrations: [baseline, {
+        migration_name: googleLinkStepUp, checksum: 'unreviewed', finished_at: new Date(), rolled_back_at: null,
+      }],
+      migrationDirectories: directories, managedAccountTableExists: true,
+    })).toThrow(`Stored migration checksum differs from the reviewed ${googleLinkStepUp}`);
+  });
+
+  test('refuses the Google linking migration while duplicate account identities exist and reports only the count', async () => {
+    const queries: string[] = [];
+    const database = {
+      async $queryRawUnsafe<T>(query: string): Promise<T> {
+        queries.push(query);
+        return (query.includes('to_regclass')
+          ? [{ exists: true }]
+          : [{ duplicate_groups: 3 }]) as T;
+      },
+    };
+    const failure = await assertNoDuplicateAccountIdentities(database).then(() => null, (error: Error) => error);
+    expect(failure?.message).toBe(
+      `${googleLinkStepUp} cannot run: account has 3 duplicate (providerId, accountId) groups; resolve them before deploying`,
+    );
+    expect(queries).toHaveLength(2);
+  });
+
+  test('allows the Google linking migration when no duplicate account identities exist', async () => {
+    const database = {
+      async $queryRawUnsafe<T>(query: string): Promise<T> {
+        return (query.includes('to_regclass') ? [{ exists: true }] : [{ duplicate_groups: 0 }]) as T;
+      },
+    };
+    await expect(assertNoDuplicateAccountIdentities(database)).resolves.toBeUndefined();
+  });
+
+  test('skips the duplicate account check when the account table does not exist yet', async () => {
+    const queries: string[] = [];
+    const database = {
+      async $queryRawUnsafe<T>(query: string): Promise<T> {
+        queries.push(query);
+        return [{ exists: false }] as T;
+      },
+    };
+    await expect(assertNoDuplicateAccountIdentities(database)).resolves.toBeUndefined();
+    expect(queries).toHaveLength(1);
+  });
+
+  test('refuses the reviewer migration while a user holds a reserved address and reports only the count', async () => {
+    const queries: string[] = [];
+    const database = {
+      async $queryRawUnsafe<T>(query: string): Promise<T> {
+        queries.push(query);
+        return (query.includes('to_regclass') ? [{ exists: true }] : [{ reserved_users: 2 }]) as T;
+      },
+    };
+    const failure = await assertNoReservedReviewerEmails(database).then(() => null, (error: Error) => error);
+    expect(failure?.message).toBe(
+      '20261111_0001_reviewer_accounts cannot run: 2 existing user(s) hold a reserved app-review address; resolve them before deploying',
+    );
+    expect(queries).toHaveLength(2);
+    // Case-insensitive, count-only, and the same three addresses the migration reserves.
+    expect(queries[1]).toContain('lower(email) IN');
+    expect(queries[1]).toContain('count(*)');
+    const migration = await readFile(
+      join(import.meta.dir, '../packages/db/prisma/migrations/20261111_0001_reviewer_accounts/migration.sql'), 'utf8',
+    );
+    for (const address of ['openai-review@tinycloud.xyz', 'google-review@tinycloud.xyz', 'appreview@tinycloud.xyz']) {
+      expect(queries[1]).toContain(`'${address}'`);
+      expect(migration).toContain(`'${address}'`);
+    }
+  });
+
+  test('allows the reviewer migration when no user holds a reserved address, and skips the check without a user table', async () => {
+    const present = {
+      async $queryRawUnsafe<T>(query: string): Promise<T> {
+        return (query.includes('to_regclass') ? [{ exists: true }] : [{ reserved_users: 0 }]) as T;
+      },
+    };
+    await expect(assertNoReservedReviewerEmails(present)).resolves.toBeUndefined();
+    const queries: string[] = [];
+    const absent = {
+      async $queryRawUnsafe<T>(query: string): Promise<T> {
+        queries.push(query);
+        return [{ exists: false }] as T;
+      },
+    };
+    await expect(assertNoReservedReviewerEmails(absent)).resolves.toBeUndefined();
+    expect(queries).toHaveLength(1);
+  });
+
+  // Once this migration is applied to production its file and both pins are frozen: reverting
+  // the commit that added `codeDigest` would change the checksum and block every API deploy.
+  // Restart survival is backed out in code only (docs/deployment.md, "The migration file is frozen").
+  test('the reviewer migration keeps the checksum and the codeDigest column it ships with', async () => {
+    const name = '20261111_0001_reviewer_accounts';
+    const frozen = '11196b6dd808c535f5ad66f7a92aff85a12afcd47004e279bc42bbc9d9fa7cf2';
+    const migration = await readFile(join(import.meta.dir, '../packages/db/prisma/migrations', name, 'migration.sql'));
+    expect(createHash('sha256').update(migration).digest('hex')).toBe(frozen);
+    expect(requiredRuntimeMigrationChecksums.get(name)).toBe(frozen);
+    expect(migration.toString('utf8')).toContain('"codeDigest" TEXT');
+    const runner = await readFile(join(import.meta.dir, 'deploy-production-migrations.ts'), 'utf8');
+    expect(runner).toContain(`[reviewerAccountsMigration, '${frozen}']`);
+  });
+
+  test('accepts the finished history row when a rolled-back attempt of the same migration exists', () => {
+    const reviewed = 'reviewed-checksum';
+    const rolledBack: MigrationRow = {
+      migration_name: googleLinkStepUp, checksum: reviewed, finished_at: null, rolled_back_at: new Date(),
+    };
+    const finished: MigrationRow = {
+      migration_name: googleLinkStepUp, checksum: reviewed, finished_at: new Date(), rolled_back_at: null,
+    };
+    expect(() => assertMigrationRecorded([rolledBack, finished], googleLinkStepUp, reviewed)).not.toThrow();
+    expect(() => assertMigrationRecorded([finished, rolledBack], googleLinkStepUp, reviewed)).not.toThrow();
+  });
+
+  test('rejects a migration whose only history rows are rolled back, unfinished, or carry another checksum', () => {
+    const rolledBack: MigrationRow = {
+      migration_name: googleLinkStepUp, checksum: 'reviewed-checksum', finished_at: null, rolled_back_at: new Date(),
+    };
+    const unfinished: MigrationRow = { ...rolledBack, rolled_back_at: null };
+    const otherChecksum: MigrationRow = {
+      ...rolledBack, checksum: 'other-checksum', finished_at: new Date(), rolled_back_at: null,
+    };
+    const message = `${googleLinkStepUp} was not recorded with the reviewed checksum`;
+    expect(() => assertMigrationRecorded([rolledBack], googleLinkStepUp, 'reviewed-checksum')).toThrow(message);
+    expect(() => assertMigrationRecorded([unfinished], googleLinkStepUp, 'reviewed-checksum')).toThrow(message);
+    expect(() => assertMigrationRecorded([rolledBack, otherChecksum], googleLinkStepUp, 'reviewed-checksum')).toThrow(message);
+    expect(() => assertMigrationRecorded([], googleLinkStepUp, 'reviewed-checksum')).toThrow(message);
+  });
+
   test('permits the prepared SIWE handoff migration while TC-488 remains parked', async () => {
     const name = '20261016_0001_prepared_siwe_handoff';
     const directories = [baseline.migration_name, ...tc492, device, name];
@@ -196,6 +340,121 @@ describe('production migration deployment mode', () => {
       migrationDirectories: [baseline.migration_name, ...tc492, device, '20260815_unreviewed'],
       managedAccountTableExists: true,
     })).toThrow('unreviewed pending migration set');
+  });
+
+  describe('the revoked access token table (TC-2104)', () => {
+    const name = '20261026_0001_revoked_access_token';
+    const migrationsRoot = join(import.meta.dir, '../packages/db/prisma/migrations');
+    const fileChecksum = async (migration: string) =>
+      createHash('sha256').update(await readFile(join(migrationsRoot, migration, 'migration.sql'))).digest('hex');
+    const applied = (migration_name: string, checksum: string): MigrationRow =>
+      ({ migration_name, checksum, finished_at: new Date(), rolled_back_at: null });
+    const directories = [baseline.migration_name, ...tc492, device, name];
+
+    test('is pending beside the parked TC-488 migration: the additive mode, and only the new one is applied', () => {
+      expect(selectProductionMigrationMode({
+        migrations: [baseline],
+        migrationDirectories: directories,
+        managedAccountTableExists: true,
+      })).toBe('pre-tc488-additive');
+      const { apply, park } = partitionPreTc488Migrations([tc488, name]);
+      expect(apply).toEqual([name]);
+      expect(park).toEqual([tc488]);
+    });
+
+    test('TC-488 is never in the list to apply, whatever else is pending', () => {
+      const { apply, park } = partitionPreTc488Migrations([...tc492, device, name]);
+      expect(apply).not.toContain(tc488);
+      expect(apply).toContain(name);
+      expect(park).toEqual([tc488]);
+    });
+
+    test('another unknown migration pending with it still fails closed', () => {
+      expect(() => selectProductionMigrationMode({
+        migrations: [baseline],
+        migrationDirectories: [...directories, '20261027_0001_not_reviewed'],
+        managedAccountTableExists: true,
+      })).toThrow('unreviewed pending migration set');
+    });
+
+    test('a stored checksum that differs from the reviewed one is refused', () => {
+      expect(() => selectProductionMigrationMode({
+        migrations: [baseline, applied(name, 'unreviewed')],
+        migrationDirectories: directories,
+        managedAccountTableExists: true,
+      })).toThrow(`Stored migration checksum differs from the reviewed ${name}`);
+    });
+
+    test('the reviewed checksum is the one of the migration file, and the runtime schema contract records the same', async () => {
+      const checksum = await fileChecksum(name);
+      expect(checksum).toBe('a57958f43b7d1c28c25b38ef358a5392e4b7f9ecf78a979b2c86c8027bd53a30');
+      expect(requiredRuntimeMigrationChecksums.get(name)).toBe(checksum);
+      // Applied with the file's own checksum, the reviewed list accepts it: an edit of either one fails here.
+      expect(selectProductionMigrationMode({
+        migrations: [baseline, applied(name, checksum)],
+        migrationDirectories: directories,
+        managedAccountTableExists: true,
+      })).toBe('pre-tc488-additive');
+    });
+
+    test('every migration directory newer than the parked TC-488 one is reviewed for the pre-TC-488 deploy', async () => {
+      const all = (await readdir(migrationsRoot, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+      const newer = all.filter((migration) => migration > tc488);
+      expect(newer).toContain(name);
+      for (const pendingOne of newer) {
+        const history: MigrationRow[] = [];
+        for (const migration of all.filter((other) => other !== tc488 && other !== pendingOne)) {
+          history.push(applied(migration, await fileChecksum(migration)));
+        }
+        expect(selectProductionMigrationMode({
+          migrations: history,
+          migrationDirectories: all,
+          managedAccountTableExists: true,
+        }), `${pendingOne} is not in the reviewed list of scripts/deploy-production-migrations.ts`).toBe('pre-tc488-additive');
+      }
+    });
+  });
+
+  test('allows approval result expansion beside parked TC-488 but rejects a changed checksum', () => {
+    const name = '20261028_0001_approval_request_results';
+    const input = {
+      migrations: [baseline],
+      migrationDirectories: [baseline.migration_name, ...tc492, device, name],
+      managedAccountTableExists: true,
+    };
+    expect(selectProductionMigrationMode(input)).toBe('pre-tc488-additive');
+    const applied = {
+      migration_name: name,
+      checksum: 'c1d45c495e46e7eaf8a3bb92c06802437c34ca2f63c47d63e2550190b1d8ed8f',
+      finished_at: new Date('2026-10-28T00:00:00Z'),
+      rolled_back_at: null,
+    };
+    expect(selectProductionMigrationMode({ ...input, migrations: [baseline, applied] })).toBe('pre-tc488-additive');
+    expect(() => selectProductionMigrationMode({
+      ...input,
+      migrations: [baseline, { ...applied, checksum: 'changed' }],
+    })).toThrow();
+  });
+
+  test('allows the reviewer expansion beside parked TC-488 only with its reviewed checksum', async () => {
+    const name = '20261111_0001_reviewer_accounts';
+    const checksum = createHash('sha256').update(await readFile(
+      join(import.meta.dir, '../packages/db/prisma/migrations', name, 'migration.sql'),
+    )).digest('hex');
+    expect(requiredRuntimeMigrationChecksums.get(name)).toBe(checksum);
+    const input = {
+      migrations: [baseline],
+      migrationDirectories: [baseline.migration_name, ...tc492, name],
+      managedAccountTableExists: true,
+    };
+    expect(selectProductionMigrationMode(input)).toBe('pre-tc488-additive');
+    expect(partitionPreTc488Migrations([tc488, name])).toEqual({ apply: [name], park: [tc488] });
+    const applied = { migration_name: name, checksum, finished_at: new Date(), rolled_back_at: null };
+    expect(selectProductionMigrationMode({ ...input, migrations: [baseline, applied] })).toBe('pre-tc488-additive');
+    expect(() => selectProductionMigrationMode({
+      ...input, migrations: [baseline, { ...applied, checksum: 'changed' }],
+    })).toThrow(`Stored migration checksum differs from the reviewed ${name}`);
   });
 
   test('fails closed on inconsistent physical cutover state', () => {

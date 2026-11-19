@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { SiweMessage } from 'siwe';
 import { appKeyRefusalMessage } from './app-key-refusal';
+import { DEVICE_FLOW_ABILITIES } from './device-flow-abilities';
 import {
   TINYCLOUD_DELEGATED_PATH,
   TINYCLOUD_DELEGATED_PATH_MAX_LENGTH,
@@ -10,6 +11,8 @@ import {
 } from './tinycloud-path-policy';
 
 export const DEVICE_AUTH_TRANSACTION_TTL_MS = 10 * 60 * 1000;
+/** How long an approved result stays retrievable, from approval, until the client acknowledges it. */
+export const DEVICE_AUTH_RESULT_RETENTION_MS = 10 * 60 * 1000;
 export const DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEVICE_AUTH_MAX_DELEGATION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEVICE_AUTH_POLL_INTERVAL_SECONDS = 2;
@@ -38,36 +41,6 @@ export const SHARE_DEVICE_PERMISSIONS: readonly DevicePermission[] = Object.free
   actions: Object.freeze(['tinycloud.capabilities/read']) as string[],
 })]);
 
-/**
- * Device-flow scope policy (TC-539). A device approval is phishable: anyone
- * can start a request and send its code to a victim. Requests are therefore
- * limited to an explicit allowlist of data abilities on one ordinary space:
- *
- * - services: `tinycloud.kv` and `tinycloud.capabilities` only, always fully
- *   qualified. `tinycloud.sql` is deferred: Node authorizes SQL descendant
- *   paths but selects the database by the final path segment, so a grant for
- *   `notes` could reach database `private` through `notes/private`;
- * - abilities: KV get/list/metadata/put/del and capabilities read. SQL,
- *   delegation, space, hooks, encryption, secrets, DuckDB, VFS, and wildcard
- *   abilities are rejected;
- * - spaces: one per request; `account` (account registry), `applications`
- *   (application registry) and `secrets` are rejected;
- * - paths: KV grants name an explicit relative path (no whole-space grants,
- *   no `.`/`..` segments, no `secrets/` or `vault/` roots) and no KV path may
- *   cover another (Node grants cover every path beneath a granted path);
- *   capabilities grants are space-wide (empty path);
- *   the single encryption grant is the approving account's own `default`
- *   network: space `default`, empty path, and only `tinycloud.encryption/decrypt`;
- * - `tinycloud.capabilities/read` is required: every OpenKey delegation
- *   carries it, so it is never optional at consent. One exception: a
- *   decrypt-only request carries no capabilities entry, and the requirement
- *   follows the request baseline as in TC-658 (`delegate-session.ts:236-258`).
- */
-export const DEVICE_FLOW_ABILITIES: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  'tinycloud.kv': ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata', 'tinycloud.kv/put', 'tinycloud.kv/del'],
-  'tinycloud.capabilities': ['tinycloud.capabilities/read'],
-  'tinycloud.encryption': ['tinycloud.encryption/decrypt'],
-});
 const DEVICE_FLOW_DENIED_SPACES: Record<string, true> = { account: true, applications: true, secrets: true };
 const DEVICE_PERMISSION_FIELDS: Record<string, true> = { service: true, space: true, path: true, actions: true };
 const DEVICE_SPACE_NAME = '[A-Za-z0-9][A-Za-z0-9._-]{0,63}';
@@ -96,6 +69,8 @@ export interface DeviceAuthorizationRecord {
   delegationExpiresAt: Date;
   /** Requested lifetime; an approval may grant at most approval time + this. */
   delegationTtlSeconds: number;
+  /** Lifetime the requester suggests as the default; absent means `delegationTtlSeconds`. */
+  suggestedTtlSeconds?: number;
   transactionExpiresAt: Date;
   requestedAt: Date;
   requestIpHash: string;
@@ -118,8 +93,13 @@ export interface DeviceAuthorizationStore {
     encryptedResult: string;
     delegationExpiresAt: Date;
     approvedPermissions: DevicePermission[];
+    resultExpiresAt: Date;
   }): Promise<boolean>;
+  /** Marks a pending, unexpired authorization denied. False when it is approved, denied, expired or unknown. */
+  deny(id: string, now: Date): Promise<boolean>;
   consumeApproved(id: string): Promise<DeviceAuthorizationRecord | null>;
+  /** Clears the ciphertext of approved results whose retention has passed without an acknowledgement. */
+  wipeExpiredResults(now: Date): Promise<void>;
 }
 
 export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore {
@@ -153,6 +133,7 @@ export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore 
     encryptedResult: string;
     delegationExpiresAt: Date;
     approvedPermissions: DevicePermission[];
+    resultExpiresAt: Date;
   }): Promise<boolean> {
     const record = this.records.get(id);
     if (!record || record.status !== 'pending') return false;
@@ -162,7 +143,16 @@ export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore 
       encryptedResult: input.encryptedResult,
       delegationExpiresAt: input.delegationExpiresAt,
       approvedPermissions: input.approvedPermissions,
+      // After approval the deadline is the result's retention, which may run past the transaction's.
+      transactionExpiresAt: new Date(Math.max(record.transactionExpiresAt.getTime(), input.resultExpiresAt.getTime())),
     });
+    return true;
+  }
+
+  async deny(id: string, now: Date): Promise<boolean> {
+    const record = this.records.get(id);
+    if (!record || record.status !== 'pending' || record.transactionExpiresAt <= now) return false;
+    record.status = 'denied';
     return true;
   }
 
@@ -174,6 +164,12 @@ export class MemoryDeviceAuthorizationStore implements DeviceAuthorizationStore 
     const consumed = { ...record };
     delete record.encryptedResult;
     return consumed;
+  }
+
+  async wipeExpiredResults(now: Date): Promise<void> {
+    for (const record of this.records.values()) {
+      if (record.status === 'approved' && record.transactionExpiresAt <= now) delete record.encryptedResult;
+    }
   }
 }
 
@@ -187,6 +183,8 @@ export type DeviceAuthorizationStart = {
   nodeOrigin: string;
   shareOrigin: string;
   delegationTtlSeconds?: number;
+  /** Optional default lifetime to show: 60 seconds up to `delegationTtlSeconds`; absent means the maximum. */
+  suggestedTtlSeconds?: number;
   reason?: string;
 };
 
@@ -396,7 +394,7 @@ function deviceSpaceIdentity(space: unknown): { key: string; name: string } | nu
 }
 
 function assertDevicePath(service: string, path: string, label: string): void {
-  if (service === 'tinycloud.capabilities' || service === 'tinycloud.encryption') {
+  if (service === 'tinycloud.capabilities') {
     if (path !== '') throw scopeError(`${label} must be empty for ${service}`);
     return;
   }
@@ -420,7 +418,6 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
     throw scopeError(`permissions must list between 1 and ${DEVICE_AUTH_MAX_PERMISSIONS} explicit capabilities`);
   }
   let requestSpace: string | undefined;
-  let encryptionEntries = 0;
   const granted: Array<{ service: string; segments: string[]; index: number }> = [];
   const permissions = value.map((raw, index) => {
     const label = `permissions[${index}]`;
@@ -429,20 +426,16 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
     const unknownField = Object.keys(entry).find((field) => !Object.hasOwn(DEVICE_PERMISSION_FIELDS, field));
     if (unknownField) throw scopeError(`${label}.${unknownField} is not a permission field`);
     const { service, space, path, actions } = entry;
-    if (typeof service !== 'string' || !Object.hasOwn(DEVICE_FLOW_ABILITIES, service)) {
-      throw scopeError(`${label}.service is not available over device authorization`);
-    }
-    if (service === 'tinycloud.encryption') {
-      encryptionEntries += 1;
-      if (encryptionEntries > 1) throw scopeError('permissions allows one tinycloud.encryption entry');
-      if (space !== 'default') throw scopeError(`${label}.space must be default for tinycloud.encryption`);
+    if (typeof service !== 'string') throw scopeError(`${label}.service is not available over device authorization`);
+    // Any spelling of the encryption service: device sign-in can't grant decrypt (TC-3204).
+    if (/^(?:tinycloud\.)?encryption$/i.test(service)) {
       if (typeof path === 'string' && /^(?:apps(?:\/|$)|urn:tinycloud:encryption:)/i.test(path)) {
         throw scopeError(appKeyRefusalMessage({ reason: 'apps_key' }, 'non_browser'));
       }
-      if (path !== '') throw scopeError(`${label}.path must be empty for tinycloud.encryption`);
-      if (!Array.isArray(actions) || actions.length !== 1 || actions[0] !== 'tinycloud.encryption/decrypt') {
-        throw scopeError(`${label}.actions must be exactly tinycloud.encryption/decrypt`);
-      }
+      throw scopeError(`${label} asks to decrypt, and device sign-in can't grant tinycloud.encryption. Sign in from a browser instead.`);
+    }
+    if (!Object.hasOwn(DEVICE_FLOW_ABILITIES, service)) {
+      throw scopeError(`${label}.service is not available over device authorization`);
     }
     if (typeof space !== 'string') throw scopeError(`${label}.space is required`);
     const spaceIdentity = deviceSpaceIdentity(space);
@@ -477,8 +470,6 @@ export function deviceRequestPermissions(value: unknown): DevicePermission[] {
     }
     return { service, space, path, actions: [...unique] };
   });
-  // A decrypt-only request carries no capabilities entry.
-  if (permissions.every((permission) => permission.service === 'tinycloud.encryption')) return permissions;
   if (!permissions.some((permission) => permission.service === 'tinycloud.capabilities')) {
     throw scopeError(
       'permissions must include tinycloud.capabilities/read with path "" in the requested space; every OpenKey delegation carries it and it cannot be unchecked',
@@ -534,7 +525,7 @@ function approvedPermissionSubset(requested: DevicePermission[], value: unknown)
     const actions = approvedByResource.get(resourceKey(permission));
     return actions ? [{ ...permission, actions: permission.actions.filter((action) => actions.has(action)) }] : [];
   });
-  if (!requested.every((permission) => permission.service === 'tinycloud.encryption') && !canonical.some((permission) => permission.service === 'tinycloud.capabilities')) {
+  if (!canonical.some((permission) => permission.service === 'tinycloud.capabilities')) {
     throw new DeviceAuthorizationError('invalid_result', 'approved permissions must keep tinycloud.capabilities/read', 400);
   }
   if (!jsonEqual(canonical, value)) {
@@ -558,12 +549,29 @@ function randomUserCode(): string {
   return [...bytes].map((value) => alphabet[value % alphabet.length]).join('');
 }
 
-function requestedTtlSeconds(input: unknown): number {
-  const seconds = input === undefined ? DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS / 1000 : Number(input);
-  if (!Number.isSafeInteger(seconds) || seconds < 60 || seconds > DEVICE_AUTH_MAX_DELEGATION_TTL_MS / 1000) {
-    throw new DeviceAuthorizationError('invalid_request', 'delegationTtlSeconds must be between 60 seconds and 30 days', 400);
+/** The last second a SIWE timestamp (four-digit year) can name. */
+const LATEST_SIWE_TIME_MS = Date.UTC(9999, 11, 31, 23, 59, 59);
+
+/**
+ * The longest lifetime the requester will accept (TC-2274: the requester signs it,
+ * so there is no server cap; only a minute minimum and what a date can hold).
+ */
+function requestedTtlSeconds(input: unknown, now: Date): number {
+  const seconds = input === undefined ? DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS / 1000 : typeof input === 'number' ? input : Number.NaN;
+  const latest = (LATEST_SIWE_TIME_MS - now.getTime() - DEVICE_AUTH_TRANSACTION_TTL_MS) / 1000;
+  if (!Number.isSafeInteger(seconds) || seconds < 60 || seconds > latest) {
+    throw new DeviceAuthorizationError('invalid_request', 'delegationTtlSeconds must be a whole number of at least 60 seconds', 400);
   }
   return seconds;
+}
+
+/** The default lifetime the requester suggests: absent means the maximum; never below a minute or above the maximum. */
+function requestedSuggestedTtlSeconds(input: unknown, maxSeconds: number): number | undefined {
+  if (input === undefined) return undefined;
+  if (typeof input !== 'number' || !Number.isSafeInteger(input) || input < 60 || input > maxSeconds) {
+    throw new DeviceAuthorizationError('invalid_request', 'suggestedTtlSeconds must be a whole number from 60 seconds up to delegationTtlSeconds', 400);
+  }
+  return input;
 }
 
 function jsonEqual(left: unknown, right: unknown): boolean {
@@ -682,7 +690,8 @@ export class DeviceAuthorizationService {
     }
     const permissions = deviceRequestPermissions(input.permissions);
     const reason = requestReason(input.reason);
-    const delegationTtlSeconds = requestedTtlSeconds(input.delegationTtlSeconds);
+    const delegationTtlSeconds = requestedTtlSeconds(input.delegationTtlSeconds, now);
+    const suggestedTtlSeconds = requestedSuggestedTtlSeconds(input.suggestedTtlSeconds, delegationTtlSeconds);
     const nodeOrigin = canonicalOrigin(input.nodeOrigin, 'nodeOrigin');
     const shareOrigin = canonicalOrigin(input.shareOrigin, 'shareOrigin');
     const requestIpHash = sha256(`device-auth-ip\0${this.options.encryptionSecret}\0${requestIp}`);
@@ -713,6 +722,7 @@ export class DeviceAuthorizationService {
       // the TTL.
       delegationExpiresAt: new Date(transactionExpiresAt.getTime() + delegationTtlSeconds * 1000),
       delegationTtlSeconds,
+      ...(suggestedTtlSeconds !== undefined ? { suggestedTtlSeconds } : {}),
       transactionExpiresAt,
       requestedAt: now,
       requestIpHash,
@@ -720,6 +730,8 @@ export class DeviceAuthorizationService {
       pollIntervalSeconds: DEVICE_AUTH_POLL_INTERVAL_SECONDS,
       status: 'pending',
     };
+    // The expiry sweep: approved results nobody acknowledged do not stay at rest past their retention.
+    await this.store.wipeExpiredResults(now);
     await this.store.create(record);
     const verificationUri = `${canonicalOrigin(this.options.verificationOrigin, 'verificationOrigin')}/device`;
     return {
@@ -741,12 +753,13 @@ export class DeviceAuthorizationService {
    * SIWE exists, from the canonical SIWE that is (or was) actually signed,
    * which also supplies the expiry; they must agree. Checked before signing
    * and before any host activation, so a delegation outside the transaction
-   * never exists.
+   * never exists. Returns the pending record so the caller can hold the
+   * signed capabilities to its requested permissions.
    */
   async assertDelegationWindow(
     transactionId: unknown,
     input: { nodeOrigin: unknown; jwk: unknown } & ({ signedSiwe: string } | { expiresAt: Date }),
-  ): Promise<void> {
+  ): Promise<DeviceAuthorizationRecord> {
     const record = typeof transactionId === 'string' ? await this.store.findById(transactionId) : null;
     const now = this.now();
     if (!record || record.status !== 'pending' || record.transactionExpiresAt <= now) {
@@ -775,6 +788,7 @@ export class DeviceAuthorizationService {
     ) {
       throw new DeviceAuthorizationError('invalid_request', 'delegation lifetime exceeds the device request', 400);
     }
+    return record;
   }
 
   async lookup(userCode: string): Promise<(Omit<DeviceAuthorizationRecord, 'deviceSecretHash' | 'codeChallenge' | 'requestIpHash' | 'encryptedResult'> & {
@@ -793,13 +807,32 @@ export class DeviceAuthorizationService {
       throw new DeviceAuthorizationError('expired_token', 'device authorization is no longer pending', 410);
     }
     const approval = validateRelayApproval(record, value, this.now());
+    const now = this.now();
     const approved = await this.store.approve(record.id, {
       userId,
       encryptedResult: JSON.stringify(approval.relay),
       delegationExpiresAt: approval.delegationExpiresAt,
       approvedPermissions: approval.approvedPermissions,
+      // Retention starts at approval, so a late approval is still retrievable, and never outlives the delegation.
+      resultExpiresAt: new Date(Math.min(approval.delegationExpiresAt.getTime(), now.getTime() + DEVICE_AUTH_RESULT_RETENTION_MS)),
     });
     if (!approved) throw new DeviceAuthorizationError('expired_token', 'device authorization is no longer pending', 410);
+  }
+
+  /** Declining refuses this authorization. Terminal and idempotent; an approved one cannot be declined. */
+  async deny(transactionId: string): Promise<{ status: 'denied' }> {
+    const record = typeof transactionId === 'string' ? await this.store.findById(transactionId) : null;
+    if (record?.status === 'denied') return { status: 'denied' };
+    if (!record || record.transactionExpiresAt <= this.now()) {
+      throw new DeviceAuthorizationError('expired_token', 'device authorization is no longer pending', 410);
+    }
+    if (record.status !== 'pending') throw new DeviceAuthorizationError('already_approved', 'device authorization was already approved', 409);
+    if (!await this.store.deny(record.id, this.now())) {
+      const current = await this.store.findById(record.id);
+      if (current?.status === 'denied') return { status: 'denied' };
+      throw new DeviceAuthorizationError('already_approved', 'device authorization was already approved', 409);
+    }
+    return { status: 'denied' };
   }
 
   async poll(input: { transactionId: string; deviceSecret: string; codeVerifier: string }): Promise<
@@ -820,16 +853,14 @@ export class DeviceAuthorizationService {
     if (!input || typeof input !== 'object' || Array.isArray(input)) {
       throw new DeviceAuthorizationError('invalid_request', 'device token request must be an object', 400);
     }
-    const record = await this.store.findById(input.transactionId);
-    if (!record || record.transactionExpiresAt <= this.now()) {
-      throw new DeviceAuthorizationError('expired_token', 'device authorization expired', 410);
+    // A denial is terminal and stays readable after the transaction window, to the holder of the device credentials.
+    const found = typeof input.transactionId === 'string' ? await this.store.findById(input.transactionId) : null;
+    if (found?.status === 'denied') {
+      this.assertDeviceCredentials(found, input);
+      throw new DeviceAuthorizationError('access_denied', 'the device authorization was denied', 400);
     }
-    if (
-      !equalDigest(sha256(input.deviceSecret), record.deviceSecretHash) ||
-      !equalDigest(sha256(input.codeVerifier), record.codeChallenge)
-    ) {
-      throw new DeviceAuthorizationError('invalid_grant', 'device secret or PKCE verifier is invalid', 401);
-    }
+    const record = await this.findLive(input.transactionId);
+    this.assertDeviceCredentials(record, input);
     const now = this.now();
     if (record.nextPollAt > now) {
       throw new DeviceAuthorizationError('slow_down', 'polling faster than the allowed interval', 429);
@@ -837,27 +868,57 @@ export class DeviceAuthorizationService {
     await this.store.updatePoll(record.id, new Date(now.getTime() + record.pollIntervalSeconds * 1000));
     if (record.status === 'pending') return { status: 'pending', interval: record.pollIntervalSeconds };
     if (record.status !== 'approved') throw new DeviceAuthorizationError('invalid_grant', 'device authorization was already consumed', 409);
-    const consumed = await this.store.consumeApproved(record.id);
-    if (!consumed) throw new DeviceAuthorizationError('invalid_grant', 'device authorization was already consumed', 409);
+    // Polling does not spend the result: it stays until the client acknowledges it or retention ends.
     return {
       status: 'approved',
       relay: (() => {
         try {
-          return JSON.parse(consumed.encryptedResult ?? '') as DeviceRelayEnvelope;
+          return JSON.parse(record.encryptedResult ?? '') as DeviceRelayEnvelope;
         } catch {
           throw new DeviceAuthorizationError('invalid_result', 'approved relay result is unavailable', 500);
         }
       })(),
       binding: {
-        transactionId: consumed.id,
-        sessionDid: consumed.sessionDid,
-        nodeOrigin: consumed.nodeOrigin,
-        shareOrigin: consumed.shareOrigin,
+        transactionId: record.id,
+        sessionDid: record.sessionDid,
+        nodeOrigin: record.nodeOrigin,
+        shareOrigin: record.shareOrigin,
         // Rows approved before TC-539 carry no separate approved set; their
         // approval was validated as equal to the request.
-        permissions: consumed.approvedPermissions ?? consumed.permissions,
-        delegationExpiresAt: consumed.delegationExpiresAt.toISOString(),
+        permissions: record.approvedPermissions ?? record.permissions,
+        delegationExpiresAt: record.delegationExpiresAt.toISOString(),
       },
     };
+  }
+
+  private async findLive(transactionId: string): Promise<DeviceAuthorizationRecord> {
+    const record = await this.store.findById(transactionId);
+    if (!record || record.transactionExpiresAt <= this.now()) {
+      throw new DeviceAuthorizationError('expired_token', 'device authorization expired', 410);
+    }
+    return record;
+  }
+
+  private assertDeviceCredentials(record: DeviceAuthorizationRecord, input: { deviceSecret: string; codeVerifier: string }): void {
+    if (
+      !equalDigest(sha256(input.deviceSecret), record.deviceSecretHash) ||
+      !equalDigest(sha256(input.codeVerifier), record.codeChallenge)
+    ) {
+      throw new DeviceAuthorizationError('invalid_grant', 'device secret or PKCE verifier is invalid', 401);
+    }
+  }
+
+  /** Spends an approved result once the client has saved it. Repeating it succeeds. */
+  async acknowledge(input: { transactionId: string; deviceSecret: string; codeVerifier: string }): Promise<{ status: 'acknowledged' }> {
+    if (typeof input?.deviceSecret !== 'string' || typeof input.codeVerifier !== 'string') {
+      throw new DeviceAuthorizationError('invalid_request', 'device acknowledgement requires the device secret and PKCE verifier', 400);
+    }
+    const record = await this.findLive(input.transactionId);
+    this.assertDeviceCredentials(record, input);
+    if (record.status === 'consumed') return { status: 'acknowledged' };
+    if (record.status !== 'approved' || !await this.store.consumeApproved(record.id)) {
+      throw new DeviceAuthorizationError('invalid_grant', 'there is no approved result to acknowledge', 409);
+    }
+    return { status: 'acknowledged' };
   }
 }

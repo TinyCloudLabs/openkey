@@ -1,6 +1,7 @@
 export type DelegateErrorCode =
   | 'invalid_permissions'
   | 'invalid_expiry'
+  | 'expiry_exceeds_link'
   | 'delegation_prepare_failed';
 
 export interface DelegateErrorDetail {
@@ -17,6 +18,12 @@ export interface DelegateErrorResponse {
   code: DelegateErrorCode;
   message: string;
   details?: DelegateErrorDetail[];
+  /**
+   * Wallet address that owns the requested space, as written in the request.
+   * Present only when a requested space belongs to a different wallet than the
+   * signing key.
+   */
+  requestedSpaceOwner?: string;
 }
 
 export class DelegateRequestError extends Error {
@@ -24,6 +31,7 @@ export class DelegateRequestError extends Error {
     public code: DelegateErrorCode,
     message: string,
     public details?: DelegateErrorDetail[],
+    public requestedSpaceOwner?: string,
   ) {
     super(message);
     this.name = 'DelegateRequestError';
@@ -44,6 +52,9 @@ export function delegateErrorResponse(
 
   if (err instanceof DelegateRequestError && err.details?.length) {
     response.details = err.details;
+  }
+  if (err instanceof DelegateRequestError && err.requestedSpaceOwner) {
+    response.requestedSpaceOwner = err.requestedSpaceOwner;
   }
 
   return response;

@@ -3,6 +3,8 @@
  * Extracts structured fields and ReCap capabilities from a SIWE message string.
  */
 
+import { daysOverTwoDays } from './approval-expiry';
+
 export interface SIWEMessage {
   domain: string;
   address: string;
@@ -243,9 +245,10 @@ export function timeUntilExpiry(iso: string): { text: string; expired: boolean }
   const seconds = Math.floor(diff / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
+  // Over two days: whole days, rounded up (the same rule as every other expiry text, `daysOverTwoDays`).
+  const days = daysOverTwoDays(diff);
 
-  if (days > 0) {
+  if (days !== null) {
     return { text: `in ${days} day${days === 1 ? '' : 's'}`, expired: false };
   }
   if (hours > 0) {
