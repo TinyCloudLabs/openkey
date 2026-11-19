@@ -23,9 +23,11 @@ const deviceService = new DeviceAuthorizationService(new MemoryDeviceAuthorizati
   verificationOrigin: 'https://openkey.example.test',
   encryptionSecret: 'fixture-device-authorization-encryption-key',
 });
-const named = { service: 'tinycloud.kv', space: 'secrets', path: 'vault/secrets/FIRST_KEY', actions: ['tinycloud.kv/get', 'tinycloud.kv/put'] };
+const capabilities = { service: 'tinycloud.capabilities', space: 'secrets', path: '', actions: ['tinycloud.capabilities/read'] };
+const named = { service: 'tinycloud.kv', space: 'secrets', path: 'vault/secrets/FIRST_KEY', actions: ['tinycloud.kv/get', 'tinycloud.kv/put', 'tinycloud.kv/list'] };
 const decrypt = { service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'] };
-const permissions = [named, decrypt];
+const secretsSpaceId = `tinycloud:pkh:eip155:1:${account.address}:secrets`;
+const permissions = [capabilities, named, decrypt];
 
 replaceModules({
   '../middleware/session': () => ({
@@ -109,27 +111,37 @@ function managedApproval(body: Record<string, any>) {
 
 test('prepares and signs a write-only secret from a manifest', async () => {
   const writeOnly = { ...named, actions: ['tinycloud.kv/put'] };
-  const { request } = await startRequest([writeOnly]);
+  const { request } = await startRequest([capabilities, writeOnly]);
   const prepared = await post('/prepare', request);
   expect(prepared.status, JSON.stringify(prepared.body)).toBe(200);
   const signed = await post('/', { ...request, ...managedApproval(prepared.body) });
   expect(signed.status, JSON.stringify(signed.body)).toBe(200);
-  expect(signed.body.permissions).toEqual([
-    { ...writeOnly, service: 'kv', space: `tinycloud:pkh:eip155:1:${account.address}:secrets` },
-  ]);
-});
-
-test('prepares, signs and relays the named KV path and the signer’s default network', async () => {
-  const { request, poll } = await startRequest();
-  const prepared = await post('/prepare', request);
-  expect(prepared.status, JSON.stringify(prepared.body)).toBe(200);
-  const signed = await post('/', { ...request, ...managedApproval(prepared.body) });
-  expect(signed.status, JSON.stringify(signed.body)).toBe(200);
+  expect(prepared.body.spaceId).toBe(secretsSpaceId);
+  expect(signed.body.spaceId).toBe(secretsSpaceId);
   expect(signed.body.permissions).toEqual(expect.arrayContaining([
-    { ...named, service: 'kv', space: `tinycloud:pkh:eip155:1:${account.address}:secrets` },
-    { service: 'encryption', space: 'encryption', path: `urn:tinycloud:encryption:did:pkh:eip155:1:${account.address}:default`, actions: decrypt.actions },
+    { ...capabilities, service: 'capabilities', space: secretsSpaceId },
+    { ...writeOnly, service: 'kv', space: secretsSpaceId },
   ]));
   expect(signed.body.permissions).toHaveLength(2);
+});
+
+test.each(['secrets', secretsSpaceId])('prepares, signs and relays a CLI request for %s', async (space) => {
+  const requested = [{ ...capabilities, space }, { ...named, space }, decrypt];
+  const { request, poll } = await startRequest(requested);
+  const prepared = await post('/prepare', request);
+  expect(prepared.status, JSON.stringify(prepared.body)).toBe(200);
+  const signed = await post('/', { ...request, ...managedApproval(prepared.body) });
+  expect(signed.status, JSON.stringify(signed.body)).toBe(200);
+  expect(prepared.body.spaceId).toBe(secretsSpaceId);
+  expect(signed.body.spaceId).toBe(secretsSpaceId);
+  expect(signed.body.permissions).toEqual(expect.arrayContaining([
+    { ...capabilities, service: 'capabilities', space: secretsSpaceId },
+    { service: 'encryption', space: 'encryption', path: `urn:tinycloud:encryption:did:pkh:eip155:1:${account.address}:default`, actions: decrypt.actions },
+  ]));
+  const signedNamed = signed.body.permissions.find((entry: { service: string }) => entry.service === 'kv');
+  expect(signedNamed).toEqual({ ...named, service: 'kv', space: secretsSpaceId, actions: expect.arrayContaining(named.actions) });
+  expect(signedNamed.actions).toHaveLength(named.actions.length);
+  expect(signed.body.permissions).toHaveLength(3);
 
   const ephemeralPublicJwk = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({ format: 'jwk' });
   await deviceService.approve(poll.transactionId, user.id, {
@@ -145,12 +157,12 @@ test('prepares, signs and relays the named KV path and the signer’s default ne
       sessionDid: sessionDidForPublicJwk(jwk),
       nodeOrigin: host,
       shareOrigin,
-      permissions,
+      permissions: requested,
       delegationExpiresAt: signed.body.expiresAt,
     },
   });
   expect(await deviceService.poll(poll)).toMatchObject({
-    status: 'approved', binding: { permissions, delegationExpiresAt: signed.body.expiresAt },
+    status: 'approved', binding: { permissions: requested, delegationExpiresAt: signed.body.expiresAt },
   });
 });
 
@@ -162,7 +174,7 @@ test('refuses a device baseline with an out-of-policy ability even if it is unch
   expect(prepared.status, JSON.stringify(prepared.body)).toBe(200);
   const altered = {
     ...request,
-    permissions: [{ ...named, actions: [...named.actions, 'tinycloud.kv/del'] }, decrypt],
+    permissions: [capabilities, { ...named, actions: [...named.actions, 'tinycloud.kv/del'] }, decrypt],
     actionKeys: prepared.body.selectedActionKeys,
   };
   const approval = managedApproval(prepared.body);

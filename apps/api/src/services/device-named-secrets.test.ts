@@ -8,10 +8,17 @@ const named: DevicePermission = {
 const decrypt: DevicePermission = {
   service: 'tinycloud.encryption', space: 'default', path: '', actions: ['tinycloud.encryption/decrypt'],
 };
+const capabilities: DevicePermission = {
+  service: 'tinycloud.capabilities', space: 'secrets', path: '', actions: ['tinycloud.capabilities/read'],
+};
 
 test('accepts separate named secrets and the default decrypt entry in either order', () => {
   for (const space of [named.space, 'tinycloud:pkh:eip155:1:0x0000000000000000000000000000000000000001:secrets']) {
-    const secrets = [{ ...named, space }, { ...named, space, path: `vault/secrets/${'A'.repeat(64)}` }];
+    const secrets = [
+      { ...capabilities, space },
+      { ...named, space },
+      { ...named, space, path: `vault/secrets/${'A'.repeat(64)}` },
+    ];
     expect(deviceRequestPermissions(secrets)).toEqual(secrets);
     for (const permissions of [[decrypt, ...secrets], [...secrets, decrypt]]) {
       expect(deviceRequestPermissions(permissions)).toEqual(permissions);
@@ -36,12 +43,20 @@ test.each(['tinycloud.kv/metadata', 'tinycloud.kv/del', 'tinycloud.kv/*', 'get',
   },
 );
 
-test.each(['tinycloud.sql', 'tinycloud.delegation', 'tinycloud.hooks', 'tinycloud.capabilities'])(
+test.each(['tinycloud.sql', 'tinycloud.delegation', 'tinycloud.hooks'])(
   'refuses %s in the secrets space',
   (service) => {
-    expect(() => deviceRequestPermissions([{ ...named, service }])).toThrow(/device authorization|named secret/);
+    expect(() => deviceRequestPermissions([{ ...named, service }])).toThrow(/device authorization/);
   },
 );
+
+test('requires exactly capabilities/read at the root beside named KV entries', () => {
+  expect(() => deviceRequestPermissions([named])).toThrow(/must include tinycloud.capabilities\/read/);
+  expect(() => deviceRequestPermissions([capabilities, decrypt])).toThrow(/at least one named secret/);
+  expect(() => deviceRequestPermissions([named, { ...capabilities, path: named.path }])).toThrow(/must be empty/);
+  expect(() => deviceRequestPermissions([named, { ...capabilities, actions: ['tinycloud.capabilities/write'] }])).toThrow(/ability/);
+  expect(deviceRequestPermissions([decrypt])).toEqual([decrypt]);
+});
 
 test('refuses two data spaces, overlapping entries, and the named path in other spaces', () => {
   expect(() => deviceRequestPermissions([named, decrypt, { ...named, space: 'default', path: 'notes' }])).toThrow(/one space/);
