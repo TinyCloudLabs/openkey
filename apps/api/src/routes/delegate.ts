@@ -62,7 +62,7 @@ import {
   type RecapEntry,
   type SessionAbilities,
 } from './delegate-session';
-import { log, logError, logMetric, logSessionJwk, recordAccountOriginRefused } from '../log';
+import { countPrivateSessionJwk, log, logError, logMetric, logSessionJwk, recordAccountOriginRefused } from '../log';
 
 // Re-export the pure delegation helpers so existing external test files
 // (e.g. delegate-oauth-route.test.ts) that import them from this module
@@ -1484,7 +1484,9 @@ delegateRouter.post('/', async (c) => {
     selectedActionIds?: unknown;
     protocolVersion?: number;
   }>(c);
-  logSessionJwk('/api/delegate', hasPrivateJwkMember(body.jwk));
+  const privateMembers = hasPrivateJwkMember(body.jwk);
+  logSessionJwk('/api/delegate', privateMembers);
+  if (privateMembers && !body.deviceTransactionId) countPrivateSessionJwk('/api/delegate');
   // Only the session key's public members are used, stored, or returned; a
   // malformed key counts as missing. A request naming a device transaction
   // keeps that flow's exact check of the key as sent, and one naming an
@@ -2015,7 +2017,9 @@ delegateRouter.post('/prepare', async (c) => {
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
   }>(c);
-  logSessionJwk('/api/delegate/prepare', hasPrivateJwkMember(body.jwk));
+  const privateMembers = hasPrivateJwkMember(body.jwk);
+  logSessionJwk('/api/delegate/prepare', privateMembers);
+  if (privateMembers && !body.deviceTransactionId) countPrivateSessionJwk('/api/delegate/prepare');
   // Only the session key's public members are used, stored, or returned; a
   // malformed key counts as missing. A request naming a device transaction
   // keeps that flow's exact check of the key as sent, and one naming an
@@ -2265,7 +2269,9 @@ delegateRouter.post('/complete', async (c) => {
      */
     selectedActionIds?: unknown;
   }>(c);
-  logSessionJwk('/api/delegate/complete', hasPrivateJwkMember(body.jwk));
+  const privateMembers = hasPrivateJwkMember(body.jwk);
+  logSessionJwk('/api/delegate/complete', privateMembers);
+  if (privateMembers && !body.deviceTransactionId) countPrivateSessionJwk('/api/delegate/complete');
   // Only the session key's public members are used, stored, or returned; a
   // malformed key counts as missing. A request naming a device transaction
   // keeps that flow's exact check of the key as sent, and one naming an
@@ -2710,7 +2716,9 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   if (body.requesterOrigin !== undefined) {
     return c.json({ error: 'requesterOrigin is only supported for ordinary delegation preparation', code: 'requester_origin_unsupported' }, 400);
   }
-  logSessionJwk('/api/delegate/authorize-sign-prepare', hasPrivateJwkMember(body.jwk));
+  const privateMembers = hasPrivateJwkMember(body.jwk);
+  logSessionJwk('/api/delegate/authorize-sign-prepare', privateMembers);
+  if (privateMembers) countPrivateSessionJwk('/api/delegate/authorize-sign-prepare');
   // Only the session key's public members are used or stored; a malformed
   // key counts as missing.
   body.jwk = publicJwk(body.jwk) as DelegationJwk;

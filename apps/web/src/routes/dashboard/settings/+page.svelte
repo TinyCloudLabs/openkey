@@ -16,6 +16,7 @@
   import PasskeyStepUpDialog from '$lib/components/auth/passkey-step-up-dialog.svelte';
   import { passkeyStepUpMethods, type PasskeyStepUpMethod, type PasskeyStepUpPurpose } from '$lib/passkey-step-up';
   import {
+    PASSKEY_APPROVAL_SETTING_SHOWN,
     confirmWithPasskey,
     lowersPasskeyApprovalMode,
     passkeyApprovalCopy,
@@ -110,10 +111,18 @@
         loadArchivedKeys();
         loadAutoSignPreference();
         loadTinyCloudManageKeyPreference();
-        loadRenewalLeases();
+        loadRenewalLeases().then(showRenewalLeasesFromLink);
       }
     }
   });
+
+  // The dashboard's "Stop renewals" link opens this page at Renewing permissions. The card renders only once
+  // the leases have loaded, after the browser looked for the anchor, so scroll to it then.
+  async function showRenewalLeasesFromLink() {
+    if (window.location.hash !== '#renewing-permissions' || !renewalLeasesShown) return;
+    await tick();
+    document.getElementById('renewing-permissions')?.scrollIntoView();
+  }
 
   async function loadRenewalLeases() {
     renewalLeasesError = '';
@@ -136,7 +145,7 @@
         passkeys = result.data || [];
         passkeysLoaded = true;
         // Whether a passkey can confirm approvals follows the passkey list.
-        loadPasskeyApprovalSetting();
+        if (PASSKEY_APPROVAL_SETTING_SHOWN) loadPasskeyApprovalSetting();
       }
     } catch (e: any) {
       error = e.message || 'Failed to load passkeys';
@@ -610,6 +619,7 @@
   <!-- The live count, so adding or removing a passkey here updates whether an unlink is allowed. -->
   <LinkedAccounts passkeyCount={passkeysLoaded ? passkeys.length : null} />
 
+  {#if PASSKEY_APPROVAL_SETTING_SHOWN}
   <Card id="passkey-approvals" class="mt-6">
     <fieldset disabled={!passkeyApproval || savingPasskeyApproval || passkeyApproval.stepUpPasskeys === 0}>
       <legend class="text-xl font-semibold text-surface-900">{passkeyApprovalCopy.title}</legend>
@@ -640,6 +650,7 @@
       <p class="mt-3 text-sm text-red-600" role="alert">{passkeyApprovalError}</p>
     {/if}
   </Card>
+  {/if}
 
   <Card class="mt-6">
     <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">

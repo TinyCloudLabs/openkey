@@ -49,7 +49,7 @@ for (const signedIn of [false, true]) {
 
 test('server-confirmed admins retain their console navigation', async ({ page }) => {
   await deviceApi(page, { signedIn: true, admin: true });
-  await page.goto('/device');
+  await page.goto('/dashboard/api-keys');
   await expect(page.getByRole('link', { name: 'OpenKey Admin console' })).toBeVisible();
 });
 
@@ -137,7 +137,7 @@ test('a stale admin answer never restores console navigation', async ({ page }) 
     }
     return route.fulfill({ json: {} });
   });
-  await page.goto('/device');
+  await page.goto('/dashboard/api-keys');
   await expect.poll(() => calls).toBe(1);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
   await expect.poll(() => calls).toBeGreaterThanOrEqual(2);
