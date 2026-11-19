@@ -120,12 +120,12 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
   for (const code of ['context-expired', 'context-not-found']) {
     test(`${keyType} ${code} refresh keeps the selection and completes approval`, async ({ page }) => {
       const flow = await open(page, keyType, 'success', code);
-      await expect(page.locator('.expiry-line')).toHaveText(/Approval expires:\s*7d/);
+      await expect(page.locator('.expiry-line')).toHaveText(/These permissions expire in 1 hour/);
       await page.getByRole('button', { name: 'Approve', exact: true }).click();
       await expect(page.getByRole('heading', { name: /Authenticated|Approved/ })).toBeVisible();
       expect(flow.counts()).toEqual({ prepares: 3, approvals: 2 });
       const prepares = flow.calls.filter(call => call.path === '/api/delegate/prepare');
-      expect(prepares.map(call => call.body.expiry)).toEqual(['604800s', '604800s', '604800s']);
+      expect(prepares.map(call => call.body.expiry)).toEqual(['3600s', '3600s', '3600s']);
       const prepare = prepares.at(-1)!;
       expect(prepare.body).toMatchObject({ keyId: 'owner-key', approvalRequestId: id, host: 'https://node.tinycloud.xyz', actionKeys: narrowed });
       const completed = flow.calls.filter(call => call.path === '/api/delegate' || call.path === '/api/delegate/complete');
@@ -133,7 +133,7 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
       const signedMessage = String((completed[1].body.prepared as { siwe: string }).siwe);
       const issuedAt = Date.parse(/^Issued At: (.+)$/m.exec(signedMessage)![1]!);
       const expiresAt = Date.parse(/^Expiration Time: (.+)$/m.exec(signedMessage)![1]!);
-      expect(Math.abs(expiresAt - issuedAt - 604_800_000)).toBeLessThanOrEqual(5_000);
+      expect(Math.abs(expiresAt - issuedAt - 3_600_000)).toBeLessThanOrEqual(5_000);
       expect(completed[1].body.authorizationContextToken).toBe('context-3');
       if (keyType === 'EXTERNAL') {
         const signed = await page.evaluate(() => {
@@ -193,7 +193,7 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
 }
 test('an unsuggested one-hour request displays and signs its requested lifetime', async ({ page }) => {
   const flow = await open(page, 'MANAGED', 'success', 'context-expired', { grantLifetimeSeconds: 3600, suggestedLifetimeSeconds: undefined });
-  await expect(page.locator('.expiry-line')).toHaveText(/Approval expires:\s*1h/);
+  await expect(page.locator('.expiry-line')).toHaveText(/These permissions expire in 1 hour/);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   await expect(page.getByRole('heading', { name: /Authenticated|Approved/ })).toBeVisible();
   const prepares = flow.calls.filter(call => call.path === '/api/delegate/prepare');
