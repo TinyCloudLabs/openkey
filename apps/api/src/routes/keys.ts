@@ -331,7 +331,7 @@ function checkedTypedData(body: { domain?: unknown; types?: unknown; primaryType
 }
 
 // TC-3442: whether Approve on a signature request needs the passkey, with the challenge for exactly this request.
-// The approval screen asks for it when it shows the request, so the tap goes straight to the passkey prompt.
+// Offered before Approve, so the approval screen can go straight to the passkey prompt.
 keysRouter.post('/:keyId/sign/passkey', async (c) => {
   const originRefusal = rejectNonOpenKeySignRequest(c);
   if (originRefusal) return originRefusal;
