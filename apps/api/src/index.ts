@@ -31,6 +31,7 @@ import { delegateRouter } from './routes/delegate';
 import { preparedHandoffRouter } from './routes/prepared-handoffs';
 import { ownerRevocationRouter } from './routes/owner-revocation-runtime';
 import { internalMetricsRouter } from './routes/internal-metrics';
+import { internalAccountDeletionsRouter } from './routes/internal-account-deletions';
 import { scoreboardMetricsRouter } from './routes/scoreboard-metrics';
 import { organizationsRouter } from './routes/organizations';
 import { tenantConsoleRouter } from './routes/tenant-console';
@@ -357,6 +358,8 @@ app.route('/api/admin/review-accounts', createReviewerAdminRouter(authPrisma));
 
 // Internal metrics route (protected by INTERNAL_METRICS_TOKEN)
 app.route('/api/internal/metrics', internalMetricsRouter);
+// Account-deletion receipts (protected by INTERNAL_DELETION_EXPORT_TOKEN)
+app.route('/api/internal/account-deletions', internalAccountDeletionsRouter);
 // Counts-only scoreboard metrics (protected by OPENKEY_METRICS_READ_TOKEN)
 app.route('/api/internal/scoreboard', scoreboardMetricsRouter);
 

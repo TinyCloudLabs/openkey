@@ -81,6 +81,7 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   [reviewerAccountsMigration, '11196b6dd808c535f5ad66f7a92aff85a12afcd47004e279bc42bbc9d9fa7cf2'],
   ['20261118_0001_terms_acceptance', 'a2535be69867c0a4c138233c22b2bfae7eda5d950c7d5c22138e25ba6efc3e7c'],
   ['20261119_0001_terms_acceptance_no_delete', 'ea98e5b306af38dfb0145ba915ea38ab6bf8e53a52744fc3039d17964ab807c4'],
+  ['20261119_0002_account_deletion_receipt', '9e068f3cfa2da675f368ebf95354462010f5e14f97554d89b8e6479790fea2fe'],
 ]);
 
 export type MigrationRow = {

@@ -59,6 +59,7 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261113_0003_renewal_lease_reservation', 'b9463cc0c23648dbc22b97ebfcd35b415be99da6cc6f6ab8422a46e367b76ce0'],
   ['20261118_0001_terms_acceptance', 'a2535be69867c0a4c138233c22b2bfae7eda5d950c7d5c22138e25ba6efc3e7c'],
   ['20261119_0001_terms_acceptance_no_delete', 'ea98e5b306af38dfb0145ba915ea38ab6bf8e53a52744fc3039d17964ab807c4'],
+  ['20261119_0002_account_deletion_receipt', '9e068f3cfa2da675f368ebf95354462010f5e14f97554d89b8e6479790fea2fe'],
 ]);
 
 export type SchemaContractDatabase = {

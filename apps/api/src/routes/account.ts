@@ -31,6 +31,7 @@ import { revokeAppleToken } from '../services/social-confirmation';
 import { revokeStoredAppleTokens } from '../services/apple-revocation';
 import { appleRelayEmailUndeliverable } from '../services/apple-notifications';
 import { liveLeaseWhere, revokeRenewalLeases, type LeaseRevocationReport } from '../services/renewal-lease-revocation';
+import { recordAccountDeletionReceipt } from '../services/account-deletion-receipt';
 import { createRenewalLeaseRouter } from './renewal-leases';
 
 const prisma = createPrismaClient();
@@ -601,6 +602,10 @@ accountRouter.post('/delete', async (c) => {
       where: { userId: user.id, providerId: 'apple', refreshToken: { not: null } },
       select: { refreshToken: true, appleClientId: true },
     });
+
+    // Record the receipt from every key row (any type, archived or not), read here before they are deleted:
+    // it is committed with the deletion or not at all.
+    await recordAccountDeletionReceipt(tx, await tx.ethereumKey.findMany({ where: { userId: user.id }, select: { address: true } }));
 
     // Delete all ethereum keys (sealed blobs will be unrecoverable)
     await tx.ethereumKey.deleteMany({ where: { userId: user.id } });

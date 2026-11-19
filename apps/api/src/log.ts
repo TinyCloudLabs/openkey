@@ -78,6 +78,7 @@ const EVENTS = {
   scoreboard_protocol_users_call: true, app_sign_in_record_failed: true, permission_entry_unknown_field: true,
   third_party_console: true, uncaught_exception: true, unhandled_rejection: true, config_invalid: true,
   account_origin_refused: true,
+  account_deletion_export: true,
   sign_origin_refused: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;
