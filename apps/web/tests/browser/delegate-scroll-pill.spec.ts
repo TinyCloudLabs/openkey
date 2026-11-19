@@ -14,7 +14,7 @@ const permissionRows = permissions.map((permission, index) => {
 const selectedActionKeys = permissionRows.flatMap((row) => row.actions.map((action) => action.key));
 const preparedResponse = { prepared: { siwe, spaceId: space, jwk: {} }, spaceId: space, ownerDid: `did:pkh:eip155:1:${address}`, address, chainId: 1, host: 'https://node.tinycloud.xyz', permissions: permissionRows, selectedActionKeys, edited: false, authorizationContext: { token: 'context-token', expiresAt: Date.now() + 600000, baselineAbilitiesDigest: 'digest' } };
 const json = (route: Route, status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
-for (const [width, height] of [[390, 844], [1280, 800]]) {
+for (const [width, height] of [[390, 844], [1280, 700]]) {
   test(`scroll affordance stays clear of permission text at ${width}x${height}`, async ({ page }) => {
     await page.setViewportSize({ width, height });
     await page.route('**/api/**', (route) => {

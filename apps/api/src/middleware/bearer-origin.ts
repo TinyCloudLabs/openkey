@@ -81,6 +81,8 @@ const sensitiveAuthEndpoints: Record<string, string> = {
   '/oauth2/create-client': 'POST',
   '/oauth2/get-client': 'GET',
   '/oauth2/get-clients': 'GET',
+  // A session read, but what it returns is the bearer credential itself.
+  '/session-token': 'GET',
 };
 
 export const requireAccountOriginForSensitiveAuth = createMiddleware(async (c, next) => {

@@ -6,9 +6,10 @@
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
-  import SocialButtons from '$lib/components/auth/social-buttons.svelte';
-  import { loadConfiguredSocialProviders, signInWithSocialPopup, type SocialProviderId } from '$lib/social-auth';
-  import { socialProviderName } from '$lib/social-continuation';
+  import Loader from '$lib/components/approval/loader.svelte';
+  import SignInCard from '$lib/components/approval/sign-in-card.svelte';
+  import Slip from '$lib/components/approval/slip.svelte';
+  import { stopForReply } from '@openkey/sdk/approval-copy';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
   import {
     delegateFailureDetail,
@@ -24,6 +25,7 @@
     walletMismatchFailureText,
   } from '$lib/delegate-failure-text';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
+  import { PasskeyPromptError, answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyNeed } from '$lib/approval-passkey';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import SiweMessage from '$lib/components/ui/siwe-message.svelte';
@@ -38,6 +40,7 @@
     KNOWN_NODE_ORIGINS,
     REGISTERED_CALLBACK_ENDPOINTS,
     checkDelegateCallback,
+    delegateRequester,
     checkDelegateHost,
     isCanonicalHttpsEndpoint,
     isCanonicalHttpsOrigin,
@@ -48,7 +51,7 @@
   import { activeKeys, autoSelectKey } from '$lib/delegate-key-selection';
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
-  import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
+  import { startCodeCountdown, remainingFromServerClock, CODE_AND_APPROVAL_EXPIRED_TEXT, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
   import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
   import { MAX_LEASE_MS, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import {
@@ -119,8 +122,12 @@
       }
       return deviceRelayFailureText(cause.status, cause.code);
     }
+    // TC-3442: a dismissed passkey prompt and the API's passkey refusals each carry the words to show.
+    if (cause instanceof PasskeyPromptError) return cause.message;
+    if (cause instanceof DelegateResponseError && isPasskeyApprovalRefusal(cause)) return cause.message;
     if (cause instanceof DelegateResponseError) {
       if (isTerminalApprovalFailure(cause.status, cause.code)) approveBlockedByFailure = true;
+      if (stopForReply({ status: cause.status, code: cause.code }) === 'S22') sessionEnded = true;
       if (
         cause.status === 400 &&
         cause.code === 'invalid_permissions' &&
@@ -159,8 +166,8 @@
   let keysLoaded = $state(false);
   let initialized = $state(false);
   let signingIn = $state(false);
-  let socialProvider = $state<SocialProviderId | null>(null);
-  let socialProviders = $state<SocialProviderId[]>([]);
+  // The server answered 401 to an approval call: the sign-in card comes back with the signed-out heading.
+  let sessionEnded = $state(false);
   let delegating = $state(false);
   let done = $state(false);
   let pasteCode = $state('');
@@ -173,6 +180,8 @@
   let copied = $state(false);
   let step = $state<'select-key' | 'link-wallet' | 'consent' | 'choose-wallet' | 'done'>('select-key');
   let preparedData = $state<any>(null);
+  // TC-3442: from the latest /prepare, whether Approve needs the passkey, with the challenge for that preview.
+  let passkeyNeed = $state<ApprovalPasskeyNeed | null>(null);
   let siweMessage = $state('');
   let preparing = $state(false);
   let permissionOptions = $state<DelegatePermission[]>([]);
@@ -181,6 +190,12 @@
   let codeDeadline = $state<number | null>(null);
   let codeCountdown = $state<CodeCountdownSnapshot | null>(null);
   let codeAnnouncement = $state('');
+  let delegationPayload = $state.raw<any>(null);
+  let codeRenewing = $state(false);
+  let codeRenewError = $state('');
+  let approvalExpiryNow = $state(Date.now());
+  const delegationExpiry = $derived(Date.parse(delegationPayload?.expirationTime ?? delegationPayload?.expiresAt ?? delegationPayload?.expiry ?? ''));
+  const delegationExpired = $derived(!Number.isFinite(delegationExpiry) || delegationExpiry <= approvalExpiryNow);
 
   // Countdown for the short code. Stopped when the deadline changes or the page is destroyed.
   $effect(() => {
@@ -191,11 +206,23 @@
       deadline,
       onUpdate: (snapshot) => {
         codeCountdown = snapshot;
-        if (snapshot.announcement) codeAnnouncement = snapshot.announcement;
+        if (snapshot.announcement) {
+          // Read at expiry: the approval-expiry effect below updates `delegationExpired` only after this tick.
+          const approvalEnded = snapshot.expired && !(Number.isFinite(delegationExpiry) && delegationExpiry > Date.now());
+          codeAnnouncement = approvalEnded ? CODE_AND_APPROVAL_EXPIRED_TEXT : snapshot.announcement;
+        }
       },
     });
   });
 
+  $effect(() => {
+    if (!codeCountdown?.expired) return;
+    const now = Date.now();
+    approvalExpiryNow = now;
+    if (!Number.isFinite(delegationExpiry) || delegationExpiry <= now) return;
+    const timer = setTimeout(() => { approvalExpiryNow = Date.now(); }, Math.min(delegationExpiry - now, 2_147_483_647));
+    return () => clearTimeout(timer);
+  });
   let updatingPermissions = $state(false);
   let permissionsEdited = $state(false);
   let authorizationContextToken = $state<string | null>(null);
@@ -538,6 +565,7 @@
     : hostCheck?.ok === false ? hostCheck.reason : '');
   $effect(() => { if (linkPolicyError) error = linkPolicyError; });
   const approvedCallback = $derived(callbackCheck?.ok ? callbackCheck.callback : null);
+  const requester = $derived(delegateRequester(approvedCallback));
   const showLoopbackHint = $derived(
     shouldShowLoopbackHint({ delegating, approvedCallback, deviceTransactionId, callbackInFlight, pasteCode }),
   );
@@ -549,6 +577,8 @@
   // carries must come from (or equal) the server's pending request. Key
   // selection waits for this check.
   if (deviceTransactionId) requestReason = '';
+  // True while a device link is checked against the server's own record.
+  let deviceLinkPending = $state(!!deviceTransactionId);
   const deviceRequestVerified = (async () => {
     if (approvalRequestMode || !deviceTransactionId) return;
     const record = await loadVerifiedDeviceRequest(import.meta.env.VITE_API_URL || '', deviceUserCode, {
@@ -566,6 +596,7 @@
     expiryParam = `${deviceRequestDefaultSeconds(record)}s`;
   })();
   deviceRequestVerified.catch((cause: unknown) => { error = delegateErrorMessage(cause); });
+  deviceRequestVerified.then(() => { deviceLinkPending = false; }, () => { deviceLinkPending = false; });
 
   // The wallet the CLI requested: the one owner (chain and address) every
   // requested space and raw encryption network resolves to. Owners that
@@ -886,6 +917,7 @@
       ? (data.permissions as DelegatePermission[])
       : [];
     preparedData = data.prepared;
+    passkeyNeed = data.passkey && typeof data.passkey === 'object' ? data.passkey as ApprovalPasskeyNeed : null;
 
     siweMessage = data.prepared?.siwe || '';
     spaceSetup = parseSpaceSetup(data.spaceSetup);
@@ -922,7 +954,7 @@
           metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
           reason: { text: requestReason, source: requestReason ? 'caller' : 'none' },
           requester: {
-            displayName: 'TinyCloud CLI',
+            displayName: requester.displayName,
             verifiedOrigin: null,
             appId: null,
             manifestName: null,
@@ -1295,6 +1327,7 @@
       }
 
       const API_URL = import.meta.env.VITE_API_URL || '';
+      const passkeyAssertion = await answerApprovalPasskey(passkeyNeed);
       const body: Record<string, unknown> = {
         keyId: selectedKey!.id,
         jwk,
@@ -1307,6 +1340,7 @@
         authorizationContextToken,
         selectedActionIds: selectedActionKeys,
         protocolVersion: 1,
+        ...(passkeyAssertion ? { passkeyAssertion } : {}),
       };
       if (approvalRequestMode) body.approvalRequestId = approvalRequestId;
       if (permissionsEdited) {
@@ -1365,6 +1399,12 @@
         await doManagedDelegate(true);
       } else {
         error = delegateErrorMessage(cause);
+        // The refused challenge is spent: prepare again for a new one, and keep the API's words on screen.
+        if (key && isPasskeyApprovalRefusal(cause)) {
+          const refusal = error;
+          try { await refreshAuthorizationContext(key, actions); } catch { /* the next Approve is refused with the API's words */ }
+          error = refusal;
+        }
       }
     } finally {
       delegating = false;
@@ -1549,6 +1589,51 @@
     }
   }
 
+  // Mints a short code for this delegation. The first mint records a refusal for the
+  // fallback text; a renewal (reportError) shows its own retry line instead.
+  async function mintShortCode(payload: any, reportError = false) {
+    codeRenewError = '';
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || '';
+      const response = await fetch(`${API_URL}/api/delegation-codes`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delegation: publicDelegationForCode(payload) }),
+      });
+      if (!response.ok) {
+        if (!reportError) {
+          const body: unknown = await response.json().catch(() => null);
+          const code = typeof body === 'object' && body !== null && 'code' in body ? body.code : undefined;
+          shortCodeFailure = { status: response.status, code };
+        }
+        throw new Error('Mint request failed');
+      }
+      const result = await response.json();
+      if (typeof result.code !== 'string' || !/^[a-z2-7]{4}-[a-z2-7]{4}$/i.test(result.code)) throw new Error('Invalid code response');
+      const remainingMs = typeof result.expiresAt === 'string'
+        ? remainingFromServerClock(result.expiresAt, response.headers.get('date'))
+        : null;
+      shortCode = result.code.toUpperCase();
+      copied = false;
+      codeCountdown = null;
+      // Read at receipt: the countdown runs on the monotonic clock from here.
+      codeDeadline = performance.now() + (remainingMs ?? 300_000);
+    } catch {
+      // The full delegation remains available when the broker is unreachable.
+      if (reportError) codeRenewError = "Couldn't get a new code. Try again, or start again in the CLI.";
+    }
+  }
+
+  async function getNewCode() {
+    if (!codeCountdown?.expired || codeRenewing || delegationExpired || !delegationPayload) return;
+    codeRenewing = true;
+    try {
+      await mintShortCode(delegationPayload, true);
+    } finally {
+      codeRenewing = false;
+    }
+  }
   async function finishDelegate(data: any) {
     const payload = permissionsEdited ? { ...data, edited: true } : data;
     spaceReadiness = spaceReadinessResult(payload, spaceSetup);
@@ -1567,7 +1652,10 @@
       if (typeof delegationExpiresAt !== 'string') throw new OwnerMessageError('The approved delegation has no expiry binding.');
       // The owner may have unchecked capabilities: bind and relay exactly
       // what the signed delegation grants, in the request's manifest form.
-      const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions);
+      const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions, {
+        address: payload.address,
+        chainId: payload.chainId,
+      });
       const relay = await encryptDeviceRelay({ ...payload, permissions: approvedPermissions });
       let response: Response;
       try {
@@ -1626,32 +1714,8 @@
     }
 
     pasteCode = delegationPasteCode(payload);
-    try {
-      const API_URL = import.meta.env.VITE_API_URL || '';
-      const response = await fetch(`${API_URL}/api/delegation-codes`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ delegation: publicDelegationForCode(payload) }),
-      });
-      if (!response.ok) {
-        const body: unknown = await response.json().catch(() => null);
-        const code = typeof body === 'object' && body !== null && 'code' in body ? body.code : undefined;
-        shortCodeFailure = { status: response.status, code };
-      } else {
-        const result = await response.json();
-        const remainingMs = typeof result.expiresAt === 'string'
-          ? remainingFromServerClock(result.expiresAt, response.headers.get('date'))
-          : null;
-        if (/^[a-z2-7]{4}-[a-z2-7]{4}$/i.test(result.code)) {
-          shortCode = result.code.toUpperCase();
-          // Read at receipt: the countdown runs on the monotonic clock from here.
-          if (remainingMs !== null) codeDeadline = performance.now() + remainingMs;
-        }
-      }
-    } catch {
-      // The full delegation remains available when the broker is unreachable.
-    }
+    delegationPayload = Object.freeze(payload);
+    await mintShortCode(payload);
     done = true;
     step = 'done';
   }
@@ -1663,6 +1727,8 @@
       const result = await authClient.signIn.passkey();
       if (result.error) {
         error = authErrorMessage(result.error, 'Passkey sign-in failed');
+      } else {
+        sessionEnded = false;
       }
     } catch (e: any) {
       error = delegateErrorMessage(e);
@@ -1670,25 +1736,6 @@
       signingIn = false;
     }
   }
-
-  // Google and Apple sign in through a popup, so this page and the #fragment on its link stay in place. The popup
-  // asks for any new-account or existing-account choice itself and reports a choice that sends the person back to
-  // email or passkey as an error line, shown here like the passkey and email failures.
-  async function signInWithSocial(provider: SocialProviderId) {
-    socialProvider = provider;
-    error = '';
-    try {
-      await signInWithSocialPopup(provider);
-    } catch (e: any) {
-      error = e.message || `${socialProviderName(provider)} sign-in failed`;
-    } finally {
-      socialProvider = null;
-    }
-  }
-
-  onMount(async () => {
-    socialProviders = await loadConfiguredSocialProviders().catch(() => []);
-  });
 
   async function activateWithHost(
     targetHost: string,
@@ -1722,6 +1769,24 @@
   function formatAddress(address: string): string {
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   }
+
+  // What the page shows while it waits, and where it is in the three steps.
+  type LoaderPhase = 'link' | 'session' | 'keys' | 'prepare';
+  const loaderPhases: readonly LoaderPhase[] = approvalRequestMode || deviceTransactionId
+    ? ['link', 'session', 'keys', 'prepare']
+    : ['session', 'keys', 'prepare'];
+  const showLoader = $derived(
+    step !== 'done' && (deviceLinkPending || $session.isPending || (!!$session.data && !sessionEnded && (loading || preparing))),
+  );
+  const showSignIn = $derived(step !== 'done' && !showLoader && (!$session.data || sessionEnded));
+  const loaderLit: LoaderPhase = $derived(
+    deviceLinkPending || (approvalRequestMode && approvalRequestLoading) ? 'link'
+      : !dispatchReady || $session.isPending ? 'session'
+      : preparing ? 'prepare' : 'keys',
+  );
+  const slipAt = $derived(showLoader ? 0 : showSignIn ? 1 : step === 'done' ? (pasteCode ? 3 : 4) : 2);
+  const slipLast = $derived(step === 'done' && pasteCode ? 'code' : deviceTransactionId ? 'terminal' : 'agent');
+  const chipEmail = $derived(!showLoader && !showSignIn && step !== 'done' ? ($session.data?.user.email ?? null) : null);
 </script>
 
 {#if requestExpired}
@@ -1734,15 +1799,19 @@
       </div>
       <Card class="w-full p-6">
         <div class="text-center py-4">
-          <h1 class="text-[17px] font-semibold text-surface-900 mb-2">{expiredRequesterName ? `${expiredRequesterName}'s request expired` : 'Request expired'}</h1>
+          <h1 class="text-[17px] font-semibold text-surface-900 mb-2">{expiredRequesterName ? `This request from ${expiredRequesterName} expired.` : 'Request expired'}</h1>
           <p class="text-[15px] leading-6 text-[#71717a]">Ask your agent for a new link.</p>
         </div>
       </Card>
     </div>
   </section>
+{:else if approvalRequestMode && !approvalRequestLoaded && approvalRequestLoading && !error}
+  <Slip at={0} center>
+    <Loader phases={loaderPhases} lit="link" />
+  </Slip>
 {:else if approvalRequestMode && !approvalRequestLoaded}
   <div role={error ? 'alert' : 'status'} class="min-h-screen flex items-center justify-center px-4 text-center">
-    {error || (approvalRequestLoading ? 'Checking request…' : 'This approval link is unavailable.')}
+    {error || 'This approval link is unavailable.'}
   </div>
 {:else if declined}
   <div data-testid="declined" class="min-h-screen flex flex-col items-center justify-center px-4 text-center">
@@ -1750,7 +1819,9 @@
     <CloseTabButton />
   </div>
 {:else if !dispatchReady && !preparedTransport}
-  <div role="status" class="min-h-screen flex items-center justify-center">Loading delegation request…</div>
+  <Slip at={0} center>
+    <Loader phases={loaderPhases} lit={loaderLit} />
+  </Slip>
 {:else if preparedStorageError}
   <div role="alert" class="min-h-screen flex items-center justify-center">Couldn't save this request. Restart the CLI command.</div>
 {:else if preparedMode}
@@ -1770,17 +1841,7 @@
     </div>
   </div>
 {:else}
-<div class="min-h-screen bg-[#fafafa] flex flex-col items-center justify-center px-4 py-8">
-  <div class="w-full max-w-sm flex flex-col items-center gap-6">
-    <!-- Logo mark -->
-    <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-surface-800 to-surface-900 flex items-center justify-center shadow-sm">
-      <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
-      </svg>
-    </div>
-
-    <!-- Main card -->
-    <Card class="w-full p-6">
+<Slip at={slipAt} last={slipLast} center={showLoader} email={chipEmail} onSignOut={() => { void authClient.signOut(); }}>
       {#if step === 'done'}
         <div class="flex flex-col items-center justify-center text-center py-4">
           <svg class="w-12 h-12 text-green-500 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -1810,18 +1871,34 @@
               <div class="w-full rounded-xl bg-surface-50 border border-surface-200 px-3 py-4">
                 <div class="font-mono text-2xl font-semibold tracking-widest select-all {codeCountdown?.expired ? 'text-surface-400 line-through' : 'text-surface-900'}">{shortCode}</div>
                 {#if codeCountdown}
-                  <p role="timer" aria-live="off" class="text-sm mt-2 {codeCountdown.expired ? 'font-medium text-amber-900' : 'text-surface-600'}">{codeCountdown.text}</p>
-                  <p class="text-surface-500 text-xs mt-1">Works once.</p>
+                  <p role="timer" aria-live="off" class="text-sm mt-2 {codeCountdown.expired ? 'font-medium text-amber-900' : 'text-surface-600'}">{codeCountdown.expired && delegationExpired ? CODE_AND_APPROVAL_EXPIRED_TEXT : codeCountdown.text}</p>
+                  {#if !codeCountdown.expired}
+                    <p class="text-surface-500 text-xs mt-1">Works once.</p>
+                  {/if}
                 {:else}
                   <p class="text-surface-600 text-sm mt-2">Use within 5 minutes. Works once.</p>
                 {/if}
               </div>
               <p class="sr-only" role="status" aria-live="polite">{codeAnnouncement}</p>
-              <button
-                class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-50"
-                onclick={() => copyCode(shortCode)}
-                aria-label="Copy short code"
-              >{copied ? 'Copied' : 'Copy code'}</button>
+              {#if codeCountdown?.expired}
+                {#if !delegationExpired}
+                  <button
+                    type="button"
+                    class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    onclick={getNewCode}
+                    disabled={codeRenewing}
+                  >Get a new code</button>
+                {/if}
+              {:else}
+                <button
+                  class="mt-3 rounded-lg border border-surface-200 bg-surface-50 px-4 py-2 text-sm font-medium text-surface-900 hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  onclick={() => copyCode(shortCode)}
+                  aria-label="Copy short code"
+                >{copied ? 'Copied' : 'Copy code'}</button>
+              {/if}
+              {#if codeRenewError}
+                <p class="text-red-700 text-sm mt-2" role="alert">{codeRenewError}</p>
+              {/if}
             {:else}
               <p class="text-surface-500 text-sm mb-3">{shortCodeFailureText(shortCodeFailure?.status, shortCodeFailure?.code)}</p>
             {/if}
@@ -1846,61 +1923,25 @@
             <CloseTabButton allowBack />
           {:else}
             <h2 class="text-lg font-semibold text-surface-900 mb-2">Authenticated</h2>
-            <p class="text-surface-500 text-sm">You can close this window and return to the CLI.</p>
+            <p class="text-surface-500 text-sm">You can close this window and return to {requester.returnTo}.</p>
             <CloseTabButton />
           {/if}
         </div>
 
-      {:else if $session.isPending}
-        <!-- The session answer has not arrived: neither the sign-in prompt nor the review fits yet. -->
-        <div class="flex flex-col items-center justify-center text-center text-surface-400 py-8" role="status">
-          <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-          </svg>
-          <span class="text-sm text-surface-500">Checking your OpenKey account…</span>
-        </div>
+      {:else if showLoader}
+        <Loader phases={loaderPhases} lit={loaderLit} />
 
-      {:else if !$session.data}
-        <header class="mb-5">
-          <h1 class="text-lg font-semibold text-surface-900">TinyCloud access request</h1>
-          <p class="text-surface-500 text-sm mt-1">Sign in to review the requested access</p>
-        </header>
-
-        <div class="flex flex-col items-center justify-center text-center py-4">
-
-          {#if error}
-            <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
-              {error}
-            </div>
-          {/if}
-
-          <Button onclick={() => { window.location.href = emailSignInHref; }} disabled={signingIn || socialProvider !== null} class="w-full rounded-xl">
-            Continue with email
-          </Button>
-          {#if socialProviders.length > 0}
-            <div class="mt-3 w-full">
-              <SocialButtons
-                providers={socialProviders}
-                loadingProvider={socialProvider}
-                disabled={signingIn || socialProvider !== null}
-                onsignin={signInWithSocial}
-              />
-            </div>
-          {/if}
-          <Button onclick={signInWithPasskey} variant="secondary" disabled={signingIn || socialProvider !== null} class="mt-3 w-full rounded-xl">
-            {signingIn ? 'Signing in…' : 'Use a passkey instead'}
-          </Button>
-        </div>
-
-      {:else if loading || preparing}
-        <div class="flex flex-col items-center justify-center text-center text-surface-400 py-8">
-          <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-          </svg>
-          <span class="text-sm text-surface-500">{preparing ? 'Preparing delegation...' : 'Loading your keys...'}</span>
-        </div>
+      {:else if showSignIn}
+        <SignInCard
+          emailHref={emailSignInHref}
+          {registerHref}
+          error={sessionEnded ? '' : error}
+          {signingIn}
+          signedOut={sessionEnded}
+          onPasskey={signInWithPasskey}
+          onBegin={() => { error = ''; }}
+          onSignedIn={() => { sessionEnded = false; }}
+        />
 
       {:else if step === 'link-wallet'}
         <!-- Link external wallet -->
@@ -2246,32 +2287,7 @@
           </KeyPicker>
         {/if}
       {/if}
-    </Card>
-
-    {#if $session.data && step !== 'done'}
-      <button
-        onclick={() => authClient.signOut()}
-        class="text-xs text-surface-400 hover:text-surface-600 transition-colors bg-transparent border-none cursor-pointer"
-      >
-        Sign out
-      </button>
-    {:else if !$session.isPending && !$session.data}
-      <div class="flex items-center gap-3 text-sm">
-        <a href={registerHref} class="text-surface-500 hover:text-surface-700 transition-colors">Register</a>
-        <span class="text-surface-300">|</span>
-        <a href="/auth/recover" class="text-surface-500 hover:text-surface-700 transition-colors">Recover account</a>
-      </div>
-    {/if}
-
-    <!-- Trust badge -->
-    <div class="flex items-center gap-1.5 text-surface-400">
-      <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
-      </svg>
-      <span class="text-xs">Protected by TEE hardware security</span>
-    </div>
-  </div>
-</div>
+</Slip>
 {/if}
 
 <style>

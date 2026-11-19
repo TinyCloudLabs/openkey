@@ -11,7 +11,7 @@ test('the account header shows every nav item in full at 390 px, with no sideway
       ? { session: { id: 'header-session', userId: 'header-admin', expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, user: { id: 'header-admin', email: 'admin@example.test' } }
       : { organizations: [{ id: 'header-organization', role: 'ADMIN' }] } });
   });
-  await page.goto('/device');
+  await page.goto('/dashboard');
   const header = page.locator('header');
   await expect(header.getByRole('link', { name: 'Dashboard' })).toBeVisible();
   const links = [

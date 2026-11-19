@@ -60,7 +60,7 @@ async function watchForSignInPrompt(page: Page) {
     const flag = { seen: false };
     Object.defineProperty(window, '__signInPromptSeen', { get: () => flag.seen });
     const look = () => {
-      if (document.body?.innerText.includes('Sign in to review the requested access')) flag.seen = true;
+      if (document.body?.innerText.includes('Sign in to review this request')) flag.seen = true;
     };
     new MutationObserver(look).observe(document, { childList: true, subtree: true, characterData: true });
   });
@@ -69,7 +69,7 @@ const promptSeen = (page: Page) => page.evaluate(() => (window as unknown as { _
 
 const jwk = encodeBase64UrlJson({ kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
 const link = `/delegate?did=did:key:z6Mk&jwk=${jwk}`;
-const signInPrompt = (page: Page) => page.getByText('Sign in to review the requested access');
+const signInPrompt = (page: Page) => page.getByRole('heading', { name: 'Sign in to review this request' });
 
 test.describe('the session check on /delegate', () => {
   test('a signed-in owner sees a checking state, never the sign-in prompt', async ({ page }) => {
@@ -77,16 +77,16 @@ test.describe('the session check on /delegate', () => {
     const releaseSession = await mock(page, signedInSession);
     await page.goto(link);
 
-    await expect(page.getByText('Checking your OpenKey account…')).toBeVisible();
+    await expect(page.locator('[role="status"] [aria-current="step"]')).toHaveText('Checking your OpenKey account');
     await expect(signInPrompt(page)).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Continue with email' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Continue with email' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Use a passkey instead' })).toHaveCount(0);
-    await expect(page.getByRole('link', { name: 'Register' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Create an account' })).toHaveCount(0);
     await expect(page.getByRole('link', { name: 'Recover account' })).toHaveCount(0);
 
     releaseSession();
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
-    await expect(page.getByText('Checking your OpenKey account…')).toHaveCount(0);
+    await expect(page.getByText('Checking your OpenKey account', { exact: true })).toHaveCount(0);
     expect(await promptSeen(page)).toBe(false);
   });
 
@@ -94,13 +94,13 @@ test.describe('the session check on /delegate', () => {
     const releaseSession = await mock(page, null);
     await page.goto(link);
 
-    await expect(page.getByText('Checking your OpenKey account…')).toBeVisible();
+    await expect(page.locator('[role="status"] [aria-current="step"]')).toHaveText('Checking your OpenKey account');
     await expect(signInPrompt(page)).toHaveCount(0);
 
     releaseSession();
     await expect(signInPrompt(page)).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Continue with email' })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Register' })).toBeVisible();
-    await expect(page.getByText('Checking your OpenKey account…')).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Continue with email' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Create an account' })).toBeVisible();
+    await expect(page.getByText('Checking your OpenKey account', { exact: true })).toHaveCount(0);
   });
 });

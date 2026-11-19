@@ -60,8 +60,8 @@ export function replaceModules(factories: Record<string, () => Exports>): void {
   });
 }
 
-// Ordinary-user route fixtures predate reviewer bindings. Give those clients an
-// empty binding table; reviewer tests supply their own model explicitly.
+// Ordinary-user route fixtures predate reviewer bindings and approval passkeys. Give those clients an empty binding
+// table and no passkey that counts for step-up (TC-3442: no approval asks for one); tests that need either supply it.
 function withReviewerModel(specifier: string, exports: Exports): Exports {
   if (specifier !== '@openkey/db' || typeof exports.createPrismaClient !== 'function') return exports;
   const createClient = exports.createPrismaClient;
@@ -73,6 +73,7 @@ function withReviewerModel(specifier: string, exports: Exports): Exports {
         findUnique: async () => null,
         findMany: async () => [],
       };
+      client.passkey ??= { count: async () => 0 };
       return client;
     },
   };
