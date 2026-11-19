@@ -1,5 +1,4 @@
 ---
-"@openkey/web": patch
 "@openkey/sdk": patch
 ---
 
