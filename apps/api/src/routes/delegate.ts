@@ -153,6 +153,7 @@ import {
   approvalRequestDigest,
   checkApprovalPasskey,
   messageApprovalSensitivity,
+  passkeyApprovalModes,
   type ApprovalBinding,
 } from '../services/approval-passkey';
 
@@ -1376,8 +1377,12 @@ delegateRouter.post('/sign', async (c) => {
     ));
   }
 
+  // TC-3442: "Always" asks for the passkey on every approval, so it pauses Auto-Sign, which has no approval to ask on.
+  // The request then goes to the approval screen like any other.
+  const autoSignOn = autoSignPreference.autoSignEnabled
+    && (await passkeyApprovalModes(prisma, user.id))?.effectiveMode !== 'ALWAYS';
   const autoSignDecision = evaluateAutoSignPolicy(
-    autoSignPreference.autoSignEnabled,
+    autoSignOn,
     evaluateBootstrapSigningScope({
       entries,
       address,

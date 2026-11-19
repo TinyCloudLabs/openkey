@@ -445,6 +445,44 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
     });
   });
 
+  describe('Auto-Sign', () => {
+    async function bootstrapSign(owner: Account) {
+      const { prepareSession } = await import('@tinycloud/node-sdk-wasm');
+      const { BOOTSTRAP_DEFAULT_ONLY_SESSION_REQUEST, bootstrapSpaceId } = await import('@tinycloud/bootstrap');
+      const jwk = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
+      const spaceId = bootstrapSpaceId(owner.address, 1, 'default');
+      const abilities: Record<string, Record<string, string[]>> = {};
+      for (const resource of BOOTSTRAP_DEFAULT_ONLY_SESSION_REQUEST.resources) {
+        const service = resource.service.replace(/^tinycloud\./, '');
+        (abilities[service] ??= {})[resource.path] = [...resource.actions];
+      }
+      const { siwe } = prepareSession({
+        address: owner.address, chainId: 1, domain: 'cli.tinycloud.xyz', issuedAt: new Date().toISOString(),
+        expirationTime: new Date(Date.now() + 3_600_000).toISOString(), spaceId,
+        jwk: { kty: 'OKP', crv: 'Ed25519', x: jwk.x }, abilities, spaceAbilities: { [spaceId]: abilities },
+      } as Parameters<typeof prepareSession>[0]);
+      const response = await post('/api/delegate/sign', { cookie: owner.cookie },
+        { address: owner.address, chainId: 1, message: siwe, type: 'siwe', keyId: owner.keyId });
+      expect(response.status, await response.clone().text()).toBe(200);
+      return await response.json() as { approved: boolean; needsApproval?: boolean; code?: string };
+    }
+
+    test('"Every approval" pauses Auto-Sign, so the request goes to the approval screen', async () => {
+      const owner = await account();
+      await createSoftPasskey(prisma, owner.userId, true, web);
+      expect(await bootstrapSign(owner)).toMatchObject({ approved: true });
+
+      await prisma.user.update({ where: { id: owner.userId }, data: { passkeyApprovalMode: 'ALWAYS' } });
+      expect(await bootstrapSign(owner)).toMatchObject({ approved: false, needsApproval: true, code: 'auto_sign_disabled' });
+    });
+
+    test('"Every approval" without a passkey that can confirm approvals leaves Auto-Sign on', async () => {
+      const owner = await account();
+      await prisma.user.update({ where: { id: owner.userId }, data: { passkeyApprovalMode: 'ALWAYS' } });
+      expect(await bootstrapSign(owner)).toMatchObject({ approved: true });
+    });
+  });
+
   describe('native app consent', () => {
     const appId = 'xyz.tinycloud.passkeytest';
     // A trusted node host. The account's space there is already set up, and
