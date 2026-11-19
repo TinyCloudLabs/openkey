@@ -32,6 +32,13 @@ export interface RenewalChoice {
   onChange: (leaseMs: number | null, windowMs?: number | null) => void;
 }
 
+/** Starting lifetime and copy for a signed approval request. */
+export interface ShortenOnlyExpiry {
+  startMs: number;
+  onceNote: string;
+  limitNote: (ms: number) => string;
+}
+
 /** Transport injected by the CLI (`/delegate`) route. */
 export interface CliSigningTransport {
   /**
@@ -82,6 +89,8 @@ export interface CliSigningTransport {
     /** A one-time approval (secrets or decrypt) starts at one hour here (TC-3111); set by the real signing pages, not harnesses. */
     onceDefault?: boolean;
     bounded: boolean;
+    /** A signed approval request can shorten its starting expiry. */
+    shortenOnly?: ShortenOnlyExpiry | null;
     /** The most the requester signed; the shown default can be shorter. Null: the default is the most. */
     maxMs?: number | null;
     onChange: (ms: number | null) => void;

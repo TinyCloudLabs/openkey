@@ -10,7 +10,7 @@
   import Loader from '$lib/components/approval/loader.svelte';
   import SignInCard from '$lib/components/approval/sign-in-card.svelte';
   import Slip from '$lib/components/approval/slip.svelte';
-  import { CODE, DONE, codeDestinationWord, fill, stopForReply, supportLine } from '@openkey/sdk/approval-copy';
+  import { APPROVAL_EXPIRY, CODE, DONE, codeDestinationWord, fill, stopForReply, supportLine } from '@openkey/sdk/approval-copy';
   import { formatLocalAccessEnd } from '$lib/access-end';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
   import {
@@ -54,7 +54,7 @@
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, CODE_AND_APPROVAL_EXPIRED_TEXT, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
-  import { MAX_LEASE_MS, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
+  import { MAX_LEASE_MS, MIN_EXPIRY_MS, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -363,6 +363,7 @@
   let requestedExpiryParam: string | null = null;
   // The longest the requester signed (a signed approval request or a device request); null on a plain link.
   let expiryMaxMs = $state<number | null>(null);
+  let approvalRequestStartMs = $state<number | null>(null);
   // TC-2933: the renewal checkbox, offered only when the approval request signed a renewal request
   // (its longest lease). `renewalLeaseMs` is the owner's lease, null while the box is unticked.
   let renewalMaxLeaseMs = $state<number | null>(null);
@@ -422,8 +423,7 @@
       return;
     }
     requestedExpiryParam ??= expiryParam;
-    const previous = { choice: expiryChoiceMs, chosen: expiryChosen, param: expiryParam };
-    expiryChoiceMs = ms;
+    const previous = { chosen: expiryChosen, param: expiryParam };
     expiryChosen = ms !== null;
     expiryParam = ms === null ? requestedExpiryParam : `${Math.round(ms / 1000)}s`;
     updatingPermissions = true;
@@ -431,8 +431,8 @@
     try {
       const data = await prepareDelegation(selectedKey, permissionsEdited ? selectedActionKeys : undefined);
       applyPreparedDelegation(data);
+      expiryChoiceMs = ms;
     } catch (e: any) {
-      expiryChoiceMs = previous.choice;
       expiryChosen = previous.chosen;
       expiryParam = previous.param;
       error = delegateErrorMessage(e);
@@ -691,10 +691,10 @@
       host = request.nodeOrigin;
       requestedPermissions = request.permissions;
       requestReason = normalizeReason(request.reason);
-      // The requester signs its longest lifetime; the owner starts from its suggestion or the maximum, never above one
-      // hour, and can still choose up to the maximum.
       expiryMaxMs = request.grantLifetimeSeconds * 1000;
-      expiryParam = `${approvalRequestStartSeconds(request.grantLifetimeSeconds, request.suggestedLifetimeSeconds)}s`;
+      const startSeconds = approvalRequestStartSeconds(request.grantLifetimeSeconds, request.suggestedLifetimeSeconds);
+      approvalRequestStartMs = Math.max(MIN_EXPIRY_MS, startSeconds * 1000);
+      expiryParam = `${startSeconds}s`;
       // The box only shows where this OpenKey has leases on (`renewalAvailable`); otherwise the plain line, and finite.
       if (request.renewal && result.renewalAvailable === true) {
         renewalMaxLeaseMs = Math.min(request.renewal.leaseLifetimeSeconds * 1000, MAX_LEASE_MS);
@@ -2095,6 +2095,11 @@
                   bounded: approvalRequestMode || Boolean(deviceTransactionId) || !linkExpiryChangeable,
                   // The most the requester signed; the default shown can be shorter (its suggestion).
                   maxMs: expiryMaxMs,
+                  shortenOnly: approvalRequestStartMs === null ? null : {
+                    startMs: approvalRequestStartMs,
+                    onceNote: APPROVAL_EXPIRY.onceStart,
+                    limitNote: (ms) => fill(APPROVAL_EXPIRY.shortenLimit, { duration: formatDuration(ms) }),
+                  },
                   onChange: changeApprovalExpiry,
                 },
                 ...(renewalMaxLeaseMs !== null ? {

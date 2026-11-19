@@ -1,5 +1,4 @@
-// A signed approval request starts the owner's choice at one hour, however long its signed maximum is, or at
-// what it asked for when that is shorter. Every API call is answered by `page.route`; no API server runs.
+// A signed approval request starts at the requester's suggestion or signed maximum. Every API call is answered by `page.route`; no API server runs.
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
 
@@ -63,11 +62,11 @@ async function openReview(page: Page, lifetime: { grantLifetimeSeconds: number; 
   return expiries;
 }
 
-test.describe('a signed approval request starts at one hour at most', () => {
-  test('a request that asks for 7 days and suggests nothing is prepared for one hour', async ({ page }) => {
+test.describe('a signed approval request starts at the requested lifetime', () => {
+  test('a request that asks for 7 days and suggests nothing is prepared for 7 days', async ({ page }) => {
     const expiries = await openReview(page, { grantLifetimeSeconds: 7 * 86_400 });
     expect(expiries.length).toBeGreaterThan(0);
-    expect(expiries.every((expiry) => expiry === '3600s')).toBe(true);
+    expect(expiries.every((expiry) => expiry === '604800s')).toBe(true);
   });
 
   test('a request that asks for 30 minutes keeps its 30 minutes', async ({ page }) => {
@@ -76,9 +75,9 @@ test.describe('a signed approval request starts at one hour at most', () => {
     expect(expiries.every((expiry) => expiry === '1800s')).toBe(true);
   });
 
-  test('a suggestion above an hour is not the start either', async ({ page }) => {
+  test('a request that suggests 7 days is prepared for 7 days', async ({ page }) => {
     const expiries = await openReview(page, { grantLifetimeSeconds: 30 * 86_400, suggestedLifetimeSeconds: 7 * 86_400 });
     expect(expiries.length).toBeGreaterThan(0);
-    expect(expiries.every((expiry) => expiry === '3600s')).toBe(true);
+    expect(expiries.every((expiry) => expiry === '604800s')).toBe(true);
   });
 });

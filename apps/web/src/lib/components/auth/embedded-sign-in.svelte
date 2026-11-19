@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { authClient, authErrorMessage } from '$lib/auth-client';
+  import { sendCodeErrorMessage } from '$lib/send-code-error';
   import {
     embedCreateAccount,
     embedSendEmailOtp,
@@ -60,7 +61,7 @@
       await embedSendEmailOtp(email);
       step = 'otp';
     } catch (cause: any) {
-      error = cause.message || 'Failed to send code';
+      error = sendCodeErrorMessage(cause, { email, passkey: passkeysSupported, fallback: 'Failed to send code' });
     } finally {
       busy = null;
     }

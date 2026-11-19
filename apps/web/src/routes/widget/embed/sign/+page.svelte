@@ -192,6 +192,17 @@
         const id = setTimeout(run, ms);
         return () => clearTimeout(id);
       },
+      nextFrame: (run) => {
+        const id = requestAnimationFrame(run);
+        return () => cancelAnimationFrame(id);
+      },
+      // The frame size and Approve's box (the window size alone while Approve is not in the DOM yet).
+      sample: () => {
+        const approve = document.querySelector('button.approve');
+        if (!approve) return [window.innerWidth, window.innerHeight];
+        const box = approve.getBoundingClientRect();
+        return [window.innerWidth, window.innerHeight, box.top, box.left, box.width, box.height];
+      },
       onChange: (settled) => { frameSettled = settled; },
     });
     // The frame's own size is what the SDK modal animates; each change restarts the quiet period.
