@@ -1256,17 +1256,28 @@ describe('prepared handoff that opts in to a longer expiry (TC-2276)', () => {
       });
       return { status: res.status, body: await res.json() as Record<string, unknown> };
     };
-    return { asked, preview };
+    const sign = (previewApprovalToken: unknown) => router.request('/authorize-sign', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ticket, authorizationContextToken: prepared.authorizationContextToken, selectedActionIds: prepared.allowedActionIds,
+        previewApprovalToken, protocolVersion: 1,
+      }),
+    });
+    return { asked, preview, sign };
   }
   const expiryOf = (body: Record<string, unknown>) => /^Expiration Time: (.+)$/m.exec(body.signedMessage as string)?.[1];
 
   test('an opted-in handoff previews an expiry later than the CLI asked for, and the sealed message carries it', async () => {
-    const { asked, preview } = await handoff({ expiryChangeable: true }, 41);
+    const { asked, preview, sign } = await handoff({ expiryChangeable: true }, 41);
     for (const later of [asked + 1, asked + 365 * 86_400_000, Date.UTC(2100, 0, 1)]) {
       const result = await preview(later);
       expect(result.status, new Date(later).toISOString()).toBe(200);
       expect(expiryOf(result.body)).toBe(new Date(later).toISOString());
     }
+    const { body } = await preview(Date.UTC(2100, 0, 1));
+    const signed = await sign(body.previewApprovalToken);
+    expect(signed.status, await signed.clone().text()).toBe(200);
+    expect((await signed.json()).signedMessage).toBe(body.signedMessage);
   });
 
   test('an opted-in handoff still previews shorter times and the asked time', async () => {

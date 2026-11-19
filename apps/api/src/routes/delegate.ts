@@ -3619,7 +3619,10 @@ delegateRouter.post('/authorize-sign', async (c) => {
     signed: signedMessage,
     selectedActionIds,
     ownerPickedExpiration: sealedExpiry !== immutable.expirationTime ? sealedExpiry : undefined,
-    longerExpiryAllowed: bound.expiryChangeable === true && !bound.handoffTicketHash,
+    longerExpiryAllowed: ticket
+      ? sealedExpiry !== undefined && Date.parse(sealedExpiry) > Date.parse(immutable.expirationTime) &&
+        await activePreparedHandoffService.expiryChangeable(ticket, user.id)
+      : bound.expiryChangeable === true && !bound.handoffTicketHash,
   });
   if (!signSubset.ok) {
     return c.json({ error: signSubset.message, code: signSubset.code, reason: signSubset.reason }, 400);
@@ -3929,6 +3932,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     spaceId: bound.spaceId,
   });
   let expirationOverride: string | undefined;
+  let longerExpiryAllowed = bound.expiryChangeable === true && !bound.handoffTicketHash;
   if (body.expirationTime !== undefined) {
     // An app that did not opt in (`expiryChangeable: true` at prepare) gets the expiry it asked for. A
     // prepared handoff's opt-in lives on the stored handoff (`request.expiryChangeable`) and is checked below.
@@ -3947,12 +3951,14 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     }
     // A prepared handoff's CLI refuses a grant longer than it asked for: that time is the ceiling, unless that CLI
     // opted in to a longer one when it made the handoff (TC-2276). The opt-in is read from the stored handoff.
-    if (ticket && Date.parse(checked.value) > Date.parse(immutable.expirationTime) &&
-      !await activePreparedHandoffService.expiryChangeable(ticket, user.id)) {
-      return c.json(
-        { error: 'expirationTime is later than the time the CLI asked for', code: 'expiry_exceeds_handoff' },
-        400,
-      );
+    if (ticket && Date.parse(checked.value) > Date.parse(immutable.expirationTime)) {
+      longerExpiryAllowed = await activePreparedHandoffService.expiryChangeable(ticket, user.id);
+      if (!longerExpiryAllowed) {
+        return c.json(
+          { error: 'expirationTime is later than the time the CLI asked for', code: 'expiry_exceeds_handoff' },
+          400,
+        );
+      }
     }
     expirationOverride = checked.value;
   }
@@ -4076,7 +4082,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     signed: preparedSignedMessage,
     selectedActionIds,
     ownerPickedExpiration: expirationOverride,
-    longerExpiryAllowed: bound.expiryChangeable === true && !bound.handoffTicketHash,
+    longerExpiryAllowed,
   });
   if (!previewSubset.ok) {
     return c.json({ error: previewSubset.message, code: previewSubset.code, reason: previewSubset.reason }, 400);
