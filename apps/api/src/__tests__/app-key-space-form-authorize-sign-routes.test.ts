@@ -151,7 +151,7 @@ const APPS_PREFIX = { [urn('/apps/xyz.tinycloud.listen/')]: ['tinycloud.encrypti
 function post(path: string, body: unknown) {
   return router.request(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
     body: JSON.stringify(body),
   });
 }
@@ -340,7 +340,7 @@ describe('POST /sign (session principal)', () => {
   test('refuses an app key', async () => {
     const res = await sign(siweWith(APPS_KEY));
     expect(res.status).toBe(403);
-    await expect(res.json()).resolves.toEqual({ approved: false, code: 'app_key_grant_refused', reason: 'App keys can only be requested from a website, not from the command line or a device sign-in.' });
+    await expect(res.json()).resolves.toEqual({ approved: false, code: 'app_key_grant_refused', reason: "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request." });
     expect(signed).toEqual([]);
   });
 

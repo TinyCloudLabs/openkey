@@ -16,13 +16,13 @@ const JWK = { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 const DECRYPT = 'tinycloud.encryption/decrypt';
 
 /** A message built the way `/api/delegate/prepare` builds it: one permission entry through the session builder. */
-function preparedWith(permission: { service: string; space?: string; path: string; actions: string[] }): string {
+function preparedWith(permission: { service: string; space?: string; path: string; actions: string[] }, address = ADDRESS): string {
   return prepareDelegationSession({
-    address: ADDRESS,
+    address,
     chainId: 1,
     prefix: 'default',
     jwk: JWK,
-    permissions: [{ ...permission, space: permission.space ?? SPACE }],
+    permissions: [{ ...permission, space: permission.space ?? `tinycloud:pkh:eip155:1:${address}:default` }],
     expiryMs: 3_600_000,
   }).prepared.siwe;
 }
@@ -80,7 +80,7 @@ describe('the request that reached /api/delegate/prepare: service tinycloud.encr
 
   test('another owner', () => {
     const other = '0x1111111111111111111111111111111111111111';
-    const siwe = preparedWith(encryptionEntry('apps/x/k', [DECRYPT], `tinycloud:pkh:eip155:1:${other}:default`));
+    const siwe = preparedWith(encryptionEntry('apps/x/k', [DECRYPT], `tinycloud:pkh:eip155:1:${other}:default`), other);
     expect(appKeyRefusalForSiwe(siwe)).not.toBeNull();
   });
 

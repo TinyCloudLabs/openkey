@@ -116,7 +116,7 @@ describe('POST /api/keys/:keyId/sign', () => {
     const { keysRouter } = await import('../routes/keys?app-key-space-form-keys' as string);
     return keysRouter.request('/key_1/sign', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
       body: JSON.stringify({ requestOrigin: ORIGIN, ...body }),
     });
   }
@@ -192,7 +192,7 @@ describe('prepared CLI handoff claim', () => {
   });
 
   test.each([
-    ['an app key', APPS_KEY, 'app_key_grant_refused', 'App keys can only be requested from a website, not from the command line or a device sign-in.'],
+    ['an app key', APPS_KEY, 'app_key_grant_refused', "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request."],
     ['key.delete', KEY_DELETE, 'key_delete_not_grantable', "Apps can't be given permission to delete keys, so OpenKey didn't approve this request."],
   ])('refuses %s', async (_name, raw, code, message) => {
     await expect(claim(raw)).rejects.toMatchObject({ code, status: 403, message });
@@ -207,7 +207,7 @@ describe('device sign-in request', () => {
     actions: ['tinycloud.encryption/decrypt'],
     ...over,
   });
-  const NON_BROWSER = 'App keys can only be requested from a website, not from the command line or a device sign-in.';
+  const NON_BROWSER = "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request.";
 
   test('accepts the default-key decrypt request', () => {
     expect(deviceRequestPermissions([entry({})])).toHaveLength(1);
