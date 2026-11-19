@@ -131,13 +131,14 @@ test('manual OpenKey login mints a short code from public fields and keeps the f
 });
 
 test.describe('TC-660 /device prefilled code', () => {
-  test('a code from the link is read-only and sign-in is the only button', async ({ page }) => {
+  test('a code from the link is read-only and the two answers are the only actions', async ({ page }) => {
     await mock(page);
     await page.goto('/device?user_code=ABCD-EFGH');
-    await expect(page.getByRole('textbox', { name: 'Device code' })).toHaveCount(0);
-    await expect(page.getByLabel('Device code')).toContainText('ABCD-EFGH');
+    await expect(page.getByRole('img', { name: 'Code A B C D, E F G H' })).toBeVisible();
+    await expect(page.getByRole('textbox')).toHaveCount(0);
     const card = page.locator('main');
-    await expect(card.getByRole('button')).toHaveCount(0);
+    await expect(card.getByRole('button')).toHaveCount(1);
+    await expect(card.getByRole('button', { name: 'No, it’s different' })).toBeVisible();
     await expect(card.locator('a[href^="/delegate?"]')).toBeVisible();
   });
 
@@ -146,13 +147,13 @@ test.describe('TC-660 /device prefilled code', () => {
     const lookups: string[] = [];
     page.on('request', (req) => { if (req.url().includes('/device-authorizations/lookup')) lookups.push(req.url()); });
     await page.goto('/device');
-    const input = page.getByRole('textbox', { name: 'Device code' });
+    const input = page.getByRole('textbox', { name: 'Enter the code from your terminal' });
     await input.pressSequentially('ABCDEFG', { delay: 30 });
     await page.waitForTimeout(500);
     await expect(page.getByRole('alert')).toHaveCount(0);
     expect(lookups).toEqual([]);
     await input.pressSequentially('H');
-    await page.getByRole('button', { name: 'Continue' }).click();
+    await page.getByRole('button', { name: 'Find the request' }).click();
     await expect(page.getByRole('alert')).toBeVisible();
     expect(lookups).toHaveLength(1);
   });
@@ -162,12 +163,12 @@ test.describe('TC-660 /device prefilled code', () => {
     const lookups: string[] = [];
     page.on('request', (req) => { if (req.url().includes('/device-authorizations/lookup')) lookups.push(new URL(req.url()).searchParams.get('user_code') ?? ''); });
     await page.goto('/device');
-    const input = page.getByRole('textbox', { name: 'Device code' });
+    const input = page.getByRole('textbox', { name: 'Enter the code from your terminal' });
     await input.pressSequentially('abcd', { delay: 30 });
     await expect(input).toHaveValue('ABCD');
     await input.fill('abcd-efgh');
     await expect(input).toHaveValue('ABCD-EFGH');
-    await page.getByRole('button', { name: 'Continue' }).click();
+    await page.getByRole('button', { name: 'Find the request' }).click();
     await expect(page.getByRole('alert')).toBeVisible();
     expect(lookups).toEqual(['ABCD-EFGH']);
   });
@@ -175,15 +176,15 @@ test.describe('TC-660 /device prefilled code', () => {
   test('without a code the editable form stays', async ({ page }) => {
     await mock(page);
     await page.goto('/device');
-    await expect(page.getByRole('textbox', { name: 'Device code' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'Enter the code from your terminal' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Find the request' })).toBeVisible();
   });
 
   test('a prefilled code that fails reopens the editable form', async ({ page }) => {
     await mock(page, oneKey, false);
     await page.goto('/device?user_code=ABCD-EFGH');
     await expect(page.getByRole('alert')).toBeVisible();
-    await expect(page.getByRole('textbox', { name: 'Device code' })).toHaveValue('ABCD-EFGH');
+    await expect(page.getByRole('textbox', { name: 'Enter the code from your terminal' })).toHaveValue('ABCD-EFGH');
   });
 });
 
