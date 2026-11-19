@@ -67,7 +67,7 @@ if (!backend) {
   let auth: typeof AuthModule.auth;
   let app: { fetch: (request: Request) => Response | Promise<Response> };
   const profiles = new Map<string, Record<string, unknown>>();
-  const mail: Array<{ to: string; subject: string }> = [];
+  const mail: Array<{ to: string; subject: string; html: string }> = [];
 
   // ---- A software WebAuthn authenticator (ES256, attestation "none") ----
   type Authenticator = { credentialId: Buffer; privateKey: KeyObject; cose: Buffer; counter: number };
@@ -214,11 +214,8 @@ if (!backend) {
   async function emailStepUp(cookie: string, purpose: 'link' | 'delete_account' | 'passkey_register' | 'passkey_remove') {
     const send = await post('/api/account/step-up/email-otp/send', { purpose }, cookie);
     if (send.status !== 200) return send;
-    const id = await sessionId(cookie);
-    const prefix = { link: 'openkey-account-step-up-otp', delete_account: 'openkey-account-delete-otp',
-      passkey_register: 'openkey-passkey-register-otp', passkey_remove: 'openkey-passkey-remove-otp' }[purpose];
-    const row = await prisma.verification.findFirstOrThrow({ where: { identifier: { startsWith: `${prefix}:${id}:` } } });
-    return post('/api/account/step-up/email-otp/verify', { code: row.value.split(':')[0], purpose }, cookie);
+    const code = /<p>(\d{6})<\/p>/.exec(mail.at(-1)?.html ?? '')?.[1];
+    return post('/api/account/step-up/email-otp/verify', { code, purpose }, cookie);
   }
 
   // ---- Passkey ceremonies ----
@@ -318,8 +315,8 @@ if (!backend) {
       if (url === 'https://appleid.apple.com/auth/revoke') return new Response('', { status: 200 });
       if (url.startsWith('https://appleid.apple.com/')) throw new Error(`Unexpected Apple network request: ${url}`);
       if (url.startsWith('https://api.resend.com/')) {
-        const body = JSON.parse(String(init?.body ?? '{}')) as { to?: string | string[]; subject?: string };
-        mail.push({ to: Array.isArray(body.to) ? body.to[0]! : body.to ?? '', subject: body.subject ?? '' });
+        const body = JSON.parse(String(init?.body ?? '{}')) as { to?: string | string[]; subject?: string; html?: string };
+        mail.push({ to: Array.isArray(body.to) ? body.to[0]! : body.to ?? '', subject: body.subject ?? '', html: body.html ?? '' });
         return Response.json({ id: randomUUID() });
       }
       return originalFetch(input, init);
@@ -382,7 +379,7 @@ if (!backend) {
       expect(await typed(await registerOptions(cookie))).toEqual({ status: 403, code: STEP_UP_REQUIRED, methods: ['passkey', 'email'] });
       const verify = await post('/api/auth/passkey/verify-registration', { response: attestation(newAuthenticator(), 'x') }, cookie);
       expect(await typed(verify)).toMatchObject({ status: 403, code: STEP_UP_REQUIRED });
-      const token = (await (await get('/api/auth/get-session', cookie)).json() as { session: { token: string } }).session.token;
+      const token = (await (await get('/api/auth/session-token', cookie)).json() as { token: string }).token;
       const proxied = await post('/api/passkey/generate-register-options', {}, '', { authorization: `Bearer ${token}` });
       expect(await typed(proxied)).toMatchObject({ status: 403, code: STEP_UP_REQUIRED });
       expect(await typed(await deletePasskey(cookie, passkey.id))).toEqual({ status: 403, code: STEP_UP_REQUIRED, methods: ['passkey'] });
@@ -587,7 +584,7 @@ if (!backend) {
 
     test('a bearer token cannot step up', async () => {
       const { cookie } = await appleUserWithPlainSession('bearer-sub', 'bearer@openkey.test');
-      const token = (await (await get('/api/auth/get-session', cookie)).json() as { session: { token: string } }).session.token;
+      const token = (await (await get('/api/auth/session-token', cookie)).json() as { token: string }).token;
       expect((await post('/api/account/step-up/passkey/options', {}, '', { authorization: `Bearer ${token}` })).status).toBe(403);
     });
   });

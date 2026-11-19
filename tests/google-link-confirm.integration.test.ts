@@ -30,7 +30,7 @@ if (!backend) {
           CORS_ORIGIN: 'https://openkey.test',
           ADMIN_API_KEY: 'tc1197-admin-key',
           APPLE_SIGN_IN_ENABLED: 'false',
-          RESEND_API_KEY: '',
+          RESEND_API_KEY: 'tc1197-resend-stub',
           GOOGLE_CLIENT_ID: 'tc1197-google-client',
           GOOGLE_CLIENT_SECRET: 'tc1197-google-secret',
         },
@@ -54,6 +54,8 @@ if (!backend) {
   const originalFetch = globalThis.fetch;
   let httpServer: Server<undefined>;
   const profiles = new Map<string, { sub: string; email: string; email_verified: boolean }>();
+  const mail: Array<{ to: string; html: string }> = [];
+  const lastCode = () => /<p>(\d{6})<\/p>/.exec(mail.at(-1)?.html ?? '')?.[1] ?? '';
 
   function jwt(payload: object): string {
     return `${Buffer.from('{}').toString('base64url')}.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.signature`;
@@ -80,11 +82,7 @@ if (!backend) {
   async function stepUp(cookie: string, userId: string): Promise<void> {
     const sent = await post('/api/account/step-up/email-otp/send', {}, cookie);
     expect(sent.status).toBe(200);
-    const session = await prisma.session.findFirstOrThrow({ where: { userId }, orderBy: { createdAt: 'desc' } });
-    const verification = await prisma.verification.findFirstOrThrow({
-      where: { identifier: { startsWith: `openkey-account-step-up-otp:${session.id}:` } },
-    });
-    const code = verification.value.split(':')[0];
+    const code = lastCode();
     const verified = await post('/api/account/step-up/email-otp/verify', { code }, cookie);
     expect(verified.status).toBe(200);
   }
@@ -148,6 +146,11 @@ if (!backend) {
         });
       }
       if (url.startsWith('https://oauth2.googleapis.com/revoke')) return new Response('', { status: 200 });
+      if (url.startsWith('https://api.resend.com/')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { to?: string | string[]; html?: string };
+        mail.push({ to: Array.isArray(body.to) ? body.to[0]! : body.to ?? '', html: body.html ?? '' });
+        return Response.json({ id: randomUUID() });
+      }
       return originalFetch(input, init);
     }) as typeof fetch;
     const { createPrismaClient } = await import('@openkey/db');
@@ -379,7 +382,7 @@ if (!backend) {
       const row = await prisma.verification.findFirstOrThrow({
         where: { identifier: { startsWith: 'openkey-account-step-up-otp:' } },
       });
-      const code = row.value.split(':')[0];
+      const code = lastCode();
       const wrong = code === '000000' ? '000001' : '000000';
       for (let attempt = 0; attempt < 3; attempt++) {
         expect((await post('/api/account/step-up/email-otp/verify', { code: wrong }, cookie)).status).toBe(400);
@@ -387,7 +390,7 @@ if (!backend) {
       expect((await post('/api/account/step-up/email-otp/verify', { code }, cookie)).status).toBe(400);
       expect((await post('/api/account/step-up/email-otp/send', {}, cookie)).status).toBe(200);
       const exhausted = await prisma.verification.findFirstOrThrow({ where: { id: row.id } });
-      expect(exhausted.value).toBe(`${code}:3`);
+      expect(exhausted.value).toMatch(/:3$/);
       expect(await prisma.session.count({ where: { userId: user.id } })).toBe(originalSessions);
       expect((await prisma.session.findFirstOrThrow({ where: { userId: user.id } })).lastEmailOtpAt).toBeNull();
     });
