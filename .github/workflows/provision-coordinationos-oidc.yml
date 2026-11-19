@@ -16,6 +16,7 @@ permissions:
 jobs:
   provision:
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 15
     env:
       CONFIRM_PROVISION: ${{ inputs.confirm }}

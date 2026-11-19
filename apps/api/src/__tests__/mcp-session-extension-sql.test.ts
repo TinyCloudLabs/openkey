@@ -100,6 +100,7 @@ describe('a change that lands between the checks and the write', () => {
       oauthClient: prisma.oauthClient,
       oauthConsent: prisma.oauthConsent,
       session: prisma.session,
+      termsAcceptance: prisma.termsAcceptance,
       $queryRaw: queryRaw as McpRefreshDatabase['$queryRaw'],
     };
   }

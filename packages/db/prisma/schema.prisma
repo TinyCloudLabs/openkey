@@ -16,11 +16,15 @@ model User {
   socialCreatedProvider String?
   socialEmailReviewedAt DateTime?
   lockedAt DateTime?
+  reviewerHoldAt DateTime?
+  reviewerBinding ReviewerAccount?
   image           String?
   autoSignEnabled Boolean  @default(true)
   tinyCloudManageKeyEnabled Boolean @default(true)
   tinyCloudManageKeyMode String @default("APP_MANAGED")
   tinyCloudManageKeyPolicyEpoch BigInt @default(0)
+  // TC-3442: ALWAYS, SENSITIVE or NEVER: which approvals need a passkey assertion bound to the request.
+  passkeyApprovalMode String @default("SENSITIVE")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -31,6 +35,7 @@ model User {
   nostrSigningGrants             NostrSigningGrant[]
   tinyCloudBootstrapState        TinyCloudBootstrapState[]
   sessions                       Session[]
+  renewalLeases                  RenewalLease[]
   accounts                       Account[]
   userEncryptionKey              UserEncryptionKey?
   verification                   Verification[]
@@ -50,8 +55,31 @@ model User {
   tinyCloudNativeGrants          TinyCloudNativeGrant[]
   keyGrants                      KeyGrant[]
   orgKeySignChallenges           OrgKeySignChallenge[]
+  termsAcceptances               TermsAcceptance[]
 
   @@map("user")
+}
+
+// TC-3232: one row per account per Terms version accepted on the required Terms screen. Append-only:
+// the migration refuses updates; rows go only with the account.
+model TermsAcceptance {
+  id          String   @id
+  userId      String
+  // 'terms'. The Privacy Policy is acknowledged under the same version, not agreed separately.
+  documentId  String
+  version     String
+  // SHA-256 (hex) of the published text of this version.
+  textSha256  String
+  acceptedAt  DateTime @default(now())
+  // 'web', or 'native:<clientId>' when accepted in a native app's sign-in sheet.
+  surface     String
+  // The API build that recorded the acceptance.
+  appVersion  String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, version])
+  @@map("terms_acceptance")
 }
 
 // Public, short-lived manual handoff of an already-signed CLI delegation.
@@ -135,10 +163,49 @@ model ApprovalRequest {
   deniedAt              DateTime?
   // Set when an approval is admitted, before signing starts; counts for a short lease. Deny is refused meanwhile.
   approvingAt           DateTime?
+  // The owner's renewal lease steps for this request (TC-2933): saved before each node call so a retry reuses them.
+  renewal               Json?
 
   @@index([expiresAt])
   @@index([resultExpiresAt])
   @@map("approval_request")
+}
+
+// An owner renewal lease OpenKey signed and the node admitted for an approval request (TC-2933). Written in the
+// same transaction as the approval it belongs to, so the owner can see and stop it later (TC-2946 sets revokedAt).
+model RenewalLease {
+  leaseCid             String    @id
+  userId               String
+  // The OpenKey session that completed the approval. Not a foreign key: it outlives the session.
+  sessionId            String?
+  // Null for a lease no approval request produced; Settings lists and stops it all the same.
+  approvalRequestId    String?   @unique
+  ownerDid             String
+  // The approved grant the lease renews.
+  originalCid          String
+  nodeOrigin           String
+  nodeDid              String
+  // The lease's audience: the node's renewer.
+  renewerDid           String
+  leaseLifetimeSeconds Int
+  approvedAt           DateTime
+  leaseExpiresAt       DateTime
+  createdAt            DateTime  @default(now())
+  revokedAt            DateTime?
+  // The approved grant's SIWE message text, as signed (no signature): Settings shows its permissions.
+  grantSiwe            String
+  // Set once the approval that admitted the lease is saved; until then the admission outcome is unknown.
+  admittedAt           DateTime?
+  // Set when the node refused to admit the lease and holds no lease to revoke: it can never renew.
+  neverAdmittedAt      DateTime?
+  // The signed lease, encrypted at rest, kept only while admission is unconfirmed (to replay it and revoke).
+  leaseAuthorization   String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([sessionId])
+  @@map("renewal_lease")
 }
 
 // Short-lived, ticket-only prepared SIWE handoff. No signed result is persisted.
@@ -179,6 +246,7 @@ model Session {
   // accepts the assertion only while that passkey counts for step-up.
   lastPasskeyId String?
   lastEmailOtpAt DateTime?
+  reviewerEpoch Int?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   orgRegistrationChallenges OrgKeyRegistrationChallenge[]
@@ -726,6 +794,7 @@ model OauthRefreshToken {
 
 // User consent records
 model OauthConsent {
+  reviewerEpoch Int?
   id          String   @id
   userId      String
   clientId    String
@@ -781,6 +850,9 @@ model TinyCloudNativeRequest {
   @@index([userId, clientId, status])
   @@index([expiresAt])
   @@map("tinycloud_native_request")
+  reviewerEpoch Int?
+  reviewerSessionId String?
+  reviewerDeadline DateTime?
 }
 
 // Immutable consent-screen revision of a request: the exact bytes and digest
@@ -810,6 +882,7 @@ model TinyCloudNativePreparation {
 // (the provider's stored token format). Revoked by the consent-withdrawal
 // triggers in the migration.
 model TinyCloudNativeGrant {
+  reviewerEpoch Int?
   id                       String   @id
   userId                   String
   clientId                 String
@@ -1071,4 +1144,53 @@ model OrgKeyRegistration {
   grant KeyGrant @relation(fields: [grantId], references: [id], onDelete: Restrict)
 
   @@map("org_key_registrations")
+}
+
+// Operator-owned bindings survive fixture account deletion.
+model ReviewerAccount {
+  store String @id
+  email String @unique
+  userId String? @unique
+  installEpoch Int @default(0)
+  clientId String?
+  redirectUri String?
+  resource String?
+  callbackUri String?
+  nodeHost String?
+  sessionDid String?
+  keyId String?
+  spaceId String?
+  seededAt DateTime?
+  readyAt DateTime?
+  grantSessionId String?
+  // SHA-256 (hex) of the installed review code; cleared by every hold. Never the code itself.
+  codeDigest String?
+  seedRun Json?
+  seedStartedAt DateTime?
+  writerExpiresAt DateTime?
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  @@map("reviewer_account")
+}
+
+// Retired reviewer authority is never available to authentication or generic signers.
+// No FK to the deleted owner: cleanup must survive account deletion.
+model ReviewerCleanup {
+  id String @id
+  store String
+  ownerUserId String
+  address String
+  spaceId String @unique
+  nodeHost String
+  sealedBlob String?
+  sealingContext String?
+  retiredAt DateTime
+  tombstoneUntil DateTime
+  boundExceeded Boolean @default(false)
+  initialWipedAt DateTime?
+  completedAt DateTime?
+  retryAt DateTime @default(now())
+  leaseUntil DateTime?
+  attempts Int @default(0)
+  @@index([retryAt, completedAt], map: "reviewer_cleanup_due")
+  @@map("reviewer_cleanup")
 }

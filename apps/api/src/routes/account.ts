@@ -1,6 +1,6 @@
 import { personalKeyWhere } from '../services/primary-key';
 // Account management routes
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { symmetricDecrypt } from 'better-auth/crypto';
 import { createPrismaClient } from '@openkey/db';
 import { requireSession, type SessionContext } from '../middleware/session';
@@ -19,6 +19,17 @@ import {
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { ACCOUNT_PASSKEY_STEP_UP_REQUIRED, requireFreshPasskey } from '../services/passkey-freshness';
 import { createPasskeyStepUpChallenge, verifyPasskeyStepUp } from '../services/passkey-enrolment';
+import {
+  approvalRequestDigest,
+  createApprovalPasskeyChallenge,
+  lowersPasskeyApprovalMode,
+  parsePasskeyApprovalMode,
+  passkeyApprovalModes,
+  PASSKEY_APPROVAL_INVALID,
+  PASSKEY_APPROVAL_NOT_STEP_UP,
+  PASSKEY_APPROVAL_REQUIRED,
+  verifyApprovalPasskey,
+} from '../services/approval-passkey';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
 import {
@@ -31,6 +42,8 @@ import {
 import { revokeAppleToken } from '../services/social-confirmation';
 import { revokeStoredAppleTokens } from '../services/apple-revocation';
 import { appleRelayEmailUndeliverable } from '../services/apple-notifications';
+import { liveLeaseWhere, revokeRenewalLeases, type LeaseRevocationReport } from '../services/renewal-lease-revocation';
+import { createRenewalLeaseRouter } from './renewal-leases';
 
 const prisma = createPrismaClient();
 
@@ -40,6 +53,7 @@ export const accountRouter = new Hono<SessionContext>();
 // from an OpenKey web origin (TC-688).
 accountRouter.use('*', requireAccountOriginForBearer);
 accountRouter.use('*', requireSession);
+accountRouter.route('/renewal-leases', createRenewalLeaseRouter(prisma));
 
 // Account deletion needs a fresh step-up on this session within the last five
 // minutes: a verification by a passkey that counts for step-up when the user
@@ -99,7 +113,7 @@ accountRouter.post('/step-up/passkey/verify', async (c) => {
   const body = await c.req.json().catch(() => null) as { challengeToken?: unknown; response?: unknown } | null;
   const result = await verifyPasskeyStepUp(prisma, c.get('session').id, c.get('user').id, body, RELYING_PARTY);
   if (result === 'not_step_up') {
-    return c.json({ error: 'This passkey was added without a verification step and cannot confirm this action', code: 'passkey_not_step_up_capable' }, 403);
+    return c.json({ error: "This passkey was added without a verification step, so it can't confirm this action.", code: 'passkey_not_step_up_capable' }, 403);
   }
   if (result !== 'verified') return c.json({ error: 'Passkey verification failed' }, 400);
   return c.json({ status: true });
@@ -302,6 +316,66 @@ accountRouter.patch('/auto-sign', async (c) => {
   });
 
   return c.json({ autoSignEnabled: preference.autoSignEnabled });
+});
+
+// TC-3442: which approvals need a passkey. The mode applies only while the account has a passkey that counts for
+// step-up; without one it is NEVER in force and cannot be changed. Asking for the passkey on fewer approvals needs
+// an assertion bound to the new mode, so a session alone cannot turn the gate off.
+const PASSKEY_APPROVAL_MODE_PURPOSE = 'passkey_approval_mode';
+const PASSKEY_APPROVAL_NEEDS_PASSKEY = { error: 'Add a passkey to use this.', code: 'passkey_approval_needs_passkey' } as const;
+
+accountRouter.get('/passkey-approval', async (c) => {
+  const modes = await passkeyApprovalModes(prisma, c.get('user').id);
+  if (!modes) return c.json({ error: 'User not found' }, 404);
+  return c.json(modes);
+});
+
+accountRouter.post('/passkey-approval/options', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { mode?: unknown } | null;
+  const mode = parsePasskeyApprovalMode(body?.mode);
+  if (!mode) return c.json({ error: 'mode must be ALWAYS, SENSITIVE or NEVER' }, 400);
+  const offer = await createApprovalPasskeyChallenge(
+    prisma,
+    { sessionId: c.get('session').id, userId: c.get('user').id },
+    { purpose: PASSKEY_APPROVAL_MODE_PURPOSE, requestDigest: approvalRequestDigest(mode) },
+  );
+  if (!offer) return c.json(PASSKEY_APPROVAL_NEEDS_PASSKEY, 409);
+  return c.json(offer);
+});
+
+accountRouter.patch('/passkey-approval', async (c) => {
+  const rejected = rejectNonBrowserControlRequest(c);
+  if (rejected) return rejected;
+  const body = await c.req.json().catch(() => null) as { mode?: unknown; passkeyAssertion?: unknown } | null;
+  const mode = parsePasskeyApprovalMode(body?.mode);
+  if (!mode) return c.json({ error: 'mode must be ALWAYS, SENSITIVE or NEVER' }, 400);
+  const userId = c.get('user').id;
+  const current = await passkeyApprovalModes(prisma, userId);
+  if (!current) return c.json({ error: 'User not found' }, 404);
+  if (current.stepUpPasskeys === 0) return c.json(PASSKEY_APPROVAL_NEEDS_PASSKEY, 409);
+  if (lowersPasskeyApprovalMode(current.mode, mode)) {
+    const result = await verifyApprovalPasskey(
+      prisma,
+      { sessionId: c.get('session').id, userId },
+      { purpose: PASSKEY_APPROVAL_MODE_PURPOSE, requestDigest: approvalRequestDigest(mode) },
+      body?.passkeyAssertion,
+    );
+    if (result !== 'verified') {
+      const refusal = body?.passkeyAssertion == null ? PASSKEY_APPROVAL_REQUIRED
+        : result === 'not_step_up' ? PASSKEY_APPROVAL_NOT_STEP_UP : PASSKEY_APPROVAL_INVALID;
+      return c.json(refusal, 403);
+    }
+  }
+  // Changed only from the mode the check above read, so a concurrent change cannot slip past it.
+  const updated = await prisma.user.updateMany({
+    where: { id: userId, passkeyApprovalMode: current.mode }, data: { passkeyApprovalMode: mode },
+  });
+  if (updated.count !== 1) {
+    return c.json({ error: 'This setting changed in another session. Reload and try again.', code: 'passkey_approval_changed' }, 409);
+  }
+  return c.json({ ...current, mode, effectiveMode: mode });
 });
 
 // List apps with a TinyCloud signing or native delegation consent and the
@@ -523,6 +597,22 @@ const EMAIL_STEP_UP_REQUIRED = {
   code: 'email_step_up_required',
 } as const;
 
+/**
+ * Deletion refused because some renewal leases are still on. A wallet-signed lease needs that wallet's
+ * signature, so the owner stops it from Settings first; any other lease is retried by deleting again.
+ */
+function renewalLeasesNotStopped(c: Context<SessionContext>, notStopped: LeaseRevocationReport['notStopped']) {
+  const walletRequired = notStopped.filter((lease) => lease.reason === 'wallet_required').length;
+  return c.json({
+    error: walletRequired > 0
+      ? 'Some renewing permissions need your wallet to stop. Stop them under Renewing permissions in Settings, then delete your account. Nothing was deleted.'
+      : "OpenKey couldn't stop renewal for every permission. Nothing was deleted. Try again.",
+    code: 'renewal_leases_not_stopped',
+    walletRequired,
+    nodeUnavailable: notStopped.length - walletRequired,
+  }, 409);
+}
+
 // Delete account permanently
 // Requires: cookie session from an OpenKey origin, typed confirmation, and a
 // fresh step-up on this session: a verification by a passkey that counts for
@@ -554,6 +644,11 @@ accountRouter.post('/delete', async (c) => {
     }, 400);
   }
 
+  // Stop every renewal lease before the keys go (TC-2946): once they are deleted nobody can revoke a lease
+  // OpenKey signed, and the node would keep renewing its grant. A lease counts as stopped only when its node
+  // confirmed; any other outcome deletes nothing, and a retry sends the ones still open again.
+  const leases = await revokeRenewalLeases(prisma, user.id, { kind: 'all' });
+  if (leases.notStopped.length > 0) return renewalLeasesNotStopped(c, leases.notStopped);
 
   // Count and delete every user key. TC-488 removed tenant-managed keys.
   const keyCount = await prisma.ethereumKey.count({
@@ -561,9 +656,11 @@ accountRouter.post('/delete', async (c) => {
   });
 
   // Delete all user data in transaction
-  let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | 'PASSKEY' | 'EMAIL' | 'OWNER';
+  let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | 'PASSKEY' | 'EMAIL' | 'LEASES' | 'OWNER';
   try { appleTokens = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${user.id} FOR UPDATE`;
+    // A lease approved since the revocations above would outlive the keys; a retry stops it first.
+    if (await tx.renewalLease.count({ where: liveLeaseWhere(user.id, { kind: 'all' }, new Date()) }) > 0) return 'LEASES';
     const activeOwnerGrants = await tx.keyGrant.count({ where: { granteeUserId: user.id, role: 'OWNER', revokedAt: null } });
     if (activeOwnerGrants > 0) return 'OWNER';
     if (!passkeyStepUp) {
@@ -614,6 +711,7 @@ accountRouter.post('/delete', async (c) => {
   if (appleTokens === 'OWNER') return c.json({ error: 'Account owns an organization key', message: 'Accounts holding an active organization key grant cannot be deleted' }, 409);
   if (appleTokens === 'PASSKEY') return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
   if (appleTokens === 'EMAIL') return c.json(EMAIL_STEP_UP_REQUIRED, 403);
+  if (appleTokens === 'LEASES') return c.json({ error: 'A permission started renewing meanwhile. Nothing was deleted. Try again.', code: 'renewal_leases_not_stopped' }, 409);
 
   await revokeStoredAppleTokens(appleTokens);
 

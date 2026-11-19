@@ -55,7 +55,15 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261103_0002_approval_request_denied', '87d5205193ef11fc87a52325ff703cc9fc14dcec3c2a81ac71408ea5709bfce8'],
   ['20261109_0001_approval_request_approving', '59d59bc76994122d54d3d4564002cab2b01fecf194a12ee688f277b41c90fa6b'],
   ['20261110_0001_apple_notifications', '431fea91f3c4ed37c4a7efef982fc5b88e7dc396bdc9b49633366c7da64fd4ba'],
+  ['20261111_0001_reviewer_accounts', '11196b6dd808c535f5ad66f7a92aff85a12afcd47004e279bc42bbc9d9fa7cf2'],
+  ['20261111_0002_reviewer_apple', '60d1032a0ef4805e61101fdfb345b3c6ba8fd395110cf2bdbbb0b1573455d56a'],
   ['20261110_0002_passkey_enrolment_provenance', '9123f0159b8d5341a737f665dcd6f3853b80a70e21562163f04c611e11d6c388'],
+  ['20261113_0001_approval_request_renewal', '1168755d777b50a32bdc33b6e3b8af5e5838527d9bf2f9edf071fc6923954bd8'],
+  ['20261113_0002_renewal_lease', '2dd0af909a1d9660a44e392eb1a0efdec46b5b7d83041ba1da7fe8cd6713d18f'],
+  ['20261113_0003_renewal_lease_reservation', 'b9463cc0c23648dbc22b97ebfcd35b415be99da6cc6f6ab8422a46e367b76ce0'],
+  ['20261118_0001_terms_acceptance', 'a2535be69867c0a4c138233c22b2bfae7eda5d950c7d5c22138e25ba6efc3e7c'],
+  ['20261119_0001_terms_acceptance_no_delete', 'ea98e5b306af38dfb0145ba915ea38ab6bf8e53a52744fc3039d17964ab807c4'],
+  ['20261119_0002_passkey_approval_mode', 'a6e0a4dd2351b7bdddf94013b3340db1ba118f6f2fa0e3b82f58b528e371ba78'],
 ]);
 
 export type SchemaContractDatabase = {
