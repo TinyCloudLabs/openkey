@@ -1,5 +1,6 @@
 // `stopForSdkError` reads only the `code` of an `OpenKeyError`, so the copy does not depend on the rest of the SDK.
 import { SIGN_IN, STOP_PARTS } from './strings';
+import { fill } from './fill';
 
 /** The buttons a stop offers. `STOP_PARTS.buttons` holds each one's label. */
 export type StopButton =
@@ -196,7 +197,7 @@ export const STOPS = {
     /** When the page does not know the wallet the link asked for. */
     bodyUnknownWallet: 'This request asks for data owned by another wallet. You chose {keyName}. A key can only share its own data, so OpenKey stopped before signing.',
     buttons: ['choose-another-key', 'start-again'],
-    support: { status: true, code: 'invalid_permissions' },
+    support: statusAndReply,
   },
   S19: {
     placement: 'page',
@@ -302,6 +303,14 @@ export const STOPS = {
     buttons: [],
     support: statusAndReply,
   },
+  /** A request already has a signed renewal, which only the same choice can finish. */
+  renewalLength: {
+    placement: 'inline',
+    title: '',
+    body: 'A renewal was already signed for this request. Choose the same renewal length, then press Approve again.',
+    buttons: [],
+    support: statusAndReply,
+  },
 } as const satisfies Record<string, Stop | InlineLines>;
 
 export type StopId = keyof typeof STOPS;
@@ -328,9 +337,13 @@ const EXPIRY_CODES = [
   'expiry_exceeds_link', 'expiry_exceeds_handoff', 'expiry_not_changeable',
 ];
 
-const BY_CODE: Record<string, StopId> = {
+const BY_CODE: Record<string, StopView['id']> = {
   session_required: 'S22',
   approval_in_progress: 'S24',
+  handoff_signing: 'S24',
+  handoff_context_unavailable: 'S14',
+  renewal_already_signed: 'renewalLength',
+  reply_unreadable: 'S27',
   'key-mismatch': 'S16',
   'user-mismatch': 'S15',
   app_key_grant_refused: 'S20',
@@ -354,42 +367,101 @@ const SAFE_CODE = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** The code when it is short and plain (letters, digits, `_`, `-`), else null. Nothing else is ever shown as a code. */
 export function safeCode(code: unknown): string | null {
-  return typeof code === 'string' && SAFE_CODE.test(code) ? code : null;
+  return typeof code === 'string' && SAFE_CODE.exec(code)?.[0] === code ? code : null;
 }
 
-export interface ReplyInput {
-  /** The HTTP status of the reply. */
-  status: number;
-  /** The `code` the reply carried, if any. */
+export interface StopContext {
+  status?: number;
   code?: unknown;
+  values?: Record<string, string>;
+  requester?: string;
+  preparedSignIn?: boolean;
+  legacy?: boolean;
+  unsafeCallback?: boolean;
+  detail?: string;
+}
+
+export interface StopView {
+  id: Exclude<StopId, 'S32'>;
+  placement: Stop['placement'];
+  marker: string;
+  title: string;
+  body: string;
+  buttons: readonly StopButton[];
+  support: string;
+  extra?: string;
+  detail?: string;
+}
+
+export interface ReplyInput extends StopContext {
   /**
    * `load`: the reply to opening an approval link (404 is S5, a 5xx is S6, 410 is S4, anything else S7).
    * Default `approve`: a reply to preparing or approving.
    */
-  phase?: 'approve' | 'load';
+  phase?: 'approve' | 'load' | 'claim';
   /** The person can change the ticked permissions on this page. */
   permissionsEditable?: boolean;
   /** The person can pick another access length on this page. */
   expiryChangeable?: boolean;
+  /** The person can choose a renewal length on this page. */
+  renewalChangeable?: boolean;
 }
 
 /** Which reason a reply from the server means. Every code the delegate pages know has one; anything else is S26. */
-export function stopForReply(input: ReplyInput): StopId {
+function replyStopId(input: ReplyInput): StopView['id'] {
   const { status, phase = 'approve', permissionsEditable = false, expiryChangeable = false } = input;
   const code = safeCode(input.code);
+  if (code === 'reply_unreadable') return 'S27';
+  if (phase === 'claim' && status === 404 && !code) return 'S5';
+  if (phase === 'claim' && code && (EXPIRED_CODES.includes(code) || code === 'handoff_expired' || code === 'prepared_expired')) return 'S4';
   if (phase === 'load') {
     if (status === 410 || (code !== null && EXPIRED_CODES.includes(code))) return 'S4';
     if (status === 404 || code === 'not_found' || code === 'gone') return 'S5';
-    if (status >= 500) return 'S6';
+    if (status === undefined || status >= 500) return 'S6';
     return 'S7';
   }
   if (status === 401) return 'S22';
-  if (status === 409) return 'S24';
   if (status === 429) return 'S23';
+  if (code === 'request_binding' || code === 'handoff_context_unavailable') return 'S14';
+  if (code === 'renewal_already_signed') return input.renewalChangeable ? 'renewalLength' : 'S14';
+  const mapped = code && Object.hasOwn(BY_CODE, code) ? BY_CODE[code] : undefined;
+  if (status === 409 && !mapped) return phase === 'claim' ? 'S26' : 'S24';
   if (code !== null && PERMISSION_CODES.includes(code)) return permissionsEditable ? 'permissions' : 'S14';
   if (code !== null && EXPIRY_CODES.includes(code)) return expiryChangeable ? 'length' : 'lengthFixed';
-  if (status === 410 && (code === null || BY_CODE[code] === undefined)) return 'S13';
-  return (code !== null ? BY_CODE[code] : undefined) ?? 'S26';
+  return mapped ?? (status === 410 ? 'S13' : 'S26');
+}
+
+/** Resolve a stop using only the facts available on this page. */
+export function approvalStop(id: StopView['id'], context: StopContext = {}): StopView {
+  const stop: Stop = STOPS[id];
+  const { status, code, values = {}, requester, preparedSignIn, legacy, unsafeCallback, detail } = context;
+  const variant = unsafeCallback ? stop.unsafe : undefined;
+  const title = variant?.title ?? (requester && stop.titleNamed ? fill(stop.titleNamed, { requester }) : stop.title);
+  const body = variant?.body ?? (preparedSignIn && stop.bodyPrepared ? stop.bodyPrepared
+    : id === 'S18' && !values.wanted && stop.bodyUnknownWallet ? stop.bodyUnknownWallet
+    : id === 'S25' && !values.keyName ? STOP_PARTS.keyUnavailable
+    : stop.body);
+  const support = stop.support && supportLine({
+    status: stop.support.status ? status : undefined,
+    code: stop.support.code === 'reply' ? code : stop.support.code,
+  });
+  const fact = stop.support?.detail && values[stop.support.detail];
+  return {
+    id,
+    placement: stop.placement,
+    title,
+    body: fill(body, values),
+    marker: stop.marker ?? STOP_PARTS.marker,
+    buttons: stop.buttons,
+    support: [support, fact].filter(Boolean).join(' · '),
+    extra: legacy ? stop.legacyLine : id === 'S17' ? STOP_PARTS.anotherProfile : undefined,
+    detail: id === 'S19' ? detail?.trim().slice(0, 300) : undefined,
+  };
+}
+
+/** Resolve the title, body, actions and support line for a failed reply. */
+export function stopForReply(input: ReplyInput): StopView {
+  return approvalStop(replyStopId(input), input);
 }
 
 /** What `stopForSdkError` answers when the reason is not a stop at all. */

@@ -247,6 +247,10 @@ export const STOP_PARTS = {
   youChose: 'You chose',
   found: 'What OpenKey found',
   supportLabel: 'Details for support',
+  anotherProfile: 'Go back to the app or command and start again with another profile.',
+  keyUnavailable: 'This key was archived or removed after this page loaded. Choose one of your other keys to continue.',
+  keyName: 'Key {index}',
+  wantsWallet: 'wants {short}',
   copy: 'Copy',
   copied: 'Copied',
   buttons: {

@@ -11,9 +11,11 @@
     allowBack?: boolean;
     /** `button`: the page's main button. `link`: a quiet link in a line of links. */
     look?: 'button' | 'link';
+    secondary?: boolean;
+    class?: string;
   }
 
-  let { allowBack = false, look = 'button' }: Props = $props();
+  let { allowBack = false, look = 'button', secondary = false, class: className = 'mt-5 w-full' }: Props = $props();
 
   let stuck = $state(false);
   let refusal = $state<HTMLParagraphElement | null>(null);
@@ -41,5 +43,5 @@
     onclick={close}
   >{CLOSE_TAB}</button>
 {:else}
-  <Button class="mt-5 w-full" onclick={close}>{CLOSE_TAB}</Button>
+  <Button class={className} variant={secondary ? 'secondary' : 'default'} onclick={close}>{CLOSE_TAB}</Button>
 {/if}

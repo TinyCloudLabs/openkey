@@ -7,7 +7,10 @@
   import { ownerRevocationCopy as text } from '$lib/owner-revocation-copy';
   import { deliverOwnerRevocation } from '$lib/owner-revocation-response';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
-  import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
+  import { ApprovalReplyError, compareWallets, readHandoffReply, shortWallet, stopForApprovalError, stopKeyName } from '$lib/approval-stop';
+  import { OwnerMessageError } from '$lib/delegate-failure-text';
+  import { ServerReplyError } from '$lib/server-reply';
+  import StopPage from '$lib/components/approval/stop-page.svelte';
   import { ownerRevocationAddress, parseOwnerRevocationRequest, renderSiweLiteral, type OwnerRevocationRequest } from '@openkey/capability-review';
   import CodeBox from '$lib/components/approval/code-box.svelte';
   import DonePage from '$lib/components/approval/done-page.svelte';
@@ -15,11 +18,9 @@
   import SignInCard from '$lib/components/approval/sign-in-card.svelte';
   import SignedInCard from '$lib/components/approval/signed-in-card.svelte';
   import Slip from '$lib/components/approval/slip.svelte';
-  import { CODE, DONE, codeDestinationWord, fill } from '@openkey/sdk/approval-copy';
+  import { CODE, DONE, STOP_PARTS, STOPS, approvalStop, type StopView, codeDestinationWord, fill } from '@openkey/sdk/approval-copy';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
-  // A 2xx reply that cannot be read: the server may have signed, so the owner must not sign again from this page.
-  class UnreadableSuccess extends Error {}
   const session = authClient.useSession();
   const apiUrl = import.meta.env.VITE_API_URL || '';
   type Delivery = { handoffId: string; state: string; cancelSecret: string; callback?: string };
@@ -35,6 +36,51 @@
   let code = $state('');
   let delivered = $state(false);
   let error = $state('');
+  let stop = $state<StopView | null>(null);
+  let retry = $state<(() => Promise<void>) | undefined>();
+  let signedOut = $state(false);
+  let retryClaimAfterSignIn = false;
+  let wanted = $state('');
+  let compared = $state<ReturnType<typeof compareWallets>>([]);
+
+  function report(cause: unknown, action?: () => Promise<void>, claiming = false) {
+    const view = stopForApprovalError(cause, {
+      phase: claiming ? 'claim' : 'approve',
+      values: { email: $session.data?.user.email ?? '', keyName: key ? stopKeyName(key) : '' },
+    });
+    if (cause instanceof OwnerMessageError) {
+      error = cause.message;
+    } else if (view.placement === 'sign-in') {
+      signedOut = true;
+      retryClaimAfterSignIn = claiming;
+    } else if (view.placement === 'inline' && (!claiming || !!request)) {
+      error = [view.title, view.body].filter(Boolean).join('. ');
+    } else {
+      stop = view.placement === 'inline' ? approvalStop('S26', { status: 409, code: 'handoff_signing' }) : view;
+      retry = action;
+    }
+  }
+
+  async function retryStop() {
+    const action = retry;
+    stop = null;
+    retry = undefined;
+    await action?.();
+  }
+
+  async function switchAccount() {
+    const result = await authClient.signOut().catch(() => null);
+    if (!result || result.error) return;
+    stop = null;
+    loaded = false;
+  }
+
+  function resumeSignIn() {
+    if (retryClaimAfterSignIn) loaded = false;
+    retryClaimAfterSignIn = false;
+    signedOut = false;
+    loginRequired = false;
+  }
   let initialized = $state(false);
   let loaded = $state(false);
   let busy = $state(false);
@@ -89,29 +135,24 @@
       pendingTimeout = setTimeout(() => {
         pending = null;
         clearPending();
-        error = 'Prepared revocation request expired. Restart the CLI command.';
+        stop = approvalStop('S4');
+        retry = undefined;
       }, Math.min(Date.parse(checked.expiresAt) - Date.now(), 300_000));
     } catch (cause) {
       clearPending();
-      error = cause instanceof Error ? cause.message : 'Invalid prepared revocation request.';
+      stop = approvalStop(encoded ? 'S1' : 'S3');
     } finally { initialized = true; }
     return () => { if (pendingTimeout !== undefined) clearTimeout(pendingTimeout); };
   });
 
-  async function post(path: string, body: unknown): Promise<Record<string, unknown>> {
+  async function post(path: string, body: unknown, valid?: (reply: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> {
     const token = getSessionToken();
     const response = await fetch(`${apiUrl}/api/delegate/${path}`, {
       method: 'POST', credentials: token ? 'omit' : 'include',
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify(body),
     });
-    const data: unknown = await response.json().catch(() => null);
-    if (!data || typeof data !== 'object' || Array.isArray(data)) {
-      throw response.ok ? new UnreadableSuccess('OpenKey returned an unreadable response.') : new Error('OpenKey returned an unreadable response.');
-    }
-    const result = data as Record<string, unknown>;
-    if (!response.ok) throw new Error(apiBusyOrEndedMessage(response.status, 'revoke') ?? (typeof result.error === 'string' ? result.error : `HTTP ${response.status}`));
-    return result;
+    return readHandoffReply(response, valid);
   }
 
   async function load() {
@@ -120,15 +161,27 @@
     busy = true;
     try {
       const availability = await fetch(`${apiUrl}/api/delegate/handoffs/available`, { credentials: 'include', cache: 'no-store' });
-      if (!availability.ok || (await availability.json()).transportVersion !== 2) throw new Error('Prepared handoff is unavailable. Restart the CLI command.');
-      const claimed = await post('handoffs/claim', input);
-      if (pending !== input || claimed.ticket !== input.delivery.handoffId || typeof claimed.expiresAt !== 'string') {
-        throw new Error('Prepared handoff expired. Restart the CLI command.');
+      if (!availability.ok) throw new ApprovalReplyError(availability.status);
+      const feature = await availability.json().catch(() => null);
+      if (!feature || typeof feature !== 'object') throw new ServerReplyError(availability.status);
+      if (feature.transportVersion !== 2) {
+        stop = approvalStop('S12');
+        return;
       }
       const listed = await api.listKeys();
+      if (pending !== input) return;
       const owner = ownerRevocationAddress(input.request);
       const choices = listed.keys.filter(item => item.address.toLowerCase() === owner.toLowerCase());
-      if (!choices.length) throw new Error('The signed-in account has no key matching the requested owner.');
+      if (!choices.length) {
+        wanted = shortWallet(owner);
+        compared = compareWallets(listed.keys);
+        stop = approvalStop('S17', { values: {
+          email: $session.data?.user.email ?? '', wanted: fill(STOP_PARTS.wantsWallet, { short: wanted }),
+        } });
+        return;
+      }
+      await post('handoffs/claim', input, (reply) => reply.ticket === input.delivery.handoffId && typeof reply.expiresAt === 'string');
+      if (pending !== input) return;
       ticket = input.delivery.handoffId;
       request = input.request;
       delivery = input.delivery;
@@ -137,14 +190,17 @@
       clearPending();
       if (choices.length === 1) await chooseKey(choices[0]!);
     } catch (cause) {
-      pending = null;
-      clearPending();
-      error = cause instanceof Error ? cause.message : 'Could not claim the prepared revocation.';
+      if (pending !== input && stop?.id === 'S4') return;
+      report(cause, pending === input ? load : undefined, true);
+      if (stop && !stop.buttons.includes('try-again')) {
+        pending = null;
+        clearPending();
+      }
     } finally { busy = false; }
   }
 
   $effect(() => {
-    if (!initialized || !pending || loaded || $session.isPending) return;
+    if (!initialized || !pending || loaded || signedOut || stop || $session.isPending) return;
     if (!$session.data) loginRequired = true;
     else if (!loginRequired) { loaded = true; void load(); }
   });
@@ -154,15 +210,13 @@
     busy = true;
     error = '';
     try {
-      const prepared = await post('owner-revocation/prepare', { ticket, keyId: choice.id });
-      if (typeof prepared.siwe !== 'string' || typeof prepared.authorizationContextToken !== 'string') {
-        throw new Error('OpenKey did not return a signing preview.');
-      }
+      const prepared = await post('owner-revocation/prepare', { ticket, keyId: choice.id },
+        (reply) => typeof reply.siwe === 'string' && typeof reply.authorizationContextToken === 'string');
       key = choice;
-      siwe = prepared.siwe;
-      contextToken = prepared.authorizationContextToken;
+      siwe = prepared.siwe as string;
+      contextToken = prepared.authorizationContextToken as string;
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not prepare owner signature.';
+      report(cause, () => chooseKey(choice));
     } finally { busy = false; }
   }
 
@@ -174,16 +228,16 @@
       let externalSignature: string | undefined;
       if (key.keyType === 'EXTERNAL') {
         const provider = (window as Window & { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
-        if (!provider) throw new Error('The owner wallet is unavailable.');
+        if (!provider) throw new OwnerMessageError(STOPS.S32.lines.noWallet);
         const chain = await provider.request({ method: 'eth_chainId' });
         if (typeof chain !== 'string' || !/^0x[0-9a-fA-F]+$/.test(chain) ||
           BigInt(chain) !== BigInt(request.ownerDid.split(':')[3]!)) {
-          throw new Error('The owner wallet is on a different chain.');
+          throw new OwnerMessageError('The owner wallet is on a different chain.');
         }
         const accounts = await provider.request({ method: 'eth_requestAccounts' });
         if (!Array.isArray(accounts) || !accounts.every(value => typeof value === 'string')) throw new Error('Owner wallet returned invalid accounts.');
         const account = accounts.find(value => value.toLowerCase() === key!.address.toLowerCase());
-        if (!account) throw new Error('The owner wallet does not match this request.');
+        if (!account) throw new OwnerMessageError(fill(STOPS.S32.lines.walletLacks, { short: shortWallet(key.address) }));
         const signed = await provider.request({ method: 'personal_sign', params: [siwe, account] });
         if (typeof signed !== 'string') throw new Error('Owner wallet did not return a signature.');
         externalSignature = signed;
@@ -194,7 +248,7 @@
         signed = await post('owner-revocation/sign', { ticket, keyId: key.id, authorizationContextToken: contextToken, ...(externalSignature ? { externalSignature } : {}) });
       } catch (cause) {
         // A refused or failed signing carries no signature and the server releases the handoff: Revoke and Cancel come back.
-        if (!(cause instanceof UnreadableSuccess)) submitted = false;
+        if (!(cause instanceof ServerReplyError)) submitted = false;
         throw cause;
       }
       if (signed.siwe !== siwe || typeof signed.signature !== 'string' || signed.deliveryState !== delivery.state || signed.selectedKeyId !== key.id) {
@@ -204,7 +258,8 @@
       code = result.code;
       delivered = result.delivered;
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Owner signing failed. Restart the CLI command.';
+      if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 4001) error = STOPS.S32.lines.walletDeclined;
+      else report(cause, submitted ? undefined : revoke);
     } finally { busy = false; }
   }
 
@@ -219,7 +274,7 @@
       delivery = null;
       cancelled = true;
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not cancel the handoff.';
+      report(cause, cancel);
     } finally { busy = false; }
   }
 
@@ -228,25 +283,32 @@
     try {
       const result = await authClient.signIn.passkey();
       if (result.error) error = authErrorMessage(result.error, 'Passkey sign-in failed');
-      else loginRequired = false;
+      else resumeSignIn();
     } catch (cause) { error = cause instanceof Error ? cause.message : 'Passkey sign-in failed'; }
     finally { signingIn = false; }
   }
   // What the page shows: a loader, the sign-in card, the signed-in card, or the request itself.
   const ended = $derived(initialized && !$session.isPending && (cancelled || (!!error && !request && !pending)));
   const loaderOn = $derived(
-    !initialized || $session.isPending || (!ended && !!$session.data && !loginRequired && !code && !request),
+    !initialized || $session.isPending || (!ended && !signedOut && !!$session.data && !loginRequired && !code && !request),
   );
   const loaderLit = $derived(!initialized || $session.isPending ? 'session' : 'request');
-  const cardOn = $derived(!loaderOn && !ended && !$session.data);
-  const signedInOn = $derived(!loaderOn && !ended && !!$session.data && loginRequired);
+  const cardOn = $derived(!loaderOn && !ended && (!$session.data || signedOut));
+  const signedInOn = $derived(!loaderOn && !ended && !!$session.data && loginRequired && !signedOut);
   const slipAt = $derived(loaderOn ? 0 : cardOn || signedInOn ? 1 : cancelled ? 3 : code ? (delivered ? 4 : 3) : 2);
   const slipLast = $derived(code && !delivered && !cancelled ? 'code' : 'terminal');
   const shortCid = (cid: string) => `${cid.slice(0, 10)}…${cid.slice(-6)}`;
 </script>
 
-<Slip at={slipAt} last={slipLast} center={loaderOn || cancelled || !!code}>
-  {#if loaderOn}
+<Slip at={stop ? 2 : slipAt} last={slipLast} stopped={!!stop} email={stop && $session.data?.user.email}
+  center={!stop && (loaderOn || cancelled || !!code)}>
+  {#if stop}
+    {#key stop}
+      <StopPage {stop} wanted={stop.id === 'S17' ? wanted : ''} compared={stop.id === 'S17' ? compared : []}
+        retry={retry ? retryStop : undefined} {switchAccount}
+        chooseKey={keys.length > 1 ? () => { stop = null; key = null; contextToken = ''; siwe = ''; } : undefined} />
+    {/key}
+  {:else if loaderOn}
     <Loader phases={['session', 'request']} lit={loaderLit} />
   {:else if cardOn}
     <SignInCard
@@ -254,7 +316,9 @@
       registerHref={`/auth/register?returnTo=${encodeURIComponent('/delegate?transportVersion=2')}`}
       {error}
       {signingIn}
+      {signedOut}
       onPasskey={signIn}
+      onSignedIn={() => { if (signedOut) resumeSignIn(); }}
       onBegin={() => { error = ''; }}
       onCancel={cancel}
     />

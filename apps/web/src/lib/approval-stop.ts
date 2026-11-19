@@ -1,0 +1,45 @@
+import { STOP_PARTS, approvalStop, fill, stopForReply, type ReplyInput } from '@openkey/sdk/approval-copy';
+import type { EthereumKey } from './api';
+import { delegateServerMessage } from './delegate-failure-text';
+import { ServerReplyError } from './server-reply';
+import { isTermsRequired, sendToTerms } from './terms';
+
+export class ApprovalReplyError extends Error {
+  constructor(readonly status: number, readonly code?: unknown, readonly detail?: string) {
+    super(`HTTP ${status}`);
+  }
+}
+
+export function stopForApprovalError(cause: unknown, context: ReplyInput) {
+  if (cause instanceof ServerReplyError) return approvalStop('S27', { ...context, status: cause.status });
+  if (cause instanceof ApprovalReplyError) {
+    return stopForReply({ ...context, status: cause.status, code: cause.code, detail: cause.detail });
+  }
+  if (cause instanceof Error && 'status' in cause && typeof cause.status === 'number') {
+    return stopForReply({ ...context, status: cause.status, code: 'code' in cause ? cause.code : undefined });
+  }
+  return approvalStop('S26', context);
+}
+
+export async function readHandoffReply(response: Response, valid?: (reply: Record<string, unknown>) => boolean) {
+  const body: unknown = await response.json().catch(() => null);
+  const reply = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null;
+  if (!response.ok) {
+    if (isTermsRequired(response.status, reply)) sendToTerms();
+    throw new ApprovalReplyError(response.status, reply?.code, delegateServerMessage(reply));
+  }
+  if (!reply || (valid && !valid(reply))) throw new ServerReplyError(response.status);
+  return reply;
+}
+
+export function shortWallet(address: string) {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
+export function stopKeyName(key: EthereumKey) {
+  return key.label ?? fill(STOP_PARTS.keyName, { index: key.keyIndex });
+}
+
+export function compareWallets(keys: EthereumKey[]) {
+  return keys.map((key) => ({ address: shortWallet(key.address), name: stopKeyName(key) }));
+}
