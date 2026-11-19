@@ -2,12 +2,17 @@ name: Drop Session Expiry Backup
 
 # Removes ops_backup.session_expires_20261026, the backup table the session expiry backfill
 # (backfill-session-expiry.yml, TC-2101, #364) left in place (TC-2110). The 30-day web session
-# cap stays, so the backup is not needed. Run it once, from main.
+# cap stays, so the backup is not needed. Run it from main.
 #
-# Order: (1) read the one row read-only and encrypt it to the pinned age recipient (AGE_RECIPIENT below),
-# uploaded as the artifact session-expires-20261026-backup on this run (kept 30 days); (2) only
-# after the upload, drop. The drop refuses unless the table holds exactly one row that still hashes
-# to the backed-up one (an absent table is "already gone" and exits 0 without changes). In one
+# Two dispatches, in order:
+#   mode=backup-only (the default): read the one row read-only and encrypt it to the pinned age recipient
+#     (AGE_RECIPIENT below), uploaded as the artifact session-expires-20261026-backup on this run (kept 30
+#     days). The log prints `backup-digest: <sha256 of the plaintext row>`. Nothing is dropped. Download the
+#     artifact and check it decrypts to that digest: `age -d -i <key> session_expires_20261026.json.age | sha256sum`.
+#   mode=drop, with confirm and expected_sha256 (that verified digest): take the backup again and upload it,
+#     refuse unless its digest equals expected_sha256, then drop.
+# The drop refuses unless the table holds exactly one row that still hashes to the backed-up one (an absent
+# table is "already gone" and exits 0 without changes). In one
 # transaction it takes an ACCESS EXCLUSIVE lock on the table, drops it, and drops the schema ops_backup only if it is then empty. No
 # CASCADE. The log prints the row count, the column names and the row's SHA-256 only: no row values and no
 # connection string.
@@ -15,9 +20,20 @@ name: Drop Session Expiry Backup
 on:
   workflow_dispatch:
     inputs:
-      confirm:
-        description: 'Type exactly: drop-ops_backup.session_expires_20261026'
+      mode:
+        description: 'backup-only: back up and stop. drop: back up again, check expected_sha256, then drop.'
+        type: choice
+        options:
+          - backup-only
+          - drop
+        default: backup-only
         required: true
+      confirm:
+        description: 'drop mode only. Type exactly: drop-ops_backup.session_expires_20261026'
+        required: false
+      expected_sha256:
+        description: 'drop mode only: the backup-digest printed by the backup-only run, after checking the artifact decrypts to it'
+        required: false
 
 permissions:
   contents: read
@@ -35,28 +51,37 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.14
 
       - name: Restore Bun dependency cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
 
       - name: Validate inputs
         env:
+          MODE: ${{ inputs.mode }}
           DROP_CONFIRM: ${{ inputs.confirm }}
+          EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
         run: |
           set -euo pipefail
-          if [ "$DROP_CONFIRM" != "drop-ops_backup.session_expires_20261026" ]; then
-            echo "confirm must be: drop-ops_backup.session_expires_20261026" >&2
-            exit 1
-          fi
+          case "$MODE" in
+            backup-only) ;;
+            drop)
+              if [ "$DROP_CONFIRM" != "drop-ops_backup.session_expires_20261026" ]; then
+                echo "confirm must be: drop-ops_backup.session_expires_20261026" >&2
+                exit 1
+              fi
+              [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "expected_sha256 must be the 64-character lowercase backup-digest of a backup-only run" >&2; exit 1; }
+              ;;
+            *) echo "mode must be backup-only or drop" >&2; exit 1 ;;
+          esac
           [[ "$AGE_RECIPIENT" =~ ^age1[0-9a-z]+$ ]] || { echo "the pinned age recipient is not a valid age1... key" >&2; exit 1; }
 
       - name: Install dependencies
@@ -72,7 +97,6 @@ jobs:
         id: backup
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DROP_CONFIRM: ${{ inputs.confirm }}
         run: |
           set -euo pipefail
           umask 077
@@ -112,14 +136,15 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # Runs only after the encrypted backup is uploaded; refuses unless the row still hashes to the
-      # backed-up one.
+      # drop mode only. Runs only after the encrypted backup is uploaded; refuses unless this run's backup
+      # has the digest verified from the backup-only run, and the row still hashes to it.
       - name: Drop session expiry backup
-        if: steps.backup.outputs.present == 'true'
+        if: inputs.mode == 'drop' && steps.backup.outputs.present == 'true'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DROP_CONFIRM: ${{ inputs.confirm }}
           BACKUP_DIGEST: ${{ steps.backup.outputs.digest }}
+          EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
         run: |
           set -euo pipefail
           bun run scripts/ci-drop-session-expiry-backup.ts drop
