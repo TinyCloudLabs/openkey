@@ -4,7 +4,7 @@ import type { Prisma } from '@openkey/db';
 
 /**
  * SHA-256 (hex) of the owner DID a key's address has on a TinyCloud node. The DID is built from the EIP-55
- * form of the address, as delegate.ts builds it. If the node matches another casing, change the one line below.
+ * form of the address, as delegate.ts builds it and as the node canonicalizes it, always on chain 1.
  */
 export function ownerDigestFor(address: string): string {
   const did = `did:pkh:eip155:1:${ensureEip55(address)}`;
