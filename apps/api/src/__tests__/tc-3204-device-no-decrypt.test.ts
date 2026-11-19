@@ -2,9 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { deviceRequestPermissions } from '../services/device-authorization';
 import { sessionAbilitiesFromPermissions, type DelegationPermissionEntry } from '../routes/delegate-session';
 
-// TC-3204: device sign-in can't ask to decrypt. Every tinycloud.encryption entry, under its full or short name in any
-// case and in any shape, is refused at device start (invalid_scope) and again when /api/delegate signs for a device
-// transaction (invalid_permissions). Other spellings fail the device-flow allowlist (tc-3204-device-allowlist.test.ts).
+// TC-3204: device sign-in can't ask to decrypt. Every tinycloud.encryption entry, in any spelling or shape, is refused
+// at device start (invalid_scope) and again when /api/delegate signs for a device transaction (invalid_permissions).
 
 const DECRYPT = 'tinycloud.encryption/decrypt';
 const signer = { address: '0xA8763f2b67aa9C807d2277a698cb071e3D86204A', chainId: 1 };

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import {
+  DEVICE_AUTH_CLOCK_SKEW_MS,
   DEVICE_AUTH_DEFAULT_DELEGATION_TTL_MS,
   DEVICE_AUTH_START_LIMIT,
   DEVICE_AUTH_TRANSACTION_TTL_MS,
