@@ -14,6 +14,7 @@ import { signManagedKey, unsealManagedKey } from '../services/managed-key-signin
 import { nativeDelegationLockResponse } from '../services/native-delegation/errors';
 import { enabledNativeDelegation } from '../services/native-delegation/policy';
 import { nativeUserRetryAfter, type NativeUserAction } from '../services/native-delegation/user-rate-limit';
+import { hasAcceptedTerms, termsRequired } from '../services/terms';
 import { ParError, validatePermissions, type NativePermission } from '../services/native-delegation/par';
 import { buildOwnerRevocationSiwe } from '@openkey/capability-review';
 import { RECLAIM_FAILED_CODE } from '../services/tinycloud-bootstrap';
@@ -120,6 +121,11 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
   router.use('*', async (c, next) => {
     const session = await auth.api.getSession({ headers: c.req.raw.headers });
     if (!session) return c.json({ error: 'unauthorized' }, 401);
+    // TC-3232: no new grant is prepared or approved until the account accepts the Terms. Denying stays open.
+    const action = c.req.path.split('/').at(-1);
+    if ((action === 'prepare' || action === 'approve') && !await hasAcceptedTerms(db, session.user.id)) {
+      return c.json(termsRequired(), 403);
+    }
     c.set('user', session.user);
     c.set('session', session.session);
     await next();

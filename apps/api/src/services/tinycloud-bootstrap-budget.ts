@@ -3,6 +3,7 @@ import type {
   TinyCloudBootstrapOutcome,
   TinyCloudBootstrapRequestedSpaceReport,
 } from './tinycloud-bootstrap';
+import { trackTinyCloudBootstrapBackground } from './tinycloud-bootstrap-background';
 
 export const DEFAULT_TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = 2500;
 const MAX_TINYCLOUD_BOOTSTRAP_SYNC_BUDGET_MS = 60_000;
@@ -142,8 +143,11 @@ export async function awaitTinyCloudBootstrapWithinBudget(
 
   // A bootstrap that bounds and logs its own background run (hostRequestedSpaceWithinBudget) sets ownLogsBackground.
   if (timedOut && !options.ownLogsBackground) {
+    let cancelled = false;
+    const untrack = trackTinyCloudBootstrapBackground(() => { cancelled = true; });
     void settled.then((outcome) => {
-      if (outcome.status !== 'pending') recordBackgroundOutcome(outcome, { attempt: 1, startedAt });
+      untrack();
+      if (!cancelled && outcome.status !== 'pending') recordBackgroundOutcome(outcome, { attempt: 1, startedAt });
     });
   }
   return result;
@@ -250,10 +254,18 @@ export async function hostRequestedSpaceWithinBudget(
   }
   const requestedSpaceHosted: RequestedSpaceHosted =
     result.status === 'hosted' ? 'yes' : result.status === 'timeout' ? 'timeout' : 'no';
+  let cancelled = false;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let wake: (() => void) | undefined;
+  const untrack = trackTinyCloudBootstrapBackground(() => {
+    cancelled = true;
+    clearTimeout(retryTimer);
+    wake?.();
+  });
   void (async () => {
     let outcome = await firstRun;
     let attemptStartedAt = startedAt;
-    for (let attempt = 1; ; attempt += 1) {
+    for (let attempt = 1; !cancelled; attempt += 1) {
       // `complete` straight from the state row: nothing ran, so there is no background run to log.
       const ranNothing = attempt === 1 && result.status === 'complete';
       if (!ranNothing && !(outcome.status === 'failed' && outcome.errorCode === 'tinycloud_bootstrap_in_progress')) {
@@ -261,13 +273,15 @@ export async function hostRequestedSpaceWithinBudget(
       }
       const delay = delays[attempt - 1];
       if (outcome.status !== 'failed' || NON_RETRYABLE_ERROR_CODES[outcome.errorCode] || delay === undefined) return;
-      await new Promise<void>((resolve) => {
-        const retryTimer = setTimeout(resolve, delay);
-        retryTimer.unref?.();
-      });
+      const waited = Promise.withResolvers<void>();
+      wake = waited.resolve;
+      retryTimer = setTimeout(waited.resolve, delay);
+      retryTimer.unref?.();
+      await waited.promise;
+      if (cancelled) return;
       attemptStartedAt = performance.now();
       outcome = await start(attempt + 1);
     }
-  })();
+  })().finally(untrack);
   return result;
 }

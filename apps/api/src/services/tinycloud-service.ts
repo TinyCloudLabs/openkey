@@ -9,6 +9,14 @@ export const OPENKEY_LEGACY_SPACE = 'openkey';
 // node-sdk >= 2.11 adds the `account` registry space (kv, sql, delegation/list,
 // capabilities) to the sign-in SIWE unless this is false. These sessions only
 // need their own space, so keep the recap OpenKey's managed key signs narrow.
+//
+// `autoBootstrapAccount: false` (TC-3115): the SDK would otherwise run a full account bootstrap inside every
+// `signIn()`: it hosts and activates six spaces one request at a time, then tries to create the account index in
+// the `account` space, which these narrow sessions cannot write (401), so it aborts and does it all again at the next
+// sign-in. Measured against the production node it costs about 8 to 9 s per sign-in, 17 to 20 s for the two sessions
+// of one /api/secrets/enable, and ends in a gateway 502. OpenKey provisions the account itself
+// (services/tinycloud-bootstrap.ts), as the SDK expects of a server-side signer. The option is read at runtime but
+// missing from the published type.
 export function createSessionNode(privateKey: string, prefix: string): TinyCloudNode {
   return new TinyCloudNode({
     host: TINYCLOUD_URL,
@@ -16,6 +24,7 @@ export function createSessionNode(privateKey: string, prefix: string): TinyCloud
     prefix,
     autoCreateSpace: true,
     includeAccountRegistryPermissions: false,
+    ...({ autoBootstrapAccount: false } as object),
   });
 }
 

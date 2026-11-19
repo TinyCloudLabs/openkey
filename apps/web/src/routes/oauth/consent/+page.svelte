@@ -6,6 +6,7 @@
   import Card from '$lib/components/ui/card.svelte';
   import { safeExternalHttpUrl, safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
   import NativeDelegationConsent from './NativeDelegationConsent.svelte';
+  import { isTermsRequired, sendToTerms } from '$lib/terms';
 
   const session = authClient.useSession();
 
@@ -98,6 +99,10 @@
 
       const result = await res.json();
 
+      if (isTermsRequired(res.status, result)) {
+        sendToTerms();
+        return;
+      }
       if (!res.ok) {
         error = result?.message || 'Consent failed';
         submitting = false;
