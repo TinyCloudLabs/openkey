@@ -98,7 +98,7 @@
     {busy}
     {error}
     {otherOptions}
-    declineNote={`We’ll sign you out. ${declineEffect(origin, appName)}`}
+    declineNote={declineEffect(origin, appName, 'native')}
     onaccept={accept}
     ondecline={decline}
   />
