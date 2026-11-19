@@ -472,9 +472,10 @@ and its image reports `migration-checksum-mismatch`. In particular, do not
 `Authorization: Bearer $ADMIN_API_KEY` and a JSON body. `<store>` is `openai`
 or `google`.
 
-1. Deploy the API and publish the web. Web production deploys are currently
-   frozen (Cloudflare Pages production deployments are disabled), so merging
-   to `main` does not publish the web: the release coordinator publishes it.
+1. Deploy the API and publish the web. Merging to `main` doesn't publish the
+   web. Cloudflare Pages production deployments are turned off, and the
+   release coordinator publishes the web by retrying the skipped production
+   deployment in Cloudflare Pages.
    The API is deployed with `deploy-api.yml`. The review-code step cannot work
    until both are live: the old web caps the code box at six characters, and
    the old API refuses the sign-in.
