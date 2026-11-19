@@ -117,12 +117,12 @@ test.describe('Approve on the approval-request review page', () => {
     });
   }
 
-  test('session-required failure leaves Approve enabled', async ({ page }) => {
+  test('session-required failure brings back the sign-in card', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await openReview(page, { delegate: { status: 401, body: { code: 'session_required', error: 'private session detail' } } });
     await approve(page).click();
-    await expect(page.getByRole('alert')).toHaveText('Your OpenKey session ended. Sign in again, then approve the request again.');
-    await expect(approve(page)).toBeEnabled();
+    await expect(page.getByRole('heading', { level: 1, name: 'You were signed out' })).toBeVisible();
+    await expect(page.getByRole('alert')).toHaveCount(0);
     const shots = process.env.DELEGATE_FAILURE_SHOT_DIR;
     if (shots) await page.screenshot({ path: `${shots}/a.png`, fullPage: false });
   });

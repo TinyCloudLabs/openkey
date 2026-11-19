@@ -46,11 +46,13 @@ import {
   socialProviderTrustedOrigins,
 } from './social-providers';
 import { appleRelayEmailUndeliverable } from './services/apple-notifications';
+import { signInCodeStorage } from './services/email-code-storage';
 import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
 import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { emailSignupConfirmation } from './services/email-signup-confirmation';
+import { sessionTokenPlugin } from './services/session-token';
 import { hasFreshEmailStepUp } from './services/email-otp-step-up';
 import { confirmedSocialProvider, socialConfirmation } from './services/social-confirmation';
 import { assertCurrentSocialLink, socialLinkStatePlugin } from './services/social-link-state';
@@ -431,14 +433,17 @@ export const auth = betterAuth({
       },
       otpLength: 6,
       expiresIn: 300, // 5 minutes
-      // Repeated requests during the active window must not invalidate a code
-      // that may still be arriving or grouped into the same email thread.
-      resendStrategy: 'reuse',
+      // Codes are stored hashed, so a resend mails a new code and the earlier
+      // one stops working; the sign-in page asks for the latest email.
+      resendStrategy: 'rotate',
+      storeOTP: signInCodeStorage,
     }),
     emailSignupConfirmation(prisma),
 
-    // Bearer plugin - returns session token in set-auth-token header
-    bearer(),
+    // Bearer plugin - returns the signed session token in the set-auth-token header, and accepts
+    // only that signed form back. OpenKey's pages read it through /session-token after a redirect.
+    bearer({ requireSignature: true }),
+    sessionTokenPlugin(),
 
     // JWT plugin (required for OAuth provider)
     jwt(),
