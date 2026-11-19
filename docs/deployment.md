@@ -636,19 +636,21 @@ Order:
    recorded API image digest, with the commands to use them.
 3. Run the preflight and read it. Stop and resolve any unexpected difference
    in the live configuration, the environment key names or the pending
-   migrations first. Then record whether this release's migrations work with
-   the recorded API image. "Additive" is not enough: a new trigger that fires
-   for every row, or a stricter schema guard, can stop the old image. Write
-   the answer in the record before deploying. If the old image can't run on
-   the new schema, an API image rollback isn't available and the plan is to
-   fix forward.
+   migrations first. Then record whether the recorded API image is allowed as
+   a rollback target. "Additive" is not enough: a new trigger that fires for
+   every row, or a stricter schema guard, can stop the old image, and an image
+   that checks the schema shape at startup fails that check once the
+   migrations have run. The image is allowed only if it has been shown to
+   start and pass its own schema guards against the schema as migrated by this
+   release. Write the answer in the record before deploying. Without that
+   proof there is no API image rollback and the plan is to fix forward.
 4. Deploy the API: `gh workflow run deploy-api.yml --ref main`.
 5. Check the API with the old web still serving: `/health` reports the
    released commit and is ready, the preflight shows the new image and
    migration state, and a sign-in through the encryption network completes.
    If a check fails, roll the API back to the recorded image if step 3
-   recorded that the image can run on the new schema; otherwise fix forward.
-   The web hasn't been promoted, so nothing else changes.
+   recorded it as allowed; otherwise fix forward. The web hasn't been
+   promoted, so nothing else changes.
 6. Promote the prebuilt web to production without delay.
 7. Check the web: `_app/version.json` and the entry file name served by
    `https://openkey.so` match the prebuilt deployment, `/delegate` loads, and
@@ -660,9 +662,9 @@ Don't loosen a refusal or turn off a check to shorten the time between steps.
 Paired rollback: it reverses the deploy, the web first and then the API.
 Promote the recorded Pages deployment and check `_app/version.json` and
 `/delegate`; this returns to the pairing step 5 already checked, the new API
-with the previous web. Then, only if step 3 recorded that the old image can
-run on the new schema, redeploy the recorded API image and confirm `/health`.
-If it can't, stop after the web and fix forward.
+with the previous web. Then, only if step 3 recorded the recorded API image as
+allowed, redeploy it and confirm `/health`. If it isn't allowed, stop after
+the web and fix forward.
 
 ### Manual Deploy
 
