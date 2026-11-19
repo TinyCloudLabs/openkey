@@ -84,3 +84,5 @@ export {
   parseRetryAfterSeconds,
   delegationNeedsRenewalNow,
 } from './native-delegation';
+
+export { sameTinyCloudHost } from './tinycloud-host';

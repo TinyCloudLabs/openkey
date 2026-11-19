@@ -14,9 +14,10 @@
     defaultLeaseMs,
     expiryLimitNote,
     formatDuration,
+    formatDurationWithEnd,
     leaseLimitNote,
   } from "$lib/approval-expiry";
-  import { formatAccessEnd } from "$lib/access-end";
+  import { formatLocalAccessEnd } from "$lib/access-end";
   import DurationChoice from "$lib/components/signing/duration-choice.svelte";
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
 
@@ -151,12 +152,12 @@
           {#if renews}
             {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}
           {:else}
-            {permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDuration(shownMs)}
+            {permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDurationWithEnd(shownMs)}
           {/if}
         </span>
       </label>
     {:else}
-      <p class="expiry-line" data-testid="approval-expiry-line">{permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDuration(shownMs)}</p>
+      <p class="expiry-line" data-testid="approval-expiry-line">{permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDurationWithEnd(shownMs)}</p>
     {/if}
     {#if onceSite !== null && requestedMs !== null}
       <p class="expiry-once-note" data-testid="approval-expiry-once-note">
@@ -169,7 +170,7 @@
         <DurationChoice
           id="approval-expiry"
           legend="Expires after"
-          detail={endsAt ? formatAccessEnd(endsAt) : null}
+          detail={endsAt ? formatLocalAccessEnd(endsAt) : null}
           presets={EXPIRY_PRESETS}
           valueMs={shownMs}
           {maxMs}
