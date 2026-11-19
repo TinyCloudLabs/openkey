@@ -74,6 +74,8 @@ const EVENTS = {
   tinycloud_bootstrap_sweep_still_failed: true, tinycloud_bootstrap_sweep_exhausted: true,
   tinycloud_bootstrap_sweep_reaped: true,
   tinycloud_bootstrap_sweep_failed: true,
+  renewal_lease_sweep_stopped: true, renewal_lease_sweep_wallet_required: true,
+  renewal_lease_sweep_not_stopped: true, renewal_lease_sweep_failed: true,
   tinycloud_bootstrap_space_registry_completed: true, native_par_valid_request_volume_threshold_reached: true,
   native_par_request_cleanup_failed: true, native_session_proof_cleanup_failed: true,
   scoreboard_protocol_users_call: true, app_sign_in_record_failed: true, permission_entry_unknown_field: true,

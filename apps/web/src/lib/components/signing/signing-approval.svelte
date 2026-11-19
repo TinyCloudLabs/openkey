@@ -81,7 +81,7 @@
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
   import ElevatedWarning from "$lib/components/signing/elevated-warning.svelte";
-  import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
+  import type { RenewalChoice, ShortenOnlyExpiry } from "$lib/components/signing/signing-adapter-types";
   import { ONCE_DEFAULT_EXPIRY_MS, onceDefaultExpiryMs, requestedExpiryMs } from "$lib/approval-expiry";
   import { isOnceTier } from "$lib/renewal-default";
 
@@ -143,6 +143,7 @@
     expiryBounded?: boolean;
     /** With `expiryBounded`: the most the requester signed, when that is more than the default it asked for. */
     expiryMaxMs?: number | null;
+    shortenOnlyExpiry?: ShortenOnlyExpiry | null;
     /**
      * Set by the surfaces that write the choice into the signed message: a one-time approval (secrets or decrypt)
      * that asks for longer than an hour starts at one hour, until the owner picks a time (TC-3111).
@@ -189,6 +190,7 @@
     onExpiryChange,
     expiryBounded = false,
     expiryMaxMs = null,
+    shortenOnlyExpiry = null,
     onceExpiryDefault = false,
     renewal = null,
     elevated = null,
@@ -262,21 +264,23 @@
   const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
   const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
 
-  // TC-3111: a one-time approval (secrets or decrypt) that asks for longer than an hour starts at one hour. It goes
-  // into the signed message through `onExpiryChange` like any pick, so what is signed is what the line says. The
-  // owner's own pick is never replaced, and a request that stops being one-time (a narrowing that drops the secret
-  // or decrypt access) goes back to what the app asked for.
+  // A signed request that includes secrets or decrypt starts as a whole at one hour or less.
+  const onceTier = $derived(isOnceTier(shortenOnlyExpiry ? model.permissions : selectedGrants));
   const onceDefaultMs = $derived(
     onceExpiryDefault && onExpiryChange && model.protocol === "tinycloud-siwe-recap"
-      ? onceDefaultExpiryMs(isOnceTier(selectedGrants), requestedExpiry)
+      ? onceDefaultExpiryMs(onceTier, shortenOnlyExpiry?.startMs ?? requestedExpiry)
       : null,
+  );
+  const expiryFoldMaxMs = $derived(shortenOnlyExpiry
+    ? (onceDefaultMs ?? shortenOnlyExpiry.startMs)
+    : expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null,
   );
   let ownerChoseExpiry = $state(false);
   let onceDefaultSent = $state(false);
   // Until the default has been applied the expiry line and its note are not shown and Approve waits, so neither a
   // screen reader nor a click meets the app's longer time first (the surface re-prepares with the hour at once).
   const onceDefaultPending = $derived(
-    onceDefaultMs !== null && !ownerChoseExpiry && !onceDefaultSent && expiryMs === null,
+    onceDefaultMs !== null && !ownerChoseExpiry && expiryMs === null && (shortenOnlyExpiry !== null || !onceDefaultSent),
   );
   $effect(() => {
     if (approving || previewPending || !onExpiryChange || ownerChoseExpiry) return;
@@ -295,6 +299,12 @@
     onExpiryChange?.(ms);
   }
   const onceDefaultShown = $derived(onceDefaultMs !== null && !ownerChoseExpiry && expiryMs === onceDefaultMs);
+  const signedOnceNote = $derived(
+    shortenOnlyExpiry && onceTier && renewal?.leaseMs == null &&
+    (expiryMs ?? shortenOnlyExpiry.startMs) <= ONCE_DEFAULT_EXPIRY_MS
+      ? shortenOnlyExpiry.onceNote
+      : null,
+  );
 
   // App keys: the standing-access line follows the decrypt statements, and a
   // `key.delete` action is listed even though it is never selected.
@@ -809,7 +819,8 @@
         maxMs={expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null}
         disabled={approving}
         onChange={chooseExpiry}
-        onceSite={onceDefaultShown ? onceNoteSite : null}
+        onceSite={onceDefaultShown && !shortenOnlyExpiry ? onceNoteSite : null}
+        onceNote={signedOnceNote}
         {renewal}
         sensitive={isOnceTier(selectedGrants)}
         {requestedBy}
@@ -1018,9 +1029,10 @@
       <details class="request-details expiry-fold">
         <summary class="request-details-summary">How long it lasts</summary>
         <ApprovalExpiryChooser
-          requestedMs={requestedExpiry}
+          requestedMs={shortenOnlyExpiry?.startMs ?? requestedExpiry}
           chosenMs={expiryMs}
-          maxMs={expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null}
+          maxMs={expiryFoldMaxMs}
+          limitNote={shortenOnlyExpiry?.limitNote}
           disabled={approving}
           onChange={chooseExpiry}
           {renewal}
