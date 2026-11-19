@@ -297,13 +297,20 @@
       }
       const { keys } = await api.listKeys();
       accountKeyCount = keys.length;
-      const candidates = keys.filter(item => item.address.toLowerCase() === match[2]!.toLowerCase() && (!input.request.keyId || item.id === input.request.keyId));
-      if (!candidates.length) {
+      const walletKeys = keys.filter(item => item.address.toLowerCase() === match[2]!.toLowerCase());
+      if (!walletKeys.length) {
         wanted = shortWallet(match[2]!);
         compared = compareWallets(keys);
         stop = approvalStop('S17', { values: {
           email: $session.data?.user.email ?? '', wanted: fill(STOP_PARTS.wantsWallet, { short: wanted }),
         } });
+        return;
+      }
+      const candidates = walletKeys.filter(item => !input.request.keyId || item.id === input.request.keyId);
+      if (!candidates.length) {
+        pending = null;
+        clearPending();
+        stop = approvalStop('S25', { fixedKey: true });
         return;
       }
       if (pending !== input) return;

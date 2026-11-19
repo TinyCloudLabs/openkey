@@ -67,5 +67,9 @@ describe('approval reply Stop content', () => {
     expect(stopForReply({ status: 500 }).body).toBe('OpenKey doesn’t have a better explanation yet. Try again. If it happens twice, send us the line below and we’ll find it.');
     expect(stopForReply({ status: 410, code: 'handoff_expired', phase: 'claim', preparedSignIn: true }).body)
       .toBe('This sign-in was open for 5 minutes and ran out. Run the command again.');
+    expect(approvalStop('S25', { fixedKey: true })).toMatchObject({
+      body: 'Start again from the app or command.',
+      buttons: ['close'],
+    });
   });
 });

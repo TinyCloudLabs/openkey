@@ -378,6 +378,7 @@ export interface StopContext {
   preparedSignIn?: boolean;
   legacy?: boolean;
   unsafeCallback?: boolean;
+  fixedKey?: boolean;
   detail?: string;
 }
 
@@ -434,11 +435,12 @@ function replyStopId(input: ReplyInput): StopView['id'] {
 /** Resolve a stop using only the facts available on this page. */
 export function approvalStop(id: StopView['id'], context: StopContext = {}): StopView {
   const stop: Stop = STOPS[id];
-  const { status, code, values = {}, requester, preparedSignIn, legacy, unsafeCallback, detail } = context;
+  const { status, code, values = {}, requester, preparedSignIn, legacy, unsafeCallback, fixedKey, detail } = context;
   const variant = unsafeCallback ? stop.unsafe : undefined;
   const title = variant?.title ?? (requester && stop.titleNamed ? fill(stop.titleNamed, { requester }) : stop.title);
   const body = variant?.body ?? (preparedSignIn && stop.bodyPrepared ? stop.bodyPrepared
     : id === 'S18' && !values.wanted && stop.bodyUnknownWallet ? stop.bodyUnknownWallet
+    : id === 'S25' && fixedKey ? STOP_PARTS.restartRequest
     : id === 'S25' && !values.keyName ? STOP_PARTS.keyUnavailable
     : stop.body);
   const support = stop.support && supportLine({
@@ -452,7 +454,7 @@ export function approvalStop(id: StopView['id'], context: StopContext = {}): Sto
     title,
     body: fill(body, values),
     marker: stop.marker ?? STOP_PARTS.marker,
-    buttons: stop.buttons,
+    buttons: id === 'S25' && fixedKey ? ['close'] : stop.buttons,
     support: [support, fact].filter(Boolean).join(' · '),
     extra: legacy ? stop.legacyLine : id === 'S17' ? STOP_PARTS.anotherProfile : undefined,
     detail: id === 'S19' ? detail?.trim().slice(0, 300) : undefined,
