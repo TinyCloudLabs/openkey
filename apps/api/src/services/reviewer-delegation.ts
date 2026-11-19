@@ -13,7 +13,7 @@ function refuse(): never {
 export function reviewerSessionDid(jwk: unknown): string | null {
   if (!jwk || typeof jwk !== 'object' || Array.isArray(jwk)) return null;
   const key = jwk as Record<string, unknown>;
-  if (Object.keys(key).some((field) => !Object.hasOwn(PUBLIC_JWK_FIELDS, field))
+  if (Object.keys(key).some((field) => !PUBLIC_JWK_FIELDS.has(field))
     || key.kty !== 'OKP' || key.crv !== 'Ed25519' || typeof key.x !== 'string'
     || (key.kid !== undefined && typeof key.kid !== 'string')) return null;
   const publicKey = Buffer.from(key.x, 'base64url');
@@ -64,7 +64,7 @@ export async function currentReviewerDelegate(database: PrismaClient, userId: st
   const binding = await reviewerForUser(database, userId);
   if (!binding) return null;
   const captured = capturedReviewer();
-  if (!captured?.sessionId || captured.userId !== userId || !reviewerActive(binding, captured.epoch)
+  if (binding.store === 'apple' || !captured?.sessionId || captured.userId !== userId || !reviewerActive(binding, captured.epoch)
     || !binding.sessionDid || binding.grantSessionId !== captured.sessionId) refuse();
   const [session, consent, client] = await Promise.all([
     database.session.findFirst({ where: {

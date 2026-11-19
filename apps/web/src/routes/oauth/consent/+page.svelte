@@ -4,8 +4,9 @@
   import { authClient, API_BASE } from '$lib/auth-client';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
-  import { safeExternalHttpUrl, safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
+  import { redirectHostForDisplay, safeExternalHttpUrl, safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
   import NativeDelegationConsent from './NativeDelegationConsent.svelte';
+  import { isTermsRequired, sendToTerms } from '$lib/terms';
 
   const session = authClient.useSession();
 
@@ -19,26 +20,48 @@
   let error = $state('');
   let fetched = $state(false);
 
-  // Get OAuth parameters from URL
-  const clientId = $page.url.searchParams.get('client_id');
-  const nativeRequest = clientId ? $page.url.searchParams.get('tinycloud_request') : null;
-  const scope = $page.url.searchParams.get('scope') || 'openid';
-  const requestedScopes = new Set(scope.split(/\s+/).filter(Boolean));
-  const identityOnlyConsent = requestedScopes.has('tinycloud:identity')
-    && !['keys', 'tinycloud:manage-key', 'tinycloud:delegation', 'tinycloud:session', 'tinycloud:mcp']
-      .some((capability) => requestedScopes.has(capability));
-
-  // Extract signed query params (up to and including sig) for consent endpoint
-  function getOAuthQuery(): string | undefined {
-    const params = new URLSearchParams(window.location.search);
+  // The signed query params (up to and including sig); the consent endpoint verifies them.
+  function signedOAuthParams(search: string): URLSearchParams | undefined {
+    const params = new URLSearchParams(search);
     if (!params.has('sig')) return undefined;
     const signed = new URLSearchParams();
     for (const [key, value] of params.entries()) {
       signed.append(key, value);
       if (key === 'sig') break;
     }
-    return signed.toString();
+    return signed;
   }
+
+  function getOAuthQuery(): string | undefined {
+    return signedOAuthParams(window.location.search)?.toString();
+  }
+
+  // Get OAuth parameters from URL. What the page tells the owner they are granting (scope)
+  // and where they return to (redirect_uri) comes only from the signed part of the query:
+  // the authorize endpoint matched redirect_uri to the client's registered URIs before
+  // sending the owner here, and a changed value fails the signature on Allow.
+  const signedParams = signedOAuthParams($page.url.search);
+  const clientId = $page.url.searchParams.get('client_id');
+  const nativeRequest = clientId ? $page.url.searchParams.get('tinycloud_request') : null;
+  const scope = (signedParams ?? $page.url.searchParams).get('scope') || 'openid';
+  const requestedScopes = new Set(scope.split(/\s+/).filter(Boolean));
+  const identityOnlyConsent = requestedScopes.has('tinycloud:identity')
+    && !['keys', 'tinycloud:manage-key', 'tinycloud:delegation', 'tinycloud:session', 'tinycloud:mcp']
+      .some((capability) => requestedScopes.has(capability));
+  const redirectHost = redirectHostForDisplay(signedParams?.get('redirect_uri'));
+
+  // Scopes with their own row below. Every other scope that can be described in a line gets a
+  // plain row. A scope with no plain description still gets a row naming it, and then the note
+  // under the list ("only the access listed above") is not shown, because it would not be true.
+  const SCOPES_WITH_OWN_ROW = new Set(['openid', 'tinycloud:identity', 'tinycloud:manage-key', 'tinycloud:mcp', 'offline_access']);
+  const OTHER_SCOPE_ROWS: Record<string, string> = {
+    email: 'See your email address',
+    keys: 'See the addresses of your OpenKey keys',
+    'tinycloud:session': "Read and save this app's data in your TinyCloud, up to an hour at a time",
+  };
+  const otherScopes = [...requestedScopes].filter((requested) => !SCOPES_WITH_OWN_ROW.has(requested));
+  const otherScopeRows = otherScopes.map((requested) => (Object.hasOwn(OTHER_SCOPE_ROWS, requested) ? OTHER_SCOPE_ROWS[requested]! : `Use the “${requested}” permission`));
+  const everyScopeDescribed = otherScopes.every((requested) => Object.hasOwn(OTHER_SCOPE_ROWS, requested));
 
   async function fetchClientInfo() {
     if (!clientId) {
@@ -98,6 +121,10 @@
 
       const result = await res.json();
 
+      if (isTermsRequired(res.status, result)) {
+        sendToTerms();
+        return;
+      }
       if (!res.ok) {
         error = result?.message || 'Consent failed';
         submitting = false;
@@ -175,7 +202,7 @@
 
       <div class="border-t border-surface-200 pt-6 mb-6">
         <p class="text-surface-600 mb-4 text-center">
-          wants to verify your identity
+          {requestedScopes.has('tinycloud:mcp') ? 'wants to connect to your TinyCloud' : 'wants to verify your identity'}
         </p>
 
         <div class="bg-surface-100 rounded-lg p-4">
@@ -205,16 +232,48 @@
               <span>Silently request TinyCloud delegation signatures from your canonical OpenKey key. You can <a href="/dashboard/settings#tinycloud-signing" class="text-primary-600 underline hover:text-primary-700">stop new signatures later in OpenKey</a>; existing delegations are not revoked by this permission.</span>
             </li>
             {/if}
+            {#if requestedScopes.has('tinycloud:mcp')}
+            <li class="flex items-center gap-2 text-surface-700">
+              <svg class="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+              </svg>
+              Connect to TinyCloud. You approve access to your data separately.
+            </li>
+            {/if}
+            {#if requestedScopes.has('offline_access')}
+            <li class="flex items-center gap-2 text-surface-700">
+              <svg class="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+              </svg>
+              {requestedScopes.has('tinycloud:mcp') ? 'Stay connected for up to 30 days, or until you disconnect it.' : 'Stay connected until the connection expires or you disconnect it.'}
+            </li>
+            {/if}
+            {#each otherScopeRows as row}
+            <li class="flex items-center gap-2 text-surface-700">
+              <svg class="w-4 h-4 text-primary-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+              </svg>
+              {row}
+            </li>
+            {/each}
           </ul>
         </div>
-        <p class="mt-3 text-xs text-surface-500">
-          {#if identityOnlyConsent}
-            This app can't sign anything or use your TinyCloud data.
-          {:else}
-            This application may request access to your canonical OpenKey identity only through the scopes you approve.
-          {/if}
-        </p>
+        {#if everyScopeDescribed}
+          <p class="mt-3 text-xs text-surface-500">
+            {#if identityOnlyConsent}
+              This app can't sign anything or use your TinyCloud data.
+            {:else}
+              This app gets only the access listed above.
+            {/if}
+          </p>
+        {/if}
       </div>
+
+      {#if redirectHost}
+        <p class="text-sm text-surface-600 text-center mb-4">
+          After you allow, you'll return to <span class="font-medium text-surface-900 break-all">{redirectHost}</span>
+        </p>
+      {/if}
 
       {#if error}
         <div class="text-red-600 text-sm text-center mb-4">{error}</div>

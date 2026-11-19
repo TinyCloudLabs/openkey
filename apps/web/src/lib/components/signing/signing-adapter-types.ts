@@ -68,6 +68,8 @@ export interface CliSigningTransport {
 
   /** Latest error string, or null. */
   error: string | null;
+  /** Server-supplied reason for `error`, shown collapsed under it; absent or null when there is none. */
+  errorDetail?: string | null;
 
   /**
    * How long the approval lasts (TC-2272, TC-2933). `bounded` is true for a signed
@@ -163,6 +165,11 @@ export interface WidgetSigningTransport {
     onceDefault?: boolean;
     onChange: (ms: number | null) => void;
   };
+  /**
+   * The renewal checkbox (TC-2933); set only where the app's sign-in asked for renewal and the server offered it.
+   * `onChange` must make the next preview carry the choice (and the window, when given).
+   */
+  renewal?: RenewalChoice;
 
   /**
    * The warning screen for extra permissions (TC-2927): decrypt or key creation on the encryption network, or on
