@@ -1268,11 +1268,11 @@ describe('TC-2380 a node that says "not hosted" beats a cached complete', () => 
     const reports: Array<{ status: string }> = [];
     return {
       reports,
-      requestedSpace: { space: 'default' as const, report: (report: { status: string }) => { reports.push(report); }, ...extra },
+      requestedSpaces: { spaces: ['default'] as const, alreadyHosted: false, report: (report: { status: string }) => { reports.push(report); }, ...extra },
     };
   }
 
-  function ensureWith(n: number, host: string, requestedSpace: ReturnType<typeof requestedDefault>['requestedSpace']) {
+  function ensureWith(n: number, host: string, requestedSpaces: ReturnType<typeof requestedDefault>['requestedSpaces']) {
     return ensureTinyCloudBootstrap({
       prisma: store.prisma,
       userId: `user-${n}`,
@@ -1280,7 +1280,7 @@ describe('TC-2380 a node that says "not hosted" beats a cached complete', () => 
       privateKey: PRIVATE_KEY,
       host,
       chainId: 1,
-      requestedSpace,
+      requestedSpaces,
     });
   }
 
@@ -1289,9 +1289,9 @@ describe('TC-2380 a node that says "not hosted" beats a cached complete', () => 
     try {
       process.env.TINYCLOUD_BOOTSTRAP_HOST = node.url;
       seedRow(260, { status: 'complete', failureCode: null, tinycloudHost: node.url });
-      const { reports, requestedSpace } = requestedDefault({ nodeReportedUnhosted: true });
+      const { reports, requestedSpaces } = requestedDefault({ nodeReportedUnhosted: true });
 
-      const outcome = await ensureWith(260, node.url, requestedSpace);
+      const outcome = await ensureWith(260, node.url, requestedSpaces);
 
       expect(outcome).toEqual({ status: 'complete' });
       expect(node.hostPosts.map((post) => post.spaceId)).toEqual([expect.stringMatching(/:default$/)]);
@@ -1308,9 +1308,9 @@ describe('TC-2380 a node that says "not hosted" beats a cached complete', () => 
     try {
       process.env.TINYCLOUD_BOOTSTRAP_HOST = node.url;
       seedRow(261, { status: 'complete', failureCode: null, tinycloudHost: node.url });
-      const { reports, requestedSpace } = requestedDefault();
+      const { reports, requestedSpaces } = requestedDefault();
 
-      const outcome = await ensureWith(261, node.url, requestedSpace);
+      const outcome = await ensureWith(261, node.url, requestedSpaces);
 
       expect(outcome).toEqual({ status: 'complete' });
       expect(node.hostPosts).toHaveLength(0);
@@ -1335,7 +1335,7 @@ describe('TC-2380 a failed re-claim of a complete row is never re-signed by the 
       privateKey: PRIVATE_KEY,
       host,
       chainId: 1,
-      requestedSpace: { space: 'default', nodeReportedUnhosted: true, report: () => {}, ...extra },
+      requestedSpaces: { spaces: ['default'], alreadyHosted: false, nodeReportedUnhosted: true, report: () => {}, ...extra },
     });
   }
 

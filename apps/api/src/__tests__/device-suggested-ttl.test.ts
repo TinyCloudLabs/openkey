@@ -69,8 +69,8 @@ describe('the requested maximum lifetime', () => {
     const window = (days: number) => service.assertDelegationWindow(started.transactionId, {
       nodeOrigin: request.nodeOrigin, jwk: request.publicJwk, expiresAt: new Date(now().getTime() + days * DAY * 1000),
     });
-    await expect(window(200)).resolves.toBeUndefined();
-    await expect(window(365)).resolves.toBeUndefined();
+    await expect(window(200)).resolves.toMatchObject({ id: started.transactionId });
+    await expect(window(365)).resolves.toMatchObject({ id: started.transactionId });
     await refusal(window(366));
   });
 });

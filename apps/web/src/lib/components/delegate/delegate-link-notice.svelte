@@ -10,7 +10,7 @@
     requesterRelay?: boolean;
     /** SIWE Expiration Time of the delegation being reviewed. */
     expiresAt: string;
-    /** False where the approval screen's own "Approval expires" line already shows it. */
+    /** False where the approval screen's own expiry line ("This permission expires in …") already shows it. */
     showExpires?: boolean;
     /** The owner confirmed they trust an unrecognized node; required to approve. */
     acknowledged?: boolean;
@@ -20,7 +20,7 @@
 
   const returnsTo = $derived.by(() => {
     if (requesterRelay) return 'Requesting CLI';
-    if (!callback) return 'This page, as a code to paste';
+    if (!callback) return '';
     const url = new URL(callback);
     return `${url.origin}${url.pathname}`;
   });
@@ -52,10 +52,12 @@
       <dt class="shrink-0 text-surface-400">Node</dt>
       <dd class="break-all text-right font-mono font-medium text-surface-900">{host}</dd>
     </div>
-    <div class="flex justify-between gap-3">
-      <dt class="shrink-0 text-surface-400">Returned to</dt>
-      <dd class="break-all text-right font-mono text-surface-900">{returnsTo}</dd>
-    </div>
+    {#if callback || requesterRelay}
+      <div class="flex justify-between gap-3">
+        <dt class="shrink-0 text-surface-400">Returned to</dt>
+        <dd class="break-all text-right font-mono text-surface-900">{returnsTo}</dd>
+      </div>
+    {/if}
     {#if showExpires}
       <div class="flex justify-between gap-3">
         <dt class="shrink-0 text-surface-400">Expires</dt>

@@ -255,6 +255,25 @@ describe('host approval rows', () => {
     expect(mounted.approveCalls()).toBe(1);
   });
 
+  // TC-2310: Approve no longer asks whether the click came from the browser (a shared-note flow clicks it from a
+  // script). What stops a click that should not count is that the button is not armed.
+  test('no click, from the browser or a script, approves while the layout is not settled or the node is being checked', () => {
+    for (const extra of [{ layoutBlocked: true }, { peerRecognition: { state: 'checking' } }]) {
+      mounted = render(hostModel(), extra);
+      expect(mounted.approve.disabled).toBe(true);
+      // The browser ignores a click on a disabled button; a script that clears the attribute first reaches the handler,
+      // which still refuses because Approve is not armed.
+      mounted.approve.removeAttribute('disabled');
+      mounted.approve.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true }) as unknown as Event);
+      trustedClick(mounted.approve);
+      mounted.approve.click();
+      flushSync();
+      expect(mounted.approveCalls(), JSON.stringify(extra)).toBe(0);
+      mounted.destroy();
+      mounted = null;
+    }
+  });
+
   test('while the node is checked the status says so and Approve is really disabled', () => {
     mounted = render(hostModel(), { peerRecognition: { state: 'checking' } });
     expect(text(mounted.target.querySelector('.host-node-status'))).toBe('Checking the node…');
@@ -309,13 +328,13 @@ describe('framed Approve', () => {
     expect(cancelled).toBe(1);
   });
 
-  test('a click that is not from the browser is ignored, a trusted one goes through', () => {
+  test('a click made by a script on an armed Approve approves, and so does one from the browser', () => {
     mounted = render(hostModel(), { peerRecognition: { state: 'other' } });
     expect(mounted.approve.disabled).toBe(false);
     mounted.approve.click();
-    expect(mounted.approveCalls()).toBe(0);
-    trustedClick(mounted.approve);
     expect(mounted.approveCalls()).toBe(1);
+    trustedClick(mounted.approve);
+    expect(mounted.approveCalls()).toBe(2);
   });
 
   test('a node check in progress keeps Approve disabled while framed', () => {

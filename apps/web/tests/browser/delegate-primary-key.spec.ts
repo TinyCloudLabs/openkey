@@ -141,8 +141,10 @@ test.describe('TC-703 primary key picker', () => {
     expect(payload.primary).toBe(true);
   });
 
-  test('the CLI callback receives the primary flag from the API unchanged', async ({ page }) => {
-    await mock(page, threeKeys, { primary: false });
+  test('the CLI callback receives the primary flag and full readiness metadata from the API unchanged', async ({ page }) => {
+    const requestedSpaces = ['tinycloud:pkh:eip155:1:0xd559ccd9eb87c530a9a349262669386de93cf412:default'];
+    const fullJwk = { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', kid: 'delegate-key', alg: 'EdDSA', ext: true, key_ops: ['verify'] };
+    await mock(page, threeKeys, { primary: false, requestedSpaces, jwk: fullJwk });
     let delivered: Record<string, unknown> | null = null;
     await page.route('http://127.0.0.1:47123/callback', (route) => {
       if (route.request().method() === 'POST') delivered = route.request().postDataJSON() as Record<string, unknown>;
@@ -154,6 +156,8 @@ test.describe('TC-703 primary key picker', () => {
     await expect(page.getByText('You can close this window and return to the CLI.')).toBeVisible();
     expect(delivered).not.toBeNull();
     expect(delivered!.primary).toBe(false);
+    expect(delivered!.requestedSpaces).toEqual(requestedSpaces);
+    expect(delivered!.jwk).toEqual(fullJwk);
   });
 
   test('archiving key zero leaves the sole nonzero primary as the signer', async ({ page }) => {
@@ -173,5 +177,49 @@ test.describe('TC-703 primary key picker', () => {
     await expect(keyButton(page, 'Key 1')).toBeDisabled();
     await expect(approve(page)).toHaveCount(0);
     expect(prepared).toEqual([]);
+  });
+});
+
+test.describe('Close button on the Authenticated page', () => {
+  const callback = 'http://127.0.0.1:47123/callback';
+  async function openAuthenticated(page: Page) {
+    await mock(page, [primary]);
+    await page.route('**/api/delegate/prepare', route => json(route, 200, preparedFor(primary.address)));
+    let delivered = false;
+    await page.route(`${callback}**`, (route) => {
+      if (route.request().method() === 'POST') delivered = true;
+      return route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type' }, body: '{"success":true}' });
+    });
+    await page.goto(`${noOwner}&${new URLSearchParams({ callback })}`);
+    await approve(page).click();
+    await expect.poll(() => delivered).toBe(true);
+    await expect(page.getByRole('heading', { name: 'Authenticated' })).toBeVisible();
+  }
+
+  test('the browser closes the window: Close calls window.close and the page stays as it is', async ({ page }) => {
+    await page.addInitScript(() => {
+      let closed = false;
+      Reflect.set(window, '__closeCalls', 0);
+      window.close = () => { Reflect.set(window, '__closeCalls', Number(Reflect.get(window, '__closeCalls')) + 1); closed = true; };
+      Object.defineProperty(window, 'closed', { get: () => closed });
+    });
+    await openAuthenticated(page);
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => Number(Reflect.get(window, '__closeCalls')))).toBe(1);
+    // The window is gone, so nothing else is shown or needed; outlast the 300 ms check.
+    await page.waitForTimeout(600);
+    await expect(page.getByText('Your browser kept this tab open.')).toHaveCount(0);
+  });
+
+  test('the browser refuses (a tab the owner opened): the button is replaced by a status line and focus moves to it', async ({ page }) => {
+    await openAuthenticated(page);
+    // A top-level tab the owner opened: the browser ignores window.close().
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    const refusal = page.getByRole('status').filter({ hasText: 'Your browser kept this tab open. Close it from your browser.' });
+    await expect(refusal).toBeVisible();
+    await expect(refusal).toBeFocused();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Close', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Authenticated' })).toBeVisible();
   });
 });

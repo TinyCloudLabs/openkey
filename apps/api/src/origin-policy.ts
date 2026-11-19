@@ -42,3 +42,40 @@ export function corsOriginPolicy(
   const origins = resolveOriginPolicy(defaultOrigin, env);
   return origins.length === 1 ? origins[0]! : origins;
 }
+
+/**
+ * Resolves account-facing browser origins without inheriting CORS-only origins.
+ * The console is accepted only when it is itself the account origin.
+ */
+export function resolveAccountOriginPolicy(
+  defaultOrigin: string,
+  env: OriginPolicyEnvironment = process.env,
+): string[] {
+  const accountOrigins = env.WEBAUTHN_ORIGIN ? [env.WEBAUTHN_ORIGIN] : [];
+  if (!isProduction(env)) {
+    accountOrigins.push(...defaultOrigin.split(',').map((origin) => origin.trim()));
+  }
+  return [...new Set(accountOrigins.flatMap((origin) => {
+    try {
+      const canonical = new URL(origin.trim()).origin;
+      return canonical === 'null' ? [] : [canonical];
+    } catch {
+      return [];
+    }
+  }))];
+}
+
+
+export function isAccountOriginAllowed(
+  origin: string | undefined,
+  defaultOrigin: string,
+  env: OriginPolicyEnvironment = process.env,
+): boolean {
+  if (!origin) return false;
+  try {
+    const canonical = new URL(origin).origin;
+    return canonical !== 'null' && resolveAccountOriginPolicy(defaultOrigin, env).includes(canonical);
+  } catch {
+    return false;
+  }
+}

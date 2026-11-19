@@ -12,7 +12,7 @@ const siwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xy
 
 type Parent = 'sdk-modal' | 'never-resizes' | 'resizes-forever';
 
-async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDelayMs = 0) {
+async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDelayMs = 0, clickOnFirstSight = false) {
   await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
   await page.route('**/api/keys/**', async (route) => {
     if (keyDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, keyDelayMs));
@@ -34,8 +34,8 @@ async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDela
     } });
   });
   await page.goto('/__parity_harness');
-  await page.evaluate(([mode, protocol, message]) => {
-    const w = window as unknown as Window & { frameLog: Array<{ t: number; top: number; enabled: boolean | null }>; resizeCount: number; sampleTimer: number };
+  await page.evaluate(([mode, protocol, message, clickFirst]) => {
+    const w = window as unknown as Window & { frameLog: Array<{ t: number; top: number; enabled: boolean | null }>; resizeCount: number; sampleTimer: number; firstClick?: { disabled: boolean; t: number } };
     w.frameLog = [];
     w.resizeCount = 0;
     // The SDK modal: a flex-centred card around a 400px frame with a 200ms height transition (index.ts:587).
@@ -74,12 +74,20 @@ async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDela
       const button = frame.contentDocument?.querySelector('button.approve') as HTMLButtonElement | null;
       const box = frame.getBoundingClientRect();
       const top = button ? Math.round((box.top + button.getBoundingClientRect().top) * 10) / 10 : NaN;
-      w.frameLog.push({ t: Math.round(performance.now() - t0), top, enabled: button ? !button.disabled : null });
+      const t = Math.round(performance.now() - t0);
+      // Opt-in: a scripted click in the very frame the button is first seen, before the settle gate can have opened.
+      if (clickFirst && button && !w.firstClick) {
+        w.firstClick = { disabled: button.disabled, t };
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      }
+      w.frameLog.push({ t, top, enabled: button ? !button.disabled : null });
       w.sampleTimer = requestAnimationFrame(sample);
     };
     sample();
-  }, [parent, version, siwe] as const);
+  }, [parent, version, siwe, clickOnFirstSight] as const);
 }
+
+const firstClick = (page: Page) => page.evaluate(() => (window as unknown as Window & { firstClick?: { disabled: boolean; t: number } }).firstClick);
 
 const samples = (page: Page) => page.evaluate(() => (window as unknown as Window & { frameLog: Array<{ t: number; top: number; enabled: boolean | null }> }).frameLog);
 
@@ -142,4 +150,60 @@ test('v2 is unchanged: still gated by its own layout-ready handshake, not by the
   // Nothing acks the layout (the harness is not a v2 host), so a v2 Approve stays blocked far past the v1 ceiling.
   await page.waitForTimeout(2200);
   expect((await samples(page)).some((s) => s.enabled === true)).toBe(false);
+});
+
+// TC-2310: a click made by a script inside the frame (a shared-note flow does this) is no longer dropped for not coming
+// from the browser. What still stops a click that should not count is that Approve is not armed: while the frame is
+// moving (v1 settle gate) or before the host has acknowledged the layout (v2), the button is disabled and nothing is sent.
+async function approvalRequests(page: Page) {
+  const seen: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/delegate/authorize-sign') seen.push(request.url());
+  });
+  return seen;
+}
+const approveFrame = (page: Page) => page.frames().find((entry) => entry !== page.mainFrame() && entry.url().includes('/widget/embed/sign'))!;
+// A script-made click, two ways: the click() method, and a dispatched click event.
+const scriptClicks = (page: Page) => approveFrame(page).evaluate(() => {
+  const button = document.querySelector('button.approve') as HTMLButtonElement;
+  button.click();
+  button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+});
+
+test('a v1 frame that has settled: a click made by a script approves', async ({ page }) => {
+  const approvals = await approvalRequests(page);
+  await openEmbed(page, 'never-resizes');
+  await reviewShown(page);
+  await expect.poll(async () => enabledAt(await samples(page)), { timeout: 6000 }).toBeDefined();
+  await page.waitForTimeout(300);
+  const approvalCount = approvals.length;
+  await scriptClicks(page);
+  await expect.poll(() => approvals.length).toBeGreaterThan(approvalCount);
+});
+
+test('a v1 frame that is still moving: a click made by a script does nothing, and approves once it has settled', async ({ page }) => {
+  const approvals = await approvalRequests(page);
+  await openEmbed(page, 'sdk-modal', 1, 0, true);
+  await reviewShown(page);
+  // At first display the frame is still animating: Approve is disabled. The harness clicked it in that same frame.
+  const approvalCount = approvals.length;
+  await expect.poll(() => firstClick(page), { timeout: 45_000 }).toBeDefined();
+  expect((await firstClick(page))!.disabled).toBe(true);
+  await page.waitForTimeout(250);
+  expect(approvals).toHaveLength(approvalCount);
+  await expect.poll(async () => enabledAt(await samples(page)), { timeout: 10_000 }).toBeDefined();
+  expect(approvals).toHaveLength(approvalCount);
+  await scriptClicks(page);
+  await expect.poll(() => approvals.length).toBeGreaterThan(approvalCount);
+});
+
+test('a v2 frame the host has not acknowledged: a click made by a script does nothing', async ({ page }) => {
+  const approvals = await approvalRequests(page);
+  await openEmbed(page, 'sdk-modal', 2);
+  await reviewShown(page);
+  await page.waitForTimeout(1500);
+  const approvalCount = approvals.length;
+  await scriptClicks(page);
+  await page.waitForTimeout(500);
+  expect(approvals).toHaveLength(approvalCount);
 });

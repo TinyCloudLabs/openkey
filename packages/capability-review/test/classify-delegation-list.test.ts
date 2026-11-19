@@ -60,7 +60,6 @@ describe("delegation reads on the signer's own applications space", () => {
   });
 
   it.each([
-    ["revoke", ["tinycloud.delegation/revoke"]],
     ["create", ["tinycloud.delegation/create"]],
     ["delegate", ["tinycloud.delegation/delegate"]],
     ["a wildcard", ["tinycloud.delegation/*"]],
@@ -118,9 +117,5 @@ describe("delegation reads elsewhere keep their classification", () => {
         displayLabel: "Another user's connected access",
       });
     }
-    expect(classify({ space: space("account"), actions: ["tinycloud.delegation/revoke"] })).toEqual({
-      family: "unknown",
-      displayLabel: "Unrecognized tinycloud.delegation permission",
-    });
   });
 });

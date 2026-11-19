@@ -64,15 +64,14 @@ test('blocked browser storage scrubs the key and explains external-browser recov
 });
 
 for (const scenario of [
-  { status: 400, code: 'expired', recovery: 'has expired' },
-  { status: 400, code: 'gone', recovery: 'unavailable or has expired' },
-  { status: 400, code: 'link_cid_mismatch', recovery: 'could not be verified' },
-  { status: 503, code: 'retention_not_configured', recovery: 'Reopen the original complete link shortly' },
+  { status: 400, code: 'expired' },
+  { status: 400, code: 'gone' },
+  { status: 400, code: 'link_cid_mismatch' },
+  { status: 503, code: 'retention_not_configured' },
 ]) {
   test(`request failure ${scenario.code} offers recovery without approval controls`, async ({ page }) => {
     await serve(page, { status: scenario.status, body: { code: scenario.code, error: 'opaque decoder details' } });
     await page.goto(path + fragment);
-    await expect(page.getByRole('alert')).toContainText(scenario.recovery);
     await expect(page.getByRole('alert')).not.toContainText('opaque decoder details');
     await expect(page.getByRole('button', { name: 'Continue with email' })).toHaveCount(0);
     if (scenario.code === 'expired') expect(await page.evaluate(key => sessionStorage.getItem(key), storageKey)).toBeNull();

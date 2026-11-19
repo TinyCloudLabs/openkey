@@ -505,6 +505,10 @@ export function buildAuthorizationDetails(options: {
 
 // ======= PAR =======
 
+/** Initial sign-in UX hint for OpenKey's login page; never an authorization input. */
+export type NativeLoginMethod = 'email' | 'passkey' | 'google' | 'apple';
+const NATIVE_LOGIN_METHODS: readonly string[] = ['email', 'passkey', 'google', 'apple'] satisfies NativeLoginMethod[];
+
 export interface BuildParRequestOptions {
   clientId: string;
   redirectUri: string;
@@ -515,7 +519,8 @@ export interface BuildParRequestOptions {
   ttlSeconds?: number;
   siweNonce?: string;
   loginHint?: string;
-  loginMethod?: 'email' | 'passkey' | 'google';
+  /** Only `email` (or no method) may carry `loginHint`. */
+  loginMethod?: NativeLoginMethod;
   /** Extra scopes appended to `openid offline_access tinycloud:delegation`. */
   extraScopes?: string[];
 }
@@ -545,13 +550,13 @@ export function buildParRequest(options: BuildParRequestOptions): {
     'authorization_details',
     JSON.stringify(buildAuthorizationDetails(options)),
   );
-  if (options.loginMethod !== undefined && !['email', 'passkey', 'google'].includes(options.loginMethod)) {
+  if (options.loginMethod !== undefined && !NATIVE_LOGIN_METHODS.includes(options.loginMethod)) {
     throw new OpenKeyNativeError('INVALID_REQUEST', 'Invalid login_method');
   }
   if (options.loginHint !== undefined) {
     const hint = options.loginHint.trim();
     if (hint.length > 254 || /[\s\p{C}]/u.test(hint) || (hint.match(/@/g) ?? []).length !== 1 ||
-      hint.startsWith('@') || hint.endsWith('@') || options.loginMethod === 'passkey' || options.loginMethod === 'google') {
+      hint.startsWith('@') || hint.endsWith('@') || (options.loginMethod !== undefined && options.loginMethod !== 'email')) {
       throw new OpenKeyNativeError('INVALID_REQUEST', 'Invalid login_hint');
     }
     form.set('login_hint', hint.toLowerCase());

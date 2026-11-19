@@ -17,16 +17,22 @@
 // decryption) is used by the native access summary. UI callers route through these rather
 // than composing the sentence themselves.
 
+import { courierTexts, COURIER_CATALOG } from "./courier.js";
 import type { CapabilityAction, CapabilityGrant, CapabilityReviewModel, PermissionSeverity } from "./model.js";
 import { appDisplayName } from "./app-identity.js";
 import {
   APP_KEY_ABILITIES,
+  CAPABILITIES_READ_STATEMENT,
   DELETE_REFUSED_TEMPLATE,
   DELEGATION_LIST_STATEMENT,
+  DELEGATION_REVOKE_LABEL,
+  FILES_FOR_YOU_STATEMENT,
   LITERAL_TRUNCATE_CHARS,
   NAMED_KEY_STATEMENTS,
   OWN_KEY_PREFIX_STATEMENTS,
+  SENDER_HISTORY_STATEMENT,
   SHARE_KEY_PREFIX_CREATE_STATEMENT,
+  appFolderDeleteStatement,
   appKeyStatementText,
   renderLiteral,
   renderNamedKeySentence,
@@ -37,6 +43,7 @@ import type { EncryptionResource } from "./encryption-resource.js";
 import { ENCRYPTION_URN_PREFIX, parseEncryptionResource } from "./encryption-resource.js";
 import { isAppsKeyResource, parseKeyResource } from "./key-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
+import { feedGrantStatement } from "./feed-grant.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
   KV_SECRET_SERVICES_PROOF,
@@ -390,6 +397,10 @@ const RECOGNIZED_DELEGATION_ACTIONS = new Set([
   "tinycloud.delegation/status",
   "delegation/status",
 ]);
+const REVOKE_DELEGATION_ACTIONS = new Set([
+  "tinycloud.delegation/revoke",
+  "delegation/revoke",
+]);
 
 function spaceNameOf(space: string): string | null {
   if (/^[a-z][a-z0-9-]*$/i.test(space)) return space.toLowerCase();
@@ -397,6 +408,88 @@ function spaceNameOf(space: string): string | null {
     /^tinycloud:pkh:eip155:\d+:0x[a-fA-F0-9]{40}:([^/:]+)$/,
   );
   return match?.[1]?.toLowerCase() ?? null;
+}
+
+/** Every verb in `abilities` and no others — the exact wire verb set. */
+function verbsExactly(abilities: readonly string[], required: ReadonlySet<string>): boolean {
+  return (
+    abilities.length > 0 &&
+    abilities.every((ability) => required.has(verbOf(ability))) &&
+    new Set(abilities.map(verbOf)).size === required.size
+  );
+}
+
+// The KV path prefix Share's sender history lives under, and the exact
+// verb set a Share-style request puts on it (`get`, `list`, `put`, `del`).
+const SENDER_HISTORY_PREFIX = "vault/sender-history/v2/records/";
+const SENDER_HISTORY_VERBS = new Set(["get", "list", "put", "del"]);
+
+// The recipient-mailbox space and path of a Share-style request, and the
+// exact verb set on it (`get`, `list`, `put`).
+const FILES_FOR_YOU_PATH = "v1/";
+const FILES_FOR_YOU_VERBS = new Set(["get", "list", "put"]);
+
+/** A Share-style sender-history grant on the signer's `applications` space. */
+function isSenderHistoryGrant(
+  grant: CapabilityGrant,
+  spaceName: string | null,
+): boolean {
+  return (
+    KV_SERVICES.has(grant.service) &&
+    grant.serviceMismatch !== true &&
+    grant.actions.every((action) => KV_RECOGNIZED_ABILITIES.has(action.ability)) &&
+    spaceName === "applications" &&
+    grant.ownedBySelf !== false &&
+    grant.path.startsWith(SENDER_HISTORY_PREFIX) &&
+    verbsExactly(
+      grant.actions.map((action) => action.ability),
+      SENDER_HISTORY_VERBS,
+    )
+  );
+}
+
+/** A Share-style `files-for-you` mailbox grant: the signer's `v1/` data. */
+function isFilesForYouGrant(
+  grant: CapabilityGrant,
+  spaceName: string | null,
+): boolean {
+  return (
+    KV_SERVICES.has(grant.service) &&
+    grant.serviceMismatch !== true &&
+    grant.actions.every((action) => KV_RECOGNIZED_ABILITIES.has(action.ability)) &&
+    spaceName === "files-for-you" &&
+    grant.ownedBySelf !== false &&
+    grant.path === FILES_FOR_YOU_PATH &&
+    verbsExactly(
+      grant.actions.map((action) => action.ability),
+      FILES_FOR_YOU_VERBS,
+    )
+  );
+}
+
+/**
+ * The app folder a KV grant deletes in: the first path segment when it is an
+ * `<appId>` on the `applications` space. An app id is reverse-DNS (it carries
+ * a dot), so `vault/…` and a dotless `chat/` do not name an app folder. The
+ * name is wire structure, never caller-supplied. Returns null elsewhere:
+ * another user's space, the whole space, or a non-app path keeps the generic
+ * delete wording.
+ */
+function appFolderOf(grant: CapabilityGrant, spaceName: string | null): string | null {
+  if (
+    !KV_SERVICES.has(grant.service) ||
+    grant.serviceMismatch === true ||
+    !grant.actions.every((action) => KV_RECOGNIZED_ABILITIES.has(action.ability)) ||
+    spaceName !== "applications" ||
+    grant.family !== "own-app-data" ||
+    grant.ownedBySelf === false
+  ) {
+    return null;
+  }
+  const folder = grant.path.split("/")[0] ?? "";
+  return /^[a-z0-9][a-z0-9.-]*$/i.test(folder) && folder.includes(".")
+    ? folder
+    : null;
 }
 
 // Sol/Fable follow-up: friendly copy for the KV / SQL / encryption service
@@ -885,6 +978,8 @@ export function splitStatementCode(text: string): Array<{ text: string; code: bo
  * renders only the non-schema part of a mixed grant.
  */
 export function buildStatements(input: CapabilityGrant): StatementEntry[] {
+  const courier = courierTexts(input);
+  if (courier) return courier.map(primaryText => ({ primaryText, service: input.service, resource: resourceOf(input) }));
   const appKeyRows = appKeyStatements(input);
   if (appKeyRows) return appKeyRows;
   // key.delete is its own never-approvable row beside any other abilities.
@@ -896,6 +991,8 @@ export function buildStatements(input: CapabilityGrant): StatementEntry[] {
       ...deletes.map((action) => buildStatement({ ...input, actions: [action] })),
     ];
   }
+  // One sentence per feed connect grant; schema is not split off it.
+  if (feedGrantStatement(input) !== null) return [buildStatement(input)];
   const view = canonicalEncryptionUrn(input);
   if (view.kind === "invalid") return [buildStatement(input)];
   const grant = view.kind === "urn" ? view.grant : input;
@@ -935,10 +1032,38 @@ export function buildStatements(input: CapabilityGrant): StatementEntry[] {
       { ...grant, actions: schemaActions },
       spaceNameOf(grant.space),
     ) !== null;
-  if (!splittable) return [buildStatement(grant)];
+  if (splittable) {
+    return [
+      buildStatement({ ...grant, actions: otherActions }),
+      buildStatement({ ...grant, actions: schemaActions }),
+    ];
+  }
+  // A KV `del` on one app folder is its own row, like the app rows: the
+  // delete names the folder it reaches instead of folding into the generic
+  // read/change/delete line. Only exact-recognized KV abilities on a real
+  // app folder split; sender-history, other users' spaces and non-app paths
+  // keep one row.
+  const deleteActions = grant.actions.filter(
+    (a) => verbOf(a.ability) === "del",
+  );
+  const keepActions = grant.actions.filter(
+    (a) => verbOf(a.ability) !== "del",
+  );
+  const spaceName = spaceNameOf(grant.space);
+  const delSplittable =
+    deleteActions.length > 0 &&
+    keepActions.length > 0 &&
+    KV_SERVICES.has(grant.service) &&
+    grant.serviceMismatch !== true &&
+    grant.appScopeNearMiss !== true &&
+    !grant.appScopedSecret &&
+    !isSenderHistoryGrant(grant, spaceName) &&
+    appFolderOf(grant, spaceName) !== null &&
+    grant.actions.every((a) => KV_RECOGNIZED_ABILITIES.has(a.ability));
+  if (!delSplittable) return [buildStatement(grant)];
   return [
-    buildStatement({ ...grant, actions: otherActions }),
-    buildStatement({ ...grant, actions: schemaActions }),
+    buildStatement({ ...grant, actions: keepActions }),
+    buildStatement({ ...grant, actions: deleteActions }),
   ];
 }
 
@@ -965,6 +1090,8 @@ function sqlWriteStatementText(path: string): string {
  *   4. Anything else → literal fallback
  */
 export function buildStatement(input: CapabilityGrant): StatementEntry {
+  const courier = courierTexts(input);
+  if (courier) return { primaryText: courier.join("; "), service: input.service, resource: resourceOf(input) };
   const appKeyRows = appKeyStatements(input);
   if (appKeyRows) return appKeyRows[0]!;
   // key.delete fails closed: every delete row is never approvable and renders
@@ -1002,6 +1129,9 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
   if (grant.serviceMismatch === true) {
     return fallbackStatement(grant);
   }
+  // A feed connect grant, recognized by its exact tuple (feed-grant.ts), reads as one sentence.
+  const feedText = feedGrantStatement(grant);
+  if (feedText !== null) return { primaryText: feedText, service, resource };
   // Key-shaped encryption grants render per-verb copy. A network URN falls
   // through to the network branches below.
   if (view.kind === "urn" && view.parsed.kind !== "network") {
@@ -1191,6 +1321,19 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     return fallbackStatement(grant);
   }
 
+  // Share-style requests name two grants whose meaning is proven by the
+  // exact wire tuple, so they keep friendly copy even though the
+  // fail-closed classification leaves `files-for-you` in the `unknown`
+  // family. Anything outside the exact shape falls through to the unknown
+  // gate below: different verbs, another user's space, a broader prefix.
+  if (isSenderHistoryGrant(grant, spaceName)) {
+    return { primaryText: SENDER_HISTORY_STATEMENT, service, resource };
+  }
+  if (isFilesForYouGrant(grant, spaceName)) {
+    return { primaryText: FILES_FOR_YOU_STATEMENT, service, resource };
+  }
+
+
   // Classification is the authority for whether a structural shape is
   // understood. Ownership or a familiar-looking path must never upgrade an
   // unknown grant into reassuring copy.
@@ -1240,13 +1383,37 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       resource,
     };
   }
-  if (grant.ownedBySelf === false && DELEGATION_SERVICES.has(service)) {
+  // The sentence says "View", so it is only for a grant that only reads. A
+  // revoke on another user's space has no sentence and stays literal.
+  if (
+    grant.ownedBySelf === false &&
+    DELEGATION_SERVICES.has(service) &&
+    grant.actions.every((a) => RECOGNIZED_DELEGATION_ACTIONS.has(a.ability))
+  ) {
     return {
       primaryText: "View another user's connected access",
       service,
       resource,
     };
   }
+  // A grant that only deletes inside one app folder names the folder
+  // (TC-2534). `buildStatements` gives a mixed grant its own del-only row
+  // first, so every action here is `del`. The folder is wire structure —
+  // never a caller-supplied app name — so it renders in code style like the
+  // per-folder app rows.
+  const deleteFolder = appFolderOf(grant, spaceName);
+  if (
+    deleteFolder !== null &&
+    grant.actions.every((a) => verbOf(a.ability) === "del")
+  ) {
+    return {
+      primaryText: appFolderDeleteStatement(deleteFolder),
+      service,
+      resource,
+      codeSpans: true,
+    };
+  }
+
   // The KV data sentences below say "update", which hides a delete. A grant
   // that can delete reads in plain words that name it ("Read and delete your
   // data"). Secrets and the account space keep their own sentences.
@@ -1549,13 +1716,23 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       return fallbackStatement(grant);
     }
     return {
-      primaryText: "Check your TinyCloud permissions",
+      primaryText: CAPABILITIES_READ_STATEMENT,
       service,
       resource,
     };
   }
 
   if (DELEGATION_SERVICES.has(service)) {
+    // Ending access the signer gave: only when it is the signer's own space and
+    // nothing else rides along. The title says the same; the resource names a
+    // space, not the app or link, so there is no target to name.
+    if (
+      grant.ownedBySelf === true &&
+      abilityStrings.length > 0 &&
+      abilityStrings.every((ability) => REVOKE_DELEGATION_ACTIONS.has(ability))
+    ) {
+      return { primaryText: DELEGATION_REVOKE_LABEL, service, resource };
+    }
     const allActionsRecognized =
       abilityStrings.length > 0 &&
       abilityStrings.every((ability) =>
@@ -1735,7 +1912,8 @@ const SUMMARY_SEVERITY_RANK: Record<PermissionSeverity, number> = { standard: 0,
  */
 export function buildSummaryStatements(grants: readonly CapabilityGrant[]): SummaryStatement[] {
   const grouped = new Map<string, SummaryStatement>();
-  for (const grant of grants) {
+  const courier = grants.filter(grant => grant.family === "courier").sort((a, b) => COURIER_CATALOG.findIndex(row => row.path === a.path) - COURIER_CATALOG.findIndex(row => row.path === b.path));
+  for (const grant of [...courier, ...grants.filter(grant => grant.family !== "courier")]) {
     for (const statement of buildStatements(grant)) {
       const existing = grouped.get(statement.primaryText);
       const rowSeverity = statement.severity ?? grant.severity;

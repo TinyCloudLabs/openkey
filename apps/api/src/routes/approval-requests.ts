@@ -1,15 +1,32 @@
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { parseLink, resolveLink, parseApprovalRequest, validateLinkHeader, verifyHeader, linkIssuerPublicKey } from '@tinycloud/share-envelope/links';
-import { ApprovalResultError, ApprovalResultService, linkRequiredError } from '../services/approval-results';
-import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { ApprovalResultError, ApprovalResultService, linkRequiredError, type ApprovalRequestRecord } from '../services/approval-results';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
 import { verifySessionProofClaims } from '../services/native-delegation/session-proof';
 import { createHash } from 'node:crypto';
+import { createPrismaDelegationCodeStore, type ApprovalCode } from './delegation-codes';
+import { verifyMessage } from 'ethers';
+import { logError } from '../log';
+import type { BoundRenewalChoice } from '../services/authorization-signing';
+import {
+  RENEWAL_FAILED_MESSAGE,
+  RenewalLeaseError,
+  admitLease,
+  parseRenewalChoice,
+  prepareRenewalStage,
+  renewalLeasesEnabled,
+  renewalUnavailableMessage,
+  signLease,
+  type RenewalStage,
+} from '../services/renewal-lease';
+import { reservedLeaseAuthorization, reserveRenewalLease } from '../services/renewal-lease-revocation';
 
 const prisma = createPrismaClient();
 const store = createPrismaApprovalRequestStore(prisma);
+const codeStore = createPrismaDelegationCodeStore(prisma);
 const linksOrigin = process.env.APPROVAL_LINKS_API_ORIGIN ?? 'https://api.tinycloud.xyz';
 const viewerOrigin = process.env.APPROVAL_OPENKEY_ORIGIN ?? 'https://openkey.so';
 const apiOrigin = process.env.BETTER_AUTH_URL ?? 'http://localhost:3001';
@@ -21,7 +38,7 @@ export function approvalResultService(): ApprovalResultService {
   if (!configured && (process.env.NODE_ENV === 'production' || process.env.TEE_MODE === 'production')) {
     throw new ApprovalResultError('retention_not_configured', 'Approval result retention requires explicit configuration', 503);
   }
-  return new ApprovalResultService(store, { apiOrigin, retentionSeconds: configured === undefined ? 600 : Number(configured) });
+  return new ApprovalResultService(store, { apiOrigin, retentionSeconds: configured === undefined ? 600 : Number(configured), codeStore });
 }
 
 async function fetchLink(input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response> {
@@ -65,7 +82,8 @@ approvalRequestRouter.post('/approval-requests/:id/load', async (c) => {
   const request = parseApprovalRequest(opened.value, { issuer: opened.header.issuer });
   const record = await store.register({ id, bodyCid: opened.header.bodyCid, issuer: opened.header.issuer, request, expiresAt: new Date(opened.header.expiresAt), createdAt: new Date(), resultRef: null, encryptedResult: null, resultExpiresAt: null });
   // `denied` is additive (TC-2459): a reopened declined link can say so. `approved` keeps its meaning.
-  return c.json({ request: record.request, requestId: id, bodyCid: record.bodyCid, expiresAt: record.expiresAt.toISOString(), approved: !!record.resultRef, denied: !!record.deniedAt });
+  // `renewalAvailable` (TC-2933): whether this OpenKey offers the renewal box at all; leases stay off until owners can revoke them.
+  return c.json({ request: record.request, requestId: id, bodyCid: record.bodyCid, expiresAt: record.expiresAt.toISOString(), approved: !!record.resultRef, denied: !!record.deniedAt, renewalAvailable: renewalLeasesEnabled() });
 });
 
 approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
@@ -76,6 +94,7 @@ approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
   if (!/^[a-z2-7]{26}$/.test(id) || typeof body.bodyCid !== 'string') throw new ApprovalResultError('invalid_request', 'Approval reference is invalid', 400);
   const record = await store.findById(id);
   if (!record) {
+    if (body.approvalCode !== undefined) throw new ApprovalResultError('not_found', 'Saved approval request not found', 404);
     // Before a browser opens the sealed request, authenticate only the
     // issuer-signed public header. No client-supplied DID or JWK is trusted.
     const header = validateLinkHeader(body.header, { mode: 'signed', audience: linksOrigin });
@@ -93,7 +112,7 @@ approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
     }
     return c.json({ status: 'pending' }, 202);
   }
-  const result = await service.discover(id, body, proof);
+  const result = await service.discover(id, body, proof, c.req.header('OpenKey-Delegation-Claim'));
   return c.json(result, result.status === 'pending' ? 202 : 200);
 });
 
@@ -106,7 +125,7 @@ approvalRequestRouter.post('/approval-results/:ref/ack', async (c) => c.json(awa
  * re-resolved here with its key, so a signed-in caller who only knows the request id is refused (403
  * `link_required`) and the request stays open. The reference is never logged or echoed.
  */
-approvalRequestRouter.post('/approval-requests/:id/deny', requireOpenKeyOriginForBearer, requireSession, async (c) => {
+approvalRequestRouter.post('/approval-requests/:id/deny', requireAccountOriginForBearer, requireSession, async (c) => {
   const id = c.req.param('id');
   const service = approvalResultService();
   const body: unknown = await c.req.json().catch(() => null);
@@ -143,9 +162,191 @@ export async function checkApprovalDelegation(body: { approvalRequestId?: unknow
   await approvalResultService().assertDelegationWindow(body.approvalRequestId, { ...body, permissions: body.permissions, ...input });
 }
 
-export async function saveApprovalDelegation<T extends Record<string, unknown>>(body: { approvalRequestId?: unknown; jwk: unknown; host: unknown; permissions?: unknown }, userId: string, delegation: T): Promise<T> {
-  if (body.approvalRequestId !== undefined) {
-    await approvalResultService().approve(String(body.approvalRequestId), userId, { ...body, permissions: body.permissions }, delegation);
-  }
-  return delegation;
+const admissions = new WeakMap<object, Date>();
+
+/** Admits the approval right before signing starts: expiry is decided here and deny is held off until it is saved. */
+export async function admitApprovalDelegation(body: { approvalRequestId?: unknown }): Promise<void> {
+  if (body.approvalRequestId === undefined) return;
+  admissions.set(body, await approvalResultService().admit(String(body.approvalRequestId)));
 }
+
+/** After a failed attempt: gives the admission back so deny and a retry need not wait. Never throws. */
+export async function releaseApprovalDelegation(body: { approvalRequestId?: unknown }): Promise<void> {
+  const marker = admissions.get(body);
+  if (!marker) return;
+  admissions.delete(body);
+  await approvalResultService().release(String(body.approvalRequestId), marker).catch(() => undefined);
+}
+
+/** Turns a renewal failure into what the owner sees; a caller error keeps its own answer. */
+function renewalFailure(error: unknown): never {
+  if (error instanceof ApprovalResultError) throw error;
+  if (error instanceof RenewalLeaseError && error.status !== 503) throw new ApprovalResultError(error.code, error.message, error.status);
+  logError('warn', 'approval_renewal_failed', error);
+  throw new ApprovalResultError('renewal_failed', RENEWAL_FAILED_MESSAGE, 503);
+}
+
+/** What an approval returns: the saved result, or (external wallet) the renewal lease the owner must sign next. */
+export type SavedApproval = (Record<string, unknown> & { approvalCode?: ApprovalCode | null }) | { renewalSignature: { message: string; leaseLifetimeSeconds: number } };
+
+/**
+ * The renewal choice for the preview being prepared (TC-2933): checked against the approval request and
+ * bound into the authorization context, so approving can only use what the owner saw in this preview.
+ */
+export async function bindApprovalRenewal(body: { approvalRequestId?: unknown; renewal?: unknown }): Promise<BoundRenewalChoice | undefined> {
+  if (body.approvalRequestId === undefined) {
+    if (body.renewal !== undefined) throw new ApprovalResultError('request_binding', 'Only an approval request can carry a renewal choice', 400);
+    return undefined;
+  }
+  const record = await approvalResultService().store.findById(String(body.approvalRequestId));
+  if (!record) throw new ApprovalResultError('expired_request', 'Approval request is no longer pending', 410);
+  try {
+    return parseRenewalChoice(body.renewal, record.request.renewal) ?? undefined;
+  } catch (error) {
+    renewalFailure(error);
+  }
+}
+
+/**
+ * Approving may repeat the renewal choice the preview bound, but never change it (TC-2933): a body that names
+ * any other choice or length is refused before anything is signed. A body without one uses the bound choice.
+ */
+export function confirmBoundRenewal(bodyRenewal: unknown, bound: BoundRenewalChoice | undefined): void {
+  if (bodyRenewal === undefined) return;
+  const same = bound !== undefined && bodyRenewal !== null && typeof bodyRenewal === 'object' &&
+    JSON.stringify(Object.entries(bodyRenewal).sort()) === JSON.stringify(Object.entries(bound).sort());
+  if (!same) throw new ApprovalResultError('request_binding', 'The renewal choice does not match the approved preview', 400);
+}
+
+/**
+ * Saves the approved grant as the request's result. When the request signed a renewal request and the owner
+ * left renewal on in the bound preview (`options.renewal`), the result also carries the node-admitted owner
+ * lease (TC-2933): `signOwner` signs it with the owner's managed key; without it (an external wallet) the
+ * lease message is returned for the owner to sign and nothing is saved yet. Only a signed lease is kept across
+ * attempts (and only for the same owner and length); anything unsigned is rebuilt from the current approval.
+ * `options.host` is the node the grant was registered with; `options.sessionId` is the OpenKey session approving,
+ * recorded with a node-admitted lease.
+ */
+export async function saveApprovalDelegation(
+  body: { approvalRequestId?: unknown; jwk: unknown; host: unknown; permissions?: unknown },
+  userId: string,
+  delegation: Record<string, unknown>,
+  options: { renewal?: BoundRenewalChoice; host: string; sessionId: string | null; signOwner?: (message: string) => Promise<string> },
+): Promise<SavedApproval> {
+  const { signOwner } = options;
+  if (body.approvalRequestId === undefined) return delegation;
+  const id = String(body.approvalRequestId);
+  const service = approvalResultService();
+  const marker = admissions.get(body);
+  const record = await service.store.findById(id);
+  if (!record) throw new ApprovalResultError('expired_request', 'Approval request is no longer pending', 410);
+  let choice;
+  try {
+    choice = parseRenewalChoice(options.renewal, record.request.renewal);
+  } catch (error) {
+    renewalFailure(error);
+  }
+  // A lease this owner already signed for the request is the approval (C5): a retry collects that same pair,
+  // but only when the preview the owner approved now is that lease. A finite or different choice is a conflict,
+  // never a silent leased completion; the owner resumes by approving the signed lease length. While leases
+  // are off, a signed lease is never admitted and the request can't complete over it.
+  // TC-2946: a signed step names its lease (`leaseCid`); the signed lease itself is kept only with its reservation.
+  const signed = record.renewal?.leaseAuthorization || record.renewal?.leaseCid ? record.renewal : null;
+  if (signed && !renewalLeasesEnabled()) throw new ApprovalResultError('renewal_disabled', renewalUnavailableMessage('request', 'after-signing'), 400);
+  if (signed && marker) {
+    if (signed.userId !== userId) throw new ApprovalResultError('request_binding', 'Another account is approving this request', 409);
+    if (choice?.choice !== 'leased' || choice.leaseLifetimeSeconds !== signed.approvedLeaseLifetimeSeconds) {
+      throw new ApprovalResultError('renewal_already_signed', 'Renewal is already signed for this request. Approve it with the same renewal length.', 409,
+        { leaseLifetimeSeconds: signed.approvedLeaseLifetimeSeconds });
+    }
+    return finishLeasedApproval(id, userId, options.sessionId, record.request, signed, marker);
+  }
+  if (choice?.choice !== 'leased') {
+    const approvalCode = await service.approve(id, userId, { ...body, permissions: body.permissions }, delegation, marker, choice ?? undefined);
+    return { ...delegation, approvalCode };
+  }
+  if (!marker) throw new ApprovalResultError('request_binding', 'Renewal needs an admitted approval', 409);
+  // The lease is for the node the owner's grant was just registered with, which must be the request's own.
+  if (options.host !== record.request.nodeOrigin) throw new ApprovalResultError('request_binding', 'Renewal node does not match the approved grant', 400);
+  let stage: RenewalStage;
+  try {
+    // An unsigned saved step carries no authority: it is rebuilt from this approval, so a changed choice is never
+    // replaced by an older one. A wallet signature over the older bytes then fails its owner check.
+    stage = await prepareRenewalStage({ userId, host: options.host, leaseLifetimeSeconds: choice.leaseLifetimeSeconds, delegation, now: new Date() });
+    await service.saveRenewal(id, stage, marker);
+    if (!signOwner) {
+      // The owner's wallet signs the lease next; the request stays open for that step.
+      await releaseApprovalDelegation(body);
+      return { renewalSignature: { message: stage.leaseSiwe, leaseLifetimeSeconds: stage.approvedLeaseLifetimeSeconds } };
+    }
+    stage = signLease(stage, await signOwner(stage.leaseSiwe));
+    await saveSignedStage(id, userId, options.sessionId, record.request, stage, marker);
+  } catch (error) {
+    renewalFailure(error);
+  }
+  return finishLeasedApproval(id, userId, options.sessionId, record.request, stage, marker);
+}
+
+/**
+ * TC-2946: a signed lease is reserved for its owner (encrypted) before the signed step is saved, and the saved step
+ * never holds the signed lease, so the approval request carries no lease anyone could admit.
+ */
+async function saveSignedStage(id: string, userId: string, sessionId: string | null, request: ApprovalRequestRecord['request'], stage: RenewalStage, marker: Date) {
+  await reserveRenewalLease(prisma, { approvalRequestId: id, userId, sessionId, nodeOrigin: request.nodeOrigin, stage });
+  const { leaseAuthorization: _signedLease, ...saved } = stage;
+  await approvalResultService().saveRenewal(id, saved, marker);
+}
+
+async function finishLeasedApproval(id: string, userId: string, sessionId: string | null, request: ApprovalRequestRecord['request'], stage: RenewalStage, marker: Date) {
+  let renewal;
+  try {
+    // A resumed signed step takes its signed lease back from the reservation.
+    if (!stage.leaseAuthorization && stage.leaseCid) stage = { ...stage, leaseAuthorization: await reservedLeaseAuthorization(prisma, userId, stage.leaseCid) };
+    // TC-2946: the owner's record of this lease is written before the node is asked to admit it, so a lease whose
+    // admission outcome is unknown can still be found and stopped. A lease stopped meanwhile is never admitted.
+    await reserveRenewalLease(prisma, { approvalRequestId: id, userId, sessionId, nodeOrigin: request.nodeOrigin, stage });
+    renewal = await admitLease(stage, request);
+  } catch (error) {
+    renewalFailure(error);
+  }
+  // The result carries the saved grant, the one the lease names, whatever this attempt signed. The lease is
+  // recorded for the owner in the same write.
+  const approvalCode = await approvalResultService().approve(id, userId, { jwk: request.targetPublicJwk, host: request.nodeOrigin, permissions: request.permissions }, stage.delegation, marker, { choice: 'leased', renewal, sessionId });
+  return { ...stage.delegation, approvalCode };
+}
+
+/**
+ * The external wallet's signature on the renewal lease (TC-2933), after `/api/delegate/complete` returned it to
+ * sign. Checked against the owner of the saved grant, then the lease is admitted and the result saved.
+ */
+approvalRequestRouter.post('/approval-requests/:id/renewal-signature', requireAccountOriginForBearer, requireSession, async (c) => {
+  if (!renewalLeasesEnabled()) throw new ApprovalResultError('renewal_disabled', renewalUnavailableMessage('request', 'after-signing'), 400);
+  const id = c.req.param('id');
+  const userId: string = c.get('user').id;
+  const body: unknown = await c.req.json().catch(() => null);
+  const signature = body && typeof body === 'object' && 'signature' in body ? body.signature : undefined;
+  if (typeof signature !== 'string') throw new ApprovalResultError('invalid_request', 'A signature is required', 400);
+  const service = approvalResultService();
+  const record = await service.store.findById(id);
+  const saved = record?.renewal;
+  if (!record || !saved || saved.userId !== userId || record.resultRef) throw new ApprovalResultError('expired_request', 'Approval request is no longer pending', 410);
+  const marker = await service.admit(id);
+  try {
+    let stage = saved;
+    if (!stage.leaseAuthorization && !stage.leaseCid) {
+      let signer = '';
+      try { signer = verifyMessage(stage.leaseSiwe, signature); } catch { /* refused below */ }
+      if (signer.toLowerCase() !== stage.ownerAddress.toLowerCase()) throw new ApprovalResultError('invalid_signature', 'The renewal signature is not from this account', 400);
+      try {
+        stage = signLease(stage, signature);
+        await saveSignedStage(id, userId, c.get('session').id, record.request, stage, marker);
+      } catch (error) {
+        renewalFailure(error);
+      }
+    }
+    return c.json(await finishLeasedApproval(id, userId, c.get('session').id, record.request, stage, marker));
+  } catch (error) {
+    await service.release(id, marker).catch(() => undefined);
+    throw error;
+  }
+});
