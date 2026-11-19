@@ -2,4 +2,6 @@
 "@openkey/sdk": patch
 ---
 
-Report sign-out dialog readiness and confirmation to callers. Details: TC-2792.
+`signOut({ onProgress })` can report when the sign-out dialog is ready and when the owner confirms.
+
+Details: TC-2792
