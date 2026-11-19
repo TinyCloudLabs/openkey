@@ -17,7 +17,7 @@ describe('the shared reason map', () => {
     expect(codes).toContain('session_required');
   });
 
-  test.each(codes)('maps the %s code to a reason of its own', (code) => {
+  test.each(codes)('maps the %s code to a reason of its own', (code: string) => {
     const id = stopForReply({ status: 400, code });
     expect(id).not.toBe('S26');
     expect(STOPS[id]).toBeDefined();
