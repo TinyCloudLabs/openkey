@@ -275,7 +275,7 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
     // The app's embedded frame signs its own session out with its bearer token: its sign-in lease is revoked at the
     // node, and the sign-out answers as before.
     const appSignedOut = await app.fetch(new Request('https://api.openkey.test/api/auth/sign-out', {
-      method: 'POST', headers: { authorization: `Bearer ${appSignIn.token}`, origin: ORIGIN },
+      method: 'POST', headers: { authorization: `Bearer ${appSignIn.cookie.slice(appSignIn.cookie.indexOf('=') + 1)}`, origin: ORIGIN },
     }));
     expect([appSignedOut.status, await appSignedOut.json()]).toEqual([200, { success: true }]);
     expect(await revokedAt(appSignIn.leaseCid)).not.toBeNull();

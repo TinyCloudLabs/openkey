@@ -53,7 +53,7 @@ const prisma = {
     },
   },
   user: {
-    findUnique: async () => ({ autoSignEnabled: true }),
+    findUnique: async () => ({ autoSignEnabled: true, passkeyApprovalMode: 'NEVER' }),
     update: async ({ data }: { data: { autoSignEnabled: boolean } }) => ({ autoSignEnabled: data.autoSignEnabled }),
   },
   renewalLease: { findMany: async () => [], count: async () => 0 },
