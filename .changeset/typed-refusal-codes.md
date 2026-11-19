@@ -2,4 +2,6 @@
 "@openkey/sdk": minor
 ---
 
-A signing request the server definitely refuses now rejects with its own error code: `APP_KEY_GRANT_REFUSED` (the request asks for an encryption key this website may not be granted), `KEY_DELETE_NOT_GRANTABLE` or `INVALID_SIWE_RECAP`, exported as the `OpenKeyRefusalCode` type. The message is unchanged. Apps that matched these refusals as `code === 'UNKNOWN'` must match the new codes instead. Details: TC-2928
+Signing requests the server refuses now reject with their own error code instead of `UNKNOWN`: `APP_KEY_GRANT_REFUSED` (the request asks for an encryption key this website can't be granted), `KEY_DELETE_NOT_GRANTABLE` or `INVALID_SIWE_RECAP`. The codes are exported as the `OpenKeyRefusalCode` type, and the messages are unchanged. Apps that check `code === 'UNKNOWN'` for these refusals need to check the new codes instead.
+
+Details: TC-2928
