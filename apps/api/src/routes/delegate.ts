@@ -3,7 +3,7 @@ import { currentReviewerDelegate, reviewerSessionDid, assertReviewerSignedDelega
 import { reviewerForUser } from '../services/reviewer-accounts';
 import { isAccountOriginAllowed } from '../origin-policy';
 // Delegate route - creates TinyCloud delegation for CLI auth flow
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { routePath } from 'hono/route';
 import { createPrismaClient } from '@openkey/db';
@@ -23,7 +23,9 @@ import {
   ensureEip55,
   generateHostSIWEMessage,
   makeSpaceId,
+  siweToDelegationHeaders,
 } from '@tinycloud/node-sdk-wasm';
+import { buildOwnerRevocationSiwe } from '@openkey/capability-review';
 import {
   canonicalizeServiceName,
   entriesForSelectedActions,
@@ -60,7 +62,7 @@ import {
   type RecapEntry,
   type SessionAbilities,
 } from './delegate-session';
-import { log, logError, logSessionJwk, recordAccountOriginRefused } from '../log';
+import { log, logError, logMetric, logSessionJwk, recordAccountOriginRefused } from '../log';
 
 // Re-export the pure delegation helpers so existing external test files
 // (e.g. delegate-oauth-route.test.ts) that import them from this module
@@ -92,7 +94,7 @@ import {
   type AuthorizationContextClaim,
   type BoundRenewalChoice,
 } from '../services/authorization-signing';
-import { MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
+import { MIN_DELEGATION_EXPIRY_MS, MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSignedSubset, parseStrictSiwe, SIGNED_SUBSET_REFUSAL_CODE } from '../services/signed-subset';
 import { checkSiweOrigin } from '../services/siwe-origin';
@@ -143,7 +145,48 @@ import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
 import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, confirmBoundRenewal, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
+import { bindSignInRenewalRequest, recordedSignInLease, setUpSignInLease, signInRenewalFailure, takePendingSignInLease, type SignInLease } from '../services/signin-renewal';
+import type { SignInRenewalRequest } from '../services/authorization-signing';
+import { parseRenewalChoice, renewalLeasesEnabled, renewalUnavailableMessage, signLease } from '../services/renewal-lease';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
+async function revokeActivatedManagedDelegation(
+  host: string,
+  key: Parameters<typeof signManagedKey>[0],
+  sealedBlob: string,
+  ownerDid: string,
+  delegationCid: string,
+): Promise<void> {
+  const now = new Date();
+  try {
+    const siwe = buildOwnerRevocationSiwe({
+      kind: 'owner-revocation',
+      ownerDid,
+      cid: delegationCid,
+      nonce: randomBytes(16).toString('hex'),
+      expiresAt: new Date(now.getTime() + 600_000).toISOString(),
+    }, SIWE_DOMAIN, now);
+    const signature = await signManagedKey(key, sealedBlob, siwe);
+    const response = await fetch(`${host.replace(/\/+$/, '')}/revoke`, {
+      method: 'POST',
+      headers: siweToDelegationHeaders({ siwe, signature }) as Record<string, string>,
+      redirect: 'error',
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      logMetric('warn', 'delegate_session_revoke_failed', { status: response.status });
+      return;
+    }
+    const result: unknown = await response.json().catch(() => null);
+    if (!result || typeof result !== 'object' ||
+        !('revoked' in result) || result.revoked !== true ||
+        !('cid' in result) || result.cid !== delegationCid) {
+      logMetric('warn', 'delegate_session_revoke_failed', { status: response.status });
+    }
+  } catch (error) {
+    logError('warn', 'delegate_session_revoke_failed', error);
+  }
+}
+
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
   activePreparedHandoffService = service;
 }
@@ -302,12 +345,15 @@ async function finishManagedSpaceOnboarding(input: {
   ));
 }
 
-async function resolveBetterAuthSession(c: any): Promise<boolean> {
+// A session that has not accepted the current Terms gets the session check's own 403 `terms_required`, so the
+// page signing with it sends the account to the Terms screen; no session falls through to missing_authorization.
+async function resolveBetterAuthSession(c: any): Promise<boolean | Response> {
   let resolved = false;
-  await (requireSession as any)(c, async () => {
+  const refusal = await (requireSession as any)(c, async () => {
     resolved = true;
   });
-  return resolved;
+  if (resolved) return true;
+  return refusal instanceof Response && refusal.status === 403 ? refusal : false;
 }
 
 const defaultDelegateSignerAuth = createDelegateSignerAuth({
@@ -466,7 +512,6 @@ const DEFAULT_DELEGATION_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
  * states its own maximum and is held to it by its window check instead (TC-2274).
  */
 const MAX_DELEGATION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
-const MIN_DELEGATION_EXPIRY_MS = 60 * 1000; // 1 minute
 
 const MS_UNIT_FACTORS: Record<string, number> = {
   ms: 1,
@@ -1615,7 +1660,7 @@ delegateRouter.post('/', async (c) => {
       assertBaselineSubset(preparedEntries, baseline);
       assertRequiredActions(preparedEntries, baseline);
     } catch (e) {
-      return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
+      return c.json(delegateErrorResponse(e, 'Invalid delegation', 'invalid_permissions'), 400);
     }
 
     // Sol MAJOR-5: derive the EXACT set of action IDs encoded in the
@@ -1748,6 +1793,7 @@ delegateRouter.post('/', async (c) => {
     });
 
     let hostActivated = false;
+    let activationMayStillApply = false;
     const requestedSpaces = delegationSpaces(preparedEntries, baseline);
     let spaceReadiness = activationReadiness(requestedSpaces, preparedEntries);
     try {
@@ -1770,6 +1816,7 @@ delegateRouter.post('/', async (c) => {
         spaceReadiness = activationReadiness(requestedSpaces, preparedEntries, activationResult);
       }
     } catch (e) {
+      activationMayStillApply = true;
       logError('warn', 'delegate_session_activation_failed', e);
     }
 
@@ -1783,7 +1830,7 @@ delegateRouter.post('/', async (c) => {
 
     recordAppSignIn(prisma, user.id, bound.appOrigin);
     const ownerSealedBlob = key.sealedBlob;
-    return c.json(await saveApprovalDelegation(body, user.id, {
+    const delegation = {
       delegationHeader: session.delegationHeader,
       delegationCid: session.delegationCid,
       spaceId: bound.spaceId,
@@ -1811,7 +1858,16 @@ delegateRouter.post('/', async (c) => {
       signature,
       signedMessage: bound.originalSiwe,
       permissions: effectiveGrants,
-    }, { renewal: bound.renewal, host, sessionId: c.get('session')?.id ?? null, signOwner: (message) => signManagedKey(key, ownerSealedBlob, message) }));
+    };
+    try {
+      return c.json(await saveApprovalDelegation(body, user.id, delegation, { renewal: bound.renewal, host, sessionId: c.get('session')?.id ?? null, signOwner: (message) => signManagedKey(key, ownerSealedBlob, message) }));
+    } catch (error) {
+      if (body.approvalRequestId !== undefined && (hostActivated || activationMayStillApply)) {
+        // A timeout also sends a best-effort revoke, which can land before a late activation (TC-2795).
+        await revokeActivatedManagedDelegation(host, key, key.sealedBlob, ownerDid, session.delegationCid);
+      }
+      throw error;
+    }
     } catch (error) {
       await releaseApprovalDelegation(body);
       throw error;
@@ -1993,7 +2049,7 @@ delegateRouter.post('/prepare', async (c) => {
   });
 
   if (!key) {
-    return c.json({ error: 'Key not found' }, 404);
+    return c.json({ error: 'Key not found', code: 'key_not_found' }, 404);
   }
 
   const address = ensureEip55(key.address);
@@ -2290,7 +2346,7 @@ delegateRouter.post('/complete', async (c) => {
     assertBaselineSubset(entries, baseline);
     assertRequiredActions(entries, baseline);
   } catch (e) {
-    return c.json({ error: e instanceof Error ? e.message : 'Invalid delegation' }, 400);
+    return c.json(delegateErrorResponse(e, 'Invalid delegation', 'invalid_permissions'), 400);
   }
 
   const preparedAddress = signedFields.address;
@@ -2530,7 +2586,7 @@ delegateRouter.post('/complete', async (c) => {
   }));
 
   recordAppSignIn(prisma, user.id, signInAppOrigin);
-  return c.json(await saveApprovalDelegation(body, user.id, {
+  const delegation = {
     delegationHeader: session.delegationHeader,
     delegationCid: session.delegationCid,
     spaceId,
@@ -2560,7 +2616,9 @@ delegateRouter.post('/complete', async (c) => {
     //   `permissions` is the effective grant set after any narrowing.
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
-  }, { renewal: boundRenewal, host: body.host, sessionId: c.get('session')?.id ?? null }));
+  };
+  // External-wallet approvals: OpenKey holds neither the wallet key nor the session key, so this path doesn't revoke. The grant's lifetime is whatever the owner chose, with no 24 h bound or 30-day cap (TC-2795).
+  return c.json(await saveApprovalDelegation(body, user.id, delegation, { renewal: boundRenewal, host: body.host, sessionId: c.get('session')?.id ?? null }));
   } catch (error) {
     await releaseApprovalDelegation(body);
     throw error;
@@ -2642,6 +2700,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     requestOrigin?: string;
     /** TC-2272: the app sends `expiryChangeable: true` when it accepts a different signed expiry. */
     expiryChangeable?: unknown;
+    /** The app's renewal ask for this sign-in (`{ version: 1, leaseLifetimeSeconds }`); ignored while leases are off. */
+    renewal?: unknown;
     requesterOrigin?: unknown;
     ticket?: string;
     transportVersion?: number;
@@ -3023,6 +3083,16 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     );
   }
 
+  let signInRenewal: SignInRenewalRequest | undefined;
+  try {
+    signInRenewal = bindSignInRenewalRequest(body.renewal, {
+      host: typeof body.host === 'string' ? body.host : '', handoff: Boolean(ticket), expiryChangeable: body.expiryChangeable === true,
+    });
+  } catch (error) {
+    const refused = signInRenewalFailure(error);
+    return c.json(refused.body, refused.status);
+  }
+
   let issued: AuthorizationContextToken;
   try {
     issued = issueAuthorizationContext({
@@ -3046,6 +3116,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       appOrigin: normalizeAppOrigin(body.reportedOrigin) ?? undefined,
       admittedAppKeys,
       expiryChangeable: body.expiryChangeable === true,
+      signInRenewal,
     });
   } catch (issueErr) {
     logError('warn', 'delegate_authorization_context_issue_failed', issueErr);
@@ -3075,6 +3146,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     // render trust from THIS value, not from the envelope it forwarded.
     metadataTrust: issued.metadataTrust,
     verifiedManifest: issued.verifiedManifest,
+    // The renewal box is offered only when the ask is bound: leases on, and a node OpenKey sets leases up on.
+    ...(signInRenewal ? { renewal: { leaseLifetimeSeconds: signInRenewal.leaseLifetimeSeconds } } : {}),
   });
 });
 
@@ -3137,6 +3210,8 @@ delegateRouter.post('/authorize-sign', async (c) => {
      * the peek+preview API (see /authorize-sign-preview).
      */
     externalSignature?: string;
+    /** Optional: repeats the renewal choice sealed with the preview; any other choice is refused. */
+    renewal?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
@@ -3487,6 +3562,13 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (!previewCheck.ok) {
     return c.json({ error: previewCheck.message, code: previewCheck.error }, 400);
   }
+  // The renewal choice sealed with the preview: the body may repeat it, never change it. A leased choice needs
+  // leases on, checked before anything is signed.
+  const sealedRenewal = previewCheck.renewal;
+  confirmBoundRenewal(body.renewal, sealedRenewal);
+  if (sealedRenewal?.choice === 'leased' && !renewalLeasesEnabled()) {
+    return c.json({ error: renewalUnavailableMessage('sign-in', 'before-signing'), code: 'renewal_disabled' }, 400);
+  }
 
   // External signatures must recover to the bound signer over these exact
   // bytes before either single-use token is consumed.
@@ -3597,6 +3679,28 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // Reference computePermissionKey so it doesn't get flagged as unused
   // during typecheck; permissionOptions may consume it in the future.
   void computePermissionKey;
+  // A leased sign-in returns the grant only with the owner lease for exactly that grant (or, for an external
+  // wallet, the lease it signs next). OpenKey records the signed lease so every stop can revoke it; the app registers
+  // the grant and has its node admit the lease. If the lease can't be prepared or recorded, no signature is returned.
+  let signInLease: SignInLease | undefined;
+  if (sealedRenewal?.choice === 'leased') {
+    try {
+      signInLease = await setUpSignInLease(prisma, {
+        userId: user.id,
+        sessionId: c.get('session')?.id ?? null,
+        host: bound.host,
+        jwk: bound.jwk,
+        spaceId: bound.spaceId,
+        signedMessage,
+        signature,
+        leaseLifetimeSeconds: sealedRenewal.leaseLifetimeSeconds,
+        signOwner: isExternal ? undefined : (message) => signManagedKey(key, key.sealedBlob!, message),
+      });
+    } catch (error) {
+      const refused = signInRenewalFailure(error);
+      return c.json(refused.body, refused.status);
+    }
+  }
 
   const handoffDelivery = ticket
     ? await activePreparedHandoffService.completeSigning(ticket, user.id, body.authorizationContextToken, key.id)
@@ -3610,7 +3714,38 @@ delegateRouter.post('/authorize-sign', async (c) => {
     selectedActionKeys: effectiveSelectedActionKeys,
     permissions: effectiveGrants,
     ...(handoffDelivery ?? {}),
+    ...(sealedRenewal ? { renewalChoice: sealedRenewal.choice } : {}),
+    ...(signInLease ?? {}),
   });
+});
+
+/**
+ * POST /api/delegate/authorize-sign-renewal
+ *
+ * The external wallet's signature on the renewal lease of a leased sign-in, after /authorize-sign returned the
+ * signed grant with `renewalSignature`. The lease is taken once, only by the same user, with a signature that
+ * recovers to the grant's owner; another wallet's signature leaves it waiting. The signed lease is recorded, so every
+ * stop can revoke it, and returned for the app to have its node admit.
+ */
+delegateRouter.post('/authorize-sign-renewal', async (c) => {
+  if (!renewalLeasesEnabled()) return c.json({ error: renewalUnavailableMessage('sign-in', 'after-signing'), code: 'renewal_disabled' }, 400);
+  const user = c.get('user');
+  const body: unknown = await c.req.json().catch(() => null);
+  const fields = body !== null && typeof body === 'object' ? body as Record<string, unknown> : {};
+  if (typeof fields.signature !== 'string' || !fields.signature) {
+    return c.json({ error: 'A signature is required.', code: 'invalid_request' }, 400);
+  }
+  const pending = takePendingSignInLease(fields.renewalToken, user.id, fields.signature);
+  if (pending === 'expired') return c.json({ error: 'This renewal request expired. Sign in again to turn on renewal.', code: 'renewal_expired' }, 410);
+  if (pending === 'wrong_signer') {
+    return c.json({ error: "That signature isn't from the wallet you signed in with. Sign with that wallet to turn on renewal.", code: 'invalid_signature' }, 400);
+  }
+  try {
+    return c.json({ renewalChoice: 'leased', renewal: await recordedSignInLease(prisma, pending.owner, signLease(pending.stage, fields.signature), 'wallet') });
+  } catch (error) {
+    const refused = signInRenewalFailure(error);
+    return c.json(refused.body, refused.status);
+  }
 });
 
 /**
@@ -3639,6 +3774,8 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     expirationTime?: unknown;
     /** TC-2927: `{ allowed: ActionId[] }`, the extra permissions the owner explicitly allowed on the warning screen. */
     elevatedDecision?: unknown;
+    /** The owner's renewal choice, for a sign-in whose app asked for renewal: `{ choice: 'finite' }` or `{ choice: 'leased', leaseLifetimeSeconds }`. */
+    renewal?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
@@ -3677,6 +3814,14 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   // different user.
   if (bound.userId !== user.id) {
     return c.json({ error: 'Authorization context bound to a different user', code: 'user_mismatch' }, 400);
+  }
+  // The renewal box's state is sealed with this preview, so signing can only use what the owner saw here.
+  let renewalChoice: BoundRenewalChoice | undefined;
+  try {
+    renewalChoice = parseRenewalChoice(body.renewal, bound.signInRenewal, renewalLeasesEnabled(), 'sign-in') ?? undefined;
+  } catch (error) {
+    const refused = signInRenewalFailure(error);
+    return c.json(refused.body, refused.status);
   }
 
   let originalEntries: RecapEntry[];
@@ -3886,6 +4031,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     selectedActionIds,
     signedMessage: preparedSignedMessage,
     elevatedAllowed,
+    renewal: renewalChoice,
   });
 
   return c.json({
@@ -3902,5 +4048,6 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     previewApprovalToken: previewApproval.token,
     previewApprovalExpiresAt: previewApproval.expiresAt,
     signedMessageDigest: previewApproval.signedMessageDigest,
+    ...(renewalChoice ? { renewal: renewalChoice } : {}),
   });
 });
