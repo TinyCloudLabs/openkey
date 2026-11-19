@@ -89,6 +89,7 @@
     {email}
     clientId={native?.clientId ?? null}
     {appName}
+    {returnTo}
     {signInHref}
     onaccepted={proceed}
   />
