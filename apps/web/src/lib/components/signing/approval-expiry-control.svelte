@@ -40,6 +40,13 @@
     requestedBy?: string;
     /** The exact end of the window, shown inside the open fold after the choice; omitted where the screen shows it elsewhere. */
     endsAt?: string | null;
+    /** How many permission rows the line sits under: more than one reads in the plural. */
+    permissionCount?: number;
+    /**
+     * Set while a one-hour start is in effect and the owner has not picked a time (TC-3111): who asked, as the
+     * screen names them ("This request" on a link). Null shows no note.
+     */
+    onceSite?: string | null;
   }
 
   let {
@@ -52,6 +59,8 @@
     sensitive = false,
     requestedBy = "",
     endsAt = null,
+    permissionCount = 1,
+    onceSite = null,
   }: Props = $props();
 
   let confirming = $state(false);
@@ -140,14 +149,19 @@
         />
         <span data-testid="approval-expiry-line">
           {#if renews}
-            This permission renews automatically for up to {formatDuration(renewal.leaseMs!)}
+            {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}
           {:else}
-            This permission expires in {formatDuration(shownMs)}
+            {permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDuration(shownMs)}
           {/if}
         </span>
       </label>
     {:else}
-      <p class="expiry-line" data-testid="approval-expiry-line">This permission expires in {formatDuration(shownMs)}</p>
+      <p class="expiry-line" data-testid="approval-expiry-line">{permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDuration(shownMs)}</p>
+    {/if}
+    {#if onceSite !== null && requestedMs !== null}
+      <p class="expiry-once-note" data-testid="approval-expiry-once-note">
+        {onceSite} asked for {formatDuration(requestedMs)}. Access to secrets or encrypted data starts at {formatDuration(shownMs)}. You can choose longer under How long it lasts.
+      </p>
     {/if}
     <details class="expiry-fold">
       <summary>How long it lasts</summary>
@@ -193,9 +207,14 @@
     line-height: 1.45;
     color: #475569;
   }
-  .expiry-line {
+  .expiry-line,
+  .expiry-once-note {
     margin: 0;
     overflow-wrap: anywhere;
+  }
+  /* Spaced under the line like the other paragraphs on the screen (measured at 390px: 10px, as above the line). */
+  .expiry-once-note {
+    margin-top: 4px;
   }
   .renewal-line {
     display: flex;

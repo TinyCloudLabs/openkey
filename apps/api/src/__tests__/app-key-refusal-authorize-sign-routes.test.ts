@@ -201,15 +201,15 @@ describe('POST /authorize-sign-prepare', () => {
     await expect(res.json()).resolves.toMatchObject({ authorizationContextToken: expect.stringMatching(/^oks_/) });
   });
 
-  // TC-2247: a website's sign-in may not name decrypt outside its own apps/ prefix, the bare network included.
+  // TC-2927: decrypt outside the app's own apps/ prefix, the bare network included, reaches the warning screen: a
+  // context is issued and the owner's decision is checked when the request is signed.
   test.each([
     ['default-network decrypt', { [urn('')]: ['tinycloud.encryption/decrypt', 'tinycloud.encryption/network.create'] }],
     ['decrypt on a key outside apps/', { [urn('/appsx/y')]: ['tinycloud.encryption/decrypt'] }],
-  ])('refuses %s and issues nothing', async (_name, raw) => {
+  ])('issues a context for %s; the owner decides on the warning screen', async (_name, raw) => {
     const res = await post('/authorize-sign-prepare', { ...prepareBody(siweWith(raw)), requestOrigin: ORIGIN });
-    expect(res.status).toBe(403);
-    // TC-2291: pin the own-sites refusal copy and its stable code.
-    await expect(res.json()).resolves.toEqual({ error: "This site isn't allowed to request that access.", code: 'app_key_grant_refused' });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({ authorizationContextToken: expect.stringMatching(/^oks_/) });
     expect(signed).toEqual([]);
   });
 });

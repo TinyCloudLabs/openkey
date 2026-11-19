@@ -70,6 +70,10 @@ interface SvelteClient {
 const { mount, unmount, flushSync } = (await import(
   pathToFileURL(join(dirname(require.resolve('svelte/package.json')), 'src/index-client.js')).href
 )) as SvelteClient;
+// A parent's choices are shared state the component reads reactively.
+const { SvelteMap } = (await import(
+  pathToFileURL(join(dirname(require.resolve('svelte/package.json')), 'src/reactivity/index-client.js')).href
+)) as { SvelteMap: new <K, V>() => Map<K, V> };
 
 // Compile a $lib svelte file, pointing its imports at on-disk sources.
 const compiled = new Map<string, string>();
@@ -369,5 +373,166 @@ describe('the link notice', () => {
     expect(rows({ showExpires: true })).toContain('Expires');
     expect(rows({ showExpires: false })).not.toContain('Expires');
     expect(rows({ showExpires: false })).toContain('Node');
+  });
+});
+
+// TC-3111: a one-time approval (secrets or decrypt) that asks for longer than an hour starts at one hour.
+describe('one-time approvals start at one hour (TC-3111)', () => {
+  const ASKED = '2026-08-07T00:00:00.000Z';
+  const SOON = '2026-07-31T00:30:00.000Z';
+  const kvGet = { [FIXTURE_META.ownSpace]: { 'tinycloud.kv/get': [{}] } };
+  const decrypt = { [urn('/apps/xyz.tinycloud.listen/')]: { [`${E}decrypt`]: [{}] } };
+
+  function modelOf(resources: Array<Record<string, Record<string, unknown[]>>>, expirationTime = ASKED): CapabilityReviewModel {
+    return parseCapabilityReview({
+      message: siweWithResources(resources.map(makeRecapResource), { expirationTime }),
+      signer: { label: 'Key', address: FIXTURE_META.address, chainId: FIXTURE_META.chainId, provenance: 'managed' },
+      editable: true,
+      metadataTrust: { status: 'unsigned', reason: 'no manifest' },
+      reason: { text: '', source: 'none' },
+      requester: {
+        displayName: 'listen.tinycloud.xyz', verifiedOrigin: 'https://listen.tinycloud.xyz', appId: null,
+        manifestName: null, manifestNameProvenance: 'none', manifestId: null, manifestIdProvenance: 'none',
+        manifestDigest: null, domainWarning: false, originWarning: false,
+      },
+      requesterAddress: null,
+      requesterVerified: false,
+    });
+  }
+  const allIds = (m: CapabilityReviewModel) =>
+    new Set(m.permissions.flatMap((grant) => grant.actions.filter((action) => action.selected).map((action) => action.id)));
+
+  // A parent that applies each choice at once, as the signing surfaces do.
+  function mounted(m: CapabilityReviewModel, props: Record<string, unknown> = {}) {
+    const state = new SvelteMap<string, unknown>();
+    state.set('expiry', null);
+    state.set('selection', allIds(m));
+    const calls: Array<number | null> = [];
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const app = mount(Approval, {
+      target,
+      props: {
+        model: m,
+        get selection() { return state.get('selection') as Set<string>; },
+        get expiryMs() { return state.get('expiry') as number | null; },
+        editing: false, onApprove() {}, onCancel() {}, onSelectionChange() {}, onEditingChange() {},
+        onExpiryChange: (ms: number | null) => { calls.push(ms); state.set('expiry', ms); },
+        onceExpiryDefault: true,
+        ...props,
+      },
+    });
+    flushSync();
+    return { target, calls, state, cleanup: () => { unmount(app); target.remove(); } };
+  }
+  const note = (t: HTMLElement) => t.querySelector('[data-testid="approval-expiry-once-note"]');
+
+  test('a secret or decrypt request that asks for 7 days starts at one hour, and the line says so', () => {
+    const { target, calls, cleanup } = mounted(modelOf([decrypt]));
+    expect(calls).toEqual([H]);
+    expect(line(target)).toContain('1 hour');
+    expect(note(target)).not.toBeNull();
+    cleanup();
+  });
+
+  test('a request that asks for an hour or less keeps what it asked for', () => {
+    const { target, calls, cleanup } = mounted(modelOf([decrypt], SOON));
+    expect(calls).toEqual([]);
+    expect(line(target)).toContain('30 minutes');
+    expect(note(target)).toBeNull();
+    cleanup();
+  });
+
+  test('standing access (ordinary data) is unchanged', () => {
+    const { target, calls, cleanup } = mounted(modelOf([kvGet]));
+    expect(calls).toEqual([]);
+    expect(line(target)).toContain('7 days');
+    expect(note(target)).toBeNull();
+    cleanup();
+  });
+
+  test('a surface that does not opt in is unchanged', () => {
+    const { target, calls, cleanup } = mounted(modelOf([decrypt]), { onceExpiryDefault: false });
+    expect(calls).toEqual([]);
+    expect(line(target)).toContain('7 days');
+    cleanup();
+  });
+
+  test('the owner can pick another time, and the default never replaces it', () => {
+    const { target, calls, cleanup } = mounted(modelOf([decrypt]));
+    open(target);
+    preset(target, '24 hours').click();
+    flushSync();
+    expect(calls).toEqual([H, 24 * H]);
+    expect(line(target)).toContain('1 day');
+    expect(note(target)).toBeNull();
+    cleanup();
+  });
+
+  test('the owner can go back to what the app asked for, and the default does not return', () => {
+    const { target, calls, cleanup } = mounted(modelOf([decrypt]));
+    open(target);
+    preset(target, '7 days').click();
+    flushSync();
+    expect(calls).toEqual([H, null]);
+    expect(line(target)).toContain('7 days');
+    expect(note(target)).toBeNull();
+    cleanup();
+  });
+
+  test('narrowing away the secret or decrypt access returns to what the app asked for', () => {
+    const m = modelOf([decrypt, kvGet]);
+    const { target, calls, state, cleanup } = mounted(m);
+    expect(calls).toEqual([H]);
+    const kvIds = new Set(m.permissions.filter((grant) => grant.service === 'tinycloud.kv').flatMap((grant) => grant.actions.map((action) => action.id)));
+    state.set('selection', kvIds);
+    flushSync();
+    expect(calls).toEqual([H, null]);
+    expect(line(target)).toContain('7 days');
+    cleanup();
+  });
+
+  test('nothing is sent while the approval is being signed or previewed', () => {
+    const approving = mounted(modelOf([decrypt]), { approving: true });
+    expect(approving.calls).toEqual([]);
+    approving.cleanup();
+    const previewing = mounted(modelOf([decrypt]), { previewPending: true });
+    expect(previewing.calls).toEqual([]);
+    previewing.cleanup();
+  });
+
+  const noteText = (t: HTMLElement) => note(t)?.textContent?.replace(/\s+/g, ' ').trim() ?? null;
+  const approveButton = (t: HTMLElement) => t.querySelector<HTMLButtonElement>('button.approve');
+
+  test('the note names the verified site, what it asked for and the hour, and where the fold is', () => {
+    const { target, cleanup } = mounted(modelOf([decrypt]));
+    expect(noteText(target)).toBe(
+      'listen.tinycloud.xyz asked for 7 days. Access to secrets or encrypted data starts at 1 hour. You can choose longer under How long it lasts.',
+    );
+    cleanup();
+  });
+
+  test('on a link, where nothing verifies who asked, the note says "This request"', () => {
+    const model = modelOf([decrypt]);
+    const { target, cleanup } = mounted({ ...model, requester: { ...model.requester, verifiedOrigin: null } });
+    expect(noteText(target)?.startsWith('This request asked for 7 days.')).toBe(true);
+    cleanup();
+  });
+
+  test('until the hour is applied the line and its note are not shown and Approve waits', () => {
+    const waiting = mounted(modelOf([decrypt]), { previewPending: true });
+    expect(waiting.target.querySelector('.expiry')).toBeNull();
+    expect(approveButton(waiting.target)?.disabled).toBe(true);
+    waiting.cleanup();
+    const applied = mounted(modelOf([decrypt]));
+    expect(applied.target.querySelector('.expiry')).not.toBeNull();
+    expect(approveButton(applied.target)?.disabled).toBe(false);
+    applied.cleanup();
+  });
+
+  test('a request that is not one-time shows its line at once', () => {
+    const { target, cleanup } = mounted(modelOf([kvGet]), { previewPending: true });
+    expect(target.querySelector('.expiry')).not.toBeNull();
+    cleanup();
   });
 });

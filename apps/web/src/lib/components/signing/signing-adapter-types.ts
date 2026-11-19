@@ -77,6 +77,8 @@ export interface CliSigningTransport {
    */
   expiry?: {
     chosenMs: number | null;
+    /** A one-time approval (secrets or decrypt) starts at one hour here (TC-3111); set by the real signing pages, not harnesses. */
+    onceDefault?: boolean;
     bounded: boolean;
     /** The most the requester signed; the shown default can be shorter. Null: the default is the most. */
     maxMs?: number | null;
@@ -157,6 +159,24 @@ export interface WidgetSigningTransport {
    */
   expiry?: {
     chosenMs: number | null;
+    /** A one-time approval (secrets or decrypt) starts at one hour here (TC-3111); set by the real signing pages, not harnesses. */
+    onceDefault?: boolean;
     onChange: (ms: number | null) => void;
+  };
+  /**
+   * The renewal checkbox (TC-2933); set only where the app's sign-in asked for renewal and the server offered it.
+   * `onChange` must make the next preview carry the choice (and the window, when given).
+   */
+  renewal?: RenewalChoice;
+
+  /**
+   * The warning screen for extra permissions (TC-2927): decrypt or key creation on the encryption network, or on
+   * keys outside the app's own area. Set by the signing pages that carry the owner's decision to the server.
+   * `splittable` is false on the exact-byte path, where the request can only be approved or cancelled whole.
+   * `onDecide` receives the action ids the owner allowed and must make the next preview (or sign) carry them.
+   */
+  elevated?: {
+    splittable: boolean;
+    onDecide: (allowed: string[]) => void;
   };
 }

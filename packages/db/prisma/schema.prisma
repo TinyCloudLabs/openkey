@@ -51,8 +51,31 @@ model User {
   deviceAuthorizations           DeviceAuthorization[]
   preparedHandoffs               PreparedHandoff[]
   tinyCloudNativeGrants          TinyCloudNativeGrant[]
+  termsAcceptances               TermsAcceptance[]
 
   @@map("user")
+}
+
+// TC-3232: one row per account per Terms version accepted on the required Terms screen. Append-only:
+// the migration refuses updates; rows go only with the account.
+model TermsAcceptance {
+  id          String   @id
+  userId      String
+  // 'terms'. The Privacy Policy is acknowledged under the same version, not agreed separately.
+  documentId  String
+  version     String
+  // SHA-256 (hex) of the published text of this version.
+  textSha256  String
+  acceptedAt  DateTime @default(now())
+  // 'web', or 'native:<clientId>' when accepted in a native app's sign-in sheet.
+  surface     String
+  // The API build that recorded the acceptance.
+  appVersion  String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, version])
+  @@map("terms_acceptance")
 }
 
 // Public, short-lived manual handoff of an already-signed CLI delegation.

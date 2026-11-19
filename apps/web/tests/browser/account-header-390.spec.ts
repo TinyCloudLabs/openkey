@@ -5,6 +5,12 @@ import { test, expect } from '@playwright/test';
 test.use({ viewport: { width: 390, height: 844 } });
 
 test('the account header shows every nav item in full at 390 px, with no sideways scroll', async ({ page }) => {
+  await page.route('**/api/**', (route) => {
+    const path = new URL(route.request().url()).pathname;
+    return route.fulfill({ json: path === '/api/auth/get-session'
+      ? { session: { id: 'header-session', userId: 'header-admin', expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, user: { id: 'header-admin', email: 'admin@example.test' } }
+      : { organizations: [{ id: 'header-organization', role: 'ADMIN' }] } });
+  });
   await page.goto('/device');
   const header = page.locator('header');
   await expect(header.getByRole('link', { name: 'Dashboard' })).toBeVisible();
