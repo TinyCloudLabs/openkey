@@ -164,8 +164,13 @@ export const CODE = {
   expired: {
     eyebrow: 'Approved, but not delivered',
     heading: 'This code ran out of time',
-    line: 'Codes last 5 minutes and this one wasn’t used, so no access was handed over. Run the command again to get a new request.',
+    /** The approval is still good, so a new code can be made for it. */
+    lineNewCode: 'Code expired. Get a new code, or start again in the CLI.',
+    /** The approval has ended too: no new code can be made. */
+    lineApprovalEnded: 'Code expired, and so has this approval. Start again in the CLI.',
     box: 'Expired',
+    newCode: 'Get a new code',
+    newCodeFailed: "Couldn't get a new code. Try again, or start again in the CLI.",
   },
   /** Read out once, when a minute is left. */
   oneMinuteLeft: '1 minute left to use this code.',

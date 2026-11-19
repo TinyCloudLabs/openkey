@@ -1,6 +1,7 @@
 <script lang="ts">
   // The code page: say where the code goes, show it alone in a big box, and copy it on a click of the box or of
-  // the Copy button. A short code counts down from five minutes; when it runs out the page says so instead.
+  // the Copy button. A short code counts down from five minutes; when it runs out the page says so and, while the
+  // approval itself still holds, offers a new code for it.
   import { onMount } from 'svelte';
   import { copyText } from '$lib/clipboard';
   import Icon from '$lib/components/approval/icon.svelte';
@@ -28,6 +29,14 @@
     announcement?: string;
     /** The short code ran out: the page says so and nothing can be copied. */
     expired?: boolean;
+    /** The approval has ended too, so no new code can be made. */
+    approvalEnded?: boolean;
+    /** Asks for a new short code for the same approval. */
+    onNewCode?: () => void;
+    /** A new code is being asked for. */
+    newCodeBusy?: boolean;
+    /** The last ask for a new code failed. */
+    newCodeFailed?: boolean;
     /** The full code is shown in place of the short one. */
     showFull?: boolean;
     /** Status and code of the reply that went wrong, for support. */
@@ -44,6 +53,10 @@
     countdown = null,
     announcement = '',
     expired = false,
+    approvalEnded = false,
+    onNewCode,
+    newCodeBusy = false,
+    newCodeFailed = false,
     showFull = $bindable(false),
     support = '',
     spaceNote = null,
@@ -98,12 +111,25 @@
 {#if expired}
   <p class={eyebrowClass}>{CODE.expired.eyebrow}</p>
   <h1 use:focusHeading class={headingClass}>{CODE.expired.heading}</h1>
-  <p class="m-0 mb-3.5 text-pretty">{CODE.expired.line}</p>
+  <p role="timer" aria-live="off" class="m-0 mb-3.5 text-pretty">{approvalEnded ? CODE.expired.lineApprovalEnded : CODE.expired.lineNewCode}</p>
   <div class="mt-2 mb-3 grid w-full justify-items-center gap-2.5 rounded-2xl border border-dashed border-surface-300 bg-surface-50 px-3.5 pt-[26px] pb-4" data-code-box>
     <span class="{shortCodeClass} text-surface-400 line-through">{shortCode}</span>
     <span class="text-[12.5px] text-surface-500">{CODE.expired.box}</span>
   </div>
-  <CloseTabButton allowBack />
+  <p class="sr-only" role="status" aria-live="polite">{announcement}</p>
+  {#if !approvalEnded && onNewCode}
+    <div class="w-full">
+      <Button class="w-full" onclick={onNewCode} disabled={newCodeBusy}>{CODE.expired.newCode}</Button>
+      {#if newCodeFailed}
+        <p role="alert" class="m-0 mt-3 w-full text-left text-[13px] leading-normal text-[#b42318]">{CODE.expired.newCodeFailed}</p>
+      {/if}
+      <div class="mt-3.5 flex justify-center text-[13px] leading-normal text-surface-500">
+        <CloseTabButton allowBack look="link" />
+      </div>
+    </div>
+  {:else}
+    <CloseTabButton allowBack />
+  {/if}
 {:else}
   <p class={eyebrowClass}>{eyebrow}</p>
   <h1 use:focusHeading class={headingClass}>{fill(full ? CODE.headingFull : CODE.headingShort, { destination: where })}</h1>

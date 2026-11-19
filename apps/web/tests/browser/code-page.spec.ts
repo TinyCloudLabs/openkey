@@ -71,15 +71,17 @@ test('when the terminal cannot be reached, the page says so and still shows the 
   await expectNoAmber(page);
 });
 
-test('five minutes on, the short code has run out: no box to copy and no Copy button', async ({ page }) => {
+test('five minutes on, the short code has run out: nothing to copy, and a new code can be asked for', async ({ page }) => {
   await page.clock.install({ time: new Date('2026-10-16T17:00:00.000Z') });
   await openCodePage(page);
   await expect(box(page)).toContainText('SF23-22CS');
   await page.clock.runFor(5 * 60_000 + 1_000);
   await expect(page.getByRole('heading', { name: 'This code ran out of time' })).toBeVisible();
+  await expect(page.getByRole('timer')).toHaveText('Code expired. Get a new code, or start again in the CLI.');
   await expect(box(page)).toContainText('Expired');
   await expect(page.locator('button[data-code-box]')).toHaveCount(0);
   await expect(page.getByRole('button', { name: /Copy/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Get a new code', exact: true })).toBeEnabled();
   await expectNoAmber(page);
 });
 

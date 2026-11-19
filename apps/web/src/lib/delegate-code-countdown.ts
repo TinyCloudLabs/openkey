@@ -7,7 +7,9 @@
 
 import { CODE, fill } from '@openkey/sdk/approval-copy';
 
-export const CODE_EXPIRED_TEXT: string = CODE.expired.heading;
+export const CODE_EXPIRED_TEXT: string = CODE.expired.lineNewCode;
+// When the approval has ended too, no new code can be minted.
+export const CODE_AND_APPROVAL_EXPIRED_TEXT: string = CODE.expired.lineApprovalEnded;
 export const CODE_ONE_MINUTE_ANNOUNCEMENT: string = CODE.oneMinuteLeft;
 
 const ONE_MINUTE_MS = 60_000;

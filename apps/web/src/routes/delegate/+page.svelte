@@ -40,6 +40,7 @@
     KNOWN_NODE_ORIGINS,
     REGISTERED_CALLBACK_ENDPOINTS,
     checkDelegateCallback,
+    delegateRequester,
     checkDelegateHost,
     isCanonicalHttpsEndpoint,
     isCanonicalHttpsOrigin,
@@ -51,7 +52,7 @@
   import { activeKeys, autoSelectKey } from '$lib/delegate-key-selection';
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
-  import { startCodeCountdown, remainingFromServerClock, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
+  import { startCodeCountdown, remainingFromServerClock, CODE_AND_APPROVAL_EXPIRED_TEXT, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
   import { MAX_LEASE_MS, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
@@ -183,6 +184,12 @@
   let codeDeadline = $state<number | null>(null);
   let codeCountdown = $state<CodeCountdownSnapshot | null>(null);
   let codeAnnouncement = $state('');
+  let delegationPayload = $state.raw<any>(null);
+  let codeRenewing = $state(false);
+  let codeRenewFailed = $state(false);
+  let approvalExpiryNow = $state(Date.now());
+  const delegationExpiry = $derived(Date.parse(delegationPayload?.expirationTime ?? delegationPayload?.expiresAt ?? delegationPayload?.expiry ?? ''));
+  const delegationExpired = $derived(!Number.isFinite(delegationExpiry) || delegationExpiry <= approvalExpiryNow);
 
   // Countdown for the short code. Stopped when the deadline changes or the page is destroyed.
   $effect(() => {
@@ -193,11 +200,23 @@
       deadline,
       onUpdate: (snapshot) => {
         codeCountdown = snapshot;
-        if (snapshot.announcement) codeAnnouncement = snapshot.announcement;
+        if (snapshot.announcement) {
+          // Read at expiry: the approval-expiry effect below updates `delegationExpired` only after this tick.
+          const approvalEnded = snapshot.expired && !(Number.isFinite(delegationExpiry) && delegationExpiry > Date.now());
+          codeAnnouncement = approvalEnded ? CODE_AND_APPROVAL_EXPIRED_TEXT : snapshot.announcement;
+        }
       },
     });
   });
 
+  $effect(() => {
+    if (!codeCountdown?.expired) return;
+    const now = Date.now();
+    approvalExpiryNow = now;
+    if (!Number.isFinite(delegationExpiry) || delegationExpiry <= now) return;
+    const timer = setTimeout(() => { approvalExpiryNow = Date.now(); }, Math.min(delegationExpiry - now, 2_147_483_647));
+    return () => clearTimeout(timer);
+  });
   let updatingPermissions = $state(false);
   let permissionsEdited = $state(false);
   let authorizationContextToken = $state<string | null>(null);
@@ -207,8 +226,6 @@
   // disappear from the review UI. `reviewSelection` is the effective
   // subset the user picked; only that changes when the user narrows.
   let reviewModel = $state<CapabilityReviewModel | null>(null);
-  // The app every /delegate link comes from today; the review and the end pages name it.
-  const REQUESTER_NAME = 'TinyCloud CLI';
   const expiredRequesterName = $derived(reviewModel?.requester.displayName?.trim() || '');
   let baselineSiweForReview = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
@@ -542,6 +559,7 @@
     : hostCheck?.ok === false ? hostCheck.reason : '');
   $effect(() => { if (linkPolicyError) error = linkPolicyError; });
   const approvedCallback = $derived(callbackCheck?.ok ? callbackCheck.callback : null);
+  const requester = $derived(delegateRequester(approvedCallback));
   const showLoopbackHint = $derived(
     shouldShowLoopbackHint({ delegating, approvedCallback, deviceTransactionId, callbackInFlight, pasteCode }),
   );
@@ -929,7 +947,7 @@
           metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
           reason: { text: requestReason, source: requestReason ? 'caller' : 'none' },
           requester: {
-            displayName: REQUESTER_NAME,
+            displayName: requester.displayName,
             verifiedOrigin: null,
             appId: null,
             manifestName: null,
@@ -1556,6 +1574,50 @@
     }
   }
 
+  // Mints a short code for this delegation. The first mint records a refusal for the
+  // fallback text; a renewal (reportError) shows its own retry line instead.
+  async function mintShortCode(payload: any, reportError = false) {
+    codeRenewFailed = false;
+    try {
+      const API_URL = import.meta.env.VITE_API_URL || '';
+      const response = await fetch(`${API_URL}/api/delegation-codes`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delegation: publicDelegationForCode(payload) }),
+      });
+      if (!response.ok) {
+        if (!reportError) {
+          const body: unknown = await response.json().catch(() => null);
+          const code = typeof body === 'object' && body !== null && 'code' in body ? body.code : undefined;
+          shortCodeFailure = { status: response.status, code };
+        }
+        throw new Error('Mint request failed');
+      }
+      const result = await response.json();
+      if (typeof result.code !== 'string' || !/^[a-z2-7]{4}-[a-z2-7]{4}$/i.test(result.code)) throw new Error('Invalid code response');
+      const remainingMs = typeof result.expiresAt === 'string'
+        ? remainingFromServerClock(result.expiresAt, response.headers.get('date'))
+        : null;
+      shortCode = result.code.toUpperCase();
+      codeCountdown = null;
+      // Read at receipt: the countdown runs on the monotonic clock from here.
+      codeDeadline = performance.now() + (remainingMs ?? 300_000);
+    } catch {
+      // The full delegation remains available when the broker is unreachable.
+      if (reportError) codeRenewFailed = true;
+    }
+  }
+
+  async function getNewCode() {
+    if (!codeCountdown?.expired || codeRenewing || delegationExpired || !delegationPayload) return;
+    codeRenewing = true;
+    try {
+      await mintShortCode(delegationPayload, true);
+    } finally {
+      codeRenewing = false;
+    }
+  }
   async function finishDelegate(data: any) {
     const payload = permissionsEdited ? { ...data, edited: true } : data;
     spaceReadiness = spaceReadinessResult(payload, spaceSetup);
@@ -1636,32 +1698,8 @@
     }
 
     pasteCode = delegationPasteCode(payload);
-    try {
-      const API_URL = import.meta.env.VITE_API_URL || '';
-      const response = await fetch(`${API_URL}/api/delegation-codes`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ delegation: publicDelegationForCode(payload) }),
-      });
-      if (!response.ok) {
-        const body: unknown = await response.json().catch(() => null);
-        const code = typeof body === 'object' && body !== null && 'code' in body ? body.code : undefined;
-        shortCodeFailure = { status: response.status, code };
-      } else {
-        const result = await response.json();
-        const remainingMs = typeof result.expiresAt === 'string'
-          ? remainingFromServerClock(result.expiresAt, response.headers.get('date'))
-          : null;
-        if (/^[a-z2-7]{4}-[a-z2-7]{4}$/i.test(result.code)) {
-          shortCode = result.code.toUpperCase();
-          // Read at receipt: the countdown runs on the monotonic clock from here.
-          if (remainingMs !== null) codeDeadline = performance.now() + remainingMs;
-        }
-      }
-    } catch {
-      // The full delegation remains available when the broker is unreachable.
-    }
+    delegationPayload = Object.freeze(payload);
+    await mintShortCode(payload);
     done = true;
     step = 'done';
   }
@@ -1702,7 +1740,7 @@
   }
 
   // The end pages. `requesterName` is the app or command the review named.
-  const requesterName = $derived(expiredRequesterName || REQUESTER_NAME);
+  const requesterName = $derived(expiredRequesterName || requester.displayName);
   // The full code was opened in place of the short one; its countdown no longer ends the page.
   let fullCodeOpen = $state(false);
   const codeExpired = $derived(!!shortCode && !!codeCountdown?.expired && !fullCodeOpen);
@@ -1771,7 +1809,7 @@
       </div>
       <Card class="w-full p-6">
         <div class="text-center py-4">
-          <h1 class="text-[17px] font-semibold text-surface-900 mb-2">{expiredRequesterName ? `${expiredRequesterName}'s request expired` : 'Request expired'}</h1>
+          <h1 class="text-[17px] font-semibold text-surface-900 mb-2">{expiredRequesterName ? `This request from ${expiredRequesterName} expired.` : 'Request expired'}</h1>
           <p class="text-[15px] leading-6 text-[#71717a]">Ask your agent for a new link.</p>
         </div>
       </Card>
@@ -1812,7 +1850,7 @@
     </div>
   </div>
 {:else}
-<Slip at={slipAt} last={slipLast} stopped={codeExpired} center={showLoader || step === 'done'} email={chipEmail} onSignOut={() => { void authClient.signOut(); }}>
+<Slip at={slipAt} last={slipLast} stopped={codeExpired && delegationExpired} center={showLoader || step === 'done'} email={chipEmail} onSignOut={() => { void authClient.signOut(); }}>
       {#if step === 'done' && pasteCode}
         <CodeBox
           {shortCode}
@@ -1822,6 +1860,10 @@
           countdown={codeCountdown}
           announcement={codeAnnouncement}
           expired={codeExpired}
+          approvalEnded={delegationExpired}
+          onNewCode={getNewCode}
+          newCodeBusy={codeRenewing}
+          newCodeFailed={codeRenewFailed}
           bind:showFull={fullCodeOpen}
           support={codeSupport}
           spaceNote={spaceReadiness}

@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'crypto';
 import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { logMetric } from '../log';
+import { resolveScoreboardExclusions, SCOREBOARD_EXCLUSION_CRITERIA, type ExclusionDatabase } from '../services/scoreboard-exclusions';
 
 // TC-1483: counts-only metrics for the scoreboard, behind their own bearer
 // (OPENKEY_METRICS_READ_TOKEN). The token grants aggregate counts only:
@@ -27,8 +28,7 @@ type DistinctUsers = {
   findMany(args: Record<string, unknown>): Promise<UserIdRow[]>;
 };
 
-export type ScoreboardDatabase = {
-  $queryRaw<T>(query: TemplateStringsArray, ...values: unknown[]): Promise<T>;
+export type ScoreboardDatabase = ExclusionDatabase & {
   oauthAccessToken: DistinctUsers;
   oauthRefreshToken: DistinctUsers;
   oauthConsent: DistinctUsers;
@@ -37,17 +37,6 @@ export type ScoreboardDatabase = {
 
 export type ScoreboardExclusions = { userIds: ReadonlySet<string>; clientIds: ReadonlySet<string> };
 
-function parseList(value: string | undefined): Set<string> {
-  return new Set((value ?? '').split(',').map((item) => item.trim()).filter(Boolean));
-}
-
-/** Team, QA and agent accounts: config lists, never returned by the API. */
-export function exclusionsFromEnv(env: Record<string, string | undefined> = process.env): ScoreboardExclusions {
-  return {
-    userIds: parseList(env.SCOREBOARD_EXCLUDE_USER_IDS),
-    clientIds: parseList(env.SCOREBOARD_EXCLUDE_CLIENT_IDS),
-  };
-}
 
 function authorized(authHeader: string | undefined): boolean {
   const token = process.env.OPENKEY_METRICS_READ_TOKEN;
@@ -234,7 +223,7 @@ scoreboardMetricsRouter.get('/protocol-users', async (c) => {
   }
   let count: number;
   try {
-    count = await countProtocolUsers(prisma as unknown as ScoreboardDatabase, owners, exclusionsFromEnv());
+    count = await countProtocolUsers(prisma as unknown as ScoreboardDatabase, owners, await resolveScoreboardExclusions(prisma));
   } catch (error) {
     logMetric('error', 'scoreboard_protocol_users_call', { status: 500 });
     throw error;
@@ -244,6 +233,6 @@ scoreboardMetricsRouter.get('/protocol-users', async (c) => {
 });
 
 scoreboardMetricsRouter.get('/app-users', async (c) => {
-  const counts = await countAppUsers(prisma as unknown as ScoreboardDatabase, exclusionsFromEnv());
-  return c.json(counts);
+  const counts = await countAppUsers(prisma as unknown as ScoreboardDatabase, await resolveScoreboardExclusions(prisma));
+  return c.json({ ...counts, exclusionCriteria: SCOREBOARD_EXCLUSION_CRITERIA });
 });

@@ -203,6 +203,10 @@ inspection scripts. `bun install` alone does not generate the gitignored client.
 
 Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**. Saving replaces the whole encrypted env, so every save must include every variable the CVM uses, not only the ones being changed; a variable left out is dropped. A deploy that sends only the compose file (`deploy-api.yml`) keeps the stored values. Settings hardcoded in `docker-compose.prod.yml` (such as the renewal lease settings below) are not part of the encrypted env:
 
+The release owner sets `SCOREBOARD_EXCLUSIONS` in the sealed API environment through the
+existing complete-env procedure. `deploy-api.yml` is unchanged. Keep the legacy exclusion
+env alongside it for rollback. Details: TC-1480
+
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
@@ -229,10 +233,14 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**. Savin
 | `API_PORT` | `3001` |
 | `CORS_ORIGIN` | `https://openkey.so,https://console.openkey.so` |
 | `ADMIN_API_KEY` | Bearer token for organization plan fixtures and app registration |
-| `INTERNAL_METRICS_TOKEN` | Bearer token for `/api/internal/metrics`, including counts-only `/native-renewals` by public OAuth client ID; unset = 503, missing/wrong bearer = 401. |
+| `INTERNAL_METRICS_TOKEN` | Bearer token for `/api/internal/metrics`, including counts-only `/native-renewals` by public OAuth client ID; unset = 503, missing/wrong bearer = 401. `GET /api/internal/metrics` also returns a counts-only `users` block (TC-2356): total accounts, one count per exclusive bucket in precedence order (`team_by_wallet`, `qa_prefix` (local part starts with `tcqa-`, `tcqa+` or the older `qa-`), `internal_team_domain`, `disposable_mail_domain`, `internal_agent_or_qa`, `test_or_throwaway_domain`, `plus_addressed`, `test_like_name`, `never_completed_signup`, `explicit_exclusions`, `bot_like`), `real` (what is left), `realActive` (`d1`/`d7`/`d30`, by last session update), `realNew7d`, and `apps` (`{name, real7d, real30d}`: distinct real accounts with an OAuth access token in the window, by client display name; names are cleaned and cut to 60 characters, only apps with at least 5 real users in 30 days are listed by name, at most 50, and every other app is summed as distinct users into one `other apps` row); `unclassifiedDomains` (`{domain, accounts}`: email domains with at least 5 accounts that no list covers and that are not major webmail, biggest first, max 200, so new disposable domains surface); `users` is `null` if that query fails. The same path also accepts a token-gated `POST` with an optional JSON body `{"disposableDomains": [...]}` (at most 5,000 lowercase hostnames, body at most 1 MB; anything else is 400 `Invalid disposableDomains`): the maintained list the internal Worker keeps, merged with the built-in and env lists for that request only (not stored, not echoed), so OpenKey makes no outbound calls for it. |
 | `OPENKEY_METRICS_READ_TOKEN` | Separate bearer for `/api/internal/scoreboard/*`. Grants **aggregate counts only** (`GET /protocol-users` -> `{count}`, `GET /app-users` -> `{total, active7d}`); neither endpoint takes input, so the token cannot be used to look up addresses or accounts. `/protocol-users` is capped at 30 calls/min per process (429) and audit-logged (status and count only). Unset = 503 |
 | `NODE_STATS_URL` / `NODE_STATS_READ_TOKEN` | Full URL of the node's read-only `GET /admin/stats` (TC-1482) and its read-only bearer. OpenKey fetches the owner addresses from it for `/protocol-users` (owners with data beyond the automatic `account` space; account-only owners are excluded). The URL must be `https:`; the response is capped at 16 MiB and concurrent calls share one node request; unset or failing node = 503, never a partial count. Expected response: `200 {"owners": ["0x<40 hex>", ...]}` |
-| `SCOREBOARD_EXCLUDE_USER_IDS` / `SCOREBOARD_EXCLUDE_CLIENT_IDS` | Comma-separated team/QA/agent user ids and internal OAuth client ids excluded from scoreboard counts |
+| `SCOREBOARD_EXCLUSIONS` | JSON identities derived from the shared `list.csv` by `python3 scripts/scoreboard-exclusions.py /var/tmp/test-identities/list.csv`. Capture stdout privately, never in deploy logs. CSV columns must be exactly `kind,value,evidence`. Kinds: `address`, `did_pkh`, `email`, `did_key`, `email_domain`. Every list row applies; evidence is not a filter. Details: TC-1480 |
+| `SCOREBOARD_EXCLUDE_USER_IDS` | Retain the existing value alongside `SCOREBOARD_EXCLUSIONS` for rollback to an older release. The scoreboard counts and `accounts.*` do not read it or fall back to it; the `explicit_exclusions` bucket of `/api/internal/metrics` `users` still reads it, in addition to `SCOREBOARD_EXCLUSIONS` (accounts matched by the shared list land in that bucket too). Both are passed through Compose; rolling back code requires no env change. Details: TC-1480 |
+| `SCOREBOARD_EXCLUDE_CLIENT_IDS` | Comma-separated OAuth client ids omitted from app-user counts. Details: TC-1480 |
+| `SCOREBOARD_EXCLUDE_ADDRESSES` | Comma-separated EVM wallet addresses of team members (compared lowercase; invalid entries are ignored). Each is mapped through `ethereum_keys.address` to its account, so every key of that person is excluded: the `team_by_wallet` bucket of `/api/internal/metrics` `users`, checked first. Addresses are never returned or logged. |
+| `SCOREBOARD_DISPOSABLE_DOMAINS` | Comma-separated extra disposable-mail domains (a leading `@` or `*.` is accepted; subdomains match; entries that are not domains, major webmail domains, our own team domains and country suffixes such as `co.uk` are ignored, so a bad list can never mark them disposable). An entry from this variable or from the Worker's POST list only takes effect once it matches at least 5 accounts (the built-in list has no such floor), so a token holder cannot probe how many accounts sit at a domain, added to the built-in list (mailinator, guerrillamail family, sharklasers, mail.tm/mail.gw and our mail.tm domains fldubai.com and maxxspace.com, maildrop, 10minutemail, yopmail, temp-mail/tempmail, trashmail, getnada, Mailpit/MailHog/MailCatcher). Feeds the `disposable_mail_domain` bucket, together with the built-in list and the `disposableDomains` the internal Worker sends in a `POST` to `/api/internal/metrics`. Mail.tm rotates domains: add the new one here, no code deploy needed; applies after the API container is recreated with the new environment. |
 | `OPENKEY_NATIVE_RENEW_DISABLED` | `true` or `1` refuses native delegation renewals with HTTP 400 `consent_required`; unset, empty, or any other value leaves renewals enabled. Changes apply after the API container is recreated with the new environment. |
 | `OPENKEY_RENEWAL_LEASES` | Hardcoded `enabled` in `docker-compose.prod.yml`, not sealed, so turning leases on or off never touches the sealed environment. To turn them off, a one-line PR sets `OPENKEY_RENEWAL_LEASES=` (empty) and `deploy-api.yml` redeploys the compose (no env file); to turn them on again, the same with `enabled`. Leases are off unless this is exactly `enabled`. While off, a request that asked for renewal is approved finite and a leased choice is refused with 400 `renewal_disabled`; leases already granted keep renewing on the node and can still be stopped in Settings. Enable only after the web that shows the renewal choice is live. |
 | `OPENKEY_RENEWAL_NODE_DID` / `OPENKEY_RENEWAL_RENEWER_DID` | Hardcoded in `docker-compose.prod.yml` (public values, not sealed): the production TinyCloud node's DID and its renewer DID, exactly as the node advertises them at `https://node.tinycloud.xyz/.well-known/tinycloud/node-keys` (`nodeDid`, `renewerDid`). Re-read them after a node upgrade; if the node's values change, update the compose before the next API deploy. Without both, or if they don't match the node, no production lease is made. |
@@ -240,6 +248,31 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**. Savin
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
 | `DSTACK_GATEWAY_DOMAIN` | Phala gateway base domain (e.g. `dstack-pha-prod5.phala.network`); the ingress CNAMEs `api.openkey.so` to `gateway.<base>` (never `_.<base>`, which Android cannot resolve) |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |
+
+The exporter normalizes `did_pkh` rows to their lowercase EVM address, merges them with
+`address` rows, and emits each normalized identity once as compact JSON with only `kind`
+and `value`. Evidence is never exported. Details: TC-1480
+
+Scoreboard exclusions are evaluated inside OpenKey for account, protocol and app-user counts.
+Exact emails, EVM addresses and listed email domains match case-insensitively. Domain
+matching uses the whole domain after `@`, with no subdomain or wildcard matching.
+EVM addresses and `did:pkh:eip155` DIDs
+match all account keys, including archived keys. `did:key` values use existing device approvals,
+approval requests and native request/grant records to identify associated accounts; keys with no
+account mapping do not affect the count. Multiple matches exclude one account once. An empty
+list excludes nobody; invalid rules fail the metrics request rather than returning a partial count.
+The exporter reads only the specified list file. `unsure.csv` is never read or applied.
+`patterns.csv` is advisory and is not exported, applied or counted. Domain rules apply
+only when an `email_domain` row is in the authoritative list; there are no default domains.
+Both prior CSV schemas are rejected. The exporter refuses auxiliary filenames before opening.
+`/api/internal/metrics` keeps `accounts.total` and adds `accounts.real`, `accounts.excluded`,
+`accounts.excludedDomainOnly` and `accounts.exclusionCriteria`. The domain-only count includes
+accounts matched by a listed domain and by no exact email, key or other identity rule; it stays
+in this response only, not Worker/D1/UI. Only aggregates and this criteria text leave OpenKey:
+`Excludes team, QA, agent/service and throwaway-mailbox accounts on the shared test-identity list (v1). Entries marked unsure are kept.`
+The CSV is authoritative; do not maintain a separate identity or domain list. Existing account
+joins already omit node identities without OpenKey accounts. No database migration is needed.
+Details: TC-1480
 
 `WEBAUTHN_ORIGIN` is the account browser origin and is required in production.
 Browser requests to sensitive account routes require an `Origin` matching that
