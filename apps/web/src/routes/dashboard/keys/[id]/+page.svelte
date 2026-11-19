@@ -3,6 +3,9 @@
   import { page } from '$app/stores';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import {
+    answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed,
+  } from '$lib/approval-passkey';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
@@ -18,6 +21,24 @@
   let message = $state('');
   let signature = $state('');
   let signing = $state(false);
+  // TC-3442: whether Sign needs the passkey, with the challenge for exactly this key and message. Fetched once typing
+  // pauses; a passkey refusal spends the challenge, so the revision fetches a new one.
+  let passkeyOffer = $state<{ keyId: string; message: string; need: ApprovalPasskeyNeed } | null>(null);
+  let passkeyOfferRevision = $state(0);
+  $effect(() => {
+    const offerKeyId = key && !key.archivedAt && key.keyType === 'MANAGED' ? key.id : null;
+    const offerMessage = message;
+    void passkeyOfferRevision;
+    if (!offerKeyId || !offerMessage.trim()) return;
+    let current = true;
+    // A failed fetch leaves the offer unknown: Sign goes without an assertion and a refusal fetches again.
+    const timer = setTimeout(() => {
+      api.signMessagePasskey(offerKeyId, offerMessage)
+        .then((need) => { if (current) passkeyOffer = { keyId: offerKeyId, message: offerMessage, need }; })
+        .catch(() => {});
+    }, 300);
+    return () => { current = false; clearTimeout(timer); };
+  });
 
   // Label editing
   let editingLabel = $state(false);
@@ -59,14 +80,25 @@
 
   async function signMessage() {
     if (!key || !message.trim()) return;
+    const keyId = key.id;
+    const signedText = message;
+    const passkeyNeed = passkeyOffer?.keyId === keyId && passkeyOffer.message === signedText ? passkeyOffer.need : null;
     signing = true;
     error = '';
     signature = '';
     try {
-      const result = await api.signMessage(key.id, message);
+      // TC-3442: the passkey prompt comes first, straight from the tap. A dismissed prompt sends nothing; the same
+      // offer stays for the next tap.
+      const passkeyAssertion: ApprovalPasskeyAssertion | undefined = await answerApprovalPasskey(passkeyNeed);
+      const result = await api.signMessage(keyId, signedText, undefined, undefined, passkeyAssertion);
       signature = result.signature;
     } catch (e: any) {
       error = e.message || 'Failed to sign message';
+      // TC-3442: the API refused over the passkey; its text is shown and the spent challenge is replaced.
+      if (isPasskeyApprovalRefusal(e)) {
+        passkeyOffer = null;
+        passkeyOfferRevision++;
+      }
     } finally {
       signing = false;
     }
