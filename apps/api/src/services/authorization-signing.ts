@@ -56,6 +56,15 @@ export interface VerifiedManifestFields {
   };
 }
 
+/** The renewal choice bound into an approval-request context: finite, or leased for this many seconds. */
+export type BoundRenewalChoice = { choice: 'finite' } | { choice: 'leased'; leaseLifetimeSeconds: number };
+
+/** The renewal an app asked for at a widget sign-in: its longest lease. Bound only while leases are on. */
+export interface SignInRenewalRequest {
+  version: 1;
+  leaseLifetimeSeconds: number;
+}
+
 export interface AuthorizationContextIssueInput {
   userId: string;
   keyId: string;
@@ -110,6 +119,13 @@ export interface AuthorizationContextIssueInput {
   admittedAppKeys?: AdmittedAppKey[];
   /** The app's `expiryChangeable: true` opt-in, bound at prepare time (TC-2272). */
   expiryChangeable?: boolean;
+  /**
+   * The owner's renewal choice for an approval request that signed a renewal request (TC-2933), bound at
+   * prepare time with the preview, so a later step cannot add or lengthen a lease the owner did not see.
+   */
+  renewal?: BoundRenewalChoice;
+  /** The renewal the requesting app asked for at this sign-in; the owner's choice is sealed with the preview. */
+  signInRenewal?: SignInRenewalRequest;
 }
 
 interface StoredContext {
@@ -139,6 +155,8 @@ interface StoredContext {
   appOrigin?: string;
   admittedAppKeys?: AdmittedAppKey[];
   expiryChangeable?: boolean;
+  renewal?: BoundRenewalChoice;
+  signInRenewal?: SignInRenewalRequest;
 }
 
 const store = new Map<string, StoredContext>();
@@ -390,6 +408,8 @@ export function issueAuthorizationContext(
     appOrigin: input.appOrigin,
     admittedAppKeys: input.admittedAppKeys,
     expiryChangeable: input.expiryChangeable,
+    renewal: input.renewal,
+    signInRenewal: input.signInRenewal,
   };
   store.set(token, stored);
 
@@ -846,6 +866,10 @@ export interface PeekSuccess {
     admittedAppKeys?: AdmittedAppKey[];
     /** The app opted in (`expiryChangeable: true`) to a signed expiry that differs from the one it sent. */
     expiryChangeable?: boolean;
+    /** The renewal choice bound with the preview (TC-2933). */
+    renewal?: BoundRenewalChoice;
+    /** The renewal the requesting app asked for at this sign-in. */
+    signInRenewal?: SignInRenewalRequest;
   };
 }
 
@@ -895,6 +919,8 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       appOrigin: stored.appOrigin,
       admittedAppKeys: stored.admittedAppKeys,
       expiryChangeable: stored.expiryChangeable,
+      renewal: stored.renewal,
+      signInRenewal: stored.signInRenewal,
     },
   };
 }
@@ -937,6 +963,10 @@ interface StoredPreviewApproval {
   selectedActionIds: string[]; // sorted for stable comparison
   signedMessageDigest: string;
   signedMessage: string;
+  /** The elevated action ids (TC-2927) the owner explicitly allowed on the warning screen; sorted. */
+  elevatedAllowed: string[];
+  /** The owner's renewal choice at this preview, for a sign-in whose app asked for renewal. */
+  renewal?: BoundRenewalChoice;
 }
 
 const previewApprovals = new Map<string, StoredPreviewApproval>();
@@ -953,6 +983,10 @@ export interface PreviewApprovalIssueInput {
   keyAddress: string;
   selectedActionIds: Set<string>;
   signedMessage: string;
+  /** The elevated action ids the owner explicitly allowed (TC-2927). The preview refused anything else. */
+  elevatedAllowed?: Iterable<string>;
+  /** The owner's renewal choice at this preview; sealed with the bytes, so signing uses exactly it. */
+  renewal?: BoundRenewalChoice;
 }
 
 export interface PreviewApprovalToken {
@@ -978,6 +1012,8 @@ export function issuePreviewApproval(
     selectedActionIds: [...input.selectedActionIds].sort(),
     signedMessageDigest: digest,
     signedMessage: input.signedMessage,
+    elevatedAllowed: [...new Set(input.elevatedAllowed ?? [])].sort(),
+    renewal: input.renewal,
   };
   previewApprovals.set(token, stored);
   return {
@@ -1030,6 +1066,10 @@ export interface PreviewApprovalCheckSuccess {
   signedMessage: string;
   selectedActionIds: Set<string>;
   keyAddress: string;
+  /** The elevated action ids the owner allowed at the preview (TC-2927). */
+  elevatedAllowed: Set<string>;
+  /** The owner's renewal choice sealed with the preview, if the sign-in asked for renewal. */
+  renewal?: BoundRenewalChoice;
   claim: PreviewApprovalClaim;
 }
 
@@ -1125,6 +1165,8 @@ export function checkPreviewApproval(
     signedMessage: stored.signedMessage,
     selectedActionIds: new Set(stored.selectedActionIds),
     keyAddress: stored.keyAddress,
+    elevatedAllowed: new Set(stored.elevatedAllowed),
+    renewal: stored.renewal,
     claim: { token: input.token, record: stored },
   };
 }

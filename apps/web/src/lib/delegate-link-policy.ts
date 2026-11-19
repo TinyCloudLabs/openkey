@@ -12,11 +12,15 @@
  * that may receive a delegation through a `/delegate` callback. Register an
  * app by adding its endpoint here, or, for another deployment, to
  * `VITE_DELEGATE_CALLBACK_URLS`.
- *  - Broad hosted TinyCloud MCP and the public personal-records plugin.
+ *  - Broad hosted TinyCloud MCP, the public personal-records plugin, and the
+ *    personal-records addresses listed in the Claude, Grok and Muse directories.
  */
 export const REGISTERED_CALLBACK_ENDPOINTS: readonly string[] = [
   'https://mcp.tinycloud.xyz/connect/callback',
   'https://mcp.tinycloud.xyz/chatgpt/connect/callback',
+  'https://mcp.tinycloud.xyz/claude/connect/callback',
+  'https://mcp.tinycloud.xyz/grok/connect/callback',
+  'https://mcp.tinycloud.xyz/muse/connect/callback',
 ];
 
 /**
@@ -52,26 +56,6 @@ function isSafeTransport(url: URL): boolean {
 export function isCanonicalHttpsOrigin(entry: string): boolean {
   const url = parseUrl(entry);
   return url !== null && url.protocol === 'https:' && url.origin === entry;
-}
-
-/**
- * Unsigned requester attribution is accepted only on ordinary links, as one
- * canonical HTTPS or HTTP loopback origin. It never authorizes a callback or node.
- */
-export function checkDelegateRequesterOrigin(
-  params: URLSearchParams,
-  trustedRequest: boolean,
-): { ok: true; origin?: string } | { ok: false; reason: string } {
-  const values = params.getAll('requesterOrigin');
-  if (values.length === 0) return { ok: true };
-  if (trustedRequest) {
-    return { ok: false, reason: 'A caller-reported requester cannot override a device or signed approval request.' };
-  }
-  const url = values.length === 1 ? parseUrl(values[0]!) : null;
-  if (!url || !isSafeTransport(url) || url.origin !== values[0] || url.hostname.includes('*')) {
-    return { ok: false, reason: 'This link must name one canonical HTTPS or HTTP loopback requester origin. Restart the app that opened this page.' };
-  }
-  return { ok: true, origin: values[0]! };
 }
 
 /**

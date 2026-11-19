@@ -57,13 +57,15 @@ const EVENTS = {
   delegate_session_activation_warning: true, delegate_session_activation_failed: true,
   delegate_authorization_context_issue_failed: true, owner_revocation_sign_failed: true, delegate_space_setup_notice_failed: true, delegate_session_jwk: true,
   delegate_origin_bind_failed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true, key_quote_failed: true,
-  approval_code_allocation_failed: true, approval_code_cleanup_failed: true,
+  approval_code_allocation_failed: true, approval_code_cleanup_failed: true, approval_renewal_failed: true, signin_renewal_failed: true,
+  signin_renewal_lease_signed: true,
   native_consent_peer_lookup_failed: true, native_consent_key_unseal_failed: true,
   native_consent_activation_after_host_setup_failed: true, native_consent_host_delegation_rejected: true,
   native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true, native_consent_stale_session_revoke_failed: true,
   oauth_client_create_failed: true, oauth_client_delete_failed: true, oauth_client_update_failed: true,
   oauth_client_secret_rotated: true,
   session_cap_unapplied: true,
+  reviewer_sign_in: true, reviewer_admin: true, reviewer_boot_failed: true,
   resource_introspect_failed: true, resource_introspect_rate_limited: true, mcp_userinfo_guard_failed: true,
   revoked_token_record_failed: true, revoked_token_sweep_failed: true,
   tinycloud_bootstrap_background_failed: true, tinycloud_bootstrap_background_completed: true,
@@ -132,6 +134,16 @@ function emit(level: LogLevel, event: EventName, fields: Record<string, string |
 export function log(level: LogLevel, event: EventName, errorCode?: string): void {
   const safeCode = typeof errorCode === 'string' && Object.hasOwn(ERROR_CODES, errorCode) ? errorCode : undefined;
   emit(level, event, { error_code: safeCode });
+}
+
+/** Reviewer operations are read by the API operations team. Fields are fixed: never ids, addresses or codes. */
+export function logReviewer(
+  event: 'reviewer_sign_in' | 'reviewer_admin',
+  result: 'failed' | 'success' | 'installed' | 'unset' | 'boot_hold' | 'boot_restored' | 'reset' | 'audience_pinned' | 'ready',
+  store: string,
+): void {
+  const knownStore = ['openai', 'google', 'apple', 'all'].includes(store) ? store : 'unknown';
+  emit('info', event, { store: knownStore, result });
 }
 
 /** Event with numeric fields only (status, count): never ids, addresses or tokens. */
@@ -283,6 +295,14 @@ export function logTinyCloudBootstrapSweep(
     skipped: fields.skipped,
     reaped: fields.reaped,
   });
+}
+
+/**
+ * A renewal lease signed at an app sign-in, which OpenKey keeps no other record of: its CID, whether OpenKey's managed
+ * key or the owner's wallet signed it, and its lifetime. Never the owner, the grant or the lease itself.
+ */
+export function logSignInLeaseSigned(leaseCid: string, signer: 'managed' | 'wallet', leaseLifetimeSeconds: number): void {
+  emit('info', 'signin_renewal_lease_signed', { lease_cid: leaseCid, signer, lease_lifetime_seconds: leaseLifetimeSeconds });
 }
 
 /** Approval delivery failures expose request identifiers and error class, never code or error details. */

@@ -503,11 +503,11 @@ describe('key.block and key.unblock are admitted only on the requesting app\'s o
     expect(signed).toEqual([]);
   });
 
-  // TC-2247: a website's sign-in may not name create or decrypt outside its own apps/ prefix, whatever its manifest lists.
-  test('create and decrypt outside apps/ are refused, and nothing is signed', async () => {
-    const { res, body } = await fromA({ [urn('/secrets/')]: ['tinycloud.encryption/decrypt'] }, ownBlock);
-    expect(res.status).toBe(403);
-    expect(body.code).toBe('app_key_grant_refused');
+  // TC-2927: create or decrypt outside the app's own apps/ prefix reaches the warning screen, whatever its manifest lists;
+  // nothing is signed by preparing it.
+  test('create and decrypt outside apps/ get a context for the warning screen, and nothing is signed', async () => {
+    const { res } = await fromA({ [urn('/secrets/')]: ['tinycloud.encryption/decrypt'] }, ownBlock);
+    expect(res.status).toBe(200);
     expect(signed).toEqual([]);
   });
 });

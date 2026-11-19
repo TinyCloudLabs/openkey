@@ -3,14 +3,30 @@
 Track changes to agent-facing development guidance for OpenKey. Add a concise entry when
 `agent.dev.md` or related agent workflow expectations change.
 
-## 2026-11-12
+## 2026-11-16
 
-- Ordinary consent accepts a canonical requester origin and binds its host
-  into the prepared SIWE, managed signing, wallet completion and refreshed
-  review. The UI distinguishes MCP, CLI and custom hosts while retaining the
-  caller-reported / no-signed-manifest disclosure. Documented validation,
-  protected-flow exclusions and the coordinated SDK deployment dependency.
-  Local signing and browser smoke passed; no production deployment occurred.
+- Hosted app-review accounts (TC-2775): the native-grant column guard, both migration
+  checksum registries and the reviewer policy were corrected, and the operator steps are in
+  `docs/deployment.md` under "Hosted app-review accounts". `agent.dev.md` notes the two
+  registries that pin a migration checksum and the count-only reserved-address preflight.
+  It also notes that an applied migration's file and checksum pins are frozen, so a feature
+  that added a column to it is backed out in code only.
+- Added the Claude, Grok and Muse personal-record MCP audiences and their exact
+  delegation callbacks alongside the broad and ChatGPT ones. Release needs the API
+  and web changes, the connector's token-status client registered for the new
+  resources, and the SDK candidate. No default-branch integration or deployment
+  without explicit owner approval.
+
+## 2026-11-13
+
+- The API tests workflow gained a `renewal-lease-postgres` job: the renewal lease integration
+  test also runs against a throwaway Postgres (`OPENKEY_TEST_POSTGRES_URL`), for lock and race
+  cases PGlite cannot show. Noted in `CLAUDE.md` under API Tests. Tracked in TC-2946.
+
+## 2026-11-11
+
+- Added administrator-managed hosted app-review sign-in and fixture account operations
+  for OpenAI and Google connectors (TC-2775).
 
 ## 2026-10-21
 
