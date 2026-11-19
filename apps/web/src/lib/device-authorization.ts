@@ -63,6 +63,17 @@ export function cleanConsentText(value: string): string {
     .trim();
 }
 
+/** A device code's eight letters and numbers, upper case, whatever else was typed or pasted around them. */
+export function normalizeDeviceUserCode(value: string): string {
+  return value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+}
+
+/** A device code as the terminal shows it, `ABCD-EFGH`; a partial code gets the dash once it passes four. */
+export function formatDeviceUserCode(value: string): string {
+  const normalized = normalizeDeviceUserCode(value);
+  return normalized.length > 4 ? `${normalized.slice(0, 4)}-${normalized.slice(4)}` : normalized;
+}
+
 export async function lookupDeviceRequest(apiBase: string, userCode: string): Promise<DeviceRequestRecord | null> {
   const response = await fetch(`${apiBase}/api/device-authorizations/lookup?user_code=${encodeURIComponent(userCode)}`, {
     credentials: 'omit',
