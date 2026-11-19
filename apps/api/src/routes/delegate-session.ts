@@ -520,8 +520,33 @@ function assertRawEncryptionPermission(
   }
 }
 
-/** Device authorization grants no encryption ability (TC-3204). */
+/** Service name of the device authorization encryption entry, exact on the wire. */
 const DEVICE_ENCRYPTION_SERVICE = 'tinycloud.encryption';
+/** Space name of the approving account's own default encryption network. */
+const DEVICE_ENCRYPTION_SPACE = 'default';
+
+/**
+ * URN of the signer's own `default` encryption network. Single producer for the
+ * device entry; owner DID uses the signer's chain and EIP-55 address.
+ */
+export function defaultEncryptionNetworkUrn(signer: { address: string; chainId: number }): string {
+  return `${RAW_ENCRYPTION_PREFIX}did:pkh:eip155:${signer.chainId}:${getAddress(signer.address)}:default`;
+}
+
+/**
+ * The exact device authorization encryption entry: service `tinycloud.encryption`,
+ * space `default`, path `""`, and only the decrypt action. Any other entry keeps
+ * its existing handling.
+ */
+export function isDeviceDefaultEncryptionEntry(entry: DelegationPermissionEntry): boolean {
+  return (
+    entry.service === DEVICE_ENCRYPTION_SERVICE &&
+    entry.space === DEVICE_ENCRYPTION_SPACE &&
+    entry.path === '' &&
+    entry.actions.length === 1 &&
+    entry.actions[0] === ENCRYPTION.DECRYPT
+  );
+}
 
 /**
  * Translate CLI permission entries into the ability maps `prepareSession()`
@@ -531,8 +556,9 @@ const DEVICE_ENCRYPTION_SERVICE = 'tinycloud.encryption';
  * network. Actions stay fully-qualified (`tinycloud.sql/read`) because the
  * SIWE recap stores them that way.
  *
- * With `deviceTransaction`, any `tinycloud.encryption` entry, in any spelling,
- * is refused: a device approval never signs decrypt (TC-3204).
+ * With `deviceTransaction`, the exact default encryption entry (see
+ * `isDeviceDefaultEncryptionEntry`) resolves to the signer's own default
+ * network. Every other entry is handled as before.
  */
 export function sessionAbilitiesFromPermissions(
   permissions: DelegationPermissionEntry[],
@@ -541,13 +567,19 @@ export function sessionAbilitiesFromPermissions(
 ): SessionAbilities {
   const entries: RecapEntry[] = [];
   const rawAbilities: RawAbilitiesMap = Object.create(null);
+  let deviceDefaultSeen = false;
   permissions.forEach((entry, index) => {
-    if (options.deviceTransaction && canonicalizeServiceName(entry.service.toLowerCase()) === DEVICE_ENCRYPTION_SERVICE) {
-      throw new DelegateRequestError(
-        'invalid_permissions',
-        `permissions[${index}] asks to decrypt, and a device approval can't grant tinycloud.encryption. Start a new sign-in.`,
-        [{ path: `permissions[${index}].service`, message: 'Device approvals grant no tinycloud.encryption ability', value: entry.service }],
-      );
+    if (options.deviceTransaction && isDeviceDefaultEncryptionEntry(entry)) {
+      if (deviceDefaultSeen) {
+        throw new DelegateRequestError(
+          'invalid_permissions',
+          `permissions[${index}] repeats the default encryption entry; a device request carries one`,
+          [{ path: `permissions[${index}]`, message: 'Only one default encryption entry is allowed' }],
+        );
+      }
+      deviceDefaultSeen = true;
+      addActions(rawAbilities, defaultEncryptionNetworkUrn(signer), [ENCRYPTION.DECRYPT]);
+      return;
     }
     if (isRawEncryptionPermission(entry)) {
       assertRawEncryptionPermission(entry, index, signer);
@@ -594,7 +626,8 @@ export interface PrepareDelegationSessionInput {
    */
   permissions?: DelegationPermissionEntry[];
   /**
-   * Device authorization context. Then any encryption entry is refused.
+   * Device authorization context. Only then does the exact default encryption
+   * entry resolve to the signer's own network.
    */
   deviceTransaction?: boolean;
   /** Pre-validated, clamped delegation lifetime in milliseconds. */
