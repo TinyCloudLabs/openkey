@@ -19,7 +19,7 @@ for (const target of cardPages) {
       await page.goto(target.url);
       await expect(heading(page, 'Sign in to review this request')).toBeVisible();
       await expect(page.getByText('Signing in doesn’t approve anything. You review the request next.')).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Continue with email' })).toBeEnabled();
+      await expect(page.getByRole('link', { name: 'Continue with email' })).toBeEnabled();
       await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeEnabled();
       await expect(page.getByRole('button', { name: 'Continue with Apple' })).toBeEnabled();
       await expect(page.getByRole('button', { name: 'Use a passkey instead' })).toBeEnabled();
@@ -108,5 +108,5 @@ test('a 401 on Approve brings the card back with "You were signed out"', async (
   await expect(page.getByText('Your OpenKey session ended before the approval went through. Sign in again and you’ll come straight back to this request.')).toBeVisible();
   await expect(page.getByRole('alert')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Use a passkey instead' })).toBeEnabled();
-  await expect(page.getByRole('button', { name: 'Continue with email' })).toBeEnabled();
+  await expect(page.getByRole('link', { name: 'Continue with email' })).toBeEnabled();
 });
