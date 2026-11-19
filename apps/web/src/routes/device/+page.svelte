@@ -170,7 +170,6 @@
 
       {#if request}
         <section class="mt-6 flex flex-col gap-5">
-          <p class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm font-medium text-amber-900" role="note">Approve only if you started this on your own device.</p>
           {#if displayReason}
             <div class="text-sm">
               <blockquote class="break-words text-surface-900">“{displayReason}”</blockquote>

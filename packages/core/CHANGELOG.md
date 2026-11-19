@@ -1,5 +1,11 @@
 # @openkey/core
 
+## 0.13.0-beta.3
+
+### Patch Changes
+
+- 5ee1a51: Accept the two production TinyCloud node names as the same node for native delegation validation and renewal.
+
 ## 0.13.0-beta.1
 
 ### Patch Changes

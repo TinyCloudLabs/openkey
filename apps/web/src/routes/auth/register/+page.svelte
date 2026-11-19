@@ -295,6 +295,7 @@
   <TermsStep
     status={terms.status}
     surface="web"
+    returnTo={initialReturnTo}
     email={terms.email}
     onaccepted={termsAccepted}
     onsignin={() => { terms = null; otp = ''; error = ''; step = 'email'; }}

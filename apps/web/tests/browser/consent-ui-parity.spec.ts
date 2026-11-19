@@ -5,6 +5,7 @@ import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
 import { generateKeyPairSync } from 'node:crypto';
+import { PUBLIC_DELEGATION_FIELDS } from '@openkey/delegation-code-fields';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
@@ -110,12 +111,7 @@ test('manual OpenKey login mints a short code from public fields and keeps the f
     spaceReady: true,
     requestedSpaces: ['tinycloud:pkh:eip155:1:0x123:default'],
   };
-  const publicKeys = [
-    'delegationHeader', 'delegationCid', 'spaceId', 'ownerDid', 'verificationMethod', 'jwk',
-    'address', 'chainId', 'hostActivated', 'spaceReady', 'spaceError', 'spacePending',
-    'primary', 'edited', 'reason', 'expirationTime', 'expiresAt', 'expiry', 'siwe',
-    'signature', 'signedMessage', 'permissions',
-  ];
+  const publicKeys: readonly string[] = PUBLIC_DELEGATION_FIELDS;
   await page.route('**/api/delegate', (route) => json(route, 200, delegation));
   await page.route('**/api/delegation-codes', (route) => {
     const body = route.request().postDataJSON() as { delegation: Record<string, unknown> };
@@ -246,7 +242,6 @@ async function openDeviceRelayReview(
   });
   await page.goto(`/delegate?${params}`);
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
-  await page.getByRole('checkbox', { name: 'I started this request myself, on a device I control.' }).check();
 }
 
 test('a prepare fetch failure uses fixed text, not the browser error message', async ({ page }) => {
@@ -285,6 +280,7 @@ test('a successful prepare after a terminal failure re-enables Approve', async (
   await approve.click();
   await expect(approve).toBeDisabled();
   await expect(page.getByTestId('approval-expiry-line')).toBeVisible();
+  await page.getByText('Advanced details', { exact: true }).click();
   await page.getByText('How long it lasts').click();
   await page.getByRole('button', { name: '24 hours', exact: true }).click();
   await expect(approve).toBeEnabled();
@@ -347,6 +343,22 @@ test('device relay network failure has no status suffix', async ({ page }) => {
   await openDeviceRelayReview(page, { relayStatus: 'network' });
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveText("You approved this, but OpenKey couldn't send it to the app or command. Press Approve to try again.");
+});
+
+test('the device-link review has no self-started notice or checkbox, and Approve sends without either', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openDeviceRelayReview(page, { relayStatus: 200 });
+  const approve = page.getByRole('button', { name: 'Approve', exact: true });
+  await expect(approve).toBeEnabled();
+  await expect(page.getByRole('region', { name: 'Device request' })).toContainText('https://node.tinycloud.xyz');
+  await expect(page.getByText('Only approve if you started this on your own device.')).toHaveCount(0);
+  await expect(page.getByText('Approving hands this access to the terminal that showed you the code.')).toHaveCount(0);
+  await expect(page.getByText('I started this request myself, on a device I control.')).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: /I started this request myself/ })).toHaveCount(0);
+  const approved = page.waitForRequest((req) => req.url().includes('/api/device-authorizations/tx_1/approve') && req.method() === 'POST');
+  await approve.click();
+  await approved;
+  await expect(page.getByRole('alert')).toHaveCount(0);
 });
 
 // TC-2984: a device link's lifetime default comes from the verified server

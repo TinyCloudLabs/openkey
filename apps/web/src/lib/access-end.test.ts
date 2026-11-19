@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
 import { appKeyAccessStatement } from '../../../../packages/capability-review/src/index';
-import { formatAccessEnd } from './access-end';
+import { formatAccessEnd, formatLocalAccessEnd } from './access-end';
 
 describe('the end of an access', () => {
   test('reads as a date and a time of day in UTC, with the zone written out', () => {
@@ -29,5 +29,16 @@ describe('the end of an access', () => {
     expect(appKeyAccessStatement('2026-10-27T14:34:00.000Z', formatAccessEnd)).toBe('This access lasts until Oct 27, 2026, 2:34 PM UTC.');
     expect(appKeyAccessStatement('soon', formatAccessEnd)).toBe('This access lasts until it expires.');
     expect(appKeyAccessStatement(null, formatAccessEnd)).toBe('This access lasts until it expires.');
+  });
+});
+
+describe('the end of an access in the viewer\'s zone', () => {
+  test('reads as the owner\'s own date and time with the zone abbreviation', () => {
+    expect(formatLocalAccessEnd('2026-10-07T05:00:00.000Z', 'America/New_York')).toBe('Oct 7, 2026, 1:00 AM EDT');
+    expect(formatLocalAccessEnd('2026-12-18T02:00:00.000Z', 'America/New_York')).toBe('Dec 17, 2026, 9:00 PM EST');
+  });
+
+  test('a value that is not a date is shown as it is', () => {
+    expect(formatLocalAccessEnd('soon')).toBe('soon');
   });
 });
