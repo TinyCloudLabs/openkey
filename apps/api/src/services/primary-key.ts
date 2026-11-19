@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { EthereumKey, PrismaClient } from '@openkey/db';
-import { createTeeClient, getAddressFromPrivateKey, unseal } from '@openkey/tee';
+import { createTeeClient, getAddressFromPrivateKey } from '@openkey/tee';
 import { getAddress, type Hex } from 'viem';
-import { deriveKeyForRecord } from './key-sealing';
+import { unsealKeyForRecord } from './key-sealing';
 import { requestDigest } from './tinycloud-manage-key-control';
 
 const tee = createTeeClient();
@@ -98,7 +98,7 @@ export async function setPrimaryKey(
       // Resolve exactly the signing path used by delegate/sign. A nonempty
       // blob alone does not prove it can be decrypted or owns this address.
       try {
-        const privateKey = await unseal(target.sealedBlob, await deriveKeyForRecord(tee, target));
+        const privateKey = await unsealKeyForRecord(tee, target, target.sealedBlob);
         if (getAddressFromPrivateKey(privateKey as Hex) !== getAddress(target.address)) {
           return { kind: 'unavailable' as const };
         }

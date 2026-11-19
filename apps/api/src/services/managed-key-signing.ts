@@ -1,17 +1,16 @@
 import type { Hex } from 'viem';
-import { createTeeClient, unseal } from '@openkey/tee';
-import { deriveKeyForRecord } from './key-sealing';
+import { createTeeClient } from '@openkey/tee';
+import { unsealKeyForRecord, type SealingRecord } from './key-sealing';
 
 const tee = createTeeClient();
 export async function unsealManagedKey(
-  key: { userId: string | null; sealingContext?: string | null },
+  key: SealingRecord,
   sealedBlob: string,
 ): Promise<Hex> {
-  const sealingKey = await deriveKeyForRecord(tee, key);
-  return unseal(sealedBlob, sealingKey) as Promise<Hex>;
+  return unsealKeyForRecord(tee, key, sealedBlob) as Promise<Hex>;
 }
 export async function signManagedKey(
-  key: { userId: string | null; sealingContext?: string | null },
+  key: SealingRecord,
   sealedBlob: string,
   message: string,
 ): Promise<Hex> {

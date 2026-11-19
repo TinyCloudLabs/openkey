@@ -233,12 +233,17 @@ export async function unseal(sealedData: string, sealingKey: Uint8Array): Promis
   return decrypted.toString('utf8');
 }
 
+// Re-export versioned sealing utilities
+export { SealingKeyring, sealingKid, isVersionedSealed } from './versioned-sealing';
+export type { SealingBinding, SealingKeyProvider } from './versioned-sealing';
+
 // Re-export wallet utilities
 export { createWalletFromPrivateKey, generatePrivateKey, getAddressFromPrivateKey } from './wallet';
 
 // Re-export Nostr identity utilities (secp256k1 Schnorr / BIP-340, NOT ECDSA)
 export {
   generateNostrKeypair,
+  deriveNostrPubkey,
   canonicalizeNip01,
   computeEventId,
   signNostrEvent,

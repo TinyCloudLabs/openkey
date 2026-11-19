@@ -8,8 +8,6 @@ import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import {
   createTeeClient,
-  seal,
-  unseal,
   generateNostrKeypair,
   computeEventId,
   signNostrEvent,
@@ -19,7 +17,7 @@ import {
 import { requireSession, type SessionContext } from '../middleware/session';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { rejectNonOpenKeySignRequest } from '../middleware/browser-control';
-import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
+import { createSealingContext, sealKeyForRecord, unsealKeyForRecord } from '../services/key-sealing';
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
@@ -125,8 +123,7 @@ nostrKeysRouter.post('/', async (c) => {
 
   const keypair = generateNostrKeypair();
   const sealingContext = createSealingContext();
-  const sealingKey = await tee.deriveKey(`openkey/key/${sealingContext}`);
-  const sealedSecret = await seal(keypair.secretKeyHex, sealingKey);
+  const sealedSecret = await sealKeyForRecord(tee, { userId: user.id, sealingContext }, keypair.secretKeyHex);
 
   // The userId unique constraint makes the database the arbiter when two
   // first-connect requests race. Prisma emits a native upsert for this shape,
@@ -331,7 +328,6 @@ nostrKeysRouter.post('/:keyId/sign-event', async (c) => {
     return c.json({ error: 'interaction_required' }, 403);
   }
 
-  const sealingKey = await deriveKeyForRecord(tee, { userId: key.userId, sealingContext: key.sealingContext });
   const unsignedEvent: UnsignedNostrEvent = {
     pubkey: key.pubkeyHex,
     created_at: template.created_at,
@@ -341,7 +337,7 @@ nostrKeysRouter.post('/:keyId/sign-event', async (c) => {
   };
 
   const signed = await signNostrEvent(
-    { sealedSecret: key.sealedSecret, sealingKey, expectedPubkeyHex: key.pubkeyHex },
+    { unsealSecret: () => unsealKeyForRecord(tee, key, key.sealedSecret), expectedPubkeyHex: key.pubkeyHex },
     unsignedEvent,
   );
 
