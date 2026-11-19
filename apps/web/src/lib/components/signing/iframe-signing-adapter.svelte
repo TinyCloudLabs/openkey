@@ -3,14 +3,16 @@
   // embedded iframe (`/widget/embed/sign`) surface.
   //
   // Popup and iframe surfaces run the same completion logic (both are
-  // widget flows that either fetch a server-signed preview or fall
-  // through to exact-byte signing). This adapter therefore mirrors the
+  // widget flows that consume a ready preview or sign original bytes).
+  // This adapter therefore mirrors the
   // popup adapter one-for-one — the parity test asserts that with the
   // same model, initialSelection, and transport shape, both adapters
   // render byte-identical DOM and invoke the same transport calls in
   // response to the same real DOM keyboard/click events.
 
-  import type { CapabilityReviewModel } from "@openkey/capability-review";
+  import { untrack } from "svelte";
+  import { readSpaceHostFacts, type CapabilityReviewModel } from "@openkey/capability-review";
+  import { watchHostPeer, type PeerRecognitionState } from "$lib/host-peer-recognition";
   import SigningApproval from "$lib/components/signing/signing-approval.svelte";
   import type { WidgetSigningTransport } from "./signing-adapter-types";
 
@@ -44,14 +46,26 @@
     transport.invalidatePreview();
   }
 
+  // Node key on a host approval: look it up on the known nodes. The state is
+  // shown in the approval view; it never enables or disables anything else.
+  const hostFacts = $derived(readSpaceHostFacts(model, selection));
+  const hostFactsKey = $derived(
+    hostFacts ? JSON.stringify([hostFacts.spaces.map((space) => space.spaceId), hostFacts.peerDid]) : "",
+  );
+  let peerRecognition = $state<PeerRecognitionState | null>(null);
+  $effect(() => {
+    void hostFactsKey;
+    return watchHostPeer(untrack(() => hostFacts), import.meta.env.VITE_DELEGATE_NODE_ORIGINS, (next) => {
+      peerRecognition = next;
+    }, untrack(() => transport.host));
+  });
+
   function onEditingChange(next: boolean) {
     editing = next;
   }
 
   function onApprove() {
-    if (transport.canUseAuthorizeSign && !transport.previewReady) {
-      void transport.requestPreview();
-    } else {
+    if (!transport.canUseAuthorizeSign || transport.previewReady) {
       void transport.approveAndSign();
     }
   }
@@ -67,11 +81,20 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
+  approveBlockedReason={transport.approveBlockedReason ?? null}
+  refused={transport.refused ?? false}
+  previewPending={transport.canUseAuthorizeSign && !transport.previewReady}
   {layoutBlocked}
   stickyActions
-  finalPreview={transport.previewReady}
+  {peerRecognition}
+  expiryMs={transport.expiry?.chosenMs ?? null}
+  onExpiryChange={transport.expiry?.onChange}
+  renewal={transport.renewal ?? null}
+  onceExpiryDefault={transport.expiry?.onceDefault ?? false}
+  elevated={transport.elevated ?? null}
   {onApprove}
   {onCancel}
+  onRetry={transport.retryPreview}
   {onSelectionChange}
   {onEditingChange}
 />

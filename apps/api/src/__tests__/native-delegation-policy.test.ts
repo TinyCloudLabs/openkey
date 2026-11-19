@@ -7,6 +7,7 @@ import {
   OAUTH_SCOPES,
   RESTRICTED_SCOPES,
   TINYCLOUD_DELEGATION_SCOPE,
+  TINYCLOUD_IDENTITY_SCOPE,
   TINYCLOUD_SESSION_SCOPE,
 } from '../oauth-config';
 import {
@@ -42,8 +43,10 @@ describe('tinycloud:delegation scope sets', () => {
     expect(DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES).not.toContain(TINYCLOUD_DELEGATION_SCOPE);
   });
 
-  test('delegation and manage-key are admin-managed and never dynamically registrable', () => {
-    expect([...ADMIN_MANAGED_SCOPES].sort()).toEqual([TINYCLOUD_DELEGATION_SCOPE, 'tinycloud:manage-key'].sort());
+  test('delegation, manage-key, and identity are admin-managed and never dynamically registrable', () => {
+    expect([...ADMIN_MANAGED_SCOPES].sort()).toEqual([
+      TINYCLOUD_DELEGATION_SCOPE, TINYCLOUD_IDENTITY_SCOPE, 'tinycloud:manage-key',
+    ].sort());
     for (const scope of ADMIN_MANAGED_SCOPES) {
       expect(DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES).not.toContain(scope as never);
     }
@@ -156,6 +159,7 @@ describe('public protocol paths', () => {
       '/api/auth/oauth2/par',
       '/api/auth/oauth2/tinycloud/renew',
       '/api/auth/oauth2/tinycloud/revoke',
+      '/api/auth/providers',
     ]) {
       expect(isPublicProtocolPath(`https://api.openkey.test${path}`), path).toBe(true);
     }
@@ -169,6 +173,8 @@ describe('public protocol paths', () => {
       '/api/auth/oauth2/token/',
       '/api/auth/oauth2/tinycloud/renew/../../consent',
       '/api/auth/oauth2/%74oken',
+      '/api/auth/providers/',
+      '/api/auth/providers/apple',
     ]) {
       expect(isPublicProtocolPath(`https://api.openkey.test${path}`), path).toBe(false);
     }

@@ -27,6 +27,7 @@ export type MetadataTrustStatus =
   | "digest-mismatch"; // manifest content hash did not match declared digest
 
 export type CapabilityFamily =
+  | "courier"
   | "bootstrap-kv"
   | "bootstrap-sql"
   | "bootstrap-capabilities"
@@ -39,6 +40,7 @@ export type CapabilityFamily =
   | "secret-mutation"
   | "encryption-key"
   | "encryption-decrypt"
+  | "app-keys"
   | "space-create"
   | "space-read"
   | "hooks"

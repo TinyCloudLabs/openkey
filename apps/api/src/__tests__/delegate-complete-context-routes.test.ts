@@ -10,6 +10,9 @@ import { Hono } from 'hono';
 import { requestLogger, apiErrorHandler } from '../log';
 import type { ApiEnv } from '../log';
 import { privateKeyToAccount } from 'viem/accounts';
+import { computeCid, siweToDelegationHeaders } from '@tinycloud/node-sdk-wasm';
+import type { signManagedKey as SignManagedKey } from '../services/managed-key-signing';
+import { SiweMessage } from 'siwe';
 import type { SpaceHostResult, activateSessionWithHost as ActivateSessionWithHost } from '@tinycloud/sdk-core';
 import {
   DeviceAuthorizationService,
@@ -17,8 +20,203 @@ import {
   sessionDidForPublicJwk,
 } from '../services/device-authorization';
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
+import { createDelegationCodeRouter, type DelegationCodeStore } from '../routes/delegation-codes';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
 import { mockModules, replaceModules } from './mock-module';
+import { recapOf } from './fake-tinycloud-node';
+function cidFromAuthorization(authorization: string): string {
+  const encoded = authorization.replace(/^Bearer /i, '');
+  return computeCid(Buffer.from(encoded, 'base64url'), 0x55n);
+}
+
+
+async function triggerManagedSaveFailure(revokeResponse: () => Promise<Response>) {
+  failApprovalSave = true;
+  const prepared = await prepare({ prefix: 'agents', approvalRequestId: 'request_managed' });
+  const valid = {
+    keyId: keyRecord.id,
+    jwk,
+    host,
+    prepared: prepared.prepared,
+    authorizationContextToken: prepared.authorizationContext.token,
+    selectedActionIds: prepared.selectedActionKeys,
+    protocolVersion: 1,
+    approvalRequestId: 'request_managed',
+  };
+  const output: string[] = [];
+  const stdoutWrite = process.stdout.write;
+  const revokeFetch = spyOn(globalThis, 'fetch').mockImplementation((async () => revokeResponse()) as unknown as typeof fetch);
+  let fetchCalls: typeof revokeFetch.mock.calls = [];
+  process.stdout.write = ((chunk: string | Uint8Array) => { output.push(String(chunk)); return true; }) as typeof process.stdout.write;
+  try {
+    await expect(router.request('/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(valid),
+    })).rejects.toThrow('approval save failed');
+  } finally {
+    fetchCalls = [...revokeFetch.mock.calls];
+    process.stdout.write = stdoutWrite;
+    revokeFetch.mockRestore();
+  }
+  expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+  expect(releaseApprovalDelegation).toHaveBeenCalledTimes(1);
+  return {
+    fetchCalls,
+    logs: output.filter(line => line.startsWith('{')).map(line => JSON.parse(line) as Record<string, unknown>),
+  };
+}
+
+test('external-wallet approval save failure does not send an invalid session-key revoke', async () => {
+  keyRecord.keyType = 'EXTERNAL';
+  keyRecord.sealedBlob = null;
+  failApprovalSave = true;
+  const prepared = await prepare({ prefix: 'agents', approvalRequestId: 'request_external' });
+  const body = { ...await completeBody(prepared), approvalRequestId: 'request_external' };
+  const revokeFetch = spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ revoked: true }));
+
+  try {
+    await expect(router.request('/complete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })).rejects.toThrow('approval save failed');
+    expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+    expect(revokeFetch).not.toHaveBeenCalled();
+    expect(releaseApprovalDelegation).toHaveBeenCalledTimes(1);
+  } finally {
+    revokeFetch.mockRestore();
+  }
+});
+
+test('managed approval save failure sends an owner-signed revocation for the activated delegation CID', async () => {
+  const result = await triggerManagedSaveFailure(async () => {
+    const sessionHeader = activateSessionWithHost.mock.calls[0]?.[1];
+    if (!sessionHeader) throw new Error('session activation was not attempted');
+    return Response.json({ revoked: true, cid: cidFromAuthorization(sessionHeader.Authorization) });
+  });
+  expect(result.fetchCalls).toHaveLength(1);
+  const [url, init] = result.fetchCalls[0]!;
+  expect(String(url)).toBe(`${host}/revoke`);
+  expect(init?.method).toBe('POST');
+  expect(init?.body).toBeUndefined();
+  const authorization = new Headers(init?.headers).get('Authorization');
+  expect(authorization).toBeString();
+
+  const sessionHeader = activateSessionWithHost.mock.calls[0]?.[1];
+  if (!sessionHeader || !authorization) throw new Error('delegation headers missing');
+  const cid = cidFromAuthorization(sessionHeader.Authorization);
+  const siwe = revocationSiwes[0];
+  if (!siwe) throw new Error('owner revocation SIWE was not captured');
+  const parsed = new SiweMessage(siwe);
+  expect(parsed.uri).toBe(`ucan:${cid}`);
+  expect(parsed.address.toLowerCase()).toBe(account.address.toLowerCase());
+  expect(authorization).toBe(siweToDelegationHeaders({
+    siwe,
+    signature: await account.signMessage({ message: siwe }),
+  }).Authorization);
+  expect(result.logs.some(line => line.event === 'delegate_session_revoke_failed')).toBe(false);
+});
+
+for (const [name, response, expectedStatus] of [
+  ['host rejects with non-2xx', async () => new Response('host response secret', { status: 503 }), 503],
+  ['host returns a wrong result', async () => Response.json({ revoked: false, cid: 'wrong' }), 200],
+  ['host returns a missing result', async () => new Response(null, { status: 200 }), 200],
+] as const) {
+  test(`managed approval save failure propagates when ${name}`, async () => {
+    const result = await triggerManagedSaveFailure(response);
+    expect(result.fetchCalls).toHaveLength(1);
+    const failure = result.logs.find(line => line.event === 'delegate_session_revoke_failed');
+    expect(failure).toMatchObject({ event: 'delegate_session_revoke_failed', status: expectedStatus });
+    expect(failure).not.toHaveProperty('error_name');
+    expect(JSON.stringify(failure)).not.toContain('host response secret');
+  });
+}
+
+test('managed approval save failure propagates when revoke networking fails', async () => {
+  const result = await triggerManagedSaveFailure(async () => { throw new Error('network response secret'); });
+  expect(result.fetchCalls).toHaveLength(1);
+  const failure = result.logs.find(line => line.event === 'delegate_session_revoke_failed');
+  expect(failure).toMatchObject({ event: 'delegate_session_revoke_failed', error_name: 'Error' });
+  expect(failure).not.toHaveProperty('message');
+  expect(JSON.stringify(failure)).not.toContain('network response secret');
+});
+
+test('managed approval save failure does not revoke when activation reports failure', async () => {
+  activateSessionWithHost.mockImplementationOnce(async () => ({
+    success: false, status: 502, error: 'host unavailable',
+  } satisfies SpaceHostResult));
+  const result = await triggerManagedSaveFailure(async () => Response.json({ revoked: true }));
+  expect(result.fetchCalls).toHaveLength(0);
+  expect(result.logs.some(line => line.event === 'delegate_session_revoke_failed')).toBe(false);
+});
+
+test('managed approval save failure attempts exact-CID revoke after activation timeout', async () => {
+  const previousTimeout = process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS;
+  process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS = '20';
+  activateSessionWithHost.mockImplementationOnce(() => new Promise<SpaceHostResult>(() => undefined));
+  try {
+    const result = await triggerManagedSaveFailure(async () => {
+      const header = activateSessionWithHost.mock.calls[0]?.[1];
+      if (!header) throw new Error('session activation was not attempted');
+      return Response.json({ revoked: true, cid: cidFromAuthorization(header.Authorization) });
+    });
+    expect(result.fetchCalls).toHaveLength(1);
+    const sessionHeader = activateSessionWithHost.mock.calls[0]?.[1];
+    if (!sessionHeader) throw new Error('session activation was not attempted');
+    const siwe = revocationSiwes.at(-1);
+    if (!siwe) throw new Error('owner revocation SIWE was not captured');
+    expect(new SiweMessage(siwe).uri).toBe(`ucan:${cidFromAuthorization(sessionHeader.Authorization)}`);
+    expect(releaseApprovalDelegation).toHaveBeenCalledTimes(1);
+  } finally {
+    if (previousTimeout === undefined) delete process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS;
+    else process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS = previousTimeout;
+  }
+});
+
+test('managed approval save failure remains the error after timeout revoke fails', async () => {
+  const previousTimeout = process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS;
+  process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS = '20';
+  activateSessionWithHost.mockImplementationOnce(() => new Promise<SpaceHostResult>(() => undefined));
+  try {
+    const result = await triggerManagedSaveFailure(async () => { throw new Error('revoke network failure'); });
+    expect(result.fetchCalls).toHaveLength(1);
+    expect(result.logs.some(line => line.event === 'delegate_session_revoke_failed')).toBe(true);
+    expect(releaseApprovalDelegation).toHaveBeenCalledTimes(1);
+  } finally {
+    if (previousTimeout === undefined) delete process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS;
+    else process.env.TINYCLOUD_BOOTSTRAP_NODE_TIMEOUT_MS = previousTimeout;
+  }
+});
+import { NEVER_SENT_TO_BROKER_FIELDS, PUBLIC_DELEGATION_FIELDS, publicDelegationForCode } from '@openkey/delegation-code-fields';
+async function expectClassifiedCompletionFields(response: Record<string, unknown>) {
+  const allowed = new Set<string>([...PUBLIC_DELEGATION_FIELDS, ...NEVER_SENT_TO_BROKER_FIELDS]);
+  const unclassified = Object.keys(response).filter((field) => !allowed.has(field));
+  expect(
+    unclassified,
+    `Unclassified completion response key(s): ${unclassified.join(', ')}. Add each to a list in packages/delegation-code-fields with a reason.`,
+  ).toEqual([]);
+  const omitted = Object.keys(response).filter((field) => !PUBLIC_DELEGATION_FIELDS.includes(field as typeof PUBLIC_DELEGATION_FIELDS[number]));
+  expect(omitted).toEqual([...NEVER_SENT_TO_BROKER_FIELDS]);
+  const store: DelegationCodeStore = {
+    create: async () => true,
+    consume: async () => null,
+    claim: async () => null,
+    acknowledge: async () => false,
+    deleteExpired: async () => {},
+  };
+  const broker = createDelegationCodeRouter({
+    store,
+    sessionMiddleware: createMiddleware(async (_c, next) => next()),
+  });
+  const postToBroker = (delegation: Record<string, unknown>) => broker.request('/', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ delegation }),
+  });
+  expect((await postToBroker(publicDelegationForCode(response))).status).toBe(201);
+  expect((await postToBroker(response)).status).toBe(400);
+}
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
@@ -54,10 +252,12 @@ const prisma = {
   tinyCloudBootstrapState: {},
 };
 
-const activateSessionWithHost = mock(async (_host: string, _header: { Authorization: string }): Promise<SpaceHostResult> => ({
-  success: true,
-  status: 200,
-}));
+async function activatedReceipt(_host: string, header: { Authorization: string }): Promise<SpaceHostResult> {
+  const activated = [...new Set(Object.keys(recapOf(header.Authorization))
+    .filter(resource => resource.startsWith('tinycloud:')).map(resource => resource.split('/')[0]!))];
+  return { success: true, status: 200, activated, skipped: [] };
+}
+const activateSessionWithHost = mock(activatedReceipt);
 let realActivateSessionWithHost: typeof ActivateSessionWithHost;
 const ensureTinyCloudBootstrap = mock(async () => ({ status: 'complete' as const }));
 const isTinyCloudBootstrapComplete = mock(async () => bootstrapComplete);
@@ -67,6 +267,9 @@ const deviceService = new DeviceAuthorizationService(new MemoryDeviceAuthorizati
 });
 
 const unseal = mock(async () => privateKey);
+let failApprovalSave = false;
+const revocationSiwes: string[] = [];
+const releaseApprovalDelegation = mock(async () => {});
 
 replaceModules({
   '../middleware/session': () => ({
@@ -98,6 +301,25 @@ await mockModules({
   '../services/tinycloud-bootstrap': () => ({
     ensureTinyCloudBootstrap,
     isTinyCloudBootstrapComplete,
+  }),
+});
+await mockModules({
+  '../routes/approval-requests': () => ({
+    admitApprovalDelegation: async () => {},
+    checkApprovalDelegation: async () => {},
+    bindApprovalRenewal: async () => undefined,
+    confirmBoundRenewal: () => {},
+    releaseApprovalDelegation,
+    saveApprovalDelegation: async (_body: unknown, _userId: string, delegation: Record<string, unknown>) => {
+      if (failApprovalSave) throw new Error('approval save failed');
+      return delegation;
+    },
+  }),
+  '../services/managed-key-signing': actual => ({
+    signManagedKey: async (key: Parameters<typeof SignManagedKey>[0], sealedBlob: string, message: string) => {
+      if (message.includes('URI: ucan:')) revocationSiwes.push(message);
+      return actual.signManagedKey(key, sealedBlob, message);
+    },
   }),
 });
 
@@ -137,8 +359,11 @@ beforeEach(() => {
   keyRecord.sealedBlob = 'sealed-blob';
   autoSignEnabled = true;
   bootstrapComplete = false;
+  failApprovalSave = false;
+  revocationSiwes.length = 0;
+  releaseApprovalDelegation.mockClear();
   activateSessionWithHost.mockClear();
-  activateSessionWithHost.mockImplementation(async () => ({ success: true, status: 200 }));
+  activateSessionWithHost.mockImplementation(activatedReceipt);
   ensureTinyCloudBootstrap.mockClear();
   isTinyCloudBootstrapComplete.mockClear();
   prisma.user.findUnique.mockClear();
@@ -150,7 +375,11 @@ async function post(path: string, body: Record<string, unknown>) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  return { status: res.status, body: (await res.json()) as Record<string, any> };
+  const result = { status: res.status, body: (await res.json()) as Record<string, any> };
+  if (res.status === 200 && (path === '/' || path === '/complete')) {
+    await expectClassifiedCompletionFields(result.body);
+  }
+  return result;
 }
 
 async function prepare(extra: Record<string, unknown> = {}) {
@@ -243,10 +472,11 @@ describe('TC-943 prod host pair (pre-merge)', () => {
 
   function expectNoOnboarding(result: Awaited<ReturnType<typeof post>>) {
     expect(result.status).toBe(200);
-    expect(result.body.hostActivated).toBe(true);
+    expect(result.body.hostActivated).toBe(false);
     expect(result.body.spaceReady).toBe(false);
     expect(result.body.spaceError).toBeUndefined();
     expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
     expect(unseal).toHaveBeenCalledTimes(1);
   }
 
@@ -406,6 +636,7 @@ async function completeBody(prepared: Record<string, any>, siwe: string = prepar
     selectedActionIds: prepared.selectedActionKeys,
   };
 }
+
 
 test('TC-959 correlates real HTTP completion and SDK node activation without changing signed authority', async () => {
   const received: Array<{ requestId: string | null; authorization: string | null }> = [];
@@ -695,6 +926,7 @@ describe('managed approval checks everything caller-controlled before consuming 
       protocolVersion: 1,
     };
   }
+
 
   test('an expired managed context reports context-expired before signing', async () => {
     const valid = await approval();
@@ -995,8 +1227,10 @@ describe('TC-945 bootstrap budget', () => {
       work.reject(new Error('background database failure'));
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(unhandled).not.toHaveBeenCalled();
-      expect(output).toHaveLength(1);
-      const line = JSON.parse(output[0]!);
+      // Apart from the request's own delegate_session_jwk line.
+      const lines = output.map((chunk) => JSON.parse(chunk)).filter((entry) => entry.event !== 'delegate_session_jwk');
+      expect(lines).toHaveLength(1);
+      const line = lines[0];
       expect(line).toMatchObject({
         level: 'error',
         event: 'tinycloud_bootstrap_background_failed',
@@ -1025,7 +1259,7 @@ describe('TC-1608 requested space', () => {
   for (const [name, approve] of [['versioned', managedApproval], ['legacy', legacyApproval]] as const) {
     test(`${name} approval answers ready once the node confirms the space, while the setup runs on`, async () => {
       ensureTinyCloudBootstrap.mockImplementationOnce((async (input: any) => {
-        input.requestedSpace.report({ status: 'hosted' });
+        input.requestedSpaces.report({ status: 'hosted' });
         return wholeSetup();
       }) as any);
       const result = await approve(host);
@@ -1035,13 +1269,13 @@ describe('TC-1608 requested space', () => {
       expect(ensureTinyCloudBootstrap).toHaveBeenCalledTimes(1);
       const [setup] = ensureTinyCloudBootstrap.mock.calls[0] as unknown as [Record<string, any>];
       // The space this approval is for, not yet confirmed by an earlier attempt.
-      expect(setup.requestedSpace).toMatchObject({ space: 'agents', alreadyHosted: false });
+      expect(setup.requestedSpaces).toMatchObject({ spaces: ['agents'], alreadyHosted: false });
     });
   }
 
   test('a space the node did not confirm reports the failure with its code', async () => {
     ensureTinyCloudBootstrap.mockImplementationOnce((async (input: any) => {
-      input.requestedSpace.report({
+      input.requestedSpaces.report({
         status: 'failed',
         errorCode: 'tinycloud_bootstrap_space_not_hosted',
         errorMessage: 'TinyCloud node did not host agents after its host delegation: space was skipped',
@@ -1055,7 +1289,9 @@ describe('TC-1608 requested space', () => {
   });
 
   test('an approval for an already hosted space never starts the setup', async () => {
-    activateSessionWithHost.mockImplementation(async () => ({ success: true, skipped: [] }) as any);
+    activateSessionWithHost.mockImplementation(async () => ({
+      success: true, status: 200, skipped: [], activated: [`tinycloud:pkh:eip155:1:${account.address}:agents`],
+    }));
     const result = await managedApproval(host);
     expect(result.body.spaceReady).toBe(true);
     expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();

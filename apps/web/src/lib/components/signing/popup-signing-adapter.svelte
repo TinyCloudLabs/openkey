@@ -4,7 +4,7 @@
   //
   // This adapter owns:
   //   - the review selection and editing state,
-  //   - the onApprove decision (preview vs exact-byte fallthrough),
+  //   - the onApprove readiness check,
   //   - the onCancel wiring (widget cancel response + close),
   //   - the invalidatePreview call when the selection changes.
   //
@@ -18,7 +18,9 @@
   // A wiring bug (e.g. dropping `invalidatePreview` from the selection
   // handler) surfaces there as a missing spy call.
 
-  import type { CapabilityReviewModel } from "@openkey/capability-review";
+  import { untrack } from "svelte";
+  import { readSpaceHostFacts, type CapabilityReviewModel } from "@openkey/capability-review";
+  import { watchHostPeer, type PeerRecognitionState } from "$lib/host-peer-recognition";
   import SigningApproval from "$lib/components/signing/signing-approval.svelte";
   import type { WidgetSigningTransport } from "./signing-adapter-types";
 
@@ -58,17 +60,26 @@
     transport.invalidatePreview();
   }
 
+  // Node key on a host approval: look it up on the known nodes. The state is
+  // shown in the approval view; it never enables or disables anything else.
+  const hostFacts = $derived(readSpaceHostFacts(model, selection));
+  const hostFactsKey = $derived(
+    hostFacts ? JSON.stringify([hostFacts.spaces.map((space) => space.spaceId), hostFacts.peerDid]) : "",
+  );
+  let peerRecognition = $state<PeerRecognitionState | null>(null);
+  $effect(() => {
+    void hostFactsKey;
+    return watchHostPeer(untrack(() => hostFacts), import.meta.env.VITE_DELEGATE_NODE_ORIGINS, (next) => {
+      peerRecognition = next;
+    }, untrack(() => transport.host));
+  });
+
   function onEditingChange(next: boolean) {
     editing = next;
   }
 
   function onApprove() {
-    // First approval prepares server-authoritative bytes. The second
-    // approval consumes the preview while staying in this same shared
-    // content view. Legacy requests sign their original exact bytes.
-    if (transport.canUseAuthorizeSign && !transport.previewReady) {
-      void transport.requestPreview();
-    } else {
+    if (!transport.canUseAuthorizeSign || transport.previewReady) {
       void transport.approveAndSign();
     }
   }
@@ -84,9 +95,18 @@
   {editing}
   approving={transport.approving}
   error={transport.error}
-  finalPreview={transport.previewReady}
+  approveBlockedReason={transport.approveBlockedReason ?? null}
+  refused={transport.refused ?? false}
+  previewPending={transport.canUseAuthorizeSign && !transport.previewReady}
+  {peerRecognition}
+  expiryMs={transport.expiry?.chosenMs ?? null}
+  onExpiryChange={transport.expiry?.onChange}
+  renewal={transport.renewal ?? null}
+  onceExpiryDefault={transport.expiry?.onceDefault ?? false}
+  elevated={transport.elevated ?? null}
   {onApprove}
   {onCancel}
+  onRetry={transport.retryPreview}
   {onSelectionChange}
   {onEditingChange}
 />

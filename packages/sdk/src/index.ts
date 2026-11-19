@@ -108,12 +108,21 @@ export interface SignOutAcknowledgement {
   revoked: boolean;
 }
 
+/**
+ * The server's definite refusals of a signing request. Asking again with the same request cannot succeed.
+ * `APP_KEY_GRANT_REFUSED`: the request asks for an encryption key this website may not be granted.
+ */
+export type OpenKeyRefusalCode = 'APP_KEY_GRANT_REFUSED' | 'KEY_DELETE_NOT_GRANTABLE' | 'INVALID_SIWE_RECAP';
+
 export interface OpenKeyError {
-  code: 'USER_CANCELLED' | 'POPUP_BLOCKED' | 'TIMEOUT' | 'NO_KEY' | 'UNAUTHORIZED' | 'UNKNOWN' | 'STATE_MISMATCH';
+  code: 'USER_CANCELLED' | 'POPUP_BLOCKED' | 'TIMEOUT' | 'NO_KEY' | 'UNAUTHORIZED' | 'UNKNOWN' | 'STATE_MISMATCH' | OpenKeyRefusalCode;
   message: string;
   /** On `POPUP_BLOCKED`: `'embedded-webview'` when the page runs in an app WebView that cannot open popups. */
   reason?: 'embedded-webview';
 }
+
+/** The widget reports a definite refusal as `{ code: 'UNKNOWN', message: <refusal code> }`. */
+const REFUSAL_CODES: ReadonlySet<string> = new Set<OpenKeyRefusalCode>(['APP_KEY_GRANT_REFUSED', 'KEY_DELETE_NOT_GRANTABLE', 'INVALID_SIWE_RECAP']);
 
 // ======= OAuth 2.1 Types =======
 
@@ -182,6 +191,51 @@ export interface TinyCloudAuthorizationRequestV1 {
   host?: string;
   /** Optional presentation envelope (name, reason, manifest). */
   presentation?: CapabilityPresentationEnvelopeV1;
+  /**
+   * Set only when the caller accepts a signed message whose `Expiration Time`
+   * differs from `siwe` (shorter or longer): OpenKey then shows "This permission
+   * expires in …" with the time under "How long it lasts", and signs the time the user picks. Read the signed
+   * expiry from the returned `signedMessage`. Forwarded only when literally `true`.
+   */
+  expiryChangeable?: boolean;
+  /**
+   * Asks OpenKey to offer the owner automatic renewal for this grant, for up to `leaseLifetimeSeconds` (at most one
+   * year). Needs `expiryChangeable: true`: renewing sensitive access shortens the signed expiry to 7 days. OpenKey
+   * shows its renewal checkbox only where renewal is available; `purpose: 'standing'` (ongoing access, such as an app
+   * sign-in) lets the box start ticked, `'task'` or none leaves it unticked. The owner decides; read `renewalChoice`
+   * and `renewal` from the result.
+   */
+  renewal?: TinyCloudRenewalRequestV1;
+}
+
+export interface TinyCloudRenewalRequestV1 {
+  version: 1;
+  /** The longest renewal the app accepts, in seconds. */
+  leaseLifetimeSeconds: number;
+  purpose?: 'standing' | 'task';
+}
+
+/**
+ * The owner-signed renewal lease for a renewing grant, in the shape of the js-sdk approval-renewal codec
+ * (`parseApprovalRenewal` in `@tinycloud/share-envelope`). The lease lets the node's renewer renew exactly
+ * `receipt.originalCid` until `receipt.leaseExpiresAt`, and nothing else. Signed, not admitted: OpenKey has not sent
+ * it to the node, and records it so the owner's stops can revoke it (`receipt` is the codec's field name). Once the
+ * grant is registered with its node, the app has the node admit the lease by passing these fields to
+ * `admitOwnerRenewalLease` in `@tinycloud/sdk-core`, which returns the same values. Until then nothing renews.
+ */
+export interface TinyCloudSignedRenewalLeaseV1 {
+  version: 1;
+  approvedLeaseLifetimeSeconds: number;
+  approvedAt: string;
+  receipt: {
+    originalCid: string;
+    leaseCid: string;
+    leaseAuthorization: string;
+    leaseExpiresAt: string;
+    leaseGeneration: 1;
+    /** The node's renewer identity as it publishes it at `/.well-known/tinycloud/node-keys`. */
+    nodeIdentity: { nodeDid: string; renewerDid: string; renewerPublicKey: string; renewerEpoch: number };
+  };
 }
 
 export interface TinyCloudAuthorizationResultV1 {
@@ -201,6 +255,43 @@ export interface TinyCloudAuthorizationResultV1 {
     path: string;
     actions: string[];
   }>;
+  /**
+   * Set when the request asked for renewal and OpenKey offered it: `'leased'` (the owner turned renewal on; `renewal`
+   * holds the signed lease for the app to have its node admit) or `'finite'` (the grant ends at its signed expiry).
+   * Unset when renewal was not offered.
+   */
+  renewalChoice?: 'finite' | 'leased';
+  renewal?: TinyCloudSignedRenewalLeaseV1;
+}
+
+const MAX_RENEWAL_LEASE_SECONDS = 365 * 86_400;
+
+/**
+ * The widget's copy of `request.renewal`, checked here so a malformed ask fails in the app, not in the window.
+ * Renewing sensitive access shortens the window, so renewal needs `expiryChangeable: true`.
+ */
+function renewalRequestField(request: Pick<TinyCloudAuthorizationRequestV1, 'renewal' | 'expiryChangeable'>): { renewal?: TinyCloudRenewalRequestV1 } {
+  const value = request.renewal;
+  if (value === undefined) return {};
+  if (request.expiryChangeable !== true) throw new Error('authorizeTinyCloud: renewal needs expiryChangeable: true');
+  const seconds = value?.leaseLifetimeSeconds;
+  const purpose = value?.purpose;
+  if (value?.version !== 1 || typeof seconds !== 'number' || !Number.isSafeInteger(seconds) || seconds <= 0 ||
+    seconds > MAX_RENEWAL_LEASE_SECONDS || (purpose !== undefined && purpose !== 'standing' && purpose !== 'task')) {
+    throw new Error('authorizeTinyCloud: renewal must be { version: 1, leaseLifetimeSeconds (up to one year), purpose? }');
+  }
+  return { renewal: { version: 1, leaseLifetimeSeconds: seconds, ...(purpose ? { purpose } : {}) } };
+}
+
+/** The renewal part of an authorization result. A leased choice without its lease is a protocol error. */
+function signInRenewalResult(raw: { renewalChoice?: unknown; renewal?: unknown }): Pick<TinyCloudAuthorizationResultV1, 'renewalChoice' | 'renewal'> {
+  if (raw.renewalChoice === 'finite') return { renewalChoice: 'finite' };
+  if (raw.renewalChoice !== 'leased') return {};
+  const renewal = raw.renewal as Partial<TinyCloudSignedRenewalLeaseV1> | null | undefined;
+  if (renewal?.version !== 1 || typeof renewal.receipt?.leaseAuthorization !== 'string' || typeof renewal.receipt.originalCid !== 'string') {
+    throw new Error('authorizeTinyCloud: OpenKey turned renewal on but returned no renewal lease');
+  }
+  return { renewalChoice: 'leased', renewal: renewal as TinyCloudSignedRenewalLeaseV1 };
 }
 
 export interface CapabilityPresentationEnvelopeV1 {
@@ -213,7 +304,11 @@ export interface CapabilityPresentationEnvelopeV1 {
    * the same reason string.
    */
   reason?: string;
-  /** Manifest ID + digest, when the app publishes a signed manifest. */
+  /**
+   * Manifest ID + digest, when the app publishes /.well-known/openkey-manifest.json.
+   * The manifest is not signed: OpenKey fetches it from the app's origin and
+   * compares its digest. Optional for app keys; see docs/app-keys-for-builders.md.
+   */
   manifestId?: string;
   manifestDigest?: string;
   /**
@@ -239,7 +334,7 @@ type MessageType =
   | { type: 'openkey:auth:request'; appName: string; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
-  | { type: 'openkey:sign:request'; message: string; keyId?: string; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1 }
+  | { type: 'openkey:sign:request'; message: string; keyId?: string; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1; expiryChangeable?: true; renewal?: TinyCloudRenewalRequestV1 }
   | { type: 'openkey:sign:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
   | {
       type: 'openkey:sign:response';
@@ -308,6 +403,13 @@ type MessageType =
 type WidgetResponseMessage = Extract<MessageType, { success: boolean }>;
 
 const DEFAULT_HOST = 'https://openkey.so';
+/** A popup window opened in the caller's gesture, before the flow knows its URL. */
+interface ReservedPopup {
+  window: Window;
+  /** Set once `openPopup` took the window over. */
+  used: boolean;
+}
+
 const POPUP_WIDTH = 400;
 const POPUP_HEIGHT = 600;
 const DEFAULT_TIMEOUT = 5 * 60 * 1000; // 5 minutes
@@ -1075,6 +1177,30 @@ export class OpenKey {
     request: TinyCloudAuthorizationRequestV1,
     opts?: { mode?: OpenKeyMode },
   ): Promise<TinyCloudAuthorizationResultV1> {
+    // A popup opens only inside the gesture that asked for it, and the awaits
+    // below (the key list, the routing) can outlast it. In popup mode the window
+    // is opened here, in the caller's own tick, and navigated to the widget once
+    // the route is known. A request that fails the checks below opens nothing.
+    const reserved =
+      request?.protocolVersion === 1 && typeof request.siwe === 'string' && request.siwe !== '' &&
+      this.resolveMode(opts?.mode) === 'popup'
+        ? this.reservePopup('sign')
+        : null;
+    try {
+      return await this.authorizeTinyCloudFlow(request, opts, reserved);
+    } finally {
+      // Closed unless the flow took the window over (the widget closes its own).
+      if (reserved && !reserved.used) {
+        try { reserved.window.close(); } catch { /* the window is already gone */ }
+      }
+    }
+  }
+
+  private async authorizeTinyCloudFlow(
+    request: TinyCloudAuthorizationRequestV1,
+    opts: { mode?: OpenKeyMode } | undefined,
+    reserved: ReservedPopup | null,
+  ): Promise<TinyCloudAuthorizationResultV1> {
     if (request.protocolVersion !== 1) {
       throw new Error(
         `authorizeTinyCloud only supports protocolVersion 1; got ${request.protocolVersion}`,
@@ -1158,6 +1284,8 @@ export class OpenKey {
       signedMessage?: string;
       selectedActionKeys?: string[];
       permissions?: TinyCloudAuthorizationResultV1['permissions'];
+      renewalChoice?: TinyCloudAuthorizationResultV1['renewalChoice'];
+      renewal?: TinyCloudSignedRenewalLeaseV1;
     }>(
       'sign',
       {
@@ -1179,8 +1307,12 @@ export class OpenKey {
         // validates and size-bounds it before use and NEVER treats it as
         // verified unless the server actually origin-binds a manifest.
         presentation: request.presentation,
+        // TC-2272: only an SDK that accepts a different signed expiry opts in; OpenKey then lets the user change it.
+        ...(request.expiryChangeable === true ? { expiryChangeable: true as const } : {}),
+        ...renewalRequestField(request),
       },
       opts?.mode,
+      reserved,
     );
     // Sol CRITICAL-1: NO silent fallback to `request.siwe`. If the widget
     // returned an authorization response without `signedMessage`, that is
@@ -1209,6 +1341,7 @@ export class OpenKey {
       signedMessage: raw.signedMessage,
       selectedActionKeys: raw.selectedActionKeys,
       permissions: raw.permissions,
+      ...signInRenewalResult(raw),
     };
   }
 
@@ -1272,6 +1405,8 @@ export class OpenKey {
         // bounded at the transport, never treated as verified without
         // server-side origin-binding.
         presentation: request.presentation,
+        ...(request.expiryChangeable === true ? { expiryChangeable: true as const } : {}),
+        ...renewalRequestField(request),
         // Sol MAJOR-3 (continuation): tell the widget to hand us back
         // the previewApproval instead of asking OpenKey to sign
         // server-side with a managed key. The widget will still render
@@ -1329,6 +1464,10 @@ export class OpenKey {
         'authorizeTinyCloud (external): server signed different bytes than the preview showed',
       );
     }
+    // The owner turned renewal on: the wallet signs the renewal lease too. Declining it fails the sign-in.
+    const renewal = finalize.renewalSignature
+      ? await this.signExternalRenewalLease(provider, walletAddress, finalize.renewalSignature)
+      : signInRenewalResult(finalize);
     return {
       protocolVersion: 1,
       address: finalize.address,
@@ -1336,7 +1475,36 @@ export class OpenKey {
       signedMessage: finalize.signedMessage,
       selectedActionKeys: finalize.selectedActionKeys ?? [],
       permissions: finalize.permissions ?? [],
+      ...renewal,
     };
+  }
+
+  /** The wallet signs the renewal lease /authorize-sign returned; OpenKey returns it signed, for the app to admit. */
+  private async signExternalRenewalLease(
+    provider: EIP1193Provider,
+    walletAddress: string,
+    lease: { message?: unknown; renewalToken?: unknown },
+  ): Promise<Pick<TinyCloudAuthorizationResultV1, 'renewalChoice' | 'renewal'>> {
+    if (typeof lease.message !== 'string' || typeof lease.renewalToken !== 'string') {
+      throw new Error('authorizeTinyCloud (external): OpenKey returned an incomplete renewal lease');
+    }
+    const signature = (await provider.request({
+      method: 'personal_sign',
+      params: [this.toHex(lease.message), walletAddress],
+    })) as string;
+    const res = await fetch(`${this.oauthHost}/api/delegate/authorize-sign-renewal`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ renewalToken: lease.renewalToken, signature }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      throw new Error(body.error || `authorize-sign-renewal failed (${res.status})`);
+    }
+    const result = signInRenewalResult(await res.json());
+    if (result.renewalChoice !== 'leased') throw new Error('authorizeTinyCloud (external): OpenKey returned no renewal lease');
+    return result;
   }
 
   /**
@@ -1724,7 +1892,7 @@ export class OpenKey {
     return false;
   }
 
-  private async openFlow<T>(action: string, message: object, modeOverride?: OpenKeyMode): Promise<T> {
+  private async openFlow<T>(action: string, message: object, modeOverride?: OpenKeyMode, reserved?: ReservedPopup | null): Promise<T> {
     const mode = this.resolveMode(modeOverride);
     const origin = encodeURIComponent(window.location.origin);
     const eoaFlag = action === 'connect' && this.hasDetectedEoa() ? '&hasEoa=true' : '';
@@ -1732,7 +1900,7 @@ export class OpenKey {
 
     if (mode === 'popup') {
       const url = `${this.host}/widget/${action}?origin=${origin}${eoaFlag}${passkeysFlag}`;
-      return new Promise((resolve, reject) => this.openPopup(action, url, message, resolve, reject));
+      return new Promise((resolve, reject) => this.openPopup(action, url, message, resolve, reject, reserved ?? null));
     }
 
     if (mode === 'redirect') {
@@ -1856,7 +2024,7 @@ export class OpenKey {
           // Consent is gated in the widget; do not discard an authorized
           // result merely because its "Signing…" state invalidated geometry.
           if (action === 'sign' && modal?.isVersionedPhase() &&
-              !modal.hasDisplayedCurrentPhase() && this.isResponseForAction(action, data)) return;
+              !modal.hasDisplayedCurrentPhase() && this.isResponseForAction(action, data) && data.success === true) return;
           if (this.isResponseForAction(action, data)) {
             settle(() => {
               cleanup();
@@ -1882,10 +2050,12 @@ export class OpenKey {
                     signedMessage: (data as any).signedMessage,
                     selectedActionKeys: (data as any).selectedActionKeys,
                     permissions: (data as any).permissions,
+                    renewalChoice: (data as any).renewalChoice,
+                    renewal: (data as any).renewal,
                   } as T);
                 }
               } else {
-                reject(data.error);
+                reject(this.handleWidgetError(data.error));
               }
             });
           }
@@ -2021,22 +2191,53 @@ export class OpenKey {
     });
   }
 
+  /**
+   * Opens the popup window of a flow in the current tick, blank. `openPopup`
+   * navigates it to the widget later. `null` when the browser did not give a
+   * usable window: the flow then opens its own, as it always did.
+   */
+  private reservePopup(action: string): ReservedPopup | null {
+    const left = window.screenX + (window.outerWidth - POPUP_WIDTH) / 2;
+    const top = window.screenY + (window.outerHeight - POPUP_HEIGHT) / 2;
+    const win = window.open(
+      'about:blank',
+      `openkey-${action}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      `width=${POPUP_WIDTH},height=${POPUP_HEIGHT},left=${left},top=${top},popup=true`,
+    );
+    return isUsablePopup(win) ? { window: win, used: false } : null;
+  }
+
   private openPopup<T>(
     action: string,
     url: string,
     message: object,
     resolve: (value: T) => void,
-    reject: (error: OpenKeyError) => void
+    reject: (error: OpenKeyError) => void,
+    reserved: ReservedPopup | null = null,
   ) {
     // Calculate popup position
     const left = window.screenX + (window.outerWidth - POPUP_WIDTH) / 2;
     const top = window.screenY + (window.outerHeight - POPUP_HEIGHT) / 2;
 
-    const popup = window.open(
-      url,
-      `openkey-${action}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-      `width=${POPUP_WIDTH},height=${POPUP_HEIGHT},left=${left},top=${top},popup=true`
-    );
+    let popup: Window | null;
+    if (reserved && !reserved.window.closed) {
+      // The window opened in the caller's gesture: send it to the widget. It
+      // counts as taken over once that navigation has succeeded; a failure
+      // leaves it to the caller, which closes it.
+      try {
+        reserved.window.location.href = url;
+        reserved.used = true;
+        popup = reserved.window;
+      } catch {
+        popup = null;
+      }
+    } else {
+      popup = window.open(
+        url,
+        `openkey-${action}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        `width=${POPUP_WIDTH},height=${POPUP_HEIGHT},left=${left},top=${top},popup=true`
+      );
+    }
 
     if (!isUsablePopup(popup)) {
       this.popup = null;
@@ -2170,10 +2371,12 @@ export class OpenKey {
               signedMessage: (data as any).signedMessage,
               selectedActionKeys: (data as any).selectedActionKeys,
               permissions: (data as any).permissions,
+              renewalChoice: (data as any).renewalChoice,
+              renewal: (data as any).renewal,
             } as T);
           }
           } else {
-            reject(data.error);
+            reject(this.handleWidgetError(data.error));
           }
         });
       }
@@ -2187,6 +2390,16 @@ export class OpenKey {
       });
     };
     this.activeFlowCancellations.add(cancel);
+  }
+
+  private handleWidgetError(error: OpenKeyError): OpenKeyError {
+    // A validated widget response can report that the cached key no longer
+    // exists. Drop the selection; only an explicit connect chooses a new key.
+    if (error?.code === 'NO_KEY') this.lastAuth = null;
+    if (error?.code === 'UNKNOWN' && REFUSAL_CODES.has(error.message)) {
+      return { ...error, code: error.message as OpenKeyRefusalCode };
+    }
+    return error;
   }
 
   private cancelActiveFlows() {

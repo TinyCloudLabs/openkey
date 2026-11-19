@@ -1,0 +1,69 @@
+name: Register Resource Server
+
+# Manually register the confidential client a hosted resource (the TinyCloud MCP
+# server) uses for OpenKey's token status check. The client secret is generated
+# in the job, encrypted to the public key of whoever will hold it, and only the
+# ciphertext is printed. The plaintext secret is never written to a log, an
+# artifact or the job summary. Client ids and the ciphertext are safe to log.
+
+on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: 'Display name of the resource server'
+        required: true
+      allowed_resources:
+        description: 'Comma-separated canonical resource URLs (token audiences) it may check tokens for, e.g. https://mcp.tinycloud.xyz/mcp,https://mcp.tinycloud.xyz/chatgpt/mcp'
+        required: true
+      secret_recipient_public_key:
+        description: 'RSA public key (2048+ bits) of the secret holder: PEM, or base64 of the PEM (base64 -w0)'
+        required: true
+      rate_limit_per_minute:
+        description: 'Requests per minute this server may make, 1 to 100000 (optional; the default is 3000)'
+        required: false
+      valid_audiences:
+        description: 'Extra audiences the API accepts, comma-separated, if a resource is not built in yet (optional; adds to the OAUTH_VALID_AUDIENCES variable)'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  register:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Restore Bun dependency cache
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      - name: Register resource server
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RESOURCE_SERVER_NAME: ${{ inputs.name }}
+          RESOURCE_SERVER_ALLOWED_RESOURCES: ${{ inputs.allowed_resources }}
+          RESOURCE_SERVER_SECRET_RECIPIENT_PUBLIC_KEY: ${{ inputs.secret_recipient_public_key }}
+          RESOURCE_SERVER_RATE_LIMIT_PER_MINUTE: ${{ inputs.rate_limit_per_minute }}
+          BETTER_AUTH_URL: https://api.openkey.so
+          OAUTH_VALID_AUDIENCES: ${{ vars.OAUTH_VALID_AUDIENCES }},${{ inputs.valid_audiences }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "DATABASE_URL secret not set" >&2
+            exit 1
+          fi
+          bun install --frozen-lockfile
+          bun node_modules/.bin/prisma generate --schema=./packages/db/prisma/schema.prisma
+          bun run scripts/ci-register-resource-server.ts

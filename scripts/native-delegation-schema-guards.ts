@@ -100,10 +100,12 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     !verified?.client_column ||
     verified.generation_columns !== 3 ||
     !verified.generation_primary_key ||
-    verified.request_columns !== 27 ||
+    // 27 native columns plus `reviewerEpoch`, `reviewerSessionId` and `reviewerDeadline` from 20261111_0002_reviewer_apple.
+    verified.request_columns !== 30 ||
     verified.preparation_columns !== 12 ||
     !verified.preparation_host_column ||
-    verified.grant_columns !== 24 ||
+    // 24 native columns plus `reviewerEpoch` from 20261111_0001_reviewer_accounts.
+    verified.grant_columns !== 25 ||
     verified.status_checks !== 4 ||
     !verified.grant_refresh_index ||
     !verified.grant_client_cascade ||

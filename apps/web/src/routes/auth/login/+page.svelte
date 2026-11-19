@@ -17,37 +17,64 @@
     nativeReentryKey,
     nativeSignIn,
     nativeSocialReturnUrls,
+    type NativeSocialProvider,
   } from '$lib/native-mode';
+  import {
+    accountExistsMessage,
+    confirmSocialContinuation,
+    loadSocialContinuation,
+    relayNotice,
+    socialErrorMessage,
+    socialProviderName,
+    type SocialContinuation,
+  } from '$lib/social-continuation';
   import NativeShell from '$lib/components/auth/native-shell.svelte';
   import { api } from '$lib/api';
   import SocialButtons from '$lib/components/auth/social-buttons.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import { newAccountSignupToken } from '$lib/email-signup';
   import NewAccountConfirmation from '$lib/components/auth/new-account-confirmation.svelte';
+  import PasskeyStepUpDialog from '$lib/components/auth/passkey-step-up-dialog.svelte';
+  import { passkeyStepUpMethods, type PasskeyStepUpMethod } from '$lib/passkey-step-up';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
+  import TermsStep from '$lib/components/auth/terms-step.svelte';
+  import { oauthClientName, pendingTerms, type TermsStatus } from '$lib/terms';
 
-  // 'passkey' is the enrolment offer; 'passkeySignIn' and 'google' are native-mode landing steps.
+  // 'passkey' is the enrolment offer; 'passkeySignIn' and 'social' are native-mode landing steps.
+  // 'social' is the frame shown while opening a provider or checking its return.
   // 'newAccount' follows a verified code for an email with no account (TC-1114).
-  type Step = 'email' | 'otp' | 'newAccount' | 'passkey' | 'passkeySignIn' | 'google';
+  type Step = 'reviewer' | 'email' | 'otp' | 'newAccount' | 'socialNewAccount' | 'socialAccountExists' | 'passkey' | 'passkeySignIn' | 'social';
 
   // Native mode: the signed authorize query carries `tinycloud_request`, so the
   // sign-in is running in a system sheet opened by a native app.
   const native = nativeSignIn($page.url.searchParams);
+  // Where this sign-in is headed, for the Terms step: an approval link or device sign-in it declines too.
+  const termsReturnTo = normalizeAuthReturnTo($page.url.searchParams.get('redirect'), $page.url.origin, undefined, { consoleOrigin: consoleOrigin() || undefined });
   // `passkeys=false` comes from clients that cannot use WebAuthn.
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
   function initialStep(): Step {
-    if (!native || native.socialError) return 'email';
+    if (!native) return 'email';
+    if (native.socialError) return native.socialError.continuation ? 'social' : 'email';
+    if (native.method === 'email' && native.hint?.trim().toLowerCase() === 'appreview@tinycloud.xyz') return 'email';
     if (native.method === 'email' && native.hint) return 'otp';
     if (native.method === 'passkey' && passkeysSupported) return 'passkeySignIn';
-    if (native.method === 'google') return 'google';
+    if (native.method === 'google' || native.method === 'apple') return 'social';
     return 'email';
   }
 
+  // The provider the 'social' step and the confirmation steps are about.
+  let socialProvider = $state<NativeSocialProvider | null>(
+    native?.socialError ? native.socialError.provider
+      : native?.method === 'google' || native?.method === 'apple' ? native.method : null,
+  );
+  let socialChecking = $state(Boolean(native?.socialError?.continuation));
+
   let email = $state(native?.hint ?? '');
   let otp = $state('');
+  let reviewCode = $state('');
   let step = $state<Step>(initialStep());
   let codeSent = $state(false);
   // A code was requested by an earlier load of this page; delivery is unconfirmed.
@@ -64,6 +91,7 @@
   let resendIn = $state(0);
   let resendTimer: ReturnType<typeof setInterval> | undefined;
   let providers = $state<SocialProviderId[]>([]);
+  let appReviewEnabled = $state(false);
   let loadingProvider = $state<SocialProviderId | null>(null);
   // In OAuth flows the API answers sign-in/email-otp with its own redirect
   // URL (the consent page, or the client's redirect_uri when consent can be
@@ -73,6 +101,41 @@
   // Proof of the verified code, spent only if the user creates the account.
   let signupToken = $state<string | null>(null);
   let creating = $state(false);
+  // A native Google or Apple return that needs a choice (TC-1188 R3/R5).
+  let socialConfirmation = $state<SocialContinuation | null>(null);
+  const socialName = $derived(socialProvider ? socialProviderName(socialProvider) : null);
+  // TC-3232: an account that has not accepted the current Terms sees them right after signing in,
+  // before the passkey offer or anything else; `afterTerms` is where sign-in was headed.
+  let terms = $state<{ status: TermsStatus; email: string; appName: string | null } | null>(null);
+  let afterTerms: (() => void | Promise<void>) | null = null;
+
+  async function askTermsFirst(next: () => void | Promise<void>): Promise<boolean> {
+    const status = await pendingTerms();
+    if (!status) return false;
+    const session = await authClient.getSession().catch(() => null);
+    const clientId = getOAuthQuery() ? new URLSearchParams(getOAuthQuery()).get('client_id') : null;
+    terms = { status, email: session?.data?.user.email ?? email, appName: clientId ? await oauthClientName(clientId) : null };
+    afterTerms = next;
+    return true;
+  }
+
+  async function termsAccepted() {
+    const next = afterTerms;
+    // Held while the Terms were pending, it can only be the provider's own Terms step: authorize
+    // again from the signed query instead, now that the account has accepted.
+    oauthRedirectUrl = undefined;
+    terms = null;
+    afterTerms = null;
+    await next?.();
+  }
+
+  function signInAgain() {
+    terms = null;
+    afterTerms = null;
+    otp = '';
+    error = '';
+    step = 'email';
+  }
 
   function getOAuthQuery(): string | undefined {
     return safeOAuthAuthorizeQuery($page.url.searchParams);
@@ -95,7 +158,12 @@
     return true;
   }
 
-  function handlePostSignIn() {
+  async function handlePostSignIn() {
+    if (await askTermsFirst(leaveSignIn)) return;
+    leaveSignIn();
+  }
+
+  function leaveSignIn() {
     if (oauthRedirectUrl && navigateToOAuthRedirect(oauthRedirectUrl)) return;
     const oauthQuery = getOAuthQuery();
     const redirect = normalizeAuthReturnTo(
@@ -118,7 +186,11 @@
   }
 
   onMount(() => {
-    loadConfiguredSocialProviders().then((loaded) => { providers = loaded; }).catch(() => {});
+    const providersLoaded = loadConfiguredSocialProviders(undefined, (enabled) => {
+      appReviewEnabled = enabled;
+      if (enabled && native?.method === 'email' && native.hint === 'appreview@tinycloud.xyz') step = 'reviewer';
+    }).catch((): SocialProviderId[] => []);
+    providersLoaded.then((loaded) => { providers = loaded; });
     if (native) {
       // Coming back from the provider via the browser's back button restores
       // this page mid-redirect; clear the busy state.
@@ -126,18 +198,36 @@
         if (!event.persisted) return;
         loading = false;
         loadingProvider = null;
-        if (step === 'google') step = 'email';
+        if (step === 'social') step = 'email';
       });
-      startNative(native);
+      startNative(native, providersLoaded);
     }
   });
 
   // Automatic first action for the requested login method. It runs once per
   // page load, and the code send is also keyed to the request in sessionStorage
   // so a reload never mails a second code.
-  async function startNative(request: NonNullable<typeof native>) {
-    if (request.socialError) {
-      error = 'Google sign-in did not finish. Continue with your email instead.';
+  async function startNative(request: NonNullable<typeof native>, providersLoaded: Promise<SocialProviderId[]>) {
+    const socialError = request.socialError;
+    if (socialError?.continuation && (socialError.code === 'new_account' || socialError.code === 'account_exists')) {
+      try {
+        // Bound to this sheet's cookie and to the signed authorize query it came back with.
+        const loaded = await loadSocialContinuation({
+          token: socialError.continuation, outcome: socialError.code, provider: socialError.provider, oauthQuery: request.signedQuery,
+        });
+        socialProvider = loaded.provider;
+        socialConfirmation = loaded;
+        step = loaded.outcome === 'new_account' ? 'socialNewAccount' : 'socialAccountExists';
+      } catch (cause) {
+        error = cause instanceof Error ? cause.message : socialErrorMessage(socialError.provider, 'failed');
+        step = 'email';
+      } finally {
+        socialChecking = false;
+      }
+      return;
+    }
+    if (socialError) {
+      error = socialErrorMessage(socialError.provider, socialError.code);
       return;
     }
 
@@ -148,7 +238,7 @@
       return;
     }
     if (existing.data) {
-      // Already signed in (for example straight back from Google): continue the
+      // Already signed in (for example straight back from Google or Apple): continue the
       // authorize request instead of signing in again. Once per request, so an
       // authorize that sends us back here cannot loop.
       const key = nativeReentryKey(request.requestId);
@@ -161,8 +251,14 @@
       return;
     }
 
-    if (request.method === 'google') {
-      await signInWithSocialTopLevel('google');
+    if (request.method === 'google' || request.method === 'apple') {
+      // Only a provider OpenKey has turned on can finish; otherwise stay on email.
+      if ((await providersLoaded).includes(request.method)) {
+        await signInWithSocialTopLevel(request.method);
+      } else {
+        error = `${socialProviderName(request.method)} sign-in isn't available right now. Continue with your email instead.`;
+        step = 'email';
+      }
     } else if (request.method === 'email' && request.hint && step === 'otp') {
       // Claimed before dispatch, and kept on a failed or unanswered send: a
       // reload while the send is in flight must not mail a second code. Resend
@@ -177,7 +273,47 @@
     }
   }
 
+  async function signInReviewer() {
+    loading = true;
+    error = '';
+    try {
+      const result = await authClient.$fetch('/sign-in/reviewer', {
+        method: 'POST',
+        body: { email, code: reviewCode, oauth_query: getOAuthQuery() },
+        onSuccess: keepOAuthRedirect,
+      });
+      reviewCode = '';
+      if (result.error) {
+        error = "Couldn't sign in with those details. Check the review account and code, then try again.";
+        return;
+      }
+      authClient.$store.notify('$sessionSignal');
+      handlePostSignIn();
+    } catch {
+      reviewCode = '';
+      error = "Couldn't sign in with those details. Check the review account and code, then try again.";
+    } finally {
+      loading = false;
+    }
+  }
+
   async function sendOTP(): Promise<boolean> {
+    if (appReviewEnabled && email.trim().toLowerCase() === 'appreview@tinycloud.xyz') {
+      if (!native && $page.url.searchParams.get('redirect') === '/dashboard/settings/delete-account') {
+        await goto('/auth/review/delete');
+      } else { step = 'reviewer'; error = ''; }
+      return true;
+    }
+    if (!native && ['openai-review@tinycloud.xyz', 'google-review@tinycloud.xyz'].includes(email.trim().toLowerCase())) {
+      // Review sign-in is refused without a signed OAuth authorize query, and no code is ever emailed.
+      if (!getOAuthQuery()) {
+        error = "Review accounts sign in from the app's own connect window. Start from the app's Connect button, then try again.";
+        return false;
+      }
+      step = 'reviewer';
+      error = '';
+      return true;
+    }
     loading = true;
     error = '';
     try {
@@ -281,6 +417,25 @@
     }
   }
 
+  async function createSocialAccount() {
+    if (!socialConfirmation || !native) return;
+    loading = true;
+    creating = true;
+    error = '';
+    try {
+      await confirmSocialContinuation({
+        token: socialConfirmation.token, provider: socialConfirmation.provider, oauthQuery: native.signedQuery,
+      });
+      authClient.$store.notify('$sessionSignal');
+      handlePostSignIn();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : 'Could not create your account.';
+    } finally {
+      loading = false;
+      creating = false;
+    }
+  }
+
   // Recovery is email sign-in plus a new passkey; it continues the OAuth
   // request or redirect this login page was serving.
   function recoverAccount() {
@@ -291,6 +446,7 @@
   }
 
   async function continueAfterEmailSignIn() {
+    if (await askTermsFirst(continueAfterEmailSignIn)) return;
     // The API normally provisions a key in its user hook; this keeps the user
     // moving if that non-critical hook needs to be retried.
     try {
@@ -352,28 +508,36 @@
     }
   }
 
-  async function signInWithSocialTopLevel(provider: SocialProviderId) {
+  async function signInWithSocialTopLevel(provider: NativeSocialProvider) {
     if (!native) return;
-    step = 'google';
+    socialProvider = provider;
+    step = 'social';
     loading = true;
     loadingProvider = provider;
     error = '';
     try {
-      await signInWithSocialRedirect(provider, nativeSocialReturnUrls(window.location.origin, native.signedQuery));
-    } catch (e: any) {
-      error = e.message || `${provider === 'google' ? 'Google' : 'Apple'} sign-in failed`;
+      await signInWithSocialRedirect(provider, nativeSocialReturnUrls(window.location.origin, native.signedQuery, provider));
+    } catch {
+      error = socialErrorMessage(provider, 'failed');
       step = 'email';
       loading = false;
       loadingProvider = null;
     }
   }
 
+  // TC-1198: the email sign-in that led here is a five-minute, single-use
+  // proof; past it, the API asks for a fresh step-up before enrolment.
+  let passkeyStepUpOffered = $state<PasskeyStepUpMethod[] | null>(null);
+
   async function registerPasskey() {
     loading = true;
     error = '';
     try {
       const result = await authClient.passkey.addPasskey();
-      if (result?.error) {
+      const methods = passkeyStepUpMethods(result?.error);
+      if (methods) {
+        passkeyStepUpOffered = methods;
+      } else if (result?.error) {
         error = authErrorMessage(result.error, 'Failed to create passkey');
       } else {
         handlePostSignIn();
@@ -400,13 +564,75 @@
   }
 </script>
 
-{#if native}
+{#if passkeyStepUpOffered}
+  <PasskeyStepUpDialog
+    purpose="passkey_register"
+    methods={passkeyStepUpOffered}
+    onverified={() => { passkeyStepUpOffered = null; void registerPasskey(); }}
+    oncancel={() => { passkeyStepUpOffered = null; }}
+  />
+{/if}
+
+<svelte:head>
+  <meta name="referrer" content="no-referrer" />
+</svelte:head>
+
+{#if terms}
+  <TermsStep
+    status={terms.status}
+    surface={native ? 'native' : 'web'}
+    email={terms.email}
+    clientId={native?.clientId ?? null}
+    appName={terms.appName}
+    returnTo={termsReturnTo}
+    onaccepted={termsAccepted}
+    onsignin={signInAgain}
+  />
+{:else if native}
   <NativeShell clientId={native.clientId} heading={(name) => `Sign in to ${name}`}>
     {#if error}
       <div class="nb-error" role="alert">{error}</div>
     {/if}
 
-    {#if step === 'otp'}
+    {#if step === 'socialNewAccount' && socialConfirmation}
+      {@const notice = relayNotice(socialConfirmation)}
+      <p class="nb-lede">No OpenKey account for <strong class="break-words">{socialConfirmation.email}</strong>.</p>
+      {#if notice}
+        <p class="nb-lede" data-testid="new-account-notice">{notice}</p>
+      {:else}
+        <p class="nb-lede">Create a new account, or use your existing sign-in method?</p>
+      {/if}
+      <div class="nb-stack">
+        <button type="button" class="nb-button nb-primary" onclick={createSocialAccount} disabled={loading}>
+          {creating ? 'Creating account…' : 'Create a new account'}
+        </button>
+        {#if passkeysSupported}
+          <button type="button" class="nb-button" onclick={signInWithPasskey} disabled={loading}>Sign in with a passkey</button>
+          <button type="button" class="nb-button" onclick={recoverAccount} disabled={loading}>Recover your account</button>
+        {/if}
+        <button type="button" class="nb-link" onclick={() => { step = 'email'; email = ''; }} disabled={loading}>Use email instead</button>
+      </div>
+    {:else if step === 'socialAccountExists' && socialConfirmation}
+      <p class="nb-lede" data-testid="social-account-exists">{accountExistsMessage(socialConfirmation.provider, socialConfirmation.email)}</p>
+      <div class="nb-stack">
+        <button type="button" class="nb-button nb-primary" onclick={() => { email = socialConfirmation!.email; step = 'email'; }}>
+          Sign in to your account
+        </button>
+        {#if passkeysSupported}
+          <button type="button" class="nb-button" onclick={signInWithPasskey}>Sign in with a passkey</button>
+        {/if}
+      </div>
+    {:else if step === 'reviewer'}
+      <p class="nb-lede">Enter the review code for <strong>{email}</strong>.</p>
+      {#if error}<p class="nb-error" role="alert">{error}</p>{/if}
+      <form onsubmit={(event) => { event.preventDefault(); signInReviewer(); }} class="nb-stack">
+        <label for="native-review-code">Review code</label>
+        <input id="native-review-code" class="nb-input" type="password" bind:value={reviewCode}
+          autocomplete="current-password" maxlength={128} required disabled={loading} />
+        <button type="submit" class="nb-button nb-primary" disabled={loading}>Sign in</button>
+        <button type="button" class="nb-link" onclick={() => { reviewCode = ''; error = ''; email = ''; step = 'email'; }} disabled={loading}>Use a different email</button>
+      </form>
+    {:else if step === 'otp'}
       <p class="nb-lede">
         {#if codeSent}
           We sent a 6-digit code to <strong>{email}</strong>.
@@ -486,8 +712,14 @@
       <div class="nb-center">
         <button type="button" class="nb-link" onclick={() => { step = 'email'; error = ''; }} disabled={loading}>Use email instead</button>
       </div>
-    {:else if step === 'google'}
-      <p class="nb-lede" role="status">Opening Google…</p>
+    {:else if step === 'social'}
+      <p class="nb-lede" role="status">
+        {#if socialChecking}
+          {socialName ? `Checking your ${socialName} sign-in…` : 'Checking your sign-in…'}
+        {:else}
+          {socialName ? `Opening ${socialName}…` : 'Opening sign-in…'}
+        {/if}
+      </p>
     {:else}
       <p class="nb-lede">Enter your email and we'll send you a sign-in code.</p>
       <form onsubmit={(event) => { event.preventDefault(); sendOTP(); }} class="nb-stack">
@@ -518,7 +750,7 @@
               class="nb-button"
               onclick={() => signInWithSocialTopLevel(provider)}
               disabled={loading}
-              aria-label={`Continue with ${provider === 'google' ? 'Google' : 'Apple'}`}
+              aria-label={`Continue with ${socialProviderName(provider)}`}
             >
               {#if provider === 'google'}
               <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
@@ -527,8 +759,12 @@
                 <path fill="#FBBC05" d="M3.963 10.707A5.41 5.41 0 0 1 3.682 9c0-.592.102-1.167.281-1.707V4.96H.956A9 9 0 0 0 0 9c0 1.452.347 2.827.956 4.04l3.007-2.333Z"/>
                 <path fill="#EA4335" d="M9 3.579c1.321 0 2.507.454 3.441 1.346l2.581-2.581C13.464.892 11.426 0 9 0A9 9 0 0 0 .956 4.96l3.007 2.333C4.672 5.164 6.656 3.579 9 3.579Z"/>
               </svg>
+              {:else}
+              <svg width="15" height="18" viewBox="0 0 15 18" fill="currentColor" aria-hidden="true">
+                <path d="M12.55 9.55c.02-2.02 1.65-2.99 1.73-3.04a3.7 3.7 0 0 0-2.91-1.57c-1.23-.13-2.43.74-3.05.74-.64 0-1.6-.73-2.64-.71a3.86 3.86 0 0 0-3.25 1.98c-1.42 2.46-.36 6.07 1 8.06.68.97 1.47 2.06 2.51 2.02 1.02-.04 1.4-.65 2.63-.65 1.22 0 1.58.65 2.64.63 1.09-.02 1.78-.98 2.43-1.96a8.05 8.05 0 0 0 1.11-2.26 3.49 3.49 0 0 1-2.2-3.24ZM10.57 3.63A3.55 3.55 0 0 0 11.38 1a3.63 3.63 0 0 0-2.35 1.25 3.4 3.4 0 0 0-.83 2.53 3 3 0 0 0 2.37-1.15Z"/>
+              </svg>
               {/if}
-              {loadingProvider === provider ? `Connecting to ${provider === 'google' ? 'Google' : 'Apple'}…` : `Continue with ${provider === 'google' ? 'Google' : 'Apple'}`}
+              {loadingProvider === provider ? `Connecting to ${socialProviderName(provider)}…` : `Continue with ${socialProviderName(provider)}`}
             </button>
           {/each}
           {#if passkeysSupported}
@@ -609,6 +845,30 @@
           {loading ? 'Waiting for passkey…' : 'Use a passkey instead'}
         </Button>
         {/if}
+        {#if !native && getOAuthQuery()}
+        <button type="button" class="mt-5 w-full text-center text-sm text-surface-500 hover:text-surface-900"
+          onclick={() => { step = 'reviewer'; error = ''; }} disabled={loading}>Use a review code</button>
+        {/if}
+      {:else if step === 'reviewer'}
+        <h1 class="mb-7 text-center text-2xl font-bold text-surface-900">App review sign-in</h1>
+        {#if error}
+          <p class="mb-6 text-sm text-red-700" role="alert">{error}</p>
+        {/if}
+        <form onsubmit={(event) => { event.preventDefault(); signInReviewer(); }} class="flex flex-col gap-4">
+          <div>
+            <label for="review-email" class="mb-2 block text-sm font-medium text-surface-700">Review account</label>
+            <Input id="review-email" type="email" bind:value={email} autocomplete="username"
+              autocapitalize="none" spellcheck={false} required disabled={loading} />
+          </div>
+          <div>
+            <label for="review-code" class="mb-2 block text-sm font-medium text-surface-700">Review code</label>
+            <Input id="review-code" type="password" bind:value={reviewCode} autocomplete="current-password"
+              maxlength={128} required disabled={loading} />
+          </div>
+          <Button type="submit" disabled={loading} class="w-full">Sign in</Button>
+        </form>
+        <button type="button" class="mt-4 w-full text-center text-sm text-surface-500 hover:text-surface-900"
+          onclick={() => { reviewCode = ''; error = ''; step = 'email'; }} disabled={loading}>Back</button>
       {:else if step === 'otp'}
         <h1 class="mb-2 text-center text-2xl font-bold text-surface-900">Check your email</h1>
         <p class="mb-7 text-center text-sm text-surface-500">

@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
+import type { PrismaClient } from '@openkey/db';
 import type { SessionContext } from './session';
-import { TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_SESSION_SCOPE } from '../oauth-config';
+import { isConfidentialWebClient, TINYCLOUD_MANAGE_KEY_SCOPE, TINYCLOUD_SESSION_SCOPE } from '../oauth-config';
+import { rejectNonOpenKeySignRequest } from './browser-control';
+import { hasAcceptedTerms } from '../services/terms';
 
 export type DelegateSignerPrincipal =
   | { kind: 'session'; userId: string }
@@ -32,7 +35,8 @@ export type DelegateSignerAuthCode =
   | 'client_misconfigured'
   | 'missing_scope'
   | 'user_not_found'
-  | 'email_not_verified';
+  | 'email_not_verified'
+  | 'terms_required';
 
 export type CoordinationosOauthContext = {
   token: {
@@ -101,11 +105,13 @@ type DelegateSignerAuthDatabase = {
   oauthClient: { findUnique: (args: any) => Promise<any> };
   user: { findUnique: (args: any) => Promise<any> };
   tinyCloudManageKeyAppPreference: { findUnique: (args: any) => Promise<any> };
+  termsAcceptance: Pick<PrismaClient, 'termsAcceptance'>['termsAcceptance'];
 };
 
 export type DelegateSignerAuthDependencies = {
   database: DelegateSignerAuthDatabase;
-  resolveSession: (context: any) => Promise<boolean>;
+  /** True for a signed-in session; a refusal to send as is (the Terms gate); false for none. */
+  resolveSession: (context: any) => Promise<boolean | Response>;
   now?: () => Date;
 };
 
@@ -116,9 +122,7 @@ function sameStringSet(actual: string[], expected: readonly string[]): boolean {
 }
 
 function isConfidentialPersonalWebClient(client: NonNullable<CoordinationosOauthContext['client']>): boolean {
-  return client.type === 'web'
-    && !client.public
-    && client.tokenEndpointAuthMethod === 'client_secret_basic'
+  return isConfidentialWebClient(client)
     && sameStringSet(client.grantTypes, ['authorization_code'])
     && sameStringSet(client.responseTypes, ['code']);
 }
@@ -158,7 +162,14 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
   }
 
   if (parsed.kind === 'missing') {
-    if (await resolveSession(c)) {
+    const session = await resolveSession(c);
+    if (session instanceof Response) return session;
+    if (session) {
+      // A cookie session may sign only from an OpenKey web origin, checked
+      // only now that a session exists: a request with no credentials at all
+      // must still reach the audited missing_authorization denial below.
+      const originRefusal = rejectNonOpenKeySignRequest(c);
+      if (originRefusal) return originRefusal;
       c.set('delegateSignerPrincipal', { kind: 'session', userId: c.get('user').id });
     } else {
       c.set('delegateSignerAuthFailure', {
@@ -202,7 +213,7 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
     return;
   }
 
-  const [client, user] = await Promise.all([
+  const [client, userRow] = await Promise.all([
     database.oauthClient.findUnique({
       where: { clientId: token.clientId },
       select: {
@@ -220,9 +231,14 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
     }),
     database.user.findUnique({
       where: { id: token.userId },
-      select: { id: true, emailVerified: true },
+      select: { id: true, emailVerified: true, lockedAt: true, reviewerHoldAt: true, reviewerBinding: true },
     }),
   ]);
+  // A locked account (R9, TC-1231) is refused exactly like a deleted one: its
+  // OAuth tokens never authorize signing.
+  const user = userRow && !userRow.lockedAt && !userRow.reviewerHoldAt && !userRow.reviewerBinding ? { id: userRow.id, emailVerified: userRow.emailVerified } : null;
+  // An account that has not accepted the current Terms (TC-3232) signs nothing until it does.
+  const termsAccepted = !user || await hasAcceptedTerms(database, user.id);
   const context: CoordinationosOauthContext = { token, client, user };
   c.set('delegateSignerOauthContext', context);
   const failure = (code: DelegateSignerAuthCode): DelegateSignerAuthFailure => ({
@@ -252,6 +268,7 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
       c.set('delegateSignerAuthFailure', failure('client_misconfigured'));
     } else if (!user) c.set('delegateSignerAuthFailure', failure('user_not_found'));
     else if (!user.emailVerified) c.set('delegateSignerAuthFailure', failure('email_not_verified'));
+    else if (!termsAccepted) c.set('delegateSignerAuthFailure', failure('terms_required'));
     else {
       c.set('delegateSignerPrincipal', {
         kind: 'coordinationos-oauth',
@@ -277,6 +294,8 @@ export function createDelegateSignerAuth(dependencies: DelegateSignerAuthDepende
       c.set('delegateSignerAuthFailure', failure('user_not_found'));
     } else if (!user.emailVerified) {
       c.set('delegateSignerAuthFailure', failure('email_not_verified'));
+    } else if (!termsAccepted) {
+      c.set('delegateSignerAuthFailure', failure('terms_required'));
     } else {
       // Authorization establishes identity only. The policy is deliberately
       // evaluated inside the signing transaction so a settings mutation cannot

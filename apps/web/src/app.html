@@ -13,6 +13,16 @@
       // request. Scrub before page code can observe it. Keep only tab-scoped
       // data across auth navigation, with an expiry timer in every document.
       {
+        if (/^\/a\/[^/]+$/.test(location.pathname) && location.hash) {
+          const fragment = location.hash;
+          history.replaceState(history.state, '', location.pathname + location.search);
+          try {
+            if (fragment.length > 1024) throw new Error('Invalid approval reference');
+            sessionStorage.setItem(`openkey.approval.${location.pathname.slice(3)}`, fragment);
+          } catch {
+            document.documentElement.dataset.approvalStorageError = '1';
+          }
+        }
         const pendingKey = 'openkey.delegate.tv2.pending';
         if (location.pathname === '/delegate' && location.hash.startsWith('#tv')) {
           const fragment = location.hash;
