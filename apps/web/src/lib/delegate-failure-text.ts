@@ -45,8 +45,8 @@ const CODE_MESSAGES: Record<string, MappedMessage> = {
   expired_request: ENDED_MESSAGE,
   expired_result: ENDED_MESSAGE,
   already_approved: ENDED_MESSAGE,
-  'key-mismatch': CHANGED_MESSAGE,
-  'user-mismatch': CHANGED_MESSAGE,
+  'key-mismatch': "This request was prepared for a different key than the one you're approving with, so OpenKey didn't approve it. Return to the app or command and start again.",
+  'user-mismatch': "This request was made for a different OpenKey account than the one you're signed in to, so OpenKey didn't approve it. Sign in with the account it was made for, or start again from the app or command.",
   'host-mismatch': CHANGED_MESSAGE,
   'space-mismatch': CHANGED_MESSAGE,
   'jwk-mismatch': CHANGED_MESSAGE,
@@ -78,8 +78,8 @@ const CODE_MESSAGES: Record<string, MappedMessage> = {
   expiry_exceeds_handoff: (options) => options.expiryChangeable ? EXPIRY_CHANGEABLE_MESSAGE : EXPIRY_NOT_CHANGEABLE_MESSAGE,
   expiry_not_changeable: (options) => options.expiryChangeable ? EXPIRY_CHANGEABLE_MESSAGE : EXPIRY_NOT_CHANGEABLE_MESSAGE,
   app_key_grant_refused: "OpenKey can't approve this kind of access. The app or command needs to ask for something different.",
-  key_delete_not_grantable: "OpenKey can't approve this kind of access. The app or command needs to ask for something different.",
-  invalid_siwe_recap: "OpenKey can't approve this kind of access. The app or command needs to ask for something different.",
+  key_delete_not_grantable: "Apps and commands can't be given permission to delete keys. Nothing was approved. Ask the app or command to send a new request without that permission.",
+  invalid_siwe_recap: "This request's permission list can't be read. Nothing was approved. Ask the app or command to send a new request.",
   invalid_permissions: "OpenKey can't approve this kind of access. The app or command needs to ask for something different.",
   rate_limited: RATE_LIMITED_MESSAGE,
   key_not_found: "This key isn't available on your account. Choose a key you own and try again.",
@@ -115,6 +115,8 @@ const TERMINAL_APPROVAL_CODES: Record<string, true> = {
   selected_actions_missing_siwe_entries: true,
   selected_actions_exceed_siwe_entries: true,
   invalid_selected_action_ids: true,
+  key_delete_not_grantable: true,
+  invalid_siwe_recap: true,
   'handoff-mismatch': true,
   binding_mismatch: true,
   request_binding: true,
@@ -137,6 +139,16 @@ export class OwnerMessageError extends Error {}
 export function delegateFailureText(cause: unknown): string {
   return cause instanceof OwnerMessageError ? cause.message : APPROVAL_FAILURE_MESSAGE;
 }
+
+function shortWallet(address: string): string {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
+export function walletMismatchFailureText(expected: string, picked: string): string {
+  const wanted = shortWallet(expected);
+  return `This request is for wallet ${wanted}, but the key you picked is for ${shortWallet(picked)}. Choose a key for ${wanted}, or ask the app or command for a new request. Nothing was approved.`;
+}
+
 export function delegateResponseFailureText(
   status: number,
   code: unknown,

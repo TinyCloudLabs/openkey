@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { delegateFailureDetail, delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, isTerminalApprovalFailure, OwnerMessageError, shortCodeFailureText } from './delegate-failure-text';
+import { delegateFailureDetail, delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, isTerminalApprovalFailure, OwnerMessageError, shortCodeFailureText, walletMismatchFailureText } from './delegate-failure-text';
 
 const changedRequest = "This request changed after you opened it, so OpenKey didn't approve it. Return to the app or command and start again.";
 const approvalCannotProceed = "Couldn't approve this request. Try again.";
@@ -13,16 +13,20 @@ const mappedCodes: Array<[string, string]> = [
     'handoff_claimed', 'prepared_expired', 'expired_request', 'expired_result', 'already_approved',
   ].map((code) => [code, 'This request has already been answered or has ended. Return to the app or command and start a new one.'] as [string, string]),
   ...[
-    'key-mismatch', 'user-mismatch', 'host-mismatch', 'space-mismatch', 'jwk-mismatch', 'baseline-digest-mismatch',
+    'host-mismatch', 'space-mismatch', 'jwk-mismatch', 'baseline-digest-mismatch',
     'immutable-fields-changed', 'prepared_metadata_mismatch', 'prepared_siwe_mismatch',
     'selected_actions_missing_siwe_entries', 'selected_actions_exceed_siwe_entries', 'invalid_selected_action_ids',
     'handoff-mismatch', 'binding_mismatch', 'request_binding', 'signature-mismatch', 'bound_siwe_parse_failed',
     'authorization_context_failed', 'missing_authorization_context_token', 'missing_prepared',
     'authorization_context_missing_original_siwe',
   ].map((code) => [code, changedRequest] as [string, string]),
+  ['key-mismatch', "This request was prepared for a different key than the one you're approving with, so OpenKey didn't approve it. Return to the app or command and start again."],
+  ['user-mismatch', "This request was made for a different OpenKey account than the one you're signed in to, so OpenKey didn't approve it. Sign in with the account it was made for, or start again from the app or command."],
   ...[
-    'app_key_grant_refused', 'key_delete_not_grantable', 'invalid_siwe_recap', 'invalid_permissions',
+    'app_key_grant_refused', 'invalid_permissions',
   ].map((code) => [code, "OpenKey can't approve this kind of access. The app or command needs to ask for something different."] as [string, string]),
+  ['key_delete_not_grantable', "Apps and commands can't be given permission to delete keys. Nothing was approved. Ask the app or command to send a new request without that permission."],
+  ['invalid_siwe_recap', "This request's permission list can't be read. Nothing was approved. Ask the app or command to send a new request."],
   ['rate_limited', 'Too many attempts. Wait five minutes, then try again.'],
   ...['key_not_found', 'key_state_invalid'].map((code) => [code, "This key isn't available on your account. Choose a key you own and try again."] as [string, string]),
 ];
@@ -123,6 +127,11 @@ describe('delegateFailureText code mappings', () => {
     expect(isTerminalApprovalFailure(400, code)).toBe(true);
   });
 
+  test.each([400, 403])('marks key_delete_not_grantable and invalid_siwe_recap terminal for HTTP %i', (status: number) => {
+    expect(isTerminalApprovalFailure(status, 'key_delete_not_grantable')).toBe(true);
+    expect(isTerminalApprovalFailure(status, 'invalid_siwe_recap')).toBe(true);
+  });
+
   test('marks HTTP 410 terminal and keeps all non-B/C failures enabled', () => {
     expect(isTerminalApprovalFailure(410, undefined)).toBe(true);
     for (const [status, code] of [
@@ -197,4 +206,19 @@ test('caps long server messages and ignores them for other codes', () => {
     .toBe("This key isn't available on your account. Choose a key you own and try again.");
   expect(delegateResponseFailureText(400, 'unknown_code', { serverMessage: 'ignored' }))
     .toBe(`${approvalCannotProceed} (Error 400 · unknown_code)`);
+});
+
+test('wallet mismatch text names both shortened wallets', () => {
+  expect(walletMismatchFailureText(
+    '0xd559aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf412',
+    '0x1234bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb9abc',
+  )).toBe(
+    'This request is for wallet 0xd559…f412, but the key you picked is for 0x1234…9abc. Choose a key for 0xd559…f412, or ask the app or command for a new request. Nothing was approved.',
+  );
+});
+
+test('other invalid_permissions failures keep the generic line', () => {
+  const generic = "OpenKey can't approve this kind of access. The app or command needs to ask for something different.";
+  expect(delegateResponseFailureText(400, 'invalid_permissions')).toBe(generic);
+  expect(delegateResponseFailureText(400, 'invalid_permissions', { permissionsEditable: true })).toBe(generic);
 });
