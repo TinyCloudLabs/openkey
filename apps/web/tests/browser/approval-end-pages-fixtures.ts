@@ -201,7 +201,7 @@ export const DEVICE_LINK = '/device?user_code=ABCD-EFGH';
 
 /** The device lookup the /device page makes. */
 export async function mockDeviceLookup(page: Page) {
-  await page.route('**/api/device-authorizations/lookup', (route) => json(route, 200, {
+  await page.route('**/api/device-authorizations/lookup**', (route) => json(route, 200, {
     id: 'device-fixture', userCode: 'ABCDEFGH', sessionDid: 'did:key:z6MkFixture',
     publicJwk: jwk, relayPublicJwk: {},
     permissions: [{ service: 'tinycloud.kv', space, path: 'notes/', actions: ['tinycloud.kv/get'] }],
