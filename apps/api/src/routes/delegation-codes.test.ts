@@ -1,6 +1,15 @@
 import { describe, expect, test } from 'bun:test';
 import { Hono } from 'hono';
-import { createDelegationCodeRouter, type DelegationCodeStore } from './delegation-codes';
+import {
+  createDelegationCodeRouter,
+  PUBLIC_DELEGATION_FIELDS,
+  PUBLIC_JWK_FIELDS,
+  type DelegationCodeStore,
+} from './delegation-codes';
+import {
+  PUBLIC_DELEGATION_FIELDS as WEB_PUBLIC_DELEGATION_FIELDS,
+  PUBLIC_JWK_FIELDS as WEB_PUBLIC_JWK_FIELDS,
+} from '../../../web/src/lib/delegation-code-body';
 
 const delegation = {
   delegationHeader: { Authorization: 'Bearer signed-delegation' },
@@ -13,6 +22,18 @@ const delegation = {
   spaceError: 'TinyCloud account setup failed (tinycloud_bootstrap_failed): seed failed.',
   expirationTime: '2099-01-01T00:00:00.000Z',
 };
+function expectFieldParity(name: string, brokerFields: string[], webFields: readonly string[]) {
+  const brokerSorted = [...brokerFields].sort();
+  const webSorted = [...webFields].sort();
+  if (brokerSorted.length !== webSorted.length || brokerSorted.some((field, index) => field !== webSorted[index])) {
+    throw new Error(`web and broker public ${name} differ: broker=[${brokerSorted.join(', ')}], web=[${webSorted.join(', ')}]`);
+  }
+}
+
+test('web short-code allowlists match the broker allowlists', () => {
+  expectFieldParity('delegation fields', Object.keys(PUBLIC_DELEGATION_FIELDS), WEB_PUBLIC_DELEGATION_FIELDS);
+  expectFieldParity('JWK fields', Object.keys(PUBLIC_JWK_FIELDS), WEB_PUBLIC_JWK_FIELDS);
+});
 
 function fixture() {
   let now = Date.UTC(2026, 9, 5);
@@ -25,6 +46,9 @@ function fixture() {
       return true;
     },
     async consume(code) { lookups.push(code); const record = records.get(code); records.delete(code); return record ?? null; },
+    // These tests send no claim, so the claim path is never reached.
+    async claim() { throw new Error('not used'); },
+    async acknowledge() { throw new Error('not used'); },
     async deleteExpired(before) {
       for (const [code, record] of records) if (record.expiresAt <= before) records.delete(code);
     },
@@ -63,6 +87,26 @@ describe('delegation short-code broker', () => {
     const again = await app.request(path);
     expect(again.status).toBe(404);
     expect(await again.json()).toEqual({ error: 'Not found' });
+  });
+  test('creates a code from the account origin', async () => {
+    const { app, records } = fixture();
+    const response = await app.request('/api/delegation-codes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173', cookie: 'session=valid' },
+      body: JSON.stringify({ delegation }),
+    });
+    expect(response.status).toBe(201);
+    expect(records.size).toBe(1);
+  });
+  test('refuses console-origin code creation before storing a delegation', async () => {
+    const { app, records } = fixture();
+    const response = await app.request('/api/delegation-codes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'https://console.openkey.so', cookie: 'session=valid' },
+      body: JSON.stringify({ delegation }),
+    });
+    expect(response.status).toBe(403);
+    expect(records.size).toBe(0);
   });
 
   test('a redeemed code answers exactly like an unknown one', async () => {
@@ -153,6 +197,71 @@ describe('delegation short-code broker', () => {
     });
     expect(disguised.status).toBe(400);
   });
+});
+test('a delegate completion response can mint a code after excluding only non-public response fields', async () => {
+  const completion = {
+    delegationHeader: { Authorization: 'Bearer signed-delegation' },
+    delegationCid: 'bafy-delegation',
+    spaceId: 'tinycloud:pkh:eip155:1:0x123:default',
+    ownerDid: 'did:key:zOwner',
+    verificationMethod: 'did:key:zSession',
+    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'public-key' },
+    address: '0x123',
+    chainId: 1,
+    hostActivated: true,
+    spaceReady: true,
+    spaceError: null,
+    spacePending: true,
+    primary: true,
+    edited: true,
+    reason: 'Sync files',
+    expirationTime: '2099-01-01T00:00:00.000Z',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    expiry: '2099-01-01T00:00:00.000Z',
+    siwe: 'signed message',
+    signature: 'signature',
+    signedMessage: 'signed message',
+    permissions: [],
+    requestedSpaces: ['tinycloud:pkh:eip155:1:0x123:default'],
+  };
+  const publicFields = new Set(Object.keys(PUBLIC_DELEGATION_FIELDS));
+  const omitted = Object.keys(completion).filter((field) => !publicFields.has(field));
+  expect(omitted).toEqual(['requestedSpaces']);
+
+  const { app } = fixture();
+  const post = (value: Record<string, unknown>) => app.request('/api/delegation-codes', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ delegation: value }),
+  });
+  expect((await post(completion)).status).toBe(400);
+  const publicCompletion = Object.fromEntries(Object.entries(completion).filter(([field]) => publicFields.has(field)));
+  expect((await post(publicCompletion)).status).toBe(201);
+});
+test('rejects JWK extension members until the mint body contains only public members', async () => {
+  const { app } = fixture();
+  const extendedJwk = {
+    ...delegation,
+    jwk: {
+      kty: 'OKP',
+      crv: 'Ed25519',
+      x: 'public-key',
+      kid: 'delegate-key',
+      alg: 'EdDSA',
+      ext: true,
+      key_ops: ['verify'],
+    },
+  };
+  const post = (value: typeof extendedJwk) => app.request('/api/delegation-codes', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ delegation: value }),
+  });
+  expect((await post(extendedJwk)).status).toBe(400);
+  expect((await post({
+    ...extendedJwk,
+    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'public-key', kid: 'delegate-key' },
+  })).status).toBe(201);
 });
 
 

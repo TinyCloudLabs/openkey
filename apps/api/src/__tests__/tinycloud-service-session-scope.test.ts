@@ -33,4 +33,15 @@ describe('TinyCloud session sign-in scope', () => {
     expect(spaces).toEqual([...expectedSpaces].sort());
     expect(spaces).not.toContain('account');
   });
+
+  // TC-3115: the SDK's own account bootstrap must not run in `signIn()`: for a first sign-in it makes ~20 requests
+  // one at a time (about 9 s against the production node), twice per /api/secrets/enable, and aborts anyway.
+  test.each([OPENKEY_LEGACY_SPACE, SECRETS_SPACE])('%s session skips the SDK account bootstrap', async (prefix) => {
+    const node = createSessionNode(privateKey, prefix) as unknown as {
+      bootstrapAccountIfNeeded(): Promise<boolean>;
+      _bootstrapStatus?: { skipped: boolean; reason?: string };
+    };
+    expect(await node.bootstrapAccountIfNeeded()).toBe(false);
+    expect(node._bootstrapStatus).toEqual({ skipped: true, reason: 'auto-bootstrap-disabled' });
+  });
 });

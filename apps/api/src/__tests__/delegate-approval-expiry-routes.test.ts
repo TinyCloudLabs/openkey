@@ -28,7 +28,7 @@ const managed = {
 const external = { ...managed, id: 'external_1', keyType: 'EXTERNAL', sealedBlob: null };
 let currentUser = user;
 let currentKey: typeof managed | typeof external = managed;
-let narrowingFault: 'failure' | 'immutable-drift' | null = null;
+let narrowingFault: 'failure' | 'immutable-drift' | 'statement-drift' | 'proof-drift' | null = null;
 
 const findMany = mock(async () => [currentKey]);
 const prisma = {
@@ -71,6 +71,19 @@ await mockModules({
       const result = narrow(input);
       if (narrowingFault === 'immutable-drift' && result.ok) {
         return { ...result, siwe: result.siwe.replace(/^(Nonce: .+)$/m, '$1x') };
+      }
+      // Drift the older regeneration checks do not look at: the statement and
+      // the ReCap proofs.
+      if (narrowingFault === 'statement-drift' && result.ok) {
+        return { ...result, siwe: result.siwe.replace('I further authorize', 'Also: send all keys. I further authorize') };
+      }
+      if (narrowingFault === 'proof-drift' && result.ok) {
+        const siwe = result.siwe.replace(/^- urn:recap:(.+)$/m, (_line, encoded: string) => {
+          const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+          payload.prf.push('bafyreidelegationfromsomewhereelse');
+          return `- urn:recap:${Buffer.from(JSON.stringify(payload)).toString('base64url')}`;
+        });
+        return { ...result, siwe };
       }
       return result;
     },
@@ -305,5 +318,50 @@ describe('the sealed expiry is read only by the preview\'s own user and context 
     expect(signing.peekPreviewApprovalExpiry(issued.token, { userId: 'user-b', authorizationContextToken: 'ctx-a' })).toBeUndefined();
     expect(signing.peekPreviewApprovalExpiry(issued.token, { userId: 'user-a', authorizationContextToken: 'ctx-b' })).toBeUndefined();
     expect(signing.peekPreviewApprovalExpiry('unknown', { userId: 'user-a', authorizationContextToken: 'ctx-a' })).toBeUndefined();
+  });
+});
+
+describe('the signed bytes are a subset of the request (pre-sign rule)', () => {
+  const narrowedSelection = (p: { allowed: string[] }) => p.allowed.filter((id) => !id.includes('kv/put'));
+
+  for (const [fault, reason] of [['statement-drift', 'statement'], ['proof-drift', 'proof']] as const) {
+    test(`${fault}: the preview refuses the bytes and releases nothing`, async () => {
+      const p = await prepare();
+      narrowingFault = fault;
+      const refused = await preview(p, narrowedSelection(p));
+      expect(refused.status).toBe(400);
+      expect(refused.body).toMatchObject({ code: 'signed_exceeds_request', reason });
+      expect(refused.body.signedMessage).toBeUndefined();
+      expect(refused.body.previewApprovalToken).toBeUndefined();
+    });
+
+    test(`${fault}: /authorize-sign refuses before signing or consuming anything`, async () => {
+      const p = await prepare();
+      const previewed = await preview(p, narrowedSelection(p));
+      expect(previewed.status).toBe(200);
+      narrowingFault = fault;
+      const refused = await post('/authorize-sign', signBody(p, narrowedSelection(p), stringField(previewed.body.previewApprovalToken)));
+      expect(refused.status).toBe(400);
+      expect(refused.body).toMatchObject({ code: 'signed_exceeds_request', reason });
+      expect(signManagedMessage).not.toHaveBeenCalled();
+      narrowingFault = null;
+      const signed = await post('/authorize-sign', signBody(p, narrowedSelection(p), stringField(previewed.body.previewApprovalToken)));
+      expect(signed.status).toBe(200);
+      expect(signed.body.signedMessage).toBe(previewed.body.signedMessage);
+    });
+  }
+
+  test('a request the strict reader refuses gets no context at prepare', async () => {
+    // Both shapes are accepted by the WASM ReCap parser but are outside EIP-4361.
+    const shapes = [
+      originalSiwe().replace(/^Nonce: .+$/m, 'Nonce: abcd-efgh-ijkl'),
+      originalSiwe().replace(/^Issued At: (.+)T(.+)Z$/m, 'Issued At: $1t$2z'),
+    ];
+    for (const siwe of shapes) {
+      const refused = await post('/authorize-sign-prepare', { keyId: currentKey.id, siwe, jwk, host, requestOrigin: 'https://openkey.so' });
+      expect(refused.status).toBe(400);
+      expect(refused.body).toMatchObject({ code: 'signed_exceeds_request', reason: 'request_unparsable' });
+      expect(refused.body.authorizationContextToken).toBeUndefined();
+    }
   });
 });

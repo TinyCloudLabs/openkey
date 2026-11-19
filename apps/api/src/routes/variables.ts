@@ -1,7 +1,7 @@
 // Variables CRUD routes - plaintext KV storage via TinyCloud
 import { Hono } from 'hono';
 import { requireSession, type SessionContext } from '../middleware/session';
-import { requireOpenKeyOriginForBearer } from '../middleware/bearer-origin';
+import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { tinyCloudService } from '../services/tinycloud-service';
 
 // Name validation: must start with letter, contain only letters/numbers/underscores, max 256 chars
@@ -23,7 +23,7 @@ export const variablesRouter = new Hono<SessionContext>();
 
 // All routes require authentication. A bearer session token is accepted only
 // from an OpenKey web origin (TC-688).
-variablesRouter.use('*', requireOpenKeyOriginForBearer);
+variablesRouter.use('*', requireAccountOriginForBearer);
 variablesRouter.use('*', requireSession);
 
 // GET / - List variables (with values)

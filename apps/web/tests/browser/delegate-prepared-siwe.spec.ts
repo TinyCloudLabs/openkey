@@ -110,14 +110,15 @@ test('v2 distinguishes the approval request expiry from the exact SIWE grant exp
   await page.clock.setFixedTime(new Date('2026-10-16T17:00:00.000Z'));
   await setup(page);
   const ticketExpiry = new Date('2026-10-16T17:05:00.000Z').toLocaleString();
-  const grantExpiry = new Date('2026-10-23T17:00:00.000Z').toLocaleString();
   await expect(page.getByText('Approval request expires')).toBeVisible();
-  await expect(page.getByText('Access granted until')).toBeVisible();
   await expect(page.getByText(ticketExpiry)).toBeVisible();
-  await expect(page.getByText(`${grantExpiry} (in 7 days)`)).toBeVisible();
+  // The grant's length is the expiry line; its exact end is shown once, inside the open fold.
+  await expect(page.getByTestId('approval-expiry-line')).toContainText('7 days');
+  await page.getByText('How long it lasts').click();
+  await expect(page.getByText('Oct 23, 2026, 5:00 PM UTC')).toHaveCount(1);
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await expect(page.getByText('Approval request expires')).toBeVisible();
-  await expect(page.getByText(`${grantExpiry} (in 7 days)`)).toBeVisible();
+  await expect(page.getByText('Oct 23, 2026, 5:00 PM UTC')).toHaveCount(1);
 });
 
 test('v2 warns when the exact SIWE has no expiration rather than implying the ticket TTL is a grant TTL', async ({ page }) => {
@@ -371,7 +372,7 @@ test('v2 permits choosing an account-matching key when no keyId was requested', 
   await expect(page.getByText('Choose an OpenKey signing key')).toBeVisible();
   await page.getByText('Original SIWE message', { exact: true }).click();
   await expectExactBlock(page, 'Original SIWE message', siwe);
-  await page.getByRole('button', { name: /Backup owner key/ }).click();
+  await page.getByRole('button', { name: 'Backup owner key', exact: true }).click();
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   expect(calls.find(call => call.path === '/api/delegate/authorize-sign-prepare')?.body).toMatchObject({ keyId: second.id });
@@ -405,7 +406,7 @@ test('the exact SIWE blocks show one line per line feed and scroll sideways at 3
   await expect(page.getByText('Choose an OpenKey signing key')).toBeVisible();
   await page.getByText('Original SIWE message', { exact: true }).click();
   await expectUnwrappedBlock(page, 'Original SIWE message', siwe.split('\n').length);
-  await page.getByRole('button', { name: /Backup owner key/ }).click();
+  await page.getByRole('button', { name: 'Backup owner key', exact: true }).click();
   await page.getByRole('button', { name: 'Preview signing message' }).click();
   await page.getByText('Exact candidate signedMessage', { exact: true }).click();
   await page.getByText('Original SIWE message', { exact: true }).click();
@@ -422,7 +423,7 @@ for (const width of [375, 1280]) {
     await expect(page.getByText('Choose an OpenKey signing key')).toBeVisible();
     await page.getByText('Original SIWE message', { exact: true }).click();
     await expectUnwrappedBlock(page, 'Original SIWE message', siwe.split('\n').length);
-    await page.getByRole('button', { name: /Backup owner key/ }).click();
+    await page.getByRole('button', { name: 'Backup owner key', exact: true }).click();
     await page.getByRole('button', { name: 'Preview signing message' }).click();
     await page.getByText('Exact candidate signedMessage', { exact: true }).click();
     await page.getByText('Original SIWE message', { exact: true }).click();

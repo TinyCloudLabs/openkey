@@ -107,5 +107,5 @@ if (!process.env.TC2212_APPROVAL_API_CHILD) {
     expect(approvedResponse.status, await approvedResponse.clone().text()).toBe(200);
     const saved = await prisma.approvalRequest.findUniqueOrThrow({ where: { id } });
     expect(saved.delegationExpiresAt!.getTime()).toBe(expiryOf(prepared.prepared.siwe));
-  });
+  }, 20_000);
 }

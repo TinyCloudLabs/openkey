@@ -21,6 +21,7 @@ Object.assign(globalThis, {
   window: win,
   document: win.document,
   HTMLElement: win.HTMLElement,
+  HTMLMediaElement: win.HTMLMediaElement,
   Element: win.Element,
   Node: win.Node,
   Text: win.Text,
@@ -68,6 +69,17 @@ function stubUrl(name: string): string {
   return pathToFileURL(file).href;
 }
 
+// The page mounts `$lib` components (the expiry line, TC-2933): compile them, and theirs, the same way.
+function compileChild(file: string): string {
+  const code = compile(readFileSync(file, 'utf8'), { generate: 'client', dev: false, name: 'Child', filename: file }).js.code
+    .replace(/from\s+['"](\$lib\/[^'"]+)['"]/g, (_match, spec: string) => `from '${spec.endsWith('.svelte')
+      ? compileChild(join(WEB_ROOT, 'src/lib', spec.slice(5)))
+      : pathToFileURL(join(WEB_ROOT, 'src/lib', spec.slice(5))).href}'`);
+  const out = join(OUT_DIR, `${file.replace(/[^A-Za-z0-9]/g, '_')}.mjs`);
+  writeFileSync(out, code);
+  return pathToFileURL(out).href;
+}
+
 const COMPONENT = join(WEB_ROOT, 'src/routes/delegate/PreparedHandoff.svelte');
 const compiled = compile(readFileSync(COMPONENT, 'utf8'), { generate: 'client', dev: false, name: 'Subject', filename: COMPONENT });
 let code = '';
@@ -81,7 +93,8 @@ for (const match of compiled.js.code.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
   else if (spec === 'svelte') target = pathToFileURL(join(dirname(require.resolve('svelte/package.json')), 'src/index-client.js')).href;
   else if (spec === '@openkey/capability-review') {
     target = pathToFileURL(join(WEB_ROOT, '..', '..', 'packages', 'capability-review', 'src', 'index.ts')).href;
-  } else if (spec.startsWith('$lib/')) target = pathToFileURL(join(WEB_ROOT, 'src/lib', spec.slice(5))).href;
+  } else if (spec.startsWith('$lib/') && spec.endsWith('.svelte')) target = compileChild(join(WEB_ROOT, 'src/lib', spec.slice(5)));
+  else if (spec.startsWith('$lib/')) target = pathToFileURL(join(WEB_ROOT, 'src/lib', spec.slice(5))).href;
   code += `from '${target}'`;
   cursor = match.index! + match[0].length;
 }
@@ -168,7 +181,7 @@ function selectedActionIdsOf(body: string): string[] {
 }
 
 /** Open the handoff page for a request, claim it, and press Preview; returns what the page sent. */
-async function previewRequest(siwe: string, successful = false): Promise<{ previewIds: string[]; status: string; approveVisible: boolean; summary: string; fullGrantCollapsed: boolean }> {
+async function previewRequest(siwe: string, successful = false): Promise<{ previewIds: string[]; status: string; approveVisible: boolean; summary: string; codeTexts: string[]; fullGrantCollapsed: boolean }> {
   const claim = {
     transportVersion: 2,
     request: { protocolVersion: 1, siwe, jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }, host: 'https://node.tinycloud.xyz', sessionDid: 'did:key:z6Mk' },
@@ -216,6 +229,7 @@ async function previewRequest(siwe: string, successful = false): Promise<{ previ
       status,
       approveVisible: [...target.querySelectorAll('button')].some((b) => b.textContent === 'Approve' && !b.disabled),
       summary: target.textContent ?? '',
+      codeTexts: [...target.querySelectorAll('p code')].map((node) => node.textContent ?? ''),
       fullGrantCollapsed: [...target.querySelectorAll('details')].filter((details) => details.querySelector('summary')?.textContent === 'Full grant').every((details) => !details.open),
     };
   } finally {
@@ -267,7 +281,25 @@ test('CLI --keys qa consent names the folder and unlocks Approve after a valid p
   expect(rendered.previewIds).toContain(`tinycloud.encryption\0encryption\0${folder}\0tinycloud.encryption/decrypt`);
   expect(rendered.approveVisible).toBe(true);
   expect(rendered.summary).toContain('Your own encryption keys in qa/');
-  expect(rendered.summary).toContain('Create your own encryption keys in `qa/`');
-  expect(rendered.summary).toContain('Decrypt data locked with your keys in `qa/`');
   expect(rendered.fullGrantCollapsed).toBe(true);
+});
+
+// TC-2242: the folder in the own-key rows is shown in code style, not between raw backquotes (as on the approval page).
+test('CLI --keys qa consent shows the folder in code style with no raw backquote', async () => {
+  const folder = `${NETWORK}/qa/`;
+  const now = new Date();
+  const siwe = prepareSession({
+    address: ADDR, chainId: 1, domain: 'cli.tinycloud.xyz', spaceId: SPACE,
+    jwk: { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' },
+    issuedAt: now.toISOString(), expirationTime: new Date(now.getTime() + 3_600_000).toISOString(),
+    abilities: { kv: { '': ['tinycloud.kv/get'] }, capabilities: { '': ['tinycloud.capabilities/read'] } },
+    rawAbilities: {
+      [NETWORK]: ['tinycloud.encryption/decrypt', 'tinycloud.encryption/network.create'],
+      [folder]: ['tinycloud.encryption/key.create', 'tinycloud.encryption/decrypt'],
+    },
+  }).siwe;
+  const rendered = await previewRequest(siwe, true);
+  expect(rendered.summary).not.toContain('`');
+  // The folder line above the rows, plus the create and decrypt rows: three code spans naming the folder.
+  expect(rendered.codeTexts.filter((text) => text === 'qa/')).toHaveLength(3);
 });

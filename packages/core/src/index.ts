@@ -43,6 +43,7 @@ export type {
   OpenKeyServerMetadata,
   NativeSessionKeypair,
   BuildParRequestOptions,
+  NativeLoginMethod,
   PushedAuthorizationResponse,
   NativeCallbackResult,
   SessionProofOptions,

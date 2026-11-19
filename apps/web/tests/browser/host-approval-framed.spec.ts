@@ -45,7 +45,7 @@ function hostConfig(peer: string) {
       originWarning: false,
     },
   });
-  return { model, initialSelection: model.permissions.flatMap((grant) => grant.actions.map((action) => action.id)), surface: 'popup' as const };
+  return { model, initialSelection: model.permissions.flatMap((grant) => grant.actions.map((action) => action.id)), surface: 'popup' as const, canUseAuthorizeSign: true, previewReady: true };
 }
 
 async function setUp(page: Page, peer: string) {
@@ -78,7 +78,7 @@ test('an unconfirmed node shows the not-confirmed marker and does not block Appr
   await expect(page.locator('button.approve')).toBeEnabled();
 });
 
-test('framed Approve can request a preview without a visibility wait', async ({ page }) => {
+test('framed Approve signs a ready preview without a visibility wait', async ({ page }) => {
   await setUp(page, NODE_PEER);
   await page.goto(HARNESS);
   await page.setContent(
@@ -93,10 +93,10 @@ test('framed Approve can request a preview without a visibility wait', async ({ 
   const inner = page.frames().find((entry) => entry !== page.mainFrame() && entry.url().startsWith(HARNESS))!;
   await expect.poll(() => inner.evaluate(() =>
     ((window as unknown as { __openkeyParityHarness: { calls: Array<{ name: string }> } }).__openkeyParityHarness.calls).map((call) => call.name),
-  )).toContain('requestPreview');
+  )).toContain('approveAndSign');
   await approve.focus();
   await page.keyboard.press('Enter');
   await expect.poll(() => inner.evaluate(() =>
     ((window as unknown as { __openkeyParityHarness: { calls: Array<{ name: string }> } }).__openkeyParityHarness.calls).map((call) => call.name),
-  )).toEqual(['requestPreview', 'requestPreview']);
+  )).toEqual(['approveAndSign', 'approveAndSign']);
 });

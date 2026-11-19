@@ -12,12 +12,25 @@
 // adapter component with a fixture model and a spy transport, then
 // dispatch real DOM keyboard events. A route-specific wiring bug —
 // dropping `invalidatePreview` from the widget adapter's selection
-// handler, mis-mapping the CLI selection, forgetting to call the preview
-// path when supported — surfaces as a missing spy call in that test.
+// handler, mis-mapping the CLI selection, signing before a preview
+// is ready — surfaces as an unexpected spy call in that test.
 //
 // The routes themselves are responsible for authentication and other
 // non-authorization concerns; those never enter the adapter and never
 // enter the parity test.
+
+/** The renewal checkbox (TC-2933), offered only where the requester signed a renewal request. */
+export interface RenewalChoice {
+  /** The lease the owner chose, in ms from approval; null when the box is unticked. */
+  leaseMs: number | null;
+  /** The longest lease the requester signed (never more than a year). */
+  maxLeaseMs: number;
+  /**
+   * Reports the owner's lease (null: unticked). `windowMs`, when given, changes the expiry window in the
+   * same step (null: back to what the app asked for), so the preview is prepared once with both.
+   */
+  onChange: (leaseMs: number | null, windowMs?: number | null) => void;
+}
 
 /** Transport injected by the CLI (`/delegate`) route. */
 export interface CliSigningTransport {
@@ -27,8 +40,17 @@ export interface CliSigningTransport {
    */
   approveDelegate: () => void | Promise<void>;
 
-  /** Cancel: the CLI's "go back to key selection" navigation. */
+  /** Back (the review's dismiss control): the CLI's "go back to key selection" navigation. It sends nothing. */
   goBack: () => void;
+
+  /**
+   * Decline the approval request (TC-2459). Set only on an approval-request review; the card then offers a Decline
+   * button left of Approve. Unset on every other `/delegate` review.
+   */
+  decline?: () => void | Promise<void>;
+
+  /** True while a decline is being sent. */
+  declining?: boolean;
 
   /**
    * Called whenever the user narrows the selection. The route is
@@ -48,18 +70,22 @@ export interface CliSigningTransport {
   error: string | null;
 
   /**
-   * The "Approval expires" choice (TC-2272). `bounded` is true for a signed
+   * How long the approval lasts (TC-2272, TC-2933). `bounded` is true for a signed
    * CLI approval request or a device approval, whose requester signed the
    * longest lifetime it accepts. `onChange` re-issues `/api/delegate/prepare`
    * so the bytes that get signed carry the choice.
    */
   expiry?: {
     chosenMs: number | null;
+    /** A one-time approval (secrets or decrypt) starts at one hour here (TC-3111); set by the real signing pages, not harnesses. */
+    onceDefault?: boolean;
     bounded: boolean;
     /** The most the requester signed; the shown default can be shorter. Null: the default is the most. */
     maxMs?: number | null;
     onChange: (ms: number | null) => void;
   };
+  /** The renewal checkbox; set only on an approval request that signed a renewal request. */
+  renewal?: RenewalChoice;
   /**
    * Set while the prepared authorization does not match the visible
    * selection (a narrowing `/prepare` failed or never ran). Approve stays
@@ -67,10 +93,14 @@ export interface CliSigningTransport {
    * user can retry.
    */
   approveBlockedReason?: string | null;
+  /** A server-declared terminal approval failure; only re-preparation can unblock Approve. */
+  approveBlockedByFailure?: boolean;
 }
 
 /** Transport injected by the widget popup and iframe routes. */
 export interface WidgetSigningTransport {
+  /** Set once the server has refused this request for good: Approve is off and this is shown in its place. */
+  approveBlockedReason?: string | null;
   /**
    * The TinyCloud node the request names (the sign request's `host`), or empty when it names none. The host
    * approval looks the node key up only there, and only if it is a known node (TC-2309).
@@ -85,28 +115,14 @@ export interface WidgetSigningTransport {
    */
   canUseAuthorizeSign: boolean;
 
-  /**
-   * True after the server has prepared exact bytes and sealed them to the
-   * current selection. The adapter keeps rendering the shared approval
-   * content, but the next approval now consumes that preview instead of
-   * requesting another one.
-   */
+  /** True while a current, unexpired token sealed to the visible selection is held. */
   previewReady: boolean;
 
-  /**
-   * Server-authoritative narrowing path: fetch a preview of the exact
-   * bytes the server would sign for the current selection. The route puts
-   * those bytes back into the shared review model; the adapter fires this
-   * only when `canUseAuthorizeSign` is true and no preview is ready.
-   */
-  requestPreview: () => void | Promise<void>;
-
-  /**
-   * Exact-byte fall-through: the legacy widget path signs the caller's
-   * original bytes verbatim. The adapter fires this when
-   * `canUseAuthorizeSign` is false.
-   */
+  /** Sign the ready sealed preview, or the original bytes on the legacy path. */
   approveAndSign: () => void | Promise<void>;
+
+  /** Owner-initiated retry after a recoverable preview/sign failure; absent while busy. */
+  retryPreview?: () => void;
 
   /** Cancel: send the widget cancel response and close the surface. */
   cancel: () => void;
@@ -127,20 +143,40 @@ export interface WidgetSigningTransport {
    */
   invalidatePreview: () => void;
 
-  /** True while the widget is previewing or signing. */
+  /** True only while the widget is signing. */
   approving: boolean;
 
   /** Latest error string, or null. */
   error: string | null;
+  /** True once the server refused in a way a retry cannot change: Approve stays disabled. */
+  refused?: boolean;
 
   /**
-   * The "Approval expires" choice (TC-2272). Set only when the signing path
+   * How long the approval lasts (TC-2272, TC-2933). Set only when the signing path
    * is the server-authoritative one, which writes the choice into the signed
    * message; unset on the exact-byte path, where the line is not shown.
    * `onChange` must invalidate any approved preview.
    */
   expiry?: {
     chosenMs: number | null;
+    /** A one-time approval (secrets or decrypt) starts at one hour here (TC-3111); set by the real signing pages, not harnesses. */
+    onceDefault?: boolean;
     onChange: (ms: number | null) => void;
+  };
+  /**
+   * The renewal checkbox (TC-2933); set only where the app's sign-in asked for renewal and the server offered it.
+   * `onChange` must make the next preview carry the choice (and the window, when given).
+   */
+  renewal?: RenewalChoice;
+
+  /**
+   * The warning screen for extra permissions (TC-2927): decrypt or key creation on the encryption network, or on
+   * keys outside the app's own area. Set by the signing pages that carry the owner's decision to the server.
+   * `splittable` is false on the exact-byte path, where the request can only be approved or cancelled whole.
+   * `onDecide` receives the action ids the owner allowed and must make the next preview (or sign) carry them.
+   */
+  elevated?: {
+    splittable: boolean;
+    onDecide: (allowed: string[]) => void;
   };
 }

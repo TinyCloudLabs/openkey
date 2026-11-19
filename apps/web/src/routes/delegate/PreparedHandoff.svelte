@@ -3,14 +3,19 @@
   import { afterNavigate, replaceState } from '$app/navigation';
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import { copyText } from '$lib/clipboard';
-  import { buildStatements, parseEncryptionResource, parseCapabilityReview, defaultSelection, renderLiteral, renderSiweLiteral, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
+  import { buildStatements, parseEncryptionResource, parseCapabilityReview, defaultSelection, renderLiteral, renderSiweLiteral, splitStatementCode, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
   import { requestedActionIds } from '$lib/widget-selection';
   import { timeUntilExpiry } from '$lib/siwe-parser';
   import { SERVER_REPLY_BODY, SERVER_REPLY_TITLE, ServerReplyError, hasSignResult, hasText } from '$lib/server-reply';
   import { fitsPreparedLinkBudget } from '$lib/prepared-link';
-  import { EXPIRY_PRESETS, LONG_EXPIRY_MS, LONG_EXPIRY_WARNING, expiryAtCapped, expiryLimitNote, formatExpiry, parseExpiry, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
+  import { remainingFromServerClock } from '$lib/delegate-code-countdown';
+  import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
+  import { expiryAtCapped, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
+  import ApprovalExpiryControl from '$lib/components/signing/approval-expiry-control.svelte';
+  import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   const session = authClient.useSession();
@@ -48,6 +53,11 @@
   let ticket = $state('');
   let initialized = $state(false);
   let pendingTimeout: ReturnType<typeof setTimeout> | undefined;
+  let handoffTimeout: ReturnType<typeof setTimeout> | undefined;
+  // When the CLI's prepared request stops being claimable: its issued-at plus five minutes.
+  let preparedExpiryMs = NaN;
+  // The `Date` header of the latest server reply: the server's clock, read at receipt.
+  let serverDate: string | null = null;
   let routerReady = false;
   let markerNeeded = false;
   afterNavigate(() => {
@@ -63,35 +73,21 @@
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? null : { local: date.toLocaleString(), relative: timeUntilExpiry(value).text };
   });
+  // The exact end the open fold shows after the choice: what the preview signs, else what a pick would give
+  // from now, else what the CLI asked for.
+  const foldEndsAt = $derived.by(() => {
+    if (phase === 'preview') return siweExpiration(previewMessage) ?? null;
+    if (expiryChoiceMs !== null) return new Date(Date.now() + expiryChoiceMs).toISOString();
+    return siweExpiration(handoff?.request.siwe ?? '') ?? null;
+  });
   let key = $state<EthereumKey | null>(null);
   let keyChoices = $state<KeyChoice[]>([]);
-  let signingChain = $state('');
   let model = $state<CapabilityReviewModel | null>(null);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
   const expiryRequestedMs = $derived(requestedExpiryMs(model?.immutable?.issuedAt, model?.immutable?.expirationTime));
-  const expiryShownMs = $derived(expiryChoiceMs ?? expiryRequestedMs);
-  let expiryOpen = $state(false);
-  let expiryText = $state('');
-  let expiryError = $state('');
-  const expiryTyped = $derived(expiryText.trim() === '' ? null : parseExpiry(expiryText));
-  const expiryWarn = $derived(expiryTyped?.ok ? expiryTyped.ms : expiryShownMs);
   // A choice after the preview is sealed would not be in what gets signed.
   const expiryEditable = $derived.by(() => phase === 'review' && !busy && !submitted);
-  function chooseExpiry(ms: number) {
-    if (!expiryEditable) return;
-    expiryChoiceMs = ms === expiryRequestedMs ? null : ms;
-    expiryText = '';
-    expiryError = '';
-    expiryOpen = false;
-  }
-  function applyExpiryText() {
-    if (!expiryEditable) return;
-    const parsed = parseExpiry(expiryText);
-    if (!parsed.ok) expiryError = parsed.message;
-    else if (expiryRequestedMs !== null && parsed.ms > expiryRequestedMs) expiryError = expiryLimitNote(expiryRequestedMs);
-    else chooseExpiry(parsed.ms);
-  }
   let selected = $state(new Set<string>());
   let contextToken = $state('');
   let previewToken = $state('');
@@ -140,28 +136,44 @@
         throw new Error('Invalid prepared sign-in request. Restart the CLI command.');
       }
       if (!isClaim(value)) throw new Error('Invalid prepared sign-in request. Restart the CLI command.');
+      // Freshness is decided on the server's clock once the first reply arrives (see `load`), never the device clock.
       const issuedAt = /^Issued At:[ \t]*(.+)$/m.exec(value.request.siwe)?.[1]?.trim();
-      const remaining = Date.parse(issuedAt ?? '') + 300_000 - Date.now();
-      if (!Number.isFinite(remaining) || remaining <= 0) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
+      preparedExpiryMs = Date.parse(issuedAt ?? '') + 300_000;
+      if (!Number.isFinite(preparedExpiryMs)) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
       pending = value;
+      // Bounds how long the unclaimed request stays in this tab: five minutes from mount on a plain timer.
       pendingTimeout = setTimeout(() => {
         pending = null;
         clearPending();
         error = 'Prepared sign-in request expired. Restart the CLI command.';
-      }, remaining);
+      }, 300_000);
     } catch (cause) {
       clearPending();
       error = cause instanceof Error ? cause.message : 'Invalid prepared sign-in request. Restart the CLI command.';
     } finally {
       initialized = true;
     }
-    return () => { if (pendingTimeout !== undefined) clearTimeout(pendingTimeout); };
+    return () => {
+      if (pendingTimeout !== undefined) clearTimeout(pendingTimeout);
+      if (handoffTimeout !== undefined) clearTimeout(handoffTimeout);
+    };
   });
 
   function cancelPending(): void {
     pending = null;
     clearPending();
     error = 'Approval cancelled. Restart the CLI command for a new sign-in.';
+  }
+
+  function expireHandoff(): void {
+    // A signing in flight, or one that finished, decides its own outcome.
+    if (!handoff || submitted || phase === 'done') return;
+    handoff = null;
+    contextToken = '';
+    previewToken = '';
+    previewMessage = '';
+    phase = 'review';
+    error = 'Prepared sign-in request expired. Restart the CLI command.';
   }
 
   // `needs` names the fields a successful answer must carry as text. With it, a
@@ -171,6 +183,7 @@
     const response = await fetch(`${apiUrl}/api/delegate/${path}`, {
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
+    serverDate = response.headers?.get('date') ?? null;
     if (needs !== undefined && response.ok) {
       let parsed: unknown;
       try { parsed = await response.json(); } catch { throw new ServerReplyError(response.status); }
@@ -185,7 +198,7 @@
     if (path === 'handoffs/claim' && response.status === 404 && record.error === 'Not found') {
       throw new Error('Prepared CLI sign-in is not available yet. Restart the CLI command after OpenKey is updated.');
     }
-    if (!response.ok) throw new Error(typeof record.error === 'string' ? record.error : `HTTP ${response.status}`);
+    if (!response.ok) throw new Error(apiBusyOrEndedMessage(response.status) ?? (typeof record.error === 'string' ? record.error : `HTTP ${response.status}`));
     return record;
   }
 
@@ -223,6 +236,13 @@
         !('transportVersion' in feature) || feature.transportVersion !== 2) {
         throw new Error('Could not verify prepared CLI sign-in availability. Restart the CLI command.');
       }
+      // The availability reply carries the first server `Date`: the request is fresh or expired on that clock.
+      const availableDate = availability.headers?.get('date') ?? null;
+      const serverNowMs = availableDate === null ? NaN : Date.parse(availableDate);
+      if (Number.isFinite(serverNowMs)) {
+        const remaining = preparedExpiryMs - serverNowMs;
+        if (remaining <= 0) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
+      }
       if (pending !== input) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
       const claimed = await post('handoffs/claim', input, ['ticket', 'expiresAt']);
       if (pending !== input) throw new Error('Prepared sign-in request expired. Restart the CLI command.');
@@ -231,6 +251,9 @@
         throw new Error('Invalid approval claim response. Restart the CLI command.');
       }
       ticket = input.delivery.handoffId;
+      // Counted on the server's clock: the claim's expiry minus the server's own Date header, never the device clock.
+      const remainingMs = remainingFromServerClock(claimed.expiresAt, serverDate);
+      if (remainingMs !== null) handoffTimeout = setTimeout(expireHandoff, remainingMs);
       const resolved: Handoff = {
         request: input.request,
         delivery: input.delivery.callback ? { callback: input.delivery.callback } : {},
@@ -241,7 +264,6 @@
       const match = /(?:^|\n)([^\n]+) wants you to sign in with your Ethereum account:\n(0x[0-9a-fA-F]{40})(?:\n|$)/.exec(resolved.request.siwe);
       const chain = /^Chain ID: ([1-9][0-9]*)$/m.exec(resolved.request.siwe);
       if (!match || !chain) throw new Error('The prepared SIWE does not name a valid signer and chain.');
-      signingChain = chain[1]!;
       const { keys } = await api.listKeys();
       const candidates = keys.filter(item => item.address.toLowerCase() === match[2]!.toLowerCase() && (!resolved.request.keyId || item.id === resolved.request.keyId));
       if (!candidates.length) throw new Error('Requested signing key is not available for this SIWE account and chain.');
@@ -342,7 +364,16 @@
         body.externalSignature = signature;
       }
       submitted = true;
-      const signed = await post('authorize-sign', body, ['signature', 'address', 'signedMessage', 'deliveryState'], hasSignResult);
+      let signed: Record<string, unknown>;
+      try {
+        signed = await post('authorize-sign', body, ['signature', 'address', 'signedMessage', 'deliveryState'], hasSignResult);
+      } catch (cause) {
+        // A refusal or failure comes back with no signature. The server releases the handoff when the key failed to
+        // sign, so the owner may approve again or cancel; if the key signed but the tokens could not be spent it stays
+        // signing until it expires and a retry is refused. Only a 2xx reply that cannot be read may have been signed.
+        if (!(cause instanceof ServerReplyError)) submitted = false;
+        throw cause;
+      }
       if (signed.protocolVersion !== 1 || typeof signed.signature !== 'string' || typeof signed.address !== 'string' ||
           !Array.isArray(signed.selectedActionKeys) || !signed.selectedActionKeys.every(value => typeof value === 'string') ||
           !Array.isArray(signed.permissions) ||
@@ -432,7 +463,7 @@
       <button onclick={cancelPending}>Cancel</button>
     {:else if busy && !handoff && !code}<p>Loading prepared sign-in…</p>
     {:else if handoff && phase === 'done'}
-      {#if delivered}<p role="status">CLI accepted your sign-in. You can close this window.</p>
+      {#if delivered}<p role="status">CLI accepted your sign-in. You can close this window.</p><CloseTabButton />
       {:else}
         <p>{callbackFailed ? 'Could not reach the CLI automatically. Paste this same response in your CLI.' : 'Paste this response in your CLI to complete sign-in.'}</p>
         <p>Only paste this code into a terminal you started yourself.</p>
@@ -452,14 +483,21 @@
         <p role="alert" class="rounded-lg border border-red-300 bg-red-50 p-3 text-sm">No expiry set</p>
       {/if}
       <h2 class="font-semibold">Choose an OpenKey signing key</h2>
-      {#each keyChoices as choice (choice.key.id)}
-        <button class="block w-full rounded-lg border p-3 text-left text-sm break-all" onclick={() => chooseKey(choice)}>{choice.key.label ?? `Key ${choice.key.keyIndex}`} · {choice.key.id} · {choice.key.address} (chain {signingChain})</button>
-      {/each}
+      <KeyPicker
+        keys={keyChoices.map((choice) => choice.key)}
+        expectedAddress={keyChoices[0].key.address.toLowerCase()}
+        onselect={(selected) => {
+          const choice = keyChoices.find((choice) => choice.key.id === selected.id);
+          if (choice) chooseKey(choice);
+        }}
+        listHeading="Choose which key signs this:"
+        primaryHeading="Sign with your primary key:"
+      />
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each keyChoices[0].review.permissions as grant}
         <div class="rounded-lg border p-3 text-sm">
           {#if ownKeyFolder(grant)}<p class="font-semibold">Your own encryption keys in <code>{ownKeyFolder(grant)}</code></p>{/if}
-          {#each buildStatements(grant) as statement}<p>{statement.primaryText}</p>{/each}
+          {#each buildStatements(grant) as statement}<p>{#if statement.codeSpans}{#each splitStatementCode(statement.primaryText) as part}{#if part.code}<code class="font-mono">{part.text}</code>{:else}{part.text}{/if}{/each}{:else}{statement.primaryText}{/if}</p>{/each}
           <details><summary>Full grant</summary><pre class="whitespace-pre-wrap break-all">{renderLiteral(`${grant.service} · ${grant.space} · ${grant.path}: ${grant.actions.map(action => action.ability).join(', ')}`)}</pre></details>
         </div>
       {/each}
@@ -473,45 +511,32 @@
         <div><dt class="font-semibold">Session DID (display only)</dt><dd>{handoff.request.sessionDid}</dd></div>
         <div><dt class="font-semibold">Node host</dt><dd>{handoff.request.host}</dd></div>
         <div><dt class="font-semibold">Approval request expires</dt><dd>{new Date(handoff.expiresAt).toLocaleString()}</dd></div>
-        <div><dt class="font-semibold">Signing key</dt><dd>{key.address} (chain {signingChain})</dd></div>
-      </dl>
-      {#if signedExpiry}
-        <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><dt class="font-semibold">Access granted until</dt><dd>{signedExpiry.local} ({signedExpiry.relative})</dd></div>
-      {:else}
-        <p role="alert" class="rounded-lg border border-red-300 bg-red-50 p-3 text-sm">No expiry set</p>
-      {/if}
-      {#if expiryShownMs !== null}
-        <div class="space-y-2 text-sm" role="group" aria-label="Approval expiry">
-          <p>Approval expires: <strong>{formatExpiry(expiryShownMs)}</strong>
-            <button type="button" class="underline min-h-10" aria-expanded={expiryOpen && expiryEditable} disabled={!expiryEditable} onclick={() => { expiryOpen = !expiryOpen; }}>(Change)</button></p>
-          {#if expiryOpen && expiryEditable}
-            <div class="rounded-lg border p-3 space-y-2">
-              <div class="flex flex-wrap gap-2">
-                {#each EXPIRY_PRESETS.filter((preset) => expiryRequestedMs === null || preset.ms <= expiryRequestedMs) as preset (preset.label)}
-                  <button type="button" class="rounded-lg border px-3 py-2" aria-pressed={expiryShownMs === preset.ms} onclick={() => chooseExpiry(preset.ms)}>{preset.label}</button>
-                {/each}
-              </div>
-              <form class="space-y-1" onsubmit={(event) => { event.preventDefault(); applyExpiryText(); }}>
-                <label for="approval-expiry-custom" class="block text-xs font-semibold">Or type a time</label>
-                <div class="flex gap-2">
-                  <input id="approval-expiry-custom" class="min-w-0 flex-1 rounded-lg border px-2 py-2 text-base" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="5600s, 90m, 40d, 1y" value={expiryText} oninput={(event) => { expiryText = event.currentTarget.value; expiryError = ''; }} aria-invalid={expiryError ? 'true' : undefined} />
-                  <button type="submit" class="rounded-lg border px-3 py-2">Set</button>
-                </div>
-                {#if expiryError}<p role="alert" class="text-red-700">{expiryError}</p>{/if}
-              </form>
-              {#if expiryRequestedMs !== null}<p class="text-xs text-surface-600">{expiryLimitNote(expiryRequestedMs)}</p>{/if}
-            </div>
-          {/if}
-          {#if expiryWarn !== null && expiryWarn > LONG_EXPIRY_MS}
-            <p role="status" class="rounded-lg border border-amber-300 bg-amber-50 p-2 text-amber-900">{LONG_EXPIRY_WARNING}</p>
-          {/if}
+        <div data-testid="prepared-signing-key">
+          <dt class="font-semibold">Signing key</dt>
+          <dd class="flex flex-wrap items-center gap-2">
+            <span class="font-medium" title={key.address}>{key.label || `Key ending ${key.address.slice(-4)}`}</span>
+          </dd>
         </div>
+      </dl>
+      {#if !signedExpiry}
+        <p role="alert" class="rounded-lg border border-red-300 bg-red-50 p-3 text-sm">No expiry set</p>
+      {:else if expiryRequestedMs === null}
+        <!-- The expiry line below can't show a length, so the end date is shown here instead. -->
+        <div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><dt class="font-semibold">Access granted until</dt><dd>{signedExpiry.local} ({signedExpiry.relative})</dd></div>
       {/if}
+      <ApprovalExpiryControl
+        requestedMs={expiryRequestedMs}
+        chosenMs={expiryChoiceMs}
+        maxMs={expiryRequestedMs}
+        disabled={!expiryEditable}
+        onChange={(ms) => { if (expiryEditable) expiryChoiceMs = ms; }}
+        endsAt={foldEndsAt}
+      />
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each model.permissions as grant}
         <div class="rounded-lg border p-3 text-sm">
           {#if ownKeyFolder(grant)}<p class="font-semibold">Your own encryption keys in <code>{ownKeyFolder(grant)}</code></p>{/if}
-          {#each buildStatements(grant) as statement}<p>{statement.primaryText}</p>{/each}
+          {#each buildStatements(grant) as statement}<p>{#if statement.codeSpans}{#each splitStatementCode(statement.primaryText) as part}{#if part.code}<code class="font-mono">{part.text}</code>{:else}{part.text}{/if}{/each}{:else}{statement.primaryText}{/if}</p>{/each}
           {#each grant.actions as action}
             <label class="flex gap-2 py-1"><input type="checkbox" checked={selected.has(action.id)} disabled={phase !== 'review' || !action.editable} onchange={() => toggle(action.id)} /><span class="break-all">{renderLiteral(action.ability, 120)}</span></label>
           {/each}
