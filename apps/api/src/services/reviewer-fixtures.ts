@@ -4,7 +4,7 @@ import { TinyCloudNode } from '@tinycloud/node-sdk';
 import { createTeeClient, generatePrivateKey, getAddressFromPrivateKey, seal } from '@openkey/tee';
 import type { PrismaClient } from '@openkey/db';
 import { createSealingContext } from './key-sealing';
-import { lockReviewer, holdReviewer, settleReviewerVerifier } from './reviewer-accounts';
+import { lockReviewer, holdReviewer, settleReviewerVerifier, seedReviewerTerms } from './reviewer-accounts';
 import { TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
 import { logReviewer } from '../log';
 
@@ -85,6 +85,8 @@ export async function provisionReviewer(
       grantSessionId: null, installEpoch: held.installEpoch,
     } });
   });
+  // The new account is reviewed as soon as its code is installed: it never sees the Terms screen.
+  await seedReviewerTerms(database);
   settleReviewerVerifier(store, binding.installEpoch);
   if (wasReset) logReviewer('reviewer_admin', 'reset', store);
   const node = new TinyCloudNode({
