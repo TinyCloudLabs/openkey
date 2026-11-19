@@ -610,6 +610,48 @@ dispatch `deploy-api.yml` after the merge: its migration step runs
 To require API-before-web with this main-only workflow, split the API/database
 and web changes into separate merges.
 
+#### Release order when web and API ship together
+
+When one release changes both the web and the API, release them as a pair, in
+this order, with the paired rollback recorded before the API changes. The web
+is built ahead and kept ready; the API goes first; the prebuilt web is
+promoted promptly after it. Each step below has a check, and each check has a
+stop point.
+
+Record first, before anything changes:
+
+- The `main` commit SHA being released.
+- The web now serving production: the Pages deployment, and the
+  `_app/version.json` value and entry file name that `https://openkey.so`
+  serves.
+- The API image now serving production, by digest: the `rollback_image` in the
+  output of `gh workflow run deploy-api.yml --ref main -f preflight_only=true`.
+
+Order:
+
+1. Prebuild the web from that exact commit and keep it ready, not promoted.
+   Record its Pages deployment and the `_app/version.json` value its preview
+   serves. Stop if it was not built from the recorded commit.
+2. Have the paired rollback ready: the recorded API image digest and the
+   recorded Pages deployment, with the commands to use them.
+3. Run the preflight and read it. Stop and resolve any unexpected difference
+   in the live configuration, the environment key names or the pending
+   migrations first.
+4. Deploy the API: `gh workflow run deploy-api.yml --ref main`.
+5. Check the API: `/health` reports the released commit and is ready, the
+   preflight shows the new image and migration state, and a sign-in through
+   the encryption network completes. If a check fails, roll the API back to
+   the recorded image. The web has not been promoted, so nothing else changes.
+6. Promote the prebuilt web to production without delay.
+7. Check the web: `_app/version.json` and the entry file name served by
+   `https://openkey.so` match the prebuilt deployment, `/delegate` loads, and
+   a sign-in through the encryption network completes again. If a check
+   fails, run the paired rollback below.
+
+Paired rollback: the API first (redeploy the recorded image), then the web
+(promote the recorded Pages deployment). Roll the web back only after the API
+is back on the recorded image, and confirm `/health` between the two steps.
+
 ### Manual Deploy
 
 1. Build the Docker image:
