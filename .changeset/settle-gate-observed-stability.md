@@ -2,4 +2,6 @@
 "@openkey/web": patch
 ---
 
-In a v1 embed, Approve is now enabled only after the frame size and the Approve button have been observed unchanged for several animation frames, and a resize after it is enabled disables it again, so a slow host no longer leaves Approve enabled while the button is still moving.
+In a v1 embed, Approve waits for the frame size and the button to settle, up to the existing time limit. A resize after Approve is enabled starts the check again.
+
+Details: TC-3185
