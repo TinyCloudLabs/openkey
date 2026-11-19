@@ -3,10 +3,13 @@ import { describe, expect, test } from 'bun:test';
 import {
   LONG_EXPIRY_MS,
   LONG_EXPIRY_WARNING,
+  ONCE_DEFAULT_EXPIRY_MS,
   expiryAt,
   formatExpiry,
+  onceDefaultExpiryMs,
   parseExpiry,
   requestedExpiryMs,
+  approvalRequestStartSeconds,
 } from './approval-expiry';
 
 const S = 1000;
@@ -136,5 +139,37 @@ describe('expiryAtCapped', () => {
     expect(expiryAtCapped(7 * D, '2026-11-05T00:00:00.000Z', now)).toBe('2026-11-05T00:00:00.000Z');
     expect(expiryAtCapped(H, null, now)).toBe('2026-10-31T01:00:00.000Z');
     expect(expiryAtCapped(H, 'not a time', now)).toBe('2026-10-31T01:00:00.000Z');
+  });
+});
+
+describe('onceDefaultExpiryMs (TC-3111)', () => {
+  test('a one-time request that asks for more than an hour starts at one hour', () => {
+    expect(ONCE_DEFAULT_EXPIRY_MS).toBe(H);
+    expect(onceDefaultExpiryMs(true, H + S)).toBe(H);
+    expect(onceDefaultExpiryMs(true, 7 * D)).toBe(H);
+  });
+
+  test('an hour or less, an unknown request, or a request that is not one-time keeps what the app asked for', () => {
+    expect(onceDefaultExpiryMs(true, H)).toBeNull();
+    expect(onceDefaultExpiryMs(true, 30 * M)).toBeNull();
+    expect(onceDefaultExpiryMs(true, null)).toBeNull();
+    expect(onceDefaultExpiryMs(false, 7 * D)).toBeNull();
+  });
+});
+
+describe('approvalRequestStartSeconds', () => {
+  test('a request that suggests nothing starts at one hour, however long its signed maximum', () => {
+    expect(approvalRequestStartSeconds(7 * 86_400)).toBe(3600);
+    expect(approvalRequestStartSeconds(8000 * 365 * 86_400)).toBe(3600);
+    expect(approvalRequestStartSeconds(7 * 86_400, 0)).toBe(3600);
+  });
+  test('a request for less than an hour starts at what it asked for', () => {
+    expect(approvalRequestStartSeconds(600)).toBe(600);
+    expect(approvalRequestStartSeconds(7 * 86_400, 1800)).toBe(1800);
+  });
+  test('a suggestion above an hour is not used as the start, and one above the maximum is ignored', () => {
+    expect(approvalRequestStartSeconds(30 * 86_400, 7 * 86_400)).toBe(3600);
+    expect(approvalRequestStartSeconds(7200, 30 * 86_400)).toBe(3600);
+    expect(approvalRequestStartSeconds(900, 30 * 86_400)).toBe(900);
   });
 });

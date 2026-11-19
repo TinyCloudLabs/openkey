@@ -105,12 +105,15 @@ import {
   appKeyRefusalCode,
   appKeyRefusalForSiwe,
   blockResourcesOutsideApps,
-  encryptionOutsideAppsRefusal,
+  exactShareKeyRefusal,
   appKeyRefusalMessage,
   appKeyRefusalStatus,
   appKeyResourcesOf,
   type AdmittedAppKey,
+  UNREADABLE_RECAP_MESSAGE,
 } from '../services/app-key-refusal';
+import { allowedElevatedIds, elevatedDecided, elevatedNotDecidedBody } from '../services/elevated-decision';
+import { elevatedActionsOf } from '@openkey/capability-review';
 import { admitAppKeys, appIdForOrigin, appKeyAdmissionRefusal, type ManifestKeys } from '../services/app-key-gate';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
@@ -140,6 +143,9 @@ import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
 import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, confirmBoundRenewal, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
+import { bindSignInRenewalRequest, recordedSignInLease, setUpSignInLease, signInRenewalFailure, takePendingSignInLease, type SignInLease } from '../services/signin-renewal';
+import type { SignInRenewalRequest } from '../services/authorization-signing';
+import { parseRenewalChoice, renewalLeasesEnabled, renewalUnavailableMessage, signLease } from '../services/renewal-lease';
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
 export function setPreparedHandoffServiceForTests(service: PreparedHandoffService): void {
   activePreparedHandoffService = service;
@@ -866,6 +872,17 @@ function attenuationSubsetOrFailure(
  * the "allowed" set the /prepare context binds — /complete cannot select
  * anything outside this set.
  */
+/**
+ * The action ids the app-key "approved together" rule compares a selection against. The extra permissions of the warning
+ * screen (TC-2927) are decided one by one, and rejecting one must not count as dropping the rest of the request, so a
+ * browser request leaves them out. A prepared-handoff (command line) request keeps the whole set.
+ */
+function groupRuleActionIds(entries: RecapEntry[], ticket: unknown): Set<string> {
+  const ids = allowedActionIdSet(entries);
+  if (!ticket) for (const action of elevatedActionsOf(entries, computeActionKey)) ids.delete(action.actionId);
+  return ids;
+}
+
 function allowedActionIdSet(entries: RecapEntry[]): Set<string> {
   const set = new Set<string>();
   for (const entry of entries) {
@@ -2627,6 +2644,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     requestOrigin?: string;
     /** TC-2272: the app sends `expiryChangeable: true` when it accepts a different signed expiry. */
     expiryChangeable?: unknown;
+    /** The app's renewal ask for this sign-in (`{ version: 1, leaseLifetimeSeconds }`); ignored while leases are off. */
+    renewal?: unknown;
     requesterOrigin?: unknown;
     ticket?: string;
     transportVersion?: number;
@@ -2700,7 +2719,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   } catch (e) {
     return c.json(
       {
-        error: e instanceof Error ? e.message : 'Invalid SIWE recap',
+        error: UNREADABLE_RECAP_MESSAGE,
         code: 'invalid_siwe_recap',
       },
       400,
@@ -2728,11 +2747,12 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     }
     appKeyCandidate = true;
   }
-  // A website's own sign-in (no ticket) may name encryption `decrypt` or
-  // `key.create` only under its own `apps/` prefix. Anything else, a bare
-  // network included, is refused before a context is issued. A ticket request
-  // (the command line's `--keys <folder>`) is not checked here.
-  const prepareEncryptionRefusal = ticket ? null : encryptionOutsideAppsRefusal(body.siwe);
+  // A website's own sign-in (no ticket) may ask to `decrypt` or `key.create` on the encryption network, or on
+  // keys outside its own `apps/` prefix, with a per-permission warning the owner decides on (TC-2927); the
+  // decision is checked at the preview. What is never accepted from any app, ours included, is an exact share
+  // key (`share/<id>`) that OpenKey did not make for the request. A ticket request (the command line's
+  // `--keys <folder>`) is not checked here.
+  const prepareEncryptionRefusal = ticket ? null : exactShareKeyRefusal(body.siwe);
   if (prepareEncryptionRefusal) {
     return c.json(appKeyRefusalBody(prepareEncryptionRefusal, 'browser'), appKeyRefusalStatus(prepareEncryptionRefusal));
   }
@@ -3007,6 +3027,16 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     );
   }
 
+  let signInRenewal: SignInRenewalRequest | undefined;
+  try {
+    signInRenewal = bindSignInRenewalRequest(body.renewal, {
+      host: typeof body.host === 'string' ? body.host : '', handoff: Boolean(ticket), expiryChangeable: body.expiryChangeable === true,
+    });
+  } catch (error) {
+    const refused = signInRenewalFailure(error);
+    return c.json(refused.body, refused.status);
+  }
+
   let issued: AuthorizationContextToken;
   try {
     issued = issueAuthorizationContext({
@@ -3030,6 +3060,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       appOrigin: normalizeAppOrigin(body.reportedOrigin) ?? undefined,
       admittedAppKeys,
       expiryChangeable: body.expiryChangeable === true,
+      signInRenewal,
     });
   } catch (issueErr) {
     logError('warn', 'delegate_authorization_context_issue_failed', issueErr);
@@ -3059,6 +3090,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     // render trust from THIS value, not from the envelope it forwarded.
     metadataTrust: issued.metadataTrust,
     verifiedManifest: issued.verifiedManifest,
+    // The renewal box is offered only when the ask is bound: leases on, and a node OpenKey sets leases up on.
+    ...(signInRenewal ? { renewal: { leaseLifetimeSeconds: signInRenewal.leaseLifetimeSeconds } } : {}),
   });
 });
 
@@ -3121,6 +3154,8 @@ delegateRouter.post('/authorize-sign', async (c) => {
      * the peek+preview API (see /authorize-sign-preview).
      */
     externalSignature?: string;
+    /** Optional: repeats the renewal choice sealed with the preview; any other choice is refused. */
+    renewal?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
@@ -3262,7 +3297,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   });
   if (appKeyGroupPartial(
     admittedAppKeyActionIds(originalEntries, bound.admittedAppKeys, computeActionKey),
-    allowedActionIdSet(originalEntries),
+    groupRuleActionIds(originalEntries, ticket),
     selectedActionIds,
   )) {
     return c.json({ error: APP_KEY_GROUP_PARTIAL_MESSAGE, code: APP_KEY_GROUP_PARTIAL_CODE }, 400);
@@ -3471,6 +3506,13 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (!previewCheck.ok) {
     return c.json({ error: previewCheck.message, code: previewCheck.error }, 400);
   }
+  // The renewal choice sealed with the preview: the body may repeat it, never change it. A leased choice needs
+  // leases on, checked before anything is signed.
+  const sealedRenewal = previewCheck.renewal;
+  confirmBoundRenewal(body.renewal, sealedRenewal);
+  if (sealedRenewal?.choice === 'leased' && !renewalLeasesEnabled()) {
+    return c.json({ error: renewalUnavailableMessage('sign-in', 'before-signing'), code: 'renewal_disabled' }, 400);
+  }
 
   // External signatures must recover to the bound signer over these exact
   // bytes before either single-use token is consumed.
@@ -3528,9 +3570,15 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (signedAppKeyRefusal) {
     return c.json(appKeyRefusalBody(signedAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(signedAppKeyRefusal));
   }
-  const signEncryptionRefusal = ticket ? null : encryptionOutsideAppsRefusal(signedMessage);
+  const signEncryptionRefusal = ticket ? null : exactShareKeyRefusal(signedMessage);
   if (signEncryptionRefusal) {
     return c.json(appKeyRefusalBody(signEncryptionRefusal, 'browser'), appKeyRefusalStatus(signEncryptionRefusal));
+  }
+  // The preview sealed which extra permissions the owner explicitly allowed (TC-2927). The bytes are the previewed
+  // ones, so this holds already; it is checked again here so no signature covers an elevated permission the owner
+  // did not decide on.
+  if (!ticket && !elevatedDecided(effectiveEntries, previewCheck.elevatedAllowed)) {
+    return c.json(elevatedNotDecidedBody(), 403);
   }
   // Both checked claims still have to reference the stored records. This
   // synchronous call compares both, checks both expiries, then deletes both
@@ -3575,6 +3623,28 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // Reference computePermissionKey so it doesn't get flagged as unused
   // during typecheck; permissionOptions may consume it in the future.
   void computePermissionKey;
+  // A leased sign-in returns the grant only with the owner lease for exactly that grant (or, for an external
+  // wallet, the lease it signs next). OpenKey records the signed lease so every stop can revoke it; the app registers
+  // the grant and has its node admit the lease. If the lease can't be prepared or recorded, no signature is returned.
+  let signInLease: SignInLease | undefined;
+  if (sealedRenewal?.choice === 'leased') {
+    try {
+      signInLease = await setUpSignInLease(prisma, {
+        userId: user.id,
+        sessionId: c.get('session')?.id ?? null,
+        host: bound.host,
+        jwk: bound.jwk,
+        spaceId: bound.spaceId,
+        signedMessage,
+        signature,
+        leaseLifetimeSeconds: sealedRenewal.leaseLifetimeSeconds,
+        signOwner: isExternal ? undefined : (message) => signManagedKey(key, key.sealedBlob!, message),
+      });
+    } catch (error) {
+      const refused = signInRenewalFailure(error);
+      return c.json(refused.body, refused.status);
+    }
+  }
 
   const handoffDelivery = ticket
     ? await activePreparedHandoffService.completeSigning(ticket, user.id, body.authorizationContextToken, key.id)
@@ -3588,7 +3658,38 @@ delegateRouter.post('/authorize-sign', async (c) => {
     selectedActionKeys: effectiveSelectedActionKeys,
     permissions: effectiveGrants,
     ...(handoffDelivery ?? {}),
+    ...(sealedRenewal ? { renewalChoice: sealedRenewal.choice } : {}),
+    ...(signInLease ?? {}),
   });
+});
+
+/**
+ * POST /api/delegate/authorize-sign-renewal
+ *
+ * The external wallet's signature on the renewal lease of a leased sign-in, after /authorize-sign returned the
+ * signed grant with `renewalSignature`. The lease is taken once, only by the same user, with a signature that
+ * recovers to the grant's owner; another wallet's signature leaves it waiting. The signed lease is recorded, so every
+ * stop can revoke it, and returned for the app to have its node admit.
+ */
+delegateRouter.post('/authorize-sign-renewal', async (c) => {
+  if (!renewalLeasesEnabled()) return c.json({ error: renewalUnavailableMessage('sign-in', 'after-signing'), code: 'renewal_disabled' }, 400);
+  const user = c.get('user');
+  const body: unknown = await c.req.json().catch(() => null);
+  const fields = body !== null && typeof body === 'object' ? body as Record<string, unknown> : {};
+  if (typeof fields.signature !== 'string' || !fields.signature) {
+    return c.json({ error: 'A signature is required.', code: 'invalid_request' }, 400);
+  }
+  const pending = takePendingSignInLease(fields.renewalToken, user.id, fields.signature);
+  if (pending === 'expired') return c.json({ error: 'This renewal request expired. Sign in again to turn on renewal.', code: 'renewal_expired' }, 410);
+  if (pending === 'wrong_signer') {
+    return c.json({ error: "That signature isn't from the wallet you signed in with. Sign with that wallet to turn on renewal.", code: 'invalid_signature' }, 400);
+  }
+  try {
+    return c.json({ renewalChoice: 'leased', renewal: await recordedSignInLease(prisma, pending.owner, signLease(pending.stage, fields.signature), 'wallet') });
+  } catch (error) {
+    const refused = signInRenewalFailure(error);
+    return c.json(refused.body, refused.status);
+  }
 });
 
 /**
@@ -3615,6 +3716,10 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     selectedActionIds?: unknown;
     /** TC-2272: the approval expiry the user chose (ISO-8601 UTC); the app's own is the default. */
     expirationTime?: unknown;
+    /** TC-2927: `{ allowed: ActionId[] }`, the extra permissions the owner explicitly allowed on the warning screen. */
+    elevatedDecision?: unknown;
+    /** The owner's renewal choice, for a sign-in whose app asked for renewal: `{ choice: 'finite' }` or `{ choice: 'leased', leaseLifetimeSeconds }`. */
+    renewal?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
@@ -3653,6 +3758,14 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   // different user.
   if (bound.userId !== user.id) {
     return c.json({ error: 'Authorization context bound to a different user', code: 'user_mismatch' }, 400);
+  }
+  // The renewal box's state is sealed with this preview, so signing can only use what the owner saw here.
+  let renewalChoice: BoundRenewalChoice | undefined;
+  try {
+    renewalChoice = parseRenewalChoice(body.renewal, bound.signInRenewal, renewalLeasesEnabled(), 'sign-in') ?? undefined;
+  } catch (error) {
+    const refused = signInRenewalFailure(error);
+    return c.json(refused.body, refused.status);
   }
 
   let originalEntries: RecapEntry[];
@@ -3699,7 +3812,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   }
   if (appKeyGroupPartial(
     admittedAppKeyActionIds(originalEntries, bound.admittedAppKeys, computeActionKey),
-    allowedActionIdSet(originalEntries),
+    groupRuleActionIds(originalEntries, ticket),
     selectedActionIds,
   )) {
     return c.json({ error: APP_KEY_GROUP_PARTIAL_MESSAGE, code: APP_KEY_GROUP_PARTIAL_CODE }, 400);
@@ -3833,10 +3946,14 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   if (previewAppKeyRefusal) {
     return c.json(appKeyRefusalBody(previewAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(previewAppKeyRefusal));
   }
-  const previewEncryptionRefusal = ticket ? null : encryptionOutsideAppsRefusal(preparedSignedMessage);
+  const previewEncryptionRefusal = ticket ? null : exactShareKeyRefusal(preparedSignedMessage);
   if (previewEncryptionRefusal) {
     return c.json(appKeyRefusalBody(previewEncryptionRefusal, 'browser'), appKeyRefusalStatus(previewEncryptionRefusal));
   }
+  // The extra permissions of the warning screen (TC-2927) are decided after this preview is first fetched, so the
+  // preview records which ones the owner allowed and /authorize-sign refuses to sign any the preview did not
+  // record as allowed. A rejected one is not in these bytes, so it needs nothing.
+  const elevatedAllowed = ticket ? new Set<string>() : allowedElevatedIds(body.elevatedDecision);
   const previewGrants = previewEntries.map((entry) => ({
     service: canonicalizeServiceName(entry.service),
     space: entry.space,
@@ -3857,6 +3974,8 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     keyAddress: ensureEip55(bound.keyAddress),
     selectedActionIds,
     signedMessage: preparedSignedMessage,
+    elevatedAllowed,
+    renewal: renewalChoice,
   });
 
   return c.json({
@@ -3873,5 +3992,6 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     previewApprovalToken: previewApproval.token,
     previewApprovalExpiresAt: previewApproval.expiresAt,
     signedMessageDigest: previewApproval.signedMessageDigest,
+    ...(renewalChoice ? { renewal: renewalChoice } : {}),
   });
 });
