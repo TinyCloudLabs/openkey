@@ -86,11 +86,22 @@ endpoint it is sent to. OpenKey compares it with the URL built from
 
 ### Who can request a delegation
 
-`tinycloud:delegation` is a restricted scope. It is **never** in any default
-scope set: not in `DEFAULT_OAUTH_SCOPES`, `PUBLIC_CLIENT_SCOPES`,
+`tinycloud:delegation` is restricted and is **never** in a default scope set:
+not in `DEFAULT_OAUTH_SCOPES`, `PUBLIC_CLIENT_SCOPES`,
 `DYNAMIC_CLIENT_REGISTRATION_ALLOWED_SCOPES`, or the tenant console's fixed
 list. `RESTRICTED_SCOPES` (`tinycloud:session`, `tinycloud:manage-key`,
-`tinycloud:delegation`) is subtracted from every derived default.
+`tinycloud:delegation`, `tinycloud:identity`) is subtracted from every derived
+default.
+
+### Identity-only scope
+
+`tinycloud:identity` returns the owner's canonical primary wallet address,
+chain ID, and DID in the signed ID token and userinfo response. It omits key
+and TinyCloud space identifiers and grants no signing, key access, or ReCap
+capability. Identity clients are admin-managed, confidential web clients
+registered with exactly `openid`, `email`, and `tinycloud:identity`. They are
+never auto-approved and receive no key list. The scope is excluded from
+defaults, public clients, and dynamic registration.
 
 A client becomes able to request a delegation only when an OpenKey admin
 **enables** it. Enabling writes `OauthClient.tinycloudNativeDelegation` and

@@ -17,6 +17,7 @@
 // decryption) is used by the native access summary. UI callers route through these rather
 // than composing the sentence themselves.
 
+import { courierTexts } from "./courier.js";
 import type { CapabilityAction, CapabilityGrant, CapabilityReviewModel, PermissionSeverity } from "./model.js";
 import { appDisplayName } from "./app-identity.js";
 import {
@@ -42,6 +43,7 @@ import type { EncryptionResource } from "./encryption-resource.js";
 import { ENCRYPTION_URN_PREFIX, parseEncryptionResource } from "./encryption-resource.js";
 import { isAppsKeyResource, parseKeyResource } from "./key-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
+import { feedGrantStatement } from "./feed-grant.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
   KV_SECRET_SERVICES_PROOF,
@@ -843,7 +845,9 @@ function schemaOnlyStatementText(
     return "Edit and delete this app's tables";
   }
   if (spaceName === "account" && grant.family === "bootstrap-sql") {
-    return "Edit and delete tables in your TinyCloud account";
+    return grant.ownedBySelf === null
+      ? "Edit and delete account tables"
+      : "Edit and delete tables in your TinyCloud account";
   }
   if (grant.family === "own-app-data" || grant.family === "cross-app-data") {
     return "Edit and delete tables in application data";
@@ -976,6 +980,8 @@ export function splitStatementCode(text: string): Array<{ text: string; code: bo
  * renders only the non-schema part of a mixed grant.
  */
 export function buildStatements(input: CapabilityGrant): StatementEntry[] {
+  const courier = courierTexts(input);
+  if (courier) return courier.map(primaryText => ({ primaryText, service: input.service, resource: resourceOf(input) }));
   const appKeyRows = appKeyStatements(input);
   if (appKeyRows) return appKeyRows;
   // key.delete is its own never-approvable row beside any other abilities.
@@ -987,6 +993,8 @@ export function buildStatements(input: CapabilityGrant): StatementEntry[] {
       ...deletes.map((action) => buildStatement({ ...input, actions: [action] })),
     ];
   }
+  // One sentence per feed connect grant; schema is not split off it.
+  if (feedGrantStatement(input) !== null) return [buildStatement(input)];
   const view = canonicalEncryptionUrn(input);
   if (view.kind === "invalid") return [buildStatement(input)];
   const grant = view.kind === "urn" ? view.grant : input;
@@ -1084,6 +1092,8 @@ function sqlWriteStatementText(path: string): string {
  *   4. Anything else → literal fallback
  */
 export function buildStatement(input: CapabilityGrant): StatementEntry {
+  const courier = courierTexts(input);
+  if (courier) return { primaryText: courier.join("; "), service: input.service, resource: resourceOf(input) };
   const appKeyRows = appKeyStatements(input);
   if (appKeyRows) return appKeyRows[0]!;
   // key.delete fails closed: every delete row is never approvable and renders
@@ -1121,6 +1131,9 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
   if (grant.serviceMismatch === true) {
     return fallbackStatement(grant);
   }
+  // A feed connect grant, recognized by its exact tuple (feed-grant.ts), reads as one sentence.
+  const feedText = feedGrantStatement(grant);
+  if (feedText !== null) return { primaryText: feedText, service, resource };
   // Key-shaped encryption grants render per-verb copy. A network URN falls
   // through to the network branches below.
   if (view.kind === "urn" && view.parsed.kind !== "network") {
@@ -1441,7 +1454,13 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     isSecretsSpace(space) &&
     (KV_SERVICES.has(service) || SQL_SERVICES.has(service))
   ) {
-    const secretOwner = grant.ownedBySelf === false ? "another user's" : "your";
+    // An unknown owner (null) never claims "your".
+    const secretOwner =
+      grant.ownedBySelf === false
+        ? "another user's"
+        : grant.ownedBySelf === true
+          ? "your"
+          : "the";
     // TinyCloud's secrets SQL database stores the secret catalog (scope,
     // name, provider, notes, and test metadata). Secret values live in KV.
     if (SQL_SERVICES.has(service)) {
@@ -1524,7 +1543,10 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     (grant.family === "bootstrap-kv" || grant.family === "bootstrap-sql")
   ) {
     return {
-      primaryText: "Manage your TinyCloud account",
+      primaryText:
+        grant.ownedBySelf === null
+          ? "Manage a TinyCloud account"
+          : "Manage your TinyCloud account",
       service,
       resource,
     };
@@ -1558,14 +1580,25 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     if (verbs.hasWrite) {
       return {
         primaryText: verbs.hasRead
-          ? "Read and publish your public data"
-          : "Publish and update your public data",
+          ? grant.ownedBySelf === null
+            ? "Read and publish public data"
+            : "Read and publish your public data"
+          : grant.ownedBySelf === null
+            ? "Publish and update public data"
+            : "Publish and update your public data",
         service,
         resource,
       };
     }
     if (verbs.hasRead || verbs.hasList || verbs.hasMetadata) {
-      return { primaryText: "Read your public data", service, resource };
+      return {
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Read public data"
+            : "Read your public data",
+        service,
+        resource,
+      };
     }
     return fallbackStatement(grant);
   }
@@ -1577,16 +1610,33 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
   ) {
     if (verbs.hasRead && verbs.hasWrite) {
       return {
-        primaryText: "Read and update your TinyCloud data",
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Read and update data"
+            : "Read and update your TinyCloud data",
         service,
         resource,
       };
     }
     if (verbs.hasWrite) {
-      return { primaryText: "Update your TinyCloud data", service, resource };
+      return {
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Update data"
+            : "Update your TinyCloud data",
+        service,
+        resource,
+      };
     }
     if (verbs.hasRead || verbs.hasList || verbs.hasMetadata) {
-      return { primaryText: "Read your TinyCloud data", service, resource };
+      return {
+        primaryText:
+          grant.ownedBySelf === null
+            ? "Read data"
+            : "Read your TinyCloud data",
+        service,
+        resource,
+      };
     }
     return fallbackStatement(grant);
   }
@@ -1729,7 +1779,10 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       );
     if (!allActionsRecognized) return fallbackStatement(grant);
     return {
-      primaryText: DELEGATION_LIST_STATEMENT,
+      primaryText:
+        grant.ownedBySelf === null
+          ? "See who has access to data"
+          : DELEGATION_LIST_STATEMENT,
       service,
       resource,
     };
