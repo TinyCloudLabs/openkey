@@ -2,6 +2,6 @@
 "@openkey/web": patch
 ---
 
-Show the Details section where a delegate request is first refused, on the key selection step.
+When OpenKey can't approve an access request, Details now also appears under the error on the key selection step, where most of these refusals happen.
 
 Details: TC-3348
