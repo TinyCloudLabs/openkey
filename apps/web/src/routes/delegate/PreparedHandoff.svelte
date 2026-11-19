@@ -365,8 +365,9 @@
     busy = true;
     error = '';
     try {
-      // TC-3442: the passkey prompt comes first, while the tap still counts as the user's gesture.
-      const passkeyAssertion = key.keyType === 'EXTERNAL' ? undefined : await answerApprovalPasskey(passkeyNeed);
+      // TC-3442: the passkey prompt comes first, while the tap still counts as the user's gesture. Without one the tap
+      // stays synchronous up to `submitted`, so a deadline passing mid-tap can't throw the handoff away.
+      const passkeyAssertion = key.keyType === 'EXTERNAL' || !passkeyNeed?.required ? undefined : await answerApprovalPasskey(passkeyNeed);
       const body: Record<string, unknown> = { ticket, authorizationContextToken: contextToken, previewApprovalToken: previewToken, selectedActionIds: previewActions, protocolVersion: 1, ...(passkeyAssertion ? { passkeyAssertion } : {}) };
       if (key.keyType === 'EXTERNAL') {
         const provider = (window as Window & { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
