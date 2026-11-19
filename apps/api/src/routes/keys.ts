@@ -4,8 +4,8 @@ import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey, type TeeQuote } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
-import { validateTypedData, verifyMessage } from 'viem';
-import type { Hex } from 'viem';
+import { hashTypedData, validateTypedData, verifyMessage } from 'viem';
+import type { Hex, TypedDataDefinition } from 'viem';
 import {
   ensureTinyCloudBootstrapForApprovedSign,
 } from '../services/tinycloud-bootstrap';
@@ -25,6 +25,13 @@ import {
 } from '../services/app-key-refusal';
 import { ELEVATED_NOT_DECIDED_CODE, elevatedNotDecidedBody } from '../services/elevated-decision';
 import { rejectNonBrowserControlRequest, rejectNonOpenKeySignRequest } from '../middleware/browser-control';
+import {
+  approvalPasskeyOffer,
+  approvalRequestDigest,
+  checkApprovalPasskey,
+  messageApprovalSensitivity,
+  type ApprovalBinding,
+} from '../services/approval-passkey';
 
 import { log, logError } from '../log';
 const prisma = createPrismaClient();
@@ -283,6 +290,80 @@ keysRouter.patch('/:keyId', async (c) => {
   return c.json({ success: true });
 });
 
+type SignBody = {
+  message: string;
+  format?: 'raw' | 'personal_sign'; // default: personal_sign
+  /** Verified origin of the requesting site; required for SIWE-shaped messages. */
+  requestOrigin?: string;
+  /** TC-2927: the owner allowed the extra permissions this message carries, on the warning screen. */
+  elevatedAcknowledged?: boolean;
+  /** TC-3442: `{ challengeToken, response }` for the challenge from `/sign/passkey`, when Approve needs the passkey. */
+  passkeyAssertion?: unknown;
+};
+
+/** TC-3442: a passkey on a message signature confirms this key, format, message and requesting site. */
+function signPasskeyBinding(keyId: string, body: SignBody): ApprovalBinding {
+  return {
+    purpose: 'key_sign',
+    requestDigest: approvalRequestDigest(keyId, body.format || 'personal_sign', body.message, body.requestOrigin ?? ''),
+  };
+}
+
+/** TC-3442: a passkey on a typed-data signature confirms this key and the EIP-712 hash of the data. */
+function signTypedDataPasskeyBinding(keyId: string, typedData: TypedDataDefinition): ApprovalBinding {
+  return { purpose: 'key_sign_typed_data', requestDigest: approvalRequestDigest(keyId, hashTypedData(typedData)) };
+}
+
+/** A typed-data signature cannot be classified as standard access, so the passkey setting treats it as sensitive. */
+const TYPED_DATA_SENSITIVITY = 'sensitive';
+
+/** Parses typed data as viem will sign it; malformed data is a client error. */
+function checkedTypedData(body: { domain?: unknown; types?: unknown; primaryType?: unknown; message?: unknown }):
+  { ok: true; typedData: TypedDataDefinition } | { ok: false; error: string } {
+  const typedData = { domain: body.domain, types: body.types, primaryType: body.primaryType, message: body.message } as TypedDataDefinition;
+  // viem rejects malformed typed data (e.g. `uint`/`int` aliases instead of `uint256`/`int256`).
+  try {
+    validateTypedData(typedData);
+    return { ok: true, typedData };
+  } catch (error) {
+    return { ok: false, error: `Invalid typed data: ${error instanceof Error ? error.message.split('\n')[0] : 'validation failed'}` };
+  }
+}
+
+// TC-3442: whether Approve on a signature request needs the passkey, with the challenge for exactly this request.
+// The approval screen asks for it when it shows the request, so the tap goes straight to the passkey prompt.
+keysRouter.post('/:keyId/sign/passkey', async (c) => {
+  const originRefusal = rejectNonOpenKeySignRequest(c);
+  if (originRefusal) return originRefusal;
+  const user = c.get('user');
+  const keyId = c.req.param('keyId');
+  const body = await c.req.json<SignBody>();
+  if (typeof body.message !== 'string') return c.json({ error: 'message must be a string' }, 400);
+  const key = await prisma.ethereumKey.findFirst({ where: { id: keyId, userId: user.id, archivedAt: null }, select: { keyType: true, address: true } });
+  if (!key) return c.json({ error: 'Key not found' }, 404);
+  if (key.keyType === 'EXTERNAL') return c.json({ required: false });
+  return c.json(await approvalPasskeyOffer(
+    prisma, { userId: user.id, sessionId: c.get('session')?.id ?? null }, signPasskeyBinding(keyId, body),
+    messageApprovalSensitivity(body.message, key.address),
+  ));
+});
+
+keysRouter.post('/:keyId/sign-typed-data/passkey', async (c) => {
+  const originRefusal = rejectNonOpenKeySignRequest(c);
+  if (originRefusal) return originRefusal;
+  const user = c.get('user');
+  const keyId = c.req.param('keyId');
+  const checked = checkedTypedData(await c.req.json());
+  if (!checked.ok) return c.json({ error: checked.error }, 400);
+  const key = await prisma.ethereumKey.findFirst({ where: { id: keyId, userId: user.id, archivedAt: null }, select: { keyType: true } });
+  if (!key) return c.json({ error: 'Key not found' }, 404);
+  if (key.keyType === 'EXTERNAL') return c.json({ required: false });
+  return c.json(await approvalPasskeyOffer(
+    prisma, { userId: user.id, sessionId: c.get('session')?.id ?? null }, signTypedDataPasskeyBinding(keyId, checked.typedData),
+    TYPED_DATA_SENSITIVITY,
+  ));
+});
+
 // Sign a message (internal - will be called by SDK widget)
 // Supports both raw signing and EIP-191 (personal_sign) format
 keysRouter.post('/:keyId/sign', async (c) => {
@@ -290,14 +371,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (originRefusal) return originRefusal;
   const user = c.get('user');
   const keyId = c.req.param('keyId');
-  const body = await c.req.json<{
-    message: string;
-    format?: 'raw' | 'personal_sign'; // default: personal_sign
-    /** Verified origin of the requesting site; required for SIWE-shaped messages. */
-    requestOrigin?: string;
-    /** TC-2927: the owner allowed the extra permissions this message carries, on the warning screen. */
-    elevatedAcknowledged?: boolean;
-  }>();
+  const body = await c.req.json<SignBody>();
   const deviceUnsupported = deviceTransactionUnsupportedError(body);
   if (deviceUnsupported) return c.json(deviceUnsupported, 400);
   // TC-1486: a SIWE-shaped message is signable only for the origin it names.
@@ -345,6 +419,13 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (key.keyType === 'EXTERNAL') {
     return c.json({ error: 'External keys must be signed client-side' }, 400);
   }
+
+  // TC-3442: the account's passkey setting, before the key is unsealed.
+  const passkeyRefusal = await checkApprovalPasskey(
+    prisma, { userId: user.id, sessionId: c.get('session')?.id ?? null }, signPasskeyBinding(keyId, body),
+    messageApprovalSensitivity(body.message, key.address), body.passkeyAssertion,
+  );
+  if (passkeyRefusal) return c.json(passkeyRefusal, 403);
 
   const sealingKey = await deriveKeyForRecord(tee, key);
   const privateKey = await unseal(key.sealedBlob!, sealingKey) as Hex;
@@ -394,6 +475,8 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
     types: any;
     primaryType: string;
     message: any;
+    /** TC-3442: `{ challengeToken, response }` for the challenge from `/sign-typed-data/passkey`. */
+    passkeyAssertion?: unknown;
   }>();
 
   const key = await prisma.ethereumKey.findFirst({
@@ -408,18 +491,15 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
     return c.json({ error: 'External keys must be signed client-side' }, 400);
   }
 
-  // viem rejects malformed typed data (e.g. `uint`/`int` aliases instead of
-  // `uint256`/`int256`); that is a client error, not a server failure.
-  try {
-    validateTypedData({
-      domain: body.domain,
-      types: body.types,
-      primaryType: body.primaryType,
-      message: body.message,
-    });
-  } catch (error) {
-    return c.json({ error: `Invalid typed data: ${error instanceof Error ? error.message.split('\n')[0] : 'validation failed'}` }, 400);
-  }
+  const checked = checkedTypedData(body);
+  if (!checked.ok) return c.json({ error: checked.error }, 400);
+
+  // TC-3442: the account's passkey setting, before the key is unsealed.
+  const passkeyRefusal = await checkApprovalPasskey(
+    prisma, { userId: user.id, sessionId: c.get('session')?.id ?? null }, signTypedDataPasskeyBinding(keyId, checked.typedData),
+    TYPED_DATA_SENSITIVITY, body.passkeyAssertion,
+  );
+  if (passkeyRefusal) return c.json(passkeyRefusal, 403);
 
   // Unseal and sign
   const sealingKey = await deriveKeyForRecord(tee, key);

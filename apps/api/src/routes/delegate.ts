@@ -148,6 +148,30 @@ import { ApprovalResultError } from '../services/approval-results';
 import { bindSignInRenewalRequest, recordedSignInLease, setUpSignInLease, signInRenewalFailure, takePendingSignInLease, type SignInLease } from '../services/signin-renewal';
 import type { SignInRenewalRequest } from '../services/authorization-signing';
 import { parseRenewalChoice, renewalLeasesEnabled, renewalUnavailableMessage, signLease } from '../services/renewal-lease';
+import {
+  approvalPasskeyOffer,
+  approvalRequestDigest,
+  checkApprovalPasskey,
+  messageApprovalSensitivity,
+  type ApprovalBinding,
+} from '../services/approval-passkey';
+
+/** TC-3442: a passkey on an authorize-sign approval confirms this authorization context and these exact bytes. */
+function authorizeSignPasskeyBinding(authorizationContextToken: string, keyAddress: string, signedMessage: string): ApprovalBinding {
+  return {
+    purpose: 'authorize_sign',
+    requestDigest: approvalRequestDigest(authorizationContextToken, keyAddress.toLowerCase(), signedMessage),
+  };
+}
+
+/** TC-3442: a passkey on a managed approval (POST /api/delegate) confirms the context /prepare bound and its bytes. */
+function delegatePasskeyBinding(authorizationContextToken: string, keyAddress: string, originalSiwe: string): ApprovalBinding {
+  return {
+    purpose: 'delegate',
+    requestDigest: approvalRequestDigest(authorizationContextToken, keyAddress.toLowerCase(), originalSiwe),
+  };
+}
+
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
 async function revokeActivatedManagedDelegation(
   host: string,
@@ -1483,6 +1507,8 @@ delegateRouter.post('/', async (c) => {
     authorizationContextToken?: string;
     selectedActionIds?: unknown;
     protocolVersion?: number;
+    /** TC-3442: `{ challengeToken, response }` for the challenge /prepare offered, when Approve needs the passkey. */
+    passkeyAssertion?: unknown;
   }>(c);
   logSessionJwk('/api/delegate', hasPrivateJwkMember(body.jwk));
   // Only the session key's public members are used, stored, or returned; a
@@ -1760,6 +1786,15 @@ delegateRouter.post('/', async (c) => {
     await checkApprovalDelegation(body, { signedSiwe: bound.originalSiwe });
     const tokenAppKeyRefusal = appKeyRefusalForSiwe(bound.originalSiwe, preparedEntries);
     if (tokenAppKeyRefusal) return c.json(appKeyRefusalBody(tokenAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(tokenAppKeyRefusal));
+    // TC-3442: the account's passkey setting, before the context is spent or the key unsealed.
+    const passkeyRefusal = await checkApprovalPasskey(
+      prisma,
+      { userId: user.id, sessionId: c.get('session')?.id ?? null },
+      delegatePasskeyBinding(token, address, bound.originalSiwe),
+      messageApprovalSensitivity(bound.originalSiwe, address),
+      body.passkeyAssertion,
+    );
+    if (passkeyRefusal) return c.json(passkeyRefusal, 403);
 
     // About to sign: consume the context atomically, only if it is still
     // the exact one checked above, so a concurrent approval or a replay
@@ -1903,6 +1938,16 @@ delegateRouter.post('/', async (c) => {
 
   const legacyAppKeyRefusal = appKeyRefusalForSiwe(preparedResult.prepared.siwe);
   if (legacyAppKeyRefusal) return c.json(appKeyRefusalBody(legacyAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(legacyAppKeyRefusal));
+  // TC-3442: these bytes are made here, so no passkey challenge could have been bound to them. An approval the
+  // account's setting says needs the passkey is refused on this path; the versioned path above can carry it.
+  const legacyPasskeyRefusal = await checkApprovalPasskey(
+    prisma,
+    { userId: user.id, sessionId: c.get('session')?.id ?? null },
+    { purpose: 'delegate_unbound', requestDigest: approvalRequestDigest(preparedResult.prepared.siwe) },
+    messageApprovalSensitivity(preparedResult.prepared.siwe, address),
+    undefined,
+  );
+  if (legacyPasskeyRefusal) return c.json(legacyPasskeyRefusal, 403);
 
   await assertReviewerSignedDelegation(prisma, user.id, preparedResult.prepared.siwe);
   const signature = await signManagedKey(key, key.sealedBlob, preparedResult.prepared.siwe);
@@ -2186,6 +2231,17 @@ delegateRouter.post('/prepare', async (c) => {
     logError('warn', 'delegate_space_setup_notice_failed', error);
   }
 
+  // TC-3442: a managed key approves through POST /api/delegate; say whether Approve needs the passkey, with the
+  // challenge for exactly the bytes bound here.
+  const passkey = key.keyType === 'MANAGED'
+    ? await approvalPasskeyOffer(
+      prisma,
+      { userId: user.id, sessionId: c.get('session')?.id ?? null },
+      delegatePasskeyBinding(authorizationContext.token, address, preparedResult.prepared.siwe),
+      messageApprovalSensitivity(preparedResult.prepared.siwe, address),
+    )
+    : { required: false as const };
+
   return c.json({
     prepared: preparedData,
     spaceId: preparedResult.spaceId,
@@ -2206,6 +2262,7 @@ delegateRouter.post('/prepare', async (c) => {
       expiresAt: authorizationContext.expiresAt,
       baselineAbilitiesDigest: authorizationContext.baselineAbilitiesDigest,
     },
+    passkey,
   });
 });
 
@@ -3211,6 +3268,8 @@ delegateRouter.post('/authorize-sign', async (c) => {
     externalSignature?: string;
     /** Optional: repeats the renewal choice sealed with the preview; any other choice is refused. */
     renewal?: unknown;
+    /** TC-3442: `{ challengeToken, response }` for the challenge the preview offered, when Approve needs the passkey. */
+    passkeyAssertion?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
@@ -3635,6 +3694,18 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (!ticket && !elevatedDecided(effectiveEntries, previewCheck.elevatedAllowed)) {
     return c.json(elevatedNotDecidedBody(), 403);
   }
+  // TC-3442: the account's passkey setting, checked before any token is spent or key unsealed. An external wallet's
+  // own signature is its confirmation.
+  if (!isExternal) {
+    const passkeyRefusal = await checkApprovalPasskey(
+      prisma,
+      { userId: user.id, sessionId: c.get('session')?.id ?? null },
+      authorizeSignPasskeyBinding(body.authorizationContextToken, boundAddress, signedMessage),
+      messageApprovalSensitivity(signedMessage, boundAddress),
+      body.passkeyAssertion,
+    );
+    if (passkeyRefusal) return c.json(passkeyRefusal, 403);
+  }
   // Both checked claims still have to reference the stored records. This
   // synchronous call compares both, checks both expiries, then deletes both
   // without an await between either comparison and either deletion. Only
@@ -4032,6 +4103,20 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     elevatedAllowed,
     renewal: renewalChoice,
   });
+  // TC-3442: whether Approve needs the passkey, with the challenge for exactly these bytes. Re-issued with every
+  // preview, so a changed selection or expiry gets its own.
+  const boundKey = await prisma.ethereumKey.findFirst({
+    where: { id: bound.keyId, userId: user.id, archivedAt: null },
+    select: { keyType: true },
+  });
+  const passkey = !boundKey || boundKey.keyType === 'EXTERNAL'
+    ? { required: false as const }
+    : await approvalPasskeyOffer(
+      prisma,
+      { userId: user.id, sessionId: c.get('session')?.id ?? null },
+      authorizeSignPasskeyBinding(body.authorizationContextToken!, ensureEip55(bound.keyAddress), preparedSignedMessage),
+      messageApprovalSensitivity(preparedSignedMessage, bound.keyAddress),
+    );
 
   return c.json({
     protocolVersion: 1,
@@ -4048,5 +4133,6 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     previewApprovalExpiresAt: previewApproval.expiresAt,
     signedMessageDigest: previewApproval.signedMessageDigest,
     ...(renewalChoice ? { renewal: renewalChoice } : {}),
+    passkey,
   });
 });
