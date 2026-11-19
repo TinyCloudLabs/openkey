@@ -2,4 +2,6 @@
 "@openkey/api": patch
 ---
 
-The approval page no longer tells an app-review account that its TinyCloud space "may not be set up yet" and that Auto-Sign is off. The review account's spaces are hosted when it is provisioned, so the notice was never accurate for it.
+The approval page doesn't show the space-setup notice to app-review accounts, whose spaces are set up when the account is provisioned.
+
+Details: TC-3282
