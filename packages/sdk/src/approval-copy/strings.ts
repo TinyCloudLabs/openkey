@@ -186,13 +186,24 @@ export const CODE = {
 
 /** /device. */
 export const DEVICE = {
+  /** The browser tab's title. */
+  title: 'Review a sign-in request — OpenKey',
   eyebrow: 'Sign-in request from a device',
   headingCode: 'Does your terminal show this code?',
+  /** The code tiles' label: `{first}` and `{second}` are the code's halves, one character at a time ("W D J B"). */
+  codeLabel: 'Code {first}, {second}',
   asksLabel: 'What it asks for',
+  reasonNote: 'This reason comes from the caller and isn’t verified.',
+  /** The list of what is asked for. */
+  asksList: 'Requested access',
+  sensitive: 'Sensitive',
   yesSignedOut: 'Yes, it matches. Sign in to review',
   yesSignedIn: 'Yes, it matches. Review the request',
   no: 'No, it’s different',
   advanced: 'Advanced details',
+  /** Inside the fold. */
+  shareOrigin: 'Share origin',
+  nodeOrigin: 'Node origin',
   noHeading: 'Stopped. Nothing was approved.',
   noLine: 'The code here didn’t match your terminal, so this request may have been started by someone else. It has been left unanswered and will expire by itself.',
   noClose: CLOSE_TAB,
@@ -218,7 +229,11 @@ export const POPUP_WINDOW = {
     heading: 'Signed in',
     line: 'This window will close. Go back to the other one.',
   },
-  failed: { heading: '{provider} sign-in didn’t finish' },
+  failed: {
+    heading: '{provider} sign-in didn’t finish',
+    /** When the return did not say which provider it came from. */
+    headingNoProvider: 'Sign-in didn’t finish',
+  },
   lost: {
     heading: 'This window lost its link to OpenKey',
     line: 'Close it and press the sign-in button again.',
@@ -239,6 +254,10 @@ export const REVOKE_REVIEW = {
     expires: 'Signature expires',
   },
   fold: 'Exact message to sign',
+  /** More than one of the account's keys owns the permission: the person picks the one to sign with. */
+  chooseKey: 'Choose the owner signing key',
+  /** A key with no name of its own. `{n}` is its index. */
+  keyFallback: 'Key {n}',
   cancel: 'Cancel',
   revoke: 'Revoke',
 } as const;

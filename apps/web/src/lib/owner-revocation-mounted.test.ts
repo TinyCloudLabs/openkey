@@ -115,12 +115,13 @@ test('owner review shows exact target and refuses an external wallet on another 
   document.body.append(target);
   const app = mount(Subject, { target, props: { encoded, onClear: () => {} } });
   try {
-    await until(() => !!target.querySelector('button')?.textContent?.includes('Revoke'), 'review');
+    const revokeButton = () => [...target.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Revoke');
+    await until(() => !!revokeButton(), 'review');
     expect(target.textContent).toContain('Revoke this permission');
-    expect(target.textContent).toContain(`${cid.slice(0, 10)}…${cid.slice(-6)}`);
+    expect(target.textContent).toContain(cid);
     expect(target.textContent).toContain(address);
     expect(target.textContent).toContain('This cannot be undone.');
-    [...target.querySelectorAll('button')].find(button => button.textContent === 'Revoke')!.click();
+    revokeButton()!.click();
     await until(() => !!target.querySelector('[role="alert"]'), 'owner chain refusal');
     expect(target.querySelector('[role="alert"]')?.textContent).toContain('chain');
     expect(calls.every(path => !path.endsWith('/sign'))).toBe(true);
@@ -144,10 +145,16 @@ test('owner review exposes the entire copyable permission ID for CLI comparison'
   document.body.append(target);
   const app = mount(Subject, { target, props: { encoded, onClear: () => {} } });
   try {
-    await until(() => target.querySelector<HTMLInputElement>('input[aria-label="Full permission ID"]')?.value === cid, 'full permission ID');
-    const fullCid = target.querySelector<HTMLInputElement>('input[aria-label="Full permission ID"]');
-    expect(fullCid?.readOnly).toBe(true);
-    expect(fullCid?.value).toBe(cid);
+    const label = () => [...target.querySelectorAll('p')].find(element => element.textContent === 'Full permission ID');
+    await until(() => !!label()?.nextElementSibling, 'full permission ID');
+    // The ID sits right under its label as one untruncated text node, so it reads and copies whole.
+    const value = label()!.nextElementSibling!;
+    expect(value.childNodes.length).toBe(1);
+    expect(value.firstChild?.nodeType).toBe(win.Node.TEXT_NODE);
+    expect(value.firstChild?.nodeValue).toBe(cid);
+    // Copyable: nothing stops the owner selecting it.
+    expect(value.classList.contains('select-none')).toBe(false);
+    expect(getComputedStyle(value).userSelect).not.toBe('none');
     expect(target.textContent).toContain('Match the full permission ID with the one shown by your CLI.');
   } finally {
     unmount(app);
