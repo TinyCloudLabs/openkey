@@ -340,6 +340,29 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     expect(nodes.ok.revocations - revocationsBefore).toBe(2);
   });
 
+  test('the dashboard signing out leaves an embedded app session\'s sign-in lease on; that session\'s own sign-out stops it', async () => {
+    const owner = await account();
+    const [dashboard, embedded] = [await owner.session(), await owner.session()];
+    const embeddedSignIn = await lease(owner, embedded.id, 'ok', 3_600_000, false, false);
+    const embeddedApproved = await lease(owner, embedded.id);
+    const revocationsBefore = nodes.ok.revocations;
+
+    // The dashboard signs out with the browser's cookie session.
+    const dashboardOut = await call(dashboard.cookie, '/api/auth/sign-out', 'POST');
+    expect([dashboardOut.status, await dashboardOut.json()]).toEqual([200, { success: true }]);
+    expect(await Promise.all([embeddedSignIn, embeddedApproved].map(stopped))).toEqual([false, false]);
+    expect(nodes.ok.revocations).toBe(revocationsBefore);
+
+    // The app's embedded frame signs its own session out with its bearer token, no cookie.
+    const embeddedOut = await app.fetch(new Request('https://api.openkey.test/api/auth/sign-out', {
+      method: 'POST', headers: { authorization: `Bearer ${embedded.token}`, origin: ORIGIN },
+    }));
+    expect([embeddedOut.status, await embeddedOut.json()]).toEqual([200, { success: true }]);
+    expect(await prisma.session.count({ where: { id: embedded.id } })).toBe(0);
+    expect(await Promise.all([embeddedSignIn, embeddedApproved].map(stopped))).toEqual([true, false]);
+    expect(nodes.ok.revocations - revocationsBefore).toBe(1);
+  });
+
   test('an app\'s sign-out answers as before when its sign-in lease can\'t be stopped; the lease stays listed', async () => {
     const owner = await account();
     const app = await owner.session();

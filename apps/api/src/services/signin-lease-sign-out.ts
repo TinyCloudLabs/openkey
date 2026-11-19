@@ -6,29 +6,37 @@
 // `/revoke-sessions`) stops nothing. The sign-out comes first and answers as before; the stop is best effort and
 // never waits for the owner's lock. A lease it can't stop stays listed in Settings, where the owner can stop it.
 import type { BetterAuthPlugin } from 'better-auth';
-import { createAuthMiddleware, getSessionFromCtx } from 'better-auth/api';
+import { createAuthMiddleware } from 'better-auth/api';
 import { defineRequestState } from '@better-auth/core/context';
 import type { PrismaClient } from '@openkey/db';
 import { revokeRenewalLeases, stopRenewalLeasesBestEffort } from './renewal-lease-revocation';
 
-/** The session this sign-out ends, read before it ends. */
+/** The session this sign-out ends. */
 const signingOut = defineRequestState<{ userId: string; sessionId: string } | undefined>(() => undefined);
 
 export function signInLeaseSignOutPlugin(database: PrismaClient, revoke = revokeRenewalLeases) {
   return {
     id: 'openkey-sign-in-lease-sign-out',
+    // The session row `/sign-out` deletes is the one it ends, however the request named it: the dashboard's
+    // cookie, or an embedded app frame's bearer token.
+    init: () => ({
+      options: {
+        databaseHooks: {
+          session: {
+            delete: {
+              before: async (session: { id: string; userId: string }, context: { path?: string } | null) => {
+                try {
+                  if (context?.path === '/sign-out') await signingOut.set({ userId: session.userId, sessionId: session.id });
+                } catch {
+                  // Noting the session never fails the sign-out; its sign-in lease then stays on.
+                }
+              },
+            },
+          },
+        },
+      },
+    }),
     hooks: {
-      before: [{
-        matcher: (ctx) => ctx.path === '/sign-out',
-        handler: createAuthMiddleware(async (ctx) => {
-          try {
-            const current = await getSessionFromCtx(ctx, { disableCookieCache: true });
-            if (current?.session) await signingOut.set({ userId: current.user.id, sessionId: current.session.id });
-          } catch {
-            // Reading the session never fails the sign-out; its sign-in lease then stays on.
-          }
-        }),
-      }],
       after: [{
         matcher: (ctx) => ctx.path === '/sign-out',
         handler: createAuthMiddleware(async (ctx) => {
