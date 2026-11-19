@@ -2206,6 +2206,12 @@
           <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
             {error}
           </div>
+          {#if errorDetail}
+            <details class="error-detail">
+              <summary>Details</summary>
+              <p>{errorDetail}</p>
+            </details>
+          {/if}
         {/if}
 
         {#if expectedAddress && preselectAttempted && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
@@ -2274,6 +2280,19 @@
 {/if}
 
 <style>
+  .error-detail {
+    color: #9f2424;
+    font-size: 12px;
+    line-height: 1.45;
+    margin: -8px 0 16px;
+  }
+  .error-detail summary {
+    cursor: pointer;
+  }
+  .error-detail p {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+  }
   @media (max-width: 480px) {
     .expired-request {
       padding-top: 1rem;
