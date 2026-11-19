@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@openkey/db';
+import { REVIEWER_MAX_SECONDS } from './reviewer-accounts';
 import { TINYCLOUD_MCP_SCOPE } from '../oauth-config';
 import { mcpTokenStatus, type McpTokenStatusDatabase } from './mcp-token-status';
 import { storedRefreshToken, type ProviderTokenOptions } from './native-delegation/provider-tokens';
@@ -88,14 +89,18 @@ export async function extendSession(
     SET "expiresAt" = GREATEST(
           s."expiresAt",
           LEAST(t.moment + make_interval(secs => ${renewSeconds}::double precision),
-                s."createdAt" + make_interval(secs => ${capSeconds}::double precision))
+                s."createdAt" + make_interval(secs => (CASE WHEN s."reviewerEpoch" IS NULL THEN ${capSeconds} ELSE ${REVIEWER_MAX_SECONDS} END)::double precision))
         ),
         "updatedAt" = t.moment
     FROM t
     WHERE s.id = ${row.sessionId}
       AND s."userId" = ${row.userId}
       AND s."expiresAt" > t.moment
-      AND s."createdAt" + make_interval(secs => ${capSeconds}::double precision) > t.moment
+      AND s."createdAt" + make_interval(secs => (CASE WHEN s."reviewerEpoch" IS NULL THEN ${capSeconds} ELSE ${REVIEWER_MAX_SECONDS} END)::double precision) > t.moment
+      AND EXISTS (SELECT 1 FROM "user" u WHERE u.id = s."userId" AND u."lockedAt" IS NULL AND u."reviewerHoldAt" IS NULL)
+      AND (NOT EXISTS (SELECT 1 FROM reviewer_account b WHERE b."userId" = s."userId")
+        OR EXISTS (SELECT 1 FROM reviewer_account b WHERE b."userId" = s."userId"
+          AND b."installEpoch" = s."reviewerEpoch" AND b."clientId" = ${row.clientId} AND b.store <> 'apple'))
       AND EXISTS (
         SELECT 1 FROM oauth_refresh_token r
         WHERE r.token = ${stored} AND r."userId" = s."userId" AND r."sessionId" = s.id
@@ -103,7 +108,8 @@ export async function extendSession(
           AND ${TINYCLOUD_MCP_SCOPE} = ANY(r.scopes))
       AND EXISTS (
         SELECT 1 FROM oauth_consent c
-        WHERE c."userId" = s."userId" AND c."clientId" = ${row.clientId} AND ${TINYCLOUD_MCP_SCOPE} = ANY(c.scopes))
+        WHERE c."userId" = s."userId" AND c."clientId" = ${row.clientId} AND ${TINYCLOUD_MCP_SCOPE} = ANY(c.scopes)
+          AND (s."reviewerEpoch" IS NULL OR c."reviewerEpoch" = s."reviewerEpoch"))
       AND EXISTS (
         SELECT 1 FROM oauth_client o WHERE o."clientId" = ${row.clientId} AND o.disabled = false)
     RETURNING s.id`;

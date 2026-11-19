@@ -1,6 +1,6 @@
-// The "Approval expires" control on the approval screen (TC-2272): parsing
-// and showing a duration, and turning the chosen one into the instant the
-// server writes into the signed message.
+// The expiry and renewal line on the approval screen (TC-2272, TC-2933):
+// parsing and showing a duration, turning the chosen one into the instant the
+// server writes into the signed message, and the renewal lease choices.
 
 const S = 1000;
 const M = 60 * S;
@@ -16,11 +16,52 @@ export const MIN_EXPIRY_MS = M;
 const LATEST_EXPIRY_MS = Date.UTC(9999, 11, 31, 23, 59, 59);
 
 export const EXPIRY_PRESETS: ReadonlyArray<{ label: string; ms: number }> = [
-  { label: '1 hr', ms: H },
-  { label: '24 hr', ms: 24 * H },
-  { label: '7d', ms: 7 * D },
-  { label: '30d', ms: 30 * D },
+  { label: '1 hour', ms: H },
+  { label: '24 hours', ms: 24 * H },
+  { label: '7 days', ms: 7 * D },
+  { label: '30 days', ms: 30 * D },
 ];
+
+/**
+ * Where a signed approval request starts: the requester's suggestion when it is a whole value up to its signed
+ * maximum, otherwise the maximum, and never more than the shortest preset (one hour). A start, not a cap: the
+ * owner can still choose any time up to the maximum.
+ */
+export function approvalRequestStartSeconds(maxSeconds: number, suggestedSeconds?: number): number {
+  const asked =
+    typeof suggestedSeconds === 'number' && Number.isFinite(suggestedSeconds) && suggestedSeconds >= 1 && suggestedSeconds <= maxSeconds
+      ? suggestedSeconds
+      : maxSeconds;
+  return Math.min(asked, EXPIRY_PRESETS[0].ms / S);
+}
+
+/** Renewal lease lengths (spec D4): 90 days by default, 6 months or 1 year, never more than a year. */
+export const LEASE_PRESETS: ReadonlyArray<{ label: string; ms: number }> = [
+  { label: '90 days', ms: 90 * D },
+  { label: '6 months', ms: 182 * D },
+  { label: '1 year', ms: 365 * D },
+];
+export const DEFAULT_LEASE_MS = 90 * D;
+export const MAX_LEASE_MS = 365 * D;
+
+/** Spec D6 rule 3: renewing access to secrets or decrypt uses a 7-day window. */
+export const SENSITIVE_RENEWAL_WINDOW_MS = 7 * D;
+
+/** One-time approvals (the Once tier: secrets or decrypt) start at one hour (spec D6). */
+export const ONCE_DEFAULT_EXPIRY_MS = H;
+
+/**
+ * The window a one-time approval starts at: one hour when the app asked for longer, otherwise null (the app asked
+ * for an hour or less, or the request is not one-time, so what it asked for stands).
+ */
+export function onceDefaultExpiryMs(onceTier: boolean, requestedMs: number | null): number | null {
+  return onceTier && requestedMs !== null && requestedMs > ONCE_DEFAULT_EXPIRY_MS ? ONCE_DEFAULT_EXPIRY_MS : null;
+}
+
+/** The lease shown when the box is first ticked: the default, or less when the requester asked for less. */
+export function defaultLeaseMs(maxLeaseMs: number): number {
+  return Math.min(DEFAULT_LEASE_MS, maxLeaseMs);
+}
 
 /** Longer than this shows the warning. There is no upper limit. */
 export const LONG_EXPIRY_MS = 365 * D;
@@ -57,6 +98,21 @@ export function formatExpiry(ms: number): string {
   return `${Math.round(ms / S)}s`;
 }
 
+function count(value: number, unit: string): string {
+  return `${value} ${unit}${value === 1 ? '' : 's'}`;
+}
+
+/** A duration in words, as the line reads it: "30 days", "6 months", "1 year", "90 minutes". */
+export function formatDuration(ms: number): string {
+  const preset = LEASE_PRESETS.find((item) => item.ms === ms);
+  if (preset) return preset.label;
+  if (ms % (365 * D) === 0) return count(ms / (365 * D), 'year');
+  if (ms % D === 0) return count(ms / D, 'day');
+  if (ms % H === 0) return count(ms / H, 'hour');
+  if (ms % M === 0) return count(ms / M, 'minute');
+  return count(Math.round(ms / S), 'second');
+}
+
 /**
  * How long the app asked the approval to last: its Expiration Time minus its
  * Issued At, to the second. A few seconds either way snap to the whole day, hour or
@@ -87,7 +143,12 @@ export function siweExpiration(message: string): string | null {
 
 /** Shown where the requester signed the longest time it accepts (signed CLI and device requests). */
 export function expiryLimitNote(maxMs: number): string {
-  return `This app asked for up to ${formatExpiry(maxMs)}. To allow longer, start the request again with a longer expiry.`;
+  return `This app asked for up to ${formatDuration(maxMs)}. To allow longer, the app has to ask again.`;
+}
+
+/** Shown when a typed renewal time is longer than the requester or the one-year limit allows. */
+export function leaseLimitNote(maxMs: number): string {
+  return `Renewal can last up to ${formatDuration(maxMs)}. Choose that or less.`;
 }
 
 /** Like `expiryAt`, but never later than `ceiling` (the time a requester asked for), when that is a valid time. */

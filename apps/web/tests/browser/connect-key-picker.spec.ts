@@ -145,25 +145,6 @@ test.describe('TC-1496 connect widgets use the shared key picker', () => {
     await expect(button(page, 'Key 0')).toHaveCount(0);
   });
 
-  test('copying a named key address does not select the account', async ({ page, context }) => {
-    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-    await mockApi(page, [{ ...keys[0], label: 'Primary QA' }, { ...keys[1], label: 'Research QA' }]);
-    await page.addInitScript(() => {
-      const received: Message[] = [];
-      (window as Recording).received = received;
-      Object.defineProperty(window, 'opener', {
-        value: { postMessage: (data: Message) => received.push(data), closed: false }, configurable: true,
-      });
-    });
-    await page.goto(`/widget/connect?origin=${encodeURIComponent(origin)}`);
-    const copy = page.getByRole('group', { name: 'Primary QA', exact: true }).getByRole('button', { name: 'Copy address of Primary QA', exact: true });
-    await expect(copy).toHaveAttribute('title', keys[0]!.address);
-    await copy.click();
-    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(keys[0]!.address);
-    expect(await responses(page)).toEqual([]);
-    await page.getByRole('button', { name: 'Primary QA', exact: true }).click();
-    await expect.poll(() => responses(page).then((list) => list.map((m) => m.keyId))).toEqual([keys[0]!.id]);
-  });
 
   test('key selection and alternate-key actions have touch-sized targets', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });

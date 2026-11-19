@@ -22,4 +22,8 @@ export * from "./siwe-origin.js";
 export * from "./encryption-resource.js";
 export * from "./host-siwe.js";
 export * from "./key-resource.js";
+export * from "./elevated.js";
+export * from "./elevated-copy.js";
 export * from "./owner-revocation.js";
+
+export { COURIER_HEADING } from "./courier.js";
