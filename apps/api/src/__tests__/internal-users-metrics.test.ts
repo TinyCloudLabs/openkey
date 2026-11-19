@@ -834,7 +834,10 @@ test('GET / keeps its token gate and adds the users block next to the existing c
     const response = await router.request('/', { headers: { authorization: 'Bearer test-metrics-token' } });
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.accounts).toEqual({ total: accounts.length, new24h: accounts.length });
+    expect(body.accounts).toEqual({
+      total: accounts.length, new24h: accounts.length, real: accounts.length, excluded: 0, excludedDomainOnly: 0,
+      exclusionCriteria: 'Excludes team, QA, agent/service and throwaway-mailbox accounts on the shared test-identity list (v1). Entries marked unsure are kept.',
+    });
     expect(body.keys).toBeDefined();
     expect(body.users.total).toBe(accounts.length);
     expect(body.users.buckets.team_by_wallet).toBe(2);
