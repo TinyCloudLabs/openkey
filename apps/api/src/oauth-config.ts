@@ -43,6 +43,10 @@ export const DIRECTORY_TINYCLOUD_MCP_AUDIENCES = [
   'https://mcp.tinycloud.xyz/claude/mcp',
   'https://mcp.tinycloud.xyz/grok/mcp',
   'https://mcp.tinycloud.xyz/muse/mcp',
+  'https://mcp.tinycloud.xyz/gemini/mcp',
+  'https://mcp.tinycloud.xyz/perplexity/mcp',
+  'https://mcp.tinycloud.xyz/mistral/mcp',
+  'https://mcp.tinycloud.xyz/copilot/mcp',
 ] as const;
 /** The hosted MCP resources. */
 export const MCP_AUDIENCES = [

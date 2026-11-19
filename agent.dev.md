@@ -110,12 +110,19 @@ bun dev:portless
   API and web deployment are both needed. This does not change sign-in methods
   or remove consent. Default-branch merges and deployment require explicit
   owner approval; no auto-merge or deployment bypass.
-- The Claude, Grok and Muse directory listings each use their own restricted
-  resource, `https://mcp.tinycloud.xyz/{claude,grok,muse}/mcp`, with the exact
-  callback `https://mcp.tinycloud.xyz/{claude,grok,muse}/connect/callback`. They
-  follow the ChatGPT rules above: exact entries only, API and web deployment both
-  needed. The connector's token-status client must also be registered for the
-  new resources (`docs/resource-server-token-status.md`).
+- The Claude, Grok, Muse, Gemini, Perplexity, Mistral and Microsoft 365 Copilot
+  directory listings each use their own restricted resource,
+  `https://mcp.tinycloud.xyz/{claude,grok,muse,gemini,perplexity,mistral,copilot}/mcp`,
+  with the exact callback `https://mcp.tinycloud.xyz/<name>/connect/callback`.
+  They follow the ChatGPT rules above: exact entries only, API and web
+  deployment both needed. The connector's token-status client must also be
+  registered for the new resources (`docs/resource-server-token-status.md`).
+- Authorization-server metadata is served at three paths: the RFC 8414 one
+  (`/.well-known/oauth-authorization-server/api/auth`), the origin's, and the
+  issuer's own (`/api/auth/.well-known/oauth-authorization-server`). Google's
+  Connected Apps console looks at the last one first and, by its documentation,
+  uses the first answer it gets, an error included; keep all three answering
+  the same document and in `PUBLIC_PROTOCOL_PATHS`.
 - Never bump `@phala/dstack-sdk` or change `createProductionClient` in `packages/tee` without
   reading `docs/tee-overview.md` "Frozen key derivation". The SDK is pinned exactly; in SDK 0.6
   `DstackClient` derives different keys, which would make every sealed key unrecoverable. The

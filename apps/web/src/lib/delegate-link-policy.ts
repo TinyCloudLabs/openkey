@@ -13,7 +13,8 @@
  * app by adding its endpoint here, or, for another deployment, to
  * `VITE_DELEGATE_CALLBACK_URLS`.
  *  - Broad hosted TinyCloud MCP, the public personal-records plugin, and the
- *    personal-records addresses listed in the Claude, Grok and Muse directories.
+ *    personal-records addresses listed in, or prepared for, the Claude, Grok,
+ *    Muse, Gemini, Perplexity, Mistral and Microsoft 365 Copilot directories.
  */
 export const REGISTERED_CALLBACK_ENDPOINTS: readonly string[] = [
   'https://mcp.tinycloud.xyz/connect/callback',
@@ -21,6 +22,10 @@ export const REGISTERED_CALLBACK_ENDPOINTS: readonly string[] = [
   'https://mcp.tinycloud.xyz/claude/connect/callback',
   'https://mcp.tinycloud.xyz/grok/connect/callback',
   'https://mcp.tinycloud.xyz/muse/connect/callback',
+  'https://mcp.tinycloud.xyz/gemini/connect/callback',
+  'https://mcp.tinycloud.xyz/perplexity/connect/callback',
+  'https://mcp.tinycloud.xyz/mistral/connect/callback',
+  'https://mcp.tinycloud.xyz/copilot/connect/callback',
 ];
 
 /**

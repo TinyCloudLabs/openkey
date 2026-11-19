@@ -128,7 +128,8 @@ the page limits what it does with one:
   (`REGISTERED_CALLBACK_ENDPOINTS` in
   `apps/web/src/lib/delegate-link-policy.ts`, currently
   `https://mcp.tinycloud.xyz/connect/callback` and the same path under
-  `/chatgpt`, `/claude`, `/grok` and `/muse`, plus
+  `/chatgpt`, `/claude`, `/grok`, `/muse`, `/gemini`, `/perplexity`,
+  `/mistral` and `/copilot`, plus
   `VITE_DELEGATE_CALLBACK_URLS` for other deployments). Any other callback
   refuses the request before a key is prepared. The page POSTs with
   `redirect: 'error'`, so a redirect cannot forward the delegation. Without a

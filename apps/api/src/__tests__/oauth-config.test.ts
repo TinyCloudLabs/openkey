@@ -53,6 +53,10 @@ describe('oauthValidAudiences', () => {
       'https://mcp.tinycloud.xyz/claude/mcp',
       'https://mcp.tinycloud.xyz/grok/mcp',
       'https://mcp.tinycloud.xyz/muse/mcp',
+      'https://mcp.tinycloud.xyz/gemini/mcp',
+      'https://mcp.tinycloud.xyz/perplexity/mcp',
+      'https://mcp.tinycloud.xyz/mistral/mcp',
+      'https://mcp.tinycloud.xyz/copilot/mcp',
       'https://other.example/mcp',
     ]);
   });
@@ -64,12 +68,15 @@ describe('accessTokenExpiresInFor (TC-1366)', () => {
     for (const resource of [
       DEFAULT_TINYCLOUD_MCP_AUDIENCE, CHATGPT_TINYCLOUD_MCP_AUDIENCE, [CHATGPT_TINYCLOUD_MCP_AUDIENCE],
       'https://mcp.tinycloud.xyz/claude/mcp', 'https://mcp.tinycloud.xyz/grok/mcp', ['https://mcp.tinycloud.xyz/muse/mcp'],
+      'https://mcp.tinycloud.xyz/gemini/mcp', ['https://mcp.tinycloud.xyz/perplexity/mcp'], 'https://mcp.tinycloud.xyz/mistral/mcp',
+      'https://mcp.tinycloud.xyz/copilot/mcp',
     ]) {
       expect(accessTokenExpiresInFor(resource), JSON.stringify(resource)).toBe(long);
     }
     for (const resource of [
       undefined, null, '', 'https://api.openkey.so', 'https://mcp.tinycloud.xyz/mcp/', 'https://mcp.tinycloud.xyz/chatgpt',
-      'https://mcp.tinycloud.xyz/claude', 'https://mcp.tinycloud.xyz/claude/mcp/', 'https://mcp.tinycloud.xyz/gemini/mcp',
+      'https://mcp.tinycloud.xyz/claude', 'https://mcp.tinycloud.xyz/claude/mcp/', 'https://mcp.tinycloud.xyz/unlisted/mcp',
+      'https://mcp.tinycloud.xyz/gemini', 'https://mcp.tinycloud.xyz/gemini/mcp/v2',
       'https://mcp.tinycloud.xyz/mcp?x=1', [], [DEFAULT_TINYCLOUD_MCP_AUDIENCE, 'https://api.openkey.so'],
       [DEFAULT_TINYCLOUD_MCP_AUDIENCE, CHATGPT_TINYCLOUD_MCP_AUDIENCE], 42, { resource: DEFAULT_TINYCLOUD_MCP_AUDIENCE },
     ]) {

@@ -3,6 +3,15 @@
 Track changes to agent-facing development guidance for OpenKey. Add a concise entry when
 `agent.dev.md` or related agent workflow expectations change.
 
+## 2026-11-19
+
+- Added the Gemini, Perplexity, Mistral and Microsoft 365 Copilot personal-record
+  MCP audiences and their exact delegation callbacks, and the issuer-path location of the
+  authorization-server metadata that Google's Connected Apps console reads. Release
+  needs the API and web changes and a token-status client registered for every
+  resource, old and new. No default-branch integration or deployment without
+  explicit owner approval.
+
 ## 2026-11-16
 
 - Hosted app-review accounts (TC-2775): the native-grant column guard, both migration

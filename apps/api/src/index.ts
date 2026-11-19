@@ -229,6 +229,11 @@ app.get('/.well-known/oauth-authorization-server', (c) =>
 app.get('/.well-known/oauth-authorization-server/api/auth', (c) =>
   authorizationServerMetadata(c.req.raw).then((response) => withNativeDelegationMetadata(response, oauthIssuer))
 );
+// Google's Connected Apps console appends the well-known name to the issuer's own path and takes the first
+// answer, an error included, so the issuer path serves the same document as the RFC 8414 location above.
+app.get('/api/auth/.well-known/oauth-authorization-server', (c) =>
+  authorizationServerMetadata(c.req.raw).then((response) => withNativeDelegationMetadata(response, oauthIssuer))
+);
 app.get('/.well-known/openid-configuration', (c) =>
   openIdConfiguration(c.req.raw)
 );
