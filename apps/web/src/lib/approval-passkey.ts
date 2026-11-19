@@ -7,6 +7,9 @@ import {
   type PublicKeyCredentialRequestOptionsJSON,
 } from '@simplewebauthn/browser';
 
+/** Whether Settings shows the "Passkey for approvals" card. */
+export const PASSKEY_APPROVAL_SETTING_SHOWN = false;
+
 export type PasskeyApprovalMode = 'ALWAYS' | 'SENSITIVE' | 'NEVER';
 
 export interface PasskeyApprovalSetting {

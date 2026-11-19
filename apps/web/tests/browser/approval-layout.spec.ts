@@ -57,6 +57,7 @@ for (const [name, url] of [['short-approval', reference], ['delegate', `/delegat
       await expect(page.getByRole('link', { name: 'Dashboard', exact: true })).toHaveCount(0);
       await expect(page.locator('footer').filter({ hasText: 'OpenKey Account' })).toHaveCount(0);
     }
+    await page.locator('[data-account-menu] button').first().click();
     await expect(page.getByRole('button', { name: 'Sign out', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Sign out', exact: true }).click();
     await expect.poll(() => calls.includes('/api/auth/sign-out')).toBe(true);

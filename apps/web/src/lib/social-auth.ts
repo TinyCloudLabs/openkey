@@ -1,3 +1,4 @@
+import { SIGN_IN, fill } from '@openkey/sdk/approval-copy';
 import { API_BASE, authClient, socialRedirectClient } from './auth-client';
 import { setSessionToken } from './embed-passkey';
 import { socialProviderName, type SocialPopupAction } from './social-continuation';
@@ -7,7 +8,17 @@ export type SocialProviderId = 'google' | 'apple';
 type PopupLike = {
   closed: boolean;
   close(): void;
+  focus?(): void;
 };
+
+/** What a page can do with the sign-in window while it waits. */
+export type SocialPopupHandle = {
+  focus(): void;
+  close(): void;
+};
+
+/** The sign-in window was closed before it finished. */
+export class SocialPopupClosedError extends Error {}
 
 type PopupEvent = {
   origin: string;
@@ -75,6 +86,7 @@ export async function signInWithSocialPopup(
   provider: SocialProviderId,
   dependencies?: SocialPopupDependencies,
   action?: SocialPopupAction,
+  onPopupOpen?: (popup: SocialPopupHandle) => void,
 ): Promise<string> {
   const deps = dependencies ?? browserPopupDependencies();
 
@@ -83,8 +95,9 @@ export async function signInWithSocialPopup(
   // on third-party cookie access from the embedding iframe.
   const popup = deps.open(socialPopupStartUrl(provider, deps.origin, action));
   if (!popup) {
-    throw new Error(`Your browser blocked the ${socialProviderName(provider)} sign-in window. Allow popups, then try again.`);
+    throw new Error(fill(SIGN_IN.popupBlocked, { provider: socialProviderName(provider) }));
   }
+  onPopupOpen?.({ focus: () => popup.focus?.(), close: () => popup.close() });
 
   return new Promise<string>((resolve, reject) => {
     let settled = false;
@@ -117,7 +130,7 @@ export async function signInWithSocialPopup(
     deps.addMessageListener(onMessage);
     poll = deps.setPoll(() => {
       if (popup.closed) {
-        finish(() => reject(new Error(`${socialProviderName(provider)} sign-in was cancelled.`)));
+        finish(() => reject(new SocialPopupClosedError(`${socialProviderName(provider)} sign-in was cancelled.`)));
       }
     });
   });
