@@ -20,7 +20,7 @@ test('the delegate page lists its phases, lights the one in progress, and keeps 
   const phases = page.locator('[role="status"] li');
   await expect(phases).toHaveText(['Checking your OpenKey account', 'Loading your keys', 'Preparing the request']);
   await expect(lit(page)).toHaveText('Checking your OpenKey account');
-  await expect(page.getByRole('button', { name: 'Continue with email' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Continue with email' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Use a passkey instead' })).toHaveCount(0);
   const first = await cardHeight(page);
 
