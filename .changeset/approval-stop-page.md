@@ -2,6 +2,6 @@
 "@openkey/sdk": patch
 ---
 
-Show a shared Stop page when an approval cannot continue.
+When an approval can't continue, OpenKey shows one Stop page with the next step, for delegate approvals, prepared sign-in and revoke.
 
 Details: TC-3441
