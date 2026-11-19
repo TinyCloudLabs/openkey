@@ -13,10 +13,9 @@ export function ownerDigestFor(address: string): string {
 
 /**
  * Records that an account was deleted: one row holding the owner digest of each of its keys, with no user id,
- * email or address. The digests are pseudonymous: whoever knows an address can compute its digest and check
- * it. Call it inside the transaction that deletes the keys, with the key rows read in that transaction before
- * they are deleted, so the receipt exists exactly when the keys are gone. Writes nothing and returns false when
- * there were no keys.
+ * email or address. The digests are pseudonymous. Call it inside the transaction that deletes the keys, with
+ * the key rows read in that transaction before they are deleted, so the receipt exists exactly when the keys
+ * are gone. Writes nothing and returns false when there were no keys.
  */
 export async function recordAccountDeletionReceipt(
   transaction: Pick<Prisma.TransactionClient, 'accountDeletionReceipt'>,
