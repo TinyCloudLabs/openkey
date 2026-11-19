@@ -15,6 +15,19 @@ const APPROVAL_FAILURE_MESSAGE = "Couldn't approve this request. Try again.";
 export interface DelegateFailureTextOptions {
   permissionsEditable?: boolean;
   expiryChangeable?: boolean;
+  serverMessage?: string;
+}
+
+const SERVER_MESSAGE_MAX = 300;
+
+export function delegateServerMessage(body: unknown): string | undefined {
+  const message = (body as { message?: unknown } | null)?.message;
+  return typeof message === 'string' && message.trim() ? message.slice(0, SERVER_MESSAGE_MAX) : undefined;
+}
+
+export function delegateFailureDetail(status: number, code: unknown, serverMessage: unknown): string | null {
+  if (status !== 400 || code !== 'invalid_permissions') return null;
+  return delegateServerMessage({ message: serverMessage }) ?? null;
 }
 
 type MappedMessage = string | ((options: DelegateFailureTextOptions) => string);
@@ -147,6 +160,8 @@ export function delegateResponseFailureText(
   if (status === 429) return RATE_LIMITED_MESSAGE;
 
   const codeText = safeCode(code);
+  const serverMessage = delegateServerMessage({ message: options.serverMessage });
+  if (serverMessage && codeText === 'app_key_grant_refused') return serverMessage;
   const mappedMessage = codeText ? CODE_MESSAGES[codeText] : undefined;
   if (typeof mappedMessage === 'function') return mappedMessage(options);
   if (mappedMessage) return mappedMessage;
