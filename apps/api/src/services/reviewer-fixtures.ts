@@ -4,7 +4,7 @@ import { retireReviewerOwner } from './reviewer-cleanup';
 import { TINYCLOUD_BOOTSTRAP_VERSION } from './tinycloud-bootstrap';
 import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
-import { TinyCloudNode } from '@tinycloud/node-sdk';
+import { TinyCloudNode, type Manifest } from '@tinycloud/node-sdk';
 import { createTeeClient, generatePrivateKey, getAddressFromPrivateKey, seal } from '@openkey/tee';
 import { Prisma, type PrismaClient } from '@openkey/db';
 import { createSealingContext } from './key-sealing';
@@ -44,6 +44,21 @@ export const REVIEWER_FIXTURES = [
     v: 1, at: '2026-10-19T09:00:00+01:00', data: { minutes: 30 },
   }],
 ] as const;
+
+/**
+ * The provisioning session's exact permissions (TC-3443): put and read back each fixture in `applications`. The
+ * Apple reviewer writes no fixture, so its session only reads capabilities; hosting the spaces is signed by the
+ * owner key itself and needs no session permission.
+ */
+export function reviewerManifest(store: string): Manifest {
+  return {
+    app_id: 'so.openkey.reviewer', name: 'OpenKey', space: 'applications', prefix: '', defaults: false,
+    includePublicSpace: false,
+    permissions: store === 'apple'
+      ? [{ service: 'tinycloud.capabilities', path: '', actions: ['read'] }]
+      : REVIEWER_FIXTURES.map(([path]) => ({ service: 'tinycloud.kv', path, actions: ['put', 'get'] })),
+  };
+}
 
 export async function provisionReviewer(
   database: PrismaClient,
@@ -101,6 +116,7 @@ export async function provisionReviewer(
   if (wasReset) logReviewer('reviewer_admin', 'reset', store);
   const node = new TinyCloudNode({
     host: config.nodeHost, privateKey, prefix: 'applications', sessionExpirationMs: 3600_000,
+    manifest: reviewerManifest(store),
     autoCreateSpace: true, autoBootstrapAccount: false, enablePublicSpace: false,
     includeAccountRegistryPermissions: false, autoDiscoverLocalNode: false,
   });

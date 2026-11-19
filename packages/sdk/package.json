@@ -9,6 +9,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
+    },
+    "./approval-copy": {
+      "types": "./dist/approval-copy.d.ts",
+      "import": "./dist/approval-copy.mjs",
+      "require": "./dist/approval-copy.js"
     }
   },
   "files": [
