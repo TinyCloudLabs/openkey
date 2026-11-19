@@ -59,3 +59,8 @@ export function isKnownTinyCloudActivationHost(raw: unknown): boolean {
     return false;
   }
 }
+
+/** Native grants retain exact hosts except for the two production node names. */
+export function sameTinyCloudHost(left: string, right: string): boolean {
+  return left === right || (TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS.has(left) && TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS.has(right));
+}

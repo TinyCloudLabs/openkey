@@ -2,6 +2,7 @@ import { lockNativeReviewer } from '../reviewer-native';
 import { reviewerActive } from '../reviewer-accounts';
 import { recordReviewerWriter } from '../reviewer-cleanup';
 import { APPLE_REVIEW_CLIENT_ID } from '../reviewer-apple-policy';
+import { sameTinyCloudHost } from '../tinycloud-hosts';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { generateRandomString } from 'better-auth/crypto';
 import type { PrismaClient } from '@openkey/db';
@@ -262,7 +263,7 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
           if (now.getTime() >= grant.absoluteExpiresAt.getTime() - (reviewer ? 0 : RENEWAL_CUTOFF_MS)) return deny('consent_required', 'grant_expired');
           const client = await tx.oauthClient.findUnique({ where: { clientId: grant.clientId } });
           const ceiling = client && enabledNativeDelegation(client);
-          if (!ceiling || ceiling.tinycloudHost !== grant.tinycloudHost) return deny('consent_required', 'ceiling_changed');
+          if (!ceiling || !sameTinyCloudHost(ceiling.tinycloudHost, grant.tinycloudHost)) return deny('consent_required', 'ceiling_changed');
           const approved = grant.approvedPermissions as NativePermission[];
           let permissions: NativePermission[];
           try {

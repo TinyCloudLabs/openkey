@@ -1,5 +1,5 @@
-// TC-2946 on a real tinycloud-node (opt-in): stopping renewal leases from the dashboard, on sign-out and on
-// account deletion, after the node has actually renewed each grant. The OpenKey API runs whole (routes, Better
+// TC-2946 on a real tinycloud-node (opt-in): stopping renewal leases from the dashboard and on account deletion, and
+// signing out leaving them renewing, after the node has actually renewed each grant. The OpenKey API runs whole (routes, Better
 // Auth, managed-key signing) on PGlite; the node is a real binary on loopback with a private home and data dir.
 //
 //   OPENKEY_TEST_TINYCLOUD_NODE_BINARY=/path/to/tinycloud bun test apps/api/src/__tests__/renewal-lease-stop.real-node.test.ts
@@ -27,7 +27,7 @@ const LEASE_SECONDS = 40 * 60;
 const ORIGIN = 'https://openkey.test';
 
 if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
-  test.skipIf(!nodeBinary)('renewal leases stop from the dashboard, on sign-out and on deletion, on a real node', async () => {
+  test.skipIf(!nodeBinary)('renewal leases stop from the dashboard and on deletion, and keep renewing after sign-out, on a real node', async () => {
     const home = mkdtempSync(join(tmpdir(), 'openkey-renewal-stop-home-'));
     try {
       const child = Bun.spawn([process.execPath, 'test', import.meta.path], {
@@ -216,7 +216,7 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
 
   const revokedAt = async (leaseCid: string) => (await prisma.renewalLease.findUnique({ where: { leaseCid } }))?.revokedAt ?? null;
 
-  test('after a real renewal, the owner stops leases from the dashboard, by signing out and by deleting the account; others are refused', async () => {
+  test('after a real renewal, the owner stops leases from the dashboard and by deleting the account; signing out leaves them renewing; others are refused', async () => {
     const dashboard = await ownerWithLease('dashboard');
     const signOut = await ownerWithLease('sign-out');
     const deletion = await ownerWithLease('deletion');
@@ -262,11 +262,11 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
     expect((await call(unconfirmed.cookie, `/api/account/renewal-leases/${unconfirmed.leaseCid}/stop`, 'POST', {})).status).toBe(200);
     expect(await revokedAt(unconfirmed.leaseCid)).not.toBeNull();
 
-    // Sign-out: the session that approved the lease ends, and its lease is stopped first.
+    // Sign-out: the session that approved the lease ends, and its lease stays on.
     const signedOut = await call(signOut.cookie, '/api/auth/sign-out', 'POST');
     expect(signedOut.status).toBe(200);
-    expect(await signedOut.json()).toMatchObject({ success: true, renewalLeases: { stopped: 1, notStopped: 0 } });
-    expect(await revokedAt(signOut.leaseCid)).not.toBeNull();
+    expect(await signedOut.json()).toEqual({ success: true });
+    expect(await revokedAt(signOut.leaseCid)).toBeNull();
     expect(await prisma.session.count({ where: { id: signOut.sessionId } })).toBe(0);
 
     // Deletion while the node can't answer: nothing is deleted. The retry stops the lease, then deletes.
@@ -288,14 +288,24 @@ if (process.env.OPENKEY_RENEWAL_STOP_TEST_CHILD !== '1') {
     expect(deleted.status).toBe(200);
     expect(await prisma.user.count({ where: { id: deletion.userId } })).toBe(0);
 
-    // Past every original's signed end: the stopped grants lapse; the lease nobody stopped keeps its grant alive.
+    // Past every original's signed end: the stopped grants lapse; the leases nobody stopped (the signed-out owner's
+    // included) keep their grants alive.
     while (Date.now() < latestEnd + 30_000) await delay(5_000);
     expect(await reads(dashboard)).toBe(false);
-    expect(await reads(signOut)).toBe(false);
+    expect(await reads(signOut)).toBe(true);
     expect(await reads(deletion)).toBe(false);
     expect(await reads(control)).toBe(true);
     expect(await reads(unconfirmed)).toBe(false);
     expect(await revokedAt(control.leaseCid)).toBeNull();
+    expect(await revokedAt(signOut.leaseCid)).toBeNull();
+
+    // Signed in again, the owner who signed out stops the lease in Settings: its grant, living on renewed time, ends at once.
+    const backToken = randomUUID();
+    await prisma.session.create({ data: { id: randomUUID(), userId: signOut.userId, token: backToken, expiresAt: new Date(Date.now() + 86_400_000) } });
+    const back = (await serializeSignedCookie(cookieName, backToken, secret)).split(';')[0]!;
+    expect((await call(back, `/api/account/renewal-leases/${signOut.leaseCid}/stop`, 'POST', {})).status).toBe(200);
+    expect(await revokedAt(signOut.leaseCid)).not.toBeNull();
+    expect(await reads(signOut)).toBe(false);
 
     // Stopping a grant that lives only on renewed time ends it at once: its signed end has already passed.
     expect((await call(control.cookie, `/api/account/renewal-leases/${control.leaseCid}/stop`, 'POST', {})).status).toBe(200);

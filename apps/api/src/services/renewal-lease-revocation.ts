@@ -39,18 +39,18 @@ const REVOCATION_LIFETIME_MS = 5 * 60_000;
  * never admitted. Counted from the record, not `approvedAt`: a wallet signs the lease up to ten minutes after that.
  */
 const SIGN_IN_ADMISSION_WINDOW_MS = 10 * 60_000;
-/** How long a best-effort stop (a sign-out, an account lock) waits for its leases; stopping carries on after that. */
+/** How long a best-effort stop (an account lock) waits for its leases; stopping carries on after that. */
 const BEST_EFFORT_STOP_BUDGET_MS = 3_000;
 const OWNER_DID = /^did:pkh:eip155:([1-9][0-9]*):(0x[0-9a-fA-F]{40})$/;
 
 export type LeaseRevocationDatabase = Pick<PrismaClient, 'renewalLease' | 'ethereumKey' | '$transaction'>;
 
-/** Which of the account's leases to stop. */
+/**
+ * Which of the account's leases to stop. Signing out stops none: a lease stops only from Settings, on account
+ * deletion, or when the account is locked (an Apple revocation, a "not mine" report).
+ */
 export type LeaseScope =
   | { kind: 'lease'; leaseCid: string }
-  | { kind: 'session'; sessionId: string }
-  /** Every lease not approved under the session that stays signed in (sign out other sessions). */
-  | { kind: 'other-sessions'; keepSessionId: string }
   | { kind: 'all' };
 
 /**
@@ -74,7 +74,7 @@ export interface LeaseRevocationDeps {
 }
 
 async function secretKey() {
-  // Loaded on use: auth.ts loads this module (sign-out hooks), and its context holds the at-rest secret.
+  // Loaded on use: auth.ts loads this module (its Apple and mailbox-review hooks), and its context holds the at-rest secret.
   const { auth } = await import('../auth');
   return (await auth.$context).secretConfig;
 }
@@ -90,8 +90,6 @@ const defaultDeps: LeaseRevocationDeps = {
 function scopeWhere(scope: LeaseScope) {
   switch (scope.kind) {
     case 'lease': return { leaseCid: scope.leaseCid };
-    case 'session': return { sessionId: scope.sessionId };
-    case 'other-sessions': return { OR: [{ sessionId: null }, { sessionId: { not: scope.keepSessionId } }] };
     case 'all': return {};
   }
 }
@@ -116,7 +114,7 @@ type Transaction = Parameters<Parameters<LeaseRevocationDatabase['$transaction']
 
 /**
  * Holds the owner's user row for the rest of the transaction: lease reservations and settling take it first.
- * `wait: false` gives up at once if another request holds it (sign-out must never wait behind a deletion).
+ * `wait: false` gives up at once if another request holds it (an account lock must never wait behind a deletion).
  */
 async function lockOwner(tx: Transaction, userId: string, wait = true) {
   if (wait) await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${userId} FOR UPDATE`;
@@ -306,10 +304,10 @@ export async function revokeRenewalLeases(
 }
 
 /**
- * Stops the leases in `scope` best effort, for an action that has already ended the owner's sessions or access (a
- * sign-out, an account lock): never waits for the owner's lock, answers within a budget and never throws. A lease not
- * confirmed stopped by then is reported not stopped; if stopping is still under way it finishes later, and any lease
- * left on stays recorded, so the next stop, sign-out or deletion sends it again.
+ * Stops the leases in `scope` best effort, for an action that has already ended the owner's access (an account
+ * lock): never waits for the owner's lock, answers within a budget and never throws. A lease not confirmed stopped
+ * by then is reported not stopped; if stopping is still under way it finishes later, and any lease left on stays
+ * recorded, so the next stop or deletion sends it again.
  */
 export async function stopRenewalLeasesBestEffort(
   db: LeaseRevocationDatabase,

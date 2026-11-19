@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, isTerminalApprovalFailure, OwnerMessageError, shortCodeFailureText, walletMismatchFailureText } from './delegate-failure-text';
+import { delegateFailureDetail, delegateFailureText, delegateResponseFailureText, deviceRelayFailureText, isTerminalApprovalFailure, OwnerMessageError, shortCodeFailureText, walletMismatchFailureText } from './delegate-failure-text';
 
 const changedRequest = "This request changed after you opened it, so OpenKey didn't approve it. Return to the app or command and start again.";
 const approvalCannotProceed = "Couldn't approve this request. Try again.";
@@ -171,6 +171,41 @@ test('formats device relay delivery failures without server text', () => {
   for (const code of ['has spaces', 'x'.repeat(65), {}]) {
     expect(deviceRelayFailureText(500, code)).toBe(`${prefix} (Error 500)`);
   }
+});
+
+const genericRefusal = "OpenKey can't approve this kind of access. The app or command needs to ask for something different.";
+
+test('shows the server sentence for app key refusals when present', () => {
+  const sentence = "This website doesn't list the key this app asked for, so OpenKey didn't approve it.";
+  expect(delegateResponseFailureText(403, 'app_key_grant_refused', { serverMessage: sentence })).toBe(sentence);
+  expect(delegateResponseFailureText(403, 'app_key_grant_refused')).toBe(genericRefusal);
+  expect(delegateResponseFailureText(403, 'app_key_grant_refused', { serverMessage: '' })).toBe(genericRefusal);
+});
+
+test('keeps the server message off the main line for invalid permissions', () => {
+  expect(delegateResponseFailureText(400, 'invalid_permissions', { serverMessage: 'Requested spaces must belong to the signing account' }))
+    .toBe(genericRefusal);
+  expect(delegateResponseFailureText(400, 'invalid_permissions')).toBe(genericRefusal);
+});
+
+test('delegateFailureDetail returns the capped message only for 400 invalid_permissions', () => {
+  const msg = 'Requested spaces must belong to the signing account';
+  expect(delegateFailureDetail(400, 'invalid_permissions', msg)).toBe(msg);
+  expect(delegateFailureDetail(400, 'invalid_permissions', 'x'.repeat(500))).toBe('x'.repeat(300));
+  expect(delegateFailureDetail(400, 'invalid_permissions', undefined)).toBeNull();
+  expect(delegateFailureDetail(400, 'invalid_permissions', '')).toBeNull();
+  expect(delegateFailureDetail(400, 'invalid_permissions', 42)).toBeNull();
+  expect(delegateFailureDetail(403, 'invalid_permissions', msg)).toBeNull();
+  expect(delegateFailureDetail(400, 'app_key_grant_refused', msg)).toBeNull();
+});
+
+test('caps long server messages and ignores them for other codes', () => {
+  const long = 'x'.repeat(500);
+  expect(delegateResponseFailureText(403, 'app_key_grant_refused', { serverMessage: long })).toBe('x'.repeat(300));
+  expect(delegateResponseFailureText(400, 'key_not_found', { serverMessage: 'ignored' }))
+    .toBe("This key isn't available on your account. Choose a key you own and try again.");
+  expect(delegateResponseFailureText(400, 'unknown_code', { serverMessage: 'ignored' }))
+    .toBe(`${approvalCannotProceed} (Error 400 · unknown_code)`);
 });
 
 test('wallet mismatch text names both shortened wallets', () => {
