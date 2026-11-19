@@ -19,6 +19,19 @@
 // non-authorization concerns; those never enter the adapter and never
 // enter the parity test.
 
+/** The renewal checkbox (TC-2933), offered only where the requester signed a renewal request. */
+export interface RenewalChoice {
+  /** The lease the owner chose, in ms from approval; null when the box is unticked. */
+  leaseMs: number | null;
+  /** The longest lease the requester signed (never more than a year). */
+  maxLeaseMs: number;
+  /**
+   * Reports the owner's lease (null: unticked). `windowMs`, when given, changes the expiry window in the
+   * same step (null: back to what the app asked for), so the preview is prepared once with both.
+   */
+  onChange: (leaseMs: number | null, windowMs?: number | null) => void;
+}
+
 /** Transport injected by the CLI (`/delegate`) route. */
 export interface CliSigningTransport {
   /**
@@ -57,18 +70,22 @@ export interface CliSigningTransport {
   error: string | null;
 
   /**
-   * The "Approval expires" choice (TC-2272). `bounded` is true for a signed
+   * How long the approval lasts (TC-2272, TC-2933). `bounded` is true for a signed
    * CLI approval request or a device approval, whose requester signed the
    * longest lifetime it accepts. `onChange` re-issues `/api/delegate/prepare`
    * so the bytes that get signed carry the choice.
    */
   expiry?: {
     chosenMs: number | null;
+    /** A one-time approval (secrets or decrypt) starts at one hour here (TC-3111); set by the real signing pages, not harnesses. */
+    onceDefault?: boolean;
     bounded: boolean;
     /** The most the requester signed; the shown default can be shorter. Null: the default is the most. */
     maxMs?: number | null;
     onChange: (ms: number | null) => void;
   };
+  /** The renewal checkbox; set only on an approval request that signed a renewal request. */
+  renewal?: RenewalChoice;
   /**
    * Set while the prepared authorization does not match the visible
    * selection (a narrowing `/prepare` failed or never ran). Approve stays
@@ -135,13 +152,31 @@ export interface WidgetSigningTransport {
   refused?: boolean;
 
   /**
-   * The "Approval expires" choice (TC-2272). Set only when the signing path
+   * How long the approval lasts (TC-2272, TC-2933). Set only when the signing path
    * is the server-authoritative one, which writes the choice into the signed
    * message; unset on the exact-byte path, where the line is not shown.
    * `onChange` must invalidate any approved preview.
    */
   expiry?: {
     chosenMs: number | null;
+    /** A one-time approval (secrets or decrypt) starts at one hour here (TC-3111); set by the real signing pages, not harnesses. */
+    onceDefault?: boolean;
     onChange: (ms: number | null) => void;
+  };
+  /**
+   * The renewal checkbox (TC-2933); set only where the app's sign-in asked for renewal and the server offered it.
+   * `onChange` must make the next preview carry the choice (and the window, when given).
+   */
+  renewal?: RenewalChoice;
+
+  /**
+   * The warning screen for extra permissions (TC-2927): decrypt or key creation on the encryption network, or on
+   * keys outside the app's own area. Set by the signing pages that carry the owner's decision to the server.
+   * `splittable` is false on the exact-byte path, where the request can only be approved or cancelled whole.
+   * `onDecide` receives the action ids the owner allowed and must make the next preview (or sign) carry them.
+   */
+  elevated?: {
+    splittable: boolean;
+    onDecide: (allowed: string[]) => void;
   };
 }

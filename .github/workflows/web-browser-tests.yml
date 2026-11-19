@@ -36,8 +36,9 @@ concurrency:
 jobs:
   web-browser-tests:
     name: Web browser specs
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Pinned: ubuntu-latest is Ubuntu 26.04, where Playwright cannot install Chromium. Unpin per TC-3071.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
       # Full history: the relevance step diffs the pull request's base against the merge commit.
       - uses: actions/checkout@v4
@@ -66,7 +67,7 @@ jobs:
 
       - name: Cache Bun dependencies
         if: steps.relevance.outputs.relevant == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -81,39 +82,93 @@ jobs:
         if: steps.relevance.outputs.relevant == 'true'
         run: bun run build --filter @openkey/capability-review --filter @openkey/sdk
 
-      # Restored and saved separately: a job that fails (a red spec) skips a plain cache step's
-      # save, and the browser download is the slow, variable part of this job.
+      - name: Read the Playwright version
+        id: playwright-version
+        if: steps.relevance.outputs.relevant == 'true'
+        working-directory: apps/web
+        run: echo "version=$(bunx playwright --version | sed 's/^Version //')" >> "$GITHUB_OUTPUT"
+
+      # The browser download is the slow, variable part of this job, so it is cached by the Playwright
+      # version, not by the whole lockfile (any dependency change would otherwise miss the cache). It is
+      # restored and saved separately: a job that fails (a red spec) skips a plain cache step's save.
       - name: Restore Playwright browsers
         id: playwright-cache
         if: steps.relevance.outputs.relevant == 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
 
-      # `--with-deps` runs apt, and a runner's Azure Ubuntu mirror is sometimes slow or stalls. apt gets
-      # short connection timeouts, retries and a wait for the dpkg lock; a failed install is retried
-      # (never killed halfway: a killed apt keeps the lock); the step has its own time limit.
+      # The apt packages `--with-deps` installs (about 150 for webkit) are the other slow part: they are
+      # downloaded from the runner's Ubuntu mirror on every run, which is what timed out (TC-3298). apt's
+      # download directory is moved to ~/.cache/apt-archives and cached, so a warm run installs them from
+      # disk. The key carries the ISO week so the archive is refreshed weekly as the mirror moves on, and a
+      # restore of an older week (restore-keys) still saves a fresh archive. apt does NOT verify a cached
+      # .deb against its package index (it accepts an existing archive file by size), so the safety of this
+      # cache rests on cache scoping alone: a pull request writes only its own refs/pull/N/merge scope, and
+      # only a push to main writes the scope that every branch reads. Do not restore this cache in a job that
+      # holds secrets or publishes, and do not widen the scope.
+      - name: Read the cache week
+        id: cache-week
+        if: steps.relevance.outputs.relevant == 'true'
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore apt packages
+        id: apt-cache
+        if: steps.relevance.outputs.relevant == 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/apt-archives
+          key: apt-${{ runner.os }}-ubuntu-24.04-playwright-${{ steps.playwright-version.outputs.version }}-${{ steps.cache-week.outputs.week }}
+          restore-keys: |
+            apt-${{ runner.os }}-ubuntu-24.04-playwright-${{ steps.playwright-version.outputs.version }}-
+
+      # `--with-deps` runs apt, and a runner's Ubuntu mirror is sometimes slow. apt gets short connection
+      # timeouts, retries and a wait for the dpkg lock; its downloads go to the cached archive directory and
+      # are kept; a failed install is retried (never killed halfway: a killed apt keeps the lock). The step's
+      # time limit is a backstop: a cold run on a slow mirror took more than the old 15 minutes ten times in
+      # the last 40 runs (TC-3241, TC-3298).
       - name: Install Playwright browsers
         id: playwright-install
         if: steps.relevance.outputs.relevant == 'true'
-        timeout-minutes: 15
+        timeout-minutes: 25
         working-directory: apps/web
         run: |
-          printf 'Acquire::Retries "3";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nDPkg::Lock::Timeout "180";\n' | sudo tee /etc/apt/apt.conf.d/99-ci-timeouts > /dev/null
+          mkdir -p "$HOME/.cache/apt-archives/partial"
+          printf 'Acquire::Retries "3";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nDPkg::Lock::Timeout "180";\nDir::Cache::archives "%s/.cache/apt-archives/";\nAPT::Keep-Downloaded-Packages "true";\nAPT::Sandbox::User "root";\n' "$HOME" | sudo tee /etc/apt/apt.conf.d/99-ci-timeouts > /dev/null
+          restored=$(find "$HOME/.cache/apt-archives" -maxdepth 1 -name '*.deb' | wc -l)
           for attempt in 1 2 3; do
-            bunx playwright install --with-deps chromium webkit && exit 0
+            if bunx playwright install --with-deps chromium webkit; then
+              kept=$(find "$HOME/.cache/apt-archives" -maxdepth 1 -name '*.deb' | wc -l)
+              echo "Playwright install: browser cache hit=${{ steps.playwright-cache.outputs.cache-hit }}, apt cache hit=${{ steps.apt-cache.outputs.cache-hit }}, apt packages from cache before install: $restored, in the archive after: $kept" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
             echo "Playwright install attempt $attempt failed" >&2
             sleep 15
           done
           exit 1
 
+      # The apt archive is saved only after the packages are installed (a killed apt leaves a partial
+      # archive), owned by the runner user so the cache action can read it. apt itself ran as root.
+      - name: Make the apt archive readable for the cache
+        if: steps.playwright-install.conclusion == 'success' && steps.apt-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo rm -f "$HOME/.cache/apt-archives/lock"
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/.cache/apt-archives"
+
+      - name: Save apt packages
+        if: steps.playwright-install.conclusion == 'success' && steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/apt-archives
+          key: apt-${{ runner.os }}-ubuntu-24.04-playwright-${{ steps.playwright-version.outputs.version }}-${{ steps.cache-week.outputs.week }}
+
       - name: Save Playwright browsers
         if: steps.playwright-install.conclusion == 'success' && steps.playwright-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
 
       # CI=true makes the config retry a failed test once. The step ends green but KEEPS Playwright's
       # exit status in `exit_code`: the summary step below reads it with the JSON report and decides the
