@@ -201,7 +201,7 @@ inspection scripts. `bun install` alone does not generate the gitignored client.
 
 #### Required Phala Environment Variables
 
-Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
+Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**. Saving replaces the whole encrypted env, so every save must include every variable the CVM uses, not only the ones being changed; a variable left out is dropped. A deploy that sends only the compose file (`deploy-api.yml`) keeps the stored values. Settings hardcoded in `docker-compose.prod.yml` (such as the renewal lease settings below) are not part of the encrypted env:
 
 | Variable | Description |
 |----------|-------------|
