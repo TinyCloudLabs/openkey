@@ -19,12 +19,9 @@ const CLAIM_RETENTION_MS = 5 * 60 * 1000;
 const CLAIM_HEADER = 'OpenKey-Delegation-Claim';
 const CLAIM_PATTERN = /^[A-Za-z0-9_-]{22,128}$/;
 
-export const PUBLIC_DELEGATION_FIELDS: Record<string, true> = Object.fromEntries(
-  PUBLIC_DELEGATION_FIELD_LIST.map((field) => [field, true]),
-) as Record<string, true>;
-export const PUBLIC_JWK_FIELDS: Record<string, true> = Object.fromEntries(
-  PUBLIC_JWK_FIELD_LIST.map((field) => [field, true]),
-) as Record<string, true>;
+// Sets, not plain objects: an object lookup would also accept inherited names such as `constructor` and `__proto__`.
+export const PUBLIC_DELEGATION_FIELDS: ReadonlySet<string> = new Set(PUBLIC_DELEGATION_FIELD_LIST);
+export const PUBLIC_JWK_FIELDS: ReadonlySet<string> = new Set(PUBLIC_JWK_FIELD_LIST);
 
 export interface ApprovalCodeBinding {
   requestId: string;
@@ -123,7 +120,7 @@ export function createDelegationCodeRouter(input: {
     const serialized = JSON.stringify(delegation);
     if (
       !delegation || typeof delegation !== 'object' || Array.isArray(delegation) ||
-      Object.keys(delegation).some((field) => !PUBLIC_DELEGATION_FIELDS[field]) ||
+      Object.keys(delegation).some((field) => !PUBLIC_DELEGATION_FIELDS.has(field)) ||
       typeof delegation.delegationHeader?.Authorization !== 'string' ||
       !delegation.delegationHeader.Authorization ||
       Object.keys(delegation.delegationHeader).some((field) => field !== 'Authorization') ||
@@ -132,7 +129,7 @@ export function createDelegationCodeRouter(input: {
       typeof delegation.verificationMethod !== 'string' || !delegation.verificationMethod ||
       !jwk || typeof jwk !== 'object' || Array.isArray(jwk) ||
       jwk.kty !== 'OKP' || jwk.crv !== 'Ed25519' || typeof jwk.x !== 'string' ||
-      Object.keys(jwk).some((field) => !PUBLIC_JWK_FIELDS[field]) ||
+      Object.keys(jwk).some((field) => !PUBLIC_JWK_FIELDS.has(field)) ||
       (delegation.primary !== undefined && typeof delegation.primary !== 'boolean') ||
       (delegation.spacePending !== undefined && delegation.spacePending !== true) ||
       serialized.length > 128 * 1024

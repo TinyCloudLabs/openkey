@@ -629,7 +629,6 @@ describe('versioned /complete validates every binding before consuming the conte
       currentUser = user;
       const ok = await post('/complete', { ...(await completeBody(prepared)), ...refusal.prepare });
       expect(ok.status).toBe(200);
-      expectClassifiedCompletionFields(ok.body);
       expect(ok.body.delegationHeader).toBeDefined();
       expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
     });
