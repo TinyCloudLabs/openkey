@@ -1,7 +1,11 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import {
+    answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed,
+  } from '$lib/approval-passkey';
   import { activeKeys, ARCHIVED_KEY_MESSAGE } from '$lib/delegate-key-selection';
   import Button from '$lib/components/ui/button.svelte';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
@@ -103,6 +107,27 @@
     return () => { active = false; };
   });
 
+  // TC-3442: whether Sign needs the passkey, with the challenge for exactly this key and data. Fetched once the request
+  // and its key are on screen; a passkey refusal spends the challenge, so the revision fetches a new one.
+  const passkeyOfferInput = $derived(
+    key && key.keyType === 'MANAGED' && key.archivedAt == null && !archivedKey && typedData ? `${requestVersion}:${key.id}` : null,
+  );
+  let passkeyOffer = $state<{ input: string; need: ApprovalPasskeyNeed } | null>(null);
+  let passkeyOfferRevision = $state(0);
+  $effect(() => {
+    const input = passkeyOfferInput;
+    void passkeyOfferRevision;
+    if (input === null) return;
+    const [offerKey, data] = untrack(() => [key, typedData]);
+    if (!offerKey || !data) return;
+    let current = true;
+    // A failed fetch leaves the offer unknown: Sign goes without an assertion and a refusal fetches again.
+    api.signTypedDataPasskey(offerKey.id, data)
+      .then((need) => { if (current) passkeyOffer = { input, need }; })
+      .catch(() => {});
+    return () => { current = false; };
+  });
+
   function handleMessage(event: MessageEvent) {
     if (!isFromWidgetCounterparty(event, origin, counterparty)) return;
     if (event.data?.type === 'openkey:signTypedData:request') {
@@ -122,12 +147,26 @@
     if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing) return;
 
     const version = requestVersion;
+    const passkeyNeed = passkeyOffer?.input === passkeyOfferInput ? passkeyOffer.need : null;
 
     signing = true;
     error = '';
 
+    // TC-3442: the passkey prompt comes first, straight from the tap. A dismissed prompt reached nothing: the same offer
+    // stays for the next tap.
+    let passkeyAssertion: ApprovalPasskeyAssertion | undefined;
     try {
-      const result = await api.signTypedData(key.id, typedData);
+      passkeyAssertion = await answerApprovalPasskey(passkeyNeed);
+    } catch (e: unknown) {
+      if (version === requestVersion) {
+        error = (e as Error).message;
+        signing = false;
+      }
+      return;
+    }
+
+    try {
+      const result = await api.signTypedData(key.id, typedData, passkeyAssertion);
       if (version !== requestVersion) return;
       sendResponse({
         type: 'openkey:signTypedData:response',
@@ -138,6 +177,11 @@
       sendClose();
     } catch (e: any) {
       if (version === requestVersion) error = e.message || 'Signing failed';
+      // TC-3442: the API refused over the passkey; its text is shown and the spent challenge is replaced.
+      if (version === requestVersion && isPasskeyApprovalRefusal(e)) {
+        passkeyOffer = null;
+        passkeyOfferRevision++;
+      }
     } finally {
       if (version === requestVersion) signing = false;
     }

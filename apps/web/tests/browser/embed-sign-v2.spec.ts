@@ -16,6 +16,7 @@ test(`v2 review at ${viewport.width}px reads one owner key and waits for fresh h
   let signCalls = 0;
   await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
   await page.route('**/api/keys/**', async (route) => {
+    if (route.request().url().endsWith('/sign/passkey')) return route.fulfill({ json: { required: false } });
     if (route.request().url().endsWith('/sign')) {
       signCalls++;
       await route.fulfill({ json: { signature: '0x00', address } });
@@ -131,6 +132,7 @@ for (const surface of ['sign', 'embed/sign']) {
       json: { keys: [{ ...key, id: 'archived-zero', label: 'Archived QA', archivedAt: '2026-11-01T00:00:00Z' }, primary, other] },
     }));
     await page.route('**/api/keys/**', (route) => {
+      if (route.request().url().endsWith('/sign/passkey')) return route.fulfill({ json: { required: false } });
       const keyId = new URL(route.request().url()).pathname.split('/')[3]!;
       if (route.request().method() === 'POST') {
         signed.push({ keyId, message: route.request().postDataJSON().message });
