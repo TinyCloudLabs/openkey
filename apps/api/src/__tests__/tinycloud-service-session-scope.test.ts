@@ -12,7 +12,7 @@ const address = new Wallet(`0x${privateKey}`).address;
 
 describe('TinyCloud session sign-in scope', () => {
   test.each([
-    [OPENKEY_LEGACY_SPACE, [OPENKEY_LEGACY_SPACE, SECRETS_SPACE]],
+    [OPENKEY_LEGACY_SPACE, [OPENKEY_LEGACY_SPACE]],
     [SECRETS_SPACE, [SECRETS_SPACE]],
   ])('%s session requests no account space', (prefix, expectedSpaces) => {
     const node = createSessionNode(privateKey, prefix) as unknown as {

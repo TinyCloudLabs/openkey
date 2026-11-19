@@ -6,6 +6,7 @@ import { storedRefreshToken, type ProviderTokenOptions } from './native-delegati
 import { clientSecretMatches } from './resource-server';
 import { WEB_SESSION_ABSOLUTE_CAP_SECONDS } from './session-cap';
 import { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS } from './session-lifetime';
+import { hasAcceptedTerms } from './terms';
 
 /**
  * An MCP access token is active only while the connection it belongs to stands
@@ -20,7 +21,7 @@ import { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS } from './sessio
  * writes the row directly and never goes through Better Auth's session update.
  */
 
-export type McpRefreshDatabase = Pick<PrismaClient, 'oauthRefreshToken' | '$queryRaw'> & McpTokenStatusDatabase;
+export type McpRefreshDatabase = Pick<PrismaClient, 'oauthRefreshToken' | '$queryRaw' | 'termsAcceptance'> & McpTokenStatusDatabase;
 
 export type McpRefreshRefusal = {
   status: 400 | 503;
@@ -158,6 +159,9 @@ export async function mcpRefreshRefusal(
     }, now);
     if (!state.active) return CONNECTION_ENDED;
     if (!extension || !row.sessionId) return null;
+    // The provider refuses an account that has not accepted the current Terms (TC-3232); a refresh it is
+    // about to refuse extends nothing.
+    if (!await hasAcceptedTerms(database, row.userId)) return null;
 
     const client = await database.oauthClient.findUnique({
       where: { clientId: row.clientId },

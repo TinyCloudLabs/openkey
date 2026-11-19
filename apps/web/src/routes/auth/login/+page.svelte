@@ -38,6 +38,8 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
+  import TermsStep from '$lib/components/auth/terms-step.svelte';
+  import { oauthClientName, pendingTerms, type TermsStatus } from '$lib/terms';
 
   // 'passkey' is the enrolment offer; 'passkeySignIn' and 'social' are native-mode landing steps.
   // 'social' is the frame shown while opening a provider or checking its return.
@@ -47,12 +49,15 @@
   // Native mode: the signed authorize query carries `tinycloud_request`, so the
   // sign-in is running in a system sheet opened by a native app.
   const native = nativeSignIn($page.url.searchParams);
+  // Where this sign-in is headed, for the Terms step: an approval link or device sign-in it declines too.
+  const termsReturnTo = normalizeAuthReturnTo($page.url.searchParams.get('redirect'), $page.url.origin, undefined, { consoleOrigin: consoleOrigin() || undefined });
   // `passkeys=false` comes from clients that cannot use WebAuthn.
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
 
   function initialStep(): Step {
     if (!native) return 'email';
     if (native.socialError) return native.socialError.continuation ? 'social' : 'email';
+    if (native.method === 'email' && native.hint?.trim().toLowerCase() === 'appreview@tinycloud.xyz') return 'email';
     if (native.method === 'email' && native.hint) return 'otp';
     if (native.method === 'passkey' && passkeysSupported) return 'passkeySignIn';
     if (native.method === 'google' || native.method === 'apple') return 'social';
@@ -85,6 +90,7 @@
   let resendIn = $state(0);
   let resendTimer: ReturnType<typeof setInterval> | undefined;
   let providers = $state<SocialProviderId[]>([]);
+  let appReviewEnabled = $state(false);
   let loadingProvider = $state<SocialProviderId | null>(null);
   // In OAuth flows the API answers sign-in/email-otp with its own redirect
   // URL (the consent page, or the client's redirect_uri when consent can be
@@ -97,6 +103,38 @@
   // A native Google or Apple return that needs a choice (TC-1188 R3/R5).
   let socialConfirmation = $state<SocialContinuation | null>(null);
   const socialName = $derived(socialProvider ? socialProviderName(socialProvider) : null);
+  // TC-3232: an account that has not accepted the current Terms sees them right after signing in,
+  // before the passkey offer or anything else; `afterTerms` is where sign-in was headed.
+  let terms = $state<{ status: TermsStatus; email: string; appName: string | null } | null>(null);
+  let afterTerms: (() => void | Promise<void>) | null = null;
+
+  async function askTermsFirst(next: () => void | Promise<void>): Promise<boolean> {
+    const status = await pendingTerms();
+    if (!status) return false;
+    const session = await authClient.getSession().catch(() => null);
+    const clientId = getOAuthQuery() ? new URLSearchParams(getOAuthQuery()).get('client_id') : null;
+    terms = { status, email: session?.data?.user.email ?? email, appName: clientId ? await oauthClientName(clientId) : null };
+    afterTerms = next;
+    return true;
+  }
+
+  async function termsAccepted() {
+    const next = afterTerms;
+    // Held while the Terms were pending, it can only be the provider's own Terms step: authorize
+    // again from the signed query instead, now that the account has accepted.
+    oauthRedirectUrl = undefined;
+    terms = null;
+    afterTerms = null;
+    await next?.();
+  }
+
+  function signInAgain() {
+    terms = null;
+    afterTerms = null;
+    otp = '';
+    error = '';
+    step = 'email';
+  }
 
   function getOAuthQuery(): string | undefined {
     return safeOAuthAuthorizeQuery($page.url.searchParams);
@@ -119,7 +157,12 @@
     return true;
   }
 
-  function handlePostSignIn() {
+  async function handlePostSignIn() {
+    if (await askTermsFirst(leaveSignIn)) return;
+    leaveSignIn();
+  }
+
+  function leaveSignIn() {
     if (oauthRedirectUrl && navigateToOAuthRedirect(oauthRedirectUrl)) return;
     const oauthQuery = getOAuthQuery();
     const redirect = normalizeAuthReturnTo(
@@ -142,7 +185,10 @@
   }
 
   onMount(() => {
-    const providersLoaded = loadConfiguredSocialProviders().catch((): SocialProviderId[] => []);
+    const providersLoaded = loadConfiguredSocialProviders(undefined, (enabled) => {
+      appReviewEnabled = enabled;
+      if (enabled && native?.method === 'email' && native.hint === 'appreview@tinycloud.xyz') step = 'reviewer';
+    }).catch((): SocialProviderId[] => []);
     providersLoaded.then((loaded) => { providers = loaded; });
     if (native) {
       // Coming back from the provider via the browser's back button restores
@@ -251,6 +297,12 @@
   }
 
   async function sendOTP(): Promise<boolean> {
+    if (appReviewEnabled && email.trim().toLowerCase() === 'appreview@tinycloud.xyz') {
+      if (!native && $page.url.searchParams.get('redirect') === '/dashboard/settings/delete-account') {
+        await goto('/auth/review/delete');
+      } else { step = 'reviewer'; error = ''; }
+      return true;
+    }
     if (!native && ['openai-review@tinycloud.xyz', 'google-review@tinycloud.xyz'].includes(email.trim().toLowerCase())) {
       // Review sign-in is refused without a signed OAuth authorize query, and no code is ever emailed.
       if (!getOAuthQuery()) {
@@ -393,6 +445,7 @@
   }
 
   async function continueAfterEmailSignIn() {
+    if (await askTermsFirst(continueAfterEmailSignIn)) return;
     // The API normally provisions a key in its user hook; this keeps the user
     // moving if that non-critical hook needs to be retried.
     try {
@@ -523,7 +576,18 @@
   <meta name="referrer" content="no-referrer" />
 </svelte:head>
 
-{#if native}
+{#if terms}
+  <TermsStep
+    status={terms.status}
+    surface={native ? 'native' : 'web'}
+    email={terms.email}
+    clientId={native?.clientId ?? null}
+    appName={terms.appName}
+    returnTo={termsReturnTo}
+    onaccepted={termsAccepted}
+    onsignin={signInAgain}
+  />
+{:else if native}
   <NativeShell clientId={native.clientId} heading={(name) => `Sign in to ${name}`}>
     {#if error}
       <div class="nb-error" role="alert">{error}</div>
@@ -557,6 +621,16 @@
           <button type="button" class="nb-button" onclick={signInWithPasskey}>Sign in with a passkey</button>
         {/if}
       </div>
+    {:else if step === 'reviewer'}
+      <p class="nb-lede">Enter the review code for <strong>{email}</strong>.</p>
+      {#if error}<p class="nb-error" role="alert">{error}</p>{/if}
+      <form onsubmit={(event) => { event.preventDefault(); signInReviewer(); }} class="nb-stack">
+        <label for="native-review-code">Review code</label>
+        <input id="native-review-code" class="nb-input" type="password" bind:value={reviewCode}
+          autocomplete="current-password" maxlength={128} required disabled={loading} />
+        <button type="submit" class="nb-button nb-primary" disabled={loading}>Sign in</button>
+        <button type="button" class="nb-link" onclick={() => { reviewCode = ''; error = ''; email = ''; step = 'email'; }} disabled={loading}>Use a different email</button>
+      </form>
     {:else if step === 'otp'}
       <p class="nb-lede">
         {#if codeSent}
