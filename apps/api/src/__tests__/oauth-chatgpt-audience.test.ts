@@ -17,12 +17,15 @@ import { CHATGPT_TINYCLOUD_MCP_AUDIENCE, DEFAULT_TINYCLOUD_MCP_AUDIENCE, oauthVa
 const root = resolve(import.meta.dir, '../../../..');
 if (process.env.OPENKEY_CHATGPT_AUDIENCE_TEST_CHILD !== '1') {
   describe('ChatGPT MCP resource audience list', () => {
-    test('lists the base URL, the default resource, the ChatGPT resource, then configured resources', () => {
+    test('lists the base URL, built-in resources, then configured resources', () => {
       expect(CHATGPT_TINYCLOUD_MCP_AUDIENCE).toBe('https://mcp.tinycloud.xyz/chatgpt/mcp');
       expect(oauthValidAudiences('https://api.openkey.test', ' https://mcp.customer.test/mcp, ')).toEqual([
         'https://api.openkey.test',
         DEFAULT_TINYCLOUD_MCP_AUDIENCE,
         CHATGPT_TINYCLOUD_MCP_AUDIENCE,
+        'https://mcp.tinycloud.xyz/claude/mcp',
+        'https://mcp.tinycloud.xyz/grok/mcp',
+        'https://mcp.tinycloud.xyz/muse/mcp',
         'https://mcp.customer.test/mcp',
       ]);
     });
