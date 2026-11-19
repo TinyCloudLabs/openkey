@@ -52,9 +52,12 @@ export function reviewerDeleteEndpoints(database: PrismaClient, origin: string) 
         });
         ctx.setCookie(COOKIE, '', { ...options, maxAge: 0 });
         return ctx.json({ deleted: true });
-      } catch {
-        const binding = await database.reviewerAccount.findUnique({ where: { store: 'apple' }, include: { user: true } });
-        await reviewerFailure(binding);
+      } catch (error) {
+        // Only a refusal counts toward the sign-in backoff; a database or transient failure is not a wrong code.
+        if (error instanceof APIError) {
+          const binding = await database.reviewerAccount.findUnique({ where: { store: 'apple' }, include: { user: true } });
+          await reviewerFailure(binding);
+        }
         throw refusal();
       }
     }),
