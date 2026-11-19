@@ -11,7 +11,9 @@
   //   2. A single top-level `<details>` labelled `Advanced details` contains:
   //      requester, verified browser origin, manifest name/appId/digest with
   //      HONEST trust/provenance label, reason (only when present), signing
-  //      identity, categorized exact-grant list, Edit/Reset controls, the
+  //      identity, the "How long it lasts" choices (where the surface lets the
+  //      owner change the time; the card keeps only the one expiry line),
+  //      categorized exact-grant list, Edit/Reset controls, the
   //      full raw message as `<pre>` (`user-select: text`; line feeds are line
   //      breaks, other control and invisible characters and runs of spaces are
   //      escaped by `renderSiweLiteral`) plus a
@@ -44,7 +46,7 @@
     CapabilityGrant,
     CapabilityReviewModel,
   } from "@openkey/capability-review";
-  import { formatAccessEnd } from "$lib/access-end";
+  import { formatLocalAccessEnd } from "$lib/access-end";
   import {
     APP_KEY_GROUP_NOTE,
     appDisplayName,
@@ -52,7 +54,6 @@
     appKeyIdentity,
     appRequestingLine,
     FAMILY_LABEL,
-    COURIER_HEADING,
     appKeyNotGrantableStatements,
     buildRenderPlan,
     buildSummaryStatements,
@@ -77,6 +78,7 @@
     type ElevatedKind,
   } from "@openkey/capability-review";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
+  import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
   import ElevatedWarning from "$lib/components/signing/elevated-warning.svelte";
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
@@ -89,6 +91,8 @@
     editing: boolean;
     approving?: boolean;
     error?: string | null;
+    /** Server-supplied reason for `error`; shown as plain text in a closed "Details" disclosure under it. */
+    errorDetail?: string | null;
     /**
      * When set, Approve is disabled and this reason is shown; unlike
      * `approving`, the selection controls stay usable so the caller can
@@ -166,6 +170,7 @@
     editing,
     approving = false,
     error = null,
+    errorDetail = null,
     approveBlockedReason = null,
     approveBlockedByFailure = false,
     layoutBlocked = false,
@@ -201,17 +206,15 @@
   const requestedExpiry = $derived(
     requestedExpiryMs(model.immutable?.issuedAt, model.immutable?.expirationTime),
   );
-  const courierGrants = $derived(model.permissions.filter(grant => grant.family === "courier"));
   const permissionSections = $derived.by(() => {
     const reviewGrants = renderPlan
       .filter((bucket) => bucket.severity !== "standard")
-      .flatMap((bucket) => bucket.grants).filter(grant => grant.family !== "courier");
+      .flatMap((bucket) => bucket.grants);
     const standardGrants = renderPlan.find(
       (bucket) => bucket.severity === "standard",
-    )?.grants.filter(grant => grant.family !== "courier") ?? [];
+    )?.grants ?? [];
 
     return [
-      ...(courierGrants.length > 0 ? [{ key: "courier", severity: "review" as const, heading: COURIER_HEADING, hint: "", grants: courierGrants, defaultOpen: true }] : []),
       ...(reviewGrants.length > 0
         ? [{
             key: "review",
@@ -257,10 +260,6 @@
   // header, come from one function so the header always counts the rows marked
   // Sensitive below it (capability-review `buildSummaryStatements`).
   const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
-  const summaryGroups = $derived([
-    { key: "courier", heading: COURIER_HEADING, rows: buildSummaryStatements(selectedGrants.filter(grant => grant.family === "courier")) },
-    { key: "other", heading: null, rows: buildSummaryStatements(selectedGrants.filter(grant => grant.family !== "courier")) },
-  ].filter(group => group.rows.length > 0));
   const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
 
   // TC-3111: a one-time approval (secrets or decrypt) that asks for longer than an hour starts at one hour. It goes
@@ -319,7 +318,7 @@
   const onceNoteSite = $derived(originHost ?? "This request");
   // Beside the renewal box a fixed end date is wrong (ticked) or repeats the box (unticked), so it is not shown there.
   const appKeyAccessLine = $derived(
-    !renewal && selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatAccessEnd) : null,
+    !renewal && selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatLocalAccessEnd) : null,
   );
   const notGrantableStatements = $derived.by(() => {
     const rows = model.permissions.flatMap(appKeyNotGrantableStatements);
@@ -766,11 +765,8 @@
       <p class="summary-lead">{appRequestingLine(identity.name)}</p>
     {/if}
     {#if summaryStatements.length > 0}
-      {#each summaryGroups as group (group.key)}
-      <div role="group" aria-label={group.heading ?? undefined}>
-      {#if group.heading}<h3>{group.heading}</h3>{/if}
       <ul class="summary-statements">
-        {#each group.rows as statement (statement.key)}
+        {#each summaryStatements as statement (statement.key)}
           <li
             class="summary-statement"
             data-severity={statement.severity}
@@ -784,8 +780,6 @@
           </li>
         {/each}
       </ul>
-      </div>
-      {/each}
     {:else if !isMalformedRecap}
       <p class="summary-empty">
         {model.permissions.length > 0
@@ -819,6 +813,7 @@
         {renewal}
         sensitive={isOnceTier(selectedGrants)}
         {requestedBy}
+        chooser={false}
         permissionCount={summaryStatements.length}
       />
     {/if}
@@ -1019,6 +1014,20 @@
       </section>
     </details>
 
+    {#if onExpiryChange && model.protocol === "tinycloud-siwe-recap" && !onceDefaultPending && (expiryMs ?? requestedExpiry) !== null}
+      <details class="request-details expiry-fold">
+        <summary class="request-details-summary">How long it lasts</summary>
+        <ApprovalExpiryChooser
+          requestedMs={requestedExpiry}
+          chosenMs={expiryMs}
+          maxMs={expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null}
+          disabled={approving}
+          onChange={chooseExpiry}
+          {renewal}
+        />
+      </details>
+    {/if}
+
     {#if model.permissions.length > 0}
       <section class="permissions" aria-label="Exact grants">
         <div class="permissions-header">
@@ -1185,6 +1194,12 @@
   <div class="action-region">
   {#if error}
     <p class="error" role="alert" aria-live="polite">{error}</p>
+    {#if errorDetail}
+      <details class="error-detail">
+        <summary>Details</summary>
+        <p>{errorDetail}</p>
+      </details>
+    {/if}
   {/if}
   {#if approveBlockedReason && approveBlockedReason !== error}
     <p class="approve-blocked" role="status" aria-live="polite">{approveBlockedReason}</p>
@@ -1942,6 +1957,19 @@
     line-height: 1.45;
     margin: 0;
     border: 1px solid #f2c0c0;
+  }
+  .error-detail {
+    color: #9f2424;
+    font-size: 12px;
+    line-height: 1.45;
+    margin: -4px 0 0;
+  }
+  .error-detail summary {
+    cursor: pointer;
+  }
+  .error-detail p {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
   }
   .approve-blocked {
     color: #7c4a03;

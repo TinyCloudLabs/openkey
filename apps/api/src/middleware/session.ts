@@ -16,6 +16,8 @@ export type SessionContext = {
       userId: string;
       expiresAt: Date;
     };
+    /** Set by `allowBeforeTerms`: this route is a way out, so the Terms gate lets it through. */
+    leaving?: true;
   };
 };
 
@@ -30,7 +32,7 @@ function sessionMiddleware(termsGate: boolean) {
     if (!session) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
-    if (termsGate && !await hasAcceptedTerms(prisma ??= createPrismaClient(), session.user.id)) {
+    if (termsGate && !c.get('leaving') && !await hasAcceptedTerms(prisma ??= createPrismaClient(), session.user.id)) {
       return c.json(termsRequired(), 403);
     }
 
@@ -41,7 +43,10 @@ function sessionMiddleware(termsGate: boolean) {
   });
 }
 
-/** A signed-in session whose account has accepted the current Terms (TC-3232); 403 `terms_required` until then. */
+/**
+ * A signed-in session whose account has accepted the current Terms (TC-3232); 403 `terms_required` until then.
+ * A way out marked by `allowBeforeTerms` (middleware/terms.ts) skips the Terms check.
+ */
 export const requireSession = sessionMiddleware(true);
 
 /** A signed-in session, whether or not the account has accepted the current Terms. Only the Terms routes use it. */

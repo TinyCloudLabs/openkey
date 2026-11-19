@@ -6,15 +6,22 @@
   import { api, type EthereumKey } from '$lib/api';
   import { copyText } from '$lib/clipboard';
   import Button from '$lib/components/ui/button.svelte';
+  import SocialButtons from '$lib/components/auth/social-buttons.svelte';
+  import { loadConfiguredSocialProviders, signInWithSocialPopup, type SocialProviderId } from '$lib/social-auth';
+  import { socialProviderName } from '$lib/social-continuation';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
   import {
+    delegateFailureDetail,
     delegateFailureText,
+    delegateServerMessage,
     delegateResponseFailureText,
     deviceRelayFailureText,
     DeviceRelayDeliveryError,
     OwnerMessageError,
     isTerminalApprovalFailure,
+    refusalIgnoresKeyChoice,
     shortCodeFailureText,
+    walletMismatchFailureText,
   } from '$lib/delegate-failure-text';
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
@@ -56,6 +63,7 @@
     type CapabilityReviewModel,
   } from '@openkey/capability-review';
   import { renewalStartsTicked } from '$lib/renewal-default';
+  import { walletNotConnectedText } from '$lib/wallet-not-connected-text';
 
   interface EIP6963ProviderInfo {
     uuid: string;
@@ -86,10 +94,12 @@
   class DelegateResponseError extends Error {
     readonly code: unknown;
     readonly status: number;
-    constructor(message: string, code: unknown, status: number) {
+    readonly serverMessage: string | undefined;
+    constructor(message: string, code: unknown, status: number, serverMessage?: string) {
       super(message);
       this.code = code;
       this.status = status;
+      this.serverMessage = serverMessage;
     }
   }
   function delegateErrorClassification(cause: unknown, refreshAttempted = false) {
@@ -99,6 +109,7 @@
   }
 
   function delegateErrorMessage(cause: unknown) {
+    errorDetailFor = null;
     if (cause instanceof DeviceRelayDeliveryError) {
       if (cause.status === 409 || cause.status === 410) {
         return delegateResponseFailureText(cause.status, cause.code, {
@@ -110,10 +121,23 @@
     }
     if (cause instanceof DelegateResponseError) {
       if (isTerminalApprovalFailure(cause.status, cause.code)) approveBlockedByFailure = true;
-      return delegateResponseFailureText(cause.status, cause.code, {
+      if (
+        cause.status === 400 &&
+        cause.code === 'invalid_permissions' &&
+        expectedAddress &&
+        selectedKey &&
+        selectedKey.address.toLowerCase() !== expectedAddress.toLowerCase()
+      ) {
+        return walletMismatchFailureText(expectedAddress, selectedKey.address);
+      }
+      const text = delegateResponseFailureText(cause.status, cause.code, {
         permissionsEditable: reviewEditing,
         expiryChangeable: expiryChangeControlVisible,
+        serverMessage: cause.serverMessage,
       });
+      const detail = delegateFailureDetail(cause.status, cause.code, cause.serverMessage);
+      if (detail) errorDetailFor = { text, detail };
+      return text;
     }
     return delegateFailureText(cause);
   }
@@ -124,11 +148,19 @@
   let loading = $state(true);
   let selectedKey = $state<EthereumKey | null>(null);
   let error = $state('');
+  // Developer-facing server reason for the message currently in `error`; null unless that message came with one.
+  let errorDetailFor = $state<{ text: string; detail: string } | null>(null);
+  const errorDetail = $derived(errorDetailFor && errorDetailFor.text === error ? errorDetailFor.detail : null);
   let requestExpired = $state(false);
   let approveBlockedByFailure = $state(false);
+  // The person whose key choice drew a refusal that is the same for every key; the key list is hidden for them.
+  let keyChoiceRefusedFor = $state<string | null>(null);
+  const keyChoiceRefused = $derived(keyChoiceRefusedFor !== null && keyChoiceRefusedFor === $session.data?.user.id);
   let keysLoaded = $state(false);
   let initialized = $state(false);
   let signingIn = $state(false);
+  let socialProvider = $state<SocialProviderId | null>(null);
+  let socialProviders = $state<SocialProviderId[]>([]);
   let delegating = $state(false);
   let done = $state(false);
   let pasteCode = $state('');
@@ -553,9 +585,6 @@
   // True once we've completed the auto-select attempt for the expected wallet.
   // Used to avoid showing the "wallet not connected" warning before keys load.
   let preselectAttempted = $state(false);
-  // True when the user has explicitly chosen to proceed with a non-matching
-  // wallet via the override path on the key picker.
-  let overrideMismatch = $state(false);
   // With no wallet named, KeyPicker offers the primary key; the other keys
   // (separate account owners) stay hidden until the user asks for them.
   let showOtherKeys = $state(false);
@@ -760,6 +789,7 @@
     error = '';
     try {
       const { key } = await api.generateKey();
+      if (!keys.some((k) => k.id === key.id)) keys = [...keys, key];
       loading = false;
       await onKeySelect(key);
     } catch (e: any) {
@@ -775,6 +805,7 @@
     }
 
     selectedKey = key;
+    keyChoiceRefusedFor = null;
     error = '';
     preparing = true;
 
@@ -787,6 +818,9 @@
     } catch (e: any) {
       error = delegateErrorMessage(e);
       selectedKey = null;
+      if (e instanceof DelegateResponseError && refusalIgnoresKeyChoice(e.status, e.code)) {
+        keyChoiceRefusedFor = $session.data?.user.id ?? null;
+      }
     } finally {
       preparing = false;
     }
@@ -841,7 +875,7 @@
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-      throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status);
+      throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status, delegateServerMessage(body));
     }
 
     return res.json();
@@ -953,6 +987,7 @@
 
   function goBack() {
     selectedKey = null;
+    keyChoiceRefusedFor = null;
     step = 'select-key';
     error = '';
     resetDelegationState();
@@ -1082,8 +1117,8 @@
     }
     // Defense-in-depth: the Approve button is already disabled in this case,
     // but block here too so a stray invocation can't slip through.
-    if (!selectedMatchesExpected && !overrideMismatch) {
-      error = `This CLI requested wallet ${expectedAddressShort}. Pick that wallet or explicitly override.`;
+    if (walletMismatchReason) {
+      error = walletMismatchReason;
       return;
     }
 
@@ -1137,11 +1172,17 @@
   // from it (a narrowing /prepare failed or never ran), block approval until
   // a /prepare for the visible selection succeeds. While one is in flight,
   // `approving` already disables Approve.
+  const walletMismatchReason = $derived(
+    expectedAddress && !selectedMatchesExpected
+      ? `This request is for wallet ${expectedAddressShort}. Choose a key for that wallet, or ask the app or command for a new request.`
+      : null,
+  );
   const approveBlockedReason = $derived(
-    reviewModel && !updatingPermissions &&
+    walletMismatchReason ??
+    (reviewModel && !updatingPermissions &&
       !preparedMatchesSelection(reviewModel, permissionOptions, reviewSelection, selectedActionKeys)
       ? 'The permissions shown have not been prepared for signing. Change a permission or Reset to try again.'
-      : null,
+      : null),
   );
 
   async function toggleAction(action: DelegatePermissionAction) {
@@ -1296,7 +1337,7 @@
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status);
+        throw new DelegateResponseError(apiBusyOrEndedMessage(res.status) ?? (body.error || `HTTP ${res.status}`), body.code, res.status, delegateServerMessage(body));
       }
 
       const data = await res.json();
@@ -1448,7 +1489,7 @@
 
       if (!compRes.ok) {
         const body = await compRes.json().catch(() => ({ error: 'Unknown error' }));
-        throw new DelegateResponseError(apiBusyOrEndedMessage(compRes.status) ?? (body.error || `HTTP ${compRes.status}`), body.code, compRes.status);
+        throw new DelegateResponseError(apiBusyOrEndedMessage(compRes.status) ?? (body.error || `HTTP ${compRes.status}`), body.code, compRes.status, delegateServerMessage(body));
       }
 
       let data = await compRes.json();
@@ -1630,6 +1671,25 @@
     }
   }
 
+  // Google and Apple sign in through a popup, so this page and the #fragment on its link stay in place. The popup
+  // asks for any new-account or existing-account choice itself and reports a choice that sends the person back to
+  // email or passkey as an error line, shown here like the passkey and email failures.
+  async function signInWithSocial(provider: SocialProviderId) {
+    socialProvider = provider;
+    error = '';
+    try {
+      await signInWithSocialPopup(provider);
+    } catch (e: any) {
+      error = e.message || `${socialProviderName(provider)} sign-in failed`;
+    } finally {
+      socialProvider = null;
+    }
+  }
+
+  onMount(async () => {
+    socialProviders = await loadConfiguredSocialProviders().catch(() => []);
+  });
+
   async function activateWithHost(
     targetHost: string,
     delegationHeader: { Authorization: string }
@@ -1791,6 +1851,16 @@
           {/if}
         </div>
 
+      {:else if $session.isPending}
+        <!-- The session answer has not arrived: neither the sign-in prompt nor the review fits yet. -->
+        <div class="flex flex-col items-center justify-center text-center text-surface-400 py-8" role="status">
+          <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          <span class="text-sm text-surface-500">Checking your OpenKey account…</span>
+        </div>
+
       {:else if !$session.data}
         <header class="mb-5">
           <h1 class="text-lg font-semibold text-surface-900">TinyCloud access request</h1>
@@ -1805,10 +1875,20 @@
             </div>
           {/if}
 
-          <Button onclick={() => { window.location.href = emailSignInHref; }} disabled={signingIn} class="w-full rounded-xl">
+          <Button onclick={() => { window.location.href = emailSignInHref; }} disabled={signingIn || socialProvider !== null} class="w-full rounded-xl">
             Continue with email
           </Button>
-          <Button onclick={signInWithPasskey} variant="secondary" disabled={signingIn} class="mt-3 w-full rounded-xl">
+          {#if socialProviders.length > 0}
+            <div class="mt-3 w-full">
+              <SocialButtons
+                providers={socialProviders}
+                loadingProvider={socialProvider}
+                disabled={signingIn || socialProvider !== null}
+                onsignin={signInWithSocial}
+              />
+            </div>
+          {/if}
+          <Button onclick={signInWithPasskey} variant="secondary" disabled={signingIn || socialProvider !== null} class="mt-3 w-full rounded-xl">
             {signingIn ? 'Signing in…' : 'Use a passkey instead'}
           </Button>
         </div>
@@ -1929,11 +2009,13 @@
           <div class="w-full bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl text-sm" role="alert">
             <div class="font-medium mb-1">Wallet mismatch</div>
             <p class="leading-relaxed">
-              This CLI requested a delegation from
+              This request is for wallet
               <code class="font-mono text-xs">{expectedAddressShort}</code>,
-              but you're about to sign with
+              but the key you picked is for
               <code class="font-mono text-xs">{formatAddress(selectedKey.address)}</code>.
-              The CLI will reject the resulting delegation.
+              Choose a key for
+              <code class="font-mono text-xs">{expectedAddressShort}</code>,
+              or ask the app or command for a new request.
             </p>
             <button
               type="button"
@@ -1991,6 +2073,7 @@
               transport={{
                 approving: delegating || updatingPermissions,
                 error,
+                errorDetail,
                 approveBlockedReason,
                 approveBlockedByFailure,
                 approveDelegate,
@@ -2074,12 +2157,12 @@
               <Button variant="secondary" onclick={goBack} disabled={delegating} class="flex-1 rounded-xl">
                 Back
               </Button>
-              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || approveBlockedByFailure || selectedActionKeys.length === 0 || (!selectedMatchesExpected && !overrideMismatch) || (hostNeedsAcknowledgment && !hostAcknowledged)} class="flex-1 rounded-xl">
+              <Button onclick={approveDelegate} disabled={delegating || updatingPermissions || approveBlockedByFailure || selectedActionKeys.length === 0 || !selectedMatchesExpected || (hostNeedsAcknowledgment && !hostAcknowledged)} class="flex-1 rounded-xl">
                 {#if delegating}
                   Signing...
                 {:else if updatingPermissions}
                   Updating...
-                {:else if !selectedMatchesExpected && !overrideMismatch}
+                {:else if !selectedMatchesExpected}
                   Wallet mismatch
                 {:else}
                   Approve
@@ -2109,28 +2192,33 @@
         <!-- Key selection -->
         <header class="mb-5">
           <h1 class="text-lg font-semibold text-surface-900">TinyCloud access request</h1>
-          <p class="text-surface-500 text-sm mt-1">Select a key to review the requested access</p>
+          {#if !keyChoiceRefused}
+            <p class="text-surface-500 text-sm mt-1">Select a key to review the requested access</p>
+          {/if}
         </header>
 
         {#if error}
           <div class="w-full bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
             {error}
           </div>
+          {#if errorDetail}
+            <details class="error-detail">
+              <summary>Details</summary>
+              <p>{errorDetail}</p>
+            </details>
+          {/if}
         {/if}
 
         {#if expectedAddress && preselectAttempted && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
           <div class="w-full bg-amber-50 border border-amber-200 text-amber-800 px-4 py-3 rounded-xl mb-4 text-sm" role="alert">
             <div class="font-medium mb-1">Wallet not connected</div>
             <p class="leading-relaxed">
-              This request is for wallet
-              <code class="font-mono text-xs">{expectedAddressShort}</code>.
-              That wallet isn't currently connected. Link it below, or switch
-              to a profile that uses a wallet you have here.
+              {walletNotConnectedText(expectedAddressShort, $session.data?.user.email ?? null)}
             </p>
           </div>
         {/if}
 
-        {#if keys.length === 0}
+        {#if keys.length === 0 && !keyChoiceRefused}
           <div class="flex flex-col items-center justify-center text-center py-4">
             <p class="text-surface-500 text-sm mb-5">No keys found. Generate your first key to connect.</p>
             <Button onclick={generateAndSelect} class="w-full rounded-xl">
@@ -2140,11 +2228,10 @@
               Link External Wallet
             </Button>
           </div>
-        {:else}
+        {:else if !keyChoiceRefused}
           <KeyPicker
             {keys}
             {expectedAddress}
-            {overrideMismatch}
             bind:showOtherKeys
             onselect={onKeySelect}
             primaryHeading="Sign in with your primary key:"
@@ -2152,15 +2239,6 @@
             otherKeysWarning="Each key is a separate account owner, with its own data and spaces. Signing in with a different key does not give the CLI the data in your primary key."
           >
             {#snippet actions()}
-              {#if expectedAddress && !overrideMismatch && !keys.some((k) => k.address.toLowerCase() === expectedAddress)}
-                <button
-                  type="button"
-                  class="text-xs text-surface-500 hover:text-surface-900 transition-colors bg-transparent border-none cursor-pointer underline self-start"
-                  onclick={() => (overrideMismatch = true)}
-                >
-                  Continue with a different wallet anyway
-                </button>
-              {/if}
               <Button variant="secondary" onclick={showLinkWallet} class="rounded-xl">
                 Link External Wallet
               </Button>
@@ -2177,7 +2255,7 @@
       >
         Sign out
       </button>
-    {:else if !$session.data}
+    {:else if !$session.isPending && !$session.data}
       <div class="flex items-center gap-3 text-sm">
         <a href={registerHref} class="text-surface-500 hover:text-surface-700 transition-colors">Register</a>
         <span class="text-surface-300">|</span>
@@ -2197,6 +2275,19 @@
 {/if}
 
 <style>
+  .error-detail {
+    color: #9f2424;
+    font-size: 12px;
+    line-height: 1.45;
+    margin: -8px 0 16px;
+  }
+  .error-detail summary {
+    cursor: pointer;
+  }
+  .error-detail p {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+  }
   @media (max-width: 480px) {
     .expired-request {
       padding-top: 1rem;

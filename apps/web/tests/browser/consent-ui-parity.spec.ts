@@ -5,6 +5,7 @@ import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
 import { generateKeyPairSync } from 'node:crypto';
+import { PUBLIC_DELEGATION_FIELDS } from '@openkey/delegation-code-fields';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
@@ -110,12 +111,7 @@ test('manual OpenKey login mints a short code from public fields and keeps the f
     spaceReady: true,
     requestedSpaces: ['tinycloud:pkh:eip155:1:0x123:default'],
   };
-  const publicKeys = [
-    'delegationHeader', 'delegationCid', 'spaceId', 'ownerDid', 'verificationMethod', 'jwk',
-    'address', 'chainId', 'hostActivated', 'spaceReady', 'spaceError', 'spacePending',
-    'primary', 'edited', 'reason', 'expirationTime', 'expiresAt', 'expiry', 'siwe',
-    'signature', 'signedMessage', 'permissions',
-  ];
+  const publicKeys: readonly string[] = PUBLIC_DELEGATION_FIELDS;
   await page.route('**/api/delegate', (route) => json(route, 200, delegation));
   await page.route('**/api/delegation-codes', (route) => {
     const body = route.request().postDataJSON() as { delegation: Record<string, unknown> };
@@ -284,6 +280,7 @@ test('a successful prepare after a terminal failure re-enables Approve', async (
   await approve.click();
   await expect(approve).toBeDisabled();
   await expect(page.getByTestId('approval-expiry-line')).toBeVisible();
+  await page.getByText('Advanced details', { exact: true }).click();
   await page.getByText('How long it lasts').click();
   await page.getByRole('button', { name: '24 hours', exact: true }).click();
   await expect(approve).toBeEnabled();
