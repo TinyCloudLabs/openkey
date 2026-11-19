@@ -667,7 +667,7 @@
       : approving
         ? "Signing…"
         : previewPending && !onRetry && !refused
-          ? "Getting ready..."
+          ? "Getting ready…"
           : approveText,
   );
 </script>
@@ -819,6 +819,7 @@
         {renewal}
         sensitive={isOnceTier(selectedGrants)}
         {requestedBy}
+        permissionCount={summaryStatements.length}
       />
     {/if}
 
