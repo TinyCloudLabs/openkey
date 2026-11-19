@@ -43,6 +43,7 @@ const prisma = {
     findUnique: mock(async () => keyRecord),
   },
   user: { findUnique: mock(async () => ({ autoSignEnabled: true })) },
+  deviceAuthorization: { findUnique: mock(async () => null) },
   tinyCloudBootstrapState: {},
   appSignInDay: {
     upsert: mock(async () => null),
