@@ -37,7 +37,7 @@ afterAll(() => {
 });
 const win = new Window({ url: 'http://localhost:5173/delegate?transportVersion=2' });
 Object.assign(globalThis, {
-  window: win, document: win.document, HTMLElement: win.HTMLElement, Element: win.Element,
+  window: win, document: win.document, HTMLElement: win.HTMLElement, HTMLMediaElement: win.HTMLMediaElement, Element: win.Element,
   Node: win.Node, Text: win.Text, Comment: win.Comment, navigator: win.navigator,
   CustomEvent: win.CustomEvent, Event: win.Event, MouseEvent: win.MouseEvent,
   getComputedStyle: win.getComputedStyle.bind(win), requestAnimationFrame: win.requestAnimationFrame.bind(win),
@@ -62,8 +62,8 @@ const stubs: Record<string, string> = {
 for (const [name, source] of Object.entries(stubs)) writeFileSync(join(out, `${name.replace(/[^A-Za-z0-9]/g, '_')}.mjs`), source);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-async function load(relative: string, output: string): Promise<unknown> {
-  const component = join(root, relative);
+// Compiles a component and, the same way, the `$lib` components it mounts; returns the compiled module's URL.
+function compileTo(component: string, output: string): string {
   const compiled = compile(readFileSync(component, 'utf8'), { generate: 'client', dev: false, filename: component });
   let source = '';
   let cursor = 0;
@@ -74,6 +74,8 @@ async function load(relative: string, output: string): Promise<unknown> {
       : specifier === 'svelte' ? svelteClient
       : specifier.startsWith('svelte/') ? pathToFileURL(require.resolve(specifier)).href
       : specifier === '@openkey/capability-review' ? pathToFileURL(join(root, '..', '..', 'packages/capability-review/src/index.ts')).href
+      : specifier === '@openkey/sdk/approval-copy' ? pathToFileURL(join(root, '..', '..', 'packages/sdk/src/approval-copy/index.ts')).href
+      : specifier.startsWith('$lib/') && specifier.endsWith('.svelte') ? compileTo(join(root, 'src/lib', specifier.slice(5)), `${specifier.replace(/[^A-Za-z0-9]/g, '_')}.mjs`)
       : specifier.startsWith('$lib/') ? pathToFileURL(join(root, 'src/lib', specifier.slice(5))).href : specifier;
     source += `from '${target}'`;
     cursor = match.index! + match[0].length;
@@ -85,11 +87,11 @@ async function load(relative: string, output: string): Promise<unknown> {
   );
   const file = join(out, output);
   writeFileSync(file, source);
-  return (await import(pathToFileURL(file).href)).default;
+  return pathToFileURL(file).href;
 }
 
-const OwnerRevocation = await load('src/routes/delegate/OwnerRevocationHandoff.svelte', 'owner-review.mjs');
-const SiweMessage = await load('src/lib/components/ui/siwe-message.svelte', 'siwe-message.mjs');
+const OwnerRevocation = (await import(compileTo(join(root, 'src/routes/delegate/OwnerRevocationHandoff.svelte'), 'owner-review.mjs'))).default;
+const SiweMessage = (await import(compileTo(join(root, 'src/lib/components/ui/siwe-message.svelte'), 'siwe-message.mjs'))).default;
 
 async function until(check: () => boolean, step: string) {
   for (let i = 0; i < 200; i++) {

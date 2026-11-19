@@ -143,11 +143,9 @@ if (!backend) {
   async function stepUp(cookie: string, userId: string, purpose?: 'delete_account') {
     const send = await post('/api/account/step-up/email-otp/send', purpose ? { purpose } : {}, cookie);
     expect(send.status, await send.clone().text()).toBe(200);
-    const session = await latestSession(userId);
-    const prefix = purpose ? 'openkey-account-delete-otp' : 'openkey-account-step-up-otp';
-    const verification = await prisma.verification.findFirstOrThrow({ where: { identifier: { startsWith: `${prefix}:${session.id}:` } } });
+    const code = /<p>(\d{6})<\/p>/.exec(mail.at(-1)?.html ?? '')?.[1];
     const verified = await post('/api/account/step-up/email-otp/verify', {
-      code: verification.value.split(':')[0], ...(purpose ? { purpose } : {}),
+      code, ...(purpose ? { purpose } : {}),
     }, cookie);
     expect(verified.status, await verified.clone().text()).toBe(200);
   }
@@ -591,7 +589,7 @@ if (!backend) {
     test('a locked user\'s live cookie and bearer sessions are refused by session lookup and the signing routes', async () => {
       const { user, cookie } = await appleUser('locked-sub', 'locked@openkey.test');
       const key = await prisma.ethereumKey.findFirstOrThrow({ where: { userId: user.id } });
-      const token = (await latestSession(user.id)).token;
+      const token = (await (await get('/api/auth/session-token', cookie)).json() as { token: string }).token;
       const bearer = { authorization: `Bearer ${token}` };
       expect(await sessionUser('', bearer)).toBe(user.id);
       expect((await post(`/api/keys/${key.id}/sign`, { message: 'before lock' }, cookie)).status).toBe(200);

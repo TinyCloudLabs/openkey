@@ -211,6 +211,17 @@ export function logSessionJwk(route: SessionJwkRoute, privateMembers: boolean): 
   emit('info', 'delegate_session_jwk', { route, private_members: privateMembers === true });
 }
 
+/** Release operators count these events to track adoption of public session keys. */
+export function countPrivateSessionJwk(route: SessionJwkRoute): void {
+  process.stdout.write(`${JSON.stringify({
+    ts: new Date().toISOString(),
+    level: 'info',
+    event: 'delegate_private_session_jwk',
+    route,
+    count: 1,
+  })}\n`);
+}
+
 const PERMISSION_FIELD_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
 /** Distinct valid field names logged per request; further names are counted into one `other` line. */
 const PERMISSION_FIELD_NAME_CAP = 8;

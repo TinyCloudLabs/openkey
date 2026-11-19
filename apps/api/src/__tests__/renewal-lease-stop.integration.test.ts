@@ -355,7 +355,7 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
 
     // The app's embedded frame signs its own session out with its bearer token, no cookie.
     const embeddedOut = await app.fetch(new Request('https://api.openkey.test/api/auth/sign-out', {
-      method: 'POST', headers: { authorization: `Bearer ${embedded.token}`, origin: ORIGIN },
+      method: 'POST', headers: { authorization: `Bearer ${embedded.cookie.slice(embedded.cookie.indexOf('=') + 1)}`, origin: ORIGIN },
     }));
     expect([embeddedOut.status, await embeddedOut.json()]).toEqual([200, { success: true }]);
     expect(await prisma.session.count({ where: { id: embedded.id } })).toBe(0);

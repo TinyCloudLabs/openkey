@@ -19,6 +19,12 @@
   //    never secret/nsec material (which never leaves the API/TEE).
   import { authClient } from '$lib/auth-client';
   import { api, type NostrKey, type SignedNostrEvent, type UnsignedNostrEvent } from '$lib/api';
+  import {
+    answerApprovalPasskey,
+    isPasskeyApprovalRefusal,
+    type ApprovalPasskeyAssertion,
+    type ApprovalPasskeyNeed,
+  } from '$lib/approval-passkey';
   import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
   import { parseCanonicalOrigin, parseNostrRelayUrl, extractRelayTag } from '$lib/nostr-origin';
   import {
@@ -64,6 +70,12 @@
   // signEvent() request state
   let pendingKeyId = $state<string | null>(null);
   let pendingEvent = $state<UnsignedNostrEvent | null>(null);
+
+  // TC-3442: Approve creates a signing grant, which the account's passkey setting may ask the passkey for. The offer
+  // for this grant is held while the consent card is up; null until it arrives, or when the fetch failed.
+  let passkeyNeed = $state<ApprovalPasskeyNeed | null>(null);
+  let passkeyOfferRequest = 0;
+  let approvalError = $state('');
 
   $effect(() => {
     if (typeof window === 'undefined' || initialized) return;
@@ -156,25 +168,79 @@
       const { key } = await api.nostr.getOrCreateKey();
       nostrKey = key;
       step = 'consent';
+      loadGrantPasskey();
     } catch (e: any) {
       failConnect('UNKNOWN', e?.message || 'Failed to load your Nostr identity');
     }
   }
 
+  /** The grant Approve creates: the relay grant on connect (none without a relay), the event's kind on sign. */
+  function pendingGrant() {
+    if (!targetOrigin) return null;
+    if (mode === 'connect') {
+      return nostrKey && pendingRelayUrl
+        ? { keyId: nostrKey.id, input: { clientOrigin: targetOrigin, kinds: [22242], relayUrl: pendingRelayUrl } }
+        : null;
+    }
+    if (mode === 'sign' && pendingKeyId && pendingEvent) {
+      const relayUrl = pendingEvent.kind === 22242 ? extractRelayTag(pendingEvent) : null;
+      return {
+        keyId: pendingKeyId,
+        input: { clientOrigin: targetOrigin, kinds: [pendingEvent.kind], ...(relayUrl ? { relayUrl } : {}) },
+      };
+    }
+    return null;
+  }
+
+  // A failed fetch leaves the offer unknown: Approve then goes without an assertion and the API's refusal says why.
+  function loadGrantPasskey() {
+    const grant = pendingGrant();
+    const request = ++passkeyOfferRequest;
+    passkeyNeed = null;
+    if (!grant) return;
+    api.nostr.createGrantPasskey(grant.keyId, grant.input).then(
+      (need) => { if (request === passkeyOfferRequest) passkeyNeed = need; },
+      () => {},
+    );
+  }
+
+  /**
+   * Creates the pending grant with the passkey answer its offer needs. False when it wasn't created: a dismissed
+   * prompt or a passkey refusal keeps the consent card up with the message, anything else goes to `onFailure`.
+   */
+  async function approveGrant(onFailure: (message: string | undefined) => void): Promise<boolean> {
+    let passkeyAssertion: ApprovalPasskeyAssertion | undefined;
+    try {
+      // First, before any other await: the passkey prompt needs the tap's user gesture.
+      passkeyAssertion = await answerApprovalPasskey(passkeyNeed);
+    } catch (e) {
+      approvalError = (e as Error).message;
+      return false;
+    }
+    const grant = pendingGrant();
+    approvalError = '';
+    step = 'working';
+    if (!grant) return true;
+    try {
+      await api.nostr.createGrant(grant.keyId, grant.input, passkeyAssertion);
+      return true;
+    } catch (e: any) {
+      if (isPasskeyApprovalRefusal(e)) {
+        // The challenge is spent: show the API's words and hold a fresh offer for the next tap.
+        approvalError = e.message;
+        step = 'consent';
+        loadGrantPasskey();
+      } else {
+        onFailure(e?.message);
+      }
+      return false;
+    }
+  }
+
   async function approveConnect() {
     if (!nostrKey || !targetOrigin) return;
-    step = 'working';
-    try {
-      if (pendingRelayUrl) {
-        await api.nostr.createGrant(nostrKey.id, {
-          clientOrigin: targetOrigin,
-          kinds: [22242],
-          relayUrl: pendingRelayUrl,
-        });
-      }
+    if (await approveGrant((message) => failConnect('UNKNOWN', message || 'Failed to authorize this app'))) {
       respondConnect(true);
-    } catch (e: any) {
-      failConnect('UNKNOWN', e?.message || 'Failed to authorize this app');
     }
   }
 
@@ -220,6 +286,7 @@
     } catch (e: any) {
       if (!afterGrant && e?.status === 403 && e?.message === 'interaction_required') {
         step = 'consent';
+        loadGrantPasskey();
         reveal();
         return;
       }
@@ -230,20 +297,11 @@
 
   async function approveSign() {
     if (!pendingKeyId || !pendingEvent || !targetOrigin) return;
-    step = 'working';
-    try {
-      const relayUrl = pendingEvent.kind === 22242 ? extractRelayTag(pendingEvent) : null;
-      await api.nostr.createGrant(pendingKeyId, {
-        clientOrigin: targetOrigin,
-        kinds: [pendingEvent.kind],
-        ...(relayUrl ? { relayUrl } : {}),
-      });
-      // Signing retry: exactly one retry immediately after the grant is
-      // created, so approval leads straight to a signed event instead of a
-      // second consent round-trip.
+    // Signing retry: exactly one retry immediately after the grant is
+    // created, so approval leads straight to a signed event instead of a
+    // second consent round-trip.
+    if (await approveGrant((message) => failSign('UNKNOWN', message || 'Failed to authorize signing'))) {
       await attemptSign(true);
-    } catch (e: any) {
-      failSign('UNKNOWN', e?.message || 'Failed to authorize signing');
     }
   }
 
@@ -332,6 +390,9 @@
             <code class="font-mono text-xs text-surface-900 break-all">{pendingRelayUrl}</code>
           </div>
         {/if}
+        {#if approvalError}
+          <p class="text-sm text-red-600" role="alert">{approvalError}</p>
+        {/if}
         <div class="flex gap-2 mt-1">
           <Button variant="secondary" size="sm" class="flex-1 rounded-xl" onclick={cancelConnect}>Cancel</Button>
           <Button size="sm" class="flex-1 rounded-xl" onclick={approveConnect}>Connect</Button>
@@ -345,6 +406,9 @@
           <span class="block text-surface-400 text-xs uppercase tracking-wide mb-1">{summary.title}</span>
           <span class="text-sm text-surface-900 break-all">{summary.detail}</span>
         </div>
+        {#if approvalError}
+          <p class="text-sm text-red-600" role="alert">{approvalError}</p>
+        {/if}
         <div class="flex gap-2 mt-1">
           <Button variant="secondary" size="sm" class="flex-1 rounded-xl" onclick={cancelSign}>Cancel</Button>
           <Button size="sm" class="flex-1 rounded-xl" onclick={approveSign}>Approve</Button>

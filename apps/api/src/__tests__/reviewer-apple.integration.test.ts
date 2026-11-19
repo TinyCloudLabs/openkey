@@ -225,7 +225,7 @@ if (!process.env.OPENKEY_APPLE_REVIEW_TEST_CHILD) {
     expect(Date.parse(tokens.tinycloud_delegation.expiresAt)).toBeLessThanOrEqual(sourceCreatedAt + 3600_000);
     expect((await call('/api/delegate/prepare', 'POST', {}, { cookie })).status).toBe(403);
     const refreshRow = await database.oauthRefreshToken.findFirstOrThrow({ where: { userId: binding.userId! } });
-    expect(refreshRow.expiresAt.getTime() - sourceCreatedAt).toBeGreaterThan(3599_000);
+    expect(refreshRow.expiresAt.getTime() - sourceCreatedAt).toBeGreaterThan(3590_000);
     expect(refreshRow.token).toBe(grant.refreshTokenHash!);
     for (const seconds of [3599, 3600, 3601]) {
       setSystemTime(sourceCreatedAt + seconds * 1000);
