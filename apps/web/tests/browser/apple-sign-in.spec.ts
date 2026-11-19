@@ -60,6 +60,9 @@ async function stubApi(page: Page, options: {
         body: JSON.stringify(state.signedIn ? signedIn(options.account?.email as string | undefined) : null),
       });
     }
+    if (path === '/api/auth/session-token') {
+      return state.signedIn ? json(route, { token: 'session-cookie-token' }) : json(route, { message: 'Unauthorized' }, 401);
+    }
     if (path === '/api/auth/providers') {
       await options.providersDelay;
       return json(route, { providers: options.providers ?? ['google', 'apple'] });
@@ -74,7 +77,10 @@ async function stubApi(page: Page, options: {
     if (path === '/api/auth/social/confirm') {
       if (options.confirm) return options.confirm(route);
       state.signedIn = true;
-      return json(route, { token: 'apple-session', user: { id: 'u', email: options.continuation?.email } });
+      return route.fulfill({
+        status: 200, contentType: 'application/json', headers: { 'set-auth-token': 'apple-session' },
+        body: JSON.stringify({ token: 'apple-session', user: { id: 'u', email: options.continuation?.email } }),
+      });
     }
     if (path === '/api/auth/list-accounts') {
       return json(route, [{ id: 'cred', providerId: 'credential', accountId: 'u' }, ...state.linked.map((a, i) => ({ id: `a${i}`, ...a }))]);
