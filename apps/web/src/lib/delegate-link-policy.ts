@@ -124,3 +124,36 @@ export function checkDelegateHost(raw: string, knownOrigins: readonly string[]):
   const recognized = bareOrigin && (isLoopbackHostname(url.hostname) || knownOrigins.includes(url.origin));
   return { ok: true, host: raw, recognized };
 }
+
+export type DelegateRequester = { displayName: string; returnTo: string };
+
+/** The CLI wording: loopback callbacks, no callback, and anything unmapped. */
+export const CLI_REQUESTER: DelegateRequester = { displayName: 'TinyCloud CLI', returnTo: 'the CLI' };
+
+/**
+ * Who is asking, as the approval screen words it. Only the built-in
+ * `REGISTERED_CALLBACK_ENDPOINTS` are named here, so a name appears only for an
+ * exact, already-approved return address. It never comes from the link's
+ * free-form parameters, and a callback added through
+ * `VITE_DELEGATE_CALLBACK_URLS` gets no name.
+ */
+const REQUESTER_BY_CALLBACK_ENDPOINT: Record<string, DelegateRequester> = {
+  'https://mcp.tinycloud.xyz/claude/connect/callback': { displayName: 'Claude via TinyCloud', returnTo: 'Claude' },
+  'https://mcp.tinycloud.xyz/grok/connect/callback': { displayName: 'Grok via TinyCloud', returnTo: 'Grok' },
+  'https://mcp.tinycloud.xyz/muse/connect/callback': { displayName: 'Muse via TinyCloud', returnTo: 'Muse' },
+  'https://mcp.tinycloud.xyz/chatgpt/connect/callback': { displayName: 'ChatGPT via TinyCloud', returnTo: 'ChatGPT' },
+  'https://mcp.tinycloud.xyz/connect/callback': { displayName: 'TinyCloud MCP', returnTo: 'your MCP client' },
+};
+
+/**
+ * The requester name and return target for an approved callback (the
+ * `callback` of a passing `checkDelegateCallback`). Loopback, absent and
+ * unmapped callbacks keep the CLI wording.
+ */
+export function delegateRequester(approvedCallback: string | null): DelegateRequester {
+  const url = approvedCallback ? parseUrl(approvedCallback) : null;
+  // The caller passes an approved callback, but a name is not handed out on that assumption alone.
+  if (!url || url.protocol !== 'https:' || !isSafeTransport(url)) return CLI_REQUESTER;
+  const endpoint = `${url.origin}${url.pathname}`;
+  return Object.hasOwn(REQUESTER_BY_CALLBACK_ENDPOINT, endpoint) ? REQUESTER_BY_CALLBACK_ENDPOINT[endpoint]! : CLI_REQUESTER;
+}

@@ -60,6 +60,9 @@ async function stubApi(page: Page, options: {
         body: JSON.stringify(state.signedIn ? signedIn(options.account?.email as string | undefined) : null),
       });
     }
+    if (path === '/api/auth/session-token') {
+      return state.signedIn ? json(route, { token: 'session-cookie-token' }) : json(route, { message: 'Unauthorized' }, 401);
+    }
     if (path === '/api/auth/providers') {
       await options.providersDelay;
       return json(route, { providers: options.providers ?? ['google', 'apple'] });
@@ -74,7 +77,10 @@ async function stubApi(page: Page, options: {
     if (path === '/api/auth/social/confirm') {
       if (options.confirm) return options.confirm(route);
       state.signedIn = true;
-      return json(route, { token: 'apple-session', user: { id: 'u', email: options.continuation?.email } });
+      return route.fulfill({
+        status: 200, contentType: 'application/json', headers: { 'set-auth-token': 'apple-session' },
+        body: JSON.stringify({ token: 'apple-session', user: { id: 'u', email: options.continuation?.email } }),
+      });
     }
     if (path === '/api/auth/list-accounts') {
       return json(route, [{ id: 'cred', providerId: 'credential', accountId: 'u' }, ...state.linked.map((a, i) => ({ id: `a${i}`, ...a }))]);
@@ -252,7 +258,7 @@ test('account exists: nothing is linked; the user signs in and adds Apple after 
   const popup = await openApplePopup(page);
   const step = popup.getByTestId('social-account-exists');
   await expect(step).toContainText(
-    `An OpenKey account already uses ${EMAIL}. Sign in to it and verify with an email code to add Apple in Settings.`,
+    `An OpenKey account already uses ${EMAIL}. Sign in to it, then add Apple in Settings.`,
   );
   await expect(step.getByRole('button', { name: 'Create a new account' })).toHaveCount(0);
   await shot(popup, info, '04-account-exists');
@@ -509,7 +515,7 @@ test.describe('native sheet', () => {
     });
     await page.goto(`/auth/login?${NATIVE_QUERY}`);
     await expect(page.getByTestId('social-account-exists')).toHaveText(
-      `An OpenKey account already uses ${EMAIL}. Sign in to it and verify with an email code to add Apple in Settings.`,
+      `An OpenKey account already uses ${EMAIL}. Sign in to it, then add Apple in Settings.`,
     );
     await expect(page.getByRole('button', { name: 'Create a new account' })).toHaveCount(0);
     await shot(page, info, '11-native-account-exists');

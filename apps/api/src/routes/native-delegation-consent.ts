@@ -22,6 +22,7 @@ import { ParError, validatePermissions, type NativePermission } from '../service
 import { buildOwnerRevocationSiwe } from '@openkey/capability-review';
 import { RECLAIM_FAILED_CODE } from '../services/tinycloud-bootstrap';
 import { prepareDelegationSession, actionKey } from './delegate-session';
+import { approvalPasskeyOffer, approvalRequestDigest, checkApprovalPasskey, messageApprovalSensitivity, type ApprovalBinding } from '../services/approval-passkey';
 
 import { log, logError, logMetric } from '../log';
 export class NativeConsentError extends Error {
@@ -61,6 +62,10 @@ function selectedPermissions(requested: NativePermission[], selection: unknown, 
   if (selected.some(k => !all.has(k))) fail(409, 'preparation_mismatch');
   const wanted = new Set(selected);
   return requested.map(p => ({ ...p, actions: p.actions.filter(a => wanted.has(actionKey({ ...p, space: spaceId }, a)) || a === 'tinycloud.capabilities/read') })).filter(p => p.actions.length);
+}
+/** TC-3442: a passkey on a native approval confirms this request's revision and its prepared bytes. */
+function nativePasskeyBinding(requestId: string, revision: number, digest: string): ApprovalBinding {
+  return { purpose: 'native_consent', requestDigest: approvalRequestDigest(requestId, String(revision), digest) };
 }
 async function lockRequest(tx: any, id: string, userId: string, allowApproved = false) {
   await tx.$executeRawUnsafe("SET LOCAL lock_timeout = '5s'");
@@ -212,7 +217,10 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { userId, siweNonce: nonce, currentRevision: revision, ...(reviewer ? { reviewerEpoch: reviewer.binding.installEpoch, reviewerSessionId: reviewer.sessionId, reviewerDeadline: new Date(reviewer.deadline) } : {}) } });
       return { ...preview, digest, client: { clientId: client.clientId, name: client.name, icon: client.icon, organization: client.organization?.name }, redirectScheme: new URL(row.redirectUri).protocol.slice(0, -1), sessionDid: row.sessionDid, tinycloudHost: ceiling.tinycloudHost, ttlSeconds, grantLifetimeSeconds: reviewer ? reviewer.ttlSeconds : ceiling.grantLifetimeSeconds, permissionOptions: prepared.permissions, selectedActionKeys: prepared.selectedActionKeys };
     }, { timeout: 15_000 });
-    return c.json(result);
+    // TC-3442: whether Approve needs the passkey, with the challenge for this revision.
+    const passkey = await approvalPasskeyOffer(db, { userId, sessionId: c.get('session')?.id ?? null },
+      nativePasskeyBinding(result.requestId, result.revision, result.digest), messageApprovalSensitivity(result.sessionSiwe, result.address));
+    return c.json({ ...result, passkey });
   });
   // The node registered the skipped session delegation although the approval is being reopened. Revoke it,
   // once and best-effort: the outcome never changes the restart.
@@ -228,7 +236,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     } catch { log('warn', 'native_consent_stale_session_revoke_failed'); }
   }
   router.post('/:id/approve', async c => {
-    const body = await c.req.json().catch(() => null) as { revision?: number; digest?: string; sessionSiwe?: string; hostSiwe?: string } | null;
+    const body = await c.req.json().catch(() => null) as { revision?: number; digest?: string; sessionSiwe?: string; hostSiwe?: string; passkeyAssertion?: unknown } | null;
     const userId = c.get('user').id;
     const pending = await db.tinyCloudNativeRequest.findUnique({ where: { id: c.req.param('id') } });
     if (!pending) fail(404, 'request_not_found');
@@ -240,6 +248,13 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     const preRevision = await db.tinyCloudNativePreparation.findUnique({ where: { requestId_revision: { requestId: pending.id, revision: body.revision } } });
     if (!preRevision || preRevision.digest !== body.digest || preRevision.sessionSiwe !== body.sessionSiwe ||
       ((preRevision.hostPlan as { hostSiwe?: string } | null)?.hostSiwe ?? undefined) !== body.hostSiwe) fail(409, 'preparation_mismatch');
+    // TC-3442: the account's passkey setting, before the key is unsealed. A replay of an approved revision signs nothing.
+    if (pending.status !== 'APPROVED') {
+      const passkeyRefusal = await checkApprovalPasskey(db, { userId, sessionId: c.get('session')?.id ?? null },
+        nativePasskeyBinding(pending.id, preRevision.revision, preRevision.digest),
+        messageApprovalSensitivity(preRevision.sessionSiwe, preRevision.address), body.passkeyAssertion);
+      if (passkeyRefusal) return c.json(passkeyRefusal, 403);
+    }
     // TEE key derivation can perform I/O. Unseal before the database locks;
     // the canonical key and approved bytes are checked again under the lock.
     const preKey = pending.status === 'APPROVED' ? null : await keyFor(db, userId);

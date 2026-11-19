@@ -105,7 +105,12 @@ export function approvalRequestDigest(...parts: string[]): string {
 
 /** What one approval is bound to: the route's purpose and the digest of the exact request. */
 export type ApprovalBinding = { purpose: string; requestDigest: string };
-export type ApprovalSubject = { sessionId: string; userId: string };
+/**
+ * Who approves: the account and the session the challenge is bound to. Routes behind the session middleware always
+ * have a session; without one no challenge is issued and no assertion verifies, so an approval that needs the passkey
+ * is refused.
+ */
+export type ApprovalSubject = { sessionId: string | null; userId: string };
 export type RelyingParty = { rpID: string; origin: string };
 
 export function relyingParty(): RelyingParty {
@@ -126,6 +131,7 @@ export type ApprovalPasskeyOffer = { challengeToken: string; options: PublicKeyC
 export async function createApprovalPasskeyChallenge(
   db: ApprovalDatabase, subject: ApprovalSubject, binding: ApprovalBinding, rp = relyingParty(), now = new Date(),
 ): Promise<ApprovalPasskeyOffer | null> {
+  if (subject.sessionId === null) return null;
   const passkeys = await db.passkey.findMany({
     where: { userId: subject.userId, countsForStepUp: true }, select: { credentialID: true, transports: true },
   });
@@ -173,7 +179,8 @@ export async function verifyApprovalPasskey(
 ): Promise<ApprovalPasskeyResult> {
   const body = assertion as { challengeToken?: unknown; response?: unknown } | null | undefined;
   const response = body?.response as AuthenticationResponseJSON | undefined;
-  if (typeof body?.challengeToken !== 'string' || !response || typeof response !== 'object' || typeof response.id !== 'string') {
+  if (typeof body?.challengeToken !== 'string' || !response || typeof response !== 'object' || typeof response.id !== 'string'
+    || subject.sessionId === null) {
     return 'invalid';
   }
   const identifier = `${sessionPrefix(subject.sessionId)}${sha256(body.challengeToken)}`;
@@ -267,7 +274,7 @@ export async function approvalPasskeyOffer(
 ): Promise<{ required: false } | ({ required: true } & ApprovalPasskeyOffer)> {
   if (!await approvalNeedsPasskey(db, subject.userId, sensitivity)) return { required: false };
   const offer = await createApprovalPasskeyChallenge(db, subject, binding, rp, now);
-  // No passkey that counts means the mode in force is NEVER, read just above; a race with its removal fails closed
-  // at the route, which then refuses without an assertion.
+  // No offer means the passkey that counts was removed since the mode was read, or there is no session; the route
+  // then refuses the approval without an assertion, failing closed.
   return offer ? { required: true, ...offer } : { required: false };
 }
