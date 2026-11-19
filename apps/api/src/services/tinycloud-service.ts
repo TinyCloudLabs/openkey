@@ -3,7 +3,9 @@ import { TinyCloudNode } from '@tinycloud/node-sdk';
 import { SECRETS_SPACE } from '@tinycloud/bootstrap';
 import { Wallet } from 'ethers';
 
-const TINYCLOUD_URL = process.env.TINYCLOUD_URL || 'https://node.tinycloud.xyz';
+// The production node answers at both node.tinycloud.xyz and tee.node.tinycloud.xyz; OpenKey's own sessions use
+// tee.node. Bootstrap state is keyed by TINYCLOUD_BOOTSTRAP_HOST instead (tinycloud-hosts.ts), which stays node.*.
+const TINYCLOUD_URL = process.env.TINYCLOUD_URL || 'https://tee.node.tinycloud.xyz';
 export const OPENKEY_LEGACY_SPACE = 'openkey';
 
 // node-sdk >= 2.11 adds the `account` registry space (kv, sql, delegation/list,

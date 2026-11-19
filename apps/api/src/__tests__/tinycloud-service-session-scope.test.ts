@@ -44,4 +44,10 @@ describe('TinyCloud session sign-in scope', () => {
     expect(await node.bootstrapAccountIfNeeded()).toBe(false);
     expect(node._bootstrapStatus).toEqual({ skipped: true, reason: 'auto-bootstrap-disabled' });
   });
+
+  // Without TINYCLOUD_URL, OpenKey's own sessions reach the production node at tee.node.tinycloud.xyz.
+  test.skipIf(process.env.TINYCLOUD_URL !== undefined)('sessions default to tee.node.tinycloud.xyz', () => {
+    const node = createSessionNode(privateKey, SECRETS_SPACE) as unknown as { auth: { tinycloudHosts: string[] } };
+    expect(node.auth.tinycloudHosts).toEqual(['https://tee.node.tinycloud.xyz']);
+  });
 });

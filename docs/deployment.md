@@ -225,6 +225,7 @@ Set these in the Phala Cloud Dashboard under your CVM's **Encrypted Env**:
 | `APPLE_APP_BUNDLE_IDENTIFIERS` | Reserved comma-separated audiences for a future PAR-bound native flow; not active |
 | `APPLE_WEBHOOK_AUDIENCE` | Primary App ID (`so.openkey`) that Apple addresses server-to-server notifications to; fixed in production Compose, not set in the encrypted env. The webhook is not found while Apple sign-in is disabled |
 | `TEE_MODE` | Not read from the env: `docker-compose.prod.yml` hardcodes `production`, and the API refuses to start otherwise (TC-966) |
+| `TINYCLOUD_URL` | Not read from the encrypted env: `docker-compose.prod.yml` hardcodes `https://tee.node.tinycloud.xyz` (also the default when unset), the node OpenKey's own variables and secrets sessions use. `TINYCLOUD_BOOTSTRAP_HOST` is separate and stays `https://node.tinycloud.xyz`, the host existing bootstrap state is keyed by |
 | `RESEND_API_KEY` | Resend API key for emails |
 | `API_PORT` | `3001` |
 | `CORS_ORIGIN` | `https://openkey.so,https://console.openkey.so` |
