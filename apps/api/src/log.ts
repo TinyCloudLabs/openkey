@@ -57,7 +57,8 @@ const EVENTS = {
   delegate_session_activation_warning: true, delegate_session_activation_failed: true,
   delegate_authorization_context_issue_failed: true, owner_revocation_sign_failed: true, delegate_space_setup_notice_failed: true, delegate_session_jwk: true,
   delegate_origin_bind_failed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true, key_quote_failed: true,
-  approval_code_allocation_failed: true, approval_code_cleanup_failed: true, approval_renewal_failed: true,
+  approval_code_allocation_failed: true, approval_code_cleanup_failed: true, approval_renewal_failed: true, signin_renewal_failed: true,
+  signin_renewal_lease_signed: true,
   native_consent_peer_lookup_failed: true, native_consent_key_unseal_failed: true,
   native_consent_activation_after_host_setup_failed: true, native_consent_host_delegation_rejected: true,
   native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true, native_consent_stale_session_revoke_failed: true,
@@ -81,7 +82,7 @@ const EVENTS = {
   unlisted_event: true,
 } as const satisfies Record<string, true>;
 type EventName = keyof typeof EVENTS;
-const CONFIG_KEYS: Record<string, true> = { BETTER_AUTH_URL: true };
+const CONFIG_KEYS: Record<string, true> = { BETTER_AUTH_URL: true, TERMS_RELEASE: true };
 const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,
@@ -89,7 +90,7 @@ const ERROR_CODES: Record<string, true> = {
   tinycloud_bootstrap_deadline: true, tinycloud_bootstrap_lease_expired: true, tinycloud_bootstrap_reclaim_failed: true,
   tinycloud_bootstrap_expired_request: true, BETTER_AUTH_URL: true, signup_token_invalid: true,
   signup_account_exists: true, quote_report_data_mismatch: true, quote_key_custody_mismatch: true,
-  quote_format_invalid: true,
+  quote_format_invalid: true, TERMS_RELEASE: true,
 };
 const LEVELS: Record<string, true> = { debug: true, info: true, warn: true, error: true };
 const METHODS: Record<string, true> = {
@@ -294,6 +295,14 @@ export function logTinyCloudBootstrapSweep(
     skipped: fields.skipped,
     reaped: fields.reaped,
   });
+}
+
+/**
+ * A renewal lease signed at an app sign-in, which OpenKey keeps no other record of: its CID, whether OpenKey's managed
+ * key or the owner's wallet signed it, and its lifetime. Never the owner, the grant or the lease itself.
+ */
+export function logSignInLeaseSigned(leaseCid: string, signer: 'managed' | 'wallet', leaseLifetimeSeconds: number): void {
+  emit('info', 'signin_renewal_lease_signed', { lease_cid: leaseCid, signer, lease_lifetime_seconds: leaseLifetimeSeconds });
 }
 
 /** Approval delivery failures expose request identifiers and error class, never code or error details. */

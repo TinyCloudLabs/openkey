@@ -101,6 +101,8 @@ const isDev = process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 
 
 The same workflow's `renewal-lease-postgres` job runs `apps/api/src/__tests__/renewal-lease-stop.integration.test.ts` with `OPENKEY_TEST_POSTGRES_URL` pointing at a throwaway Postgres service, so its lock and race cases (which PGlite's single connection cannot show) run in CI. Locally, set `OPENKEY_TEST_POSTGRES_URL` to a server where the test may create and drop a database (TC-2946).
 
+The order of files in that run differs between machines, so state one file leaves behind can break whichever file runs after it (TC-2969). `bunfig.toml` preloads `apps/api/src/__tests__/end-background-work.ts`, which after every test ends the TinyCloud setup that test left running in the background (a late result, or a retry 5, 15 or 45 seconds on), so none of it can log, call the background observer or start a retry during a later test. Assert on background work inside the test that started it. Process-wide counters, such as the origin refusal counts in `log.ts`, hold every earlier file's entries: a test that asserts on all of them gives the code under test its own instance, loaded under a file-specific query (`'../log?my-test' as string`).
+
 ## Environment Files
 
 - `.env` - Local development
