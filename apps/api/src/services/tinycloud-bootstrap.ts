@@ -28,7 +28,7 @@ import {
 } from '@tinycloud/node-sdk-wasm';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { PrismaClient } from '@openkey/db';
-import { DEFAULT_TINYCLOUD_BOOTSTRAP_HOST, TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
+import { DEFAULT_TINYCLOUD_BOOTSTRAP_HOST, TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS, bootstrapCallHost } from './tinycloud-hosts';
 import { tinyCloudBootstrapNodeCallTimeoutMs, tinyCloudBootstrapNodeInvokeTimeoutMs } from './tinycloud-node-timeouts';
 import { kvSpaceRegistryStore, registerMissingBootstrapSpaces } from './tinycloud-space-registry';
 import { hostRequestedSpaceWithinBudget, SWEEP_RETRYABLE_CODES } from './tinycloud-bootstrap-budget';
@@ -428,11 +428,12 @@ export async function ensureTinyCloudBootstrap(
   try {
     await withBootstrapLockHeartbeat(input.prisma, cacheKey, attemptId, async () => {
       const privateKey = await resolvePrivateKey(input.privateKey);
+      // Locks and state stay keyed by `tinycloudHost`; the node calls go to its call host (tinycloud-hosts.ts).
       const runInput: TinyCloudBootstrapRunInput = {
         address: ensureEip55(input.key.address),
         chainId,
         privateKey,
-        tinycloudHost,
+        tinycloudHost: bootstrapCallHost(tinycloudHost),
       };
       const requested = input.requestedSpaces;
       if (requested) {

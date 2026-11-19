@@ -20,6 +20,8 @@ let state: {
   lockExpiresAt?: Date | null;
   failureReason?: string | null;
 } | null = null;
+// The host the mock state row is keyed by.
+let stateHost = tinycloudHost;
 
 const executor = mock(async () => undefined);
 const probe = mock(async () => undefined);
@@ -56,7 +58,7 @@ const prisma = {
       throw new Error('update should not be called');
     }),
     updateMany: mock(async ({ where, data }: { where: Record<string, unknown>; data: Partial<NonNullable<typeof state>> }) => {
-      if (!state || where.keyId !== key.id || where.chainId !== chainId || where.tinycloudHost !== tinycloudHost) {
+      if (!state || where.keyId !== key.id || where.chainId !== chainId || where.tinycloudHost !== stateHost) {
         return { count: 0 };
       }
       if (where.bootstrapVersion !== TINYCLOUD_BOOTSTRAP_VERSION) {
@@ -84,6 +86,7 @@ beforeEach(async () => {
   } = await import('../services/tinycloud-bootstrap.ts?actual' as string));
   autoSignEnabled = true;
   state = null;
+  stateHost = tinycloudHost;
   process.env.NODE_ENV = originalNodeEnv;
   process.env.TINYCLOUD_BOOTSTRAP_HOST = tinycloudHost;
   executor.mockClear();
@@ -340,6 +343,41 @@ describe('ensureTinyCloudBootstrapForApprovedSign', () => {
       failureCode: null,
       failureReason: null,
     });
+  });
+
+  test('keeps state keyed node.tinycloud.xyz and sends its node calls to tee.node.tinycloud.xyz', async () => {
+    delete process.env.TINYCLOUD_BOOTSTRAP_HOST;
+    stateHost = defaultTinycloudHost;
+
+    expect(await ensureTinyCloudBootstrapForApprovedSign(ensureInput())).toEqual({ status: 'complete' });
+
+    const stateKey = { keyId: key.id, chainId, tinycloudHost: defaultTinycloudHost, bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION };
+    expect(prisma.tinyCloudBootstrapState.findUnique).toHaveBeenCalledWith({
+      where: { keyId_chainId_tinycloudHost_bootstrapVersion: stateKey },
+    });
+    expect(prisma.tinyCloudBootstrapState.create).toHaveBeenCalledWith({ data: expect.objectContaining(stateKey) });
+    expect(probe).toHaveBeenCalledWith({ address, chainId, privateKey, tinycloudHost });
+    expect(executor).toHaveBeenCalledWith({ address, chainId, privateKey, tinycloudHost });
+    expect(state).toMatchObject({ status: 'complete' });
+  });
+
+  test('an existing complete row keyed node.tinycloud.xyz still matches and runs nothing', async () => {
+    delete process.env.TINYCLOUD_BOOTSTRAP_HOST;
+    stateHost = defaultTinycloudHost;
+    state = { id: 'state_1', status: 'complete' };
+
+    expect(await ensureTinyCloudBootstrapForApprovedSign(ensureInput())).toEqual({ status: 'complete' });
+
+    expect(prisma.tinyCloudBootstrapState.findUnique).toHaveBeenCalledWith({
+      where: {
+        keyId_chainId_tinycloudHost_bootstrapVersion: {
+          keyId: key.id, chainId, tinycloudHost: defaultTinycloudHost, bootstrapVersion: TINYCLOUD_BOOTSTRAP_VERSION,
+        },
+      },
+    });
+    expect(executor).not.toHaveBeenCalled();
+    expect(probe).not.toHaveBeenCalled();
+    expect(prisma.tinyCloudBootstrapState.create).not.toHaveBeenCalled();
   });
 
   test('returns a failed outcome when another bootstrap attempt owns the fresh lock', async () => {

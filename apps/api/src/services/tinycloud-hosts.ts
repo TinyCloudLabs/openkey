@@ -1,10 +1,20 @@
 // TinyCloud nodes OpenKey may sign for or host spaces on. Shared by the
 // bootstrap flow and the native delegation client ceiling.
 export const DEFAULT_TINYCLOUD_BOOTSTRAP_HOST = 'https://node.tinycloud.xyz';
+const TEE_TINYCLOUD_HOST = 'https://tee.node.tinycloud.xyz';
 export const TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS: ReadonlySet<string> = new Set([
   DEFAULT_TINYCLOUD_BOOTSTRAP_HOST,
-  'https://tee.node.tinycloud.xyz',
+  TEE_TINYCLOUD_HOST,
 ]);
+
+/**
+ * The origin a bootstrap run calls for the host its state is keyed by. Both production names reach the same node:
+ * state keyed `node.tinycloud.xyz` keeps that key (existing rows still match) and its calls go to `tee.node.tinycloud.xyz`.
+ * Any other host is called as-is.
+ */
+export function bootstrapCallHost(keyHost: string): string {
+  return keyHost === DEFAULT_TINYCLOUD_BOOTSTRAP_HOST ? TEE_TINYCLOUD_HOST : keyHost;
+}
 
 export const LOCAL_HOSTNAMES: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '[::1]']);
 
