@@ -1015,8 +1015,8 @@ model ReviewerAccount {
 
 // TC-3353: one row per deleted account, written in the same transaction that deletes its keys. It keeps no
 // user id, email or address: only the SHA-256 (hex) of each deleted key's `did:pkh:eip155:1:<address>`, so the
-// space owners an account had can be matched later without the account being identifiable. Append-only: the
-// migration refuses updates and deletes.
+// space owners an account had can be matched later. The digest is pseudonymous: whoever knows an address can
+// compute its digest and check it. Append-only: the migration refuses updates and deletes.
 model AccountDeletionReceipt {
   id           String   @id @default(uuid())
   deletedAt    DateTime @default(now())
