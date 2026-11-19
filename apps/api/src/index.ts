@@ -1,6 +1,6 @@
 import './log'; // Keep first: patches dependency console output before any dependency module runs.
 import './install-process-handlers'; // Install fatal handlers before dependency startup.
-import { Hono } from 'hono';
+import { Hono, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
 import { apiErrorHandler, log, logConfigInvalid, logError, requestLogger, type ApiEnv } from './log';
@@ -19,7 +19,7 @@ import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
 import { createAccountTermsRouter } from './routes/account-terms';
 import { termsRelease } from './services/terms';
-import { createTermsSessionGuard, createTermsSubjectGuard } from './middleware/terms';
+import { allowBeforeTerms, allowBeforeTermsWhen, createTermsSessionGuard, createTermsSubjectGuard } from './middleware/terms';
 import { oauthAdminRouter } from './routes/oauth-admin';
 import { createResourceIntrospectRouter } from './routes/oauth-resource-introspect';
 import { MCP_AUDIENCES, oauthValidAudiences } from './oauth-config';
@@ -273,12 +273,12 @@ app.use('/api/auth/oauth2/userinfo', createMcpUserinfoGuard({
 app.use('/api/auth/oauth2/userinfo', createLockedSubjectGuard(authPrisma));
 app.use('/api/auth/oauth2/introspect', createLockedSubjectGuard(authPrisma));
 // TC-3232: until the account accepts the Terms, its tokens get no userinfo answer, and no consent or
-// postLogin continue goes ahead.
+// postLogin continue goes ahead. Declining a consent stays open: leaving never requires agreeing.
 app.use('/api/auth/oauth2/userinfo', createTermsSubjectGuard(authPrisma));
-const termsSessionGuard = createTermsSessionGuard(authPrisma, async (headers) =>
-  (await auth.api.getSession({ headers, query: { disableRefresh: true } }))?.user.id ?? null);
-app.use('/api/auth/oauth2/consent', termsSessionGuard);
-app.use('/api/auth/oauth2/continue', termsSessionGuard);
+const termsSessionUserId = async (headers: Headers) =>
+  (await auth.api.getSession({ headers, query: { disableRefresh: true } }))?.user.id ?? null;
+app.use('/api/auth/oauth2/consent', createTermsSessionGuard(authPrisma, termsSessionUserId, { allowDenial: true }));
+app.use('/api/auth/oauth2/continue', createTermsSessionGuard(authPrisma, termsSessionUserId));
 app.use('/api/auth/*', createRevokeDenylist({
   database: authPrisma,
   verify: createAccessTokenVerifier({ issuer: oauthIssuer, getJwks: readSigningKeys }),
@@ -309,6 +309,32 @@ app.post('/api/webhooks/apple', bodyLimit({
   maxSize: 32 * 1024,
   onError: (c) => c.json({ error: 'invalid_notification' }, 400),
 }), createAppleWebhookHandler({ database: authPrisma }));
+
+// Ways out (TC-3232): leaving never requires agreeing, so these answer for an account that hasn't accepted
+// the current Terms. Marked here, ahead of the routers that serve them, so their `requireSession` skips the
+// Terms check. Agreeing to anything, and managing the account, still wait for acceptance.
+// An email step-up is a way out only for deleting the account; its other purposes manage the account.
+const deleteAccountStepUp = allowBeforeTermsWhen(4 * 1024, (body) => body.purpose === 'delete_account');
+// Claiming a handoff is a way out only for an owner revocation (the claim service reads `kind` the same way
+// and accepts no kind but owner-revocation); a sign-in handoff grants access.
+const ownerRevocationClaim = allowBeforeTermsWhen(6 * 1024, (body) =>
+  !!body.request && typeof body.request === 'object' && !Array.isArray(body.request) && 'kind' in body.request);
+const WAYS_OUT: Array<['POST' | 'DELETE', string, MiddlewareHandler?]> = [
+  ['POST', '/api/account/step-up/email-otp/send', deleteAccountStepUp],
+  ['POST', '/api/account/step-up/email-otp/verify', deleteAccountStepUp],
+  ['POST', '/api/account/step-up/passkey/options'], // a passkey step-up proves what a passkey sign-in does
+  ['POST', '/api/account/step-up/passkey/verify'],
+  ['POST', '/api/account/delete'],
+  ['DELETE', '/api/account/tinycloud-apps/*'], // disconnecting a TinyCloud, MCP or identity app
+  ['POST', '/api/account/renewal-leases/:leaseCid/stop'],
+  ['DELETE', '/api/keys/nostr/grants/:grantId'],
+  ['POST', '/api/delegate/handoffs/claim', ownerRevocationClaim],
+  ['POST', '/api/delegate/owner-revocation/*'],
+  ['POST', '/api/delegate/handoffs/cancel-claimed'],
+  ['POST', '/api/approval-requests/:id/deny'],
+  ['POST', '/api/device-authorizations/:transactionId/deny'],
+];
+for (const [method, path, marker = allowBeforeTerms] of WAYS_OUT) app.on(method, path, marker);
 
 // Key management routes
 app.route('/api/keys', keysRouter);
