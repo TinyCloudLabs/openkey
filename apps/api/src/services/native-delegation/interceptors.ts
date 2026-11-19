@@ -420,7 +420,7 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
             || !session || session.expiresAt.getTime() <= Date.now()
             || session.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000 <= Date.now()
             || reviewerSubject.clientId !== binding.clientId || 'status' in clients || clients.effective !== binding.clientId
-            || params.get('resource') !== binding.resource
+            || (binding.store === 'apple' ? params.has('resource') || grantType !== 'authorization_code' : params.get('resource') !== binding.resource)
             || (grantType === 'authorization_code' && reviewerSubject.reviewerEpoch !== binding.installEpoch)
             || (grantType === 'refresh_token' && !reviewerSubject.scopes?.includes(TINYCLOUD_MCP_SCOPE))) {
             return { status: 400, error: 'invalid_grant', description: 'the review connection has ended' };

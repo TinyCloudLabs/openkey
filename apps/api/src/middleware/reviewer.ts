@@ -4,6 +4,7 @@ import { logReviewer } from '../log';
 import { REVIEWER_MAX_SECONDS, captureReviewer, reviewerActive, reviewerForUser, reviewerForEmail } from '../services/reviewer-accounts';
 
 const ROUTES = new Set([
+  'POST /api/review-account/delete-intent', 'POST /api/review-account/delete',
   'GET /api/auth/get-session', 'POST /api/auth/sign-out',
   'POST /api/auth/sign-in/reviewer', 'POST /api/auth/sign-in/email-otp',
   'GET /api/auth/oauth2/authorize', 'GET /api/auth/oauth2/public-client',
@@ -24,13 +25,18 @@ export function createReviewerRouteGuard(
     const principals = await resolve(c.req.raw.headers);
     const bindings = await Promise.all(principals.map((principal) => reviewerForUser(database, principal.userId)));
     if (!bindings.some(Boolean)) return next();
-    const allowed = ROUTES.has(`${c.req.method} ${c.req.path.replace(/\/$/, '')}`);
+    const listed = ROUTES.has(`${c.req.method} ${c.req.path.replace(/\/$/, '')}`);
+    const nativeConsentRoute = c.req.method === 'POST'
+      && (/^\/api\/oauth\/tinycloud\/requests\/[^/]+\/(prepare|approve|deny)$/.test(c.req.path)
+        || ['/api/auth/oauth2/tinycloud/renew', '/api/auth/oauth2/tinycloud/revoke'].includes(c.req.path));
+    const hostedDelegate = c.req.path.startsWith('/api/delegate');
     let captured = false;
     for (const [index, principal] of principals.entries()) {
       // A reviewer credential beside any other account's credential is refused outright.
       const binding = bindings[index];
       const session = principal.sessionId
         ? await database.session.findUnique({ where: { id: principal.sessionId } }) : null;
+      const allowed = binding?.store === 'apple' ? !hostedDelegate && (listed || nativeConsentRoute) : listed;
       if (!allowed || !binding || !reviewerActive(binding, session?.reviewerEpoch ?? null)
         || session?.userId !== binding.userId || session.expiresAt <= new Date()
         || session.createdAt.getTime() + REVIEWER_MAX_SECONDS * 1000 <= Date.now()) {
@@ -49,6 +55,15 @@ export function createReviewerRouteGuard(
 /** Includes provider refusals that run before the reviewer verifier hook. */
 export function createReviewerAuthAudit(database: PrismaClient): MiddlewareHandler {
   return async (c, next) => {
+    if (['/api/review-account/delete', '/api/auth/reviewer/delete', '/api/review-account/delete-intent', '/api/auth/reviewer/delete-intent'].includes(c.req.path)) {
+      try { await next(); }
+      finally {
+        const failed = Boolean(c.error) || c.res.status >= 400;
+        if (!c.req.path.endsWith('delete-intent') || failed) logReviewer('reviewer_admin',
+          c.req.path.endsWith('delete-intent') ? 'delete_intent_failed' : failed ? 'delete_failed' : 'deleted', 'apple');
+      }
+      return;
+    }
     if (!['/api/auth/sign-in/reviewer', '/api/auth/sign-in/email-otp'].includes(c.req.path)) return next();
     let audited = c.req.path === '/api/auth/sign-in/reviewer';
     let store = 'unknown';

@@ -46,6 +46,8 @@
     if ($session.isPending || step === 'done') return;
     if (!$session.data) {
       goto(`/auth/login?redirect=${encodeURIComponent(DELETE_ACCOUNT_PATH)}`);
+    } else if ($session.data.user.email.trim().toLowerCase() === 'appreview@tinycloud.xyz') {
+      goto('/auth/review/delete');
     } else if (!started) {
       started = true;
       void load();
