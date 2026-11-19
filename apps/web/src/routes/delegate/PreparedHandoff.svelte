@@ -15,6 +15,7 @@
   import { apiBusyOrEndedMessage } from '$lib/api-busy-or-ended';
   import { expiryAtCapped, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
   import ApprovalExpiryControl from '$lib/components/signing/approval-expiry-control.svelte';
+  import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
 
   let { encoded, onClear }: { encoded: string; onClear: () => void } = $props();
   const session = authClient.useSession();
@@ -462,7 +463,7 @@
       <button onclick={cancelPending}>Cancel</button>
     {:else if busy && !handoff && !code}<p>Loading prepared sign-in…</p>
     {:else if handoff && phase === 'done'}
-      {#if delivered}<p role="status">CLI accepted your sign-in. You can close this window.</p>
+      {#if delivered}<p role="status">CLI accepted your sign-in. You can close this window.</p><CloseTabButton />
       {:else}
         <p>{callbackFailed ? 'Could not reach the CLI automatically. Paste this same response in your CLI.' : 'Paste this response in your CLI to complete sign-in.'}</p>
         <p>Only paste this code into a terminal you started yourself.</p>
