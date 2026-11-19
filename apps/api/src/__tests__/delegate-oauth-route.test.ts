@@ -1182,6 +1182,7 @@ describe('CoordinationOS OAuth signer route', () => {
       missing_scope: 403,
       user_not_found: 403,
       email_not_verified: 403,
+      terms_required: 403,
       key_not_found: 403,
       wrong_user: 403,
       external_key_denied: 403,

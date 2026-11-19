@@ -102,7 +102,7 @@ test.describe('Approve on the approval-request review page', () => {
   });
   for (const [name, delegate, message, image] of [
     ['ended', { status: 400, body: { code: 'handoff_expired', error: 'private ended detail' } }, ENDED, 'b.png'],
-    ['changed', { status: 400, body: { code: 'key-mismatch', error: 'private mismatch detail' } }, "This request changed after you opened it, so OpenKey didn't approve it. Return to the app or command and start again.", 'c.png'],
+    ['changed', { status: 400, body: { code: 'immutable-fields-changed', error: 'private mismatch detail' } }, "This request changed after you opened it, so OpenKey didn't approve it. Return to the app or command and start again.", 'c.png'],
   ] as const) {
     test(`${name} failures disable Approve but preserve Decline and Back`, async ({ page }) => {
       await page.setViewportSize({ width: 390, height: 844 });

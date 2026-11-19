@@ -2,22 +2,20 @@
   // How long the approval lasts, and whether it renews (TC-2272, TC-2933).
   // One line: a renewal checkbox where the requester can use a renewal lease,
   // otherwise "This permission expires in <window>". The window and the lease
-  // can be changed under a closed fold. It only reports the choices; the
-  // server writes the window into the signed message and signs the lease.
+  // are changed in approval-expiry-chooser.svelte: under a closed fold here, or
+  // where the screen sets `chooser` false and shows the chooser itself. It only
+  // reports the choices; the server writes the window into the signed message
+  // and signs the lease.
   import {
-    EXPIRY_PRESETS,
-    LEASE_PRESETS,
     LONG_EXPIRY_MS,
     LONG_EXPIRY_WARNING,
     MAX_LEASE_MS,
     SENSITIVE_RENEWAL_WINDOW_MS,
     defaultLeaseMs,
-    expiryLimitNote,
     formatDuration,
-    leaseLimitNote,
+    formatDurationWithEnd,
   } from "$lib/approval-expiry";
-  import { formatAccessEnd } from "$lib/access-end";
-  import DurationChoice from "$lib/components/signing/duration-choice.svelte";
+  import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
 
   interface Props {
@@ -40,11 +38,15 @@
     requestedBy?: string;
     /** The exact end of the window, shown inside the open fold after the choice; omitted where the screen shows it elsewhere. */
     endsAt?: string | null;
+    /** How many permission rows the line sits under: more than one reads in the plural. */
+    permissionCount?: number;
     /**
      * Set while a one-hour start is in effect and the owner has not picked a time (TC-3111): who asked, as the
      * screen names them ("This request" on a link). Null shows no note.
      */
     onceSite?: string | null;
+    /** Show the "How long it lasts" fold here. False where the screen shows ApprovalExpiryChooser elsewhere. */
+    chooser?: boolean;
   }
 
   let {
@@ -57,7 +59,9 @@
     sensitive = false,
     requestedBy = "",
     endsAt = null,
+    permissionCount = 1,
     onceSite = null,
+    chooser = true,
   }: Props = $props();
 
   let confirming = $state(false);
@@ -71,10 +75,6 @@
   // Spec D6 rule 4: a lease no longer than the window never renews, so the line says it expires.
   const renews = $derived(ticked && shownMs !== null && renewal!.leaseMs! > shownMs);
   const showWarning = $derived(shownMs !== null && shownMs > LONG_EXPIRY_MS);
-
-  function chooseWindow(ms: number) {
-    onChange(ms === requestedMs ? null : ms);
-  }
 
   function turnOn() {
     renewal!.onChange(proposedLeaseMs);
@@ -146,48 +146,26 @@
         />
         <span data-testid="approval-expiry-line">
           {#if renews}
-            This permission renews automatically for up to {formatDuration(renewal.leaseMs!)}
+            {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}
           {:else}
-            This permission expires in {formatDuration(shownMs)}
+            {permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDurationWithEnd(shownMs)}
           {/if}
         </span>
       </label>
     {:else}
-      <p class="expiry-line" data-testid="approval-expiry-line">This permission expires in {formatDuration(shownMs)}</p>
+      <p class="expiry-line" data-testid="approval-expiry-line">{permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDurationWithEnd(shownMs)}</p>
     {/if}
     {#if onceSite !== null && requestedMs !== null}
       <p class="expiry-once-note" data-testid="approval-expiry-once-note">
-        {onceSite} asked for {formatDuration(requestedMs)}. Access to secrets or encrypted data starts at {formatDuration(shownMs)}. You can choose longer under How long it lasts.
+        {onceSite} asked for {formatDuration(requestedMs)}. Access to secrets or encrypted data starts at {formatDuration(shownMs)}. You can choose longer in Advanced details.
       </p>
     {/if}
-    <details class="expiry-fold">
-      <summary>How long it lasts</summary>
-      <div class="expiry-panel">
-        <DurationChoice
-          id="approval-expiry"
-          legend="Expires after"
-          detail={endsAt ? formatAccessEnd(endsAt) : null}
-          presets={EXPIRY_PRESETS}
-          valueMs={shownMs}
-          {maxMs}
-          limitNote={expiryLimitNote}
-          {disabled}
-          onChoose={chooseWindow}
-        />
-        {#if renewal && renewal.leaseMs !== null}
-          <DurationChoice
-            id="approval-lease"
-            legend="Renews for up to"
-            presets={LEASE_PRESETS}
-            valueMs={renewal.leaseMs}
-            maxMs={leaseMaxMs}
-            limitNote={leaseLimitNote}
-            {disabled}
-            onChoose={(ms) => renewal!.onChange(ms)}
-          />
-        {/if}
-      </div>
-    </details>
+    {#if chooser}
+      <details class="expiry-fold">
+        <summary>How long it lasts</summary>
+        <ApprovalExpiryChooser {requestedMs} {chosenMs} {maxMs} {disabled} {onChange} {renewal} {endsAt} />
+      </details>
+    {/if}
     {#if showWarning}
       <p class="expiry-warning" role="status">{LONG_EXPIRY_WARNING}</p>
     {/if}
@@ -256,16 +234,6 @@
   /* The open fold keeps the closed fold's gap before whatever follows. */
   .expiry-fold[open] {
     margin-bottom: 8px;
-  }
-  .expiry-panel {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    margin-top: 6px;
-    padding: 10px 12px;
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
-    border-radius: 12px;
   }
   .renewal-confirm {
     display: flex;

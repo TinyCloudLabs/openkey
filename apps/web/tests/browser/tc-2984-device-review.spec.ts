@@ -65,6 +65,15 @@ for (const [max, suggested, expected] of [[604_800, undefined, 3_600], [604_800,
   });
 }
 
+test('the device summary shows the request without a self-started notice', async ({ page }) => {
+  await deviceApi(page, { reason: 'Publish notes from my laptop' });
+  await page.goto('/device?user_code=ABCD-EFGH');
+  await expect(page.locator('a[href^="/delegate?"]')).toBeVisible();
+  await expect(page.getByText('Publish notes from my laptop')).toBeVisible();
+  await expect(page.getByText(/started this on your own device/)).toHaveCount(0);
+  await expect(page.getByRole('note')).toHaveCount(0);
+});
+
 test('a transient lookup failure offers recovery without exposing the upstream detail', async ({ page }) => {
   const options = { lookupStatus: 503 };
   await deviceApi(page, options);

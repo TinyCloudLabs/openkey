@@ -90,6 +90,30 @@ export type WidgetMessageType =
   | "openkey:layout-applied";
 
 /**
+ * The app's renewal ask on a sign request (TC-2933). The SDK sends it only with `expiryChangeable: true`; the
+ * transport keeps it only in this exact shape, so the page can forward it as is.
+ */
+export interface WidgetRenewalAsk {
+  version: 1;
+  leaseLifetimeSeconds: number;
+  purpose?: "standing" | "task";
+}
+
+const MAX_RENEWAL_LEASE_SECONDS = 365 * 24 * 60 * 60;
+
+/** The request's renewal ask, or null when it is malformed or comes without `expiryChangeable: true`. */
+function readRenewalAsk(value: unknown, expiryChangeable: unknown): WidgetRenewalAsk | null {
+  if (expiryChangeable !== true || value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const ask = value as Record<string, unknown>;
+  const seconds = ask.leaseLifetimeSeconds;
+  if (Object.keys(ask).some((key) => key !== "version" && key !== "leaseLifetimeSeconds" && key !== "purpose")) return null;
+  if (ask.version !== 1 || typeof seconds !== "number" || !Number.isSafeInteger(seconds)) return null;
+  if (seconds < 1 || seconds > MAX_RENEWAL_LEASE_SECONDS) return null;
+  if (ask.purpose !== undefined && ask.purpose !== "standing" && ask.purpose !== "task") return null;
+  return { version: 1, leaseLifetimeSeconds: seconds, ...(ask.purpose === undefined ? {} : { purpose: ask.purpose }) };
+}
+
+/**
  * Well-formed sign request as delivered to the widget. The transport
  * forwards the entire message envelope (minus the type/requestId/
  * protocolVersion header) as `data` so the widget can extract
@@ -381,6 +405,16 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
           }
         }
       }
+    }
+    // The renewal ask (TC-2933): kept only in its exact shape, with `expiryChangeable: true`; anything else is
+    // dropped, as for the presentation envelope, and the widget behaves as if the app had not asked.
+    if (payload.renewal !== undefined) {
+      const renewal = readRenewalAsk(payload.renewal, payload.expiryChangeable);
+      if (!renewal) {
+        // eslint-disable-next-line no-console
+        console.warn("[widget-transport] dropping malformed renewal ask");
+      }
+      payload.renewal = renewal ?? undefined;
     }
     // Reported origin is optional. Widget flows use their configured
     // origin for the actual channel; `reportedOrigin` is a defence-in-
