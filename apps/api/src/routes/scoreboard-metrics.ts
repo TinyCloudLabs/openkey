@@ -223,7 +223,7 @@ scoreboardMetricsRouter.get('/protocol-users', async (c) => {
   }
   let count: number;
   try {
-    count = await countProtocolUsers(prisma as unknown as ScoreboardDatabase, owners, await resolveScoreboardExclusions(prisma));
+    count = await countProtocolUsers(prisma as unknown as ScoreboardDatabase, owners, await resolveScoreboardExclusions(prisma, process.env, { includeEmailPrefixes: true }));
   } catch (error) {
     logMetric('error', 'scoreboard_protocol_users_call', { status: 500 });
     throw error;
@@ -233,6 +233,6 @@ scoreboardMetricsRouter.get('/protocol-users', async (c) => {
 });
 
 scoreboardMetricsRouter.get('/app-users', async (c) => {
-  const counts = await countAppUsers(prisma as unknown as ScoreboardDatabase, await resolveScoreboardExclusions(prisma));
+  const counts = await countAppUsers(prisma as unknown as ScoreboardDatabase, await resolveScoreboardExclusions(prisma, process.env, { includeEmailPrefixes: true }));
   return c.json({ ...counts, exclusionCriteria: SCOREBOARD_EXCLUSION_CRITERIA });
 });
