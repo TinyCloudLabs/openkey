@@ -631,7 +631,7 @@
     <div class="mb-5">
       <h2 class="text-xl font-semibold text-surface-900">Connected TinyCloud apps</h2>
       <p class="text-sm text-surface-500 mt-1">
-        Block an app to stop new TinyCloud signatures and renewals. Disconnect to withdraw its consent and end its device grants.
+        Block an app to stop new TinyCloud signatures for it. Permissions you set to renew keep renewing until you stop them under Renewing permissions. Disconnect to withdraw its consent and end its device grants.
       </p>
     </div>
 
