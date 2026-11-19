@@ -43,7 +43,6 @@ const prisma = {
     findUnique: mock(async () => keyRecord),
   },
   user: { findUnique: mock(async () => ({ autoSignEnabled: true })) },
-  deviceAuthorization: { findUnique: mock(async () => null) },
   tinyCloudBootstrapState: {},
   appSignInDay: {
     upsert: mock(async () => null),
@@ -280,12 +279,15 @@ describe('session JWK adoption log line', () => {
         written.push(String(chunk));
         return true;
       }) as typeof process.stdout.write;
-      await post(path, {
-        keyId: keyRecord.id, siwe: widgetSiwe(), jwk: withPrivate ? sentJwk : publicMembers, host, requestOrigin: ORIGIN,
-        ...(device ? { deviceTransactionId: 'device-transaction-fixture' } : {}),
+      // The telemetry runs before required-field validation. Omit the key ID
+      // on device cases so the route exercises the guard without a device lookup.
+      const result = await post(path, {
+        siwe: widgetSiwe(), jwk: withPrivate ? sentJwk : publicMembers, host, requestOrigin: ORIGIN,
+        ...(device ? { deviceTransactionId: 'device-transaction-fixture' } : { keyId: keyRecord.id }),
       }).finally(() => {
         process.stdout.write = write;
       });
+      if (device) expect(result.status).toBe(400);
       const output = written.join('');
       const lines = output.split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
       expect(lines.filter((line) => line.event === 'delegate_session_jwk')).toEqual([{
