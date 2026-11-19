@@ -5,6 +5,8 @@ import { REVIEWER_MAX_SECONDS, captureReviewer, reviewerActive, reviewerForUser,
 
 const ROUTES = new Set([
   'POST /api/review-account/delete-intent', 'POST /api/review-account/delete',
+  // TC-3232: with a Terms release configured, a reviewer must be able to read and accept the Terms.
+  'GET /api/account/terms', 'POST /api/account/terms/accept',
   'GET /api/auth/get-session', 'POST /api/auth/sign-out',
   'POST /api/auth/sign-in/reviewer', 'POST /api/auth/sign-in/email-otp',
   'GET /api/auth/oauth2/authorize', 'GET /api/auth/oauth2/public-client',
