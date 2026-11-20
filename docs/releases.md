@@ -33,3 +33,10 @@ node scripts/release/backfill-github-releases.mjs             # create them
 `deploy-api.yml` is manual (`gh workflow run deploy-api.yml --ref main`); its `production` environment makes GitHub record a Deployment per run.
 
 Cloudflare Pages deploys `main` on merge but only reports a check run, not a Deployment. `record-pages-deployments.yml` reacts to each finished `Cloudflare Pages: <project>` check run on `main` and creates a Deployment named `pages-<project>` with the check run as its log link. It does not trigger or alter Pages builds. Only deploys after this workflow is merged are recorded.
+
+The Share sender smoke's web-deploy waiter requires a completed success from
+Cloudflare's app (`85455`), named exactly `Cloudflare Pages: openkey`, on the
+requested commit SHA. It fetches all attempts with `filter=all` and pagination;
+incomplete results fail closed. Cancelled or unfinished duplicates do not reject
+an existing success, but any other completed non-success attempt does, including
+older attempts. Without a success it keeps the existing 20-minute polling limit.
