@@ -167,7 +167,7 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     !verified.stepup_status_check ||
     !verified.stepup_grant_revoked_trigger ||
     !verified.stepup_guard_trigger ||
-    verified.stepup_delegation_columns !== 10 ||
+    verified.stepup_delegation_columns !== 11 ||
     !verified.stepup_delegation_cascade ||
     !verified.stepup_revoked_trigger
   ) {

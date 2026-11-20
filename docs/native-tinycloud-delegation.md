@@ -344,8 +344,10 @@ withdrawn at once (`DENIED`, signature cleared) and the delegation is revoked
 on the node. The response carries only `error` and `error_description`: no
 signature, delegation, CID or header. If the revoke fails, the request keeps
 `{revokePending, delegationCid, tinycloudHost, address, grantId, appId,
-expiresAt}` (an identifier, not authority), recorded for audit only: nothing
-retries it yet. The failure is logged (`native_consent_stale_session_revoke_failed`).
+expiresAt, siweDomain}` (an identifier, not authority). The revoke sweeper
+retries it (see [Revoking one app's step-up](#revoking-one-apps-step-up-tc-3569)).
+A node refusal is logged as `native_consent_stale_session_revoke_failed` on this
+path and `native_stepup_revoke_pending_refused` from the sweeper.
 
 Accepted residual risk: a node that keeps a delegation for the spaces it did
 activate after we deny the request holds a delegation that is user-approved,
@@ -356,13 +358,13 @@ Consent creates no grant and no token, writes no step-up row, and changes
 nothing in the user's consent or its generation. The step-up row is written
 only by the code exchange of an approved request.
 
-**The flag stays off until the step-up screen ships.** The consent page's
-sign-in screen refuses any preview whose `kind` is not `SIGNIN` (an error with no
-Allow), because it would otherwise describe a step-up as a sign-in without naming
-the framed app. `OPENKEY_NATIVE_STEPUP_ENABLED` must not be turned on in any
-environment before the step-up consent screen (PR 4) ships. A retry sweeper for
-`revokePending` records, consumed by consent withdrawal and app revoke, must also
-exist before the flag is turned on.
+**The flag stays off until the step-up screen is live.** The consent page chooses
+its screen from an explicit `kind`, with no default: `STEPUP` renders the
+step-up screen, `SIGNIN` (or no `kind`, from an API that predates request
+kinds) renders the sign-in screen, and any other value is an error with no Allow.
+Order of rollout: API with `kind` live, then the web with the step-up screen,
+then the flag. `OPENKEY_NATIVE_STEPUP_ENABLED` must not be turned on in any
+environment before both the step-up screen and the revoke sweeper are deployed.
 
 ### Step-up code exchange (TC-3569)
 
@@ -1301,11 +1303,39 @@ only when all of these hold; otherwise the entry is left until it expires:
   another key.
 
 Until the sweep reaches the node, a revoked step-up's delegations are still
-valid there, for at most their TTL. Three paths drop the rows without a revoke:
-deleting the account (its keys are deleted first, so nothing could sign), an
-admin deleting the OAuth client (its grants cascade, Home's own delegations
-included), and the reviewer-account cleanup (a reviewer's grant never carries a
-step-up). In each the delegations expire by themselves within their TTL.
+valid there, for at most their TTL. The sweep keeps going when entries cannot
+be revoked: an entry with no owner, or a request record that is not one, is
+dropped; one that is gated (host, exclusive mode, key) or that the node refuses
+stays and moves to the back of the queue (`tinycloud_native_stepup_delegation.lastAttemptAt`,
+and `updatedAt` on a request record), so a stuck entry never starves the rest.
+It logs a node refusal as `native_stepup_revoke_pending_refused`.
+
+An approved step-up request that is never redeemed has already put its delegation
+on the node. Whatever ends it (sign-out, an Apple revoke, a consent withdrawal,
+direct SQL) is caught by the sweep itself: it selects approved step-up requests
+that are `WITHDRAWN`, or `APPROVED` on a `REVOKED` grant, and in one conditional
+update drops the signature, sets `hosting` to `failed`, and leaves only the
+`revokePending` record (`DENIED`, or still `WITHDRAWN`). A request redeemed in
+the meantime no longer matches and is left alone.
+
+Ceiling narrowing is not a revoke: delegations already signed with wider
+entries stay live on the node until their TTL (an admin action, bounded by the
+TTL). An app removed from the ceiling entirely is a revoke (`ceiling_removed`).
+
+Three paths drop the rows without a revoke: deleting the account (its keys are
+deleted first, so nothing could sign), deleting an OAuth client (its grants
+cascade, Home's own delegations included; `DELETE /api/admin/oauth/clients/:clientId`
+and the organization-admin delete in `tenant-console.ts`), and the
+reviewer-account cleanup (a reviewer's grant never carries a step-up). In each
+the delegations expire by themselves within their TTL.
+
+Runbook: before deleting a client that has a `stepUps` ceiling, disable it and
+let the sweep drain (no `tinycloud_native_stepup_delegation` row with
+`revokeRequestedAt` set, no request with a `revokePending` record for that
+client), or wait out the longest TTL. The tenant-console route has no way to set a
+`stepUps` ceiling today (it does not write `tinycloudNativeDelegation`); if a
+tenant client ever gets one, the delete route must first refuse with `409` while
+unexpired delegation rows or `revokePending` records exist for it.
 
 ## TTL rules
 

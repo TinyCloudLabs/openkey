@@ -13,6 +13,7 @@ CREATE TABLE "tinycloud_native_stepup_delegation" (
   "siweDomain" TEXT NOT NULL,
   "expiresAt" TIMESTAMP(3) NOT NULL,
   "revokeRequestedAt" TIMESTAMP(3),
+  "lastAttemptAt" TIMESTAMP(3),
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT "tinycloud_native_stepup_delegation_grantId_appId_fkey" FOREIGN KEY ("grantId", "appId")
     REFERENCES "tinycloud_native_stepup"("grantId", "appId") ON DELETE CASCADE ON UPDATE CASCADE

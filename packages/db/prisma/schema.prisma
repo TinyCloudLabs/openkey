@@ -858,6 +858,7 @@ model TinyCloudNativeStepUpDelegation {
   siweDomain        String
   expiresAt         DateTime
   revokeRequestedAt DateTime?
+  lastAttemptAt     DateTime?
   createdAt         DateTime  @default(now())
 
   stepUp TinyCloudNativeStepUp @relation(fields: [grantId, appId], references: [grantId, appId], onDelete: Cascade)
