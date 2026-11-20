@@ -1738,11 +1738,12 @@ only One lists is something the app asks for that the server would refuse; one
 only OpenKey lists is access no app asked for.
 
 One's file is read at the commit pinned in `scripts/step-up-ceilings/one.pin.json`
-(`ref` is a 40-character sha, never a branch; the `api-tests` workflow reads it with
-`TINYCHAT_READ_TOKEN`). While `ref` is `null` the check prints that it did not
-run and passes; `--require-pin` makes that a failure. Do not turn
-`OPENKEY_NATIVE_STEPUP_ENABLED` on while the pin is `null`, and move the pin
-with any change to either side.
+(`ref` is a 40-character sha, never a branch). tinychat is a public repository, so
+the `api-tests` workflow reads the file from `raw.githubusercontent.com` with no
+token, and runs with `--require-pin`: a `null` pin fails it (without the flag the
+script prints that it did not run and passes). When One's branch is squash-merged,
+re-pin to the sha on its main: a squashed branch commit becomes unreachable. Move
+the pin with any change to either side.
 
 ## TinyCloud node responsibility
 

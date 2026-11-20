@@ -69,10 +69,9 @@ export function parsePin(raw: unknown): OnePin {
   return { repo: pin.repo, path: pin.path, ref: pin.ref ?? null };
 }
 
-async function fetchPinned(pin: OnePin & { ref: string }, token: string | undefined): Promise<unknown> {
-  const response = await fetch(`https://api.github.com/repos/${pin.repo}/contents/${pin.path}?ref=${pin.ref}`, {
-    headers: { accept: 'application/vnd.github.raw+json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
-  });
+// tinychat is a public repository, so the pinned commit is read without a token or any secret.
+async function fetchPinned(pin: OnePin & { ref: string }): Promise<unknown> {
+  const response = await fetch(`https://raw.githubusercontent.com/${pin.repo}/${pin.ref}/${pin.path}`);
   if (!response.ok) throw new Error(`could not read ${pin.repo}@${pin.ref}:${pin.path} (${response.status})`);
   return response.json();
 }
@@ -97,7 +96,7 @@ async function main(argv: string[]): Promise<number> {
       console.log(message);
       return 0;
     }
-    one = await fetchPinned({ ...pin, ref: pin.ref }, process.env.TINYCHAT_READ_TOKEN ?? process.env.GH_TOKEN);
+    one = await fetchPinned({ ...pin, ref: pin.ref });
   }
   const differences = describeParity(compareCeilings(openkey, one));
   if (differences.length) { console.error(['Step-up ceilings differ:', ...differences].join('\n')); return 1; }
