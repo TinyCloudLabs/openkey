@@ -18,6 +18,7 @@ import { keccak256 } from 'viem';
 import { seal, unseal } from '../src/index';
 import { loadLegacyRoot, legacyRootPinsFromEnv, LEGACY_ROOT_ENV, LegacyRootError, type KmsAppKeyResponse, type LegacyKmsTransport } from '../src/legacy-root';
 import { certExtensionValue, createRaTlsKmsTransport, issueRaTlsClientCredentials } from '../src/legacy-root-kms';
+import { createSidecarTransport } from '../src/legacy-root-sidecar';
 
 // dstack sdk/simulator/appkeys.json app key and the KAT's recorded answers
 // (dstack-key-derivation.kat.test.ts): the epoch-0 derivation must reproduce them.
@@ -81,13 +82,13 @@ describe('loadLegacyRoot', () => {
     const canary = await oldSealed(KAT[0]!.path, 'old secret');
     const root = await loadLegacyRoot({ config, transport: transportReturning(() => answer()), canaries: [canary] });
     for (const vector of KAT) {
-      expect(Buffer.from(root.legacyKey(vector.path)).toString('hex')).toBe(vector.sealingKey);
+      expect(Buffer.from(await root.legacyKey(vector.path)).toString('hex')).toBe(vector.sealingKey);
     }
     // Reads a second record, sealed under a different path, that was not the canary.
     const other = await oldSealed(KAT[1]!.path, 'another secret');
-    expect(await unseal(other.sealed, root.legacyKey(other.path))).toBe('another secret');
+    expect(await unseal(other.sealed, await root.legacyKey(other.path))).toBe('another secret');
     root.destroy();
-    expect(() => root.legacyKey(KAT[0]!.path)).toThrow(LegacyRootError);
+    await expect(root.legacyKey(KAT[0]!.path)).rejects.toBeInstanceOf(LegacyRootError);
   });
 
   test('wrong epoch in the answer: bail', async () => {
@@ -185,13 +186,19 @@ describe('pins', () => {
     [LEGACY_ROOT_ENV.appId]: APP_ID,
   };
 
-  test('are read from the environment: all five, epoch 0, well-formed', () => {
+  const sidecarEnv = {
+    [LEGACY_ROOT_ENV.sidecarSocket]: '/run/key-recovery/sock',
+    [LEGACY_ROOT_ENV.rootEpoch]: '0',
+    [LEGACY_ROOT_ENV.kmsRootPubkey]: ROOT_PUB_HEX,
+    [LEGACY_ROOT_ENV.appId]: APP_ID,
+  };
+
+  test('direct KMS: all five, epoch 0, well-formed', () => {
     expect(legacyRootPinsFromEnv(env)).toEqual({
       config: { rootEpoch: 0, appId: APP_ID, kmsRootPubkey: ROOT_PUB_HEX },
-      kmsUrl: 'https://kms.example:12001',
-      kmsCaCert: 'AAAA',
+      transport: { kind: 'kms', kmsUrl: 'https://kms.example:12001', kmsCaCert: 'AAAA' },
     });
-    for (const name of Object.values(LEGACY_ROOT_ENV)) {
+    for (const name of Object.values(LEGACY_ROOT_ENV).filter((n) => n !== LEGACY_ROOT_ENV.sidecarSocket)) {
       expect(() => legacyRootPinsFromEnv({ ...env, [name]: undefined })).toThrow(LegacyRootError);
       expect(() => legacyRootPinsFromEnv({ ...env, [name]: '  ' })).toThrow(LegacyRootError);
     }
@@ -203,6 +210,36 @@ describe('pins', () => {
     ]) {
       expect(() => legacyRootPinsFromEnv({ ...env, ...bad })).toThrow(LegacyRootError);
     }
+  });
+
+  test('sidecar: socket, epoch 0, root pubkey, app id', () => {
+    expect(legacyRootPinsFromEnv(sidecarEnv)).toEqual({
+      config: { rootEpoch: 0, appId: APP_ID, kmsRootPubkey: ROOT_PUB_HEX },
+      transport: { kind: 'sidecar', socketPath: '/run/key-recovery/sock' },
+    });
+    for (const name of [LEGACY_ROOT_ENV.rootEpoch, LEGACY_ROOT_ENV.kmsRootPubkey, LEGACY_ROOT_ENV.appId]) {
+      expect(() => legacyRootPinsFromEnv({ ...sidecarEnv, [name]: undefined })).toThrow(LegacyRootError);
+    }
+    expect(() => legacyRootPinsFromEnv({ ...sidecarEnv, [LEGACY_ROOT_ENV.sidecarSocket]: 'relative/sock' })).toThrow(
+      LegacyRootError,
+    );
+  });
+
+  test('exactly one transport: both, neither, or half of the direct pair refuses', () => {
+    const refusing = (e: Record<string, string | undefined>) => {
+      expect(() => legacyRootPinsFromEnv(e)).toThrow(LegacyRootError);
+      try {
+        legacyRootPinsFromEnv(e);
+      } catch (error) {
+        expect((error as LegacyRootError).code).toBe('config_invalid');
+      }
+    };
+    refusing({ ...env, [LEGACY_ROOT_ENV.sidecarSocket]: '/run/key-recovery/sock' }); // both
+    refusing({ ...sidecarEnv, [LEGACY_ROOT_ENV.kmsUrl]: 'https://kms.example:12001' }); // sidecar + half of direct
+    const { [LEGACY_ROOT_ENV.sidecarSocket]: _socket, ...neither } = sidecarEnv;
+    refusing(neither); // neither
+    const { [LEGACY_ROOT_ENV.kmsCaCert]: _ca, ...halfDirect } = env;
+    refusing(halfDirect); // URL without CA
   });
 });
 
@@ -401,14 +438,14 @@ describe('createRaTlsKmsTransport against a fake agent and a fake KMS', () => {
     reset();
     const canary = await oldSealed(KAT[0]!.path, 'old secret');
     const root = await loadLegacyRoot({ config, transport: transport(), canaries: [canary] });
-    expect(Buffer.from(root.legacyKey(KAT[1]!.path)).toString('hex')).toBe(KAT[1]!.sealingKey);
+    expect(Buffer.from(await root.legacyKey(KAT[1]!.path)).toString('hex')).toBe(KAT[1]!.sealingKey);
 
     // Step 3 is without a client certificate; step 7 is with one that chains to the temp CA.
     const tempCaCall = kmsSeen.find((seen) => seen.path === '/prpc/GetTempCaCert?json')!;
     expect(tempCaCall.authorized).toBe(false);
     const appKeyCall = kmsSeen.find((seen) => seen.path === '/prpc/GetAppKey?json')!;
-    // Epoch 0 pinned explicitly, no app_epoch, the agent's vm_config forwarded, no ticket.
-    expect(appKeyCall.body).toEqual({ api_version: 1, vm_config: VM_CONFIG, root_epoch: 0, launch_ticket: '' });
+    // Epoch 0 and app epoch 0 sent explicitly (unset, the KMS would use the current app epoch), the agent's vm_config forwarded, no ticket.
+    expect(appKeyCall.body).toEqual({ api_version: 1, vm_config: VM_CONFIG, root_epoch: 0, app_epoch: 0, launch_ticket: '' });
     expect(appKeyCall.authorized).toBe(true);
     // The agent was asked who it is before anything went to the KMS, then for one quote.
     expect(agentRequests.map((r) => r.path)).toEqual(['/Info', '/GetQuote']);
@@ -523,4 +560,182 @@ test('the recorded sealing keys equal sha256(HKDF-SHA256(RATLS, app key, path))'
     const okm = createHmac('sha256', prk).update(vector.path).update(Buffer.from([1])).digest();
     expect(createHash('sha256').update(okm).digest('hex')).toBe(vector.sealingKey);
   }
+});
+
+// ---- sidecar transport: a fake dstack-key-recovery on a unix socket --------
+
+/** What the sidecar answers for `path` when the app key is OLD_APP_KEY: the v0 GetKey(path) value and its chain. */
+function sidecarAnswer(path: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const prk = createHmac('sha256', 'RATLS').update(OLD_APP_KEY).digest();
+  const key = createHmac('sha256', prk).update(path).update(Buffer.from([1])).digest();
+  const publicKey = Buffer.from(secp256k1.getPublicKey(key, true));
+  const digest = keccak256(Buffer.from(`:${publicKey.toString('hex')}`, 'utf8'), 'bytes');
+  const sig = Buffer.from(secp256k1.sign(digest, OLD_APP_KEY, { prehash: false, format: 'recovered' }));
+  const link0 = Buffer.concat([sig.subarray(1), sig.subarray(0, 1)]); // r || s || v
+  return {
+    api: 'v0',
+    key: key.toString('hex'),
+    public_key: publicKey.toString('hex'),
+    signature_chain: [link0.toString('hex'), Buffer.from(issue(OLD_APP_KEY)).toString('hex')],
+    root_epoch: 0,
+    app_epoch: 0,
+    ...overrides,
+  };
+}
+
+function chainWith(path: string, index: 0 | 1, link: Uint8Array): Record<string, unknown> {
+  const chain = [...(sidecarAnswer(path)['signature_chain'] as string[])];
+  chain[index] = Buffer.from(link).toString('hex');
+  return { signature_chain: chain };
+}
+
+describe('sidecar transport against a fake dstack-key-recovery', () => {
+  let dir: string;
+  let socketPath: string;
+  let server: HttpServer;
+  let seen: string[];
+  let respond: (path: string) => { status: number; body: unknown };
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'openkey-k1-sidecar-'));
+    socketPath = join(dir, 'key-recovery.sock');
+    seen = [];
+    respond = (path) => ({ status: 200, body: sidecarAnswer(path) });
+    server = createHttpServer((req, res) => {
+      seen.push(`${req.method} ${req.url}`);
+      const path = new URL(req.url ?? '', 'http://sidecar').searchParams.get('path') ?? '';
+      const { status, body } = respond(path);
+      const text = typeof body === 'string' ? body : JSON.stringify(body);
+      res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(text) }).end(text);
+    });
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const sidecar = () => createSidecarTransport({ socketPath });
+  const reply = (overrides: Record<string, unknown> | ((path: string) => Record<string, unknown>)) => {
+    seen.length = 0;
+    respond = (path) => ({ status: 200, body: sidecarAnswer(path, typeof overrides === 'function' ? overrides(path) : overrides) });
+  };
+
+  test('happy path: per-path keys reproduce the recorded sealing keys; an old-sealed fixture unseals', async () => {
+    reply({});
+    const canary = await oldSealed(KAT[0]!.path, 'old secret');
+    const root = await loadLegacyRoot({ config, sidecar: sidecar(), canaries: [canary] });
+    // One GET per path, both epochs explicit, purpose absent, the path url-encoded.
+    expect(seen).toEqual([
+      `GET /v0/key?path=${encodeURIComponent(KAT[0]!.path)}&root_epoch=0&app_epoch=0`,
+    ]);
+    for (const vector of KAT) {
+      expect(Buffer.from(await root.legacyKey(vector.path)).toString('hex')).toBe(vector.sealingKey);
+    }
+    const other = await oldSealed(KAT[1]!.path, 'another secret');
+    expect(await unseal(other.sealed, await root.legacyKey(other.path))).toBe('another secret');
+    root.destroy();
+    await expect(root.legacyKey(KAT[0]!.path)).rejects.toBeInstanceOf(LegacyRootError);
+  });
+
+  test('a wrong or missing epoch, or another API: bail', async () => {
+    const canary = await oldSealed(KAT[0]!.path, 'x');
+    const cases: [Record<string, unknown>, string][] = [
+      [{ root_epoch: 1 }, 'epoch_mismatch'],
+      [{ app_epoch: 1 }, 'epoch_mismatch'],
+      [{ root_epoch: undefined }, 'epoch_mismatch'], // absent, not 0
+      [{ app_epoch: undefined }, 'epoch_mismatch'],
+      [{ api: 'v1' }, 'response_invalid'],
+      [{ api: undefined }, 'response_invalid'],
+    ];
+    for (const [overrides, code] of cases) {
+      reply(overrides);
+      await expect(loadLegacyRoot({ config, sidecar: sidecar(), canaries: [canary] })).rejects.toMatchObject({ code });
+    }
+  });
+
+  test('a bad key, public key or chain: bail', async () => {
+    const canary = await oldSealed(KAT[0]!.path, 'x');
+    const path = KAT[0]!.path;
+    const good = sidecarAnswer(path);
+    const links = good['signature_chain'] as string[];
+    const highS = issue(OLD_APP_KEY);
+    const n = secp256k1.Point.Fn.ORDER;
+    const s = BigInt(`0x${Buffer.from(highS.subarray(32, 64)).toString('hex')}`);
+    highS.set(Buffer.from((n - s).toString(16).padStart(64, '0'), 'hex'), 32);
+    const badV = Buffer.from(links[0]!, 'hex');
+    badV[64] = 2;
+    const cases: [Record<string, unknown>, string][] = [
+      [{ key: (good['key'] as string).slice(2) }, 'response_invalid'], // 31 bytes
+      [{ public_key: Buffer.from(secp256k1.getPublicKey(OTHER_SECRET, true)).toString('hex') }, 'response_invalid'],
+      [{ signature_chain: [links[0]] }, 'response_invalid'],
+      [{ signature_chain: [links[0], links[1], links[1]] }, 'response_invalid'],
+      [{ signature_chain: [links[0], links[1]!.slice(2)] }, 'response_invalid'], // 64-byte link
+      [{ signature_chain: [badV.toString('hex'), links[1]] }, 'response_invalid'], // recovery id 2
+      // Link 0 signed by another key recovers another app key, which the root never issued.
+      [
+        (() => {
+          const digest = keccak256(Buffer.from(`:${good['public_key'] as string}`, 'utf8'), 'bytes');
+          const sig = Buffer.from(secp256k1.sign(digest, OTHER_SECRET, { prehash: false, format: 'recovered' }));
+          return chainWith(path, 0, Buffer.concat([sig.subarray(1), sig.subarray(0, 1)]));
+        })(),
+        'signature_invalid',
+      ],
+      [chainWith(path, 1, issue(OLD_APP_KEY, OTHER_SECRET)), 'signature_invalid'], // not the pinned root
+      [chainWith(path, 1, issue(OLD_APP_KEY, ROOT_SECRET, '22'.repeat(20))), 'signature_invalid'], // another app id
+      [chainWith(path, 1, highS), 'signature_invalid'],
+    ];
+    for (const [overrides, code] of cases) {
+      reply(overrides);
+      await expect(loadLegacyRoot({ config, sidecar: sidecar(), canaries: [canary] })).rejects.toMatchObject({ code });
+    }
+  });
+
+  test('a refusal, a non-hex answer or an unreachable socket: bail with a closed code', async () => {
+    const canary = await oldSealed(KAT[0]!.path, 'x');
+    seen.length = 0;
+    respond = () => ({ status: 500, body: { error: 'epoch 0 not available; secret=hunter2' } });
+    const refused = await loadLegacyRoot({ config, sidecar: sidecar(), canaries: [canary] }).catch((e: unknown) => e);
+    expect((refused as LegacyRootError).code).toBe('kms_refused');
+    expect((refused as LegacyRootError).message).not.toContain('hunter2');
+    reply({ key: 'not hex' });
+    await expect(loadLegacyRoot({ config, sidecar: sidecar(), canaries: [canary] })).rejects.toMatchObject({
+      code: 'kms_refused',
+    });
+    const gone = createSidecarTransport({ socketPath: join(dir, 'nobody-home.sock') });
+    await expect(loadLegacyRoot({ config, sidecar: gone, canaries: [canary] })).rejects.toMatchObject({
+      code: 'kms_refused',
+    });
+  });
+
+  test('a correctly signed key for another path does not open the canary: bail', async () => {
+    // The chain proves the key belongs to this app, not to this path; only the canary proves the path.
+    respond = () => ({ status: 200, body: sidecarAnswer(KAT[1]!.path) });
+    const canary = await oldSealed(KAT[0]!.path, 'x');
+    await expect(loadLegacyRoot({ config, sidecar: sidecar(), canaries: [canary] })).rejects.toMatchObject({
+      code: 'canary_failed',
+    });
+  });
+
+  test('exactly one transport: both or neither refuses before anything is called', async () => {
+    reply({});
+    const canary = await oldSealed(KAT[0]!.path, 'x');
+    const kms = transportReturning(() => answer());
+    await expect(loadLegacyRoot({ config, transport: kms, sidecar: sidecar(), canaries: [canary] })).rejects.toMatchObject({
+      code: 'config_invalid',
+    });
+    await expect(loadLegacyRoot({ config, canaries: [canary] })).rejects.toMatchObject({ code: 'config_invalid' });
+    expect(kms.calls).toBe(0);
+    expect(seen).toEqual([]);
+  });
+
+  test('the shared vectors for the derived key: public key and the link-0 digest', () => {
+    const getKey = Buffer.from('bbeb1e02123fe7cfab8471656ab89eff4d0b517fabdd457aa624942d1d5e0b02', 'hex');
+    const publicKey = Buffer.from(secp256k1.getPublicKey(getKey, true)).toString('hex');
+    expect(publicKey).toBe('0324658ea9452d044b7e5a70c79b352bb73968365b45bed193df98f6dde67a65e3');
+    expect(keccak256(Buffer.from(`:${publicKey}`, 'utf8'), 'hex')).toBe(
+      '0xaafcab4c272e0db55aac89ee9d441edb18b2a0a3742794205dcd013d08d25c98',
+    );
+  });
 });

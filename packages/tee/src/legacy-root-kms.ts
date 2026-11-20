@@ -12,7 +12,7 @@
 //   4-6. a throwaway P-256 key, a quote over sha512("ratls-cert:" || SPKI), whose
 //      REPORTDATA is checked, and a client certificate signed by the temp CA
 //      carrying quote and event log in dstack's legacy RA-TLS extensions;
-//   7. `GetAppKey {api_version: 1, vm_config, root_epoch, launch_ticket: ""}`
+//   7. `GetAppKey {api_version: 1, vm_config, root_epoch, app_epoch: 0, launch_ticket: ""}`
 //      presenting [client cert, temp CA cert]; any non-2xx stops, no retry.
 // The KMS answer is not trusted for what it says: loadLegacyRoot checks its epoch
 // and its signature under a pinned root key. Nothing here is a fallback.
@@ -375,10 +375,10 @@ export function createRaTlsKmsTransport(options: RaTlsKmsTransportOptions): Lega
         tempCaKeyPem: tempCaKey,
       });
 
-      // 7. GetAppKey for root epoch `rootEpoch`; app_epoch stays unset.
+      // 7. GetAppKey for root epoch `rootEpoch`, app epoch 0 sent explicitly: unset, the KMS would use the current one.
       const answer = await kmsPost(
         `${base}/GetAppKey?json`,
-        { api_version: 1, vm_config: creds.vmConfig, root_epoch: rootEpoch, launch_ticket: '' },
+        { api_version: 1, vm_config: creds.vmConfig, root_epoch: rootEpoch, app_epoch: 0, launch_ticket: '' },
         caPem,
         { certChainPem: `${creds.certPem}${tempCaCert}`, keyPem: creds.keyPem },
         timeoutMs,

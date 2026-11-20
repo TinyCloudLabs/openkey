@@ -253,9 +253,14 @@ export type {
   LegacyRootConfig,
   LegacyRootErrorCode,
   LegacyRootPins,
+  LegacyTransportPins,
   LegacyCanary,
   LegacyKmsTransport,
+  LegacySidecarTransport,
   KmsAppKeyResponse,
+  SidecarKeyResponse,
 } from './legacy-root';
 export { createRaTlsKmsTransport } from './legacy-root-kms';
 export type { RaTlsKmsTransportOptions } from './legacy-root-kms';
+export { createSidecarTransport } from './legacy-root-sidecar';
+export type { SidecarTransportOptions } from './legacy-root-sidecar';
