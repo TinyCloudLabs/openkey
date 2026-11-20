@@ -174,4 +174,82 @@ describe('tinycloud_native_stepup', () => {
     await db.exec(`DELETE FROM "tinycloud_native_grant" WHERE "id" = 'g-e'`);
     expect(await statuses('g-e')).toEqual([]);
   });
+
+  describe('request kind', () => {
+    const insertRequest = (id: string, client: string, kind: string | null, grantId: string | null, appId: string | null) => db.query(
+      `INSERT INTO "tinycloud_native_request" (
+         "id", "clientId", "redirectUri", "state", "codeChallenge", "scopes", "sessionDid", "sessionJwk", "sessionJkt",
+         "requestedPermissions", "ttlSeconds", "requestUriExpiresAt", "expiresAt", "updatedAt", "kind", "grantId", "appId"
+       ) VALUES ($1, $2, 'xyz.tinycloud.exo://openkey/callback', 'state', 'challenge', ARRAY['openid'], 'did:key:z6Mk', '{}'::JSONB, 'jkt',
+         '[]'::JSONB, 3600, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, COALESCE($3, 'SIGNIN'), $4, $5)`,
+      [id, client, kind, grantId, appId],
+    );
+    const kinds = async (grantId: string) => (await db.query<{ id: string; kind: string }>(
+      `SELECT "id", "kind" FROM "tinycloud_native_request" WHERE "grantId" = $1 ORDER BY "id"`, [grantId])).rows;
+
+    test('a sign-in request has no grant or app; a step-up request has both and a real grant', async () => {
+      await seedGrant('k');
+      await insertRequest('r-signin', 'client-k', null, null, null);
+      await insertRequest('r-stepup', 'client-k', 'STEPUP', 'g-k', 'xyz.tinycloud.explorer');
+      expect(await kinds('g-k')).toEqual([{ id: 'r-stepup', kind: 'STEPUP' }]);
+
+      await expect(insertRequest('r-1', 'client-k', 'SIGNIN', 'g-k', null)).rejects.toThrow();
+      await expect(insertRequest('r-2', 'client-k', 'SIGNIN', null, 'xyz.tinycloud.explorer')).rejects.toThrow();
+      await expect(insertRequest('r-3', 'client-k', 'STEPUP', null, 'xyz.tinycloud.explorer')).rejects.toThrow();
+      await expect(insertRequest('r-4', 'client-k', 'STEPUP', 'g-k', null)).rejects.toThrow();
+      await expect(insertRequest('r-5', 'client-k', 'OTHER', null, null)).rejects.toThrow();
+      await expect(insertRequest('r-6', 'client-k', 'STEPUP', 'g-missing', 'xyz.tinycloud.explorer')).rejects.toThrow();
+    });
+
+    test('deleting the grant deletes its step-up requests and keeps the sign-in request', async () => {
+      await seedGrant('m');
+      await insertRequest('r-m-signin', 'client-m', null, null, null);
+      await insertRequest('r-m-stepup', 'client-m', 'STEPUP', 'g-m', 'xyz.tinycloud.account');
+      await db.exec(`DELETE FROM "tinycloud_native_grant" WHERE "id" = 'g-m'`);
+      const left = await db.query<{ id: string }>(`SELECT "id" FROM "tinycloud_native_request" WHERE "id" LIKE 'r-m-%' ORDER BY "id"`);
+      expect(left.rows).toEqual([{ id: 'r-m-signin' }]);
+    });
+
+    test('down.sql removes the columns and the step-up requests and keeps sign-in requests', async () => {
+      const scratch = new PGlite();
+      try {
+        const migrations = (await readdir(join(root, 'packages/db/prisma/migrations'), { withFileTypes: true }))
+          .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+        for (const migration of migrations) {
+          await scratch.exec(await readFile(join(root, 'packages/db/prisma/migrations', migration, 'migration.sql'), 'utf8'));
+        }
+        await scratch.exec(`
+          INSERT INTO "user" ("id", "email", "emailVerified", "name", "updatedAt") VALUES ('u', 'u@example.test', true, 'Owner', CURRENT_TIMESTAMP);
+          INSERT INTO "oauth_client" (
+            "id", "clientId", "name", "redirectUris", "scopes", "disabled", "skipConsent", "enableEndSession",
+            "tokenEndpointAuthMethod", "grantTypes", "responseTypes", "type", "public", "contacts", "updatedAt"
+          ) VALUES ('c', 'client', 'Home', ARRAY['x://y'], ARRAY['openid'], false, false, false,
+            'none', ARRAY['authorization_code'], ARRAY['code'], 'native', true, ARRAY[]::TEXT[], CURRENT_TIMESTAMP);
+          INSERT INTO "tinycloud_native_grant" (
+            "id", "userId", "clientId", "consentId", "consentGeneration", "keyId", "address", "sessionDid", "sessionJwk",
+            "sessionJkt", "spaceId", "approvedPermissions", "ttlSeconds", "tinycloudHost", "absoluteExpiresAt"
+          ) VALUES ('g', 'u', 'client', 'consent', 0, 'key', '0x0', 'did:key:z6Mk', '{}'::JSONB,
+            'jkt', 'space', '[]'::JSONB, 3600, 'https://tee.node.tinycloud.xyz', CURRENT_TIMESTAMP + interval '1 day');
+          INSERT INTO "tinycloud_native_request" (
+            "id", "clientId", "redirectUri", "state", "codeChallenge", "scopes", "sessionDid", "sessionJwk", "sessionJkt",
+            "requestedPermissions", "ttlSeconds", "requestUriExpiresAt", "expiresAt", "updatedAt", "kind", "grantId", "appId"
+          ) VALUES
+            ('r-signin', 'client', 'x://y', 's', 'c', ARRAY['openid'], 'did:key:z6Mk', '{}'::JSONB, 'jkt', '[]'::JSONB, 3600, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'SIGNIN', NULL, NULL),
+            ('r-stepup', 'client', 'x://y', 's', 'c', ARRAY['openid'], 'did:key:z6Mk', '{}'::JSONB, 'jkt', '[]'::JSONB, 3600, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'STEPUP', 'g', 'app');
+        `);
+        await scratch.exec(await readFile(join(root, 'packages/db/prisma/migrations/20261121_0002_native_request_kind/down.sql'), 'utf8'));
+        const rows = await scratch.query<{ id: string }>(`SELECT "id" FROM "tinycloud_native_request" ORDER BY "id"`);
+        expect(rows.rows).toEqual([{ id: 'r-signin' }]);
+        const columns = await scratch.query<{ n: number }>(
+          `SELECT COUNT(*)::int AS n FROM information_schema.columns WHERE table_name = 'tinycloud_native_request'`);
+        expect(columns.rows[0]!.n).toBe(30);
+        const left = await scratch.query<{ name: string }>(
+          `SELECT conname AS name FROM pg_constraint WHERE conname LIKE 'tinycloud_native_request\\_%' AND (conname LIKE '%kind%' OR conname LIKE '%grantId%')
+           UNION ALL SELECT indexname FROM pg_indexes WHERE indexname = 'tinycloud_native_request_grantId_idx'`);
+        expect(left.rows).toEqual([]);
+      } finally {
+        await scratch.close();
+      }
+    });
+  });
 });

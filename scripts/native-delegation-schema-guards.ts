@@ -31,6 +31,7 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     preparation_host_column: boolean;
     grant_columns: number;
     status_checks: number;
+    request_grant_cascade: boolean;
     grant_refresh_index: boolean;
     grant_client_cascade: boolean;
     withdrawal_function: boolean;
@@ -68,8 +69,11 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
         'tinycloud_native_request_status_check',
         'tinycloud_native_request_hosting_check',
         'tinycloud_native_request_siwe_nonce_check',
+        'tinycloud_native_request_kind_check',
         'tinycloud_native_grant_status_check'
       )) AS status_checks,
+      EXISTS (SELECT 1 FROM pg_constraint
+        WHERE conname = 'tinycloud_native_request_grantId_fkey' AND contype = 'f' AND confdeltype = 'c') AS request_grant_cascade,
       to_regclass('public."tinycloud_native_grant_refreshTokenHash_key"') IS NOT NULL AS grant_refresh_index,
       EXISTS (SELECT 1 FROM pg_constraint
         WHERE conname = 'tinycloud_native_grant_clientId_fkey' AND contype = 'f' AND confdeltype = 'c') AS grant_client_cascade,
@@ -127,12 +131,14 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     verified.generation_columns !== 3 ||
     !verified.generation_primary_key ||
     // 27 native columns plus `reviewerEpoch`, `reviewerSessionId` and `reviewerDeadline` from 20261111_0002_reviewer_apple.
-    verified.request_columns !== 30 ||
+    // ... and `kind`, `grantId` and `appId` from 20261121_0002_native_request_kind.
+    verified.request_columns !== 33 ||
     verified.preparation_columns !== 12 ||
     !verified.preparation_host_column ||
     // 24 native columns plus `reviewerEpoch` from 20261111_0001_reviewer_accounts.
     verified.grant_columns !== 25 ||
-    verified.status_checks !== 4 ||
+    verified.status_checks !== 5 ||
+    !verified.request_grant_cascade ||
     !verified.grant_refresh_index ||
     !verified.grant_client_cascade ||
     !verified.withdrawal_function ||

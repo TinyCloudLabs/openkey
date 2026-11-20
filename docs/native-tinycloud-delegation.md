@@ -242,6 +242,17 @@ contains `stepUps` as having an unknown field, and a malformed ceiling disables
 delegation for the client. Apply a ceiling with `stepUps` only once this
 version is deployed, and do not roll the API back past it while one is set.
 
+### Request kind
+
+`tinycloud_native_request` has a `kind`: `SIGNIN` (every request today; `grantId`
+and `appId` are null) or `STEPUP` (a request to add an app's step-up to an
+existing grant; `grantId` and `appId` are set). A check constraint enforces the
+pairing, `grantId` references the grant with `ON DELETE CASCADE`, and the schema
+guard checks the three columns, the constraint and the cascade. Nothing writes a
+`STEPUP` row until the step-up endpoint ships; the migration only adds the
+columns. A step-up request takes its session key from the grant, never from the
+caller.
+
 ## Permissions and the signed session SIWE
 
 Requests and responses list permissions as manifest entries with

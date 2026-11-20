@@ -736,13 +736,19 @@ model TinyCloudNativeRequest {
   expiresAt               DateTime
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
+  // TC-3569: SIGNIN (grantId and appId null) or STEPUP (both set); a check constraint enforces it.
+  kind                    String   @default("SIGNIN")
+  grantId                 String?
+  appId                   String?
 
   client OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  grant TinyCloudNativeGrant? @relation(fields: [grantId], references: [id], onDelete: Cascade)
   preparations TinyCloudNativePreparation[]
 
   @@index([clientId, status])
   @@index([userId, clientId, status])
   @@index([expiresAt])
+  @@index([grantId])
   @@map("tinycloud_native_request")
   reviewerEpoch Int?
   reviewerSessionId String?
@@ -805,6 +811,7 @@ model TinyCloudNativeGrant {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   client OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
   stepUps TinyCloudNativeStepUp[]
+  stepUpRequests TinyCloudNativeRequest[]
 
   @@index([userId, clientId, status])
   @@index([previousRefreshTokenHash])
