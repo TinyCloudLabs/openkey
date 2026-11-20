@@ -81,6 +81,7 @@ const EVENTS = {
   scoreboard_protocol_users_call: true, app_sign_in_record_failed: true, permission_entry_unknown_field: true,
   third_party_console: true, uncaught_exception: true, unhandled_rejection: true, config_invalid: true,
   account_origin_refused: true,
+  legacy_reseal_done: true, legacy_reseal_failed: true, legacy_reseal_progress: true, legacy_reseal_quarantined: true,
   sign_origin_refused: true,
   approval_passkey_verified: true, approval_passkey_refused: true,
   unlisted_event: true,
@@ -96,6 +97,10 @@ const ERROR_CODES: Record<string, true> = {
   signup_account_exists: true, quote_report_data_mismatch: true, quote_key_custody_mismatch: true,
   quote_format_invalid: true, TERMS_RELEASE: true,
   passkey_approval_required: true, passkey_approval_invalid: true, passkey_not_step_up_capable: true,
+  config_invalid: true, epoch_mismatch: true, response_invalid: true, signature_invalid: true, kms_refused: true,
+  canary_failed: true, reseal_config: true, reseal_canary_missing: true, reseal_canary_mismatch: true,
+  reseal_canary_not_pending: true, reseal_row_unreadable: true, reseal_row_mismatch: true,
+  reseal_old_unseal_failed: true, reseal_swap_failed: true, reseal_verify_failed: true, reseal_quarantine_limit: true,
 };
 const LEVELS: Record<string, true> = { debug: true, info: true, warn: true, error: true };
 const METHODS: Record<string, true> = {
@@ -139,6 +144,36 @@ function emit(level: LogLevel, event: EventName, fields: Record<string, string |
 export function log(level: LogLevel, event: EventName, errorCode?: string): void {
   const safeCode = typeof errorCode === 'string' && Object.hasOwn(ERROR_CODES, errorCode) ? errorCode : undefined;
   emit(level, event, { error_code: safeCode });
+}
+
+/** TC-3554: the one-time re-seal at boot. Counts only; never ids, addresses, paths or keys. */
+export function logLegacyReseal(counts: { total: number; migrated: number; alreadyCurrent: number; quarantined: number }): void {
+  emit('info', 'legacy_reseal_done', counts);
+}
+
+/** One line per row left untouched: table, opaque database id, reason. Bounded by the quarantine limit. */
+export function logLegacyResealQuarantined(row: { source: string; id: string; reason: string }): void {
+  const { source, id, reason } = row;
+  const ok = (source === 'ethereum_key' || source === 'nostr_key' || source === 'reviewer_cleanup')
+    && /^[A-Za-z0-9_-]{1,64}$/.test(id) && (reason === 'unreadable' || reason === 'unopenable' || reason === 'mismatch');
+  if (ok) emit('warn', 'legacy_reseal_quarantined', { source, row_id: id, reason });
+}
+
+/** Rows migrated so far (counts only), logged every batch so a long first boot is visible. */
+export function logLegacyResealProgress(progress: { done: number; pending: number; total: number }): void {
+  emit('info', 'legacy_reseal_progress', progress);
+}
+
+/** The failed row's table and database id (an opaque cuid), so an operator can find it. Never keys or paths. */
+export function logLegacyResealFailed(error: unknown): void {
+  const fields: Record<string, string | undefined> = {};
+  if (typeof error === 'object' && error !== null) {
+    const { code, source, rowId } = error as { code?: unknown; source?: unknown; rowId?: unknown };
+    if (typeof code === 'string' && Object.hasOwn(ERROR_CODES, code)) fields.error_code = code;
+    if (source === 'ethereum_key' || source === 'nostr_key' || source === 'reviewer_cleanup') fields.source = source;
+    if (typeof rowId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(rowId)) fields.row_id = rowId;
+  }
+  emit('error', 'legacy_reseal_failed', fields);
 }
 
 /** Reviewer operations are read by the API operations team. Fields are fixed: never ids, addresses or codes. */

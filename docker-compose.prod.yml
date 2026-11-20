@@ -57,15 +57,20 @@ services:
       - OPENKEY_RENEWAL_LEASES=enabled
       - OPENKEY_RENEWAL_NODE_DID=did:key:z6MkjHi79SMX4doJyo2w7jDTM6Fa7iX6EVZWXNbJ6RzBm3Wi
       - OPENKEY_RENEWAL_RENEWER_DID=did:key:z6MkgWpiYdQV8pAr3dtHLdQsoZR3wF5wsS7fpkzAuX6q1PZj
-      # TC-3554 K1 — DO NOT MERGE. Pins for the epoch-0 legacy-root read (packages/tee legacy-root),
-      # read only from here (literals, so the compose hash attests them), never from ${VAR}.
-      # The UNSET_ value waits on Phala (P2: which epoch holds the pre-move root, and the key itself,
-      # from the witness get-keys run); it is not hex, so legacyRootPinsFromEnv refuses it before any
-      # sidecar call. Replace it here with the real 33-byte compressed hex.
+      # TC-3554 — one-time re-seal at first boot, DO NOT MERGE until reviewed. Every value is a literal, so the
+      # compose hash attests it (never ${VAR}, which resolves from the sealed environment).
+      # The API re-seals every key sealed under the pre-move Phala root (epoch 0, read through the
+      # key-recovery sidecar) under the current root, and listens only after every row is current. Any
+      # failure ends the process. Remove OPENKEY_LEGACY_RESEAL in the next compose once it has run.
+      # KMS_ROOT_PUBKEY is the epoch-0 root, approved by Bobbie from the offline recovery and two
+      # pre-move records. CANARY_ADDRESS is an internal test account (MEAL) whose key was sealed before
+      # the move: its unsealed key must derive exactly this address, or the API does not start.
+      - OPENKEY_LEGACY_RESEAL=enabled
       - OPENKEY_LEGACY_SIDECAR_SOCKET=/run/key-recovery/kr.sock
       - OPENKEY_LEGACY_ROOT_EPOCH=0
-      - OPENKEY_LEGACY_KMS_ROOT_PUBKEY=UNSET_TC3554_P2_EPOCH0_KMS_ROOT_PUBKEY
+      - OPENKEY_LEGACY_KMS_ROOT_PUBKEY=0334c76e0c3f52ec64cbf9bbf5c910c272330166fd656c0a86bb330963e46910e1
       - OPENKEY_LEGACY_APP_ID=b7d6e87778f73904a8f5fd26e4d0f1d1310234be
+      - OPENKEY_LEGACY_CANARY_ADDRESS=0x92a13CF5e915b6a4c70EC7FF68277ad9670B922C
     restart: unless-stopped
     healthcheck:
       # Keep this aligned with the API's configurable listener. `$$` defers
@@ -74,7 +79,9 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s
+      # TC-3554: the first boot re-seals every pre-move key before the API listens, so /health
+      # is unreachable for as long as that takes. Failures inside start_period do not count.
+      start_period: 900s
 
   # TC-3554 — DO NOT MERGE. Phala's dstack-key-recovery (cosign-verified digest, same as the
   # node's) fetches the epoch-0 key from the KMS and serves it on a unix socket for openkey-api's

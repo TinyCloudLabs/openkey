@@ -167,10 +167,11 @@ jobs:
           # openkey-api CVM app_id (Phala workspace openkey-secondary) and prod5 gateway domain.
           RAW_APP_URL: https://b7d6e87778f73904a8f5fd26e4d0f1d1310234be-3001.dstack-pha-prod5.phala.network
         run: |
-          for i in $(seq 1 30); do
+          # TC-3554: the first boot after the root move re-seals every key before the API listens.
+          for i in $(seq 1 90); do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$INGRESS_URL/health" || true)
             [ "$code" = "200" ] && break
-            echo "Waiting for $INGRESS_URL/health (got $code), attempt $i/30"
+            echo "Waiting for $INGRESS_URL/health (got $code), attempt $i/90"
             sleep 10
           done
           if [ "$code" != "200" ]; then

@@ -6,7 +6,7 @@ import { reviewerCleanupNode } from './services/reviewer-cleanup-node';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
-import { apiErrorHandler, log, logConfigInvalid, logError, requestLogger, type ApiEnv } from './log';
+import { apiErrorHandler, log, logConfigInvalid, logError, logLegacyResealFailed, requestLogger, type ApiEnv } from './log';
 import {
   oauthProviderAuthServerMetadata,
   oauthProviderOpenIdConfigMetadata,
@@ -57,7 +57,8 @@ import { providerTokenOptions } from './services/native-delegation/provider-toke
 import { handlePar } from './services/native-delegation/par';
 import { createNativeDelegationConsentRouter } from './routes/native-delegation-consent';
 import { handleNativeRenewOrRevoke } from './services/native-delegation/renew-revoke';
-import { resolveTeeMode } from '@openkey/tee';
+import { createTeeClient, resolveTeeMode } from '@openkey/tee';
+import { resealLegacyAtBoot } from './services/legacy-reseal-boot';
 import {
   protocolAwareCors,
   withNativeDelegationMetadata,
@@ -447,6 +448,18 @@ const ALL_SCOPES = ['openid', 'email', 'keys', 'offline_access'];
 // Reviewer authority is settled before Bun can serve this module. A failure leaves every
 // reviewer refused and does not stop the API for ordinary users.
 log('info', 'api_starting');
+// TC-3554: one-time re-seal of keys sealed under the pre-move root. Off unless the compose enables it. Any
+// failure ends the process here, before Bun can serve this module: the API never listens on a half-migrated
+// database. Finished rows stay finished, so the restart policy resumes where this stopped. The process holds
+// two minutes before it exits, so a failure that will not go away retries about once per two minutes, not in
+// a tight loop against the KMS.
+try {
+  await resealLegacyAtBoot(authPrisma, createTeeClient());
+} catch (error) {
+  logLegacyResealFailed(error);
+  await new Promise((resolve) => setTimeout(resolve, 120_000));
+  throw error;
+}
 await initializeReviewersAtBoot(authPrisma);
 
 // Persisted cleanup runs outside account transactions and survives restarts.
