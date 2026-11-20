@@ -82,9 +82,9 @@ test.describe('approval names the requesting assistant', () => {
 
   test('an unregistered callback is refused and no assistant is named', async ({ page }) => {
     await mock(page);
-    await page.goto(link('https://mcp.tinycloud.xyz/gemini/connect/callback?state=x'));
+    await page.goto(link('https://mcp.tinycloud.xyz/unlisted/connect/callback?state=x'));
     await expect(page.getByRole('heading', { name: 'This link would send your approval to a site OpenKey doesn’t know' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
-    await expect(page.getByText(/Requested by (Claude|Grok|Muse|ChatGPT|TinyCloud MCP)/)).toHaveCount(0);
+    await expect(page.getByText(/Requested by (Claude|Grok|Muse|ChatGPT|Gemini|Perplexity|Mistral|Copilot|TinyCloud MCP)/)).toHaveCount(0);
   });
 });
