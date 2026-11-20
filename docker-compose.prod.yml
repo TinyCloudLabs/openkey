@@ -1,10 +1,13 @@
 services:
   api:
     image: ${DOCKER_IMAGE}
+    depends_on:
+      - key-recovery
     # TC-1012: no host port. The ingress reaches api over the compose network;
     # publishing it would expose the app via the Phala gateway, bypassing ingress.
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock
+      - key-recovery:/run/key-recovery
     environment:
       - NODE_ENV=production
       - DATABASE_URL=${DATABASE_URL}
@@ -54,6 +57,15 @@ services:
       - OPENKEY_RENEWAL_LEASES=enabled
       - OPENKEY_RENEWAL_NODE_DID=did:key:z6MkjHi79SMX4doJyo2w7jDTM6Fa7iX6EVZWXNbJ6RzBm3Wi
       - OPENKEY_RENEWAL_RENEWER_DID=did:key:z6MkgWpiYdQV8pAr3dtHLdQsoZR3wF5wsS7fpkzAuX6q1PZj
+      # TC-3554 K1 — DO NOT MERGE. Pins for the epoch-0 legacy-root read (packages/tee legacy-root),
+      # read only from here (literals, so the compose hash attests them), never from ${VAR}.
+      # The UNSET_ value waits on Phala (P2: which epoch holds the pre-move root, and the key itself,
+      # from the witness get-keys run); it is not hex, so legacyRootPinsFromEnv refuses it before any
+      # sidecar call. Replace it here with the real 33-byte compressed hex.
+      - OPENKEY_LEGACY_SIDECAR_SOCKET=/run/key-recovery/kr.sock
+      - OPENKEY_LEGACY_ROOT_EPOCH=0
+      - OPENKEY_LEGACY_KMS_ROOT_PUBKEY=UNSET_TC3554_P2_EPOCH0_KMS_ROOT_PUBKEY
+      - OPENKEY_LEGACY_APP_ID=b7d6e87778f73904a8f5fd26e4d0f1d1310234be
     restart: unless-stopped
     healthcheck:
       # Keep this aligned with the API's configurable listener. `$$` defers
@@ -63,6 +75,35 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
+
+  # TC-3554 — DO NOT MERGE. Phala's dstack-key-recovery (cosign-verified digest, same as the
+  # node's) fetches the epoch-0 key from the KMS and serves it on a unix socket for openkey-api's
+  # own verifier (packages/tee legacy-root). No ports and no TCP listener (--no-addr); the socket
+  # lives on a volume only this service and api mount. The api image runs as root, so the sidecar
+  # runs as root:root and its 0660 socket is reachable by api. From host-shared it sees only
+  # .appkeys.json and .sys-config.json, never the decrypted env. Its answers are not logged.
+  key-recovery:
+    image: ghcr.io/dstack-tee/dstack-key-recovery@sha256:26803eb7eb34f69f367d7ebc0b4abc31f35caad5e58213de77a91dddcd2d0b6b
+    restart: unless-stopped
+    user: "0:0"
+    command: ["serve", "--no-addr", "--socket", "/run/key-recovery/kr.sock"]
+    # The quote goes through the host's vsock QGS; Docker's default seccomp profile blocks AF_VSOCK.
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      DSTACK_CCEL_FILE: /ccel.bin
+    volumes:
+      - key-recovery:/run/key-recovery
+      - /dstack/.host-shared/.appkeys.json:/dstack/.host-shared/.appkeys.json:ro
+      - /dstack/.host-shared/.sys-config.json:/dstack/.host-shared/.sys-config.json:ro
+      - /run/log/dstack:/run/log/dstack:ro
+      - /sys/firmware/acpi/tables/data/CCEL:/ccel.bin:ro
+      - /etc/tdx-attest.conf:/etc/tdx-attest.conf:ro
+    devices:
+      - /dev/tdx_guest:/dev/tdx_guest
+      - /dev/vsock:/dev/vsock
+    logging:
+      driver: none
 
   dstack-ingress:
     image: dstacktee/dstack-ingress:20250924@sha256:40429d78060ef3066b5f93676bf3ba7c2e9ac47d4648440febfdda558aed4b32
@@ -91,3 +132,4 @@ services:
 
 volumes:
   cert-data:
+  key-recovery:
