@@ -16,7 +16,7 @@ import {
   unseal,
   type TeeClient,
 } from '@openkey/tee';
-import { logLegacyReseal } from '../log';
+import { logLegacyReseal, logLegacyResealProgress, logLegacyResealQuarantined } from '../log';
 import {
   LegacyResealError,
   resealLegacyRows,
@@ -26,6 +26,9 @@ import {
   type ResealSummary,
 } from './legacy-reseal';
 import { resolveSealingContext } from './key-sealing';
+
+/** One progress line per this many rows, so an unknown row count cannot flood the log. */
+const PROGRESS_EVERY = 25;
 
 export const LEGACY_RESEAL_ENV = {
   enable: 'OPENKEY_LEGACY_RESEAL',
@@ -160,7 +163,16 @@ export async function resealLegacyAtBoot(
     tee,
     openLegacy: legacyOpener(prisma, env, canaryAddress),
     canary: { source: 'ethereum_key', id: canaryRow.id },
+    onProgress: (progress) => {
+      if (progress.done % PROGRESS_EVERY === 0 || progress.done === progress.pending) logLegacyResealProgress(progress);
+    },
   });
-  logLegacyReseal(summary);
+  for (const row of summary.quarantined) logLegacyResealQuarantined(row);
+  logLegacyReseal({
+    total: summary.total,
+    migrated: summary.migrated,
+    alreadyCurrent: summary.alreadyCurrent,
+    quarantined: summary.quarantined.length,
+  });
   return summary;
 }

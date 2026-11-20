@@ -450,11 +450,14 @@ const ALL_SCOPES = ['openid', 'email', 'keys', 'offline_access'];
 log('info', 'api_starting');
 // TC-3554: one-time re-seal of keys sealed under the pre-move root. Off unless the compose enables it. Any
 // failure ends the process here, before Bun can serve this module: the API never listens on a half-migrated
-// database (restart policy retries; each attempt is a no-op for rows already current).
+// database. Finished rows stay finished, so the restart policy resumes where this stopped. The process holds
+// two minutes before it exits, so a failure that will not go away retries about once per two minutes, not in
+// a tight loop against the KMS.
 try {
   await resealLegacyAtBoot(authPrisma, createTeeClient());
 } catch (error) {
   logLegacyResealFailed(error);
+  await new Promise((resolve) => setTimeout(resolve, 120_000));
   throw error;
 }
 await initializeReviewersAtBoot(authPrisma);

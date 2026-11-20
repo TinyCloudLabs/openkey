@@ -110,7 +110,7 @@ describe('resealLegacyRows', () => {
       canary: { source: 'ethereum_key', id: 'e-canary' },
     });
 
-    expect(summary).toEqual({ total: 4, migrated: 4, alreadyCurrent: 0 });
+    expect(summary).toEqual({ total: 4, migrated: 4, alreadyCurrent: 0, quarantined: [] });
     expect(opened).toBe(1);
     expect(log[0]).toBe('open'); // the old root, canary proven, before any row is read with it or written
     expect(log.filter((l) => l.startsWith('swap')).at(-1)).toBe('swap ethereum_key:e-canary');
@@ -126,7 +126,7 @@ describe('resealLegacyRows', () => {
       openLegacy: async () => { throw new Error('old root must not be needed'); },
       canary: { source: 'ethereum_key', id: 'e-canary' },
     });
-    expect(again).toEqual({ total: 4, migrated: 0, alreadyCurrent: 4 });
+    expect(again).toEqual({ total: 4, migrated: 0, alreadyCurrent: 4, quarantined: [] });
   });
 
   test('a partly migrated database finishes: current rows are skipped, old rows move', async () => {
@@ -136,7 +136,19 @@ describe('resealLegacyRows', () => {
     const summary = await resealLegacyRows({
       stores: [store], tee: newTee, openLegacy: async () => legacyFor().legacy, canary: { source: 'ethereum_key', id: 'e-canary' },
     });
-    expect(summary).toEqual({ total: 2, migrated: 1, alreadyCurrent: 1 });
+    expect(summary).toEqual({ total: 2, migrated: 1, alreadyCurrent: 1, quarantined: [] });
+  });
+
+  test('reports counts after every swapped row, never row contents', async () => {
+    const canary = await ethereum('e-canary', CONTEXT_A, 'u1', oldRoot);
+    const a = await ethereum('e-1', CONTEXT_B, 'u2', oldRoot);
+    const b = await ethereum('e-2', CONTEXT_C, 'u3', newTee.deriveKey);
+    const seen: unknown[] = [];
+    await resealLegacyRows({
+      stores: [memoryStore([canary.row, a.row, b.row])], tee: newTee, openLegacy: async () => legacyFor().legacy,
+      canary: { source: 'ethereum_key', id: 'e-canary' }, onProgress: (p) => seen.push(p),
+    });
+    expect(seen).toEqual([{ done: 1, pending: 2, total: 3 }, { done: 2, pending: 2, total: 3 }]);
   });
 
   test('a failed canary (old root not proven) writes nothing', async () => {
@@ -152,47 +164,103 @@ describe('resealLegacyRows', () => {
     expect(log).toEqual([]);
   });
 
-  test('canary must be a pending row: missing, or already current while others are pending', async () => {
+  test('canary must exist while rows are pending', async () => {
     const pending = await ethereum('e-1', CONTEXT_B, 'u2', oldRoot);
-    const current = await ethereum('e-canary', CONTEXT_A, 'u1', newTee.deriveKey);
-    const open = async () => legacyFor().legacy;
-    await expect(resealLegacyRows({ stores: [memoryStore([pending.row])], tee: newTee, openLegacy: open, canary: { source: 'ethereum_key', id: 'e-canary' } }))
+    await expect(resealLegacyRows({ stores: [memoryStore([pending.row])], tee: newTee, openLegacy: async () => legacyFor().legacy, canary: { source: 'ethereum_key', id: 'e-canary' } }))
       .rejects.toMatchObject({ code: 'reseal_canary_missing' });
-    await expect(resealLegacyRows({ stores: [memoryStore([pending.row, current.row])], tee: newTee, openLegacy: open, canary: { source: 'ethereum_key', id: 'e-canary' } }))
-      .rejects.toMatchObject({ code: 'reseal_canary_not_pending' });
   });
 
-  test('an old-sealed row whose key is not the row\'s own address is refused and left as it was', async () => {
+  test('a row that opens under neither key, or is not its own, is quarantined: untouched, listed by id, the rest still migrates', async () => {
     const canary = await ethereum('e-canary', CONTEXT_A, 'u1', oldRoot);
-    const wrong = await ethereum('e-wrong', CONTEXT_B, 'u2', oldRoot);
-    // The row claims another address than the key it holds.
-    const lying: ResealRow = { ...wrong.row, matches: () => false };
-    const store = memoryStore([canary.row, lying]);
-    await expect(resealLegacyRows({
-      stores: [store], tee: newTee, openLegacy: async () => legacyFor().legacy, canary: { source: 'ethereum_key', id: 'e-canary' },
-    })).rejects.toMatchObject({ code: 'reseal_row_mismatch', rowId: 'e-wrong' });
-    expect((await store.rows()).find((r) => r.id === 'e-wrong')!.sealed).toBe(wrong.row.sealed);
+    const good = await ethereum('e-good', CONTEXT_B, 'u2', oldRoot);
+    const stray = await ethereum('e-stray', CONTEXT_C, 'u3', keyUnder('some-third-root'));
+    const wrong = await ethereum('e-wrong', CONTEXT_D, 'u4', oldRoot);
+    const lying: ResealRow = { ...wrong.row, matches: () => false }; // opens under the old key but is not its own address
+    const orphan = await ethereum('e-orphan', CONTEXT_A, null, oldRoot);
+    const unresolvable: ResealRow = { ...orphan.row, sealingContext: null, userId: null };
+    const filler = await Promise.all(Array.from({ length: 300 }, (_, i) => ethereum(`e-f${i}`, ctxOf(10 + (i % 200)), `u-f${i}`, newTee.deriveKey)));
+    const log: string[] = [];
+    const store = memoryStore([canary.row, good.row, stray.row, lying, unresolvable, ...filler.map((f) => f.row)], log);
+    const summary = await resealLegacyRows({
+      stores: [store], tee: newTee, openLegacy: async () => legacyFor(log).legacy, canary: { source: 'ethereum_key', id: 'e-canary' },
+    });
+    expect(summary.migrated).toBe(2); // canary + good
+    expect(summary.quarantined).toEqual([
+      { source: 'ethereum_key', id: 'e-orphan', reason: 'unreadable' },
+      { source: 'ethereum_key', id: 'e-stray', reason: 'unopenable' },
+      { source: 'ethereum_key', id: 'e-wrong', reason: 'mismatch' },
+    ]);
+    const after = await store.rows();
+    expect(after.find((r) => r.id === 'e-stray')!.sealed).toBe(stray.row.sealed);
+    expect(after.find((r) => r.id === 'e-wrong')!.sealed).toBe(wrong.row.sealed);
+    // Pre-verify: every old-key call happens before the first write.
+    const lastKey = log.lastIndexOf('legacyKey');
+    const firstSwap = log.findIndex((l) => l.startsWith('swap'));
+    expect(lastKey).toBeLessThan(firstSwap);
   });
 
-  test('a row sealed under neither root, or one that opens under the current key but is not its own: bail', async () => {
+  test('quarantine is capped at max(3, 0.5% of rows): more means the wrong key, nothing is written', async () => {
     const canary = await ethereum('e-canary', CONTEXT_A, 'u1', oldRoot);
-    const stray = await ethereum('e-stray', CONTEXT_B, 'u2', keyUnder('some-third-root'));
+    const strays = await Promise.all([1, 2, 3, 4].map((n) => ethereum(`e-s${n}`, ctxOf(20 + n), `u-s${n}`, keyUnder('third'))));
+    const good = await ethereum('e-good', CONTEXT_B, 'u2', oldRoot);
+    const log: string[] = [];
     await expect(resealLegacyRows({
-      stores: [memoryStore([canary.row, stray.row])], tee: newTee, openLegacy: async () => legacyFor().legacy, canary: { source: 'ethereum_key', id: 'e-canary' },
-    })).rejects.toMatchObject({ code: 'reseal_old_unseal_failed', rowId: 'e-stray' });
+      stores: [memoryStore([canary.row, good.row, ...strays.map((s) => s.row)], log)], tee: newTee,
+      openLegacy: async () => legacyFor(log).legacy, canary: { source: 'ethereum_key', id: 'e-canary' },
+    })).rejects.toMatchObject({ code: 'reseal_quarantine_limit' });
+    expect(log.filter((l) => l.startsWith('swap'))).toEqual([]);
+  });
 
+  test('the canary itself failing is never quarantined: it fails closed, with nothing written', async () => {
+    const canary = await ethereum('e-canary', CONTEXT_A, 'u1', keyUnder('some-third-root'));
+    const good = await ethereum('e-good', CONTEXT_B, 'u2', oldRoot);
+    const log: string[] = [];
+    await expect(resealLegacyRows({
+      stores: [memoryStore([canary.row, good.row], log)], tee: newTee, openLegacy: async () => legacyFor(log).legacy, canary: { source: 'ethereum_key', id: 'e-canary' },
+    })).rejects.toMatchObject({ code: 'reseal_old_unseal_failed', rowId: 'e-canary' });
+    expect(log.filter((l) => l.startsWith('swap'))).toEqual([]);
+
+    // Also when the canary opens under the CURRENT key but is not its own.
     const corrupt = await ethereum('e-corrupt', CONTEXT_B, 'u2', newTee.deriveKey);
     await expect(resealLegacyRows({
       stores: [memoryStore([{ ...corrupt.row, matches: () => false }])], tee: newTee, openLegacy: async () => legacyFor().legacy, canary: { source: 'ethereum_key', id: 'e-corrupt' },
-    })).rejects.toMatchObject({ code: 'reseal_row_mismatch' });
+    })).rejects.toMatchObject({ code: 'reseal_canary_not_pending' });
   });
 
-  test('a row with no resolvable sealing path (NULL context, no user) is refused', async () => {
-    const orphan = await ethereum('e-orphan', CONTEXT_D, null, oldRoot);
+  test('a re-run with a quarantined row left behind boots again without the old root, and does not loop', async () => {
+    const canary = await ethereum('e-canary', CONTEXT_A, 'u1', oldRoot);
+    const stray = await ethereum('e-stray', CONTEXT_B, 'u2', keyUnder('some-third-root'));
+    const filler = await Promise.all(Array.from({ length: 700 }, (_, i) => ethereum(`e-f${i}`, ctxOf(10 + (i % 200)), `u-f${i}`, newTee.deriveKey)));
+    const store = memoryStore([canary.row, stray.row, ...filler.map((f) => f.row)]);
+    const first = await resealLegacyRows({ stores: [store], tee: newTee, openLegacy: async () => legacyFor().legacy, canary: { source: 'ethereum_key', id: 'e-canary' } });
+    expect(first).toMatchObject({ migrated: 1, quarantined: [{ id: 'e-stray', reason: 'unopenable' }] });
+    const again = await resealLegacyRows({
+      stores: [store], tee: newTee,
+      openLegacy: async () => { throw new Error('old root must not be needed'); },
+      canary: { source: 'ethereum_key', id: 'e-canary' },
+    });
+    expect(again).toMatchObject({ migrated: 0, quarantined: [{ id: 'e-stray' }] });
+  });
+
+  test('a sidecar/KMS failure while verifying stops the run before any write', async () => {
+    const canary = await ethereum('e-canary', CONTEXT_A, 'u1', oldRoot);
+    const first = await ethereum('e-1', CONTEXT_B, 'u2', oldRoot);
+    const second = await ethereum('e-2', CONTEXT_C, 'u3', oldRoot);
+    const log: string[] = [];
+    const store = memoryStore([canary.row, first.row, second.row], log);
+    let calls = 0;
+    const flaky: ResealLegacy = {
+      async legacyKey(path) {
+        calls += 1;
+        if (calls === 2) throw new Error('kms refused');
+        return oldRoot(path);
+      },
+    };
     await expect(resealLegacyRows({
-      stores: [memoryStore([{ ...orphan.row, sealingContext: null, userId: null }])], tee: newTee,
-      openLegacy: async () => legacyFor().legacy, canary: { source: 'ethereum_key', id: 'e-orphan' },
-    })).rejects.toMatchObject({ code: 'reseal_row_unreadable' });
+      stores: [store], tee: newTee, openLegacy: async () => flaky, canary: { source: 'ethereum_key', id: 'e-canary' },
+    })).rejects.toThrow('kms refused');
+    expect(log).toEqual([]); // not skipped as a bad row, and nothing was written
+    expect(calls).toBe(2);
   });
 
   test('a swap that loses the compare-and-swap, or a store that claims success without writing, bails', async () => {

@@ -4,20 +4,25 @@
 // sealed before it only open under the epoch-0 root, which the key-recovery sidecar can read. This pass opens
 // each such row once with the epoch-0 key, seals it again under the current key, and checks the result.
 //
-// Fail closed: any row that cannot be classified, opened, checked or swapped stops the pass with a
-// LegacyResealError. The caller (apps/api boot) lets that end the process, so the API never listens on a
-// half-migrated database. Nothing here logs ids, addresses, paths or key material.
+// Fail closed: the canary failing, a lost swap, a failed verification, or too many quarantined rows stops the
+// pass with a LegacyResealError. The caller (apps/api boot) lets that end the process, so the API never
+// listens on a half-migrated database. A few rows that cannot be opened at all are QUARANTINED instead: left
+// exactly as they were (they were unusable before), reported by id and counted, and the API still starts.
+// Nothing here logs addresses, paths or key material.
 //
 //  1. Each row's path comes from resolveSealingContext (the same rule every signer uses).
 //  2. A row that already opens under the CURRENT key, and whose plaintext belongs to the row (address or
 //     public key), is current. Re-running is a no-op, and needs no old root at all.
-//  3. Otherwise it is pending. The first pending row loads the old root (`openLegacy`: sidecar, pinned root,
-//     mandatory canary) before ANY row is touched. The canary row is swapped last, so it is still old-sealed
-//     whenever another row is pending.
-//  4. A pending row is opened with the old key, its plaintext is checked against the row's own address or
-//     public key (an anchor independent of Phala and of the sidecar), sealed under the current key, re-opened
-//     and re-checked, and swapped with a compare-and-swap on the ciphertext it read.
-//  5. A final pass re-reads every row and requires it to be current.
+//  3. Otherwise it is pending. If there are pending rows, the old root is loaded (`openLegacy`: sidecar, pinned
+//     root, mandatory canary) before ANY row is touched. The canary row is swapped last, so it is still
+//     old-sealed whenever another row is pending.
+//  4. Pre-verify, before the first write: every pending row is opened with the old key and checked against its
+//     own address or public key (an anchor independent of Phala and of the sidecar). One that fails is
+//     quarantined. More than max(3, 0.5% of rows) quarantined means the wrong key: fail closed. The canary
+//     itself failing always fails closed.
+//  5. Each verified row is sealed under the current key, re-opened and re-checked, and swapped with a
+//     compare-and-swap on the ciphertext it read.
+//  6. A final pass re-reads every row: current, or one of the quarantined.
 import { seal, unseal } from '@openkey/tee';
 import { resolveSealingContext } from './key-sealing';
 
@@ -32,7 +37,8 @@ export type LegacyResealCode =
   | 'reseal_row_mismatch'
   | 'reseal_old_unseal_failed'
   | 'reseal_swap_failed'
-  | 'reseal_verify_failed';
+  | 'reseal_verify_failed'
+  | 'reseal_quarantine_limit';
 
 /** Fixed messages; `source` and `rowId` are database ids, never key material. */
 export class LegacyResealError extends Error {
@@ -80,12 +86,29 @@ export interface ResealOptions {
   openLegacy: () => Promise<ResealLegacy>;
   /** The canary's row. It is swapped last. */
   canary: { source: ResealSource; id: string };
+  /** Called after each row is swapped. Counts only. The caller decides how often to log. */
+  onProgress?: (progress: { done: number; pending: number; total: number }) => void;
+}
+
+/** Why a row was left untouched. Never includes key material. */
+export type QuarantineReason = 'unreadable' | 'unopenable' | 'mismatch';
+export interface ResealQuarantined {
+  source: ResealSource;
+  id: string;
+  reason: QuarantineReason;
 }
 
 export interface ResealSummary {
   total: number;
   migrated: number;
   alreadyCurrent: number;
+  /** Rows left exactly as they were: they open under neither key, or do not belong to themselves. */
+  quarantined: ResealQuarantined[];
+}
+
+/** More quarantined rows than this means the wrong key, not a few bad rows: the boot fails closed. */
+export function quarantineLimit(total: number): number {
+  return Math.max(3, total * 0.005);
 }
 
 function pathOf(row: ResealRow): string {
@@ -112,22 +135,31 @@ function matches(row: ResealRow, plaintext: string): boolean {
   }
 }
 
-type Classified = { row: ResealRow; store: ResealStore; current: boolean };
+type State = 'current' | 'pending' | 'quarantined';
+type Classified = { row: ResealRow; store: ResealStore; state: State; reason?: QuarantineReason };
 
+/** Opens every row under the CURRENT key. Nothing is written and the old root is not involved. */
 async function classify(stores: readonly ResealStore[], tee: ResealTee): Promise<Classified[]> {
   const out: Classified[] = [];
   for (const store of stores) {
     for (const row of await store.rows()) {
-      const key = await tee.deriveKey(pathOf(row));
+      let path: string;
+      try {
+        path = pathOf(row);
+      } catch {
+        out.push({ row, store, state: 'quarantined', reason: 'unreadable' });
+        continue;
+      }
+      const key = await tee.deriveKey(path);
       try {
         const plaintext = await opens(row.sealed, key);
         if (plaintext === null) {
-          out.push({ row, store, current: false });
+          out.push({ row, store, state: 'pending' });
         } else if (matches(row, plaintext)) {
-          out.push({ row, store, current: true });
+          out.push({ row, store, state: 'current' });
         } else {
-          // Opens under the current key but holds someone else's secret: corrupt, not old.
-          throw new LegacyResealError('reseal_row_mismatch', row);
+          // Opens under the current key but holds someone else's secret: not old, and not ours to rewrite.
+          out.push({ row, store, state: 'quarantined', reason: 'mismatch' });
         }
       } finally {
         key.fill(0);
@@ -140,45 +172,86 @@ async function classify(stores: readonly ResealStore[], tee: ResealTee): Promise
 export async function resealLegacyRows(options: ResealOptions): Promise<ResealSummary> {
   const { stores, tee, canary } = options;
   const rows = await classify(stores, tee);
-  const pending = rows.filter((entry) => !entry.current);
+  const limit = quarantineLimit(rows.length);
   const isCanary = (entry: Classified) => entry.row.source === canary.source && entry.row.id === canary.id;
+  const quarantined: ResealQuarantined[] = rows
+    .filter((entry) => entry.state === 'quarantined')
+    .map((entry) => ({ source: entry.row.source, id: entry.row.id, reason: entry.reason! }));
+  const checkLimit = () => {
+    if (quarantined.length > limit) throw new LegacyResealError('reseal_quarantine_limit');
+  };
+  const quarantine = (entry: Classified, reason: QuarantineReason) => {
+    quarantined.push({ source: entry.row.source, id: entry.row.id, reason });
+    checkLimit();
+  };
+  checkLimit();
 
-  if (pending.length > 0) {
-    const canaryEntry = rows.find(isCanary);
-    if (!canaryEntry) throw new LegacyResealError('reseal_canary_missing');
-    if (canaryEntry.current) throw new LegacyResealError('reseal_canary_not_pending', canaryEntry.row);
+  const canaryEntry = rows.find(isCanary);
+  if (canaryEntry?.state === 'quarantined') throw new LegacyResealError('reseal_canary_not_pending', canaryEntry.row);
 
-    // Old root, with its canary proven, before anything is written.
-    const legacy = await options.openLegacy();
-    const ordered = [...pending.filter((entry) => !isCanary(entry)), canaryEntry];
+  const pending = rows.filter((entry) => entry.state === 'pending');
+  const verified: { entry: Classified; key: Uint8Array }[] = [];
+  let migrated = 0;
+  try {
+    if (pending.length > 0 && canaryEntry?.state === 'current') {
+      // The canary is swapped last, so a current canary means an earlier pass finished every row it could open.
+      // What is still pending was quarantined then. The old root cannot be proven without a pending canary:
+      // leave these rows exactly as they are.
+      for (const entry of pending) quarantine(entry, 'unopenable');
+    } else if (pending.length > 0) {
+      if (!canaryEntry) throw new LegacyResealError('reseal_canary_missing');
 
-    for (const { row, store } of ordered) {
-      const path = pathOf(row);
-      const oldKey = await legacy.legacyKey(path);
-      let plaintext: string | null;
-      try {
-        plaintext = await opens(row.sealed, oldKey);
-      } finally {
-        oldKey.fill(0);
+      // Old root, with its canary proven, before anything is written.
+      const legacy = await options.openLegacy();
+
+      // Pre-verify: open every pending row with the old key and check it belongs to itself, BEFORE the first
+      // write. A row that fails is quarantined (the canary never is: it fails the boot).
+      for (const entry of pending) {
+        const key = await legacy.legacyKey(pathOf(entry.row));
+        const plaintext = await opens(entry.row.sealed, key);
+        const reason: QuarantineReason | null = plaintext === null ? 'unopenable' : matches(entry.row, plaintext) ? null : 'mismatch';
+        if (reason === null) {
+          verified.push({ entry, key });
+          continue;
+        }
+        key.fill(0);
+        if (isCanary(entry)) throw new LegacyResealError(reason === 'unopenable' ? 'reseal_old_unseal_failed' : 'reseal_row_mismatch', entry.row);
+        quarantine(entry, reason);
       }
-      if (plaintext === null) throw new LegacyResealError('reseal_old_unseal_failed', row);
-      if (!matches(row, plaintext)) throw new LegacyResealError('reseal_row_mismatch', row);
 
-      const newKey = await tee.deriveKey(path);
-      try {
-        const sealed = await seal(plaintext, newKey);
-        const reopened = await opens(sealed, newKey);
-        if (reopened !== plaintext || !matches(row, reopened)) throw new LegacyResealError('reseal_verify_failed', row);
-        if (!(await store.swap(row, sealed))) throw new LegacyResealError('reseal_swap_failed', row);
-      } finally {
-        newKey.fill(0);
+      const ordered = [...verified.filter(({ entry }) => !isCanary(entry)), ...verified.filter(({ entry }) => isCanary(entry))];
+      for (const [index, { entry, key }] of ordered.entries()) {
+        const { row, store } = entry;
+        const plaintext = await opens(row.sealed, key);
+        if (plaintext === null) throw new LegacyResealError('reseal_old_unseal_failed', row);
+        const path = pathOf(row);
+        const newKey = await tee.deriveKey(path);
+        try {
+          const sealed = await seal(plaintext, newKey);
+          const reopened = await opens(sealed, newKey);
+          if (reopened !== plaintext || !matches(row, reopened)) throw new LegacyResealError('reseal_verify_failed', row);
+          if (!(await store.swap(row, sealed))) throw new LegacyResealError('reseal_swap_failed', row);
+        } finally {
+          newKey.fill(0);
+        }
+        key.fill(0);
+        migrated += 1;
+        options.onProgress?.({ done: index + 1, pending: ordered.length, total: rows.length });
       }
     }
+  } finally {
+    for (const { key } of verified) key.fill(0);
   }
 
-  // Every row, re-read, must now open under the current key and belong to itself.
+  // Every row, re-read, must now open under the current key and belong to itself, or be a quarantined row.
   const after = await classify(stores, tee);
-  const stale = after.find((entry) => !entry.current);
+  const known = new Set(quarantined.map((q) => `${q.source}:${q.id}`));
+  const stale = after.find((entry) => entry.state !== 'current' && !known.has(`${entry.row.source}:${entry.row.id}`));
   if (stale) throw new LegacyResealError('reseal_verify_failed', stale.row);
-  return { total: after.length, migrated: pending.length, alreadyCurrent: rows.length - pending.length };
+  return {
+    total: after.length,
+    migrated,
+    alreadyCurrent: rows.filter((entry) => entry.state === 'current').length,
+    quarantined,
+  };
 }
