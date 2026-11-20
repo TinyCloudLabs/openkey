@@ -2,4 +2,8 @@
 "@openkey/web": minor
 ---
 
-The native consent page has a step-up screen (TC-3569). It is chosen from an explicit `kind` with no default: `STEPUP` names the framed app and the read-only access it adds, with no toggles, and Allow or Don't allow; `SIGNIN` is the sign-in screen as before; anything else (no `kind`, an unknown one, or a `STEPUP` that does not name its app and spaces) is an error with nothing to Allow. A request for a space the user has not hosted shows a notice and nothing to Allow. The API sends a `kind` on every preview, so this web must be deployed after it. Step-up requests stay off behind `OPENKEY_NATIVE_STEPUP_ENABLED` until the API, this screen and the revoke sweeper are all deployed.
+The native consent page has a step-up screen. It's chosen from an explicit `kind` with no default: `STEPUP` names the framed app and the read-only access it adds, with Allow or Don't allow and no toggles; `SIGNIN` shows the sign-in screen; anything else (no `kind`, an unknown one, or a `STEPUP` that doesn't name its app and spaces) shows an error with nothing to allow. A request for a space the user hasn't set up shows a notice with nothing to allow.
+
+Upgrading: deploy this web after the API, which sends a `kind` on every preview.
+
+Details: TC-3569
