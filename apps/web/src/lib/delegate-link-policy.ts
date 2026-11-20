@@ -148,6 +148,10 @@ const REQUESTER_BY_CALLBACK_ENDPOINT: Record<string, DelegateRequester> = {
   'https://mcp.tinycloud.xyz/grok/connect/callback': { displayName: 'Grok via TinyCloud', returnTo: 'Grok' },
   'https://mcp.tinycloud.xyz/muse/connect/callback': { displayName: 'Muse via TinyCloud', returnTo: 'Muse' },
   'https://mcp.tinycloud.xyz/chatgpt/connect/callback': { displayName: 'ChatGPT via TinyCloud', returnTo: 'ChatGPT' },
+  'https://mcp.tinycloud.xyz/gemini/connect/callback': { displayName: 'Gemini via TinyCloud', returnTo: 'Gemini' },
+  'https://mcp.tinycloud.xyz/perplexity/connect/callback': { displayName: 'Perplexity via TinyCloud', returnTo: 'Perplexity' },
+  'https://mcp.tinycloud.xyz/mistral/connect/callback': { displayName: 'Mistral via TinyCloud', returnTo: 'Mistral' },
+  'https://mcp.tinycloud.xyz/copilot/connect/callback': { displayName: 'Copilot via TinyCloud', returnTo: 'Copilot' },
   'https://mcp.tinycloud.xyz/connect/callback': { displayName: 'TinyCloud MCP', returnTo: 'your MCP client' },
 };
 

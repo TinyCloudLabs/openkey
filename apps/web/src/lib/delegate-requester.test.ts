@@ -9,6 +9,10 @@ describe('delegateRequester', () => {
       ['https://mcp.tinycloud.xyz/grok/connect/callback?state=t.n.sig', 'Grok via TinyCloud', 'Grok'],
       ['https://mcp.tinycloud.xyz/muse/connect/callback?state=t.n.sig', 'Muse via TinyCloud', 'Muse'],
       ['https://mcp.tinycloud.xyz/chatgpt/connect/callback?state=t.n.sig', 'ChatGPT via TinyCloud', 'ChatGPT'],
+      ['https://mcp.tinycloud.xyz/gemini/connect/callback?state=t.n.sig', 'Gemini via TinyCloud', 'Gemini'],
+      ['https://mcp.tinycloud.xyz/perplexity/connect/callback?state=t.n.sig', 'Perplexity via TinyCloud', 'Perplexity'],
+      ['https://mcp.tinycloud.xyz/mistral/connect/callback?state=t.n.sig', 'Mistral via TinyCloud', 'Mistral'],
+      ['https://mcp.tinycloud.xyz/copilot/connect/callback?state=t.n.sig', 'Copilot via TinyCloud', 'Copilot'],
       ['https://mcp.tinycloud.xyz/connect/callback?state=t.n.sig', 'TinyCloud MCP', 'your MCP client'],
     ];
     for (const [callback, displayName, returnTo] of cases) {
@@ -31,7 +35,8 @@ describe('delegateRequester', () => {
       'http://[::1]:9000/callback',
       // A look-alike of a mapped endpoint must not borrow its name.
       'https://mcp.tinycloud.xyz/claude/connect/callback/extra',
-      'https://mcp.tinycloud.xyz/gemini/connect/callback',
+      'https://mcp.tinycloud.xyz/unlisted/connect/callback',
+      'https://mcp.tinycloud.xyz/gemini/connect/callback/extra',
       'https://mcp.tinycloud.xyz.evil.example/claude/connect/callback',
       'https://mcp.tinycloud.xyz@evil.example/claude/connect/callback',
       // Credentials in the URL: the endpoint matches, but no name.

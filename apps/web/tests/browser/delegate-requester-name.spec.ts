@@ -58,6 +58,10 @@ const registered: Array<[string, string, string, string]> = [
   ['Grok', 'https://mcp.tinycloud.xyz/grok/connect/callback', 'Grok via TinyCloud', 'Grok'],
   ['Muse', 'https://mcp.tinycloud.xyz/muse/connect/callback', 'Muse via TinyCloud', 'Muse'],
   ['ChatGPT', 'https://mcp.tinycloud.xyz/chatgpt/connect/callback', 'ChatGPT via TinyCloud', 'ChatGPT'],
+  ['Gemini', 'https://mcp.tinycloud.xyz/gemini/connect/callback', 'Gemini via TinyCloud', 'Gemini'],
+  ['Perplexity', 'https://mcp.tinycloud.xyz/perplexity/connect/callback', 'Perplexity via TinyCloud', 'Perplexity'],
+  ['Mistral', 'https://mcp.tinycloud.xyz/mistral/connect/callback', 'Mistral via TinyCloud', 'Mistral'],
+  ['Copilot', 'https://mcp.tinycloud.xyz/copilot/connect/callback', 'Copilot via TinyCloud', 'Copilot'],
   ['the bare TinyCloud MCP', 'https://mcp.tinycloud.xyz/connect/callback', 'TinyCloud MCP', 'your MCP client'],
 ];
 
