@@ -39,7 +39,6 @@ jobs:
 
       - name: Configure npm auth
         run: |
-          export NPM_TOKEN="${{ secrets.NPM_TOKEN }}"
           ./scripts/npm-auth.sh
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -49,8 +48,6 @@ jobs:
 
       - name: Publish packages
         run: |
-          INPUT="${{ github.event.inputs.packages }}"
-
           # All publishable packages
           ALL_PKGS="packages/core packages/types packages/sdk packages/cli packages/sdk-react-native"
 
@@ -92,5 +89,6 @@ jobs:
             cd "$GITHUB_WORKSPACE"
           done
         env:
+          INPUT: ${{ inputs.packages }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -42,15 +42,21 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/TinyCloudLabs/openkey.git
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/TinyCloudLabs/openkey.git"
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
       - name: Create changeset
         run: |
-          echo "Creating changeset for ${{ github.event.inputs.version }} release..."
+          echo "Creating changeset for $VERSION release..."
           bun changeset add --empty
+        env:
+          VERSION: ${{ inputs.version }}
 
       - name: Version packages
-        run: bun changeset version --${{ github.event.inputs.version }}
+        run: bun changeset version "--$VERSION"
+        env:
+          VERSION: ${{ inputs.version }}
 
       - name: Build packages
         run: bun run build
@@ -60,7 +66,6 @@ jobs:
 
       - name: Publish packages
         run: |
-          export NPM_TOKEN="${{ secrets.NPM_TOKEN }}"
           ./scripts/npm-auth.sh
 
           ROOT_DIR=$(pwd)
