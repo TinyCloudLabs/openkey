@@ -17,7 +17,7 @@ const MAX_LIST_ENTRIES = 32;
 export const DEFAULT_MAX_DELEGATION_TTL_SECONDS = 3600;
 export const DEFAULT_GRANT_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
 
-const STEP_UP_SPACES = ['public', 'account', 'agents', 'applications'] as const;
+export const STEP_UP_SPACES = ['public', 'account', 'agents', 'applications'] as const;
 const STEP_UP_KV_ACTIONS = new Set(['get', 'list', 'metadata']);
 const STEP_UP_SQL_ACTIONS = new Set(['read', 'schema']);
 // A step-up never addresses the secrets roots; `variables` joins the shared denied roots.

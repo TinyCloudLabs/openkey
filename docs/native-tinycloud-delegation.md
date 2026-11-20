@@ -249,9 +249,58 @@ and `appId` are null) or `STEPUP` (a request to add an app's step-up to an
 existing grant; `grantId` and `appId` are set). A check constraint enforces the
 pairing, `grantId` references the grant with `ON DELETE CASCADE`, and the schema
 guard checks the three columns, the constraint and the cascade. Nothing writes a
-`STEPUP` row until the step-up endpoint ships; the migration only adds the
-columns. A step-up request takes its session key from the grant, never from the
-caller.
+`STEPUP` row until the step-up endpoint (below) is enabled; the migration only
+adds the columns. A step-up request takes its session key from the grant, never
+from the caller. The sign-in consent and code-exchange paths refuse a
+non-`SIGNIN` request (`409 unsupported_request_kind` from prepare and approve,
+`invalid_grant` from exchange), so a `STEPUP` row can never be completed as a
+sign-in.
+
+### Step-up request endpoint (TC-3569)
+
+`POST /api/auth/oauth2/tinycloud/stepup` records a step-up request for an app
+inside the Home grant. It is behind `OPENKEY_NATIVE_STEPUP_ENABLED` (`1` or
+`true`; default off). While off the path answers `404 not_found`, writes
+nothing, and discovery omits `tinycloud_delegation_stepup_endpoint`.
+
+It signs nothing, issues no token, creates no grant and does not rotate the
+refresh token. It returns `201 {"request_uri", "expires_in": 90}`; the app then
+opens `/authorize` with that `request_uri` as for sign-in, and the consent and
+exchange steps for `STEPUP` requests are separate changes.
+
+Credentials are the Home grant's current refresh token plus an
+`OpenKey-Session-Proof` signed by the grant's key for this endpoint
+(`htu` = issuer + `/oauth2/tinycloud/stepup`). Only the grant's current
+refresh-token hash matches; the proof's `jti` is committed before any other
+work, so a replay is refused. The delegate (`sessionDid`, JWK, JKT) is copied
+from the grant; a request body carrying a `session_key`, `session_did` or
+`authorization_details` member is `invalid_request`.
+
+Form body (urlencoded, no other keys): `client_id`, `refresh_token`, `app_id`,
+`permissions` (a JSON array of `{service, space, path, actions}`), `redirect_uri`
+(registered on the client), `state`, `code_challenge`,
+`code_challenge_method=S256`.
+
+Accepted when, in one transaction under the native lock order: the grant is
+`ACTIVE` and its consent scope and generation match; now is before
+`absoluteExpiresAt` less 300 s (the renewal rule); the account is not locked, on
+reviewer hold or a reviewer; the refresh-token row is live; the client's
+ceiling has `stepUps` and the same host as the grant; and every entry is covered
+by `stepUps[app_id][space]` (exact app id, case-sensitive; exact path or a
+`/`-terminated prefix for KV; exact database for SQL; read-only vocabulary
+`kv: get|list|metadata`, `sql: read|schema`; no overlapping entries). At most
+8 open step-up requests exist per grant.
+
+| HTTP | `error` |
+|---|---|
+| 404 | `not_found` (flag off) |
+| 401 | `invalid_session_proof` (bad proof, replay, unknown or previous token) |
+| 400 | `invalid_request` (body, redirect URI, PKCE) |
+| 400 | `invalid_grant` (revoked grant, dead refresh token) |
+| 400 | `consent_required` (consent changed, grant near its end, client disabled) |
+| 400 | `access_denied` (account locked, no step-up ceiling, entry beyond the ceiling) |
+| 400 | `invalid_authorization_details` (malformed `permissions`, including any write action) |
+| 429 | `slow_down` (`Retry-After: 10`) |
 
 ## Permissions and the signed session SIWE
 

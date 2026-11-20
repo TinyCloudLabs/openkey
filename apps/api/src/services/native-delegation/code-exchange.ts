@@ -124,6 +124,8 @@ export async function exchangeNativeCode(
   if (typeof requestId !== 'string' || !requestId) invalidGrant('authorization code has no native delegation request');
   const request = await db.tinyCloudNativeRequest.findUnique({ where: { id: requestId } });
   if (!request) invalidGrant('no approved native delegation request for this code');
+  // A step-up code is redeemed by its own branch; this one only ever mints a grant, so it refuses any other kind.
+  if (request.kind !== 'SIGNIN') invalidGrant('authorization code does not match its native delegation request');
   const binding = {
     clientId: bound(query, 'client_id'),
     redirectUri: bound(query, 'redirect_uri'),

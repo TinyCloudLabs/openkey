@@ -40,7 +40,7 @@ async function sweepExpiredSessionProofJtis(db: PrismaClient): Promise<void> {
   await db.nativeSessionProofJti.deleteMany({ where: { expiresAt: { lt: new Date() } } });
 }
 
-async function startSessionProofJtiSweep(db: PrismaClient): Promise<void> {
+export async function startSessionProofJtiSweep(db: PrismaClient): Promise<void> {
   const existing = sessionProofJtiSweepStarts.get(db);
   if (existing) return existing;
   const start = (async () => {

@@ -57,6 +57,7 @@ import { providerTokenOptions } from './services/native-delegation/provider-toke
 import { handlePar } from './services/native-delegation/par';
 import { createNativeDelegationConsentRouter } from './routes/native-delegation-consent';
 import { handleNativeRenewOrRevoke } from './services/native-delegation/renew-revoke';
+import { handleNativeStepUpRequest } from './services/native-delegation/step-up';
 import { createTeeClient, resolveTeeMode } from '@openkey/tee';
 import { resealLegacyAtBoot } from './services/legacy-reseal-boot';
 import {
@@ -249,6 +250,7 @@ app.get('/api/auth/providers', (c) =>
 app.post('/api/auth/oauth2/par', (c) => handlePar(c.req.raw, authPrisma));
 app.post('/api/auth/oauth2/tinycloud/renew', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'renew'));
 app.post('/api/auth/oauth2/tinycloud/revoke', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'revoke'));
+app.post('/api/auth/oauth2/tinycloud/stepup', (c) => handleNativeStepUpRequest(c.req.raw, authPrisma, oauthIssuer));
 
 // The key set /api/auth/jwks serves, read through the auth handler.
 const readSigningKeys = async () => {

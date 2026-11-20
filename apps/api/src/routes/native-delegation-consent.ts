@@ -159,6 +159,8 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     // the consent/generation/request locks, then recheck the host under lock.
     const pending = await db.tinyCloudNativeRequest.findUnique({ where: { id: c.req.param('id') } });
     if (!pending) fail(404, 'request_not_found');
+    // A step-up request is consented by its own path; until that ships, no sign-in path may act on one.
+    if (pending.kind !== 'SIGNIN') fail(409, 'unsupported_request_kind');
     const preReviewer = await nativeReviewerAuthority(db, userId, pending);
     if (pending.userId && pending.userId !== userId) fail(403, 'request_user_mismatch');
     if (pending.status === 'APPROVED' && pending.userId === userId && pending.expiresAt > new Date()) {
@@ -240,6 +242,8 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     const userId = c.get('user').id;
     const pending = await db.tinyCloudNativeRequest.findUnique({ where: { id: c.req.param('id') } });
     if (!pending) fail(404, 'request_not_found');
+    // A step-up request is consented by its own path; until that ships, no sign-in path may act on one.
+    if (pending.kind !== 'SIGNIN') fail(409, 'unsupported_request_kind');
     const preReviewer = await nativeReviewerAuthority(db, userId, pending);
     if (pending.userId && pending.userId !== userId) fail(403, 'request_user_mismatch');
     if (pending.status !== 'APPROVED') active(pending);
