@@ -47,7 +47,7 @@ const stepUp = (appId = 'xyz.tinycloud.explorer') => ({
 const signInSpace = spaceId('applications');
 const signInOptions = [option('tinycloud.capabilities', 'applications', '', [caps]),
   option('tinycloud.kv', 'applications', 'xyz.tinycloud.tinychat/threads/', [kvGet, kvPut])];
-const signIn = () => ({ ...stepUp(), kind: undefined, stepUp: undefined, spaces: undefined, reactivation: undefined,
+const signIn = () => ({ ...stepUp(), kind: 'SIGNIN', stepUp: undefined, spaces: undefined, reactivation: undefined,
   hostPlan: { host: 'https://tee.node.tinycloud.xyz', spaceId: signInSpace, peerId: 'did:key:z6Mk', hostSiwe: 'host bytes' },
   permissionOptions: signInOptions, selectedActionKeys: signInOptions.flatMap(p => p.actions.map(a => a.key)),
   sessionSiwe: siwe({ [`${signInSpace}/capabilities`]: { [caps]: [{}] },
@@ -193,13 +193,12 @@ test.describe('native step-up consent', () => {
     await expect(allow(page)).toHaveCount(0);
   });
 
-  test('a prepare with no kind is a sign-in and renders the sign-in screen', async ({ page }) => {
-    await setup(page, n => ({ body: { ...signIn(), revision: n + 1, digest: `digest-${n + 1}` } }));
-    await expect(page.getByRole('heading', { name: 'Exo wants access' })).toBeVisible();
-    await expect(page.getByText(/renews automatically while you use Exo\./)).toBeVisible();
-    await expect(page.getByText(/First sign-in/)).toBeVisible();
-    await expect(page.getByText(/stays allowed/)).toHaveCount(0);
-    await expect(allow(page)).toBeEnabled();
+  test('a prepare with no kind is an error with nothing to Allow, even when it looks like a sign-in', async ({ page }) => {
+    const calls = await setup(page, () => ({ body: { ...signIn(), kind: undefined, revision: 1, digest: 'digest-1' } }));
+    await expect(page.getByRole('alert')).toContainText('This request needs a newer version of the app to approve.');
+    await expect(allow(page)).toHaveCount(0);
+    await expect(page.getByText(/renews automatically/)).toHaveCount(0);
+    expect(calls.approves).toHaveLength(0);
   });
 
   test('kind SIGNIN is a sign-in too', async ({ page }) => {
@@ -208,11 +207,12 @@ test.describe('native step-up consent', () => {
     await expect(page.getByText(/renews automatically/)).toBeVisible();
   });
 
-  test('the step-up screen is never inferred from stepUp or spaces: a preview without a kind stays a sign-in', async ({ page }) => {
-    await setup(page, () => ({ body: { ...signIn(), stepUp: { grantId: 'grant-1', appId: 'xyz.tinycloud.explorer' }, spaces, revision: 1, digest: 'digest-1' } }));
-    await expect(page.getByRole('heading', { name: 'Exo wants access' })).toBeVisible();
-    await expect(page.getByText(/renews automatically/)).toBeVisible();
-    await expect(page.getByText(/stays allowed/)).toHaveCount(0);
+  test('a preview that carries stepUp and spaces but no kind is an error with nothing to Allow, never a sign-in', async ({ page }) => {
+    const calls = await setup(page, () => ({ body: { ...signIn(), kind: undefined, stepUp: { grantId: 'grant-1', appId: 'xyz.tinycloud.explorer' }, spaces, revision: 1, digest: 'digest-1' } }));
+    await expect(page.getByRole('alert')).toContainText('This request needs a newer version of the app to approve.');
+    await expect(allow(page)).toHaveCount(0);
+    await expect(page.getByText(/renews automatically/)).toHaveCount(0);
+    expect(calls.approves).toHaveLength(0);
   });
 
   test('an unknown kind is an error with nothing to Allow', async ({ page }) => {

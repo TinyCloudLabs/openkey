@@ -360,8 +360,10 @@ only by the code exchange of an approved request.
 
 **The flag stays off until the step-up screen is live.** The consent page chooses
 its screen from an explicit `kind`, with no default: `STEPUP` renders the
-step-up screen, `SIGNIN` (or no `kind`, from an API that predates request
-kinds) renders the sign-in screen, and any other value is an error with no Allow.
+step-up screen, `SIGNIN` renders the sign-in screen, and anything else is an
+error with no Allow, including no `kind` at all (a preview that carries `stepUp`
+or `spaces` without one is never shown as a sign-in). The API sends a `kind` on
+every preview, so the web must not be deployed before the API that sends it.
 Order of rollout: API with `kind` live, then the web with the step-up screen,
 then the flag. `OPENKEY_NATIVE_STEPUP_ENABLED` must not be turned on in any
 environment before both the step-up screen and the revoke sweeper are deployed.
@@ -1720,10 +1722,27 @@ app may call `revokeStepUp`, and the sweeper revokes an approved request that is
 never redeemed.
 
 The step-up screen on the consent page is chosen from an explicit `kind` (see
-[Step-up consent](#step-up-consent-tc-3569)). Parity with the framed apps'
-ceiling table (`frontend/src/apps/native-step-up-ceilings.json` in `tinychat`) is
-checked by hand until that file exists on a pushed ref; the ceilings in this
-repo are the source of truth.
+[Step-up consent](#step-up-consent-tc-3569)).
+
+#### Parity with TinyCloud One
+
+The ceilings OpenKey applies to the Home client are committed as
+`scripts/step-up-ceilings/phase1.json`. The framed apps' own table is
+`frontend/src/apps/native-step-up-ceilings.json` in `tinychat`, in the same shape
+(the `stepUps` section, keyed by full app id). `bun scripts/step-up-ceiling-parity.ts`
+validates both with the API's own ceiling validation, flattens each to one line per
+(app, space, service, path or database, action) and requires the same set both
+ways. App ids, paths and database names are compared case-sensitively; a prefix
+is a different entry; the order and grouping in the file do not matter. An entry
+only One lists is something the app asks for that the server would refuse; one
+only OpenKey lists is access no app asked for.
+
+One's file is read at the commit pinned in `scripts/step-up-ceilings/one.pin.json`
+(`ref` is a 40-character sha, never a branch; the `api-tests` workflow reads it with
+`TINYCHAT_READ_TOKEN`). While `ref` is `null` the check prints that it did not
+run and passes; `--require-pin` makes that a failure. Do not turn
+`OPENKEY_NATIVE_STEPUP_ENABLED` on while the pin is `null`, and move the pin
+with any change to either side.
 
 ## TinyCloud node responsibility
 

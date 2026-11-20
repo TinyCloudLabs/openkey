@@ -80,10 +80,11 @@
       const data = await route('prepare', actionKeys ? { actionKeys } : {}) as Preview | { status: 'APPROVED' };
       if (turn !== serial) return;
       if ('status' in data) { approved = true; return; }
-      // An explicit kind decides the screen, with no default: SIGNIN renders the sign-in screen (an API that predates
-      // request kinds sends none, and only ever has sign-ins, so a missing kind is a sign-in), STEPUP the step-up
-      // screen, and any other kind, or a STEPUP that does not name its app and spaces, is an error with no Allow.
-      if (data.kind === 'STEPUP' ? !isStepUpPreview(data) : data.kind !== undefined && data.kind !== 'SIGNIN') {
+      // An explicit kind decides the screen, with no default: SIGNIN renders the sign-in screen, STEPUP the step-up
+      // screen, and anything else is an error with no Allow: no kind (a preview that carries `stepUp` or `spaces`
+      // without one is not a sign-in), an unknown kind, or a STEPUP that does not name its app and spaces. The API
+      // sends a kind on every preview, so the web must not be deployed before it.
+      if (data.kind === 'STEPUP' ? !isStepUpPreview(data) : data.kind !== 'SIGNIN') {
         error = 'This request needs a newer version of the app to approve.';
         return;
       }
