@@ -39,3 +39,34 @@ CREATE TRIGGER tinycloud_native_stepup_grant_revoked
   AFTER UPDATE OF "status" ON "tinycloud_native_grant" FOR EACH ROW
   WHEN (NEW."status" = 'REVOKED' AND OLD."status" IS DISTINCT FROM 'REVOKED')
   EXECUTE FUNCTION tinycloud_native_stepup_grant_revoked();
+
+-- A revoke sticks. The AFTER trigger above revokes the step-ups of a grant that
+-- is already revoked; this BEFORE trigger closes the other direction. An ACTIVE
+-- step-up is refused (TC773) when the grant is not ACTIVE, and a step-up that a
+-- grant revocation took down never becomes ACTIVE again. The grant row is
+-- locked FOR SHARE, so an approval racing sign-out, an Apple revoke or a
+-- consent withdrawal either commits first and is then revoked by the AFTER
+-- trigger, or waits for the revocation and is refused. Same style as
+-- tinycloud_native_assert_grant_live.
+CREATE FUNCTION tinycloud_native_stepup_guard() RETURNS TRIGGER AS $$
+DECLARE
+  grant_status TEXT;
+BEGIN
+  IF NEW."status" <> 'ACTIVE' THEN
+    RETURN NEW;
+  END IF;
+  IF TG_OP = 'UPDATE' AND OLD."revokedReason" = 'grant_revoked' THEN
+    RAISE EXCEPTION 'tinycloud native step-up was revoked with its grant' USING ERRCODE = 'TC773';
+  END IF;
+  PERFORM set_config('lock_timeout', '5s', true);
+  SELECT g."status" INTO grant_status FROM "tinycloud_native_grant" g WHERE g."id" = NEW."grantId" FOR SHARE;
+  IF NOT FOUND OR grant_status <> 'ACTIVE' THEN
+    RAISE EXCEPTION 'tinycloud native grant is no longer active' USING ERRCODE = 'TC773';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER tinycloud_native_stepup_guard
+  BEFORE INSERT OR UPDATE OF "status" ON "tinycloud_native_stepup" FOR EACH ROW
+  EXECUTE FUNCTION tinycloud_native_stepup_guard();
