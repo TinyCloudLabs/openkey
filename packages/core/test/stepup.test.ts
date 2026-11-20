@@ -80,7 +80,7 @@ interface StepUpBuild {
   key: NativeSessionKeypair;
   signer?: typeof owner;
   address?: string;
-  siwe?: (defaults: { address: string; did: string; expiresAt: string }) => string;
+  siwe?: (defaults: { address: string; did: string; expiresAt: string; lines: string[] }) => string;
   override?: Record<string, unknown>;
 }
 
@@ -89,10 +89,11 @@ function buildStepUp(build: StepUpBuild): Record<string, unknown> {
   const issuedAt = new Date().toISOString();
   const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
   const did = build.key.keyId.split('#')[0]!;
-  const siwe = (build.siwe ?? (({ address: who, did: delegate, expiresAt: expiry }) => [
-    'openkey.so wants you to sign in with your Ethereum account:', who, '', 'Delegate read access', '',
-    `URI: ${delegate}`, 'Version: 1', 'Chain ID: 1', 'Nonce: stepupnonce1', `Issued At: ${issuedAt}`, `Expiration Time: ${expiry}`,
-  ].join('\n')))({ address, did, expiresAt });
+  const lines = [
+    'openkey.so wants you to sign in with your Ethereum account:', address, '', 'Delegate read access', '',
+    `URI: ${did}`, 'Version: 1', 'Chain ID: 1', 'Nonce: stepupnonce1', `Issued At: ${issuedAt}`, `Expiration Time: ${expiresAt}`,
+  ];
+  const siwe = build.siwe ? build.siwe({ address, did, expiresAt, lines }) : lines.join('\n');
   return {
     version: 1, appId: APP, grantId: 'grant-1', address, chainId: 1, ownerDid: `did:pkh:eip155:1:${address}`,
     spaces: [{ space: 'public', spaceId: `tinycloud:pkh:eip155:1:${address}:public` },
@@ -106,7 +107,8 @@ function buildStepUp(build: StepUpBuild): Record<string, unknown> {
 
 function validateOptions(key: NativeSessionKeypair): ValidateStepUpOptions {
   return { sessionKey: key, appId: APP, requestedPermissions: PERMISSIONS, expectedTinycloudHost: HOST,
-    expectedGrantId: 'grant-1', expectedAddress: owner.address };
+    expectedGrantId: 'grant-1', expectedAddress: owner.address, expectedChainId: 1,
+    grantRenewableUntil: new Date(Date.now() + 2 * 86_400_000).toISOString() };
 }
 
 function jsonResponse(status: number, data: unknown, retryAfter?: string): NativeFetchResponse {
@@ -171,6 +173,13 @@ describe('validateTinyCloudStepUp', () => {
       ['openkey.so wants you to sign in with your Ethereum account:', address, '', `URI: ${other.did}`, `Expiration Time: ${expiresAt}`].join('\n') })],
     ['a signed message with another expiry', (k) => buildStepUp({ key: k, siwe: ({ address, did }) =>
       ['openkey.so wants you to sign in with your Ethereum account:', address, '', `URI: ${did}`, 'Expiration Time: 2099-01-01T00:00:00.000Z'].join('\n') })],
+    ['a signed message with a duplicated URI line', (k) => buildStepUp({ key: k, siwe: ({ lines }) => [...lines, `URI: ${other.did}`].join('\n') })],
+    ['a signed message repeating its own URI line', (k) => buildStepUp({ key: k, siwe: ({ lines }) => [...lines, lines[5]!].join('\n') })],
+    ['a signed message without a URI line', (k) => buildStepUp({ key: k, siwe: ({ lines }) => lines.filter((line) => !line.startsWith('URI: ')).join('\n') })],
+    ['a signed message for another chain', (k) => buildStepUp({ key: k, siwe: ({ lines }) => lines.map((line) => (line === 'Chain ID: 1' ? 'Chain ID: 137' : line)).join('\n') })],
+    ['a signed message without a Chain ID line', (k) => buildStepUp({ key: k, siwe: ({ lines }) => lines.filter((line) => !line.startsWith('Chain ID: ')).join('\n') })],
+    ['a signed message with a duplicated Chain ID line', (k) => buildStepUp({ key: k, siwe: ({ lines }) => [...lines, 'Chain ID: 1'].join('\n') })],
+    ['a signed message with a duplicated Expiration Time line', (k) => buildStepUp({ key: k, siwe: ({ lines }) => [...lines, lines[10]!].join('\n') })],
     ['delegated to another key', (k) => buildStepUp({ key: k, override: { verificationMethod: other.keyId } })],
     ['for another app', (k) => buildStepUp({ key: k, override: { appId: 'xyz.tinycloud.courier' } })],
     ['for another grant', (k) => buildStepUp({ key: k, override: { grantId: 'grant-2' } })],
@@ -198,6 +207,10 @@ describe('validateTinyCloudStepUp', () => {
     const built = buildStepUp({ key });
     expect(() => validateTinyCloudStepUp(built, { ...validateOptions(key), grantRenewableUntil: new Date(Date.now() - 3_600_000).toISOString() }))
       .toThrow(OpenKeyNativeError);
+  });
+
+  it('binds the signed text to the chain id Home holds', () => {
+    expect(thrownCode(() => validateTinyCloudStepUp(buildStepUp({ key }), { ...validateOptions(key), expectedChainId: 137 }))).toBe('SERVER');
   });
 
   it('fails closed without an expected node and for non-object input', () => {
@@ -355,6 +368,7 @@ describe('renewDelegation step-up additions', () => {
   const key = generateSessionKeypair();
   const held = { [APP]: validateTinyCloudStepUp(buildStepUp({ key }), validateOptions(key)) };
   const home = () => ({
+    grantId: 'grant-1', chainId: 1,
     verificationMethod: key.keyId, expiresAt: new Date(Date.now() + 3_600_000).toISOString(), tinycloudHost: HOST, address: owner.address,
     renewableUntil: new Date(Date.now() + 2 * 86_400_000).toISOString(),
     permissions: [{ service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] }],
@@ -407,6 +421,25 @@ describe('renewDelegation step-up additions', () => {
   it('treats every step-up as unheld when the caller passes none', async () => {
     const { fetchFn } = recorder(() => jsonResponse(200, { refresh_token: 'rt-2', tinycloud_delegation: home(), tinycloud_stepups: [buildStepUp({ key })] }));
     const result = await renewDelegation({ ...base, heldStepUps: undefined, fetchFn });
+    expect(result.stepUps?.renewed).toEqual([]);
+    expect(result.stepUps?.rejected).toHaveLength(1);
+  });
+
+  const homeFields = ['grantId', 'address', 'chainId', 'renewableUntil'];
+  it.each(homeFields)('rejects every renewed step-up, and still renews Home, when Home lacks %s', async (field) => {
+    const delegation: Record<string, unknown> = home();
+    delete delegation[field];
+    const { fetchFn } = recorder(() => jsonResponse(200, { refresh_token: 'rt-2', tinycloud_delegation: delegation, tinycloud_stepups: [buildStepUp({ key })] }));
+    const result = await renewDelegation({ ...base, fetchFn });
+    expect(result.refreshToken).toBe('rt-2');
+    expect(result.stepUps?.renewed).toEqual([]);
+    expect(result.stepUps?.rejected).toHaveLength(1);
+    expect(result.stepUps?.rejected[0]?.message).toContain(field);
+  });
+
+  it('rejects a renewed step-up bound to another chain than Home', async () => {
+    const { fetchFn } = recorder(() => jsonResponse(200, { refresh_token: 'rt-2', tinycloud_delegation: { ...home(), chainId: 137 }, tinycloud_stepups: [buildStepUp({ key })] }));
+    const result = await renewDelegation({ ...base, fetchFn });
     expect(result.stepUps?.renewed).toEqual([]);
     expect(result.stepUps?.rejected).toHaveLength(1);
   });

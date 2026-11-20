@@ -52,29 +52,30 @@ export interface StepUpAccess {
 const READ_ACTIONS: Record<string, true> = { get: true, list: true, metadata: true, read: true, schema: true };
 const ACTION_WORDS: Record<string, string> = { get: 'read', read: 'read', list: 'list', metadata: 'see details', schema: 'see structure' };
 
+/** What the step-up screen reads from a reviewed grant: the structural part of `CapabilityGrant`. */
+export interface StepUpGrant { service: string; space: string; path: string; actions: readonly { ability: string }[] }
+
 /**
- * What a step-up adds, grouped by space, from the prepare response's `spaces` and `permissionOptions`. Option keys
- * are `service\0space\0path`. The capabilities read every delegation carries is plumbing, not access, so it is not
- * listed. A step-up is all-or-nothing, so every option is shown and none can be switched off.
+ * What a step-up adds, grouped by space, from the grants parsed out of the very text the user will sign
+ * (`model.permissions`), never from a list the server sends next to it. The capabilities read every delegation
+ * carries is plumbing, not access, so it is not listed. A step-up is all-or-nothing, so every grant is shown.
  */
-export function stepUpAccess(spaces: readonly StepUpSpace[], options: readonly ServerPermissionOption[]): StepUpAccess {
+export function stepUpAccess(grants: readonly StepUpGrant[]): StepUpAccess {
   const groups = new Map<string, StepUpSpaceAccess>();
-  for (const { space, spaceId } of spaces) groups.set(spaceId, { space, spaceId, items: [] });
   let readOnly = true;
-  for (const option of options) {
-    const [service = '', spaceId = '', path = ''] = option.key.split('\0');
-    const short = service.slice(service.lastIndexOf('.') + 1);
+  for (const grant of grants) {
+    const short = grant.service.slice(grant.service.lastIndexOf('.') + 1);
     if (short === 'capabilities') continue;
-    let group = groups.get(spaceId);
+    let group = groups.get(grant.space);
     if (!group) {
-      group = { space: spaceId.slice(spaceId.lastIndexOf(':') + 1), spaceId, items: [] };
-      groups.set(spaceId, group);
+      group = { space: grant.space.slice(grant.space.lastIndexOf(':') + 1), spaceId: grant.space, items: [] };
+      groups.set(grant.space, group);
     }
-    const verbs = option.actions.map((action) => action.ability.slice(action.ability.indexOf('/') + 1));
+    const verbs = grant.actions.map((action) => action.ability.slice(action.ability.indexOf('/') + 1));
     const itemReadOnly = verbs.every((verb) => Object.hasOwn(READ_ACTIONS, verb));
     if (!itemReadOnly) readOnly = false;
     group.items.push({
-      resource: path ? `${short}/${path}` : short,
+      resource: grant.path ? `${short}/${grant.path}` : short,
       actions: [...new Set(verbs.map((verb) => (Object.hasOwn(ACTION_WORDS, verb) ? ACTION_WORDS[verb] : verb)))],
       readOnly: itemReadOnly,
     });

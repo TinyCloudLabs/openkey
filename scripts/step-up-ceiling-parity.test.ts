@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
-import { compareCeilings, describeParity, flattenCeilings, parsePin, validateCeilingFile } from './step-up-ceiling-parity';
+import { compareCeilings, describeParity, flattenCeilings, parsePin, pinUrl, validateCeilingFile } from './step-up-ceiling-parity';
 
 const phase1 = JSON.parse(readFileSync(new URL('./step-up-ceilings/phase1.json', import.meta.url), 'utf8')) as Record<string, Record<string, unknown>>;
 const copy = () => structuredClone(phase1) as Record<string, any>;
@@ -70,7 +70,22 @@ describe('step-up ceiling parity (TC-3569)', () => {
     expect(parsePin({ repo: 'TinyCloudLabs/tinychat', path: 'a.json', ref: null }).ref).toBeNull();
     expect(parsePin({ repo: 'TinyCloudLabs/tinychat', path: 'a.json', ref: 'a'.repeat(40) }).ref).toBe('a'.repeat(40));
     for (const ref of ['main', 'a'.repeat(39), 'A'.repeat(40), '']) expect(() => parsePin({ repo: 'TinyCloudLabs/tinychat', path: 'a.json', ref })).toThrow();
-    expect(() => parsePin({ repo: 'TinyCloudLabs/tinychat', path: '../a.json', ref: null })).toThrow();
+  });
+
+  test('the pin names the One repository and a plain file path, and the URL it reads is exactly that file', () => {
+    const pin = (over: object) => ({ repo: 'TinyCloudLabs/tinychat', path: 'frontend/src/a.json', ref: 'a'.repeat(40), ...over });
+    expect(pinUrl(parsePin(pin({})) as never).href).toBe(`https://raw.githubusercontent.com/TinyCloudLabs/tinychat/${'a'.repeat(40)}/frontend/src/a.json`);
+    for (const repo of ['TinyCloudLabs/openkey', 'evil/tinychat', 'TinyCloudLabs/tinychat/x', 'tinycloudlabs/tinychat']) expect(() => parsePin(pin({ repo }))).toThrow();
+    for (const path of ['../a.json', '%2e%2e/a.json', 'a/%2E%2E/b.json', 'a/./b.json', '.hidden/a.json', 'a/.b.json', 'a\\b.json', 'a.json?x=1', 'a.json#x', '/a.json', 'a//b.json', 'a/', '']) {
+      expect(() => parsePin(pin({ path }))).toThrow();
+    }
+  });
+
+  test('a URL that does not come out as the plain path is refused', () => {
+    // Even a pin that got past parsing (a hand-built object) cannot walk off the pinned commit.
+    for (const path of ['%2e%2e/%2e%2e/main/a.json', 'a.json?ref=main', 'a.json#x', '../a.json']) {
+      expect(() => pinUrl({ repo: 'TinyCloudLabs/tinychat', path, ref: 'a'.repeat(40) })).toThrow();
+    }
   });
 
   test('the committed pin file is well formed', () => {

@@ -1762,7 +1762,47 @@ export async function requestStepUp(
   };
 }
 
-export interface ValidateStepUpOptions {
+/**
+ * What Home's own delegation fixes for every step-up bound to its grant: the
+ * grant id, the owner address and chain, and the grant's renewal cutoff.
+ * Every field is required; a step-up is never checked against less.
+ */
+export interface NativeStepUpHomeBinding {
+  /** The Home grant id, from its sign-in delegation. */
+  expectedGrantId: string;
+  /** The Home delegation's owner address; the step-up is signed by the same account. */
+  expectedAddress: string;
+  /** The Home delegation's chain id; the signed message names the same chain. */
+  expectedChainId: number;
+  /** The Home delegation's `renewableUntil`; a step-up never outlives its grant. */
+  grantRenewableUntil: string | number;
+}
+
+/**
+ * Read the binding out of Home's delegation. Throws `OpenKeyNativeError`
+ * (`SERVER`) when it lacks the grant id, address, chain id or renewable-until
+ * value: step-up fails closed rather than skip a check.
+ */
+export function nativeStepUpHomeBinding(delegation: TinyCloudDelegation): NativeStepUpHomeBinding {
+  const { grantId, address, chainId, renewableUntil } = delegation;
+  const missing: string[] = [];
+  if (typeof grantId !== 'string' || grantId.length === 0) missing.push('grantId');
+  if (typeof address !== 'string' || address.length === 0) missing.push('address');
+  if (typeof chainId !== 'number' || !Number.isInteger(chainId) || chainId <= 0) missing.push('chainId');
+  if (renewableUntil === undefined || renewableUntil === null || renewableUntil === '') missing.push('renewableUntil');
+  if (
+    missing.length > 0 ||
+    typeof grantId !== 'string' || typeof address !== 'string' || typeof chainId !== 'number' || renewableUntil === undefined
+  ) {
+    throw new OpenKeyNativeError(
+      'SERVER',
+      `Home delegation lacks ${missing.join(', ')}; a step-up cannot be bound to it`,
+    );
+  }
+  return { expectedGrantId: grantId, expectedAddress: address, expectedChainId: chainId, grantRenewableUntil: renewableUntil };
+}
+
+export interface ValidateStepUpOptions extends NativeStepUpHomeBinding {
   /** The Home grant's session key. */
   sessionKey: NativeSessionKeypair;
   /** The app the step-up was requested for. */
@@ -1771,12 +1811,6 @@ export interface ValidateStepUpOptions {
   requestedPermissions: NativeStepUpPermission[];
   /** Expected TinyCloud node, accepting either production node name. Required - fails closed. */
   expectedTinycloudHost: string;
-  /** The Home grant id, from its sign-in delegation. */
-  expectedGrantId?: string;
-  /** The Home delegation's owner address; the step-up is signed by the same account. */
-  expectedAddress?: string;
-  /** The Home delegation's `renewableUntil`; a step-up never outlives its grant. */
-  grantRenewableUntil?: string | number;
   /** Injectable clock (ms). */
   now?: number;
 }
@@ -1815,15 +1849,19 @@ function stepUpTime(value: unknown, field: string): number {
 /**
  * Validate a `tinycloud_stepup` object from a code exchange or one element of
  * a renewal's `tinycloud_stepups`. It checks, in this order: the shape and
- * `version`; `appId` and (when known) `grantId` and the owner address; the
- * owner DID and each `spaceId` derived from the address; that
- * `verificationMethod` is the Home grant's session key; read-only entries that
- * are a subset of the ones requested, with exactly their spaces; the SIWE text
- * (signer address line, session DID, expiry) and that its signature recovers
- * to the owner address; the node host; and the lifetime (in the future, after
- * issue, never past the grant's cutoff). Returns a clean copy; throws
- * `OpenKeyNativeError` (`SERVER`) on any violation. The TinyCloud header and
- * CID are checked by the SDK's WASM verifier, as for sign-in.
+ * `version`; `appId`, `grantId`, the owner address and the chain id against
+ * Home's delegation; the owner DID and each `spaceId` derived from the
+ * address; that `verificationMethod` is the Home grant's session key;
+ * read-only entries that are a subset of the ones requested, with exactly
+ * their spaces; the SIWE text itself (the address line, exactly one `URI:`
+ * line naming the session DID, exactly one `Chain ID:` line naming Home's
+ * chain, exactly one `Expiration Time:` matching `expiresAt`) and that its
+ * signature recovers to the owner address; the node host; and the lifetime
+ * (in the future, after issue, never past the grant's cutoff). The SIWE
+ * resources (the recap of the delegated abilities) are not decoded: the
+ * entries and spaces are checked as the response lists them. Returns a clean
+ * copy; throws `OpenKeyNativeError` (`SERVER`) on any violation. The TinyCloud
+ * header and CID are checked by the SDK's WASM verifier, as for sign-in.
  */
 export function validateTinyCloudStepUp(
   value: unknown,
@@ -1837,27 +1875,18 @@ export function validateTinyCloudStepUp(
   if (raw.version !== 1) throw fault('version is not supported');
   if (raw.appId !== options.appId) throw fault('appId does not match the request');
   const grantId = raw.grantId;
-  if (
-    typeof grantId !== 'string' ||
-    grantId.length === 0 ||
-    (options.expectedGrantId !== undefined && grantId !== options.expectedGrantId)
-  ) {
+  if (typeof grantId !== 'string' || grantId.length === 0 || grantId !== options.expectedGrantId) {
     throw fault('grantId does not match the session grant');
   }
   const address = raw.address;
   if (typeof address !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(address)) {
     throw fault('address is invalid');
   }
-  if (
-    options.expectedAddress !== undefined &&
-    address.toLowerCase() !== options.expectedAddress.toLowerCase()
-  ) {
+  if (address.toLowerCase() !== options.expectedAddress.toLowerCase()) {
     throw fault('address does not match the session owner');
   }
-  const chainId = raw.chainId;
-  if (typeof chainId !== 'number' || !Number.isInteger(chainId) || chainId <= 0) {
-    throw fault('chainId is invalid');
-  }
+  const chainId = options.expectedChainId;
+  if (raw.chainId !== chainId) throw fault('chainId does not match the session grant');
   const ownerDid = raw.ownerDid;
   if (
     typeof ownerDid !== 'string' ||
@@ -1907,11 +1936,9 @@ export function validateTinyCloudStepUp(
   if (expiresMs <= issuedMs) throw fault('expires before it was issued');
   // The grant's absolute expiry is its renewal cutoff plus 300 s.
   if (expiresMs > renewableMs + GRANT_CUTOFF_MS) throw fault('outlives its grant');
-  if (options.grantRenewableUntil !== undefined) {
-    const grantMs = parseExpiresAt(options.grantRenewableUntil, 'renewableUntil');
-    if (renewableMs > grantMs + 1000 || expiresMs > grantMs + GRANT_CUTOFF_MS) {
-      throw fault('outlives the session grant');
-    }
+  const grantMs = parseExpiresAt(options.grantRenewableUntil, 'renewableUntil');
+  if (renewableMs > grantMs + 1000 || expiresMs > grantMs + GRANT_CUTOFF_MS) {
+    throw fault('outlives the session grant');
   }
 
   const siwe = raw.siwe;
@@ -1920,12 +1947,19 @@ export function validateTinyCloudStepUp(
     throw fault('is missing its signed message');
   }
   const sessionDid = options.sessionKey.keyId.split('#')[0]!;
-  const siweExpiry = /\nExpiration Time: ([^\n]+)/.exec(siwe);
+  // The signed text is what the account actually authorized: bind it, not only the JSON beside it.
+  const siweLines = siwe.split('\n');
+  const siweField = (label: string): string | undefined => {
+    const lines = siweLines.filter((line) => line.startsWith(`${label}: `));
+    return lines.length === 1 ? lines[0]!.slice(label.length + 2) : undefined;
+  };
+  const siweExpiry = siweField('Expiration Time');
   if (
-    siwe.split('\n')[1]?.toLowerCase() !== address.toLowerCase() ||
-    !siwe.includes(sessionDid) ||
-    !siweExpiry ||
-    Math.abs(Date.parse(siweExpiry[1]!) - expiresMs) > 1000
+    siweLines[1]?.toLowerCase() !== address.toLowerCase() ||
+    siweField('URI') !== sessionDid ||
+    siweField('Chain ID') !== String(chainId) ||
+    siweExpiry === undefined ||
+    Math.abs(Date.parse(siweExpiry) - expiresMs) > 1000
   ) {
     throw fault('signed message does not match the delegation');
   }
@@ -2086,6 +2120,15 @@ function parseRenewedStepUps(
   const renewed: TinyCloudStepUp[] = [];
   const rejected: NativeStepUpRejection[] = [];
   const seen = new Set<string>();
+  // Home's renewed delegation is the reference every step-up is bound to; when it
+  // lacks a field, no step-up can be checked, so each is rejected (never Home's renewal).
+  let homeBinding: NativeStepUpHomeBinding | OpenKeyNativeError;
+  try {
+    homeBinding = nativeStepUpHomeBinding(delegation);
+  } catch (error) {
+    if (!(error instanceof OpenKeyNativeError)) throw error;
+    homeBinding = error;
+  }
   const items: unknown[] = Array.isArray(data.tinycloud_stepups) ? data.tinycloud_stepups : [];
   for (const item of items) {
     const named =
@@ -2100,14 +2143,13 @@ function parseRenewedStepUps(
         throw new OpenKeyNativeError('SERVER', 'tinycloud_stepup is for an app this session does not hold');
       }
       if (seen.has(appId)) throw new OpenKeyNativeError('SERVER', 'tinycloud_stepup is repeated');
+      if (homeBinding instanceof OpenKeyNativeError) throw homeBinding;
       const stepUp = validateTinyCloudStepUp(item, {
         sessionKey: options.sessionKey,
         appId,
         requestedPermissions: reference.permissions,
         expectedTinycloudHost: options.expectedTinycloudHost,
-        expectedGrantId: reference.grantId,
-        expectedAddress: delegation.address ?? reference.address,
-        grantRenewableUntil: delegation.renewableUntil ?? reference.renewableUntil,
+        ...homeBinding,
       });
       seen.add(appId);
       renewed.push(stepUp);

@@ -10,6 +10,7 @@ import {
   generateSessionKeypair,
   generateState,
   isNativeStepUpAppId,
+  nativeStepUpHomeBinding,
   normalizeDelegationPermissions,
   parseNativeCallback,
   renewDelegation,
@@ -896,38 +897,48 @@ export class OpenKeyNative {
     const challenge = await generateCodeChallenge(verifier);
     // The request is made with the grant's current refresh token, which a
     // renewal rotates: it runs in the renew queue so it never sees a dead one.
-    const { home, requestUri } = await this.inRenewQueue(async () => {
+    const { home, binding, requestUri } = await this.inRenewQueue(async () => {
       this.assertEpoch(epoch);
       const stored = await this.readQueued();
       if (!stored) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'No OpenKey session is stored');
+      // Fail closed before the user is asked: a Home delegation that cannot bind a step-up gets none.
+      const homeBinding = nativeStepUpHomeBinding(stored.delegation);
       const pushed = await requestStepUp({ metadata, clientId: this.options.clientId, refreshToken: stored.tokens.refreshToken,
         sessionKey: sessionKeypairFromJwk(stored.privateJwk), appId: options.appId, redirectUri: this.stepUpRedirectUri,
         state, codeChallenge: challenge, permissions: options.capabilities, fetchFn: this.fetchFn, sleepFn: this.sleepFn });
-      return { home: stored, requestUri: pushed.requestUri };
+      return { home: stored, binding: homeBinding, requestUri: pushed.requestUri };
     });
     const url = buildNativeAuthorizeUrl({ authorizationEndpoint: metadata.authorizationEndpoint, clientId: this.options.clientId, requestUri });
     const code = await this.authorize(url, this.stepUpRedirectUri, state);
     // A sign-out or a new sign-in during the consent screen ends this step-up.
     this.assertEpoch(epoch);
     const sessionKey = sessionKeypairFromJwk(home.privateJwk);
-    const stepUp = await exchangeStepUpCode({ metadata, code, redirectUri: this.stepUpRedirectUri, clientId: this.options.clientId,
-      codeVerifier: verifier, sessionKey, appId: options.appId, requestedPermissions: options.capabilities,
-      expectedTinycloudHost: this.expectedHost(), expectedGrantId: home.delegation.grantId, expectedAddress: home.delegation.address,
-      grantRenewableUntil: home.delegation.renewableUntil, fetchFn: this.fetchFn });
-    try { await this.verifier(stepUp); }
-    catch { throw new OpenKeyNativeError('SERVER', 'Step-up delegation failed verification'); }
-    // Persist on top of whatever a renewal stored meanwhile; a renewal and this write never interleave.
-    await this.inRenewQueue(async () => {
-      this.assertEpoch(epoch);
-      const current = await this.readQueued();
-      if (!current || current.privateJwk.x !== home.privateJwk.x) {
-        throw new OpenKeyNativeError('NOT_SIGNED_IN', 'The stored OpenKey session changed');
+    try {
+      const stepUp = await exchangeStepUpCode({ metadata, code, redirectUri: this.stepUpRedirectUri, clientId: this.options.clientId,
+        codeVerifier: verifier, sessionKey, appId: options.appId, requestedPermissions: options.capabilities,
+        expectedTinycloudHost: this.expectedHost(), ...binding, fetchFn: this.fetchFn });
+      try { await this.verifier(stepUp); }
+      catch { throw new OpenKeyNativeError('SERVER', 'Step-up delegation failed verification'); }
+      // Persist on top of whatever a renewal stored meanwhile; a renewal and this write never interleave.
+      await this.inRenewQueue(async () => {
+        this.assertEpoch(epoch);
+        const current = await this.readQueued();
+        if (!current || current.privateJwk.x !== home.privateJwk.x) {
+          throw new OpenKeyNativeError('NOT_SIGNED_IN', 'The stored OpenKey session changed');
+        }
+        const expected = matchFor(current);
+        current.stepUps = liveStepUps({ ...current.stepUps, [stepUp.appId]: stepUp });
+        await this.write(current, epoch, expected);
+      });
+      return stepUp;
+    } catch (error) {
+      // The code was redeemed, so the server may hold a step-up this client refused or could not store.
+      // A server refusal of the exchange itself (an OAuth error) created nothing.
+      if (!(error instanceof OpenKeyNativeError && error.serverError !== undefined)) {
+        await this.discardStepUp(options.appId, home.privateJwk.x, epoch);
       }
-      const expected = matchFor(current);
-      current.stepUps = liveStepUps({ ...current.stepUps, [stepUp.appId]: stepUp });
-      await this.write(current, epoch, expected);
-    });
-    return stepUp;
+      throw error;
+    }
   }
 
   /**
@@ -939,20 +950,38 @@ export class OpenKeyNative {
     this.assertStepUpAllowed(appId);
     const epoch = this.coordinator.epoch;
     const metadata = await this.metadata();
-    await this.inRenewQueue(async () => {
-      this.assertEpoch(epoch);
-      const record = await this.readQueued();
-      if (!record) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'No OpenKey session is stored');
-      await revokeStepUp({ metadata, clientId: this.options.clientId, refreshToken: record.tokens.refreshToken,
-        sessionKey: sessionKeypairFromJwk(record.privateJwk), appId, fetchFn: this.fetchFn, sleepFn: this.sleepFn });
-      // The session was replaced while the server answered: that grant's step-ups are not this record's.
-      if (this.coordinator.epoch !== epoch || !record.stepUps || !Object.hasOwn(record.stepUps, appId)) return;
-      const expected = matchFor(record);
-      const remaining = { ...record.stepUps };
-      delete remaining[appId];
-      record.stepUps = liveStepUps(remaining);
-      await this.write(record, epoch, expected);
-    });
+    await this.inRenewQueue(() => this.revokeStepUpQueued(metadata, appId, epoch));
+  }
+
+  /** Runs in the renew queue. `onlyKeyX` limits it to the grant whose session key has that public `x`. */
+  private async revokeStepUpQueued(metadata: OpenKeyServerMetadata, appId: string, epoch: number, onlyKeyX?: string): Promise<void> {
+    this.assertEpoch(epoch);
+    const record = await this.readQueued();
+    if (!record) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'No OpenKey session is stored');
+    if (onlyKeyX !== undefined && record.privateJwk.x !== onlyKeyX) return;
+    await revokeStepUp({ metadata, clientId: this.options.clientId, refreshToken: record.tokens.refreshToken,
+      sessionKey: sessionKeypairFromJwk(record.privateJwk), appId, fetchFn: this.fetchFn, sleepFn: this.sleepFn });
+    // The session was replaced while the server answered: that grant's step-ups are not this record's.
+    if (this.coordinator.epoch !== epoch || !record.stepUps || !Object.hasOwn(record.stepUps, appId)) return;
+    const expected = matchFor(record);
+    const remaining = { ...record.stepUps };
+    delete remaining[appId];
+    record.stepUps = liveStepUps(remaining);
+    await this.write(record, epoch, expected);
+  }
+
+  /**
+   * Best effort after a step-up the server may have created was refused here:
+   * end it on the server and drop any local copy for the app. It never throws,
+   * so it cannot mask the error that caused it.
+   */
+  private async discardStepUp(appId: string, keyX: string, epoch: number): Promise<void> {
+    try {
+      const metadata = await this.metadata();
+      await this.inRenewQueue(() => this.revokeStepUpQueued(metadata, appId, epoch, keyX));
+    } catch {
+      // The server row stays until the app calls revokeStepUp or the grant ends.
+    }
   }
 
   /**
