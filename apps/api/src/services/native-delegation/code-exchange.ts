@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { APIError } from 'better-auth/api';
 import { generateRandomString } from 'better-auth/crypto';
 import { defineRequestState, getCurrentAuthContext } from '@better-auth/core/context';
-import type { PrismaClient } from '@openkey/db';
+import type { PrismaClient, Prisma } from '@openkey/db';
 import { TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
 import { isNativeDelegationLockTimeout, nativeDelegationSqlState } from './errors';
 import { enabledNativeDelegation } from './policy';
@@ -11,6 +11,9 @@ import { storedToken, type ProviderTokenOptions } from './provider-tokens';
 import { OPENKEY_SESSION_PROOF_HEADER } from './public-protocol';
 import { verifySessionProof } from './session-proof';
 import type { NativePermission } from './par';
+import { StepUpEntryError, validateStepUpPermissions, type StepUpPermission } from './step-up';
+import { primaryKeyWhere } from '../primary-key';
+import { sameTinyCloudHost } from '../tinycloud-hosts';
 
 /**
  * Native code exchange (spec: "Code exchange and token response"), run from
@@ -57,6 +60,25 @@ interface ApprovedDelegation {
   permissions: NativePermission[];
   ttlSeconds: number;
   tinycloudHost: string;
+}
+
+/** The artifact a step-up approve stores: the sign-in artifact plus the grant and app it is bound to. */
+interface ApprovedStepUpDelegation extends ApprovedDelegation {
+  sessionDid: string;
+  grantId: string;
+  appId: string;
+}
+
+type NativeRequest = Prisma.TinyCloudNativeRequestGetPayload<Record<string, never>>;
+
+function isApprovedStepUpDelegation(value: unknown): value is ApprovedStepUpDelegation {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const entry = value as Record<string, unknown>;
+  const header = entry.delegationHeader;
+  return ['address', 'ownerDid', 'issuedAt', 'expiresAt', 'siwe', 'signature', 'delegationCid', 'verificationMethod', 'tinycloudHost', 'sessionDid', 'grantId', 'appId']
+    .every((field) => typeof entry[field] === 'string' && (entry[field] as string).length > 0) &&
+    typeof entry.chainId === 'number' && Array.isArray(entry.permissions) &&
+    !!header && typeof header === 'object' && typeof (header as Record<string, unknown>).Authorization === 'string';
 }
 
 export interface NativeCodeExchangeInput {
@@ -124,8 +146,8 @@ export async function exchangeNativeCode(
   if (typeof requestId !== 'string' || !requestId) invalidGrant('authorization code has no native delegation request');
   const request = await db.tinyCloudNativeRequest.findUnique({ where: { id: requestId } });
   if (!request) invalidGrant('no approved native delegation request for this code');
-  // A step-up code is redeemed by its own branch; this one only ever mints a grant, so it refuses any other kind.
-  if (request.kind !== 'SIGNIN') invalidGrant('authorization code does not match its native delegation request');
+  // A step-up code is redeemed by its own branch; the sign-in branch below only ever mints a grant.
+  if (request.kind !== 'SIGNIN' && request.kind !== 'STEPUP') invalidGrant('authorization code does not match its native delegation request');
   const binding = {
     clientId: bound(query, 'client_id'),
     redirectUri: bound(query, 'redirect_uri'),
@@ -137,6 +159,7 @@ export async function exchangeNativeCode(
   }
   if (!user?.id) invalidGrant('authorization code has no user');
   const userId = user.id;
+  if (request.kind === 'STEPUP') return await exchangeStepUp(db, issuer, request, userId, binding);
 
   const code = (ctx.body as { code?: unknown } | undefined)?.code;
   const proof = ctx.request?.headers.get(OPENKEY_SESSION_PROOF_HEADER);
@@ -260,6 +283,142 @@ export async function exchangeNativeCode(
   ctx.setHeader!('Cache-Control', 'no-store');
   ctx.setHeader!('Pragma', 'no-cache');
   return redeemed.fields;
+}
+
+/**
+ * TC-3569: the code exchange of an approved `STEPUP` request. It adds nothing to the user's consent and mints
+ * neither a grant nor a refresh token: the only writes are the request's redemption and the grant's step-up row.
+ * The code is bound to its request, the grant and PKCE, and the proof is verified against the GRANT's key. The
+ * hook runs before the provider writes any token, and the request's scopes carry no `offline_access`, so the
+ * provider writes one short-lived access token that holds only `tinycloud:delegation`.
+ */
+async function exchangeStepUp(
+  db: PrismaClient,
+  issuer: string,
+  request: NativeRequest,
+  userId: string,
+  binding: { clientId: string; redirectUri: string; state: string; codeChallenge: string },
+): Promise<Record<string, unknown>> {
+  const ctx = await getCurrentAuthContext();
+  const code = (ctx.body as { code?: unknown } | undefined)?.code;
+  const proof = ctx.request?.headers.get(OPENKEY_SESSION_PROOF_HEADER);
+  const home = request.grantId ? await db.tinyCloudNativeGrant.findUnique({ where: { id: request.grantId } }) : null;
+  if (!home || !request.appId || home.sessionJkt !== request.sessionJkt) invalidGrant('authorization code does not match its native delegation request');
+  if (typeof code !== 'string' || !verifySessionProof(proof, {
+    sessionJwk: home.sessionJwk as { x: string },
+    sessionJkt: home.sessionJkt,
+    htu: `${issuer}${TOKEN_PATH}`,
+    clientId: request.clientId,
+    credential: code,
+  })) {
+    throw new APIError('UNAUTHORIZED', { error: 'invalid_session_proof', error_description: 'missing or invalid OpenKey-Session-Proof' });
+  }
+  const appId = request.appId;
+  let fields: Record<string, unknown>;
+  try {
+    // Lock order: reviewer, consent, generation, request, grant, step-up, token row.
+    fields = await db.$transaction(async (tx) => {
+      await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
+      if (await lockNativeReviewer(tx, userId)) invalidGrant('review accounts cannot step up');
+      // A concurrent switch to user-controlled keys takes this row FOR UPDATE; it cannot land between here and the commit.
+      await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${userId} FOR SHARE`;
+      const consents = await tx.$queryRaw<{ id: string; scopes: string[] | null }[]>`
+        SELECT id, scopes FROM oauth_consent
+        WHERE "userId" = ${userId} AND "clientId" = ${request.clientId} FOR SHARE`;
+      if (!consents.some((row) => row.scopes?.includes(TINYCLOUD_DELEGATION_SCOPE))) invalidGrant('consent is missing or withdrawn');
+      const generations = await tx.$queryRaw<{ generation: bigint }[]>`
+        SELECT generation FROM tinycloud_native_consent_generation
+        WHERE "userId" = ${userId} AND "clientId" = ${request.clientId} FOR SHARE`;
+      const generation = generations[0]?.generation;
+      if (generation === undefined) invalidGrant('consent changed since approval');
+
+      // Exactly one of two concurrent redemptions matches; only an approval that finished hosting can be redeemed.
+      const swapped = await tx.tinyCloudNativeRequest.updateMany({
+        where: { id: request.id, kind: 'STEPUP', status: 'APPROVED', userId, consentGeneration: generation, hosting: 'existing', grantId: home.id, appId, ...binding },
+        data: { status: 'REDEEMED' },
+      });
+      if (swapped.count !== 1) invalidGrant('no approved native delegation request for this code');
+      const row = await tx.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: request.id } });
+      if (row.approvedRevision === null || row.delegation === null) throw new Error(`approved native request ${row.id} lacks its approval`);
+      // A DENIED approval reuses this column for its revoke record, which carries no signature: never redeemable.
+      if (!isApprovedStepUpDelegation(row.delegation)) throw new Error(`approved step-up request ${row.id} holds a malformed delegation`);
+      const delegation = row.delegation;
+      const preparation = await tx.tinyCloudNativePreparation.findUniqueOrThrow({
+        where: { requestId_revision: { requestId: row.id, revision: row.approvedRevision } },
+      });
+
+      // The grant must still be the live one this step-up was made for.
+      await tx.$queryRaw`SELECT id FROM tinycloud_native_grant WHERE id = ${home.id} FOR SHARE`;
+      const grant = await tx.tinyCloudNativeGrant.findUnique({ where: { id: home.id } });
+      const now = Date.now();
+      if (!grant || grant.status !== 'ACTIVE' || grant.userId !== userId || grant.clientId !== row.clientId || grant.consentGeneration !== generation ||
+        grant.sessionJkt !== row.sessionJkt || grant.sessionDid !== row.sessionDid || now >= grant.absoluteExpiresAt.getTime() - RENEWAL_CUTOFF_MS) {
+        invalidGrant('the grant is no longer active');
+      }
+      await tx.$queryRaw`SELECT id FROM oauth_refresh_token WHERE token = ${grant.refreshTokenHash} FOR SHARE`;
+      const token = grant.refreshTokenHash ? await tx.oauthRefreshToken.findUnique({ where: { token: grant.refreshTokenHash } }) : null;
+      if (!token || token.userId !== userId || token.clientId !== grant.clientId || token.revoked || token.expiresAt.getTime() <= now) invalidGrant('the grant is no longer active');
+      const account = await tx.user.findUnique({ where: { id: userId }, select: { lockedAt: true, reviewerHoldAt: true, tinyCloudManageKeyMode: true } });
+      if (!account || account.lockedAt || account.reviewerHoldAt || account.tinyCloudManageKeyMode === 'USER_CONTROLLED_EXCLUSIVE') invalidGrant('the account cannot step up');
+      const preference = await tx.tinyCloudManageKeyAppPreference.findUnique({ where: { userId_clientId: { userId, clientId: grant.clientId } } });
+      if (preference?.status === 'DISABLED' || preference?.enabled === false) invalidGrant('the app is switched off');
+      const key = await tx.ethereumKey.findFirst({ where: primaryKeyWhere(userId) });
+      if (!key || !key.sealedBlob || key.id !== grant.keyId || key.id !== preparation.keyId ||
+        key.address.toLowerCase() !== grant.address.toLowerCase() || key.address.toLowerCase() !== delegation.address.toLowerCase()) invalidGrant('the grant key changed');
+      const client = await tx.oauthClient.findUniqueOrThrow({ where: { clientId: row.clientId } });
+      const ceiling = enabledNativeDelegation(client);
+      if (!ceiling || !sameTinyCloudHost(ceiling.tinycloudHost, grant.tinycloudHost) || !sameTinyCloudHost(ceiling.tinycloudHost, delegation.tinycloudHost)) {
+        invalidGrant('native delegation is no longer enabled for this client');
+      }
+      let permissions: StepUpPermission[];
+      try { permissions = validateStepUpPermissions(appId, delegation.permissions, ceiling.stepUps); }
+      catch (error) { if (error instanceof StepUpEntryError) invalidGrant('the approved permissions are beyond the step-up ceiling'); throw error; }
+      // The delegation is for this grant's own session key and ends with, at the latest, the grant.
+      const expiresAt = Date.parse(delegation.expiresAt);
+      if (delegation.grantId !== grant.id || delegation.appId !== appId || delegation.sessionDid !== grant.sessionDid ||
+        !(expiresAt > now) || expiresAt > grant.absoluteExpiresAt.getTime()) invalidGrant('the approved delegation does not match the grant');
+
+      const existing = await tx.tinyCloudNativeStepUp.findUnique({ where: { grantId_appId: { grantId: grant.id, appId } } });
+      const approvedAt = new Date(now);
+      if (!existing) {
+        await tx.tinyCloudNativeStepUp.create({ data: { id: randomBytes(24).toString('base64url'), grantId: grant.id, appId, approvedPermissions: permissions, approvedAt } });
+      } else if (existing.status === 'ACTIVE') {
+        await tx.tinyCloudNativeStepUp.update({ where: { id: existing.id }, data: { approvedPermissions: permissions, approvedAt } });
+      } else if (existing.revokedReason === 'app_revoked') {
+        // The app revoked it; this approved request is the user's full consent to bring it back.
+        await tx.tinyCloudNativeStepUp.update({ where: { id: existing.id },
+          data: { status: 'ACTIVE', revokedAt: null, revokedReason: null, approvedPermissions: permissions, approvedAt, lastRenewedAt: null } });
+      } else invalidGrant('the step-up was revoked with its grant');
+
+      return {
+        tinycloud_stepup: {
+          version: 1,
+          appId,
+          grantId: grant.id,
+          address: delegation.address,
+          chainId: delegation.chainId,
+          ownerDid: delegation.ownerDid,
+          spaces: [...new Set(permissions.map((permission) => permission.space))].map((space) => ({ space, spaceId: `tinycloud:pkh:eip155:1:${delegation.address}:${space}` })),
+          verificationMethod: delegation.verificationMethod,
+          siwe: delegation.siwe,
+          signature: delegation.signature,
+          delegationHeader: delegation.delegationHeader,
+          delegationCid: delegation.delegationCid,
+          issuedAt: delegation.issuedAt,
+          expiresAt: delegation.expiresAt,
+          renewableUntil: new Date(grant.absoluteExpiresAt.getTime() - RENEWAL_CUTOFF_MS).toISOString(),
+          permissions: structuredClone(permissions),
+          tinycloudHost: delegation.tinycloudHost,
+          hosting: 'existing',
+        },
+      };
+    }, { timeout: 15_000 });
+  } catch (error) {
+    throw spentCodeError(error);
+  }
+  ctx.setHeader!('Cache-Control', 'no-store');
+  ctx.setHeader!('Pragma', 'no-cache');
+  return fields;
 }
 
 /**

@@ -253,9 +253,9 @@ guard checks the three columns, the constraint and the cascade. Nothing writes a
 adds the columns. A step-up request takes its session key from the grant, never
 from the caller. The sign-in consent path refuses any other non-`SIGNIN` kind
 (`409 unsupported_request_kind` from prepare and approve), `STEPUP` requests
-are handled by their own branch (below), and the code exchange refuses every
-non-`SIGNIN` request (`invalid_grant`), so a `STEPUP` row can never be
-completed as a sign-in.
+are handled by their own branch (below), and the code exchange sends a `STEPUP`
+request to its own branch, which can never create a grant, so a `STEPUP` row can
+never be completed as a sign-in.
 
 ### Step-up request endpoint (TC-3569)
 
@@ -267,8 +267,8 @@ nothing, and discovery omits `tinycloud_delegation_stepup_endpoint`.
 It signs nothing, issues no token, creates no grant and does not rotate the
 refresh token. It returns `201 {"request_uri", "expires_in": 90}`; the app then
 opens `/authorize` with that `request_uri` as for sign-in. The consent step is
-described under "Step-up consent" below; the code exchange for `STEPUP`
-requests is a separate change and still refuses them.
+described under "Step-up consent" below, and its code exchange under "Step-up
+code exchange".
 
 Credentials are the Home grant's current refresh token plus an
 `OpenKey-Session-Proof` signed by the grant's key for this endpoint
@@ -363,6 +363,61 @@ the framed app. `OPENKEY_NATIVE_STEPUP_ENABLED` must not be turned on in any
 environment before the step-up consent screen (PR 4) ships. A retry sweeper for
 `revokePending` records, consumed by consent withdrawal and app revoke, must also
 exist before the flag is turned on.
+
+### Step-up code exchange (TC-3569)
+
+After consent the app finishes `/authorize` (the provider's consent accept), then
+redeems the code at `POST /api/auth/oauth2/token` with the PKCE verifier and an
+`OpenKey-Session-Proof` as for sign-in, except that the proof is verified against
+the **Home grant's** session key (`request.grantId`), never a key the caller
+supplies. A step-up code can never mint a grant: the exchange for a `STEPUP`
+request has its own branch that creates no grant and no refresh token and never
+touches `oauth_consent` or its generation.
+
+Under the locks (reviewer, user `FOR SHARE`, consent, generation, request,
+grant, refresh-token row) the exchange redeems the request only when it is
+`APPROVED` with `hosting = 'existing'` and its `delegation` has the shape of an
+approval (a `DENIED` request reuses the column for its revoke record). It then
+re-runs the gate: grant ACTIVE for this user and client, same session key and
+DID, generation unchanged, before the renewal cutoff, refresh token live, account
+not locked or on reviewer hold, key control not `USER_CONTROLLED_EXCLUSIVE`, app
+not switched off, same canonical key, ceiling still enabled for the grant's host,
+and the approved entries still inside the current `stepUps` ceiling. The
+delegation's `expiresAt` must still be in the future and no later than the grant's
+`absoluteExpiresAt`. Any failure leaves the request unredeemed; the provider has
+already spent the code (as for sign-in), so the app starts a new request.
+
+The step-up row is created for a new `(grantId, appId)`, replaced in place
+(same row, new entries) when it is `ACTIVE`, and re-activated when it was revoked
+by the app (`app_revoked`): this approved, full browser consent is the user's
+approval to bring it back, and `grantId` is never changed. A row revoked with
+its grant (`grant_revoked`) can never be re-activated.
+
+The response carries the signed delegation under `tinycloud_stepup`:
+`{version, appId, grantId, address, chainId, ownerDid, spaces: [{space,
+spaceId}], verificationMethod, siwe, signature, delegationHeader,
+delegationCid, issuedAt, expiresAt, renewableUntil, permissions, tinycloudHost,
+hosting: "existing"}`. `renewableUntil` is the grant's renewal cutoff
+(`absoluteExpiresAt` minus 300 s). The response is `Cache-Control: no-store`.
+
+**Consent is not changed.** The provider's consent accept rewrites the user's
+`oauth_consent` scopes to the accepted request's scopes. A step-up request carries
+only `tinycloud:delegation`, which would shrink the Home sign-in's `openid
+offline_access tinycloud:delegation`. The provider interceptor for
+`/oauth2/consent` therefore puts the row's `scopes` and `updatedAt` back as they
+were for a `STEPUP` request, whatever the provider answered. (A process crash
+between the provider's write and the restore would leave the narrower scopes
+until the next sign-in; the delegation scope, which every native check reads, is
+never removed.)
+
+**The access token.** The step-up request's scope is `tinycloud:delegation` only
+(no `openid`, no `offline_access`), so the provider writes one access token of
+300 s with that scope alone, no refresh token (`refreshId` null) and no ID token.
+The token opens nothing: the delegate signer, userinfo and the OpenKey account
+APIs, `/stepup`, renew and revoke all refuse it (they need a session or a refresh
+token plus a session proof, or other scopes). Withdrawing consent deletes it with
+the client's other access tokens; otherwise it expires on its own within 300 s and
+holds no capability.
 
 ## Permissions and the signed session SIWE
 
@@ -1245,6 +1300,7 @@ transaction starts with `SET LOCAL lock_timeout = '5s'`.
 |---|---|
 | Prepare / approve | consent `FOR SHARE` (may be missing) → generation (`INSERT … ON CONFLICT DO NOTHING`, then `FOR SHARE`) → request `FOR UPDATE` |
 | Code exchange | consent `FOR SHARE` → generation `FOR SHARE` → request (atomic `UPDATE`) → grant insert. The provider writes the refresh-token row afterwards, outside this transaction, and `generateRefreshToken` links it to the grant. |
+| Step-up code exchange | reviewer → user `FOR SHARE` → consent `FOR SHARE` → generation `FOR SHARE` → request (atomic `UPDATE`) → grant `FOR SHARE` → refresh-token row `FOR SHARE` → step-up row. |
 | Renew / native revoke | consent `FOR SHARE` → generation `FOR SHARE` → grant `FOR UPDATE` → token rows |
 | Withdrawal trigger | consent (held by the `DELETE`/`UPDATE`) → generation `UPDATE` → requests → grants → token rows |
 

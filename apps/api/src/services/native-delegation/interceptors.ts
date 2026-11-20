@@ -584,10 +584,32 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
     c.res = new Response(null, { status: 200, headers });
   }
 
+  /**
+   * TC-3569: the provider's consent step overwrites the user's `oauth_consent` scopes with the scopes of the
+   * request being accepted. A step-up request carries only `tinycloud:delegation`, so accepting it would shrink the
+   * Home sign-in's consent (`openid offline_access tinycloud:delegation`). A step-up never changes consent: the
+   * row's scopes and `updatedAt` are put back as they were, whatever the provider answered.
+   */
+  async function keepConsentForStepUp(c: Context, next: () => Promise<void>): Promise<void> {
+    const body = await parseProviderJson(c.req.raw);
+    const query = typeof body?.oauth_query === 'string' ? new URLSearchParams(body.oauth_query) : null;
+    const requestId = query?.get('tinycloud_request');
+    const row = requestId ? await database.tinyCloudNativeRequest.findUnique({ where: { id: requestId }, select: { kind: true, clientId: true } }) : null;
+    const userId = row?.kind === 'STEPUP' ? await getSessionUserId(c.req.raw.headers) : null;
+    if (!row || !userId) return next();
+    const before = await database.oauthConsent.findFirst({ where: { userId, clientId: row.clientId }, select: { id: true, scopes: true, updatedAt: true } });
+    try {
+      await next();
+    } finally {
+      if (before) await database.oauthConsent.updateMany({ where: { id: before.id }, data: { scopes: before.scopes, updatedAt: before.updatedAt } });
+    }
+  }
+
   // Other auth routes go straight to better-auth without an async hop.
   return (c, next) => {
     const path = providerPath(c.req.url);
     const post = c.req.method === 'POST';
+    if (post && path === '/oauth2/consent') return keepConsentForStepUp(c, next);
     const guard: ((c: Context) => Promise<Decision>) | null = path === '/oauth2/authorize' ? guardAuthorize
       : post && path === '/sign-in/social' ? guardSocialSignIn
       : post && path === '/oauth2/token' ? guardToken

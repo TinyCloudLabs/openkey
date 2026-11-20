@@ -72,7 +72,8 @@ if (!child) {
   };
   const hash = (value: string) => createHash('sha256').update(value).digest('base64url');
   const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
-  const challenge = hash('tc3569-verifier');
+  const VERIFIER = 'tc3569-stepup-verifier-0123456789-0123456789-0123456789';
+  const challenge = hash(VERIFIER);
   type SessionKey = { privateKey: KeyObject; publicJwk: { kty: 'OKP'; crv: 'Ed25519'; x: string }; jkt: string };
 
   function sessionKey(): SessionKey {
@@ -133,6 +134,10 @@ if (!child) {
     finally { await database.close(); }
     process.env.DATABASE_URL = `pglite:${directory}`;
     delete process.env.OPENKEY_DATABASE_SCHEMA;
+    // The per-user consent budget (30 approves a minute) is not what these flows test; the endpoint's own caps are.
+    const { mock } = await import('bun:test');
+    const userRateLimit = await import('../services/native-delegation/user-rate-limit');
+    mock.module('../services/native-delegation/user-rate-limit', () => ({ ...userRateLimit, nativeUserRetryAfter: () => 0 }));
     const { createPrismaClient } = await import('@openkey/db');
     prisma = createPrismaClient();
     const { auth } = await import('../auth');
@@ -611,5 +616,184 @@ if (!child) {
     const { value } = await withNode(allHosted, () => consent(id, 'approve', approval(preview)));
     expect(value.status).toBe(200);
     expect(await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-1' } })).toMatchObject({ status: 'REVOKED', revokedReason: 'app_revoked', revokedAt, grantId: 'g1' });
+  });
+
+  // ---- PR 2c: the code exchange of an approved STEPUP request ----
+  async function approvedCode(key: SessionKey) {
+    const created = await (await stepUp(key, 'token-1')).json() as { request_uri: string };
+    const authorize = await app.fetch(new Request(`${API}/api/auth/oauth2/authorize?${new URLSearchParams({ client_id: clientId, request_uri: created.request_uri })}`, { headers: { cookie } }));
+    expect(authorize.status, await authorize.clone().text()).toBe(302);
+    const consentUrl = new URL(authorize.headers.get('location')!);
+    expect(consentUrl.pathname).toBe('/oauth/consent');
+    const id = created.request_uri.slice('urn:ietf:params:oauth:request_uri:'.length);
+    const { preview } = await prepared(id);
+    const { value: approved } = await withNode(allHosted, () => consent(id, 'approve', approval(preview)));
+    expect(approved.status, await approved.clone().text()).toBe(200);
+    const accepted = await app.fetch(new Request(`${API}/api/auth/oauth2/consent`, { method: 'POST',
+      headers: { cookie, origin: 'https://openkey.test', 'content-type': 'application/json' }, body: JSON.stringify({ accept: true, oauth_query: consentUrl.searchParams.toString() }) }));
+    expect(accepted.status, await accepted.clone().text()).toBe(200);
+    const code = new URL((await accepted.json() as { url: string }).url).searchParams.get('code')!;
+    expect(code).toBeTruthy();
+    return { id, code, preview };
+  }
+  function redeem(key: SessionKey, code: string, overrides: Record<string, string> = {}, sessionProof?: string) {
+    return post('/api/auth/oauth2/token', new URLSearchParams({
+      grant_type: 'authorization_code', code, client_id: clientId, redirect_uri: STEPUP_REDIRECT, code_verifier: VERIFIER, ...overrides,
+    }), sessionProof ?? proof(key, code, '/api/auth/oauth2/token'));
+  }
+
+  // What the Home sign-in owns. A step-up exchange must leave all of it exactly as it was.
+  async function homeState() {
+    return JSON.stringify([
+      await prisma.tinyCloudNativeGrant.findMany({ orderBy: { id: 'asc' } }), await prisma.oauthRefreshToken.findMany({ orderBy: { id: 'asc' } }),
+      await prisma.oauthConsent.findMany({ orderBy: { id: 'asc' } }), await prisma.tinyCloudNativeConsentGeneration.findMany(),
+    ], (_key, value) => typeof value === 'bigint' ? value.toString() : value);
+  }
+  async function fresh() {
+    await beforeEachReset();
+    await prisma.$executeRawUnsafe('TRUNCATE TABLE "oauth_access_token", "verification", "tinycloud_bootstrap_state"');
+    await prisma.tinyCloudBootstrapState.create({ data: { userId: USER, keyId: 'su-key', address, chainId: 1, tinycloudHost: HOST,
+      bootstrapVersion: 'test', status: 'complete', checkedAt: new Date(), completedAt: new Date() } });
+    await prisma.oauthClient.update({ where: { clientId }, data: { disabled: false, tinycloudNativeDelegation: ceiling } });
+  }
+
+  test('the exchange returns the signed step-up; it adds no grant, refresh token or consent change', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const home = await homeState();
+    const flow = await approvedCode(key);
+    const response = await redeem(key, flow.code);
+    const payload = await response.json() as { access_token: string; expires_in: number; scope: string; refresh_token?: string; id_token?: string; tinycloud_delegation?: unknown;
+      tinycloud_stepup: { grantId: string; appId: string; siwe: string; signature: string; spaces: Array<{ space: string }>; expiresAt: string; renewableUntil: string; hosting: string; permissions: unknown } };
+    expect(response.status, JSON.stringify(payload)).toBe(200);
+    expect(payload).toMatchObject({ scope: DELEGATION, expires_in: 300, tinycloud_stepup: { grantId: 'g1', appId: EXPLORER, hosting: 'existing', permissions: explorerEntries } });
+    expect(payload.tinycloud_stepup.spaces.map((space) => space.space)).toEqual(['public', 'applications']);
+    expect([payload.refresh_token, payload.id_token, payload.tinycloud_delegation]).toEqual([undefined, undefined, undefined]);
+    expect(await recoverMessageAddress({ message: payload.tinycloud_stepup.siwe, signature: payload.tinycloud_stepup.signature as `0x${string}` })).toBe(address);
+    const grant = await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'g1' } });
+    expect(Date.parse(payload.tinycloud_stepup.expiresAt)).toBeLessThanOrEqual(grant.absoluteExpiresAt.getTime());
+    expect(Date.parse(payload.tinycloud_stepup.renewableUntil)).toBe(grant.absoluteExpiresAt.getTime() - 300_000);
+    // Home is exactly as before: same grant, same single refresh token, same consent (scopes included), same generation.
+    expect(await homeState()).toBe(home);
+    expect(await prisma.tinyCloudNativeStepUp.findMany()).toEqual([expect.objectContaining({ grantId: 'g1', appId: EXPLORER, status: 'ACTIVE', approvedPermissions: explorerEntries, revokedAt: null })]);
+    expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: flow.id } })).status).toBe('REDEEMED');
+    // The one access token holds only the delegation scope, lives 300 s and hangs off no refresh token.
+    const tokens = await prisma.oauthAccessToken.findMany();
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0]).toMatchObject({ scopes: [DELEGATION], refreshId: null, clientId, userId: USER });
+    expect(tokens[0]!.expiresAt.getTime() - tokens[0]!.createdAt.getTime()).toBeLessThanOrEqual(300_000);
+  });
+
+  test('the step-up access token opens nothing: not the signer, not userinfo, not the step-up, renew or revoke endpoints', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const flow = await approvedCode(key);
+    const payload = await (await redeem(key, flow.code)).json() as { access_token: string };
+    const home = await homeState();
+    const bearer = { Authorization: `Bearer ${payload.access_token}`, 'content-type': 'application/json', origin: 'https://openkey.test' };
+    const outcomes: Array<[string, number]> = [];
+    for (const [path, method] of [['/api/delegate/sign', 'POST'], ['/api/auth/oauth2/userinfo', 'GET'], ['/api/auth/oauth2/tinycloud/stepup', 'POST'],
+      ['/api/auth/oauth2/tinycloud/renew', 'POST'], ['/api/auth/oauth2/tinycloud/revoke', 'POST'], ['/api/account/connected-apps', 'GET']] as const) {
+      const response = await app.fetch(new Request(`${API}${path}`, { method, headers: bearer, body: method === 'POST' ? '{}' : undefined }));
+      outcomes.push([path, response.status >= 400 && response.status < 500 ? 4 : response.status]);
+    }
+    expect(outcomes).toEqual([['/api/delegate/sign', 4], ['/api/auth/oauth2/userinfo', 4], ['/api/auth/oauth2/tinycloud/stepup', 4],
+      ['/api/auth/oauth2/tinycloud/renew', 4], ['/api/auth/oauth2/tinycloud/revoke', 4], ['/api/account/connected-apps', 4]]);
+    expect(await homeState()).toBe(home);
+  });
+
+  test('a code redeems once; a wrong proof spends the code and nothing else', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const stranger = sessionKey();
+    for (const [label, bad] of [
+      ['proof from another key', (code: string) => proof(stranger, code, '/api/auth/oauth2/token', { signer: stranger.privateKey })],
+      ['proof for another credential', (code: string) => proof(key, 'other-code', '/api/auth/oauth2/token')],
+      ['proof for another client', (code: string) => proof(key, code, '/api/auth/oauth2/token').replace(/^[^.]+\.[^.]+/, () => `${b64({ typ: 'openkey-session-proof+jwt', alg: 'EdDSA', kid: stranger.jkt })}.${b64({ jti: 'x' })}`)],
+    ] as const) {
+      const flow = await approvedCode(key);
+      const response = await redeem(key, flow.code, {}, bad(flow.code));
+      expect([label, response.status, (await body(response)).error]).toEqual([label, 401, 'invalid_session_proof']);
+      // The provider spent the code before the proof was checked: the right proof no longer redeems it.
+      expect([label, (await redeem(key, flow.code)).status >= 400]).toEqual([label, true]);
+      expect([label, await prisma.tinyCloudNativeStepUp.count(), await prisma.oauthAccessToken.count()]).toEqual([label, 0, 0]);
+      await prisma.tinyCloudNativeRequest.deleteMany({});
+    }
+    const flow = await approvedCode(key);
+    expect((await redeem(key, flow.code)).status).toBe(200);
+    expect((await redeem(key, flow.code)).status).toBeGreaterThanOrEqual(400);
+    expect(await prisma.tinyCloudNativeStepUp.count()).toBe(1);
+    expect(await prisma.oauthAccessToken.count()).toBe(1);
+  });
+
+  test('every gate is re-checked at exchange: the code is spent, no step-up row, no token', async () => {
+    const cases: Array<[string, (requestId: string) => Promise<unknown>]> = [
+      ['grant revoked', () => prisma.tinyCloudNativeGrant.update({ where: { id: 'g1' }, data: { status: 'REVOKED', revokedAt: new Date(), revokedReason: 'test' } })],
+      ['grant near its end', () => prisma.tinyCloudNativeGrant.update({ where: { id: 'g1' }, data: { absoluteExpiresAt: new Date(Date.now() + 100_000) } })],
+      ['refresh token revoked', () => prisma.oauthRefreshToken.update({ where: { token: hash('token-1') }, data: { revoked: new Date() } })],
+      ['stepUps removed from the ceiling', () => prisma.oauthClient.update({ where: { clientId }, data: { tinycloudNativeDelegation: { ...ceiling, stepUps: undefined } } })],
+      ['ceiling narrowed', () => prisma.oauthClient.update({ where: { clientId }, data: { tinycloudNativeDelegation: { ...ceiling, stepUps: { [EXPLORER]: { public: ceiling.stepUps[EXPLORER].public } } } } })],
+      ['canonical key changed', () => prisma.ethereumKey.update({ where: { id: 'su-key' }, data: { isCanonicalTinyCloud: false } })],
+      ['key control exclusive to the user', () => prisma.user.update({ where: { id: USER }, data: { tinyCloudManageKeyMode: 'USER_CONTROLLED_EXCLUSIVE' } })],
+      ['app switched off', () => prisma.tinyCloudManageKeyAppPreference.create({ data: { userId: USER, clientId, enabled: false, status: 'DISABLED' } })],
+      ['consent withdrawn', () => prisma.oauthConsent.deleteMany({ where: { userId: USER, clientId } })],
+      ['hosting did not finish', (requestId) => prisma.tinyCloudNativeRequest.update({ where: { id: requestId }, data: { hosting: 'failed' } })],
+      ['client disabled', () => prisma.oauthClient.update({ where: { clientId }, data: { disabled: true } })],
+      ['delegation is a revoke record, not an approval', (requestId) => prisma.tinyCloudNativeRequest.update({ where: { id: requestId },
+        data: { delegation: { revokePending: true, delegationCid: 'bafy-test', grantId: 'g1', appId: EXPLORER } } })],
+      ['approved delegation would outlive the grant', async (requestId) => {
+        const row = await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: requestId } });
+        await prisma.tinyCloudNativeRequest.update({ where: { id: requestId }, data: { delegation: { ...(row.delegation as object), expiresAt: new Date(Date.now() + 90 * 86400_000).toISOString() } } });
+      }],
+    ];
+    for (const [label, arrange] of cases) {
+      await fresh();
+      const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+      const flow = await approvedCode(key);
+      await arrange(flow.id);
+      const response = await redeem(key, flow.code);
+      expect([label, response.status >= 400 && response.status < 600]).toEqual([label, true]);
+      expect([label, await prisma.tinyCloudNativeStepUp.count(), await prisma.oauthAccessToken.count()]).toEqual([label, 0, 0]);
+      // Withdrawing the consent also withdraws every request (the consent trigger); the others stay approved and unredeemed.
+      const expected = label === 'consent withdrawn' ? 'WITHDRAWN' : 'APPROVED';
+      expect([label, (await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: flow.id } })).status]).toEqual([label, expected]);
+    }
+  });
+
+  test('a code for a STEPUP request can never mint a grant or a sign-in: a forged sign-in scope is refused', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const flow = await approvedCode(key);
+    const home = await homeState();
+    const row = await prisma.verification.findFirstOrThrow({ where: { identifier: hash(flow.code) } });
+    const value = JSON.parse(row.value) as { query: Record<string, unknown> };
+    value.query.scope = `openid offline_access ${DELEGATION}`;
+    await prisma.verification.update({ where: { id: row.id }, data: { value: JSON.stringify(value) } });
+    const response = await redeem(key, flow.code);
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(await homeState()).toBe(home);
+    expect(await prisma.oauthRefreshToken.count()).toBe(1);
+    expect(await prisma.tinyCloudNativeStepUp.count()).toBe(0);
+  });
+
+  test('an app-revoked step-up comes back through this full consent; a row a grant revoke took down never does', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-1', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries.slice(0, 1),
+      status: 'REVOKED', revokedAt: new Date(Date.now() - 60_000), revokedReason: 'app_revoked' } });
+    const flow = await approvedCode(key);
+    expect((await redeem(key, flow.code)).status).toBe(200);
+    expect(await prisma.tinyCloudNativeStepUp.findMany()).toEqual([expect.objectContaining({ id: 'su-1', grantId: 'g1', status: 'ACTIVE', revokedAt: null, revokedReason: null, approvedPermissions: explorerEntries })]);
+
+    await fresh();
+    const second = sessionKey(); await seedDevice('g1', second, 'token-1');
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-2', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries,
+      status: 'REVOKED', revokedAt: new Date(Date.now() - 60_000), revokedReason: 'grant_revoked' } });
+    const stale = await approvedCode(second);
+    expect((await redeem(second, stale.code)).status).toBeGreaterThanOrEqual(400);
+    expect(await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-2' } })).toMatchObject({ status: 'REVOKED', revokedReason: 'grant_revoked' });
+  });
+
+  test('an active step-up is replaced by the newly approved set, never duplicated', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-1', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries.slice(0, 1) } });
+    const flow = await approvedCode(key);
+    expect((await redeem(key, flow.code)).status).toBe(200);
+    expect(await prisma.tinyCloudNativeStepUp.findMany()).toEqual([expect.objectContaining({ id: 'su-1', status: 'ACTIVE', approvedPermissions: explorerEntries })]);
   });
 }
