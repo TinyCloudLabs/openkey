@@ -16,8 +16,8 @@ import type { TLSSocket } from 'node:tls';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { keccak256 } from 'viem';
 import { seal, unseal } from '../src/index';
-import { loadLegacyRoot, LegacyRootError, type KmsAppKeyResponse, type LegacyKmsTransport } from '../src/legacy-root';
-import { createRaTlsKmsTransport, issueRaTlsClientCredentials } from '../src/legacy-root-kms';
+import { loadLegacyRoot, legacyRootPinsFromEnv, LEGACY_ROOT_ENV, LegacyRootError, type KmsAppKeyResponse, type LegacyKmsTransport } from '../src/legacy-root';
+import { certExtensionValue, createRaTlsKmsTransport, issueRaTlsClientCredentials } from '../src/legacy-root-kms';
 
 // dstack sdk/simulator/appkeys.json app key and the KAT's recorded answers
 // (dstack-key-derivation.kat.test.ts): the epoch-0 derivation must reproduce them.
@@ -92,7 +92,13 @@ describe('loadLegacyRoot', () => {
 
   test('wrong epoch in the answer: bail', async () => {
     const canary = await oldSealed(KAT[0]!.path, 'x');
-    for (const bad of [answer({ rootEpoch: 1 }), answer({ appEpoch: 1 })]) {
+    for (const bad of [
+      answer({ rootEpoch: 1 }),
+      answer({ appEpoch: 1 }),
+      // An absent epoch is a refusal, not 0: an old KMS that ignores root_epoch must not pass here.
+      answer({ rootEpoch: undefined }),
+      answer({ appEpoch: undefined }),
+    ]) {
       await expect(
         loadLegacyRoot({ config, transport: transportReturning(() => bad), canaries: [canary] }),
       ).rejects.toMatchObject({ code: 'epoch_mismatch' });
@@ -170,6 +176,61 @@ describe('loadLegacyRoot', () => {
   });
 });
 
+describe('pins', () => {
+  const env = {
+    [LEGACY_ROOT_ENV.kmsUrl]: 'https://kms.example:12001',
+    [LEGACY_ROOT_ENV.rootEpoch]: '0',
+    [LEGACY_ROOT_ENV.kmsRootPubkey]: ROOT_PUB_HEX,
+    [LEGACY_ROOT_ENV.kmsCaCert]: 'AAAA',
+    [LEGACY_ROOT_ENV.appId]: APP_ID,
+  };
+
+  test('are read from the environment: all five, epoch 0, well-formed', () => {
+    expect(legacyRootPinsFromEnv(env)).toEqual({
+      config: { rootEpoch: 0, appId: APP_ID, kmsRootPubkey: ROOT_PUB_HEX },
+      kmsUrl: 'https://kms.example:12001',
+      kmsCaCert: 'AAAA',
+    });
+    for (const name of Object.values(LEGACY_ROOT_ENV)) {
+      expect(() => legacyRootPinsFromEnv({ ...env, [name]: undefined })).toThrow(LegacyRootError);
+      expect(() => legacyRootPinsFromEnv({ ...env, [name]: '  ' })).toThrow(LegacyRootError);
+    }
+    for (const bad of [
+      { [LEGACY_ROOT_ENV.rootEpoch]: '1' },
+      { [LEGACY_ROOT_ENV.rootEpoch]: 'zero' },
+      { [LEGACY_ROOT_ENV.kmsRootPubkey]: '00'.repeat(33) },
+      { [LEGACY_ROOT_ENV.appId]: '11' },
+    ]) {
+      expect(() => legacyRootPinsFromEnv({ ...env, ...bad })).toThrow(LegacyRootError);
+    }
+  });
+});
+
+// The spec's vectors (tinycloud-node docs/tc-3554-kms-epoch-fetch.md), shared with the Rust side.
+test('the shared vectors: issuance digest, app pub, and GetKey(path) from k256_key = 01 x 32', () => {
+  const key = new Uint8Array(32).fill(1);
+  const pub = secp256k1.getPublicKey(key, true);
+  expect(Buffer.from(pub).toString('hex')).toBe('031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f');
+  expect(keccak256(new Uint8Array(0), 'hex')).toBe('0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470');
+  const digest = keccak256(Buffer.concat([Buffer.from('dstack-kms-issued:'), Buffer.alloc(20, 0x35), pub]), 'hex');
+  expect(digest).toBe('0xb5e4fd2ef63b05285fe79190ddfb3e40efba1eef5a507bf4aed05da771847721');
+  const prk = createHmac('sha256', 'RATLS').update(key).digest();
+  const getKey = createHmac('sha256', prk).update('tinycloud/keys/primary').update(Buffer.from([1])).digest('hex');
+  expect(getKey).toBe('bbeb1e02123fe7cfab8471656ab89eff4d0b517fabdd457aa624942d1d5e0b02');
+});
+
+test('the signature recovery byte is ignored: only (r, s) under the pinned key count', async () => {
+  const canary = await oldSealed(KAT[0]!.path, 'x');
+  const signature = issue(OLD_APP_KEY);
+  signature[64] = 0x7f;
+  const root = await loadLegacyRoot({
+    config,
+    transport: transportReturning(() => answer({ k256Signature: signature })),
+    canaries: [canary],
+  });
+  root.destroy();
+});
+
 // ---- transport: fake agent + fake KMS -------------------------------------
 
 function openssl(args: string[], cwd: string): void {
@@ -177,59 +238,29 @@ function openssl(args: string[], cwd: string): void {
   if (result.exitCode !== 0) throw new Error(`openssl ${args[0]} failed: ${result.stderr.toString()}`);
 }
 
+// A TDX-v4-shaped fake quote: the 64-byte REPORTDATA sits at offset 568, as in a real one.
+const QUOTE_HEAD = Buffer.alloc(568, 0xab);
+const QUOTE_TAIL = Buffer.alloc(100, 0xcd);
+const VM_CONFIG = '{"os_image_hash":"00"}';
+
 describe('createRaTlsKmsTransport against a fake agent and a fake KMS', () => {
   let dir: string;
   let agent: HttpServer;
   let kms: HttpsServer;
+  let kmsNoUsage: HttpsServer;
   let kmsUrl: string;
-  let kmsCaPin: string;
-  let agentRequests: { reportData: string }[];
+  let kmsNoUsageUrl: string;
+  let kmsCaCert: string;
+  let agentRequests: { path: string; reportData?: string }[];
   let kmsSeen: { path: string; body: Record<string, unknown>; authorized: boolean }[];
-  let mode: 'ok' | 'refuse' | 'epoch1';
+  let mode: 'ok' | 'refuse' | 'epoch1' | 'no-root-epoch' | 'no-app-epoch';
+  let agentMode: 'ok' | 'other-app' | 'bad-report-data';
 
-  beforeAll(async () => {
-    dir = mkdtempSync(join(tmpdir(), 'openkey-k1-'));
-    // KMS CA (what GetMeta.ca_cert is), KMS server cert, and the temp CA (P-256, as the KMS issues it).
-    openssl(['ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', 'ca.key'], dir);
-    openssl(['req', '-x509', '-new', '-key', 'ca.key', '-days', '2', '-subj', '/CN=fake kms ca', '-out', 'ca.pem'], dir);
-    openssl(['ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', 'tmp.key'], dir);
-    openssl(['req', '-x509', '-new', '-key', 'tmp.key', '-days', '2', '-subj', '/CN=Dstack Client Temp CA', '-out', 'tmp.pem'], dir);
-    openssl(['ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', 'srv.key'], dir);
-    openssl(['req', '-new', '-key', 'srv.key', '-subj', '/CN=localhost', '-out', 'srv.csr'], dir);
-    writeFileSync(join(dir, 'ext.cnf'), 'subjectAltName=DNS:localhost,IP:127.0.0.1\n');
-    openssl(['x509', '-req', '-in', 'srv.csr', '-CA', 'ca.pem', '-CAkey', 'ca.key', '-CAcreateserial', '-days', '2', '-extfile', 'ext.cnf', '-out', 'srv.pem'], dir);
-    const caPem = readFileSync(join(dir, 'ca.pem'), 'utf8');
-    const spki = new X509Certificate(caPem).publicKey.export({ type: 'spki', format: 'der' });
-    kmsCaPin = createHash('sha256').update(spki).digest('hex');
-
-    agentRequests = [];
-    kmsSeen = [];
-    mode = 'ok';
-
-    // Fake guest agent: POST /GetQuote {report_data hex}.
-    agent = createHttpServer((req, res) => {
-      const chunks: Buffer[] = [];
-      req.on('data', (c: Buffer) => chunks.push(c));
-      req.on('end', () => {
-        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { report_data: string };
-        agentRequests.push({ reportData: body.report_data });
-        const payload = JSON.stringify({
-          quote: 'ab'.repeat(64),
-          event_log: '[{"imr":3}]',
-          report_data: body.report_data,
-          vm_config: '{"os_image_hash":"00"}',
-        });
-        // The SDK's own HTTP reader needs a Content-Length, as the real agent sends.
-        res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) }).end(payload);
-      });
-    });
-    await new Promise<void>((resolve) => agent.listen(join(dir, 'dstack.sock'), resolve));
-
-    // Fake KMS: public GetTempCaCert; GetAppKey only for a client cert issued by the temp CA.
-    kms = createHttpsServer(
+  function fakeKms(keyFile: string, certFile: string): HttpsServer {
+    return createHttpsServer(
       {
-        key: readFileSync(join(dir, 'srv.key')),
-        cert: readFileSync(join(dir, 'srv.pem')),
+        key: readFileSync(join(dir, keyFile)),
+        cert: readFileSync(join(dir, certFile)),
         ca: [readFileSync(join(dir, 'tmp.pem'))],
         requestCert: true,
         rejectUnauthorized: false,
@@ -243,22 +274,21 @@ describe('createRaTlsKmsTransport against a fake agent and a fake KMS', () => {
           kmsSeen.push({ path: req.url ?? '', body, authorized: socket.authorized });
           const send = (status: number, payload: unknown) =>
             res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(payload));
-          if (req.url?.startsWith('/prpc/KMS.GetTempCaCert')) {
+          if (req.url === '/prpc/GetTempCaCert?json') {
             send(200, {
               temp_ca_cert: readFileSync(join(dir, 'tmp.pem'), 'utf8'),
               temp_ca_key: readFileSync(join(dir, 'tmp.key'), 'utf8'),
-              ca_cert: caPem,
+              ca_cert: readFileSync(join(dir, 'ca.pem'), 'utf8'),
             });
             return;
           }
-          if (req.url?.startsWith('/prpc/KMS.GetAppKey') && socket.authorized && mode !== 'refuse') {
-            const signature = issue(OLD_APP_KEY);
+          if (req.url === '/prpc/GetAppKey?json' && socket.authorized && mode !== 'refuse') {
             send(200, {
-              ca_cert: caPem,
+              ca_cert: readFileSync(join(dir, 'ca.pem'), 'utf8'),
               k256_key: Buffer.from(OLD_APP_KEY).toString('hex'),
-              k256_signature: Buffer.from(signature).toString('hex'),
-              // proto3 JSON omits zeros: epoch 0 arrives as an absent field.
-              ...(mode === 'epoch1' ? { root_epoch: 1 } : {}),
+              k256_signature: Buffer.from(issue(OLD_APP_KEY)).toString('hex'),
+              ...(mode === 'no-root-epoch' ? {} : { root_epoch: mode === 'epoch1' ? 1 : 0 }),
+              ...(mode === 'no-app-epoch' ? {} : { app_epoch: 0 }),
             });
             return;
           }
@@ -266,45 +296,114 @@ describe('createRaTlsKmsTransport against a fake agent and a fake KMS', () => {
         });
       },
     );
+  }
+
+  const port = (server: HttpsServer) => {
+    const address = server.address();
+    return typeof address === 'object' && address ? address.port : 0;
+  };
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'openkey-k1-'));
+    // KMS CA, the temp CA (P-256, as the KMS issues it), and two KMS server leaves:
+    // one marked kms:rpc (extension 1.3.6.1.4.1.62397.1.4 = DER OCTET STRING "kms:rpc"), one not.
+    openssl(['ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', 'ca.key'], dir);
+    openssl(['req', '-x509', '-new', '-key', 'ca.key', '-days', '2', '-subj', '/CN=fake kms ca', '-out', 'ca.pem'], dir);
+    openssl(['ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', 'tmp.key'], dir);
+    openssl(['req', '-x509', '-new', '-key', 'tmp.key', '-days', '2', '-subj', '/CN=Dstack Client Temp CA', '-out', 'tmp.pem'], dir);
+    openssl(['ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', 'srv.key'], dir);
+    openssl(['req', '-new', '-key', 'srv.key', '-subj', '/CN=localhost', '-out', 'srv.csr'], dir);
+    const san = 'subjectAltName=DNS:localhost,IP:127.0.0.1\n';
+    writeFileSync(join(dir, 'ext-rpc.cnf'), `${san}1.3.6.1.4.1.62397.1.4=DER:04076b6d733a727063\n`);
+    writeFileSync(join(dir, 'ext-plain.cnf'), san);
+    for (const [name, ext] of [['srv', 'ext-rpc.cnf'], ['srv-plain', 'ext-plain.cnf']] as const) {
+      openssl(['x509', '-req', '-in', 'srv.csr', '-CA', 'ca.pem', '-CAkey', 'ca.key', '-CAcreateserial', '-days', '2', '-extfile', ext, '-out', `${name}.pem`], dir);
+    }
+    kmsCaCert = new X509Certificate(readFileSync(join(dir, 'ca.pem'))).raw.toString('base64');
+
+    agentRequests = [];
+    kmsSeen = [];
+    mode = 'ok';
+    agentMode = 'ok';
+
+    // Fake guest agent: POST /Info and POST /GetQuote {report_data hex}.
+    agent = createHttpServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { report_data?: string };
+        agentRequests.push({ path: req.url ?? '', reportData: body.report_data });
+        const payload =
+          req.url === '/Info'
+            ? { app_id: agentMode === 'other-app' ? '22'.repeat(20) : APP_ID.toUpperCase(), tcb_info: '{}' }
+            : {
+                quote: Buffer.concat([
+                  QUOTE_HEAD,
+                  Buffer.from(agentMode === 'bad-report-data' ? '00'.repeat(64) : body.report_data!, 'hex'),
+                  QUOTE_TAIL,
+                ]).toString('hex'),
+                event_log: '[{"imr":3}]',
+                report_data: body.report_data,
+                vm_config: VM_CONFIG,
+              };
+        const text = JSON.stringify(payload);
+        // The SDK's own HTTP reader needs a Content-Length, as the real agent sends.
+        res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(text) }).end(text);
+      });
+    });
+    await new Promise<void>((resolve) => agent.listen(join(dir, 'dstack.sock'), resolve));
+
+    kms = fakeKms('srv.key', 'srv.pem');
+    kmsNoUsage = fakeKms('srv.key', 'srv-plain.pem');
     await new Promise<void>((resolve) => kms.listen(0, '127.0.0.1', resolve));
-    const address = kms.address();
-    kmsUrl = `https://localhost:${typeof address === 'object' && address ? address.port : 0}`;
+    await new Promise<void>((resolve) => kmsNoUsage.listen(0, '127.0.0.1', resolve));
+    kmsUrl = `https://localhost:${port(kms)}`;
+    kmsNoUsageUrl = `https://localhost:${port(kmsNoUsage)}`;
   });
 
   afterAll(async () => {
     await new Promise<void>((resolve) => agent.close(() => resolve()));
     await new Promise<void>((resolve) => kms.close(() => resolve()));
+    await new Promise<void>((resolve) => kmsNoUsage.close(() => resolve()));
     rmSync(dir, { recursive: true, force: true });
   });
 
-  function transport(pin = kmsCaPin) {
-    return createRaTlsKmsTransport({ kmsUrl, kmsCaPin: pin, agentEndpoint: join(dir, 'dstack.sock') });
+  function transport(overrides: { url?: string; ca?: string } = {}) {
+    return createRaTlsKmsTransport({
+      kmsUrl: overrides.url ?? kmsUrl,
+      kmsCaCert: overrides.ca ?? kmsCaCert,
+      appId: APP_ID,
+      agentEndpoint: join(dir, 'dstack.sock'),
+    });
+  }
+
+  function reset(next: typeof mode = 'ok', agentNext: typeof agentMode = 'ok') {
+    mode = next;
+    agentMode = agentNext;
+    agentRequests.length = 0;
+    kmsSeen.length = 0;
   }
 
   test('happy path: a quoted, temp-CA-signed client cert fetches epoch 0, and an old-sealed fixture unseals', async () => {
-    mode = 'ok';
-    agentRequests.length = 0;
-    kmsSeen.length = 0;
+    reset();
     const canary = await oldSealed(KAT[0]!.path, 'old secret');
     const root = await loadLegacyRoot({ config, transport: transport(), canaries: [canary] });
     expect(Buffer.from(root.legacyKey(KAT[1]!.path)).toString('hex')).toBe(KAT[1]!.sealingKey);
 
-    const appKeyCall = kmsSeen.find((seen) => seen.path.startsWith('/prpc/KMS.GetAppKey'))!;
-    // The request: epoch 0 pinned explicitly, the agent's vm_config forwarded, no ticket.
-    expect(appKeyCall.body).toEqual({
-      api_version: 1,
-      vm_config: '{"os_image_hash":"00"}',
-      root_epoch: 0,
-      launch_ticket: '',
-    });
-    // The client cert chained to the temp CA at the TLS layer.
+    // Step 3 is without a client certificate; step 7 is with one that chains to the temp CA.
+    const tempCaCall = kmsSeen.find((seen) => seen.path === '/prpc/GetTempCaCert?json')!;
+    expect(tempCaCall.authorized).toBe(false);
+    const appKeyCall = kmsSeen.find((seen) => seen.path === '/prpc/GetAppKey?json')!;
+    // Epoch 0 pinned explicitly, no app_epoch, the agent's vm_config forwarded, no ticket.
+    expect(appKeyCall.body).toEqual({ api_version: 1, vm_config: VM_CONFIG, root_epoch: 0, launch_ticket: '' });
     expect(appKeyCall.authorized).toBe(true);
-    expect(agentRequests).toHaveLength(1);
+    // The agent was asked who it is before anything went to the KMS, then for one quote.
+    expect(agentRequests.map((r) => r.path)).toEqual(['/Info', '/GetQuote']);
     root.destroy();
   });
 
-  test('the client certificate binds the quote to its own key and chains to the temp CA', async () => {
-    agentRequests.length = 0;
+  test('the client certificate binds the quote to its own key, chains to the temp CA, and carries the legacy extensions', async () => {
+    reset();
     const tempCaCertPem = readFileSync(join(dir, 'tmp.pem'), 'utf8');
     const creds = await issueRaTlsClientCredentials({
       agentEndpoint: join(dir, 'dstack.sock'),
@@ -313,8 +412,8 @@ describe('createRaTlsKmsTransport against a fake agent and a fake KMS', () => {
     });
     const cert = new X509Certificate(creds.certPem);
     const caCert = new X509Certificate(tempCaCertPem);
-    // Issued by the temp CA, and its signature verifies under the CA key.
     expect(cert.issuer).toBe(caCert.subject);
+    expect(cert.subject).toBe('CN=RA-TLS TEMP Cert');
     expect(cert.verify(caCert.publicKey)).toBe(true);
     expect(cert.checkIssued(caCert)).toBe(true);
     // The quote request was over sha512("ratls-cert:" || the cert's own SPKI) ...
@@ -322,40 +421,75 @@ describe('createRaTlsKmsTransport against a fake agent and a fake KMS', () => {
     const expected = createHash('sha512').update(Buffer.concat([Buffer.from('ratls-cert:'), spki])).digest('hex');
     expect(agentRequests.map((r) => r.reportData)).toEqual([expected]);
     expect(creds.reportData.toString('hex')).toBe(expected);
-    // ... and the agent's quote and event log ride in dstack's legacy RA-TLS extensions.
-    const raw = cert.raw;
-    expect(raw.includes(Buffer.from('ab'.repeat(64), 'hex'))).toBe(true);
-    expect(raw.includes(Buffer.from('[{"imr":3}]'))).toBe(true);
-    // OIDs 1.3.6.1.4.1.62397.1.1 (quote) and .1.2 (event log).
-    expect(raw.includes(Buffer.from('2b0601040183e73d0101', 'hex'))).toBe(true);
-    expect(raw.includes(Buffer.from('2b0601040183e73d0102', 'hex'))).toBe(true);
-    expect(creds.vmConfig).toBe('{"os_image_hash":"00"}');
+    // ... and quote and event log ride in the legacy extensions, each a DER OCTET STRING inside extnValue
+    // (what ra-tls get_extension_bytes parses).
+    const quote = Buffer.concat([QUOTE_HEAD, Buffer.from(expected, 'hex'), QUOTE_TAIL]);
+    const quoteExt = certExtensionValue(cert.raw, '1.3.6.1.4.1.62397.1.1')!;
+    expect(quoteExt[0]).toBe(0x04);
+    expect(quoteExt.subarray(quoteExt.length - quote.length).equals(quote)).toBe(true);
+    expect(quoteExt.length).toBe(quote.length + 4); // tag, 0x82, two length bytes
+    const logExt = certExtensionValue(cert.raw, '1.3.6.1.4.1.62397.1.2')!;
+    expect([...logExt.subarray(0, 2)]).toEqual([0x04, '[{"imr":3}]'.length]);
+    expect(logExt.subarray(2).toString('utf8')).toBe('[{"imr":3}]');
+    // keyUsage: critical, digitalSignature only (BIT STRING 07 80).
+    expect(certExtensionValue(cert.raw, '2.5.29.15')!.equals(Buffer.from('03020780', 'hex'))).toBe(true);
+    expect(creds.vmConfig).toBe(VM_CONFIG);
   });
 
-  test('a KMS CA that does not match the pin: bail before any quote is requested', async () => {
-    mode = 'ok';
-    agentRequests.length = 0;
+  test('a KMS CA that is not the pinned one: bail before any quote is requested', async () => {
+    reset();
+    const canary = await oldSealed(KAT[0]!.path, 'x');
+    const otherCa = new X509Certificate(readFileSync(join(dir, 'tmp.pem'))).raw.toString('base64');
+    await expect(
+      loadLegacyRoot({ config, transport: transport({ ca: otherCa }), canaries: [canary] }),
+    ).rejects.toMatchObject({ code: 'kms_refused' });
+    expect(agentRequests.filter((r) => r.path === '/GetQuote')).toEqual([]);
+    expect(kmsSeen).toEqual([]);
+  });
+
+  test('a server leaf that is not marked kms:rpc is refused, though the CA signed it', async () => {
+    reset();
     const canary = await oldSealed(KAT[0]!.path, 'x');
     await expect(
-      loadLegacyRoot({ config, transport: transport('00'.repeat(32)), canaries: [canary] }),
+      loadLegacyRoot({ config, transport: transport({ url: kmsNoUsageUrl }), canaries: [canary] }),
     ).rejects.toMatchObject({ code: 'kms_refused' });
-    expect(agentRequests).toEqual([]);
+    expect(agentRequests.filter((r) => r.path === '/GetQuote')).toEqual([]);
+  });
+
+  test('a guest agent that is not the pinned app: bail before any KMS call', async () => {
+    reset('ok', 'other-app');
+    const canary = await oldSealed(KAT[0]!.path, 'x');
+    await expect(loadLegacyRoot({ config, transport: transport(), canaries: [canary] })).rejects.toMatchObject({
+      code: 'kms_refused',
+    });
+    expect(kmsSeen).toEqual([]);
+  });
+
+  test('a quote whose REPORTDATA is not the requested one: bail before GetAppKey', async () => {
+    reset('ok', 'bad-report-data');
+    const canary = await oldSealed(KAT[0]!.path, 'x');
+    await expect(loadLegacyRoot({ config, transport: transport(), canaries: [canary] })).rejects.toMatchObject({
+      code: 'kms_refused',
+    });
+    expect(kmsSeen.some((seen) => seen.path === '/prpc/GetAppKey?json')).toBe(false);
   });
 
   test('KMS refusal: bail', async () => {
-    mode = 'refuse';
+    reset('refuse');
     const canary = await oldSealed(KAT[0]!.path, 'x');
     await expect(loadLegacyRoot({ config, transport: transport(), canaries: [canary] })).rejects.toMatchObject({
       code: 'kms_refused',
     });
   });
 
-  test('a KMS that answers for epoch 1: bail', async () => {
-    mode = 'epoch1';
+  test('a KMS that answers for epoch 1, or without saying which epoch: bail', async () => {
     const canary = await oldSealed(KAT[0]!.path, 'x');
-    await expect(loadLegacyRoot({ config, transport: transport(), canaries: [canary] })).rejects.toMatchObject({
-      code: 'epoch_mismatch',
-    });
+    for (const next of ['epoch1', 'no-root-epoch', 'no-app-epoch'] as const) {
+      reset(next);
+      await expect(loadLegacyRoot({ config, transport: transport(), canaries: [canary] })).rejects.toMatchObject({
+        code: 'epoch_mismatch',
+      });
+    }
   });
 });
 

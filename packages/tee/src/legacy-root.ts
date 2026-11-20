@@ -57,8 +57,10 @@ export interface LegacyRootConfig {
 
 /** The fields of `KMS.GetAppKey`'s answer that this module consumes. */
 export interface KmsAppKeyResponse {
-  rootEpoch: number;
-  appEpoch: number;
+  /** `undefined` when the answer carries no root_epoch: refused, not read as 0. */
+  rootEpoch: number | undefined;
+  /** `undefined` when the answer carries no app_epoch: refused, not read as 0. */
+  appEpoch: number | undefined;
   /** The 32-byte app k256 private key of that root epoch. */
   k256Key: Uint8Array;
   /** 65 bytes: r || s || recovery id, over the issuance preimage. */
@@ -82,7 +84,10 @@ export interface LegacyCanary {
 }
 
 export interface LegacyRoot {
-  /** Sealing key for `path` under the old root: sha256 of the v0 GetKey output. For unseal only. */
+  /**
+   * Sealing key for `path` under the old root: sha256 of the v0 GetKey output. For
+   * unseal only. A fresh copy per call: the caller zeroes it after use.
+   */
   legacyKey(path: string): Uint8Array;
   /** Zeroes the root. `legacyKey` throws afterwards. */
   destroy(): void;
@@ -120,6 +125,57 @@ function parseConfig(config: LegacyRootConfig): { appId: Uint8Array; rootPubkey:
   return { appId, rootPubkey };
 }
 
+/** Names of the pins in the compose `environment:`. */
+export const LEGACY_ROOT_ENV = {
+  kmsUrl: 'OPENKEY_LEGACY_KMS_URL',
+  rootEpoch: 'OPENKEY_LEGACY_ROOT_EPOCH',
+  kmsRootPubkey: 'OPENKEY_LEGACY_KMS_ROOT_PUBKEY',
+  kmsCaCert: 'OPENKEY_LEGACY_KMS_CA_CERT',
+  appId: 'OPENKEY_LEGACY_APP_ID',
+} as const;
+
+export interface LegacyRootPins {
+  config: LegacyRootConfig;
+  /** KMS origin, https://host[:port]. */
+  kmsUrl: string;
+  /** The KMS RPC CA certificate, base64 of its DER. The only trust anchor for the KMS. */
+  kmsCaCert: string;
+}
+
+/**
+ * The pins, read from the process environment and from nowhere else: not from a
+ * KMS response, not from the database, not from an argument. They protect the
+ * old root in transit and decide which root is accepted, so they must come from
+ * attested configuration. Deploy them as LITERAL values in the compose
+ * `environment:` (covered by the compose hash), never as `${VAR}` references,
+ * which resolve from the sealed environment and are not attested. All five are
+ * required; a missing or malformed pin throws `config_invalid`.
+ */
+export function legacyRootPinsFromEnv(env: Record<string, string | undefined> = process.env): LegacyRootPins {
+  const read = (name: string): string => {
+    const value = env[name]?.trim();
+    if (!value) {
+      throw new LegacyRootError('config_invalid', `${name} is not set`);
+    }
+    return value;
+  };
+  const epoch = read(LEGACY_ROOT_ENV.rootEpoch);
+  if (!/^\d+$/.test(epoch)) {
+    throw new LegacyRootError('config_invalid', `${LEGACY_ROOT_ENV.rootEpoch} is not a number`);
+  }
+  const pins: LegacyRootPins = {
+    config: {
+      rootEpoch: Number(epoch),
+      appId: read(LEGACY_ROOT_ENV.appId),
+      kmsRootPubkey: read(LEGACY_ROOT_ENV.kmsRootPubkey),
+    },
+    kmsUrl: read(LEGACY_ROOT_ENV.kmsUrl),
+    kmsCaCert: read(LEGACY_ROOT_ENV.kmsCaCert),
+  };
+  parseConfig(pins.config); // epoch 0 only, app id and root key well formed
+  return pins;
+}
+
 /**
  * Fetches the epoch-0 app key through `transport`, checks it, and proves it
  * with the canary records. Throws LegacyRootError and returns nothing usable
@@ -145,7 +201,7 @@ export async function loadLegacyRoot(options: {
     throw new LegacyRootError('kms_refused', 'the KMS did not return the epoch-0 app key');
   }
 
-  // (a) The KMS must say it derived from epoch 0. Never accept "whatever it sent".
+  // (a) The KMS must SAY it derived from epoch 0: an absent epoch is a refusal, never "0".
   if (response.rootEpoch !== 0 || response.appEpoch !== 0) {
     throw new LegacyRootError('epoch_mismatch', 'the KMS answered for a different epoch than 0');
   }
@@ -155,7 +211,8 @@ export async function loadLegacyRoot(options: {
     if (k256Key.length !== 32 || !secp256k1.utils.isValidSecretKey(k256Key)) {
       throw new LegacyRootError('response_invalid', 'the app key is not a secp256k1 secret key');
     }
-    if (response.k256Signature.length !== 65 || response.k256Signature[64]! > 1) {
+    // `v` is ignored (verification is under the pinned key); only the envelope length is checked.
+    if (response.k256Signature.length !== 65) {
       throw new LegacyRootError('response_invalid', 'the app key signature is not r || s || v');
     }
 

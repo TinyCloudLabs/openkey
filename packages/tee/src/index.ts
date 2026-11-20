@@ -247,11 +247,12 @@ export {
 export type { UnsignedNostrEvent, SignedNostrEvent, NostrKeypair, SealedNostrSecret } from './nostr';
 
 // Read-only access to the pre-move Phala root (TC-3554 K1; draft, do not merge).
-export { loadLegacyRoot, LegacyRootError } from './legacy-root';
+export { loadLegacyRoot, legacyRootPinsFromEnv, LEGACY_ROOT_ENV, LegacyRootError } from './legacy-root';
 export type {
   LegacyRoot,
   LegacyRootConfig,
   LegacyRootErrorCode,
+  LegacyRootPins,
   LegacyCanary,
   LegacyKmsTransport,
   KmsAppKeyResponse,

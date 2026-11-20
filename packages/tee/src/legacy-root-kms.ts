@@ -1,31 +1,36 @@
 // The KMS leg of the epoch-0 read: an RA-TLS client for `KMS.GetAppKey`. TC-3554, K1.
 //
-// DO NOT MERGE. Mirrors the node's path B (node-design-bridge.md, "The shared
-// piece"), the one the 0.5.12 guest's own boot takes:
-//   1. fetch the KMS temp CA (`GetTempCaCert`, public) and check the CA cert's
-//      public key against the pinned hash;
-//   2. generate a P-256 key in process and ask the guest agent for a quote over
-//      sha512("ratls-cert:" || SPKI DER) (dstack `QuoteContentType::RaTlsCert`);
-//   3. sign a client certificate for that key with the temp CA, carrying the
-//      quote and event log in dstack's legacy RA-TLS extensions
-//      (1.3.6.1.4.1.62397.1.1 / .1.2), which KMS builds from 0.5 on still read;
-//   4. call `KMS.GetAppKey {api_version: 1, root_epoch: 0, vm_config}` over
-//      mutual TLS, trusting only the pinned CA.
-// The KMS answer is not trusted for what it says: loadLegacyRoot checks its
-// epoch and its signature under a pinned root key. Nothing here is a fallback;
-// every failure throws.
+// DO NOT MERGE. Implements the protocol in tinycloud-node's
+// docs/tc-3554-kms-epoch-fetch.md (aa33b25c; /var/tmp/aa33-tc3554.IODx/
+// tc-3554-kms-epoch-fetch.md, sha256 033d819a…); if this file and that document
+// disagree, this file is the bug:
+//   1. the guest agent's app id must equal the pinned one;
+//   2. every KMS connection trusts only the pinned KMS CA, with hostname
+//      verification, and the server's leaf must carry extension
+//      1.3.6.1.4.1.62397.1.4 = "kms:rpc" (the CA also signs app certificates);
+//   3. `GetTempCaCert` (no client certificate);
+//   4-6. a throwaway P-256 key, a quote over sha512("ratls-cert:" || SPKI), whose
+//      REPORTDATA is checked, and a client certificate signed by the temp CA
+//      carrying quote and event log in dstack's legacy RA-TLS extensions;
+//   7. `GetAppKey {api_version: 1, vm_config, root_epoch, launch_ticket: ""}`
+//      presenting [client cert, temp CA cert]; any non-2xx stops, no retry.
+// The KMS answer is not trusted for what it says: loadLegacyRoot checks its epoch
+// and its signature under a pinned root key. Nothing here is a fallback.
 //
 // Not run against a real KMS: without TDX hardware no quote binds a fresh key.
 // Tests cover the wire shape against a fake agent and a fake KMS.
 import { createHash, createPrivateKey, createSign, generateKeyPairSync, randomBytes, X509Certificate } from 'crypto';
 import { request as httpsRequest } from 'https';
+import type { TLSSocket } from 'tls';
 import type { KmsAppKeyResponse, LegacyKmsTransport } from './legacy-root';
 
 export interface RaTlsKmsTransportOptions {
-  /** KMS base URL, e.g. https://kms.dstack-pha-prod2.phala.network (`/prpc` is added). */
+  /** KMS origin, `https://host[:port]`, no path (`/prpc` is added). */
   kmsUrl: string;
-  /** sha256 of the KMS CA certificate's SubjectPublicKeyInfo DER, hex. */
-  kmsCaPin: string;
+  /** The KMS RPC CA certificate: base64 (standard, padded) of its DER. The only trust anchor. */
+  kmsCaCert: string;
+  /** The app id, 20 bytes as hex. The guest agent must report the same one. */
+  appId: string;
   /** Guest agent socket or URL; default is the SDK's own (/var/run/dstack.sock). */
   agentEndpoint?: string;
   /** Per-call limit. Default 20 s. */
@@ -34,8 +39,14 @@ export interface RaTlsKmsTransportOptions {
 
 const OID_RATLS_TDX_QUOTE = '1.3.6.1.4.1.62397.1.1';
 const OID_RATLS_EVENT_LOG = '1.3.6.1.4.1.62397.1.2';
+const OID_RATLS_CERT_USAGE = '1.3.6.1.4.1.62397.1.4';
 const OID_ECDSA_SHA256 = '1.2.840.10045.4.3.2';
 const OID_COMMON_NAME = '2.5.4.3';
+const OID_KEY_USAGE = '2.5.29.15';
+const KMS_RPC_USAGE = 'kms:rpc';
+
+// TDX v4 quote: 48-byte header, then the 584-byte body whose REPORTDATA starts at body offset 520.
+const TD_REPORT_DATA_OFFSET = 48 + 520;
 
 // ---- minimal DER ----------------------------------------------------------
 
@@ -51,7 +62,7 @@ function der(tag: number, ...parts: Buffer[]): Buffer {
   return Buffer.concat([Buffer.from([tag]), derLength(body.length), body]);
 }
 
-function derOid(oid: string): Buffer {
+function oidBytes(oid: string): Buffer {
   const arcs = oid.split('.').map(Number);
   const out: number[] = [arcs[0]! * 40 + arcs[1]!];
   for (const arc of arcs.slice(2)) {
@@ -59,7 +70,11 @@ function derOid(oid: string): Buffer {
     for (let n = Math.floor(arc / 128); n > 0; n = Math.floor(n / 128)) chunk.unshift((n & 0x7f) | 0x80);
     out.push(...chunk);
   }
-  return der(0x06, Buffer.from(out));
+  return Buffer.from(out);
+}
+
+function derOid(oid: string): Buffer {
+  return der(0x06, oidBytes(oid));
 }
 
 function derUtcTime(date: Date): Buffer {
@@ -69,7 +84,8 @@ function derUtcTime(date: Date): Buffer {
 }
 
 /** Reads one TLV at `offset`; returns its content range and the end of the element. */
-function readTlv(buf: Buffer, offset: number): { start: number; end: number; next: number } {
+function readTlv(buf: Buffer, offset: number): { tag: number; start: number; end: number; next: number } {
+  const tag = buf[offset]!;
   let pos = offset + 1;
   let length = buf[pos++]!;
   if (length & 0x80) {
@@ -77,15 +93,21 @@ function readTlv(buf: Buffer, offset: number): { start: number; end: number; nex
     length = 0;
     for (let i = 0; i < count; i++) length = length * 256 + buf[pos++]!;
   }
-  return { start: pos, end: pos + length, next: pos + length };
+  return { tag, start: pos, end: pos + length, next: pos + length };
+}
+
+/** The tbsCertificate of a DER certificate, with the offset of its first field after `version`. */
+function tbsFields(certDer: Buffer): { tbs: { start: number; end: number }; firstAfterVersion: number } {
+  const cert = readTlv(certDer, 0);
+  const tbs = readTlv(certDer, cert.start);
+  let pos = tbs.start;
+  if (certDer[pos] === 0xa0) pos = readTlv(certDer, pos).next; // [0] version
+  return { tbs, firstAfterVersion: pos };
 }
 
 /** The issuer name to use: the temp CA certificate's subject, byte for byte. */
 function subjectOf(caDer: Buffer): Buffer {
-  const cert = readTlv(caDer, 0);
-  const tbs = readTlv(caDer, cert.start);
-  let pos = tbs.start;
-  if (caDer[pos] === 0xa0) pos = readTlv(caDer, pos).next; // [0] version
+  let pos = tbsFields(caDer).firstAfterVersion;
   pos = readTlv(caDer, pos).next; // serialNumber
   pos = readTlv(caDer, pos).next; // signature algorithm
   pos = readTlv(caDer, pos).next; // issuer
@@ -94,8 +116,37 @@ function subjectOf(caDer: Buffer): Buffer {
   return caDer.subarray(pos, subject.next);
 }
 
-function extension(oid: string, value: Buffer): Buffer {
-  return der(0x30, derOid(oid), der(0x04, value));
+/**
+ * The bytes inside the extnValue OCTET STRING of extension `oid`, or undefined.
+ * dstack writes its values as a DER OCTET STRING inside extnValue.
+ */
+export function certExtensionValue(certDer: Buffer, oid: string): Buffer | undefined {
+  const { tbs, firstAfterVersion } = tbsFields(certDer);
+  let pos = firstAfterVersion;
+  for (const _skipped of ['serialNumber', 'signature', 'issuer', 'validity', 'subject', 'subjectPublicKeyInfo']) {
+    pos = readTlv(certDer, pos).next;
+  }
+  while (pos < tbs.end && certDer[pos] !== 0xa3) pos = readTlv(certDer, pos).next; // skip [1] and [2] unique ids
+  if (pos >= tbs.end) return undefined;
+  const extensions = readTlv(certDer, readTlv(certDer, pos).start);
+  const wanted = oidBytes(oid);
+  for (let ext = extensions.start; ext < extensions.end; ) {
+    const item = readTlv(certDer, ext);
+    const id = readTlv(certDer, item.start);
+    if (certDer.subarray(id.start, id.end).equals(wanted)) {
+      let next = id.next;
+      if (certDer[next] === 0x01) next = readTlv(certDer, next).next; // critical flag
+      const value = readTlv(certDer, next);
+      return certDer.subarray(value.start, value.end);
+    }
+    ext = item.next;
+  }
+  return undefined;
+}
+
+/** A dstack RA-TLS extension: extnValue holds a DER OCTET STRING of the raw bytes. */
+function extension(oid: string, raw: Buffer): Buffer {
+  return der(0x30, derOid(oid), der(0x04, der(0x04, raw)));
 }
 
 /**
@@ -119,10 +170,10 @@ export function buildRaTlsClientCert(options: {
   const notBefore = new Date(now.getTime() - 3600_000);
   const notAfter = new Date(now.getTime() + 3600_000);
   const serial = randomBytes(16);
-  serial[0] = serial[0]! & 0x7f; // positive
-  if (serial[0] === 0) serial[0] = 1;
+  serial[0] = (serial[0]! & 0x7f) | 0x01; // positive, no leading zero
   const sigAlg = der(0x30, derOid(OID_ECDSA_SHA256));
-  const subject = der(0x30, der(0x31, der(0x30, derOid(OID_COMMON_NAME), der(0x0c, Buffer.from('openkey legacy-root client', 'utf8')))));
+  const subject = der(0x30, der(0x31, der(0x30, derOid(OID_COMMON_NAME), der(0x0c, Buffer.from('RA-TLS TEMP Cert', 'utf8')))));
+  const keyUsage = der(0x30, derOid(OID_KEY_USAGE), der(0x01, Buffer.from([0xff])), der(0x04, der(0x03, Buffer.from([0x07, 0x80])))); // digitalSignature
   const tbs = der(
     0x30,
     der(0xa0, der(0x02, Buffer.from([2]))), // v3
@@ -134,7 +185,12 @@ export function buildRaTlsClientCert(options: {
     options.spkiDer,
     der(
       0xa3,
-      der(0x30, extension(OID_RATLS_TDX_QUOTE, options.quote), extension(OID_RATLS_EVENT_LOG, options.eventLog)),
+      der(
+        0x30,
+        keyUsage,
+        extension(OID_RATLS_TDX_QUOTE, options.quote),
+        extension(OID_RATLS_EVENT_LOG, options.eventLog),
+      ),
     ),
   );
   const signature = createSign('sha256').update(tbs).sign(caKey); // ECDSA, DER
@@ -145,14 +201,24 @@ export function buildRaTlsClientCert(options: {
 
 // ---- HTTPS / prpc ---------------------------------------------------------
 
-interface TlsOptions {
-  ca?: string;
-  cert?: string;
-  key?: string;
-  rejectUnauthorized: boolean;
+interface ClientCredentials {
+  /** PEM chain presented to the KMS: client cert, then the temp CA cert. */
+  certChainPem: string;
+  keyPem: string;
 }
 
-function postJson(url: string, body: unknown, tls: TlsOptions, timeoutMs: number): Promise<Record<string, unknown>> {
+/**
+ * POSTs JSON to the KMS. The only trust anchor is `caPem` (no system roots), the
+ * hostname is verified, TLS is 1.2 or later, and the server's leaf must carry
+ * the `kms:rpc` usage extension. Any non-2xx answer is an error.
+ */
+function kmsPost(
+  url: string,
+  body: unknown,
+  caPem: string,
+  credentials: ClientCredentials | undefined,
+  timeoutMs: number,
+): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const payload = Buffer.from(JSON.stringify(body), 'utf8');
     const req = httpsRequest(
@@ -161,19 +227,29 @@ function postJson(url: string, body: unknown, tls: TlsOptions, timeoutMs: number
         method: 'POST',
         headers: { 'content-type': 'application/json', 'content-length': payload.length },
         timeout: timeoutMs,
-        ...tls,
+        ca: caPem, // replaces the system roots
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: true,
+        ...(credentials ? { cert: credentials.certChainPem, key: credentials.keyPem } : {}),
       },
       (res) => {
+        const leaf = (res.socket as TLSSocket).getPeerCertificate?.().raw;
+        const usage = leaf ? certExtensionValue(leaf, OID_RATLS_CERT_USAGE) : undefined;
+        const expected = Buffer.concat([Buffer.from([0x04, KMS_RPC_USAGE.length]), Buffer.from(KMS_RPC_USAGE, 'utf8')]);
+        if (!usage || !usage.equals(expected)) {
+          res.resume();
+          reject(new Error('the KMS server certificate is not marked kms:rpc'));
+          return;
+        }
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
         res.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf8');
-          if (res.statusCode !== 200) {
+          if (res.statusCode === undefined || res.statusCode < 200 || res.statusCode > 299) {
             reject(new Error(`KMS answered ${res.statusCode}`));
             return;
           }
           try {
-            const parsed: unknown = JSON.parse(text);
+            const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
             if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('not an object');
             resolve(parsed as Record<string, unknown>);
           } catch {
@@ -188,21 +264,27 @@ function postJson(url: string, body: unknown, tls: TlsOptions, timeoutMs: number
   });
 }
 
+/** Bytes fields in KMS JSON are hex strings; an optional `0x` prefix is accepted. */
 function hexField(source: Record<string, unknown>, name: string): Buffer {
   const value = source[name];
-  if (typeof value !== 'string' || !/^(?:[0-9a-fA-F]{2})+$/.test(value)) {
+  const stripped = typeof value === 'string' ? value.replace(/^0x/, '') : undefined;
+  if (stripped === undefined || !/^(?:[0-9a-fA-F]{2})+$/.test(stripped)) {
     throw new Error(`KMS answer field ${name} is not hex`);
   }
-  return Buffer.from(value, 'hex');
+  return Buffer.from(stripped, 'hex');
 }
 
-function uintField(source: Record<string, unknown>, name: string): number {
-  const value = source[name] ?? 0; // proto3 JSON omits a zero
+/** The counter, `undefined` when the field is absent, an error when it is present but not a counter. */
+function counterField(source: Record<string, unknown>, name: string): number | undefined {
+  const value = source[name];
+  if (value === undefined) return undefined;
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
     throw new Error(`KMS answer field ${name} is not a counter`);
   }
   return value;
 }
+
+// ---- credentials (steps 4-6) ---------------------------------------------
 
 export interface RaTlsClientCredentials {
   certPem: string;
@@ -214,7 +296,7 @@ export interface RaTlsClientCredentials {
 }
 
 /**
- * Steps 2 and 3: a throwaway P-256 key, quoted by the guest agent, and a client
+ * Steps 4 to 6: a throwaway P-256 key, quoted by the guest agent, and a client
  * certificate for it signed by the temp CA.
  */
 export async function issueRaTlsClientCredentials(options: {
@@ -232,11 +314,16 @@ export async function issueRaTlsClientCredentials(options: {
   if (!/^(?:[0-9a-fA-F]{2})+$/.test(quoteHex) || typeof quote.event_log !== 'string') {
     throw new Error('the guest agent quote is malformed');
   }
+  const quoteBytes = Buffer.from(quoteHex, 'hex');
+  const quoted = quoteBytes.subarray(TD_REPORT_DATA_OFFSET, TD_REPORT_DATA_OFFSET + 64);
+  if (quoted.length !== 64 || !quoted.equals(reportData)) {
+    throw new Error('the quote REPORTDATA is not the requested report data');
+  }
   const { certPem } = buildRaTlsClientCert({
     spkiDer,
     caCertPem: options.tempCaCertPem,
     caKeyPem: options.tempCaKeyPem,
-    quote: Buffer.from(quoteHex, 'hex'),
+    quote: quoteBytes,
     eventLog: Buffer.from(quote.event_log, 'utf8'),
   });
   return {
@@ -247,43 +334,51 @@ export async function issueRaTlsClientCredentials(options: {
   };
 }
 
+// ---- transport -----------------------------------------------------------
+
 export function createRaTlsKmsTransport(options: RaTlsKmsTransportOptions): LegacyKmsTransport {
   const base = `${options.kmsUrl.replace(/\/+$/, '').replace(/\/prpc$/, '')}/prpc`;
   const timeoutMs = options.timeoutMs ?? 20_000;
-  const pin = options.kmsCaPin.toLowerCase();
+  const expectedAppId = options.appId.replace(/^0x/, '').toLowerCase();
+  const caDer = Buffer.from(options.kmsCaCert, 'base64');
+  const caPem = new X509Certificate(caDer).toString(); // throws on a CA that does not parse
 
   return {
     async getAppKey({ rootEpoch }): Promise<KmsAppKeyResponse> {
-      // 1. Temp CA. Unauthenticated read; what it returns is checked against the pin.
-      const tempCa = await postJson(`${base}/KMS.GetTempCaCert?json`, {}, { rejectUnauthorized: false }, timeoutMs);
-      const tempCaCert = tempCa['temp_ca_cert'];
-      const tempCaKey = tempCa['temp_ca_key'];
-      const kmsCa = tempCa['ca_cert'];
-      if (typeof tempCaCert !== 'string' || typeof tempCaKey !== 'string' || typeof kmsCa !== 'string') {
-        throw new Error('GetTempCaCert answer is incomplete');
-      }
-      const spki = new X509Certificate(kmsCa).publicKey.export({ type: 'spki', format: 'der' });
-      if (createHash('sha256').update(spki).digest('hex') !== pin) {
-        throw new Error('the KMS CA does not match the pinned hash');
+      // 1. The agent must be this app.
+      const { DstackClient } = await import('@phala/dstack-sdk');
+      const info = await new DstackClient(options.agentEndpoint).info();
+      if (typeof info.app_id !== 'string' || info.app_id.replace(/^0x/, '').toLowerCase() !== expectedAppId) {
+        throw new Error('the guest agent reports a different app id');
       }
 
-      // 2-3. Quoted throwaway key and the temp-CA-signed client certificate.
+      // 2-3. Temp CA, over TLS pinned to the KMS CA, without a client certificate.
+      const tempCa = await kmsPost(`${base}/GetTempCaCert?json`, {}, caPem, undefined, timeoutMs);
+      const tempCaCert = tempCa['temp_ca_cert'];
+      const tempCaKey = tempCa['temp_ca_key'];
+      if (typeof tempCaCert !== 'string' || typeof tempCaKey !== 'string') {
+        throw new Error('GetTempCaCert answer is incomplete');
+      }
+
+      // 4-6. Quoted throwaway key and the temp-CA-signed client certificate.
       const creds = await issueRaTlsClientCredentials({
         agentEndpoint: options.agentEndpoint,
         tempCaCertPem: tempCaCert,
         tempCaKeyPem: tempCaKey,
       });
 
-      // 4. GetAppKey for root epoch 0, trusting only the pinned CA.
-      const answer = await postJson(
-        `${base}/KMS.GetAppKey`,
+      // 7. GetAppKey for root epoch `rootEpoch`; app_epoch stays unset.
+      const answer = await kmsPost(
+        `${base}/GetAppKey?json`,
         { api_version: 1, vm_config: creds.vmConfig, root_epoch: rootEpoch, launch_ticket: '' },
-        { ca: kmsCa, cert: creds.certPem, key: creds.keyPem, rejectUnauthorized: true },
+        caPem,
+        { certChainPem: `${creds.certPem}${tempCaCert}`, keyPem: creds.keyPem },
         timeoutMs,
       );
       return {
-        rootEpoch: uintField(answer, 'root_epoch'),
-        appEpoch: uintField(answer, 'app_epoch'),
+        // Absent stays undefined: loadLegacyRoot refuses it. It is never read as 0.
+        rootEpoch: counterField(answer, 'root_epoch'),
+        appEpoch: counterField(answer, 'app_epoch'),
         k256Key: new Uint8Array(hexField(answer, 'k256_key')),
         k256Signature: new Uint8Array(hexField(answer, 'k256_signature')),
       };
