@@ -6,6 +6,8 @@ Track changes to agent-facing development guidance for OpenKey. Add a concise en
 ## 2026-11-20
 
 - CI: the Dependabot Changeset workflow cancels superseded runs for the same PR.
+  Web browser tests isolate non-PR runs by run ID so pending main runs cannot
+  replace one another.
 
 ## 2026-11-16
 
