@@ -69,8 +69,9 @@
       if (turn !== serial) return;
       if ('status' in data) { approved = true; return; }
       // Fail closed: this screen describes a sign-in ("renews automatically"). A step-up names the framed app and
-      // what it adds, and has its own screen; until that ships, anything but a sign-in is an error with no Allow.
-      if (data.kind !== 'SIGNIN') { error = 'This request needs a newer version of the app to approve.'; return; }
+      // what it adds, and has its own screen; until that ships, any other kind is an error with no Allow. An API that
+      // predates request kinds sends none, and only ever has sign-ins, so a missing kind is a sign-in.
+      if (data.kind !== undefined && data.kind !== 'SIGNIN') { error = 'This request needs a newer version of the app to approve.'; return; }
       if (!model) {
         const parsed = parseCapabilityReview({
           message: data.sessionSiwe,
