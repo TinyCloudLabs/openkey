@@ -1209,13 +1209,18 @@ response gains:
   `tinycloud_stepup`, one per renewed app (`[]` if none could be renewed);
 - `tinycloud_stepups_dropped`: the app ids the ceiling no longer covers. Their
   rows stay `ACTIVE` and as approved (the ceiling may return), but nothing is
-  signed for them.
+  signed for them;
+- `tinycloud_stepups_failed`: the app ids whose delegation could not be prepared
+  or signed this time. One failing step-up never fails Home's own renewal; it is
+  skipped (logged as `native_stepup_renew_failed`, with no SIWE, signature or
+  header) and the next renewal tries again.
 
-Neither field is present when the grant has no `ACTIVE` step-up, or when the
-switch is off, so the response is then exactly the sign-in renewal's. A step-up
-row's `lastRenewedAt` is set when it is re-signed. Revoked and `app_revoked`
-rows are not renewed. Home's delegation in the same response is unchanged and
-does not carry the step-up's entries.
+None of these fields is present when the grant has no `ACTIVE` step-up, or when
+the switch is off, so the response is then exactly the sign-in renewal's. A
+step-up row's `lastRenewedAt` is set when it is re-signed. Revoked and
+`app_revoked` rows are not renewed, and a reviewer's grant never renews a
+step-up (every step-up path refuses a reviewer). Home's delegation in the same
+response is unchanged and does not carry the step-up's entries.
 
 ## Native revocation
 

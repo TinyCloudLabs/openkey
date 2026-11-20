@@ -237,7 +237,7 @@ export function stepUpDelegationResponse(input: {
     chainId: input.chainId,
     ownerDid: input.ownerDid,
     spaces: [...new Set(input.permissions.map((permission) => permission.space))]
-      .map((space) => ({ space, spaceId: `tinycloud:pkh:eip155:1:${input.address}:${space}` })),
+      .map((space) => ({ space, spaceId: `tinycloud:pkh:eip155:${input.chainId}:${input.address}:${space}` })),
     verificationMethod: input.verificationMethod,
     siwe: input.siwe,
     signature: input.signature,

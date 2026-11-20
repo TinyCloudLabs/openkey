@@ -1,5 +1,5 @@
 import './tc1777-test-env';
-import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from 'bun:test';
 import { createHash, generateKeyPairSync, randomUUID, sign, type KeyObject } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -862,7 +862,7 @@ if (!child) {
   // ---- PR 3: renewal re-signs the grant's active step-ups ----
   async function renewHome(key: SessionKey, token = 'token-1') {
     const response = await post(RENEW, new URLSearchParams({ client_id: clientId, refresh_token: token }), proof(key, token, RENEW));
-    return { response, payload: await response.json() as { refresh_token: string; tinycloud_delegation?: { permissions: unknown; expiresAt: string }; tinycloud_stepups?: Array<Record<string, any>>; tinycloud_stepups_dropped?: string[]; error?: string } };
+    return { response, payload: await response.json() as { refresh_token: string; tinycloud_delegation?: { permissions: unknown; expiresAt: string }; tinycloud_stepups?: Array<Record<string, any>>; tinycloud_stepups_dropped?: string[]; tinycloud_stepups_failed?: string[]; error?: string } };
   }
 
   test('renewal re-signs an active step-up for the grant key, inside the grant, and leaves Home\'s own delegation as it was', async () => {
@@ -905,6 +905,9 @@ if (!child) {
     const plain = await renewHome(key);
     expect(plain.response.status).toBe(200);
     expect(Object.keys(plain.payload).sort()).toEqual(['expires_in', 'refresh_token', 'tinycloud_delegation']);
+    // The inner delegation is the sign-in renewal's too: no step-up key leaks into it.
+    const innerKeys = ['address', 'chainId', 'delegationCid', 'delegationHeader', 'expiresAt', 'grantId', 'hosting', 'issuedAt', 'ownerDid', 'permissions', 'renewableUntil', 'signature', 'siwe', 'spaceId', 'tinycloudHost', 'verificationMethod', 'version'];
+    expect(Object.keys(plain.payload.tinycloud_delegation!).sort()).toEqual(innerKeys);
 
     await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-1', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries } });
     await prisma.tinyCloudNativeGrant.update({ where: { id: 'g1' }, data: { lastRenewedAt: null } });
@@ -914,7 +917,34 @@ if (!child) {
       const off = await renewHome(key, plain.payload.refresh_token);
       expect(off.response.status, JSON.stringify(off.payload)).toBe(200);
       expect(Object.keys(off.payload).sort()).toEqual(['expires_in', 'refresh_token', 'tinycloud_delegation']);
+      expect(Object.keys(off.payload.tinycloud_delegation!).sort()).toEqual(innerKeys);
       expect((await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-1' } })).lastRenewedAt).toBeNull();
     } finally { if (previous === undefined) delete process.env.OPENKEY_NATIVE_STEPUP_ENABLED; else process.env.OPENKEY_NATIVE_STEPUP_ENABLED = previous; }
+  });
+
+  test('a step-up that cannot be signed is reported and skipped; Home\'s own renewal and the other step-ups still succeed', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const account = [{ service: 'tinycloud.kv', space: 'account', path: 'applications/', actions: ['tinycloud.kv/get'] }];
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-account', grantId: 'g1', appId: 'xyz.tinycloud.account', approvedPermissions: account } });
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-explorer', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries } });
+    const delegateSession = await import('../routes/delegate-session');
+    const original = delegateSession.prepareDelegationSession;
+    // Calls, in order: Home's delegation, then the step-ups by app id (account first).
+    let calls = 0;
+    const spy = spyOn(delegateSession, 'prepareDelegationSession').mockImplementation((input) => {
+      calls += 1;
+      if (calls === 2) throw new Error('prepare failed: SIWE-SENTINEL');
+      return original(input);
+    });
+    try {
+      const { response, payload } = await renewHome(key);
+      expect(response.status, JSON.stringify(payload)).toBe(200);
+      expect(payload.tinycloud_delegation).toBeDefined();
+      expect(payload.tinycloud_stepups!.map((stepUp) => stepUp.appId)).toEqual([EXPLORER]);
+      expect(payload.tinycloud_stepups_failed).toEqual(['xyz.tinycloud.account']);
+      expect(JSON.stringify(payload)).not.toContain('SENTINEL');
+      expect((await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-account' } })).lastRenewedAt).toBeNull();
+      expect((await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-explorer' } })).lastRenewedAt).not.toBeNull();
+    } finally { spy.mockRestore(); }
   });
 }
