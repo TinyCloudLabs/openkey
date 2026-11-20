@@ -404,11 +404,20 @@ hosting: "existing"}`. `renewableUntil` is the grant's renewal cutoff
 `oauth_consent` scopes to the accepted request's scopes. A step-up request carries
 only `tinycloud:delegation`, which would shrink the Home sign-in's `openid
 offline_access tinycloud:delegation`. The provider interceptor for
-`/oauth2/consent` therefore puts the row's `scopes` and `updatedAt` back as they
-were for a `STEPUP` request, whatever the provider answered. (A process crash
-between the provider's write and the restore would leave the narrower scopes
-until the next sign-in; the delegation scope, which every native check reads, is
-never removed.)
+`/oauth2/consent` therefore puts the row's `scopes` and `updatedAt` back for a
+`STEPUP` request, whatever the provider answered. The restore is one
+compare-and-swap (`UPDATE ... WHERE scopes = <what is there now>`): it undoes only
+the provider's own write, never recreates a withdrawn consent, and leaves a row
+someone else changed in the meantime alone.
+
+The provider's write and the restore are two statements, not one transaction: the
+provider writes through its own connection. A crash between them leaves the
+narrower scopes. That costs nothing for the Home grant: renewal reads only the
+`tinycloud:delegation` scope (and the consent generation, which a scope change
+that keeps the delegation scope does not move), and the provider's refresh never
+reads consent. A test renews Home twice with the consent narrowed to
+`tinycloud:delegation`. The next sign-in finds the stored scopes short of its
+request and goes through the consent screen, which it needs anyway.
 
 **The access token.** The step-up request's scope is `tinycloud:delegation` only
 (no `openid`, no `offline_access`), so the provider writes one access token of

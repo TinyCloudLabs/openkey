@@ -186,6 +186,25 @@ export interface ProviderInterceptorOptions {
   };
 }
 
+/**
+ * Puts a consent row back the way it was before the provider's consent step rewrote its scopes. The swap is one
+ * `UPDATE ... WHERE scopes = <what is there now>`: it changes only the provider's own write. A row that is gone
+ * (consent withdrawn) is not recreated, and a row someone else changed in the meantime is left as they set it.
+ * A row that did not hold the delegation scope is never touched.
+ */
+export async function restoreStepUpConsent(
+  database: Pick<PrismaClient, 'oauthConsent'>,
+  before: { id: string; scopes: string[]; updatedAt: Date },
+): Promise<void> {
+  if (!before.scopes.includes(TINYCLOUD_DELEGATION_SCOPE)) return;
+  const current = await database.oauthConsent.findUnique({ where: { id: before.id }, select: { scopes: true } });
+  if (!current || (current.scopes.length === before.scopes.length && current.scopes.every((scope, index) => scope === before.scopes[index]))) return;
+  await database.oauthConsent.updateMany({
+    where: { id: before.id, scopes: { equals: current.scopes } },
+    data: { scopes: before.scopes, updatedAt: before.updatedAt },
+  });
+}
+
 type RefreshTokenMatch = { clientId: string; native: boolean };
 type AccessTokenMatch = { clientId: string };
 
@@ -586,9 +605,12 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
 
   /**
    * TC-3569: the provider's consent step overwrites the user's `oauth_consent` scopes with the scopes of the
-   * request being accepted. A step-up request carries only `tinycloud:delegation`, so accepting it would shrink the
-   * Home sign-in's consent (`openid offline_access tinycloud:delegation`). A step-up never changes consent: the
-   * row's scopes and `updatedAt` are put back as they were, whatever the provider answered.
+   * request being accepted. A step-up request carries only `tinycloud:delegation`, so accepting it narrows the
+   * Home sign-in's consent (`openid offline_access tinycloud:delegation`). A step-up never changes consent, so
+   * once the provider has answered the scopes are put back (`restoreStepUpConsent`, one compare-and-swap).
+   * Home's renewal reads only the delegation scope and the provider's refresh never reads consent, so the
+   * narrower scopes in the instant before the restore, or after a crash, cost nothing but a re-consent at the
+   * next sign-in, which sign-in always asks for.
    */
   async function keepConsentForStepUp(c: Context, next: () => Promise<void>): Promise<void> {
     const body = await parseProviderJson(c.req.raw);
@@ -601,7 +623,7 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
     try {
       await next();
     } finally {
-      if (before) await database.oauthConsent.updateMany({ where: { id: before.id }, data: { scopes: before.scopes, updatedAt: before.updatedAt } });
+      if (before) await restoreStepUpConsent(database, before);
     }
   }
 

@@ -796,4 +796,48 @@ if (!child) {
     expect((await redeem(key, flow.code)).status).toBe(200);
     expect(await prisma.tinyCloudNativeStepUp.findMany()).toEqual([expect.objectContaining({ id: 'su-1', status: 'ACTIVE', approvedPermissions: explorerEntries })]);
   });
+
+  test('Home renews and signs in with consent narrowed to the delegation scope: renewal never needs openid or offline_access', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    // What a crash between the provider's consent write and the restore would leave behind.
+    await prisma.oauthConsent.updateMany({ where: { userId: USER, clientId }, data: { scopes: [DELEGATION] } });
+    const generation = JSON.stringify(await prisma.tinyCloudNativeConsentGeneration.findMany(), (_k, v) => typeof v === 'bigint' ? v.toString() : v);
+    const response = await post(RENEW, new URLSearchParams({ client_id: clientId, refresh_token: 'token-1' }), proof(key, 'token-1', RENEW));
+    const payload = await response.json() as { refresh_token?: string; tinycloud_delegation?: { grantId: string } };
+    expect(response.status, JSON.stringify(payload)).toBe(200);
+    expect(payload.tinycloud_delegation?.grantId).toBe('g1');
+    // The renewed token is the new credential and keeps working for the next renewal.
+    const next = await post(RENEW, new URLSearchParams({ client_id: clientId, refresh_token: payload.refresh_token! }), proof(key, payload.refresh_token!, RENEW));
+    expect([next.status, (await next.json() as { error?: string }).error]).not.toEqual([400, 'consent_required']);
+    expect(JSON.stringify(await prisma.tinyCloudNativeConsentGeneration.findMany(), (_k, v) => typeof v === 'bigint' ? v.toString() : v)).toBe(generation);
+    expect((await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'g1' } })).status).toBe('ACTIVE');
+  });
+
+  test('the consent restore is a compare-and-swap: it undoes only the provider write, never a withdrawal or a later change', async () => {
+    const { restoreStepUpConsent } = await import('../services/native-delegation/interceptors');
+    const full = ['openid', 'offline_access', DELEGATION];
+    const before = await prisma.oauthConsent.findFirstOrThrow({ where: { userId: USER, clientId } });
+    expect(before.scopes).toEqual(full);
+    const snapshot = { id: before.id, scopes: before.scopes, updatedAt: before.updatedAt };
+    const scopesNow = async () => (await prisma.oauthConsent.findMany({ where: { userId: USER, clientId } })).map((row) => row.scopes);
+
+    // The provider's write is undone, updatedAt included.
+    await prisma.oauthConsent.update({ where: { id: before.id }, data: { scopes: [DELEGATION], updatedAt: new Date() } });
+    await restoreStepUpConsent(prisma, snapshot);
+    expect(await prisma.oauthConsent.findUniqueOrThrow({ where: { id: before.id } })).toMatchObject({ scopes: full, updatedAt: before.updatedAt });
+
+    // Nothing to undo: untouched.
+    await restoreStepUpConsent(prisma, snapshot);
+    expect(await scopesNow()).toEqual([full]);
+
+    // The consent was withdrawn in between: nothing is brought back.
+    await prisma.oauthConsent.delete({ where: { id: before.id } });
+    await restoreStepUpConsent(prisma, snapshot);
+    expect(await scopesNow()).toEqual([]);
+
+    // A consent that never held the delegation scope is never rewritten.
+    await prisma.oauthConsent.create({ data: { id: before.id, userId: USER, clientId, scopes: ['openid'] } });
+    await restoreStepUpConsent(prisma, { id: before.id, scopes: ['openid'], updatedAt: before.updatedAt });
+    expect(await scopesNow()).toEqual([['openid']]);
+  });
 }
