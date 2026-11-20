@@ -11,7 +11,7 @@ import { storedToken, type ProviderTokenOptions } from './provider-tokens';
 import { OPENKEY_SESSION_PROOF_HEADER } from './public-protocol';
 import { verifySessionProof } from './session-proof';
 import type { NativePermission } from './par';
-import { StepUpEntryError, validateStepUpPermissions, type StepUpPermission } from './step-up';
+import { StepUpEntryError, stepUpDelegationResponse, validateStepUpPermissions, type StepUpPermission } from './step-up';
 import { primaryKeyWhere } from '../primary-key';
 import { sameTinyCloudHost } from '../tinycloud-hosts';
 
@@ -391,26 +391,13 @@ async function exchangeStepUp(
       } else invalidGrant('the step-up was revoked with its grant');
 
       return {
-        tinycloud_stepup: {
-          version: 1,
-          appId,
-          grantId: grant.id,
-          address: delegation.address,
-          chainId: delegation.chainId,
-          ownerDid: delegation.ownerDid,
-          spaces: [...new Set(permissions.map((permission) => permission.space))].map((space) => ({ space, spaceId: `tinycloud:pkh:eip155:${delegation.chainId}:${delegation.address}:${space}` })),
-          verificationMethod: delegation.verificationMethod,
-          siwe: delegation.siwe,
-          signature: delegation.signature,
-          delegationHeader: delegation.delegationHeader,
-          delegationCid: delegation.delegationCid,
-          issuedAt: delegation.issuedAt,
-          expiresAt: delegation.expiresAt,
-          renewableUntil: new Date(grant.absoluteExpiresAt.getTime() - RENEWAL_CUTOFF_MS).toISOString(),
-          permissions: structuredClone(permissions),
+        tinycloud_stepup: stepUpDelegationResponse({
+          appId, grantId: grant.id, address: delegation.address, chainId: delegation.chainId, ownerDid: delegation.ownerDid, permissions,
+          verificationMethod: delegation.verificationMethod, siwe: delegation.siwe, signature: delegation.signature,
+          delegationHeader: delegation.delegationHeader, delegationCid: delegation.delegationCid, issuedAt: delegation.issuedAt,
+          expiresAt: delegation.expiresAt, renewableUntil: new Date(grant.absoluteExpiresAt.getTime() - RENEWAL_CUTOFF_MS).toISOString(),
           tinycloudHost: delegation.tinycloudHost,
-          hosting: 'existing',
-        },
+        }),
       };
     }, { timeout: 15_000 });
   } catch (error) {

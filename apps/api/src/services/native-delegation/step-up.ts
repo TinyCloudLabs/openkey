@@ -219,3 +219,35 @@ export async function handleNativeStepUpRequest(request: Request, db: PrismaClie
     throw error;
   }
 }
+
+/**
+ * The signed step-up delegation as a native app receives it: in the code-exchange response (`tinycloud_stepup`)
+ * and for each app in a renewal response (`tinycloud_stepups`). One shape for both.
+ */
+export function stepUpDelegationResponse(input: {
+  appId: string; grantId: string; address: string; chainId: number; ownerDid: string; permissions: StepUpPermission[];
+  verificationMethod: string; siwe: string; signature: string; delegationHeader: unknown; delegationCid: string;
+  issuedAt: string; expiresAt: string; renewableUntil: string; tinycloudHost: string;
+}): Record<string, unknown> {
+  return {
+    version: 1,
+    appId: input.appId,
+    grantId: input.grantId,
+    address: input.address,
+    chainId: input.chainId,
+    ownerDid: input.ownerDid,
+    spaces: [...new Set(input.permissions.map((permission) => permission.space))]
+      .map((space) => ({ space, spaceId: `tinycloud:pkh:eip155:1:${input.address}:${space}` })),
+    verificationMethod: input.verificationMethod,
+    siwe: input.siwe,
+    signature: input.signature,
+    delegationHeader: input.delegationHeader,
+    delegationCid: input.delegationCid,
+    issuedAt: input.issuedAt,
+    expiresAt: input.expiresAt,
+    renewableUntil: input.renewableUntil,
+    permissions: structuredClone(input.permissions),
+    tinycloudHost: input.tinycloudHost,
+    hosting: 'existing',
+  };
+}

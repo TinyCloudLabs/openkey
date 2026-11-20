@@ -1195,6 +1195,28 @@ previous grant hash.
 Renewal never accepts a new session key, a broader permission set or a longer
 TTL. Any of those requires a new browser authorization.
 
+### Renewal of step-ups (TC-3569)
+
+While `OPENKEY_NATIVE_STEPUP_ENABLED` is on, a renewal also re-signs each `ACTIVE`
+step-up of the grant, in the same transaction and under the same locks (grant,
+then its step-up rows, then the token rows). Each is a fresh delegation for the
+grant's own session key, with the same TTL cap as Home's. It is signed only if the
+step-up's stored entries still pass the client's **current** `stepUps` ceiling;
+renewal never widens a step-up and never re-reads what the app asked for. The
+response gains:
+
+- `tinycloud_stepups`: an array of objects in the same shape as the code-exchange
+  `tinycloud_stepup`, one per renewed app (`[]` if none could be renewed);
+- `tinycloud_stepups_dropped`: the app ids the ceiling no longer covers. Their
+  rows stay `ACTIVE` and as approved (the ceiling may return), but nothing is
+  signed for them.
+
+Neither field is present when the grant has no `ACTIVE` step-up, or when the
+switch is off, so the response is then exactly the sign-in renewal's. A step-up
+row's `lastRenewedAt` is set when it is re-signed. Revoked and `app_revoked`
+rows are not renewed. Home's delegation in the same response is unchanged and
+does not carry the step-up's entries.
+
 ## Native revocation
 
 ```text

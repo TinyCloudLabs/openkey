@@ -858,4 +858,63 @@ if (!child) {
     await prisma.oauthConsent.deleteMany({ where: { userId: USER, clientId } });
     expect((await prisma.oauthAccessToken.findMany({ where: { userId: USER } })).map((row) => row.id)).toEqual(['other-client-less']);
   });
+
+  // ---- PR 3: renewal re-signs the grant's active step-ups ----
+  async function renewHome(key: SessionKey, token = 'token-1') {
+    const response = await post(RENEW, new URLSearchParams({ client_id: clientId, refresh_token: token }), proof(key, token, RENEW));
+    return { response, payload: await response.json() as { refresh_token: string; tinycloud_delegation?: { permissions: unknown; expiresAt: string }; tinycloud_stepups?: Array<Record<string, any>>; tinycloud_stepups_dropped?: string[]; error?: string } };
+  }
+
+  test('renewal re-signs an active step-up for the grant key, inside the grant, and leaves Home\'s own delegation as it was', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-1', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries } });
+    const { response, payload } = await renewHome(key);
+    expect(response.status, JSON.stringify(payload)).toBe(200);
+    expect(payload.tinycloud_stepups).toHaveLength(1);
+    const [stepUp] = payload.tinycloud_stepups!;
+    expect(stepUp).toMatchObject({ version: 1, appId: EXPLORER, grantId: 'g1', hosting: 'existing', permissions: explorerEntries, address, tinycloudHost: HOST });
+    expect(stepUp!.spaces.map((space: { space: string }) => space.space)).toEqual(['public', 'applications']);
+    expect(await recoverMessageAddress({ message: stepUp!.siwe, signature: stepUp!.signature })).toBe(address);
+    const grant = await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'g1' } });
+    expect(Date.parse(stepUp!.expiresAt)).toBeLessThanOrEqual(grant.absoluteExpiresAt.getTime());
+    expect(stepUp!.renewableUntil).toBe(new Date(grant.absoluteExpiresAt.getTime() - 300_000).toISOString());
+    // Home's delegation does not carry the step-up's entries: the step-up is its own delegation.
+    expect(payload.tinycloud_delegation!.permissions).toEqual(homePermissions);
+    expect(payload.tinycloud_stepups_dropped).toBeUndefined();
+    expect(await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-1' } })).toMatchObject({ status: 'ACTIVE', approvedPermissions: explorerEntries, grantId: 'g1' });
+    expect((await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-1' } })).lastRenewedAt).not.toBeNull();
+  });
+
+  test('renewal never re-signs a step-up the ceiling no longer covers, a revoked one, or any when the switch is off', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-1', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries } });
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-2', grantId: 'g1', appId: 'xyz.tinycloud.account', approvedPermissions: [{ service: 'tinycloud.kv', space: 'account', path: 'applications/', actions: ['tinycloud.kv/get'] }],
+      status: 'REVOKED', revokedAt: new Date(), revokedReason: 'app_revoked' } });
+    // The ceiling no longer covers Explorer's SQL: it is reported and not renewed, and its row is left as approved.
+    await prisma.oauthClient.update({ where: { clientId }, data: { tinycloudNativeDelegation: { ...ceiling, stepUps: { [EXPLORER]: { public: ceiling.stepUps[EXPLORER].public } } } } });
+    const narrowed = await renewHome(key);
+    expect(narrowed.response.status, JSON.stringify(narrowed.payload)).toBe(200);
+    expect(narrowed.payload.tinycloud_stepups).toEqual([]);
+    expect(narrowed.payload.tinycloud_stepups_dropped).toEqual([EXPLORER]);
+    expect(await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-1' } })).toMatchObject({ status: 'ACTIVE', approvedPermissions: explorerEntries, lastRenewedAt: null });
+    expect(await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-2' } })).toMatchObject({ status: 'REVOKED', lastRenewedAt: null });
+  });
+
+  test('a grant with no active step-up renews with exactly the sign-in response; with the switch off a step-up is not renewed', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const plain = await renewHome(key);
+    expect(plain.response.status).toBe(200);
+    expect(Object.keys(plain.payload).sort()).toEqual(['expires_in', 'refresh_token', 'tinycloud_delegation']);
+
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-1', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries } });
+    await prisma.tinyCloudNativeGrant.update({ where: { id: 'g1' }, data: { lastRenewedAt: null } });
+    const previous = process.env.OPENKEY_NATIVE_STEPUP_ENABLED;
+    delete process.env.OPENKEY_NATIVE_STEPUP_ENABLED;
+    try {
+      const off = await renewHome(key, plain.payload.refresh_token);
+      expect(off.response.status, JSON.stringify(off.payload)).toBe(200);
+      expect(Object.keys(off.payload).sort()).toEqual(['expires_in', 'refresh_token', 'tinycloud_delegation']);
+      expect((await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-1' } })).lastRenewedAt).toBeNull();
+    } finally { if (previous === undefined) delete process.env.OPENKEY_NATIVE_STEPUP_ENABLED; else process.env.OPENKEY_NATIVE_STEPUP_ENABLED = previous; }
+  });
 }

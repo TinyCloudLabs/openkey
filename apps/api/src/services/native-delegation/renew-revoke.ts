@@ -14,9 +14,10 @@ import { prepareDelegationSession } from '../../routes/delegate-session';
 import { TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
 import { nativeDelegationLockResponse } from './errors';
 import { validatePermissions, ParError, type NativePermission } from './par';
-import { enabledNativeDelegation } from './policy';
+import { StepUpEntryError, stepUpDelegationResponse, validateStepUpPermissions, type StepUpPermission } from './step-up';
+import { enabledNativeDelegation, type NativeStepUpCeilings } from './policy';
 import { storedToken } from './provider-tokens';
-import { NATIVE_DELEGATION_ENDPOINT_PATHS, OPENKEY_SESSION_PROOF_HEADER } from './public-protocol';
+import { NATIVE_DELEGATION_ENDPOINT_PATHS, OPENKEY_SESSION_PROOF_HEADER, nativeStepUpEnabled } from './public-protocol';
 import { credentialHash, SESSION_PROOF_MAX_SKEW_SECONDS, sessionProofJtiHash, verifySessionProofClaims } from './session-proof';
 import { hasAcceptedTerms, termsRequired } from '../terms';
 import { logError, withScheduledLogContext } from '../../log';
@@ -120,6 +121,45 @@ async function recordDecision(tx: any, grant: { userId: string; clientId: string
   await tx.tinyCloudManageKeySigningDecision.create({ data: {
     id: randomUUID(), userId: grant.userId, clientId: grant.clientId, policyEpoch: epoch, allowed, reason,
   } });
+}
+
+type ActiveStepUp = { id: string; appId: string; approvedPermissions: unknown };
+
+async function lockActiveStepUps(tx: any, grantId: string): Promise<ActiveStepUp[]> {
+  await tx.$queryRaw`SELECT id FROM tinycloud_native_stepup WHERE "grantId" = ${grantId} AND status = 'ACTIVE' FOR UPDATE`;
+  return await tx.tinyCloudNativeStepUp.findMany({ where: { grantId, status: 'ACTIVE' }, orderBy: { appId: 'asc' } });
+}
+
+async function renewStepUps(tx: any, input: {
+  rows: ActiveStepUp[];
+  grant: { id: string; address: string; sessionJwk: unknown };
+  ceiling: { siweDomain?: string; stepUps?: NativeStepUpCeilings; tinycloudHost: string };
+  key: { address: string }; privateKey: `0x${string}` | null; now: Date; ttlSeconds: number; renewableUntil: string;
+}): Promise<{ renewed: Record<string, unknown>[]; dropped: string[] }> {
+  const renewed: Record<string, unknown>[] = [];
+  const dropped: string[] = [];
+  for (const row of input.rows) {
+    let permissions: StepUpPermission[];
+    try { permissions = validateStepUpPermissions(row.appId, row.approvedPermissions, input.ceiling.stepUps); }
+    catch (error) {
+      if (error instanceof StepUpEntryError) { dropped.push(row.appId); continue; }
+      throw error;
+    }
+    const prepared = prepareDelegationSession({ address: ensureEip55(input.key.address), chainId: 1, prefix: 'applications',
+      jwk: input.grant.sessionJwk as { kty: string; crv: string; x: string }, permissions, expiryMs: input.ttlSeconds * 1000,
+      domain: input.ceiling.siweDomain ?? 'openkey.so', nonce: randomBytes(12).toString('hex'), issuedAt: input.now });
+    const signature = await createWalletFromPrivateKey(input.privateKey!).signMessage({ message: prepared.prepared.siwe });
+    const delegation = completeSessionSetup({ ...prepared.prepared, signature });
+    await tx.tinyCloudNativeStepUp.update({ where: { id: row.id }, data: { lastRenewedAt: input.now } });
+    renewed.push(stepUpDelegationResponse({
+      appId: row.appId, grantId: input.grant.id, address: input.grant.address, chainId: 1, ownerDid: `did:pkh:eip155:1:${input.grant.address}`, permissions,
+      verificationMethod: delegation.verificationMethod, siwe: prepared.prepared.siwe, signature, delegationHeader: delegation.delegationHeader,
+      delegationCid: delegation.delegationCid, issuedAt: input.now.toISOString(),
+      expiresAt: new Date(input.now.getTime() + input.ttlSeconds * 1000).toISOString(), renewableUntil: input.renewableUntil,
+      tinycloudHost: input.ceiling.tinycloudHost,
+    }));
+  }
+  return { renewed, dropped };
 }
 
 /** Public, cookie-free native endpoint. Every mutation is serialized with consent withdrawal. */
@@ -233,6 +273,8 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
           }
           const rowHash = recoveringLostResponse ? grant.refreshTokenHash : hash;
           if (!rowHash) return fail('invalid_grant', 400);
+          // Lock order: grant, step-ups, token rows. Off with the step-up switch: such a grant renews as a sign-in grant.
+          const stepUpRows = nativeStepUpEnabled() ? await lockActiveStepUps(tx, grant.id) : [];
           const tokenRows = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM oauth_refresh_token WHERE token = ${rowHash} FOR UPDATE`;
           if (!tokenRows.length) return fail('invalid_grant', 400);
           const row = await tx.oauthRefreshToken.findUnique({ where: { token: rowHash } });
@@ -303,6 +345,10 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
           if (prepared.spaceId !== grant.spaceId || prepared.prepared.verificationMethod !== grant.sessionDid) return deny('consent_required', 'session_changed');
           const signature = await createWalletFromPrivateKey(privateKey).signMessage({ message: prepared.prepared.siwe });
           const delegation = completeSessionSetup({ ...prepared.prepared, signature });
+          // Each active step-up is re-signed for the same session key, inside the current ceiling only; one that
+          // the ceiling no longer covers is not renewed (and reported), never widened or dropped silently.
+          const stepUps = await renewStepUps(tx, { rows: stepUpRows, grant, ceiling, key, privateKey, now, ttlSeconds,
+            renewableUntil: new Date(grant.absoluteExpiresAt.getTime() - RENEWAL_CUTOFF_MS).toISOString() });
           const newToken = generateRandomString(32, 'A-Z', 'a-z');
           const newHash = await storedToken({ storeTokens: 'hashed' }, newToken, 'refresh_token');
           const expiresAt = new Date(Math.min(now.getTime() + REFRESH_LIFETIME_SECONDS * 1000, reviewer ? grant.absoluteExpiresAt.getTime() : Infinity));
@@ -333,6 +379,8 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
               permissions, tinycloudHost: grant.tinycloudHost, hosting: 'existing', address: grant.address,
               chainId: 1, ownerDid: `did:pkh:eip155:1:${grant.address}`, spaceId: grant.spaceId,
             },
+            // Only when the grant has active step-ups: otherwise the response is exactly the sign-in renewal's.
+            ...(stepUpRows.length ? { tinycloud_stepups: stepUps.renewed, ...(stepUps.dropped.length ? { tinycloud_stepups_dropped: stepUps.dropped } : {}) } : {}),
           } };
         }, { timeout: 15_000 });
       } catch (error) {
