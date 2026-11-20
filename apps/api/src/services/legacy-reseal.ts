@@ -88,6 +88,8 @@ export interface ResealOptions {
   canary: { source: ResealSource; id: string };
   /** Called after each row is swapped. Counts only. The caller decides how often to log. */
   onProgress?: (progress: { done: number; pending: number; total: number }) => void;
+  /** Old-key fetches in flight during pre-verify. Defaults to 4. */
+  concurrency?: number;
 }
 
 /** Why a row was left untouched. Never includes key material. */
@@ -105,6 +107,9 @@ export interface ResealSummary {
   /** Rows left exactly as they were: they open under neither key, or do not belong to themselves. */
   quarantined: ResealQuarantined[];
 }
+
+/** Old-key fetches in flight at once. The KMS rate limit behind the sidecar is unknown, so this stays small. */
+const DEFAULT_CONCURRENCY = 4;
 
 /** More quarantined rows than this means the wrong key, not a few bad rows: the boot fails closed. */
 export function quarantineLimit(total: number): number {
@@ -191,6 +196,7 @@ export async function resealLegacyRows(options: ResealOptions): Promise<ResealSu
 
   const pending = rows.filter((entry) => entry.state === 'pending');
   const verified: { entry: Classified; key: Uint8Array }[] = [];
+  const held: Uint8Array[] = []; // every old key fetched; all zeroed on the way out, however it ends
   let migrated = 0;
   try {
     if (pending.length > 0 && canaryEntry?.state === 'current') {
@@ -205,18 +211,45 @@ export async function resealLegacyRows(options: ResealOptions): Promise<ResealSu
       const legacy = await options.openLegacy();
 
       // Pre-verify: open every pending row with the old key and check it belongs to itself, BEFORE the first
-      // write. A row that fails is quarantined (the canary never is: it fails the boot).
-      for (const entry of pending) {
-        const key = await legacy.legacyKey(pathOf(entry.row));
-        const plaintext = await opens(entry.row.sealed, key);
-        const reason: QuarantineReason | null = plaintext === null ? 'unopenable' : matches(entry.row, plaintext) ? null : 'mismatch';
-        if (reason === null) {
-          verified.push({ entry, key });
-          continue;
+      // write. A row that fails is quarantined (the canary never is: it fails the boot). The fetch runs with a
+      // small bounded concurrency; nothing is written during it, and any sidecar/KMS error is fatal: no new
+      // fetch starts after the first failure, and every key already fetched is zeroed.
+      const outcomes: ({ key: Uint8Array } | { reason: QuarantineReason })[] = new Array(pending.length);
+      let failed: { error: unknown } | undefined;
+      let next = 0;
+      let bad = quarantined.length;
+      const worker = async () => {
+        while (!failed) {
+          const index = next++;
+          const entry = pending[index];
+          if (!entry) return;
+          try {
+            const key = await legacy.legacyKey(pathOf(entry.row));
+            held.push(key);
+            const plaintext = await opens(entry.row.sealed, key);
+            const reason: QuarantineReason | null = plaintext === null ? 'unopenable' : matches(entry.row, plaintext) ? null : 'mismatch';
+            if (reason === null) {
+              outcomes[index] = { key };
+              continue;
+            }
+            key.fill(0);
+            if (isCanary(entry)) throw new LegacyResealError(reason === 'unopenable' ? 'reseal_old_unseal_failed' : 'reseal_row_mismatch', entry.row);
+            outcomes[index] = { reason };
+            bad += 1;
+            if (bad > limit) throw new LegacyResealError('reseal_quarantine_limit');
+          } catch (error) {
+            failed ??= { error };
+            return;
+          }
         }
-        key.fill(0);
-        if (isCanary(entry)) throw new LegacyResealError(reason === 'unopenable' ? 'reseal_old_unseal_failed' : 'reseal_row_mismatch', entry.row);
-        quarantine(entry, reason);
+      };
+      const width = Math.max(1, Math.floor(options.concurrency ?? DEFAULT_CONCURRENCY));
+      await Promise.all(Array.from({ length: Math.min(width, pending.length) }, worker));
+      if (failed) throw failed.error;
+      for (const [index, entry] of pending.entries()) {
+        const outcome = outcomes[index]!;
+        if ('key' in outcome) verified.push({ entry, key: outcome.key });
+        else quarantine(entry, outcome.reason);
       }
 
       const ordered = [...verified.filter(({ entry }) => !isCanary(entry)), ...verified.filter(({ entry }) => isCanary(entry))];
@@ -240,7 +273,7 @@ export async function resealLegacyRows(options: ResealOptions): Promise<ResealSu
       }
     }
   } finally {
-    for (const { key } of verified) key.fill(0);
+    for (const key of held) key.fill(0);
   }
 
   // Every row, re-read, must now open under the current key and belong to itself, or be a quarantined row.

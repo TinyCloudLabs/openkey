@@ -260,7 +260,37 @@ describe('resealLegacyRows', () => {
       stores: [store], tee: newTee, openLegacy: async () => flaky, canary: { source: 'ethereum_key', id: 'e-canary' },
     })).rejects.toThrow('kms refused');
     expect(log).toEqual([]); // not skipped as a bad row, and nothing was written
-    expect(calls).toBe(2);
+    expect(calls).toBeLessThanOrEqual(3); // with 4 workers over 3 rows all three start at once; none after a failure
+  });
+
+  test('old-key fetches run at most 4 at a time, every row still migrates, and a failure stops new fetches', async () => {
+    const canary = await ethereum('e-canary', CONTEXT_A, 'u1', oldRoot);
+    const rest = await Promise.all(Array.from({ length: 20 }, (_, i) => ethereum(`e-${i}`, ctxOf(40 + i), `u-${i}`, oldRoot)));
+    let inFlight = 0;
+    let peak = 0;
+    let started = 0;
+    const slow = (failAt: number): ResealLegacy => ({
+      async legacyKey(path) {
+        started += 1;
+        const n = started;
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await Promise.resolve(); // a yield, so the four workers overlap
+        inFlight -= 1;
+        if (n === failAt) throw new Error('kms refused');
+        return oldRoot(path);
+      },
+    });
+    const store = memoryStore([canary.row, ...rest.map((r) => r.row)]);
+    const summary = await resealLegacyRows({ stores: [store], tee: newTee, openLegacy: async () => slow(-1), canary: { source: 'ethereum_key', id: 'e-canary' } });
+    expect(summary.migrated).toBe(21);
+    expect(peak).toBe(4);
+
+    started = 0;
+    const fresh = memoryStore([canary.row, ...rest.map((r) => r.row)]);
+    await expect(resealLegacyRows({ stores: [fresh], tee: newTee, openLegacy: async () => slow(6), canary: { source: 'ethereum_key', id: 'e-canary' } })).rejects.toThrow('kms refused');
+    expect(started).toBeLessThan(12); // stopped well short of the 21 rows
+    expect((await fresh.rows()).every((r) => [canary.row, ...rest.map((x) => x.row)].some((o) => o.id === r.id && o.sealed === r.sealed))).toBe(true); // nothing written
   });
 
   test('a swap that loses the compare-and-swap, or a store that claims success without writing, bails', async () => {
