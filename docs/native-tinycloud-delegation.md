@@ -222,10 +222,20 @@ it is not built yet; until it ships the section is stored and ignored.
 | `kv.paths` | Relative paths, no dot segments. `""` (the whole space) is admitted only in `public`. The roots `secrets`, `vault` and `variables` are refused. |
 | `sql.databases` | Exact names: one segment, or `<folder>/<name>`. No prefix and no pattern. |
 
-The `tinycloud_native_stepup` table holds one row per (grant, app). A database
-trigger revokes every step-up of a grant when the grant becomes `REVOKED`, by
-sign-out, consent withdrawal or direct SQL, so a step-up never outlives its
-grant.
+The `tinycloud_native_stepup` table holds one row per (grant, app). Two
+database triggers keep a step-up inside its grant. When a grant becomes
+`REVOKED`, by sign-out, consent withdrawal or direct SQL, every step-up of it
+becomes `REVOKED` (`grant_revoked`) in the same transaction. In the other
+direction, a guard refuses (`TC773`) an `ACTIVE` step-up on a grant that is not
+`ACTIVE`, and a step-up that was revoked with its grant can never become
+`ACTIVE` again. The guard locks the grant row `FOR SHARE`, so an approval racing
+a revocation either commits first and is then revoked, or waits and is
+refused. A step-up revoked on its own may be approved again while the grant is
+`ACTIVE`.
+
+A grant that expires keeps the status `ACTIVE`, so the database does not
+enforce expiry: issuing a step-up and renewing one must sit behind the same live
+and expiry check as grant renewal.
 
 Rollback: an API build that predates this section refuses a ceiling that
 contains `stepUps` as having an unknown field, and a malformed ceiling disables

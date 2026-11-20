@@ -111,6 +111,60 @@ describe('tinycloud_native_stepup', () => {
     expect(await statuses('g-d')).toEqual([{ appId: 'explorer', status: 'REVOKED', revokedReason: 'grant_revoked', revoked: true }]);
   });
 
+  test('an ACTIVE step-up cannot be inserted on a grant that is not ACTIVE', async () => {
+    await seedGrant('f');
+    await db.exec(`UPDATE "tinycloud_native_grant" SET "status" = 'REVOKED', "revokedAt" = CURRENT_TIMESTAMP, "revokedReason" = 'client_signout' WHERE "id" = 'g-f'`);
+
+    await expect(addStepUp('g-f', 'explorer')).rejects.toMatchObject({ code: 'TC773' });
+    expect(await statuses('g-f')).toEqual([]);
+    // A grant that does not exist is refused too, before the foreign key is reached.
+    await expect(addStepUp('g-missing', 'explorer')).rejects.toMatchObject({ code: 'TC773' });
+  });
+
+  test('a step-up taken down with its grant never becomes ACTIVE again', async () => {
+    await seedGrant('g');
+    await addStepUp('g-g', 'explorer');
+    await db.exec(`UPDATE "tinycloud_native_grant" SET "status" = 'REVOKED', "revokedAt" = CURRENT_TIMESTAMP WHERE "id" = 'g-g'`);
+
+    await expect(db.exec(`UPDATE "tinycloud_native_stepup" SET "status" = 'ACTIVE' WHERE "grantId" = 'g-g'`)).rejects.toMatchObject({ code: 'TC773' });
+    // Even if the grant row were ACTIVE again, the reason keeps the step-up down.
+    await db.exec(`UPDATE "tinycloud_native_grant" SET "status" = 'ACTIVE', "revokedAt" = NULL WHERE "id" = 'g-g'`);
+    await expect(db.exec(`UPDATE "tinycloud_native_stepup" SET "status" = 'ACTIVE', "revokedReason" = NULL WHERE "grantId" = 'g-g'`)).rejects.toMatchObject({ code: 'TC773' });
+    expect(await statuses('g-g')).toEqual([{ appId: 'explorer', status: 'REVOKED', revokedReason: 'grant_revoked', revoked: true }]);
+  });
+
+  test('a step-up revoked on its own can be approved again while the grant is ACTIVE, and not once it is revoked', async () => {
+    await seedGrant('h');
+    await addStepUp('g-h', 'explorer');
+    await db.exec(`UPDATE "tinycloud_native_stepup" SET "status" = 'REVOKED', "revokedAt" = CURRENT_TIMESTAMP, "revokedReason" = 'app_revoked' WHERE "grantId" = 'g-h'`);
+    await db.exec(`UPDATE "tinycloud_native_stepup" SET "status" = 'ACTIVE', "revokedAt" = NULL, "revokedReason" = NULL WHERE "grantId" = 'g-h'`);
+    expect((await statuses('g-h'))[0]?.status).toBe('ACTIVE');
+
+    await db.exec(`UPDATE "tinycloud_native_stepup" SET "status" = 'REVOKED', "revokedAt" = CURRENT_TIMESTAMP, "revokedReason" = 'app_revoked' WHERE "grantId" = 'g-h'`);
+    await db.exec(`UPDATE "tinycloud_native_grant" SET "status" = 'REVOKED' WHERE "id" = 'g-h'`);
+    await expect(db.exec(`UPDATE "tinycloud_native_stepup" SET "status" = 'ACTIVE' WHERE "grantId" = 'g-h'`)).rejects.toMatchObject({ code: 'TC773' });
+  });
+
+  test('down.sql leaves no step-up trigger, function or table behind', async () => {
+    const scratch = new PGlite();
+    try {
+      const migrations = (await readdir(join(root, 'packages/db/prisma/migrations'), { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+      for (const migration of migrations) {
+        await scratch.exec(await readFile(join(root, 'packages/db/prisma/migrations', migration, 'migration.sql'), 'utf8'));
+      }
+      await scratch.exec(await readFile(join(root, 'packages/db/prisma/migrations/20261121_0001_native_stepup/down.sql'), 'utf8'));
+      const left = await scratch.query<{ name: string }>(
+        `SELECT tgname AS name FROM pg_trigger WHERE tgname LIKE 'tinycloud_native_stepup%'
+         UNION ALL SELECT proname FROM pg_proc WHERE proname LIKE 'tinycloud_native_stepup%'
+         UNION ALL SELECT relname FROM pg_class WHERE relname LIKE 'tinycloud_native_stepup%'`,
+      );
+      expect(left.rows).toEqual([]);
+    } finally {
+      await scratch.close();
+    }
+  });
+
   test('one step-up per app per grant, a closed status set, and deleting the grant deletes the rows', async () => {
     await seedGrant('e');
     await addStepUp('g-e', 'explorer');

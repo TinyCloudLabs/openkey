@@ -45,6 +45,7 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     stepup_grant_cascade: boolean;
     stepup_status_check: boolean;
     stepup_grant_revoked_trigger: boolean;
+    stepup_guard_trigger: boolean;
   }>>(`
     SELECT
       EXISTS (SELECT 1 FROM information_schema.columns
@@ -112,7 +113,13 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
           AND NOT tgisinternal
           AND tgenabled <> 'D'
           AND tgname = 'tinycloud_native_stepup_grant_revoked'
-          AND tgfoid = to_regprocedure('public.tinycloud_native_stepup_grant_revoked()')) AS stepup_grant_revoked_trigger
+          AND tgfoid = to_regprocedure('public.tinycloud_native_stepup_grant_revoked()')) AS stepup_grant_revoked_trigger,
+      EXISTS (SELECT 1 FROM pg_trigger
+        WHERE tgrelid = to_regclass('public.tinycloud_native_stepup')
+          AND NOT tgisinternal
+          AND tgenabled <> 'D'
+          AND tgname = 'tinycloud_native_stepup_guard'
+          AND tgfoid = to_regprocedure('public.tinycloud_native_stepup_guard()')) AS stepup_guard_trigger
   `);
   const verified = rows[0];
   if (
@@ -139,7 +146,8 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     !verified.stepup_grant_app_index ||
     !verified.stepup_grant_cascade ||
     !verified.stepup_status_check ||
-    !verified.stepup_grant_revoked_trigger
+    !verified.stepup_grant_revoked_trigger ||
+    !verified.stepup_guard_trigger
   ) {
     throw new Error(`TC-773 native delegation schema verification failed: ${JSON.stringify(verified)}`);
   }
