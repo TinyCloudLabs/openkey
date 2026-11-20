@@ -245,3 +245,16 @@ export {
   SUPPORTED_NOSTR_KINDS,
 } from './nostr';
 export type { UnsignedNostrEvent, SignedNostrEvent, NostrKeypair, SealedNostrSecret } from './nostr';
+
+// Read-only access to the pre-move Phala root (TC-3554 K1; draft, do not merge).
+export { loadLegacyRoot, LegacyRootError } from './legacy-root';
+export type {
+  LegacyRoot,
+  LegacyRootConfig,
+  LegacyRootErrorCode,
+  LegacyCanary,
+  LegacyKmsTransport,
+  KmsAppKeyResponse,
+} from './legacy-root';
+export { createRaTlsKmsTransport } from './legacy-root-kms';
+export type { RaTlsKmsTransportOptions } from './legacy-root-kms';
