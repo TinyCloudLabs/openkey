@@ -3,6 +3,7 @@ import { ensureEip55, siweToDelegationHeaders } from '@tinycloud/node-sdk-wasm';
 import { buildOwnerRevocationSiwe } from '@openkey/capability-review';
 import { Prisma, type PrismaClient } from '@openkey/db';
 import { log, logError, logMetric, withScheduledLogContext } from '../../log';
+import { isKnownTinyCloudActivationHost } from '../tinycloud-hosts';
 import { signManagedKey } from '../managed-key-signing';
 import { primaryKeyWhere } from '../primary-key';
 
@@ -73,7 +74,7 @@ export async function revokeOwnerDelegation(
   } catch { log('warn', 'native_consent_stale_session_revoke_failed'); return false; }
 }
 
-export type RevokePendingDatabase = Pick<PrismaClient, 'tinyCloudNativeRequest' | 'tinyCloudNativeStepUpDelegation' | 'ethereumKey'>;
+export type RevokePendingDatabase = Pick<PrismaClient, 'tinyCloudNativeRequest' | 'tinyCloudNativeStepUpDelegation' | 'ethereumKey' | 'user'>;
 
 export interface RevokePendingDeps {
   host: OwnerRevocationHost;
@@ -114,7 +115,12 @@ export async function sweepRevokePendingOnce(db: RevokePendingDatabase, deps: Re
   ) => {
     if (!userId) { report.pending += 1; return; }
     if (Date.parse(record.expiresAt) <= deps.now().getTime()) { await clear(); report.expired += 1; return; }
+    // The server signs unattended here, so it is as strict as every other signing path: a node OpenKey may talk to,
+    // and never for an account that took its key back (USER_CONTROLLED_EXCLUSIVE). Both leave the entry to expire.
+    if (!isKnownTinyCloudActivationHost(record.tinycloudHost)) { report.pending += 1; return; }
     try {
+      const account = await db.user.findUnique({ where: { id: userId }, select: { tinyCloudManageKeyMode: true } });
+      if (!account || account.tinyCloudManageKeyMode === 'USER_CONTROLLED_EXCLUSIVE') { report.pending += 1; return; }
       const key = await db.ethereumKey.findFirst({ where: primaryKeyWhere(userId) });
       // The delegation was signed by the owner address it names; only that key can revoke it.
       if (!key?.sealedBlob || ensureEip55(key.address) !== ensureEip55(record.address)) { report.pending += 1; return; }

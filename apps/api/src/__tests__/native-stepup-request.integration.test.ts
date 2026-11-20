@@ -1112,4 +1112,22 @@ if (!child) {
     expect(await prisma.tinyCloudNativeStepUpDelegation.count()).toBe(0);
     expect(calls).toEqual([HOST, HOST]);
   });
+
+  test('the sweep never signs for a node OpenKey does not talk to, nor for an account that took its key back', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-1', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries, status: 'REVOKED', revokedReason: 'app_revoked' } });
+    const marked = (id: string, tinycloudHost: string) => ({ id, grantId: 'g1', appId: EXPLORER, delegationCid: `cid-${id}`, tinycloudHost, address, siweDomain: 'openkey.so',
+      expiresAt: new Date(Date.now() + 600_000), revokeRequestedAt: new Date() });
+    await prisma.tinyCloudNativeStepUpDelegation.create({ data: marked('good', HOST) });
+    await prisma.tinyCloudNativeStepUpDelegation.create({ data: marked('evil', 'https://evil.example') });
+    const { sweepRevokePendingOnce } = await import('../services/native-delegation/revoke-pending');
+    const calls: string[] = [];
+    await prisma.user.update({ where: { id: USER }, data: { tinyCloudManageKeyMode: 'USER_CONTROLLED_EXCLUSIVE' } });
+    expect(await sweepRevokePendingOnce(prisma, await sweepDeps(true, calls))).toEqual({ pending: 2, revoked: 0, expired: 0 });
+    expect(calls).toEqual([]);
+    await prisma.user.update({ where: { id: USER }, data: { tinyCloudManageKeyMode: 'APP_MANAGED' } });
+    expect(await sweepRevokePendingOnce(prisma, await sweepDeps(true, calls))).toEqual({ pending: 1, revoked: 1, expired: 0 });
+    expect(calls).toEqual([HOST]);
+    expect((await prisma.tinyCloudNativeStepUpDelegation.findMany()).map((row) => row.id)).toEqual(['evil']);
+  });
 }

@@ -1290,11 +1290,22 @@ timer in the API (not behind the switch), asks the node to revoke each marked
 delegation with the owner's signature and the `revokePending` records above. An
 entry is cleared only when the node answers OK or the delegation has expired by
 itself. It runs every 60 s and logs `native_stepup_revoke_pending` with the
-number still waiting. An entry whose recorded owner address is no longer the
-account's primary key is left, never revoked with another key.
+number still waiting. The sweep signs unattended with the account's key, so it
+signs exactly one thing, the owner revocation of that one delegation CID, and
+only when all of these hold; otherwise the entry is left until it expires:
+
+- the recorded host is a node OpenKey may talk to (`isKnownTinyCloudActivationHost`);
+- the account is not `USER_CONTROLLED_EXCLUSIVE` (the user took the key back: the
+  server does not sign for it);
+- the recorded owner address is the account's current primary key, never
+  another key.
 
 Until the sweep reaches the node, a revoked step-up's delegations are still
-valid there, for at most their TTL.
+valid there, for at most their TTL. Three paths drop the rows without a revoke:
+deleting the account (its keys are deleted first, so nothing could sign), an
+admin deleting the OAuth client (its grants cascade, Home's own delegations
+included), and the reviewer-account cleanup (a reviewer's grant never carries a
+step-up). In each the delegations expire by themselves within their TTL.
 
 ## TTL rules
 
