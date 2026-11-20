@@ -54,7 +54,7 @@ export async function embedSendEmailOtp(
   });
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(body?.message || body?.error || 'Failed to send code');
+    throw Object.assign(new Error(body?.message || body?.error || 'Failed to send code'), { code: body?.code });
   }
 }
 
@@ -105,10 +105,7 @@ function persistEmbeddedSession(
   if (!response.ok) {
     throw new Error(body?.message || body?.error || failure);
   }
-  const sessionToken =
-    response.headers.get('set-auth-token')
-    || body?.token
-    || body?.session?.token;
+  const sessionToken = response.headers.get('set-auth-token');
   if (!sessionToken) {
     throw new Error('Email verified, but no embedded session token was returned.');
   }
@@ -118,6 +115,39 @@ function persistEmbeddedSession(
 
 export function clearSessionToken(): void {
   sessionStorage.removeItem(SESSION_TOKEN_KEY);
+}
+
+/**
+ * The current cookie session's token in its signed form, the form the
+ * `set-auth-token` header carries, or null when there is no session.
+ */
+export async function readSignedSessionToken(fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  const response = await fetchImpl(`${API_BASE}/api/auth/session-token`, {
+    credentials: 'include',
+    headers: { Accept: 'application/json' },
+  });
+  if (response.status !== 404) {
+    if (!response.ok) return null;
+    const body = await response.json().catch(() => null) as { token?: unknown } | null;
+    return typeof body?.token === 'string' && body.token ? body.token : null;
+  }
+  // An API without /session-token answers 404: read the session as before.
+  const session = await fetchImpl(`${API_BASE}/api/auth/get-session`, {
+    credentials: 'include',
+    headers: { Accept: 'application/json' },
+  });
+  const body = await session.json().catch(() => null) as { token?: string; session?: { token?: string } } | null;
+  return session.headers.get('set-auth-token') || body?.session?.token || body?.token || null;
+}
+
+/** Whether `token` authenticates as a bearer, with no cookie and no session refresh. */
+async function bearerAuthenticates(token: string, fetchImpl: typeof fetch): Promise<boolean> {
+  const response = await fetchImpl(`${API_BASE}/api/auth/get-session?disableRefresh=true`, {
+    credentials: 'omit',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error('Session check failed');
+  return (await response.json().catch(() => undefined)) !== null;
 }
 
 /**
@@ -138,17 +168,20 @@ export async function revokeEmbeddedSession(
     // deleted after the browser cookie has been cleared.
     if (!tokenToVerify) {
       try {
-        const currentSession = await fetchImpl(
-          `${API_BASE}/api/auth/get-session?disableRefresh=true`,
-          { credentials: 'include' },
-        );
-        if (currentSession.ok) {
-          const current = await currentSession.json().catch(() => undefined);
-          tokenToVerify = current?.session?.token ?? null;
-        }
+        tokenToVerify = await readSignedSessionToken(fetchImpl);
       } catch {
         // Still attempt sign-out so local cookie cleanup is not blocked by a
         // failed preflight. Without the old token, revocation stays unverified.
+      }
+    }
+
+    // A token that does not authenticate before sign-out proves nothing by
+    // failing to authenticate after it, so it is not used to verify.
+    if (tokenToVerify) {
+      try {
+        if (!await bearerAuthenticates(tokenToVerify, fetchImpl)) tokenToVerify = null;
+      } catch {
+        tokenToVerify = null;
       }
     }
 
@@ -167,15 +200,7 @@ export async function revokeEmbeddedSession(
     // database session fails. Re-check the previous bearer without cookies or
     // session refresh so `revoked: true` means that exact old session can no
     // longer authenticate, not merely that sign-out was accepted.
-    const verification = await fetchImpl(
-      `${API_BASE}/api/auth/get-session?disableRefresh=true`,
-      {
-        credentials: 'omit',
-        headers: { Authorization: `Bearer ${tokenToVerify}` },
-      },
-    );
-    if (!verification.ok) return false;
-    return (await verification.json().catch(() => undefined)) === null;
+    return !await bearerAuthenticates(tokenToVerify, fetchImpl);
   } catch {
     return false;
   } finally {

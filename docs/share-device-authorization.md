@@ -326,7 +326,7 @@ signature, the page stops approving and shows:
 > Ask your agent for a new link.
 
 When consent already identified the requester, its name is kept in the heading
-(for example, “TinyCloud CLI's request expired”). The terminal screen reuses the
+(for example, “This request from TinyCloud CLI expired.”). The terminal screen reuses the
 confirmation card and key icon, sits near the top on narrow screens, and does
 not add viewport-height scrolling when its content fits.
 

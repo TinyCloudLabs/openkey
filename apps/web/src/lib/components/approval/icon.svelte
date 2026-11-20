@@ -1,6 +1,7 @@
 <script lang="ts">
   // The few line icons the approval pages use. Decorative: the words beside them carry the meaning.
-  let { name, class: className = 'h-[18px] w-[18px]' }: { name: 'key' | 'shield' | 'chev' | 'alert'; class?: string } = $props();
+  type Name = 'key' | 'shield' | 'chev' | 'alert' | 'copy' | 'check' | 'x';
+  let { name, class: className = 'h-[18px] w-[18px]' }: { name: Name; class?: string } = $props();
 </script>
 
 <svg
@@ -20,6 +21,13 @@
     <path d="M9 12l2.2 2.2L15.2 10" />
   {:else if name === 'chev'}
     <path d="M7 10l5 5 5-5" />
+  {:else if name === 'copy'}
+    <rect x="9" y="9" width="11" height="11" rx="2.5" />
+    <path d="M15 9V6.5A2.5 2.5 0 0012.5 4h-6A2.5 2.5 0 004 6.5v6A2.5 2.5 0 006.5 15H9" />
+  {:else if name === 'check'}
+    <path d="M5 12.5l4.5 4.5L19 7" />
+  {:else if name === 'x'}
+    <path d="M6 6l12 12M18 6L6 18" />
   {:else}
     <path d="M12 8.5v4.5M12 16.4v.1M10.3 4.2L2.9 17a2 2 0 001.7 3h14.8a2 2 0 001.7-3L13.7 4.2a2 2 0 00-3.4 0z" />
   {/if}

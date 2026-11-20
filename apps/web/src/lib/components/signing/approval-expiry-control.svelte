@@ -45,6 +45,7 @@
      * screen names them ("This request" on a link). Null shows no note.
      */
     onceSite?: string | null;
+    onceNote?: string | null;
     /** Show the "How long it lasts" fold here. False where the screen shows ApprovalExpiryChooser elsewhere. */
     chooser?: boolean;
   }
@@ -61,6 +62,7 @@
     endsAt = null,
     permissionCount = 1,
     onceSite = null,
+    onceNote = null,
     chooser = true,
   }: Props = $props();
 
@@ -155,7 +157,9 @@
     {:else}
       <p class="expiry-line" data-testid="approval-expiry-line">{permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDurationWithEnd(shownMs)}</p>
     {/if}
-    {#if onceSite !== null && requestedMs !== null}
+    {#if onceNote !== null}
+      <p class="expiry-once-note" data-testid="approval-expiry-once-note">{onceNote}</p>
+    {:else if onceSite !== null && requestedMs !== null}
       <p class="expiry-once-note" data-testid="approval-expiry-once-note">
         {onceSite} asked for {formatDuration(requestedMs)}. Access to secrets or encrypted data starts at {formatDuration(shownMs)}. You can choose longer in Advanced details.
       </p>

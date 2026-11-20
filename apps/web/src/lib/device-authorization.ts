@@ -63,6 +63,17 @@ export function cleanConsentText(value: string): string {
     .trim();
 }
 
+/** A device code's eight letters and numbers, upper case, whatever else was typed or pasted around them. */
+export function normalizeDeviceUserCode(value: string): string {
+  return value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+}
+
+/** A device code as the terminal shows it, `ABCD-EFGH`; a partial code gets the dash once it passes four. */
+export function formatDeviceUserCode(value: string): string {
+  const normalized = normalizeDeviceUserCode(value);
+  return normalized.length > 4 ? `${normalized.slice(0, 4)}-${normalized.slice(4)}` : normalized;
+}
+
 export async function lookupDeviceRequest(apiBase: string, userCode: string): Promise<DeviceRequestRecord | null> {
   const response = await fetch(`${apiBase}/api/device-authorizations/lookup?user_code=${encodeURIComponent(userCode)}`, {
     credentials: 'omit',
@@ -79,13 +90,19 @@ export async function lookupDeviceRequest(apiBase: string, userCode: string): Pr
  * its `expiry` (`<seconds>s`) is within the requested lifetime, so a crafted
  * link cannot swap keys, origins, scope, reason, or lifetime.
  */
+export class DeviceLinkError extends Error {
+  constructor(readonly stopId: 'S4' | 'S28', message: string) {
+    super(message);
+  }
+}
+
 export async function loadVerifiedDeviceRequest(
   apiBase: string,
   userCode: string,
   link: DeviceDelegateLink,
 ): Promise<DeviceRequestRecord> {
   const record = userCode ? await lookupDeviceRequest(apiBase, userCode) : null;
-  if (!record) throw new Error('This device request is invalid or expired. Restart the CLI command and enter its code at /device.');
+  if (!record) throw new DeviceLinkError('S4', 'This device request is invalid or expired. Restart the CLI command and enter its code at /device.');
   const canonical = (value: unknown) => JSON.stringify(value, (_key, entry: unknown) =>
     entry && typeof entry === 'object' && !Array.isArray(entry)
       ? Object.fromEntries(Object.entries(entry).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)))
@@ -100,7 +117,7 @@ export async function loadVerifiedDeviceRequest(
     canonical(record.permissions) !== canonical(link.permissions) ||
     !(Number(/^(\d+)s$/.exec(link.expiry)?.[1]) <= deviceRequestTtlSeconds(record))
   ) {
-    throw new Error('This approval link does not match the device request. Enter the code from your terminal at /device.');
+    throw new DeviceLinkError('S28', 'This approval link does not match the device request. Enter the code from your terminal at /device.');
   }
   return record;
 }
@@ -243,19 +260,48 @@ export function readDelegatePermissionsParam(params: URLSearchParams): { permiss
   return value === null ? null : decodeDelegatePermissionsParam(value);
 }
 
+const ENCRYPTION_SERVICE = 'tinycloud.encryption';
+const DECRYPT_ABILITY = 'tinycloud.encryption/decrypt';
+
+/**
+ * The device's encryption entry: the one `tinycloud.encryption/decrypt` grant
+ * in the `default` space with an empty path. It stands for the approving
+ * account's own default network, which the API resolves at prepare.
+ */
+function isDeviceEncryptionEntry(permission: DevicePermission): boolean {
+  return (
+    permission.service === ENCRYPTION_SERVICE &&
+    permission.space === 'default' &&
+    permission.path === '' &&
+    permission.actions.length === 1 &&
+    permission.actions[0] === DECRYPT_ABILITY
+  );
+}
+
+/**
+ * Resource URN of the signer's own `default` encryption network, as the API
+ * signs it. Lowercased: an EIP-55 address and its lowercase form name the same
+ * account, so comparing lowercase is equality of the EIP-55 form.
+ */
+function defaultEncryptionNetworkUrn(signer: { address: string; chainId: number }): string {
+  return `urn:tinycloud:encryption:did:pkh:eip155:${signer.chainId}:${signer.address}:default`.toLowerCase();
+}
+
 /**
  * Map the grants of a signed delegation (`/api/delegate` `permissions`,
  * ReCap form: short service names and full space URIs) back onto the
  * requested manifest permissions, keeping the request's spelling. Throws
  * when the delegation carries anything the device request did not ask for
- * or grants nothing. Device sign-in grants no encryption ability, so any
- * encryption grant is refused (TC-3204).
+ * or grants nothing. `signer` is the account that signed the delegation; a
+ * raw encryption grant must name that account's own `default` network.
  */
 export function approvedDevicePermissions(
   requested: DevicePermission[],
   granted: unknown,
+  signer: { address: string; chainId: number },
 ): DevicePermission[] {
   if (!Array.isArray(granted)) throw new Error('The approved delegation does not list its permissions.');
+  const ownNetwork = defaultEncryptionNetworkUrn(signer);
   const grantedActions = new Map<DevicePermission, Set<string>>();
   for (const raw of granted) {
     const grant = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
@@ -263,9 +309,14 @@ export function approvedDevicePermissions(
       ? `tinycloud.${grant.service}`
       : grant.service;
     const actions = Array.isArray(grant.actions) ? grant.actions : [];
-    // Full or short service name, in any case, as the API canonicalizes it.
-    const source = typeof grant.service === 'string' && /^(?:tinycloud\.)?encryption$/i.test(grant.service)
-      ? undefined
+    const source = service === ENCRYPTION_SERVICE
+      ? requested.find((permission) =>
+          isDeviceEncryptionEntry(permission) &&
+          typeof grant.path === 'string' &&
+          grant.path.toLowerCase() === ownNetwork &&
+          actions.length === 1 &&
+          actions[0] === DECRYPT_ABILITY,
+        )
       : requested.find((permission) =>
           permission.service === service &&
           permission.path === grant.path &&
@@ -305,4 +356,23 @@ export function formatDeviceLifetime(seconds: number): string {
  */
 export function deviceLifetimeNotice(seconds: number, now: number = Date.now()): { ends: string; long: boolean } {
   return { ends: formatAccessEnd(new Date(now + seconds * 1000).toISOString()), long: seconds > 365 * 86_400 };
+}
+
+/**
+ * The approver's own `default` network decrypt entry, the one encryption grant
+ * a device request may carry, is labelled "Decrypt protected data" with its
+ * lifetime. Every other entry returns null and keeps its existing label.
+ */
+export function decryptDefaultEntryLabel(
+  permission: DevicePermission,
+  lifetimeSeconds: number,
+): { statement: string; lifetime: string } | null {
+  const exact =
+    permission.service === 'tinycloud.encryption' &&
+    permission.space === 'default' &&
+    permission.path === '' &&
+    permission.actions.length === 1 &&
+    permission.actions[0] === 'tinycloud.encryption/decrypt';
+  if (!exact) return null;
+  return { statement: 'Decrypt protected data', lifetime: formatDeviceLifetime(lifetimeSeconds) };
 }

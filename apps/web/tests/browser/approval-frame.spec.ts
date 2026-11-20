@@ -56,6 +56,6 @@ test('signed in, the chip shows the account and "Sign out" brings the sign-in ca
 
 test('the device page has no OpenKey Account header', async ({ page }) => {
   await open(page, DEVICE_LINK, false);
-  await expect(page.getByRole('heading', { level: 1, name: 'Review a sign-in request' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Does your terminal show this code?' })).toBeVisible();
   await expect(page.getByText('OpenKey Account')).toHaveCount(0);
 });

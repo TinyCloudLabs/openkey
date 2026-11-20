@@ -119,8 +119,8 @@ test.describe('Decline on the approval-request review page', () => {
     const calls = await openReview(page);
     await decline(page).dblclick();
     await expect(declined(page)).toBeVisible();
-    // The declined page ends with a Close button (its wording is not pinned here).
-    await expect(declined(page).getByRole('button', { name: 'Close', exact: true })).toBeVisible();
+    // The declined page ends with Close this tab.
+    await expect(declined(page).getByRole('button', { name: 'Close this tab', exact: true })).toBeVisible();
     expect(denies(calls)).toHaveLength(1);
     expect(denies(calls)[0]!.body).toEqual({ reference: path + fragment });
     // The key fragment never travels in a URL.
@@ -143,17 +143,18 @@ test.describe('Decline on the approval-request review page', () => {
     expect(denies(calls)).toHaveLength(3);
   });
 
-  test('a request that was already approved cannot be declined, and the card stays', async ({ page }) => {
+  test('a request that was already approved stops without declining', async ({ page }) => {
     await openReview(page, { denyReplies: [{ status: 409, body: { code: 'already_approved' } }] });
     await decline(page).click();
-    await expect(page.getByRole('alert')).toContainText('This request was already approved, so it cannot be declined.');
+    await expect(page.getByRole('heading', { name: 'This request was already answered' })).toBeVisible();
+    await expect(approve(page)).toHaveCount(0);
     await expect(declined(page)).toHaveCount(0);
   });
 
   test('a request that expired before the decline shows the expired message alone, with no card and no declined page', async ({ page }) => {
     const calls = await openReview(page, { denyReplies: [{ status: 410, body: { code: 'expired_request' } }] });
     await decline(page).click();
-    await expect(page.getByRole('alert')).toContainText('This approval request has expired.');
+    await expect(page.getByRole('heading', { name: /request expired$/i })).toBeVisible();
     await expect(approve(page)).toHaveCount(0);
     await expect(declined(page)).toHaveCount(0);
     expect(denies(calls)).toHaveLength(1);

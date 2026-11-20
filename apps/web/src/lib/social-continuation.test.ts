@@ -18,11 +18,11 @@ import {
 const ORIGIN = 'https://openkey.so';
 const callback = (query: string) => parseSocialCallback(new URL(`${ORIGIN}/auth/social/callback?${query}`));
 
-function fetchReturning(status: number, body: unknown) {
+function fetchReturning(status: number, body: unknown, headers: Record<string, string> = {}) {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const impl = (async (url: string, init?: RequestInit) => {
     calls.push({ url, init });
-    return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+    return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
   }) as unknown as typeof fetch;
   return { impl, calls };
 }
@@ -72,14 +72,14 @@ describe('socialPopupReturnUrl', () => {
 describe('socialErrorMessage', () => {
   test.each([
     ['apple', 'apple_email_required', APPLE_EMAIL_REQUIRED_MESSAGE],
-    ['apple', 'account_not_linked', 'An OpenKey account already uses this email. Sign in to it and add Apple in Settings.'],
+    ['apple', 'account_not_linked', 'An OpenKey account already uses this email. Sign in to it, then add Apple in Settings.'],
     ['apple', 'user_cancelled_authorize', 'Apple sign-in was cancelled.'],
     ['google', 'access_denied', 'Google sign-in was cancelled.'],
     ['apple', 'account_already_linked_to_different_user', 'This Apple account is already linked to another OpenKey account.'],
     ['apple', 'unable_to_link_account', 'OpenKey could not link Apple. Verify a new email code in Settings and try again.'],
     ['apple', 'continuation_expired', 'This Apple confirmation expired. Start sign-in again.'],
-    ['apple', 'invalid_code', 'Apple could not complete sign-in. Please try again.'],
-    [null, 'invalid_code', 'Sign-in could not complete. Please try again.'],
+    ['apple', 'invalid_code', "Apple sign-in couldn't be completed. Try again."],
+    [null, 'invalid_code', "Sign-in couldn't be completed. Try again."],
     [null, 'cancelled', 'Sign-in was cancelled.'],
   ] as const)('%s %s', (provider: 'apple' | 'google' | null, code: string, message: string) => {
     expect(socialErrorMessage(provider, code)).toBe(message);
@@ -102,7 +102,7 @@ describe('relay copy (R4) and account exists (R3)', () => {
 
   test('account exists names the email and the provider', () => {
     expect(accountExistsMessage('apple', 'sam@example.test')).toBe(
-      'An OpenKey account already uses sam@example.test. Sign in to it and verify with an email code to add Apple in Settings.',
+      'An OpenKey account already uses sam@example.test. Sign in to it, then add Apple in Settings.',
     );
   });
 });
@@ -140,26 +140,26 @@ describe('loadSocialContinuation', () => {
     ['no email', { outcome: 'new_account', providerId: 'apple', email: '' }],
   ])('%s is refused, never shown', async (_label: string, body: unknown) => {
     const { impl } = fetchReturning(200, body);
-    await expect(loadSocialContinuation(input, impl)).rejects.toThrow('Apple could not complete sign-in. Please try again.');
+    await expect(loadSocialContinuation(input, impl)).rejects.toThrow("Apple sign-in couldn't be completed. Try again.");
   });
 });
 
 describe('confirmSocialContinuation', () => {
   test('returns the session token and posts the bound native query', async () => {
-    const { impl, calls } = fetchReturning(200, { token: 'session-1', user: {} });
-    expect(await confirmSocialContinuation({ token: 'tok', provider: 'apple', oauthQuery: 'client_id=exo' }, impl)).toBe('session-1');
+    const { impl, calls } = fetchReturning(200, { token: 'raw', user: {} }, { 'set-auth-token': 'session-1.sig' });
+    expect(await confirmSocialContinuation({ token: 'tok', provider: 'apple', oauthQuery: 'client_id=exo' }, impl)).toBe('session-1.sig');
     expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ continuation: 'tok', oauthQuery: 'client_id=exo' });
     expect(calls[0]!.init?.method).toBe('POST');
   });
 
   test('the web confirm sends no oauthQuery', async () => {
-    const { impl, calls } = fetchReturning(200, { token: 'session-1' });
+    const { impl, calls } = fetchReturning(200, { token: 'raw' }, { 'set-auth-token': 'session-1.sig' });
     await confirmSocialContinuation({ token: 'tok', provider: 'apple' }, impl);
     expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ continuation: 'tok' });
   });
 
   test.each([
-    [{ code: 'ACCOUNT_ALREADY_EXISTS' }, 'An OpenKey account already uses this email. Sign in to it and add Apple in Settings.'],
+    [{ code: 'ACCOUNT_ALREADY_EXISTS' }, 'An OpenKey account already uses this email. Sign in to it, then add Apple in Settings.'],
     [{ code: 'ACCOUNT_ALREADY_LINKED' }, 'This Apple account is already linked to an OpenKey account. Sign in with Apple instead.'],
     [{ message: 'Invalid continuation' }, 'Could not create your account. Start Apple sign-in again.'],
   ])('maps %o', async (body: unknown, message: string) => {
@@ -169,6 +169,11 @@ describe('confirmSocialContinuation', () => {
 
   test('a 200 without a token is not a session', async () => {
     const { impl } = fetchReturning(200, {});
+    await expect(confirmSocialContinuation({ token: 'tok', provider: 'google' }, impl)).rejects.toThrow('Start Google sign-in again');
+  });
+
+  test('a session token in the body without the set-auth-token header is not a session', async () => {
+    const { impl } = fetchReturning(200, { token: 'raw-session', user: {} });
     await expect(confirmSocialContinuation({ token: 'tok', provider: 'google' }, impl)).rejects.toThrow('Start Google sign-in again');
   });
 });

@@ -37,6 +37,12 @@ export const renewalLeaseCopy = {
   walletDeclined: "You didn't sign, so renewal is still on.",
   failed: "Couldn't stop renewal, so it's still on. Try again.",
   loadFailed: "Couldn't load your renewing permissions. Reload to try again.",
+  /** By a sign-out button, shown only while the account has renewing permissions. */
+  signOutKeepsRenewing: 'Signing out doesn’t stop apps renewing the access you approved.',
+  /** The dashboard's link to Renewing permissions in Settings. */
+  stopRenewalsLink: 'Stop renewals',
+  /** Inside apps, where Settings is a step away. */
+  stopRenewalsInSettings: 'You can stop renewals in OpenKey Settings.',
 } as const;
 
 /**

@@ -46,16 +46,19 @@ import {
   socialProviderTrustedOrigins,
 } from './social-providers';
 import { appleRelayEmailUndeliverable } from './services/apple-notifications';
+import { signInCodeStorage } from './services/email-code-storage';
 import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
 import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { emailSignupConfirmation } from './services/email-signup-confirmation';
+import { sessionTokenPlugin } from './services/session-token';
 import { hasFreshEmailStepUp } from './services/email-otp-step-up';
 import { confirmedSocialProvider, socialConfirmation } from './services/social-confirmation';
 import { assertCurrentSocialLink, socialLinkStatePlugin } from './services/social-link-state';
 import { socialMailboxReview } from './services/social-mailbox-review';
 import { betterAuthLog, log, logError } from './log';
+import { emailOtpDelivery } from './services/email-otp-delivery';
 import { withReviewerDatabase } from './services/reviewer-database';
 import { reviewerAuth } from './services/reviewer-auth';
 import { REVIEWER_MAX_SECONDS, capturedReviewer, reviewerActive, reviewerForUser } from './services/reviewer-accounts';
@@ -74,6 +77,7 @@ const resend = process.env.RESEND_API_KEY
 
 // Environment-based configuration
 const isDev = process.env.NODE_ENV !== 'production' && process.env.TEE_MODE !== 'production';
+const otpDelivery = emailOtpDelivery(resend, isDev);
 const rpID = process.env.WEBAUTHN_RP_ID!;
 const origin = process.env.WEBAUTHN_ORIGIN!;
 
@@ -403,26 +407,7 @@ export const auth = betterAuth({
     // Email OTP is the default registration and sign-in method. A verified code
     // for an unknown email asks the user to confirm before an account exists.
     emailOTP({
-      async sendVerificationOTP({ email, otp, type }) {
-        if (!resend) {
-          if (isDev) log('warn', 'otp_delivery_unconfigured');
-          return;
-        }
-
-        await resend.emails.send({
-          from: 'OpenKey <noreply@openkey.so>',
-          to: email,
-          subject: 'Verify your OpenKey email',
-          html: `
-            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 400px; margin: 0 auto; padding: 20px;">
-              <h2 style="color: #1a1a1a; margin-bottom: 24px;">Your verification code</h2>
-              <p style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #667eea; margin: 32px 0; text-align: center;">${otp}</p>
-              <p style="color: #666; font-size: 14px;">This code expires in 5 minutes.</p>
-              <p style="color: #888; font-size: 12px; margin-top: 24px;">If you didn't request this, you can safely ignore this email.</p>
-            </div>
-          `,
-        });
-      },
+      sendVerificationOTP: otpDelivery.sendVerificationOTP,
       generateOTP({ email }: { email: string }) {
         if (process.env.TEE_MODE === 'development' && email === 'test@openkey.dev') {
           return '000000';
@@ -431,14 +416,18 @@ export const auth = betterAuth({
       },
       otpLength: 6,
       expiresIn: 300, // 5 minutes
-      // Repeated requests during the active window must not invalidate a code
-      // that may still be arriving or grouped into the same email thread.
-      resendStrategy: 'reuse',
+      // Codes are stored hashed, so a resend mails a new code and the earlier
+      // one stops working; the sign-in page asks for the latest email.
+      resendStrategy: 'rotate',
+      storeOTP: signInCodeStorage,
     }),
+    otpDelivery.plugin,
     emailSignupConfirmation(prisma),
 
-    // Bearer plugin - returns session token in set-auth-token header
-    bearer(),
+    // Bearer plugin - returns the signed session token in the set-auth-token header, and accepts
+    // only that signed form back. OpenKey's pages read it through /session-token after a redirect.
+    bearer({ requireSignature: true }),
+    sessionTokenPlugin(),
 
     // JWT plugin (required for OAuth provider)
     jwt(),
