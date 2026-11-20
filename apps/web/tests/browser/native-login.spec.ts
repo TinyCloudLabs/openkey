@@ -192,6 +192,34 @@ test.describe('native login', () => {
     await expect(page.locator('#email')).toBeVisible();
   });
 
+  // TC-3596: one passkey per interaction. The sign-in names the pending request, so Approve for it asks for nothing more.
+  test('the passkey sign-in names the pending request it was opened for', async ({ page }) => {
+    await page.addInitScript(() => {
+      const bytes = (text: string) => new TextEncoder().encode(text).buffer;
+      navigator.credentials.get = async () => ({
+        id: 'AAAA', rawId: bytes('id'), type: 'public-key', authenticatorAttachment: 'platform',
+        response: { authenticatorData: bytes('data'), clientDataJSON: bytes('{}'), signature: bytes('sig'), userHandle: null },
+        getClientExtensionResults: () => ({}),
+      }) as unknown as Credential;
+    });
+    const api = await mockApi(page);
+    await page.route('**/api/auth/passkey/generate-authenticate-options', (route) => json(route, {
+      challenge: 'AAAA', rpId: 'localhost', allowCredentials: [], userVerification: 'required', timeout: 60000,
+    }));
+    const verifyHeaders: Array<Record<string, string>> = [];
+    await page.route('**/api/auth/passkey/verify-authentication', (route) => {
+      verifyHeaders.push(route.request().headers());
+      return json(route, { session: session.session, user: session.user });
+    });
+    await page.goto(`/auth/login?${signedQuery({ login_method: 'passkey' })}`);
+    await page.waitForLoadState('networkidle');
+    await page.getByRole('button', { name: 'Continue with passkey' }).click();
+
+    await expect.poll(() => verifyHeaders.length).toBe(1);
+    expect(verifyHeaders[0]!['x-openkey-passkey-flow']).toBe('req-1');
+    expect(api.count('/api/auth/passkey/verify-authentication')).toBe(0);
+  });
+
   test('the code step is one one-time-code input drawn as six 44x52 boxes, and Continue waits for the sixth digit', async ({ page }) => {
     await mockApi(page);
     await page.goto(`/auth/login?${signedQuery({ login_method: 'email', login_hint: 'sam@example.test' })}`);
