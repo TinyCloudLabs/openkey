@@ -52,7 +52,15 @@ jobs:
           bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review --filter @openkey/sdk
 
       - name: API tests
-        run: bun test apps/api/src/__tests__ scripts/deploy-production-migrations.test.ts scripts/oauth-client-branding.test.ts
+        run: bun test apps/api/src/__tests__ scripts/deploy-production-migrations.test.ts scripts/oauth-client-branding.test.ts scripts/step-up-ceiling-parity.test.ts
+
+      # TC-3569: OpenKey's step-up ceilings against the ones TinyCloud One's framed apps ask for, entry for entry.
+      # Skips with a notice until scripts/step-up-ceilings/one.pin.json pins One's file to a commit; the step-up flag
+      # waits for that pin (`--require-pin` makes this step fail while it is missing).
+      - name: Step-up ceiling parity with TinyCloud One
+        env:
+          TINYCHAT_READ_TOKEN: ${{ secrets.TINYCHAT_READ_TOKEN }}
+        run: bun scripts/step-up-ceiling-parity.ts
 
       # The capability review and web lib tests use the package built above.
       - name: Capability review and web lib tests
