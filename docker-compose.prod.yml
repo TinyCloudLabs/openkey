@@ -57,11 +57,13 @@ services:
       - OPENKEY_RENEWAL_LEASES=enabled
       - OPENKEY_RENEWAL_NODE_DID=did:key:z6MkjHi79SMX4doJyo2w7jDTM6Fa7iX6EVZWXNbJ6RzBm3Wi
       - OPENKEY_RENEWAL_RENEWER_DID=did:key:z6MkgWpiYdQV8pAr3dtHLdQsoZR3wF5wsS7fpkzAuX6q1PZj
-      # TC-3554 — one-time re-seal at first boot, DO NOT MERGE until reviewed. Every value is a literal, so the
+      # TC-3554 — one-time re-seal at first boot. Every value is a literal, so the
       # compose hash attests it (never ${VAR}, which resolves from the sealed environment).
       # The API re-seals every key sealed under the pre-move Phala root (epoch 0, read through the
-      # key-recovery sidecar) under the current root, and listens only after every row is current. Any
-      # failure ends the process. Remove OPENKEY_LEGACY_RESEAL in the next compose once it has run.
+      # key-recovery sidecar) under the current root, and listens only after every row is current
+      # or on the bounded quarantine list. Any other failure ends the process. It ran at the first
+      # boot on 7f053ae1. Remove OPENKEY_LEGACY_RESEAL (and key-recovery below) only after the
+      # quarantine list has been reviewed.
       # KMS_ROOT_PUBKEY is the epoch-0 root, approved by Bobbie from the offline recovery and two
       # pre-move records. CANARY_ADDRESS is an internal test account (MEAL) whose key was sealed before
       # the move: its unsealed key must derive exactly this address, or the API does not start.
@@ -83,7 +85,7 @@ services:
       # is unreachable for as long as that takes. Failures inside start_period do not count.
       start_period: 900s
 
-  # TC-3554 — DO NOT MERGE. Phala's dstack-key-recovery (cosign-verified digest, same as the
+  # TC-3554 — Phala's dstack-key-recovery (cosign-verified digest, same as the
   # node's) fetches the epoch-0 key from the KMS and serves it on a unix socket for openkey-api's
   # own verifier (packages/tee legacy-root). No ports and no TCP listener (--no-addr); the socket
   # lives on a volume only this service and api mount. The api image runs as root, so the sidecar
