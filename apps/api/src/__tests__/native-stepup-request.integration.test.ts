@@ -5,7 +5,8 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
-import { getAddress } from 'viem';
+import { getAddress, recoverMessageAddress } from 'viem';
+import { SiweMessage } from 'siwe';
 import { serializeSignedCookie } from 'better-call';
 import type * as DatabaseModule from '@openkey/db';
 
@@ -37,7 +38,7 @@ if (!child) {
   let app: { fetch: (request: Request) => Response | Promise<Response> };
   let clientId: string;
   let cookie: string;
-  let address: string;
+  let address: `0x${string}`;
   const API = 'https://api.openkey.test';
   const ISSUER = `${API}/api/auth`;
   const STEPUP = '/api/auth/oauth2/tinycloud/stepup';
@@ -163,8 +164,11 @@ if (!child) {
     process.env.OPENKEY_NATIVE_STEPUP_ENABLED = '1';
     await prisma.$executeRawUnsafe(`TRUNCATE TABLE "oauth_refresh_token", "oauth_access_token", "native_session_proof_jti", "oauth_consent", "tinycloud_manage_key_app_preference",
       "tinycloud_native_grant", "tinycloud_native_request", "tinycloud_native_consent_generation" CASCADE`);
-    await prisma.user.update({ where: { id: USER }, data: { lockedAt: null, tinyCloudManageKeyMode: 'APP_MANAGED' } });
+    await prisma.user.update({ where: { id: USER }, data: { lockedAt: null, reviewerHoldAt: null, tinyCloudManageKeyMode: 'APP_MANAGED' } });
     await prisma.ethereumKey.update({ where: { id: 'su-key' }, data: { isCanonicalTinyCloud: true } });
+    await prisma.$executeRawUnsafe('TRUNCATE TABLE "tinycloud_bootstrap_state"');
+    await prisma.tinyCloudBootstrapState.create({ data: { userId: USER, keyId: 'su-key', address, chainId: 1, tinycloudHost: HOST,
+      bootstrapVersion: 'test', status: 'complete', checkedAt: new Date(), completedAt: new Date() } });
     await prisma.oauthClient.update({ where: { clientId }, data: { disabled: false, scopes: ['openid', 'offline_access', DELEGATION], tinycloudNativeDelegation: ceiling } });
     await prisma.oauthConsent.create({ data: { id: 'su-consent', userId: USER, clientId, scopes: ['openid', 'offline_access', DELEGATION] } });
     await prisma.tinyCloudNativeConsentGeneration.create({ data: { userId: USER, clientId, generation: 0n } });
@@ -214,7 +218,7 @@ if (!child) {
   test('the delegate key can only come from the grant', async () => {
     const key = sessionKey(); await seedDevice('g1', key, 'token-1');
     const other = sessionKey();
-    for (const extra of [{ session_key: JSON.stringify(other.publicJwk) }, { session_did: 'did:key:z6Mk' }, { authorization_details: '[]' }]) {
+    for (const extra of [{ session_key: JSON.stringify(other.publicJwk) }, { session_did: 'did:key:z6Mk' }, { authorization_details: '[]' }] as Array<Record<string, string>>) {
       const response = await stepUp(key, 'token-1', extra);
       expect(response.status).toBe(400);
       expect((await body(response)).error).toBe('invalid_request');
@@ -277,7 +281,7 @@ if (!child) {
   async function beforeEachReset() {
     await prisma.$executeRawUnsafe(`TRUNCATE TABLE "oauth_refresh_token", "native_session_proof_jti", "oauth_consent", "tinycloud_native_grant",
       "tinycloud_native_request", "tinycloud_native_consent_generation", "tinycloud_manage_key_app_preference" CASCADE`);
-    await prisma.user.update({ where: { id: USER }, data: { lockedAt: null, tinyCloudManageKeyMode: 'APP_MANAGED' } });
+    await prisma.user.update({ where: { id: USER }, data: { lockedAt: null, reviewerHoldAt: null, tinyCloudManageKeyMode: 'APP_MANAGED' } });
     await prisma.ethereumKey.update({ where: { id: 'su-key' }, data: { isCanonicalTinyCloud: true } });
     await prisma.oauthClient.update({ where: { clientId }, data: { disabled: false } });
     await prisma.oauthConsent.create({ data: { id: 'su-consent', userId: USER, clientId, scopes: ['openid', 'offline_access', DELEGATION] } });
@@ -333,7 +337,7 @@ if (!child) {
     const key = sessionKey(); await seedDevice('g1', key, 'token-1');
     for (const over of [
       { redirect_uri: 'xyz.tinycloud.exo://openkey/other' }, { code_challenge_method: 'plain' }, { code_challenge: 'short' }, { state: 'short' },
-    ]) {
+    ] as Array<Record<string, string>>) {
       const response = await stepUp(key, 'token-1', over);
       expect([JSON.stringify(over), response.status, (await body(response)).error]).toEqual([JSON.stringify(over), 400, 'invalid_request']);
     }
@@ -372,19 +376,204 @@ if (!child) {
     expect(row.requestUriExpiresAt.getTime()).toBeLessThanOrEqual(row.expiresAt.getTime());
   });
 
-  test('the sign-in consent path never acts on a STEPUP request', async () => {
-    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+  // ---- PR 2b: consent prepare / approve for a STEPUP request ----
+  const CONSENT = `${API}/api/oauth/tinycloud/requests`;
+  const spaceId = (name: string) => `tinycloud:pkh:eip155:1:${address}:${name}`;
+  interface Preview { requestId: string; revision: number; digest: string; sessionSiwe: string; kind: string; reactivation: boolean;
+    spaces: Array<{ space: string; spaceId: string }>; stepUp: { grantId: string; appId: string }; error?: string; error_description?: string }
+  interface Approval { status: string; hosting: string; spaces: string[]; error?: string; error_description?: string }
+
+  async function consent(id: string, action: 'prepare' | 'approve', payload: Record<string, unknown> = {}) {
+    return app.fetch(new Request(`${CONSENT}/${id}/${action}`, { method: 'POST',
+      headers: { cookie, origin: 'https://openkey.test', 'content-type': 'application/json' }, body: JSON.stringify(payload) }));
+  }
+  // The request the way the app sees it after /authorize: RESOLVED, waiting for the user.
+  async function newRequest(key: SessionKey) {
     const created = await (await stepUp(key, 'token-1')).json() as { request_uri: string };
-    const id = created.request_uri.slice('urn:ietf:params:oauth:request_uri:'.length);
-    await prisma.tinyCloudNativeRequest.update({ where: { id }, data: { status: 'RESOLVED' } });
-    for (const action of ['prepare', 'approve']) {
-      const response = await app.fetch(new Request(`${API}/api/oauth/tinycloud/requests/${id}/${action}`, { method: 'POST',
-        headers: { cookie, origin: 'https://openkey.test', 'content-type': 'application/json' }, body: '{}' }));
-      expect([action, response.status, (await body(response)).error]).toEqual([action, 409, 'unsupported_request_kind']);
-    }
+    // The provider's /authorize resolves the request URI with this function; the request becomes RESOLVED.
+    const { resolveRequestUri, REQUEST_URI_PREFIX } = await import('../services/native-delegation/par');
+    const query = await resolveRequestUri(prisma, created.request_uri, clientId);
+    const id = created.request_uri.slice(REQUEST_URI_PREFIX.length);
+    expect(query).toMatchObject({ client_id: clientId, redirect_uri: STEPUP_REDIRECT, tinycloud_request: id });
+    return id;
+  }
+  async function prepared(id: string) {
+    const response = await consent(id, 'prepare');
+    return { response, preview: await response.json() as Preview };
+  }
+  const approval = (preview: Preview) => ({ revision: preview.revision, digest: preview.digest, sessionSiwe: preview.sessionSiwe });
+  const allHosted = () => new Response(JSON.stringify({ activated: [spaceId('public'), spaceId('applications')], skipped: [] }), { status: 200 });
+
+  // The node: /delegate answers `delegate`, /revoke is counted, anything else is a test failure.
+  async function withNode<T>(delegate: () => Response, run: () => Promise<T>) {
+    const original = globalThis.fetch;
+    const calls = { delegate: 0, revoke: 0 };
+    globalThis.fetch = (async (input: Request | URL | string) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url === `${HOST}/delegate`) { calls.delegate++; return delegate(); }
+      if (url === `${HOST}/revoke`) { calls.revoke++; return new Response('{}', { status: 200 }); }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof fetch;
+    try { return { value: await run(), calls }; } finally { globalThis.fetch = original; }
+  }
+  async function snapshot() {
+    return JSON.stringify([
+      await prisma.tinyCloudNativeGrant.findMany({ orderBy: { id: 'asc' } }), await prisma.oauthRefreshToken.findMany({ orderBy: { id: 'asc' } }),
+      await prisma.oauthAccessToken.count(), await prisma.oauthConsent.findMany({ orderBy: { id: 'asc' } }),
+      await prisma.tinyCloudNativeConsentGeneration.findMany(), await prisma.tinyCloudNativeStepUp.findMany(),
+    ], (_key, value) => typeof value === 'bigint' ? value.toString() : value);
+  }
+
+  test('prepare builds one multi-space SIWE to the grant\'s own session key and signs nothing', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const id = await newRequest(key);
+    const { response, preview } = await prepared(id);
+    expect(response.status).toBe(200);
+    expect(preview).toMatchObject({ kind: 'STEPUP', reactivation: false, stepUp: { grantId: 'g1', appId: EXPLORER } });
+    expect(preview.spaces).toEqual([{ space: 'public', spaceId: spaceId('public') }, { space: 'applications', spaceId: spaceId('applications') }]);
+    const grant = await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'g1' } });
+    const siwe = new SiweMessage(preview.sessionSiwe);
+    expect(siwe.address).toBe(address);
+    expect(preview.sessionSiwe).toContain(grant.sessionDid.split('#')[0]!);
+    const row = await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } });
+    expect(row).toMatchObject({ status: 'RESOLVED', signature: null, delegation: null, approvedRevision: null });
+    expect(await prisma.tinyCloudNativePreparation.count()).toBe(1);
+  });
+
+  test('approve signs for the grant\'s key and creates no grant, token, step-up or consent change', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const id = await newRequest(key);
+    const { preview } = await prepared(id);
+    const before = await snapshot();
+    const { value, calls } = await withNode(allHosted, async () => {
+      const first = await consent(id, 'approve', approval(preview));
+      const replay = await consent(id, 'approve', approval(preview));
+      return { first, firstBody: await first.json() as Approval, replay, replayBody: await replay.json() as Approval };
+    });
+    expect(value.first.status).toBe(200);
+    expect(value.firstBody).toMatchObject({ status: 'APPROVED', hosting: 'existing', spaces: ['public', 'applications'] });
+    expect(value.replay.status).toBe(200);
+    expect(value.replayBody).toMatchObject({ status: 'APPROVED', hosting: 'existing' });
+    expect(calls).toEqual({ delegate: 1, revoke: 0 });
+    const row = await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } });
+    expect(row.status).toBe('APPROVED');
+    // The signed text is the one rebuilt at approve (same content as the preview, its own issued-at).
+    const signed = (row.delegation as { siwe: string }).siwe;
+    expect(await recoverMessageAddress({ message: signed, signature: row.signature as `0x${string}` })).toBe(address);
+    expect(row.delegation).toMatchObject({ grantId: 'g1', appId: EXPLORER, sessionDid: row.sessionDid });
+    expect(await snapshot()).toBe(before);
+  });
+
+  test('the delegation never outlives a nearly-ended grant', async () => {
+    const key = sessionKey();
+    const expiresAt = new Date(Date.now() + 400_000);
+    await seedDevice('g1', key, 'token-1', { expiresAt });
+    const id = await newRequest(key);
+    const { preview } = await prepared(id);
+    expect(Date.parse(/Expiration Time: ([^\n]+)/.exec(preview.sessionSiwe)![1]!)).toBeLessThanOrEqual(expiresAt.getTime());
+    const { value } = await withNode(allHosted, () => consent(id, 'approve', approval(preview)));
+    expect(value.status).toBe(200);
+    const row = await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } });
+    expect(Date.parse((row.delegation as { expiresAt: string }).expiresAt)).toBeLessThanOrEqual(expiresAt.getTime());
+  });
+
+  test('a space the node did not activate refuses the whole step-up, withdraws the approval and revokes the delegation', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const id = await newRequest(key);
+    const { preview } = await prepared(id);
+    const { value, calls } = await withNode(
+      () => new Response(JSON.stringify({ activated: [spaceId('applications')], skipped: [spaceId('public')] }), { status: 200 }),
+      async () => { const response = await consent(id, 'approve', approval(preview)); return { response, payload: await response.json() as Approval }; });
+    expect(value.response.status).toBe(409);
+    expect(value.payload.error).toBe('space_not_hosted');
+    expect(value.payload.error_description).toBe('Spaces not hosted on this node: public');
+    expect(calls).toEqual({ delegate: 1, revoke: 1 });
+    expect(await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: 'DENIED', signature: null, delegation: null });
+  });
+
+  test('a node failure at activation is a 503, withdraws the approval and revokes the delegation', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const id = await newRequest(key);
+    const { preview } = await prepared(id);
+    const { value, calls } = await withNode(() => new Response('{}', { status: 500 }), async () => {
+      const response = await consent(id, 'approve', approval(preview)); return { response, payload: await response.json() as Approval }; });
+    expect([value.response.status, value.payload.error]).toEqual([503, 'temporarily_unavailable']);
+    expect(calls.revoke).toBe(1);
+    expect(await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: 'DENIED', signature: null, delegation: null });
+  });
+
+  test('without a completed bootstrap the spaces are not hosted: prepare refuses and stores nothing', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const id = await newRequest(key);
+    await prisma.$executeRawUnsafe('TRUNCATE TABLE "tinycloud_bootstrap_state"');
+    const { response, preview } = await prepared(id);
+    expect([response.status, preview.error, preview.error_description]).toEqual([409, 'space_not_hosted', 'Spaces not hosted on this node: public, applications']);
     expect(await prisma.tinyCloudNativePreparation.count()).toBe(0);
-    expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).status).toBe('RESOLVED');
-    expect(await prisma.tinyCloudNativeStepUp.count()).toBe(0);
-    expect(await prisma.tinyCloudNativeGrant.count()).toBe(1);
+  });
+
+  test('every gate is re-checked at approve: nothing is signed, the node is not called, the request stays pending', async () => {
+    const cases: Array<[string, () => Promise<unknown>, number, string]> = [
+      ['grant revoked', () => prisma.tinyCloudNativeGrant.update({ where: { id: 'g1' }, data: { status: 'REVOKED', revokedAt: new Date(), revokedReason: 'test' } }), 409, 'preparation_superseded'],
+      ['grant near its end', () => prisma.tinyCloudNativeGrant.update({ where: { id: 'g1' }, data: { absoluteExpiresAt: new Date(Date.now() + 100_000) } }), 409, 'preparation_superseded'],
+      ['refresh token revoked', () => prisma.oauthRefreshToken.update({ where: { token: hash('token-1') }, data: { revoked: new Date() } }), 409, 'preparation_superseded'],
+      ['stepUps removed from the ceiling', () => prisma.oauthClient.update({ where: { clientId }, data: { tinycloudNativeDelegation: { ...ceiling, stepUps: undefined } } }), 409, 'preparation_superseded'],
+      ['ceiling narrowed', () => prisma.oauthClient.update({ where: { clientId }, data: { tinycloudNativeDelegation: { ...ceiling, stepUps: { [EXPLORER]: { public: ceiling.stepUps[EXPLORER].public } } } } }), 409, 'preparation_superseded'],
+      ['client disabled', () => prisma.oauthClient.update({ where: { clientId }, data: { disabled: true } }), 409, 'preparation_superseded'],
+      ['canonical key changed', () => prisma.ethereumKey.update({ where: { id: 'su-key' }, data: { isCanonicalTinyCloud: false } }), 409, 'preparation_mismatch'],
+      ['account locked', () => prisma.user.update({ where: { id: USER }, data: { lockedAt: new Date() } }), 401, 'unauthorized'],
+      ['reviewer hold', () => prisma.user.update({ where: { id: USER }, data: { reviewerHoldAt: new Date() } }), 401, 'unauthorized'],
+      ['key control exclusive to the user', () => prisma.user.update({ where: { id: USER }, data: { tinyCloudManageKeyMode: 'USER_CONTROLLED_EXCLUSIVE' } }), 403, 'access_denied'],
+      ['app switched off', () => prisma.tinyCloudManageKeyAppPreference.create({ data: { userId: USER, clientId, enabled: false, status: 'DISABLED' } }), 403, 'access_denied'],
+      ['consent generation moved', () => prisma.tinyCloudNativeConsentGeneration.update({ where: { userId_clientId: { userId: USER, clientId } }, data: { generation: 1n } }), 409, 'preparation_superseded'],
+      ['bootstrap gone', () => prisma.$executeRawUnsafe('TRUNCATE TABLE "tinycloud_bootstrap_state"'), 409, 'space_not_hosted'],
+    ];
+    for (const [label, arrange, status, code] of cases) {
+      await beforeEachReset();
+      await prisma.$executeRawUnsafe('TRUNCATE TABLE "tinycloud_bootstrap_state"');
+      await prisma.tinyCloudBootstrapState.create({ data: { userId: USER, keyId: 'su-key', address, chainId: 1, tinycloudHost: HOST,
+        bootstrapVersion: 'test', status: 'complete', checkedAt: new Date(), completedAt: new Date() } });
+      await prisma.oauthClient.update({ where: { clientId }, data: { tinycloudNativeDelegation: ceiling } });
+      const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+      const id = await newRequest(key);
+      const { preview } = await prepared(id);
+      await arrange();
+      const { value, calls } = await withNode(allHosted, async () => {
+        const response = await consent(id, 'approve', approval(preview)); return { response, payload: await response.json() as Approval }; });
+      expect([label, value.response.status, value.payload.error]).toEqual([label, status, code]);
+      expect([label, calls]).toEqual([label, { delegate: 0, revoke: 0 }]);
+      expect([label, await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })]).toEqual([label, expect.objectContaining({ status: 'RESOLVED', signature: null, delegation: null })]);
+      expect(await prisma.tinyCloudNativeStepUp.count()).toBe(0);
+    }
+  });
+
+  test('a stale, tampered or foreign preview is not signed', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const id = await newRequest(key);
+    const first = (await prepared(id)).preview;
+    const second = (await prepared(id)).preview;
+    expect(second.revision).toBe(first.revision + 1);
+    for (const [label, payload] of [
+      ['old revision', approval(first)],
+      ['wrong digest', { ...approval(second), digest: 'x'.repeat(second.digest.length) }],
+      ['edited SIWE', { ...approval(second), sessionSiwe: second.sessionSiwe.replace('public', 'account') }],
+      ['no body', {}],
+    ] as const) {
+      const { value, calls } = await withNode(allHosted, async () => (await consent(id, 'approve', payload)).status);
+      expect([label, value >= 400 && value < 500, calls.delegate]).toEqual([label, true, 0]);
+    }
+    expect(await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: 'RESOLVED', signature: null, delegation: null });
+  });
+
+  test('a step-up revoked by the app is shown as a re-activation and consent leaves the row alone', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const revokedAt = new Date(Date.now() - 60_000);
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-1', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries,
+      status: 'REVOKED', revokedAt, revokedReason: 'app_revoked' } });
+    const id = await newRequest(key);
+    const { preview } = await prepared(id);
+    expect(preview.reactivation).toBe(true);
+    const { value } = await withNode(allHosted, () => consent(id, 'approve', approval(preview)));
+    expect(value.status).toBe(200);
+    expect(await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-1' } })).toMatchObject({ status: 'REVOKED', revokedReason: 'app_revoked', revokedAt, grantId: 'g1' });
   });
 }

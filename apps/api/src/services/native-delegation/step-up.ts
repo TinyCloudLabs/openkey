@@ -33,7 +33,7 @@ const SQL_ACTIONS = ['tinycloud.sql/read', 'tinycloud.sql/schema'];
 const MAX_ENTRIES = 32;
 const MAX_PENDING_PER_GRANT = 8;
 /** The last moment a grant can be used, as for renewal (`renew-revoke.ts`): its absolute expiry less 300 s. */
-const GRANT_CUTOFF_MS = 300_000;
+export const GRANT_CUTOFF_MS = 300_000;
 const REQUEST_URI_TTL_MS = 90_000;
 const REQUEST_TTL_MS = 600_000;
 

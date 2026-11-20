@@ -1,3 +1,5 @@
+import type { Hex } from 'viem';
+import type { ReviewerBinding } from '../services/reviewer-accounts';
 import { lockNativeReviewer, nativeReviewerAuthority } from '../services/reviewer-native';
 import { recordReviewerWriter } from '../services/reviewer-cleanup';
 import { sameTinyCloudHost } from '../services/tinycloud-hosts';
@@ -19,6 +21,7 @@ import { enabledNativeDelegation } from '../services/native-delegation/policy';
 import { nativeUserRetryAfter, type NativeUserAction } from '../services/native-delegation/user-rate-limit';
 import { hasAcceptedTerms, termsRequired } from '../services/terms';
 import { ParError, validatePermissions, type NativePermission } from '../services/native-delegation/par';
+import { GRANT_CUTOFF_MS, StepUpEntryError, validateStepUpPermissions, type StepUpPermission } from '../services/native-delegation/step-up';
 import { buildOwnerRevocationSiwe } from '@openkey/capability-review';
 import { RECLAIM_FAILED_CODE } from '../services/tinycloud-bootstrap';
 import { prepareDelegationSession, actionKey } from './delegate-session';
@@ -48,7 +51,7 @@ function permitted(value: unknown, ceiling: Parameters<typeof validatePermission
   try { return validatePermissions(value, ceiling); }
   catch (error) { if (error instanceof ParError) fail(409, 'preparation_superseded'); throw error; }
 }
-function prepareSiwe(row: { sessionJwk: unknown }, permissions: NativePermission[], key: { address: string }, ceiling: { siweDomain?: string }, nonce: string, ttlSeconds: number, at: Date) {
+function prepareSiwe(row: { sessionJwk: unknown }, permissions: Array<{ service: string; space: string; path: string; actions: string[] }>, key: { address: string }, ceiling: { siweDomain?: string }, nonce: string, ttlSeconds: number, at: Date) {
   return prepareDelegationSession({
     address: ensureEip55(key.address), chainId: 1, prefix: 'applications', jwk: row.sessionJwk as { kty: string; crv: string; x: string },
     permissions, expiryMs: ttlSeconds * 1000, domain: ceiling.siweDomain ?? 'openkey.so', nonce, issuedAt: at,
@@ -80,10 +83,11 @@ async function lockRequest(tx: any, id: string, userId: string, allowApproved = 
   if (row.userId && row.userId !== userId) fail(403, 'request_user_mismatch');
   return { row, generation: generation[0]!.generation };
 }
-async function keyFor(tx: any, userId: string) {
+interface ConsentKey { id: string; address: string; sealedBlob: string; userId: string | null; sealingContext: string | null }
+async function keyFor(tx: any, userId: string): Promise<ConsentKey> {
   const key = await tx.ethereumKey.findFirst({ where: primaryKeyWhere(userId) });
   if (!key || !key.sealedBlob) fail(409, 'preparation_mismatch');
-  return key as { id: string; address: string; sealedBlob: string; userId: string | null; sealingContext: string | null };
+  return key as ConsentKey;
 }
 export interface NativeConsentHostOps {
   fetchPeerId: (host: string, spaceId: string) => Promise<string>;
@@ -159,7 +163,8 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     // the consent/generation/request locks, then recheck the host under lock.
     const pending = await db.tinyCloudNativeRequest.findUnique({ where: { id: c.req.param('id') } });
     if (!pending) fail(404, 'request_not_found');
-    // A step-up request is consented by its own path; until that ships, no sign-in path may act on one.
+    // A step-up is consented by its own gate; any other kind is refused.
+    if (pending.kind === 'STEPUP') return c.json(await prepareStepUp(userId, c.get('session')?.id ?? null, pending.id));
     if (pending.kind !== 'SIGNIN') fail(409, 'unsupported_request_kind');
     const preReviewer = await nativeReviewerAuthority(db, userId, pending);
     if (pending.userId && pending.userId !== userId) fail(403, 'request_user_mismatch');
@@ -242,8 +247,8 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     const userId = c.get('user').id;
     const pending = await db.tinyCloudNativeRequest.findUnique({ where: { id: c.req.param('id') } });
     if (!pending) fail(404, 'request_not_found');
-    // A step-up request is consented by its own path; until that ships, no sign-in path may act on one.
-    if (pending.kind !== 'SIGNIN') fail(409, 'unsupported_request_kind');
+    // A step-up is consented by its own gate; any other kind is refused.
+    if (pending.kind !== 'SIGNIN' && pending.kind !== 'STEPUP') fail(409, 'unsupported_request_kind');
     const preReviewer = await nativeReviewerAuthority(db, userId, pending);
     if (pending.userId && pending.userId !== userId) fail(403, 'request_user_mismatch');
     if (pending.status !== 'APPROVED') active(pending);
@@ -273,6 +278,10 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
         if (error instanceof NativeOperationTimeoutError) fail(503, 'temporarily_unavailable');
         fail(500, 'key_unavailable');
       }
+    }
+    if (pending.kind === 'STEPUP') {
+      if (!body) fail(409, 'preparation_superseded');
+      return c.json(await approveStepUp(userId, pending.id, body, preKey, privateKey));
     }
     const result = await db.$transaction(async tx => {
       const reviewerBinding = await lockNativeReviewer(tx, userId);
@@ -372,6 +381,131 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     await db.tinyCloudNativeRequest.update({ where: { id: result.rowId }, data: { hosting } });
     return c.json({ status: 'APPROVED', revision: result.revision, hosting });
   });
+  /**
+   * TC-3569: what a step-up consent re-checks under the locks, for prepare and approve alike. The grant must
+   * be live and unexpired, the account usable, the grant's key still the canonical one, the client's ceiling
+   * must still cover every entry, and every requested space must already be hosted (bootstrap complete):
+   * a step-up never hosts a space.
+   */
+  async function stepUpGate(tx: any, row: any, userId: string, generation: bigint, reviewerBinding: ReviewerBinding | null) {
+    if (row.kind !== 'STEPUP' || !row.grantId || !row.appId) fail(409, 'unsupported_request_kind');
+    if (await nativeReviewerAuthority(tx, userId, row, reviewerBinding)) fail(403, 'reviewer_stepup_refused');
+    await tx.$queryRawUnsafe('SELECT id FROM tinycloud_native_grant WHERE id = $1 FOR SHARE', row.grantId);
+    const grant = await tx.tinyCloudNativeGrant.findUnique({ where: { id: row.grantId } });
+    const now = Date.now();
+    // Same live and expiry rule as renewal: an expired grant keeps the status ACTIVE.
+    if (!grant || grant.status !== 'ACTIVE' || grant.userId !== userId || grant.clientId !== row.clientId || grant.consentGeneration !== generation ||
+      grant.sessionJkt !== row.sessionJkt || grant.sessionDid !== row.sessionDid || now >= grant.absoluteExpiresAt.getTime() - GRANT_CUTOFF_MS) fail(409, 'preparation_superseded');
+    const user = await tx.user.findUnique({ where: { id: userId }, select: { lockedAt: true, reviewerHoldAt: true, tinyCloudManageKeyMode: true } });
+    if (!user || user.lockedAt || user.reviewerHoldAt) fail(403, 'access_denied');
+    // The request was made under the consent generation the grant carries; withdrawing consent bumps it.
+    if (row.consentGeneration != null && row.consentGeneration !== generation) fail(409, 'preparation_superseded');
+    // The grant's refresh token must still be its live one (a sign-out or revoke ends the step-up with it).
+    await tx.$queryRawUnsafe('SELECT id FROM oauth_refresh_token WHERE token = $1 FOR SHARE', grant.refreshTokenHash);
+    const token = await tx.oauthRefreshToken.findUnique({ where: { token: grant.refreshTokenHash } });
+    if (!token || token.userId !== userId || token.clientId !== grant.clientId || token.revoked || token.expiresAt.getTime() <= now) fail(409, 'preparation_superseded');
+    const preference = await tx.tinyCloudManageKeyAppPreference.findUnique({ where: { userId_clientId: { userId, clientId: grant.clientId } } });
+    if (user.tinyCloudManageKeyMode === 'USER_CONTROLLED_EXCLUSIVE' || preference?.status === 'DISABLED' || preference?.enabled === false) fail(403, 'access_denied');
+    const key = await keyFor(tx, userId);
+    if (key.id !== grant.keyId || ensureEip55(key.address) !== ensureEip55(grant.address)) fail(409, 'preparation_mismatch');
+    const client = await tx.oauthClient.findUniqueOrThrow({ where: { clientId: row.clientId }, include: { organization: { select: { name: true } } } });
+    const ceiling = enabledNativeDelegation(client);
+    if (!ceiling || !sameTinyCloudHost(ceiling.tinycloudHost, grant.tinycloudHost)) fail(409, 'preparation_superseded');
+    let permissions: StepUpPermission[];
+    try { permissions = validateStepUpPermissions(row.appId, row.requestedPermissions, ceiling.stepUps); }
+    catch (error) { if (error instanceof StepUpEntryError) fail(409, 'preparation_superseded'); throw error; }
+    const hosted = await tx.tinyCloudBootstrapState.findFirst({ where: { keyId: key.id, chainId: 1, tinycloudHost: ceiling.tinycloudHost, status: 'complete' } });
+    if (!hosted) throw new NativeConsentError(409, 'space_not_hosted', `Spaces not hosted on this node: ${[...new Set(permissions.map(p => p.space))].join(', ')}`);
+    const maxTtl = Math.min(row.ttlSeconds, ceiling.maxDelegationTtlSeconds);
+    return { grant, key, client, ceiling, permissions, maxTtl, remainingSeconds: (at: Date) => Math.floor((grant.absoluteExpiresAt.getTime() - at.getTime()) / 1000) };
+  }
+  async function prepareStepUp(userId: string, sessionId: string | null, requestId: string) {
+    const result = await db.$transaction(async tx => {
+      const reviewerBinding = await lockNativeReviewer(tx, userId);
+      const { row, generation } = await lockRequest(tx, requestId, userId);
+      const gate = await stepUpGate(tx, row, userId, generation, reviewerBinding);
+      const preparedAt = new Date();
+      // The delegation never outlives the grant it is bound to.
+      const ttlSeconds = Math.min(gate.maxTtl, gate.remainingSeconds(preparedAt));
+      if (ttlSeconds < 1) fail(409, 'preparation_superseded');
+      const nonce = row.siweNonce ?? randomBytes(12).toString('base64url').replaceAll('-', 'A').replaceAll('_', 'B');
+      const address = ensureEip55(gate.key.address);
+      const prepared = prepareSiwe(row, gate.permissions, gate.key, gate.ceiling, nonce, ttlSeconds, preparedAt);
+      const revision = row.currentRevision + 1;
+      const preview = { requestId: row.id, revision, userId, keyId: gate.key.id, address, sessionSiwe: prepared.prepared.siwe, permissions: gate.permissions, hostPlan: null,
+        stepUp: { grantId: gate.grant.id, appId: row.appId as string } };
+      const digest = preparationDigest(preview);
+      await tx.tinyCloudNativePreparation.create({ data: { id: randomUUID(), requestId: row.id, revision, userId, keyId: gate.key.id, address, tinycloudHost: gate.ceiling.tinycloudHost, sessionSiwe: preview.sessionSiwe, permissions: gate.permissions, digest } });
+      await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { userId, siweNonce: nonce, currentRevision: revision } });
+      // Read-only: a revoked step-up is only ever re-activated by the exchange of an approved request.
+      const existing = await tx.tinyCloudNativeStepUp.findUnique({ where: { grantId_appId: { grantId: gate.grant.id, appId: row.appId } } });
+      return { ...preview, digest, kind: 'STEPUP' as const, reactivation: existing?.status === 'REVOKED',
+        client: { clientId: gate.client.clientId, name: gate.client.name, icon: gate.client.icon, organization: gate.client.organization?.name },
+        redirectScheme: new URL(row.redirectUri).protocol.slice(0, -1), sessionDid: row.sessionDid, tinycloudHost: gate.ceiling.tinycloudHost, ttlSeconds,
+        grantLifetimeSeconds: gate.remainingSeconds(preparedAt), spaces: prepared.requestedSpaces, permissionOptions: prepared.permissions, selectedActionKeys: prepared.selectedActionKeys };
+    }, { timeout: 15_000 });
+    const passkey = await approvalPasskeyOffer(db, { userId, sessionId },
+      nativePasskeyBinding(result.requestId, result.revision, result.digest), messageApprovalSensitivity(result.sessionSiwe, result.address));
+    return { ...result, passkey };
+  }
+  async function approveStepUp(userId: string, requestId: string, body: { revision?: number; digest?: string; sessionSiwe?: string },
+    preKey: ConsentKey | null, privateKey: Hex | null) {
+    const result = await db.$transaction(async tx => {
+      const reviewerBinding = await lockNativeReviewer(tx, userId);
+      const { row, generation } = await lockRequest(tx, requestId, userId, true);
+      if (row.userId !== userId) fail(403, 'request_user_mismatch');
+      if (body.revision !== row.currentRevision) fail(409, 'preparation_superseded');
+      const revision = await tx.tinyCloudNativePreparation.findUnique({ where: { requestId_revision: { requestId: row.id, revision: body.revision! } } });
+      if (!revision || revision.digest !== body.digest || revision.sessionSiwe !== body.sessionSiwe || revision.hostPlan != null) fail(409, 'preparation_mismatch');
+      if (row.status === 'APPROVED') {
+        if (row.approvedRevision !== revision.revision) fail(409, 'request_not_pending');
+        return { replay: true as const, revision: revision.revision, hosting: row.hosting };
+      }
+      const gate = await stepUpGate(tx, row, userId, generation, reviewerBinding);
+      if (!preKey || !privateKey || gate.key.id !== revision.keyId || gate.key.id !== preKey.id || gate.key.sealedBlob !== preKey.sealedBlob ||
+        ensureEip55(gate.key.address) !== revision.address) fail(409, 'preparation_mismatch');
+      if (!sameTinyCloudHost(revision.tinycloudHost, gate.ceiling.tinycloudHost)) fail(409, 'preparation_superseded');
+      const timestamps = /Issued At: ([^\n]+)\nExpiration Time: ([^\n]+)/.exec(revision.sessionSiwe);
+      const revisionTtl = timestamps ? (Date.parse(timestamps[2]!) - Date.parse(timestamps[1]!)) / 1000 : NaN;
+      if (!Number.isInteger(revisionTtl) || revisionTtl > gate.maxTtl) fail(409, 'preparation_superseded');
+      if (!row.siweNonce) fail(409, 'preparation_mismatch');
+      const signedAt = new Date();
+      const signedTtl = Math.min(revisionTtl, gate.remainingSeconds(signedAt));
+      if (signedTtl < 1) fail(409, 'preparation_superseded');
+      const rebuilt = prepareSiwe(row, gate.permissions, gate.key, gate.ceiling, row.siweNonce, signedTtl, signedAt);
+      if (!sameApprovedSiwe(revision.sessionSiwe, rebuilt.prepared.siwe)) fail(409, 'preparation_mismatch');
+      const signature = await createWalletFromPrivateKey(privateKey).signMessage({ message: rebuilt.prepared.siwe });
+      const delegation = completeSessionSetup({ ...rebuilt.prepared, signature });
+      const spaces = rebuilt.requestedSpaces;
+      const artifact = { version: 1, address: revision.address, chainId: 1, ownerDid: `did:pkh:eip155:1:${revision.address}`,
+        sessionDid: row.sessionDid, sessionJkt: row.sessionJkt, issuedAt: signedAt.toISOString(),
+        expiresAt: new Date(signedAt.getTime() + signedTtl * 1000).toISOString(), siwe: rebuilt.prepared.siwe,
+        signature, delegationHeader: delegation.delegationHeader, delegationCid: delegation.delegationCid,
+        spaceId: delegation.spaceId, verificationMethod: delegation.verificationMethod, permissions: gate.permissions,
+        ttlSeconds: signedTtl, tinycloudHost: gate.ceiling.tinycloudHost, grantId: gate.grant.id, appId: row.appId as string };
+      await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { status: 'APPROVED', approvedRevision: revision.revision, consentGeneration: generation, signature, delegation: artifact, hosting: 'failed' } });
+      return { replay: false as const, rowId: row.id, revision: revision.revision, artifact, spaces, siweDomain: gate.ceiling.siweDomain ?? 'openkey.so' };
+    }, { timeout: 15_000 });
+    if (result.replay) return { status: 'APPROVED' as const, revision: result.revision, hosting: result.hosting };
+    // Every requested space must be hosted already. The activation receipt is the node's own answer, so a
+    // space it skipped is refused: the approval is withdrawn and the delegation revoked on the node, and a
+    // step-up never creates a space.
+    let activated: string[] | null = null;
+    try {
+      const activation = await hostOps.activateSessionWithHost(result.artifact.tinycloudHost, result.artifact.delegationHeader);
+      if (activation.success) activated = activation.activated ?? [];
+    } catch (error) { logError('warn', 'native_consent_host_activation_failed', error); }
+    const unhosted = result.spaces.filter(space => !activated?.includes(space.spaceId));
+    if (activated && unhosted.length === 0) {
+      await db.tinyCloudNativeRequest.update({ where: { id: result.rowId }, data: { hosting: 'existing' } });
+      return { status: 'APPROVED' as const, revision: result.revision, hosting: 'existing' as const, spaces: result.spaces.map(space => space.space) };
+    }
+    await db.tinyCloudNativeRequest.updateMany({ where: { id: result.rowId, status: 'APPROVED', approvedRevision: result.revision },
+      data: { status: 'DENIED', hosting: 'failed', signature: null, delegation: Prisma.DbNull } });
+    await revokeStaleSessionDelegation(result.artifact, result.siweDomain, privateKey!);
+    if (!activated) fail(503, 'temporarily_unavailable');
+    throw new NativeConsentError(409, 'space_not_hosted', `Spaces not hosted on this node: ${unhosted.map(space => space.space).join(', ')}`);
+  }
   router.post('/:id/deny', async c => {
     const userId = c.get('user').id;
     await db.$transaction(async tx => {

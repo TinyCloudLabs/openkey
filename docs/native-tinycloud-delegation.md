@@ -251,10 +251,11 @@ pairing, `grantId` references the grant with `ON DELETE CASCADE`, and the schema
 guard checks the three columns, the constraint and the cascade. Nothing writes a
 `STEPUP` row until the step-up endpoint (below) is enabled; the migration only
 adds the columns. A step-up request takes its session key from the grant, never
-from the caller. The sign-in consent and code-exchange paths refuse a
-non-`SIGNIN` request (`409 unsupported_request_kind` from prepare and approve,
-`invalid_grant` from exchange), so a `STEPUP` row can never be completed as a
-sign-in.
+from the caller. The sign-in consent path refuses any other non-`SIGNIN` kind
+(`409 unsupported_request_kind` from prepare and approve), `STEPUP` requests
+are handled by their own branch (below), and the code exchange refuses every
+non-`SIGNIN` request (`invalid_grant`), so a `STEPUP` row can never be
+completed as a sign-in.
 
 ### Step-up request endpoint (TC-3569)
 
@@ -265,8 +266,9 @@ nothing, and discovery omits `tinycloud_delegation_stepup_endpoint`.
 
 It signs nothing, issues no token, creates no grant and does not rotate the
 refresh token. It returns `201 {"request_uri", "expires_in": 90}`; the app then
-opens `/authorize` with that `request_uri` as for sign-in, and the consent and
-exchange steps for `STEPUP` requests are separate changes.
+opens `/authorize` with that `request_uri` as for sign-in. The consent step is
+described under "Step-up consent" below; the code exchange for `STEPUP`
+requests is a separate change and still refuses them.
 
 Credentials are the Home grant's current refresh token plus an
 `OpenKey-Session-Proof` signed by the grant's key for this endpoint
@@ -308,6 +310,40 @@ than the grant's cutoff (`absoluteExpiresAt` less 300 s).
 | 400 | `access_denied` (account locked, key control exclusive to the user, app switched off, no step-up ceiling, entry beyond the ceiling) |
 | 400 | `invalid_authorization_details` (malformed `permissions`, including any write action) |
 | 429 | `slow_down` (`Retry-After: 10`) |
+
+### Step-up consent (TC-3569)
+
+The consent page's `prepare` and `approve` calls accept a `STEPUP` request.
+Both re-check, under the native lock order and in one transaction, everything
+`/stepup` checked: the grant is `ACTIVE`, the same user, client, consent
+generation, session key and DID, and before its cutoff; the grant's refresh
+token is still live; the account is usable (not locked, no reviewer hold, not
+a reviewer) and has neither taken key control exclusively nor switched the
+app off; the canonical key is the grant's key and address; the client's
+ceiling is enabled for the grant's host and still covers every entry; and the
+request's consent generation still matches. A reviewer is refused with `403
+reviewer_stepup_refused`.
+
+Consent is all-or-nothing: there is no narrowing of the entries and no host
+plan. The step-up never hosts a space. `prepare` refuses with `409
+space_not_hosted` ("Spaces not hosted on this node: ...") unless the key's
+TinyCloud bootstrap is `complete` for the grant's host. It builds one
+multi-space SIWE for the grant's session key, with a lifetime no longer than
+the client ceiling allows or the grant has left, and returns the preview
+(`kind: "STEPUP"`, `spaces`, `stepUp: {grantId, appId}`, `grantLifetimeSeconds`,
+`reactivation`: a revoked step-up exists for this app). `approve` signs with
+the grant's key and activates the delegation on the node. The node's receipt
+must list every requested space as activated: a space it skipped refuses the
+whole step-up with `409 space_not_hosted` naming it, the approval is withdrawn
+(`DENIED`, signature and delegation cleared) and the delegation is revoked on
+the node on a best-effort basis; a node failure is `503
+temporarily_unavailable` with the same withdrawal. Until a skipped space is
+hosted a delegation the node may have kept is inert, and it expires with its
+TTL.
+
+Consent creates no grant and no token, writes no step-up row, and changes
+nothing in the user's consent or its generation. The step-up row is written
+only by the code exchange of an approved request.
 
 ## Permissions and the signed session SIWE
 
