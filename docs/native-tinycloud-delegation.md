@@ -405,10 +405,13 @@ hosting: "existing"}`. `renewableUntil` is the grant's renewal cutoff
 only `tinycloud:delegation`, which would shrink the Home sign-in's `openid
 offline_access tinycloud:delegation`. The provider interceptor for
 `/oauth2/consent` therefore puts the row's `scopes` and `updatedAt` back for a
-`STEPUP` request, whatever the provider answered. The restore is one
-compare-and-swap (`UPDATE ... WHERE scopes = <what is there now>`): it undoes only
-the provider's own write, never recreates a withdrawn consent, and leaves a row
-someone else changed in the meantime alone.
+`STEPUP` request, whatever the provider answered. The restore is one conditional
+`UPDATE`: it applies only if the row still holds exactly what the provider wrote
+for a step-up (`['tinycloud:delegation']`) and the user's consent generation is
+still the one read before the provider ran. A consent withdrawal (row deleted) or
+an update-consent that removes the delegation scope (generation moves) after the
+provider's write is therefore never undone, and nothing withdrawn is recreated. A
+snapshot without the delegation scope is never restored.
 
 The provider's write and the restore are two statements, not one transaction: the
 provider writes through its own connection. A crash between them leaves the
@@ -416,17 +419,21 @@ narrower scopes. That costs nothing for the Home grant: renewal reads only the
 `tinycloud:delegation` scope (and the consent generation, which a scope change
 that keeps the delegation scope does not move), and the provider's refresh never
 reads consent. A test renews Home twice with the consent narrowed to
-`tinycloud:delegation`. The next sign-in finds the stored scopes short of its
-request and goes through the consent screen, which it needs anyway.
+`tinycloud:delegation`. The narrower scopes heal at the next sign-in's consent.
+An update-consent to exactly `['tinycloud:delegation']` in the same instant is
+indistinguishable from the provider's write and is restored (the delegation scope
+stays either way).
 
 **The access token.** The step-up request's scope is `tinycloud:delegation` only
 (no `openid`, no `offline_access`), so the provider writes one access token of
 300 s with that scope alone, no refresh token (`refreshId` null) and no ID token.
 The token opens nothing: the delegate signer, userinfo and the OpenKey account
 APIs, `/stepup`, renew and revoke all refuse it (they need a session or a refresh
-token plus a session proof, or other scopes). Withdrawing consent deletes it with
-the client's other access tokens; otherwise it expires on its own within 300 s and
-holds no capability.
+token plus a session proof, or other scopes). Withdrawing consent deletes it
+(`tinycloud_native_withdraw_consent()`, migration `20261121_0003`: access tokens of
+that user and client with no refresh token and the delegation scope, which the
+grant's own refresh-token-based delete never reached); otherwise it expires on its
+own within 300 s. It holds no capability either way.
 
 ## Permissions and the signed session SIWE
 

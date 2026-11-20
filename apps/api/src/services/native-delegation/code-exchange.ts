@@ -195,7 +195,7 @@ export async function exchangeNativeCode(
       // ties the code to the consent current at approve, so a code approved
       // before a delete and re-consent cannot adopt the new consent.
       const swapped = await tx.tinyCloudNativeRequest.updateMany({
-        where: { id: request.id, status: 'APPROVED', userId, consentGeneration: generation, ...binding },
+        where: { id: request.id, kind: 'SIGNIN', status: 'APPROVED', userId, consentGeneration: generation, ...binding },
         data: { status: 'REDEEMED' },
       });
       if (swapped.count !== 1) invalidGrant('no approved native delegation request for this code');
@@ -398,7 +398,7 @@ async function exchangeStepUp(
           address: delegation.address,
           chainId: delegation.chainId,
           ownerDid: delegation.ownerDid,
-          spaces: [...new Set(permissions.map((permission) => permission.space))].map((space) => ({ space, spaceId: `tinycloud:pkh:eip155:1:${delegation.address}:${space}` })),
+          spaces: [...new Set(permissions.map((permission) => permission.space))].map((space) => ({ space, spaceId: `tinycloud:pkh:eip155:${delegation.chainId}:${delegation.address}:${space}` })),
           verificationMethod: delegation.verificationMethod,
           siwe: delegation.siwe,
           signature: delegation.signature,

@@ -813,31 +813,49 @@ if (!child) {
     expect((await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'g1' } })).status).toBe('ACTIVE');
   });
 
-  test('the consent restore is a compare-and-swap: it undoes only the provider write, never a withdrawal or a later change', async () => {
+  test('the consent restore applies only to the provider write: an update-consent or a withdrawal after it is never undone', async () => {
     const { restoreStepUpConsent } = await import('../services/native-delegation/interceptors');
     const full = ['openid', 'offline_access', DELEGATION];
     const before = await prisma.oauthConsent.findFirstOrThrow({ where: { userId: USER, clientId } });
     expect(before.scopes).toEqual(full);
-    const snapshot = { id: before.id, scopes: before.scopes, updatedAt: before.updatedAt };
+    const generation = async () => (await prisma.tinyCloudNativeConsentGeneration.findFirst({ where: { userId: USER, clientId } }))?.generation ?? 0n;
+    const snapshot = async () => ({ id: before.id, userId: USER, clientId, scopes: before.scopes, updatedAt: before.updatedAt, generation: await generation() });
     const scopesNow = async () => (await prisma.oauthConsent.findMany({ where: { userId: USER, clientId } })).map((row) => row.scopes);
 
     // The provider's write is undone, updatedAt included.
+    const taken = await snapshot();
     await prisma.oauthConsent.update({ where: { id: before.id }, data: { scopes: [DELEGATION], updatedAt: new Date() } });
-    await restoreStepUpConsent(prisma, snapshot);
+    await restoreStepUpConsent(prisma, taken);
     expect(await prisma.oauthConsent.findUniqueOrThrow({ where: { id: before.id } })).toMatchObject({ scopes: full, updatedAt: before.updatedAt });
 
     // Nothing to undo: untouched.
-    await restoreStepUpConsent(prisma, snapshot);
+    await restoreStepUpConsent(prisma, taken);
     expect(await scopesNow()).toEqual([full]);
 
-    // The consent was withdrawn in between: nothing is brought back.
+    // The provider writes, then the user's update-consent withdraws the delegation scope (generation moves): the
+    // restore must not bring the old scopes back.
+    await prisma.oauthConsent.update({ where: { id: before.id }, data: { scopes: [DELEGATION] } });
+    await prisma.oauthConsent.update({ where: { id: before.id }, data: { scopes: ['openid'] } });
+    expect(await generation()).toBeGreaterThan(taken.generation);
+    await restoreStepUpConsent(prisma, taken);
+    expect(await scopesNow()).toEqual([['openid']]);
+
+    // The consent was withdrawn outright: nothing is recreated.
     await prisma.oauthConsent.delete({ where: { id: before.id } });
-    await restoreStepUpConsent(prisma, snapshot);
+    await restoreStepUpConsent(prisma, taken);
     expect(await scopesNow()).toEqual([]);
 
-    // A consent that never held the delegation scope is never rewritten.
-    await prisma.oauthConsent.create({ data: { id: before.id, userId: USER, clientId, scopes: ['openid'] } });
-    await restoreStepUpConsent(prisma, { id: before.id, scopes: ['openid'], updatedAt: before.updatedAt });
-    expect(await scopesNow()).toEqual([['openid']]);
+    // A snapshot that never held the delegation scope is never restored.
+    await prisma.oauthConsent.create({ data: { id: before.id, userId: USER, clientId, scopes: [DELEGATION] } });
+    await restoreStepUpConsent(prisma, { ...await snapshot(), scopes: ['openid'] });
+    expect(await scopesNow()).toEqual([[DELEGATION]]);
+  });
+
+  test('withdrawing consent deletes the 300 s access token a step-up exchange mints, not only the grant\'s own tokens', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const token = (id: string, refreshId: string | null, scopes: string[]) => ({ id, token: hash(id), clientId, userId: USER, refreshId, scopes, expiresAt: new Date(Date.now() + 300_000) });
+    await prisma.oauthAccessToken.createMany({ data: [token('stepup-token', null, [DELEGATION]), token('other-client-less', null, ['openid'])] });
+    await prisma.oauthConsent.deleteMany({ where: { userId: USER, clientId } });
+    expect((await prisma.oauthAccessToken.findMany({ where: { userId: USER } })).map((row) => row.id)).toEqual(['other-client-less']);
   });
 }

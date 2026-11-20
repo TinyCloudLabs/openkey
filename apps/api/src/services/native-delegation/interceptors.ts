@@ -42,7 +42,7 @@ const AUTH_BASE_PATH = '/api/auth';
 const FORM_MEDIA_TYPE = 'application/x-www-form-urlencoded';
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
-export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'oauthConsent' | 'tinyCloudNativeGrant' | 'tinyCloudNativeRequest' | 'session' | '$queryRaw' | 'reviewerAccount' | 'user' | 'termsAcceptance'>;
+export type ProviderInterceptorDatabase = Pick<PrismaClient, 'oauthClient' | 'oauthRefreshToken' | 'oauthAccessToken' | 'oauthConsent' | 'tinyCloudNativeGrant' | 'tinyCloudNativeRequest' | 'session' | '$queryRaw' | '$executeRaw' | 'reviewerAccount' | 'user' | 'termsAcceptance'>;
 
 type Refusal = { status: 400 | 401 | 429 | 503; error: string; description: string; retryAfter?: number };
 /**
@@ -186,23 +186,30 @@ export interface ProviderInterceptorOptions {
   };
 }
 
+async function consentGeneration(database: Pick<PrismaClient, '$queryRaw'>, userId: string, clientId: string): Promise<bigint> {
+  const rows = await database.$queryRaw<{ generation: bigint }[]>`
+    SELECT generation FROM tinycloud_native_consent_generation WHERE "userId" = ${userId} AND "clientId" = ${clientId}`;
+  return rows[0]?.generation ?? 0n;
+}
+
 /**
- * Puts a consent row back the way it was before the provider's consent step rewrote its scopes. The swap is one
- * `UPDATE ... WHERE scopes = <what is there now>`: it changes only the provider's own write. A row that is gone
- * (consent withdrawn) is not recreated, and a row someone else changed in the meantime is left as they set it.
- * A row that did not hold the delegation scope is never touched.
+ * Puts a consent row back the way it was before the provider's consent step rewrote its scopes (TC-3569). One
+ * UPDATE, applied only if the row still holds exactly what the provider wrote for a step-up
+ * (`['tinycloud:delegation']`) and the consent generation is still the one read with `before`. A withdrawal or an
+ * update-consent after the provider's write either deletes the row, replaces its scopes, or moves the
+ * generation, so none of them is undone, and nothing withdrawn is recreated. A snapshot that did not hold the
+ * delegation scope is never restored.
  */
 export async function restoreStepUpConsent(
-  database: Pick<PrismaClient, 'oauthConsent'>,
-  before: { id: string; scopes: string[]; updatedAt: Date },
+  database: Pick<PrismaClient, '$executeRaw'>,
+  before: { id: string; userId: string; clientId: string; scopes: string[]; updatedAt: Date; generation: bigint },
 ): Promise<void> {
   if (!before.scopes.includes(TINYCLOUD_DELEGATION_SCOPE)) return;
-  const current = await database.oauthConsent.findUnique({ where: { id: before.id }, select: { scopes: true } });
-  if (!current || (current.scopes.length === before.scopes.length && current.scopes.every((scope, index) => scope === before.scopes[index]))) return;
-  await database.oauthConsent.updateMany({
-    where: { id: before.id, scopes: { equals: current.scopes } },
-    data: { scopes: before.scopes, updatedAt: before.updatedAt },
-  });
+  await database.$executeRaw`
+    UPDATE oauth_consent SET scopes = ${before.scopes}::text[], "updatedAt" = ${before.updatedAt}
+    WHERE id = ${before.id} AND scopes = ARRAY[${TINYCLOUD_DELEGATION_SCOPE}]::text[]
+      AND COALESCE((SELECT generation FROM tinycloud_native_consent_generation
+        WHERE "userId" = ${before.userId} AND "clientId" = ${before.clientId}), 0) = ${before.generation}`;
 }
 
 type RefreshTokenMatch = { clientId: string; native: boolean };
@@ -607,10 +614,11 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
    * TC-3569: the provider's consent step overwrites the user's `oauth_consent` scopes with the scopes of the
    * request being accepted. A step-up request carries only `tinycloud:delegation`, so accepting it narrows the
    * Home sign-in's consent (`openid offline_access tinycloud:delegation`). A step-up never changes consent, so
-   * once the provider has answered the scopes are put back (`restoreStepUpConsent`, one compare-and-swap).
+   * once the provider has answered, the scopes are put back (`restoreStepUpConsent`): one conditional UPDATE
+   * that applies only to the provider's own write and only if the consent generation has not moved since.
    * Home's renewal reads only the delegation scope and the provider's refresh never reads consent, so the
-   * narrower scopes in the instant before the restore, or after a crash, cost nothing but a re-consent at the
-   * next sign-in, which sign-in always asks for.
+   * narrower scopes in the instant before the restore, or after a crash, cost nothing; they heal at the next
+   * sign-in's consent.
    */
   async function keepConsentForStepUp(c: Context, next: () => Promise<void>): Promise<void> {
     const body = await parseProviderJson(c.req.raw);
@@ -619,11 +627,13 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
     const row = requestId ? await database.tinyCloudNativeRequest.findUnique({ where: { id: requestId }, select: { kind: true, clientId: true } }) : null;
     const userId = row?.kind === 'STEPUP' ? await getSessionUserId(c.req.raw.headers) : null;
     if (!row || !userId) return next();
-    const before = await database.oauthConsent.findFirst({ where: { userId, clientId: row.clientId }, select: { id: true, scopes: true, updatedAt: true } });
+    // The generation is read before the row: a withdrawal in between leaves the snapshot behind, so nothing is restored.
+    const generation = await consentGeneration(database, userId, row.clientId);
+    const consent = await database.oauthConsent.findFirst({ where: { userId, clientId: row.clientId }, select: { id: true, scopes: true, updatedAt: true } });
     try {
       await next();
     } finally {
-      if (before) await restoreStepUpConsent(database, before);
+      if (consent) await restoreStepUpConsent(database, { ...consent, userId, clientId: row.clientId, generation });
     }
   }
 
