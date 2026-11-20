@@ -1687,6 +1687,44 @@ sees only the callback, or a sheet closed without one (`USER_CANCELLED`).
 server-side grant is already unusable, so `signOut` still wipes the local key
 and tokens and resolves.
 
+### Step-up in the SDK (TC-3569)
+
+`@openkey/core` has `requestStepUp`, `exchangeStepUpCode`, `validateTinyCloudStepUp`
+and `revokeStepUp`; `@openkey/sdk-capacitor` wraps them as
+`OpenKeyNative.requestStepUp({ appId, capabilities })` and `revokeStepUp(appId)`.
+Step-ups are held in `NativeSession.stepUps` (by app id), inside the existing
+session record, and merged on each renewal from `tinycloud_stepups`
+(`renewed` replaces, `removed` deletes; `dropped`, `failed` and a response that
+does not validate stay until their own expiry).
+
+Before storing anything the SDK checks the response: the signer recovered from the
+EIP-191 signature is the Home grant's address, the SIWE expiry matches
+`expiresAt` (within a second), the grant id, owner DID, session key, node host and
+spaces are the expected ones, the step-up does not outlive the Home grant, and
+the body holds no refresh token and no Home delegation. A mismatch is `SERVER`
+and leaves the Home session as it was.
+
+| Server outcome | SDK code |
+|---|---|
+| Discovery lacks `tinycloud_delegation_stepup_endpoint`, or `not_found` (flag off) | `UNAVAILABLE`, nothing opened or stored |
+| `invalid_request`, `invalid_authorization_details` | `INVALID_REQUEST` |
+| `slow_down` | `TEMPORARILY_UNAVAILABLE` with `retryAfterSeconds` |
+| `access_denied` | `ACCESS_DENIED` |
+| `consent_required`, `invalid_session_proof` | `CONSENT_REQUIRED` / `INVALID_GRANT`, as for the Home grant |
+
+The step-up redirect defaults to the sign-in `redirectUri` (`stepUpRedirectUri`
+overrides it; a different value must be registered on the Home client and
+handled by the app; the Android plugin accepts only `/callback`). The SDK does
+not revoke on a failed exchange or verification after the user consented: the
+app may call `revokeStepUp`, and the sweeper revokes an approved request that is
+never redeemed.
+
+The step-up screen on the consent page is chosen from an explicit `kind` (see
+[Step-up consent](#step-up-consent-tc-3569)). Parity with the framed apps'
+ceiling table (`frontend/src/apps/native-step-up-ceilings.json` in `tinychat`) is
+checked by hand until that file exists on a pushed ref; the ceilings in this
+repo are the source of truth.
+
 ## TinyCloud node responsibility
 
 OpenKey validates SQL ceilings under the same application path rules as KV.
