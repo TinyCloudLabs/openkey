@@ -239,6 +239,7 @@ export { createWalletFromPrivateKey, generatePrivateKey, getAddressFromPrivateKe
 // Re-export Nostr identity utilities (secp256k1 Schnorr / BIP-340, NOT ECDSA)
 export {
   generateNostrKeypair,
+  nostrPubkeyFromSecret,
   canonicalizeNip01,
   computeEventId,
   signNostrEvent,
