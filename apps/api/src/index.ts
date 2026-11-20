@@ -66,6 +66,7 @@ import {
 } from './services/native-delegation/public-protocol';
 import { startTinyCloudBootstrapSweep } from './services/tinycloud-bootstrap-sweep';
 import { startRenewalLeaseStopSweep } from './services/renewal-lease-sweep';
+import { startRevokePendingSweep } from './services/native-delegation/revoke-pending';
 
 
 const betterAuthUrl = process.env.BETTER_AUTH_URL;
@@ -486,6 +487,9 @@ const port = parseInt(process.env.API_PORT || '3001');
 if (process.env.NODE_ENV !== 'test') startTinyCloudBootstrapSweep();
 // With OPENKEY_RENEWAL_LEASES=stop, revokes every live renewal lease (TC-3088). Does nothing for any other value.
 if (process.env.NODE_ENV !== 'test') startRenewalLeaseStopSweep(authPrisma);
+// Retries the node revocation of step-up delegations OpenKey withdrew after the node had registered them (TC-3569).
+// Not behind the step-up switch: a record already written must still be revoked with the switch off.
+if (process.env.NODE_ENV !== 'test') startRevokePendingSweep(authPrisma);
 
 export default {
   port,

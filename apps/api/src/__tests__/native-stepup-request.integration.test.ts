@@ -516,7 +516,7 @@ if (!child) {
     expect(calls.revoke).toBe(1);
     const row = await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } });
     expect(row).toMatchObject({ status: 'DENIED', signature: null });
-    expect(row.delegation).toEqual({ revokePending: true, delegationCid: expect.any(String), tinycloudHost: HOST, address, grantId: 'g1', appId: EXPLORER, expiresAt: expect.any(String) });
+    expect(row.delegation).toEqual({ revokePending: true, delegationCid: expect.any(String), tinycloudHost: HOST, address, grantId: 'g1', appId: EXPLORER, expiresAt: expect.any(String), siweDomain: 'openkey.so' });
   });
 
   test('another account can neither prepare nor approve this account\'s request', async () => {
@@ -619,8 +619,8 @@ if (!child) {
   });
 
   // ---- PR 2c: the code exchange of an approved STEPUP request ----
-  async function approvedCode(key: SessionKey) {
-    const created = await (await stepUp(key, 'token-1')).json() as { request_uri: string };
+  async function approvedCode(key: SessionKey, token = 'token-1') {
+    const created = await (await stepUp(key, token)).json() as { request_uri: string };
     const authorize = await app.fetch(new Request(`${API}/api/auth/oauth2/authorize?${new URLSearchParams({ client_id: clientId, request_uri: created.request_uri })}`, { headers: { cookie } }));
     expect(authorize.status, await authorize.clone().text()).toBe(302);
     const consentUrl = new URL(authorize.headers.get('location')!);
@@ -862,7 +862,7 @@ if (!child) {
   // ---- PR 3: renewal re-signs the grant's active step-ups ----
   async function renewHome(key: SessionKey, token = 'token-1') {
     const response = await post(RENEW, new URLSearchParams({ client_id: clientId, refresh_token: token }), proof(key, token, RENEW));
-    return { response, payload: await response.json() as { refresh_token: string; tinycloud_delegation?: { permissions: unknown; expiresAt: string }; tinycloud_stepups?: Array<Record<string, any>>; tinycloud_stepups_dropped?: string[]; tinycloud_stepups_failed?: string[]; error?: string } };
+    return { response, payload: await response.json() as { refresh_token: string; tinycloud_delegation?: { permissions: unknown; expiresAt: string }; tinycloud_stepups?: Array<Record<string, any>>; tinycloud_stepups_dropped?: string[]; tinycloud_stepups_failed?: string[]; tinycloud_stepups_removed?: string[]; error?: string } };
   }
 
   test('renewal re-signs an active step-up for the grant key, inside the grant, and leaves Home\'s own delegation as it was', async () => {
@@ -946,5 +946,170 @@ if (!child) {
       expect((await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-account' } })).lastRenewedAt).toBeNull();
       expect((await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-explorer' } })).lastRenewedAt).not.toBeNull();
     } finally { spy.mockRestore(); }
+  });
+
+  // ---- PR 3b: app revoke, ceiling removal, the revoke sweep ----
+  const REVOKE = '/api/auth/oauth2/tinycloud/revoke';
+  function revokeApp(key: SessionKey, token: string, fields: Record<string, string> = {}) {
+    return post(REVOKE, new URLSearchParams({ client_id: clientId, refresh_token: token, ...fields }), proof(key, token, REVOKE));
+  }
+  const account = [{ service: 'tinycloud.kv', space: 'account', path: 'applications/', actions: ['tinycloud.kv/get'] }];
+
+  test('revoking one app ends only its step-up: the grant, its token and the other step-ups stay', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-explorer', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries } });
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-account', grantId: 'g1', appId: 'xyz.tinycloud.account', approvedPermissions: account } });
+    const home = await homeState();
+    const response = await revokeApp(key, 'token-1', { app_id: EXPLORER });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(await homeState()).toBe(home);
+    expect(await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-explorer' } })).toMatchObject({ status: 'REVOKED', revokedReason: 'app_revoked', grantId: 'g1' });
+    expect(await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-account' } })).toMatchObject({ status: 'ACTIVE', revokedReason: null });
+    // The token still renews Home, and the revoked app's step-up is no longer signed.
+    const renewed = await renewHome(key);
+    expect(renewed.response.status, JSON.stringify(renewed.payload)).toBe(200);
+    expect(renewed.payload.tinycloud_stepups!.map((stepUp) => stepUp.appId)).toEqual(['xyz.tinycloud.account']);
+    // Revoking an app with no step-up is the same answer, and changes nothing.
+    const again = await revokeApp(key, renewed.payload.refresh_token, { app_id: EXPLORER });
+    expect(again.status).toBe(200);
+  });
+
+  test('app_id is refused on renew, malformed, or with the step-up switch off; a plain revoke still ends the grant and its step-ups', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-explorer', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries } });
+    const renew = await post(RENEW, new URLSearchParams({ client_id: clientId, refresh_token: 'token-1', app_id: EXPLORER }), proof(key, 'token-1', RENEW));
+    expect(renew.status).toBe(400);
+    expect((await revokeApp(key, 'token-1', { app_id: 'not an app id' })).status).toBe(400);
+    expect((await revokeApp(key, 'token-1', { app_id: '' })).status).toBe(400);
+    const previous = process.env.OPENKEY_NATIVE_STEPUP_ENABLED;
+    delete process.env.OPENKEY_NATIVE_STEPUP_ENABLED;
+    try { expect((await revokeApp(key, 'token-1', { app_id: EXPLORER })).status).toBe(400); }
+    finally { if (previous === undefined) delete process.env.OPENKEY_NATIVE_STEPUP_ENABLED; else process.env.OPENKEY_NATIVE_STEPUP_ENABLED = previous; }
+    expect((await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-explorer' } })).status).toBe('ACTIVE');
+
+    expect((await revokeApp(key, 'token-1')).status).toBe(200);
+    expect(await prisma.tinyCloudNativeGrant.findUniqueOrThrow({ where: { id: 'g1' } })).toMatchObject({ status: 'REVOKED' });
+    expect(await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-explorer' } })).toMatchObject({ status: 'REVOKED', revokedReason: 'grant_revoked' });
+  });
+
+  test('revoking an app closes its approved-but-unredeemed request and queues the delegation already on the node for the sweep', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const flow = await approvedCode(key);
+    expect((await revokeApp(key, 'token-1', { app_id: EXPLORER })).status).toBe(200);
+    const request = await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: flow.id } });
+    expect(request).toMatchObject({ status: 'DENIED', signature: null, hosting: 'failed' });
+    // An identifier and where to send the revocation: no signature, no delegation header.
+    expect(Object.keys(request.delegation as object).sort()).toEqual(['address', 'appId', 'delegationCid', 'expiresAt', 'grantId', 'revokePending', 'siweDomain', 'tinycloudHost']);
+    expect((await redeem(key, flow.code)).status).toBeGreaterThanOrEqual(400);
+    expect(await prisma.tinyCloudNativeStepUp.count()).toBe(0);
+
+    const calls: Array<{ host: string; headers: Record<string, string> }> = [];
+    const { sweepRevokePendingOnce } = await import('../services/native-delegation/revoke-pending');
+    const { signManagedKey } = await import('../services/managed-key-signing');
+    const deps = (ok: boolean) => ({ signManaged: signManagedKey, now: () => new Date(), host: { revokeDelegation: async (host: string, headers: Record<string, string>) => { calls.push({ host, headers }); return { ok, status: ok ? 200 : 503 }; } } });
+    // The node refuses: the record stays, nothing is lost.
+    expect(await sweepRevokePendingOnce(prisma, deps(false))).toEqual({ pending: 1, revoked: 0, expired: 0 });
+    expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: flow.id } })).delegation).not.toBeNull();
+    // The node confirms: the record is cleared, and a second pass has nothing to do.
+    expect(await sweepRevokePendingOnce(prisma, deps(true))).toEqual({ pending: 0, revoked: 1, expired: 0 });
+    expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: flow.id } })).delegation).toBeNull();
+    expect(await sweepRevokePendingOnce(prisma, deps(true))).toEqual({ pending: 0, revoked: 0, expired: 0 });
+    expect(calls.map((call) => call.host)).toEqual([HOST, HOST]);
+  });
+
+  test('the sweep retries a record whatever its status, drops an expired one without a node call, and skips one whose key is not the account\'s', async () => {
+    const { sweepRevokePendingOnce, revokePendingRecord } = await import('../services/native-delegation/revoke-pending');
+    const { signManagedKey } = await import('../services/managed-key-signing');
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const calls: string[] = [];
+    const deps = { signManaged: signManagedKey, now: () => new Date(), host: { revokeDelegation: async (host: string) => { calls.push(host); return { ok: true, status: 200 }; } } };
+    const artifact = (cid: string, expiresAt: Date, owner = address) => revokePendingRecord(
+      { delegationCid: cid, tinycloudHost: HOST, address: owner, grantId: 'g1', appId: EXPLORER, expiresAt: expiresAt.toISOString() }, 'openkey.so');
+    const base = { clientId, redirectUri: STEPUP_REDIRECT, state: 'a'.repeat(32), codeChallenge: challenge, scopes: [DELEGATION], sessionDid: 'did:key:z', sessionJwk: key.publicJwk,
+      sessionJkt: key.jkt, requestedPermissions: [], ttlSeconds: 300, requestUriExpiresAt: new Date(Date.now() + 60_000), expiresAt: new Date(Date.now() + 600_000),
+      kind: 'STEPUP', grantId: 'g1', appId: EXPLORER, userId: USER };
+    const soon = new Date(Date.now() + 600_000);
+    await prisma.tinyCloudNativeRequest.create({ data: { ...base, id: 'r-denied', status: 'DENIED', delegation: artifact('cid-1', soon) } });
+    await prisma.tinyCloudNativeRequest.create({ data: { ...base, id: 'r-withdrawn', status: 'WITHDRAWN', delegation: artifact('cid-2', soon) } });
+    await prisma.tinyCloudNativeRequest.create({ data: { ...base, id: 'r-expired', status: 'DENIED', delegation: artifact('cid-3', new Date(Date.now() - 1_000)) } });
+    await prisma.tinyCloudNativeRequest.create({ data: { ...base, id: 'r-foreign', status: 'DENIED', delegation: artifact('cid-4', soon, getAddress('0x' + '22'.repeat(20))) } });
+    expect(await sweepRevokePendingOnce(prisma, deps)).toEqual({ pending: 1, revoked: 2, expired: 1 });
+    expect(calls).toEqual([HOST, HOST]);
+    const left = (await prisma.tinyCloudNativeRequest.findMany({ select: { id: true, delegation: true } })).filter((row) => row.delegation !== null);
+    expect(left.map((row) => row.id)).toEqual(['r-foreign']);
+  });
+
+  test('an app that leaves the ceiling entirely loses its step-up at renewal; getting it back takes a full consent', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-explorer', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries } });
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-account', grantId: 'g1', appId: 'xyz.tinycloud.account', approvedPermissions: account } });
+    const { stepUps: _all, ...withoutStepUps } = ceiling;
+    // Explorer is gone from the ceiling; Account stays.
+    await prisma.oauthClient.update({ where: { clientId }, data: { tinycloudNativeDelegation: { ...withoutStepUps, stepUps: { 'xyz.tinycloud.account': ceiling.stepUps['xyz.tinycloud.account'] } } } });
+    const renewed = await renewHome(key);
+    expect(renewed.response.status, JSON.stringify(renewed.payload)).toBe(200);
+    expect(renewed.payload.tinycloud_stepups_removed).toEqual([EXPLORER]);
+    expect(renewed.payload.tinycloud_stepups!.map((stepUp) => stepUp.appId)).toEqual(['xyz.tinycloud.account']);
+    expect(await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-explorer' } })).toMatchObject({ status: 'REVOKED', revokedReason: 'ceiling_removed', grantId: 'g1' });
+    expect(await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-account' } })).toMatchObject({ status: 'ACTIVE' });
+
+    // The admin reuses the app id: nothing is inherited. Renewal does not bring the row back...
+    await prisma.oauthClient.update({ where: { clientId }, data: { tinycloudNativeDelegation: ceiling } });
+    await prisma.tinyCloudNativeGrant.update({ where: { id: 'g1' }, data: { lastRenewedAt: null } });
+    const again = await renewHome(key, renewed.payload.refresh_token);
+    expect(again.payload.tinycloud_stepups!.map((stepUp) => stepUp.appId)).toEqual(['xyz.tinycloud.account']);
+    expect((await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-explorer' } })).status).toBe('REVOKED');
+    // ...only a fully consented, redeemed request does.
+    const flow = await approvedCode(key, again.payload.refresh_token);
+    expect((await redeem(key, flow.code)).status).toBe(200);
+    expect(await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { id: 'su-explorer' } })).toMatchObject({ status: 'ACTIVE', revokedReason: null, grantId: 'g1' });
+  });
+
+  async function sweepDeps(ok: boolean, calls: string[]) {
+    const { signManagedKey } = await import('../services/managed-key-signing');
+    return { signManaged: signManagedKey, now: () => new Date(), host: { revokeDelegation: async (host: string) => { calls.push(host); return { ok, status: ok ? 200 : 503 }; } } };
+  }
+
+  test('every delegation a step-up signs is remembered; revoking the app marks them and the sweep revokes each one on the node', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const flow = await approvedCode(key);
+    const exchanged = await redeem(key, flow.code);
+    expect(exchanged.status, await exchanged.clone().text()).toBe(200);
+    const first = (await exchanged.json() as { tinycloud_stepup: { delegationCid: string } }).tinycloud_stepup.delegationCid;
+    const renewed = await renewHome(key);
+    expect(renewed.response.status, JSON.stringify(renewed.payload)).toBe(200);
+    const second = renewed.payload.tinycloud_stepups![0]!.delegationCid as string;
+    expect(second).not.toBe(first);
+    const rows = await prisma.tinyCloudNativeStepUpDelegation.findMany();
+    expect(rows.map((row) => row.delegationCid).sort()).toEqual([first, second].sort());
+    expect(rows.every((row) => row.grantId === 'g1' && row.appId === EXPLORER && row.tinycloudHost === HOST && row.address === address && row.revokeRequestedAt === null)).toBe(true);
+
+    expect((await revokeApp(key, renewed.payload.refresh_token, { app_id: EXPLORER })).status).toBe(200);
+    expect((await prisma.tinyCloudNativeStepUpDelegation.findMany()).every((row) => row.revokeRequestedAt !== null)).toBe(true);
+    const { sweepRevokePendingOnce } = await import('../services/native-delegation/revoke-pending');
+    const calls: string[] = [];
+    expect(await sweepRevokePendingOnce(prisma, await sweepDeps(true, calls))).toEqual({ pending: 0, revoked: 2, expired: 0 });
+    expect(calls).toEqual([HOST, HOST]);
+    expect(await prisma.tinyCloudNativeStepUpDelegation.count()).toBe(0);
+    expect(await prisma.tinyCloudNativeStepUp.findUniqueOrThrow({ where: { grantId_appId: { grantId: 'g1', appId: EXPLORER } } })).toMatchObject({ status: 'REVOKED', revokedReason: 'app_revoked' });
+  });
+
+  test('revoking the grant marks its step-up delegations too; expired ones are forgotten, and a node that refuses keeps the rest', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-1', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries } });
+    const row = (id: string, expiresAt: Date) => ({ id, grantId: 'g1', appId: EXPLORER, delegationCid: `cid-${id}`, tinycloudHost: HOST, address, siweDomain: 'openkey.so', expiresAt });
+    await prisma.tinyCloudNativeStepUpDelegation.create({ data: row('live', new Date(Date.now() + 600_000)) });
+    await prisma.tinyCloudNativeStepUpDelegation.create({ data: row('old', new Date(Date.now() - 60_000)) });
+    expect((await revokeApp(key, 'token-1')).status).toBe(200);
+    expect((await prisma.tinyCloudNativeStepUpDelegation.findUniqueOrThrow({ where: { id: 'live' } })).revokeRequestedAt).not.toBeNull();
+    expect((await prisma.tinyCloudNativeStepUpDelegation.findUniqueOrThrow({ where: { id: 'old' } })).revokeRequestedAt).toBeNull();
+
+    const { sweepRevokePendingOnce } = await import('../services/native-delegation/revoke-pending');
+    const calls: string[] = [];
+    expect(await sweepRevokePendingOnce(prisma, await sweepDeps(false, calls))).toEqual({ pending: 1, revoked: 0, expired: 0 });
+    expect((await prisma.tinyCloudNativeStepUpDelegation.findMany()).map((entry) => entry.id)).toEqual(['live']);
+    expect(await sweepRevokePendingOnce(prisma, await sweepDeps(true, calls))).toEqual({ pending: 0, revoked: 1, expired: 0 });
+    expect(await prisma.tinyCloudNativeStepUpDelegation.count()).toBe(0);
+    expect(calls).toEqual([HOST, HOST]);
   });
 }

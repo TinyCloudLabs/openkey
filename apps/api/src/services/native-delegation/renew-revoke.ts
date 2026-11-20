@@ -14,7 +14,8 @@ import { prepareDelegationSession } from '../../routes/delegate-session';
 import { TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
 import { nativeDelegationLockResponse } from './errors';
 import { validatePermissions, ParError, type NativePermission } from './par';
-import { StepUpEntryError, stepUpDelegationResponse, validateStepUpPermissions, type StepUpPermission } from './step-up';
+import { StepUpEntryError, isStepUpAppId, pruneExpiredStepUpDelegations, recordStepUpDelegation, stepUpDelegationResponse, validateStepUpPermissions, type StepUpPermission } from './step-up';
+import { revokePendingRecordFor } from './revoke-pending';
 import { enabledNativeDelegation, type NativeStepUpCeilings } from './policy';
 import { storedToken } from './provider-tokens';
 import { NATIVE_DELEGATION_ENDPOINT_PATHS, OPENKEY_SESSION_PROOF_HEADER, nativeStepUpEnabled } from './public-protocol';
@@ -26,7 +27,7 @@ const REFRESH_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
 const RENEWAL_CUTOFF_MS = 300_000;
 const CONFLICT_WINDOW_MS = 30_000;
 const SESSION_PROOF_JTI_SWEEP_INTERVAL_MS = 10_000;
-const FORM_KEYS = new Set(['client_id', 'refresh_token', 'siwe_nonce', 'authorization_details']);
+const FORM_KEYS = new Set(['client_id', 'refresh_token', 'siwe_nonce', 'authorization_details', 'app_id']);
 const DETAIL_KEYS = new Set(['type', 'session_key', 'permissions']);
 const sessionProofJtiSweepStarts = new WeakMap<PrismaClient, Promise<void>>();
 
@@ -135,11 +136,20 @@ async function renewStepUps(tx: any, input: {
   grant: { id: string; address: string; sessionJwk: unknown };
   ceiling: { siweDomain?: string; stepUps?: NativeStepUpCeilings; tinycloudHost: string };
   key: { address: string }; privateKey: `0x${string}` | null; now: Date; ttlSeconds: number; renewableUntil: string;
-}): Promise<{ renewed: Record<string, unknown>[]; dropped: string[]; failed: string[] }> {
+}): Promise<{ renewed: Record<string, unknown>[]; dropped: string[]; failed: string[]; removed: string[] }> {
   const renewed: Record<string, unknown>[] = [];
   const dropped: string[] = [];
   const failed: string[] = [];
+  const removed: string[] = [];
+  await pruneExpiredStepUpDelegations(tx, input.grant.id, input.now);
   for (const row of input.rows) {
+    // An app that is no longer in the ceiling at all ends its step-up for good. Leaving the row would let an app id the
+    // admin later reuses silently inherit this consent; coming back takes a full browser consent, as after app_revoked.
+    if (!input.ceiling.stepUps || !Object.hasOwn(input.ceiling.stepUps, row.appId)) {
+      await tx.tinyCloudNativeStepUp.update({ where: { id: row.id }, data: { status: 'REVOKED', revokedAt: input.now, revokedReason: 'ceiling_removed' } });
+      removed.push(row.appId);
+      continue;
+    }
     let permissions: StepUpPermission[];
     try { permissions = validateStepUpPermissions(row.appId, row.approvedPermissions, input.ceiling.stepUps); }
     catch (error) {
@@ -168,9 +178,11 @@ async function renewStepUps(tx: any, input: {
       continue;
     }
     await tx.tinyCloudNativeStepUp.update({ where: { id: row.id }, data: { lastRenewedAt: input.now } });
+    await recordStepUpDelegation(tx, { grantId: input.grant.id, appId: row.appId, delegationCid: artifact.delegationCid as string,
+      tinycloudHost: input.ceiling.tinycloudHost, address: input.grant.address, siweDomain: input.ceiling.siweDomain ?? 'openkey.so', expiresAt: artifact.expiresAt as string });
     renewed.push(artifact);
   }
-  return { renewed, dropped, failed };
+  return { renewed, dropped, failed, removed };
 }
 
 /** Public, cookie-free native endpoint. Every mutation is serialized with consent withdrawal. */
@@ -181,8 +193,11 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
     const params = new URLSearchParams(await request.text());
     const keys = [...params.keys()];
     if (new Set(keys).size !== keys.length || keys.some((key) => !FORM_KEYS.has(key)) ||
-      (operation === 'revoke' && keys.some((key) => key !== 'client_id' && key !== 'refresh_token')) ||
+      (operation === 'revoke' && keys.some((key) => key !== 'client_id' && key !== 'refresh_token' && !(key === 'app_id' && nativeStepUpEnabled()))) ||
+      // `app_id` (revoke one app's step-up, TC-3569) is for revoke only, and only while the step-up switch is on.
+      (operation === 'renew' && params.has('app_id')) || (params.has('app_id') && !isStepUpAppId(params.get('app_id'))) ||
       !params.get('client_id') || !params.get('refresh_token')) return respond(fail('invalid_request', 400));
+    const appId = operation === 'revoke' ? params.get('app_id') : null;
     if (operation === 'renew' && nativeRenewalsDisabled()) return respond(fail('consent_required', 400));
     const token = params.get('refresh_token')!;
     const hash = credentialHash(token);
@@ -262,6 +277,10 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
             SELECT id, scopes FROM oauth_consent WHERE "userId" = ${candidate.userId} AND "clientId" = ${candidate.clientId} FOR SHARE`;
           const generations = await tx.$queryRaw<{ generation: bigint }[]>`
             SELECT generation FROM tinycloud_native_consent_generation WHERE "userId" = ${candidate.userId} AND "clientId" = ${candidate.clientId} FOR SHARE`;
+          // Lock order: requests, then the grant.
+          const openRequests = appId ? await tx.$queryRaw<{ id: string }[]>`
+            SELECT id FROM tinycloud_native_request WHERE "grantId" = ${candidate.id} AND kind = 'STEPUP' AND "appId" = ${appId}
+              AND status IN ('PENDING', 'RESOLVED', 'APPROVED') FOR UPDATE` : [];
           await tx.$queryRaw`SELECT id FROM tinycloud_native_grant WHERE id = ${candidate.id} FOR UPDATE`;
           // A request may have waited for unsealing or this lock after its
           // initial verification. Do not honor it once its proof window ends.
@@ -270,6 +289,21 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
           const grant = await tx.tinyCloudNativeGrant.findUnique({ where: { id: candidate.id } });
           if (!grant || (grant.refreshTokenHash !== hash && grant.previousRefreshTokenHash !== hash)) return fail('invalid_grant', 400);
           if (operation === 'revoke') {
+            if (appId) {
+              // One app's step-up, not the grant: the grant, its tokens and every other step-up stay as they are. A request
+              // for this app that is still open is closed with it; an approved one has already put its delegation on the
+              // node, so it keeps a revoke record for the sweep instead of an unredeemable approval.
+              const client = await tx.oauthClient.findUnique({ where: { clientId: grant.clientId } });
+              const siweDomain = (client && enabledNativeDelegation(client))?.siweDomain ?? 'openkey.so';
+              for (const request of await tx.tinyCloudNativeRequest.findMany({ where: { id: { in: openRequests.map((row) => row.id) } } })) {
+                const record = request.status === 'APPROVED' ? revokePendingRecordFor(request.delegation, siweDomain) : null;
+                await tx.tinyCloudNativeRequest.update({ where: { id: request.id }, data: record
+                  ? { status: 'DENIED', hosting: 'failed', signature: null, delegation: record } : { status: 'DENIED' } });
+              }
+              await tx.tinyCloudNativeStepUp.updateMany({ where: { grantId: grant.id, appId, status: 'ACTIVE' },
+                data: { status: 'REVOKED', revokedAt: new Date(), revokedReason: 'app_revoked' } });
+              return { body: {} };
+            }
             if (grant.status !== 'REVOKED') await tx.tinyCloudNativeGrant.update({ where: { id: grant.id }, data: { status: 'REVOKED', revokedAt: new Date(), revokedReason: 'client_signout' } });
             await deleteGrantTokens(tx, grant);
             return { body: {} };
@@ -396,6 +430,7 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
               tinycloud_stepups: stepUps.renewed,
               ...(stepUps.dropped.length ? { tinycloud_stepups_dropped: stepUps.dropped } : {}),
               ...(stepUps.failed.length ? { tinycloud_stepups_failed: stepUps.failed } : {}),
+              ...(stepUps.removed.length ? { tinycloud_stepups_removed: stepUps.removed } : {}),
             } : {}),
           } };
         }, { timeout: 15_000 });

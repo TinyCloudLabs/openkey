@@ -27,6 +27,11 @@ import { credentialHash, SESSION_PROOF_MAX_SKEW_SECONDS, sessionProofJtiHash, ve
 
 const FORM_KEYS = new Set(['client_id', 'refresh_token', 'app_id', 'permissions', 'redirect_uri', 'state', 'code_challenge', 'code_challenge_method']);
 const APP_ID = /^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$/;
+
+/** An app id as a native app names itself: dotted ASCII, at most 128 characters. */
+export function isStepUpAppId(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= 128 && APP_ID.test(value);
+}
 const ENTRY_KEYS = new Set(['service', 'space', 'path', 'actions']);
 const KV_ACTIONS = ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata'];
 const SQL_ACTIONS = ['tinycloud.sql/read', 'tinycloud.sql/schema'];
@@ -64,7 +69,7 @@ function covers(allowed: string, path: string): boolean {
  * names. Duplicate or overlapping entries in one space and service are refused.
  */
 export function validateStepUpPermissions(appId: string, value: unknown, ceilings: NativeStepUpCeilings | undefined): StepUpPermission[] {
-  if (!APP_ID.test(appId) || appId.length > 128) malformed('invalid app_id');
+  if (!isStepUpAppId(appId)) malformed('invalid app_id');
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ENTRIES) malformed('permissions must be a non-empty array');
   const ceiling = ceilings && Object.hasOwn(ceilings, appId) ? ceilings[appId] : undefined;
   const entries = (value as unknown[]).map((item): StepUpPermission => {
@@ -250,4 +255,20 @@ export function stepUpDelegationResponse(input: {
     tinycloudHost: input.tinycloudHost,
     hosting: 'existing',
   };
+}
+
+/**
+ * Remembers a delegation a step-up has just handed to an app, so that revoking the step-up can reach it on the node.
+ * Identifiers and where to send the revocation only; nothing that could be replayed. Called inside the transaction
+ * that holds the step-up row, so the database trigger that marks the rows for the sweep sees it.
+ */
+export async function recordStepUpDelegation(tx: any, input: {
+  grantId: string; appId: string; delegationCid: string; tinycloudHost: string; address: string; siweDomain: string; expiresAt: string;
+}): Promise<void> {
+  await tx.tinyCloudNativeStepUpDelegation.create({ data: { id: randomBytes(24).toString('base64url'), ...input, expiresAt: new Date(input.expiresAt) } });
+}
+
+/** Forgets the grant's delegations that have expired by themselves: nothing is left on the node to revoke. */
+export async function pruneExpiredStepUpDelegations(tx: any, grantId: string, now: Date): Promise<void> {
+  await tx.tinyCloudNativeStepUpDelegation.deleteMany({ where: { grantId, expiresAt: { lte: now } } });
 }

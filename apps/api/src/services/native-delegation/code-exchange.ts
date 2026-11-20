@@ -11,7 +11,7 @@ import { storedToken, type ProviderTokenOptions } from './provider-tokens';
 import { OPENKEY_SESSION_PROOF_HEADER } from './public-protocol';
 import { verifySessionProof } from './session-proof';
 import type { NativePermission } from './par';
-import { StepUpEntryError, stepUpDelegationResponse, validateStepUpPermissions, type StepUpPermission } from './step-up';
+import { StepUpEntryError, pruneExpiredStepUpDelegations, recordStepUpDelegation, stepUpDelegationResponse, validateStepUpPermissions, type StepUpPermission } from './step-up';
 import { primaryKeyWhere } from '../primary-key';
 import { sameTinyCloudHost } from '../tinycloud-hosts';
 
@@ -384,12 +384,16 @@ async function exchangeStepUp(
         await tx.tinyCloudNativeStepUp.create({ data: { id: randomBytes(24).toString('base64url'), grantId: grant.id, appId, approvedPermissions: permissions, approvedAt } });
       } else if (existing.status === 'ACTIVE') {
         await tx.tinyCloudNativeStepUp.update({ where: { id: existing.id }, data: { approvedPermissions: permissions, approvedAt } });
-      } else if (existing.revokedReason === 'app_revoked') {
-        // The app revoked it; this approved request is the user's full consent to bring it back.
+      } else if (existing.revokedReason === 'app_revoked' || existing.revokedReason === 'ceiling_removed') {
+        // The app revoked it, or the admin removed the app from the ceiling; this approved request is the user's full
+        // consent to bring it back.
         await tx.tinyCloudNativeStepUp.update({ where: { id: existing.id },
           data: { status: 'ACTIVE', revokedAt: null, revokedReason: null, approvedPermissions: permissions, approvedAt, lastRenewedAt: null } });
       } else invalidGrant('the step-up was revoked with its grant');
 
+      await pruneExpiredStepUpDelegations(tx, grant.id, new Date(now));
+      await recordStepUpDelegation(tx, { grantId: grant.id, appId, delegationCid: delegation.delegationCid, tinycloudHost: delegation.tinycloudHost,
+        address: delegation.address, siweDomain: ceiling.siweDomain ?? 'openkey.so', expiresAt: delegation.expiresAt });
       return {
         tinycloud_stepup: stepUpDelegationResponse({
           appId, grantId: grant.id, address: delegation.address, chainId: delegation.chainId, ownerDid: delegation.ownerDid, permissions,

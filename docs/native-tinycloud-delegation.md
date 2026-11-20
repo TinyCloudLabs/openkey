@@ -1222,6 +1222,15 @@ step-up row's `lastRenewedAt` is set when it is re-signed. Revoked and
 step-up (every step-up path refuses a reviewer). Home's delegation in the same
 response is unchanged and does not carry the step-up's entries.
 
+An app that is no longer in the ceiling's `stepUps` at all ends its step-up at
+the renewal that notices: the row becomes `REVOKED` with `revokedReason`
+`ceiling_removed`, its delegations are marked for the revoke sweep, and the
+response lists the app id in `tinycloud_stepups_removed`. Bringing it back takes a
+full browser consent and an approved request, as after `app_revoked`; a renewal
+never reactivates it. Removal is only noticed at a renewal: an admin who removes
+and re-adds an app id between two renewals leaves the row `ACTIVE`, as approved
+(a ceiling only ever narrows what was approved, so nothing widens).
+
 ## Native revocation
 
 ```text
@@ -1246,6 +1255,46 @@ client_id=exo-native&refresh_token=<current or previous refresh token>
 SDK `signOut()` calls this endpoint and then wipes the stored session key and
 tokens. Already-issued delegations stay valid until `expiresAt`
 ([Remaining limits](#remaining-limits)).
+
+### Revoking one app's step-up (TC-3569)
+
+While `OPENKEY_NATIVE_STEPUP_ENABLED` is on, the same endpoint takes one more
+field, `app_id=<reverse-DNS app id>`. With it the request ends that app's
+step-up only:
+
+- the grant, its refresh tokens and every other app's step-up are untouched,
+  and the response is `200 {}`;
+- the app's `ACTIVE` row becomes `REVOKED` with `revokedReason` `app_revoked`
+  and is no longer renewed. An app with no step-up gets the same `200 {}`;
+- the app's open step-up requests (`PENDING`, `RESOLVED`, `APPROVED`) become
+  `DENIED`. An `APPROVED` one has already put its delegation on the node, so it
+  keeps a `revokePending` record: an identifier and where to send the
+  revocation, never the signature or the delegation header.
+
+`app_id` is refused with `400 invalid_request` on a renew, when it is not a
+well-formed app id, and while the switch is off. Without `app_id` the request is
+the sign-out above.
+
+#### Delegations already on the node
+
+Every delegation a step-up signs, at the exchange and at each renewal, is kept
+in `tinycloud_native_stepup_delegation` (delegation CID, host, owner address,
+SIWE domain, `expiresAt`; no signature, no header) until it expires. Rows that
+have expired are dropped at the next exchange or renewal and by the sweep.
+
+When a step-up becomes `REVOKED`, by any path (the app's revoke, the ceiling
+removing the app, or its grant being revoked by sign-out, an Apple revoke or a
+consent withdrawal), a database trigger marks its unexpired delegations
+(`revokeRequestedAt`) in the same transaction. The revoke sweep, an in-process
+timer in the API (not behind the switch), asks the node to revoke each marked
+delegation with the owner's signature and the `revokePending` records above. An
+entry is cleared only when the node answers OK or the delegation has expired by
+itself. It runs every 60 s and logs `native_stepup_revoke_pending` with the
+number still waiting. An entry whose recorded owner address is no longer the
+account's primary key is left, never revoked with another key.
+
+Until the sweep reaches the node, a revoked step-up's delegations are still
+valid there, for at most their TTL.
 
 ## TTL rules
 

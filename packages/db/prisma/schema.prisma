@@ -835,10 +835,36 @@ model TinyCloudNativeStepUp {
   lastRenewedAt       DateTime?
   createdAt           DateTime  @default(now())
 
-  grant TinyCloudNativeGrant @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  grant       TinyCloudNativeGrant              @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  delegations TinyCloudNativeStepUpDelegation[]
 
   @@unique([grantId, appId])
   @@map("tinycloud_native_stepup")
+}
+
+// TC-3569: one delegation a step-up signed and put in front of an app (at the
+// exchange or at a renewal), kept until it expires so that a revoke can reach
+// it on the node. Only identifiers and where to send the revocation: no
+// signature and no delegation header. A database trigger sets
+// revokeRequestedAt when the step-up is revoked, by any path; the revoke sweep
+// clears the row once the node confirms or the delegation has expired.
+model TinyCloudNativeStepUpDelegation {
+  id                String    @id
+  grantId           String
+  appId             String
+  delegationCid     String    @unique
+  tinycloudHost     String
+  address           String
+  siweDomain        String
+  expiresAt         DateTime
+  revokeRequestedAt DateTime?
+  createdAt         DateTime  @default(now())
+
+  stepUp TinyCloudNativeStepUp @relation(fields: [grantId, appId], references: [grantId, appId], onDelete: Cascade)
+
+  @@index([grantId, appId])
+  @@index([revokeRequestedAt])
+  @@map("tinycloud_native_stepup_delegation")
 }
 
 // Deliberately independent of oauth_consent: deleting and recreating consent

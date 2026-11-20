@@ -47,6 +47,9 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     stepup_status_check: boolean;
     stepup_grant_revoked_trigger: boolean;
     stepup_guard_trigger: boolean;
+    stepup_delegation_columns: number;
+    stepup_delegation_cascade: boolean;
+    stepup_revoked_trigger: boolean;
   }>>(`
     SELECT
       EXISTS (SELECT 1 FROM information_schema.columns
@@ -123,7 +126,17 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
           AND NOT tgisinternal
           AND tgenabled <> 'D'
           AND tgname = 'tinycloud_native_stepup_guard'
-          AND tgfoid = to_regprocedure('public.tinycloud_native_stepup_guard()')) AS stepup_guard_trigger
+          AND tgfoid = to_regprocedure('public.tinycloud_native_stepup_guard()')) AS stepup_guard_trigger,
+      (SELECT COUNT(*)::int FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'tinycloud_native_stepup_delegation') AS stepup_delegation_columns,
+      EXISTS (SELECT 1 FROM pg_constraint
+        WHERE conname = 'tinycloud_native_stepup_delegation_grantId_appId_fkey' AND contype = 'f' AND confdeltype = 'c') AS stepup_delegation_cascade,
+      EXISTS (SELECT 1 FROM pg_trigger
+        WHERE tgrelid = to_regclass('public.tinycloud_native_stepup')
+          AND NOT tgisinternal
+          AND tgenabled <> 'D'
+          AND tgname = 'tinycloud_native_stepup_revoked'
+          AND tgfoid = to_regprocedure('public.tinycloud_native_stepup_revoked()')) AS stepup_revoked_trigger
   `);
   const verified = rows[0];
   if (
@@ -153,7 +166,10 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     !verified.stepup_grant_cascade ||
     !verified.stepup_status_check ||
     !verified.stepup_grant_revoked_trigger ||
-    !verified.stepup_guard_trigger
+    !verified.stepup_guard_trigger ||
+    verified.stepup_delegation_columns !== 10 ||
+    !verified.stepup_delegation_cascade ||
+    !verified.stepup_revoked_trigger
   ) {
     throw new Error(`TC-773 native delegation schema verification failed: ${JSON.stringify(verified)}`);
   }

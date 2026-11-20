@@ -153,7 +153,10 @@ describe('tinycloud_native_stepup', () => {
       for (const migration of migrations) {
         await scratch.exec(await readFile(join(root, 'packages/db/prisma/migrations', migration, 'migration.sql'), 'utf8'));
       }
-      await scratch.exec(await readFile(join(root, 'packages/db/prisma/migrations/20261121_0001_native_stepup/down.sql'), 'utf8'));
+      // Rolled back newest first: the delegation table depends on the step-up table.
+      for (const down of ['20261121_0004_native_stepup_delegation', '20261121_0001_native_stepup']) {
+        await scratch.exec(await readFile(join(root, 'packages/db/prisma/migrations', down, 'down.sql'), 'utf8'));
+      }
       const left = await scratch.query<{ name: string }>(
         `SELECT tgname AS name FROM pg_trigger WHERE tgname LIKE 'tinycloud_native_stepup%'
          UNION ALL SELECT proname FROM pg_proc WHERE proname LIKE 'tinycloud_native_stepup%'

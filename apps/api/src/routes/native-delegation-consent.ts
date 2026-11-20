@@ -22,12 +22,12 @@ import { nativeUserRetryAfter, type NativeUserAction } from '../services/native-
 import { hasAcceptedTerms, termsRequired } from '../services/terms';
 import { ParError, validatePermissions, type NativePermission } from '../services/native-delegation/par';
 import { GRANT_CUTOFF_MS, StepUpEntryError, validateStepUpPermissions, type StepUpPermission } from '../services/native-delegation/step-up';
-import { buildOwnerRevocationSiwe } from '@openkey/capability-review';
+import { revokeDelegationOnNode, revokeOwnerDelegation, revokePendingRecord } from '../services/native-delegation/revoke-pending';
 import { RECLAIM_FAILED_CODE } from '../services/tinycloud-bootstrap';
 import { prepareDelegationSession, actionKey } from './delegate-session';
 import { approvalPasskeyOffer, approvalRequestDigest, checkApprovalPasskey, messageApprovalSensitivity, type ApprovalBinding } from '../services/approval-passkey';
 
-import { log, logError, logMetric } from '../log';
+import { log, logError } from '../log';
 export class NativeConsentError extends Error {
   constructor(readonly status: 401 | 403 | 404 | 409 | 500 | 503, readonly code: string, readonly description?: string) { super(code); }
 }
@@ -102,10 +102,6 @@ async function fetchPeerId(host: string, spaceId: string): Promise<string> {
   if (!value.startsWith('did:key:')) throw new Error(`unexpected peer ID response: ${value.slice(0, 100)}`);
   return value;
 }
-async function revokeDelegation(host: string, headers: Record<string, string>): Promise<{ ok: boolean; status: number }> {
-  const response = await fetch(`${host}/revoke`, { method: 'POST', headers, signal: AbortSignal.timeout(5_000) });
-  return { ok: response.ok, status: response.status };
-}
 class NativeOperationTimeoutError extends Error {
   constructor(ms: number) { super(`operation timed out after ${ms} ms`); this.name = 'NativeOperationTimeoutError'; }
 }
@@ -114,7 +110,7 @@ async function withinTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   try { return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new NativeOperationTimeoutError(ms)), ms); })]); }
   finally { if (timer) clearTimeout(timer); }
 }
-const defaultHostOps: NativeConsentHostOps = { fetchPeerId, activateSessionWithHost, submitHostDelegation, revokeDelegation };
+const defaultHostOps: NativeConsentHostOps = { fetchPeerId, activateSessionWithHost, submitHostDelegation, revokeDelegation: revokeDelegationOnNode };
 export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: NativeConsentHostOps = defaultHostOps) {
   const router = new Hono<SessionContext>();
   router.use('*', async (c, next) => {
@@ -232,16 +228,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
   // The node registered the skipped session delegation although the approval is being reopened. Revoke it,
   // once and best-effort: the outcome never changes the restart.
   async function revokeStaleSessionDelegation(artifact: { address: string; delegationCid: string; tinycloudHost: string }, domain: string, privateKey: `0x${string}`): Promise<boolean> {
-    try {
-      const now = new Date();
-      const address = ensureEip55(artifact.address);
-      const siwe = buildOwnerRevocationSiwe({ kind: 'owner-revocation', ownerDid: `did:pkh:eip155:1:${address}`, cid: artifact.delegationCid,
-        nonce: randomBytes(16).toString('hex'), expiresAt: new Date(now.getTime() + 600_000).toISOString() }, domain, now);
-      const signature = await createWalletFromPrivateKey(privateKey).signMessage({ message: siwe });
-      const response = await hostOps.revokeDelegation(artifact.tinycloudHost, siweToDelegationHeaders({ siwe, signature }) as Record<string, string>);
-      if (!response.ok) logMetric('warn', 'native_consent_stale_session_revoke_failed', { status: response.status });
-      return response.ok;
-    } catch { log('warn', 'native_consent_stale_session_revoke_failed'); return false; }
+    return revokeOwnerDelegation(artifact, domain, (message) => createWalletFromPrivateKey(privateKey).signMessage({ message }), hostOps);
   }
   router.post('/:id/approve', async c => {
     const body = await c.req.json().catch(() => null) as { revision?: number; digest?: string; sessionSiwe?: string; hostSiwe?: string; passkeyAssertion?: unknown } | null;
@@ -506,10 +493,10 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       return { status: 'APPROVED' as const, revision: result.revision, hosting: 'existing' as const, spaces: result.spaces.map(space => space.space) };
     }
     // The approval is withdrawn at once. Until the node confirms the revoke, the request keeps a durable record
-    // of the delegation's CID (an identifier, not authority: no signature, no header), recorded for audit; nothing
-    // retries it yet. It is never returned to the client.
-    const record = { revokePending: true, delegationCid: result.artifact.delegationCid, tinycloudHost: result.artifact.tinycloudHost,
-      address: result.artifact.address, grantId: result.artifact.grantId, appId: result.artifact.appId, expiresAt: result.artifact.expiresAt };
+    // of the delegation's CID (an identifier, not authority: no signature, no header). The revoke sweep
+    // (`revoke-pending.ts`) retries it until the node confirms or the delegation expires. It is never returned
+    // to the client.
+    const record = revokePendingRecord(result.artifact, result.siweDomain);
     await db.tinyCloudNativeRequest.updateMany({ where: { id: result.rowId, status: 'APPROVED', approvedRevision: result.revision },
       data: { status: 'DENIED', hosting: 'failed', signature: null, delegation: record } });
     if (await revokeStaleSessionDelegation(result.artifact, result.siweDomain, privateKey!)) {
