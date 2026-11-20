@@ -22,6 +22,7 @@ export const NATIVE_DELEGATION_ENDPOINT_PATHS = {
 const PUBLIC_PROTOCOL_PATHS: ReadonlySet<string> = new Set([
   '/.well-known/oauth-authorization-server',
   '/.well-known/oauth-authorization-server/api/auth',
+  '/api/auth/.well-known/oauth-authorization-server',
   '/.well-known/openid-configuration',
   '/api/auth/.well-known/openid-configuration',
   '/api/auth/oauth2/token',

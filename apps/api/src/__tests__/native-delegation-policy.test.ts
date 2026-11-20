@@ -153,6 +153,7 @@ describe('public protocol paths', () => {
     for (const path of [
       '/.well-known/oauth-authorization-server',
       '/.well-known/oauth-authorization-server/api/auth',
+      '/api/auth/.well-known/oauth-authorization-server',
       '/.well-known/openid-configuration',
       '/api/auth/.well-known/openid-configuration',
       '/api/auth/oauth2/token',

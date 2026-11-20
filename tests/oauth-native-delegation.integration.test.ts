@@ -1702,6 +1702,7 @@ function decodeCacao(authorization: string) {
         for (const path of [
           '/.well-known/oauth-authorization-server/api/auth',
           '/.well-known/oauth-authorization-server',
+          '/api/auth/.well-known/oauth-authorization-server',
           '/.well-known/openid-configuration',
           '/api/auth/.well-known/openid-configuration',
         ]) {
@@ -1721,6 +1722,8 @@ function decodeCacao(authorization: string) {
       for (const endpoint of [metadata.authorization_endpoint, metadata.token_endpoint, metadata.pushed_authorization_request_endpoint]) {
         expect(new URL(endpoint!).origin).toBe(API);
       }
+      // The issuer-path location serves the same document as the RFC 8414 one.
+      expect(await (await call('/api/auth/.well-known/oauth-authorization-server')).json()).toEqual(metadata);
     });
 
     test('preflight and POST on the public endpoints allow any origin and the session proof header', async () => {

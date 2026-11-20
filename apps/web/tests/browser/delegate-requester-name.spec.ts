@@ -58,6 +58,10 @@ const registered: Array<[string, string, string, string]> = [
   ['Grok', 'https://mcp.tinycloud.xyz/grok/connect/callback', 'Grok via TinyCloud', 'Grok'],
   ['Muse', 'https://mcp.tinycloud.xyz/muse/connect/callback', 'Muse via TinyCloud', 'Muse'],
   ['ChatGPT', 'https://mcp.tinycloud.xyz/chatgpt/connect/callback', 'ChatGPT via TinyCloud', 'ChatGPT'],
+  ['Gemini', 'https://mcp.tinycloud.xyz/gemini/connect/callback', 'Gemini via TinyCloud', 'Gemini'],
+  ['Perplexity', 'https://mcp.tinycloud.xyz/perplexity/connect/callback', 'Perplexity via TinyCloud', 'Perplexity'],
+  ['Mistral', 'https://mcp.tinycloud.xyz/mistral/connect/callback', 'Mistral via TinyCloud', 'Mistral'],
+  ['Copilot', 'https://mcp.tinycloud.xyz/copilot/connect/callback', 'Copilot via TinyCloud', 'Copilot'],
   ['the bare TinyCloud MCP', 'https://mcp.tinycloud.xyz/connect/callback', 'TinyCloud MCP', 'your MCP client'],
 ];
 
@@ -78,9 +82,9 @@ test.describe('approval names the requesting assistant', () => {
 
   test('an unregistered callback is refused and no assistant is named', async ({ page }) => {
     await mock(page);
-    await page.goto(link('https://mcp.tinycloud.xyz/gemini/connect/callback?state=x'));
+    await page.goto(link('https://mcp.tinycloud.xyz/unlisted/connect/callback?state=x'));
     await expect(page.getByRole('heading', { name: 'This link would send your approval to a site OpenKey doesn’t know' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
-    await expect(page.getByText(/Requested by (Claude|Grok|Muse|ChatGPT|TinyCloud MCP)/)).toHaveCount(0);
+    await expect(page.getByText(/Requested by (Claude|Grok|Muse|ChatGPT|Gemini|Perplexity|Mistral|Copilot|TinyCloud MCP)/)).toHaveCount(0);
   });
 });

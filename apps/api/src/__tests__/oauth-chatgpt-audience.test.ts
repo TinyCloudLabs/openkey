@@ -26,6 +26,10 @@ if (process.env.OPENKEY_CHATGPT_AUDIENCE_TEST_CHILD !== '1') {
         'https://mcp.tinycloud.xyz/claude/mcp',
         'https://mcp.tinycloud.xyz/grok/mcp',
         'https://mcp.tinycloud.xyz/muse/mcp',
+        'https://mcp.tinycloud.xyz/gemini/mcp',
+        'https://mcp.tinycloud.xyz/perplexity/mcp',
+        'https://mcp.tinycloud.xyz/mistral/mcp',
+        'https://mcp.tinycloud.xyz/copilot/mcp',
         'https://mcp.customer.test/mcp',
       ]);
     });

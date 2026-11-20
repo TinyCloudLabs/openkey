@@ -47,6 +47,8 @@ if (process.env.OPENKEY_MCP_LIFETIME_TEST_CHILD !== '1') {
   const MCP_RESOURCES = [
     'https://mcp.tinycloud.xyz/mcp', 'https://mcp.tinycloud.xyz/chatgpt/mcp',
     'https://mcp.tinycloud.xyz/claude/mcp', 'https://mcp.tinycloud.xyz/grok/mcp', 'https://mcp.tinycloud.xyz/muse/mcp',
+    'https://mcp.tinycloud.xyz/gemini/mcp', 'https://mcp.tinycloud.xyz/perplexity/mcp', 'https://mcp.tinycloud.xyz/mistral/mcp',
+    'https://mcp.tinycloud.xyz/copilot/mcp',
   ] as const;
   const OPENKEY_AUDIENCE = 'https://api.openkey.test';
   const callback = 'https://chatgpt.com/connector_platform_oauth_redirect';
