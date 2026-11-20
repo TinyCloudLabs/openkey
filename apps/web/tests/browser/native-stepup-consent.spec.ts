@@ -58,6 +58,15 @@ const sessionBody = { session: { id: 's', userId: 'u', expiresAt: new Date(Date.
 const EXO_BRANDING = { clientId: 'exo-native', name: 'Exo', icon: null, organization: 'TinyCloud Labs' };
 const unhostedBody = { error: 'space_not_hosted', error_description: `Spaces not hosted on this node: ${spaceId('account')}` };
 const PREWARN = /One of the spaces this app needs is not set up on your TinyCloud account yet, so it can’t be allowed yet\./;
+/** The refusal screen for a request kind this page cannot show: the reason, the next step, the way back, no Allow. */
+async function expectRefused(page: Page) {
+  await expect(page.getByRole('heading', { name: 'This app can’t be allowed yet' })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveText('This request needs a newer version of the app.');
+  await expect(page.getByText('Nothing was allowed. Update the app, then try again.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Back to the app', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: "Don't allow" })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Allow', exact: true })).toHaveCount(0);
+}
 const CONSENT_URL = '/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test';
 
 interface Calls { prepares: number; approves: Record<string, any>[]; denies: number; providers: boolean[] }
@@ -96,8 +105,8 @@ test.describe('native step-up consent', () => {
   test('names the app and what it adds, has no toggles, and approve echoes the revision and digest', async ({ page }) => {
     const calls = await setup(page, n => ({ body: { ...stepUp(), revision: n + 1, digest: `digest-${n + 1}` } }));
     await expect(page.getByRole('heading', { name: 'Give Explorer more access' })).toBeVisible();
-    await expect(page.getByText('Explorer will be able to read more of your data than Exo can today.')).toBeVisible();
-    await expect(page.getByText('This is added to what Exo already has access to.')).toBeVisible();
+    await expect(page.getByText('Explorer will be able to read more of your data, on top of what Exo already has.')).toBeVisible();
+    await expect(page.getByText('This is added to what')).toHaveCount(0);
     await expect(page.getByText('Explorer stays allowed and renews with Exo until you remove it.')).toBeVisible();
     await expect(page.getByText('Signed in as')).toContainText('sam@example.test');
     // Every space and capability, in read-only words; the plumbing capabilities read is not listed.
@@ -138,7 +147,7 @@ test.describe('native step-up consent', () => {
     const writable = option('tinycloud.kv', 'account', 'notes/', [kvGet, kvPut]);
     await setup(page, () => ({ body: { ...stepUp(), revision: 1, digest: 'digest-1', permissionOptions: [writable],
       sessionSiwe: siwe({ [`${spaceId('account')}/kv/notes/`]: { [kvGet]: [{}], [kvPut]: [{}] } }) } }));
-    await expect(page.getByText('Explorer will be able to use more of your data than Exo can today.')).toBeVisible();
+    await expect(page.getByText('Explorer will be able to use more of your data, on top of what Exo already has.')).toBeVisible();
     await expect(page.getByText('Can change data: read, put')).toBeVisible();
   });
 
@@ -195,7 +204,7 @@ test.describe('native step-up consent', () => {
 
   test('a prepare with no kind is an error with nothing to Allow, even when it looks like a sign-in', async ({ page }) => {
     const calls = await setup(page, () => ({ body: { ...signIn(), kind: undefined, revision: 1, digest: 'digest-1' } }));
-    await expect(page.getByRole('alert')).toContainText('This request needs a newer version of the app to approve.');
+    await expectRefused(page);
     await expect(allow(page)).toHaveCount(0);
     await expect(page.getByText(/renews automatically/)).toHaveCount(0);
     expect(calls.approves).toHaveLength(0);
@@ -209,7 +218,7 @@ test.describe('native step-up consent', () => {
 
   test('a preview that carries stepUp and spaces but no kind is an error with nothing to Allow, never a sign-in', async ({ page }) => {
     const calls = await setup(page, () => ({ body: { ...signIn(), kind: undefined, stepUp: { grantId: 'grant-1', appId: 'xyz.tinycloud.explorer' }, spaces, revision: 1, digest: 'digest-1' } }));
-    await expect(page.getByRole('alert')).toContainText('This request needs a newer version of the app to approve.');
+    await expectRefused(page);
     await expect(allow(page)).toHaveCount(0);
     await expect(page.getByText(/renews automatically/)).toHaveCount(0);
     expect(calls.approves).toHaveLength(0);
@@ -217,14 +226,35 @@ test.describe('native step-up consent', () => {
 
   test('an unknown kind is an error with nothing to Allow', async ({ page }) => {
     const calls = await setup(page, () => ({ body: { ...stepUp(), kind: 'FUTURE', revision: 1, digest: 'digest-1' } }));
-    await expect(page.getByRole('alert')).toContainText('This request needs a newer version of the app to approve.');
+    await expectRefused(page);
+    await expect(allow(page)).toHaveCount(0);
+    expect(calls.approves).toHaveLength(0);
+  });
+
+  test('the way back from a refused request ends it instead of leaving it pending', async ({ page }) => {
+    const calls = await setup(page, () => ({ body: { ...stepUp(), kind: 'FUTURE', revision: 1, digest: 'digest-1' } }));
+    await expectRefused(page);
+    await page.getByRole('button', { name: 'Back to the app', exact: true }).click();
+    await expect.poll(() => calls.providers).toEqual([false]);
+    expect(calls.denies).toBe(1);
+    expect(calls.approves).toHaveLength(0);
+  });
+
+  test('when the way back fails, the refusal stays on screen with its error and still nothing to Allow', async ({ page }) => {
+    const calls = await setup(page, () => ({ body: { ...stepUp(), kind: 'FUTURE', revision: 1, digest: 'digest-1' } }));
+    await expectRefused(page);
+    await page.route('**/api/auth/oauth2/consent', route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Consent failed' }) }));
+    await page.getByRole('button', { name: 'Back to the app', exact: true }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'Consent failed' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'This app can’t be allowed yet' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Back to the app', exact: true })).toBeEnabled();
     await expect(allow(page)).toHaveCount(0);
     expect(calls.approves).toHaveLength(0);
   });
 
   test('a STEPUP that does not name its app and spaces is an error with nothing to Allow', async ({ page }) => {
     await setup(page, () => ({ body: { ...stepUp(), stepUp: undefined, spaces: undefined, revision: 1, digest: 'digest-1' } }));
-    await expect(page.getByRole('alert')).toContainText('This request needs a newer version of the app to approve.');
+    await expectRefused(page);
     await expect(allow(page)).toHaveCount(0);
   });
 
@@ -256,10 +286,17 @@ test.describe('native step-up consent', () => {
       () => ({ status: 409, body: { error: 'preparation_superseded' } }));
     await allow(page).click();
     await expect.poll(() => calls.prepares).toBe(2);
-    await expect(page.getByRole('alert')).toContainText('This request needs a newer version of the app to approve.');
+    await expectRefused(page);
     await expect(allow(page)).toHaveCount(0);
     await expect(page.getByText('kv/applications/')).toHaveCount(0);
     expect(calls.approves).toHaveLength(1);
+  });
+
+  test('a payload that cannot be decoded says so, with nothing to Allow', async ({ page }) => {
+    const undecodable = stepUpSiwe.replace(/- urn:recap:\S+/, '- urn:recap:!!!not-base64!!!');
+    await setup(page, () => ({ body: { ...stepUp(), sessionSiwe: undecodable, revision: 1, digest: 'digest-1' } }));
+    await expect(page.getByRole('alert')).toHaveText('This request can’t be read, so it can’t be allowed.');
+    await expect(allow(page)).toBeDisabled();
   });
 });
 

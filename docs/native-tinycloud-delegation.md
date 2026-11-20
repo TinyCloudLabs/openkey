@@ -360,15 +360,20 @@ only by the code exchange of an approved request.
 
 **The flag stays off until the step-up screen is live.** The consent page chooses
 its screen from an explicit `kind`, with no default: `STEPUP` renders the
-step-up screen, `SIGNIN` renders the sign-in screen, and anything else is an
-error with no Allow, including no `kind` at all (a preview that carries `stepUp`
-or `spaces` without one is never shown as a sign-in). The API sends a `kind` on
-every preview, so the web must not be deployed before the API that sends it.
-Order of rollout: API with `kind` live, then the web with the step-up screen,
-then the ceiling diff (see "Parity with TinyCloud One"), then the flag.
-`OPENKEY_NATIVE_STEPUP_ENABLED` must not be turned on in any environment before
-the step-up screen and the revoke sweeper are deployed and the Home client's
-`stepUps` has been diffed against the reference.
+step-up screen, `SIGNIN` renders the sign-in screen, and anything else shows a
+screen with no Allow, including no `kind` at all (a preview that carries `stepUp`
+or `spaces` without one is never shown as a sign-in). That screen says the request
+needs a newer version of the app and that nothing was allowed, and its "Back to the
+app" button denies the current request and returns to the app, the way the
+"space not set up" screen does; if that fails the screen stays, with the error. The
+API sends a `kind` on every preview, so the web must not be deployed before the
+API that sends it.
+Order of rollout: API with `kind` live, then the web with the step-up screen, then
+the refusal screen with its way back, then the ceiling diff (see "Parity with
+TinyCloud One"), then the flag. `OPENKEY_NATIVE_STEPUP_ENABLED` must not be turned
+on in any environment before the step-up screen, the refusal screen and the revoke
+sweeper are deployed and the Home client's `stepUps` has been diffed against the
+reference.
 
 ### Step-up code exchange (TC-3569)
 
@@ -1760,7 +1765,8 @@ reference an admin applies, not something the API reads. So the flag has one mor
 step before it: diff the production Home client's `tinycloudNativeDelegation.stepUps`
 against `phase1.json` (entry for entry, as above), or have the admin write path
 refuse anything else. The full rollout order is the API with `kind` live, then
-the web step-up screen, then that ceiling diff, then the flag.
+the web step-up screen, then the refusal-screen follow-up, then that ceiling
+diff, then the flag.
 
 ## TinyCloud node responsibility
 
