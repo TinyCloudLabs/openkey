@@ -209,8 +209,9 @@ interface ClientCredentials {
 
 /**
  * POSTs JSON to the KMS. The only trust anchor is `caPem` (no system roots), the
- * hostname is verified, TLS is 1.2 or later, and the server's leaf must carry
- * the `kms:rpc` usage extension. Any non-2xx answer is an error.
+ * hostname is verified, TLS is 1.2 or later, and the server's leaf must be signed
+ * directly by that CA (not by an app CA below it) and carry the `kms:rpc` usage extension.
+ * Any non-2xx answer is an error.
  */
 function kmsPost(
   url: string,
@@ -239,6 +240,13 @@ function kmsPost(
         if (!usage || !usage.equals(expected)) {
           res.resume();
           reject(new Error('the KMS server certificate is not marked kms:rpc'));
+          return;
+        }
+        // The leaf must be signed by the pinned CA itself. The KMS root CA also signs per-app CAs, and an
+        // app holding one could mint a leaf that chains here; that signature is by a different key.
+        if (!new X509Certificate(leaf!).verify(new X509Certificate(caPem).publicKey)) {
+          res.resume();
+          reject(new Error('the KMS server certificate is not issued directly by the pinned CA'));
           return;
         }
         const chunks: Buffer[] = [];

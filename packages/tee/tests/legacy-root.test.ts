@@ -248,8 +248,10 @@ describe('createRaTlsKmsTransport against a fake agent and a fake KMS', () => {
   let agent: HttpServer;
   let kms: HttpsServer;
   let kmsNoUsage: HttpsServer;
+  let kmsViaAppCa: HttpsServer;
   let kmsUrl: string;
   let kmsNoUsageUrl: string;
+  let kmsViaAppCaUrl: string;
   let kmsCaCert: string;
   let agentRequests: { path: string; reportData?: string }[];
   let kmsSeen: { path: string; body: Record<string, unknown>; authorized: boolean }[];
@@ -320,6 +322,13 @@ describe('createRaTlsKmsTransport against a fake agent and a fake KMS', () => {
       openssl(['x509', '-req', '-in', 'srv.csr', '-CA', 'ca.pem', '-CAkey', 'ca.key', '-CAcreateserial', '-days', '2', '-extfile', ext, '-out', `${name}.pem`], dir);
     }
     kmsCaCert = new X509Certificate(readFileSync(join(dir, 'ca.pem'))).raw.toString('base64');
+    // An app CA signed by the KMS CA (basicConstraints CA:TRUE), and a kms:rpc leaf for the same server key signed by it.
+    openssl(['ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', 'appca.key'], dir);
+    openssl(['req', '-new', '-key', 'appca.key', '-subj', '/CN=fake app ca', '-out', 'appca.csr'], dir);
+    writeFileSync(join(dir, 'ext-appca.cnf'), 'basicConstraints=critical,CA:TRUE\n');
+    openssl(['x509', '-req', '-in', 'appca.csr', '-CA', 'ca.pem', '-CAkey', 'ca.key', '-CAcreateserial', '-days', '2', '-extfile', 'ext-appca.cnf', '-out', 'appca.pem'], dir);
+    openssl(['x509', '-req', '-in', 'srv.csr', '-CA', 'appca.pem', '-CAkey', 'appca.key', '-CAcreateserial', '-days', '2', '-extfile', 'ext-rpc.cnf', '-out', 'srv-via-app-ca.pem'], dir);
+    writeFileSync(join(dir, 'srv-via-app-ca-chain.pem'), readFileSync(join(dir, 'srv-via-app-ca.pem'), 'utf8') + readFileSync(join(dir, 'appca.pem'), 'utf8'));
 
     agentRequests = [];
     kmsSeen = [];
@@ -355,16 +364,20 @@ describe('createRaTlsKmsTransport against a fake agent and a fake KMS', () => {
 
     kms = fakeKms('srv.key', 'srv.pem');
     kmsNoUsage = fakeKms('srv.key', 'srv-plain.pem');
+    kmsViaAppCa = fakeKms('srv.key', 'srv-via-app-ca-chain.pem');
     await new Promise<void>((resolve) => kms.listen(0, '127.0.0.1', resolve));
     await new Promise<void>((resolve) => kmsNoUsage.listen(0, '127.0.0.1', resolve));
+    await new Promise<void>((resolve) => kmsViaAppCa.listen(0, '127.0.0.1', resolve));
     kmsUrl = `https://localhost:${port(kms)}`;
     kmsNoUsageUrl = `https://localhost:${port(kmsNoUsage)}`;
+    kmsViaAppCaUrl = `https://localhost:${port(kmsViaAppCa)}`;
   });
 
   afterAll(async () => {
     await new Promise<void>((resolve) => agent.close(() => resolve()));
     await new Promise<void>((resolve) => kms.close(() => resolve()));
     await new Promise<void>((resolve) => kmsNoUsage.close(() => resolve()));
+    await new Promise<void>((resolve) => kmsViaAppCa.close(() => resolve()));
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -452,6 +465,16 @@ describe('createRaTlsKmsTransport against a fake agent and a fake KMS', () => {
     const canary = await oldSealed(KAT[0]!.path, 'x');
     await expect(
       loadLegacyRoot({ config, transport: transport({ url: kmsNoUsageUrl }), canaries: [canary] }),
+    ).rejects.toMatchObject({ code: 'kms_refused' });
+    expect(agentRequests.filter((r) => r.path === '/GetQuote')).toEqual([]);
+  });
+
+  test('a leaf signed by an app CA below the pinned CA is refused, though it chains and is marked kms:rpc', async () => {
+    // The KMS root CA also signs per-app CAs; an app holding one could otherwise mint a "KMS" server cert.
+    reset();
+    const canary = await oldSealed(KAT[0]!.path, 'x');
+    await expect(
+      loadLegacyRoot({ config, transport: transport({ url: kmsViaAppCaUrl }), canaries: [canary] }),
     ).rejects.toMatchObject({ code: 'kms_refused' });
     expect(agentRequests.filter((r) => r.path === '/GetQuote')).toEqual([]);
   });
