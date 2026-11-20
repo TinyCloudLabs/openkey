@@ -100,6 +100,22 @@ jobs:
         run: |
           sed -i "s|\${DOCKER_IMAGE}|${{ env.DOCKER_IMAGE }}:${{ github.sha }}|g" docker-compose.prod.yml
 
+      # The guest runs docker compose v2.26.0 (dstack 0.5.15 base image). Its schema refuses long-form
+      # `devices` ("services.key-recovery.devices.0 must be a string"), which stopped the witness boot.
+      # Validate the exact bytes sent to Phala with that version, before the migrations and the CVM.
+      # `config -q` needs no Docker daemon; unset variables are only warnings.
+      - name: Validate the compose with the guest's docker compose version
+        env:
+          COMPOSE_VERSION: v2.26.0
+          COMPOSE_SHA256: 59c6b262bedc4a02f46c8400e830e660935684899c770c3f5e804a2b7079fc16
+        run: |
+          bin="$RUNNER_TEMP/docker-compose"
+          curl -fsSL -o "$bin" "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64"
+          echo "${COMPOSE_SHA256}  ${bin}" | sha256sum -c -
+          chmod +x "$bin"
+          "$bin" version | grep -q "${COMPOSE_VERSION}"
+          "$bin" -f docker-compose.prod.yml config -q
+
       # Apply the tracked migrations before shipping the code. Raw migration SQL
       # installs custody and tenant-boundary guards that `prisma db push` omits.
       # The API container intentionally does not contain or run the schema engine.
