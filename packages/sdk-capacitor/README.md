@@ -122,6 +122,33 @@ Secure-store read, write, and remove failures use `STORAGE`, distinct from `NETW
 
 Before exchanging a code, the SDK stores an exchange intent containing its session key. It stores the returned refresh token on that intent before validating the delegation. On startup, an unfinished intent with a token is revoked or moved to pending revoke; one without a token is dropped. A committed session clears its matching intent without revocation. As with any client-only journal, a process kill between receipt of the HTTP response and the secure-store write of its token cannot be recovered without a server lookup by the session key.
 
+## Step-up for framed apps
+
+A framed TinyCloud app (`xyz.tinycloud.explorer`, `xyz.tinycloud.account`, `xyz.tinycloud.courier`) may need more read access than the Home sign-in grant holds. `requestStepUp()` asks OpenKey for a separate, read-only, per-app delegation bound to the current Home grant. The user approves it in the system browser, and the signed delegation is stored with the session.
+
+```ts
+const stepUp = await openkey.requestStepUp({
+  appId: 'xyz.tinycloud.explorer',
+  capabilities: [
+    { service: 'tinycloud.kv', space: 'public', path: '', actions: ['tinycloud.kv/get', 'tinycloud.kv/list'] },
+    { service: 'tinycloud.sql', space: 'applications', path: 'default', actions: ['tinycloud.sql/read'] },
+  ],
+});
+// stepUp.delegationHeader.Authorization, stepUp.delegationCid, stepUp.spaces, stepUp.expiresAt
+(await openkey.current())?.stepUps?.['xyz.tinycloud.explorer']; // also held offline with the session
+await openkey.revokeStepUp('xyz.tinycloud.explorer');
+```
+
+- Entries are read-only: KV `get`, `list`, `metadata` and SQL `read`, `schema`, in the spaces `public`, `account`, `agents` or `applications`. `path` is always required (`''` is the whole space and the server admits it only in `public`; for SQL it names one database). The server derives the lifetime, so there is no TTL option.
+- The delegate is the Home session key, so the step-up needs no second key and the Home grant is not changed. `requestStepUp()` never rotates or replaces the refresh token and never creates a grant.
+- The SDK checks the response before storing it: the same account signed it (EIP-191 recovery), it is bound to the Home grant id and session key, its spaces and entries are within what was requested, it expires within the Home grant's lifetime, and it names the expected TinyCloud node. A mismatch rejects with `SERVER`, stores nothing and leaves the Home session as it was.
+- `current()` and the value returned by `renew()` carry `stepUps` (a map by app id) when any are held and unexpired. The map is stored inside the existing session record, so a session saved by an earlier SDK version loads unchanged, and `signOut()` clears the step-ups with it.
+- `renew()` folds the server's step-up fields into the stored map: renewed delegations replace the held ones, `removed` apps are deleted, and a `dropped`, `failed` or rejected one stays until its own expiry. Hand the new `stepUps` to TinyCloud after each renewal, as for `delegation`. A bad step-up in a renewal response never fails the Home renewal.
+- `revokeStepUp(appId)` ends that app's step-up on the server and removes the local copy only after the server confirms. The Home grant and other apps are untouched. Without a step-up the server still answers success.
+- With `ephemeralSession: true` the browser asks the user to re-authenticate for the approval, as for sign-in.
+- `stepUpRedirectUri` is optional and defaults to `redirectUri`. A different value must be registered on the OpenKey client and handled by the app (the Android plugin only accepts the path `/callback`, so keep the default on Android).
+- Step-up depends on a server switch that is off until OpenKey enables it. When the API does not offer it, `requestStepUp()` and `revokeStepUp()` reject with `UNAVAILABLE` (discovery does not list the endpoint, or the API answers `not_found`) and nothing is stored. `INVALID_REQUEST` is a malformed app id or capability list, or the API refusing the request. `ACCESS_DENIED` is the user declining; `CONSENT_REQUIRED` and `INVALID_GRANT` mean the Home grant needs a new sign-in.
+
 ## Security
 
 The session private JWK and refresh token are stored in iOS Keychain generic passwords with `AfterFirstUnlockThisDeviceOnly` and iCloud synchronization disabled. Android stores AES-GCM ciphertext in the `openkey_secure_store` SharedPreferences file with a non-exportable Android Keystore key. Android apps with backup enabled must exclude `sharedpref/openkey_secure_store.xml` from both legacy `fullBackupContent` and Android 12+ `dataExtractionRules` for cloud backup and device transfer, or disable backup for the app. In each backup rules file use `<exclude domain="sharedpref" path="openkey_secure_store.xml" />` (under both `<cloud-backup>` and `<device-transfer>` for `dataExtractionRules`). A restored ciphertext cannot be decrypted with a different device's key. The JWK is necessarily present in JS memory while TinyCloud WASM signs requests. `NativeSessionStorage` never uses localStorage. A device or JS runtime compromise can still expose an active session. Native access tokens are not refreshed; renewal rotates only the TinyCloud delegation refresh token. A lost renew response can require a new sign-in.

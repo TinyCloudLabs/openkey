@@ -4,17 +4,23 @@ import {
   delegationNeedsRenewalNow,
   discoverOpenKeyServer,
   exchangeDelegationCode,
+  exchangeStepUpCode,
   generateCodeChallenge,
   generateCodeVerifier,
   generateSessionKeypair,
   generateState,
+  isNativeStepUpAppId,
   normalizeDelegationPermissions,
   parseNativeCallback,
   renewDelegation,
+  requestStepUp,
   revokeDelegation,
+  revokeStepUp,
   sendParRequest,
   sessionKeypairFromJwk,
   type NativeDelegationPermission,
+  type NativeStepUpPermission,
+  type NativeStepUpRenewal,
   type NativeFetch,
   type NativeLoginMethod,
   type NativeSessionJwk,
@@ -23,6 +29,7 @@ import {
   type OpenKeyServerMetadata,
   type SleepFn,
   type TinyCloudDelegation,
+  type TinyCloudStepUp,
 } from '@openkey/core';
 import { OpenKeyCapacitor, type OpenKeyCapacitorPlugin } from './plugin';
 import { NativeSessionStorage } from './storage';
@@ -31,6 +38,13 @@ import { verifyTinyCloudDelegation } from './verify';
 export interface OpenKeyNativeOptions {
   clientId: string;
   redirectUri: string;
+  /**
+   * Redirect URI of the step-up browser step (TC-3569); it must be registered on
+   * the client. Defaults to `redirectUri`, which every platform already routes
+   * back to the app. A separate URI needs its own route (Android's intent filter
+   * and plugin accept only `/callback` today).
+   */
+  stepUpRedirectUri?: string;
   issuer?: string;
   ephemeralSession?: boolean;
   /** Android Custom Tabs appearance. iOS ASWebAuthenticationSession ignores this option. */
@@ -57,6 +71,8 @@ export interface NativeSession {
   tokens: NativeTokens;
   delegation: TinyCloudDelegation;
   sessionKey: NativeSessionKeypair;
+  /** Step-ups held for this grant, by app id; absent when there are none. */
+  stepUps?: Record<string, TinyCloudStepUp>;
 }
 
 interface StoredSession {
@@ -67,6 +83,8 @@ interface StoredSession {
   permissions: NativeDelegationPermission[];
   /** Milliseconds when the current refresh token was issued or rotated. */
   refreshIssuedAt?: number;
+  /** Step-ups held for this grant, by app id. Absent in sessions stored before TC-3569. */
+  stepUps?: Record<string, TinyCloudStepUp>;
 }
 
 interface PendingRevokeGrant {
@@ -113,6 +131,27 @@ class SessionReadError extends OpenKeyNativeError {
   constructor(message: string, readonly corrupt: boolean) {
     super('STORAGE', message);
   }
+}
+
+/** The step-ups that have not expired, or `undefined` when none have. */
+function liveStepUps(stepUps: Record<string, TinyCloudStepUp> | undefined, now = Date.now()): Record<string, TinyCloudStepUp> | undefined {
+  if (!stepUps) return undefined;
+  const live = Object.fromEntries(Object.entries(stepUps).filter(([, stepUp]) => Date.parse(stepUp.expiresAt) > now));
+  return Object.keys(live).length > 0 ? live : undefined;
+}
+
+/** A stored `stepUps` of the wrong shape never invalidates the sign-in session around it. */
+function sanitizeStepUps(value: unknown): Record<string, TinyCloudStepUp> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const clean: Record<string, TinyCloudStepUp> = {};
+  for (const [appId, entry] of Object.entries(value)) {
+    const candidate = entry as Partial<TinyCloudStepUp> | null;
+    if (isNativeStepUpAppId(appId) && candidate && typeof candidate === 'object' && candidate.appId === appId &&
+        typeof candidate.expiresAt === 'string' && Array.isArray(candidate.permissions)) {
+      clean[appId] = candidate as TinyCloudStepUp;
+    }
+  }
+  return Object.keys(clean).length > 0 ? clean : undefined;
 }
 
 const TERMINAL_RENEW_CODES = new Set(['INVALID_GRANT', 'CONSENT_REQUIRED', 'ACCESS_DENIED', 'SPACE_UNAVAILABLE']);
@@ -167,6 +206,8 @@ interface SessionCoordinator {
   signOutFlight?: Promise<void>;
   pendingRevokeFlight?: Promise<void>;
   activeIntents: Set<string>;
+  /** App ids with a step-up request in flight; one per app. */
+  activeStepUps: Set<string>;
 }
 
 // One queue and epoch per physical secure-store identity and key prefix.
@@ -177,7 +218,7 @@ function coordinatorFor(storeIdentity: object, namespace: string): SessionCoordi
   if (!byNamespace) { byNamespace = new Map(); coordinators.set(storeIdentity, byNamespace); }
   let coordinator = byNamespace.get(namespace);
   if (!coordinator) {
-    coordinator = { epoch: 0, signInAttempt: 0, signedOut: false, sessionEpochs: new Map(), storageTail: Promise.resolve(), renewTail: Promise.resolve(), renewals: new Map(), activeIntents: new Set() };
+    coordinator = { epoch: 0, signInAttempt: 0, signedOut: false, sessionEpochs: new Map(), storageTail: Promise.resolve(), renewTail: Promise.resolve(), renewals: new Map(), activeIntents: new Set(), activeStepUps: new Set() };
     byNamespace.set(namespace, coordinator);
   }
   return coordinator;
@@ -193,6 +234,7 @@ export class OpenKeyNative {
   private readonly storage: NativeSessionStorage;
   private readonly coordinator: SessionCoordinator;
   private metadataPromise?: Promise<OpenKeyServerMetadata>;
+  private readonly stepUpRedirectUri: string;
 
   constructor(private readonly options: OpenKeyNativeOptions) {
     if (options.browserTheme && (!/^#[0-9a-fA-F]{6}$/.test(options.browserTheme.toolbarColor) ||
@@ -200,6 +242,7 @@ export class OpenKeyNative {
       throw new OpenKeyNativeError('INVALID_REQUEST', 'Invalid browserTheme');
     }
     this.issuer = options.issuer ?? 'https://api.openkey.so/api/auth';
+    this.stepUpRedirectUri = options.stepUpRedirectUri ?? options.redirectUri;
     this.plugin = options.plugin ?? OpenKeyCapacitor;
     this.fetchFn = options.fetchFn;
     this.sleepFn = options.sleepFn;
@@ -228,6 +271,10 @@ export class OpenKeyNative {
     const redirect = new URL(options.redirectUri);
     if (redirect.protocol !== 'https:' && !redirect.hostname) {
       throw new OpenKeyNativeError('SERVER', 'Private-use redirect URI must have a host');
+    }
+    const stepUpRedirect = new URL(this.stepUpRedirectUri);
+    if (stepUpRedirect.protocol !== 'https:' && !stepUpRedirect.hostname) {
+      throw new OpenKeyNativeError('SERVER', 'Private-use step-up redirect URI must have a host');
     }
     // Initialization is synchronous for callers; cleanup runs in the background.
     // A transient retry remains in secure storage for the next opportunity.
@@ -281,6 +328,7 @@ export class OpenKeyNative {
       const stored = JSON.parse(value) as StoredSession;
       if (stored.version !== 1 || !stored.tokens?.refreshToken || !stored.delegation || !stored.privateJwk) throw new Error();
       sessionKeypairFromJwk(stored.privateJwk);
+      stored.stepUps = sanitizeStepUps(stored.stepUps);
       return stored;
     } catch {
       throw new SessionReadError('Stored OpenKey session is invalid', true);
@@ -520,7 +568,8 @@ export class OpenKeyNative {
   private present(record: StoredSession): NativeSession {
     const sessionKey = sessionKeypairFromJwk(record.privateJwk);
     this.coordinator.sessionEpochs.set(record.privateJwk.x, this.coordinator.epoch);
-    return { tokens: record.tokens, delegation: record.delegation, sessionKey };
+    const stepUps = liveStepUps(record.stepUps);
+    return { tokens: record.tokens, delegation: record.delegation, sessionKey, ...(stepUps ? { stepUps } : {}) };
   }
 
   signIn(options: { capabilities: NativeDelegationPermission[]; ttlSeconds?: number; siweNonce?: string; loginHint?: string; loginMethod?: NativeLoginMethod }): Promise<NativeSession> {
@@ -556,18 +605,7 @@ export class OpenKeyNative {
       loginHint: options.loginHint, loginMethod: options.loginMethod,
     }, this.fetchFn);
     const url = buildNativeAuthorizeUrl({ authorizationEndpoint: metadata.authorizationEndpoint, clientId: this.options.clientId, requestUri });
-    let callback: string;
-    try {
-      callback = (await this.plugin.openAuthSession({ url, callbackScheme: new URL(this.options.redirectUri).protocol.slice(0, -1), callbackUrl: this.options.redirectUri, expectedState: state, ephemeral: this.options.ephemeralSession ?? true, browserTheme: this.options.browserTheme })).url;
-    } catch (error) { throw asNativeError(error); }
-    let returned: URL;
-    try { returned = new URL(callback); }
-    catch { throw new OpenKeyNativeError('SERVER', 'Callback URL is not parseable'); }
-    const expected = new URL(this.options.redirectUri);
-    if (returned.protocol !== expected.protocol || returned.host !== expected.host || returned.pathname !== expected.pathname) {
-      throw new OpenKeyNativeError('STATE_MISMATCH', 'Callback destination does not match redirect URI');
-    }
-    const { code } = parseNativeCallback({ url: callback, expectedState: state, issuer: this.issuer });
+    const code = await this.authorize(url, this.options.redirectUri, state);
     const intent: ExchangeIntent = { version: 1, attemptId: state, privateJwk: sessionKey.privateJwk,
       expiresAt: Date.now() + REFRESH_TTL_MS };
     this.coordinator.activeIntents.add(state);
@@ -678,8 +716,7 @@ export class OpenKeyNative {
     const flightKey = `${epoch}:${JSON.stringify({ siweNonce: options.siweNonce ?? null, permissions: sorted })}`;
     const existing = this.coordinator.renewals.get(flightKey);
     if (existing) return existing;
-    const pending = this.coordinator.renewTail.then(() => this.renewOnce(options, epoch));
-    this.coordinator.renewTail = pending.then(() => {}, () => {});
+    const pending = this.inRenewQueue(() => this.renewOnce(options, epoch));
     this.coordinator.renewals.set(flightKey, pending);
     void pending.finally(() => { if (this.coordinator.renewals.get(flightKey) === pending) this.coordinator.renewals.delete(flightKey); }).catch(() => {});
     return pending;
@@ -700,6 +737,7 @@ export class OpenKeyNative {
           refreshToken: record.tokens.refreshToken, sessionKey: key,
           requestedPermissions: record.permissions, permissionsSubset: options.capabilities,
           siweNonce: options.siweNonce, expectedTinycloudHost: this.expectedHost(),
+          heldStepUps: record.stepUps,
           fetchFn: this.fetchFn, sleepFn: this.sleepFn });
       } catch (caught) {
         if (this.coordinator.epoch !== epoch) {
@@ -785,6 +823,7 @@ export class OpenKeyNative {
         this.assertEpoch(epoch);
       }
       record.delegation = renewed.delegation;
+      record.stepUps = await this.mergeStepUps(record.stepUps, renewed.stepUps);
       try { await this.write(record, epoch, { key: record.privateJwk.x, token: renewed.refreshToken }); }
       catch (caught) {
         if (this.coordinator.epoch !== epoch) {
@@ -803,6 +842,136 @@ export class OpenKeyNative {
       this.assertEpoch(epoch);
       return this.present(record);
     }
+  }
+
+  private inRenewQueue<T>(operation: () => Promise<T>): Promise<T> {
+    const pending = this.coordinator.renewTail.then(operation);
+    this.coordinator.renewTail = pending.then(() => {}, () => {});
+    return pending;
+  }
+
+  /** Open the authorization sheet and return the code of the callback for `state`; the callback must land on `redirectUri`. */
+  private async authorize(url: string, redirectUri: string, state: string): Promise<string> {
+    let callback: string;
+    try {
+      callback = (await this.plugin.openAuthSession({ url, callbackScheme: new URL(redirectUri).protocol.slice(0, -1), callbackUrl: redirectUri, expectedState: state, ephemeral: this.options.ephemeralSession ?? true, browserTheme: this.options.browserTheme })).url;
+    } catch (error) { throw asNativeError(error); }
+    let returned: URL;
+    try { returned = new URL(callback); }
+    catch { throw new OpenKeyNativeError('SERVER', 'Callback URL is not parseable'); }
+    const expected = new URL(redirectUri);
+    if (returned.protocol !== expected.protocol || returned.host !== expected.host || returned.pathname !== expected.pathname) {
+      throw new OpenKeyNativeError('STATE_MISMATCH', 'Callback destination does not match redirect URI');
+    }
+    return parseNativeCallback({ url: callback, expectedState: state, issuer: this.issuer }).code;
+  }
+
+  private assertStepUpAllowed(appId: string): void {
+    if (!isNativeStepUpAppId(appId)) throw new OpenKeyNativeError('INVALID_REQUEST', 'Invalid step-up app id');
+    if (this.coordinator.signedOut) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'No OpenKey session is active');
+    if (this.coordinator.signOutFlight) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'Sign-out is in progress');
+    if (this.coordinator.signInFlight) throw new OpenKeyNativeError('UNAVAILABLE', 'Sign-in is in progress');
+  }
+
+  /**
+   * Add one framed app's read-only step-up to the current Home grant (TC-3569):
+   * request, system-browser consent, code exchange, then store the signed
+   * delegation with the session. The Home session, its refresh token and its
+   * stored record are untouched when any step fails.
+   */
+  async requestStepUp(options: { appId: string; capabilities: NativeStepUpPermission[] }): Promise<TinyCloudStepUp> {
+    this.assertStepUpAllowed(options.appId);
+    if (this.coordinator.activeStepUps.has(options.appId)) {
+      throw new OpenKeyNativeError('UNAVAILABLE', 'A step-up for this app is already in progress');
+    }
+    this.coordinator.activeStepUps.add(options.appId);
+    try { return await this.requestStepUpOnce(options, this.coordinator.epoch); }
+    finally { this.coordinator.activeStepUps.delete(options.appId); }
+  }
+
+  private async requestStepUpOnce(options: { appId: string; capabilities: NativeStepUpPermission[] }, epoch: number): Promise<TinyCloudStepUp> {
+    const metadata = await this.metadata();
+    const state = generateState();
+    const verifier = generateCodeVerifier();
+    const challenge = await generateCodeChallenge(verifier);
+    // The request is made with the grant's current refresh token, which a
+    // renewal rotates: it runs in the renew queue so it never sees a dead one.
+    const { home, requestUri } = await this.inRenewQueue(async () => {
+      this.assertEpoch(epoch);
+      const stored = await this.readQueued();
+      if (!stored) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'No OpenKey session is stored');
+      const pushed = await requestStepUp({ metadata, clientId: this.options.clientId, refreshToken: stored.tokens.refreshToken,
+        sessionKey: sessionKeypairFromJwk(stored.privateJwk), appId: options.appId, redirectUri: this.stepUpRedirectUri,
+        state, codeChallenge: challenge, permissions: options.capabilities, fetchFn: this.fetchFn, sleepFn: this.sleepFn });
+      return { home: stored, requestUri: pushed.requestUri };
+    });
+    const url = buildNativeAuthorizeUrl({ authorizationEndpoint: metadata.authorizationEndpoint, clientId: this.options.clientId, requestUri });
+    const code = await this.authorize(url, this.stepUpRedirectUri, state);
+    // A sign-out or a new sign-in during the consent screen ends this step-up.
+    this.assertEpoch(epoch);
+    const sessionKey = sessionKeypairFromJwk(home.privateJwk);
+    const stepUp = await exchangeStepUpCode({ metadata, code, redirectUri: this.stepUpRedirectUri, clientId: this.options.clientId,
+      codeVerifier: verifier, sessionKey, appId: options.appId, requestedPermissions: options.capabilities,
+      expectedTinycloudHost: this.expectedHost(), expectedGrantId: home.delegation.grantId, expectedAddress: home.delegation.address,
+      grantRenewableUntil: home.delegation.renewableUntil, fetchFn: this.fetchFn });
+    try { await this.verifier(stepUp); }
+    catch { throw new OpenKeyNativeError('SERVER', 'Step-up delegation failed verification'); }
+    // Persist on top of whatever a renewal stored meanwhile; a renewal and this write never interleave.
+    await this.inRenewQueue(async () => {
+      this.assertEpoch(epoch);
+      const current = await this.readQueued();
+      if (!current || current.privateJwk.x !== home.privateJwk.x) {
+        throw new OpenKeyNativeError('NOT_SIGNED_IN', 'The stored OpenKey session changed');
+      }
+      const expected = matchFor(current);
+      current.stepUps = liveStepUps({ ...current.stepUps, [stepUp.appId]: stepUp });
+      await this.write(current, epoch, expected);
+    });
+    return stepUp;
+  }
+
+  /**
+   * End one app's step-up on the server and drop it from the stored session.
+   * The Home grant and every other app's step-up are untouched. The local copy
+   * is removed only after the server confirms; a failure leaves it in place.
+   */
+  async revokeStepUp(appId: string): Promise<void> {
+    this.assertStepUpAllowed(appId);
+    const epoch = this.coordinator.epoch;
+    const metadata = await this.metadata();
+    await this.inRenewQueue(async () => {
+      this.assertEpoch(epoch);
+      const record = await this.readQueued();
+      if (!record) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'No OpenKey session is stored');
+      await revokeStepUp({ metadata, clientId: this.options.clientId, refreshToken: record.tokens.refreshToken,
+        sessionKey: sessionKeypairFromJwk(record.privateJwk), appId, fetchFn: this.fetchFn, sleepFn: this.sleepFn });
+      // The session was replaced while the server answered: that grant's step-ups are not this record's.
+      if (this.coordinator.epoch !== epoch || !record.stepUps || !Object.hasOwn(record.stepUps, appId)) return;
+      const expected = matchFor(record);
+      const remaining = { ...record.stepUps };
+      delete remaining[appId];
+      record.stepUps = liveStepUps(remaining);
+      await this.write(record, epoch, expected);
+    });
+  }
+
+  /**
+   * Fold a renewal's step-up fields into the held ones: renewed ones replace,
+   * `removed` ones go, and `dropped`, `failed` and rejected ones stay as they
+   * were until their own expiry. A renewed step-up the verifier refuses is
+   * treated like a rejected one.
+   */
+  private async mergeStepUps(held: Record<string, TinyCloudStepUp> | undefined, renewal: NativeStepUpRenewal | undefined): Promise<Record<string, TinyCloudStepUp> | undefined> {
+    const next: Record<string, TinyCloudStepUp> = { ...held };
+    if (renewal) {
+      for (const appId of renewal.removed) delete next[appId];
+      for (const stepUp of renewal.renewed) {
+        if (renewal.removed.includes(stepUp.appId)) continue;
+        try { await this.verifier(stepUp); next[stepUp.appId] = stepUp; }
+        catch { /* the held copy stays until it expires */ }
+      }
+    }
+    return liveStepUps(next);
   }
 
   signOut(): Promise<void> {
