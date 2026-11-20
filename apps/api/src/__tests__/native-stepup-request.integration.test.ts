@@ -5,6 +5,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
+import { getAddress } from 'viem';
 import { serializeSignedCookie } from 'better-call';
 import type * as DatabaseModule from '@openkey/db';
 
@@ -36,6 +37,7 @@ if (!child) {
   let app: { fetch: (request: Request) => Response | Promise<Response> };
   let clientId: string;
   let cookie: string;
+  let address: string;
   const API = 'https://api.openkey.test';
   const ISSUER = `${API}/api/auth`;
   const STEPUP = '/api/auth/oauth2/tinycloud/stepup';
@@ -113,8 +115,8 @@ if (!child) {
       scopes: ['openid', 'offline_access', DELEGATION], revoked: options.tokenRevoked ? new Date() : null,
       expiresAt: options.tokenExpiresAt ?? new Date(Date.now() + 7 * 86400_000) } });
     await prisma.tinyCloudNativeGrant.create({ data: { id, userId: USER, clientId, consentId: 'su-consent', consentGeneration: 0n,
-      keyId: 'su-key', address: '0x0000000000000000000000000000000000000001', sessionDid: `${did}#${did.slice('did:key:'.length)}`,
-      sessionJwk: key.publicJwk, sessionJkt: key.jkt, spaceId: 'tinycloud:pkh:eip155:1:0x0000000000000000000000000000000000000001:applications',
+      keyId: 'su-key', address, sessionDid: `${did}#${did.slice('did:key:'.length)}`,
+      sessionJwk: key.publicJwk, sessionJkt: key.jkt, spaceId: `tinycloud:pkh:eip155:1:${address}:applications`,
       approvedPermissions: homePermissions, ttlSeconds: 3600, tinycloudHost: HOST, refreshTokenHash: hash(token),
       absoluteExpiresAt: options.expiresAt ?? new Date(Date.now() + 30 * 86400_000) } });
   }
@@ -138,6 +140,12 @@ if (!child) {
     await prisma.session.create({ data: { id: 'su-session', token: sessionToken, userId: USER, expiresAt: new Date(Date.now() + 3_600_000) } });
     const context = await auth.$context;
     cookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, sessionToken, context.secret)).split(';')[0]!;
+    const { createTeeClient, generatePrivateKey, getAddressFromPrivateKey, seal } = await import('@openkey/tee');
+    const privateKey = generatePrivateKey(); address = getAddress(getAddressFromPrivateKey(privateKey));
+    const sealingContext = randomUUID().replaceAll('-', '').padEnd(43, 'A').slice(0, 43);
+    const sealingKey = await createTeeClient().deriveKey(`openkey/key/${sealingContext}`);
+    await prisma.ethereumKey.create({ data: { id: 'su-key', userId: USER, address, publicKey: '0x1',
+      sealedBlob: await seal(privateKey, sealingKey), sealingContext, keyType: 'MANAGED', isCanonicalTinyCloud: true } });
     const response = await app.fetch(new Request(`${API}/api/admin/oauth/clients`, { method: 'POST',
       headers: { Authorization: 'Bearer tc3569-admin-key', 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Step-up Home', type: 'native', redirectUris: [HOME_REDIRECT, STEPUP_REDIRECT], tinycloudNativeDelegation: ceiling }) }));
@@ -153,9 +161,10 @@ if (!child) {
 
   beforeEach(async () => {
     process.env.OPENKEY_NATIVE_STEPUP_ENABLED = '1';
-    await prisma.$executeRawUnsafe(`TRUNCATE TABLE "oauth_refresh_token", "oauth_access_token", "native_session_proof_jti", "oauth_consent",
+    await prisma.$executeRawUnsafe(`TRUNCATE TABLE "oauth_refresh_token", "oauth_access_token", "native_session_proof_jti", "oauth_consent", "tinycloud_manage_key_app_preference",
       "tinycloud_native_grant", "tinycloud_native_request", "tinycloud_native_consent_generation" CASCADE`);
-    await prisma.user.update({ where: { id: USER }, data: { lockedAt: null } });
+    await prisma.user.update({ where: { id: USER }, data: { lockedAt: null, tinyCloudManageKeyMode: 'APP_MANAGED' } });
+    await prisma.ethereumKey.update({ where: { id: 'su-key' }, data: { isCanonicalTinyCloud: true } });
     await prisma.oauthClient.update({ where: { clientId }, data: { disabled: false, scopes: ['openid', 'offline_access', DELEGATION], tinycloudNativeDelegation: ceiling } });
     await prisma.oauthConsent.create({ data: { id: 'su-consent', userId: USER, clientId, scopes: ['openid', 'offline_access', DELEGATION] } });
     await prisma.tinyCloudNativeConsentGeneration.create({ data: { userId: USER, clientId, generation: 0n } });
@@ -174,7 +183,7 @@ if (!child) {
     const row = await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } });
     expect(row).toMatchObject({
       kind: 'STEPUP', grantId: 'g1', appId: EXPLORER, clientId, userId: USER, status: 'PENDING', redirectUri: STEPUP_REDIRECT,
-      scopes: [DELEGATION], sessionDid: grantBefore.sessionDid, sessionJkt: grantBefore.sessionJkt, ttlSeconds: 3600,
+      scopes: [DELEGATION], sessionDid: grantBefore.sessionDid, sessionJkt: grantBefore.sessionJkt, ttlSeconds: 3600, consentGeneration: 0n,
     });
     expect(row.sessionJwk).toEqual(grantBefore.sessionJwk as object);
     expect(row.requestedPermissions).toEqual(explorerEntries);
@@ -251,6 +260,9 @@ if (!child) {
       ['expired token', async () => { await prisma.oauthRefreshToken.update({ where: { token: hash('token-1') }, data: { expiresAt: new Date(Date.now() - 1000) } }); }, 400, 'invalid_grant'],
       ['revoked token', async () => { await prisma.oauthRefreshToken.update({ where: { token: hash('token-1') }, data: { revoked: new Date() } }); }, 400, 'invalid_grant'],
       ['disabled client', async () => { await prisma.oauthClient.update({ where: { clientId }, data: { disabled: true } }); }, 400, 'consent_required'],
+      ['key control exclusive to the user', async () => { await prisma.user.update({ where: { id: USER }, data: { tinyCloudManageKeyMode: 'USER_CONTROLLED_EXCLUSIVE' } }); }, 400, 'access_denied'],
+      ['app switched off', async () => { await prisma.tinyCloudManageKeyAppPreference.create({ data: { userId: USER, clientId, enabled: false, status: 'DISABLED' } }); }, 400, 'access_denied'],
+      ['canonical key changed', async () => { await prisma.ethereumKey.update({ where: { id: 'su-key' }, data: { isCanonicalTinyCloud: false } }); }, 400, 'consent_required'],
     ];
     for (const [label, arrange, status, code] of cases) {
       await beforeEachReset();
@@ -264,8 +276,9 @@ if (!child) {
 
   async function beforeEachReset() {
     await prisma.$executeRawUnsafe(`TRUNCATE TABLE "oauth_refresh_token", "native_session_proof_jti", "oauth_consent", "tinycloud_native_grant",
-      "tinycloud_native_request", "tinycloud_native_consent_generation" CASCADE`);
-    await prisma.user.update({ where: { id: USER }, data: { lockedAt: null } });
+      "tinycloud_native_request", "tinycloud_native_consent_generation", "tinycloud_manage_key_app_preference" CASCADE`);
+    await prisma.user.update({ where: { id: USER }, data: { lockedAt: null, tinyCloudManageKeyMode: 'APP_MANAGED' } });
+    await prisma.ethereumKey.update({ where: { id: 'su-key' }, data: { isCanonicalTinyCloud: true } });
     await prisma.oauthClient.update({ where: { clientId }, data: { disabled: false } });
     await prisma.oauthConsent.create({ data: { id: 'su-consent', userId: USER, clientId, scopes: ['openid', 'offline_access', DELEGATION] } });
     await prisma.tinyCloudNativeConsentGeneration.create({ data: { userId: USER, clientId, generation: 0n } });
@@ -329,6 +342,34 @@ if (!child) {
     expect(capped.status).toBe(429);
     expect(capped.headers.get('retry-after')).toBe('10');
     expect(await requests()).toBe(8);
+  });
+
+  test('only live requests count toward the cap, and parallel requests cannot pass it', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    for (let index = 0; index < 8; index++) expect((await stepUp(key, 'token-1')).status).toBe(201);
+    expect((await stepUp(key, 'token-1')).status).toBe(429);
+    // Request URIs that were never opened expire; their slots are free again.
+    await prisma.tinyCloudNativeRequest.updateMany({ where: { grantId: 'g1' }, data: { requestUriExpiresAt: new Date(Date.now() - 1000) } });
+    expect((await stepUp(key, 'token-1')).status).toBe(201);
+    // An opened (RESOLVED) request counts until it expires, then it does not.
+    await prisma.tinyCloudNativeRequest.updateMany({ where: { grantId: 'g1', status: 'PENDING' }, data: { status: 'RESOLVED', expiresAt: new Date(Date.now() - 1000) } });
+    for (let index = 0; index < 8; index++) expect((await stepUp(key, 'token-1')).status).toBe(201);
+    expect((await stepUp(key, 'token-1')).status).toBe(429);
+    await prisma.tinyCloudNativeRequest.deleteMany({});
+    const statuses = (await Promise.all(Array.from({ length: 12 }, () => stepUp(key, 'token-1')))).map((response) => response.status);
+    expect(statuses.filter((status) => status === 201).length).toBeLessThanOrEqual(8);
+    expect(statuses.every((status) => status === 201 || status === 429)).toBe(true);
+    expect(await prisma.tinyCloudNativeRequest.count({ where: { status: 'PENDING' } })).toBeLessThanOrEqual(8);
+  });
+
+  test('a request never outlives the moment its grant can no longer be used', async () => {
+    const key = sessionKey();
+    const expiresAt = new Date(Date.now() + 400_000);
+    await seedDevice('g1', key, 'token-1', { expiresAt });
+    const created = await (await stepUp(key, 'token-1')).json() as { request_uri: string };
+    const row = await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: created.request_uri.slice('urn:ietf:params:oauth:request_uri:'.length) } });
+    expect(row.expiresAt.getTime()).toBeLessThanOrEqual(expiresAt.getTime() - 300_000);
+    expect(row.requestUriExpiresAt.getTime()).toBeLessThanOrEqual(row.expiresAt.getTime());
   });
 
   test('the sign-in consent path never acts on a STEPUP request', async () => {

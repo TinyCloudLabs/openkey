@@ -4,6 +4,7 @@ import { TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
 import { TINYCLOUD_DELEGATED_PATH, TINYCLOUD_DELEGATED_PATH_MAX_LENGTH, hasDotSegment } from '../tinycloud-path-policy';
 import { sameTinyCloudHost } from '../tinycloud-hosts';
 import { lockNativeReviewer } from '../reviewer-native';
+import { primaryKeyWhere } from '../primary-key';
 import { nativeDelegationLockResponse } from './errors';
 import { REQUEST_URI_PREFIX } from './par';
 import { enabledNativeDelegation, STEP_UP_SPACES, type NativeStepUpCeilings, type NativeStepUpSpace } from './policy';
@@ -96,7 +97,7 @@ export function validateStepUpPermissions(appId: string, value: unknown, ceiling
   for (let i = 0; i < entries.length; i++) for (let j = i + 1; j < entries.length; j++) {
     const a = entries[i]!, b = entries[j]!;
     if (a.service === b.service && a.space === b.space &&
-      (a.path === b.path || (a.path.endsWith('/') && b.path.startsWith(a.path)) || (b.path.endsWith('/') && a.path.startsWith(b.path)))) malformed('overlapping permissions');
+      (a.path === b.path || a.path === '' || b.path === '' || (a.path.endsWith('/') && b.path.startsWith(a.path)) || (b.path.endsWith('/') && a.path.startsWith(b.path)))) malformed('overlapping permissions');
   }
   return entries;
 }
@@ -148,14 +149,17 @@ export async function handleNativeStepUpRequest(request: Request, db: PrismaClie
 
     const result = await db.$transaction(async (tx): Promise<{ failure: Failure } | { requestId: string }> => {
       await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
-      // Lock order as renewal: reviewer, user, consent, generation, requests, grants.
+      // Lock order as renewal: reviewer, user, consent, generation, grant, then the token row. The request is
+      // inserted last. The grant is locked FOR NO KEY UPDATE so concurrent step-ups of one grant queue here and
+      // the open-request cap below counts a settled set; it still conflicts with renewal's FOR UPDATE and
+      // with the FOR SHARE of the step-up guard and of consent.
       const reviewer = await lockNativeReviewer(tx, candidate.userId);
       await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${candidate.userId} FOR SHARE`;
       const consents = await tx.$queryRaw<{ id: string; scopes: string[] }[]>`
         SELECT id, scopes FROM oauth_consent WHERE "userId" = ${candidate.userId} AND "clientId" = ${candidate.clientId} FOR SHARE`;
       const generations = await tx.$queryRaw<{ generation: bigint }[]>`
         SELECT generation FROM tinycloud_native_consent_generation WHERE "userId" = ${candidate.userId} AND "clientId" = ${candidate.clientId} FOR SHARE`;
-      await tx.$queryRaw`SELECT id FROM tinycloud_native_grant WHERE id = ${candidate.id} FOR SHARE`;
+      await tx.$queryRaw`SELECT id FROM tinycloud_native_grant WHERE id = ${candidate.id} FOR NO KEY UPDATE`;
       if (Math.abs(Date.now() / 1000 - proof.iat) > SESSION_PROOF_MAX_SKEW_SECONDS) return { failure: { error: 'invalid_session_proof', status: 401 } };
       const grant = await tx.tinyCloudNativeGrant.findUnique({ where: { id: candidate.id } });
       if (!grant || grant.refreshTokenHash !== hash || grant.status !== 'ACTIVE') return { failure: { error: 'invalid_grant', status: 400 } };
@@ -164,13 +168,18 @@ export async function handleNativeStepUpRequest(request: Request, db: PrismaClie
       const now = new Date();
       // Same live and expiry rule as renewal: an expired grant keeps the status ACTIVE.
       if (now.getTime() >= grant.absoluteExpiresAt.getTime() - GRANT_CUTOFF_MS) return { failure: { error: 'consent_required', status: 400 } };
-      const user = await tx.user.findUnique({ where: { id: grant.userId }, select: { lockedAt: true, reviewerHoldAt: true } });
+      const user = await tx.user.findUnique({ where: { id: grant.userId }, select: { lockedAt: true, reviewerHoldAt: true, tinyCloudManageKeyMode: true } });
       if (!user || user.lockedAt || user.reviewerHoldAt || reviewer) return { failure: { error: 'access_denied', status: 400 } };
       // The token must still be the grant's live refresh token, as for renewal.
       await tx.$queryRaw`SELECT id FROM oauth_refresh_token WHERE token = ${hash} FOR SHARE`;
       const row = await tx.oauthRefreshToken.findUnique({ where: { token: hash } });
       if (!row || row.userId !== grant.userId || row.clientId !== grant.clientId || !row.scopes.includes(TINYCLOUD_DELEGATION_SCOPE) ||
         row.revoked || row.expiresAt <= now) return { failure: { error: 'invalid_grant', status: 400 } };
+      const key = await tx.ethereumKey.findFirst({ where: primaryKeyWhere(grant.userId) });
+      if (!key || key.id !== grant.keyId || key.address.toLowerCase() !== grant.address.toLowerCase() || !key.sealedBlob) return { failure: { error: 'consent_required', status: 400 } };
+      // As renewal: the account's own key control and the per-app switch.
+      const preference = await tx.tinyCloudManageKeyAppPreference.findUnique({ where: { userId_clientId: { userId: grant.userId, clientId: grant.clientId } } });
+      if (user.tinyCloudManageKeyMode === 'USER_CONTROLLED_EXCLUSIVE' || preference?.status === 'DISABLED' || preference?.enabled === false) return { failure: { error: 'access_denied', status: 400 } };
       const client = await tx.oauthClient.findUnique({ where: { clientId: grant.clientId } });
       const ceiling = client && enabledNativeDelegation(client);
       if (!client || !ceiling || !sameTinyCloudHost(ceiling.tinycloudHost, grant.tinycloudHost)) return { failure: { error: 'consent_required', status: 400 } };
@@ -181,19 +190,23 @@ export async function handleNativeStepUpRequest(request: Request, db: PrismaClie
         if (error instanceof StepUpEntryError) return { failure: { error: error.kind === 'ceiling' ? 'access_denied' : 'invalid_authorization_details', status: 400 } };
         throw error;
       }
+      // Only live requests count: a request URI that was never opened, or an expired request, frees its slot.
       const open = await tx.tinyCloudNativeRequest.count({ where: {
-        grantId: grant.id, kind: 'STEPUP', status: { in: ['PENDING', 'RESOLVED'] }, expiresAt: { gt: now },
+        grantId: grant.id, kind: 'STEPUP',
+        OR: [{ status: 'PENDING', requestUriExpiresAt: { gt: now } }, { status: 'RESOLVED', expiresAt: { gt: now } }],
       } });
       if (open >= MAX_PENDING_PER_GRANT) return { failure: { error: 'slow_down', status: 429, retryAfter: 10 } };
       const id = randomBytes(24).toString('base64url');
+      // The request never outlives the moment its grant can no longer be used.
+      const cutoff = grant.absoluteExpiresAt.getTime() - GRANT_CUTOFF_MS;
       await tx.tinyCloudNativeRequest.create({ data: {
         id, kind: 'STEPUP', grantId: grant.id, appId, clientId: grant.clientId, userId: grant.userId,
         redirectUri: params.get('redirect_uri')!, state, codeChallenge: challenge, scopes: [TINYCLOUD_DELEGATION_SCOPE],
         // The delegate is the grant's session key. Nothing in the request can name another.
         sessionDid: grant.sessionDid, sessionJwk: grant.sessionJwk as object, sessionJkt: grant.sessionJkt,
-        requestedPermissions: permissions,
+        requestedPermissions: permissions, consentGeneration: grant.consentGeneration,
         ttlSeconds: Math.min(grant.ttlSeconds, ceiling.maxDelegationTtlSeconds),
-        requestUriExpiresAt: new Date(now.getTime() + REQUEST_URI_TTL_MS), expiresAt: new Date(now.getTime() + REQUEST_TTL_MS),
+        requestUriExpiresAt: new Date(Math.min(now.getTime() + REQUEST_URI_TTL_MS, cutoff)), expiresAt: new Date(Math.min(now.getTime() + REQUEST_TTL_MS, cutoff)),
       } });
       return { requestId: id };
     }, { timeout: 15_000 });

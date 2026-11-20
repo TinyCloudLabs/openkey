@@ -281,15 +281,22 @@ Form body (urlencoded, no other keys): `client_id`, `refresh_token`, `app_id`,
 (registered on the client), `state`, `code_challenge`,
 `code_challenge_method=S256`.
 
-Accepted when, in one transaction under the native lock order: the grant is
-`ACTIVE` and its consent scope and generation match; now is before
-`absoluteExpiresAt` less 300 s (the renewal rule); the account is not locked, on
-reviewer hold or a reviewer; the refresh-token row is live; the client's
+Accepted when, in one transaction under the native lock order (reviewer, user,
+consent, generation, grant `FOR NO KEY UPDATE`, token row; the request is
+inserted last): the grant is `ACTIVE` and its consent scope and generation
+match; now is before `absoluteExpiresAt` less 300 s (the renewal rule); the
+account is not locked, on reviewer hold or a reviewer, and has not taken key
+control exclusively or switched the app off (as renewal); the grant's key is
+still the account's canonical key; the refresh-token row is live; the client's
 ceiling has `stepUps` and the same host as the grant; and every entry is covered
 by `stepUps[app_id][space]` (exact app id, case-sensitive; exact path or a
-`/`-terminated prefix for KV; exact database for SQL; read-only vocabulary
-`kv: get|list|metadata`, `sql: read|schema`; no overlapping entries). At most
-8 open step-up requests exist per grant.
+`/`-terminated prefix for KV, `""` being the root and overlapping every other
+path in its space; exact database for SQL; read-only vocabulary
+`kv: get|list|metadata`, `sql: read|schema`). At most 8 live step-up requests
+exist per grant (a request URI that expired unopened, or an expired request,
+frees its slot; the grant lock serialises concurrent requests so the cap
+holds). The request stores the grant's consent generation and expires no later
+than the grant's cutoff (`absoluteExpiresAt` less 300 s).
 
 | HTTP | `error` |
 |---|---|
@@ -298,7 +305,7 @@ by `stepUps[app_id][space]` (exact app id, case-sensitive; exact path or a
 | 400 | `invalid_request` (body, redirect URI, PKCE) |
 | 400 | `invalid_grant` (revoked grant, dead refresh token) |
 | 400 | `consent_required` (consent changed, grant near its end, client disabled) |
-| 400 | `access_denied` (account locked, no step-up ceiling, entry beyond the ceiling) |
+| 400 | `access_denied` (account locked, key control exclusive to the user, app switched off, no step-up ceiling, entry beyond the ceiling) |
 | 400 | `invalid_authorization_details` (malformed `permissions`, including any write action) |
 | 429 | `slow_down` (`Retry-After: 10`) |
 

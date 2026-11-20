@@ -45,6 +45,11 @@ describe('step-up entry validation', () => {
     expect(kind('xyz.tinycloud.account', [kv('account', 'spaces/a'), kv('account', 'spaces/')])).toBe('malformed');
     expect(kind('xyz.tinycloud.account', [kv('account', 'applications/'), kv('account', 'spaces/')])).toBe('ok');
     expect(kind('xyz.tinycloud.explorer', [kv('public', ''), { service: 'tinycloud.sql', space: 'applications', path: 'default', actions: ['tinycloud.sql/read'] }])).toBe('ok');
+    // The empty path is the root: it overlaps every other path in its space.
+    const rootAndPrefix = { 'xyz.tinycloud.explorer': { public: { kv: { paths: ['', 'a/'], actions: ['get'] } } } } as Parameters<typeof validateStepUpPermissions>[2];
+    for (const entries of [[kv('public', ''), kv('public', 'a/')], [kv('public', 'a/'), kv('public', '')]]) {
+      expect(() => validateStepUpPermissions('xyz.tinycloud.explorer', entries, rootAndPrefix)).toThrow(expect.objectContaining({ kind: 'malformed' }));
+    }
   });
 
   test('no ceilings at all refuses as policy, not as a malformed request', () => {
