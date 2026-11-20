@@ -3,7 +3,8 @@
 // 20261007_0002_native_preparation_host, the token guard triggers of
 // 20261007_0003_tinycloud_native_token_guard, sign-in columns from
 // 20261012_0001_signin_polish_hints_branding, and session proof replay
-// protection from 20261012_0002_native_session_proof_jti.
+// protection from 20261012_0002_native_session_proof_jti, and the step-up
+// table and grant-revocation trigger of 20261121_0001_native_stepup.
 // `prisma migrate diff` cannot see triggers or CHECK constraints, and the
 // consent-withdrawal triggers are what revoke native grants and tokens.
 
@@ -39,6 +40,11 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     proof_jti_columns: number;
     proof_jti_primary_key: boolean;
     proof_jti_expiry_index: boolean;
+    stepup_columns: number;
+    stepup_grant_app_index: boolean;
+    stepup_grant_cascade: boolean;
+    stepup_status_check: boolean;
+    stepup_grant_revoked_trigger: boolean;
   }>>(`
     SELECT
       EXISTS (SELECT 1 FROM information_schema.columns
@@ -93,7 +99,20 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
         WHERE table_schema = 'public' AND table_name = 'native_session_proof_jti') AS proof_jti_columns,
       EXISTS (SELECT 1 FROM pg_constraint
         WHERE conname = 'native_session_proof_jti_pkey' AND contype = 'p') AS proof_jti_primary_key,
-      to_regclass('public.native_session_proof_jti_expires_at_idx') IS NOT NULL AS proof_jti_expiry_index
+      to_regclass('public.native_session_proof_jti_expires_at_idx') IS NOT NULL AS proof_jti_expiry_index,
+      (SELECT COUNT(*)::int FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'tinycloud_native_stepup') AS stepup_columns,
+      to_regclass('public."tinycloud_native_stepup_grantId_appId_key"') IS NOT NULL AS stepup_grant_app_index,
+      EXISTS (SELECT 1 FROM pg_constraint
+        WHERE conname = 'tinycloud_native_stepup_grantId_fkey' AND contype = 'f' AND confdeltype = 'c') AS stepup_grant_cascade,
+      EXISTS (SELECT 1 FROM pg_constraint
+        WHERE conname = 'tinycloud_native_stepup_status_check' AND contype = 'c') AS stepup_status_check,
+      EXISTS (SELECT 1 FROM pg_trigger
+        WHERE tgrelid = to_regclass('public.tinycloud_native_grant')
+          AND NOT tgisinternal
+          AND tgenabled <> 'D'
+          AND tgname = 'tinycloud_native_stepup_grant_revoked'
+          AND tgfoid = to_regprocedure('public.tinycloud_native_stepup_grant_revoked()')) AS stepup_grant_revoked_trigger
   `);
   const verified = rows[0];
   if (
@@ -115,7 +134,12 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     verified.token_guard_triggers !== 2 ||
     verified.proof_jti_columns !== 3 ||
     !verified.proof_jti_primary_key ||
-    !verified.proof_jti_expiry_index
+    !verified.proof_jti_expiry_index ||
+    verified.stepup_columns !== 10 ||
+    !verified.stepup_grant_app_index ||
+    !verified.stepup_grant_cascade ||
+    !verified.stepup_status_check ||
+    !verified.stepup_grant_revoked_trigger
   ) {
     throw new Error(`TC-773 native delegation schema verification failed: ${JSON.stringify(verified)}`);
   }

@@ -194,6 +194,44 @@ To replace an existing client's ceiling, run `register-oauth-client.yml` with
 `client_id` and `tinycloud_native_delegation`; the run log prints the ceiling
 before and after.
 
+### Step-up ceilings (TC-3569)
+
+A client's ceiling may carry an optional `stepUps` section: for each framed
+app of a host application (TinyCloud One), what the owner may add on top of
+the sign-in grant, by space. It is admin-set, like the rest of the ceiling, and
+enforced by `validateNativeDelegationConfig`. The step-up endpoint that reads
+it is not built yet; until it ships the section is stored and ignored.
+
+```json
+"stepUps": {
+  "explorer": {
+    "public": { "kv": { "paths": [""], "actions": ["get", "list", "metadata"] } },
+    "applications": { "sql": { "databases": ["default"], "actions": ["read", "schema"] } }
+  },
+  "account": { "account": { "kv": { "paths": ["applications/", "spaces/"], "actions": ["get", "list"] } } },
+  "courier": { "agents": { "kv": { "paths": ["xyz.tinycloud.courier/"], "actions": ["get", "list"] } } }
+}
+```
+
+| Rule | |
+|---|---|
+| App key | 1 to 16 apps; the same grammar as `appId`; never a secrets root. |
+| Spaces | `public`, `account`, `agents`, `applications`. The secrets space and `tinycloud.encryption` are refused until a separate ruling enables them. |
+| `kv.actions` | A subset of `get`, `list`, `metadata`. No write action, ever. |
+| `sql.actions` | A subset of `read`, `schema`. |
+| `kv.paths` | Relative paths, no dot segments. `""` (the whole space) is admitted only in `public`. The roots `secrets`, `vault` and `variables` are refused. |
+| `sql.databases` | Exact names: one segment, or `<folder>/<name>`. No prefix and no pattern. |
+
+The `tinycloud_native_stepup` table holds one row per (grant, app). A database
+trigger revokes every step-up of a grant when the grant becomes `REVOKED`, by
+sign-out, consent withdrawal or direct SQL, so a step-up never outlives its
+grant.
+
+Rollback: an API build that predates this section refuses a ceiling that
+contains `stepUps` as having an unknown field, and a malformed ceiling disables
+delegation for the client. Apply a ceiling with `stepUps` only once this
+version is deployed, and do not roll the API back past it while one is set.
+
 ## Permissions and the signed session SIWE
 
 Requests and responses list permissions as manifest entries with

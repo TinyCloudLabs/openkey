@@ -804,10 +804,34 @@ model TinyCloudNativeGrant {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   client OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  stepUps TinyCloudNativeStepUp[]
 
   @@index([userId, clientId, status])
   @@index([previousRefreshTokenHash])
   @@map("tinycloud_native_grant")
+}
+
+// TC-3569: a step-up on a native grant, one row per (grant, app). It is signed
+// only to the grant's recorded session did:key and re-issued at renewal only
+// while ACTIVE. A database trigger revokes every step-up when its grant is
+// revoked, by any path. Nothing writes this table until the step-up endpoint
+// ships.
+model TinyCloudNativeStepUp {
+  id                  String    @id
+  grantId             String
+  appId               String
+  approvedPermissions Json
+  status              String    @default("ACTIVE")
+  approvedAt          DateTime  @default(now())
+  revokedAt           DateTime?
+  revokedReason       String?
+  lastRenewedAt       DateTime?
+  createdAt           DateTime  @default(now())
+
+  grant TinyCloudNativeGrant @relation(fields: [grantId], references: [id], onDelete: Cascade)
+
+  @@unique([grantId, appId])
+  @@map("tinycloud_native_stepup")
 }
 
 // Deliberately independent of oauth_consent: deleting and recreating consent

@@ -17,6 +17,20 @@ const MAX_LIST_ENTRIES = 32;
 export const DEFAULT_MAX_DELEGATION_TTL_SECONDS = 3600;
 export const DEFAULT_GRANT_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
 
+const STEP_UP_SPACES = ['public', 'account', 'agents', 'applications'] as const;
+const STEP_UP_KV_ACTIONS = new Set(['get', 'list', 'metadata']);
+const STEP_UP_SQL_ACTIONS = new Set(['read', 'schema']);
+// A step-up never addresses the secrets roots; `variables` joins the shared denied roots.
+const STEP_UP_DENIED_ROOTS = new Set([...Object.keys(TINYCLOUD_DENIED_PATH_ROOTS), 'variables']);
+const MAX_STEP_UP_APPS = 16;
+
+export type NativeStepUpSpace = (typeof STEP_UP_SPACES)[number];
+export interface NativeStepUpSpaceCeiling {
+  kv?: { paths: string[]; actions: string[] };
+  sql?: { databases: string[]; actions: string[] };
+}
+export type NativeStepUpCeilings = Record<string, Partial<Record<NativeStepUpSpace, NativeStepUpSpaceCeiling>>>;
+
 /**
  * Admin-approved ceiling for a native client's TinyCloud delegations. It is
  * stored on `OauthClient.tinycloudNativeDelegation` and only ever written
@@ -39,6 +53,11 @@ export interface NativeDelegationConfig {
   maxDelegationTtlSeconds: number;
   grantLifetimeSeconds: number;
   siweDomain?: string;
+  /**
+   * Step-up ceilings by framed-app id (TC-3569). Read-only entries in spaces
+   * beyond the sign-in grant's own; see `validateStepUps`.
+   */
+  stepUps?: NativeStepUpCeilings;
 }
 
 export interface NativeDelegationClient {
@@ -124,6 +143,75 @@ function foreignSqlDatabase(path: string, appId: string): boolean {
     !Object.hasOwn(TINYCLOUD_DENIED_PATH_ROOTS, owner.toLowerCase()) && sqlDatabase(path, owner);
 }
 
+function stepUpRootAllowed(path: string): boolean {
+  const root = path.split('/', 1)[0]!.toLowerCase();
+  return !STEP_UP_DENIED_ROOTS.has(root);
+}
+
+/** `""` (the whole space) is admitted only in the public space; every other path is relative, dot-free and outside the secrets roots. */
+function stepUpKvPath(path: string, space: NativeStepUpSpace): boolean {
+  if (path === '') return space === 'public';
+  return path.length <= TINYCLOUD_DELEGATED_PATH_MAX_LENGTH && TINYCLOUD_DELEGATED_PATH.test(path) &&
+    !hasDotSegment(path) && stepUpRootAllowed(path);
+}
+
+/** An exact database: one segment, or `<folder>/<name>`; never a prefix or a secrets root. */
+function stepUpSqlDatabase(path: string): boolean {
+  const segments = path.split('/');
+  return segments.length >= 1 && segments.length <= 2 &&
+    segments.every((segment) => PATH_SEGMENT.test(segment) && segment !== '.' && segment !== '..') &&
+    stepUpRootAllowed(path);
+}
+
+/**
+ * Step-up ceilings (TC-3569): per framed app, what the owner may add on top of
+ * the sign-in grant, by space. Read-only by construction: a write action, a
+ * secrets-space or encryption entry, or a `get` on the secrets roots is
+ * refused here and can never be stored. Nothing reads these until the step-up
+ * endpoint ships.
+ */
+function validateStepUps(input: unknown): NativeStepUpCeilings {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) reject('stepUps must be an object');
+  const apps = Object.keys(input);
+  if (apps.length === 0 || apps.length > MAX_STEP_UP_APPS) reject(`stepUps must name 1 to ${MAX_STEP_UP_APPS} apps`);
+  const parsed: NativeStepUpCeilings = {};
+  for (const stepUpAppId of apps) {
+    if (stepUpAppId.length > 128 || !APP_ID.test(stepUpAppId) ||
+        Object.hasOwn(TINYCLOUD_DENIED_PATH_ROOTS, stepUpAppId.toLowerCase())) {
+      reject('stepUps app id is invalid');
+    }
+    const spaces = object((input as Record<string, unknown>)[stepUpAppId], `stepUps.${stepUpAppId}`, STEP_UP_SPACES);
+    if (Object.keys(spaces).length === 0) reject(`stepUps.${stepUpAppId} must name at least one space`);
+    const parsedSpaces: Partial<Record<NativeStepUpSpace, NativeStepUpSpaceCeiling>> = {};
+    for (const space of STEP_UP_SPACES) {
+      if (spaces[space] === undefined) continue;
+      const label = `stepUps.${stepUpAppId}.${space}`;
+      const entry = object(spaces[space], label, ['kv', 'sql']);
+      if (entry.kv === undefined && entry.sql === undefined) reject(`${label} must hold kv or sql`);
+      const parsedSpace: NativeStepUpSpaceCeiling = {};
+      if (entry.kv !== undefined) {
+        const kv = object(entry.kv, `${label}.kv`, ['paths', 'actions']);
+        const paths = strings(kv.paths, `${label}.kv.paths`);
+        if (paths.some((path) => !stepUpKvPath(path, space))) {
+          reject(`${label}.kv.paths must be relative paths outside the secrets roots; "" is only for the public space`);
+        }
+        parsedSpace.kv = { paths, actions: actions(kv.actions, `${label}.kv.actions`, STEP_UP_KV_ACTIONS) };
+      }
+      if (entry.sql !== undefined) {
+        const sql = object(entry.sql, `${label}.sql`, ['databases', 'actions']);
+        const databases = strings(sql.databases, `${label}.sql.databases`);
+        if (databases.some((database) => !stepUpSqlDatabase(database))) {
+          reject(`${label}.sql.databases must name exact databases outside the secrets roots`);
+        }
+        parsedSpace.sql = { databases, actions: actions(sql.actions, `${label}.sql.actions`, STEP_UP_SQL_ACTIONS) };
+      }
+      parsedSpaces[space] = parsedSpace;
+    }
+    parsed[stepUpAppId] = parsedSpaces;
+  }
+  return parsed;
+}
+
 /**
  * The only way a delegation ceiling is accepted. Enablement is limited to
  * enabled native public clients without a secret, and KV paths and SQL
@@ -142,7 +230,7 @@ export function validateNativeDelegationConfig(
   }
   if (client.disabled === true) reject('TinyCloud delegation cannot be enabled on a disabled client');
   const value = object(input, 'tinycloudNativeDelegation', [
-    'version', 'appId', 'tinycloudHost', 'kv', 'sql', 'hooks', 'maxDelegationTtlSeconds', 'grantLifetimeSeconds', 'siweDomain',
+    'version', 'appId', 'tinycloudHost', 'kv', 'sql', 'hooks', 'maxDelegationTtlSeconds', 'grantLifetimeSeconds', 'siweDomain', 'stepUps',
   ]);
   if (value.version !== 1) reject('tinycloudNativeDelegation.version must be 1');
   if (typeof value.appId !== 'string' || value.appId.length > 128 || !APP_ID.test(value.appId) ||
@@ -151,7 +239,6 @@ export function validateNativeDelegationConfig(
   }
   const appId = value.appId;
   const host = trustedHost(value.tinycloudHost, allowLocalHosts);
-
   const kv = object(value.kv, 'kv', ['paths', 'actions', 'root']);
   const paths = strings(kv.paths, 'kv.paths');
   if (paths.some((path) => !kvPath(path, appId))) reject('kv.paths must be relative paths under the appId');
@@ -200,9 +287,11 @@ export function validateNativeDelegationConfig(
   if (value.siweDomain !== undefined && (typeof value.siweDomain !== 'string' || !DNS_NAME.test(value.siweDomain))) {
     reject('siweDomain is invalid');
   }
+  const parsedStepUps = value.stepUps === undefined ? undefined : validateStepUps(value.stepUps);
   return {
     version: 1, appId, tinycloudHost: host, kv: parsedKv, sql: parsedSql,
     ...(parsedHooks ? { hooks: parsedHooks } : {}),
+    ...(parsedStepUps ? { stepUps: parsedStepUps } : {}),
     maxDelegationTtlSeconds, grantLifetimeSeconds,
     ...(value.siweDomain === undefined ? {} : { siweDomain: value.siweDomain as string }),
   };
