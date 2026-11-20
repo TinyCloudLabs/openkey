@@ -740,6 +740,9 @@ model TinyCloudNativeRequest {
   kind                    String   @default("SIGNIN")
   grantId                 String?
   appId                   String?
+  // TC-3596: which gate let the approval through: NOT_REQUIRED, FLOW_PASSKEY (the passkey sign-in made for this
+  // request) or REQUEST_PASSKEY (a passkey assertion bound to this request's revision). Null until approved.
+  approvalPasskeyMethod   String?
 
   client OauthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
   grant TinyCloudNativeGrant? @relation(fields: [grantId], references: [id], onDelete: Cascade)
