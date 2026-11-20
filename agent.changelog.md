@@ -3,6 +3,10 @@
 Track changes to agent-facing development guidance for OpenKey. Add a concise entry when
 `agent.dev.md` or related agent workflow expectations change.
 
+## 2026-11-20
+
+- CI: the Dependabot Changeset workflow cancels superseded runs for the same PR.
+
 ## 2026-11-16
 
 - Hosted app-review accounts (TC-2775): the native-grant column guard, both migration
