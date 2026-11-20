@@ -231,7 +231,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
   });
   // The node registered the skipped session delegation although the approval is being reopened. Revoke it,
   // once and best-effort: the outcome never changes the restart.
-  async function revokeStaleSessionDelegation(artifact: { address: string; delegationCid: string; tinycloudHost: string }, domain: string, privateKey: `0x${string}`) {
+  async function revokeStaleSessionDelegation(artifact: { address: string; delegationCid: string; tinycloudHost: string }, domain: string, privateKey: `0x${string}`): Promise<boolean> {
     try {
       const now = new Date();
       const address = ensureEip55(artifact.address);
@@ -240,7 +240,8 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       const signature = await createWalletFromPrivateKey(privateKey).signMessage({ message: siwe });
       const response = await hostOps.revokeDelegation(artifact.tinycloudHost, siweToDelegationHeaders({ siwe, signature }) as Record<string, string>);
       if (!response.ok) logMetric('warn', 'native_consent_stale_session_revoke_failed', { status: response.status });
-    } catch { log('warn', 'native_consent_stale_session_revoke_failed'); }
+      return response.ok;
+    } catch { log('warn', 'native_consent_stale_session_revoke_failed'); return false; }
   }
   router.post('/:id/approve', async c => {
     const body = await c.req.json().catch(() => null) as { revision?: number; digest?: string; sessionSiwe?: string; hostSiwe?: string; passkeyAssertion?: unknown } | null;
@@ -500,9 +501,16 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       await db.tinyCloudNativeRequest.update({ where: { id: result.rowId }, data: { hosting: 'existing' } });
       return { status: 'APPROVED' as const, revision: result.revision, hosting: 'existing' as const, spaces: result.spaces.map(space => space.space) };
     }
+    // The approval is withdrawn at once. Until the node confirms the revoke, the request keeps a durable record
+    // of the delegation's CID (an identifier, not authority: no signature, no header) so the revoke can be
+    // retried or audited; it is never returned to the client.
+    const record = { revokePending: true, delegationCid: result.artifact.delegationCid, tinycloudHost: result.artifact.tinycloudHost,
+      address: result.artifact.address, grantId: result.artifact.grantId, appId: result.artifact.appId, expiresAt: result.artifact.expiresAt };
     await db.tinyCloudNativeRequest.updateMany({ where: { id: result.rowId, status: 'APPROVED', approvedRevision: result.revision },
-      data: { status: 'DENIED', hosting: 'failed', signature: null, delegation: Prisma.DbNull } });
-    await revokeStaleSessionDelegation(result.artifact, result.siweDomain, privateKey!);
+      data: { status: 'DENIED', hosting: 'failed', signature: null, delegation: record } });
+    if (await revokeStaleSessionDelegation(result.artifact, result.siweDomain, privateKey!)) {
+      await db.tinyCloudNativeRequest.updateMany({ where: { id: result.rowId, status: 'DENIED' }, data: { delegation: Prisma.DbNull } });
+    }
     if (!activated) fail(503, 'temporarily_unavailable');
     throw new NativeConsentError(409, 'space_not_hosted', `Spaces not hosted on this node: ${unhosted.map(space => space.space).join(', ')}`);
   }

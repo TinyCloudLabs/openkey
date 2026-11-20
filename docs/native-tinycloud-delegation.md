@@ -334,12 +334,21 @@ the client ceiling allows or the grant has left, and returns the preview
 `reactivation`: a revoked step-up exists for this app). `approve` signs with
 the grant's key and activates the delegation on the node. The node's receipt
 must list every requested space as activated: a space it skipped refuses the
-whole step-up with `409 space_not_hosted` naming it, the approval is withdrawn
-(`DENIED`, signature and delegation cleared) and the delegation is revoked on
-the node on a best-effort basis; a node failure is `503
-temporarily_unavailable` with the same withdrawal. Until a skipped space is
-hosted a delegation the node may have kept is inert, and it expires with its
-TTL.
+whole step-up with `409 space_not_hosted` naming it (`prepare` already refuses
+this way, naming the spaces, whenever the key's bootstrap is not complete, so
+the consent screen does not offer Allow for a step-up that cannot succeed). A
+node failure is `503 temporarily_unavailable`. In both cases the approval is
+withdrawn at once (`DENIED`, signature cleared) and the delegation is revoked
+on the node. The response carries only `error` and `error_description`: no
+signature, delegation, CID or header. If the revoke fails, the request keeps
+`{revokePending, delegationCid, tinycloudHost, address, grantId, appId,
+expiresAt}` (an identifier, not authority) so the revoke can be retried or
+audited, and the failure is logged (`native_consent_stale_session_revoke_failed`).
+
+Accepted residual risk: a node that keeps a delegation for the spaces it did
+activate after we deny the request holds a delegation that is user-approved,
+read-only, bounded by its TTL (no longer than the grant's remaining life),
+delegated to the user's own session key, and whose CID is never returned.
 
 Consent creates no grant and no token, writes no step-up row, and changes
 nothing in the user's consent or its generation. The step-up row is written

@@ -38,6 +38,7 @@ if (!child) {
   let app: { fetch: (request: Request) => Response | Promise<Response> };
   let clientId: string;
   let cookie: string;
+  let cookieB: string;
   let address: `0x${string}`;
   const API = 'https://api.openkey.test';
   const ISSUER = `${API}/api/auth`;
@@ -141,6 +142,10 @@ if (!child) {
     await prisma.session.create({ data: { id: 'su-session', token: sessionToken, userId: USER, expiresAt: new Date(Date.now() + 3_600_000) } });
     const context = await auth.$context;
     cookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, sessionToken, context.secret)).split(';')[0]!;
+    await prisma.user.create({ data: { id: 'su-user-b', email: 'sub@example.test', name: 'SUB', emailVerified: true } });
+    const tokenB = randomUUID();
+    await prisma.session.create({ data: { id: 'su-session-b', token: tokenB, userId: 'su-user-b', expiresAt: new Date(Date.now() + 3_600_000) } });
+    cookieB = (await serializeSignedCookie(context.authCookies.sessionToken.name, tokenB, context.secret)).split(';')[0]!;
     const { createTeeClient, generatePrivateKey, getAddressFromPrivateKey, seal } = await import('@openkey/tee');
     const privateKey = generatePrivateKey(); address = getAddress(getAddressFromPrivateKey(privateKey));
     const sealingContext = randomUUID().replaceAll('-', '').padEnd(43, 'A').slice(0, 43);
@@ -383,9 +388,9 @@ if (!child) {
     spaces: Array<{ space: string; spaceId: string }>; stepUp: { grantId: string; appId: string }; error?: string; error_description?: string }
   interface Approval { status: string; hosting: string; spaces: string[]; error?: string; error_description?: string }
 
-  async function consent(id: string, action: 'prepare' | 'approve', payload: Record<string, unknown> = {}) {
+  async function consent(id: string, action: 'prepare' | 'approve', payload: Record<string, unknown> = {}, as = cookie) {
     return app.fetch(new Request(`${CONSENT}/${id}/${action}`, { method: 'POST',
-      headers: { cookie, origin: 'https://openkey.test', 'content-type': 'application/json' }, body: JSON.stringify(payload) }));
+      headers: { cookie: as, origin: 'https://openkey.test', 'content-type': 'application/json' }, body: JSON.stringify(payload) }));
   }
   // The request the way the app sees it after /authorize: RESOLVED, waiting for the user.
   async function newRequest(key: SessionKey) {
@@ -405,13 +410,13 @@ if (!child) {
   const allHosted = () => new Response(JSON.stringify({ activated: [spaceId('public'), spaceId('applications')], skipped: [] }), { status: 200 });
 
   // The node: /delegate answers `delegate`, /revoke is counted, anything else is a test failure.
-  async function withNode<T>(delegate: () => Response, run: () => Promise<T>) {
+  async function withNode<T>(delegate: () => Response, run: () => Promise<T>, revokeStatus = 200) {
     const original = globalThis.fetch;
     const calls = { delegate: 0, revoke: 0 };
     globalThis.fetch = (async (input: Request | URL | string) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       if (url === `${HOST}/delegate`) { calls.delegate++; return delegate(); }
-      if (url === `${HOST}/revoke`) { calls.revoke++; return new Response('{}', { status: 200 }); }
+      if (url === `${HOST}/revoke`) { calls.revoke++; return new Response('{}', { status: revokeStatus }); }
       throw new Error(`unexpected fetch ${url}`);
     }) as typeof fetch;
     try { return { value: await run(), calls }; } finally { globalThis.fetch = original; }
@@ -483,12 +488,43 @@ if (!child) {
     const { preview } = await prepared(id);
     const { value, calls } = await withNode(
       () => new Response(JSON.stringify({ activated: [spaceId('applications')], skipped: [spaceId('public')] }), { status: 200 }),
-      async () => { const response = await consent(id, 'approve', approval(preview)); return { response, payload: await response.json() as Approval }; });
+      async () => { const response = await consent(id, 'approve', approval(preview)); return { response, text: await response.text() }; });
+    const payload = JSON.parse(value.text) as Approval;
     expect(value.response.status).toBe(409);
-    expect(value.payload.error).toBe('space_not_hosted');
-    expect(value.payload.error_description).toBe('Spaces not hosted on this node: public');
+    expect(payload.error).toBe('space_not_hosted');
+    expect(payload.error_description).toBe('Spaces not hosted on this node: public');
+    // No signature, delegation, CID or header reaches the client.
+    expect(Object.keys(payload).sort()).toEqual(['error', 'error_description']);
     expect(calls).toEqual({ delegate: 1, revoke: 1 });
     expect(await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: 'DENIED', signature: null, delegation: null });
+  });
+
+  test('when the node also fails to revoke, nothing reaches the client and the request keeps only the CID for a retry', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const id = await newRequest(key);
+    const { preview } = await prepared(id);
+    const { value, calls } = await withNode(
+      () => new Response(JSON.stringify({ activated: [spaceId('applications')], skipped: [spaceId('public')] }), { status: 200 }),
+      async () => { const response = await consent(id, 'approve', approval(preview)); return { response, text: await response.text() }; }, 500);
+    expect(value.response.status).toBe(409);
+    expect(Object.keys(JSON.parse(value.text) as object).sort()).toEqual(['error', 'error_description']);
+    expect(calls.revoke).toBe(1);
+    const row = await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } });
+    expect(row).toMatchObject({ status: 'DENIED', signature: null });
+    expect(row.delegation).toEqual({ revokePending: true, delegationCid: expect.any(String), tinycloudHost: HOST, address, grantId: 'g1', appId: EXPLORER, expiresAt: expect.any(String) });
+  });
+
+  test('another account can neither prepare nor approve this account\'s request', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    const id = await newRequest(key);
+    const { preview } = await prepared(id);
+    const prepare = await consent(id, 'prepare', {}, cookieB);
+    expect(prepare.status).toBeGreaterThanOrEqual(400);
+    const { value, calls } = await withNode(allHosted, () => consent(id, 'approve', approval(preview), cookieB));
+    expect(value.status).toBeGreaterThanOrEqual(400);
+    expect(calls.delegate).toBe(0);
+    expect(await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).toMatchObject({ status: 'RESOLVED', signature: null, delegation: null, userId: USER });
+    expect(await prisma.tinyCloudNativePreparation.count()).toBe(1);
   });
 
   test('a node failure at activation is a 503, withdraws the approval and revokes the delegation', async () => {
