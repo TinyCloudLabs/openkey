@@ -20,7 +20,7 @@
   } = $props();
 
   const appName = $derived(stepUpAppName(preview.stepUp.appId));
-  const access = $derived(stepUpAccess(preview.spaces, preview.permissionOptions));
+  const access = $derived(stepUpAccess(model.permissions));
 </script>
 
 {#if email}<p class="nb-lede signed-in">Signed in as <strong>{email}</strong></p>{/if}

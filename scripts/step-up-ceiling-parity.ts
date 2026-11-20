@@ -59,19 +59,32 @@ export function compareCeilings(openkey: unknown, one: unknown): CeilingParity {
 
 export interface OnePin { repo: string; path: string; ref: string | null }
 
+export const ONE_REPO = 'TinyCloudLabs/tinychat';
+// Plain segments only: no `%`, `\`, `?`, `#`, and none starting with a dot, so no `.`/`..` however it is encoded.
+const PIN_PATH = /^[A-Za-z0-9_-][A-Za-z0-9._-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$/;
+
 export function parsePin(raw: unknown): OnePin {
   const pin = raw as Partial<OnePin> | null;
-  if (!pin || typeof pin.repo !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(pin.repo) || typeof pin.path !== 'string' || pin.path.length === 0 || pin.path.includes('..')) {
-    throw new Error('one.pin.json needs "repo" (owner/name) and "path"');
+  if (!pin || pin.repo !== ONE_REPO || typeof pin.path !== 'string' || !PIN_PATH.test(pin.path)) {
+    throw new Error(`one.pin.json needs "repo" (${ONE_REPO}) and a plain "path"`);
   }
   // A commit, never a branch: the check must read the same bytes tomorrow that it read today.
   if (pin.ref !== null && !(typeof pin.ref === 'string' && /^[0-9a-f]{40}$/.test(pin.ref))) throw new Error('one.pin.json "ref" must be null or a 40-character commit sha');
   return { repo: pin.repo, path: pin.path, ref: pin.ref ?? null };
 }
 
+/** The one place the pinned file is read from. Throws unless the URL is exactly `/<repo>/<sha>/<path>` on the raw host. */
+export function pinUrl(pin: OnePin & { ref: string }): URL {
+  const url = new URL(`https://raw.githubusercontent.com/${pin.repo}/${pin.ref}/${pin.path}`);
+  if (url.host !== 'raw.githubusercontent.com' || url.search !== '' || url.hash !== '' || url.pathname !== `/${pin.repo}/${pin.ref}/${pin.path}`) {
+    throw new Error('one.pin.json does not name a plain file path');
+  }
+  return url;
+}
+
 // tinychat is a public repository, so the pinned commit is read without a token or any secret.
 async function fetchPinned(pin: OnePin & { ref: string }): Promise<unknown> {
-  const response = await fetch(`https://raw.githubusercontent.com/${pin.repo}/${pin.ref}/${pin.path}`);
+  const response = await fetch(pinUrl(pin));
   if (!response.ok) throw new Error(`could not read ${pin.repo}@${pin.ref}:${pin.path} (${response.status})`);
   return response.json();
 }

@@ -4,9 +4,9 @@ import { stepUpAccess, stepUpAppName } from './native-stepup';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
 const spaceId = (name: string) => `tinycloud:pkh:eip155:1:${address}:${name}`;
-const option = (service: string, space: string, path: string, abilities: string[]) => ({
-  key: `${service}\0${spaceId(space)}\0${path}`,
-  actions: abilities.map((ability) => ({ key: `${service}\0${spaceId(space)}\0${path}\0${ability}`, ability, required: true })),
+// The structural part of a reviewed grant, as parsed from the signed text.
+const grant = (service: string, space: string, path: string, abilities: string[]) => ({
+  service, space: spaceId(space), path, actions: abilities.map((ability) => ({ ability })),
 });
 
 describe('stepUpAppName', () => {
@@ -20,13 +20,11 @@ describe('stepUpAppName', () => {
 });
 
 describe('stepUpAccess', () => {
-  const spaces = [{ space: 'account', spaceId: spaceId('account') }, { space: 'agents', spaceId: spaceId('agents') }];
-
   test('groups reads by space and leaves out the capabilities read', () => {
-    const access = stepUpAccess(spaces, [
-      option('tinycloud.capabilities', 'account', '', ['tinycloud.capabilities/read']),
-      option('tinycloud.kv', 'account', 'applications/', ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata']),
-      option('tinycloud.sql', 'agents', '', ['tinycloud.sql/read']),
+    const access = stepUpAccess([
+      grant('tinycloud.capabilities', 'account', '', ['tinycloud.capabilities/read']),
+      grant('tinycloud.kv', 'account', 'applications/', ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata']),
+      grant('tinycloud.sql', 'agents', '', ['tinycloud.sql/read']),
     ]);
     expect(access.readOnly).toBe(true);
     expect(access.spaces).toEqual([
@@ -36,13 +34,14 @@ describe('stepUpAccess', () => {
   });
 
   test('a write is named as it is and the whole step-up is not read-only', () => {
-    const access = stepUpAccess(spaces, [option('tinycloud.kv', 'account', 'x/', ['tinycloud.kv/get', 'tinycloud.kv/put'])]);
+    const access = stepUpAccess([grant('tinycloud.kv', 'account', 'x/', ['tinycloud.kv/get', 'tinycloud.kv/put'])]);
     expect(access.readOnly).toBe(false);
     expect(access.spaces[0].items[0]).toMatchObject({ actions: ['read', 'put'], readOnly: false });
   });
 
-  test('an option in a space the list omits still shows under that space', () => {
-    const access = stepUpAccess([], [option('tinycloud.kv', 'public', 'a/', ['tinycloud.kv/get'])]);
+  test('only what the signed text grants is listed: a space nobody grants shows nothing', () => {
+    const access = stepUpAccess([grant('tinycloud.kv', 'public', 'a/', ['tinycloud.kv/get'])]);
     expect(access.spaces.map((group) => group.space)).toEqual(['public']);
+    expect(stepUpAccess([grant('tinycloud.capabilities', 'public', '', ['tinycloud.capabilities/read'])]).spaces).toEqual([]);
   });
 });

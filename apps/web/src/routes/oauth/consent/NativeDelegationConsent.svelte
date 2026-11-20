@@ -85,10 +85,15 @@
       // without one is not a sign-in), an unknown kind, or a STEPUP that does not name its app and spaces. The API
       // sends a kind on every preview, so the web must not be deployed before it.
       if (data.kind === 'STEPUP' ? !isStepUpPreview(data) : data.kind !== 'SIGNIN') {
+        // Nothing of an earlier prepare stays on screen: no model and no preview to Allow from.
+        preview = null;
+        model = null;
         error = 'This request needs a newer version of the app to approve.';
         return;
       }
-      if (!model) {
+      // A step-up is always read afresh from the text it will sign: its list is what that text says, never an older
+      // prepare's. (A sign-in keeps its first parse, which holds the user's selection across re-prepares.)
+      if (!model || data.kind === 'STEPUP') {
         const parsed = parseCapabilityReview({
           message: data.sessionSiwe,
           signer: { label: 'Canonical OpenKey key', address: data.address, chainId: 1, provenance: 'managed' },

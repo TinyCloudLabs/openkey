@@ -49,7 +49,7 @@ function storedSession(plugin: MockPlugin): [string, string] {
   return entry;
 }
 
-function fixture(options: { advertiseStepUp?: boolean; separateRedirect?: boolean } = {}) {
+function fixture(options: { advertiseStepUp?: boolean; separateRedirect?: boolean; homeOmits?: string } = {}) {
   const advertiseStepUp = options.advertiseStepUp ?? true;
   const configuredStepUpRedirect = options.separateRedirect === false ? undefined : stepUpRedirectUri;
   const callbackStepUpRedirect = configuredStepUpRedirect ?? redirectUri;
@@ -67,14 +67,18 @@ function fixture(options: { advertiseStepUp?: boolean; separateRedirect?: boolea
   const renewForms: URLSearchParams[] = [];
   const revokeForms: URLSearchParams[] = [];
 
-  const delegation = () => ({
-    verificationMethod: keyId, expiresAt: new Date(Date.now() + 3_600_000).toISOString(), issuedAt: new Date().toISOString(),
-    permissions: [
-      { service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] }, ...homeCapabilities,
-    ], tinycloudHost: host, address: owner.address, chainId: 1, grantId: 'grant-1', renewableUntil,
-    spaceId: `tinycloud:pkh:eip155:1:${owner.address}:applications`,
-    siwe: 'signed siwe', signature: '0xsignature', delegationHeader: { Authorization: 'Bearer fake' }, delegationCid: 'bafyhome',
-  });
+  const delegation = () => {
+    const built: Record<string, unknown> = {
+      verificationMethod: keyId, expiresAt: new Date(Date.now() + 3_600_000).toISOString(), issuedAt: new Date().toISOString(),
+      permissions: [
+        { service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] }, ...homeCapabilities,
+      ], tinycloudHost: host, address: owner.address, chainId: 1, grantId: 'grant-1', renewableUntil,
+      spaceId: `tinycloud:pkh:eip155:1:${owner.address}:applications`,
+      siwe: 'signed siwe', signature: '0xsignature', delegationHeader: { Authorization: 'Bearer fake' }, delegationCid: 'bafyhome',
+    };
+    if (options.homeOmits) delete built[options.homeOmits];
+    return built;
+  };
 
   async function signedStepUp(overrides: StepUpOverrides = {}): Promise<Json> {
     const permissions: StepUpEntry[] = overrides.permissions ?? readCapabilities;
@@ -348,6 +352,67 @@ describe('OpenKeyNative step-up', () => {
     await expect(client.requestStepUp({ appId: explorer, capabilities: readCapabilities })).rejects.toMatchObject({ code: 'INVALID_GRANT' });
     expect(storedSession(f.plugin)[1]).toBe(before);
     expect((await client.current())?.tokens.refreshToken).toBe('initial');
+  });
+
+  test.each(['grantId', 'address', 'chainId', 'renewableUntil'])('refuses a step-up before asking the user when Home lacks %s', async (field) => {
+    const { f, client } = await signedIn({ homeOmits: field });
+    const before = storedSession(f.plugin)[1];
+    await expect(client.requestStepUp({ appId: explorer, capabilities: readCapabilities })).rejects.toMatchObject({ code: 'SERVER' });
+    expect(f.stepUpForms).toHaveLength(0);
+    expect(f.plugin.openOptions).toBeNull();
+    expect(f.revokeForms).toHaveLength(0);
+    expect(storedSession(f.plugin)[1]).toBe(before);
+    expect((await client.current())?.stepUps).toBeUndefined();
+  });
+
+  test('an exchanged but invalid step-up is revoked for that app and the original error is kept', async () => {
+    const { f, client } = await signedIn();
+    const before = storedSession(f.plugin)[1];
+    f.setExchangeReply(async () => response(200, { tinycloud_stepup: await f.signedStepUp({ signer: stranger }) }));
+    await expect(client.requestStepUp({ appId: explorer, capabilities: readCapabilities })).rejects.toMatchObject({ code: 'SERVER' });
+    expect(f.revokeForms).toHaveLength(1);
+    expect(f.revokeForms[0]!.get('app_id')).toBe(explorer);
+    expect(f.revokeForms[0]!.get('refresh_token')).toBe('initial');
+    expect(storedSession(f.plugin)[1]).toBe(before);
+  });
+
+  test('a failing cleanup revoke never masks the original error', async () => {
+    const { f, client } = await signedIn();
+    f.setExchangeReply(async () => response(200, { tinycloud_stepup: await f.signedStepUp({ signer: stranger }) }));
+    f.setRevokeReply(() => response(400, { error: 'invalid_request' }));
+    await expect(client.requestStepUp({ appId: explorer, capabilities: readCapabilities })).rejects.toMatchObject({ code: 'SERVER', message: expect.stringContaining('signature') });
+    expect(f.revokeForms).toHaveLength(1);
+    f.setRevokeReply(() => { throw new Error('network down'); });
+    await expect(client.requestStepUp({ appId: explorer, capabilities: readCapabilities })).rejects.toMatchObject({ code: 'SERVER' });
+    expect((await client.current())?.tokens.refreshToken).toBe('initial');
+  });
+
+  test('a step-up the verifier refuses is revoked and nothing is stored', async () => {
+    const f = fixture();
+    const client = f.make(async (delegation) => { if (delegation.delegationCid === 'bafystepup') throw new Error('bad cid'); });
+    await client.signIn({ capabilities: homeCapabilities });
+    await expect(client.requestStepUp({ appId: explorer, capabilities: readCapabilities })).rejects.toMatchObject({ code: 'SERVER' });
+    expect(f.revokeForms.map((form) => form.get('app_id'))).toEqual([explorer]);
+    expect((await client.current())?.stepUps).toBeUndefined();
+  });
+
+  test('a refused new step-up also drops the copy this app held before', async () => {
+    const { f, client } = await signedIn();
+    await client.requestStepUp({ appId: explorer, capabilities: readCapabilities });
+    await client.requestStepUp({ appId: courier, capabilities: readCapabilities });
+    f.setExchangeReply(async () => response(200, { tinycloud_stepup: await f.signedStepUp({ signer: stranger }) }));
+    await expect(client.requestStepUp({ appId: explorer, capabilities: readCapabilities })).rejects.toMatchObject({ code: 'SERVER' });
+    expect(f.revokeForms.map((form) => form.get('app_id'))).toEqual([explorer]);
+    expect(Object.keys((await client.current())?.stepUps ?? {})).toEqual([courier]);
+  });
+
+  test('a server refusal of the exchange, or a declined consent, creates nothing to revoke', async () => {
+    const { f, client } = await signedIn();
+    f.setExchangeReply(async () => response(400, { error: 'invalid_grant' }));
+    await expect(client.requestStepUp({ appId: explorer, capabilities: readCapabilities })).rejects.toMatchObject({ code: 'INVALID_GRANT' });
+    f.denyConsent();
+    await expect(client.requestStepUp({ appId: explorer, capabilities: readCapabilities })).rejects.toMatchObject({ code: 'ACCESS_DENIED' });
+    expect(f.revokeForms).toHaveLength(0);
   });
 
   async function withStepUps(apps: string[]) {

@@ -241,6 +241,26 @@ test.describe('native step-up consent', () => {
     await expect.poll(() => calls.approves.length).toBe(2);
     expect(calls.approves[1]).toMatchObject({ revision: 2, digest: 'digest-2' });
   });
+
+  test('the access list is what the signed text grants, not what the preview lists beside it', async ({ page }) => {
+    const granted = siwe({ [`${spaceId('public')}/capabilities`]: { [caps]: [{}] }, [`${spaceId('public')}/kv/shown/`]: { [kvGet]: [{}] } });
+    await setup(page, () => ({ body: { ...stepUp(), sessionSiwe: granted, revision: 1, digest: 'digest-1' } }));
+    await expect(page.getByText('The public space')).toBeVisible();
+    await expect(page.getByText('kv/shown/')).toBeVisible();
+    await expect(page.getByText('The account space')).toHaveCount(0);
+    await expect(page.getByText('kv/applications/')).toHaveCount(0);
+  });
+
+  test('a re-prepare that answers an unknown kind leaves nothing to Allow, and the old screen goes', async ({ page }) => {
+    const calls = await setup(page, n => ({ body: { ...stepUp(), ...(n === 0 ? {} : { kind: 'FUTURE' }), revision: n + 1, digest: `digest-${n + 1}` } }),
+      () => ({ status: 409, body: { error: 'preparation_superseded' } }));
+    await allow(page).click();
+    await expect.poll(() => calls.prepares).toBe(2);
+    await expect(page.getByRole('alert')).toContainText('This request needs a newer version of the app to approve.');
+    await expect(allow(page)).toHaveCount(0);
+    await expect(page.getByText('kv/applications/')).toHaveCount(0);
+    expect(calls.approves).toHaveLength(1);
+  });
 });
 
 // The passkey path is the sign-in one: Allow answers the revision's challenge and sends the assertion with the approval.
