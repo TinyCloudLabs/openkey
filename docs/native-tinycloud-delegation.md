@@ -314,7 +314,8 @@ than the grant's cutoff (`absoluteExpiresAt` less 300 s).
 ### Step-up consent (TC-3569)
 
 The consent page's `prepare` and `approve` calls accept a `STEPUP` request.
-Both re-check, under the native lock order and in one transaction, everything
+Both re-check, under the native lock order (reviewer, then the user row `FOR SHARE`,
+so a concurrent switch to user-controlled keys cannot land after the gate) and in one transaction, everything
 `/stepup` checked: the grant is `ACTIVE`, the same user, client, consent
 generation, session key and DID, and before its cutoff; the grant's refresh
 token is still live; the account is usable (not locked, no reviewer hold, not
@@ -336,14 +337,15 @@ the grant's key and activates the delegation on the node. The node's receipt
 must list every requested space as activated: a space it skipped refuses the
 whole step-up with `409 space_not_hosted` naming it (`prepare` already refuses
 this way, naming the spaces, whenever the key's bootstrap is not complete, so
-the consent screen does not offer Allow for a step-up that cannot succeed). A
+the consent screen does not offer Allow for a step-up that cannot succeed). The
+node call is bounded to 10 s. A
 node failure is `503 temporarily_unavailable`. In both cases the approval is
 withdrawn at once (`DENIED`, signature cleared) and the delegation is revoked
 on the node. The response carries only `error` and `error_description`: no
 signature, delegation, CID or header. If the revoke fails, the request keeps
 `{revokePending, delegationCid, tinycloudHost, address, grantId, appId,
-expiresAt}` (an identifier, not authority) so the revoke can be retried or
-audited, and the failure is logged (`native_consent_stale_session_revoke_failed`).
+expiresAt}` (an identifier, not authority), recorded for audit only: nothing
+retries it yet. The failure is logged (`native_consent_stale_session_revoke_failed`).
 
 Accepted residual risk: a node that keeps a delegation for the spaces it did
 activate after we deny the request holds a delegation that is user-approved,
@@ -353,6 +355,14 @@ delegated to the user's own session key, and whose CID is never returned.
 Consent creates no grant and no token, writes no step-up row, and changes
 nothing in the user's consent or its generation. The step-up row is written
 only by the code exchange of an approved request.
+
+**The flag stays off until the step-up screen ships.** The consent page's
+sign-in screen refuses any preview whose `kind` is not `SIGNIN` (an error with no
+Allow), because it would otherwise describe a step-up as a sign-in without naming
+the framed app. `OPENKEY_NATIVE_STEPUP_ENABLED` must not be turned on in any
+environment before the step-up consent screen (PR 4) ships. A retry sweeper for
+`revokePending` records, consumed by consent withdrawal and app revoke, must also
+exist before the flag is turned on.
 
 ## Permissions and the signed session SIWE
 

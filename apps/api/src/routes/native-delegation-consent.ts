@@ -222,7 +222,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       const digest = preparationDigest(preview);
       await tx.tinyCloudNativePreparation.create({ data: { id: randomUUID(), requestId: row.id, revision, userId, keyId: key.id, address, tinycloudHost: ceiling.tinycloudHost, sessionSiwe: preview.sessionSiwe, permissions, hostPlan: hostPlan ?? undefined, digest } });
       await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { userId, siweNonce: nonce, currentRevision: revision, ...(reviewer ? { reviewerEpoch: reviewer.binding.installEpoch, reviewerSessionId: reviewer.sessionId, reviewerDeadline: new Date(reviewer.deadline) } : {}) } });
-      return { ...preview, digest, client: { clientId: client.clientId, name: client.name, icon: client.icon, organization: client.organization?.name }, redirectScheme: new URL(row.redirectUri).protocol.slice(0, -1), sessionDid: row.sessionDid, tinycloudHost: ceiling.tinycloudHost, ttlSeconds, grantLifetimeSeconds: reviewer ? reviewer.ttlSeconds : ceiling.grantLifetimeSeconds, permissionOptions: prepared.permissions, selectedActionKeys: prepared.selectedActionKeys };
+      return { ...preview, digest, kind: 'SIGNIN' as const, client: { clientId: client.clientId, name: client.name, icon: client.icon, organization: client.organization?.name }, redirectScheme: new URL(row.redirectUri).protocol.slice(0, -1), sessionDid: row.sessionDid, tinycloudHost: ceiling.tinycloudHost, ttlSeconds, grantLifetimeSeconds: reviewer ? reviewer.ttlSeconds : ceiling.grantLifetimeSeconds, permissionOptions: prepared.permissions, selectedActionKeys: prepared.selectedActionKeys };
     }, { timeout: 15_000 });
     // TC-3442: whether Approve needs the passkey, with the challenge for this revision.
     const passkey = await approvalPasskeyOffer(db, { userId, sessionId: c.get('session')?.id ?? null },
@@ -423,6 +423,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
   async function prepareStepUp(userId: string, sessionId: string | null, requestId: string) {
     const result = await db.$transaction(async tx => {
       const reviewerBinding = await lockNativeReviewer(tx, userId);
+      await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${userId} FOR SHARE`;
       const { row, generation } = await lockRequest(tx, requestId, userId);
       const gate = await stepUpGate(tx, row, userId, generation, reviewerBinding);
       const preparedAt = new Date();
@@ -453,6 +454,8 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     preKey: ConsentKey | null, privateKey: Hex | null) {
     const result = await db.$transaction(async tx => {
       const reviewerBinding = await lockNativeReviewer(tx, userId);
+      // A concurrent switch to user-controlled keys takes this row FOR UPDATE; it cannot land after the gate.
+      await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${userId} FOR SHARE`;
       const { row, generation } = await lockRequest(tx, requestId, userId, true);
       if (row.userId !== userId) fail(403, 'request_user_mismatch');
       if (body.revision !== row.currentRevision) fail(409, 'preparation_superseded');
@@ -493,7 +496,8 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     // step-up never creates a space.
     let activated: string[] | null = null;
     try {
-      const activation = await hostOps.activateSessionWithHost(result.artifact.tinycloudHost, result.artifact.delegationHeader);
+      // A node that does not answer must not hold the approval open: it fails like any activation failure.
+      const activation = await hostOps.activateSessionWithHost(result.artifact.tinycloudHost, result.artifact.delegationHeader, AbortSignal.timeout(10_000));
       if (activation.success) activated = activation.activated ?? [];
     } catch (error) { logError('warn', 'native_consent_host_activation_failed', error); }
     const unhosted = result.spaces.filter(space => !activated?.includes(space.spaceId));
@@ -502,8 +506,8 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       return { status: 'APPROVED' as const, revision: result.revision, hosting: 'existing' as const, spaces: result.spaces.map(space => space.space) };
     }
     // The approval is withdrawn at once. Until the node confirms the revoke, the request keeps a durable record
-    // of the delegation's CID (an identifier, not authority: no signature, no header) so the revoke can be
-    // retried or audited; it is never returned to the client.
+    // of the delegation's CID (an identifier, not authority: no signature, no header), recorded for audit; nothing
+    // retries it yet. It is never returned to the client.
     const record = { revokePending: true, delegationCid: result.artifact.delegationCid, tinycloudHost: result.artifact.tinycloudHost,
       address: result.artifact.address, grantId: result.artifact.grantId, appId: result.artifact.appId, expiresAt: result.artifact.expiresAt };
     await db.tinyCloudNativeRequest.updateMany({ where: { id: result.rowId, status: 'APPROVED', approvedRevision: result.revision },
