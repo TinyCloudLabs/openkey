@@ -19,7 +19,7 @@ const optionKey = `tinycloud.capabilities\0${space}\0`;
 const permissionOptions = [{ key: optionKey, service: 'capabilities', path: '', label: 'capabilities', resourcePath: 'capabilities',
   actions: [{ key: `${optionKey}\0${caps}`, action: 'read', ability: caps, required: true }] }];
 const selected = [`${optionKey}\0${caps}`];
-const base = { requestId: 'native-1', userId: 'u', keyId: 'key-1', address, client: { clientId: 'exo-native', name: 'Exo', icon: null, organization: 'TinyCloud Labs' },
+const base = { requestId: 'native-1', kind: 'SIGNIN', userId: 'u', keyId: 'key-1', address, client: { clientId: 'exo-native', name: 'Exo', icon: null, organization: 'TinyCloud Labs' },
   redirectScheme: 'xyz.tinycloud.exo', sessionDid: 'did:key:z6Mk', tinycloudHost: 'https://tee.node.tinycloud.xyz', ttlSeconds: 3600,
   grantLifetimeSeconds: 2592000, hostPlan: null, permissionOptions, sessionSiwe: siwe, selectedActionKeys: selected };
 const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });

@@ -25,7 +25,7 @@ const option = (service: string, short: string, path: string, abilities: string[
 };
 const permissionOptions = [option('tinycloud.capabilities', 'capabilities', '', [caps]), option('tinycloud.kv', 'kv', 'xyz.tinycloud.tinychat/threads/', [kvGet])];
 const selected = permissionOptions.flatMap((permission) => permission.actions.map((action) => action.key));
-const base = { requestId: 'native-1', userId: 'u', keyId: 'key-1', address, client: { clientId: 'exo-native', name: 'Exo', icon: null, organization: 'TinyCloud Labs' },
+const base = { requestId: 'native-1', kind: 'SIGNIN', userId: 'u', keyId: 'key-1', address, client: { clientId: 'exo-native', name: 'Exo', icon: null, organization: 'TinyCloud Labs' },
   redirectScheme: 'xyz.tinycloud.exo', sessionDid: 'did:key:z6Mk', tinycloudHost: 'https://tee.node.tinycloud.xyz', ttlSeconds: 3600,
   grantLifetimeSeconds: 2592000, hostPlan: null, permissionOptions, selectedActionKeys: selected, revision: 1, digest: 'digest-1' };
 const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
