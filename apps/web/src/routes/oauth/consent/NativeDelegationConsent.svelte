@@ -44,6 +44,8 @@
   let error = $state('');
   /** The API refused to prepare or approve a step-up because a space it needs is not hosted (`space_not_hosted`). */
   let unhosted = $state(false);
+  /** The API sent a kind this page cannot show (none, an unknown one, or a STEPUP that names no app or spaces). */
+  let refused = $state(false);
   let serial = 0;
   const stepUpPreview = $derived(preview && isStepUpPreview(preview) ? preview : null);
   // A step-up has no optional actions: every capability is requested and none can be switched off.
@@ -76,6 +78,7 @@
     loading = true;
     error = '';
     unhosted = false;
+    refused = false;
     try {
       const data = await route('prepare', actionKeys ? { actionKeys } : {}) as Preview | { status: 'APPROVED' };
       if (turn !== serial) return;
@@ -85,10 +88,10 @@
       // without one is not a sign-in), an unknown kind, or a STEPUP that does not name its app and spaces. The API
       // sends a kind on every preview, so the web must not be deployed before it.
       if (data.kind === 'STEPUP' ? !isStepUpPreview(data) : data.kind !== 'SIGNIN') {
-        // Nothing of an earlier prepare stays on screen: no model and no preview to Allow from.
+        // Nothing of an earlier prepare stays on screen: no model and no preview to Allow from, only the way back.
         preview = null;
         model = null;
-        error = 'This request needs a newer version of the app to approve.';
+        refused = true;
         return;
       }
       // A step-up is always read afresh from the text it will sign: its list is what that text says, never an older
@@ -196,10 +199,19 @@
     `${grant.space}${grant.resourceService ? `/${grant.resourceService}` : ''}${grant.path ? `/${grant.path}` : ''}`;
 </script>
 
-<NativeShell {clientId} name={preview ? preview.client.name : unhosted ? undefined : null}
-  heading={(name) => unhosted ? 'This app can’t be allowed yet' : stepUpPreview ? `Give ${stepUpAppName(stepUpPreview.stepUp.appId)} more access` : `${name} wants access`}>
-  {#if !ready || (loading && !preview && !unhosted)}
+<NativeShell {clientId} name={preview ? preview.client.name : unhosted || refused ? undefined : null}
+  heading={(name) => unhosted || refused ? 'This app can’t be allowed yet' : stepUpPreview ? `Give ${stepUpAppName(stepUpPreview.stepUp.appId)} more access` : `${name} wants access`}>
+  {#if !ready || (loading && !preview && !unhosted && !refused)}
     <p class="nb-lede" role="status">Preparing your request…</p>
+  {:else if refused}
+    <section class="panel" aria-label="Request not supported">
+      <p class="sentence" role="alert">This request needs a newer version of the app.</p>
+      <p class="note">Nothing was allowed. Update the app, then try again.</p>
+    </section>
+    {#if error}<p class="nb-error" role="alert">{error}</p>{/if}
+    <div class="nb-stack actions-row">
+      <button type="button" class="nb-button" onclick={deny} disabled={submitting}>Back to the app</button>
+    </div>
   {:else if unhosted}
     <section class="panel" aria-label="Space not set up">
       <p class="sentence" role="alert">One of the spaces this app needs is not set up on your TinyCloud account yet, so it can’t be allowed yet.</p>
