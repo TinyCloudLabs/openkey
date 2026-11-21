@@ -190,7 +190,8 @@ describe('signMessage presentation', () => {
       expect(h.client.signMessageShowsApproval).toBe(true);
       const leaving = h.client.signOut({ mode: 'iframe' });
       expect(h.client.signMessageShowsApproval).toBe(false);
-      leaving.catch(() => {});
+      Reflect.apply(Reflect.get(h.client, 'cancelActiveFlows'), h.client, []);
+      await leaving.catch(() => {});
     } finally { h.restore(); }
   });
 });
