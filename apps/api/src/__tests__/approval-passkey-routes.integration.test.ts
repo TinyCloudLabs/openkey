@@ -597,6 +597,9 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
       const signedIn = await passkeySignIn(passkey, requestIdOf(path));
       expect(signedIn.response.status, await signedIn.response.clone().text()).toBe(200);
       expect(await flowRows(owner.userId)).toBe(1);
+      // A second session of the account signs in for the same request: its cover must end with the decision too.
+      expect((await passkeySignIn(passkey, requestIdOf(path))).response.status).toBe(200);
+      expect(await flowRows(owner.userId)).toBe(2);
       await resolveRequest(path, owner);
 
       expect((await preview(owner, path, signedIn.cookie)).passkey).toEqual({ required: false });

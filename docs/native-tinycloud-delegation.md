@@ -850,7 +850,8 @@ counts as that request's approval passkey:
   request, and a request that has no cover gets the usual challenge.
 - While it exists, `prepare` returns `passkey: {required: false}` and `approve` needs no assertion, for sign-in
   and step-up requests alike. A re-prepare of the same request (a changed selection) is covered too. Approve or
-  deny ends the cover; an expired one gets the existing `passkey_approval_required` refusal and a new challenge.
+  deny ends every session's cover for that request; an expired one gets the existing `passkey_approval_required`
+  refusal and a new challenge.
 - `tinycloud_native_request.approvalPasskeyMethod` records which gate let the approval through:
   `NOT_REQUIRED`, `FLOW_PASSKEY` or `REQUEST_PASSKEY`.
 - Only these two routes read the cover. Lowering the approval setting, TinyCloud manage-key mode, enabling an

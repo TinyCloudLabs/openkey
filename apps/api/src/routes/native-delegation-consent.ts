@@ -274,7 +274,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     if (pending.kind === 'STEPUP') {
       if (!body) fail(409, 'preparation_superseded');
       const stepUp = await approveStepUp(userId, pending.id, body, preKey, privateKey, passkeyMethod);
-      await clearFlowPasskey(db, c.get('session')?.id ?? null, pending.id);
+      await clearFlowPasskey(db, pending.id);
       return c.json(stepUp);
     }
     const result = await db.$transaction(async tx => {
@@ -324,7 +324,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { status: 'APPROVED', approvedRevision: revision.revision, consentGeneration: generation, signature, delegation: artifact, hosting: 'failed', approvalPasskeyMethod: passkeyMethod } });
       return { alreadyApproved: false as const, rowId: row.id, revision: revision.revision, hostPlan, artifact, key, siweDomain: ceiling.siweDomain ?? 'openkey.so' };
     }, { timeout: 15_000 });
-    await clearFlowPasskey(db, c.get('session')?.id ?? null, pending.id);
+    await clearFlowPasskey(db, pending.id);
     if (result.alreadyApproved) return c.json({ status: 'APPROVED', revision: result.revision, hosting: result.hosting });
     let hosting: 'existing' | 'created' | 'failed' = 'failed';
     let restart = false;
@@ -520,7 +520,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       await nativeReviewerAuthority(tx, userId, row, reviewerBinding);
       await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { status: 'DENIED' } });
     });
-    await clearFlowPasskey(db, c.get('session')?.id ?? null, c.req.param('id'));
+    await clearFlowPasskey(db, c.req.param('id'));
     return c.json({ status: 'DENIED' });
   });
   return router;
