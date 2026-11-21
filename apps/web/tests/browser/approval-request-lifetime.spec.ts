@@ -12,7 +12,7 @@ const KV_GET = 'tinycloud.kv/get';
 const ONCE_NOTE = 'Requests that include secrets or decryption start at 1 hour. You can choose longer, up to what the app asked for.';
 
 const notes = { service: 'tinycloud.kv', space: SPACE, path: 'notes/', ability: KV_GET, resource: `${SPACE}/kv/notes/` };
-const secret = { service: 'tinycloud.kv', space: SPACE, path: 'vault/secrets/DEPLOY_KEY', ability: KV_GET, resource: `${SPACE}/kv/vault/secrets/DEPLOY_KEY` };
+const secret = { service: 'tinycloud.kv', space: SPACE, path: 'vault/secrets/', ability: KV_GET, resource: `${SPACE}/kv/vault/secrets/` };
 const network = `urn:tinycloud:encryption:${OWNER}:default`;
 const decrypt = {
   service: 'tinycloud.encryption',
