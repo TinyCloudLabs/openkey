@@ -181,7 +181,7 @@ jobs:
         env:
           INGRESS_URL: https://api.openkey.so
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
-          # The openkey-api CVM's app_id (Phala workspace openkey-secondary). Changing it is a deliberate act.
+          # The openkey-api CVM's app_id. Changing it is a deliberate act.
           EXPECTED_APP_ID: b7d6e87778f73904a8f5fd26e4d0f1d1310234be
         run: |
           # TC-3554: the first boot after the root move re-seals every key before the API listens.
