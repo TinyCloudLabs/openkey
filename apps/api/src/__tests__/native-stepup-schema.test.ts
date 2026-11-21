@@ -245,7 +245,8 @@ describe('tinycloud_native_stepup', () => {
         expect(rows.rows).toEqual([{ id: 'r-signin' }]);
         const columns = await scratch.query<{ n: number }>(
           `SELECT COUNT(*)::int AS n FROM information_schema.columns WHERE table_name = 'tinycloud_native_request'`);
-        expect(columns.rows[0]!.n).toBe(30);
+        // 30 plus `approvalPasskeyMethod`, which 20261121_0005 adds and this down file leaves alone.
+        expect(columns.rows[0]!.n).toBe(31);
         const left = await scratch.query<{ name: string }>(
           `SELECT conname AS name FROM pg_constraint WHERE conname LIKE 'tinycloud_native_request\\_%' AND (conname LIKE '%kind%' OR conname LIKE '%grantId%')
            UNION ALL SELECT indexname FROM pg_indexes WHERE indexname = 'tinycloud_native_request_grantId_idx'`);

@@ -360,11 +360,20 @@ only by the code exchange of an approved request.
 
 **The flag stays off until the step-up screen is live.** The consent page chooses
 its screen from an explicit `kind`, with no default: `STEPUP` renders the
-step-up screen, `SIGNIN` (or no `kind`, from an API that predates request
-kinds) renders the sign-in screen, and any other value is an error with no Allow.
-Order of rollout: API with `kind` live, then the web with the step-up screen,
-then the flag. `OPENKEY_NATIVE_STEPUP_ENABLED` must not be turned on in any
-environment before both the step-up screen and the revoke sweeper are deployed.
+step-up screen, `SIGNIN` renders the sign-in screen, and anything else shows a
+screen with no Allow, including no `kind` at all (a preview that carries `stepUp`
+or `spaces` without one is never shown as a sign-in). That screen says the request
+needs a newer version of the app and that nothing was allowed, and its "Back to the
+app" button denies the current request and returns to the app, the way the
+"space not set up" screen does; if that fails the screen stays, with the error. The
+API sends a `kind` on every preview, so the web must not be deployed before the
+API that sends it.
+Order of rollout: API with `kind` live, then the web with the step-up screen, then
+the refusal screen with its way back, then the ceiling diff (see "Parity with
+TinyCloud One"), then the flag. `OPENKEY_NATIVE_STEPUP_ENABLED` must not be turned
+on in any environment before the step-up screen, the refusal screen and the revoke
+sweeper are deployed and the Home client's `stepUps` has been diffed against the
+reference.
 
 ### Step-up code exchange (TC-3569)
 
@@ -822,6 +831,32 @@ Content-Type: application/json
 Deny sets a `RESOLVED` request to `DENIED` and returns `{"status":"DENIED"}`.
 The page then posts provider consent `{accept: false, oauth_query}`, which
 redirects with `error=access_denied&state=…&iss=…`.
+
+### One passkey per interaction (TC-3596)
+
+When the account's passkey setting asks for a passkey on Approve, `prepare` returns a challenge and `approve`
+verifies an assertion bound to that revision's digest (`passkey_approval_required` otherwise). A user who has
+just signed in with a passkey would see two prompts back to back, so a passkey sign-in made **for this request**
+counts as that request's approval passkey:
+
+- The login page sends `x-openkey-passkey-flow: <tinycloud_request id>` with its passkey sign-in. After the
+  sign-in verifies, OpenKey records a cover only when **all** of these hold: the request id has the exact PAR id
+  shape (`^[A-Za-z0-9_-]{32}$`); the request exists, is `RESOLVED` (the state `/authorize` leaves it in when it
+  sends the user to sign in), and is unowned or the signer's; it was created
+  before the assertion; the assertion carries the user-verified flag; and the passkey is one that counts for
+  step-up, the same bar as an approval passkey. Otherwise nothing is recorded and the sign-in still succeeds.
+- The cover is one `verification` row, `openkey-flow-passkey:<session id>:<request id>`, valid for five minutes
+  and for that session and that request only. It is not shared with another session of the account or another
+  request, and a request that has no cover gets the usual challenge.
+- While it exists, `prepare` returns `passkey: {required: false}` and `approve` needs no assertion, for sign-in
+  and step-up requests alike. A re-prepare of the same request (a changed selection) is covered too. Approve or
+  deny ends every session's cover for that request; an expired one gets the existing `passkey_approval_required`
+  refusal and a new challenge.
+- `tinycloud_native_request.approvalPasskeyMethod` records which gate let the approval through:
+  `NOT_REQUIRED`, `FLOW_PASSKEY` or `REQUEST_PASSKEY`.
+- Only these two routes read the cover. Lowering the approval setting, TinyCloud manage-key mode, enabling an
+  app, account deletion, passkey enrolment and removal, and key export or recovery keep asking for their own
+  passkey. Email-code and social sign-ins make no cover and are asked once, at Approve.
 
 ### Consent errors
 
@@ -1686,6 +1721,78 @@ sees only the callback, or a sheet closed without one (`USER_CANCELLED`).
 "Terminal" from renew means a local sign-out. From native revoke, it means the
 server-side grant is already unusable, so `signOut` still wipes the local key
 and tokens and resolves.
+
+### Step-up in the SDK (TC-3569)
+
+`@openkey/core` has `requestStepUp`, `exchangeStepUpCode`, `validateTinyCloudStepUp`
+and `revokeStepUp`; `@openkey/sdk-capacitor` wraps them as
+`OpenKeyNative.requestStepUp({ appId, capabilities })` and `revokeStepUp(appId)`.
+Step-ups are held in `NativeSession.stepUps` (by app id), inside the existing
+session record, and merged on each renewal from `tinycloud_stepups`
+(`renewed` replaces, `removed` deletes; `dropped`, `failed` and a response that
+does not validate stay until their own expiry).
+
+Before storing anything the SDK checks the response against Home's stored grant,
+which must hold its grant id, address, chain id and renewable-until (a Home
+delegation that lacks one fails with `SERVER` before the user is asked, and in a
+renewal puts the step-ups in `rejected`). The signer recovered from the EIP-191
+signature is the Home grant's address; the signed SIWE text has exactly one `URI:`
+line equal to the session key's did, exactly one `Chain ID:` line equal to Home's,
+and one `Expiration Time:` within a second of `expiresAt`; the grant id, owner DID,
+session key, node host and spaces are the expected ones; the step-up does not
+outlive the Home grant; and the body holds no refresh token and no Home
+delegation. The recap in the SIWE is not decoded: the entries are checked as the
+response lists them. A mismatch is `SERVER` and leaves the Home session as it was.
+
+| Server outcome | SDK code |
+|---|---|
+| Discovery lacks `tinycloud_delegation_stepup_endpoint`, or `not_found` (flag off) | `UNAVAILABLE`, nothing opened or stored |
+| `invalid_request`, `invalid_authorization_details` | `INVALID_REQUEST` |
+| `slow_down` | `TEMPORARILY_UNAVAILABLE` with `retryAfterSeconds` |
+| `access_denied` | `ACCESS_DENIED` |
+| `consent_required`, `invalid_session_proof` | `CONSENT_REQUIRED` / `INVALID_GRANT`, as for the Home grant |
+
+The step-up redirect defaults to the sign-in `redirectUri` (`stepUpRedirectUri`
+overrides it; a different value must be registered on the Home client and
+handled by the app; the Android plugin accepts only `/callback`). If the code was
+redeemed but the response then fails validation, the verifier or the store, the
+SDK makes a best-effort `revokeStepUp(appId)`, keeps no local copy, and returns
+the original error; if that revoke is skipped or fails, the app can call
+`revokeStepUp`, and the sweeper revokes an approved request that is never redeemed.
+
+The step-up screen on the consent page is chosen from an explicit `kind` (see
+[Step-up consent](#step-up-consent-tc-3569)).
+
+#### Parity with TinyCloud One
+
+`scripts/step-up-ceilings/phase1.json` is the reference for the ceilings an admin
+applies to the Home client (the API does not read this file). The framed apps' own
+table is `frontend/src/apps/native-step-up-ceilings.json` in `tinychat`, in the same shape
+(the `stepUps` section, keyed by full app id). `bun scripts/step-up-ceiling-parity.ts`
+validates both with the API's own ceiling validation, flattens each to one line per
+(app, space, service, path or database, action) and requires the same set both
+ways. App ids, paths and database names are compared case-sensitively; a prefix
+is a different entry; the order and grouping in the file do not matter. An entry
+only One lists is something the app asks for that the server would refuse; one
+only OpenKey lists is access no app asked for.
+
+One's file is read at the commit pinned in `scripts/step-up-ceilings/one.pin.json`
+(`ref` is a 40-character sha, never a branch). tinychat is a public repository, so
+the `api-tests` workflow reads the file from `raw.githubusercontent.com` with no
+token, and runs with `--require-pin`: a `null` pin fails it (without the flag the
+script prints that it did not run and passes). When One's branch is squash-merged,
+re-pin to the sha on its main: a squashed branch commit becomes unreachable. Move
+the pin with any change to either side.
+
+What the check does not see: it compares two files in the repositories. The API
+enforces the `stepUps` that an admin set on the Home client's ceiling (the
+database), which no CI job reads. `scripts/step-up-ceilings/phase1.json` is the
+reference an admin applies, not something the API reads. So the flag has one more
+step before it: diff the production Home client's `tinycloudNativeDelegation.stepUps`
+against `phase1.json` (entry for entry, as above), or have the admin write path
+refuse anything else. The full rollout order is the API with `kind` live, then
+the web step-up screen, then the refusal-screen follow-up, then that ceiling
+diff, then the flag.
 
 ## TinyCloud node responsibility
 

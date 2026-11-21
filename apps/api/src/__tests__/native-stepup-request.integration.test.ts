@@ -9,6 +9,8 @@ import { getAddress, recoverMessageAddress } from 'viem';
 import { SiweMessage } from 'siwe';
 import { serializeSignedCookie } from 'better-call';
 import type * as DatabaseModule from '@openkey/db';
+import type { PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/server';
+import { createSoftPasskey } from './soft-passkey';
 
 // TC-3569 PR 2a: the step-up request endpoint over HTTP on the tracked
 // migration chain. It records a STEPUP request and signs nothing; the sign-in
@@ -472,6 +474,52 @@ if (!child) {
     expect(await recoverMessageAddress({ message: signed, signature: row.signature as `0x${string}` })).toBe(address);
     expect(row.delegation).toMatchObject({ grantId: 'g1', appId: EXPLORER, sessionDid: row.sessionDid });
     expect(await snapshot()).toBe(before);
+  });
+
+  // TC-3596: a passkey sign-in made for the step-up request covers its Approve; no other session and no other request.
+  test('a passkey sign-in made for a step-up request covers its Approve and records the method; another session is still asked', async () => {
+    const key = sessionKey(); await seedDevice('g1', key, 'token-1');
+    await prisma.user.update({ where: { id: USER }, data: { passkeyApprovalMode: 'ALWAYS' } });
+    const passkey = await createSoftPasskey(prisma, USER, true, 'https://openkey.test');
+    try {
+      const created = await (await stepUp(key, 'token-1')).json() as { request_uri: string };
+      const { resolveRequestUri, REQUEST_URI_PREFIX } = await import('../services/native-delegation/par');
+      const id = created.request_uri.slice(REQUEST_URI_PREFIX.length);
+      // /authorize resolves the request before it sends the user to sign in; then the passkey sign-in the login page makes.
+      await resolveRequestUri(prisma, created.request_uri, clientId);
+      const asked = await app.fetch(new Request(`${API}/api/auth/passkey/generate-authenticate-options`, { headers: { origin: 'https://openkey.test' } }));
+      const cookies = (response: Response) => response.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');
+      const verified = await app.fetch(new Request(`${API}/api/auth/passkey/verify-authentication`, { method: 'POST',
+        headers: { origin: 'https://openkey.test', 'content-type': 'application/json', cookie: cookies(asked), 'x-openkey-passkey-flow': id },
+        body: JSON.stringify({ response: passkey.assert(await asked.json() as PublicKeyCredentialRequestOptionsJSON) }) }));
+      expect(verified.status, await verified.clone().text()).toBe(200);
+      const signedIn = cookies(verified);
+
+      // Another session of the same account is asked, for this very request.
+      const other = await (await consent(id, 'prepare', {}, cookie)).json() as Preview & { passkey: { required: boolean } };
+      expect(other.passkey.required).toBe(true);
+      const refused = await consent(id, 'approve', approval(other), cookie);
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({ code: 'passkey_approval_required' });
+
+      // The session that signed in for it is not, on prepare or on a re-prepare, and Approve needs no assertion.
+      const first = await consent(id, 'prepare', {}, signedIn);
+      expect((await first.json() as { passkey: unknown }).passkey).toEqual({ required: false });
+      const preview = await (await consent(id, 'prepare', {}, signedIn)).json() as Preview & { passkey: unknown };
+      expect(preview.passkey).toEqual({ required: false });
+      const { value, calls } = await withNode(allHosted, async () => {
+        const approved = await consent(id, 'approve', approval(preview), signedIn);
+        return { approved, body: await approved.json() as Approval };
+      });
+      expect(value.approved.status, JSON.stringify(value.body)).toBe(200);
+      expect(value.body).toMatchObject({ status: 'APPROVED', spaces: ['public', 'applications'] });
+      expect(calls).toEqual({ delegate: 1, revoke: 0 });
+      expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).approvalPasskeyMethod).toBe('FLOW_PASSKEY');
+      expect(await prisma.verification.count({ where: { identifier: { startsWith: 'openkey-flow-passkey:' } } })).toBe(0);
+    } finally {
+      await prisma.user.update({ where: { id: USER }, data: { passkeyApprovalMode: 'SENSITIVE' } });
+      await prisma.passkey.deleteMany({ where: { userId: USER } });
+    }
   });
 
   test('the delegation never outlives a nearly-ended grant', async () => {

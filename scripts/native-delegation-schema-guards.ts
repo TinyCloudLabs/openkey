@@ -145,7 +145,8 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     !verified.generation_primary_key ||
     // 27 native columns plus `reviewerEpoch`, `reviewerSessionId` and `reviewerDeadline` from 20261111_0002_reviewer_apple.
     // ... and `kind`, `grantId` and `appId` from 20261121_0002_native_request_kind.
-    verified.request_columns !== 33 ||
+    // ... and `approvalPasskeyMethod` from 20261121_0005_native_approval_passkey_method.
+    verified.request_columns !== 34 ||
     verified.preparation_columns !== 12 ||
     !verified.preparation_host_column ||
     // 24 native columns plus `reviewerEpoch` from 20261111_0001_reviewer_accounts.

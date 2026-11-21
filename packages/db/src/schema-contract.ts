@@ -61,25 +61,19 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261118_0001_terms_acceptance', 'a2535be69867c0a4c138233c22b2bfae7eda5d950c7d5c22138e25ba6efc3e7c'],
   ['20261119_0001_terms_acceptance_no_delete', 'ea98e5b306af38dfb0145ba915ea38ab6bf8e53a52744fc3039d17964ab807c4'],
   ['20261119_0002_passkey_approval_mode', 'a6e0a4dd2351b7bdddf94013b3340db1ba118f6f2fa0e3b82f58b528e371ba78'],
-  // TC-3569 S1b (merged at 15e213cd 15:40Z) added four migrations to the filesystem but
-  // left the schema-contract without entries; the schema-contract test walks the directory
-  // and fails without them. TC-3596's `80b114ee` (branch passkey/one-per-flow, not yet
-  // merged) is the canonical fix. Carrying the same four entries here so my branch's
-  // schema-contract test stays green; when TC-3596 merges, the duplicates dedupe (or the
-  // OpenKey driver resolves the overlap). Checksums match the preflight map in
-  // scripts/deploy-production-migrations.ts.
+
   ['20261121_0001_native_stepup', 'e83cdd1c6296344b0d3df1559c40dbb9381faaff8e167f98486f27d0551bde3b'],
   ['20261121_0002_native_request_kind', '22823dfea36b42f7ffcfc5da0d333340ed025316e68a95c39f63821181022c23'],
   ['20261121_0003_native_withdraw_stepup_tokens', '0058b9b249016025ce123121ee48ffad03241060d6c708100f9958dd8179cf48'],
   ['20261121_0004_native_stepup_delegation', '71c7f4491f6e63320acb9ef34c76ff54ec0bce2e880764e725b3500fa9c0e6bb'],
+  ['20261121_0005_native_approval_passkey_method', '450234c3f53249bd91b0f9d92823d24cd377458e1db114a503c08fe588ccf76e'],
   // TC-3657: Prisma-backed stores for OpenKey's outside-app one-tap TinyCloud setup
   // endpoint. Required so the API cannot go live without the two tables that back the
   // single-use nonce invariant (Bobbie C1) and the per-owner rate limit (C5).
-  // Numbered 0005 because TC-3569 S1b (merged at 15e213cd) claimed 0001-0004 on the same
-  // date. If TC-3596 (branch `passkey/one-per-flow`, draft migration 0005
-  // `native_approval_passkey_method`) lands first, the OpenKey driver renumbers it; this
-  // slice keeps 0005 as long as it merges before TC-3596.
-  ['20261121_0005_tinycloud_setup_tables', '2c76d33c89a485b5db77efdfbfe6e3bcf2d87ba94587118cef26932e931845d7'],
+  // Numbered 0006 because TC-3569 S1b (merged at 15e213cd) claimed 0001-0004 and TC-3596
+  // (merged at 4b6c594c) claimed 0005. If a later slice claims 0006 first, the OpenKey
+  // driver renumbers.
+  ['20261121_0006_tinycloud_setup_tables', '2c76d33c89a485b5db77efdfbfe6e3bcf2d87ba94587118cef26932e931845d7'],
 ]);
 
 export type SchemaContractDatabase = {
