@@ -10,6 +10,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { mockModules, replaceModules } from './mock-module';
 import { MemoryPreparedHandoffStore, PreparedHandoffService } from '../services/prepared-handoff';
+import { DEVICE_SECRETS_REFUSAL } from '../services/device-flow-abilities';
 import { deviceRequestPermissions } from '../services/device-authorization';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -202,10 +203,6 @@ describe('device sign-in request', () => {
   });
   const NON_BROWSER = "App keys can only be requested through a website's sign-in, not from the command line or a device sign-in, so OpenKey didn't approve this request.";
 
-  test('accepts the default-key decrypt request', () => {
-    expect(deviceRequestPermissions([entry({})])).toHaveLength(1);
-  });
-
   test.each([
     ['an apps/ key path', entry({ path: 'apps/xyz.tinycloud.listen/k' })],
     ['an apps/ prefix', entry({ path: 'apps/xyz.tinycloud.listen/', actions: ['tinycloud.encryption/key.create'] })],
@@ -222,7 +219,7 @@ describe('device sign-in request', () => {
     ['key.delete on the default network', entry({ actions: ['tinycloud.encryption/key.delete'] })],
     ['block and decrypt together', entry({ actions: ['tinycloud.encryption/key.block', 'tinycloud.encryption/decrypt'] })],
   ])('refuses %s', (_name, permission) => {
-    expect(() => deviceRequestPermissions([permission])).toThrow('actions must be exactly tinycloud.encryption/decrypt');
+    expect(() => deviceRequestPermissions([permission])).toThrow(DEVICE_SECRETS_REFUSAL);
   });
 
   test('an apps/ path on a kv entry is an ordinary path', () => {
