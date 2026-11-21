@@ -242,6 +242,20 @@ if (process.env.OPENKEY_RENEWAL_STOP_CI_CHILD !== '1') {
     expect(await stopped(withRequest)).toBe(false);
   });
 
+  test('the list says which leases the signed-in session\'s own sign-out stops', async () => {
+    const owner = await account();
+    const here = await owner.session();
+    const elsewhere = await owner.session();
+    const signInHere = await lease(owner, here.id, 'ok', 3_600_000, false, false);
+    const signInElsewhere = await lease(owner, elsewhere.id, 'ok', 3_600_000, false, false);
+    const approvedHere = await lease(owner, here.id);
+
+    const listed = await (await call(here.cookie, '/api/account/renewal-leases', 'GET')).json() as { leases: Array<{ leaseCid: string; endsOnSignOut: boolean }> };
+
+    const endsOnSignOut = Object.fromEntries(listed.leases.map((row) => [row.leaseCid, row.endsOnSignOut]));
+    expect(endsOnSignOut).toEqual({ [signInHere]: true, [signInElsewhere]: false, [approvedHere]: false });
+  });
+
   test('the stop sweep revokes every OpenKey-signed lease, reports wallet-signed ones, retries what the node did not confirm, and runs only for `stop`', async () => {
     const sweep = await import('../services/renewal-lease-sweep');
     const saved = process.env.OPENKEY_RENEWAL_LEASES;

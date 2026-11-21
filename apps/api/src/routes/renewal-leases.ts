@@ -27,6 +27,7 @@ export function createRenewalLeaseRouter(db: RenewalLeaseRouteDatabase, deps?: L
   // The account's leases that still renew: not stopped and not past their end.
   router.get('/', async (c) => {
     const userId = c.get('user').id;
+    const sessionId = c.get('session')?.id;
     const leases = await db.renewalLease.findMany({ where: liveLeaseWhere(userId, { kind: 'all' }, now()), orderBy: { approvedAt: 'desc' } });
     const [requests, keys] = await Promise.all([
       db.approvalRequest.findMany({ where: { id: { in: leases.flatMap((lease) => lease.approvalRequestId ?? []) } }, select: { id: true, request: true, delegationExpiresAt: true } }),
@@ -50,6 +51,8 @@ export function createRenewalLeaseRouter(db: RenewalLeaseRouteDatabase, deps?: L
           signer: key?.keyType === 'MANAGED' ? 'openkey' : 'wallet',
           reason: requestReason(request?.request),
           grantSiwe: lease.grantSiwe,
+          // A sign-in lease recorded under the session the owner is signing out of: that sign-out stops it.
+          endsOnSignOut: lease.approvalRequestId === null && lease.sessionId !== null && lease.sessionId === sessionId,
         };
       }),
     });
