@@ -522,10 +522,14 @@
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
       requestedKeyId = keyId;
-      // The legacy path carries a plain signMessage(). Its `presentation` is the app's own words: shown only after
-      // `claimedPresentation` has cleaned and judged it, never read as a manifest envelope, and never sent anywhere.
-      requestPresentation = null;
-      plainPresentation = event.data.presentation ?? null;
+      // A plain signMessage() (no protocol version) carries the app's own words in `presentation`; they are shown only
+      // after `claimedPresentation` has judged them and are never read as a manifest envelope or sent anywhere.
+      const plain = incomingProtocolVersion === null;
+      requestPresentation =
+        !plain && event.data.presentation && typeof event.data.presentation === 'object'
+          ? event.data.presentation
+          : null;
+      plainPresentation = plain ? event.data.presentation ?? null : null;
       serverMetadataTrust = null;
       serverVerifiedManifest = null;
       keyFetched = false; // Reset so effect can run

@@ -1017,12 +1017,19 @@ export class OpenKey {
    */
   readonly signMessagePresentation = 1 as const;
 
+  /** The key type of the connected key: `null` when not connected or when the connect response named no known type. */
+  private connectedKeyType(): 'MANAGED' | 'EXTERNAL' | null {
+    const keyType = this.lastAuth?.keyType;
+    return keyType === 'MANAGED' || keyType === 'EXTERNAL' ? keyType : null;
+  }
+
   /**
-   * True when `signMessage()` opens the OpenKey approval screen: the client is connected with a key OpenKey holds.
-   * False when it goes straight to the person's own wallet (an external key) and when the client is not connected.
+   * True when `signMessage()` opens the OpenKey approval screen: the client is connected with a key OpenKey holds
+   * (a managed key). False when it goes straight to the person's own wallet (an external key), when the client is not
+   * connected and when the key type is not known.
    */
   get signMessageShowsApproval(): boolean {
-    return this.lastAuth !== null && this.lastAuth.keyType !== 'EXTERNAL';
+    return this.connectedKeyType() === 'MANAGED';
   }
 
   constructor(config: OpenKeyConfig = {}) {
@@ -1202,7 +1209,7 @@ export class OpenKey {
    * For external keys, routes directly to the user's wallet provider
    */
   async signMessage(request: SignMessageRequest, opts?: { mode?: OpenKeyMode }): Promise<SignResult> {
-    if (this.lastAuth?.keyType === 'EXTERNAL') {
+    if (this.connectedKeyType() === 'EXTERNAL') {
       return this.signWithExternalWallet(request);
     }
     return this.signWithOpenKey(request, opts?.mode);

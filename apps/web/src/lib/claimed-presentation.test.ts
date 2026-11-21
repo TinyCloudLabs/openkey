@@ -12,7 +12,7 @@ import {
 } from './claimed-presentation';
 
 const APP = 'https://notes.example';
-const SHELL = 'https://tinycloud.chat';
+const SHELL = 'https://tinycloud.one';
 const DID = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
 
 const bytes = (...head: number[]) => Buffer.from([...head, ...new Array(30).fill(7)]).toString('base64');
@@ -60,6 +60,37 @@ describe('reserved names', () => {
     }
   });
 
+  test('names that swap a letter for a lookalike from another script, a symbol or a sound-alike are dropped', () => {
+    const lookalikes = [
+      'TinyCl\u0585ud', // Armenian oh
+      'Tі\u006Ey \u13DFloud', // Cyrillic і and Cherokee Ꮯ
+      'OpenKe\u04AF', // Cyrillic ү
+      'Open\u0138EY', // Latin kra
+      'OpenK\u0258y', // Latin reversed e
+      'ОрепКеу', // all Cyrillic
+      'Tinycl\u25CBud', // white circle
+      'TinyClovd', // v for u
+      'TinyCloûd',
+      'Tiny Cl0ud One',
+    ];
+    for (const text of lookalikes) {
+      expect(decide(claim({ displayName: text }))).toBeNull();
+      expect(decide(claim({ displayName: 'Acme Notes', onBehalfOf: text }))).toEqual({
+        displayName: 'Acme Notes', iconUrl: null, onBehalfOf: null, reason: null,
+      });
+    }
+  });
+
+  test('a name that mixes scripts is dropped; one written in a single script, or in Latin with digits and punctuation, is shown', () => {
+    for (const text of ['Nоtes', 'Notes Блокнот', 'Δelta Notes', 'Notes ノート', 'Ꮯat']) {
+      expect(decide(claim({ displayName: text }))).toBeNull();
+      expect(decide(claim({ onBehalfOf: text }))).toBeNull();
+    }
+    for (const text of ['Acme Notes', 'Блокнот', 'Ноты 2', 'ノート', '日本語のノート', 'Δέλτα', 'Café Notes #1 (beta)']) {
+      expect(decide(claim({ displayName: text }))?.displayName).toBe(text);
+    }
+  });
+
   test('a reserved name in "on behalf of" is dropped, and the name beside it stays', () => {
     const decided = decide(claim({ displayName: 'Acme Notes', onBehalfOf: 'Sync in TinyCloud' }));
     expect(decided).toEqual({ displayName: 'Acme Notes', iconUrl: null, onBehalfOf: null, reason: null });
@@ -84,13 +115,27 @@ describe('reserved names', () => {
   });
 
   test('a trusted shell origin is an exact match', () => {
-    for (const origin of ['https://tinycloud.chat.evil.example', 'https://www.tinycloud.chat', 'http://tinycloud.chat', 'https://tinycloud.chat:8443']) {
-      expect(decide(claim({ displayName: 'TinyChat' }), origin)).toBeNull();
+    for (const origin of ['https://tinycloud.one.evil.example', 'https://www.tinycloud.one', 'http://tinycloud.one', 'https://tinycloud.one:8443']) {
+      expect(decide(claim({ displayName: 'TinyCloud One' }), origin)).toBeNull();
     }
   });
 
-  test('a reason may use any word', () => {
-    expect(decide(claim({ reason: 'Share my notes with TinyCloud' }))?.reason).toBe('Share my notes with TinyCloud');
+  test('a reason that holds a reserved name is dropped, however it is spelled', () => {
+    for (const reason of [
+      'OpenKey security check: approve to continue',
+      'Share my notes with TinyCloud',
+      'Open Key needs this',
+      'Ореn Кеу needs this',
+      'Your T1nyCl0ud account',
+    ]) {
+      expect(decide(claim({ reason, displayName: 'Acme Notes' }))?.reason).toBeNull();
+      expect(decide(claim({ reason }))).toBeNull();
+    }
+    expect(decide(claim({ reason: 'Keep your notes in step.' }))?.reason).toBe('Keep your notes in step.');
+  });
+
+  test('a reason with a reserved name is kept for a trusted shell origin', () => {
+    expect(decide(claim({ reason: 'Share my notes with TinyCloud' }), SHELL)?.reason).toBe('Share my notes with TinyCloud');
   });
 
   test('names that merely resemble nothing reserved pass', () => {
@@ -170,6 +215,21 @@ describe('a name that reads as a host', () => {
   test('a version or a dotted number is not a host', () => {
     expect(decide(claim({ displayName: 'Notes v2.0' }))?.displayName).toBe('Notes v2.0');
     expect(decide(claim({ displayName: 'Acme Inc. Notes' }))?.displayName).toBe('Acme Inc. Notes');
+  });
+
+  test('a dot written as a lookalike mark, with spaces, in brackets or as the word "dot" still reads as a host', () => {
+    for (const displayName of ['example·com', 'example‧com', 'example・com', 'example܁com', 'example . com', 'example [.] com', 'example(.)com', 'example dot com', 'secure-login .app']) {
+      expect(decide(claim({ displayName }))).toBeNull();
+    }
+    expect(decide(claim({ displayName: 'notes dot example' }))?.displayName).toBe('notes dot example');
+  });
+
+  test('"on behalf of" and a reason that read as another host are dropped; the origin\'s own host is kept', () => {
+    expect(decide(claim({ onBehalfOf: 'paypal.com', displayName: 'Acme Notes' }))?.onBehalfOf).toBeNull();
+    expect(decide(claim({ onBehalfOf: 'paypal dot com', displayName: 'Acme Notes' }))?.onBehalfOf).toBeNull();
+    expect(decide(claim({ reason: 'Sign in at paypal.com', displayName: 'Acme Notes' }))?.reason).toBeNull();
+    expect(decide(claim({ onBehalfOf: 'notes.example' }))?.onBehalfOf).toBe('notes.example');
+    expect(decide(claim({ reason: 'Sync with notes.example' }))?.reason).toBe('Sync with notes.example');
   });
 });
 

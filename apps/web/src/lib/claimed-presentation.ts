@@ -33,15 +33,13 @@ export const RESERVED_NAMES: readonly string[] = [
 
 /**
  * Requesters that may call themselves by a reserved name: the exact https origins of OpenKey's own pages and of the
- * TinyCloud apps that sign in through OpenKey (TinyChat on tinycloud.chat, Home on home.tinycloud.xyz and tinycloud.one,
- * Share, Secret Manager). Matching is byte-exact on the verified origin the widget saw. A desktop webview origin is
- * not here: every app in that webview has it.
+ * TinyCloud apps that sign in through OpenKey (TinyCloud One on tinycloud.one, Share, Secret Manager). Matching is
+ * byte-exact on the verified origin the widget saw. A desktop webview origin is not here: every app in that webview
+ * has it.
  */
 export const TRUSTED_SHELL_ORIGINS: Record<string, true | undefined> = {
   'https://openkey.so': true,
   'https://console.openkey.so': true,
-  'https://tinycloud.chat': true,
-  'https://home.tinycloud.xyz': true,
   'https://tinycloud.one': true,
   'https://share.tinycloud.xyz': true,
   'https://secrets.tinycloud.xyz': true,
@@ -83,29 +81,66 @@ function capText(text: string, limit: number): string {
   return `${characters.slice(0, limit - 1).join('').trimEnd()}…`;
 }
 
+// ---- scripts ----------------------------------------------------------------
+
+// The scripts a name may be written in. Japanese and Korean text mixes Han with its own scripts, so those share a group.
+const SCRIPT_GROUPS: ReadonlyArray<readonly [string, RegExp]> = [
+  ['latin', /\p{Script=Latin}/u],
+  ['cyrillic', /\p{Script=Cyrillic}/u],
+  ['greek', /\p{Script=Greek}/u],
+  ['armenian', /\p{Script=Armenian}/u],
+  ['cherokee', /\p{Script=Cherokee}/u],
+  ['georgian', /\p{Script=Georgian}/u],
+  ['hebrew', /\p{Script=Hebrew}/u],
+  ['arabic', /\p{Script=Arabic}/u],
+  ['devanagari', /\p{Script=Devanagari}/u],
+  ['thai', /\p{Script=Thai}/u],
+  ['cjk', /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Bopomofo}]/u],
+];
+const NEUTRAL_SCRIPT = /[\p{Script=Common}\p{Script=Inherited}]/u;
+
+/**
+ * Is the text written in more than one script? Digits, punctuation, symbols and spaces belong to none; a letter of a
+ * script not listed counts as one script of its own.
+ */
+function mixesScripts(text: string): boolean {
+  const found = new Set<string>();
+  for (const character of text) {
+    if (!/\p{L}/u.test(character) || NEUTRAL_SCRIPT.test(character)) continue;
+    found.add(SCRIPT_GROUPS.find(([, script]) => script.test(character))?.[0] ?? 'other');
+    if (found.size > 1) return true;
+  }
+  return false;
+}
+
 // ---- reserved names -------------------------------------------------------
 
 // Letters from other scripts and lookalike symbols, as the Latin letter or digit they pass for. The text is
 // lower-cased first, so only lower-case forms are listed.
 const LOOKALIKES: Record<string, string> = {
   // Cyrillic
-  'а': 'a', 'в': 'b', 'е': 'e', 'ё': 'e', 'к': 'k', 'м': 'm', 'н': 'h', 'о': 'o', 'р': 'p', 'с': 'c', 'т': 't',
-  'у': 'y', 'х': 'x', 'і': 'i', 'ї': 'i', 'ј': 'j', 'ѕ': 's', 'һ': 'h', 'ԁ': 'd', 'ԛ': 'q', 'ԝ': 'w', 'ѵ': 'v',
-  'ӏ': 'l', 'ө': 'o',
+  'а': 'a', 'в': 'b', 'ь': 'b', 'е': 'e', 'ё': 'e', 'к': 'k', 'м': 'm', 'н': 'h', 'о': 'o', 'п': 'n', 'р': 'p', 'с': 'c',
+  'т': 't', 'у': 'y', 'ү': 'y', 'х': 'x', 'і': 'i', 'ї': 'i', 'ј': 'j', 'ѕ': 's', 'һ': 'h', 'ԁ': 'd', 'ԛ': 'q', 'ԝ': 'w',
+  'ѵ': 'v', 'ӏ': 'l', 'ө': 'o',
   // Greek
   'α': 'a', 'β': 'b', 'γ': 'y', 'ε': 'e', 'ζ': 'z', 'η': 'n', 'ι': 'i', 'κ': 'k', 'μ': 'u', 'ν': 'v', 'ο': 'o',
   'ρ': 'p', 'τ': 't', 'υ': 'u', 'χ': 'x', 'ω': 'w', 'ϲ': 'c', 'ϳ': 'j',
-  // Latin lookalikes: dotless i, script g, alpha, iota, and the small capitals
-  'ı': 'i', 'ɡ': 'g', 'ɑ': 'a', 'ɩ': 'i', 'ᴀ': 'a', 'ʙ': 'b', 'ᴄ': 'c', 'ᴅ': 'd', 'ᴇ': 'e', 'ɢ': 'g', 'ʜ': 'h',
-  'ɪ': 'i', 'ᴊ': 'j', 'ᴋ': 'k', 'ʟ': 'l', 'ᴍ': 'm', 'ɴ': 'n', 'ᴏ': 'o', 'ᴘ': 'p', 'ʀ': 'r', 'ꜱ': 's', 'ᴛ': 't',
-  'ᴜ': 'u', 'ᴠ': 'v', 'ᴡ': 'w', 'ʏ': 'y', 'ᴢ': 'z',
+  // Armenian and Cherokee
+  'օ': 'o', 'ս': 'u', 'ꮯ': 'c',
+  // Latin lookalikes: dotless i, kra, script g, alpha, iota, reversed e, and the small capitals
+  'ı': 'i', 'ĸ': 'k', 'ɡ': 'g', 'ɑ': 'a', 'ɩ': 'i', 'ɘ': 'e', 'ǝ': 'e', 'ɛ': 'e', 'ʋ': 'u', 'ᴀ': 'a', 'ʙ': 'b', 'ᴄ': 'c',
+  'ᴅ': 'd', 'ᴇ': 'e', 'ɢ': 'g', 'ʜ': 'h', 'ɪ': 'i', 'ᴊ': 'j', 'ᴋ': 'k', 'ʟ': 'l', 'ᴍ': 'm', 'ɴ': 'n', 'ᴏ': 'o', 'ᴘ': 'p',
+  'ʀ': 'r', 'ꜱ': 's', 'ᴛ': 't', 'ᴜ': 'u', 'ᴠ': 'v', 'ᴡ': 'w', 'ʏ': 'y', 'ᴢ': 'z',
   // Digits and symbols used for letters
   '0': 'o', '1': 'l', '3': 'e', '4': 'a', '5': 's', '7': 't', '!': 'l', '|': 'l', '@': 'a', '$': 's', '€': 'e',
+  '○': 'o', '◯': 'o', '〇': 'o', '⚪': 'o', '◦': 'o',
 };
 
 /**
  * The text as a reader sees it, reduced for comparison: NFKC, no invisible characters, no accents, lower case,
- * lookalikes folded to the letter they imitate (`i`, `l`, `1` and `|` are all `l`), then no spaces or punctuation.
+ * lookalikes folded to the letter they imitate, then no spaces or punctuation. `i`, `l`, `1` and `|` are all `l`, `u`
+ * and `v` are `u`, `o`, `0` and `○` are `o`, `rn` is `m` and `cl` is `d`; both sides of a comparison are folded the
+ * same way, so a name that spells one for the other matches.
  */
 function skeleton(text: string): string {
   const reduced = (cleanText(text) ?? '')
@@ -114,10 +149,10 @@ function skeleton(text: string): string {
     .replace(/\p{M}/gu, '');
   let folded = '';
   for (const character of reduced) folded += LOOKALIKES[character] ?? character;
-  // `rn` reads as `m` and `cl` as `d`; both sides are folded the same way, so a name that spells one for the other matches.
   return folded
     .replace(/[^\p{L}\p{N}]/gu, '')
     .replace(/i/gu, 'l')
+    .replace(/v/gu, 'u')
     .replace(/rn/gu, 'm')
     .replace(/cl/gu, 'd');
 }
@@ -145,10 +180,20 @@ function originHosts(origin: string): string[] {
   }
 }
 
-/** Does the name hold something that reads as a host name other than the verified origin's own? */
-function namesAnotherHost(name: string, origin: string): boolean {
+// Marks people write for a dot so that a host name does not look like one.
+const DOT_LOOKALIKES = /[\u00b7\u0387\u2024\u2027\u2e31\u30fb\u0701]/gu;
+const BRACKETED_DOT = /\s*[[({]\s*(?:\.|dot)\s*[\])}]\s*/giu;
+const SPACED_DOT = /\s+\.\s+|\s+\.(?=\p{L})|\s+dot\s+/giu;
+
+/** The text with the ways of writing a dot that is not a plain full stop folded into one. */
+function withPlainDots(text: string): string {
+  return text.replace(DOT_LOOKALIKES, '.').replace(BRACKETED_DOT, '.').replace(SPACED_DOT, '.');
+}
+
+/** Does the text hold something that reads as a host name other than the verified origin's own? */
+function namesAnotherHost(text: string, origin: string): boolean {
   const own = originHosts(origin);
-  const found = name.match(HOST_LIKE) ?? [];
+  const found = withPlainDots(text).match(HOST_LIKE) ?? [];
   return found.some((candidate) => !own.includes(candidate.toLowerCase().replace(/[\u3002\uff61]/gu, '.')));
 }
 
@@ -177,9 +222,10 @@ function fieldOf(source: object, name: string): unknown {
 /**
  * What of the app's presentation may be shown under the verified `origin`, or `null` when nothing may.
  *
- * - A name that reads as another host than the origin's is dropped.
- * - A name or "on behalf of" that contains a reserved name is dropped unless the origin is a trusted shell. Nothing
- *   marks the drop: the screen shows what is left.
+ * - A name or "on behalf of" that mixes scripts is dropped.
+ * - A name, "on behalf of" or reason that reads as another host than the origin's is dropped.
+ * - A name, "on behalf of" or reason that contains a reserved name is dropped unless the origin is a trusted shell.
+ *   Nothing marks a drop: the screen shows what is left.
  * - The icon is shown only beside a name that is shown, and only as a small PNG, JPEG or WebP data URI.
  *
  * Every text is cleaned and cut to its limit. With no verified origin nothing is shown.
@@ -190,21 +236,18 @@ export function claimedPresentation(input: { presentation: unknown; origin: stri
   if (typeof presentation !== 'object' || presentation === null || Array.isArray(presentation)) return null;
   if (fieldOf(presentation, 'protocolVersion') !== 1) return null;
   const trusted = Object.hasOwn(TRUSTED_SHELL_ORIGINS, origin);
+  const shown = (text: string | null): string | null =>
+    text === null || namesAnotherHost(text, origin) || (!trusted && containsReservedName(text)) ? null : text;
+  const shownName = (text: string | null): string | null => (text !== null && mixesScripts(text) ? null : shown(text));
 
-  let displayName = cleanText(fieldOf(presentation, 'displayName'));
-  if (displayName !== null && (namesAnotherHost(displayName, origin) || (!trusted && containsReservedName(displayName)))) {
-    displayName = null;
-  }
+  let displayName = shownName(cleanText(fieldOf(presentation, 'displayName')));
+  let onBehalfOf = shownName(cleanText(fieldOf(presentation, 'onBehalfOf')));
+  let reason = shown(cleanText(fieldOf(presentation, 'reason')));
 
-  let onBehalfOf = cleanText(fieldOf(presentation, 'onBehalfOf'));
-  if (onBehalfOf !== null) {
-    onBehalfOf = !trusted && containsReservedName(onBehalfOf) ? null : capText(onBehalfOf, CLAIM_LIMITS.onBehalfOf);
-  }
-
-  const reasonText = cleanText(fieldOf(presentation, 'reason'));
-  const reason = reasonText === null ? null : capText(reasonText, CLAIM_LIMITS.reason);
   const iconUrl = displayName === null ? null : validIcon(fieldOf(presentation, 'iconUrl'));
   displayName = displayName === null ? null : capText(displayName, CLAIM_LIMITS.displayName);
+  onBehalfOf = onBehalfOf === null ? null : capText(onBehalfOf, CLAIM_LIMITS.onBehalfOf);
+  reason = reason === null ? null : capText(reason, CLAIM_LIMITS.reason);
 
   if (displayName === null && onBehalfOf === null && reason === null) return null;
   return { displayName, iconUrl, onBehalfOf, reason };

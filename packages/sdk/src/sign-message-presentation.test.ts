@@ -160,17 +160,37 @@ describe('signMessage presentation', () => {
       await h.connect('MANAGED');
       expect(h.client.signMessageShowsApproval).toBe(true);
     } finally { h.restore(); }
-    const unmarked = harness();
-    try {
-      // A connect response that names no key type is a managed key.
-      await unmarked.connect();
-      expect(unmarked.client.signMessageShowsApproval).toBe(true);
-    } finally { unmarked.restore(); }
     const external = harness();
     try {
       expect(external.client.signMessageShowsApproval).toBe(false);
       await external.connect('EXTERNAL');
       expect(external.client.signMessageShowsApproval).toBe(false);
     } finally { external.restore(); }
+  });
+
+  test('signMessageShowsApproval is false when the connected key type is not a known one', async () => {
+    const h = harness();
+    try {
+      await h.connect('MANAGED');
+      for (const keyType of [undefined, null, '', 'managed', 'HARDWARE']) {
+        Reflect.set(h.client, 'lastAuth', { address: '0xfirst', keyId: 'key-first', keyType });
+        expect(h.client.signMessageShowsApproval).toBe(false);
+      }
+    } finally { h.restore(); }
+  });
+
+  test('signMessageShowsApproval follows the key type through sign-out and a reconnect with another key', async () => {
+    const h = harness();
+    try {
+      await h.connect('MANAGED');
+      expect(h.client.signMessageShowsApproval).toBe(true);
+      await h.connect('EXTERNAL');
+      expect(h.client.signMessageShowsApproval).toBe(false);
+      await h.connect('MANAGED');
+      expect(h.client.signMessageShowsApproval).toBe(true);
+      const leaving = h.client.signOut({ mode: 'iframe' });
+      expect(h.client.signMessageShowsApproval).toBe(false);
+      leaving.catch(() => {});
+    } finally { h.restore(); }
   });
 });

@@ -81,7 +81,7 @@ const reset = () => {
 const KEY = { id: 'key_1', address: '0x1111111111111111111111111111111111111111', keyIndex: 0, keyType: 'MANAGED', label: 'Key' };
 const DELEGATEE = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
 const APP_ORIGIN = 'https://notes.example';
-const SHELL_ORIGIN = 'https://tinycloud.chat';
+const SHELL_ORIGIN = 'https://tinycloud.one';
 const ORIGINS = { app: APP_ORIGIN, shell: SHELL_ORIGIN } as const;
 
 const wrapperSource = (adapterUrl: string) => `<script>
@@ -258,6 +258,7 @@ async function withPage(
   originName: OriginName,
   presentation: unknown,
   body: (screen: Screen) => Promise<void>,
+  wire: Record<string, unknown> = {},
 ) {
   reset();
   const origin = ORIGINS[originName];
@@ -273,7 +274,7 @@ async function withPage(
   const app = mount(Pages[`${pageName}-${originName}`], { target, props: {} });
   try {
     await until(() => shared().options !== null, 'the transport');
-    const request = { type: 'openkey:sign:request', message, keyId: KEY.id, ...(presentation === undefined ? {} : { presentation }) };
+    const request = { type: 'openkey:sign:request', message, keyId: KEY.id, ...(presentation === undefined ? {} : { presentation }), ...wire };
     if (pageName === 'popup') {
       win.dispatchEvent(new win.MessageEvent('message', { data: request, origin, source: opener as never }));
     } else {
@@ -384,13 +385,34 @@ for (const pageName of PAGE_NAMES) {
 
     test('the same name is shown when the requester is a trusted shell origin', async () => {
       await withPage(pageName, 'shell', claim({ displayName: 'TinyCloud One', onBehalfOf: 'Tiny Chat in TinyCloud One' }), async ({ claimLines, requesterLine }) => {
-        expect(requesterLine()).toContain('tinycloud.chat');
+        expect(requesterLine()).toContain('tinycloud.one');
         expect(claimLines()).toEqual([
           'It calls itself "TinyCloud One".',
           `It says it's asking for "Tiny Chat in TinyCloud One".`,
           `OpenKey hasn't checked these.`,
         ]);
       });
+    });
+
+    test('a reason or an on-behalf-of that imitates a product or another site is dropped, and the lines that stay are closed as one', async () => {
+      const presentation = claim({
+        displayName: 'Acme Notes',
+        onBehalfOf: 'paypal.com',
+        reason: 'OpenKey security check: approve to continue',
+      });
+      await withPage(pageName, 'app', presentation, async ({ claimLines, bodyText }) => {
+        expect(claimLines()).toEqual([`It calls itself "Acme Notes". OpenKey hasn't checked that name.`]);
+        expect(bodyText()).not.toContain('paypal');
+        expect(bodyText()).not.toContain('security check');
+      });
+    });
+
+    test('a request that names an authorization protocol shows no claim, and the words stay out of the manifest', async () => {
+      const wire = pageName === 'popup' ? { protocolVersion: 1 } : { authorizationProtocolVersion: 1 };
+      await withPage(pageName, 'app', claim({ displayName: 'Acme Notes', reason: 'To sync.' }), async ({ section, bodyText }) => {
+        expect(section()).toBeNull();
+        expect(bodyText()).not.toContain('calls itself');
+      }, wire);
     });
 
     test('a name that reads as another host is dropped', async () => {
