@@ -14,7 +14,7 @@
   let generating = $state(false);
   let error = $state('');
   let copiedId = $state<string | null>(null);
-  // Whether the account has renewing permissions: only then does the note by Sign Out show.
+  // Whether apps keep renewing after this sign-out: only then does the note by Sign Out show.
   let renewing = $state(false);
   let renewingChecked = false;
 
@@ -35,7 +35,8 @@
 
   async function checkRenewing() {
     try {
-      renewing = (await api.listRenewalLeases()).leases.length > 0;
+      // Only leases that outlive this sign-out count: the ones it stops are not what the note is about.
+      renewing = (await api.listRenewalLeases()).leases.some((lease) => !lease.endsOnSignOut);
     } catch {
       // Without the list the note stays hidden; signing out is unaffected.
     }

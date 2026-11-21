@@ -1,5 +1,5 @@
-// TC-2946: signing out leaves approved permissions renewing, so the sign-out buttons say so, but only when the
-// account has renewing permissions. Every API call is answered by page.route.
+// TC-3636: signing out ends this sign-in's own renewal but leaves other apps' renewals on, so the sign-out buttons say
+// so, but only when something other than this sign-in keeps renewing. Every API call is answered by page.route.
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { ORIGIN } from './e2e-port';
 
@@ -8,10 +8,12 @@ const session = { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now(
 const lease = {
   leaseCid: 'bafkr4ilease', originalCid: 'bafkr4ioriginal', nodeOrigin: 'https://node.tinycloud.xyz', approvedAt: '2026-11-13T12:00:00.000Z',
   leaseExpiresAt: '2027-02-11T12:00:00.000Z', grantExpiresAt: '2026-12-13T12:00:00.000Z', signer: 'openkey', reason: 'Courier keeps your inbox in sync',
-  grantSiwe: '',
+  grantSiwe: '', endsOnSignOut: false,
 };
-const DASHBOARD_NOTE = 'Signing out doesn’t stop apps renewing the access you approved. Stop renewals';
-const APP_NOTE = 'Signing out doesn’t stop apps renewing the access you approved. You can stop renewals in OpenKey Settings.';
+// A sign-in lease of the session being signed out: signing out stops it, so it is no reason to say anything.
+const endingLease = { ...lease, leaseCid: 'bafkr4iending', reason: null, endsOnSignOut: true };
+const DASHBOARD_NOTE = 'Apps you allowed to stay signed in keep renewing after you sign out. Stop renewals';
+const APP_NOTE = 'Signing out ends this app’s sign-in and its renewal. Other apps you allowed to stay signed in keep renewing. To stop them, choose Stop renewal under Renewing permissions in OpenKey settings.';
 
 async function setup(page: Page, leases: unknown[] | 'error') {
   await page.context().addCookies([{ name: 'better-auth.session_token', value: 'cookie-session', url: ORIGIN }]);
@@ -38,7 +40,7 @@ test('the dashboard says signing out leaves renewals on, and Stop renewals opens
   await expect(page.locator('#renewing-permissions')).toBeInViewport();
 });
 
-for (const [label, leases] of [['no renewing permissions', []], ['the list fails to load', 'error']] as const) {
+for (const [label, leases] of [['no renewing permissions', []], ['only this sign-in\'s own renewal would continue', [endingLease]], ['the list fails to load', 'error']] as const) {
   test(`the dashboard shows no sign-out note when ${label}`, async ({ page }) => {
     await setup(page, leases === 'error' ? 'error' : [...leases]);
     const listed = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/account/renewal-leases');
@@ -63,10 +65,12 @@ test('the in-app sign-out confirm says renewals continue when the account has re
   await expect(page.getByTestId('sign-out-renewal-note')).toHaveText(APP_NOTE);
 });
 
-test('the in-app sign-out confirm says nothing about renewals when none are renewing', async ({ page }) => {
-  await setup(page, []);
-  const listed = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/account/renewal-leases');
-  await askToSignOut(page);
-  await listed;
-  await expect(page.getByTestId('sign-out-renewal-note')).toHaveCount(0);
-});
+for (const [label, leases] of [['none are renewing', []], ['only this sign-in\'s own renewal would continue', [endingLease]]] as const) {
+  test(`the in-app sign-out confirm says nothing about renewals when ${label}`, async ({ page }) => {
+    await setup(page, [...leases]);
+    const listed = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/account/renewal-leases');
+    await askToSignOut(page);
+    await listed;
+    await expect(page.getByTestId('sign-out-renewal-note')).toHaveCount(0);
+  });
+}
