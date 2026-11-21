@@ -185,12 +185,12 @@ describe('the own folder equals the SDK generic manifest', () => {
     for (const vector of sdk.vectors) expect(genericAppId(vector.host)).toBe(vector.appId);
   });
 
-  test('ownFolderPermissions is exactly the SDK resource set, with no public space and 7 days', () => {
+  test('ownFolderPermissions is byte-for-byte the SDK resource set, with no public space and 7 days', () => {
     for (const vector of sdk.vectors) {
       expect(vector.space).toBe('applications');
       expect(vector.includePublicSpace).toBe(false);
       expect(vector.expiryMs).toBe(SEVEN_DAYS_MS);
-      expect(ownFolderPermissions(vector.host ?? '')).toEqual(vector.resources);
+      expect(JSON.stringify(ownFolderPermissions(vector.host ?? ''))).toBe(JSON.stringify(vector.resources));
     }
   });
 });
@@ -203,12 +203,14 @@ describe('a request that names no permissions', () => {
     expect(sorted(parsePreparedRecap(siwe))).toEqual(sorted(sdkEntries('com.example.notes')));
     expect(lifetimeMs(siwe)).toBe(SEVEN_DAYS_MS);
     expect(prepared.ownFolderOnly).toBe(true);
+    expect(prepared.ownFolderShared).toBe(false);
     expect(prepared.spaceId).toBe(makeSpaceId(account.address, chainId, 'applications'));
   });
 
   test('/prepare with a port in the origin names the same folder', async () => {
     const prepared = await prepare({ requesterOrigin: 'http://localhost:5173' });
     expect(sorted(parsePreparedRecap(prepared.prepared.siwe))).toEqual(sorted(sdkEntries('localhost')));
+    expect(prepared.ownFolderShared).toBe(false);
   });
 
   test('/prepare without a requester origin uses the default domain', async () => {
@@ -219,6 +221,17 @@ describe('a request that names no permissions', () => {
       entry.path ? { ...entry, path: folder } : entry
     ))));
     expect(lifetimeMs(siwe)).toBe(SEVEN_DAYS_MS);
+    expect(prepared.ownFolderOnly).toBe(true);
+    expect(prepared.ownFolderShared).toBe(true);
+  });
+
+  test('/prepare for an origin whose host is not a plain name uses the shared node.app folder', async () => {
+    const prepared = await prepare({ requesterOrigin: 'http://[::1]:5173' });
+    const folder = 'node.app/';
+    expect(sorted(parsePreparedRecap(prepared.prepared.siwe))).toEqual(sorted(sdkEntries('com.example.notes').map((entry) => (
+      entry.path ? { ...entry, path: folder } : entry
+    ))));
+    expect(prepared.ownFolderShared).toBe(true);
   });
 
   test('approving it signs the prepared own-folder bytes', async () => {
@@ -289,6 +302,7 @@ describe('a request that names its permissions', () => {
       { service: 'capabilities', space, path: '', actions: ['tinycloud.capabilities/read'] },
     ]));
     expect(prepared.ownFolderOnly).toBe(false);
+    expect(prepared.ownFolderShared).toBe(false);
   });
 });
 

@@ -671,6 +671,12 @@ export interface PrepareDelegationSessionResult {
   requestedSpaces: RequestedDelegationSpace[];
   /** True when the request named no permissions, so it gets only its own folder. */
   ownFolderOnly: boolean;
+  /**
+   * True when that folder is one many requests share: the request had no
+   * requester origin (the default domain's folder) or its host can't be read
+   * ({@link GENERIC_APP_ID_WITHOUT_HOST}).
+   */
+  ownFolderShared: boolean;
 }
 
 export function prepareDelegationSession({
@@ -689,6 +695,8 @@ export function prepareDelegationSession({
 }: PrepareDelegationSessionInput): PrepareDelegationSessionResult {
   const ownFolderOnly = permissions === undefined;
   const siweDomain = domain ?? SIWE_DOMAIN;
+  const appId = genericAppId(siweDomain);
+  const ownFolderShared = ownFolderOnly && (appId === genericAppId(SIWE_DOMAIN) || appId === GENERIC_APP_ID_WITHOUT_HOST);
   const fallbackSpaceId = makeSpaceId(address, chainId, prefix);
   const baselineAbilities = ownFolderOnly
     ? ownFolderSessionAbilities(siweDomain, { address, chainId })
@@ -781,5 +789,6 @@ export function prepareDelegationSession({
     baselineAbilities,
     requestedSpaces: delegationSpaces(selectedEntries, baselineAbilities),
     ownFolderOnly,
+    ownFolderShared,
   };
 }

@@ -2313,6 +2313,7 @@ delegateRouter.post('/prepare', async (c) => {
     selectedActionKeys: preparedResult.selectedActionKeys,
     edited: preparedResult.edited,
     ownFolderOnly: preparedResult.ownFolderOnly,
+    ownFolderShared: preparedResult.ownFolderShared,
     reason,
     // Versioned protocol: /complete MUST echo this token.
     authorizationContext: {
@@ -2451,9 +2452,11 @@ delegateRouter.post('/complete', async (c) => {
   try {
     const entries = parsePreparedRecap(body.prepared.siwe);
     const signer = { address: signedFields.address, chainId: signedFields.chainId };
-    // As before TC-3443, the no-permissions baseline belongs to the account the
-    // request was prepared for, so a SIWE signed by another address fails the
-    // address checks below with their own codes.
+    // With no permissions, the baseline is the own folder of the account the
+    // request was prepared for, not of the signer, as the old default was. A
+    // SIWE re-signed by another address passes this subset check, and the
+    // checks after it decide: prepared.address (key-mismatch), the signature,
+    // then the context bindings.
     const preview = typeof body.authorizationContextToken === 'string'
       ? peekAuthorizationContext(body.authorizationContextToken) : undefined;
     const [, , , preparedChainId, preparedOwner] = (preview?.ok ? preview.value.spaceId : preparedSpaceId).split(':');
