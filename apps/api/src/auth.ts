@@ -210,7 +210,7 @@ const passkeyFreshnessPlugin = {
         );
       }) as AuthMiddleware,
     }, {
-      // One passkey per interaction: a passkey sign-in that names its pending native request covers that request's Approve.
+      // One passkey per interaction: a passkey sign-in that names its native request covers that request's Approve.
       matcher: (ctx) => ctx.path === '/passkey/verify-authentication',
       handler: (async (ctx: { headers?: Headers; body?: unknown; context: { returned?: unknown } }) => {
         return recordFlowPasskeyAfterHook(prisma, ctx.context.returned, ctx.headers?.get(FLOW_PASSKEY_HEADER), ctx.body);

@@ -490,7 +490,7 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
     const host = 'https://tee.node.tinycloud.xyz';
     afterAll(() => { hostedSpace = null; });
 
-    // `pending` leaves the request as the sign-in page finds it: not yet resolved, no owner.
+    // `pending` leaves the request as the sign-in page finds it: resolved by /authorize, no owner yet.
     async function nativeRequest(owner: Account, options: { pending?: boolean } = {}) {
       const clientId = `ok_${randomBytes(16).toString('hex')}`;
       await prisma.oauthClient.create({ data: {
@@ -520,7 +520,7 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
           { service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] },
           { service: 'tinycloud.kv', space: 'applications', path: `${appId}/notes/`, actions: ['tinycloud.kv/get', 'tinycloud.kv/list'] },
         ],
-        ttlSeconds: 3600, ...(options.pending ? { status: 'PENDING' } : { status: 'RESOLVED', userId: owner.userId }),
+        ttlSeconds: 3600, status: 'RESOLVED', ...(options.pending ? {} : { userId: owner.userId }),
         requestUriExpiresAt: new Date(Date.now() + 600_000), expiresAt: new Date(Date.now() + 600_000),
       } });
       return `/api/oauth/tinycloud/requests/${id}`;
@@ -567,13 +567,13 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
       expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: requestIdOf(path) } })).approvalPasskeyMethod).toBe('NOT_REQUIRED');
     });
 
-    // TC-3596: one passkey per interaction. The native login page names its pending request on the passkey sign-in.
+    // TC-3596: one passkey per interaction. The native login page names its request on the passkey sign-in.
     const requestIdOf = (path: string) => path.split('/').at(-1)!;
     const cookieHeader = (response: Response) => response.headers.getSetCookie().map((cookie) => cookie.split(';')[0]).join('; ');
     const flowRows = (userId: string) => prisma.verification.count({ where: { userId, identifier: { startsWith: 'openkey-flow-passkey:' } } });
-    // The authorize step that follows a sign-in resolves the request for the signed-in user.
+    // The authorize step that follows a sign-in gives the request its owner.
     const resolveRequest = (path: string, owner: Account) => prisma.tinyCloudNativeRequest.update({
-      where: { id: requestIdOf(path) }, data: { status: 'RESOLVED', userId: owner.userId },
+      where: { id: requestIdOf(path) }, data: { userId: owner.userId },
     });
 
     /** A passkey sign-in through the real routes, as the native login page makes it. `flow` is the header value. */
@@ -660,8 +660,8 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
       await prisma.tinyCloudNativeRequest.update({ where: { id: requestIdOf(theirs) }, data: { userId: other.userId } });
       expect((await passkeySignIn(passkey, requestIdOf(theirs))).response.status).toBe(200);
       expect(await flowRows(owner.userId)).toBe(0);
-      // A request that is no longer pending.
-      await resolveRequest(path, owner);
+      // A request that is already decided.
+      await prisma.tinyCloudNativeRequest.update({ where: { id }, data: { status: 'DENIED' } });
       expect((await passkeySignIn(passkey, id)).response.status).toBe(200);
       expect(await flowRows(owner.userId)).toBe(0);
       // A passkey that was enrolled on a session alone.
