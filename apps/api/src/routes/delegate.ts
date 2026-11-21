@@ -32,7 +32,7 @@ import {
   permissionKey as computePermissionKey,
 } from './delegate-session';
 import { activateSessionWithinTimeout } from '../services/tinycloud-node-timeouts';
-import { ownBootstrapSpaceName } from '../services/tinycloud-siwe';
+import { isTinyCloudSiweForSigner, ownBootstrapSpaceName, parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
 import type { SpaceHostResult } from '@tinycloud/sdk-core';
 import { BOOTSTRAP_SPACE_NAMES, CAPABILITIES } from '@tinycloud/bootstrap';
 import {
@@ -136,7 +136,7 @@ import {
 } from '../services/coordinationos-signing-audit';
 import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
 import { canonicalTrustedTinyCloudHost, LOCAL_HOSTNAMES } from '../services/tinycloud-hosts';
-import { hostRequestedSpaceWithinBudget } from '../services/tinycloud-bootstrap-budget';
+import { awaitTinyCloudBootstrapWithinBudget, hostRequestedSpaceWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
 import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
 import { PreparedHandoffError } from '../services/prepared-handoff';
@@ -251,6 +251,49 @@ async function managedSpaceSetupPlan(input: {
   });
   return { space: name, plan: preference?.autoSignEnabled ? 'setup' : 'auto-sign-off', bootstrapHost };
 }
+
+/**
+ * Hosts a managed account at the node for the sign-in message the owner approved: the same hook, with the same
+ * budget, as POST /api/keys/:id/sign (TC-1608). web-sdk 3.13 does not bootstrap an interactive signer, so nothing
+ * else would host a brand-new account. The hook decides what is hosted (the account space's own entries, or the
+ * signer's own space the message names) and is idempotent: a complete account answers `complete`. It never
+ * withholds the signature: a failure is logged and the setup sweep retries it.
+ */
+async function bootstrapApprovedManagedSignIn(input: {
+  userId: string;
+  key: { id: string; userId: string | null; address: string; keyType: string; sealedBlob: string | null; sealingContext?: string | null };
+  message: string;
+}): Promise<void> {
+  try {
+    if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN === 'off' || !input.key.sealedBlob) return;
+    // The cheap refusals come first, so a message the hook would skip does not unseal the key.
+    const siwe = parseTinyCloudSiwe(input.message);
+    if (siwe === null || !isTinyCloudSiweForSigner(siwe, input.key.address)) return;
+    const { ensureTinyCloudBootstrapForApprovedSign } = await import('../services/tinycloud-bootstrap');
+    const sealedBlob = input.key.sealedBlob;
+    // A sign-in that names one of the signer's own spaces (and no account-space entry) waits for that space instead,
+    // bounded by the requested-space timeout inside the bootstrap.
+    const waitsForOwnSpace = requestedOwnSpaceForSiwe(siwe, input.key.address) !== null;
+    const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
+      ensureTinyCloudBootstrapForApprovedSign({
+        prisma,
+        userId: input.userId,
+        key: { id: input.key.id, address: input.key.address, keyType: input.key.keyType },
+        privateKey: () => unsealManagedKey(input.key, sealedBlob),
+        message: input.message,
+        format: 'personal_sign',
+      }),
+      waitsForOwnSpace ? { budgetMs: OWN_TIMEOUT_BUDGET_MS, ownLogsBackground: true } : {},
+    );
+    if (bootstrap.status === 'failed') {
+      log('error', 'tinycloud_bootstrap_failed', bootstrap.errorCode);
+    }
+  } catch {
+    // The signature is already made and any lease recorded: nothing here may turn it into an error.
+    log('error', 'tinycloud_bootstrap_failed', 'tinycloud_bootstrap_crashed');
+  }
+}
+
 type SpaceReadiness = { spaceReady: boolean | null; spaceError?: string; spacePending?: true };
 type RequestedSpaceReadiness = RequestedDelegationSpace & SpaceReadiness;
 type DelegationReadiness = SpaceReadiness & { requestedSpaces: RequestedSpaceReadiness[] };
@@ -3789,6 +3832,13 @@ delegateRouter.post('/authorize-sign', async (c) => {
       const refused = signInRenewalFailure(error);
       return c.json(refused.body, refused.status);
     }
+  }
+
+  // An approved sign-in by a managed key hosts the account at the node before the signature is returned, as
+  // POST /api/keys/:id/sign does. Only here, once a signature exists and the lease (if any) is recorded: a
+  // refused or failed sign hosts nothing. An external wallet's account is the wallet's to host.
+  if (!isExternal) {
+    await bootstrapApprovedManagedSignIn({ userId: user.id, key, message: signedMessage });
   }
 
   const handoffDelivery = ticket
