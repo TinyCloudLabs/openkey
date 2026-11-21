@@ -36,7 +36,9 @@ Cloudflare Pages deploys `main` on merge but only reports a check run, not a Dep
 
 The Share sender smoke's web-deploy waiter requires a completed success from
 Cloudflare's app (`85455`), named exactly `Cloudflare Pages: openkey`, on the
-requested commit SHA. It fetches all attempts with `filter=all` and pagination;
+requested commit SHA. Completed checks advertising `Branch Preview URL` are
+excluded: a same-SHA preview cannot authorize a production smoke. It fetches all
+attempts with `filter=all` and pagination;
 incomplete results fail closed. The highest check-run ID selects the newest
 completed, non-cancelled attempt by creation order, not completion time. Its
 success passes; any other conclusion refuses unless a newer-created unfinished
