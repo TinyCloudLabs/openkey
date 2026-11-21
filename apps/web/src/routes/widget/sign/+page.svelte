@@ -69,9 +69,8 @@
   let keyProblem = $state<'missing' | 'transient' | null>(null);
   let keyReadGeneration = 0;
   const expectedAddress = $derived(parseSIWE(message)?.message.address.toLowerCase() ?? null);
-  const signedUri = $derived(parseSIWE(message)?.message.uri ?? null);
   const claimedView = $derived.by(() => {
-    const claimed = claimedPresentation({ presentation: plainPresentation, origin, signedUri });
+    const claimed = claimedPresentation({ presentation: plainPresentation, origin });
     return claimed ? claimedPresentationView(claimed) : null;
   });
   let loading = $state(true);

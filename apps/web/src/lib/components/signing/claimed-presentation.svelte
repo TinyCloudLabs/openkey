@@ -12,9 +12,6 @@
 </script>
 
 <section class="claimed" aria-label="What the app says about itself" data-testid="claimed-presentation">
-  {#if view.verified}
-    <p class="claim-line" data-claim="verified-on-behalf-of"><span>{view.verified.before}<bdi>{view.verified.value}</bdi>{view.verified.after}</span></p>
-  {/if}
   {#each view.claims as claim (claim.kind)}
     <p class="claim-line" data-claim={claim.kind}>
       {#if claim.kind === "name" && view.iconUrl}

@@ -1017,6 +1017,14 @@ export class OpenKey {
    */
   readonly signMessagePresentation = 1 as const;
 
+  /**
+   * True when `signMessage()` opens the OpenKey approval screen: the client is connected with a key OpenKey holds.
+   * False when it goes straight to the person's own wallet (an external key) and when the client is not connected.
+   */
+  get signMessageShowsApproval(): boolean {
+    return this.lastAuth !== null && this.lastAuth.keyType !== 'EXTERNAL';
+  }
+
   constructor(config: OpenKeyConfig = {}) {
     this.config = config;
     this.host = config.host || DEFAULT_HOST;

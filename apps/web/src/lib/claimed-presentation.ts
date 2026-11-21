@@ -32,9 +32,10 @@ export const RESERVED_NAMES: readonly string[] = [
 ];
 
 /**
- * Requesters that may call themselves by a reserved name: the exact origins of OpenKey's own pages and of the TinyCloud
- * apps that sign in through OpenKey (TinyChat on tinycloud.chat, Home on home.tinycloud.xyz and tinycloud.one, the
- * desktop app, Share, Secret Manager). Matching is byte-exact on the verified origin the widget saw.
+ * Requesters that may call themselves by a reserved name: the exact https origins of OpenKey's own pages and of the
+ * TinyCloud apps that sign in through OpenKey (TinyChat on tinycloud.chat, Home on home.tinycloud.xyz and tinycloud.one,
+ * Share, Secret Manager). Matching is byte-exact on the verified origin the widget saw. A desktop webview origin is
+ * not here: every app in that webview has it.
  */
 export const TRUSTED_SHELL_ORIGINS: Record<string, true | undefined> = {
   'https://openkey.so': true,
@@ -42,8 +43,6 @@ export const TRUSTED_SHELL_ORIGINS: Record<string, true | undefined> = {
   'https://tinycloud.chat': true,
   'https://home.tinycloud.xyz': true,
   'https://tinycloud.one': true,
-  'tauri://localhost': true,
-  'http://tauri.localhost': true,
   'https://share.tinycloud.xyz': true,
   'https://secrets.tinycloud.xyz': true,
 };
@@ -53,8 +52,7 @@ export interface ClaimedPresentation {
   displayName: string | null;
   /** The name's icon: set only when `displayName` is. */
   iconUrl: string | null;
-  /** `verified` is true only when the text equals the delegatee DID or URI of the signed message. */
-  onBehalfOf: { text: string; verified: boolean } | null;
+  onBehalfOf: string | null;
   reason: string | null;
 }
 
@@ -171,13 +169,6 @@ function validIcon(value: unknown): string | null {
 
 // ---- the decision ---------------------------------------------------------
 
-/** Does the text name the signed message's delegatee: its URI, or the DID part of it? */
-function namesDelegatee(text: string, signedUri: string | null): boolean {
-  if (signedUri === null) return false;
-  const uri = signedUri.trim();
-  return uri !== '' && (text === uri || text === uri.split('#')[0]);
-}
-
 /** An own field of the app's presentation, whatever it holds. */
 function fieldOf(source: object, name: string): unknown {
   return Object.hasOwn(source, name) ? Reflect.get(source, name) : undefined;
@@ -189,17 +180,12 @@ function fieldOf(source: object, name: string): unknown {
  * - A name that reads as another host than the origin's is dropped.
  * - A name or "on behalf of" that contains a reserved name is dropped unless the origin is a trusted shell. Nothing
  *   marks the drop: the screen shows what is left.
- * - An "on behalf of" equal to the delegatee DID or URI in the signed message (`signedUri`) is verified; any other is a claim.
  * - The icon is shown only beside a name that is shown, and only as a small PNG, JPEG or WebP data URI.
  *
  * Every text is cleaned and cut to its limit. With no verified origin nothing is shown.
  */
-export function claimedPresentation(input: {
-  presentation: unknown;
-  origin: string;
-  signedUri: string | null;
-}): ClaimedPresentation | null {
-  const { presentation, origin, signedUri } = input;
+export function claimedPresentation(input: { presentation: unknown; origin: string }): ClaimedPresentation | null {
+  const { presentation, origin } = input;
   if (!origin || origin === '*' || origin === 'null') return null;
   if (typeof presentation !== 'object' || presentation === null || Array.isArray(presentation)) return null;
   if (fieldOf(presentation, 'protocolVersion') !== 1) return null;
@@ -210,13 +196,9 @@ export function claimedPresentation(input: {
     displayName = null;
   }
 
-  let onBehalfOf: ClaimedPresentation['onBehalfOf'] = null;
-  const behalfText = cleanText(fieldOf(presentation, 'onBehalfOf'));
-  if (behalfText !== null) {
-    if (namesDelegatee(behalfText, signedUri)) onBehalfOf = { text: capText(behalfText, CLAIM_LIMITS.onBehalfOf), verified: true };
-    else if (trusted || !containsReservedName(behalfText)) {
-      onBehalfOf = { text: capText(behalfText, CLAIM_LIMITS.onBehalfOf), verified: false };
-    }
+  let onBehalfOf = cleanText(fieldOf(presentation, 'onBehalfOf'));
+  if (onBehalfOf !== null) {
+    onBehalfOf = !trusted && containsReservedName(onBehalfOf) ? null : capText(onBehalfOf, CLAIM_LIMITS.onBehalfOf);
   }
 
   const reasonText = cleanText(fieldOf(presentation, 'reason'));
@@ -235,7 +217,6 @@ export const claimedPresentationCopy = {
   nameOnly: `It calls itself "{value}". OpenKey hasn't checked that name.`,
   name: `It calls itself "{value}".`,
   onBehalfOf: `It says it's asking for "{value}".`,
-  verifiedOnBehalfOf: `It is asking for "{value}".`,
   reason: `Its reason: "{value}"`,
   closingOne: `OpenKey hasn't checked this.`,
   closingMany: `OpenKey hasn't checked these.`,
@@ -250,8 +231,6 @@ export interface ClaimLine {
 }
 
 export interface ClaimedPresentationView {
-  /** The "on behalf of" that matches the signed message; the only line that is not an unchecked claim. */
-  verified: Omit<ClaimLine, 'kind'> | null;
   /** The claims in the order name, on-behalf-of, reason. */
   claims: ClaimLine[];
   /** One closing line after the claims; `null` where the name line says it itself. */
@@ -272,17 +251,13 @@ export function claimLineText(claim: Omit<ClaimLine, 'kind'>): string {
 /** The lines the sign screen shows for what survived `claimedPresentation`. */
 export function claimedPresentationView(claimed: ClaimedPresentation): ClaimedPresentationView {
   const claims: ClaimLine[] = [];
-  const nameAlone = claimed.displayName !== null && (claimed.onBehalfOf === null || claimed.onBehalfOf.verified) && claimed.reason === null;
+  const nameAlone = claimed.displayName !== null && claimed.onBehalfOf === null && claimed.reason === null;
   if (claimed.displayName !== null) {
     claims.push(line('name', nameAlone ? claimedPresentationCopy.nameOnly : claimedPresentationCopy.name, claimed.displayName));
   }
-  if (claimed.onBehalfOf && !claimed.onBehalfOf.verified) {
-    claims.push(line('onBehalfOf', claimedPresentationCopy.onBehalfOf, claimed.onBehalfOf.text));
-  }
+  if (claimed.onBehalfOf !== null) claims.push(line('onBehalfOf', claimedPresentationCopy.onBehalfOf, claimed.onBehalfOf));
   if (claimed.reason !== null) claims.push(line('reason', claimedPresentationCopy.reason, claimed.reason));
-  const verified = claimed.onBehalfOf?.verified ? line('onBehalfOf', claimedPresentationCopy.verifiedOnBehalfOf, claimed.onBehalfOf.text) : null;
   return {
-    verified: verified && { before: verified.before, value: verified.value, after: verified.after },
     claims,
     closing: nameAlone || claims.length === 0
       ? null

@@ -13,27 +13,23 @@ import {
 
 const APP = 'https://notes.example';
 const SHELL = 'https://tinycloud.chat';
-const DELEGATEE = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
+const DID = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
 
 const bytes = (...head: number[]) => Buffer.from([...head, ...new Array(30).fill(7)]).toString('base64');
 const PNG = `data:image/png;base64,${bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)}`;
 const JPEG = `data:image/jpeg;base64,${bytes(0xff, 0xd8, 0xff, 0xe0)}`;
 const WEBP = `data:image/webp;base64,${bytes(0x52, 0x49, 0x46, 0x46)}`;
 
-function decide(presentation: unknown, origin = APP, signedUri: string | null = DELEGATEE) {
-  return claimedPresentation({ presentation, origin, signedUri });
+function decide(presentation: unknown, origin = APP) {
+  return claimedPresentation({ presentation, origin });
 }
 const claim = (fields: Record<string, unknown>) => ({ protocolVersion: 1, ...fields });
-const viewOf = (presentation: unknown, origin = APP, signedUri: string | null = DELEGATEE): ClaimedPresentationView | null => {
-  const decided = decide(presentation, origin, signedUri);
+const viewOf = (presentation: unknown, origin = APP): ClaimedPresentationView | null => {
+  const decided = decide(presentation, origin);
   return decided ? claimedPresentationView(decided) : null;
 };
 const textOf = (view: ClaimedPresentationView | null): string[] =>
-  view ? [
-    ...(view.verified ? [claimLineText(view.verified)] : []),
-    ...view.claims.map(claimLineText),
-    ...(view.closing ? [view.closing] : []),
-  ] : [];
+  view ? [...view.claims.map(claimLineText), ...(view.closing ? [view.closing] : [])] : [];
 
 describe('reserved names', () => {
   test('"TinyCloud One" from an origin that is not a trusted shell is dropped', () => {
@@ -74,10 +70,17 @@ describe('reserved names', () => {
     expect(decide(claim({ displayName: 'Tiny Cloud One', onBehalfOf: 'Home in OpenKey' }), 'https://tinycloud.one')).toEqual({
       displayName: 'Tiny Cloud One',
       iconUrl: null,
-      onBehalfOf: { text: 'Home in OpenKey', verified: false },
+      onBehalfOf: 'Home in OpenKey',
       reason: null,
     });
     expect(decide(claim({ displayName: 'Share' }), 'https://share.tinycloud.xyz')?.displayName).toBe('Share');
+  });
+
+  test('a desktop webview origin is not a trusted shell, so a reserved name from it is dropped', () => {
+    for (const origin of ['tauri://localhost', 'http://tauri.localhost', 'https://tauri.localhost']) {
+      expect(decide(claim({ displayName: 'TinyCloud One', onBehalfOf: 'Home in OpenKey' }), origin)).toBeNull();
+      expect(decide(claim({ displayName: 'Acme Notes' }), origin)?.displayName).toBe('Acme Notes');
+    }
   });
 
   test('a trusted shell origin is an exact match', () => {
@@ -120,7 +123,7 @@ describe('cleaning', () => {
     }));
     expect(Array.from(decided!.displayName!)).toHaveLength(CLAIM_LIMITS.displayName);
     expect(decided!.displayName!.endsWith('…')).toBe(true);
-    expect(Array.from(decided!.onBehalfOf!.text)).toHaveLength(CLAIM_LIMITS.onBehalfOf);
+    expect(Array.from(decided!.onBehalfOf!)).toHaveLength(CLAIM_LIMITS.onBehalfOf);
     expect(Array.from(decided!.reason!)).toHaveLength(CLAIM_LIMITS.reason);
     expect(decide(claim({ displayName: 'A'.repeat(64) }))?.displayName).toBe('A'.repeat(64));
   });
@@ -218,18 +221,9 @@ describe('the icon', () => {
 });
 
 describe('on behalf of', () => {
-  test('equal to the delegatee DID or URI in the signed message is verified', () => {
-    expect(decide(claim({ onBehalfOf: DELEGATEE }))?.onBehalfOf).toEqual({ text: DELEGATEE, verified: true });
-    expect(decide(claim({ onBehalfOf: DELEGATEE }), APP, `${DELEGATEE}#${DELEGATEE.slice(8)}`)?.onBehalfOf).toEqual({
-      text: DELEGATEE, verified: true,
-    });
-  });
-
-  test('a name, or anything when the message names no delegatee, is a claim', () => {
-    expect(decide(claim({ onBehalfOf: 'Sync in Acme' }))?.onBehalfOf).toEqual({ text: 'Sync in Acme', verified: false });
-    expect(decide(claim({ onBehalfOf: DELEGATEE }), APP, null)?.onBehalfOf).toEqual({ text: DELEGATEE, verified: false });
-    expect(decide(claim({ onBehalfOf: `${DELEGATEE}x` }))?.onBehalfOf?.verified).toBe(false);
-    expect(decide(claim({ onBehalfOf: DELEGATEE.toUpperCase() }))?.onBehalfOf?.verified).toBe(false);
+  test('any text is a claim, whatever the signed message names', () => {
+    expect(decide(claim({ onBehalfOf: 'Sync in Acme' }))?.onBehalfOf).toBe('Sync in Acme');
+    expect(decide(claim({ onBehalfOf: DID }))?.onBehalfOf).toBe(DID);
   });
 });
 
@@ -274,16 +268,14 @@ describe('the lines on the screen', () => {
     ]);
   });
 
-  test('a verified on-behalf-of is not labelled unchecked and does not count among the claims', () => {
-    expect(textOf(viewOf(claim({ onBehalfOf: DELEGATEE })))).toEqual([`It is asking for "${DELEGATEE}".`]);
-    expect(textOf(viewOf(claim({ displayName: NAME, onBehalfOf: DELEGATEE })))).toEqual([
-      `It is asking for "${DELEGATEE}".`,
-      `It calls itself "${NAME}". OpenKey hasn't checked that name.`,
+  test('an on-behalf-of that is a DID is the same unchecked claim and counts toward the closing line', () => {
+    expect(textOf(viewOf(claim({ onBehalfOf: DID })))).toEqual([
+      `It says it's asking for "${DID}".`,
+      `OpenKey hasn't checked this.`,
     ]);
-    expect(textOf(viewOf(claim({ displayName: NAME, onBehalfOf: DELEGATEE, reason: REASON })))).toEqual([
-      `It is asking for "${DELEGATEE}".`,
+    expect(textOf(viewOf(claim({ displayName: NAME, onBehalfOf: DID })))).toEqual([
       `It calls itself "${NAME}".`,
-      `Its reason: "${REASON}"`,
+      `It says it's asking for "${DID}".`,
       `OpenKey hasn't checked these.`,
     ]);
   });

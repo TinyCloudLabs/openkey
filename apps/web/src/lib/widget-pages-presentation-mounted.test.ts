@@ -355,9 +355,9 @@ for (const pageName of PAGE_NAMES) {
       });
     });
 
-    test('an on-behalf-of that equals the delegatee in the signed bytes is shown as asked, not as unchecked', async () => {
+    test('an on-behalf-of that is the delegatee DID in the signed bytes is the same unchecked claim', async () => {
       await withPage(pageName, 'app', claim({ onBehalfOf: DELEGATEE }), async ({ claimLines }) => {
-        expect(claimLines()).toEqual([`It is asking for "${DELEGATEE}".`]);
+        expect(claimLines()).toEqual([`It says it's asking for "${DELEGATEE}".`, `OpenKey hasn't checked this.`]);
       });
     });
 
