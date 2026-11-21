@@ -42,6 +42,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile --ignore-scripts
 
+      # Mirror the Dockerfile check so a migration PR missing the schema
+      # contract fails during review rather than the deploy image build.
+      - name: DB schema contract
+        run: bun test packages/db/src/schema-contract.test.ts
+
       # The API imports @openkey/db and @openkey/tee from their built dist/,
       # and @openkey/db needs the generated Prisma client. The tests that drive
       # the signing pages' own code load @openkey/capability-review from its dist/,
