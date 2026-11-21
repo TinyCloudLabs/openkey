@@ -349,9 +349,9 @@ const WAYS_OUT: Array<['GET' | 'POST' | 'DELETE', string, MiddlewareHandler?]> =
   ['GET', '/api/account'],
   ['GET', '/api/account/tinycloud-apps'],
   ['GET', '/api/account/renewal-leases'],
-  // Reading your own secrets and variables before deleting the account, so you can take your data with you: the
-  // browser session only (a request with an Authorization header stays gated), reads only (every write stays
-  // gated). `/status` is here because it restores the TinyCloud session that listing needs after a restart.
+  // Reading what you hold before deleting the account (secret names, variable names and values): the browser
+  // session only (a request with an Authorization header stays gated), reads only (every write stays gated).
+  // `/status` is here because it restores the TinyCloud session that listing needs after a restart.
   ['GET', '/api/secrets/status', allowBrowserBeforeTerms],
   ['GET', '/api/secrets', allowBrowserBeforeTerms],
   ['GET', '/api/variables', allowBrowserBeforeTerms],

@@ -121,8 +121,8 @@ if (process.env.OPENKEY_TEST_REAL_TERMS_RELEASE !== '1') {
     }
   });
 
-  // The way out for your own data: an account that has not accepted can read its own secrets and variables
-  // (names for secrets, names and values for variables) with its browser session, and nothing else about them.
+  // Seeing what you hold before deleting the account: an account that has not accepted can list its secrets'
+  // names and read its variables (names and values) with its browser session, and nothing else about them.
   describe('reading your own secrets and variables before agreeing', () => {
     let writes: string[];
     beforeAll(async () => {
@@ -187,7 +187,7 @@ if (process.env.OPENKEY_TEST_REAL_TERMS_RELEASE !== '1') {
         const appToken = await send('GET', path, { authorization: `Bearer ${randomUUID()}` });
         expect(appToken.status, path).toBe(401);
       }
-      // Once that account has agreed, its token reads as before.
+      // Once that account has agreed, its token reads its data.
       await prisma.termsAcceptance.create({
         data: { id: randomUUID(), userId, documentId: 'terms', version: shipped.version, textSha256: shipped.textSha256, surface: 'web', appVersion: 'test' },
       });
