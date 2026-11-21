@@ -832,6 +832,32 @@ Deny sets a `RESOLVED` request to `DENIED` and returns `{"status":"DENIED"}`.
 The page then posts provider consent `{accept: false, oauth_query}`, which
 redirects with `error=access_denied&state=…&iss=…`.
 
+### One passkey per interaction (TC-3596)
+
+When the account's passkey setting asks for a passkey on Approve, `prepare` returns a challenge and `approve`
+verifies an assertion bound to that revision's digest (`passkey_approval_required` otherwise). A user who has
+just signed in with a passkey would see two prompts back to back, so a passkey sign-in made **for this request**
+counts as that request's approval passkey:
+
+- The login page sends `x-openkey-passkey-flow: <tinycloud_request id>` with its passkey sign-in. After the
+  sign-in verifies, OpenKey records a cover only when **all** of these hold: the request id has the exact PAR id
+  shape (`^[A-Za-z0-9_-]{32}$`); the request exists, is `RESOLVED` (the state `/authorize` leaves it in when it
+  sends the user to sign in), and is unowned or the signer's; it was created
+  before the assertion; the assertion carries the user-verified flag; and the passkey is one that counts for
+  step-up, the same bar as an approval passkey. Otherwise nothing is recorded and the sign-in still succeeds.
+- The cover is one `verification` row, `openkey-flow-passkey:<session id>:<request id>`, valid for five minutes
+  and for that session and that request only. It is not shared with another session of the account or another
+  request, and a request that has no cover gets the usual challenge.
+- While it exists, `prepare` returns `passkey: {required: false}` and `approve` needs no assertion, for sign-in
+  and step-up requests alike. A re-prepare of the same request (a changed selection) is covered too. Approve or
+  deny ends every session's cover for that request; an expired one gets the existing `passkey_approval_required`
+  refusal and a new challenge.
+- `tinycloud_native_request.approvalPasskeyMethod` records which gate let the approval through:
+  `NOT_REQUIRED`, `FLOW_PASSKEY` or `REQUEST_PASSKEY`.
+- Only these two routes read the cover. Lowering the approval setting, TinyCloud manage-key mode, enabling an
+  app, account deletion, passkey enrolment and removal, and key export or recovery keep asking for their own
+  passkey. Email-code and social sign-ins make no cover and are asked once, at Approve.
+
 ### Consent errors
 
 | HTTP | `error` | Cause |

@@ -85,6 +85,14 @@ function responseBody(value: unknown): Promise<SessionIssuedResponse | null> | S
   return value as SessionIssuedResponse;
 }
 
+/** The session a successful sign-in response issued, or null when it issued none. */
+export async function issuedSession(returned: unknown): Promise<{ sessionId: string; userId: string } | null> {
+  const body = await responseBody(returned);
+  const sessionId = body?.session?.id;
+  const userId = body?.session?.userId;
+  return typeof sessionId === 'string' && typeof userId === 'string' ? { sessionId, userId } : null;
+}
+
 /** The generic login path never records custody freshness without a marker. */
 export function assertFreshPasskeyUserVerification(verification: {
   authenticationInfo?: { userVerified?: boolean };
