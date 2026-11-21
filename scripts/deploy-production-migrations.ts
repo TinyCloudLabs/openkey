@@ -83,6 +83,10 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   ['20261118_0001_terms_acceptance', 'a2535be69867c0a4c138233c22b2bfae7eda5d950c7d5c22138e25ba6efc3e7c'],
   ['20261119_0001_terms_acceptance_no_delete', 'ea98e5b306af38dfb0145ba915ea38ab6bf8e53a52744fc3039d17964ab807c4'],
   ['20261119_0002_passkey_approval_mode', 'a6e0a4dd2351b7bdddf94013b3340db1ba118f6f2fa0e3b82f58b528e371ba78'],
+  ['20261121_0001_native_stepup', 'e83cdd1c6296344b0d3df1559c40dbb9381faaff8e167f98486f27d0551bde3b'],
+  ['20261121_0002_native_request_kind', '22823dfea36b42f7ffcfc5da0d333340ed025316e68a95c39f63821181022c23'],
+  ['20261121_0003_native_withdraw_stepup_tokens', '0058b9b249016025ce123121ee48ffad03241060d6c708100f9958dd8179cf48'],
+  ['20261121_0004_native_stepup_delegation', '71c7f4491f6e63320acb9ef34c76ff54ec0bce2e880764e725b3500fa9c0e6bb'],
 ]);
 
 export type MigrationRow = {
