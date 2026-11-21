@@ -175,7 +175,7 @@ if (process.env.OPENKEY_TEST_REAL_TERMS_RELEASE !== '1') {
       expect(writes).toEqual([]);
     });
 
-    test('a session token or an app token for an account that has not accepted cannot read them', async () => {
+    test('a session token or an app token sent in an Authorization header for an account that has not accepted cannot read them', async () => {
       const { userId, cookie } = await account('token');
       const token = decodeURIComponent(cookie.slice(cookie.indexOf('=') + 1));
       for (const path of ['/api/secrets', '/api/variables', '/api/secrets/status']) {
