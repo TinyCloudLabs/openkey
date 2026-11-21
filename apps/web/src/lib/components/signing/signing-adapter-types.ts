@@ -181,8 +181,8 @@ export interface WidgetSigningTransport {
   renewal?: RenewalChoice;
 
   /**
-   * The warning screen for extra permissions (TC-2927): decrypt or key creation on the encryption network, or on
-   * keys outside the app's own area. Set by the signing pages that carry the owner's decision to the server.
+   * The warning screen for extra permissions (TC-2927): decrypt, key creation, or blocking and unblocking keys on the
+   * encryption network, or on keys outside the app's own area. Set by the signing pages that carry the owner's decision to the server.
    * `splittable` is false on the exact-byte path, where the request can only be approved or cancelled whole.
    * `onDecide` receives the action ids the owner allowed and must make the next preview (or sign) carry them.
    */

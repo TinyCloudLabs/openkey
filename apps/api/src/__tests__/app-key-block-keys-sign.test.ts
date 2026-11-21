@@ -1,8 +1,8 @@
 // `key.block` and `key.unblock` on an encryption key or prefix outside `apps/`
-// are refused on the generic signing route (`/api/keys/:keyId/sign`), as text
-// and as `0x` hex. The route has a verified `requestOrigin` but no manifest and
-// no app id, so it cannot tell whose key a block names and refuses whatever the
-// origin.
+// are signed on the generic signing route (`/api/keys/:keyId/sign`) only after
+// the owner decided on the warning screen (`elevatedAcknowledged: true`), as
+// text and as `0x` hex. The route has a verified `requestOrigin` but no
+// manifest and no app id, so no origin makes the decision for the owner.
 
 import './tc1777-test-env';
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
@@ -118,18 +118,35 @@ describe('POST /api/keys/:keyId/sign with key.block or key.unblock outside apps/
   test.each(outside.flatMap(([name, resource]) => [
     [name, resource, BLOCK],
     [name, resource, UNBLOCK],
-  ] as const))('refuses %s %s %j as text, before the key is unsealed', async (_name, resource, abilities) => {
+  ] as const))('refuses %s %s %j as text until the owner decided, before the key is unsealed', async (_name, resource, abilities) => {
     const response = await sign({ message: siweWith({ [resource]: [...abilities] }) });
     expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({ code: 'app_key_grant_refused' });
+    await expect(response.json()).resolves.toMatchObject({ code: 'elevated_not_decided' });
     expect(unseal).not.toHaveBeenCalled();
     expect(calls).toEqual([]);
   });
 
-  test.each(['raw', 'personal_sign'])('refuses the same message as hex with format %s', async (format) => {
+  test.each(outside.flatMap(([name, resource]) => [
+    [name, resource, BLOCK],
+    [name, resource, UNBLOCK],
+  ] as const))('signs %s %s %j once the owner decided on the warning screen', async (_name, resource, abilities) => {
+    const response = await sign({ message: siweWith({ [resource]: [...abilities] }), elevatedAcknowledged: true });
+    expect(response.status).toBe(200);
+    expect(calls).toEqual(['bootstrap', 'sign']);
+  });
+
+  test.each(['raw', 'personal_sign'])('refuses the same message as hex with format %s until the owner decided', async (format) => {
     const response = await sign({ message: hex(siweWith({ [urn('/secrets/k')]: BLOCK })), format });
     expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({ code: 'app_key_grant_refused' });
+    await expect(response.json()).resolves.toMatchObject({ code: 'elevated_not_decided' });
+    expect(calls).toEqual([]);
+  });
+
+  test('an acknowledgement that is not exactly true does not count', async () => {
+    for (const elevatedAcknowledged of [false, 'true', 1, null]) {
+      const response = await sign({ message: siweWith({ [urn('/secrets/k')]: BLOCK }), elevatedAcknowledged });
+      expect(response.status).toBe(403);
+    }
     expect(calls).toEqual([]);
   });
 

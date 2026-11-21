@@ -2921,24 +2921,21 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     }
     appKeyCandidate = true;
   }
-  // A website's own sign-in (no ticket) may ask to `decrypt` or `key.create` on the encryption network, or on
-  // keys outside its own `apps/` prefix, with a per-permission warning the owner decides on (TC-2927); the
-  // decision is checked at the preview. What is never accepted from any app, ours included, is an exact share
-  // key (`share/<id>`) that OpenKey did not make for the request. A ticket request (the command line's
+  // A website's own sign-in (no ticket) may ask to `decrypt`, `key.create`, `key.block` or `key.unblock` on the
+  // encryption network, or on keys outside its own `apps/` prefix, with a per-permission warning the owner decides
+  // on (TC-2927); the decision is checked at the preview. What is never accepted from any app, ours included, is an
+  // exact share key (`share/<id>`) that OpenKey did not make for the request. A ticket request (the command line's
   // `--keys <folder>`) is not checked here.
   const prepareEncryptionRefusal = ticket ? null : exactShareKeyRefusal(body.siwe);
   if (prepareEncryptionRefusal) {
     return c.json(appKeyRefusalBody(prepareEncryptionRefusal, 'browser'), appKeyRefusalStatus(prepareEncryptionRefusal));
   }
-  // `key.block` and `key.unblock` on a key or prefix outside `apps/` take the
-  // same admission; no manifest lists such a key, so they are refused there.
-  const blockOutsideApps = blockResourcesOutsideApps(body.siwe);
-  if (blockOutsideApps.length > 0) {
-    if (ticket) {
-      const refusal = { reason: 'apps_key' } as const;
-      return c.json(appKeyRefusalBody(refusal, 'non_browser'), appKeyRefusalStatus(refusal));
-    }
-    appKeyCandidate = true;
+  // `key.block` and `key.unblock` on a key or prefix outside `apps/` take the same road as `decrypt`: a website's
+  // own sign-in (no ticket) shows the owner the warning screen and the decision is checked at the preview. A
+  // ticket request carries no owner decision and is always refused.
+  if (ticket && blockResourcesOutsideApps(body.siwe).length > 0) {
+    const refusal = { reason: 'apps_key' } as const;
+    return c.json(appKeyRefusalBody(refusal, 'non_browser'), appKeyRefusalStatus(refusal));
   }
   let boundDeclaredAppId: string | undefined;
   let boundDeclaredKeysAppId: string | undefined;
@@ -3159,7 +3156,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     const manifestBound = metadataTrust.status === 'origin-bound';
     const admission = admitAppKeys({
       siwe: body.siwe,
-      resources: [...(appKeyResourcesOf(body.siwe) ?? []), ...blockOutsideApps],
+      resources: appKeyResourcesOf(body.siwe) ?? [],
       requestOrigin: body.requestOrigin,
       // A browser channel origin is sufficient when no signed manifest was
       // verified. `reportedOrigin` remains the origin-bind input when a

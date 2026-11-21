@@ -1,6 +1,6 @@
 <script lang="ts">
-  // The extra warning screen for permissions an app may ask for only with a per-permission decision (TC-2927): decrypt
-  // or key creation on the encryption network, or on keys outside the app's own area. One card per permission, each with
+  // The extra warning screen for permissions an app may ask for only with a per-permission decision (TC-2927): decrypt,
+  // key creation, or blocking and unblocking keys on the encryption network, or on keys outside the app's own area. One card per permission, each with
   // "Reject this permission" and "Allow this permission" and neither chosen to start with. A request that can be split
   // continues with whatever the owner allowed; a request that cannot (exact bytes) is approved or cancelled whole.
   // Wording is Monica's, in capability-review's copy catalog; this file has no sentences of its own.
