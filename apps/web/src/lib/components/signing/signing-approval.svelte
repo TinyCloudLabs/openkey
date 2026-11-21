@@ -83,7 +83,7 @@
   import ElevatedWarning from "$lib/components/signing/elevated-warning.svelte";
   import type { RenewalChoice, ShortenOnlyExpiry } from "$lib/components/signing/signing-adapter-types";
   import { ONCE_DEFAULT_EXPIRY_MS, onceDefaultExpiryMs, requestedExpiryMs } from "$lib/approval-expiry";
-  import { isOnceTier } from "$lib/renewal-default";
+  import { isOnceTier, isSensitiveTier } from "$lib/renewal-default";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -822,7 +822,7 @@
         onceSite={onceDefaultShown && !shortenOnlyExpiry ? onceNoteSite : null}
         onceNote={signedOnceNote}
         {renewal}
-        sensitive={isOnceTier(selectedGrants)}
+        sensitive={isSensitiveTier(selectedGrants)}
         {requestedBy}
         chooser={false}
         permissionCount={summaryStatements.length}
