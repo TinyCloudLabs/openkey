@@ -32,11 +32,28 @@ node scripts/release/backfill-github-releases.mjs             # create them
 
 `deploy-api.yml` is manual (`gh workflow run deploy-api.yml --ref main`); its `production` environment makes GitHub record a Deployment per run.
 
-Cloudflare Pages deploys `main` on merge but only reports a check run, not a Deployment. `record-pages-deployments.yml` reacts to each finished `Cloudflare Pages: <project>` check run on `main` and creates a Deployment named `pages-<project>` with the check run as its log link. It does not trigger or alter Pages builds. Only deploys after this workflow is merged are recorded.
+Cloudflare Pages production auto-deploy is off: a merge alone does not publish
+`openkey.so`. The release coordinator manually retries the skipped production
+deployment. Pages reports a check run, not a Deployment.
+`record-pages-deployments.yml` mirrors each finished `Cloudflare Pages: <project>`
+check on `main` as `pages-<project>`; it does not trigger or alter Pages builds.
 
-The Share sender smoke's web-deploy waiter requires a completed success from
-Cloudflare's app (`85455`), named exactly `Cloudflare Pages: openkey`, on the
-requested commit SHA. It fetches all attempts with `filter=all` and pagination;
-incomplete results fail closed. Cancelled or unfinished duplicates do not reject
-an existing success, but any other completed non-success attempt does, including
-older attempts. Without a success it keeps the existing 20-minute polling limit.
+The Share sender smoke reacts to a completed production `Cloudflare Pages: openkey`
+check from Cloudflare's app (`85455`) on `main`, not a push. Demo, other-app,
+other-branch and `Branch Preview URL` checks cannot start a production smoke.
+An unpublished push starts no smoke and consumes no polling window.
+
+Before running smoke, the publication job fetches every check attempt for the
+event's exact commit SHA (`filter=all`, paginated). The highest check-run ID among
+completed, non-cancelled, non-preview attempts decides: success runs smoke;
+failure or an unknown conclusion fails the workflow; skipped/neutral or no
+completed attempt skips smoke with an explicit not-published summary. A newer
+unfinished attempt does not override a completed decision. Invalid, missing or
+tied matching IDs and incomplete API responses fail closed.
+
+A successful retry supersedes a failed attempt for that same commit, even if
+the older failure event arrives later. Superseded non-success attempts are
+logged by ID and conclusion. Smoke failures on a published web still fail.
+The successful API `workflow_run` and manual-dispatch smoke paths are unchanged.
+Only actual smoke jobs share the existing concurrency group; unrelated
+`check_run` events cannot displace a queued smoke. Details: TC-3683.
