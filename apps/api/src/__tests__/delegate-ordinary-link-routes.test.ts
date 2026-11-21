@@ -293,12 +293,12 @@ describe('app keys through an ordinary link', () => {
     expect(activateSessionWithHost).not.toHaveBeenCalled();
   });
 
-  test('a link that names the app\'s website never gets a key resource into the message', async () => {
+  test('a link that names the app\'s website cannot ask for the app\'s key in the space-path form', async () => {
     const result = await askForListenKey('default');
-    expect(result.status).toBe(200);
-    expect(result.body.prepared.siwe).not.toContain(KEY_URN);
-    const token = /urn:recap:(\S+)/.exec(result.body.prepared.siwe)?.[1];
-    expect(Buffer.from(token!, 'base64url').toString('utf8')).not.toContain(KEY_URN);
+    expect(result.status).toBe(403);
+    expect(result.body.code).toBe('app_key_grant_refused');
+    expect(result.body.prepared).toBeUndefined();
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
   });
 
   test('refuses at completion a signed message that adds the app\'s key', async () => {
