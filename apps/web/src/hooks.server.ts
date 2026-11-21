@@ -71,15 +71,14 @@ export const handle: Handle = async ({ event, resolve }) => {
   }
 
   const response = await resolve(event);
-  // TC-3657 Bobbie F2 fix (15:16:27Z) + N2 fix (15:42:43Z): `/widget/tinycloud-setup` sets
-  // `ssr=false` on its layout so neither a `+page.server.ts` nor a `+layout.server.ts`
-  // `setHeaders` reaches the HTML document — only the `__data.json` payload. Set the
-  // framing headers here in the request handler so the document itself carries them,
-  // regardless of SSR mode. Belt-and-braces with the client guard in `+layout.ts`.
-  //
-  // Match on `event.route.id` (the normalised route template SvelteKit resolves after
-  // decoding), not on the raw `event.url.pathname`. A `/widget/tinycloud%2Dsetup` URL
-  // decodes to the same route template `/widget/tinycloud-setup`, so the headers apply.
+  // TC-3657: `/widget/tinycloud-setup` sets `ssr=false` on its layout, so neither a
+  // `+page.server.ts` nor a `+layout.server.ts` `setHeaders` call reaches the HTML
+  // document; only the `__data.json` payload. Set the framing headers here in the request
+  // handler so the document itself carries them regardless of SSR mode. Matching on
+  // `event.route.id` (the normalised route template SvelteKit resolves after decoding)
+  // rather than the raw pathname closes the percent-encoded-ASCII bypass: a URL like
+  // `/widget/tinycloud%2Dsetup` decodes to the same route template and still gets the
+  // headers. The client-side guard in `+layout.ts` is a belt-and-braces check.
   if (isTinyCloudSetupWidgetRoute(event.route?.id ?? '')) {
     response.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
     response.headers.set('X-Frame-Options', 'DENY');

@@ -21,7 +21,7 @@ test('buildTinyCloudSetupPayload produces a canonical payload the server can sig
   // Hash is the sha256 of the canonical bytes — the setup ticket binds to this exact value.
   assert.equal(hash, createHash('sha256').update(canonical, 'utf8').digest('hex'));
   // The space URI is derived from the subject and the fixed primary space name; no caller
-  // field can shape it. (Bobbie C1 + N2: nothing from `requestingApp` enters the record.)
+  // field can shape it. Nothing from `requestingApp` enters the signed record.
   assert.equal(space, `tinycloud:pkh:eip155:1:${SUBJECT.split(':').pop()!.toLowerCase()}:${TINYCLOUD_SETUP_PRIMARY_SPACE}`);
 });
 

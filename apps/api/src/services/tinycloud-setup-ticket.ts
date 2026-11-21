@@ -1,19 +1,17 @@
-// TC-3657 Bobbie C1 (14:32:09Z): one-time setup ticket for the outside-app
-// registry publish flow. Minted when the widget page renders; verified by
-// the `/authorize-tinycloud-setup` POST before the server signs/publishes.
+// TC-3657: one-time setup ticket for the outside-app registry publish flow. Minted when
+// the widget page renders; verified by the `/authorize-tinycloud-setup` POST before the
+// server signs or publishes.
 //
-// Binding (ALL required): owner session, verified requesting origin (derived
-// by the widget from `window.opener.origin` and sent on mint), record hash
-// (hex sha256 of the canonical location payload bytes the server is about
-// to sign), a short TTL, and single-use.
+// Binding (ALL required): owner session, verified requesting origin (derived by the widget
+// from `window.opener.origin` and sent on mint), record hash (hex sha256 of the canonical
+// location payload bytes the server is about to sign), a short TTL, and single-use.
 //
-// Persistence (Naomi 15:12:55Z): consumed nonces live in Postgres via Prisma
-// (`TinyCloudSetupConsumedNonce`) so the single-use invariant survives API
-// restarts AND is global across API replicas. A replayed ticket from a
-// second replica still refuses because the first replica's consume inserted
-// the nonce row. Ticket-signature verification is the first gate; the DB
-// insert is the second. An in-memory implementation is retained for tests
-// and local development (used when no PrismaClient is injected).
+// Persistence: consumed nonces live in Postgres via Prisma (`TinyCloudSetupConsumedNonce`)
+// so the single-use invariant survives API restarts AND is global across API replicas. A
+// replayed ticket from a second replica still refuses because the first replica's consume
+// inserted the nonce row. Ticket-signature verification is the first gate; the DB insert
+// is the second. An in-memory implementation is retained for tests and local development
+// (used when no PrismaClient is injected).
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { PrismaClient } from '@openkey/db';
@@ -25,7 +23,7 @@ export const SETUP_TICKET_TTL_MS = 5 * 60_000;
 export interface SetupTicketBinding {
   /** Owner's `did:pkh`; must match the session's owner at both mint and verify. */
   readonly subject: string;
-  /** Browser-derived requesting origin from the OPENER (Bobbie C3). Never from the request body. */
+  /** Browser-derived requesting origin from the opener. Never from the request body. */
   readonly verifiedRequestingOrigin: string;
   /** Hex sha256 of the canonical LocationRecordV2Payload bytes the server will sign + publish. */
   readonly recordHash: string;

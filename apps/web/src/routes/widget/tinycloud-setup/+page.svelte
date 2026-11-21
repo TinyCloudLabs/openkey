@@ -1,20 +1,21 @@
 <!--
-  TC-3657 widget page. DRAFT structure/skeleton. Monica owns consent copy; Soren owns final
-  interaction + visuals. Business logic lives in `widget-state.ts` (unit-tested); this
-  component is the shell + I/O.
+  TC-3657 widget page. The business logic lives in `widget-state.ts` (unit-tested); this
+  component is the shell + I/O only. Copy strings come from `widget-state.ts` helpers
+  (`approveButtonLabel`, `claimLabel`, `requesterLine`) so they stay locked in tests.
 
-  Bobbie 15:16:27Z + 15:42:43Z fixes folded in:
-    - F1: Approve button is arm-delayed after mint (1200ms); the state machine transitions
-      to `armed` immediately on mint success and the Svelte component disables the button
-      until the ARM_DELAY_MS timer fires.
-    - F4: `verifiedRequestingOrigin` is captured in state and used for every postMessage
-      back, including mint-failed, 429, and publish-failed paths.
-    - F7: ticket mint is deferred until the user actually taps Approve.
-    - F8 / N4: Approve button copy uses the browser-verified origin in `armed` phase.
-    - N3: WebAuthn assertion wired via `confirmWithPasskey` (same path as every other
-      OpenKey managed-key approval, `apps/web/src/lib/approval-passkey.ts`). ALWAYS +
-      SENSITIVE owners now complete the flow instead of failing closed.
-    - N6: `startMint` sets `mintInFlight`; a second tap is refused while a mint is live.
+  Invariants:
+    - The Approve button is disabled until an arm delay after mint (`ARM_DELAY_MS`), so a
+      popup that opens under the cursor can't be double-clicked through the passkey +
+      publish sequence.
+    - `verifiedRequestingOrigin` is captured once from the opener's postMessage and used
+      for every reply, including the rate-limited, mint-failed, and publish-failed paths.
+    - Ticket mint happens on the user's tap, not on the opener's `syn` — so a malicious
+      page cannot burn the owner's hourly mint quota by firing messages.
+    - `mintInFlight` refuses a second tap while a mint is live.
+    - The button names the browser-verified origin, never the caller-asserted app name.
+    - WebAuthn assertion uses `confirmWithPasskey` (same path as every other managed-key
+      approval); dismissal rolls back to `armed` so the user can retry; the ticket is not
+      consumed on a passkey failure.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -27,6 +28,7 @@
     approveButtonLabel,
     claimLabel,
     initialState,
+    requesterLine,
     startMint,
     type PostBackEnvelope,
     type WidgetState,
@@ -38,6 +40,12 @@
   let opener: Window | null = null;
   let armed = false;
   const ARM_DELAY_MS = 1200;
+
+  /** Strip the `did:pkh:eip155:<chain>:` prefix so the preview shows just the owner address. */
+  function addressFromSubject(subject: string): string {
+    const match = /^did:pkh:eip155:\d+:(.+)$/.exec(subject);
+    return match ? match[1] : subject;
+  }
 
   function postBack(envelope: PostBackEnvelope) {
     if (!state.replyTargetOrigin) return;
@@ -71,9 +79,6 @@
       const body = await response.json();
       const update = applyMintResult(state, { ok: true, body });
       state = update.state;
-      // F1 arm delay: the button stays disabled for ARM_DELAY_MS after the mint lands so a
-      // popup that opens under the cursor can't be double-clicked through the passkey +
-      // publish sequence.
       setTimeout(() => { if (state.phase === 'armed') armed = true; }, ARM_DELAY_MS);
     } catch (e) {
       const update = applyMintResult(state, { ok: false, status: 0, body: { error: 'mint_failed' } });
@@ -93,9 +98,7 @@
         const offer: ApprovalPasskeyOffer = { challengeToken: state.passkey.challengeToken, options: state.passkey.options as never };
         passkeyAssertion = await confirmWithPasskey(offer);
       } catch (e) {
-        // User dismissed the passkey prompt, or the authenticator failed. Roll back the
-        // phase so they can tap Approve again. Do NOT consume the ticket.
-        state = { ...originalState, error: e instanceof PasskeyPromptError ? e.message : 'Passkey failed' };
+        state = { ...originalState, error: e instanceof PasskeyPromptError ? e.message : "Your passkey didn't confirm. Try again." };
         return;
       }
     }
@@ -152,8 +155,6 @@
   });
 
   async function onApproveClick() {
-    // The button walks the user through two taps: first a mint (shows "Preparing…" during
-    // the arm delay), then after armed → a publish with the WebAuthn prompt.
     if (state.phase === 'review' && !state.mintInFlight && state.ticket === null) {
       await requestMint();
       return;
@@ -171,27 +172,22 @@
   <main><p>Opening setup…</p></main>
 {:else}
   <main>
-    <!-- TODO(Monica): final consent copy owned by Monica; current text is DRAFT. -->
-    <h1>Set up TinyCloud for this app</h1>
+    <h1>Set up your TinyCloud</h1>
 
-    {#if state.preview}
-      <section aria-label="What will be published">
-        <dl>
-          <dt>Owner</dt><dd><code>{state.preview.subject}</code></dd>
-          <dt>Default node</dt><dd><code>{state.preview.nodeDid}</code> at <code>{state.preview.nodeOrigin}</code></dd>
-          <dt>Space</dt><dd><code>{state.preview.primarySpaceName}</code></dd>
-        </dl>
-      </section>
+    {#if requesterLine(state)}
+      <p>{requesterLine(state)}</p>
+    {/if}
+    {#if claimLabel(state)}
+      <p>{claimLabel(state)}</p>
     {/if}
 
-    <section aria-label="Requesting app">
-      <p>
-        Requested by <strong>{state.verifiedRequestingOrigin ?? ''}</strong>
-        {#if claimLabel(state)}
-          ({claimLabel(state)})
-        {/if}
-      </p>
-    </section>
+    {#if state.preview}
+      <dl>
+        <dt>Account</dt><dd>{addressFromSubject(state.preview.subject)}</dd>
+        <dt>Stored on</dt><dd>{state.preview.nodeOrigin}</dd>
+        <dt>Space</dt><dd>{state.preview.primarySpaceName}</dd>
+      </dl>
+    {/if}
 
     <button
       type="button"

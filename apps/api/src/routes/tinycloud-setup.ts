@@ -1,39 +1,39 @@
-// TC-3657: outside-app one-tap TinyCloud setup via OpenKey. Sam's TC-3620 pick (14:14:07Z);
-// design + conditions at `/var/tmp/integ/outside-app-setup-design.md` §13/§13a. Approved by
-// Bobbie 14:32:09Z + 14:58:08Z, Naomi 14:32:33Z + 14:58:46Z + 15:12:55Z. DRAFT PR; merge waits
-// on Sam's card + Naomi's head-named GO; deploy waits on Amos + `TINYCLOUD_DEFAULT_NODE_DID` +
-// `OPENKEY_SETUP_TICKET_SECRET`.
+// TC-3657: outside-app one-tap TinyCloud setup via OpenKey. Two POST endpoints behind
+// the standard session + OpenKey-origin middleware. Fail-closed on configuration: unless
+// both `TINYCLOUD_DEFAULT_NODE_DID` and `OPENKEY_SETUP_TICKET_SECRET` are set, both
+// endpoints return `{ error: 'setup_unavailable' }` with 503 and nothing is minted or
+// signed.
 //
-// Two endpoints:
 //   POST /api/tinycloud-setup/mint-ticket
-//     - requires an OpenKey session + `Origin: <openkey-origin>` (TC-688 via
-//       `rejectNonOpenKeySignRequest`, F6 fix 15:16:27Z: fails closed when Origin is missing).
-//     - body: `{ requestingOrigin: string }` — the outside app's origin as observed by the
-//       widget via `postMessage event.origin` (Bobbie C3). The server trusts this because
-//       the request itself is authenticated to have come from the OpenKey-origin widget page.
-//     - rate limit: C5/N3 per-owner `mint` action (Prisma-backed; shared across replicas).
-//     - returns `{ ticket, passkey, preview }`. `passkey` is either `{ required: true,
+//     - Session cookie + Origin check (`rejectNonOpenKeySignRequest`); missing Origin
+//       returns 403.
+//     - Body: `{ requestingOrigin }`. The outside app's origin as observed by the widget
+//       via the opener's `postMessage event.origin` (browser-verified; the server trusts
+//       it because the request itself comes authenticated from the OpenKey-origin widget
+//       page).
+//     - Per-owner rate limit on the `mint` action (Prisma-backed; shared across replicas).
+//     - Returns `{ ticket, passkey, preview }`. `passkey` is either `{ required: true,
 //       challengeToken, options }` when the owner's `passkeyApprovalMode` requires it, or
-//       `{ required: false }`. The widget then shows the preview and, on approve, assembles
+//       `{ required: false }`. The widget shows the preview and, on approve, assembles
 //       the publish request with any passkey assertion.
 //
 //   POST /api/tinycloud-setup/publish
-//     - requires session + Origin check.
-//     - body: `{ ticket, requestingOrigin, passkeyAssertion? }`.
-//     - rate limit: C5/N3 per-owner `publish` action.
-//     - **Bobbie C4 (14:53:16Z, confirmed via 15:14:23Z reviewer check):** calls
-//       `checkApprovalPasskey(..., 'sensitive', passkeyAssertion)` before any signing.
-//       `publishing a public record linking the owner's address to a server` is a sensitive
-//       approval (same category as other OpenKey sign operations), so a `passkeyApprovalMode`
-//       of ALWAYS or SENSITIVE requires a fresh passkey assertion bound to the request;
-//       NEVER-mode owners get a user-gesture + session + ticket + Origin gate.
-//     - consumes the ticket (Prisma single-use via unique constraint).
-//     - signs the canonical payload via `signManagedKey` (owner's primary TEE-sealed key).
-//     - publishes via `publishTinyCloudSetupRecord` (`onPrepared: current === null` fence).
-//     - returns `TinyCloudSetupResultV1`.
-//
-// Fail-closed environment: without `TINYCLOUD_DEFAULT_NODE_DID` set, both endpoints return
-// `{ error: 'setup_unavailable' }` and nothing is minted or signed.
+//     - Session + Origin check.
+//     - Body: `{ ticket, requestingOrigin, passkeyAssertion? }`.
+//     - Per-owner rate limit on the `publish` action.
+//     - Calls `checkApprovalPasskey(..., 'sensitive', passkeyAssertion)` before any
+//       signing. Publishing a public record linking the owner's address to a server is a
+//       sensitive approval (same category as every other OpenKey sign operation):
+//       `passkeyApprovalMode` of ALWAYS or SENSITIVE requires a fresh passkey assertion
+//       bound to this request's {subject, verifiedRequestingOrigin, recordHash}; NEVER
+//       mode owners pass through on session + ticket + Origin + the widget's explicit tap.
+//     - Decodes the ticket to recover `mintedAt`, rebuilds the canonical payload at that
+//       moment, asserts the rebuilt hash matches the ticket binding, then atomically
+//       consumes the ticket's nonce (Prisma unique constraint).
+//     - Signs the canonical payload via `signManagedKey` (owner's primary TEE-sealed key).
+//     - Publishes via `publishTinyCloudSetupRecord` (`onPrepared: current === null` fence
+//       plus the stricter hash-equality assert).
+//     - Returns `TinyCloudSetupResultV1`.
 
 import { Hono, type Context } from 'hono';
 import { createPrismaClient, type PrismaClient } from '@openkey/db';
@@ -90,7 +90,7 @@ export interface TinyCloudSetupRouterDeps {
 
 /** Default dependency wiring. The signing secret for the setup ticket store comes from
  *  `OPENKEY_SETUP_TICKET_SECRET` (hex, >= 32 bytes). When the var is unset or too short,
- *  this throws; the router catches it and returns 503 per request (F5 15:16:27Z lazy init
+ *  this throws; the router catches it and returns 503 per request (lazy init: a missing
  *  so an unset env does NOT crash OpenKey boot). Nonce persistence + rate-limit buckets
  *  use Prisma. */
 export function defaultDeps(): TinyCloudSetupRouterDeps {
@@ -104,7 +104,7 @@ export function defaultDeps(): TinyCloudSetupRouterDeps {
 
 export function createTinyCloudSetupRouter(injected?: Partial<TinyCloudSetupRouterDeps>): Hono<SessionContext> {
   // Resolve deps lazily per request so a missing OPENKEY_SETUP_TICKET_SECRET turns into a
-  // 503 on the endpoint, not a crash on process boot (F5 15:16:27Z).
+  // 503 on the endpoint, not a crash on process boot.
   let cached: TinyCloudSetupRouterDeps | null = null;
   const resolveDeps = (): TinyCloudSetupRouterDeps | null => {
     if (cached) return cached;
@@ -190,7 +190,7 @@ export function createTinyCloudSetupRouter(injected?: Partial<TinyCloudSetupRout
       c.header('retry-after', String(retryAfterSec));
       return c.json({ error: 'rate_limited' }, 429);
     }
-    // F3 fix (Bobbie 15:16:27Z): decode the ticket to recover `mintedAt`, then rebuild the
+    // Decode the ticket to recover `mintedAt`, then rebuild the
     // canonical payload at that same moment so its hash matches what the ticket was bound to.
     // The earlier draft used `now` for both the ticket mint hash and the publish rebuild;
     // because `updated_at` depended on wall-clock, the hashes diverged and every real publish
@@ -214,7 +214,7 @@ export function createTinyCloudSetupRouter(injected?: Partial<TinyCloudSetupRout
       // but we check anyway so a future change that drifts the recipe fails loudly.
       return c.json({ error: 'record_mismatch' }, 403);
     }
-    // Bobbie C4 (14:53:16Z + 15:14:23Z): passkey assertion required for owners whose mode is
+    // Passkey assertion required for owners whose mode is
     // ALWAYS or SENSITIVE. NEVER-mode owners pass through on session + ticket + origin alone.
     const passkeyBinding = setupPasskeyBinding(subject, requestingOrigin, hash);
     const passkeyAssertion = (body as { passkeyAssertion?: unknown }).passkeyAssertion;
@@ -240,7 +240,7 @@ export function createTinyCloudSetupRouter(injected?: Partial<TinyCloudSetupRout
         ...(deps.fetch ? { fetch: deps.fetch } : {}),
         onPrepared: async (prepared, current) => {
           if (current !== null) return false;
-          // Bobbie 15:16:27Z explicit onPrepared assert: the bytes we're about to sign must
+          // Explicit onPrepared assert: the bytes we're about to sign must
           // match the ticket's recordHash exactly. Both the server and the client invariants
           // depend on this.
           const preparedHash = createHash('sha256').update(canonicalLocationPayloadV2(prepared), 'utf8').digest('hex');
@@ -292,7 +292,7 @@ function subjectFromAddress(address: string): string {
 
 /** The passkey challenge binding for this request: unique per owner + verified requesting
  *  origin + canonical record hash, so a passkey assertion for one setup request cannot be
- *  replayed as an assertion for another request (Bobbie C4 bound-to-request semantics). */
+ *  replayed as an assertion for another request (bound-to-request semantics). */
 function setupPasskeyBinding(subject: string, requestingOrigin: string, recordHash: string) {
   return {
     purpose: 'tinycloud_setup_publish',

@@ -1,13 +1,10 @@
-// TC-3657 widget business logic, extracted from `+page.svelte` so the invariants Bobbie
-// called out (F4 origin-carried-everywhere, F7 mint-on-click-not-on-message, F8 button
-// copy uses verified origin) have their own tests without pulling in a Svelte mount
-// harness. The svelte component is a thin shell over this state machine.
-//
-// Bobbie 15:42:43Z follow-ups folded in:
-//   - N4: `armed` moved into state so `approveButtonLabel` reads it; the Approve/Preparing
-//     transition is now observable and covered by the F8 test.
-//   - N6: `mintInFlight` flag in state + guard in the Svelte click handler so a double-tap
-//     on Approve cannot spend two of the owner's 10/hr mint quota.
+// TC-3657 widget business logic, extracted from `+page.svelte` so three invariants have
+// direct unit tests: the browser-verified origin is captured once and carried through
+// every reply; the ticket mint fires on the user's tap, not on the opener's syn; the
+// Approve-button copy names the browser-verified origin and never the caller-asserted
+// name. The `armed` phase lives in state so `approveButtonLabel` reads it; `mintInFlight`
+// is the flag that makes the "no double-tap burns two mints" invariant testable without a
+// Svelte component. The component is a thin shell over this state machine.
 
 export type Phase =
   | 'waiting'
@@ -66,8 +63,8 @@ export interface WidgetState {
   passkey: { required: false } | ({ required: true } & PasskeyOffer);
   error: string | null;
   replyTargetOrigin: string | null;
-  /** N6: true from the moment the user taps Approve until the mint settles. The button
-   *  reads this to refuse a second tap; a successful mint ends it. */
+  /** True from the moment the user taps Approve until the mint settles. The button reads
+   *  this to refuse a second tap; a successful mint ends it. */
   mintInFlight: boolean;
 }
 
@@ -85,26 +82,41 @@ export function initialState(embeddedRefusalMessage: string | null): WidgetState
   };
 }
 
-/** F8 + N4: the Approve button's copy. In `armed` it names the browser-verified origin,
- *  never the caller-asserted app name. In `review` (post-syn, pre-arm-delay) it reads
- *  "Preparing…"; in `submitting` it reads "Publishing…". */
+/** The Approve button's copy. In `armed` it names the browser-verified origin (never the
+ *  caller-asserted app name). `submitting` reads "Setting up…"; `review` / no-origin read
+ *  "Preparing…". */
 export function approveButtonLabel(state: WidgetState): string {
-  if (state.phase === 'submitting') return 'Publishing…';
-  if (state.phase === 'armed' && state.verifiedRequestingOrigin) return `Approve for ${state.verifiedRequestingOrigin}`;
-  // Phase is `review` (post-syn, pre-arm-delay) or we haven't captured the origin yet.
+  if (state.phase === 'submitting') return 'Setting up…';
+  if (state.phase === 'armed' && state.verifiedRequestingOrigin) return `Set up for ${state.verifiedRequestingOrigin}`;
   return 'Preparing…';
 }
 
-/** The claimed name is a caller assertion; the UI must label it as such so a crafted
- *  `window.name` or manifest cannot look authoritative. */
+/** The claimed name is a caller assertion; the UI must label it. Returns null when the
+ *  app made no name claim. */
 export function claimLabel(state: WidgetState): string | null {
   if (!state.claim.name) return null;
-  return `the app says its name is "${state.claim.name}" — this is the app's own claim, not verified by OpenKey`;
+  return `It calls itself "${state.claim.name}". OpenKey hasn't checked that name.`;
 }
 
-/** Fold a `syn` message from the opener into state. Only the FIRST capture sticks; later
- *  messages from a different origin cannot change the verified origin or opener. F7: this
- *  does NOT mint the ticket — the owner's 10/hour quota is only spent on their tap. */
+/** The "who asked" sentence shown next to the preview. Returns null until the browser-
+ *  verified origin has been captured. */
+export function requesterLine(state: WidgetState): string | null {
+  if (!state.verifiedRequestingOrigin) return null;
+  return `${state.verifiedRequestingOrigin} asked to set up your TinyCloud.`;
+}
+
+/** Map an API refusal reason to the visible error line. The 429 rate-limit line is set at
+ *  the applyMintResult / applyPublishResult call site; everything else goes through this
+ *  map. Raw reasons like `mint_failed` / `publish_failed` / `setup_unavailable` never
+ *  appear on screen. */
+export function visibleErrorForReason(reason: string | undefined): string {
+  if (reason === 'setup_unavailable') return "Setup isn't available right now. Try again later.";
+  return "Setup didn't finish. Try again.";
+}
+
+/** Fold a `syn` message from the opener into state. Only the first capture sticks; later
+ *  messages from a different origin cannot change the verified origin or opener. Does NOT
+ *  mint the ticket; the owner's hourly quota is only spent on their tap. */
 export function applySyn(state: WidgetState, event: {
   origin: string;
   source: unknown;
@@ -127,15 +139,14 @@ export function applySyn(state: WidgetState, event: {
   };
 }
 
-/** Mark the mint request as in-flight (N6). The Svelte click handler calls this before
- *  the fetch so a second tap sees `mintInFlight === true` and refuses. */
+/** Mark the mint request as in-flight. The Svelte click handler calls this before the
+ *  fetch so a second tap sees `mintInFlight === true` and refuses. */
 export function startMint(state: WidgetState): WidgetState {
   return { ...state, mintInFlight: true };
 }
 
-/** Fold a mint response (success, 429, or failure) into state. F4: every error path keeps
- *  `verifiedRequestingOrigin` set so the caller can post the result back. N6: the
- *  in-flight flag clears either way. */
+/** Fold a mint response (success, 429, or failure) into state. Every error path keeps
+ *  `verifiedRequestingOrigin` set so the caller can post the result back. */
 export function applyMintResult(
   state: WidgetState,
   result:
@@ -143,10 +154,6 @@ export function applyMintResult(
     | { ok: false; status: number; body: { error?: string }; retryAfterSeconds?: number },
 ): { state: WidgetState; postBack: PostBackEnvelope | null } {
   if (result.ok) {
-    // The post-mint phase is `armed` once the arm-delay timer fires; before that the Svelte
-    // component keeps the button disabled by reading `phase === 'review'`. We transition
-    // directly to `armed` here because the arm delay is handled in the component for the
-    // F1 double-tap-guard, and the state machine shouldn't block tests on real timers.
     return {
       state: { ...state, ticket: result.body.ticket, preview: result.body.preview, passkey: result.body.passkey, phase: 'armed', mintInFlight: false },
       postBack: null,
@@ -155,7 +162,7 @@ export function applyMintResult(
   if (result.status === 429) {
     const reason = 'rate_limited';
     return {
-      state: { ...state, phase: 'declined', mintInFlight: false, error: 'Too many setup attempts right now. Try again later.' },
+      state: { ...state, phase: 'declined', mintInFlight: false, error: 'Too many tries. Try again later.' },
       postBack: {
         type: 'openkey:tinycloud-setup:response', v: 1, status: 'unavailable', reason,
         ...(result.retryAfterSeconds !== undefined ? { retryAfter: result.retryAfterSeconds } : {}),
@@ -164,13 +171,13 @@ export function applyMintResult(
   }
   const reason = result.body.error ?? 'mint_failed';
   return {
-    state: { ...state, phase: 'declined', mintInFlight: false, error: reason },
+    state: { ...state, phase: 'declined', mintInFlight: false, error: visibleErrorForReason(reason) },
     postBack: { type: 'openkey:tinycloud-setup:response', v: 1, status: 'unavailable', reason },
   };
 }
 
-/** Fold a publish response. F4: all error paths carry `verifiedRequestingOrigin`, so the
- *  caller can post back. Success and declined both reach `done` / `declined` phases. */
+/** Fold a publish response. All error paths carry `verifiedRequestingOrigin`, so the
+ *  caller can post back. Success and declined reach `done` / `declined`. */
 export function applyPublishResult(
   state: WidgetState,
   result:
@@ -185,7 +192,7 @@ export function applyPublishResult(
   }
   if (result.status === 429) {
     return {
-      state: { ...state, phase: 'declined' },
+      state: { ...state, phase: 'declined', error: 'Too many tries. Try again later.' },
       postBack: {
         type: 'openkey:tinycloud-setup:response', v: 1, status: 'unavailable', reason: 'rate_limited',
         ...(result.retryAfterSeconds !== undefined ? { retryAfter: result.retryAfterSeconds } : {}),
@@ -194,7 +201,7 @@ export function applyPublishResult(
   }
   const reason = result.body.error ?? 'publish_failed';
   return {
-    state: { ...state, phase: 'declined' },
+    state: { ...state, phase: 'declined', error: visibleErrorForReason(reason) },
     postBack: { type: 'openkey:tinycloud-setup:response', v: 1, status: 'unavailable', reason },
   };
 }

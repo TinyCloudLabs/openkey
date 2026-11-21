@@ -1,16 +1,14 @@
-// TC-3657 Bobbie C5 + N3 (14:32:09Z, 14:53:16Z): per-owner rate limit on
-// `/authorize-tinycloud-setup`. The SDK-side 24h throttle in `localStorage`
-// (js-sdk#1113 `handle-account-setup-required.ts`) is UX-only; the outside
-// app owns its own storage. THIS limiter is the security guarantee.
+// TC-3657: per-owner rate limit on the outside-app setup endpoint. The SDK-side 24h
+// throttle in `localStorage` (js-sdk#1113 `handle-account-setup-required.ts`) is a UX
+// hint the outside app owns; THIS limiter is the security guarantee.
 //
-// Persistence (Naomi 15:12:55Z): the counter lives in Postgres via
-// `TinyCloudSetupRateLimitBucket`. Atomic increment via UPSERT keyed by
-// `${action}:${subject.toLowerCase()}:${windowStartMs}` so parallel API
-// replicas share one counter per owner per action per hourly window.
-// An in-memory implementation is retained for tests + local dev.
+// Persistence: the counter lives in Postgres via `TinyCloudSetupRateLimitBucket`. Atomic
+// increment via UPSERT keyed by `${action}:${subject.toLowerCase()}:${windowStartMs}` so
+// parallel API replicas share one counter per owner per action per hourly window. An
+// in-memory implementation is retained for tests and local dev.
 //
-// Separate from `NativeUserAction` per OpenKey driver 15:01:13Z — the
-// native type is the native consent routes' contract and should not grow.
+// Kept separate from `NativeUserAction`: that type is the native consent routes' contract
+// and should not grow.
 
 import type { PrismaClient } from '@openkey/db';
 

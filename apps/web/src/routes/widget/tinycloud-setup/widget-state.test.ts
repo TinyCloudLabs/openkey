@@ -1,6 +1,5 @@
-// TC-3657 Bobbie 15:16:27Z + 15:42:43Z widget-state tests. One test per regression /
-// clarification. The state machine is pure; these assertions don't need a Svelte mount
-// harness.
+// TC-3657 widget-state tests. One case per invariant / regression. The state machine is
+// pure; these assertions don't need a Svelte mount harness.
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
 import {
@@ -11,7 +10,9 @@ import {
   approveButtonLabel,
   claimLabel,
   initialState,
+  requesterLine,
   startMint,
+  visibleErrorForReason,
   type WidgetState,
 } from './widget-state';
 
@@ -38,9 +39,7 @@ function synEvent(origin: string, requestingApp: { name?: string; manifestUrl?: 
 }
 
 describe('widget state', () => {
-  // F7: mint is NOT triggered on `syn` from the opener. The state transitions to review
-  // but the ticket stays null until an explicit mint call.
-  test('F7 regression: syn from opener does not mint a ticket (burn-quota attack)', () => {
+  test('a message from the opener does not mint a ticket (prevents burning the hourly quota before the user taps)', () => {
     const state = initialState(null);
     const afterSyn = applySyn(state, synEvent(APP_ORIGIN));
     expect(afterSyn.verifiedRequestingOrigin).toBe(APP_ORIGIN);
@@ -49,8 +48,7 @@ describe('widget state', () => {
     expect(afterSyn.mintInFlight).toBe(false);
   });
 
-  // F7 strengthens into: a second syn from a different origin cannot overwrite the first.
-  test('F7 regression: a second syn from a different origin is ignored', () => {
+  test('a second message from a different origin is ignored (the first capture sticks)', () => {
     const state = initialState(null);
     const first = applySyn(state, synEvent(APP_ORIGIN));
     const attacker = applySyn(first, synEvent('https://attacker.example', { name: 'TakeOver' }));
@@ -58,48 +56,60 @@ describe('widget state', () => {
     expect(attacker.claim).toEqual({});
   });
 
-  // F4: every post-back path carries the verified origin.
-  test('F4 regression: 429 mint still posts back; state keeps verifiedRequestingOrigin', () => {
+  test('a rate-limited mint still posts back and keeps the verified origin', () => {
     const state: WidgetState = { ...initialState(null), verifiedRequestingOrigin: APP_ORIGIN, replyTargetOrigin: APP_ORIGIN, phase: 'review', mintInFlight: true };
     const { state: next, postBack } = applyMintResult(state, { ok: false, status: 429, body: {}, retryAfterSeconds: 42 });
     expect(next.verifiedRequestingOrigin).toBe(APP_ORIGIN);
     expect(next.replyTargetOrigin).toBe(APP_ORIGIN);
     expect(next.phase).toBe('declined');
     expect(next.mintInFlight).toBe(false);
+    expect(next.error).toBe('Too many tries. Try again later.');
     expect(postBack).toEqual({ type: 'openkey:tinycloud-setup:response', v: 1, status: 'unavailable', reason: 'rate_limited', retryAfter: 42 });
   });
 
-  test('F4 regression: failed mint still posts back a reason envelope', () => {
+  test('a failed mint posts back a reason envelope and shows the user-facing "setup didn\'t finish" line', () => {
     const state: WidgetState = { ...initialState(null), verifiedRequestingOrigin: APP_ORIGIN, replyTargetOrigin: APP_ORIGIN, phase: 'review', mintInFlight: true };
     const { state: next, postBack } = applyMintResult(state, { ok: false, status: 500, body: { error: 'mint_failed' } });
     expect(next.mintInFlight).toBe(false);
+    expect(next.error).toBe("Setup didn't finish. Try again.");
     expect(postBack).toEqual({ type: 'openkey:tinycloud-setup:response', v: 1, status: 'unavailable', reason: 'mint_failed' });
   });
 
-  test('F4 regression: 429 publish still posts back; state keeps verifiedRequestingOrigin', () => {
+  test('a mint that returns setup_unavailable shows the "setup isn\'t available" line', () => {
+    const state: WidgetState = { ...initialState(null), verifiedRequestingOrigin: APP_ORIGIN, replyTargetOrigin: APP_ORIGIN, phase: 'review', mintInFlight: true };
+    const { state: next } = applyMintResult(state, { ok: false, status: 503, body: { error: 'setup_unavailable' } });
+    expect(next.error).toBe("Setup isn't available right now. Try again later.");
+  });
+
+  test('a rate-limited publish posts back and keeps the verified origin', () => {
     const state: WidgetState = { ...initialState(null), verifiedRequestingOrigin: APP_ORIGIN, replyTargetOrigin: APP_ORIGIN, phase: 'submitting' };
     const { state: next, postBack } = applyPublishResult(state, { ok: false, status: 429, body: {}, retryAfterSeconds: 7 });
     expect(next.verifiedRequestingOrigin).toBe(APP_ORIGIN);
+    expect(next.error).toBe('Too many tries. Try again later.');
     expect(postBack).toEqual({ type: 'openkey:tinycloud-setup:response', v: 1, status: 'unavailable', reason: 'rate_limited', retryAfter: 7 });
   });
 
-  test('F4 regression: failed publish still posts back a reason envelope', () => {
+  test('a failed publish shows the "setup didn\'t finish" line and posts back its reason', () => {
     const state: WidgetState = { ...initialState(null), verifiedRequestingOrigin: APP_ORIGIN, replyTargetOrigin: APP_ORIGIN, phase: 'submitting' };
-    const { postBack } = applyPublishResult(state, { ok: false, status: 500, body: { error: 'publish_failed' } });
+    const { state: next, postBack } = applyPublishResult(state, { ok: false, status: 500, body: { error: 'publish_failed' } });
+    expect(next.error).toBe("Setup didn't finish. Try again.");
     expect(postBack).toEqual({ type: 'openkey:tinycloud-setup:response', v: 1, status: 'unavailable', reason: 'publish_failed' });
   });
 
-  test('F4 regression: successful publish posts back status+subject on the right origin', () => {
+  test('a publish that returns setup_unavailable shows the "setup isn\'t available" line', () => {
+    const state: WidgetState = { ...initialState(null), verifiedRequestingOrigin: APP_ORIGIN, replyTargetOrigin: APP_ORIGIN, phase: 'submitting' };
+    const { state: next } = applyPublishResult(state, { ok: false, status: 503, body: { error: 'setup_unavailable' } });
+    expect(next.error).toBe("Setup isn't available right now. Try again later.");
+  });
+
+  test('a successful publish posts back status and subject on the right origin', () => {
     const state: WidgetState = { ...initialState(null), verifiedRequestingOrigin: APP_ORIGIN, replyTargetOrigin: APP_ORIGIN, phase: 'submitting' };
     const { postBack, state: next } = applyPublishResult(state, { ok: true, body: { status: 'published', subject: 'did:pkh:eip155:1:0x1' } });
     expect(next.phase).toBe('done');
     expect(postBack).toEqual({ type: 'openkey:tinycloud-setup:response', v: 1, status: 'published', subject: 'did:pkh:eip155:1:0x1' });
   });
 
-  // N4: successful mint transitions directly to `armed` so `approveButtonLabel` can show
-  // the verified origin. The Svelte component layers the F1 arm-delay on top by keeping
-  // the button disabled for ARM_DELAY_MS.
-  test('N4 regression: successful mint transitions to phase=armed; label reads "Approve for <origin>"', () => {
+  test('a successful mint moves to armed so the button shows its final label', () => {
     const state: WidgetState = { ...initialState(null), verifiedRequestingOrigin: APP_ORIGIN, replyTargetOrigin: APP_ORIGIN, phase: 'review', mintInFlight: true };
     const { state: next, postBack } = applyMintResult(state, { ok: true, body: previewBody });
     expect(next.ticket).toBe('t');
@@ -107,18 +117,16 @@ describe('widget state', () => {
     expect(next.phase).toBe('armed');
     expect(next.mintInFlight).toBe(false);
     expect(postBack).toBeNull();
-    expect(approveButtonLabel(next)).toBe(`Approve for ${APP_ORIGIN}`);
   });
 
-  test('F4 regression: decline posts back on the verified origin', () => {
+  test('decline posts back on the verified origin', () => {
     const state: WidgetState = { ...initialState(null), verifiedRequestingOrigin: APP_ORIGIN, replyTargetOrigin: APP_ORIGIN, phase: 'review' };
     const { postBack, state: next } = applyDecline(state);
     expect(next.phase).toBe('declined');
     expect(postBack).toEqual({ type: 'openkey:tinycloud-setup:response', v: 1, status: 'declined' });
   });
 
-  // F8: the Approve button label uses the verified origin, not the caller-asserted name.
-  test('F8 regression: approve button label in phase=armed uses the verified origin, never the claimed app name', () => {
+  test('the approve button at armed names the verified origin (never the caller-asserted name)', () => {
     const state: WidgetState = {
       ...initialState(null),
       verifiedRequestingOrigin: APP_ORIGIN,
@@ -127,11 +135,21 @@ describe('widget state', () => {
       phase: 'armed',
     };
     const label = approveButtonLabel(state);
-    expect(label).toBe(`Approve for ${APP_ORIGIN}`);
+    expect(label).toBe(`Set up for ${APP_ORIGIN}`);
     expect(label.includes('<not verified name>')).toBe(false);
   });
 
-  test('F8 regression: the claim label labels the name as a claim, not as the app\'s identity', () => {
+  test('the approve button at review reads "Preparing…"', () => {
+    const state: WidgetState = { ...initialState(null), verifiedRequestingOrigin: APP_ORIGIN, replyTargetOrigin: APP_ORIGIN, phase: 'review' };
+    expect(approveButtonLabel(state)).toBe('Preparing…');
+  });
+
+  test('the approve button at submitting reads "Setting up…"', () => {
+    const state: WidgetState = { ...initialState(null), verifiedRequestingOrigin: APP_ORIGIN, replyTargetOrigin: APP_ORIGIN, phase: 'submitting' };
+    expect(approveButtonLabel(state)).toBe('Setting up…');
+  });
+
+  test('the claim line labels the name as the app\'s own claim', () => {
     const state: WidgetState = {
       ...initialState(null),
       verifiedRequestingOrigin: APP_ORIGIN,
@@ -141,13 +159,27 @@ describe('widget state', () => {
     };
     const label = claimLabel(state);
     expect(label).toContain('ClaimedName');
-    expect(label).toContain("the app's own claim");
-    expect(label).toContain('not verified by OpenKey');
+    expect(label).toContain("OpenKey hasn't checked");
   });
 
-  // F2: embedded refusal is a hard refusal state.
-  test('F2 regression: embedded refusal halts the widget and never accepts a syn', () => {
-    const refusalMsg = 'TinyCloud setup cannot run inside an embedded frame.';
+  test('the requester line names the browser-verified origin', () => {
+    const state: WidgetState = {
+      ...initialState(null),
+      verifiedRequestingOrigin: APP_ORIGIN,
+      replyTargetOrigin: APP_ORIGIN,
+      phase: 'armed',
+    };
+    const line = requesterLine(state);
+    expect(line).toBe(`${APP_ORIGIN} asked to set up your TinyCloud.`);
+  });
+
+  test('the requester line is null when the origin has not been captured', () => {
+    const state = initialState(null);
+    expect(requesterLine(state)).toBeNull();
+  });
+
+  test('the embedded-refusal state halts the widget and never accepts a message', () => {
+    const refusalMsg = 'Setup has to open in its own window. Go back to the app, allow pop-ups and try again.';
     const state = initialState(refusalMsg);
     expect(state.phase).toBe('embedded-refused');
     const afterSyn = applySyn(state, synEvent(APP_ORIGIN));
@@ -155,7 +187,7 @@ describe('widget state', () => {
     expect(afterSyn.verifiedRequestingOrigin).toBeNull();
   });
 
-  test('messages from non-opener window are ignored', () => {
+  test('messages from a non-opener window are ignored', () => {
     const state = initialState(null);
     const notOpener = {};
     const result = applySyn(state, { origin: APP_ORIGIN, source: notOpener, opener: OPENER, data: { type: 'openkey:tinycloud-setup:request', v: 1 } });
@@ -163,9 +195,7 @@ describe('widget state', () => {
     expect(result.verifiedRequestingOrigin).toBeNull();
   });
 
-  // N6: in-flight guard. `startMint` sets the flag; `applyMintResult` clears it. The
-  // Svelte click handler consults `state.mintInFlight` before starting a second mint.
-  test('N6 regression: startMint sets mintInFlight; mint result clears it', () => {
+  test('startMint sets mintInFlight; both success and failure clear it', () => {
     const state: WidgetState = { ...initialState(null), verifiedRequestingOrigin: APP_ORIGIN, replyTargetOrigin: APP_ORIGIN, phase: 'review' };
     const flagged = startMint(state);
     expect(flagged.mintInFlight).toBe(true);
@@ -173,5 +203,12 @@ describe('widget state', () => {
     expect(success.mintInFlight).toBe(false);
     const { state: failure } = applyMintResult(flagged, { ok: false, status: 500, body: {} });
     expect(failure.mintInFlight).toBe(false);
+  });
+
+  test('visibleErrorForReason maps setup_unavailable and everything else to the two user-facing lines', () => {
+    expect(visibleErrorForReason('setup_unavailable')).toBe("Setup isn't available right now. Try again later.");
+    expect(visibleErrorForReason('mint_failed')).toBe("Setup didn't finish. Try again.");
+    expect(visibleErrorForReason('publish_failed')).toBe("Setup didn't finish. Try again.");
+    expect(visibleErrorForReason(undefined)).toBe("Setup didn't finish. Try again.");
   });
 });

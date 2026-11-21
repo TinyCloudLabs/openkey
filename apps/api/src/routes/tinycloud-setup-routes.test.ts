@@ -1,10 +1,11 @@
 import './tinycloud-setup-test-env';
 
-// TC-3657 Bobbie 15:16:27Z + Naomi 15:12:55Z/15:16:50Z: route-level integration tests.
-// Exercises the hono router with injected stores + injected session middleware against a
-// fake PrismaClient. One test per F that would have failed on d9aa2841, plus Naomi's
-// explicit scenarios: replayed ticket, wrong origin, framed request (covered in the widget
-// test suite), rate-limit hit, and 503 when config is unset.
+// TC-3657: route-level integration tests. Exercises the hono router with injected stores
+// + injected session middleware against a fake PrismaClient. Covers the acceptance
+// scenarios (replayed ticket, wrong origin, framed request handled in the widget test
+// suite, rate-limit hit, 503 when config is unset) plus one case per guarantee that the
+// draft once lacked (passkey gate, record-hash rebuild under wall-clock drift, lazy init
+// when the secret is missing, origin middleware refusals, hash-mismatch).
 //
 // The route calls `rejectNonOpenKeySignRequest` + `requireSession` middleware; the test
 // router injects simple stand-ins so the tests can exercise the business logic directly.
@@ -91,11 +92,11 @@ interface BuildRouterOpts {
   configuredHost?: string;
   /** If set, exercises the real origin middleware; otherwise skips it. */
   realOrigin?: boolean;
-  /** For deterministic time control (F3). Mint and publish both see the same `now()`. */
+  /** For deterministic time control. Mint and publish both see the same `now()`. */
   getServerTime?: () => Date;
   rateLimits?: { mint: number; publish: number };
-  /** N5 (Bobbie 15:42:43Z): injected `fetch` the registry client calls. Defaults to a stub
-   *  that returns 502 so tests NEVER touch the real registry. */
+  /** Injected `fetch` the registry client calls. Defaults to a stub that returns 502 so
+   *  tests NEVER touch the real registry. */
   fetch?: typeof fetch;
 }
 
@@ -115,7 +116,7 @@ function buildRouter(opts: BuildRouterOpts = {}) {
     retryAfter,
     prisma,
     configuredHost: opts.configuredHost ?? CONFIGURED_HOST.host,
-    // N5: inject a stub fetch by default so no route test can reach the live registry.
+    // Inject a stub fetch by default so no route test can reach the live registry.
     fetch: opts.fetch ?? ((async () => new Response('', { status: 502 })) as unknown as typeof fetch),
     ...(opts.getServerTime ? { getServerTime: opts.getServerTime } : {}),
     sessionMiddleware: async (c, next) => { setSession(c); await next(); },
@@ -176,9 +177,9 @@ describe('tinycloud-setup router', () => {
     expect(body.status).toBe('unavailable');
   });
 
-  // Naomi 15:16:50Z — "add a test for each F that fails on d9aa2841".
+  // One case per acceptance scenario the route must enforce.
 
-  test('F3 regression: publish does NOT fail with record_mismatch when mint and publish run at different wall-clock moments', async () => {
+  test('publish does not fail with record_mismatch when mint and publish run at different wall-clock moments', async () => {
     // On d9aa2841, mint-ticket hashed the payload at time T0 and publish rehashed at T0+Δ
     // (the handlers each called `new Date()`), so the two hashes diverged and every real
     // publish got 403 record_mismatch. The fix carries mintedAt inside the ticket and
@@ -210,12 +211,12 @@ describe('tinycloud-setup router', () => {
     expect(replayBody.error).toBe('already_used');
   });
 
-  // N5 (Bobbie 15:42:43Z): a hash-mismatch scenario — if the `recordHash` the ticket was
-  // bound to differs from what the server rebuilds (should be impossible with the current
-  // canonicaliser, but tests make the invariant structural), the publish returns 403
-  // record_mismatch. We force the mismatch by minting under one node origin and rebuilding
-  // under a different one; the hash depends on the node.
-  test('N5 regression: hash-mismatch between ticket and rebuilt payload → 403 record_mismatch', async () => {
+  // Hash-mismatch scenario — if the `recordHash` the ticket was bound to differs from
+  // what the server rebuilds (should be impossible with the current canonicaliser, but
+  // tests make the invariant structural), the publish returns 403 record_mismatch. We
+  // force the mismatch by minting under one node origin and rebuilding under a different
+  // one; the hash depends on the node.
+  test('hash-mismatch between ticket and rebuilt payload → 403 record_mismatch', async () => {
     let currentMs = 1_700_000_000_000;
     const getServerTime = () => new Date(currentMs);
     // Shared ticket store + rate limiter so the second router sees the first router's ticket.
@@ -246,7 +247,7 @@ describe('tinycloud-setup router', () => {
     expect(body.error).toBe('record_mismatch');
   });
 
-  test('F5 regression: unset OPENKEY_SETUP_TICKET_SECRET yields 503 per request, not a boot crash', async () => {
+  test('unset OPENKEY_SETUP_TICKET_SECRET yields 503 per request, not a boot crash', async () => {
     // The lazy-init path: if deps fail to build (e.g. secret missing), the router catches
     // and returns 503. We simulate by invoking createTinyCloudSetupRouter with a Partial deps
     // missing ticketStore — the lazy resolver falls through to defaultDeps(), which reads
@@ -274,7 +275,7 @@ describe('tinycloud-setup router', () => {
     }
   });
 
-  test('F6 regression: missing Origin header is refused by the real middleware (403)', async () => {
+  test('missing Origin header is refused by the real middleware (403)', async () => {
     // With `realOrigin: true` we use the production origin guard; a request with NO Origin
     // header is refused with 403 `Managed-key signing requires an OpenKey browser origin`.
     const { app } = buildRouter({ realOrigin: true });
@@ -286,7 +287,7 @@ describe('tinycloud-setup router', () => {
     expect(response.status).toBe(403);
   });
 
-  test('F6 regression: cross-origin Origin header is refused (403); same-site passes', async () => {
+  test('cross-origin Origin header is refused (403); same-site passes', async () => {
     const { app } = buildRouter({ realOrigin: true });
     const foreign = await app.request('/api/tinycloud-setup/mint-ticket', {
       method: 'POST',
@@ -302,8 +303,8 @@ describe('tinycloud-setup router', () => {
     expect(sameSite.status).toBe(200);
   });
 
-  // Naomi 15:12:55Z — "replayed ticket, wrong origin, framed request, rate-limit hit, 503
-  // when config unset". The framed request is covered in the widget tests.
+  // Replayed ticket, wrong origin, rate-limit hit, and 503 when config is unset. The
+  // framed-request refusal lives in the widget-state test suite.
 
   test('replayed ticket (second publish) fails with 409 already_used', async () => {
     const { app } = buildRouter();
@@ -375,9 +376,9 @@ describe('tinycloud-setup router', () => {
     }
   });
 
-  // F1 (C4): publish without a passkey assertion must be refused when the owner's mode
-  // requires one. On d9aa2841 this went through on cookie + ticket + one click.
-  test('F1 regression: publish without a passkey assertion → 403 passkey_approval_required when mode is ALWAYS', async () => {
+  // Publish without a passkey assertion must be refused when the owner's mode is ALWAYS
+  // or SENSITIVE (the sensitive-approval gate `checkApprovalPasskey`).
+  test('publish without a passkey assertion → 403 passkey_approval_required when mode is ALWAYS', async () => {
     const { app } = buildRouter({ passkeyApprovalMode: 'ALWAYS', stepUpPasskeyCount: 1 });
     const minted = await mintOk(app);
     const response = await app.request('/api/tinycloud-setup/publish', {

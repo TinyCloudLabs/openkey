@@ -69,7 +69,7 @@ export function sameTinyCloudHost(left: string, right: string): boolean {
 // `/authorize-tinycloud-setup` to fill the location record's `nodes[]` entry — never by
 // renewal-lease (which has its own pin at `renewal-lease.ts`, different trust purpose).
 // MUST be set in production before the endpoint is exposed; the route fails closed
-// without it (Bobbie C5 fail-closed semantics for config). Must be a canonical Ed25519
+// without it (fail-closed; the server never signs a record pointing at an unverified node). Must be a canonical Ed25519
 // `did:key:z...` matching the trusted bootstrap host's `/info` response.
 const TINYCLOUD_DEFAULT_NODE_DID_PATTERN = /^did:key:z[1-9A-HJ-NP-Za-km-z]{40,}$/;
 
@@ -88,7 +88,7 @@ export interface TinyCloudBootstrapNode {
 
 /** The node DID + origin pair for the TC-3657 setup record. Both components come from
  *  env/validated allowlist; neither can be influenced by the caller. Returns `null` when
- *  either side is missing (fail-closed per Bobbie C1 — the server never signs a record
+ *  either side is missing (fail-closed — the server never signs a record
  *  pointing at an unverified node). */
 export function defaultTinyCloudBootstrapNode(configuredHost: string = DEFAULT_TINYCLOUD_BOOTSTRAP_HOST): TinyCloudBootstrapNode | null {
   const nodeDid = trustedTinyCloudBootstrapNodeDid();

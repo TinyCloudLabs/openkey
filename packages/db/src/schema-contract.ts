@@ -69,11 +69,10 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261121_0005_native_approval_passkey_method', '450234c3f53249bd91b0f9d92823d24cd377458e1db114a503c08fe588ccf76e'],
   // TC-3657: Prisma-backed stores for OpenKey's outside-app one-tap TinyCloud setup
   // endpoint. Required so the API cannot go live without the two tables that back the
-  // single-use nonce invariant (Bobbie C1) and the per-owner rate limit (C5).
-  // Numbered 0006 because TC-3569 S1b (merged at 15e213cd) claimed 0001-0004 and TC-3596
-  // (merged at 4b6c594c) claimed 0005. If a later slice claims 0006 first, the OpenKey
-  // driver renumbers.
-  ['20261121_0006_tinycloud_setup_tables', '2c76d33c89a485b5db77efdfbfe6e3bcf2d87ba94587118cef26932e931845d7'],
+  // single-use nonce invariant and the per-owner rate limit. Numbered 0006 because
+  // S1b (merged at 15e213cd) claimed 0001-0004 and TC-3596 (merged at 4b6c594c) claimed
+  // 0005. If a later slice claims 0006 first the OpenKey driver renumbers.
+  ['20261121_0006_tinycloud_setup_tables', 'a70e40ec6d8c438f61dbe7784fdba3f17b69af069ee1d717af571803fb6f36cc'],
 ]);
 
 export type SchemaContractDatabase = {

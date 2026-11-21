@@ -349,9 +349,9 @@ type MessageType =
   | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:sign:request'; message: string; keyId?: string; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1; expiryChangeable?: true; renewal?: TinyCloudRenewalRequestV1 }
-  // TC-3657: outside-app one-tap setup. The widget observes the opener's
-  // origin via `event.origin` (Bobbie C3, N1: forced popup); the SDK
-  // does NOT send any `origin` field in the request, by design.
+  // TC-3657: outside-app one-tap setup. The widget observes the opener's origin via
+  // `event.origin`; the SDK does NOT send any `origin` field in the request, by design
+  // (and the popup is forced regardless of `opts.mode`).
   | { type: 'openkey:tinycloud-setup:request'; requestingApp?: { name?: string; manifest?: unknown }; requestId: string }
   | { type: 'openkey:tinycloud-setup:response'; success: true; result: TinyCloudSetupResultV1; requestId: string }
   | { type: 'openkey:tinycloud-setup:response'; success: false; error: OpenKeyError; requestId: string }
@@ -1226,17 +1226,17 @@ export class OpenKey {
   }
 
   /**
-   * TC-3657: outside-app one-tap TinyCloud setup. Sam's TC-3620 pick (14:14:07Z).
+   * TC-3657: outside-app one-tap TinyCloud setup.
    *
    * The outside app's own sign-in refuses a brand-new owner with `AccountSetupRequiredError`
-   * (from TinyCloud's web-sdk). The outside app catches that error and calls this method;
-   * OpenKey opens a top-level popup (N1 — never iframe, regardless of `opts.mode`), the owner
-   * sees the consent screen in OpenKey's own origin, and on approve OpenKey signs + publishes
-   * the owner's registry location record under their `did:pkh`. The outside app never sees the
-   * signed record (only the `status` + `subject`); OpenKey server picks the node DID + origin
-   * from its allowlisted configuration (Bobbie C1); the browser-derived requesting origin is
-   * used for the per-origin rate limit + the consent screen label (C3), not any field in
-   * `request.requestingApp` (which stays caller-asserted display only — N2).
+   * (from TinyCloud's web-sdk). The outside app catches that error and calls this method.
+   * OpenKey opens a top-level popup (never an iframe, regardless of `opts.mode`), the owner
+   * sees the consent screen in OpenKey's own origin, and on approve OpenKey signs and
+   * publishes the owner's registry location record under their `did:pkh`. The outside app
+   * never sees the signed record (only the `status` + `subject`); OpenKey server picks the
+   * node DID + origin from its allowlisted configuration; the browser-derived requesting
+   * origin is used for the per-origin rate limit and the consent screen label, not any
+   * field in `request.requestingApp` (which stays caller-asserted display only).
    *
    * `request.requestingApp.name` and `request.requestingApp.manifest` are DISPLAYED CLAIMS
    * only. OpenKey never uses them to build the signed record, the setup ticket, the rate
@@ -1246,7 +1246,7 @@ export class OpenKey {
     request: { requestingApp?: { name?: string; manifest?: unknown } } = {},
     _opts?: { mode?: OpenKeyMode },
   ): Promise<TinyCloudSetupResultV1> {
-    // N1: popup is forced regardless of the caller's requested mode. The parameter is
+    // The popup is forced regardless of the caller's requested mode. The parameter is
     // accepted for signature symmetry with `authorizeTinyCloud` but ignored.
     const reserved = this.reservePopup('tinycloud-setup');
     try {

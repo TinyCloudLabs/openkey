@@ -1,7 +1,7 @@
 // TC-3657: OpenKey server's V2 location-registry client. Writes the owner's
 // `did:pkh`-signed location record using `@tinycloud/sdk-core@3.12.0-beta.22`'s
 // publication primitives (already a prod dep per `apps/api/package.json`;
-// OpenKey driver 15:01:13Z confirmed no existing registry client to extend).
+// subpath, so no existing registry client needs extending here).
 //
 // The server builds the canonical payload from inputs it fully controls:
 //   - `subject`: owner's `did:pkh` from the authenticated session.
@@ -9,8 +9,8 @@
 //     allowlisted); caller cannot influence.
 //   - `spaces`: the owner's primary space URI, derived from the owner's
 //     did:pkh + a fixed space name; caller cannot influence.
-// None of `requestingApp.name` / `requestingApp.manifest` are read here (N2:
-// those are DISPLAYED CLAIMS, never grant inputs).
+// None of `requestingApp.name` / `requestingApp.manifest` is read here; those fields are
+// displayed on the setup screen as caller-asserted claims and never enter the record.
 
 import {
   DEFAULT_TINYCLOUD_LOCATION_REGISTRY_URL,
@@ -37,7 +37,7 @@ export interface TinyCloudSetupRecordInputs {
 }
 
 /** Builds the exact canonical payload the server will sign. Returns the payload + the hex sha256
- *  the setup ticket binds to (Bobbie C1: ticket must be bound to the record hash). The returned
+ *  the setup ticket binds to (the ticket must be bound to the record hash). The returned
  *  payload is immediately ready for `signLocationRecordV2` or `publishLocationRecordV2`. */
 export function buildTinyCloudSetupPayload(inputs: TinyCloudSetupRecordInputs): { payload: LocationRecordV2Payload; canonical: string; hash: string; space: string } {
   const spaceName = inputs.primarySpace ?? TINYCLOUD_SETUP_PRIMARY_SPACE;
@@ -66,11 +66,11 @@ export interface TinyCloudSetupPublishInputs extends TinyCloudSetupRecordInputs 
   readonly fetch?: typeof fetch;
   /** Optional stricter fence; the default already refuses when `current !== null`, but the
    *  route layers an `onPrepared` that also asserts `sha256(canonical(prepared)) === recordHash`
-   *  so the bytes we're about to sign exactly match what the ticket was bound to (Bobbie F3). */
+   *  so the bytes we're about to sign exactly match what the ticket was bound to. */
   readonly onPrepared?: (prepared: LocationRecordV2Payload, current: LocationRecordV2 | null) => Promise<boolean> | boolean;
 }
 
-/** Publishes the setup record. Fails loudly on any mismatch (Bobbie C1 no-overwrite via
+/** Publishes the setup record. Fails loudly on any mismatch (no-overwrite fence via
  *  `onPrepared: current === null`; TC-3547's own fence). The caller must have already minted
  *  + consumed a setup ticket bound to this subject + verified origin + the payload's hash. */
 export async function publishTinyCloudSetupRecord(inputs: TinyCloudSetupPublishInputs): Promise<LocationRecordV2> {
@@ -84,7 +84,7 @@ export async function publishTinyCloudSetupRecord(inputs: TinyCloudSetupPublishI
       node: { did: inputs.node.nodeDid, url: inputs.node.origin },
       mode: 'read-write',
     })),
-    // Bobbie C1 hard fence: refuse the publish if any record now exists for the owner.
+    // Hard fence: refuse the publish if any record now exists for the owner.
     onPrepared: inputs.onPrepared ?? (async (_prepared, current) => current === null),
     ...(inputs.fetch ? { fetch: inputs.fetch } : {}),
     ...(inputs.now ? { now: () => inputs.now! } : {}),

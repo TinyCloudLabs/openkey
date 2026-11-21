@@ -1,7 +1,7 @@
-// TC-3657 Bobbie C5/N3 + Naomi 15:12:55Z: the in-memory limiter is what tests exercise.
-// Production uses the Prisma limiter (replica-safe); the unit assertions cover the shared
-// invariants: thresholds, per-owner isolation, case-insensitive subjects, bucket
-// independence (mint vs publish), and hourly window reset.
+// TC-3657: the in-memory limiter is what tests exercise. Production uses the Prisma
+// limiter (replica-safe); the unit assertions cover the shared invariants: thresholds,
+// per-owner isolation, case-insensitive subjects, bucket independence (mint vs publish),
+// and hourly window reset.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';

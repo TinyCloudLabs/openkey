@@ -1,5 +1,5 @@
-// TC-3657 Bobbie C1 (14:32:09Z) + F3 fix (15:16:27Z): unit tests for the setup ticket
-// store. Covers signature + binding + TTL + single-use + decode/consume roundtrip.
+// TC-3657: unit tests for the setup ticket store. Covers signature + binding + TTL +
+// single-use + decode/consume roundtrip.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -43,7 +43,7 @@ test('consume rejects a ticket after TTL expires', async () => {
   assert.equal(err.status, 410);
 });
 
-test('consume rejects when subject / origin / recordHash do not match (Bobbie C1 binding)', async () => {
+test('consume rejects when subject / origin / recordHash do not match', async () => {
   const now = new Date();
   for (const bad of [
     { ...binding, subject: 'did:pkh:eip155:1:0x00000000000000000000000000000000000000Bb' },
@@ -82,7 +82,7 @@ test('consume rejects a malformed ticket envelope', async () => {
 });
 
 test('nonces are rejected after an API restart when the persistent store already has them', async () => {
-  // Naomi 15:12:55Z: the ticket's single-use property must survive restarts. Simulate it by
+  // The single-use property must survive restarts. Simulate it by
   // creating a fresh store that shares a nonce store (as Prisma would in production): the
   // previously-consumed ticket is refused even though the in-memory signer forgot it.
   const sharedNonceStore = createInMemorySetupNonceStore();
@@ -97,7 +97,7 @@ test('nonces are rejected after an API restart when the persistent store already
   assert.equal(err.code, 'already_used');
 });
 
-test('decode returns the ticket mintedAt without consuming it (F3)', async () => {
+test('decode returns the ticket mintedAt without consuming it', async () => {
   // The route uses `decode` to rebuild the canonical payload at the ticket's mintedAt so the
   // hash matches what the ticket was bound to. Calling decode must NOT burn the nonce.
   const store = makeStore();

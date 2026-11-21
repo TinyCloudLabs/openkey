@@ -4,10 +4,10 @@
 --   tinycloud_setup_consumed_nonce: single-use proof that a setup ticket's server-minted
 --     nonce has been consumed. A new ticket's consume() refuses when a row with the
 --     ticket's nonce already exists, so a replayed ticket cannot sign a second record
---     even after a restart or across API replicas (Bobbie C1).
+--     even after a restart or across API replicas (C1).
 --   tinycloud_setup_rate_limit_bucket: per-owner-per-action window counter with atomic
 --     increment via ON CONFLICT ... DO UPDATE. One shared row per (action, subject,
---     windowStartMs) across every API replica, so N3's server-side per-owner limit is
+--     windowStartMs) across every API replica, so the server-side per-owner limit is
 --     global, not per-process.
 
 CREATE TABLE "tinycloud_setup_consumed_nonce" (
