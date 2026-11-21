@@ -193,6 +193,16 @@ export const DEVICE = {
   /** The code tiles' label: `{first}` and `{second}` are the code's halves, one character at a time ("W D J B"). */
   codeLabel: 'Code {first}, {second}',
   asksLabel: 'What it asks for',
+  namedSecret: '{name} · {access}',
+  secretNames: 'See the names of all your secrets (not their contents)',
+  // Display order for the named secret actions.
+  secretAccess: {
+    'tinycloud.kv/get': 'Read',
+    'tinycloud.kv/put': 'Write',
+    'tinycloud.kv/list': 'List',
+  },
+  defaultDecrypt: 'Decrypt protected data',
+  accessForLifetime: '{access} for {lifetime}',
   reasonNote: 'This reason comes from the caller and isn’t verified.',
   /** The list of what is asked for. */
   asksList: 'Requested access',

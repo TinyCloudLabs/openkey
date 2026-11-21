@@ -5,6 +5,7 @@
 
 import { formatAccessEnd } from './access-end';
 import { EXPIRY_PRESETS } from './approval-expiry';
+import { DEVICE, fill } from '@openkey/sdk/approval-copy';
 
 export interface DevicePermission {
   service: string;
@@ -367,12 +368,26 @@ export function decryptDefaultEntryLabel(
   permission: DevicePermission,
   lifetimeSeconds: number,
 ): { statement: string; lifetime: string } | null {
-  const exact =
-    permission.service === 'tinycloud.encryption' &&
-    permission.space === 'default' &&
-    permission.path === '' &&
-    permission.actions.length === 1 &&
-    permission.actions[0] === 'tinycloud.encryption/decrypt';
-  if (!exact) return null;
-  return { statement: 'Decrypt protected data', lifetime: formatDeviceLifetime(lifetimeSeconds) };
+  if (!isDeviceEncryptionEntry(permission)) return null;
+  return { statement: DEVICE.defaultDecrypt, lifetime: formatDeviceLifetime(lifetimeSeconds) };
+}
+
+export function devicePermissionSummary(permission: DevicePermission, lifetimeSeconds: number): string | null {
+  const decrypt = decryptDefaultEntryLabel(permission, lifetimeSeconds);
+  if (decrypt) {
+    return fill(DEVICE.accessForLifetime, { access: decrypt.statement, lifetime: decrypt.lifetime });
+  }
+  if (permission.service !== 'tinycloud.kv' || permission.space.split(':').at(-1) !== 'secrets') return null;
+
+  if (permission.path === 'vault/secrets/' && permission.actions.length === 1 && permission.actions[0] === 'tinycloud.kv/list') {
+    return DEVICE.secretNames;
+  }
+  const name = /^vault\/secrets\/([A-Z][A-Z0-9_]{0,63})$/.exec(permission.path)?.[1];
+  const verbs = DEVICE.secretAccess;
+  if (!name || !permission.actions.length || !permission.actions.every((ability) => Object.hasOwn(verbs, ability))) return null;
+  const access = Object.entries(verbs)
+    .filter(([ability]) => permission.actions.includes(ability))
+    .map(([, label]) => label)
+    .join(', ');
+  return fill(DEVICE.namedSecret, { name, access });
 }

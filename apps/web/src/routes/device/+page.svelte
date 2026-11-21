@@ -9,6 +9,7 @@
   import CloseTabButton from '$lib/components/ui/close-tab-button.svelte';
   import {
     cleanConsentText,
+    devicePermissionSummary,
     deviceRequestDefaultSeconds,
     deviceRequestReason,
     deviceRequestTtlSeconds,
@@ -26,6 +27,7 @@
     permissionId,
     splitStatementCode,
     type CapabilityGrant,
+    type SummaryStatement,
   } from '@openkey/capability-review';
   import { DEVICE } from '@openkey/sdk/approval-copy';
 
@@ -48,9 +50,15 @@
   const displayReason = $derived(request?.reason ? cleanConsentText(request.reason) : '');
   const summaryRows = $derived.by(() => {
     if (!request) return [];
-    const grants: CapabilityGrant[] = request.permissions.map((permission) => {
+    const explicitRows: SummaryStatement[] = [];
+    const grants: CapabilityGrant[] = request.permissions.flatMap((permission) => {
+      const summary = devicePermissionSummary(permission, Math.min(lifetimeSeconds, maxLifetimeSeconds));
+      if (summary !== null) {
+        explicitRows.push({ key: summary, primaryText: summary, severity: 'sensitive', unmapped: false, codeSpans: false });
+        return [];
+      }
       const classified = classifyRecapEntry(permission);
-      return {
+      return [{
         ...permission,
         ...classified,
         id: permissionId(permission.service, permission.space, permission.path),
@@ -69,9 +77,9 @@
           editable: false,
           caveats: [],
         })),
-      };
+      }];
     });
-    return buildSummaryStatements(grants);
+    return [...explicitRows, ...buildSummaryStatements(grants)];
   });
 
   const delegateHref = $derived.by(() => {
