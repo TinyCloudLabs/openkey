@@ -129,6 +129,9 @@ export interface WidgetSigningTransport {
   /** True while a current, unexpired token sealed to the visible selection is held. */
   previewReady: boolean;
 
+  /** True while the passkey offer Approve needs is still being fetched: Approve waits, as it does for a preview. */
+  passkeyPending?: boolean;
+
   /** Sign the ready sealed preview, or the original bytes on the legacy path. */
   approveAndSign: () => void | Promise<void>;
 

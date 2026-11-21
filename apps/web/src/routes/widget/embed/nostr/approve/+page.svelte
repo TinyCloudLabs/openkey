@@ -21,9 +21,12 @@
   import { api, type NostrKey, type SignedNostrEvent, type UnsignedNostrEvent } from '$lib/api';
   import {
     answerApprovalPasskey,
+    approvalPasskeyGate,
     isPasskeyApprovalRefusal,
+    passkeyApprovalCopy,
     type ApprovalPasskeyAssertion,
     type ApprovalPasskeyNeed,
+    type PasskeyOfferFetch,
   } from '$lib/approval-passkey';
   import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
   import { parseCanonicalOrigin, parseNostrRelayUrl, extractRelayTag } from '$lib/nostr-origin';
@@ -73,7 +76,14 @@
 
   // TC-3442: Approve creates a signing grant, which the account's passkey setting may ask the passkey for. The offer
   // for this grant is held while the consent card is up; null until it arrives, or when the fetch failed.
-  let passkeyNeed = $state<ApprovalPasskeyNeed | null>(null);
+  let passkeyOffer = $state<{ input: string; need: ApprovalPasskeyNeed } | null>(null);
+  let passkeyOfferFetch = $state<PasskeyOfferFetch>('idle');
+  const grantInput = $derived.by(() => {
+    const grant = pendingGrant();
+    return grant ? JSON.stringify(grant) : null;
+  });
+  const offerGate = $derived(approvalPasskeyGate({ input: grantInput, held: passkeyOffer, fetch: passkeyOfferFetch }));
+  const offerFailure = $derived(passkeyOfferFetch === 'failed' ? passkeyApprovalCopy.offerFailed : '');
   let passkeyOfferRequest = 0;
   let approvalError = $state('');
 
@@ -192,15 +202,25 @@
     return null;
   }
 
-  // A failed fetch leaves the offer unknown: Approve then goes without an assertion and the API's refusal says why.
+  // Approve sends nothing until the offer for the current grant has landed; a failed fetch shows `offerFailure` and the
+  // next tap fetches again.
   function loadGrantPasskey() {
     const grant = pendingGrant();
     const request = ++passkeyOfferRequest;
-    passkeyNeed = null;
-    if (!grant) return;
+    passkeyOffer = null;
+    if (!grant) {
+      passkeyOfferFetch = 'idle';
+      return;
+    }
+    const input = JSON.stringify(grant);
+    passkeyOfferFetch = 'pending';
     api.nostr.createGrantPasskey(grant.keyId, grant.input).then(
-      (need) => { if (request === passkeyOfferRequest) passkeyNeed = need; },
-      () => {},
+      (need) => {
+        if (request !== passkeyOfferRequest) return;
+        passkeyOffer = { input, need };
+        passkeyOfferFetch = 'idle';
+      },
+      () => { if (request === passkeyOfferRequest) passkeyOfferFetch = 'failed'; },
     );
   }
 
@@ -209,10 +229,14 @@
    * prompt or a passkey refusal keeps the consent card up with the message, anything else goes to `onFailure`.
    */
   async function approveGrant(onFailure: (message: string | undefined) => void): Promise<boolean> {
+    // Without the offer for this grant nothing is sent: Approve waits for the fetch in flight, or fetches again.
+    const gate = offerGate;
+    if (gate.action === 'retry') loadGrantPasskey();
+    if (gate.action !== 'send') return false;
     let passkeyAssertion: ApprovalPasskeyAssertion | undefined;
     try {
       // First, before any other await: the passkey prompt needs the tap's user gesture.
-      passkeyAssertion = await answerApprovalPasskey(passkeyNeed);
+      passkeyAssertion = await answerApprovalPasskey(gate.need);
     } catch (e) {
       approvalError = (e as Error).message;
       return false;
@@ -390,12 +414,12 @@
             <code class="font-mono text-xs text-surface-900 break-all">{pendingRelayUrl}</code>
           </div>
         {/if}
-        {#if approvalError}
-          <p class="text-sm text-red-600" role="alert">{approvalError}</p>
+        {#if approvalError || offerFailure}
+          <p class="text-sm text-red-600" role="alert">{approvalError || offerFailure}</p>
         {/if}
         <div class="flex gap-2 mt-1">
           <Button variant="secondary" size="sm" class="flex-1 rounded-xl" onclick={cancelConnect}>Cancel</Button>
-          <Button size="sm" class="flex-1 rounded-xl" onclick={approveConnect}>Connect</Button>
+          <Button size="sm" class="flex-1 rounded-xl" onclick={approveConnect} disabled={offerGate.action === 'wait'}>Connect</Button>
         </div>
       </div>
     {:else if step === 'consent' && mode === 'sign'}
@@ -406,12 +430,12 @@
           <span class="block text-surface-400 text-xs uppercase tracking-wide mb-1">{summary.title}</span>
           <span class="text-sm text-surface-900 break-all">{summary.detail}</span>
         </div>
-        {#if approvalError}
-          <p class="text-sm text-red-600" role="alert">{approvalError}</p>
+        {#if approvalError || offerFailure}
+          <p class="text-sm text-red-600" role="alert">{approvalError || offerFailure}</p>
         {/if}
         <div class="flex gap-2 mt-1">
           <Button variant="secondary" size="sm" class="flex-1 rounded-xl" onclick={cancelSign}>Cancel</Button>
-          <Button size="sm" class="flex-1 rounded-xl" onclick={approveSign}>Approve</Button>
+          <Button size="sm" class="flex-1 rounded-xl" onclick={approveSign} disabled={offerGate.action === 'wait'}>Approve</Button>
         </div>
       </div>
     {:else}
