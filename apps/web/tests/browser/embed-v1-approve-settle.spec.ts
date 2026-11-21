@@ -69,8 +69,29 @@ async function openEmbed(page: Page, parent: Parent, version: 1 | 2 = 1, keyDela
       let flip = false;
       setInterval(() => { flip = !flip; frame.style.transition = 'none'; frame.style.height = flip ? '380px' : '420px'; }, 40);
     }
-    // Sample the Approve button's page position and enabled state every animation frame.
+    // Sample the Approve button's page position and enabled state every animation frame. Every change of its
+    // `disabled` attribute is also recorded as it happens: a parent that resizes the frame faster than a frame
+    // interval can leave Approve enabled for less than one sample, and a sampler alone would miss that.
+    const watched = new WeakSet<Document>();
+    const watch = (doc: Document) => {
+      // A document that is still being replaced has no root yet; the next frame tries again.
+      if (watched.has(doc) || !doc.documentElement) return;
+      watched.add(doc);
+      new MutationObserver((records) => {
+        for (const record of records) {
+          const target = record.target as HTMLButtonElement;
+          if (!target.matches('button.approve')) continue;
+          const box = frame.getBoundingClientRect();
+          w.frameLog.push({
+            t: Math.round(performance.now() - t0),
+            top: Math.round((box.top + target.getBoundingClientRect().top) * 10) / 10,
+            enabled: !target.disabled,
+          });
+        }
+      }).observe(doc.documentElement, { attributes: true, attributeFilter: ['disabled'], subtree: true });
+    };
     const sample = () => {
+      if (frame.contentDocument) watch(frame.contentDocument);
       const button = frame.contentDocument?.querySelector('button.approve') as HTMLButtonElement | null;
       const box = frame.getBoundingClientRect();
       const top = button ? Math.round((box.top + button.getBoundingClientRect().top) * 10) / 10 : NaN;
