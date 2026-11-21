@@ -5,7 +5,8 @@
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import {
-    answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed,
+    answerApprovalPasskey, approvalPasskeyGate, isPasskeyApprovalRefusal, passkeyApprovalCopy,
+    type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed, type PasskeyOfferFetch,
   } from '$lib/approval-passkey';
   import { ARCHIVED_KEY_MESSAGE, autoSelectKey, signingKeyChoices } from '$lib/delegate-key-selection';
   import { parseSIWE } from '$lib/siwe-parser';
@@ -881,6 +882,8 @@
 
   // TC-3442: the exact-byte path asks whether Approve needs the passkey for exactly this key, message and site. An
   // external key never gets an offer; a passkey refusal spends the challenge, so the revision fetches a new one.
+  // Approve sends nothing until the offer for the current input has landed: it waits while the fetch is in flight and
+  // fetches again after a failure.
   const exactBytePasskeyInput = $derived.by(() =>
     key && key.keyType === 'MANAGED' && !externalSignMode && message && reviewModel && !siweRefusal && !canUseAuthorizeSignFn()
       ? JSON.stringify([key.id, message, origin === '*' ? null : origin])
@@ -888,18 +891,31 @@
   );
   let exactBytePasskey = $state<{ input: string; need: ApprovalPasskeyNeed } | null>(null);
   let exactBytePasskeyRevision = $state(0);
+  let exactBytePasskeyFetch = $state<PasskeyOfferFetch>('idle');
+  const exactByteGate = $derived(approvalPasskeyGate({
+    input: exactBytePasskeyInput, held: exactBytePasskey, fetch: exactBytePasskeyFetch,
+  }));
   $effect(() => {
     const input = exactBytePasskeyInput;
     void exactBytePasskeyRevision;
-    if (input === null) return;
+    if (input === null) {
+      exactBytePasskeyFetch = 'idle';
+      return;
+    }
     const [offerKeyId, offerMessage, offerOrigin] = JSON.parse(input) as [string, string, string | null];
     let current = true;
-    // A failed fetch leaves the offer unknown: Approve goes without an assertion and a refusal fetches again.
-    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined)
-      .then((need) => { if (current) exactBytePasskey = { input, need }; })
-      .catch(() => {});
+    exactBytePasskeyFetch = 'pending';
+    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined).then(
+      (need) => {
+        if (!current) return;
+        exactBytePasskey = { input, need };
+        exactBytePasskeyFetch = 'idle';
+      },
+      () => { if (current) exactBytePasskeyFetch = 'failed'; },
+    );
     return () => { current = false; };
   });
+  const offerFailure = $derived(exactBytePasskeyFetch === 'failed' ? passkeyApprovalCopy.offerFailed : '');
 
   function currentPreview(): HeldPreview | null {
     const preview = heldPreview;
@@ -1140,11 +1156,16 @@
       if (!previewing) invalidatePreviewForSelectionEdit();
       return;
     }
-    const passkeyNeed = externalSignMode
-      ? null
-      : approved
-        ? approved.passkey
-        : exactBytePasskey?.input === exactBytePasskeyInput ? exactBytePasskey.need : null;
+    // Without the offer for these bytes nothing is sent: Approve waits for the fetch in flight, or fetches again.
+    let passkeyNeed: ApprovalPasskeyNeed | null = null;
+    if (!externalSignMode) {
+      if (approved) passkeyNeed = approved.passkey;
+      else if (exactByteGate.action === 'send') passkeyNeed = exactByteGate.need;
+      else {
+        if (exactByteGate.action === 'retry') exactBytePasskeyRevision++;
+        return;
+      }
+    }
     signing = true;
     error = '';
     // TC-3442: the passkey prompt comes first, straight from the tap. A dismissed prompt reached nothing: the same
@@ -1497,8 +1518,9 @@
         layoutBlocked={v2 ? !layoutReady : !frameSettled}
         transport={{
           approving: signing,
+          passkeyPending: exactByteGate.action === 'wait',
           host: messageHost,
-          error: error || layoutError,
+          error: error || layoutError || offerFailure,
           approveBlockedReason: refusalMessage,
           refused,
           canUseAuthorizeSign: canUseAuthorizeSignFn(),
