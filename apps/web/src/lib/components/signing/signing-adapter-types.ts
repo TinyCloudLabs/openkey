@@ -19,6 +19,8 @@
 // non-authorization concerns; those never enter the adapter and never
 // enter the parity test.
 
+import type { ClaimedPresentationView } from "$lib/claimed-presentation";
+
 /** The renewal checkbox (TC-2933), offered only where the requester signed a renewal request. */
 export interface RenewalChoice {
   /** The lease the owner chose, in ms from approval; null when the box is unticked. */
@@ -193,4 +195,10 @@ export interface WidgetSigningTransport {
     splittable: boolean;
     onDecide: (allowed: string[]) => void;
   };
+
+  /**
+   * What the app says about a plain `signMessage()` request, already cleaned and decided by `claimedPresentation`.
+   * Display-only: the approval shows it under the verified origin and nothing here reaches the signer or the API.
+   */
+  claimedPresentation?: ClaimedPresentationView | null;
 }
