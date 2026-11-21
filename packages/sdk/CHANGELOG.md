@@ -1,5 +1,33 @@
 # @openkey/sdk
 
+## 0.13.0-beta.4
+
+### Patch Changes
+
+- 20f3efb: Approval pages end on one code page, where the code box copies itself and counts down, or one done page with a short receipt and nothing to copy.
+
+  Details: TC-3441
+
+- 911925f: Add the `@openkey/sdk/approval-copy` entry point: the texts of the approval pages, the table that maps a server reply to one of them, and `fill()` for the `{placeholders}`.
+
+  Details: TC-3441
+
+- b7a3937: Approval copy has a line for the 1-hour limit on requests that include secrets or decryption, and a line for the limit in the duration picker.
+
+  Details: TC-3510
+
+- 4f3532d: When an approval can't continue, OpenKey shows one Stop page with the next step, for delegate approvals, prepared sign-in and revoke.
+
+  Details: TC-3441
+
+- e952d08: The Google and Apple sign-in window and the revoke review match the other approval pages. The revoke review shows the full permission ID, which can be copied, with Cancel and Revoke buttons.
+
+  Details: TC-3441
+
+- 377d81f: `signOut({ onProgress })` can report when the sign-out dialog is ready and when the owner confirms.
+
+  Details: TC-2792
+
 ## 0.13.0-beta.3
 
 ### Minor Changes
