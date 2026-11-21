@@ -152,8 +152,8 @@
     /** The renewal checkbox (TC-2933); set only where the requester signed a renewal request. */
     renewal?: RenewalChoice | null;
     /**
-     * The warning screen for extra permissions (TC-2927): decrypt or key creation on the encryption network, or on
-     * keys outside the app's own area. Set only by the signing pages that carry the owner's decision to the server.
+     * The warning screen for extra permissions (TC-2927): decrypt, key creation, or blocking and unblocking keys on the
+     * encryption network, or on keys outside the app's own area. Set only by the signing pages that carry the owner's decision to the server.
      * Approve opens the screen first when the selection carries one; `splittable` is false where the request cannot be
      * narrowed (exact bytes): approve or cancel it whole. `onDecide` gets the action ids the owner allowed.
      */
@@ -581,10 +581,13 @@
     actionIds: string[];
     decrypt: boolean;
     create: boolean;
+    block: boolean;
+    unblock: boolean;
     where: string | null;
   }
-  // One group per selected grant that carries decrypt or key creation on the encryption network, or on keys outside
-  // the app's own `apps/` area. The same `elevatedKindOf` decides on the server, so both see the same permissions.
+  // One group per selected grant that carries decrypt, key creation, or blocking or unblocking of keys on the
+  // encryption network, or on keys outside the app's own `apps/` area. The same `elevatedKindOf` decides on the
+  // server, so both see the same permissions.
   const elevatedGroups = $derived.by((): ElevatedGroup[] => {
     if (!elevated) return [];
     return selectedGrants.flatMap((grant): ElevatedGroup[] => {
@@ -594,14 +597,19 @@
         return kind === null ? [] : [{ action, kind }];
       });
       if (picked.length === 0) return [];
-      return [{
-        id: grant.id,
-        kind: picked[0]!.kind,
-        actionIds: picked.map(({ action }) => action.id),
-        decrypt: picked.some(({ action }) => elevatedAbilityVerb(action.ability) === "decrypt"),
-        create: picked.some(({ action }) => elevatedAbilityVerb(action.ability) === "key.create"),
-        where: elevatedWhere(entry),
-      }];
+      const has = (verb: string) => picked.some(({ action }) => elevatedAbilityVerb(action.ability) === verb);
+      return [
+        {
+          id: grant.id,
+          kind: picked[0]!.kind,
+          actionIds: picked.map(({ action }) => action.id),
+          decrypt: has("decrypt"),
+          create: has("key.create"),
+          block: has("key.block"),
+          unblock: has("key.unblock"),
+          where: elevatedWhere(entry),
+        },
+      ];
     });
   });
   let allowedElevated = $state<Set<string>>(new Set());
@@ -617,7 +625,12 @@
   const elevatedCards = $derived(
     pendingElevatedGroups.map((group) => ({
       id: group.id,
-      ...elevatedCard(group.kind, { decrypt: group.decrypt, create: group.create }, elevatedSite, elevatedWhereText(group.where)),
+      ...elevatedCard(
+        group.kind,
+        { decrypt: group.decrypt, create: group.create, block: group.block, unblock: group.unblock },
+        elevatedSite,
+        elevatedWhereText(group.where),
+      ),
     })),
   );
   const notApprovedRows = $derived(

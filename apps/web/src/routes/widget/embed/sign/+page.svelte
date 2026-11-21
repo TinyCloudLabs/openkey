@@ -173,8 +173,9 @@
     if (windowMs !== undefined) expiryChoiceMs = windowMs;
     invalidatePreviewForSelectionEdit();
   }
-  // TC-2927: the extra permissions (decrypt or key creation on the encryption network or on keys outside the app's own
-  // area) the owner allowed on the warning screen. The preview records them and signing refuses an undecided one.
+  // TC-2927: the extra permissions (decrypt, key creation, or blocking and unblocking keys on the encryption network
+  // or on keys outside the app's own area) the owner allowed on the warning screen. The preview records them and
+  // signing refuses an undecided one.
   let elevatedAllowed = $state<string[]>([]);
   // Sol MAJOR-3 (continuation): external-key review mode. See widget/sign.
   let externalSignMode = $state(false);

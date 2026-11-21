@@ -19,7 +19,6 @@ import {
   appKeyRefusalBody,
   appKeyRefusalForMessage,
   appKeyRefusalStatus,
-  blocksOutsideApps,
   exactShareKeyRefusalForMessage,
   messageHasElevatedPermissions,
 } from '../services/app-key-refusal';
@@ -390,8 +389,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (siweCheck.siwe && !siweCheck.ok) {
     return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
   }
-  const appKeyRefusal = appKeyRefusalForMessage(body.message)
-    ?? (blocksOutsideApps(body.message) ? ({ reason: 'apps_key' } as const) : null);
+  const appKeyRefusal = appKeyRefusalForMessage(body.message);
   if (appKeyRefusal) {
     return c.json(appKeyRefusalBody(appKeyRefusal, 'non_browser'), appKeyRefusalStatus(appKeyRefusal));
   }
@@ -401,9 +399,10 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (shareRefusal) {
     return c.json(appKeyRefusalBody(shareRefusal, 'browser'), appKeyRefusalStatus(shareRefusal));
   }
-  // TC-2927: `decrypt` or `key.create` on the encryption network, or on keys outside the site's own `apps/`, is
-  // signed only after the owner decided on it on the warning screen. These exact bytes cannot be narrowed, so the
-  // screen offers all or nothing and the request says it was shown (`elevatedAcknowledged`). Checked before unseal.
+  // TC-2927: `decrypt`, `key.create`, `key.block` or `key.unblock` on the encryption network, or on keys outside the
+  // site's own `apps/`, is signed only after the owner decided on it on the warning screen. These exact bytes cannot be
+  // narrowed, so the screen offers all or nothing and the request says it was shown (`elevatedAcknowledged`). Checked
+  // before unseal.
   if (messageHasElevatedPermissions(body.message) && body.elevatedAcknowledged !== true) {
     return c.json({ ...elevatedNotDecidedBody(), code: ELEVATED_NOT_DECIDED_CODE }, 403);
   }
