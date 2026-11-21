@@ -258,3 +258,19 @@ test('reloaded approved request can finish provider consent', async ({ page }) =
   await expect.poll(() => providerPosts).toBe(1);
   expect(approvals).toBe(0);
 });
+
+test('a step-up request is refused on the sign-in screen: an error, and nothing to Allow', async ({ page }) => {
+  let approvals = 0;
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/get-session') return json(route, sessionBody);
+    if (path === '/api/oauth/tinycloud/clients/exo-native/branding') return json(route, EXO_BRANDING);
+    if (path.endsWith('/prepare')) return json(route, { ...base, kind: 'STEPUP', revision: 1, digest: 'digest-1', sessionSiwe: siwe(true), selectedActionKeys: selected });
+    if (path.endsWith('/approve')) { approvals++; return json(route, { error: 'must not approve' }, 409); }
+    return json(route, { error: `unmocked ${path}` }, 404);
+  });
+  await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
+  await expect(page.getByRole('alert')).toContainText('needs a newer version of the app');
+  await expect(page.getByRole('button', { name: 'Allow' })).toHaveCount(0);
+  expect(approvals).toBe(0);
+});

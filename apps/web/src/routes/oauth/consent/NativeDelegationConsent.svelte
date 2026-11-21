@@ -26,6 +26,8 @@
     ttlSeconds: number; grantLifetimeSeconds: number; permissionOptions: ServerPermissionOption[]; selectedActionKeys: string[];
     /** TC-3442: whether Approve needs the passkey, with the challenge for this revision. */
     passkey?: ApprovalPasskeyNeed;
+    /** The request kind; only SIGNIN renders here. */
+    kind?: string;
   };
   let preview = $state<Preview | null>(null);
   let model = $state<CapabilityReviewModel | null>(null);
@@ -66,6 +68,10 @@
       const data = await route('prepare', actionKeys ? { actionKeys } : {}) as Preview | { status: 'APPROVED' };
       if (turn !== serial) return;
       if ('status' in data) { approved = true; return; }
+      // Fail closed: this screen describes a sign-in ("renews automatically"). A step-up names the framed app and
+      // what it adds, and has its own screen; until that ships, any other kind is an error with no Allow. An API that
+      // predates request kinds sends none, and only ever has sign-ins, so a missing kind is a sign-in.
+      if (data.kind !== undefined && data.kind !== 'SIGNIN') { error = 'This request needs a newer version of the app to approve.'; return; }
       if (!model) {
         const parsed = parseCapabilityReview({
           message: data.sessionSiwe,
