@@ -1,7 +1,8 @@
-// TC-3657 Bobbie N1 (14:53:16Z) client half: this widget runs as a top-level popup only.
-// The authoritative `frame-ancestors 'none'` header is set by the server renderer
-// (`+layout.server.ts` or app-wide CSP), but this guard refuses to render if the browser
-// somehow served the page inside a frame anyway (e.g. CSP header lost at a proxy).
+// TC-3657 Bobbie N1 (14:53:16Z) + F2 fix (15:16:27Z) client half: this widget runs as
+// a top-level popup only. The authoritative `frame-ancestors 'none'` + `X-Frame-Options:
+// DENY` headers are set in `apps/web/src/hooks.server.ts` (so they actually reach the
+// HTML document even with `ssr=false`). This guard refuses to render if the browser
+// somehow served the page inside a frame anyway (e.g. headers lost at a proxy).
 export const ssr = false;
 
 export const load = (): { embeddedRefusalMessage: string | null } => {

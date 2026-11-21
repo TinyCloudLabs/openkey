@@ -2,26 +2,21 @@
 // registry publish flow. Minted when the widget page renders; verified by
 // the `/authorize-tinycloud-setup` POST before the server signs/publishes.
 //
-// Binding (ALL required): owner session, verified requesting origin
-// (derived by the widget from `window.opener.origin` and re-asserted
-// server-side on mint), record hash (hex sha256 of the canonical location
-// payload bytes the server is about to sign), a short TTL, and single-use.
+// Binding (ALL required): owner session, verified requesting origin (derived
+// by the widget from `window.opener.origin` and sent on mint), record hash
+// (hex sha256 of the canonical location payload bytes the server is about
+// to sign), a short TTL, and single-use.
 //
-// Attack this closes: an outside page that holds the OpenKey session
-// cookie cannot POST directly without a ticket. The ticket only exists
-// after the widget page rendered in the OpenKey origin, so even a
-// session-bearing cross-origin request without a ticket returns 403 (test
-// `cross-origin POST with valid session but no ticket is refused` in
-// `__tests__/tinycloud-setup.test.ts`).
-//
-// Store shape today: HMAC-signed opaque ticket + an in-process Map tracking
-// consumed nonces. This is a DRAFT; the production replacement (likely
-// Prisma-backed, following `approval-request-store.ts`) is a follow-up on
-// this ticket — flagged in the design note and this file's TODO below. The
-// signature + single-use invariant is enforced by the current code; the
-// Prisma swap is a resilience upgrade, not a security-boundary move.
+// Persistence (Naomi 15:12:55Z): consumed nonces live in Postgres via Prisma
+// (`TinyCloudSetupConsumedNonce`) so the single-use invariant survives API
+// restarts AND is global across API replicas. A replayed ticket from a
+// second replica still refuses because the first replica's consume inserted
+// the nonce row. Ticket-signature verification is the first gate; the DB
+// insert is the second. An in-memory implementation is retained for tests
+// and local development (used when no PrismaClient is injected).
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import type { PrismaClient } from '@openkey/db';
 
 /** TC-3657: tight TTL for the ticket, measured from mint. 5 minutes bounds how long
  * the consent screen can sit open before the owner's tap stops working. */
@@ -45,15 +40,23 @@ export class SetupTicketError extends Error {
   }
 }
 
+export interface DecodedSetupTicket {
+  readonly subject: string;
+  readonly verifiedRequestingOrigin: string;
+  readonly recordHash: string;
+  readonly mintedAt: Date;
+}
+
 export interface SetupTicketStore {
-  /** Returns a signed opaque ticket bound to the inputs + a fresh server-minted nonce.
-   *  Mint cannot fail for well-formed inputs; it never contacts storage. */
+  /** Signs an opaque ticket bound to the inputs + a fresh server-minted nonce. Pure (no I/O). */
   mint(binding: SetupTicketBinding, now: Date): string;
-  /** Verifies the ticket opens to the same binding, is unexpired, and has not been consumed.
-   *  Consumes the nonce (single-use) on success; throws SetupTicketError on failure. */
-  consume(ticket: string, expected: SetupTicketBinding, now: Date): void;
-  /** Size of the consumed-nonce set, for test assertions only. */
-  readonly consumedSize: number;
+  /** Signature-verifies the ticket + returns its payload WITHOUT TTL or binding checks (so the
+   *  caller can read `mintedAt` to rebuild the canonical payload the ticket was bound to).
+   *  Throws SetupTicketError on a malformed or forged ticket. Does NOT consume the nonce. */
+  decode(ticket: string): DecodedSetupTicket;
+  /** Verifies the ticket's signature, TTL, binding, and single-use. Atomic with respect to the
+   *  nonce insert (DB unique constraint). Throws SetupTicketError on any failure. */
+  consume(ticket: string, expected: SetupTicketBinding, now: Date): Promise<void>;
 }
 
 interface SignedTicketPayload {
@@ -65,23 +68,49 @@ interface SignedTicketPayload {
   mintedAtMs: number;    // epoch ms
 }
 
-/** Writes nothing to disk. Consumed-nonce retention is limited to one TTL window because a
- *  nonce older than TTL_MS is already expired and cannot pass verification; purging anything
- *  older is safe. The purge runs opportunistically on consume() calls to bound memory. */
-export function createSetupTicketStore(signingSecret: Uint8Array): SetupTicketStore {
+/** Minimal persistence surface. The default is Prisma-backed (durable, replica-safe).
+ *  Tests inject their own to assert behaviour without a running DB. */
+export interface SetupNonceStore {
+  /** Returns true if the nonce was inserted now (first use); false if already present. */
+  insertIfAbsent(nonce: string, subject: string, mintedAt: Date): Promise<boolean>;
+}
+
+export function prismaSetupNonceStore(prisma: PrismaClient): SetupNonceStore {
+  return {
+    async insertIfAbsent(nonce, subject, mintedAt) {
+      try {
+        await prisma.tinyCloudSetupConsumedNonce.create({
+          data: { nonce, subject, mintedAt },
+        });
+        return true;
+      } catch (error) {
+        // P2002 is the Prisma unique-constraint violation; the row already exists.
+        if (error && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === 'P2002') {
+          return false;
+        }
+        throw error;
+      }
+    },
+  };
+}
+
+/** In-memory nonce store used by unit tests and local dev. Not safe across restarts or
+ *  replicas; production must use `prismaSetupNonceStore`. */
+export function createInMemorySetupNonceStore(): SetupNonceStore {
+  const seen = new Set<string>();
+  return {
+    async insertIfAbsent(nonce) {
+      if (seen.has(nonce)) return false;
+      seen.add(nonce);
+      return true;
+    },
+  };
+}
+
+export function createSetupTicketStore(signingSecret: Uint8Array, nonceStore: SetupNonceStore): SetupTicketStore {
   if (signingSecret.byteLength < 32) {
     throw new Error('setup ticket signing secret must be at least 32 bytes');
   }
-  const consumedNonces = new Map<string, number>(); // nonce -> mintedAtMs
-  let lastPurgeMs = 0;
-  const purgeIfStale = (nowMs: number): void => {
-    if (nowMs - lastPurgeMs < SETUP_TICKET_TTL_MS) return;
-    lastPurgeMs = nowMs;
-    const cutoffMs = nowMs - SETUP_TICKET_TTL_MS;
-    for (const [nonce, mintedAtMs] of consumedNonces) {
-      if (mintedAtMs < cutoffMs) consumedNonces.delete(nonce);
-    }
-  };
   const sign = (payloadJson: string): string =>
     createHmac('sha256', signingSecret).update(payloadJson).digest('base64url');
   const verify = (payloadJson: string, mac: string): boolean => {
@@ -95,7 +124,7 @@ export function createSetupTicketStore(signingSecret: Uint8Array): SetupTicketSt
     const mac = sign(payloadJson);
     return Buffer.from(JSON.stringify([payloadJson, mac]), 'utf8').toString('base64url');
   };
-  const decodeTicket = (ticket: string): { payload: SignedTicketPayload; mac: string; payloadJson: string } => {
+  const decodeTicket = (ticket: string): SignedTicketPayload => {
     let outer: unknown;
     try {
       outer = JSON.parse(Buffer.from(ticket, 'base64url').toString('utf8'));
@@ -110,15 +139,12 @@ export function createSetupTicketStore(signingSecret: Uint8Array): SetupTicketSt
       throw new SetupTicketError('bad_signature', 'ticket signature does not verify', 403);
     }
     let payload: unknown;
-    try {
-      payload = JSON.parse(payloadJson);
-    } catch {
-      throw new SetupTicketError('malformed_ticket', 'ticket payload is not JSON', 400);
-    }
+    try { payload = JSON.parse(payloadJson); }
+    catch { throw new SetupTicketError('malformed_ticket', 'ticket payload is not JSON', 400); }
     if (!isSignedTicketPayload(payload)) {
       throw new SetupTicketError('malformed_ticket', 'ticket payload has the wrong shape', 400);
     }
-    return { payload, mac, payloadJson };
+    return payload;
   };
   return {
     mint(binding, now) {
@@ -132,10 +158,18 @@ export function createSetupTicketStore(signingSecret: Uint8Array): SetupTicketSt
       };
       return encodeTicket(payload);
     },
-    consume(ticket, expected, now) {
+    decode(ticket) {
+      const payload = decodeTicket(ticket);
+      return {
+        subject: payload.subject,
+        verifiedRequestingOrigin: payload.origin,
+        recordHash: payload.recordHash,
+        mintedAt: new Date(payload.mintedAtMs),
+      };
+    },
+    async consume(ticket, expected, now) {
+      const payload = decodeTicket(ticket);
       const nowMs = now.getTime();
-      purgeIfStale(nowMs);
-      const { payload } = decodeTicket(ticket);
       if (nowMs - payload.mintedAtMs > SETUP_TICKET_TTL_MS) {
         throw new SetupTicketError('expired_ticket', 'ticket has expired', 410);
       }
@@ -148,12 +182,11 @@ export function createSetupTicketStore(signingSecret: Uint8Array): SetupTicketSt
       if (payload.recordHash !== expected.recordHash) {
         throw new SetupTicketError('record_mismatch', 'ticket record hash does not match the payload being signed', 403);
       }
-      if (consumedNonces.has(payload.nonce)) {
+      const fresh = await nonceStore.insertIfAbsent(payload.nonce, payload.subject, new Date(payload.mintedAtMs));
+      if (!fresh) {
         throw new SetupTicketError('already_used', 'ticket has already been consumed', 409);
       }
-      consumedNonces.set(payload.nonce, payload.mintedAtMs);
     },
-    get consumedSize() { return consumedNonces.size; },
   };
 }
 
@@ -167,8 +200,3 @@ function isSignedTicketPayload(value: unknown): value is SignedTicketPayload {
     typeof v.recordHash === 'string' && /^[0-9a-f]{64}$/.test(v.recordHash) &&
     typeof v.mintedAtMs === 'number' && Number.isFinite(v.mintedAtMs);
 }
-
-// TODO(TC-3657 follow-up): swap in a Prisma-backed store (model after
-// `approval-request-store.ts`) so consumed nonces survive restarts and the
-// per-owner rate limit (see `tinycloud-setup-rate-limit.ts`) can share the same
-// transaction. The signed-ticket shape itself stays as-is.

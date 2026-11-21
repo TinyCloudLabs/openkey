@@ -68,5 +68,16 @@ export const handle: Handle = async ({ event, resolve }) => {
     });
   }
 
-  return resolve(event);
+  const response = await resolve(event);
+  // TC-3657 Bobbie F2 fix (15:16:27Z): `/widget/tinycloud-setup` sets `ssr=false` on its
+  // layout so neither a `+page.server.ts` nor a `+layout.server.ts` `setHeaders` reaches
+  // the HTML document — only the `__data.json` payload. Set the framing headers here in
+  // the request handler so the document itself carries them, regardless of SSR mode.
+  // Belt-and-braces with the client guard in `+layout.ts`.
+  if (event.url.pathname === '/widget/tinycloud-setup' || event.url.pathname.startsWith('/widget/tinycloud-setup/')) {
+    response.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
+    response.headers.set('X-Frame-Options', 'DENY');
+    response.headers.set('Referrer-Policy', 'no-referrer');
+  }
+  return response;
 };

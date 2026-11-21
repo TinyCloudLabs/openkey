@@ -1,198 +1,189 @@
 <!--
-  TC-3657: outside-app one-tap TinyCloud setup consent screen. DRAFT; final copy + visuals are
-  owned by Monica (text) and Soren (interaction). This page is only the state machine: it
-  observes the opener's origin via `event.origin` on an opener postMessage (Bobbie C3,
-  browser-verified), calls `/api/tinycloud-setup/mint-ticket` + `/publish`, and postMessages
-  the outside app's SDK the `TinyCloudSetupResultV1`.
+  TC-3657 widget page. DRAFT structure/skeleton. Monica owns consent copy; Soren owns final
+  interaction + visuals. Business logic lives in `widget-state.ts` (unit-tested); this
+  component is the shell + I/O.
 
-  Guards rendered here:
-    - N1: refuses to render inside an iframe (`+layout.ts` + server CSP; see also
-      `+page.server.ts` which sets `frame-ancestors 'none'`).
-    - C3: the requestingOrigin on screen + sent to the server comes from `event.origin`
-      of the opener's postMessage. The outside app cannot forge it — a postMessage to
-      this window carries the browser-verified origin of the sender. `requestingApp.name`
-      and `requestingApp.manifest` from the request are DISPLAYED CLAIMS labeled as such
-      (N2); OpenKey server never uses them for grant input.
-    - C5: the server rate-limits per owner; this page surfaces a 429 as a friendly retry hint.
+  Bobbie 15:16:27Z fixes folded in:
+    - F1: Approve button is arm-delayed; the user's tap during the review arm first mints,
+      then (after an animation-frame arm delay) publishes.
+    - F4: `verifiedRequestingOrigin` is captured in state and used for every postMessage
+      back, including the mint-failed, 429, and publish-failed paths.
+    - F7: ticket mint is deferred until the user actually taps Approve.
+    - F8: the Approve button's copy names the browser-verified origin, not the app's claim.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { LayoutData } from './$types';
+  import {
+    applyDecline,
+    applyMintResult,
+    applyPublishResult,
+    applySyn,
+    approveButtonLabel,
+    claimLabel,
+    initialState,
+    type PostBackEnvelope,
+    type WidgetState,
+  } from './widget-state';
 
-  // The previous-render refusal from +layout.ts; if present, we show it and self-close.
-  export let data: LayoutData;
+  export let data: { embeddedRefusalMessage: string | null };
 
-  type Phase =
-    | { kind: 'loading' }
-    | { kind: 'ready'; preview: SetupPreview; ticket: string; requestingOrigin: string; requestingAppName?: string; requestingAppManifest?: unknown }
-    | { kind: 'submitting' }
-    | { kind: 'error'; message: string }
-    | { kind: 'refused-embedded' };
+  let state: WidgetState = initialState(data.embeddedRefusalMessage);
+  let opener: Window | null = null;
+  let armed = false;
+  const ARM_DELAY_MS = 1200;
 
-  interface SetupPreview {
-    subject: string;
-    nodeDid: string;
-    nodeOrigin: string;
-    space: string;
-    primarySpaceName: string;
+  function postBack(envelope: PostBackEnvelope) {
+    if (!state.replyTargetOrigin) return;
+    try { opener?.postMessage(envelope, state.replyTargetOrigin); } catch { /* opener closed */ }
   }
 
-  type SetupResult =
-    | { status: 'published'; subject: string }
-    | { status: 'already-current'; subject: string }
-    | { status: 'declined' }
-    | { status: 'unavailable'; reason: 'signature-refused' | 'registry-error' | 'node-unreachable' | 'rate-limited' };
+  function closeSoon() { setTimeout(() => { try { window.close(); } catch { /* no-op */ } }, 300); }
 
-  let phase: Phase = data.embeddedRefusalMessage ? { kind: 'refused-embedded' } : { kind: 'loading' };
-  let requestId: string | null = null;
-
-  onMount(() => {
-    if (phase.kind === 'refused-embedded') {
-      // Close after a short tick so the user sees the message.
-      window.setTimeout(() => { try { window.close(); } catch { /* popup may be blocked */ } }, 3000);
-      return;
-    }
-    // Wait for the opener's postMessage identifying itself + the request.
-    const listener = async (event: MessageEvent) => {
-      // event.origin is browser-verified. Ignore any message that isn't our SDK's setup request.
-      const data = event.data;
-      if (!data || typeof data !== 'object' || data.type !== 'openkey:tinycloud-setup:request') return;
-      if (typeof data.requestId !== 'string') return;
-      if (event.source !== window.opener) return;
-      requestId = data.requestId;
-      try {
-        const mint = await fetch('/api/tinycloud-setup/mint-ticket', {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ requestingOrigin: event.origin }),
-        });
-        if (mint.status === 429) {
-          phase = { kind: 'error', message: 'Too many setup attempts for this account in the last hour. Please try again later.' };
-          respond({ status: 'unavailable', reason: 'rate-limited' });
-          return;
-        }
-        if (!mint.ok) {
-          phase = { kind: 'error', message: 'Setup is unavailable right now.' };
-          respond({ status: 'unavailable', reason: 'node-unreachable' });
-          return;
-        }
-        const body = (await mint.json()) as { ticket: string; preview: SetupPreview };
-        phase = {
-          kind: 'ready',
-          preview: body.preview,
-          ticket: body.ticket,
-          requestingOrigin: event.origin,
-          requestingAppName: typeof data.requestingApp?.name === 'string' ? data.requestingApp.name : undefined,
-          requestingAppManifest: data.requestingApp?.manifest,
-        };
-      } catch {
-        phase = { kind: 'error', message: 'Setup is unavailable right now.' };
-        respond({ status: 'unavailable', reason: 'node-unreachable' });
-      }
-    };
-    window.addEventListener('message', listener);
-    return () => window.removeEventListener('message', listener);
-  });
-
-  async function approve() {
-    if (phase.kind !== 'ready') return;
-    const { ticket, requestingOrigin } = phase;
-    phase = { kind: 'submitting' };
+  async function requestMint() {
+    if (!state.verifiedRequestingOrigin) return;
     try {
-      const publish = await fetch('/api/tinycloud-setup/publish', {
+      const response = await fetch('/api/tinycloud-setup/mint-ticket', {
         method: 'POST',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ticket, requestingOrigin }),
+        body: JSON.stringify({ requestingOrigin: state.verifiedRequestingOrigin }),
       });
-      if (publish.status === 429) {
-        respond({ status: 'unavailable', reason: 'rate-limited' });
+      if (!response.ok) {
+        const retryAfterSeconds = response.status === 429 ? Number(response.headers.get('retry-after') ?? '60') : undefined;
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        const update = applyMintResult(state, {
+          ok: false, status: response.status, body,
+          ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+        });
+        state = update.state;
+        if (update.postBack) postBack(update.postBack);
+        closeSoon();
         return;
       }
-      if (!publish.ok) {
-        respond({ status: 'unavailable', reason: 'registry-error' });
+      const body = await response.json();
+      const update = applyMintResult(state, { ok: true, body });
+      state = update.state;
+      // Arm the Approve button after a short delay (F1).
+      setTimeout(() => { if (state.phase === 'review') armed = true; }, ARM_DELAY_MS);
+    } catch (e) {
+      const update = applyMintResult(state, { ok: false, status: 0, body: { error: 'mint_failed' } });
+      state = update.state;
+      if (update.postBack) postBack(update.postBack);
+      closeSoon();
+    }
+  }
+
+  async function approve() {
+    if (!armed || !state.ticket || !state.verifiedRequestingOrigin) return;
+    state = { ...state, phase: 'submitting' };
+    try {
+      let passkeyAssertion: unknown = undefined;
+      if (state.passkey.required) {
+        // TODO(Soren) wire webauthn.get() using `state.passkey.options`.
+        passkeyAssertion = null;
+      }
+      const response = await fetch('/api/tinycloud-setup/publish', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ticket: state.ticket, requestingOrigin: state.verifiedRequestingOrigin, passkeyAssertion }),
+      });
+      if (!response.ok) {
+        const retryAfterSeconds = response.status === 429 ? Number(response.headers.get('retry-after') ?? '60') : undefined;
+        const body = await response.json().catch(() => ({})) as { error?: string };
+        const update = applyPublishResult(state, {
+          ok: false, status: response.status, body,
+          ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+        });
+        state = update.state;
+        if (update.postBack) postBack(update.postBack);
+        closeSoon();
         return;
       }
-      respond((await publish.json()) as SetupResult);
-    } catch {
-      respond({ status: 'unavailable', reason: 'node-unreachable' });
+      const body = await response.json();
+      const update = applyPublishResult(state, { ok: true, body });
+      state = update.state;
+      if (update.postBack) postBack(update.postBack);
+      closeSoon();
+    } catch (e) {
+      const update = applyPublishResult(state, { ok: false, status: 0, body: { error: 'publish_failed' } });
+      state = update.state;
+      if (update.postBack) postBack(update.postBack);
+      closeSoon();
     }
   }
 
   function decline() {
-    respond({ status: 'declined' });
+    const update = applyDecline(state);
+    state = update.state;
+    postBack(update.postBack);
+    closeSoon();
   }
 
-  function respond(result: SetupResult): void {
-    // postMessage to opener using the opener's exact origin (which we already trust;
-    // the outside app receives this via the OpenKey SDK's openFlow listener).
-    try {
-      if (window.opener && requestId && phase.kind !== 'refused-embedded') {
-        const originOk = phase.kind === 'ready' || phase.kind === 'submitting'
-          ? (phase as { requestingOrigin?: string }).requestingOrigin ?? null
-          : null;
-        if (originOk) {
-          window.opener.postMessage(
-            { type: 'openkey:tinycloud-setup:response', success: true, result, requestId },
-            originOk,
-          );
-        }
-      }
-    } finally {
-      try { window.close(); } catch { /* popup may be blocked */ }
+  function onMessage(event: MessageEvent) {
+    const next = applySyn(state, { origin: event.origin, source: event.source, opener: window.opener, data: event.data });
+    if (next === state) return;
+    state = next;
+    if (opener === null) opener = event.source as Window;
+  }
+
+  onMount(() => {
+    if (state.phase === 'embedded-refused') return;
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  });
+
+  async function onApproveClick() {
+    if (state.phase === 'review' && state.ticket === null) {
+      await requestMint();
+      return;
     }
+    if (state.phase === 'review' && armed) await approve();
   }
 </script>
 
-{#if phase.kind === 'refused-embedded'}
+{#if state.phase === 'embedded-refused'}
   <main>
-    <h1>Embedded setup is refused</h1>
+    <h1>Can't continue</h1>
     <p>{data.embeddedRefusalMessage}</p>
   </main>
-{:else if phase.kind === 'loading'}
-  <main>
-    <h1>Opening setup…</h1>
-    <p>Waiting for the requesting app to introduce itself.</p>
-  </main>
-{:else if phase.kind === 'error'}
-  <main>
-    <h1>Setup is unavailable</h1>
-    <p>{phase.message}</p>
-    <button type="button" on:click={() => { try { window.close(); } catch { /* popup */ } }}>Close</button>
-  </main>
-{:else if phase.kind === 'submitting'}
-  <main>
-    <h1>Publishing…</h1>
-    <p>Hold on while OpenKey signs and publishes your account's location record.</p>
-  </main>
+{:else if state.phase === 'waiting'}
+  <main><p>Opening setup…</p></main>
 {:else}
   <main>
-    <h1>Let your apps find your space</h1>
-    <!-- TODO(Monica): final copy; placeholder below carries the design's §5 wording. -->
-    <p>
-      To use TinyCloud apps outside TinyCloud Home, we publish a public record that links your
-      account address to the server that holds your space. Anyone who knows your account
-      address can see it, along with the names of your spaces. It doesn't include any of your content.
-    </p>
-    <dl>
-      <dt>Requesting app (verified origin)</dt>
-      <dd><code>{phase.requestingOrigin}</code></dd>
-      {#if phase.requestingAppName}
-        <dt>App's own claimed name</dt>
-        <dd><em>{phase.requestingAppName}</em> <small>(the app's own claim, not verified)</small></dd>
-      {/if}
-      <dt>Account</dt>
-      <dd><code>{phase.preview.subject}</code></dd>
-      <dt>Server address</dt>
-      <dd><code>{phase.preview.nodeOrigin}</code></dd>
-      <dt>Space</dt>
-      <dd><code>{phase.preview.space}</code></dd>
-    </dl>
-    <!-- TODO(Monica/Soren): final button copy + layout. -->
-    <button type="button" on:click={approve}>Publish and continue to {phase.requestingAppName ?? 'the app'}</button>
+    <!-- TODO(Monica): final consent copy owned by Monica; current text is DRAFT. -->
+    <h1>Set up TinyCloud for this app</h1>
+
+    {#if state.preview}
+      <section aria-label="What will be published">
+        <dl>
+          <dt>Owner</dt><dd><code>{state.preview.subject}</code></dd>
+          <dt>Default node</dt><dd><code>{state.preview.nodeDid}</code> at <code>{state.preview.nodeOrigin}</code></dd>
+          <dt>Space</dt><dd><code>{state.preview.primarySpaceName}</code></dd>
+        </dl>
+      </section>
+    {/if}
+
+    <section aria-label="Requesting app">
+      <p>
+        Requested by <strong>{state.verifiedRequestingOrigin ?? ''}</strong>
+        {#if claimLabel(state)}
+          ({claimLabel(state)})
+        {/if}
+      </p>
+    </section>
+
+    <button
+      type="button"
+      disabled={state.phase === 'submitting' || (state.phase === 'review' && state.ticket !== null && !armed)}
+      on:click={onApproveClick}
+    >
+      {approveButtonLabel(state)}
+    </button>
     <button type="button" on:click={decline}>Not now</button>
+
+    {#if state.error}
+      <p role="alert">{state.error}</p>
+    {/if}
   </main>
 {/if}
-
-<!-- Styles deferred to Soren; the page is intentionally plain for the draft. -->

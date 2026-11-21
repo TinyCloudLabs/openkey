@@ -64,6 +64,10 @@ export interface TinyCloudSetupPublishInputs extends TinyCloudSetupRecordInputs 
   readonly signer: LocationRecordSigner;
   readonly registryUrl?: string;
   readonly fetch?: typeof fetch;
+  /** Optional stricter fence; the default already refuses when `current !== null`, but the
+   *  route layers an `onPrepared` that also asserts `sha256(canonical(prepared)) === recordHash`
+   *  so the bytes we're about to sign exactly match what the ticket was bound to (Bobbie F3). */
+  readonly onPrepared?: (prepared: LocationRecordV2Payload, current: LocationRecordV2 | null) => Promise<boolean> | boolean;
 }
 
 /** Publishes the setup record. Fails loudly on any mismatch (Bobbie C1 no-overwrite via
@@ -81,7 +85,7 @@ export async function publishTinyCloudSetupRecord(inputs: TinyCloudSetupPublishI
       mode: 'read-write',
     })),
     // Bobbie C1 hard fence: refuse the publish if any record now exists for the owner.
-    onPrepared: async (_prepared, current) => current === null,
+    onPrepared: inputs.onPrepared ?? (async (_prepared, current) => current === null),
     ...(inputs.fetch ? { fetch: inputs.fetch } : {}),
     ...(inputs.now ? { now: () => inputs.now! } : {}),
   });
