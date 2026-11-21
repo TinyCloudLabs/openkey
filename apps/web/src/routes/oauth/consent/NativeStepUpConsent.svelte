@@ -27,12 +27,11 @@
 
 <section class="panel" aria-label="Requested access">
   <p class="sentence">
-    {appName} will be able to {access.readOnly ? 'read' : 'use'} more of your data than {preview.client.name} can today.
+    {appName} will be able to {access.readOnly ? 'read' : 'use'} more of your data, on top of what {preview.client.name} already has.
   </p>
   {#if preview.reactivation}
     <p class="note">You removed {appName} before. Allowing it now turns it back on.</p>
   {/if}
-  <p class="note">This is added to what {preview.client.name} already has access to.</p>
 
   <ul class="spaces">
     {#each access.spaces as group (group.spaceId)}
@@ -75,7 +74,7 @@
 
 {#if error}<p class="nb-error" role="alert">{error}</p>{/if}
 {#if malformed}
-  <p class="nb-error" role="alert">This request carries a capability payload that could not be decoded, so it cannot be approved.</p>
+  <p class="nb-error" role="alert">This request can’t be read, so it can’t be allowed.</p>
 {/if}
 
 <div class="nb-stack actions-row">
