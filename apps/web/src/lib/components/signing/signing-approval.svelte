@@ -272,7 +272,7 @@
       : null,
   );
   const expiryFoldMaxMs = $derived(shortenOnlyExpiry
-    ? (onceDefaultMs ?? shortenOnlyExpiry.startMs)
+    ? shortenOnlyExpiry.startMs
     : expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null,
   );
   let ownerChoseExpiry = $state(false);

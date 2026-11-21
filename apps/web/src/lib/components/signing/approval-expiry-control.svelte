@@ -161,7 +161,7 @@
       <p class="expiry-once-note" data-testid="approval-expiry-once-note">{onceNote}</p>
     {:else if onceSite !== null && requestedMs !== null}
       <p class="expiry-once-note" data-testid="approval-expiry-once-note">
-        {onceSite} asked for {formatDuration(requestedMs)}. Access to secrets or encrypted data starts at {formatDuration(shownMs)}. You can choose longer in Advanced details.
+        {onceSite} asked for {formatDuration(requestedMs)}. Access to secrets or encrypted data starts at {formatDuration(shownMs)}. You can choose longer under How long it lasts.
       </p>
     {/if}
     {#if chooser}

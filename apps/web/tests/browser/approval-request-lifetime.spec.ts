@@ -9,7 +9,7 @@ const OWNER = `did:pkh:eip155:1:${ADDRESS}`;
 const SPACE = `tinycloud:pkh:eip155:1:${ADDRESS}:default`;
 const AUDIENCE = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
 const KV_GET = 'tinycloud.kv/get';
-const ONCE_NOTE = '1 hour is the most for a request that includes secrets or decryption.';
+const ONCE_NOTE = 'Requests that include secrets or decryption start at 1 hour. You can choose longer, up to what the app asked for.';
 
 const notes = { service: 'tinycloud.kv', space: SPACE, path: 'notes/', ability: KV_GET, resource: `${SPACE}/kv/notes/` };
 const secret = { service: 'tinycloud.kv', space: SPACE, path: 'vault/secrets/DEPLOY_KEY', ability: KV_GET, resource: `${SPACE}/kv/vault/secrets/DEPLOY_KEY` };
@@ -137,12 +137,16 @@ for (const [name, grants] of [['secrets', [notes, secret]], ['decrypt', [notes, 
     }
 
     const fold = await openFold(page);
-    await expect(fold.getByRole('button', { name: '24 hours' })).toHaveCount(0);
+    await expect(fold.getByRole('button', { name: '24 hours' })).toBeVisible();
     await fold.getByLabel('Or type a time').fill('2h');
     await fold.getByRole('button', { name: 'Set' }).click();
+    await expect(line(page)).toHaveText('These permissions expire in 2 hours');
+    expect(expiries.at(-1)).toBe('7200s');
+    await fold.getByLabel('Or type a time').fill('31d');
+    await fold.getByRole('button', { name: 'Set' }).click();
     const limit = fold.getByRole('alert');
-    await expect(limit).toHaveText('This approval can last up to 1 hour.');
-    expect(expiries.at(-1)).toBe('3600s');
+    await expect(limit).toHaveText('This approval can last up to 30 days.');
+    expect(expiries.at(-1)).toBe('7200s');
     if (name === 'secrets') {
       await testInfo.attach('secrets expiry limit', { body: await limit.innerText(), contentType: 'text/plain' });
       await testInfo.attach('secrets expiry limit', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
