@@ -9,13 +9,14 @@ import {
   TINYCLOUD_IDENTITY_SCOPE,
   TINYCLOUD_SESSION_SCOPE,
 } from '../oauth-config';
-import { createPrismaClient, type Prisma } from '@openkey/db';
+import { createPrismaClient } from '@openkey/db';
 // Namespace import: route tests replace @openkey/db with a module that only
 // provides createPrismaClient, and a named runtime import would fail to link.
 import * as openkeyDb from '@openkey/db';
 import { createHash, randomBytes } from 'crypto';
 import {
   NativeDelegationPolicyError,
+  nativeDelegationJson,
   validateNativeDelegationConfig,
   type NativeDelegationConfig,
 } from '../services/native-delegation/policy';
@@ -81,10 +82,6 @@ const IDENTITY_WEB_SCOPES = ['openid', 'email', TINYCLOUD_IDENTITY_SCOPE] as con
 const PUBLIC_CLIENT_SCOPES = OAUTH_SCOPES.filter(
   (scope) => !RESTRICTED_SCOPES.has(scope),
 );
-function nativeDelegationJson(config: NativeDelegationConfig): Prisma.InputJsonObject {
-  return config as unknown as Prisma.InputJsonObject;
-}
-
 function hasExactWebClientScopes(scopes: unknown): scopes is string[] {
   if (!Array.isArray(scopes) || !scopes.every((scope): scope is string => typeof scope === 'string')) return false;
   const required = scopes.includes(TINYCLOUD_IDENTITY_SCOPE)
