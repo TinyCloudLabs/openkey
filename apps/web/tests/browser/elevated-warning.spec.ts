@@ -262,7 +262,7 @@ test('decrypt and block on the same folder are one card that names both: allowin
   await approve(frame).click();
   await expect(frame.getByRole('heading', { level: 2 })).toHaveCount(1);
   await expect(frame.getByRole('heading', { level: 2, name: 'Control access to encryption keys in a folder named Shared' })).toBeVisible();
-  await expect(frame.getByText(/could unlock encrypted items, block encryption keys in a folder named Shared, for as long as this approval lasts\./)).toBeVisible();
+  await expect(frame.getByText(/could unlock encrypted items and block encryption keys in a folder named Shared, for as long as this approval lasts\./)).toBeVisible();
   await shot(page, '390-decrypt-and-block');
   await frame.getByRole('button', { name: 'Allow this permission' }).click();
   await frame.getByRole('button', { name: 'Continue' }).click();

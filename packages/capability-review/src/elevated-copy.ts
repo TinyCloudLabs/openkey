@@ -122,7 +122,7 @@ function elevatedControlCard(
 ): { heading: string; body: string } {
   const scope = kind === "encryption-network" ? "anywhere in your account" : `in ${where}`;
   // Key actions share the noun, once: "create, block and unblock encryption keys". Unlocking is its own phrase, and
-  // the two phrases are joined with a comma: "unlock encrypted items, block and unblock encryption keys".
+  // the two phrases are joined with "and": "unlock encrypted items and block and unblock encryption keys".
   const keyActions = [
     ...(abilities.create ? ["create"] : []),
     ...(abilities.block ? ["block"] : []),
@@ -131,7 +131,7 @@ function elevatedControlCard(
   const actions = [
     ...(abilities.decrypt ? ["unlock encrypted items"] : []),
     ...(keyActions.length > 0 ? [`${joinActions(keyActions)} encryption keys`] : []),
-  ].join(", ");
+  ].join(" and ");
   const sentence = `${who} could ${actions} ${scope}, ${LAST_FOR_AS_LONG}.`;
   return {
     heading: `Control access to encryption keys ${scope}`,
