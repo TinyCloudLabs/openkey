@@ -90,7 +90,7 @@
   {:else}
     <section class="mt-8" aria-labelledby="leave-apps-heading">
       <h2 id="leave-apps-heading" class="text-xl font-semibold text-surface-900">Connected apps</h2>
-      <p class="mt-1 text-sm text-surface-500">Disconnecting stops the app from getting new access or renewing it. A signing app keeps the access it already has until it runs out.</p>
+      <p class="mt-1 text-sm text-surface-500">Disconnecting stops the app from getting new access. Renewals you approved keep going until you stop them under Renewing permissions. A signing app keeps the access it already has until it runs out.</p>
       {#if appsError}
         <p role="alert" class="mt-4 text-sm text-red-600">{appsError}</p>
       {:else if noApps}
