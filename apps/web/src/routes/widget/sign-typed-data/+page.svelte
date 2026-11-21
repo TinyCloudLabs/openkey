@@ -4,7 +4,8 @@
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import {
-    answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed,
+    answerApprovalPasskey, approvalPasskeyGate, isPasskeyApprovalRefusal, passkeyApprovalCopy,
+    type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed, type PasskeyOfferFetch,
   } from '$lib/approval-passkey';
   import { activeKeys, ARCHIVED_KEY_MESSAGE } from '$lib/delegate-key-selection';
   import Button from '$lib/components/ui/button.svelte';
@@ -108,25 +109,39 @@
   });
 
   // TC-3442: whether Sign needs the passkey, with the challenge for exactly this key and data. Fetched once the request
-  // and its key are on screen; a passkey refusal spends the challenge, so the revision fetches a new one.
+  // and its key are on screen; a passkey refusal spends the challenge, so the revision fetches a new one. Sign sends
+  // nothing until the offer for the current request has landed: it waits while the fetch is in flight and fetches
+  // again after a failure.
   const passkeyOfferInput = $derived(
     key && key.keyType === 'MANAGED' && key.archivedAt == null && !archivedKey && typedData ? `${requestVersion}:${key.id}` : null,
   );
   let passkeyOffer = $state<{ input: string; need: ApprovalPasskeyNeed } | null>(null);
   let passkeyOfferRevision = $state(0);
+  let passkeyOfferFetch = $state<PasskeyOfferFetch>('idle');
+  const passkeyOfferGate = $derived(approvalPasskeyGate({
+    input: passkeyOfferInput, held: passkeyOffer, fetch: passkeyOfferFetch,
+  }));
   $effect(() => {
     const input = passkeyOfferInput;
     void passkeyOfferRevision;
-    if (input === null) return;
     const [offerKey, data] = untrack(() => [key, typedData]);
-    if (!offerKey || !data) return;
+    if (input === null || !offerKey || !data) {
+      passkeyOfferFetch = 'idle';
+      return;
+    }
     let current = true;
-    // A failed fetch leaves the offer unknown: Sign goes without an assertion and a refusal fetches again.
-    api.signTypedDataPasskey(offerKey.id, data)
-      .then((need) => { if (current) passkeyOffer = { input, need }; })
-      .catch(() => {});
+    passkeyOfferFetch = 'pending';
+    api.signTypedDataPasskey(offerKey.id, data).then(
+      (need) => {
+        if (!current) return;
+        passkeyOffer = { input, need };
+        passkeyOfferFetch = 'idle';
+      },
+      () => { if (current) passkeyOfferFetch = 'failed'; },
+    );
     return () => { current = false; };
   });
+  const offerFailure = $derived(passkeyOfferFetch === 'failed' ? passkeyApprovalCopy.offerFailed : '');
 
   function handleMessage(event: MessageEvent) {
     if (!isFromWidgetCounterparty(event, origin, counterparty)) return;
@@ -147,7 +162,11 @@
     if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing) return;
 
     const version = requestVersion;
-    const passkeyNeed = passkeyOffer?.input === passkeyOfferInput ? passkeyOffer.need : null;
+    // Without the offer for this data nothing is sent: Sign waits for the fetch in flight, or fetches again.
+    const gate = passkeyOfferGate;
+    if (gate.action === 'retry') passkeyOfferRevision++;
+    if (gate.action !== 'send') return;
+    const passkeyNeed = gate.need;
 
     signing = true;
     error = '';
@@ -278,15 +297,15 @@
         <pre class="m-0 whitespace-pre-wrap break-all font-mono text-xs max-h-[120px] overflow-y-auto">{JSON.stringify(typedData.message, null, 2)}</pre>
       </Card>
 
-      {#if error}
+      {#if error || offerFailure}
         <Card class="bg-red-500/10 border-red-500 text-red-500 p-4">
-          {error}
+          {error || offerFailure}
         </Card>
       {/if}
 
       <div class="flex gap-3 mt-auto">
         <Button variant="secondary" class="flex-1" onclick={cancel}>Cancel</Button>
-        <Button class="flex-1" onclick={signTypedData} disabled={signing}>
+        <Button class="flex-1" onclick={signTypedData} disabled={signing || passkeyOfferGate.action === 'wait'}>
           {signing ? 'Signing...' : 'Sign Data'}
         </Button>
       </div>
