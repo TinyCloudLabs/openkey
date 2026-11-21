@@ -1972,7 +1972,7 @@ function isAccountRegistryGrant(grant: CapabilityGrant): boolean {
  * True when the account space is touched only to read the app list and the space list: at least one registry grant,
  * every one on a space the signer owns with only `get` or `list`. The only other account-space grant allowed beside
  * them is the capabilities read, which has its own row. Any other account grant (a write verb, account SQL, the
- * setup status, delegations) or an unknown owner keeps "Manage your TinyCloud account".
+ * setup status, delegations) or an unknown owner shows "Manage your TinyCloud account".
  */
 export function accountListsReadOnly(grants: readonly CapabilityGrant[]): boolean {
   const accountGrants = grants.filter((grant) => spaceNameOf(grant.space) === "account" && grant.family !== "bootstrap-capabilities");

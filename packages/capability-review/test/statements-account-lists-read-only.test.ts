@@ -1,5 +1,5 @@
 // A request that only reads the app list and the space list in the account space says so in the main row and in
-// Advanced details; any other account access keeps "Manage your TinyCloud account".
+// Advanced details; any other account access shows "Manage your TinyCloud account".
 
 import { describe, expect, it } from "bun:test";
 

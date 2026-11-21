@@ -1,5 +1,5 @@
 // Mounted check of the approval view for a request that only reads the account's app list and space list: the main
-// row, the Advanced details line, and the unchanged "Manage your TinyCloud account" row for anything that can change
+// row, the Advanced details line, and the "Manage your TinyCloud account" row for anything that can change
 // the account. Mounts the real signing-approval.svelte in happy-dom, as signing-approval-app-keys-mounted does.
 
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
