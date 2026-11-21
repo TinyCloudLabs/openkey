@@ -90,11 +90,19 @@ describe('signedSiweExpirationTime', () => {
   test('reads the SIWE Expiration Time', () => {
     const expirationTime = '2026-07-01T00:00:00.000Z';
     const siwe = [
-      'cli.tinycloud.xyz wants you to sign in',
+      'cli.tinycloud.xyz wants you to sign in with your Ethereum account:',
+      '0x0000000000000000000000000000000000000000',
       '',
+      '',
+      'URI: https://cli.tinycloud.xyz',
+      'Version: 1',
+      'Chain ID: 1',
+      'Nonce: abcdefgh',
+      'Issued At: 2026-06-30T00:00:00.000Z',
       `Expiration Time: ${expirationTime}`,
+      'Resources:',
+      '- urn:recap:foo',
     ].join('\n');
-
     expect(signedSiweExpirationTime(siwe)).toBe(expirationTime);
   });
 
@@ -102,5 +110,23 @@ describe('signedSiweExpirationTime', () => {
     expect(signedSiweExpirationTime(undefined)).toBeUndefined();
     expect(signedSiweExpirationTime('no expiry here')).toBeUndefined();
     expect(signedSiweExpirationTime('Expiration Time: not-a-date')).toBeUndefined();
+  });
+  test.each(['\r', '\u2028'])('rejects statement-line expiry spoofing with %p', (separator) => {
+    const message = [
+      'cli.tinycloud.xyz wants you to sign in with your Ethereum account:',
+      '0x0000000000000000000000000000000000000000',
+      '',
+      'Example statement',
+      '',
+      'URI: https://cli.tinycloud.xyz',
+      'Version: 1',
+      'Chain ID: 1',
+      'Nonce: abcdefgh',
+      'Issued At: 2026-06-30T00:00:00.000Z',
+      'Expiration Time: 2036-06-29T00:00:00.000Z',
+      'Resources:',
+      '- urn:recap:foo',
+    ].join('\n').replace('Example statement', `Expiration Time: 2026-07-01T00:00:00Z${separator}Example statement`);
+    expect(signedSiweExpirationTime(message)).toBeUndefined();
   });
 });

@@ -13,6 +13,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
 import { FAKE_PEER_ID, startFakeTinyCloudNode, type FakeTinyCloudNode } from './fake-tinycloud-node';
+import { assertWithinDelegationCeiling, expirationTimeOf } from '../services/approval-expiry';
 import { mockModules, replaceModules } from './mock-module';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -444,7 +445,7 @@ describe('TC-1608 what the managed key signs', () => {
     const recap = /urn:recap:([A-Za-z0-9_-]+)/.exec(siwe)![1]!;
     return JSON.parse(Buffer.from(recap, 'base64url').toString('utf8')).att as Record<string, Record<string, unknown>>;
   };
-  const withoutNonce = (siwe: string) => siwe.replace(/^Nonce: .*\n/m, '').replace(/^Issued At: .*\n/m, '');
+  const withoutNonce = (siwe: string) => siwe.replace(/^Nonce: .*\n/m, '').replace(/^Issued At: .*\n/m, '').replace(/^Expiration Time: .*\n/m, '');
 
   test('signs only the existing host SIWE for the requested space, exactly once, and the same total as before', async () => {
     const approved = await approveDefault();
@@ -470,7 +471,8 @@ describe('TC-1608 what the managed key signs', () => {
         peerId: FAKE_PEER_ID,
       });
       expect(withoutNonce(siwe)).toBe(withoutNonce(expected));
-      expect(recapOf(siwe)).toEqual({ [`${spaceId(name)}/space`]: { 'tinycloud.space/host': [{}] } });
+      expect(assertWithinDelegationCeiling(siwe)).toBe('ok');
+      expect(expirationTimeOf(siwe)).toBeDefined();
     }
     // The requested space's host SIWE is signed first among the host SIWEs.
     expect(signed.findIndex(isHostSiwe)).toBe(signed.indexOf(defaultHost[0]!));
