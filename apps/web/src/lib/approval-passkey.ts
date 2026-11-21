@@ -89,7 +89,7 @@ export const passkeyApprovalCopy = {
   needsPasskey: 'Add a passkey to use this.',
   cancelled: "Your passkey didn't confirm this. Try again.",
   loadFailed: "Couldn't load this setting.",
-  offerFailed: "Couldn't get your passkey ready. Tap Approve to try again.",
+  offerFailed: "Couldn't get your passkey ready. Try again.",
 } as const;
 
 /** The API's passkey refusals speak of an Approve button; Settings has none, so it shows its own line for them. */
