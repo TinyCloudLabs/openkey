@@ -145,12 +145,16 @@ describe("the warning copy", () => {
   test("the control card: the whole account heading, every action the grant carries in order, and the refusal sentence only when blocking is included", () => {
     const network = elevatedCard("encryption-network", { decrypt: true, create: false, block: true, unblock: true }, "example.com", elevatedWhereText(null));
     expect(network.heading).toBe("Control access to encryption keys anywhere in your account");
-    expect(network.body.startsWith("example.com could unlock encrypted items, block encryption keys and unblock encryption keys anywhere in your account, for as long as this approval lasts.")).toBe(true);
+    expect(network.body.startsWith("example.com could unlock encrypted items, block and unblock encryption keys anywhere in your account, for as long as this approval lasts.")).toBe(true);
     expect(network.body.endsWith("including your own.")).toBe(true);
     const unblock = elevatedCard("encryption-keys", { decrypt: false, create: false, unblock: true }, null, elevatedWhereText("Shared"));
     expect(unblock.body).toBe("This request could unblock encryption keys in a folder named Shared, for as long as this approval lasts.");
     const pair = elevatedCard("encryption-keys", { decrypt: false, create: true, unblock: true }, "x.test", elevatedWhereText("Shared"));
-    expect(pair.body).toBe("x.test could create encryption keys and unblock encryption keys in a folder named Shared, for as long as this approval lasts.");
+    expect(pair.body).toBe("x.test could create and unblock encryption keys in a folder named Shared, for as long as this approval lasts.");
+    const all = elevatedCard("encryption-network", { decrypt: true, create: true, block: true, unblock: true }, null, elevatedWhereText(null));
+    expect(all.body.startsWith("This request could unlock encrypted items, create, block and unblock encryption keys anywhere in your account, for as long as this approval lasts.")).toBe(true);
+    const both = elevatedCard("encryption-network", { decrypt: false, create: false, block: true, unblock: true }, "example.com", elevatedWhereText(null));
+    expect(both.body.startsWith("example.com could block and unblock encryption keys anywhere in your account, for as long as this approval lasts.")).toBe(true);
   });
 
   test("no card ever says 'until {date}' (the approval can renew)", () => {
