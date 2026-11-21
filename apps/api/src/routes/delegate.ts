@@ -264,28 +264,33 @@ async function bootstrapApprovedManagedSignIn(input: {
   key: { id: string; userId: string | null; address: string; keyType: string; sealedBlob: string | null; sealingContext?: string | null };
   message: string;
 }): Promise<void> {
-  if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN === 'off' || !input.key.sealedBlob) return;
-  // The cheap refusals come first, so a message the hook would skip does not unseal the key.
-  const siwe = parseTinyCloudSiwe(input.message);
-  if (siwe === null || !isTinyCloudSiweForSigner(siwe, input.key.address)) return;
-  const { ensureTinyCloudBootstrapForApprovedSign } = await import('../services/tinycloud-bootstrap');
-  const sealedBlob = input.key.sealedBlob;
-  // A sign-in that names one of the signer's own spaces (and no account-space entry) waits for that space instead,
-  // bounded by the requested-space timeout inside the bootstrap.
-  const waitsForOwnSpace = requestedOwnSpaceForSiwe(siwe, input.key.address) !== null;
-  const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
-    ensureTinyCloudBootstrapForApprovedSign({
-      prisma,
-      userId: input.userId,
-      key: { id: input.key.id, address: input.key.address, keyType: input.key.keyType },
-      privateKey: () => unsealManagedKey(input.key, sealedBlob),
-      message: input.message,
-      format: 'personal_sign',
-    }),
-    waitsForOwnSpace ? { budgetMs: OWN_TIMEOUT_BUDGET_MS, ownLogsBackground: true } : {},
-  );
-  if (bootstrap.status === 'failed') {
-    log('error', 'tinycloud_bootstrap_failed', bootstrap.errorCode);
+  try {
+    if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN === 'off' || !input.key.sealedBlob) return;
+    // The cheap refusals come first, so a message the hook would skip does not unseal the key.
+    const siwe = parseTinyCloudSiwe(input.message);
+    if (siwe === null || !isTinyCloudSiweForSigner(siwe, input.key.address)) return;
+    const { ensureTinyCloudBootstrapForApprovedSign } = await import('../services/tinycloud-bootstrap');
+    const sealedBlob = input.key.sealedBlob;
+    // A sign-in that names one of the signer's own spaces (and no account-space entry) waits for that space instead,
+    // bounded by the requested-space timeout inside the bootstrap.
+    const waitsForOwnSpace = requestedOwnSpaceForSiwe(siwe, input.key.address) !== null;
+    const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
+      ensureTinyCloudBootstrapForApprovedSign({
+        prisma,
+        userId: input.userId,
+        key: { id: input.key.id, address: input.key.address, keyType: input.key.keyType },
+        privateKey: () => unsealManagedKey(input.key, sealedBlob),
+        message: input.message,
+        format: 'personal_sign',
+      }),
+      waitsForOwnSpace ? { budgetMs: OWN_TIMEOUT_BUDGET_MS, ownLogsBackground: true } : {},
+    );
+    if (bootstrap.status === 'failed') {
+      log('error', 'tinycloud_bootstrap_failed', bootstrap.errorCode);
+    }
+  } catch {
+    // The signature is already made and any lease recorded: nothing here may turn it into an error.
+    log('error', 'tinycloud_bootstrap_failed', 'tinycloud_bootstrap_crashed');
   }
 }
 

@@ -1,6 +1,6 @@
-// TC-3633: POST /api/delegate/authorize-sign (the versioned sign-in) hosts a managed account at the node, as
-// POST /api/keys/:id/sign does. web-sdk 3.13 does not bootstrap an interactive signer itself, so a brand-new
-// account that signed in here was never hosted and its first space operation failed.
+// TC-3633: POST /api/delegate/authorize-sign (the versioned sign-in) sets up a managed account at the node, as
+// POST /api/keys/:id/sign does. These tests check that a brand-new account that signs in here is set up at the
+// node before the reply.
 //
 // These tests run the real delegate route (prepare, preview, authorize-sign), the real TinyCloud bootstrap and
 // the real WASM against a loopback node (fake-tinycloud-node.ts). Only the database, the TEE and the session
