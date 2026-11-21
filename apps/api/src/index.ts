@@ -22,7 +22,7 @@ import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
 import { createAccountTermsRouter } from './routes/account-terms';
 import { termsRelease } from './services/terms';
-import { allowBeforeTerms, allowBeforeTermsWhen, createTermsSessionGuard, createTermsSubjectGuard } from './middleware/terms';
+import { allowBeforeTerms, allowBeforeTermsWhen, allowBrowserBeforeTerms, createTermsSessionGuard, createTermsSubjectGuard } from './middleware/terms';
 import { oauthAdminRouter } from './routes/oauth-admin';
 import { createResourceIntrospectRouter } from './routes/oauth-resource-introspect';
 import { MCP_AUDIENCES, oauthValidAudiences } from './oauth-config';
@@ -349,6 +349,12 @@ const WAYS_OUT: Array<['GET' | 'POST' | 'DELETE', string, MiddlewareHandler?]> =
   ['GET', '/api/account'],
   ['GET', '/api/account/tinycloud-apps'],
   ['GET', '/api/account/renewal-leases'],
+  // Reading your own secrets and variables before deleting the account, so you can take your data with you: the
+  // browser session only (a request with an Authorization header stays gated), reads only (every write stays
+  // gated). `/status` is here because it restores the TinyCloud session that listing needs after a restart.
+  ['GET', '/api/secrets/status', allowBrowserBeforeTerms],
+  ['GET', '/api/secrets', allowBrowserBeforeTerms],
+  ['GET', '/api/variables', allowBrowserBeforeTerms],
   ['POST', '/api/account/step-up/email-otp/send', deleteAccountStepUp],
   ['POST', '/api/account/step-up/email-otp/verify', deleteAccountStepUp],
   ['POST', '/api/account/step-up/passkey/options'], // a passkey step-up proves what a passkey sign-in does

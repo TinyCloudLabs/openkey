@@ -3,7 +3,7 @@
 // file as checked in: an account that has not accepted is refused with 403 `terms_required`, and an
 // app-review account is recorded as accepting the shipped version at start. Runs in a child process with
 // OPENKEY_TEST_REAL_TERMS_RELEASE=1, which keeps the real file.
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
@@ -119,5 +119,80 @@ if (process.env.OPENKEY_TEST_REAL_TERMS_RELEASE !== '1') {
     } finally {
       await prisma.reviewerAccount.update({ where: { store: 'apple' }, data: { userId: null } });
     }
+  });
+
+  // The way out for your own data: an account that has not accepted can read its own secrets and variables
+  // (names for secrets, names and values for variables) with its browser session, and nothing else about them.
+  describe('reading your own secrets and variables before agreeing', () => {
+    let writes: string[];
+    beforeAll(async () => {
+      const { tinyCloudService } = await import('../services/tinycloud-service');
+      const service = tinyCloudService as unknown as Record<string, unknown>;
+      service.isEnabledForUser = async () => true;
+      service.listSecrets = async () => [{ name: 'API_TOKEN', createdAt: '2026-11-20T00:00:00.000Z' }];
+      service.listVariables = async () => [{ name: 'REGION', value: 'eu', createdAt: '2026-11-20T00:00:00.000Z' }];
+      for (const method of ['putSecret', 'deleteSecret', 'putVariable', 'deleteVariable', 'enableForUser']) {
+        service[method] = async () => { writes.push(method); return { createdAt: 'x', spaceId: 'x' }; };
+      }
+    });
+    beforeEach(() => { writes = []; });
+
+    const send = (method: string, path: string, headers: Record<string, string>, body?: unknown) =>
+      app.fetch(new Request(`${api}${path}`, {
+        method, headers: { origin: web, ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }));
+
+    test('an account that has not accepted can read its own secrets and variables', async () => {
+      const { cookie } = await account('reader');
+      const secrets = await send('GET', '/api/secrets', { cookie });
+      expect(secrets.status).toBe(200);
+      expect(await secrets.json()).toEqual({ secrets: [{ name: 'API_TOKEN', createdAt: '2026-11-20T00:00:00.000Z' }] });
+      const variables = await send('GET', '/api/variables', { cookie });
+      expect(variables.status).toBe(200);
+      expect(await variables.json()).toEqual({ variables: [{ name: 'REGION', value: 'eu', createdAt: '2026-11-20T00:00:00.000Z' }] });
+      const status = await send('GET', '/api/secrets/status', { cookie });
+      expect(status.status).toBe(200);
+      expect(await status.json()).toEqual({ enabled: true, secretCount: 1, variableCount: 1 });
+    });
+
+    test('an account that has not accepted cannot write them', async () => {
+      const { cookie } = await account('writer');
+      const attempts: Array<[string, string, unknown?]> = [
+        ['POST', '/api/secrets/enable'],
+        ['POST', '/api/secrets', { name: 'NEW', value: 'v' }],
+        ['PUT', '/api/secrets/API_TOKEN', { value: 'v' }],
+        ['DELETE', '/api/secrets/API_TOKEN'],
+        ['POST', '/api/variables', { name: 'NEW', value: 'v' }],
+        ['PUT', '/api/variables/REGION', { value: 'us' }],
+        ['DELETE', '/api/variables/REGION'],
+      ];
+      for (const [method, path, body] of attempts) {
+        const response = await send(method, path, { cookie }, body);
+        expect(response.status, `${method} ${path}`).toBe(403);
+        expect(await response.json(), `${method} ${path}`).toMatchObject({ error: 'terms_required' });
+      }
+      expect(writes).toEqual([]);
+    });
+
+    test('a session token or an app token for an account that has not accepted cannot read them', async () => {
+      const { userId, cookie } = await account('token');
+      const token = decodeURIComponent(cookie.slice(cookie.indexOf('=') + 1));
+      for (const path of ['/api/secrets', '/api/variables', '/api/secrets/status']) {
+        // The account's own session token, as a widget or CLI would hold it: refused until the account agrees.
+        const bearer = await send('GET', path, { authorization: `Bearer ${token}` });
+        expect(bearer.status, path).toBe(403);
+        expect(await bearer.json(), path).toMatchObject({ error: 'terms_required' });
+        // An OAuth access token or delegation is not a session at all.
+        const appToken = await send('GET', path, { authorization: `Bearer ${randomUUID()}` });
+        expect(appToken.status, path).toBe(401);
+      }
+      // Once that account has agreed, its token reads as before.
+      await prisma.termsAcceptance.create({
+        data: { id: randomUUID(), userId, documentId: 'terms', version: shipped.version, textSha256: shipped.textSha256, surface: 'web', appVersion: 'test' },
+      });
+      const accepted = await send('GET', '/api/secrets', { authorization: `Bearer ${token}` });
+      expect(accepted.status).toBe(200);
+    });
   });
 }
