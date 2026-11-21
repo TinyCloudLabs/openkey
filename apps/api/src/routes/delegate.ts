@@ -2453,10 +2453,9 @@ delegateRouter.post('/complete', async (c) => {
     const entries = parsePreparedRecap(body.prepared.siwe);
     const signer = { address: signedFields.address, chainId: signedFields.chainId };
     // With no permissions, the baseline is the own folder of the account the
-    // request was prepared for, not of the signer, as the old default was. A
-    // SIWE re-signed by another address passes this subset check, and the
-    // checks after it decide: prepared.address (key-mismatch), the signature,
-    // then the context bindings.
+    // request was prepared for, not of the signer. A SIWE re-signed by another
+    // address passes this subset check, and the checks after it decide:
+    // prepared.address (key-mismatch), the signature, then the context bindings.
     const preview = typeof body.authorizationContextToken === 'string'
       ? peekAuthorizationContext(body.authorizationContextToken) : undefined;
     const [, , , preparedChainId, preparedOwner] = (preview?.ok ? preview.value.spaceId : preparedSpaceId).split(':');
