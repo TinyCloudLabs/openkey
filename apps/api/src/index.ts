@@ -30,6 +30,7 @@ import { createOauthBrandingRouter } from './routes/oauth-branding';
 import { passkeyProxyRouter } from './routes/passkey-proxy';
 import { secretsRouter } from './routes/secrets';
 import { variablesRouter } from './routes/variables';
+import { createTinyCloudSetupRouter } from './routes/tinycloud-setup';
 import { delegateRouter } from './routes/delegate';
 import { preparedHandoffRouter } from './routes/prepared-handoffs';
 import { ownerRevocationRouter } from './routes/owner-revocation-runtime';
@@ -397,6 +398,7 @@ app.route('/api/internal/scoreboard', scoreboardMetricsRouter);
 // Secrets and variables routes (TinyCloud-backed)
 app.route('/api/secrets', secretsRouter);
 app.route('/api/variables', variablesRouter);
+app.route('/api/tinycloud-setup', createTinyCloudSetupRouter());
 
 // Delegate route (CLI auth flow)
 app.route('/api/delegate/handoffs', preparedHandoffRouter);
