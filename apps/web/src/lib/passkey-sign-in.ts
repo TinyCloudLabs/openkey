@@ -88,7 +88,11 @@ export function startPasskeyAutofill(deps: AutofillDeps): Autofill {
   let stopped = false;
   let stopping: Promise<void> | undefined;
   let settled = false;
-  const settledGate = Promise.withResolvers<void>();
+  // `Promise.withResolvers` is missing from the Safari that the iOS sign-in sheet can run.
+  let resolveSettled!: () => void;
+  const settledPromise = new Promise<void>((resolve) => {
+    resolveSettled = resolve;
+  });
   const handle: Autofill = {
     stop() {
       // A request that already settled has no ceremony left, and cancelling would hit an unrelated one.
@@ -97,9 +101,11 @@ export function startPasskeyAutofill(deps: AutofillDeps): Autofill {
       stopped = true;
       deps.cancel();
       const timer = setInterval(deps.cancel, deps.retryEveryMs ?? 100);
-      const bound = Promise.withResolvers<void>();
-      const boundTimer = setTimeout(bound.resolve, deps.boundMs ?? 10_000);
-      stopping = Promise.race([settledGate.promise, bound.promise]).then(() => {
+      let boundTimer: ReturnType<typeof setTimeout> | undefined;
+      const bound = new Promise<void>((resolve) => {
+        boundTimer = setTimeout(resolve, deps.boundMs ?? 10_000);
+      });
+      stopping = Promise.race([settledPromise, bound]).then(() => {
         clearInterval(timer);
         clearTimeout(boundTimer);
       });
@@ -118,7 +124,7 @@ export function startPasskeyAutofill(deps: AutofillDeps): Autofill {
       // A rejected or aborted request is never shown.
     } finally {
       settled = true;
-      settledGate.resolve();
+      resolveSettled();
       if (latest === handle) latest = null;
     }
   })();
