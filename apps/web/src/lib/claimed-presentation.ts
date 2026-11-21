@@ -19,8 +19,9 @@ export const MAX_ICON_URI_LENGTH = 32768;
 const MAX_INPUT_LENGTH = 1024;
 
 /**
- * Names of OpenKey and TinyCloud's own products. A name or an "on behalf of" that contains one of these (however it is
- * spaced, punctuated or disguised) is shown only for a requester on `TRUSTED_SHELL_ORIGINS`.
+ * Names of OpenKey and TinyCloud's own products. A name, an "on behalf of" or a reason that contains one of these
+ * (however it is spaced, punctuated or disguised) is shown only for a requester on `TRUSTED_SHELL_ORIGINS`. "Share"
+ * and "Secret Manager" count only as whole words.
  */
 export const RESERVED_NAMES: readonly string[] = [
   'TinyCloud',
@@ -136,6 +137,23 @@ const LOOKALIKES: Record<string, string> = {
   '○': 'o', '◯': 'o', '〇': 'o', '⚪': 'o', '◦': 'o',
 };
 
+/** The text lower-cased, in NFKD with no accents or invisible characters. */
+function reduced(text: string): string {
+  return (cleanText(text) ?? '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '');
+}
+
+/** `i` and `l`, `u` and `v`, `rn` and `m`, `cl` and `d` read alike, so each pair is folded to one spelling. */
+function foldedSpelling(letters: string): string {
+  return letters
+    .replace(/i/gu, 'l')
+    .replace(/v/gu, 'u')
+    .replace(/rn/gu, 'm')
+    .replace(/cl/gu, 'd');
+}
+
 /**
  * The text as a reader sees it, reduced for comparison: NFKC, no invisible characters, no accents, lower case,
  * lookalikes folded to the letter they imitate, then no spaces or punctuation. `i`, `l`, `1` and `|` are all `l`, `u`
@@ -143,26 +161,61 @@ const LOOKALIKES: Record<string, string> = {
  * same way, so a name that spells one for the other matches.
  */
 function skeleton(text: string): string {
-  const reduced = (cleanText(text) ?? '')
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(/\p{M}/gu, '');
   let folded = '';
-  for (const character of reduced) folded += LOOKALIKES[character] ?? character;
-  return folded
-    .replace(/[^\p{L}\p{N}]/gu, '')
-    .replace(/i/gu, 'l')
-    .replace(/v/gu, 'u')
-    .replace(/rn/gu, 'm')
-    .replace(/cl/gu, 'd');
+  for (const character of reduced(text)) folded += LOOKALIKES[character] ?? character;
+  return foldedSpelling(folded.replace(/[^\p{L}\p{N}]/gu, ''));
 }
 
-const RESERVED_SKELETONS: readonly string[] = RESERVED_NAMES.map(skeleton);
+/**
+ * The words of the text after lookalike folding; every character that is not a letter ends a word. With
+ * `boundaries`, a digit and a symbol that would pass for a letter (`4` for `a`, `!` for `l`) end a word instead of
+ * being folded, so `Share!` and `Share1` read as the word `share`. Runs of single letters (`S h a r e`) are joined.
+ */
+function words(text: string, boundaries: boolean): string[] {
+  let folded = '';
+  for (const character of reduced(text)) {
+    folded += boundaries && /[\p{N}!|@$€]/u.test(character) ? ' ' : LOOKALIKES[character] ?? character;
+  }
+  const joined: string[] = [];
+  let inSingleRun = false;
+  for (const word of folded.split(/[^\p{L}]+/u).filter((part) => part !== '')) {
+    const single = Array.from(word).length === 1;
+    if (single && inSingleRun) joined[joined.length - 1] += word;
+    else joined.push(word);
+    inSingleRun = single;
+  }
+  return joined.map(foldedSpelling);
+}
 
-/** Does the text contain a reserved name once spacing, punctuation, invisible characters and lookalikes are folded? */
+// Generic words among the reserved names. They are matched as whole words, so "Shared Notes" and "ShareThis" are not
+// reserved while "Share", "My Share" and "Share-Notes" are; the other names match anywhere in the text.
+const WHOLE_WORD_NAMES: Record<string, true | undefined> = { Share: true, 'Secret Manager': true };
+
+const SUBSTRING_SKELETONS: readonly string[] = RESERVED_NAMES.filter((name) => !Object.hasOwn(WHOLE_WORD_NAMES, name)).map(skeleton);
+const WHOLE_WORD_SEQUENCES: readonly (readonly string[])[] = RESERVED_NAMES.filter((name) => Object.hasOwn(WHOLE_WORD_NAMES, name)).map((name) =>
+  words(name, false),
+);
+
+function holdsWholeWord(textWords: readonly string[]): boolean {
+  return WHOLE_WORD_SEQUENCES.some((sequence) => {
+    const together = sequence.join('');
+    return textWords.some(
+      (word, start) => word === together || sequence.every((part, offset) => textWords[start + offset] === part),
+    );
+  });
+}
+
+/**
+ * Does the text contain a reserved name once spacing, punctuation, invisible characters and lookalikes are folded?
+ * "Share" and "Secret Manager" count only as whole words.
+ */
 export function containsReservedName(text: string): boolean {
-  const reduced = skeleton(text);
-  return RESERVED_SKELETONS.some((reserved) => reduced.includes(reserved));
+  const folded = skeleton(text);
+  return (
+    SUBSTRING_SKELETONS.some((reserved) => folded.includes(reserved)) ||
+    holdsWholeWord(words(text, false)) ||
+    holdsWholeWord(words(text, true))
+  );
 }
 
 // ---- host-like names ------------------------------------------------------

@@ -52,7 +52,7 @@ describe('reserved names', () => {
       'Tiny Chat',
       'Secret   Manager',
       'sharе', // Cyrillic е
-      'Shared notes',
+      'Secret Manager Pro',
       'Tinydoud', // `cl` drawn as `d`
     ];
     for (const displayName of disguised) {
@@ -142,6 +142,42 @@ describe('reserved names', () => {
     expect(containsReservedName('Acme Notes')).toBe(false);
     expect(containsReservedName('Tiny Notes')).toBe(false);
     expect(containsReservedName('Cloud Drive')).toBe(false);
+  });
+
+  test('"Share" and "Secret Manager" are reserved as whole words, however they are separated or disguised', () => {
+    const reserved = [
+      'Share', 'share', 'SHARE', 'Share Notes', 'My Share', 'Sh4re', 'Sh@re', '$hare',
+      'Share-Notes', 'Share_Notes', 'Share2', 'Share1', 'Share9 Notes', 'Share!', '(Share)',
+      'S h a r e', 'S-h-a-r-e',
+      'Secret Manager', 'Secret Manager Pro', 'Secret-Manager', 'Secret_Manager', 'My Secret Manager', 'SecretManager',
+      'Secret2Manager',
+    ];
+    for (const text of reserved) {
+      expect(containsReservedName(text)).toBe(true);
+      expect(decide(claim({ displayName: text }))).toBeNull();
+      expect(decide(claim({ displayName: text }), SHELL)?.displayName).toBe(text);
+    }
+    expect(decide(claim({ displayName: 'Sha\u200Bre' }))).toBeNull();
+    expect(decide(claim({ displayName: 'Sha\u200Bre' }), SHELL)?.displayName).toBe('Share');
+    // Mixed-script and host-like spellings are reserved too, and a trusted shell origin may not use them either.
+    for (const text of ['Shаre', 'Ѕecret Manager', 'Secret Мanager', 'Share.app', 'Secret.Manager', 'My·Share', 'My‧Share']) {
+      expect(containsReservedName(text)).toBe(true);
+      expect(decide(claim({ displayName: text }))).toBeNull();
+      expect(decide(claim({ displayName: text }), SHELL)).toBeNull();
+    }
+  });
+
+  test('"Share" and "Secret Manager" glued to letters are not reserved', () => {
+    for (const text of ['Shared Notes', 'ShareThis', 'Fileshare', 'Sharp', 'Shareware', 'Timeshare Notes', 'Secretary Manager', 'Secret Managers', 'Top Secret Managerie']) {
+      expect(containsReservedName(text)).toBe(false);
+      expect(decide(claim({ displayName: text }))?.displayName).toBe(text);
+    }
+  });
+
+  test('the other reserved names still match inside a word', () => {
+    for (const text of ['MyTinyCloudApp', 'OpenKeyish', 'xTinyChatx', 'TinyCloudOne']) {
+      expect(containsReservedName(text)).toBe(true);
+    }
   });
 });
 
