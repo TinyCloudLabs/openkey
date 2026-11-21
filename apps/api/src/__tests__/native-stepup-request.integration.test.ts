@@ -485,7 +485,8 @@ if (!child) {
       const created = await (await stepUp(key, 'token-1')).json() as { request_uri: string };
       const { resolveRequestUri, REQUEST_URI_PREFIX } = await import('../services/native-delegation/par');
       const id = created.request_uri.slice(REQUEST_URI_PREFIX.length);
-      // The passkey sign-in the login page makes while the request is still pending.
+      // /authorize resolves the request before it sends the user to sign in; then the passkey sign-in the login page makes.
+      await resolveRequestUri(prisma, created.request_uri, clientId);
       const asked = await app.fetch(new Request(`${API}/api/auth/passkey/generate-authenticate-options`, { headers: { origin: 'https://openkey.test' } }));
       const cookies = (response: Response) => response.headers.getSetCookie().map((value) => value.split(';')[0]).join('; ');
       const verified = await app.fetch(new Request(`${API}/api/auth/passkey/verify-authentication`, { method: 'POST',
@@ -493,7 +494,6 @@ if (!child) {
         body: JSON.stringify({ response: passkey.assert(await asked.json() as PublicKeyCredentialRequestOptionsJSON) }) }));
       expect(verified.status, await verified.clone().text()).toBe(200);
       const signedIn = cookies(verified);
-      await resolveRequestUri(prisma, created.request_uri, clientId);
 
       // Another session of the same account is asked, for this very request.
       const other = await (await consent(id, 'prepare', {}, cookie)).json() as Preview & { passkey: { required: boolean } };

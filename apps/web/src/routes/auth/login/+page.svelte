@@ -481,7 +481,7 @@
     error = '';
     try {
       // One passkey per interaction: a passkey sign-in opened from a native request names it, so Approve for that
-      // request asks for nothing more (TC-3596). The API accepts it only for a pending request and a verified passkey.
+      // request asks for nothing more (TC-3596). The API accepts it only for a resolved request and a verified passkey.
       const result = await authClient.signIn.passkey(native ? { fetchOptions: { headers: { 'x-openkey-passkey-flow': native.requestId } } } : undefined);
       if (result.error) {
         error = authErrorMessage(result.error, 'Passkey sign-in failed');

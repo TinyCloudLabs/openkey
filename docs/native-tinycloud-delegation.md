@@ -841,7 +841,8 @@ counts as that request's approval passkey:
 
 - The login page sends `x-openkey-passkey-flow: <tinycloud_request id>` with its passkey sign-in. After the
   sign-in verifies, OpenKey records a cover only when **all** of these hold: the request id has the exact PAR id
-  shape (`^[A-Za-z0-9_-]{32}$`); the request exists, is `PENDING`, and is unowned or the signer's; it was created
+  shape (`^[A-Za-z0-9_-]{32}$`); the request exists, is `RESOLVED` (the state `/authorize` leaves it in when it
+  sends the user to sign in), and is unowned or the signer's; it was created
   before the assertion; the assertion carries the user-verified flag; and the passkey is one that counts for
   step-up, the same bar as an approval passkey. Otherwise nothing is recorded and the sign-in still succeeds.
 - The cover is one `verification` row, `openkey-flow-passkey:<session id>:<request id>`, valid for five minutes

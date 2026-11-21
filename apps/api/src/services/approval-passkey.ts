@@ -285,7 +285,7 @@ export const FLOW_PASSKEY_MAX_AGE_MS = 5 * 60 * 1000;
 const FLOW_PREFIX = 'openkey-flow-passkey';
 /** A native request id is 24 random bytes in base64url (par.ts). Nothing else may name a flow. */
 const FLOW_REQUEST_ID = /^[A-Za-z0-9_-]{32}$/;
-/** Header the native sign-in page sets on its passkey sign-in: the pending request it was opened for. */
+/** Header the native sign-in page sets on its passkey sign-in: the request it was opened for. */
 export const FLOW_PASSKEY_HEADER = 'x-openkey-passkey-flow';
 // The session id is server-issued and the request id is checked against FLOW_REQUEST_ID, so no caller text shapes
 // this identifier or collides with another verification row.
@@ -303,10 +303,11 @@ function authenticatorDataVerified(authenticatorData: unknown): boolean {
 
 /**
  * One passkey per interaction: records that this session signed in with a passkey FOR this request (`flowId`, the
- * pending native request the sign-in page was opened from). The sign-in's own assertion is the proof of presence,
+ * native request the sign-in page was opened from). The sign-in's own assertion is the proof of presence,
  * so that request's Approve, and only that one, asks for nothing more for five minutes. Nothing is recorded unless
  * the assertion was user-verified by a passkey that counts for step-up (the bar an approval passkey meets), and
- * the request exists, is pending, has a known kind, is unowned or this user's, and began before this assertion.
+ * the request exists, is RESOLVED (the state /authorize leaves it in before it sends the user to sign in), has a
+ * known kind, is unowned or this user's, and began before this assertion.
  */
 export async function recordFlowPasskey(
   db: Pick<PrismaClient, 'passkey' | 'verification' | 'tinyCloudNativeRequest'>,
@@ -316,7 +317,7 @@ export async function recordFlowPasskey(
   const request = await db.tinyCloudNativeRequest.findUnique({
     where: { id: input.flowId }, select: { status: true, kind: true, userId: true, createdAt: true, expiresAt: true },
   });
-  if (!request || request.status !== 'PENDING' || (request.kind !== 'SIGNIN' && request.kind !== 'STEPUP')
+  if (!request || request.status !== 'RESOLVED' || (request.kind !== 'SIGNIN' && request.kind !== 'STEPUP')
     || (request.userId !== null && request.userId !== input.userId)
     || request.createdAt.getTime() > now.getTime() || request.expiresAt.getTime() <= now.getTime()) return false;
   const passkey = await db.passkey.findFirst({
