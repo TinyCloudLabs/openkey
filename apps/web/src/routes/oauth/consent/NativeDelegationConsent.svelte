@@ -12,6 +12,8 @@
   } from '@openkey/capability-review';
   import { reviewSelectionToActionKeys, preparedMatchesSelection, type ServerPermissionOption } from '$lib/delegate-review-selection';
   import { answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyNeed } from '$lib/approval-passkey';
+  import NativeStepUpConsent from './NativeStepUpConsent.svelte';
+  import { isStepUpPreview, stepUpAppName, type StepUpSpace } from '$lib/native-stepup';
 
   let { requestId, clientId, email, ready }: {
     requestId: string; clientId: string; email?: string;
@@ -26,8 +28,11 @@
     ttlSeconds: number; grantLifetimeSeconds: number; permissionOptions: ServerPermissionOption[]; selectedActionKeys: string[];
     /** TC-3442: whether Approve needs the passkey, with the challenge for this revision. */
     passkey?: ApprovalPasskeyNeed;
-    /** The request kind; only SIGNIN renders here. */
+    /** The request kind: SIGNIN, or STEPUP (with `stepUp`, `spaces` and `reactivation`). */
     kind?: string;
+    stepUp?: { grantId: string; appId: string };
+    spaces?: StepUpSpace[];
+    reactivation?: boolean;
   };
   let preview = $state<Preview | null>(null);
   let model = $state<CapabilityReviewModel | null>(null);
@@ -37,9 +42,15 @@
   let submitting = $state(false);
   let approved = $state(false);
   let error = $state('');
+  /** The API refused to prepare or approve a step-up because a space it needs is not hosted (`space_not_hosted`). */
+  let unhosted = $state(false);
   let serial = 0;
-  const blocked = $derived(model && preview && !preparedMatchesSelection(model, baselineOptions, selection, preview.selectedActionKeys)
+  const stepUpPreview = $derived(preview && isStepUpPreview(preview) ? preview : null);
+  // A step-up has no optional actions: every capability is requested and none can be switched off.
+  const blocked = $derived(model && preview && !stepUpPreview && !preparedMatchesSelection(model, baselineOptions, selection, preview.selectedActionKeys)
     ? 'The selected permissions have not been prepared yet.' : null);
+  const failedWith = (cause: unknown, code: string) => (cause as { errorCode?: unknown } | null)?.errorCode === code;
+  const preparedKeys = () => (stepUpPreview ? undefined : reviewSelectionToActionKeys(model!, baselineOptions, selection));
 
   function oauthQuery(): string | undefined {
     const params = new URLSearchParams(window.location.search);
@@ -56,7 +67,7 @@
     if (isTermsRequired(response.status, data)) sendToTerms();
     if (!response.ok) {
       const failure = new Error(data.error_description ?? data.error ?? `${action} failed (${response.status})`);
-      throw Object.assign(failure, { code: typeof data.code === 'string' ? data.code : undefined });
+      throw Object.assign(failure, { code: typeof data.code === 'string' ? data.code : undefined, errorCode: typeof data.error === 'string' ? data.error : undefined });
     }
     return data;
   }
@@ -64,15 +75,25 @@
     const turn = ++serial;
     loading = true;
     error = '';
+    unhosted = false;
     try {
       const data = await route('prepare', actionKeys ? { actionKeys } : {}) as Preview | { status: 'APPROVED' };
       if (turn !== serial) return;
       if ('status' in data) { approved = true; return; }
-      // Fail closed: this screen describes a sign-in ("renews automatically"). A step-up names the framed app and
-      // what it adds, and has its own screen; until that ships, any other kind is an error with no Allow. An API that
-      // predates request kinds sends none, and only ever has sign-ins, so a missing kind is a sign-in.
-      if (data.kind !== undefined && data.kind !== 'SIGNIN') { error = 'This request needs a newer version of the app to approve.'; return; }
-      if (!model) {
+      // An explicit kind decides the screen, with no default: SIGNIN renders the sign-in screen, STEPUP the step-up
+      // screen, and anything else is an error with no Allow: no kind (a preview that carries `stepUp` or `spaces`
+      // without one is not a sign-in), an unknown kind, or a STEPUP that does not name its app and spaces. The API
+      // sends a kind on every preview, so the web must not be deployed before it.
+      if (data.kind === 'STEPUP' ? !isStepUpPreview(data) : data.kind !== 'SIGNIN') {
+        // Nothing of an earlier prepare stays on screen: no model and no preview to Allow from.
+        preview = null;
+        model = null;
+        error = 'This request needs a newer version of the app to approve.';
+        return;
+      }
+      // A step-up is always read afresh from the text it will sign: its list is what that text says, never an older
+      // prepare's. (A sign-in keeps its first parse, which holds the user's selection across re-prepares.)
+      if (!model || data.kind === 'STEPUP') {
         const parsed = parseCapabilityReview({
           message: data.sessionSiwe,
           signer: { label: 'Canonical OpenKey key', address: data.address, chainId: 1, provenance: 'managed' },
@@ -90,7 +111,12 @@
         model = { ...model, rawMessage: data.sessionSiwe };
       }
       preview = data;
-    } catch (cause) { if (turn === serial) error = cause instanceof Error ? cause.message : 'Preparation failed'; }
+    } catch (cause) {
+      if (turn !== serial) return;
+      error = cause instanceof Error ? cause.message : 'Preparation failed';
+      // This step-up asks for a space the account does not host yet; the screen says so instead of a generic failure.
+      if (failedWith(cause, 'space_not_hosted')) unhosted = true;
+    }
     finally { if (turn === serial) loading = false; }
   }
   async function providerConsent(accept: boolean) {
@@ -121,11 +147,13 @@
       await providerConsent(true);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Approval failed';
-      if (error === 'preparation_superseded') await prepare(reviewSelectionToActionKeys(model!, baselineOptions, selection));
+      // The API withdrew this approval because a space the app needs is not hosted: there is nothing left to Allow.
+      if (failedWith(cause, 'space_not_hosted')) unhosted = true;
+      else if (error === 'preparation_superseded') await prepare(preparedKeys());
       // The refused challenge is spent: prepare again for a new one, and keep the API's words on screen.
       else if (isPasskeyApprovalRefusal(cause)) {
         const refusal = error;
-        await prepare(reviewSelectionToActionKeys(model!, baselineOptions, selection));
+        await prepare(preparedKeys());
         error = refusal;
       }
       submitting = false;
@@ -168,13 +196,24 @@
     `${grant.space}${grant.resourceService ? `/${grant.resourceService}` : ''}${grant.path ? `/${grant.path}` : ''}`;
 </script>
 
-<NativeShell {clientId} heading={(name) => `${name} wants access`} name={preview?.client.name ?? null}>
-  {#if !ready || (loading && !preview)}
+<NativeShell {clientId} name={preview ? preview.client.name : unhosted ? undefined : null}
+  heading={(name) => unhosted ? 'This app can’t be allowed yet' : stepUpPreview ? `Give ${stepUpAppName(stepUpPreview.stepUp.appId)} more access` : `${name} wants access`}>
+  {#if !ready || (loading && !preview && !unhosted)}
     <p class="nb-lede" role="status">Preparing your request…</p>
+  {:else if unhosted}
+    <section class="panel" aria-label="Space not set up">
+      <p class="sentence" role="alert">One of the spaces this app needs is not set up on your TinyCloud account yet, so it can’t be allowed yet.</p>
+      <p class="note">Nothing was allowed. Go back to the app; it can ask again once the space is set up.</p>
+    </section>
+    <div class="nb-stack actions-row">
+      <button type="button" class="nb-button" onclick={deny} disabled={submitting}>Back to the app</button>
+    </div>
   {:else if approved}
     <p class="nb-lede">Your delegation was approved. Continue to return to the app.</p>
     {#if error}<p role="alert" class="nb-error">{error}</p>{/if}
     <button type="button" class="nb-button nb-primary" disabled={submitting} onclick={approve}>Continue to app</button>
+  {:else if stepUpPreview && model}
+    <NativeStepUpConsent preview={stepUpPreview} {model} {email} {error} {malformed} {loading} {submitting} onapprove={approve} ondeny={deny} />
   {:else if preview && model && summary}
     <p class="nb-lede signed-in">Signed in as <strong>{email}</strong></p>
 

@@ -20,7 +20,7 @@ const option = (service: string, short: string, path: string, actions: [string, 
 };
 const permissionOptions = [option('tinycloud.capabilities', 'capabilities', '', [[caps, true]]), option('tinycloud.kv', 'kv', 'xyz.tinycloud.tinychat/threads/', [[kvGet, false], [kvPut, false]])];
 const selected = permissionOptions.flatMap(p => p.actions.map(a => a.key));
-const base = { requestId: 'native-1', userId: 'u', keyId: 'key-1', address, client: { clientId: 'exo-native', name: 'Exo', icon: null, organization: 'TinyCloud Labs' },
+const base = { requestId: 'native-1', kind: 'SIGNIN', userId: 'u', keyId: 'key-1', address, client: { clientId: 'exo-native', name: 'Exo', icon: null, organization: 'TinyCloud Labs' },
   redirectScheme: 'xyz.tinycloud.exo', sessionDid: 'did:key:z6Mk', tinycloudHost: 'https://tee.node.tinycloud.xyz', ttlSeconds: 3600,
   grantLifetimeSeconds: 2592000, hostPlan: { host: 'https://tee.node.tinycloud.xyz', spaceId: space, peerId: 'did:key:z6Mk', hostSiwe: 'host bytes' }, permissionOptions };
 const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -256,21 +256,5 @@ test('reloaded approved request can finish provider consent', async ({ page }) =
   await expect(page.getByText('Your delegation was approved.')).toBeVisible();
   await page.getByRole('button', { name: 'Continue to app' }).click();
   await expect.poll(() => providerPosts).toBe(1);
-  expect(approvals).toBe(0);
-});
-
-test('a step-up request is refused on the sign-in screen: an error, and nothing to Allow', async ({ page }) => {
-  let approvals = 0;
-  await page.route('**/api/**', route => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === '/api/auth/get-session') return json(route, sessionBody);
-    if (path === '/api/oauth/tinycloud/clients/exo-native/branding') return json(route, EXO_BRANDING);
-    if (path.endsWith('/prepare')) return json(route, { ...base, kind: 'STEPUP', revision: 1, digest: 'digest-1', sessionSiwe: siwe(true), selectedActionKeys: selected });
-    if (path.endsWith('/approve')) { approvals++; return json(route, { error: 'must not approve' }, 409); }
-    return json(route, { error: `unmocked ${path}` }, 404);
-  });
-  await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
-  await expect(page.getByRole('alert')).toContainText('needs a newer version of the app');
-  await expect(page.getByRole('button', { name: 'Allow' })).toHaveCount(0);
   expect(approvals).toBe(0);
 });

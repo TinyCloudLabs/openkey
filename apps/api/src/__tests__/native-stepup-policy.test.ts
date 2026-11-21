@@ -5,6 +5,7 @@ import {
   validateNativeDelegationConfig,
   type NativeDelegationClient,
 } from '../services/native-delegation/policy';
+import phase1 from '../../../../scripts/step-up-ceilings/phase1.json';
 
 // TC-3569: the step-up section of the Home client's ceiling. It is admin-set,
 // read-only by construction, and nothing reads it until the endpoint ships.
@@ -18,15 +19,7 @@ const base = {
   sql: null,
 };
 
-// Phase 1, exactly as ruled: all read-only.
-const phase1 = {
-  'xyz.tinycloud.explorer': {
-    public: { kv: { paths: [''], actions: ['get', 'list', 'metadata'] } },
-    applications: { sql: { databases: ['default'], actions: ['read', 'schema'] } },
-  },
-  'xyz.tinycloud.account': { account: { kv: { paths: ['applications/', 'spaces/'], actions: ['get', 'list'] } } },
-  'xyz.tinycloud.courier': { agents: { kv: { paths: ['xyz.tinycloud.courier/'], actions: ['get', 'list'] } } },
-};
+// Phase 1, exactly as ruled: all read-only. The same file the parity check compares with One's.
 
 const withStepUps = (stepUps: unknown) => ({ ...base, stepUps });
 const accepted = (stepUps: unknown) => validateNativeDelegationConfig(withStepUps(stepUps), nativeClient, options);
