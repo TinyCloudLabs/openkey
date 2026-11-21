@@ -63,6 +63,8 @@ const EVENTS = {
   native_consent_peer_lookup_failed: true, native_consent_key_unseal_failed: true,
   native_consent_activation_after_host_setup_failed: true, native_consent_host_delegation_rejected: true,
   native_consent_activation_did_not_host_space: true, native_consent_host_activation_failed: true, native_consent_stale_session_revoke_failed: true,
+  native_stepup_renew_failed: true, native_stepup_revoke_pending_refused: true,
+  native_stepup_revoke_pending: true, native_stepup_revoke_pending_failed: true, native_stepup_revoke_pending_sweep_failed: true,
   oauth_client_create_failed: true, oauth_client_delete_failed: true, oauth_client_update_failed: true,
   oauth_client_secret_rotated: true,
   session_cap_unapplied: true,
@@ -83,7 +85,7 @@ const EVENTS = {
   account_origin_refused: true,
   legacy_reseal_done: true, legacy_reseal_failed: true, legacy_reseal_progress: true, legacy_reseal_quarantined: true,
   sign_origin_refused: true,
-  approval_passkey_verified: true, approval_passkey_refused: true,
+  approval_passkey_verified: true, approval_passkey_refused: true, approval_passkey_flow_covered: true, approval_passkey_flow_record_failed: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;
 type EventName = keyof typeof EVENTS;

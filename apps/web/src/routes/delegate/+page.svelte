@@ -1666,10 +1666,7 @@
       if (typeof delegationExpiresAt !== 'string') throw new OwnerMessageError('The approved delegation has no expiry binding.');
       // The owner may have unchecked capabilities: bind and relay exactly
       // what the signed delegation grants, in the request's manifest form.
-      const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions, {
-        address: payload.address,
-        chainId: payload.chainId,
-      });
+      const approvedPermissions = approvedDevicePermissions(requestedPermissions, payload.permissions);
       const relay = await encryptDeviceRelay({ ...payload, permissions: approvedPermissions });
       let response: Response;
       try {

@@ -83,7 +83,7 @@
   error={transport.error}
   approveBlockedReason={transport.approveBlockedReason ?? null}
   refused={transport.refused ?? false}
-  previewPending={transport.canUseAuthorizeSign && !transport.previewReady}
+  previewPending={(transport.canUseAuthorizeSign && !transport.previewReady) || (transport.passkeyPending ?? false)}
   {layoutBlocked}
   stickyActions
   {peerRecognition}

@@ -490,7 +490,8 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
     const host = 'https://tee.node.tinycloud.xyz';
     afterAll(() => { hostedSpace = null; });
 
-    async function nativeRequest(owner: Account) {
+    // `pending` leaves the request as the sign-in page finds it: resolved by /authorize, no owner yet.
+    async function nativeRequest(owner: Account, options: { pending?: boolean } = {}) {
       const clientId = `ok_${randomBytes(16).toString('hex')}`;
       await prisma.oauthClient.create({ data: {
         id: randomUUID(), clientId, name: 'Native fixture', public: true, type: 'native', tokenEndpointAuthMethod: 'none',
@@ -500,10 +501,12 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
           maxDelegationTtlSeconds: 3600, grantLifetimeSeconds: 86_400, siweDomain: 'openkey.so',
         },
       } });
-      await prisma.tinyCloudBootstrapState.create({ data: {
-        userId: owner.userId, keyId: owner.keyId, address: owner.address, chainId: 1, tinycloudHost: host,
-        bootstrapVersion: 'test', status: 'complete', checkedAt: new Date(), completedAt: new Date(),
-      } });
+      if (!await prisma.tinyCloudBootstrapState.findFirst({ where: { userId: owner.userId }, select: { id: true } })) {
+        await prisma.tinyCloudBootstrapState.create({ data: {
+          userId: owner.userId, keyId: owner.keyId, address: owner.address, chainId: 1, tinycloudHost: host,
+          bootstrapVersion: 'test', status: 'complete', checkedAt: new Date(), completedAt: new Date(),
+        } });
+      }
       hostedSpace = { host, spaceId: `tinycloud:pkh:eip155:1:${owner.address}:applications` };
       const jwk = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
       const sessionJwk = { kty: 'OKP', crv: 'Ed25519', x: jwk.x! };
@@ -517,15 +520,15 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
           { service: 'tinycloud.capabilities', space: 'applications', path: '', actions: ['tinycloud.capabilities/read'] },
           { service: 'tinycloud.kv', space: 'applications', path: `${appId}/notes/`, actions: ['tinycloud.kv/get', 'tinycloud.kv/list'] },
         ],
-        ttlSeconds: 3600, status: 'RESOLVED', userId: owner.userId,
+        ttlSeconds: 3600, status: 'RESOLVED', ...(options.pending ? {} : { userId: owner.userId }),
         requestUriExpiresAt: new Date(Date.now() + 600_000), expiresAt: new Date(Date.now() + 600_000),
       } });
       return `/api/oauth/tinycloud/requests/${id}`;
     }
 
     type NativePreview = { revision: number; digest: string; sessionSiwe: string; passkey: Offer };
-    async function preview(owner: Account, path: string) {
-      const prepared = await post(`${path}/prepare`, { cookie: owner.cookie }, {});
+    async function preview(owner: Account, path: string, cookie = owner.cookie) {
+      const prepared = await post(`${path}/prepare`, { cookie }, {});
       expect(prepared.status, await prepared.clone().text()).toBe(200);
       const body = await prepared.json() as NativePreview;
       return { passkey: body.passkey, approval: { revision: body.revision, digest: body.digest, sessionSiwe: body.sessionSiwe } };
@@ -549,6 +552,7 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
       expect(approved.status, await approved.clone().text()).toBe(200);
       expect(await approved.json()).toMatchObject({ status: 'APPROVED', hosting: 'existing' });
       expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).status).toBe('APPROVED');
+      expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id } })).approvalPasskeyMethod).toBe('REQUEST_PASSKEY');
     });
 
     test('SENSITIVE approves standard access without asking', async () => {
@@ -560,6 +564,156 @@ if (process.env.OPENKEY_APPROVAL_PASSKEY_ROUTES_CHILD !== '1') {
       const approved = await post(`${path}/approve`, { cookie: owner.cookie }, approval);
       expect(approved.status, await approved.clone().text()).toBe(200);
       expect(await approved.json()).toMatchObject({ status: 'APPROVED', hosting: 'existing' });
+      expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: requestIdOf(path) } })).approvalPasskeyMethod).toBe('NOT_REQUIRED');
+    });
+
+    // TC-3596: one passkey per interaction. The native login page names its request on the passkey sign-in.
+    const requestIdOf = (path: string) => path.split('/').at(-1)!;
+    const cookieHeader = (response: Response) => response.headers.getSetCookie().map((cookie) => cookie.split(';')[0]).join('; ');
+    const flowRows = (userId: string) => prisma.verification.count({ where: { userId, identifier: { startsWith: 'openkey-flow-passkey:' } } });
+    // The authorize step that follows a sign-in gives the request its owner.
+    const resolveRequest = (path: string, owner: Account) => prisma.tinyCloudNativeRequest.update({
+      where: { id: requestIdOf(path) }, data: { userId: owner.userId },
+    });
+
+    /** A passkey sign-in through the real routes, as the native login page makes it. `flow` is the header value. */
+    async function passkeySignIn(passkey: SoftPasskey, flow: string | null, extra: { userVerified?: boolean } = {}) {
+      const asked = await app.fetch(new Request(`${api}/api/auth/passkey/generate-authenticate-options`, { headers: { origin: web } }));
+      expect(asked.status, await asked.clone().text()).toBe(200);
+      const options = await asked.json() as PublicKeyCredentialRequestOptionsJSON;
+      const response = await app.fetch(new Request(`${api}/api/auth/passkey/verify-authentication`, {
+        method: 'POST',
+        headers: { origin: web, 'content-type': 'application/json', cookie: cookieHeader(asked), ...(flow ? { 'x-openkey-passkey-flow': flow } : {}) },
+        body: JSON.stringify({ response: passkey.assert(options, extra) }),
+      }));
+      return { response, cookie: cookieHeader(response) };
+    }
+
+    test('a passkey sign-in made for this request covers its Approve: no second prompt, the approval records it, and the cover ends with it', async () => {
+      const owner = await account();
+      const passkey = await createSoftPasskey(prisma, owner.userId, true, web);
+      await prisma.user.update({ where: { id: owner.userId }, data: { passkeyApprovalMode: 'ALWAYS' } });
+      const path = await nativeRequest(owner, { pending: true });
+      const signedIn = await passkeySignIn(passkey, requestIdOf(path));
+      expect(signedIn.response.status, await signedIn.response.clone().text()).toBe(200);
+      expect(await flowRows(owner.userId)).toBe(1);
+      // A second session of the account signs in for the same request: its cover must end with the decision too.
+      expect((await passkeySignIn(passkey, requestIdOf(path))).response.status).toBe(200);
+      expect(await flowRows(owner.userId)).toBe(2);
+      await resolveRequest(path, owner);
+
+      expect((await preview(owner, path, signedIn.cookie)).passkey).toEqual({ required: false });
+      // A new preview of the same request, as a changed selection makes, is covered too.
+      const { passkey: again, approval } = await preview(owner, path, signedIn.cookie);
+      expect(again).toEqual({ required: false });
+      const approved = await post(`${path}/approve`, { cookie: signedIn.cookie }, approval);
+      expect(approved.status, await approved.clone().text()).toBe(200);
+      expect(await approved.json()).toMatchObject({ status: 'APPROVED', hosting: 'existing' });
+      expect((await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: requestIdOf(path) } })).approvalPasskeyMethod).toBe('FLOW_PASSKEY');
+      expect(await flowRows(owner.userId)).toBe(0);
+    });
+
+    test('the cover is for that request and that session: another request, another session and a stolen cookie still get the challenge', async () => {
+      const owner = await account();
+      const passkey = await createSoftPasskey(prisma, owner.userId, true, web);
+      await prisma.user.update({ where: { id: owner.userId }, data: { passkeyApprovalMode: 'ALWAYS' } });
+      const a = await nativeRequest(owner, { pending: true });
+      const b = await nativeRequest(owner, { pending: true });
+      const signedIn = await passkeySignIn(passkey, requestIdOf(a));
+      expect(signedIn.response.status, await signedIn.response.clone().text()).toBe(200);
+      await resolveRequest(a, owner);
+      await resolveRequest(b, owner);
+
+      // The signed-in session, for a request it did not sign in for.
+      const forB = await preview(owner, b, signedIn.cookie);
+      expect(forB.passkey.required).toBe(true);
+      await expectRefusal(await post(`${b}/approve`, { cookie: signedIn.cookie }, forB.approval), 'passkey_approval_required');
+      // Another session of the same account, for the request that was signed in for.
+      const forA = await preview(owner, a, owner.cookie);
+      expect(forA.passkey.required).toBe(true);
+      await expectRefusal(await post(`${a}/approve`, { cookie: owner.cookie }, forA.approval), 'passkey_approval_required');
+      expect(await prisma.tinyCloudNativeRequest.count({ where: { id: { in: [requestIdOf(a), requestIdOf(b)] }, status: 'APPROVED' } })).toBe(0);
+
+      // Denying the request ends its cover.
+      expect((await preview(owner, a, signedIn.cookie)).passkey).toEqual({ required: false });
+      const denied = await post(`${a}/deny`, { cookie: signedIn.cookie }, {});
+      expect(denied.status, await denied.clone().text()).toBe(200);
+      expect(await flowRows(owner.userId)).toBe(0);
+    });
+
+    test('a sign-in records a cover only for a user-verified step-up passkey and a pending request that is unowned or the signer\'s, for five minutes', async () => {
+      const { flowPasskeyCovers, recordFlowPasskey } = await import('../services/approval-passkey');
+      const owner = await account();
+      const passkey = await createSoftPasskey(prisma, owner.userId, true, web);
+      const path = await nativeRequest(owner, { pending: true });
+      const id = requestIdOf(path);
+
+      // No header, a malformed one, a short one, and a request that does not exist.
+      for (const flow of [null, 'x:y', 'a'.repeat(31), randomBytes(16).toString('hex')]) {
+        const signedIn = await passkeySignIn(passkey, flow);
+        expect(signedIn.response.status, await signedIn.response.clone().text()).toBe(200);
+        expect(await flowRows(owner.userId)).toBe(0);
+      }
+      // An assertion without user verification.
+      await passkeySignIn(passkey, id, { userVerified: false });
+      expect(await flowRows(owner.userId)).toBe(0);
+      // A request that belongs to another account.
+      const other = await account();
+      const theirs = await nativeRequest(other, { pending: true });
+      await prisma.tinyCloudNativeRequest.update({ where: { id: requestIdOf(theirs) }, data: { userId: other.userId } });
+      expect((await passkeySignIn(passkey, requestIdOf(theirs))).response.status).toBe(200);
+      expect(await flowRows(owner.userId)).toBe(0);
+      // A request that is already decided.
+      await prisma.tinyCloudNativeRequest.update({ where: { id }, data: { status: 'DENIED' } });
+      expect((await passkeySignIn(passkey, id)).response.status).toBe(200);
+      expect(await flowRows(owner.userId)).toBe(0);
+      // A passkey that was enrolled on a session alone.
+      const weak = await account();
+      const weakPasskey = await createSoftPasskey(prisma, weak.userId, false, web);
+      const weakRequest = await nativeRequest(weak, { pending: true });
+      expect((await passkeySignIn(weakPasskey, requestIdOf(weakRequest))).response.status).toBe(200);
+      expect(await flowRows(weak.userId)).toBe(0);
+
+      // The control: a user-verified step-up passkey, a pending request of this account.
+      const fresh = await nativeRequest(owner, { pending: true });
+      const freshId = requestIdOf(fresh);
+      expect((await passkeySignIn(passkey, freshId)).response.status).toBe(200);
+      const row = await prisma.verification.findFirstOrThrow({ where: { userId: owner.userId, identifier: { startsWith: 'openkey-flow-passkey:' } } });
+      expect(row.identifier.endsWith(`:${freshId}`)).toBe(true);
+      const subject = { userId: owner.userId, sessionId: row.identifier.split(':')[1]! };
+      const now = Date.now();
+      expect(await flowPasskeyCovers(prisma, subject, freshId, new Date(now + 4 * 60_000))).toBe(true);
+      expect(await flowPasskeyCovers(prisma, subject, freshId, new Date(now + 5 * 60_000 + 5_000))).toBe(false);
+      expect(await flowPasskeyCovers(prisma, subject, requestIdOf(path), new Date(now))).toBe(false);
+      expect(await flowPasskeyCovers(prisma, { ...subject, sessionId: 'another-session' }, freshId, new Date(now))).toBe(false);
+      expect(await flowPasskeyCovers(prisma, { ...subject, userId: other.userId }, freshId, new Date(now))).toBe(false);
+      // A request that began after the assertion is never covered.
+      const created = (await prisma.tinyCloudNativeRequest.findUniqueOrThrow({ where: { id: freshId } })).createdAt;
+      expect(await recordFlowPasskey(prisma, { ...subject, flowId: freshId, credentialId: passkey.credentialID, userVerified: true },
+        new Date(created.getTime() - 1_000))).toBe(false);
+    });
+
+    test('the approvals that always ask ignore the sign-in\'s passkey while a cover exists', async () => {
+      const owner = await account();
+      const passkey = await createSoftPasskey(prisma, owner.userId, true, web);
+      const path = await nativeRequest(owner, { pending: true });
+      const signedIn = await passkeySignIn(passkey, requestIdOf(path));
+      expect(signedIn.response.status, await signedIn.response.clone().text()).toBe(200);
+      expect(await flowRows(owner.userId)).toBe(1);
+      const auth = { cookie: signedIn.cookie };
+      const epoch = Number((await prisma.user.findUniqueOrThrow({ where: { id: owner.userId } })).tinyCloudManageKeyPolicyEpoch);
+
+      await expectRefusal(await post('/api/account/tinycloud-apps/some-app', auth,
+        { enabled: true, expectedEpoch: epoch, confirmation: 'TAKE CONTROL' }, 'PATCH'), 'passkey_approval_required');
+      await expectRefusal(await post('/api/account/tinycloud-manage-key', auth,
+        { mode: 'USER_CONTROLLED_SHARED', expectedEpoch: epoch, confirmation: 'TAKE CONTROL' }, 'PATCH'), 'passkey_approval_required');
+      await expectRefusal(await post('/api/account/passkey-approval', auth, { mode: 'NEVER' }, 'PATCH'), 'passkey_approval_required');
+      await expectRefusal(await post(`/api/keys/${owner.keyId}/sign-typed-data`, auth, typedData), 'passkey_approval_required');
+      const removal = await post('/api/auth/passkey/delete-passkey', auth, { id: passkey.id });
+      expect(removal.status, await removal.clone().text()).toBe(403);
+      expect(await removal.json()).toMatchObject({ code: 'PASSKEY_STEP_UP_REQUIRED' });
+      expect(await prisma.passkey.count({ where: { id: passkey.id } })).toBe(1);
+      expect((await prisma.user.findUniqueOrThrow({ where: { id: owner.userId } })).passkeyApprovalMode).toBe('SENSITIVE');
     });
   });
 }

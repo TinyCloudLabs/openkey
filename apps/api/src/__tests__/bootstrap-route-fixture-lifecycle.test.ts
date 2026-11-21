@@ -12,7 +12,7 @@ test('delegation route fixtures leave no bootstrap timers after teardown', async
     'delegate-raw-encryption-routes',
     'delegate-device-window-routes',
     'delegate-wallet-session-proof',
-    'delegate-device-default-decrypt-routes',
+    'tc-3204-device-no-decrypt-routes',
   ].map((name) => `${import.meta.dir}/${name}.test.ts`);
   const child = Bun.spawn([
     process.execPath, 'test', '--preload', `${import.meta.dir}/fixtures/bootstrap-retry-guard.mjs`, ...fixtures,

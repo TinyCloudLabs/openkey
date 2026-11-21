@@ -37,6 +37,7 @@ import {
   assertFreshPasskeyUserVerification,
   recordPasskeyFreshnessAfterHook,
 } from './services/passkey-freshness';
+import { FLOW_PASSKEY_HEADER, recordFlowPasskeyAfterHook } from './services/approval-passkey';
 import { passkeyEnrolmentPlugin, type ResolvedSession } from './services/passkey-enrolment';
 import {
   appleTokenClientId,
@@ -207,6 +208,12 @@ const passkeyFreshnessPlugin = {
           ctx.headers?.get('x-openkey-passkey-ceremony'),
           (ctx.body as { response?: { id?: unknown } } | undefined)?.response?.id,
         );
+      }) as AuthMiddleware,
+    }, {
+      // One passkey per interaction: a passkey sign-in that names its native request covers that request's Approve.
+      matcher: (ctx) => ctx.path === '/passkey/verify-authentication',
+      handler: (async (ctx: { headers?: Headers; body?: unknown; context: { returned?: unknown } }) => {
+        return recordFlowPasskeyAfterHook(prisma, ctx.context.returned, ctx.headers?.get(FLOW_PASSKEY_HEADER), ctx.body);
       }) as AuthMiddleware,
     }],
   },
