@@ -86,6 +86,15 @@ export const FILES_FOR_YOU_STATEMENT =
   "Read and change files shared with you";
 
 /**
+ * Consent sentence (and grant title) of the KV grant a share-by-email tool
+ * makes on the signer's own `default` space: the `shares/` folder with exactly
+ * `get`, `metadata`, `put`, `del`. The delete reaches every share in the
+ * folder, including shares made in other apps, so the line says so.
+ */
+export const SHARES_FOLDER_STATEMENT =
+  "Create shares and delete any of your shares";
+
+/**
  * Consent sentences of the three grants a feed connect step makes on the
  * signer's own `applications` space (see feed-grant.ts), one per grant:
  * SQL read, write and schema on the registry database, SQL read, write and

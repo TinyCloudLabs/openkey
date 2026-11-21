@@ -32,6 +32,7 @@ import {
   OWN_KEY_PREFIX_STATEMENTS,
   SENDER_HISTORY_STATEMENT,
   SHARE_KEY_PREFIX_CREATE_STATEMENT,
+  SHARES_FOLDER_STATEMENT,
   appFolderDeleteStatement,
   appKeyStatementText,
   renderLiteral,
@@ -429,6 +430,11 @@ const SENDER_HISTORY_VERBS = new Set(["get", "list", "put", "del"]);
 const FILES_FOR_YOU_PATH = "v1/";
 const FILES_FOR_YOU_VERBS = new Set(["get", "list", "put"]);
 
+// The shares folder in the signer's `default` space and the exact verb set a
+// share-by-email tool puts on it (`get`, `metadata`, `put`, `del`).
+const SHARES_FOLDER_PATH = "shares/";
+const SHARES_FOLDER_VERBS = new Set(["get", "metadata", "put", "del"]);
+
 /** A Share-style sender-history grant on the signer's `applications` space. */
 function isSenderHistoryGrant(
   grant: CapabilityGrant,
@@ -463,6 +469,29 @@ function isFilesForYouGrant(
     verbsExactly(
       grant.actions.map((action) => action.ability),
       FILES_FOR_YOU_VERBS,
+    )
+  );
+}
+
+/**
+ * The grant a share-by-email tool makes on the signer's own `default` space:
+ * the `shares/` folder with exactly `get`, `metadata`, `put`, `del`. `del`
+ * reaches every share in the folder, including ones another app made.
+ */
+function isSharesFolderGrant(
+  grant: CapabilityGrant,
+  spaceName: string | null,
+): boolean {
+  return (
+    KV_SERVICES.has(grant.service) &&
+    grant.serviceMismatch !== true &&
+    grant.actions.every((action) => KV_RECOGNIZED_ABILITIES.has(action.ability)) &&
+    spaceName === "default" &&
+    grant.ownedBySelf === true &&
+    grant.path === SHARES_FOLDER_PATH &&
+    verbsExactly(
+      grant.actions.map((action) => action.ability),
+      SHARES_FOLDER_VERBS,
     )
   );
 }
@@ -1333,6 +1362,9 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
   }
   if (isFilesForYouGrant(grant, spaceName)) {
     return { primaryText: FILES_FOR_YOU_STATEMENT, service, resource };
+  }
+  if (isSharesFolderGrant(grant, spaceName)) {
+    return { primaryText: SHARES_FOLDER_STATEMENT, service, resource };
   }
 
 
