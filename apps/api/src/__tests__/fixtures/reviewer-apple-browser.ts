@@ -52,7 +52,7 @@ async function main() {
     sql: { databases: ['threads', 'canvas', 'connectors', 'home_feed', 'details', 'summaries', 'transcripts'].map(x => `${appId}/${x}`), actions: ['read', 'write', 'schema'], prefixes: [`${appId}/feed/`], foreignDatabases: ['xyz.tinycloud.sample.healthlog/healthlog', 'xyz.tinycloud.sample.recipes/recipes'] },
     hooks: { paths: [`sql/${appId}/feed/`, `sql/${appId}/home_feed`, `sql/${appId}/threads`], actions: ['subscribe'] },
     maxDelegationTtlSeconds: 3600, grantLifetimeSeconds: 30 * 86400, siweDomain: 'openkey.so' };
-  await database.oauthClient.create({ data: { id: 'apple-browser-client', clientId, name: 'TinyCloud Home', public: true, type: 'native', tokenEndpointAuthMethod: 'none', redirectUris: [callback], scopes: ['openid', 'email', 'offline_access', 'tinycloud:delegation'], contacts: [], tinycloudNativeDelegation: ceiling } });
+  await database.oauthClient.create({ data: { id: 'apple-browser-client', clientId, name: 'TinyCloud One', public: true, type: 'native', tokenEndpointAuthMethod: 'none', redirectUris: [callback], scopes: ['openid', 'email', 'offline_access', 'tinycloud:delegation'], contacts: [], tinycloudNativeDelegation: ceiling } });
   await database.user.create({ data: { id: 'apple-browser', email: 'appreview@tinycloud.xyz', name: 'App review', emailVerified: true, reviewerHoldAt: new Date() } });
   const { generatePrivateKey, getAddressFromPrivateKey, seal, createTeeClient } = await import('@openkey/tee');
   const privateKey = generatePrivateKey();
