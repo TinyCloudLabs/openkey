@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { tinyCloudService } from '../services/tinycloud-service';
+import { restoreTinyCloudSession } from '../services/tinycloud-session';
 
 // Name validation: must start with letter, contain only letters/numbers/underscores, max 256 chars
 const NAME_REGEX = /^[A-Za-z][A-Za-z0-9_]*$/;
@@ -30,6 +31,7 @@ variablesRouter.use('*', requireSession);
 variablesRouter.get('/', async (c) => {
   const user = c.get('user');
 
+  await restoreTinyCloudSession(user.id); // after an API restart the session is gone until it is restored
   const variables = await tinyCloudService.listVariables(user.id);
   return c.json({ variables });
 });

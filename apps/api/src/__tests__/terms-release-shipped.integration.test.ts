@@ -5,7 +5,7 @@
 // OPENKEY_TEST_REAL_TERMS_RELEASE=1, which keeps the real file.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -124,15 +124,31 @@ if (process.env.OPENKEY_TEST_REAL_TERMS_RELEASE !== '1') {
   // Seeing what you hold before deleting the account: an account that has not accepted can list its secrets'
   // names and read its variables (names and values) with its browser session, and nothing else about them.
   describe('reading your own secrets and variables before agreeing', () => {
+    // The service stands in for the TinyCloud node: a session is open for an account once it is `open`, and the
+    // lists fail without one, as they do after an API restart.
     let writes: string[];
+    const open = new Set<string>();
+    const restored: Array<{ userId: string; privateKey: string }> = [];
     beforeAll(async () => {
       const { tinyCloudService } = await import('../services/tinycloud-service');
       const service = tinyCloudService as unknown as Record<string, unknown>;
-      service.isEnabledForUser = async () => true;
-      service.listSecrets = async () => [{ name: 'API_TOKEN', createdAt: '2026-11-20T00:00:00.000Z' }];
-      service.listVariables = async () => [{ name: 'REGION', value: 'eu', createdAt: '2026-11-20T00:00:00.000Z' }];
-      for (const method of ['putSecret', 'deleteSecret', 'putVariable', 'deleteVariable', 'enableForUser']) {
-        service[method] = async () => { writes.push(method); return { createdAt: 'x', spaceId: 'x' }; };
+      const requireOpen = (userId: string) => { if (!open.has(userId)) throw new Error('TinyCloud not enabled for user'); };
+      service.isEnabledForUser = async (userId: string) => open.has(userId);
+      service.enableForUser = async (userId: string, privateKey: string) => {
+        open.add(userId);
+        restored.push({ userId, privateKey });
+        return { spaceId: 'x' };
+      };
+      service.listSecrets = async (userId: string) => {
+        requireOpen(userId);
+        return [{ name: 'API_TOKEN', createdAt: '2026-11-20T00:00:00.000Z' }];
+      };
+      service.listVariables = async (userId: string) => {
+        requireOpen(userId);
+        return [{ name: 'REGION', value: 'eu', createdAt: '2026-11-20T00:00:00.000Z' }];
+      };
+      for (const method of ['putSecret', 'deleteSecret', 'putVariable', 'deleteVariable']) {
+        service[method] = async () => { writes.push(method); return { createdAt: 'x' }; };
       }
     });
     beforeEach(() => { writes = []; });
@@ -144,7 +160,8 @@ if (process.env.OPENKEY_TEST_REAL_TERMS_RELEASE !== '1') {
       }));
 
     test('an account that has not accepted can read its own secrets and variables', async () => {
-      const { cookie } = await account('reader');
+      const { userId, cookie } = await account('reader');
+      open.add(userId);
       const secrets = await send('GET', '/api/secrets', { cookie });
       expect(secrets.status).toBe(200);
       expect(await secrets.json()).toEqual({ secrets: [{ name: 'API_TOKEN', createdAt: '2026-11-20T00:00:00.000Z' }] });
@@ -154,6 +171,27 @@ if (process.env.OPENKEY_TEST_REAL_TERMS_RELEASE !== '1') {
       const status = await send('GET', '/api/secrets/status', { cookie });
       expect(status.status).toBe(200);
       expect(await status.json()).toEqual({ enabled: true, secretCount: 1, variableCount: 1 });
+    });
+
+    test('after an API restart the lists restore the account\'s TinyCloud session themselves', async () => {
+      const { createTeeClient, generatePrivateKey, getAddressFromPrivateKey, seal } = await import('@openkey/tee');
+      const { userId, cookie } = await account('restore');
+      const privateKey = generatePrivateKey();
+      const sealingContext = randomBytes(32).toString('base64url');
+      const sealingKey = await createTeeClient().deriveKey(`openkey/key/${sealingContext}`);
+      await prisma.ethereumKey.deleteMany({ where: { userId } });
+      await prisma.ethereumKey.create({
+        data: { userId, address: getAddressFromPrivateKey(privateKey), publicKey: '0x1', sealedBlob: await seal(privateKey, sealingKey), sealingContext, keyType: 'MANAGED' },
+      });
+      // The API has just restarted: this account's session is not open, and nothing has called /status.
+      expect(open.has(userId)).toBe(false);
+      for (const [path, key] of [['/api/secrets', 'secrets'], ['/api/variables', 'variables']] as const) {
+        open.delete(userId);
+        const listed = await send('GET', path, { cookie });
+        expect(listed.status, path).toBe(200);
+        expect(Object.keys(await listed.json()), path).toEqual([key]);
+        expect(restored.at(-1), path).toEqual({ userId, privateKey: privateKey.replace(/^0x/, '') });
+      }
     });
 
     test('an account that has not accepted cannot write them', async () => {
@@ -191,6 +229,7 @@ if (process.env.OPENKEY_TEST_REAL_TERMS_RELEASE !== '1') {
       await prisma.termsAcceptance.create({
         data: { id: randomUUID(), userId, documentId: 'terms', version: shipped.version, textSha256: shipped.textSha256, surface: 'web', appVersion: 'test' },
       });
+      open.add(userId);
       const accepted = await send('GET', '/api/secrets', { authorization: `Bearer ${token}` });
       expect(accepted.status).toBe(200);
     });
