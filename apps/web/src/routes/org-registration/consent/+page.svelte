@@ -143,15 +143,15 @@
       <h1 class="text-2xl font-semibold text-surface-900">Organization registered</h1>
       <p class="mt-3 text-surface-600">OpenCredentials confirmed your organization.</p>
       <dl class="mt-6 space-y-4 text-sm">
-        {#each [['Name', registration.displayName], ['Handle', registration.handle], ['Org ID', registration.orgId], ['Controller', registration.controllerDid], ['Issuer', registration.issuerDid], ['Tier', registration.tier], ['Registration', registration.registrationId]] as [label, value]}
-          <div><dt class="font-medium text-surface-600">{label}</dt><dd class="mt-1 break-words whitespace-pre-wrap text-surface-900">{value}</dd></div>
+        {#each [['Handle', registration.handle], ['Name', registration.displayName], ['Org ID', registration.orgId], ['Controller', registration.controllerDid], ['Issuer', registration.issuerDid], ['Tier', registration.tier], ['Registration', registration.registrationId]] as [label, value]}
+          <div><dt class="font-medium text-surface-600">{label}</dt><dd class="mt-1 break-words whitespace-pre-wrap text-surface-900"><bdi>{value}</bdi></dd></div>
         {/each}
       </dl>
       <Button href="https://credentials.org" class="mt-8 w-full">Return to Credentials</Button>
     {:else}
       <h1 class="text-2xl font-semibold text-surface-900">Register organization</h1>
       {#if pending}
-        <p class="mt-4 break-words whitespace-pre-wrap text-surface-900">Create an OWNER key for <strong>{pending.fields.orgName}</strong> (@{pending.fields.handle}).</p>
+        <p class="mt-4 break-words whitespace-pre-wrap text-surface-900">Create the owner key for <strong><bdi>@{pending.fields.handle}</bdi></strong> (<bdi>{pending.fields.orgName}</bdi>).</p>
         <p class="mt-3 text-sm text-surface-600">Your passkey approves this exact registration. OpenKey sends its proof directly to OpenCredentials; no token needs to be copied.</p>
         <p class="mt-3 text-sm text-surface-600">This approval does not enable organization message signing.</p>
       {:else if !error}
