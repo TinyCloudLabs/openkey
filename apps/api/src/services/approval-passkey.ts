@@ -366,12 +366,10 @@ export async function flowPasskeyCovers(
   return row !== null;
 }
 
-/** Ends the cover when its request is approved or denied. */
-export async function clearFlowPasskey(
-  db: Pick<PrismaClient, 'verification'>, sessionId: string | null, flowId: string,
-): Promise<void> {
-  if (sessionId === null || !FLOW_REQUEST_ID.test(flowId)) return;
-  await db.verification.deleteMany({ where: { identifier: flowIdentifier(sessionId, flowId) } });
+/** Ends every session's cover for a request when it is approved or denied, so none can outlive the decision. */
+export async function clearFlowPasskey(db: Pick<PrismaClient, 'verification'>, flowId: string): Promise<void> {
+  if (!FLOW_REQUEST_ID.test(flowId)) return;
+  await db.verification.deleteMany({ where: { identifier: { startsWith: `${FLOW_PREFIX}:`, endsWith: `:${flowId}` } } });
 }
 
 /**
