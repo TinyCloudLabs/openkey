@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   changeset:
-    if: github.actor == 'dependabot[bot]'
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -23,17 +23,12 @@ jobs:
           ref: ${{ github.head_ref }}
           token: ${{ secrets.GH_TOKEN }}
 
-      - name: Get PR info
-        id: pr
-        run: |
-          echo "title=${{ github.event.pull_request.title }}" >> "$GITHUB_OUTPUT"
-          echo "branch=${{ github.head_ref }}" >> "$GITHUB_OUTPUT"
-
       - name: Generate changeset
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
-          CHANGESET_ID="dependabot-$(echo '${{ github.head_ref }}' | sed 's/[^a-zA-Z0-9]/-/g' | head -c 50)"
+          CHANGESET_ID="dependabot-$(printf '%s' "$HEAD_REF" | sed 's/[^a-zA-Z0-9]/-/g' | head -c 50)"
 
           # Build changeset header based on workspace packages
           HEADER="---"
