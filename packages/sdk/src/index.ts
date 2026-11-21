@@ -264,6 +264,20 @@ export interface TinyCloudAuthorizationResultV1 {
   renewal?: TinyCloudSignedRenewalLeaseV1;
 }
 
+/**
+ * TC-3657: result of `OpenKey.authorizeTinyCloudSetup`. Outside apps catch
+ * `AccountSetupRequiredError` from their TinyCloud sign-in and call this; OpenKey
+ * shows the consent, signs the owner's registry location record under their own
+ * `did:pkh`, and publishes it. The app never sees the signed record; `subject` is
+ * returned so the SDK side can decide whether to retry sign-in. See js-sdk#1113
+ * `handle-account-setup-required.ts` for the matching client-side shape.
+ */
+export type TinyCloudSetupResultV1 =
+  | { status: 'published'; subject: string }
+  | { status: 'already-current'; subject: string }
+  | { status: 'declined' }
+  | { status: 'unavailable'; reason: 'signature-refused' | 'registry-error' | 'node-unreachable' | 'rate-limited' };
+
 const MAX_RENEWAL_LEASE_SECONDS = 365 * 86_400;
 
 /**
@@ -335,6 +349,12 @@ type MessageType =
   | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:sign:request'; message: string; keyId?: string; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1; expiryChangeable?: true; renewal?: TinyCloudRenewalRequestV1 }
+  // TC-3657: outside-app one-tap setup. The widget observes the opener's
+  // origin via `event.origin` (Bobbie C3, N1: forced popup); the SDK
+  // does NOT send any `origin` field in the request, by design.
+  | { type: 'openkey:tinycloud-setup:request'; requestingApp?: { name?: string; manifest?: unknown }; requestId: string }
+  | { type: 'openkey:tinycloud-setup:response'; success: true; result: TinyCloudSetupResultV1; requestId: string }
+  | { type: 'openkey:tinycloud-setup:response'; success: false; error: OpenKeyError; requestId: string }
   | { type: 'openkey:sign:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
   | {
       type: 'openkey:sign:response';
@@ -1201,6 +1221,48 @@ export class OpenKey {
       // Closed unless the flow took the window over (the widget closes its own).
       if (reserved && !reserved.used) {
         try { reserved.window.close(); } catch { /* the window is already gone */ }
+      }
+    }
+  }
+
+  /**
+   * TC-3657: outside-app one-tap TinyCloud setup. Sam's TC-3620 pick (14:14:07Z).
+   *
+   * The outside app's own sign-in refuses a brand-new owner with `AccountSetupRequiredError`
+   * (from TinyCloud's web-sdk). The outside app catches that error and calls this method;
+   * OpenKey opens a top-level popup (N1 — never iframe, regardless of `opts.mode`), the owner
+   * sees the consent screen in OpenKey's own origin, and on approve OpenKey signs + publishes
+   * the owner's registry location record under their `did:pkh`. The outside app never sees the
+   * signed record (only the `status` + `subject`); OpenKey server picks the node DID + origin
+   * from its allowlisted configuration (Bobbie C1); the browser-derived requesting origin is
+   * used for the per-origin rate limit + the consent screen label (C3), not any field in
+   * `request.requestingApp` (which stays caller-asserted display only — N2).
+   *
+   * `request.requestingApp.name` and `request.requestingApp.manifest` are DISPLAYED CLAIMS
+   * only. OpenKey never uses them to build the signed record, the setup ticket, the rate
+   * limit, or any grant.
+   */
+  async authorizeTinyCloudSetup(
+    request: { requestingApp?: { name?: string; manifest?: unknown } } = {},
+    _opts?: { mode?: OpenKeyMode },
+  ): Promise<TinyCloudSetupResultV1> {
+    // N1: popup is forced regardless of the caller's requested mode. The parameter is
+    // accepted for signature symmetry with `authorizeTinyCloud` but ignored.
+    const reserved = this.reservePopup('tinycloud-setup');
+    try {
+      return await this.openFlow<TinyCloudSetupResultV1>(
+        'tinycloud-setup',
+        {
+          type: 'openkey:tinycloud-setup:request',
+          requestingApp: request.requestingApp ?? {},
+          requestId: crypto.randomUUID(),
+        },
+        'popup',
+        reserved,
+      );
+    } finally {
+      if (reserved && !reserved.used) {
+        try { reserved.window.close(); } catch { /* window is already gone */ }
       }
     }
   }

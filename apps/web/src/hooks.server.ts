@@ -41,6 +41,8 @@ function reservedConsoleHostPage(accountOrigin: string) {
 </html>`;
 }
 
+import { isTinyCloudSetupWidgetRoute } from './routes/widget/tinycloud-setup/route-match';
+
 export const handle: Handle = async ({ event, resolve }) => {
   const route = routeConsoleHost({
     hostname: event.url.hostname,
@@ -68,5 +70,20 @@ export const handle: Handle = async ({ event, resolve }) => {
     });
   }
 
-  return resolve(event);
+  const response = await resolve(event);
+  // TC-3657 Bobbie F2 fix (15:16:27Z) + N2 fix (15:42:43Z): `/widget/tinycloud-setup` sets
+  // `ssr=false` on its layout so neither a `+page.server.ts` nor a `+layout.server.ts`
+  // `setHeaders` reaches the HTML document — only the `__data.json` payload. Set the
+  // framing headers here in the request handler so the document itself carries them,
+  // regardless of SSR mode. Belt-and-braces with the client guard in `+layout.ts`.
+  //
+  // Match on `event.route.id` (the normalised route template SvelteKit resolves after
+  // decoding), not on the raw `event.url.pathname`. A `/widget/tinycloud%2Dsetup` URL
+  // decodes to the same route template `/widget/tinycloud-setup`, so the headers apply.
+  if (isTinyCloudSetupWidgetRoute(event.route?.id ?? '')) {
+    response.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
+    response.headers.set('X-Frame-Options', 'DENY');
+    response.headers.set('Referrer-Policy', 'no-referrer');
+  }
+  return response;
 };

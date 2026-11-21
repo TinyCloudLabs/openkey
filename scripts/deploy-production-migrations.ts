@@ -87,6 +87,12 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   ['20261121_0002_native_request_kind', '22823dfea36b42f7ffcfc5da0d333340ed025316e68a95c39f63821181022c23'],
   ['20261121_0003_native_withdraw_stepup_tokens', '0058b9b249016025ce123121ee48ffad03241060d6c708100f9958dd8179cf48'],
   ['20261121_0004_native_stepup_delegation', '71c7f4491f6e63320acb9ef34c76ff54ec0bce2e880764e725b3500fa9c0e6bb'],
+  // TC-3657: Prisma-backed stores for OpenKey's outside-app one-tap TinyCloud setup
+  // endpoint. Additive (two CREATE TABLE + two CREATE INDEX, no ALTER); same reviewed-map
+  // pattern S1b uses. Preflight is only strict about this on the pre-tc488-additive path
+  // per OpenKey driver 15:39:54Z; production is on `full`, but we follow the pattern so
+  // Bobbie's sha-vs-file check continues to work for everyone.
+  ['20261121_0005_tinycloud_setup_tables', '2c76d33c89a485b5db77efdfbfe6e3bcf2d87ba94587118cef26932e931845d7'],
 ]);
 
 export type MigrationRow = {
