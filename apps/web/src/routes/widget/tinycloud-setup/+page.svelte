@@ -19,7 +19,7 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { confirmWithPasskey, PasskeyPromptError, type ApprovalPasskeyOffer } from '$lib/approval-passkey';
+  import { confirmWithPasskey, PasskeyPromptError, passkeyApprovalCopy, type ApprovalPasskeyOffer } from '$lib/approval-passkey';
   import {
     applyDecline,
     applyMintResult,
@@ -98,7 +98,7 @@
         const offer: ApprovalPasskeyOffer = { challengeToken: state.passkey.challengeToken, options: state.passkey.options as never };
         passkeyAssertion = await confirmWithPasskey(offer);
       } catch (e) {
-        state = { ...originalState, error: e instanceof PasskeyPromptError ? e.message : "Your passkey didn't confirm. Try again." };
+        state = { ...originalState, error: e instanceof PasskeyPromptError ? e.message : passkeyApprovalCopy.cancelled };
         return;
       }
     }
