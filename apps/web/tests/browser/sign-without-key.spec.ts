@@ -73,6 +73,7 @@ async function mockApi(page: Page, account: Account) {
       if (account.listFails) return json(route, 500, { error: 'Internal error' });
       return json(route, 200, { keys: account.keys.filter((k) => !k.archivedAt) });
     }
+    if (/^\/api\/keys\/[^/]+\/sign\/passkey$/.test(path) && route.request().method() === 'POST') return json(route, 200, { required: false });
     const sign = path.match(/^\/api\/keys\/([^/]+)\/sign$/);
     if (sign && route.request().method() === 'POST') {
       const body = route.request().postDataJSON() as { message: string };
