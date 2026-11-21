@@ -4,10 +4,10 @@
 
 import type { ElevatedKind } from "./elevated.js";
 
-// The extra warning screen for permissions an app may ask for only with a per-permission decision: decrypt or key
-// creation on the encryption network, or on keys outside the app's own. `site` is the browser-verified origin host (for
-// an embedded sign-in, the page that embeds it), never a name the app supplies; null where nothing is verified (a link),
-// which reads "This request".
+// The extra warning screen for permissions an app may ask for only with a per-permission decision: decrypt, key
+// creation, or blocking and unblocking keys on the encryption network, or on keys outside the app's own. `site` is the
+// browser-verified origin host (for an embedded sign-in, the page that embeds it), never a name the app supplies; null
+// where nothing is verified (a link), which reads "This request".
 
 const LAST_FOR_AS_LONG = "for as long as this approval lasts";
 
@@ -59,14 +59,18 @@ export function elevatedWhereText(lastSegment: string | null): string {
   return lastSegment === null ? "your encrypted data" : `a folder named ${lastSegment}`;
 }
 
-/** The heading and sentence of one card. `where` is `elevatedWhereText(...)`. */
+/**
+ * The heading and sentence of one card. `where` is `elevatedWhereText(...)`. A grant that includes blocking or
+ * unblocking gets the "Control access" card, which names every action the grant carries.
+ */
 export function elevatedCard(
   kind: ElevatedKind,
-  abilities: { decrypt: boolean; create: boolean },
+  abilities: { decrypt: boolean; create: boolean; block?: boolean; unblock?: boolean },
   site: string | null,
   where: string,
 ): { heading: string; body: string } {
   const who = elevatedSubject(site);
+  if (abilities.block || abilities.unblock) return elevatedControlCard(kind, abilities, who, where);
   if (kind === "encryption-network") {
     if (abilities.decrypt) {
       return {
@@ -94,5 +98,38 @@ export function elevatedCard(
   return {
     heading: `Unlock encrypted items in ${where}`,
     body: `${who} could unlock the encrypted items in ${where}, ${LAST_FOR_AS_LONG}.`,
+  };
+}
+
+/** Said on the card that includes blocking. A block does not take back a key already handed out, so it says "refused". */
+export const ELEVATED_BLOCK_NOTE = "Until the key is unblocked, requests to unlock the items it protects are refused, including your own.";
+
+/** "a", "a and b", "a, b and c": no serial comma. */
+function joinActions(parts: string[]): string {
+  return parts.length <= 1 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+/**
+ * The card for a grant that includes blocking or unblocking keys, whatever else it carries: "Control access to
+ * encryption keys {scope}", then "{who} could {actions} {scope}, for as long as this approval lasts.", and the
+ * refusal sentence when blocking is included.
+ */
+function elevatedControlCard(
+  kind: ElevatedKind,
+  abilities: { decrypt: boolean; create: boolean; block?: boolean; unblock?: boolean },
+  who: string,
+  where: string,
+): { heading: string; body: string } {
+  const scope = kind === "encryption-network" ? "anywhere in your account" : `in ${where}`;
+  const actions = joinActions([
+    ...(abilities.decrypt ? ["unlock encrypted items"] : []),
+    ...(abilities.create ? ["create encryption keys"] : []),
+    ...(abilities.block ? ["block encryption keys"] : []),
+    ...(abilities.unblock ? ["unblock encryption keys"] : []),
+  ]);
+  const sentence = `${who} could ${actions} ${scope}, ${LAST_FOR_AS_LONG}.`;
+  return {
+    heading: `Control access to encryption keys ${scope}`,
+    body: abilities.block ? `${sentence} ${ELEVATED_BLOCK_NOTE}` : sentence,
   };
 }

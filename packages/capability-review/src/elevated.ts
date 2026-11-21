@@ -4,9 +4,9 @@
 // screen for those permissions with "Reject this permission", and the rest of the request is still approved. These
 // are the permissions that screen covers:
 //
-//   - `decrypt` or `key.create` on a whole encryption network (`urn:tinycloud:encryption:<owner>:<network>`), or on a
-//     key or prefix outside `apps/` (for example `share/`). An app's own `apps/<id>/` keys go through the manifest
-//     admission instead and are not listed here.
+//   - `decrypt`, `key.create`, `key.block` or `key.unblock` on a whole encryption network
+//     (`urn:tinycloud:encryption:<owner>:<network>`), or on a key or prefix outside `apps/` (for example `share/`).
+//     An app's own `apps/<id>/` keys go through the manifest admission instead and are not listed here.
 //
 // The web screen and the API guard both call `elevatedKindOf`, so the screen can never decide on a different set of
 // permissions than the server later checks. This file has no imports beyond the key-resource helpers.
@@ -16,7 +16,9 @@ import { isAppsKeyResource, keyPathOfAnyResource, keyPathOfResource, KEY_RESOURC
 /** A whole encryption network, or keys and prefixes outside `apps/`. */
 export type ElevatedKind = "encryption-network" | "encryption-keys";
 
-const ELEVATED_VERBS: ReadonlySet<string> = new Set(["decrypt", "key.create"]);
+const ELEVATED_VERBS: ReadonlySet<string> = new Set(["decrypt", "key.create", "key.block", "key.unblock"]);
+// The verbs an exact share key is refused for, whoever asks.
+const SHARE_KEY_VERBS: ReadonlySet<string> = new Set(["decrypt", "key.create"]);
 
 /** The part of a ReCap entry the check reads: the parser's form (`space: "encryption"`, `path: <urn>`) or the reported one. */
 export interface ElevatedEntryLike {
@@ -74,7 +76,7 @@ const EXACT_SHARE_KEY = /^share\/[^/]+$/i;
  */
 export function isExactShareKeyGrant(entry: ElevatedEntryLike, ability: string): boolean {
   if (!isEncryptionService(entry.service?.toLowerCase())) return false;
-  if (!ELEVATED_VERBS.has(elevatedAbilityVerb(ability))) return false;
+  if (!SHARE_KEY_VERBS.has(elevatedAbilityVerb(ability))) return false;
   const resource = encryptionResourceOfEntry(entry) ?? (entry.path || entry.space);
   const path = keyPathOfAnyResource(resource)
     ?? keyPathOfAnyResource(`${entry.space}/${entry.service}/${entry.path}`);

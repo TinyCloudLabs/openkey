@@ -100,8 +100,9 @@
   let previewing = $state(false);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
-  // TC-2927: the extra permissions (decrypt or key creation on the encryption network or on keys outside the app's own
-  // area) the owner allowed on the warning screen. The preview records them and signing refuses an undecided one.
+  // TC-2927: the extra permissions (decrypt, key creation, or blocking and unblocking keys on the encryption network
+  // or on keys outside the app's own area) the owner allowed on the warning screen. The preview records them and
+  // signing refuses an undecided one.
   let elevatedAllowed = $state<string[]>([]);
   // Sol MAJOR-3 (continuation): when the SDK passes `externalSign: true`
   // on the sign request, the widget MUST NOT call /authorize-sign at

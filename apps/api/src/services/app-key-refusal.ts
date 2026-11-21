@@ -198,7 +198,8 @@ function isKeyBlockAbility(ability: string): boolean {
  * The encryption resources of a SIWE message outside `apps/` that carry
  * `key.block` or `key.unblock`: a bare network, a key or a prefix. The node
  * does not tie these two abilities to the requesting host, so a browser
- * request may name them only under its own `apps/<app id>/`.
+ * request may name them only after the owner decided on the warning screen,
+ * and a ticket request may not name them at all.
  */
 export function blockResourcesOutsideApps(siwe: string): Array<[string, string[]]> {
   return (recapResources(siwe) ?? []).filter(
@@ -246,9 +247,10 @@ export function exactShareKeyRefusalForMessage(message: string): AppKeyRefusal |
 }
 
 /**
- * Does this message ask for anything the extra warning screen covers: `decrypt` or `key.create` on a whole encryption
- * network, or on a key or prefix outside `apps/` (`elevatedKindOf`, shared with the screen)? Text and `0x` hex are
- * both read. A ReCap that cannot be read is not elevated here: the refusal checks report it.
+ * Does this message ask for anything the extra warning screen covers: `decrypt`, `key.create`, `key.block` or
+ * `key.unblock` on a whole encryption network, or on a key or prefix outside `apps/` (`elevatedKindOf`, shared with
+ * the screen)? Text and `0x` hex are both read. A ReCap that cannot be read is not elevated here: the refusal checks
+ * report it.
  */
 export function messageHasElevatedPermissions(message: string): boolean {
   const hasElevated = (siwe: string): boolean =>
@@ -297,18 +299,6 @@ export function appKeyRefusalForMessage(message: string): AppKeyRefusal | null {
   if (direct) return direct;
   const decoded = decodeHexUtf8(message);
   return decoded === null ? null : appKeyRefusalForSiwe(decoded);
-}
-
-/**
- * Does a message, as written or as UTF-8 when it is `0x` hex, carry `key.block`
- * or `key.unblock` on an encryption resource outside `apps/`? A route that
- * signs a message without a manifest cannot tell which app asks, so it refuses
- * these whatever the origin.
- */
-export function blocksOutsideApps(message: string): boolean {
-  if (blockResourcesOutsideApps(message).length > 0) return true;
-  const decoded = decodeHexUtf8(message);
-  return decoded !== null && blockResourcesOutsideApps(decoded).length > 0;
 }
 
 export function appKeyRefusalCode(refusal: AppKeyRefusal): AppKeyRefusalCode {
