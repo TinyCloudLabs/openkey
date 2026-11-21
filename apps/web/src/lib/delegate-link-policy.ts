@@ -84,7 +84,7 @@ export function withConfiguredEntries(
 
 export type DelegateCallbackCheck =
   | { ok: true; callback: string | null }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; endpoint?: string };
 
 /**
  * Where the page may POST the signed delegation. No callback means the page
@@ -102,13 +102,14 @@ export function checkDelegateCallback(raw: string, registeredEndpoints: readonly
   }
   return {
     ok: false,
+    endpoint: `${url.origin}${url.pathname}`,
     reason: `This link asks OpenKey to send your delegation to ${url.origin}${url.pathname}, which is not a registered TinyCloud app. OpenKey only returns delegations to this device or to registered apps, so this request was refused.`,
   };
 }
 
 export type DelegateHostCheck =
   | { ok: true; host: string; recognized: boolean }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; hostname?: string };
 
 /**
  * The TinyCloud node the delegation is activated on, which receives it.
@@ -118,9 +119,42 @@ export type DelegateHostCheck =
 export function checkDelegateHost(raw: string, knownOrigins: readonly string[]): DelegateHostCheck {
   const url = parseUrl(raw);
   if (!url || !isSafeTransport(url)) {
-    return { ok: false, reason: 'This link names an invalid TinyCloud node. A node must be an HTTPS address. Restart the command or app that opened this page.' };
+    return { ok: false, hostname: url?.hostname, reason: 'This link names an invalid TinyCloud node. A node must be an HTTPS address. Restart the command or app that opened this page.' };
   }
   const bareOrigin = url.pathname === '/' && !url.search && !url.hash;
   const recognized = bareOrigin && (isLoopbackHostname(url.hostname) || knownOrigins.includes(url.origin));
   return { ok: true, host: raw, recognized };
+}
+
+export type DelegateRequester = { displayName: string; returnTo: string };
+
+/** The CLI wording: loopback callbacks, no callback, and anything unmapped. */
+export const CLI_REQUESTER: DelegateRequester = { displayName: 'TinyCloud CLI', returnTo: 'the CLI' };
+
+/**
+ * Who is asking, as the approval screen words it. Only the built-in
+ * `REGISTERED_CALLBACK_ENDPOINTS` are named here, so a name appears only for an
+ * exact, already-approved return address. It never comes from the link's
+ * free-form parameters, and a callback added through
+ * `VITE_DELEGATE_CALLBACK_URLS` gets no name.
+ */
+const REQUESTER_BY_CALLBACK_ENDPOINT: Record<string, DelegateRequester> = {
+  'https://mcp.tinycloud.xyz/claude/connect/callback': { displayName: 'Claude via TinyCloud', returnTo: 'Claude' },
+  'https://mcp.tinycloud.xyz/grok/connect/callback': { displayName: 'Grok via TinyCloud', returnTo: 'Grok' },
+  'https://mcp.tinycloud.xyz/muse/connect/callback': { displayName: 'Muse via TinyCloud', returnTo: 'Muse' },
+  'https://mcp.tinycloud.xyz/chatgpt/connect/callback': { displayName: 'ChatGPT via TinyCloud', returnTo: 'ChatGPT' },
+  'https://mcp.tinycloud.xyz/connect/callback': { displayName: 'TinyCloud MCP', returnTo: 'your MCP client' },
+};
+
+/**
+ * The requester name and return target for an approved callback (the
+ * `callback` of a passing `checkDelegateCallback`). Loopback, absent and
+ * unmapped callbacks keep the CLI wording.
+ */
+export function delegateRequester(approvedCallback: string | null): DelegateRequester {
+  const url = approvedCallback ? parseUrl(approvedCallback) : null;
+  // The caller passes an approved callback, but a name is not handed out on that assumption alone.
+  if (!url || url.protocol !== 'https:' || !isSafeTransport(url)) return CLI_REQUESTER;
+  const endpoint = `${url.origin}${url.pathname}`;
+  return Object.hasOwn(REQUESTER_BY_CALLBACK_ENDPOINT, endpoint) ? REQUESTER_BY_CALLBACK_ENDPOINT[endpoint]! : CLI_REQUESTER;
 }

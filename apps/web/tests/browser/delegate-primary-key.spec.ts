@@ -6,6 +6,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { fullCodeFromBox, recordClipboard } from './approval-code-fixtures';
 
 const CAPS_READ = 'tinycloud.capabilities/read';
 const KV_GET = 'tinycloud.kv/get';
@@ -132,11 +133,12 @@ test.describe('TC-703 primary key picker', () => {
   });
 
   test('the paste code carries the primary flag from the API unchanged', async ({ page }) => {
+    await recordClipboard(page);
     await mock(page, threeKeys, { primary: true });
     await page.goto(noOwner);
     await keyButton(page, 'Key 0').click();
     await approve(page).click();
-    const code = await page.locator('textarea').inputValue();
+    const code = await fullCodeFromBox(page);
     const payload = JSON.parse(Buffer.from(code, 'base64').toString('utf8')) as Record<string, unknown>;
     expect(payload.primary).toBe(true);
   });
@@ -153,7 +155,7 @@ test.describe('TC-703 primary key picker', () => {
     await page.goto(`${noOwner}&callback=${encodeURIComponent('http://127.0.0.1:47123/callback')}`);
     await keyButton(page, 'Key 0').click();
     await approve(page).click();
-    await expect(page.getByText('You can close this window and return to the CLI.')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Approved. Go back to your agent.' })).toBeVisible();
     expect(delivered).not.toBeNull();
     expect(delivered!.primary).toBe(false);
     expect(delivered!.requestedSpaces).toEqual(requestedSpaces);
@@ -171,17 +173,12 @@ test.describe('TC-703 primary key picker', () => {
 
   test('a signing key for a different wallet than the request names cannot approve, with no override', async ({ page }) => {
     await mock(page, []);
-    await page.route('**/api/keys/generate', (route) => json(route, 200, { key: second }));
-    await page.route('**/api/delegate/prepare', (route) => json(route, 200, preparedFor(second.address)));
     const space = `tinycloud:pkh:eip155:1:${primary.address}:default`;
     const permissions = [{ service: 'tinycloud.kv', space, path: 'notes/', actions: [KV_GET] }];
     await page.goto(`${noOwner}&permissions=${encodeBase64UrlJson({ permissions })}`);
-    await page.getByRole('button', { name: 'Generate Key' }).click();
-
-    await expect(page.getByText('Wallet mismatch', { exact: true }).first()).toBeVisible();
-    await expect(page.getByRole('alert').filter({ hasText: 'This request is for wallet 0xd559...f412, but the key you picked is for' }))
-      .toContainText('Choose a key for 0xd559...f412, or ask the app or command for a new request.');
-    await expect(approve(page)).toBeDisabled();
+    await expect(page.getByRole('heading', { name: 'This request is for a wallet this account doesn’t have' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Generate Key' })).toHaveCount(0);
+    await expect(approve(page)).toHaveCount(0);
     await expect(page.getByRole('button', { name: /different wallet anyway/ })).toHaveCount(0);
   });
 
@@ -190,7 +187,10 @@ test.describe('TC-703 primary key picker', () => {
     const space = `tinycloud:pkh:eip155:1:${primary.address}:default`;
     const permissions = [{ service: 'tinycloud.kv', space, path: 'notes/', actions: [KV_GET] }];
     await page.goto(`${noOwner}&permissions=${encodeBase64UrlJson({ permissions })}`);
-    await expect(keyButton(page, 'Key 1')).toBeDisabled();
+    const stop = page.getByTestId('stop-page');
+    await expect(stop.getByRole('heading', { name: 'This request is for a wallet this account doesn’t have' })).toBeVisible();
+    await expect(stop.getByTestId('wallet-comparison')).toContainText('0x2222…2222');
+    await expect(keyButton(page, 'Key 1')).toHaveCount(0);
     await expect(approve(page)).toHaveCount(0);
     expect(prepared).toEqual([]);
   });
@@ -209,7 +209,7 @@ test.describe('Close button on the Authenticated page', () => {
     await page.goto(`${noOwner}&${new URLSearchParams({ callback })}`);
     await approve(page).click();
     await expect.poll(() => delivered).toBe(true);
-    await expect(page.getByRole('heading', { name: 'Authenticated' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Approved. Go back to your agent.' })).toBeVisible();
   }
 
   test('the browser closes the window: Close calls window.close and the page stays as it is', async ({ page }) => {
@@ -220,7 +220,7 @@ test.describe('Close button on the Authenticated page', () => {
       Object.defineProperty(window, 'closed', { get: () => closed });
     });
     await openAuthenticated(page);
-    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await page.getByRole('button', { name: 'Close this tab', exact: true }).click();
     await expect.poll(() => page.evaluate(() => Number(Reflect.get(window, '__closeCalls')))).toBe(1);
     // The window is gone, so nothing else is shown or needed; outlast the 300 ms check.
     await page.waitForTimeout(600);
@@ -230,12 +230,12 @@ test.describe('Close button on the Authenticated page', () => {
   test('the browser refuses (a tab the owner opened): the button is replaced by a status line and focus moves to it', async ({ page }) => {
     await openAuthenticated(page);
     // A top-level tab the owner opened: the browser ignores window.close().
-    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    await page.getByRole('button', { name: 'Close this tab', exact: true }).click();
     const refusal = page.getByRole('status').filter({ hasText: 'Your browser kept this tab open. Close it from your browser.' });
     await expect(refusal).toBeVisible();
     await expect(refusal).toBeFocused();
     await expect(page.getByRole('alert')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Close', exact: true })).toHaveCount(0);
-    await expect(page.getByRole('heading', { name: 'Authenticated' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Close this tab', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Approved. Go back to your agent.' })).toBeVisible();
   });
 });

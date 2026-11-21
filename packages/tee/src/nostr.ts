@@ -70,6 +70,16 @@ export function generateNostrKeypair(): NostrKeypair {
   }
 }
 
+/** The x-only public key (hex) a Nostr secret key belongs to; for checking an unsealed secret against its row. */
+export function nostrPubkeyFromSecret(secretKeyHex: string): string {
+  const secretKey = hexToBytes(secretKeyHex);
+  try {
+    return bytesToHex(schnorr.getPublicKey(secretKey));
+  } finally {
+    secretKey.fill(0);
+  }
+}
+
 /**
  * Exact NIP-01 serialization: `[0,pubkey,created_at,kind,tags,content]`.
  * No extra whitespace; relies on JSON.stringify's standard escaping, which

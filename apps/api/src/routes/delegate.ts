@@ -32,7 +32,7 @@ import {
   permissionKey as computePermissionKey,
 } from './delegate-session';
 import { activateSessionWithinTimeout } from '../services/tinycloud-node-timeouts';
-import { ownBootstrapSpaceName } from '../services/tinycloud-siwe';
+import { isTinyCloudSiweForSigner, ownBootstrapSpaceName, parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
 import type { SpaceHostResult } from '@tinycloud/sdk-core';
 import { BOOTSTRAP_SPACE_NAMES, CAPABILITIES } from '@tinycloud/bootstrap';
 import {
@@ -62,7 +62,7 @@ import {
   type RecapEntry,
   type SessionAbilities,
 } from './delegate-session';
-import { log, logError, logMetric, logSessionJwk, recordAccountOriginRefused } from '../log';
+import { countPrivateSessionJwk, log, logError, logMetric, logSessionJwk, recordAccountOriginRefused } from '../log';
 
 // Re-export the pure delegation helpers so existing external test files
 // (e.g. delegate-oauth-route.test.ts) that import them from this module
@@ -136,7 +136,7 @@ import {
 } from '../services/coordinationos-signing-audit';
 import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
 import { canonicalTrustedTinyCloudHost, LOCAL_HOSTNAMES } from '../services/tinycloud-hosts';
-import { hostRequestedSpaceWithinBudget } from '../services/tinycloud-bootstrap-budget';
+import { awaitTinyCloudBootstrapWithinBudget, hostRequestedSpaceWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
 import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
 import { PreparedHandoffError } from '../services/prepared-handoff';
@@ -148,6 +148,36 @@ import { ApprovalResultError } from '../services/approval-results';
 import { bindSignInRenewalRequest, recordedSignInLease, setUpSignInLease, signInRenewalFailure, takePendingSignInLease, type SignInLease } from '../services/signin-renewal';
 import type { SignInRenewalRequest } from '../services/authorization-signing';
 import { parseRenewalChoice, renewalLeasesEnabled, renewalUnavailableMessage, signLease } from '../services/renewal-lease';
+import {
+  approvalPasskeyOffer,
+  approvalRequestDigest,
+  checkApprovalPasskey,
+  messageApprovalSensitivity,
+  passkeyApprovalModes,
+  type ApprovalBinding,
+} from '../services/approval-passkey';
+
+/**
+ * TC-3442: a passkey on an authorize-sign approval confirms this authorization context, these exact bytes and the
+ * preview-approval token, which seals everything else the approval acts on (selection, elevated choices, renewal).
+ */
+function authorizeSignPasskeyBinding(
+  authorizationContextToken: string, previewApprovalToken: string, keyAddress: string, signedMessage: string,
+): ApprovalBinding {
+  return {
+    purpose: 'authorize_sign',
+    requestDigest: approvalRequestDigest(authorizationContextToken, previewApprovalToken, keyAddress.toLowerCase(), signedMessage),
+  };
+}
+
+/** TC-3442: a passkey on a managed approval (POST /api/delegate) confirms the context /prepare bound and its bytes. */
+function delegatePasskeyBinding(authorizationContextToken: string, keyAddress: string, originalSiwe: string): ApprovalBinding {
+  return {
+    purpose: 'delegate',
+    requestDigest: approvalRequestDigest(authorizationContextToken, keyAddress.toLowerCase(), originalSiwe),
+  };
+}
+
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
 async function revokeActivatedManagedDelegation(
   host: string,
@@ -221,6 +251,49 @@ async function managedSpaceSetupPlan(input: {
   });
   return { space: name, plan: preference?.autoSignEnabled ? 'setup' : 'auto-sign-off', bootstrapHost };
 }
+
+/**
+ * Hosts a managed account at the node for the sign-in message the owner approved: the same hook, with the same
+ * budget, as POST /api/keys/:id/sign (TC-1608). web-sdk 3.13 does not bootstrap an interactive signer, so nothing
+ * else would host a brand-new account. The hook decides what is hosted (the account space's own entries, or the
+ * signer's own space the message names) and is idempotent: a complete account answers `complete`. It never
+ * withholds the signature: a failure is logged and the setup sweep retries it.
+ */
+async function bootstrapApprovedManagedSignIn(input: {
+  userId: string;
+  key: { id: string; userId: string | null; address: string; keyType: string; sealedBlob: string | null; sealingContext?: string | null };
+  message: string;
+}): Promise<void> {
+  try {
+    if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN === 'off' || !input.key.sealedBlob) return;
+    // The cheap refusals come first, so a message the hook would skip does not unseal the key.
+    const siwe = parseTinyCloudSiwe(input.message);
+    if (siwe === null || !isTinyCloudSiweForSigner(siwe, input.key.address)) return;
+    const { ensureTinyCloudBootstrapForApprovedSign } = await import('../services/tinycloud-bootstrap');
+    const sealedBlob = input.key.sealedBlob;
+    // A sign-in that names one of the signer's own spaces (and no account-space entry) waits for that space instead,
+    // bounded by the requested-space timeout inside the bootstrap.
+    const waitsForOwnSpace = requestedOwnSpaceForSiwe(siwe, input.key.address) !== null;
+    const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
+      ensureTinyCloudBootstrapForApprovedSign({
+        prisma,
+        userId: input.userId,
+        key: { id: input.key.id, address: input.key.address, keyType: input.key.keyType },
+        privateKey: () => unsealManagedKey(input.key, sealedBlob),
+        message: input.message,
+        format: 'personal_sign',
+      }),
+      waitsForOwnSpace ? { budgetMs: OWN_TIMEOUT_BUDGET_MS, ownLogsBackground: true } : {},
+    );
+    if (bootstrap.status === 'failed') {
+      log('error', 'tinycloud_bootstrap_failed', bootstrap.errorCode);
+    }
+  } catch {
+    // The signature is already made and any lease recorded: nothing here may turn it into an error.
+    log('error', 'tinycloud_bootstrap_failed', 'tinycloud_bootstrap_crashed');
+  }
+}
+
 type SpaceReadiness = { spaceReady: boolean | null; spaceError?: string; spacePending?: true };
 type RequestedSpaceReadiness = RequestedDelegationSpace & SpaceReadiness;
 type DelegationReadiness = SpaceReadiness & { requestedSpaces: RequestedSpaceReadiness[] };
@@ -1347,8 +1420,12 @@ delegateRouter.post('/sign', async (c) => {
     ));
   }
 
+  // TC-3442: "Always" asks for the passkey on every approval, so it pauses Auto-Sign, which has no approval to ask on.
+  // The request then goes to the approval screen like any other.
+  const autoSignOn = autoSignPreference.autoSignEnabled
+    && (await passkeyApprovalModes(prisma, user.id))?.effectiveMode !== 'ALWAYS';
   const autoSignDecision = evaluateAutoSignPolicy(
-    autoSignPreference.autoSignEnabled,
+    autoSignOn,
     evaluateBootstrapSigningScope({
       entries,
       address,
@@ -1483,8 +1560,12 @@ delegateRouter.post('/', async (c) => {
     authorizationContextToken?: string;
     selectedActionIds?: unknown;
     protocolVersion?: number;
+    /** TC-3442: `{ challengeToken, response }` for the challenge /prepare offered, when Approve needs the passkey. */
+    passkeyAssertion?: unknown;
   }>(c);
-  logSessionJwk('/api/delegate', hasPrivateJwkMember(body.jwk));
+  const privateMembers = hasPrivateJwkMember(body.jwk);
+  logSessionJwk('/api/delegate', privateMembers);
+  if (privateMembers && !body.deviceTransactionId) countPrivateSessionJwk('/api/delegate');
   // Only the session key's public members are used, stored, or returned; a
   // malformed key counts as missing. A request naming a device transaction
   // keeps that flow's exact check of the key as sent, and one naming an
@@ -1760,6 +1841,15 @@ delegateRouter.post('/', async (c) => {
     await checkApprovalDelegation(body, { signedSiwe: bound.originalSiwe });
     const tokenAppKeyRefusal = appKeyRefusalForSiwe(bound.originalSiwe, preparedEntries);
     if (tokenAppKeyRefusal) return c.json(appKeyRefusalBody(tokenAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(tokenAppKeyRefusal));
+    // TC-3442: the account's passkey setting, before the context is spent or the key unsealed.
+    const passkeyRefusal = await checkApprovalPasskey(
+      prisma,
+      { userId: user.id, sessionId: c.get('session')?.id ?? null },
+      delegatePasskeyBinding(token, address, bound.originalSiwe),
+      messageApprovalSensitivity(bound.originalSiwe, address),
+      body.passkeyAssertion,
+    );
+    if (passkeyRefusal) return c.json(passkeyRefusal, 403);
 
     // About to sign: consume the context atomically, only if it is still
     // the exact one checked above, so a concurrent approval or a replay
@@ -1903,6 +1993,16 @@ delegateRouter.post('/', async (c) => {
 
   const legacyAppKeyRefusal = appKeyRefusalForSiwe(preparedResult.prepared.siwe);
   if (legacyAppKeyRefusal) return c.json(appKeyRefusalBody(legacyAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(legacyAppKeyRefusal));
+  // TC-3442: these bytes are made here, so no passkey challenge could have been bound to them. An approval the
+  // account's setting says needs the passkey is refused on this path; the versioned path above can carry it.
+  const legacyPasskeyRefusal = await checkApprovalPasskey(
+    prisma,
+    { userId: user.id, sessionId: c.get('session')?.id ?? null },
+    { purpose: 'delegate_unbound', requestDigest: approvalRequestDigest(preparedResult.prepared.siwe) },
+    messageApprovalSensitivity(preparedResult.prepared.siwe, address),
+    undefined,
+  );
+  if (legacyPasskeyRefusal) return c.json(legacyPasskeyRefusal, 403);
 
   await assertReviewerSignedDelegation(prisma, user.id, preparedResult.prepared.siwe);
   const signature = await signManagedKey(key, key.sealedBlob, preparedResult.prepared.siwe);
@@ -2015,7 +2115,9 @@ delegateRouter.post('/prepare', async (c) => {
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
   }>(c);
-  logSessionJwk('/api/delegate/prepare', hasPrivateJwkMember(body.jwk));
+  const privateMembers = hasPrivateJwkMember(body.jwk);
+  logSessionJwk('/api/delegate/prepare', privateMembers);
+  if (privateMembers && !body.deviceTransactionId) countPrivateSessionJwk('/api/delegate/prepare');
   // Only the session key's public members are used, stored, or returned; a
   // malformed key counts as missing. A request naming a device transaction
   // keeps that flow's exact check of the key as sent, and one naming an
@@ -2165,7 +2267,8 @@ delegateRouter.post('/prepare', async (c) => {
 
   let spaceSetup: { space: string; plan: SpaceSetupPlan } | null = null;
   try {
-    const setup = await managedSpaceSetupPlan({
+    // A reviewer's spaces are hosted when the account is provisioned, so the notice would only mislead.
+    const setup = await reviewerForUser(prisma, user.id) ? null : await managedSpaceSetupPlan({
       userId: user.id,
       keyType: key.keyType,
       host,
@@ -2185,6 +2288,17 @@ delegateRouter.post('/prepare', async (c) => {
   } catch (error) {
     logError('warn', 'delegate_space_setup_notice_failed', error);
   }
+
+  // TC-3442: a managed key approves through POST /api/delegate; say whether Approve needs the passkey, with the
+  // challenge for exactly the bytes bound here.
+  const passkey = key.keyType === 'MANAGED'
+    ? await approvalPasskeyOffer(
+      prisma,
+      { userId: user.id, sessionId: c.get('session')?.id ?? null },
+      delegatePasskeyBinding(authorizationContext.token, address, preparedResult.prepared.siwe),
+      messageApprovalSensitivity(preparedResult.prepared.siwe, address),
+    )
+    : { required: false as const };
 
   return c.json({
     prepared: preparedData,
@@ -2206,6 +2320,7 @@ delegateRouter.post('/prepare', async (c) => {
       expiresAt: authorizationContext.expiresAt,
       baselineAbilitiesDigest: authorizationContext.baselineAbilitiesDigest,
     },
+    passkey,
   });
 });
 
@@ -2265,7 +2380,9 @@ delegateRouter.post('/complete', async (c) => {
      */
     selectedActionIds?: unknown;
   }>(c);
-  logSessionJwk('/api/delegate/complete', hasPrivateJwkMember(body.jwk));
+  const privateMembers = hasPrivateJwkMember(body.jwk);
+  logSessionJwk('/api/delegate/complete', privateMembers);
+  if (privateMembers && !body.deviceTransactionId) countPrivateSessionJwk('/api/delegate/complete');
   // Only the session key's public members are used, stored, or returned; a
   // malformed key counts as missing. A request naming a device transaction
   // keeps that flow's exact check of the key as sent, and one naming an
@@ -2710,7 +2827,9 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   if (body.requesterOrigin !== undefined) {
     return c.json({ error: 'requesterOrigin is only supported for ordinary delegation preparation', code: 'requester_origin_unsupported' }, 400);
   }
-  logSessionJwk('/api/delegate/authorize-sign-prepare', hasPrivateJwkMember(body.jwk));
+  const privateMembers = hasPrivateJwkMember(body.jwk);
+  logSessionJwk('/api/delegate/authorize-sign-prepare', privateMembers);
+  if (privateMembers) countPrivateSessionJwk('/api/delegate/authorize-sign-prepare');
   // Only the session key's public members are used or stored; a malformed
   // key counts as missing.
   body.jwk = publicJwk(body.jwk) as DelegationJwk;
@@ -3211,6 +3330,8 @@ delegateRouter.post('/authorize-sign', async (c) => {
     externalSignature?: string;
     /** Optional: repeats the renewal choice sealed with the preview; any other choice is refused. */
     renewal?: unknown;
+    /** TC-3442: `{ challengeToken, response }` for the challenge the preview offered, when Approve needs the passkey. */
+    passkeyAssertion?: unknown;
     ticket?: string;
     transportVersion?: number;
     callback?: unknown;
@@ -3635,6 +3756,18 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (!ticket && !elevatedDecided(effectiveEntries, previewCheck.elevatedAllowed)) {
     return c.json(elevatedNotDecidedBody(), 403);
   }
+  // TC-3442: the account's passkey setting, checked before any token is spent or key unsealed. An external wallet's
+  // own signature is its confirmation.
+  if (!isExternal) {
+    const passkeyRefusal = await checkApprovalPasskey(
+      prisma,
+      { userId: user.id, sessionId: c.get('session')?.id ?? null },
+      authorizeSignPasskeyBinding(body.authorizationContextToken, body.previewApprovalToken!, boundAddress, signedMessage),
+      messageApprovalSensitivity(signedMessage, boundAddress),
+      body.passkeyAssertion,
+    );
+    if (passkeyRefusal) return c.json(passkeyRefusal, 403);
+  }
   // Both checked claims still have to reference the stored records. This
   // synchronous call compares both, checks both expiries, then deletes both
   // without an await between either comparison and either deletion. Only
@@ -3699,6 +3832,13 @@ delegateRouter.post('/authorize-sign', async (c) => {
       const refused = signInRenewalFailure(error);
       return c.json(refused.body, refused.status);
     }
+  }
+
+  // An approved sign-in by a managed key hosts the account at the node before the signature is returned, as
+  // POST /api/keys/:id/sign does. Only here, once a signature exists and the lease (if any) is recorded: a
+  // refused or failed sign hosts nothing. An external wallet's account is the wallet's to host.
+  if (!isExternal) {
+    await bootstrapApprovedManagedSignIn({ userId: user.id, key, message: signedMessage });
   }
 
   const handoffDelivery = ticket
@@ -4032,6 +4172,20 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     elevatedAllowed,
     renewal: renewalChoice,
   });
+  // TC-3442: whether Approve needs the passkey, with the challenge for exactly these bytes. Re-issued with every
+  // preview, so a changed selection or expiry gets its own.
+  const boundKey = await prisma.ethereumKey.findFirst({
+    where: { id: bound.keyId, userId: user.id, archivedAt: null },
+    select: { keyType: true },
+  });
+  const passkey = !boundKey || boundKey.keyType === 'EXTERNAL'
+    ? { required: false as const }
+    : await approvalPasskeyOffer(
+      prisma,
+      { userId: user.id, sessionId: c.get('session')?.id ?? null },
+      authorizeSignPasskeyBinding(body.authorizationContextToken!, previewApproval.token, ensureEip55(bound.keyAddress), preparedSignedMessage),
+      messageApprovalSensitivity(preparedSignedMessage, bound.keyAddress),
+    );
 
   return c.json({
     protocolVersion: 1,
@@ -4048,5 +4202,6 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     previewApprovalExpiresAt: previewApproval.expiresAt,
     signedMessageDigest: previewApproval.signedMessageDigest,
     ...(renewalChoice ? { renewal: renewalChoice } : {}),
+    passkey,
   });
 });

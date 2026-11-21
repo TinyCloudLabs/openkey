@@ -224,30 +224,26 @@ async function run(scenario: Scenario) {
   document.body.appendChild(target);
   const app = mount(Subject, { target, props: { encoded, onClear: () => {} } });
   const button = (label: string) => [...target.querySelectorAll('button')].find((b) => b.textContent?.includes(label)) as HTMLButtonElement | undefined;
-  const refusal = () => target.querySelector('[data-testid="server-reply-refusal"]');
+  const stop = () => target.querySelector('[data-testid="stop-page"]');
   try {
     await until(() => button('Preview signing message') !== undefined && !button('Preview signing message')!.disabled, 'the Preview button');
     button('Preview signing message')!.click();
-    await until(() => refusal() !== null || button('Approve') !== undefined, 'the preview answer');
-    if (refusal() === null && scenario.sign !== undefined) {
+    await until(() => stop() !== null || button('Approve') !== undefined, 'the preview answer');
+    if (stop() === null && scenario.sign !== undefined) {
       button('Approve')!.click();
-      await until(() => refusal() !== null, 'the sign answer');
+      await until(() => stop() !== null, 'the sign answer');
     }
   } finally {
     const result = {
       called,
       errors,
-      shown: refusal() !== null,
-      text: refusal()?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-      alert: target.querySelector('[role="alert"]:not([data-testid])')?.textContent?.trim() ?? null,
-      advanced: refusal()?.querySelector('details')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
-      visibleOutsideAdvanced: (() => {
-        const node = refusal();
-        if (!node) return '';
-        const clone = node.cloneNode(true) as HTMLElement;
-        clone.querySelector('details')?.remove();
-        return clone.textContent?.replace(/\s+/g, ' ').trim() ?? '';
-      })(),
+      shown: stop() !== null,
+      text: stop()?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+      heading: stop()?.querySelector('h1')?.textContent?.trim(),
+      body: stop()?.querySelector('h1 + p')?.textContent?.trim(),
+      support: stop()?.querySelector('[data-support-line]')?.textContent?.trim(),
+      retry: !!button('Try again'),
+      delivered: target.querySelector('[data-code-box]') !== null,
     };
     unmount(app);
     target.remove();
@@ -267,8 +263,8 @@ describe('the prepared CLI handoff page when a reply cannot be read', () => {
   for (const [label, reply] of bad) {
     test(`prepare answers 200 with ${label}: refusal shown, nothing previewed or signed`, async () => {
       const result = await run({ prepare: reply });
-      expect(result.shown).toBe(true);
-      expect(result.advanced).toContain('HTTP 200');
+      expect(result.heading).toBe('OpenKey couldn’t finish this request');
+      expect(result.support).toBe('HTTP 200 · reply_unreadable');
       expect(result.called).not.toContain('authorize-sign-preview');
       expect(result.called).not.toContain('authorize-sign');
       expect(result.errors.join(' ')).toContain('HTTP 200');
@@ -277,20 +273,20 @@ describe('the prepared CLI handoff page when a reply cannot be read', () => {
 
   test('prepare answers 200 with text that is not JSON', async () => {
     const result = await run({ prepare: { status: 200, text: 'not json' } });
-    expect(result.shown).toBe(true);
+    expect(result.heading).toBe('OpenKey couldn’t finish this request');
     expect(result.called).not.toContain('authorize-sign-preview');
   });
 
   test('preview answers 200 without a preview approval token', async () => {
     const result = await run({ preview: { status: 200, text: '{"signedMessage":"signed"}' } });
-    expect(result.shown).toBe(true);
+    expect(result.heading).toBe('OpenKey couldn’t finish this request');
     expect(result.called).not.toContain('authorize-sign');
   });
 
   test('sign answers 200 with an object without a signature: refusal shown', async () => {
     const result = await run({ sign: { status: 200, text: '{}' } });
-    expect(result.shown).toBe(true);
-    expect(result.advanced).toContain('HTTP 200');
+    expect(result.heading).toBe('OpenKey couldn’t finish this request');
+    expect(result.support).toBe('HTTP 200 · reply_unreadable');
   });
 
   const SIGNED = { protocolVersion: 1, signature: `0x${'11'.repeat(65)}`, address: ADDR, signedMessage: 'signed', deliveryState: 'state', selectedKeyId: KEY.id, selectedActionKeys: ['key-1'], permissions: [] };
@@ -304,21 +300,24 @@ describe('the prepared CLI handoff page when a reply cannot be read', () => {
   for (const [label, body] of incomplete) {
     test(`sign answers 200 with ${label}: string 20, nothing delivered`, async () => {
       const result = await run({ sign: { status: 200, text: JSON.stringify(body) } });
-      expect(result.shown).toBe(true);
-      expect(result.alert).toBeNull();
+      expect(result.heading).toBe('OpenKey couldn’t finish this request');
+      expect(result.retry).toBe(false);
+      expect(result.delivered).toBe(false);
     });
   }
 
   test('the status and the words of the refusal never meet in the visible text', async () => {
     const result = await run({ prepare: { status: 200, text: '{}' } });
-    expect(result.visibleOutsideAdvanced).not.toMatch(/HTTP|<status>|\b200\b/);
-    expect(result.text).toContain('Server reply');
+    expect(result.heading).toBe('OpenKey couldn’t finish this request');
+    expect(result.body).toBe('OpenKey couldn’t read the server’s reply, so nothing was approved. Try again. If it keeps happening, contact the app.');
+    expect(result.support).toBe('HTTP 200 · reply_unreadable');
   });
 
-  test('a refusal with the server\'s own text keeps that text and shows no unreadable-reply refusal', async () => {
+  test('a refusal shows its status on the Stop page', async () => {
     const result = await run({ prepare: { status: 403, text: '{"error":"This website doesn\'t list the key this app asked for, so OpenKey didn\'t approve it."}' } });
-    expect(result.shown).toBe(false);
-    expect(result.alert).toBe("This website doesn't list the key this app asked for, so OpenKey didn't approve it.");
+    expect(result.heading).toBe('The approval didn’t go through');
+    expect(result.support).toBe('HTTP 403');
+    expect(result.text).not.toContain('This website');
   });
 
   test('readable replies still reach the approval step', async () => {

@@ -31,7 +31,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: web-browser-tests-${{ github.ref }}
+  group: web-browser-tests-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -47,7 +47,7 @@ jobs:
           fetch-depth: 0
 
       - name: Test the workflow's own scripts
-        run: node --test .github/scripts/web-browser-relevance.test.mjs .github/scripts/web-browser-summary.test.mjs
+        run: node --test .github/scripts/web-browser-relevance.test.mjs .github/scripts/web-browser-summary.test.mjs .github/scripts/pages-check-state.test.mjs
 
       - name: Decide whether the change touches the web app
         id: relevance

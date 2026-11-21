@@ -239,9 +239,29 @@ export { createWalletFromPrivateKey, generatePrivateKey, getAddressFromPrivateKe
 // Re-export Nostr identity utilities (secp256k1 Schnorr / BIP-340, NOT ECDSA)
 export {
   generateNostrKeypair,
+  nostrPubkeyFromSecret,
   canonicalizeNip01,
   computeEventId,
   signNostrEvent,
   SUPPORTED_NOSTR_KINDS,
 } from './nostr';
 export type { UnsignedNostrEvent, SignedNostrEvent, NostrKeypair, SealedNostrSecret } from './nostr';
+
+// Read-only access to the pre-move Phala root (TC-3554 K1; draft, do not merge).
+export { loadLegacyRoot, legacyRootPinsFromEnv, LEGACY_ROOT_ENV, LegacyRootError } from './legacy-root';
+export type {
+  LegacyRoot,
+  LegacyRootConfig,
+  LegacyRootErrorCode,
+  LegacyRootPins,
+  LegacyTransportPins,
+  LegacyCanary,
+  LegacyKmsTransport,
+  LegacySidecarTransport,
+  KmsAppKeyResponse,
+  SidecarKeyResponse,
+} from './legacy-root';
+export { createRaTlsKmsTransport } from './legacy-root-kms';
+export type { RaTlsKmsTransportOptions } from './legacy-root-kms';
+export { createSidecarTransport } from './legacy-root-sidecar';
+export type { SidecarTransportOptions } from './legacy-root-sidecar';
