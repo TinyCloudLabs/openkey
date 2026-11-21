@@ -70,11 +70,12 @@ type Shared = {
   offerCalls: unknown[][];
   signCalls: unknown[][];
   prompts: Array<ApprovalPasskeyNeed | null>;
+  signErrors: unknown[];
 };
 const store = globalThis as unknown as { __passkeyOffer: Shared };
 const shared = (): Shared => store.__passkeyOffer;
 const reset = (offer: () => Promise<ApprovalPasskeyNeed>) => {
-  store.__passkeyOffer = { options: null, transport: null, offer, offerCalls: [], signCalls: [], prompts: [] };
+  store.__passkeyOffer = { options: null, transport: null, offer, offerCalls: [], signCalls: [], prompts: [], signErrors: [] };
 };
 
 const KEY = { id: 'key_1', address: '0x1111111111111111111111111111111111111111', keyIndex: 0, keyType: 'MANAGED', label: 'Key' };
@@ -108,7 +109,12 @@ const baseStubs = (pageUrl: string): Record<string, string> => ({
     getKey: async () => ({ key: ${JSON.stringify(KEY)} }),
     listKeys: async () => ({ keys: [${JSON.stringify(KEY)}] }),
     signMessagePasskey: (...args) => { globalThis.__passkeyOffer.offerCalls.push(args); return globalThis.__passkeyOffer.offer(); },
-    signMessage: async (...args) => { globalThis.__passkeyOffer.signCalls.push(args); return { signature: '0x${'11'.repeat(65)}', address: ${JSON.stringify(KEY.address)} }; },
+    signMessage: async (...args) => {
+      globalThis.__passkeyOffer.signCalls.push(args);
+      const refusal = globalThis.__passkeyOffer.signErrors.shift();
+      if (refusal) throw refusal;
+      return { signature: '0x${'11'.repeat(65)}', address: ${JSON.stringify(KEY.address)} };
+    },
   };`,
   '$lib/approval-passkey': `export * from ${JSON.stringify(REAL_PASSKEY_MODULE)};
     export const answerApprovalPasskey = async (need) => {
@@ -334,6 +340,41 @@ for (const { name } of PAGES) {
         await until(() => shared().signCalls.length === 1, 'the sign request');
         expect(shared().prompts).toEqual([REQUIRED]);
         expect(shared().signCalls[0]![4]).toEqual(ASSERTION);
+      });
+    });
+
+    test('after the API refuses over the passkey, Approve stays busy while the new offer is fetched and sends nothing until it lands', async () => {
+      const second = deferred<ApprovalPasskeyNeed>();
+      let fetches = 0;
+      await withPage(name, () => (++fetches === 1 ? Promise.resolve(REQUIRED) : second.promise), async ({ approve, tap, transport }) => {
+        await until(() => !approve().disabled, 'Approve to be ready');
+        shared().signErrors.push(Object.assign(new Error('This approval needs your passkey.'), { code: 'passkey_approval_required' }));
+
+        tap();
+        await until(() => shared().signCalls.length === 1, 'the refused sign request');
+        await until(() => shared().offerCalls.length === 2, 'the new offer request');
+        expect(shared().prompts).toEqual([REQUIRED]);
+
+        // The spent offer is gone and the new one is on its way: Approve is busy and taps send nothing.
+        expect(approve().disabled).toBe(true);
+        for (let i = 0; i < 3; i++) {
+          tap();
+          await transport().approveAndSign();
+          flushSync();
+        }
+        expect(shared().signCalls).toHaveLength(1);
+        expect(shared().prompts).toEqual([REQUIRED]);
+        expect(shared().offerCalls).toHaveLength(2);
+        expect(approve().disabled).toBe(true);
+
+        second.resolve(REQUIRED);
+        await until(() => !approve().disabled, 'Approve to be ready again');
+        expect(shared().signCalls).toHaveLength(1);
+
+        tap();
+        await until(() => shared().signCalls.length === 2, 'the second sign request');
+        expect(shared().prompts).toEqual([REQUIRED, REQUIRED]);
+        expect(shared().signCalls[1]![4]).toEqual(ASSERTION);
       });
     });
   });
