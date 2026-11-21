@@ -475,8 +475,8 @@ function isFilesForYouGrant(
 
 /**
  * The grant a share-by-email tool makes on the signer's own `default` space:
- * the `shares/` folder with exactly `get`, `metadata`, `put`, `del`. `del`
- * reaches every share in the folder, including ones another app made.
+ * the `shares/` folder with exactly `get`, `metadata`, `put`, `del`. `put` and
+ * `del` reach every share in the folder, including ones another app made.
  */
 function isSharesFolderGrant(
   grant: CapabilityGrant,

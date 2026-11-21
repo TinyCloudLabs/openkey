@@ -1,5 +1,5 @@
 // A share-by-email tool asks for the `shares/` folder of the signer's own `default` space with
-// `get`, `metadata`, `put` and `del`. The `del` reaches every share in the folder, including
+// `get`, `metadata`, `put` and `del`. `put` and `del` reach every share in the folder, including
 // shares another app made, so the row says that. Any other shape keeps the generic row.
 
 import { describe, expect, it } from "bun:test";
@@ -58,9 +58,9 @@ function review(resource: string, verbs: string[]): CapabilityGrant {
 }
 
 describe("the shares folder grant", () => {
-  it("says it can delete any of the owner's shares, and stays a standard row", () => {
+  it("says it can change and delete any of the owner's shares, and stays a standard row", () => {
     const grant = review(`${space("default")}/kv/shares/`, EXACT);
-    expect(buildStatement(grant).primaryText).toBe("Create shares and delete any of your shares");
+    expect(buildStatement(grant).primaryText).toBe("Create, change and delete any of your shares");
     expect(buildStatement(grant).primaryText).toBe(SHARES_FOLDER_STATEMENT);
     expect(grant.severity).toBe("standard");
   });
