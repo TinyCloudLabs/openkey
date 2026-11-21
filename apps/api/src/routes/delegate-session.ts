@@ -93,25 +93,47 @@ export interface DelegationPermissionEntry {
 // Default requester for CLI links that do not supply an explicit origin.
 export const SIWE_DOMAIN = 'cli.tinycloud.xyz';
 
-// Capability URNs come from the TC-112 registry constants published by
-// @tinycloud/bootstrap. Note: tinycloud.sql/export is deliberately absent —
-// it was never a node-dispatched ability (SQL export ops are authorized as
-// sql/read) and js-sdk 2.6.0's exportDb mints sql/read, so granting it was
-// a dead no-op (TC-114).
-export const DEFAULT_ABILITIES: AbilitiesMap = {
-  kv: {
-    '': [KV.PUT, KV.GET, KV.DEL, KV.LIST, KV.METADATA],
-  },
-  sql: {
-    '': [SQL.READ, SQL.WRITE, SQL.ADMIN],
-  },
-  capabilities: {
-    '': [CAPABILITIES.READ],
-  },
-};
+/** App id of the own folder when the request has no usable host name. Same as the SDK. */
+export const GENERIC_APP_ID_WITHOUT_HOST = 'node.app';
 
-export function defaultSessionAbilities(spaceId: string): SessionAbilities {
-  return { spaceAbilities: { [spaceId]: DEFAULT_ABILITIES }, rawAbilities: Object.create(null) };
+const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/**
+ * The app id for a request from `host`: the host name reversed
+ * (`notes.example.com` → `com.example.notes`), port dropped.
+ * {@link GENERIC_APP_ID_WITHOUT_HOST} when there is no usable host name.
+ *
+ * This copies `genericAppId` in js-sdk `packages/sdk-core/src/owner-access.ts`.
+ * The API pins an sdk-core that does not export it yet. Change both together.
+ */
+export function genericAppId(host: string | null | undefined): string {
+  const name = host?.trim().toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '');
+  if (!name) return GENERIC_APP_ID_WITHOUT_HOST;
+  const labels = name.split('.');
+  if (!labels.every((label) => HOST_LABEL.test(label))) return GENERIC_APP_ID_WITHOUT_HOST;
+  return labels.reverse().join('.');
+}
+
+/**
+ * What a request that names no permissions gets: its own folder,
+ * `applications/<app id>/`, where the app id comes from the SIWE domain. This
+ * is the same set as the SDK's generic manifest (`genericAppManifest` in
+ * js-sdk sdk-core `owner-access.ts`, standard tier in `manifest.ts`): kv
+ * get/put/del/list/metadata and sql read/write on the folder, plus
+ * capabilities read on the `applications` space. Nothing else.
+ */
+export function ownFolderPermissions(domain: string): DelegationPermissionEntry[] {
+  const folder = `${genericAppId(domain)}/`;
+  return [
+    { service: 'tinycloud.kv', space: 'applications', path: folder, actions: [KV.GET, KV.PUT, KV.DEL, KV.LIST, KV.METADATA] },
+    { service: 'tinycloud.sql', space: 'applications', path: folder, actions: [SQL.READ, SQL.WRITE] },
+    { service: 'tinycloud.capabilities', space: 'applications', path: '', actions: [CAPABILITIES.READ] },
+  ];
+}
+
+/** {@link ownFolderPermissions} as the request baseline for `signer`. */
+export function ownFolderSessionAbilities(domain: string, signer: { address: string; chainId: number }): SessionAbilities {
+  return sessionAbilitiesFromPermissions(ownFolderPermissions(domain), signer);
 }
 
 const SERVICE_LABELS: Record<string, string> = {
@@ -619,10 +641,11 @@ export interface PrepareDelegationSessionInput {
   actionKeys?: string[];
   permissionKeys?: string[];
   /**
-   * CLI-driven explicit capability request. Every logical space resolves to
-   * the signing account and becomes a separate per-space ability baseline.
-   * Raw encryption entries remain top-level ReCap resources. Users can trim
-   * the baseline through the same actionKeys/permissionKeys consent controls.
+   * The requested capabilities. Every logical space resolves to the signing
+   * account and becomes a separate per-space ability baseline. Raw encryption
+   * entries remain top-level ReCap resources. Users can trim the baseline
+   * through the same actionKeys/permissionKeys consent controls. When absent,
+   * the request gets only its own folder ({@link ownFolderPermissions}).
    */
   permissions?: DelegationPermissionEntry[];
   /**
@@ -646,6 +669,14 @@ export interface PrepareDelegationSessionResult {
   baselineAbilities: SessionAbilities;
   spaceId: string;
   requestedSpaces: RequestedDelegationSpace[];
+  /** True when the request named no permissions, so it gets only its own folder. */
+  ownFolderOnly: boolean;
+  /**
+   * True when that folder is one many requests share: the request had no
+   * requester origin (the default domain's folder) or its host can't be read
+   * ({@link GENERIC_APP_ID_WITHOUT_HOST}).
+   */
+  ownFolderShared: boolean;
 }
 
 export function prepareDelegationSession({
@@ -662,11 +693,14 @@ export function prepareDelegationSession({
   nonce,
   issuedAt,
 }: PrepareDelegationSessionInput): PrepareDelegationSessionResult {
-  const isCliBaseline = permissions !== undefined;
+  const ownFolderOnly = permissions === undefined;
+  const siweDomain = domain ?? SIWE_DOMAIN;
+  const appId = genericAppId(siweDomain);
+  const ownFolderShared = ownFolderOnly && (appId === genericAppId(SIWE_DOMAIN) || appId === GENERIC_APP_ID_WITHOUT_HOST);
   const fallbackSpaceId = makeSpaceId(address, chainId, prefix);
-  const baselineAbilities = isCliBaseline
-    ? sessionAbilitiesFromPermissions(permissions!, { address, chainId }, { deviceTransaction })
-    : defaultSessionAbilities(fallbackSpaceId);
+  const baselineAbilities = ownFolderOnly
+    ? ownFolderSessionAbilities(siweDomain, { address, chainId })
+    : sessionAbilitiesFromPermissions(permissions, { address, chainId }, { deviceTransaction });
   const spaceId = primaryRoutingSpace(Object.keys(baselineAbilities.spaceAbilities), fallbackSpaceId);
 
   const now = issuedAt ?? new Date();
@@ -674,7 +708,7 @@ export function prepareDelegationSession({
   const baseConfig = {
     address,
     chainId,
-    domain: domain ?? SIWE_DOMAIN,
+    domain: siweDomain,
     ...(nonce ? { nonce } : {}),
     issuedAt: now.toISOString(),
     expirationTime: expirationTime.toISOString(),
@@ -754,5 +788,7 @@ export function prepareDelegationSession({
     spaceId,
     baselineAbilities,
     requestedSpaces: delegationSpaces(selectedEntries, baselineAbilities),
+    ownFolderOnly,
+    ownFolderShared,
   };
 }
