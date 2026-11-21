@@ -1082,6 +1082,40 @@ function sqlWriteStatementText(path: string): string {
 }
 
 /**
+ * A grant with an empty path on the applications space is every app's data, not one app's folder. Its row names the
+ * breadth ("all your apps") with the kinds of access it carries. Null when the grant is not that shape, or carries a
+ * verb this row cannot state, so the caller keeps its existing row.
+ */
+function allAppsStatementText(
+  grant: CapabilityGrant,
+  spaceName: string | null,
+): string | null {
+  if (grant.family !== "own-app-data" || spaceName !== "applications" || grant.path !== "") return null;
+  const verbs = grant.actions.map((a) => verbOf(a.ability));
+  if (verbs.length === 0) return null;
+  if (KV_SERVICES.has(grant.service)) {
+    const kinds = new Set<string>();
+    for (const verb of verbs) {
+      if (verb === "get" || verb === "list" || verb === "metadata") kinds.add("read");
+      else if (verb === "put") kinds.add("change");
+      else if (verb === "del" || verb === "delete") kinds.add("delete");
+      else return null;
+    }
+    const words = ["read", "change", "delete"].filter((kind) => kinds.has(kind));
+    const joined = words.length > 1 ? `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}` : words[0]!;
+    return `${joined.charAt(0).toUpperCase()}${joined.slice(1)} data in all your apps`;
+  }
+  if (SQL_SERVICES.has(grant.service)) {
+    if (!verbs.every((verb) => verb === "read" || verb === "select" || verb === "write")) return null;
+    // `write` reaches every row (read, insert, update, delete), so it states all three.
+    return verbs.includes("write")
+      ? "Read, change and delete records in all your apps"
+      : "Read records in all your apps";
+  }
+  return null;
+}
+
+/**
  * Compute the deterministic statement for a grant. Match order:
  *   1. Encryption create + decrypt combined form (bundle across grants must
  *      be handled by the caller — here we only produce the single-grant
@@ -1415,6 +1449,11 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       codeSpans: true,
     };
   }
+
+  // A grant on the whole applications space reaches every app, so its row says
+  // "all your apps" with the kinds of access it carries.
+  const allAppsText = allAppsStatementText(grant, spaceName);
+  if (allAppsText !== null) return { primaryText: allAppsText, service, resource };
 
   // The KV data sentences below say "update", which hides a delete. A grant
   // that can delete reads in plain words that name it ("Read and delete your
