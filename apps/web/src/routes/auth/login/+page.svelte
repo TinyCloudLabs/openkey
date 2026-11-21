@@ -504,10 +504,11 @@
   const passkeyFlow = native ? { fetchOptions: { headers: { 'x-openkey-passkey-flow': native.requestId } } } : undefined;
 
   async function signInWithPasskey() {
-    // The modal ceremony replaces the autofill request; the autofill request must not outlive it.
-    supersedePasskeyAutofill();
+    // The modal ceremony replaces the autofill request, and starts only once that request has settled:
+    // the browser keeps one ceremony at a time, so a late autofill ceremony would abort this one.
     loading = true;
     error = '';
+    await supersedePasskeyAutofill();
     try {
       const result = await authClient.signIn.passkey(passkeyFlow);
       if (!result.error) {
@@ -591,6 +592,7 @@
   async function registerPasskey() {
     loading = true;
     error = '';
+    await supersedePasskeyAutofill();
     try {
       const result = await authClient.passkey.addPasskey();
       const methods = passkeyStepUpMethods(result?.error);

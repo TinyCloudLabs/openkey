@@ -91,7 +91,7 @@ function deps(overrides: Partial<AutofillDeps> = {}) {
     cancel: () => { log.cancelled++; },
     onSignedIn: () => { log.signedIn++; },
     retryEveryMs: 5,
-    retryForMs: 200,
+    boundMs: 500,
     ...overrides,
   };
   return { log, value };
@@ -130,63 +130,140 @@ describe('startPasskeyAutofill', () => {
     const { log, value } = deps({ signIn: () => gate.promise });
     const autofill = startPasskeyAutofill(value);
     await tick();
-    autofill.stop();
+    const stopped = autofill.stop();
     expect(log.cancelled).toBeGreaterThanOrEqual(1);
     gate.resolve({ error: null });
-    await tick();
+    await stopped;
     expect(log.signedIn).toBe(0);
   });
 
-  test('stop before the ceremony exists keeps aborting until the request settles', async () => {
+  test('stop keeps cancelling until the request settles, then stops cancelling', async () => {
     const gate = Promise.withResolvers<{ error: null }>();
     const { log, value } = deps({ signIn: () => gate.promise });
     const autofill = startPasskeyAutofill(value);
     await tick();
-    autofill.stop();
+    const stopped = autofill.stop();
     const first = log.cancelled;
     await tick(40);
     expect(log.cancelled).toBeGreaterThan(first);
     gate.resolve({ error: null });
-    await tick(20);
+    await stopped;
     const settledAt = log.cancelled;
     await tick(40);
     expect(log.cancelled).toBe(settledAt);
   });
 
-  test('superseding by a modal ceremony aborts once and never cancels the modal later', async () => {
+  test('stop resolves only after the request settled, and returns the same promise when repeated', async () => {
     const gate = Promise.withResolvers<{ error: null }>();
-    const { log, value } = deps({ signIn: () => gate.promise });
-    startPasskeyAutofill(value);
+    const { value } = deps({ signIn: () => gate.promise });
+    const autofill = startPasskeyAutofill(value);
     await tick();
-    supersedePasskeyAutofill();
-    expect(log.cancelled).toBe(1);
+    let resolved = false;
+    const stopped = autofill.stop();
+    void stopped.then(() => { resolved = true; });
+    expect(autofill.stop()).toBe(stopped);
+    await tick(20);
+    expect(resolved).toBe(false);
+    gate.resolve({ error: null });
+    await stopped;
+    expect(resolved).toBe(true);
+  });
+
+  test('a hung request holds the stop only for the bound, then cancelling ends', async () => {
+    const gate = Promise.withResolvers<{ error: null }>();
+    const { log, value } = deps({ signIn: () => gate.promise, boundMs: 40 });
+    const autofill = startPasskeyAutofill(value);
+    await tick();
+    await autofill.stop();
+    const atBound = log.cancelled;
+    expect(atBound).toBeGreaterThan(1);
     await tick(40);
-    expect(log.cancelled).toBe(1);
+    expect(log.cancelled).toBe(atBound);
     gate.resolve({ error: null });
     await tick();
     expect(log.signedIn).toBe(0);
   });
 
-  test('a newer request replaces the older one', async () => {
+  // A model of the browser's one-ceremony rule: starting a ceremony aborts the current one, and `cancel`
+  // aborts the current one. The autofill sign-in only starts its ceremony after a slow options request.
+  function browser(optionsDelayMs: number) {
+    const events: string[] = [];
+    let current: { name: string; abort: () => void } | null = null;
+    const begin = (name: string) => {
+      if (current) {
+        events.push(`${current.name} aborted by ${name}`);
+        current.abort();
+      }
+      const gate = Promise.withResolvers<never>();
+      const mine = { name, abort: () => gate.reject(new Error('aborted')) };
+      current = mine;
+      events.push(`${name} started`);
+      return gate.promise;
+    };
+    const cancel = () => {
+      if (!current) return;
+      events.push(`${current.name} cancelled`);
+      current.abort();
+      current = null;
+    };
+    const signIn = async () => {
+      await tick(optionsDelayMs);
+      await begin('autofill');
+      return { error: null };
+    };
+    return { events, begin, cancel, signIn };
+  }
+
+  test('a modal ceremony started after superseding waits for a slow options request and is never aborted by it', async () => {
+    const fake = browser(40);
+    const { log, value } = deps({ signIn: fake.signIn, cancel: fake.cancel });
+    startPasskeyAutofill(value);
+    await tick();
+    await supersedePasskeyAutofill();
+    // The autofill ceremony started late, was cancelled while pending, and the request has settled.
+    expect(fake.events).toEqual(['autofill started', 'autofill cancelled']);
+    void fake.begin('modal').catch(() => {});
+    await tick(60);
+    expect(fake.events).toEqual(['autofill started', 'autofill cancelled', 'modal started']);
+    expect(log.signedIn).toBe(0);
+  });
+
+  test('superseding resolves only after the autofill request settled', async () => {
     const gate = Promise.withResolvers<{ error: null }>();
-    const old = deps({ signIn: () => gate.promise });
+    const { value } = deps({ signIn: () => gate.promise });
+    startPasskeyAutofill(value);
+    await tick();
+    let proceeded = false;
+    const waiting = supersedePasskeyAutofill().then(() => { proceeded = true; });
+    await tick(20);
+    expect(proceeded).toBe(false);
+    gate.resolve({ error: null });
+    await waiting;
+    expect(proceeded).toBe(true);
+  });
+
+  test('superseding with nothing running resolves at once', async () => {
+    await supersedePasskeyAutofill();
+  });
+
+  test('a newer request starts only after the older one settled', async () => {
+    const fake = browser(40);
+    const old = deps({ signIn: fake.signIn, cancel: fake.cancel });
     startPasskeyAutofill(old.value);
     await tick();
-    const fresh = deps();
+    const fresh = deps({ signIn: async () => { fake.events.push('fresh signIn'); return { error: null }; } });
     startPasskeyAutofill(fresh.value);
-    await tick();
-    expect(old.log.cancelled).toBe(1);
-    gate.resolve({ error: null });
-    await tick();
+    await tick(100);
+    expect(fake.events).toEqual(['autofill started', 'autofill cancelled', 'fresh signIn']);
     expect(old.log.signedIn).toBe(0);
     expect(fresh.log.signedIn).toBe(1);
   });
 
-  test('stop is idempotent after the request finished', async () => {
+  test('stop after the request finished cancels nothing', async () => {
     const { log, value } = deps();
     const autofill = startPasskeyAutofill(value);
     await tick();
-    autofill.stop();
+    await autofill.stop();
     expect(log.cancelled).toBe(0);
   });
 });

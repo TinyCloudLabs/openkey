@@ -54,7 +54,7 @@ async function mockApi(page: Page) {
       });
     }
     if (path === '/api/auth/oauth2/authorize') {
-      return route.fulfill({ status: 302, headers: { location: DONE } });
+      return route.fulfill({ status: 200, contentType: 'text/html', body: '<p>authorize</p>' });
     }
     return json(route, { error: `unmocked ${path}` }, 404);
   });
@@ -127,10 +127,11 @@ test.describe('native login passkey autofill', () => {
     await virtualAuthenticator(page);
     await watchCredentials(page, { conditional: 'authenticator', modal: 'authenticator' });
     const api = await mockApi(page);
+    const authorize = page.waitForRequest('**/api/auth/oauth2/authorize**');
     await page.goto(`/auth/login?${signedQuery({ login_method: 'email' })}`);
 
     await expect(page.locator('#email')).toHaveAttribute('autocomplete', 'username webauthn');
-    await page.waitForURL(DONE);
+    expect(new URL((await authorize).url()).searchParams.get('tinycloud_request')).toBe('req-1');
     expect(api.verifyHeaders).toHaveLength(1);
     expect(api.verifyHeaders[0]!['x-openkey-passkey-flow']).toBe('req-1');
     expect(api.count(SEND)).toBe(0);
@@ -140,6 +141,7 @@ test.describe('native login passkey autofill', () => {
     await virtualAuthenticator(page);
     await watchCredentials(page, { conditional: 'wait', modal: 'authenticator' });
     const api = await mockApi(page);
+    const authorize = page.waitForRequest('**/api/auth/oauth2/authorize**');
     const release = Promise.withResolvers<void>();
     const headers: Array<Record<string, string>> = [];
     await page.route(VERIFY, async (route) => {
@@ -160,7 +162,7 @@ test.describe('native login passkey autofill', () => {
     expect(calls[1]!.conditional).toBe(false);
     expect(headers[0]!['x-openkey-passkey-flow']).toBe('req-1');
     release.resolve();
-    await page.waitForURL(DONE);
+    expect(new URL((await authorize).url()).searchParams.get('tinycloud_request')).toBe('req-1');
     expect(api.verifyHeaders).toHaveLength(0);
   });
 
@@ -214,6 +216,7 @@ test.describe('native login passkey autofill', () => {
     const api = await mockApi(page);
     await page.route('**/api/auth/passkey/list-user-passkeys', (route) => json(route, [{ id: 'existing-passkey' }]));
     await page.goto(`/auth/login?${signedQuery({ login_method: 'passkey' })}`);
+    await page.waitForLoadState('networkidle');
     await page.getByRole('button', { name: 'Continue with passkey' }).click();
     await page.getByRole('button', { name: PASSKEY_FALLBACK_COPY.emailButton }).click();
     await page.locator('#email').fill('sam@example.test');
@@ -233,12 +236,13 @@ test.describe('native login passkey autofill', () => {
     await watchCredentials(page, { conditional: 'wait', modal: 'notAllowed' });
     const api = await mockApi(page);
     await page.goto(`/auth/login?${signedQuery({ login_method: 'passkey' })}`);
+    await page.waitForLoadState('networkidle');
     await page.getByRole('button', { name: 'Use email instead' }).click();
     await page.locator('#email').fill('sam@example.test');
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     await page.locator('#otp').fill('123456');
 
     await page.waitForURL(DONE);
-    expect(api.calls.some((call) => call.includes('passkey'))).toBe(false);
+    expect(api.calls.filter((call) => call.includes('passkey') && !call.endsWith('generate-authenticate-options'))).toEqual([]);
   });
 });

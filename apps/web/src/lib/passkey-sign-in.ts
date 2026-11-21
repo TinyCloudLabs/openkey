@@ -51,68 +51,75 @@ export interface AutofillDeps {
   cancel: () => void;
   /** Called once when the autofill sign-in verified and the page is still waiting for it. */
   onSignedIn: () => void;
-  /** How long `cancel` is repeated while the request is still preparing its ceremony. */
+  /** How often `cancel` is repeated while a stopped request has not settled. */
   retryEveryMs?: number;
-  retryForMs?: number;
+  /** The longest a stop waits for the request to settle. */
+  boundMs?: number;
 }
 
 export interface Autofill {
-  /** Ends the request: `superseded` when another ceremony is about to start and must not be cancelled later. */
-  stop: (reason?: 'superseded') => void;
+  /**
+   * Ends the request and resolves once it has settled (or the bound passed). Until then `cancel` is
+   * repeated, because the ceremony starts only after the options request and would otherwise start late
+   * and abort whatever ceremony follows. Calling it again returns the same promise.
+   */
+  stop: () => Promise<void>;
 }
 
-let active: Autofill | null = null;
-let retry: ReturnType<typeof setInterval> | undefined;
+let latest: Autofill | null = null;
 
-function clearRetry() {
-  clearInterval(retry);
-  retry = undefined;
-}
-
-/** Ends the running conditional request, if any, because a modal ceremony is about to start. */
-export function supersedePasskeyAutofill() {
-  active?.stop('superseded');
-  clearRetry();
+/**
+ * Ends the running conditional request, if any, and resolves when it has settled. A passkey action that
+ * starts its own ceremony (the modal sign-in, passkey registration) awaits this first, because the
+ * browser keeps one ceremony at a time and a late conditional ceremony would abort the newer one.
+ */
+export function supersedePasskeyAutofill(): Promise<void> {
+  return latest ? latest.stop() : Promise.resolve();
 }
 
 /**
  * Starts the conditional (autofill) passkey sign-in. Nothing it does is visible to the person: a
  * request that is unsupported, aborted, refused or fails produces no error and no step change; only a
- * verified sign-in calls `onSignedIn`, and never after `stop`.
+ * verified sign-in calls `onSignedIn`, and never after `stop`. A request that replaces an older one
+ * begins after the older one settled.
  */
 export function startPasskeyAutofill(deps: AutofillDeps): Autofill {
-  supersedePasskeyAutofill();
+  const previous = supersedePasskeyAutofill();
   let stopped = false;
+  let stopping: Promise<void> | undefined;
   let settled = false;
+  const settledGate = Promise.withResolvers<void>();
   const handle: Autofill = {
-    stop(reason) {
-      if (stopped) return;
+    stop() {
+      // A request that already settled has no ceremony left, and cancelling would hit an unrelated one.
+      if (settled) return Promise.resolve();
+      if (stopping) return stopping;
       stopped = true;
-      if (active === handle) active = null;
-      if (settled) return;
       deps.cancel();
-      // The ceremony starts after the options request; a stop before that has nothing to abort yet.
-      if (reason === 'superseded') return;
-      clearRetry();
-      const until = Date.now() + (deps.retryForMs ?? 3000);
-      retry = setInterval(() => {
-        if (settled || Date.now() > until) clearRetry();
-        else deps.cancel();
-      }, deps.retryEveryMs ?? 100);
+      const timer = setInterval(deps.cancel, deps.retryEveryMs ?? 100);
+      const bound = Promise.withResolvers<void>();
+      const boundTimer = setTimeout(bound.resolve, deps.boundMs ?? 10_000);
+      stopping = Promise.race([settledGate.promise, bound.promise]).then(() => {
+        clearInterval(timer);
+        clearTimeout(boundTimer);
+      });
+      return stopping;
     },
   };
-  active = handle;
+  latest = handle;
   void (async () => {
     try {
-      if (!(await deps.supported()) || stopped) return;
+      await previous;
+      if (stopped || !(await deps.supported()) || stopped) return;
       const result = await deps.signIn();
-      settled = true;
       if (stopped || result?.error) return;
       deps.onSignedIn();
     } catch {
       // A rejected or aborted request is never shown.
     } finally {
       settled = true;
+      settledGate.resolve();
+      if (latest === handle) latest = null;
     }
   })();
   return handle;
