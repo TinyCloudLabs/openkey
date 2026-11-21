@@ -48,6 +48,7 @@
   } from "@openkey/capability-review";
   import { formatLocalAccessEnd } from "$lib/access-end";
   import {
+    accountListsReadOnlyDetails,
     APP_KEY_GROUP_NOTE,
     appDisplayName,
     appKeyAccessStatement,
@@ -262,6 +263,8 @@
   // header, come from one function so the header always counts the rows marked
   // Sensitive below it (capability-review `buildSummaryStatements`).
   const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
+  // Advanced details says what the account lists line means when the request only reads the app and space lists.
+  const accountListsNote = $derived(accountListsReadOnlyDetails(selectedGrants));
   const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
 
   // A signed request that includes secrets or decrypt starts as a whole at one hour or less.
@@ -1069,6 +1072,9 @@
 
         {#if editing && appKeyGrants.length > 0}
           <p class="app-key-note">{APP_KEY_GROUP_NOTE}</p>
+        {/if}
+        {#if accountListsNote}
+          <p class="app-key-note" data-testid="account-lists-read-only-note">{accountListsNote}</p>
         {/if}
         {#each permissionSections as bucket (bucket.key)}
           <details

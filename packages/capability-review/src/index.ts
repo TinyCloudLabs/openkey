@@ -25,4 +25,5 @@ export * from "./key-resource.js";
 export * from "./elevated.js";
 export * from "./elevated-copy.js";
 export * from "./owner-revocation.js";
+export * from "./account-lists-copy.js";
 
