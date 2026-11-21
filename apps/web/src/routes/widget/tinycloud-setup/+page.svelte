@@ -3,16 +3,22 @@
   interaction + visuals. Business logic lives in `widget-state.ts` (unit-tested); this
   component is the shell + I/O.
 
-  Bobbie 15:16:27Z fixes folded in:
-    - F1: Approve button is arm-delayed; the user's tap during the review arm first mints,
-      then (after an animation-frame arm delay) publishes.
+  Bobbie 15:16:27Z + 15:42:43Z fixes folded in:
+    - F1: Approve button is arm-delayed after mint (1200ms); the state machine transitions
+      to `armed` immediately on mint success and the Svelte component disables the button
+      until the ARM_DELAY_MS timer fires.
     - F4: `verifiedRequestingOrigin` is captured in state and used for every postMessage
-      back, including the mint-failed, 429, and publish-failed paths.
+      back, including mint-failed, 429, and publish-failed paths.
     - F7: ticket mint is deferred until the user actually taps Approve.
-    - F8: the Approve button's copy names the browser-verified origin, not the app's claim.
+    - F8 / N4: Approve button copy uses the browser-verified origin in `armed` phase.
+    - N3: WebAuthn assertion wired via `confirmWithPasskey` (same path as every other
+      OpenKey managed-key approval, `apps/web/src/lib/approval-passkey.ts`). ALWAYS +
+      SENSITIVE owners now complete the flow instead of failing closed.
+    - N6: `startMint` sets `mintInFlight`; a second tap is refused while a mint is live.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { confirmWithPasskey, PasskeyPromptError, type ApprovalPasskeyOffer } from '$lib/approval-passkey';
   import {
     applyDecline,
     applyMintResult,
@@ -21,6 +27,7 @@
     approveButtonLabel,
     claimLabel,
     initialState,
+    startMint,
     type PostBackEnvelope,
     type WidgetState,
   } from './widget-state';
@@ -40,7 +47,8 @@
   function closeSoon() { setTimeout(() => { try { window.close(); } catch { /* no-op */ } }, 300); }
 
   async function requestMint() {
-    if (!state.verifiedRequestingOrigin) return;
+    if (!state.verifiedRequestingOrigin || state.mintInFlight) return;
+    state = startMint(state);
     try {
       const response = await fetch('/api/tinycloud-setup/mint-ticket', {
         method: 'POST',
@@ -63,8 +71,10 @@
       const body = await response.json();
       const update = applyMintResult(state, { ok: true, body });
       state = update.state;
-      // Arm the Approve button after a short delay (F1).
-      setTimeout(() => { if (state.phase === 'review') armed = true; }, ARM_DELAY_MS);
+      // F1 arm delay: the button stays disabled for ARM_DELAY_MS after the mint lands so a
+      // popup that opens under the cursor can't be double-clicked through the passkey +
+      // publish sequence.
+      setTimeout(() => { if (state.phase === 'armed') armed = true; }, ARM_DELAY_MS);
     } catch (e) {
       const update = applyMintResult(state, { ok: false, status: 0, body: { error: 'mint_failed' } });
       state = update.state;
@@ -75,13 +85,21 @@
 
   async function approve() {
     if (!armed || !state.ticket || !state.verifiedRequestingOrigin) return;
+    const originalState = state;
     state = { ...state, phase: 'submitting' };
-    try {
-      let passkeyAssertion: unknown = undefined;
-      if (state.passkey.required) {
-        // TODO(Soren) wire webauthn.get() using `state.passkey.options`.
-        passkeyAssertion = null;
+    let passkeyAssertion: unknown = undefined;
+    if (state.passkey.required) {
+      try {
+        const offer: ApprovalPasskeyOffer = { challengeToken: state.passkey.challengeToken, options: state.passkey.options as never };
+        passkeyAssertion = await confirmWithPasskey(offer);
+      } catch (e) {
+        // User dismissed the passkey prompt, or the authenticator failed. Roll back the
+        // phase so they can tap Approve again. Do NOT consume the ticket.
+        state = { ...originalState, error: e instanceof PasskeyPromptError ? e.message : 'Passkey failed' };
+        return;
       }
+    }
+    try {
       const response = await fetch('/api/tinycloud-setup/publish', {
         method: 'POST',
         credentials: 'include',
@@ -134,11 +152,13 @@
   });
 
   async function onApproveClick() {
-    if (state.phase === 'review' && state.ticket === null) {
+    // The button walks the user through two taps: first a mint (shows "Preparing…" during
+    // the arm delay), then after armed → a publish with the WebAuthn prompt.
+    if (state.phase === 'review' && !state.mintInFlight && state.ticket === null) {
       await requestMint();
       return;
     }
-    if (state.phase === 'review' && armed) await approve();
+    if (state.phase === 'armed' && armed) await approve();
   }
 </script>
 
@@ -175,7 +195,7 @@
 
     <button
       type="button"
-      disabled={state.phase === 'submitting' || (state.phase === 'review' && state.ticket !== null && !armed)}
+      disabled={state.phase === 'submitting' || state.mintInFlight || (state.phase === 'armed' && !armed)}
       on:click={onApproveClick}
     >
       {approveButtonLabel(state)}

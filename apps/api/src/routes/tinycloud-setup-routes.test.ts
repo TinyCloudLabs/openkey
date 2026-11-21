@@ -94,6 +94,9 @@ interface BuildRouterOpts {
   /** For deterministic time control (F3). Mint and publish both see the same `now()`. */
   getServerTime?: () => Date;
   rateLimits?: { mint: number; publish: number };
+  /** N5 (Bobbie 15:42:43Z): injected `fetch` the registry client calls. Defaults to a stub
+   *  that returns 502 so tests NEVER touch the real registry. */
+  fetch?: typeof fetch;
 }
 
 function buildRouter(opts: BuildRouterOpts = {}) {
@@ -112,6 +115,8 @@ function buildRouter(opts: BuildRouterOpts = {}) {
     retryAfter,
     prisma,
     configuredHost: opts.configuredHost ?? CONFIGURED_HOST.host,
+    // N5: inject a stub fetch by default so no route test can reach the live registry.
+    fetch: opts.fetch ?? ((async () => new Response('', { status: 502 })) as unknown as typeof fetch),
     ...(opts.getServerTime ? { getServerTime: opts.getServerTime } : {}),
     sessionMiddleware: async (c, next) => { setSession(c); await next(); },
     ...(opts.realOrigin ? {} : { originMiddleware: async (_c, next) => { await next(); } }),
@@ -189,9 +194,56 @@ describe('tinycloud-setup router', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ ticket: minted.ticket, requestingOrigin: APP_ORIGIN }),
     });
-    expect(publish.status).not.toBe(403);
-    const body = await publish.json().catch(() => ({})) as { error?: string; status?: string };
-    expect(body.error).not.toBe('record_mismatch');
+    // Publish reaches the registry (stub returns 502 → 'unavailable'); it does NOT stop at
+    // 403 record_mismatch (the pre-fix failure) or at any other 4xx. The ticket is also
+    // consumed, so a replay returns 409 already_used — asserted below.
+    expect(publish.status).toBe(502);
+    const body = await publish.json() as { status: string };
+    expect(body.status).toBe('unavailable');
+    const replay = await app.request('/api/tinycloud-setup/publish', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ticket: minted.ticket, requestingOrigin: APP_ORIGIN }),
+    });
+    expect(replay.status).toBe(409);
+    const replayBody = await replay.json() as { error: string };
+    expect(replayBody.error).toBe('already_used');
+  });
+
+  // N5 (Bobbie 15:42:43Z): a hash-mismatch scenario — if the `recordHash` the ticket was
+  // bound to differs from what the server rebuilds (should be impossible with the current
+  // canonicaliser, but tests make the invariant structural), the publish returns 403
+  // record_mismatch. We force the mismatch by minting under one node origin and rebuilding
+  // under a different one; the hash depends on the node.
+  test('N5 regression: hash-mismatch between ticket and rebuilt payload → 403 record_mismatch', async () => {
+    let currentMs = 1_700_000_000_000;
+    const getServerTime = () => new Date(currentMs);
+    // Shared ticket store + rate limiter so the second router sees the first router's ticket.
+    const ticketStore = createSetupTicketStore(randomBytes(32), createInMemorySetupNonceStore());
+    const retryAfter = createInMemoryTinyCloudSetupLimiter();
+    const prisma = fakePrisma();
+    const stubFetch = (async () => new Response('', { status: 502 })) as unknown as typeof fetch;
+    const makeApp = (configuredHost: string) => {
+      const a = new Hono<SessionContext>();
+      a.onError((err, c) => c.json({ error: 'internal', message: String(err instanceof Error ? err.message : err) }, 500));
+      a.route('/api/tinycloud-setup', createTinyCloudSetupRouter({
+        ticketStore, retryAfter, prisma, configuredHost, getServerTime, fetch: stubFetch,
+        sessionMiddleware: async (c, next) => { setSession(c); await next(); },
+        originMiddleware: async (_c, next) => { await next(); },
+      }));
+      return a;
+    };
+    const mintApp = makeApp('https://node-one.example');
+    const publishApp = makeApp('https://node-two.example');
+    const minted = await mintOk(mintApp);
+    const publish = await publishApp.request('/api/tinycloud-setup/publish', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ticket: minted.ticket, requestingOrigin: APP_ORIGIN }),
+    });
+    expect(publish.status).toBe(403);
+    const body = await publish.json() as { error: string };
+    expect(body.error).toBe('record_mismatch');
   });
 
   test('F5 regression: unset OPENKEY_SETUP_TICKET_SECRET yields 503 per request, not a boot crash', async () => {

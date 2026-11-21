@@ -1,7 +1,13 @@
 // TC-3657 widget business logic, extracted from `+page.svelte` so the invariants Bobbie
-// called out (F4 origin-carried-everywhere, F7 mint-on-click-not-on-message,
-// F8 button-copy-uses-verified-origin) have their own tests without pulling in a Svelte
-// mount harness. The svelte component is a thin shell over this state machine.
+// called out (F4 origin-carried-everywhere, F7 mint-on-click-not-on-message, F8 button
+// copy uses verified origin) have their own tests without pulling in a Svelte mount
+// harness. The svelte component is a thin shell over this state machine.
+//
+// Bobbie 15:42:43Z follow-ups folded in:
+//   - N4: `armed` moved into state so `approveButtonLabel` reads it; the Approve/Preparing
+//     transition is now observable and covered by the F8 test.
+//   - N6: `mintInFlight` flag in state + guard in the Svelte click handler so a double-tap
+//     on Approve cannot spend two of the owner's 10/hr mint quota.
 
 export type Phase =
   | 'waiting'
@@ -59,10 +65,10 @@ export interface WidgetState {
   preview: PublishPreview | null;
   passkey: { required: false } | ({ required: true } & PasskeyOffer);
   error: string | null;
-  // The target origin of every message we send back; always equal to
-  // `verifiedRequestingOrigin` when set. Captured here so the Svelte template can bind to it
-  // without re-reading the opener's origin each time.
   replyTargetOrigin: string | null;
+  /** N6: true from the moment the user taps Approve until the mint settles. The button
+   *  reads this to refuse a second tap; a successful mint ends it. */
+  mintInFlight: boolean;
 }
 
 export function initialState(embeddedRefusalMessage: string | null): WidgetState {
@@ -75,17 +81,18 @@ export function initialState(embeddedRefusalMessage: string | null): WidgetState
     passkey: { required: false },
     error: embeddedRefusalMessage,
     replyTargetOrigin: null,
+    mintInFlight: false,
   };
 }
 
-/** F8: the copy on the Approve button names the browser-verified origin, never the
- *  caller-asserted app name. The caller's claimed name belongs in the preview, labelled as
- *  a claim. Returns an empty string when the origin isn't known yet (phase=waiting). */
+/** F8 + N4: the Approve button's copy. In `armed` it names the browser-verified origin,
+ *  never the caller-asserted app name. In `review` (post-syn, pre-arm-delay) it reads
+ *  "Preparing…"; in `submitting` it reads "Publishing…". */
 export function approveButtonLabel(state: WidgetState): string {
   if (state.phase === 'submitting') return 'Publishing…';
-  if (state.phase === 'review') return 'Preparing…';
-  if (!state.verifiedRequestingOrigin) return '';
-  return `Approve for ${state.verifiedRequestingOrigin}`;
+  if (state.phase === 'armed' && state.verifiedRequestingOrigin) return `Approve for ${state.verifiedRequestingOrigin}`;
+  // Phase is `review` (post-syn, pre-arm-delay) or we haven't captured the origin yet.
+  return 'Preparing…';
 }
 
 /** The claimed name is a caller assertion; the UI must label it as such so a crafted
@@ -107,25 +114,28 @@ export function applySyn(state: WidgetState, event: {
   if (state.phase === 'embedded-refused') return state;
   if (event.source !== event.opener) return state;
   if (event.data.type !== 'openkey:tinycloud-setup:request' || event.data.v !== 1) return state;
-  // Capture once. A second message with a different origin is ignored.
   if (state.verifiedRequestingOrigin !== null && event.origin !== state.verifiedRequestingOrigin) {
     return state;
   }
   const verifiedRequestingOrigin = state.verifiedRequestingOrigin ?? event.origin;
-  const next: WidgetState = {
+  return {
     ...state,
     verifiedRequestingOrigin,
     replyTargetOrigin: verifiedRequestingOrigin,
     claim: event.data.requestingApp ?? {},
-    // F7: no ticket mint here.
     phase: state.phase === 'waiting' ? 'review' : state.phase,
   };
-  return next;
 }
 
-/** Fold a mint response (success, 429, or failure) into state. F4: a 429 or failed response
- *  still has `verifiedRequestingOrigin` set, so the caller can post the result back on the
- *  right origin. */
+/** Mark the mint request as in-flight (N6). The Svelte click handler calls this before
+ *  the fetch so a second tap sees `mintInFlight === true` and refuses. */
+export function startMint(state: WidgetState): WidgetState {
+  return { ...state, mintInFlight: true };
+}
+
+/** Fold a mint response (success, 429, or failure) into state. F4: every error path keeps
+ *  `verifiedRequestingOrigin` set so the caller can post the result back. N6: the
+ *  in-flight flag clears either way. */
 export function applyMintResult(
   state: WidgetState,
   result:
@@ -133,15 +143,19 @@ export function applyMintResult(
     | { ok: false; status: number; body: { error?: string }; retryAfterSeconds?: number },
 ): { state: WidgetState; postBack: PostBackEnvelope | null } {
   if (result.ok) {
+    // The post-mint phase is `armed` once the arm-delay timer fires; before that the Svelte
+    // component keeps the button disabled by reading `phase === 'review'`. We transition
+    // directly to `armed` here because the arm delay is handled in the component for the
+    // F1 double-tap-guard, and the state machine shouldn't block tests on real timers.
     return {
-      state: { ...state, ticket: result.body.ticket, preview: result.body.preview, passkey: result.body.passkey, phase: 'review' },
+      state: { ...state, ticket: result.body.ticket, preview: result.body.preview, passkey: result.body.passkey, phase: 'armed', mintInFlight: false },
       postBack: null,
     };
   }
   if (result.status === 429) {
     const reason = 'rate_limited';
     return {
-      state: { ...state, phase: 'declined', error: 'Too many setup attempts right now. Try again later.' },
+      state: { ...state, phase: 'declined', mintInFlight: false, error: 'Too many setup attempts right now. Try again later.' },
       postBack: {
         type: 'openkey:tinycloud-setup:response', v: 1, status: 'unavailable', reason,
         ...(result.retryAfterSeconds !== undefined ? { retryAfter: result.retryAfterSeconds } : {}),
@@ -150,7 +164,7 @@ export function applyMintResult(
   }
   const reason = result.body.error ?? 'mint_failed';
   return {
-    state: { ...state, phase: 'declined', error: reason },
+    state: { ...state, phase: 'declined', mintInFlight: false, error: reason },
     postBack: { type: 'openkey:tinycloud-setup:response', v: 1, status: 'unavailable', reason },
   };
 }

@@ -61,6 +61,13 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261118_0001_terms_acceptance', 'a2535be69867c0a4c138233c22b2bfae7eda5d950c7d5c22138e25ba6efc3e7c'],
   ['20261119_0001_terms_acceptance_no_delete', 'ea98e5b306af38dfb0145ba915ea38ab6bf8e53a52744fc3039d17964ab807c4'],
   ['20261119_0002_passkey_approval_mode', 'a6e0a4dd2351b7bdddf94013b3340db1ba118f6f2fa0e3b82f58b528e371ba78'],
+  // TC-3657: Prisma-backed stores for OpenKey's outside-app one-tap TinyCloud setup
+  // endpoint. Required so the API cannot go live without the two tables that back the
+  // single-use nonce invariant (C1) and the per-owner rate limit (C5). Bobbie N1 15:42:43Z.
+  // NOTE: folder name will change when this slice merges after TC-3569 S1b lands — see
+  // the follow-up commit that renames to the next free 20261121_NNNN number and updates
+  // this entry (sha256 stays the same because only the folder name changes).
+  ['20261121_0001_tinycloud_setup_tables', '2c76d33c89a485b5db77efdfbfe6e3bcf2d87ba94587118cef26932e931845d7'],
 ]);
 
 export type SchemaContractDatabase = {
