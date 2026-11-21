@@ -268,7 +268,8 @@ export function messageHasElevatedPermissions(message: string): boolean {
  *
  * `entries` are the wasm-parsed entries of the same message, when the caller
  * has them: `space` and `path` of every entry, under any service name, get the
- * same check.
+ * same check, and so does the resource string that `space`, `service` and
+ * `path` make together (the space-path form of an encryption resource).
  *
  * `admitted` lists the `apps/` resources an earlier step admitted for this
  * message. A resource is passed only when it is byte-equal to an admitted one
@@ -283,6 +284,9 @@ export function appKeyRefusalForSiwe(
   if (resources === null) return { reason: 'recap_unreadable' };
   for (const entry of entries ?? []) {
     resources.push([entry.space, [...entry.actions]], [entry.path, [...entry.actions]]);
+    // The same entry as the resource string the text scan reads, so a space-path
+    // resource is classified identically from both views.
+    if (entry.service !== undefined) resources.push([`${entry.space}/${entry.service}/${entry.path}`, [...entry.actions]]);
   }
   return refusalForResources(resources, admitted);
 }
