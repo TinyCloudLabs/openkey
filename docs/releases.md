@@ -37,6 +37,12 @@ Cloudflare Pages deploys `main` on merge but only reports a check run, not a Dep
 The Share sender smoke's web-deploy waiter requires a completed success from
 Cloudflare's app (`85455`), named exactly `Cloudflare Pages: openkey`, on the
 requested commit SHA. It fetches all attempts with `filter=all` and pagination;
-incomplete results fail closed. Cancelled or unfinished duplicates do not reject
-an existing success, but any other completed non-success attempt does, including
-older attempts. Without a success it keeps the existing 20-minute polling limit.
+incomplete results fail closed. The highest check-run ID selects the newest
+completed, non-cancelled attempt by creation order, not completion time. Its
+success passes; any other conclusion refuses unless a newer-created unfinished
+attempt for that exact app, name and SHA is still pending. With no completed
+non-cancelled attempt it remains pending. Cancelled attempts are ignored, and an
+unfinished duplicate does not veto a completed success. Missing, invalid or tied
+IDs in matching non-cancelled attempts fail closed. Every superseded completed
+non-success is logged to stderr with its ID and conclusion, without changing the
+state-only stdout contract. Pending keeps the existing 20-minute polling limit.
