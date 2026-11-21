@@ -846,7 +846,7 @@ counts as that request's approval passkey:
   step-up, the same bar as an approval passkey. Otherwise nothing is recorded and the sign-in still succeeds.
 - The cover is one `verification` row, `openkey-flow-passkey:<session id>:<request id>`, valid for five minutes
   and for that session and that request only. It is not shared with another session of the account or another
-  request, and a request that has no cover still gets today's challenge.
+  request, and a request that has no cover gets the usual challenge.
 - While it exists, `prepare` returns `passkey: {required: false}` and `approve` needs no assertion, for sign-in
   and step-up requests alike. A re-prepare of the same request (a changed selection) is covered too. Approve or
   deny ends the cover; an expired one gets the existing `passkey_approval_required` refusal and a new challenge.
