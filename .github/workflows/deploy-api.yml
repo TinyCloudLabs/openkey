@@ -193,10 +193,9 @@ jobs:
             echo "::error::$INGRESS_URL/health returned $code, expected 200" >&2
             exit 1
           fi
-          # The gateway is whatever the CVM reports now. Phala moves CVMs between gateways (11-21 00:25Z:
-          # pha-prod5 to pha1-prod5), and a closed port looks the same on any gateway, so a hard-coded
-          # domain would pass without probing the real one. No answer, or an answer that is not an app id and
-          # a domain, fails the step: an unprobed port is not a closed one.
+          # The gateway is whatever the CVM reports. Phala can move a CVM to another gateway, and a closed port
+          # looks the same on any gateway, so a hard-coded domain would pass without probing the real one. No answer,
+          # or an answer that is not an app id and a domain, fails the step: an unprobed port is not a closed one.
           if ! cvm=$(phala cvms get openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json); then
             echo "::error::TC-1012: could not read the openkey-api CVM, so the gateway to probe is unknown" >&2
             exit 1
