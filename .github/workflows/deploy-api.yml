@@ -181,6 +181,8 @@ jobs:
         env:
           INGRESS_URL: https://api.openkey.so
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          # The openkey-api CVM's app_id (Phala workspace openkey-secondary). Changing it is a deliberate act.
+          EXPECTED_APP_ID: b7d6e87778f73904a8f5fd26e4d0f1d1310234be
         run: |
           # TC-3554: the first boot after the root move re-seals every key before the API listens.
           for i in $(seq 1 90); do
@@ -204,6 +206,12 @@ jobs:
           GATEWAY_BASE_DOMAIN=$(jq -r '.gateway.base_domain // empty' <<<"$cvm" 2>/dev/null || true)
           if ! [[ "$APP_ID" =~ ^[0-9a-f]{40}$ ]] || ! [[ "$GATEWAY_BASE_DOMAIN" =~ ^[a-z0-9-]+(\.[a-z0-9-]+)+$ ]]; then
             echo "::error::TC-1012: the openkey-api CVM did not report a usable app_id and gateway.base_domain; cannot tell which gateway to probe" >&2
+            exit 1
+          fi
+          # The name `openkey-api` must still be our CVM: a rename, a duplicate or another workspace's CVM
+          # under that name would be probed instead of ours, and its closed port would prove nothing.
+          if [ "$APP_ID" != "$EXPECTED_APP_ID" ]; then
+            echo "::error::TC-1012: the openkey-api CVM reports app $APP_ID, not the expected $EXPECTED_APP_ID; refusing to probe another app's port" >&2
             exit 1
           fi
           RAW_APP_URL="https://${APP_ID}-3001.${GATEWAY_BASE_DOMAIN}"
