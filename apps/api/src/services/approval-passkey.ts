@@ -21,6 +21,7 @@ import {
 import { decodeHexUtf8, parseCapabilityReview, parseSiweChainId } from '@openkey/capability-review';
 import type { PrismaClient } from '@openkey/db';
 import { log } from '../log';
+import { issuedSession } from './passkey-freshness';
 
 export const PASSKEY_APPROVAL_MODES = ['ALWAYS', 'SENSITIVE', 'NEVER'] as const;
 export type PasskeyApprovalMode = (typeof PASSKEY_APPROVAL_MODES)[number];
@@ -277,4 +278,127 @@ export async function approvalPasskeyOffer(
   // No offer means the passkey that counts was removed since the mode was read, or there is no session; the route
   // then refuses the approval without an assertion, failing closed.
   return offer ? { required: true, ...offer } : { required: false };
+}
+
+/** How long a passkey sign-in made for one request covers that request's Approve. */
+export const FLOW_PASSKEY_MAX_AGE_MS = 5 * 60 * 1000;
+const FLOW_PREFIX = 'openkey-flow-passkey';
+/** A native request id is 24 random bytes in base64url (par.ts). Nothing else may name a flow. */
+const FLOW_REQUEST_ID = /^[A-Za-z0-9_-]{32}$/;
+/** Header the native sign-in page sets on its passkey sign-in: the request it was opened for. */
+export const FLOW_PASSKEY_HEADER = 'x-openkey-passkey-flow';
+// The session id is server-issued and the request id is checked against FLOW_REQUEST_ID, so no caller text shapes
+// this identifier or collides with another verification row.
+const flowIdentifier = (sessionId: string, flowId: string) => `${FLOW_PREFIX}:${sessionId}:${flowId}`;
+
+/** Which gate let an approval through, recorded on the approval for audit. */
+export type ApprovalPasskeyMethod = 'NOT_REQUIRED' | 'FLOW_PASSKEY' | 'REQUEST_PASSKEY';
+
+/** The user-verified flag (bit 2) of a WebAuthn authenticatorData, base64url. The signature covers it. */
+function authenticatorDataVerified(authenticatorData: unknown): boolean {
+  if (typeof authenticatorData !== 'string') return false;
+  const bytes = Buffer.from(authenticatorData, 'base64url');
+  return bytes.length >= 37 && (bytes[32]! & 0x04) !== 0;
+}
+
+/**
+ * One passkey per interaction: records that this session signed in with a passkey FOR this request (`flowId`, the
+ * native request the sign-in page was opened from). The sign-in's own assertion is the proof of presence,
+ * so that request's Approve, and only that one, asks for nothing more for five minutes. Nothing is recorded unless
+ * the assertion was user-verified by a passkey that counts for step-up (the bar an approval passkey meets), and
+ * the request exists, is RESOLVED (the state /authorize leaves it in before it sends the user to sign in), has a
+ * known kind, is unowned or this user's, and began before this assertion.
+ */
+export async function recordFlowPasskey(
+  db: Pick<PrismaClient, 'passkey' | 'verification' | 'tinyCloudNativeRequest'>,
+  input: { userId: string; sessionId: string; flowId: string; credentialId: string; userVerified: boolean }, now = new Date(),
+): Promise<boolean> {
+  if (!input.userVerified || !FLOW_REQUEST_ID.test(input.flowId)) return false;
+  const request = await db.tinyCloudNativeRequest.findUnique({
+    where: { id: input.flowId }, select: { status: true, kind: true, userId: true, createdAt: true, expiresAt: true },
+  });
+  if (!request || request.status !== 'RESOLVED' || (request.kind !== 'SIGNIN' && request.kind !== 'STEPUP')
+    || (request.userId !== null && request.userId !== input.userId)
+    || request.createdAt.getTime() > now.getTime() || request.expiresAt.getTime() <= now.getTime()) return false;
+  const passkey = await db.passkey.findFirst({
+    where: { credentialID: input.credentialId, userId: input.userId, countsForStepUp: true }, select: { id: true },
+  });
+  if (!passkey) return false;
+  const identifier = flowIdentifier(input.sessionId, input.flowId);
+  await db.verification.deleteMany({ where: { identifier } });
+  await db.verification.create({ data: {
+    id: randomUUID(), identifier, userId: input.userId, value: passkey.id, expiresAt: new Date(now.getTime() + FLOW_PASSKEY_MAX_AGE_MS),
+  } });
+  return true;
+}
+
+/**
+ * Better Auth's after hook for a passkey sign-in that names a request. A sign-in must never fail because the flow
+ * record could not be written, so nothing here throws; without the record Approve simply asks for its own passkey.
+ */
+export async function recordFlowPasskeyAfterHook(
+  db: Pick<PrismaClient, 'passkey' | 'verification' | 'tinyCloudNativeRequest'>,
+  returned: unknown, flowId: string | null | undefined, body: unknown, now = new Date(),
+): Promise<Record<string, never>> {
+  if (!flowId) return {};
+  try {
+    const session = await issuedSession(returned);
+    const response = (body as { response?: { id?: unknown; response?: { authenticatorData?: unknown } } } | undefined)?.response;
+    if (session && typeof response?.id === 'string') {
+      await recordFlowPasskey(db, {
+        ...session, flowId, credentialId: response.id, userVerified: authenticatorDataVerified(response.response?.authenticatorData),
+      }, now);
+    }
+  } catch {
+    log('warn', 'approval_passkey_flow_record_failed');
+  }
+  return {};
+}
+
+/** Did this session sign in with a passkey for this request, within five minutes? Nothing else covers it. */
+export async function flowPasskeyCovers(
+  db: Pick<PrismaClient, 'verification'>, subject: ApprovalSubject, flowId: string, now = new Date(),
+): Promise<boolean> {
+  if (subject.sessionId === null || !FLOW_REQUEST_ID.test(flowId)) return false;
+  const row = await db.verification.findFirst({
+    where: { identifier: flowIdentifier(subject.sessionId, flowId), userId: subject.userId, expiresAt: { gt: now } }, select: { id: true },
+  });
+  return row !== null;
+}
+
+/** Ends every session's cover for a request when it is approved or denied, so none can outlive the decision. */
+export async function clearFlowPasskey(db: Pick<PrismaClient, 'verification'>, flowId: string): Promise<void> {
+  if (!FLOW_REQUEST_ID.test(flowId)) return;
+  await db.verification.deleteMany({ where: { identifier: { startsWith: `${FLOW_PREFIX}:`, endsWith: `:${flowId}` } } });
+}
+
+/**
+ * `checkApprovalPasskey` for a request whose sign-in was started from it (`flowId`): a passkey sign-in made for this
+ * request counts as the approval's passkey. Says which gate let it through, so the approval can record it. Only
+ * such routes call this. The approvals that always ask (lowering the setting, manage-key mode, enabling an app,
+ * account deletion, passkey enrolment, key export or recovery) call `checkApprovalPasskey` and never see a
+ * sign-in's passkey.
+ */
+export async function checkApprovalPasskeyInFlow(
+  db: ApprovalDatabase, subject: ApprovalSubject, binding: ApprovalBinding, sensitivity: ApprovalSensitivity,
+  assertion: unknown, flowId: string, rp = relyingParty(), now = new Date(),
+): Promise<{ refusal: ApprovalPasskeyRefusal } | { refusal: null; method: ApprovalPasskeyMethod }> {
+  if (!await approvalNeedsPasskey(db, subject.userId, sensitivity)) return { refusal: null, method: 'NOT_REQUIRED' };
+  if (await flowPasskeyCovers(db, subject, flowId, now)) {
+    log('info', 'approval_passkey_flow_covered');
+    return { refusal: null, method: 'FLOW_PASSKEY' };
+  }
+  const refusal = await checkApprovalPasskey(db, subject, binding, sensitivity, assertion, rp, now);
+  return refusal ? { refusal } : { refusal: null, method: 'REQUEST_PASSKEY' };
+}
+
+/** `approvalPasskeyOffer` for the same kind of route: no challenge when this request's own sign-in already counts. */
+export async function approvalPasskeyOfferInFlow(
+  db: ApprovalDatabase, subject: ApprovalSubject, binding: ApprovalBinding, sensitivity: ApprovalSensitivity,
+  flowId: string, rp = relyingParty(), now = new Date(),
+): Promise<{ required: false } | ({ required: true } & ApprovalPasskeyOffer)> {
+  if (await approvalNeedsPasskey(db, subject.userId, sensitivity) && await flowPasskeyCovers(db, subject, flowId, now)) {
+    return { required: false };
+  }
+  return approvalPasskeyOffer(db, subject, binding, sensitivity, rp, now);
 }

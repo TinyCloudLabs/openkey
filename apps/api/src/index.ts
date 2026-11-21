@@ -57,6 +57,7 @@ import { providerTokenOptions } from './services/native-delegation/provider-toke
 import { handlePar } from './services/native-delegation/par';
 import { createNativeDelegationConsentRouter } from './routes/native-delegation-consent';
 import { handleNativeRenewOrRevoke } from './services/native-delegation/renew-revoke';
+import { handleNativeStepUpRequest } from './services/native-delegation/step-up';
 import { createTeeClient, resolveTeeMode } from '@openkey/tee';
 import { resealLegacyAtBoot } from './services/legacy-reseal-boot';
 import {
@@ -65,6 +66,7 @@ import {
 } from './services/native-delegation/public-protocol';
 import { startTinyCloudBootstrapSweep } from './services/tinycloud-bootstrap-sweep';
 import { startRenewalLeaseStopSweep } from './services/renewal-lease-sweep';
+import { startRevokePendingSweep } from './services/native-delegation/revoke-pending';
 
 
 const betterAuthUrl = process.env.BETTER_AUTH_URL;
@@ -249,6 +251,7 @@ app.get('/api/auth/providers', (c) =>
 app.post('/api/auth/oauth2/par', (c) => handlePar(c.req.raw, authPrisma));
 app.post('/api/auth/oauth2/tinycloud/renew', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'renew'));
 app.post('/api/auth/oauth2/tinycloud/revoke', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'revoke'));
+app.post('/api/auth/oauth2/tinycloud/stepup', (c) => handleNativeStepUpRequest(c.req.raw, authPrisma, oauthIssuer));
 
 // The key set /api/auth/jwks serves, read through the auth handler.
 const readSigningKeys = async () => {
@@ -484,6 +487,9 @@ const port = parseInt(process.env.API_PORT || '3001');
 if (process.env.NODE_ENV !== 'test') startTinyCloudBootstrapSweep();
 // With OPENKEY_RENEWAL_LEASES=stop, revokes every live renewal lease (TC-3088). Does nothing for any other value.
 if (process.env.NODE_ENV !== 'test') startRenewalLeaseStopSweep(authPrisma);
+// Retries the node revocation of step-up delegations OpenKey withdrew after the node had registered them (TC-3569).
+// Not behind the step-up switch: a record already written must still be revoked with the switch off.
+if (process.env.NODE_ENV !== 'test') startRevokePendingSweep(authPrisma);
 
 export default {
   port,

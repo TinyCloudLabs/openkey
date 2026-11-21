@@ -42,6 +42,11 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile --ignore-scripts
 
+      # Mirror the Dockerfile check so a migration PR missing the schema
+      # contract fails during review rather than the deploy image build.
+      - name: DB schema contract
+        run: bun test packages/db/src/schema-contract.test.ts
+
       # The API imports @openkey/db and @openkey/tee from their built dist/,
       # and @openkey/db needs the generated Prisma client. The tests that drive
       # the signing pages' own code load @openkey/capability-review from its dist/,
@@ -52,7 +57,13 @@ jobs:
           bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review --filter @openkey/sdk
 
       - name: API tests
-        run: bun test apps/api/src/__tests__ scripts/deploy-production-migrations.test.ts scripts/oauth-client-branding.test.ts
+        run: bun test apps/api/src/__tests__ scripts/deploy-production-migrations.test.ts scripts/oauth-client-branding.test.ts scripts/step-up-ceiling-parity.test.ts
+
+      # TC-3569: OpenKey's step-up ceilings against the ones TinyCloud One's framed apps ask for, entry for entry.
+      # Reads One's file at the commit pinned in scripts/step-up-ceilings/one.pin.json from the public tinychat
+      # repository (no secret). A null pin fails the step (--require-pin): the step-up flag waits for the pin.
+      - name: Step-up ceiling parity with TinyCloud One
+        run: bun scripts/step-up-ceiling-parity.ts --require-pin
 
       # The capability review and web lib tests use the package built above.
       - name: Capability review and web lib tests

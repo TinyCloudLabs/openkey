@@ -8,7 +8,17 @@ export const NATIVE_DELEGATION_ENDPOINT_PATHS = {
   par: '/oauth2/par',
   renew: '/oauth2/tinycloud/renew',
   revoke: '/oauth2/tinycloud/revoke',
+  stepup: '/oauth2/tinycloud/stepup',
 } as const;
+
+/**
+ * Read per request, like `OPENKEY_NATIVE_RENEW_DISABLED`; only `1` and `true`
+ * enable the step-up endpoint. Unset or any other value is off.
+ */
+export function nativeStepUpEnabled(): boolean {
+  const value = process.env.OPENKEY_NATIVE_STEPUP_ENABLED?.trim().toLowerCase();
+  return value === 'true' || value === '1';
+}
 
 /**
  * Discovery and the public protocol endpoints a native app calls without
@@ -28,6 +38,7 @@ const PUBLIC_PROTOCOL_PATHS: ReadonlySet<string> = new Set([
   `/api/auth${NATIVE_DELEGATION_ENDPOINT_PATHS.par}`,
   `/api/auth${NATIVE_DELEGATION_ENDPOINT_PATHS.renew}`,
   `/api/auth${NATIVE_DELEGATION_ENDPOINT_PATHS.revoke}`,
+  `/api/auth${NATIVE_DELEGATION_ENDPOINT_PATHS.stepup}`,
   '/api/auth/providers',
 ]);
 
@@ -60,6 +71,8 @@ export function nativeDelegationMetadata(issuer: string) {
     pushed_authorization_request_endpoint: `${issuer}${NATIVE_DELEGATION_ENDPOINT_PATHS.par}`,
     tinycloud_delegation_renew_endpoint: `${issuer}${NATIVE_DELEGATION_ENDPOINT_PATHS.renew}`,
     tinycloud_delegation_revocation_endpoint: `${issuer}${NATIVE_DELEGATION_ENDPOINT_PATHS.revoke}`,
+    // Advertised only while the endpoint is on, so a client can feature-detect it.
+    ...(nativeStepUpEnabled() ? { tinycloud_delegation_stepup_endpoint: `${issuer}${NATIVE_DELEGATION_ENDPOINT_PATHS.stepup}` } : {}),
   };
 }
 
