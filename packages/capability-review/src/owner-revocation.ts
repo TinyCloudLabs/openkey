@@ -39,8 +39,18 @@ export function ownerRevocationAddress(request: OwnerRevocationRequest): string 
   return getAddress(didPattern.exec(request.ownerDid)![2]!);
 }
 
+/**
+ * The exact message the owner's key signs to revoke `request.cid`. Some callers pass stored rows, not a parsed
+ * request, so every field is checked here: none can carry a line break (another SIWE field) into the signed text.
+ */
 export function buildOwnerRevocationSiwe(request: OwnerRevocationRequest, domain: string, issuedAt: Date): string {
-  const match = didPattern.exec(request.ownerDid)!;
+  const match = didPattern.exec(request.ownerDid);
+  if (!match) throw new Error('Invalid ownerDid');
+  if (!cidPattern.test(request.cid)) throw new Error('Invalid cid');
+  // EIP-4361's nonce: at least 8 alphanumerics (requests from the handoff are held to more by the parser).
+  if (!/^[A-Za-z0-9]{8,}$/.test(request.nonce)) throw new Error('Invalid nonce');
+  // A host, with an optional port: no whitespace, no path.
+  if (!/^[^\s/]+$/.test(domain)) throw new Error('Invalid domain');
   return [
     `${domain} wants you to sign in with your Ethereum account:`,
     ownerRevocationAddress(request), '', '',
