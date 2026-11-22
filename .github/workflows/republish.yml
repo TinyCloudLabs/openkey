@@ -20,6 +20,13 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GH_TOKEN }}
 
+      # Pre-release security check: never publish unless every check in
+      # .github/required-checks.json passed on this exact SHA.
+      - name: Require green checks on the republished commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/require-green.mjs "$GITHUB_SHA"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
