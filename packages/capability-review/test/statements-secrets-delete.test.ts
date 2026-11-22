@@ -75,4 +75,11 @@ describe("secrets KV statements with a delete", () => {
     expect(texts(["tinycloud.kv/put"])).toEqual(["Update secret values"]);
     expect(texts(["tinycloud.kv/get", "tinycloud.kv/put"])).toEqual(["Read and update secret values"]);
   });
+
+  it("names a wildcard or an unrecognised ability beside a delete instead of a delete sentence", () => {
+    expect(texts(["tinycloud.kv/*"]).join(" ")).toContain("nknown action: tinycloud.kv/*");
+    for (const other of ["tinycloud.kv/admin", "tinycloud.kv/grant", "tinycloud.kv/revoke"]) {
+      expect(texts(["tinycloud.kv/del", other]).join(" ")).toContain(`nknown action: ${other}`);
+    }
+  });
 });
