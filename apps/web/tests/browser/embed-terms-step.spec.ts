@@ -228,3 +228,125 @@ test('a Terms check that never answers shows Try again in a frame the host is to
   await expect.poll(() => page.evaluate(() => (window as SdkHost).signState)).toBe('signed');
   expect(checks).toBe(2);
 });
+
+/** A host page driving a same-origin frame by hand: the first sight of Agree and the layout acknowledgement. */
+type HarnessHost = Window & {
+  firstAgree?: { disabled: boolean };
+  acknowledge?: () => void;
+};
+
+/** Every POST /api/account/terms/accept, by its Authorization header; the status is owed until one arrives. */
+async function termsOwedUntilAccepted(page: Page): Promise<Array<string | undefined>> {
+  const accepts: Array<string | undefined> = [];
+  await page.route('**/api/account/terms', (route) =>
+    json(route, { ...RELEASE, requiresAcceptance: accepts.length === 0, previouslyAccepted: accepts.length > 0 }));
+  await page.route('**/api/account/terms/accept', (route) => {
+    accepts.push(route.request().headers().authorization);
+    return json(route, { accepted: true, version: RELEASE.version });
+  });
+  return accepts;
+}
+
+// Agree in the frame waits for the frame to settle, as Approve does. In a v2 Sign frame the host must also
+// acknowledge the frame's layout: until it does, Agree stays disabled past the frame's own settle ceiling and a click
+// records nothing. The acknowledgement arms it.
+test('in a v2 Sign frame the host has not acknowledged, Agree is disabled and a click records nothing', async ({ page }) => {
+  const address = '0x1111111111111111111111111111111111111111';
+  const signingKey = { id: 'selected-key', address, publicKey: '0x02', keyIndex: 0, label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z' };
+  const message = `${HOST} wants you to sign in with your Ethereum account:\n${address}\n\nSign in\n\nURI: ${ORIGIN}\nVersion: 1\nChain ID: 1\nNonce: 12345678\nIssued At: 2026-10-15T00:00:00.000Z`;
+  await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'fixture-session'));
+  await page.route('**/api/keys/**', (route) => json(route, { key: signingKey }));
+  await page.route('**/api/auth/get-session**', (route) => json(route, { session: { id: 'fixture-session' }, user: { id: 'fixture-user' } }));
+  const accepts = await termsOwedUntilAccepted(page);
+
+  await page.goto(`${ORIGIN}/__parity_harness`);
+  await page.evaluate((siwe) => {
+    const host = window as HarnessHost;
+    const frame = document.createElement('iframe');
+    frame.id = 'sign';
+    frame.style.cssText = 'border:none;width:400px;height:400px;display:block';
+    frame.src = `/widget/embed/sign?origin=${encodeURIComponent(location.origin)}&requestId=phase-1&keyId=selected-key&protocolVersion=2`;
+    document.body.append(frame);
+    // Like the SDK, the host sizes the frame to each layout it is sent; unlike it, it acknowledges only when told to.
+    let layout: { layoutId: number; height: number } | null = null;
+    let acknowledging = false;
+    const acknowledge = () => {
+      if (layout) frame.contentWindow!.postMessage({ type: 'openkey:layout-applied', requestId: 'phase-1', protocolVersion: 2, ...layout }, location.origin);
+    };
+    host.acknowledge = () => { acknowledging = true; acknowledge(); };
+    window.addEventListener('message', (event) => {
+      if (event.source !== frame.contentWindow) return;
+      if (event.data?.type === 'openkey:ready') {
+        frame.contentWindow!.postMessage({
+          type: 'openkey:sign:request', requestId: 'phase-1', protocolVersion: 2, authorizationProtocolVersion: 1,
+          keyId: 'selected-key', jwk: { kty: 'EC' }, message: siwe,
+        }, location.origin);
+        return;
+      }
+      if (event.data?.type !== 'openkey:resize' || typeof event.data.layoutId !== 'number') return;
+      frame.style.height = `${event.data.height}px`;
+      layout = { layoutId: event.data.layoutId, height: event.data.height };
+      if (acknowledging) requestAnimationFrame(acknowledge);
+    });
+  }, message);
+
+  const agree = page.frameLocator('#sign').getByTestId('terms-agree');
+  await expect(agree).toBeVisible();
+  await expect(agree).toBeDisabled();
+  // Past the frame's own settle ceiling (1.5 s from display), only the missing acknowledgement holds Agree.
+  await page.waitForTimeout(2_000);
+  await expect(agree).toBeDisabled();
+  await agree.dispatchEvent('click');
+  await page.waitForTimeout(300);
+  expect(accepts).toHaveLength(0);
+
+  await page.evaluate(() => (window as HarnessHost).acknowledge?.());
+  await expect(agree).toBeEnabled();
+  await agree.click();
+  await expect.poll(() => accepts).toEqual(['Bearer fixture-session']);
+});
+
+// In the connect frame, Agree is disabled while the frame settles: a click made by a script in the very animation
+// frame Agree is first seen does nothing, and Agree arms once the frame has been still.
+test('a click on Agree the moment it is first seen does nothing, and Agree arms once the frame has settled', async ({ page }) => {
+  await page.route('**/api/auth/get-session', (route) => json(route, null));
+  await page.route('**/api/auth/providers', (route) => json(route, { providers: [] }));
+  await page.route('**/api/auth/email-otp/send-verification-otp', (route) => json(route, { success: true }));
+  await page.route('**/api/auth/sign-in/email-otp', (route) => json(route, { token: 'session-existing', user: { id: 'u' } }, 200, {
+    'set-auth-token': 'session-existing', 'access-control-expose-headers': 'set-auth-token',
+  }));
+  await page.route('**/api/keys', (route) => json(route, { keys: KEYS }));
+  const accepts = await termsOwedUntilAccepted(page);
+
+  await page.goto(`${ORIGIN}/__parity_harness`);
+  await page.evaluate(() => {
+    const host = window as HarnessHost;
+    const frame = document.createElement('iframe');
+    frame.id = 'openkey';
+    frame.style.cssText = 'border:none;width:400px;height:720px;display:block';
+    frame.src = `/widget/embed/connect?origin=${encodeURIComponent(location.origin)}`;
+    document.body.append(frame);
+    const watch = () => {
+      const agree = frame.contentDocument?.querySelector<HTMLButtonElement>('[data-testid="terms-agree"]');
+      if (agree) {
+        host.firstAgree = { disabled: agree.disabled };
+        agree.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        return;
+      }
+      requestAnimationFrame(watch);
+    };
+    watch();
+  });
+  const frame = page.frameLocator('#openkey');
+  await emailCode(frame, EXISTING_EMAIL);
+
+  await expect.poll(() => page.evaluate(() => (window as HarnessHost).firstAgree)).toEqual({ disabled: true });
+  await page.waitForTimeout(300);
+  expect(accepts).toHaveLength(0);
+  const agree = frame.getByTestId('terms-agree');
+  await expect(agree).toBeEnabled();
+  expect(accepts).toHaveLength(0);
+  await agree.click();
+  await expect.poll(() => accepts).toEqual(['Bearer session-existing']);
+  await expect(frame.getByText('Connect with your primary key:')).toBeVisible();
+});
