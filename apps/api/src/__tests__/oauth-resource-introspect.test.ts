@@ -585,4 +585,38 @@ if (process.env.OPENKEY_RESOURCE_INTROSPECT_TEST_CHILD !== '1') {
       expect(await prisma.revokedAccessToken.findUnique({ where: { tokenHash: 'expired-row' } })).toBeNull();
     });
   });
+
+  // Production limits /api/auth/jwks per client address, and no client address reaches the API behind the
+  // ingress, so callers share one bucket. Filling it must not break OpenKey's own key reads.
+  describe('with the public /jwks rate-limit bucket full', () => {
+    test('the status check, the userinfo guard and revoke recording still read the signing keys', async () => {
+      const { clientId, accessToken } = await mcpToken('jwks-full', resource, 'openid tinycloud:mcp');
+      const context = await authModule.auth.$context;
+      // Past every verifier's one-minute key cache, so each reads the key set again.
+      setSystemTime(new Date(Date.now() + 120_000));
+      context.rateLimit.enabled = true;
+      try {
+        let refused = false;
+        for (let attempt = 0; attempt < 200 && !refused; attempt += 1) refused = (await call('/jwks')).status === 429;
+        expect(refused).toBe(true);
+
+        expect((await check(accessToken)).body).toMatchObject({ active: true, client_id: clientId });
+        const userinfo = await call('/oauth2/userinfo', { headers: { authorization: `Bearer ${accessToken}` } });
+        expect(userinfo.status, await userinfo.clone().text()).toBe(200);
+        const before = await prisma.revokedAccessToken.count();
+        const revoked = await call('/oauth2/revoke', {
+          method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ token: accessToken, client_id: clientId }),
+        });
+        expect(revoked.status, await revoked.clone().text()).toBe(200);
+        expect(await prisma.revokedAccessToken.count()).toBe(before + 1);
+        expect((await check(accessToken)).body).toEqual(INACTIVE);
+        // The bucket is still full for outside callers.
+        expect((await call('/jwks')).status).toBe(429);
+      } finally {
+        context.rateLimit.enabled = false;
+        setSystemTime();
+      }
+    });
+  });
 }

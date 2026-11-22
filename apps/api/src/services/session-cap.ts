@@ -55,29 +55,41 @@ export async function capSessionRefresh(
 }
 
 /**
- * Since 1.6.35 Better Auth gives the session cookie of a `/get-session` refresh the full
- * `session.expiresIn` as Max-Age, whatever expiry the hook above (or the reviewer cap) set. This
- * after hook brings the cookie's Max-Age back to the session's own remaining lifetime, as before:
- * a capped session's cookie ends with it, and an ended session's cookie gets no positive lifetime.
+ * Since 1.6.35 Better Auth gives a refreshed session cookie the full `session.expiresIn` as Max-Age,
+ * whatever expiry the hook above (or the reviewer cap) set, on `/get-session` and on any endpoint
+ * whose session read refreshed it. This after hook, on every endpoint, brings the cookie's Max-Age
+ * back to the session's own remaining lifetime, as before: a capped session's cookie ends with it,
+ * and an ended session's cookie gets no positive lifetime. Only a cookie carrying that session's
+ * token is changed; a cookie for another session (a new sign-in) is left as it is.
  */
 export function sessionCookieCapPlugin() {
   return {
     id: 'openkey-session-cookie-cap',
     hooks: {
       after: [{
-        matcher: (ctx) => ctx.path === '/get-session',
+        matcher: () => true,
         handler: createAuthMiddleware(async (ctx) => {
           const headers = ctx.context.responseHeaders;
-          const expiresAt = timeMs((ctx.context.returned as { session?: { expiresAt?: unknown } } | null)?.session?.expiresAt);
           const cookies = headers?.getSetCookie() ?? [];
           const prefix = ctx.context.authCookies.sessionToken.name + '=';
-          if (!headers || !Number.isFinite(expiresAt) || !cookies.some((cookie) => cookie.startsWith(prefix))) return;
-          const remaining = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
+          if (!headers || !cookies.some((cookie) => cookie.startsWith(prefix))) return;
+          type Read = { session?: { token?: unknown; expiresAt?: unknown } } | null | undefined;
+          // `/get-session` returns the session as refreshed; elsewhere the endpoint's session read left it in the context.
+          const sessions = [ctx.context.returned as Read, ctx.context.session as Read].map((read) => read?.session);
+          let changed = false;
+          const capped = cookies.map((cookie) => {
+            if (!cookie.startsWith(prefix)) return cookie;
+            const value = decodeURIComponent(cookie.slice(prefix.length).split(';', 1)[0]!);
+            const token = value.slice(0, value.lastIndexOf('.'));
+            const expiresAt = timeMs(sessions.find((session) => token && session?.token === token)?.expiresAt);
+            if (!Number.isFinite(expiresAt)) return cookie;
+            const remaining = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
+            changed = true;
+            return cookie.replace(/Max-Age=(\d+)/i, (_, age: string) => `Max-Age=${Math.min(Number(age), remaining)}`);
+          });
+          if (!changed) return;
           headers.delete('set-cookie');
-          for (const cookie of cookies) {
-            headers.append('set-cookie', cookie.startsWith(prefix)
-              ? cookie.replace(/Max-Age=(\d+)/i, (_, value: string) => `Max-Age=${Math.min(Number(value), remaining)}`) : cookie);
-          }
+          for (const cookie of capped) headers.append('set-cookie', cookie);
         }),
       }],
     },

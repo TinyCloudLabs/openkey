@@ -3,6 +3,7 @@ import './install-process-handlers'; // Install fatal handlers before dependency
 import { appleReviewEnabled } from './services/reviewer-apple-policy';
 import { runReviewerCleanup } from './services/reviewer-cleanup';
 import { reviewerCleanupNode } from './services/reviewer-cleanup-node';
+import type { JSONWebKeySet } from 'jose';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
@@ -256,12 +257,11 @@ app.post('/api/auth/oauth2/tinycloud/renew', (c) => handleNativeRenewOrRevoke(c.
 app.post('/api/auth/oauth2/tinycloud/revoke', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'revoke'));
 app.post('/api/auth/oauth2/tinycloud/stepup', (c) => handleNativeStepUpRequest(c.req.raw, authPrisma, oauthIssuer));
 
-// The key set /api/auth/jwks serves, read through the auth handler.
-const readSigningKeys = async () => {
-  const response = await auth.handler(new Request(`${oauthIssuer}/jwks`));
-  if (!response.ok) throw new Error('signing keys unavailable');
-  return (await response.json()) as { keys: import('jose').JWK[] };
-};
+// The key set /api/auth/jwks serves, read server-side. Through auth.handler the read would share the
+// public /jwks rate-limit bucket, which any caller can fill, and every token check would then fail.
+// The plugin list is too wide for `auth.api` to type the jwt plugin's endpoint; this is its declared shape.
+const jwtApi = auth.api as unknown as { getJwks(): Promise<JSONWebKeySet> };
+const readSigningKeys = () => jwtApi.getJwks();
 const tokenAudiences = oauthValidAudiences(process.env.BETTER_AUTH_URL!);
 const reviewerTokenVerifier = createAccessTokenVerifier({ issuer: oauthIssuer, getJwks: readSigningKeys });
 
