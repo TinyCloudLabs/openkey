@@ -23,7 +23,8 @@ None of them has a `paths:` filter, so each reports on every PR and can be requi
 - **Merge to main**: the ruleset below (Amos applies it).
 - **API deploy** (`deploy-api.yml`, `deploy` job) and **npm publish / version PR**
   (`changesets.yml` `release`, `manual-release.yml` `release`, `republish.yml` `republish`):
-  the first step after checkout runs
+  a step before any build, publish or production change (and never skipped, even with the
+  deploy's `override_reason`) runs
   `.github/scripts/require-green.mjs`, which fails unless every check in
   `.github/required-checks.json` concluded `success` on `$GITHUB_SHA`. It waits up to 40 min
   for checks still running; a missing, skipped, cancelled or failed check, or a GitHub API
@@ -220,10 +221,10 @@ environment at all.
    gh api -X PUT $R/environments/production -F can_admins_bypass=false \
      -F 'deployment_branch_policy[protected_branches]=false' -F 'deployment_branch_policy[custom_branch_policies]=true'
    ```
-3. **Then merge** the PR commit `ci: npm publish jobs run in the main-only npm-production
-   environment`. It adds `environment: npm-production` to the three npm jobs. It must not land
-   before step 1: GitHub creates an environment that a workflow references and that doesn't
-   exist yet, with no branch policy.
+3. **Then land** the follow-up commit `ci: npm publish jobs run in the main-only npm-production
+   environment`, a separate PR opened after step 1. It adds `environment: npm-production` to the
+   three npm jobs. It must not land before step 1: when a workflow references an environment
+   that doesn't exist, GitHub creates it with no branch policy.
 4. **Remove the repo-level copies**, only after a `deploy-api.yml` deploy and a Release run have
    succeeded with env secrets alone:
    ```sh
