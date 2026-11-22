@@ -9,6 +9,10 @@ on:
         description: Inspect serving instances, rollback image, and migration state without changes
         type: boolean
         default: false
+      override_reason:
+        description: Skips the Share sender smoke before the deploy. Needs a written reason, which the run summary records
+        type: string
+        default: ''
 
 concurrency:
   group: production-api
@@ -50,12 +54,64 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: bun scripts/inspect-api-production.ts
 
+  # The latest Share sender smoke on main that ran (not skipped) must be green, must have started after the
+  # serving API commit's deploy job finished, and must have run on that commit or a later one. Otherwise the
+  # deploy stops. `override_reason` skips the check and is recorded in the run summary.
+  smoke-gate:
+    if: github.ref == 'refs/heads/main' && !inputs.preflight_only && inputs.override_reason == ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a green smoke on the serving API
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          serving=$(curl -fsS -m 15 https://api.openkey.so/health | jq -er '.commit | select(test("^[0-9a-f]{40}$"))')
+          deploys="$RUNNER_TEMP/deploy-runs.ndjson"
+          : > "$deploys"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-api.yml/runs?branch=main&status=success&head_sha=${serving}&per_page=20" \
+            --jq '.workflow_runs[].id' | while read -r id; do
+              gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/jobs" \
+                | jq -c '{jobs: [.jobs[] | {name, conclusion, completed_at}]}' >> "$deploys"
+            done
+          smokes="$RUNNER_TEMP/smoke-runs.ndjson"
+          : > "$smokes"
+          for conclusion in success failure cancelled timed_out; do
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/share-sender-smoke.yml/runs?branch=main&status=${conclusion}&per_page=1" \
+              --jq '.workflow_runs[0] // empty | {id, status, conclusion, head_sha, run_started_at, html_url}' >> "$smokes"
+          done
+          jq -n --arg serving "$serving" --slurpfile d "$deploys" --slurpfile s "$smokes" \
+            '{serving: $serving, deployRuns: $d, smokeRuns: $s}' \
+            | node .github/scripts/share-smoke-gate.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+
   deploy:
-    if: github.ref == 'refs/heads/main' && !inputs.preflight_only
+    needs: smoke-gate
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && !inputs.preflight_only && (
+        needs.smoke-gate.result == 'success' ||
+        (needs.smoke-gate.result == 'skipped' && inputs.override_reason != '')
+      )
     runs-on: ubuntu-latest
     environment: production
     steps:
       - uses: actions/checkout@v4
+
+      - name: Record the smoke override
+        if: inputs.override_reason != ''
+        env:
+          OVERRIDE_REASON: ${{ inputs.override_reason }}
+        run: |
+          {
+            echo "### Share sender smoke skipped"
+            echo
+            echo "Run by ${GITHUB_ACTOR} with override_reason: ${OVERRIDE_REASON}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install Phala CLI
         run: npm install -g phala@1.1.22
