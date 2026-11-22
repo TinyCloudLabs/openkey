@@ -2,9 +2,10 @@
 # closed, so each can be a required check (docs/security/required-checks.md), and
 # deploy-api.yml / changesets.yml refuse to ship a commit where any is not green.
 #
-# - gitleaks: a pull request scans only its own commits; a push to main scans the
-#   whole history against the reviewed baseline (.gitleaksignore, by fingerprint)
-#   and .gitleaks.toml (allowlists for values public by construction). Rotate a
+# - gitleaks: a pull request scans only its own commits, with the baseline
+#   (.gitleaksignore) and config (.gitleaks.toml) read from its BASE commit, so a
+#   PR can't allowlist its own leak; baseline changes go in their own PR. A push to
+#   main scans the whole history against main's own baseline and config. Rotate a
 #   leaked value; never baseline it.
 # - Web artifact audit: the exact Cloudflare Pages build (`bun run build --filter
 #   @openkey/web`, which ends in `bun run audit:web`).
@@ -39,6 +40,10 @@ jobs:
       - name: Install pinned gitleaks
         run: node scripts/security/install-tool.mjs gitleaks "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
 
+      # Baseline and config come from the base commit, never from the PR. gitleaks always also
+      # reads .gitleaksignore from the directory it scans (on top of --gitleaks-ignore-path), so
+      # it scans a worktree checked out at the base commit; the history (BASE..HEAD) is shared.
+      # Fallbacks: an empty ignore file, and the default rules as an explicit config.
       - name: Scan the pull request's commits
         if: github.event_name == 'pull_request'
         env:
@@ -47,7 +52,19 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::missing base/head SHA" >&2; exit 1; }
-          gitleaks git --config .gitleaks.toml --log-opts="${BASE_SHA}..${HEAD_SHA}" --redact --no-banner --exit-code 1 .
+          base="$RUNNER_TEMP/gitleaks-base"
+          git worktree add --detach "$base" "$BASE_SHA"
+          [ -f "$base/.gitleaksignore" ] || : > "$base/.gitleaksignore"
+          config="$RUNNER_TEMP/gitleaks-base.toml"
+          if [ -f "$base/.gitleaks.toml" ]; then
+            cp "$base/.gitleaks.toml" "$config"
+          else
+            printf '[extend]\nuseDefault = true\n' > "$config"
+          fi
+          echo "baseline: $(grep -cvE '^\s*(#|$)' "$base/.gitleaksignore" || true) entries, config from ${BASE_SHA}"
+          cd "$base"
+          gitleaks git --config "$config" --gitleaks-ignore-path "$base/.gitleaksignore" \
+            --log-opts="${BASE_SHA}..${HEAD_SHA}" --redact --no-banner --exit-code 1 "$base"
 
       - name: Scan the full history
         if: github.event_name != 'pull_request'

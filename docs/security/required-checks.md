@@ -59,6 +59,9 @@ don't widen the allow-list without a security review.
   (test vectors, migration checksums, the public Phala app id, throwaway test keys). None is a
   live credential. `.gitleaks.toml` allowlists `did:key` identifiers, two well-known test
   private keys and migration checksum rows by exact shape.
+  A pull request is scanned with the `.gitleaksignore` and `.gitleaks.toml` of its base commit
+  (if absent, an empty baseline and the default rules), so a PR can't allowlist its own leak.
+  Baseline changes go in their own PR and take effect once it has merged.
 - `.trivyignore.yaml`: the 82 fixable CRITICAL/HIGH advisories in the production image of
   `d1d16d4f` (2026-11-22), each pinned to its package version by purl. They are known debt,
   not accepted risk: remove an entry when its upgrade lands.
