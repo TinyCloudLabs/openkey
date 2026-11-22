@@ -6,6 +6,7 @@ import {
   COVER_VISIBLE_MS,
   coverNotHonoured,
   createApproveVisibility,
+  sameReview,
   type VisibilityEntryLike,
   type VisibilityObserver,
   type VisibilityObserverFactory,
@@ -203,5 +204,40 @@ describe('which offers the tap holds back', () => {
   test('never on a page that is not framed', () => {
     const h = harness({ framed: false });
     expect(coverNotHonoured(covered, h.tracker)).toBe(false);
+  });
+});
+
+describe('whether a refetched offer is for the request that was shown', () => {
+  const shown = { input: '["req","key","message",["a"],null,[]]', signedMessage: 'bytes', renewalLeaseMs: null };
+
+  test('the same preview input, bytes and renewal lease continue the tap', () => {
+    expect(sameReview(shown, { ...shown })).toBe(true);
+  });
+
+  test('a different selection, message, key or chosen expiry in the input does not', () => {
+    for (const input of ['["req","key","message",["a","b"],null,[]]', '["req","key","other",["a"],null,[]]',
+      '["req","other-key","message",["a"],null,[]]', '["req","key","message",["a"],3600000,[]]']) {
+      expect(sameReview(shown, { ...shown, input })).toBe(false);
+    }
+  });
+
+  test('different sealed bytes do not, even for the same input', () => {
+    expect(sameReview(shown, { ...shown, signedMessage: 'other bytes' })).toBe(false);
+  });
+
+  test('a different renewal lease does not', () => {
+    expect(sameReview({ ...shown, renewalLeaseMs: null }, { ...shown, renewalLeaseMs: 60_000 })).toBe(false);
+    expect(sameReview({ ...shown, renewalLeaseMs: 60_000 }, { ...shown, renewalLeaseMs: 60_000 })).toBe(true);
+  });
+
+  test('the exact-byte offer continues only for the same key, message and origin', () => {
+    const exact = { input: '["key","message","https://cli.tinycloud.xyz"]', signedMessage: '', renewalLeaseMs: null };
+    expect(sameReview(exact, { ...exact })).toBe(true);
+    expect(sameReview(exact, { ...exact, input: '["key","message changed","https://cli.tinycloud.xyz"]' })).toBe(false);
+    expect(sameReview(exact, { ...exact, input: '["key","message","https://other.example"]' })).toBe(false);
+  });
+
+  test('no snapshot of what was shown never continues', () => {
+    expect(sameReview(null, shown)).toBe(false);
   });
 });

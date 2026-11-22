@@ -4,7 +4,7 @@ import { HOST } from './e2e-port';
 import { makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
 
 // A framed sign iframe honours the web flow's one-passkey cover only while the browser's intersection observer v2
-// reports Approve in plain view. Both tests run the REAL Chromium observer against the real page: the harness parent
+// reports Approve in plain view. Both tests run the real Chromium observer against the real page: the harness parent
 // frames /widget/embed/sign, the mocked preview waives the passkey with `flowCover: true` whenever the request names
 // the flow, and a real WebAuthn ceremony (virtual authenticator) answers the offer the API makes without it.
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';

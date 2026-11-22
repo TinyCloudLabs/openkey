@@ -16,7 +16,7 @@
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import { newWebSignFlowId, releaseWebSignFlow, webSignFlowHeaders } from '$lib/web-sign-flow';
-  import { coverNotHonoured, createApproveVisibility } from '$lib/approve-visibility';
+  import { coverNotHonoured, createApproveVisibility, sameReview, type ReviewSnapshot } from '$lib/approve-visibility';
   import Button from '$lib/components/ui/button.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
@@ -196,11 +196,16 @@
   let coverRefetch = $state<'preview' | 'exact' | null>(null);
   const coverFlowId = $derived(approveVisibility.coverUsable && !coverWithdrawn ? webFlowId : undefined);
   const coverHeaders = () => (coverFlowId ? webSignFlowHeaders(coverFlowId) : {});
-  function withdrawCover(previewed: boolean) {
+  // The request the owner saw when the cover was withdrawn: the continued tap signs only that.
+  let coverShown: ReviewSnapshot | null = null;
+  function withdrawCover(approved: HeldPreview | null) {
+    coverShown = {
+      input: approved?.input ?? exactBytePasskeyInput ?? '', signedMessage: approved?.signedMessage ?? '', renewalLeaseMs,
+    };
     coverWithdrawn = true;
     error = '';
-    coverRefetch = previewed ? 'preview' : 'exact';
-    if (previewed) invalidatePreviewForSelectionEdit();
+    coverRefetch = approved ? 'preview' : 'exact';
+    if (approved) invalidatePreviewForSelectionEdit();
     else exactBytePasskey = null;
   }
   const requester = originAuthority(origin);
@@ -1189,7 +1194,7 @@
     // A covered offer counts only while Approve has been in plain view. Before that, this tap is answered with the
     // passkey: the page stops naming the flow, fetches the offer again and goes on once it lands.
     if (coverNotHonoured(passkeyNeed, approveVisibility)) {
-      withdrawCover(approved !== null);
+      withdrawCover(approved);
       return;
     }
     signing = true;
@@ -1319,16 +1324,26 @@
     previewRevision++;
   }
 
-  // The fresh offer a withdrawn cover waits for: when it lands, and the host has applied the review's layout, the tap
-  // that withdrew the cover goes on to the passkey prompt; when its fetch fails the page shows the failure and the
-  // next tap tries again.
+  // The fresh offer a withdrawn cover waits for. When it lands for exactly the request the owner saw at the tap, and
+  // the host has applied the review's layout, that tap goes on to the passkey prompt. A request that differs stays on
+  // screen for a new tap, and a failed fetch shows the failure so that the next tap tries again.
   $effect(() => {
     const waiting = coverRefetch;
     if (waiting === null) return;
-    const landed = waiting === 'preview' ? currentPreview() !== null : exactByteGate.action === 'send';
+    const preview = waiting === 'preview' ? currentPreview() : null;
+    const landed = waiting === 'preview' ? preview !== null : exactByteGate.action === 'send';
     const failed = waiting === 'preview' ? !previewing && (error !== '' || refused) : exactBytePasskeyFetch === 'failed';
     if (!landed && !failed) return;
-    if (landed && v2 && !layoutReady) return;
+    if (landed) {
+      const fresh: ReviewSnapshot = {
+        input: preview?.input ?? exactBytePasskey?.input ?? '', signedMessage: preview?.signedMessage ?? '', renewalLeaseMs,
+      };
+      if (!sameReview(coverShown, fresh)) {
+        coverRefetch = null;
+        return;
+      }
+      if (v2 && !layoutReady) return;
+    }
     coverRefetch = null;
     if (landed) untrack(() => { void approveAndSign(); });
   });

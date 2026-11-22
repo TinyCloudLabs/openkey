@@ -106,10 +106,11 @@ type Shared = {
   signCalls: unknown[][];
   prompts: Array<ApprovalPasskeyNeed | null>;
   failFresh: boolean;
+  changeFresh: boolean;
 };
 const store = globalThis as unknown as { __cover: Shared };
 const shared = (): Shared => store.__cover;
-const reset = () => { store.__cover = { options: null, offerCalls: [], signCalls: [], prompts: [], failFresh: false }; };
+const reset = () => { store.__cover = { options: null, offerCalls: [], signCalls: [], prompts: [], failFresh: false, changeFresh: false }; };
 
 const KEY = { id: 'key_1', address: '0x1111111111111111111111111111111111111111', keyIndex: 0, keyType: 'MANAGED', label: 'Key' };
 const ASSERTION = { challengeToken: 'challenge-1', response: { id: 'credential-1' } };
@@ -493,7 +494,8 @@ async function withPreviewPage(
       const ids = request.selectedActionIds as string[];
       status = 200;
       answer = {
-        signedMessage: 'signed', previewApprovalToken: `approval-${++previews}`,
+        signedMessage: shared().changeFresh && !headers['x-openkey-passkey-flow'] ? 'signed-changed' : 'signed',
+        previewApprovalToken: `approval-${++previews}`,
         previewApprovalExpiresAt: new Date(Date.now() + 60_000).toISOString(),
         authorizationContextToken: 'context-token', selectedActionKeys: ids,
         permissions: ids.map((id) => {
@@ -508,7 +510,7 @@ async function withPreviewPage(
     if (name === 'authorize-sign') {
       status = 200;
       answer = {
-        signature: `0x${'11'.repeat(65)}`, address: ADDR, signedMessage: 'signed', selectedActionKeys: ['key-1'],
+        signature: `0x${'11'.repeat(65)}`, address: ADDR, signedMessage: shared().changeFresh ? 'signed-changed' : 'signed', selectedActionKeys: ['key-1'],
         permissions: [{ service: 'tinycloud.kv', space: SPACE, path: 'notes/', actions: ['tinycloud.kv/get'] }],
       };
     }
@@ -609,6 +611,44 @@ for (const { name } of PAGES) {
         expect(named('authorize-sign-preview')[1]!.headers[HEADER]).toBeUndefined();
         expect(named('authorize-sign')).toEqual([]);
         expect(shared().prompts).toEqual([]);
+      });
+    });
+
+    test('a fresh preview for the same request continues the tap: one tap, one ceremony, one approval of the second preview', async () => {
+      await withPreviewPage(name, async ({ tap, named }) => {
+        report(true);
+        advance(499);
+        tap();
+        await untilTimers(() => named('authorize-sign').length === 1, 'the approval');
+
+        expect(named('authorize-sign-preview')[0]!.body.selectedActionIds).toEqual(named('authorize-sign-preview')[1]!.body.selectedActionIds);
+        expect(shared().prompts).toEqual([REQUIRED]);
+        expect(named('authorize-sign')[0]!.body.previewApprovalToken).toBe('approval-2');
+      });
+    });
+
+    test('a fresh preview whose bytes differ from the one shown at the tap is not signed on that tap: the new request waits for a new tap', async () => {
+      await withPreviewPage(name, async ({ approve, tap, named }) => {
+        shared().changeFresh = true;
+        report(true);
+        advance(499);
+        tap();
+        await untilTimers(() => named('authorize-sign-preview').length === 2, 'the fresh preview');
+        await untilTimers(() => !approve().disabled, 'Approve to be ready again');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        expect(named('authorize-sign')).toEqual([]);
+        expect(shared().prompts).toEqual([]);
+        expect(named('authorize-sign-preview')[1]!.headers[HEADER]).toBeUndefined();
+
+        tap();
+        await untilTimers(() => named('authorize-sign').length === 1, 'the approval after the new tap');
+
+        expect(shared().prompts).toEqual([REQUIRED]);
+        expect(named('authorize-sign')[0]!.body.previewApprovalToken).toBe('approval-2');
+        expect(named('authorize-sign')[0]!.body.passkeyAssertion).toEqual(ASSERTION);
+        expect(named('authorize-sign')[0]!.headers[HEADER]).toBeUndefined();
+        expect(named('authorize-sign-preview')).toHaveLength(2);
       });
     });
   });

@@ -898,10 +898,12 @@ sign-in made **for this sign request** counts as that request's approval passkey
   report still says so. The 500 ms restarts whenever Approve becomes actionable again.
 - When a tap arrives on a `flowCover` offer without that, the page asks for the passkey on that tap: it stops naming
   the flow, fetches the offer again without the flow header, and runs the passkey prompt for the same tap (in the
-  iframe once the host has applied the review's layout). If that
-  fetch fails, the page shows the offer failure and the next tap tries again. A browser without observer v2
-  (Safari, Firefox) never names the flow in a frame, so it asks for the passkey at once. A page that is not framed,
-  such as the pop-up window, is not gated.
+  iframe once the host has applied the review's layout). The tap goes on only when the fresh offer is for exactly
+  the request shown at the tap: the same key, message and selection, chosen expiry, allowed extra permissions,
+  sealed bytes and renewal lease. A different request is left on screen and waits for a new tap, which then asks for
+  the passkey. If the fetch fails, the page shows the offer failure and the next tap tries again. A browser without
+  observer v2 (Safari, Firefox) never names the flow in a frame, so it asks for the passkey at once. A page that is
+  not framed, such as the pop-up window, is not gated.
 - The observer samples at most every 100 ms, so an element placed over Approve between two samples is not seen
   until the next one, so that 100 ms is a gap the check cannot see. Observer v2 is available in Chrome only.
 - The web server answers `/auth/login` with `Content-Security-Policy: frame-ancestors 'none'`
