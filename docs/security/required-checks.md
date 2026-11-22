@@ -22,7 +22,7 @@ None of them has a `paths:` filter, so each reports on every PR and can be requi
 
 - **Merge to main**: the ruleset below (Amos applies it).
 - **API deploy** (`deploy-api.yml`, `deploy` job) and **npm publish / version PR**
-  (`changesets.yml` `release`, `manual-release.yml` `release`, `republish.yml` `republish`):
+  (`changesets.yml` `release`, `republish.yml` `republish`):
   a step before any build, publish or production change (and never skipped, even with the
   deploy's `override_reason`) runs
   `.github/scripts/require-green.mjs`, which fails unless every check in
@@ -76,14 +76,17 @@ from each release's checksums file.
 
 ## Ruleset change for Amos
 
-Today the main ruleset (id `27215997`) only blocks force-push and deletion; no check is required.
+Amos applied both steps on 2026-11-22 at 11:14Z, on Naomi's GO; the steps below are the record.
+Before that the main ruleset (id `27215997`) only blocked force-push and deletion.
 Naomi's rule: a check becomes required only after it has passed once on main. The first six
 checks already have (main `d1d16d4f`, 2026-11-22, except `Major release sign-off`, which is
 PR-only and passes on every PR). The three security checks have not, so this is two steps.
 
 The required-status-checks rule applies to every update of main, so it also blocks a direct push
 whose commit lacks green checks. `integration_id` 15368 is GitHub Actions: a check with the same
-name from another app doesn't count.
+name from another app doesn't count. So no workflow may push to main: releases go through the
+changesets version PR. `manual-release.yml`, which pushed its version commit straight to main and
+had never run, was removed for this.
 
 The ruleset keeps `bypass_actors: []`. No agent merges with `--admin` or uses a ruleset bypass to
 get past red or pending checks. The one exception is a rollback, on Naomi's word. Secret scanning
@@ -205,11 +208,11 @@ Jobs that read deploy tokens:
 | job | secrets | environment today |
 |---|---|---|
 | deploy-api.yml `preflight`, `deploy`; tc-492-production-cutover.yml; baseline/backfill/drop/inspect/provision/register workflows | `DATABASE_URL`, `PHALA_CLOUD_API_KEY`, `DOCKER_REGISTRY_*` | `production` |
-| changesets.yml `release`, manual-release.yml `release`, republish.yml `republish` | `NPM_TOKEN`, `GH_TOKEN` | **none** |
+| changesets.yml `release`, republish.yml `republish` | `NPM_TOKEN`, `GH_TOKEN` | **none** |
 
 The gap: the repo-level `DATABASE_URL`, `PHALA_CLOUD_API_KEY` and `DOCKER_REGISTRY_*` copies, and
 the org-level `PHALA_CLOUD_API_KEY`, `NPM_TOKEN` and `GH_TOKEN`, are readable by a workflow on any
-branch pushed to this repo. Fork PRs get no secrets. The three npm publish jobs run with no
+branch pushed to this repo. Fork PRs get no secrets. The two npm publish jobs run with no
 environment at all.
 
 ### After
@@ -235,7 +238,7 @@ environment at all.
    ```
 3. **Then land** the follow-up commit `ci: npm publish jobs run in the main-only npm-production
    environment`, a separate PR opened after step 1. It adds `environment: npm-production` to the
-   three npm jobs. It must not land before step 1: when a workflow references an environment
+   two npm jobs. It must not land before step 1: when a workflow references an environment
    that doesn't exist, GitHub creates it with no branch policy.
 4. **Remove the repo-level copies**, only after a `deploy-api.yml` deploy and a Release run have
    succeeded with env secrets alone:
