@@ -169,6 +169,9 @@ const CREDENTIALS_UNCONFIRMED =
   "Your credentials space can be hosted only on a node OpenKey can confirm as a TinyCloud node, and it can't confirm this one. Only the app that sent you here can fix this. You can decline.";
 const CREDENTIALS_CHECK_FAILED =
   "OpenKey couldn't get an answer from this node to check it. That alone doesn't mean anything is wrong with it. Try again, or decline.";
+// O4d: the /delegate page names whoever sent the link, not an app.
+const CREDENTIALS_UNCONFIRMED_LINK =
+  "Your credentials space can be hosted only on a node OpenKey can confirm as a TinyCloud node, and it can't confirm this one. Only whoever sent you this link can fix this. You can decline.";
 const selectionOf = (model: Review) => new Set(model.permissions.flatMap((grant) => grant.actions.map((action) => action.id)));
 
 interface Mounted {
@@ -666,6 +669,7 @@ describe.each([['popup', PopupAdapter], ['iframe', IframeAdapter]])('%s adapter:
     expect(status()).toBe('Not confirmed as a known TinyCloud node');
     expect(retry()).toBeNull();
     expect(mounted.approve.disabled).toBe(true);
+    expect(text(mounted.target.querySelector('[data-testid="node-unconfirmed-reason"]'))).toBe(CREDENTIALS_UNCONFIRMED);
   });
 
   test('a node that never answers is the failed state once the 5 s check ends: Approve stays disabled', async () => {
@@ -727,7 +731,7 @@ describe('/delegate (CLI adapter) host request', () => {
     mounted = mountCli(credentialsModel());
     expect(mounted.approve.disabled).toBe(true);
     expect(text(mounted.target.querySelector('.host-node-status'))).toBe('Not confirmed as a known TinyCloud node');
-    expect(text(mounted.target.querySelector('[data-testid="node-unconfirmed-reason"]'))).toBe(CREDENTIALS_UNCONFIRMED);
+    expect(text(mounted.target.querySelector('[data-testid="node-unconfirmed-reason"]'))).toBe(CREDENTIALS_UNCONFIRMED_LINK);
     expect(mounted.approve.getAttribute('aria-describedby')).toBe('node-unconfirmed-reason');
     trustedClick(mounted.approve);
     mounted.approve.removeAttribute('disabled');

@@ -133,6 +133,8 @@
     peerRecognition?: PeerRecognitionState | null;
     /** Runs the node lookup again; offered with "Try again" when the lookup failed for the `credentials` space. */
     onRetryNodeCheck?: () => void;
+    /** Who can fix an unconfirmed `credentials` node: the app (widget surfaces) or the sender of a `/delegate` link. */
+    requestedVia?: "app" | "link";
     /**
      * The approval expiry the user chose, in ms from approval; null keeps what
      * the app asked for. The line shows only on surfaces that pass
@@ -196,6 +198,7 @@
     showSigner = false,
     peerRecognition = null,
     onRetryNodeCheck,
+    requestedVia = "app",
     expiryMs = null,
     onExpiryChange,
     expiryBounded = false,
@@ -564,6 +567,8 @@
   const NODE_CHECK_FAILED = "Couldn't check this node";
   const CREDENTIALS_NODE_UNCONFIRMED_REASON =
     "Your credentials space can be hosted only on a node OpenKey can confirm as a TinyCloud node, and it can't confirm this one. Only the app that sent you here can fix this. You can decline.";
+  const CREDENTIALS_NODE_UNCONFIRMED_LINK_REASON =
+    "Your credentials space can be hosted only on a node OpenKey can confirm as a TinyCloud node, and it can't confirm this one. Only whoever sent you this link can fix this. You can decline.";
   const CREDENTIALS_NODE_CHECK_FAILED_REASON =
     "OpenKey couldn't get an answer from this node to check it. That alone doesn't mean anything is wrong with it. Try again, or decline.";
 
@@ -1327,7 +1332,9 @@
     <!-- Below the button row on a wide screen; directly under Approve once the buttons stack (see the media query). -->
     {#if credentialsNodeBlocked}
       <p class="approve-blocked node-reason" id="node-unconfirmed-reason" data-testid="node-unconfirmed-reason">
-        {nodeCheckFailed ? CREDENTIALS_NODE_CHECK_FAILED_REASON : CREDENTIALS_NODE_UNCONFIRMED_REASON}
+        {nodeCheckFailed
+          ? CREDENTIALS_NODE_CHECK_FAILED_REASON
+          : requestedVia === "link" ? CREDENTIALS_NODE_UNCONFIRMED_LINK_REASON : CREDENTIALS_NODE_UNCONFIRMED_REASON}
       </p>
     {/if}
     <button
