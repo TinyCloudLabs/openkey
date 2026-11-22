@@ -8,6 +8,7 @@
 // answered by page.route; no API server runs.
 
 import { test, expect, type Page, type Route } from '@playwright/test';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const json = (route: Route, body: unknown, status = 200) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -52,6 +53,7 @@ async function mockOAuthSignIn(page: Page, passkeys: unknown[]) {
     if (path === '/api/auth/oauth2/public-client') return json(route, { client_name: 'Test App' });
     return json(route, { error: `unmocked ${path}` }, 404);
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return { calls, serverRedirectUrl: () => serverRedirectUrl };
 }
 

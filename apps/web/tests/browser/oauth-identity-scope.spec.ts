@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const sessionBody = {
   session: { id: 'session-1', userId: 'user-1', expiresAt: new Date(Date.now() + 3_600_000).toISOString() },
@@ -21,6 +22,7 @@ async function openConsent(page: Page, scopes: string) {
     if (path.endsWith('/oauth2/public-client')) return json(route, { client_name: 'Sample App' });
     return json(route, {});
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto(`/oauth/consent?client_id=sample-client&scope=${encodeURIComponent(scopes)}&sig=test`);
   await expect(page.getByRole('heading', { name: 'Sample App' })).toBeVisible();
 }
@@ -75,6 +77,7 @@ test('identity app settings show the connected app and one-step disconnect dialo
     }
     return json(route, {});
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 
   await page.goto('/dashboard/settings');
   const section = page.locator('#connected-identity-apps');

@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { ORIGIN } from './e2e-port';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 // TC-3442: Settings chooses which approvals need a passkey. Asking on more approvals saves at once; asking on fewer
 // goes through the passkey prompt and sends its assertion with the change. Without a passkey that can confirm
@@ -41,6 +42,7 @@ async function setup(page: Page, initial: { mode: string; stepUpPasskeys: number
     if (path.includes('tinycloud')) return json(route, { tinyCloudManageKeyEnabled: true, mode: 'APP_MANAGED', policyEpoch: 0, apps: [], activity: [] });
     return json(route, {});
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return calls;
 }
 

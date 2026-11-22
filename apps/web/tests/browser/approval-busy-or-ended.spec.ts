@@ -5,6 +5,7 @@
 // the 390px phone width.
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const id = 'abcdefghijklmnopqrstuvwxyz';
 const fragment = `#v=4&k=${'A'.repeat(43)}&c=bafkreia${'a'.repeat(52)}`;
@@ -61,6 +62,7 @@ async function serve(page: Page, options: { delegate?: { status: number; body: u
     if (url.pathname === '/api/delegate/prepare') return json(route, 200, prepared());
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 }
 
 const approve = (page: Page) => page.getByRole('button', { name: 'Approve', exact: true });

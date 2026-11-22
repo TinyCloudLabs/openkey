@@ -25,12 +25,16 @@ FROM deps AS builder
 COPY apps/web ./apps/web
 COPY packages/capability-review ./packages/capability-review
 COPY packages/sdk/src/approval-copy ./packages/sdk/src/approval-copy
+# The web build reads whether the Terms release is set.
+COPY apps/api/src/terms-release.json ./apps/api/src/terms-release.json
 # Baked into the client bundle at build time (see apps/web/src/lib/api.ts,
 # apps/web/src/lib/auth-client.ts). Must point at wherever the OpenKey API
 # container is reachable from the *browser*, not the Docker network.
 ARG VITE_API_URL
 ENV VITE_API_URL=${VITE_API_URL}
-RUN cd apps/web && bun run build
+# `vite build` directly: `bun run build` adds the publish-time artifact audit (`bun run audit:web`),
+# which needs the repo's scripts/ and .gitleaks.toml that this local-only image doesn't copy.
+RUN cd apps/web && bunx vite build
 
 FROM base AS runner
 ENV NODE_ENV=production

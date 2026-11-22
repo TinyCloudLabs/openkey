@@ -1,5 +1,6 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 // TC-3442: Sign Data answers the API's `/sign-typed-data/passkey` offer when the account's setting asks for it, and the
 // signature request carries the assertion. A passkey refusal shows the API's words and the next tap answers a fresh offer.
@@ -33,6 +34,7 @@ async function setup(page: Page, surface: string, opts: { required: boolean; ref
     }
     return json(route, {});
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('WebAuthn.enable');
   const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', { options: {

@@ -70,7 +70,8 @@
   import { renewalStartsTicked } from '$lib/renewal-default';
   import { ServerReplyError } from '$lib/server-reply';
   import { compareWallets, shortWallet, stopKeyName } from '$lib/approval-stop';
-  import { isTermsRequired, sendToTerms } from '$lib/terms';
+  import { isTermsRequired } from '$lib/terms';
+  import { termsRefused } from '$lib/terms-gate';
 
   interface EIP6963ProviderInfo {
     uuid: string;
@@ -167,7 +168,7 @@
 
   async function readDelegateFailure(response: Response) {
     const body = await response.json().catch(() => null);
-    if (isTermsRequired(response.status, body)) sendToTerms();
+    if (isTermsRequired(response.status, body)) termsRefused();
     const owner = body?.requestedSpaceOwner;
     const passkeyMessage = isPasskeyApprovalRefusal(body) && typeof body?.error === 'string' ? body.error : undefined;
     return new DelegateResponseError(
@@ -1716,6 +1717,7 @@
       }
       if (!response.ok) {
         const body: unknown = await response.json().catch(() => null);
+        if (isTermsRequired(response.status, body)) termsRefused();
         const fields = body && typeof body === 'object' ? body as { error?: unknown; code?: unknown } : null;
         const code = safeCode(fields?.error) ?? fields?.code;
         throw new DeviceRelayDeliveryError(response.status, code);
