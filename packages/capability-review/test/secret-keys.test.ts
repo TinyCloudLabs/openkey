@@ -177,8 +177,15 @@ describe("the 7-day cap on secrets", () => {
     expect(approvalLifetimeCapSeconds([entry(OPENAI_KEY, [DECRYPT])], 3600)).toBe(3600);
   });
 
+  it("caps a request that creates a key for a secret or under secrets/ at 7 days, as it caps a decrypt", () => {
+    for (const path of [OPENAI_KEY, ALL_SECRETS, `${NETWORK}/secrets/scoped/work/api_key`]) {
+      expect(approvalLifetimeCapSeconds([entry(path, [CREATE])], MONTH), path).toBe(SECRET_GRANT_MAX_SECONDS);
+      expect(approvalLifetimeCapSeconds([entry(path, [CREATE])], 3600), path).toBe(3600);
+    }
+  });
+
   it("leaves every other request at what it signed", () => {
-    for (const [path, actions] of [[OPENAI_KEY, [CREATE]], [NETWORK, [CREATE]], [`${NETWORK}/share/`, [DECRYPT]], [`urn:tinycloud:encryption:${OWNER}:team/secrets/x`, [DECRYPT]]] as const) {
+    for (const [path, actions] of [[NETWORK, [CREATE]], [`${NETWORK}/share/`, [DECRYPT]], [`urn:tinycloud:encryption:${OWNER}:team/secrets/x`, [DECRYPT]]] as const) {
       expect(approvalLifetimeCapSeconds([entry(path, [...actions])], MONTH), path).toBe(MONTH);
     }
     expect(approvalLifetimeCapSeconds([{ service: "tinycloud.kv", space: SECRETS_SPACE, path: "vault/secrets/OPENAI_API_KEY", actions: [KV_GET] }], MONTH)).toBe(MONTH);

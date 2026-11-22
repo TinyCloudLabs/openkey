@@ -274,9 +274,12 @@ describe('POST /sign (session principal, Auto-Sign) refuses signed bytes over 7 
 // refuses but that reads as one of them once lower-cased and percent-decoded. The frame takes each (and the page shows
 // the all-secrets card); each is held to 7 days.
 const ALL_SECRETS_SHAPES: Array<[string, Record<string, string[]>]> = [
-  '/secrets', '/secrets/scoped/work/', '/secrets/scoped/', '/Secrets/', '/SECRETS/', '/SECRETS/x', '/Secrets/openai_api_key',
-  '/secrets%2F', '/secrets%2f', '/secrets%2Fopenai_api_key', '/secrets%2fx',
-].map((rest) => [`decrypt on default${rest}`, { [urn(rest)]: [`${E}decrypt`] }]);
+  ...[
+    '/secrets', '/secrets/scoped/work/', '/secrets/scoped/', '/Secrets/', '/SECRETS/', '/SECRETS/x', '/Secrets/openai_api_key',
+    '/secrets%2F', '/secrets%2f', '/secrets%2Fopenai_api_key', '/secrets%2fx',
+  ].map((rest): [string, Record<string, string[]>] => [`decrypt on default${rest}`, { [urn(rest)]: [`${E}decrypt`] }]),
+  ['key.create on default/secrets/', { [urn('/secrets/')]: [`${E}key.create`] }],
+];
 
 describe('every shape of a grant on all secrets', () => {
   test.each(ALL_SECRETS_SHAPES)('%s: /authorize-sign-prepare offers it as a warned permission', async (_name, raw) => {

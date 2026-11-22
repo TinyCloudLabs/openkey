@@ -24,6 +24,7 @@ const secret = {
 const network = `urn:tinycloud:encryption:${OWNER}:default`;
 const secretKey = `${network}/secrets/openai_api_key`;
 const keyDecrypt = { service: 'tinycloud.encryption', space: 'encryption', path: secretKey, ability: DECRYPT, resource: secretKey };
+const keyCreate = { service: 'tinycloud.encryption', space: 'encryption', path: secretKey, ability: 'tinycloud.encryption/key.create', resource: secretKey };
 const networkDecrypt = { service: 'tinycloud.encryption', space: 'encryption', path: network, ability: DECRYPT, resource: network };
 
 function respond(route: Route, body: unknown, status = 200) {
@@ -160,6 +161,17 @@ test('an app that signs 30 days for a secret gets 7 days at most', async ({ page
   const fold = await openFold(page);
   await typeTime(fold, '8d');
   await expect(fold.getByRole('alert')).toHaveText('This approval can last up to 7 days.');
+  expect(expiries.at(-1)).toBe(`${7 * DAY}s`);
+});
+
+test('an app that signs 30 days to create a key for a secret gets 7 days at most', async ({ page }) => {
+  const expiries = await openReview(page, { grants: [secret, keyCreate], grantLifetimeSeconds: 30 * DAY });
+  await expect(approve(page)).toBeEnabled();
+  const fold = await openFold(page);
+  await typeTime(fold, '8d');
+  await expect(fold.getByRole('alert')).toHaveText('This approval can last up to 7 days.');
+  await typeTime(fold, '7d');
+  await expect(fold.getByRole('alert')).toHaveCount(0);
   expect(expiries.at(-1)).toBe(`${7 * DAY}s`);
 });
 

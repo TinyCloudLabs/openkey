@@ -14,6 +14,7 @@ const OWNER = '0xA8763f2b67aa9C807d2277a698cb071e3D86204A';
 const NETWORK = `urn:tinycloud:encryption:did:pkh:eip155:1:${OWNER}:default`;
 const HOST = 'https://node.tinycloud.test';
 const DECRYPT = 'tinycloud.encryption/decrypt';
+const CREATE = 'tinycloud.encryption/key.create';
 
 function fixture(permissions: unknown[], grantLifetimeSeconds = 30 * 86_400) {
   const jwk = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
@@ -51,6 +52,20 @@ describe('approval request lifetime for secrets (TC-3800)', () => {
   ] as const) {
     test(`a request that signed 30 days and decrypts ${name} is refused past 7 days`, async () => {
       const f = fixture([secretRead, decrypt]);
+      await expect(f.window({ expiryMs: 7 * DAY_MS })).resolves.toBeDefined();
+      await expect(f.window({ signedSiwe: f.siwe(7 * DAY_MS) })).resolves.toBeDefined();
+      await expect(f.window({ expiryMs: 7 * DAY_MS + 1000 })).rejects.toMatchObject({ code: 'request_binding' });
+      await expect(f.window({ signedSiwe: f.siwe(8 * DAY_MS) })).rejects.toMatchObject({ code: 'request_binding' });
+    });
+  }
+
+  // `key.create` on secrets is held to 7 days on every other path, so a signed approval request holds it too.
+  for (const [name, create] of [
+    ['every secret', { ...secretKey, path: `${NETWORK}/secrets/`, actions: [CREATE] }],
+    ['a secret\'s own key', { ...secretKey, actions: [CREATE] }],
+  ] as const) {
+    test(`a request that signed 30 days and creates a key for ${name} is refused past 7 days`, async () => {
+      const f = fixture([secretRead, create]);
       await expect(f.window({ expiryMs: 7 * DAY_MS })).resolves.toBeDefined();
       await expect(f.window({ signedSiwe: f.siwe(7 * DAY_MS) })).resolves.toBeDefined();
       await expect(f.window({ expiryMs: 7 * DAY_MS + 1000 })).rejects.toMatchObject({ code: 'request_binding' });

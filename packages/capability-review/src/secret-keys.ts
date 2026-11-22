@@ -193,11 +193,12 @@ export function decryptsSecrets(entries: readonly SecretReachEntry[]): boolean {
 
 /**
  * The longest a signed approval request may last: what its requester signed, but never more than
- * `SECRET_GRANT_MAX_SECONDS` when any of its entries decrypts secrets (`entryDecryptsSecrets`, a whole network
- * included). The page offers no more and the server refuses more.
+ * `SECRET_GRANT_MAX_SECONDS` when it may `decrypt` or `key.create` on a key or prefix under `secrets/`, or `decrypt` a
+ * whole network (`secretLifetimeCapApplies`, the rule every other path holds, with the network always on here). The
+ * page offers no more and the server refuses more.
  */
 export function approvalLifetimeCapSeconds(entries: readonly SecretReachEntry[], signedSeconds: number): number {
-  return decryptsSecrets(entries) ? Math.min(signedSeconds, SECRET_GRANT_MAX_SECONDS) : signedSeconds;
+  return secretLifetimeCapApplies(entries, { networkDecrypt: true }) ? Math.min(signedSeconds, SECRET_GRANT_MAX_SECONDS) : signedSeconds;
 }
 
 /**
