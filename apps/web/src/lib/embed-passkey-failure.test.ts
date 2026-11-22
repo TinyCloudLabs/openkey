@@ -16,6 +16,7 @@ describe('passkeyFailureText', () => {
   test('says a passkey request that ran out timed out', () => {
     expect(passkeyFailureText({ error: 'Challenge token not found or expired' }, 400)).toBe(PASSKEY_REQUEST_EXPIRED_TEXT);
     expect(passkeyFailureText({ error: 'Challenge token expired' }, 400)).toBe(PASSKEY_REQUEST_EXPIRED_TEXT);
+    expect(passkeyFailureText({ code: 'CHALLENGE_NOT_FOUND', message: 'Challenge not found' }, 400)).toBe(PASSKEY_REQUEST_EXPIRED_TEXT);
   });
 
   test("uses the API's own words for any other error", () => {

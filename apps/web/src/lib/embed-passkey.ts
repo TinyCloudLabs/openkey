@@ -214,13 +214,14 @@ export const PASSKEY_REQUEST_EXPIRED_TEXT = 'The passkey request timed out. Tap 
 
 /**
  * What the frame says when a passkey call is refused. Plain words for a passkey the account does not have
- * (`PASSKEY_NOT_FOUND`) and for a passkey request that ran out (the API's own "Challenge token ..." replies); else the
+ * (`PASSKEY_NOT_FOUND`) and for a passkey request that ran out (`CHALLENGE_NOT_FOUND`, or the API's own "Challenge token ..." replies); else the
  * server's own words from `error` (the API's replies) or `message` (Better Auth's replies); else `HTTP <status>` with
  * the reply's `code` when it has one. Every tap on Passkey asks the API for a fresh challenge.
  */
 export function passkeyFailureText(body: unknown, status: number): string {
   const reply = (body && typeof body === 'object' ? body : {}) as { error?: unknown; message?: unknown; code?: unknown };
   if (reply.code === 'PASSKEY_NOT_FOUND') return PASSKEY_NOT_KNOWN_TEXT;
+  if (reply.code === 'CHALLENGE_NOT_FOUND') return PASSKEY_REQUEST_EXPIRED_TEXT;
   if (typeof reply.error === 'string' && reply.error.startsWith('Challenge token ')) return PASSKEY_REQUEST_EXPIRED_TEXT;
   for (const words of [reply.error, reply.message]) {
     if (typeof words === 'string' && words.trim() !== '') return words;
