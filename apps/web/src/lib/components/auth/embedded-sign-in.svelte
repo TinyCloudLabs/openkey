@@ -9,6 +9,7 @@
     embedVerifyEmailOtp,
     isEmbedContext,
   } from '$lib/embed-passkey';
+  import { webSignFlowHeaders } from '$lib/web-sign-flow';
   import {
     loadConfiguredSocialProviders,
     signInWithSocialPopup,
@@ -28,6 +29,8 @@
     passkeysSupported?: boolean;
     /** Opens account recovery; offered when an email has no account. */
     onrecover?: () => void;
+    /** The sign page's own flow id: a passkey sign-in made here covers that request's Approve. */
+    flowId?: string;
   }
 
   let {
@@ -37,6 +40,7 @@
     onuseexternalwallet,
     passkeysSupported = true,
     onrecover,
+    flowId,
   }: Props = $props();
 
   type BusyAction = 'send-email' | 'verify-email' | 'create-account' | 'passkey' | SocialProviderId;
@@ -109,9 +113,9 @@
     error = '';
     try {
       if (isEmbedContext()) {
-        await embedSignInPasskey();
+        await embedSignInPasskey(flowId ? webSignFlowHeaders(flowId) : undefined);
       } else {
-        const result = await authClient.signIn.passkey();
+        const result = await authClient.signIn.passkey(flowId ? { fetchOptions: { headers: webSignFlowHeaders(flowId) } } : undefined);
         if (result.error) {
           error = authErrorMessage(result.error, 'Passkey sign-in failed');
           return;

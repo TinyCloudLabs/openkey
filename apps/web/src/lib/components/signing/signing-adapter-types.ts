@@ -19,6 +19,9 @@
 // non-authorization concerns; those never enter the adapter and never
 // enter the parity test.
 
+import type { ApproveVisibility } from '$lib/approve-visibility';
+import type { ClaimedPresentationView } from "$lib/claimed-presentation";
+
 /** The renewal checkbox (TC-2933), offered only where the requester signed a renewal request. */
 export interface RenewalChoice {
   /** The lease the owner chose, in ms from approval; null when the box is unticked. */
@@ -112,6 +115,8 @@ export interface CliSigningTransport {
 export interface WidgetSigningTransport {
   /** Set once the server has refused this request for good: Approve is off and this is shown in its place. */
   approveBlockedReason?: string | null;
+  /** Reports whether Approve is in plain view, for the one-passkey cover; see `approve-visibility.ts`. */
+  approveVisibility?: ApproveVisibility;
   /**
    * The TinyCloud node the request names (the sign request's `host`), or empty when it names none. The host
    * approval looks the node key up only there, and only if it is a known node (TC-2309).
@@ -128,6 +133,9 @@ export interface WidgetSigningTransport {
 
   /** True while a current, unexpired token sealed to the visible selection is held. */
   previewReady: boolean;
+
+  /** True while the passkey offer Approve needs is still being fetched: Approve waits, as it does for a preview. */
+  passkeyPending?: boolean;
 
   /** Sign the ready sealed preview, or the original bytes on the legacy path. */
   approveAndSign: () => void | Promise<void>;
@@ -181,8 +189,8 @@ export interface WidgetSigningTransport {
   renewal?: RenewalChoice;
 
   /**
-   * The warning screen for extra permissions (TC-2927): decrypt or key creation on the encryption network, or on
-   * keys outside the app's own area. Set by the signing pages that carry the owner's decision to the server.
+   * The warning screen for extra permissions (TC-2927): decrypt, key creation, or blocking and unblocking keys on the
+   * encryption network, or on keys outside the app's own area. Set by the signing pages that carry the owner's decision to the server.
    * `splittable` is false on the exact-byte path, where the request can only be approved or cancelled whole.
    * `onDecide` receives the action ids the owner allowed and must make the next preview (or sign) carry them.
    */
@@ -190,4 +198,10 @@ export interface WidgetSigningTransport {
     splittable: boolean;
     onDecide: (allowed: string[]) => void;
   };
+
+  /**
+   * What the app says about a plain `signMessage()` request, already cleaned and decided by `claimedPresentation`.
+   * Display-only: the approval shows it under the verified origin and nothing here reaches the signer or the API.
+   */
+  claimedPresentation?: ClaimedPresentationView | null;
 }

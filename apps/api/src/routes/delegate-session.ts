@@ -21,6 +21,7 @@ import {
 } from './delegate-validation';
 import { logPermissionEntryUnknownFields } from '../log';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
+import { DEVICE_FLOW_ABILITIES, DEVICE_SECRETS_REFUSAL } from '../services/device-flow-abilities';
 
 export type DelegationJwk = { kty: string; crv: string; x: string };
 export type AbilitiesMap = Record<string, Record<string, string[]>>;
@@ -93,25 +94,47 @@ export interface DelegationPermissionEntry {
 // Default requester for CLI links that do not supply an explicit origin.
 export const SIWE_DOMAIN = 'cli.tinycloud.xyz';
 
-// Capability URNs come from the TC-112 registry constants published by
-// @tinycloud/bootstrap. Note: tinycloud.sql/export is deliberately absent —
-// it was never a node-dispatched ability (SQL export ops are authorized as
-// sql/read) and js-sdk 2.6.0's exportDb mints sql/read, so granting it was
-// a dead no-op (TC-114).
-export const DEFAULT_ABILITIES: AbilitiesMap = {
-  kv: {
-    '': [KV.PUT, KV.GET, KV.DEL, KV.LIST, KV.METADATA],
-  },
-  sql: {
-    '': [SQL.READ, SQL.WRITE, SQL.ADMIN],
-  },
-  capabilities: {
-    '': [CAPABILITIES.READ],
-  },
-};
+/** App id of the own folder when the request has no usable host name. Same as the SDK. */
+export const GENERIC_APP_ID_WITHOUT_HOST = 'node.app';
 
-export function defaultSessionAbilities(spaceId: string): SessionAbilities {
-  return { spaceAbilities: { [spaceId]: DEFAULT_ABILITIES }, rawAbilities: Object.create(null) };
+const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/**
+ * The app id for a request from `host`: the host name reversed
+ * (`notes.example.com` → `com.example.notes`), port dropped.
+ * {@link GENERIC_APP_ID_WITHOUT_HOST} when there is no usable host name.
+ *
+ * This copies `genericAppId` in js-sdk `packages/sdk-core/src/owner-access.ts`.
+ * The API pins an sdk-core that does not export it yet. Change both together.
+ */
+export function genericAppId(host: string | null | undefined): string {
+  const name = host?.trim().toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '');
+  if (!name) return GENERIC_APP_ID_WITHOUT_HOST;
+  const labels = name.split('.');
+  if (!labels.every((label) => HOST_LABEL.test(label))) return GENERIC_APP_ID_WITHOUT_HOST;
+  return labels.reverse().join('.');
+}
+
+/**
+ * What a request that names no permissions gets: its own folder,
+ * `applications/<app id>/`, where the app id comes from the SIWE domain. This
+ * is the same set as the SDK's generic manifest (`genericAppManifest` in
+ * js-sdk sdk-core `owner-access.ts`, standard tier in `manifest.ts`): kv
+ * get/put/del/list/metadata and sql read/write on the folder, plus
+ * capabilities read on the `applications` space. Nothing else.
+ */
+export function ownFolderPermissions(domain: string): DelegationPermissionEntry[] {
+  const folder = `${genericAppId(domain)}/`;
+  return [
+    { service: 'tinycloud.kv', space: 'applications', path: folder, actions: [KV.GET, KV.PUT, KV.DEL, KV.LIST, KV.METADATA] },
+    { service: 'tinycloud.sql', space: 'applications', path: folder, actions: [SQL.READ, SQL.WRITE] },
+    { service: 'tinycloud.capabilities', space: 'applications', path: '', actions: [CAPABILITIES.READ] },
+  ];
+}
+
+/** {@link ownFolderPermissions} as the request baseline for `signer`. */
+export function ownFolderSessionAbilities(domain: string, signer: { address: string; chainId: number }): SessionAbilities {
+  return sessionAbilitiesFromPermissions(ownFolderPermissions(domain), signer);
 }
 
 const SERVICE_LABELS: Record<string, string> = {
@@ -520,32 +543,37 @@ function assertRawEncryptionPermission(
   }
 }
 
-/** Service name of the device authorization encryption entry, exact on the wire. */
+/** Device authorization grants no encryption ability. */
 const DEVICE_ENCRYPTION_SERVICE = 'tinycloud.encryption';
-/** Space name of the approving account's own default encryption network. */
-const DEVICE_ENCRYPTION_SPACE = 'default';
 
 /**
- * URN of the signer's own `default` encryption network. Single producer for the
- * device entry; owner DID uses the signer's chain and EIP-55 address.
+ * A device approval signs only what device start admits: an exact `DEVICE_FLOW_ABILITIES` service and its actions.
+ * The encryption service, in its short or any-case spelling, gets its own refusal.
  */
-export function defaultEncryptionNetworkUrn(signer: { address: string; chainId: number }): string {
-  return `${RAW_ENCRYPTION_PREFIX}did:pkh:eip155:${signer.chainId}:${getAddress(signer.address)}:default`;
-}
-
-/**
- * The exact device authorization encryption entry: service `tinycloud.encryption`,
- * space `default`, path `""`, and only the decrypt action. Any other entry keeps
- * its existing handling.
- */
-export function isDeviceDefaultEncryptionEntry(entry: DelegationPermissionEntry): boolean {
-  return (
-    entry.service === DEVICE_ENCRYPTION_SERVICE &&
-    entry.space === DEVICE_ENCRYPTION_SPACE &&
-    entry.path === '' &&
-    entry.actions.length === 1 &&
-    entry.actions[0] === ENCRYPTION.DECRYPT
-  );
+function assertDeviceFlowEntry(entry: DelegationPermissionEntry, index: number): void {
+  if (canonicalizeServiceName(entry.service.toLowerCase()) === DEVICE_ENCRYPTION_SERVICE) {
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      DEVICE_SECRETS_REFUSAL,
+      [{ path: `permissions[${index}].service`, message: 'Device approvals grant no tinycloud.encryption ability', value: entry.service }],
+    );
+  }
+  if (!Object.hasOwn(DEVICE_FLOW_ABILITIES, entry.service)) {
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      `permissions[${index}].service is not available over device authorization`,
+      [{ path: `permissions[${index}].service`, message: 'Not a device-flow service', value: entry.service }],
+    );
+  }
+  const allowed = DEVICE_FLOW_ABILITIES[entry.service]!;
+  const refused = entry.actions.find(action => !allowed.includes(action));
+  if (refused !== undefined) {
+    throw new DelegateRequestError(
+      'invalid_permissions',
+      `permissions[${index}].actions contains an ability that is not available over device authorization`,
+      [{ path: `permissions[${index}].actions`, message: 'Not a device-flow ability', value: refused }],
+    );
+  }
 }
 
 /**
@@ -556,9 +584,8 @@ export function isDeviceDefaultEncryptionEntry(entry: DelegationPermissionEntry)
  * network. Actions stay fully-qualified (`tinycloud.sql/read`) because the
  * SIWE recap stores them that way.
  *
- * With `deviceTransaction`, the exact default encryption entry (see
- * `isDeviceDefaultEncryptionEntry`) resolves to the signer's own default
- * network. Every other entry is handled as before.
+ * With `deviceTransaction`, only device-flow services and actions are signed
+ * (`DEVICE_FLOW_ABILITIES`), so no device approval signs decrypt.
  */
 export function sessionAbilitiesFromPermissions(
   permissions: DelegationPermissionEntry[],
@@ -567,20 +594,8 @@ export function sessionAbilitiesFromPermissions(
 ): SessionAbilities {
   const entries: RecapEntry[] = [];
   const rawAbilities: RawAbilitiesMap = Object.create(null);
-  let deviceDefaultSeen = false;
   permissions.forEach((entry, index) => {
-    if (options.deviceTransaction && isDeviceDefaultEncryptionEntry(entry)) {
-      if (deviceDefaultSeen) {
-        throw new DelegateRequestError(
-          'invalid_permissions',
-          `permissions[${index}] repeats the default encryption entry; a device request carries one`,
-          [{ path: `permissions[${index}]`, message: 'Only one default encryption entry is allowed' }],
-        );
-      }
-      deviceDefaultSeen = true;
-      addActions(rawAbilities, defaultEncryptionNetworkUrn(signer), [ENCRYPTION.DECRYPT]);
-      return;
-    }
+    if (options.deviceTransaction) assertDeviceFlowEntry(entry, index);
     if (isRawEncryptionPermission(entry)) {
       assertRawEncryptionPermission(entry, index, signer);
       addActions(rawAbilities, entry.path, entry.actions);
@@ -619,15 +634,15 @@ export interface PrepareDelegationSessionInput {
   actionKeys?: string[];
   permissionKeys?: string[];
   /**
-   * CLI-driven explicit capability request. Every logical space resolves to
-   * the signing account and becomes a separate per-space ability baseline.
-   * Raw encryption entries remain top-level ReCap resources. Users can trim
-   * the baseline through the same actionKeys/permissionKeys consent controls.
+   * The requested capabilities. Every logical space resolves to the signing
+   * account and becomes a separate per-space ability baseline. Raw encryption
+   * entries remain top-level ReCap resources. Users can trim the baseline
+   * through the same actionKeys/permissionKeys consent controls. When absent,
+   * the request gets only its own folder ({@link ownFolderPermissions}).
    */
   permissions?: DelegationPermissionEntry[];
   /**
-   * Device authorization context. Only then does the exact default encryption
-   * entry resolve to the signer's own network.
+   * Device authorization context. Then any encryption entry is refused.
    */
   deviceTransaction?: boolean;
   /** Pre-validated, clamped delegation lifetime in milliseconds. */
@@ -646,6 +661,14 @@ export interface PrepareDelegationSessionResult {
   baselineAbilities: SessionAbilities;
   spaceId: string;
   requestedSpaces: RequestedDelegationSpace[];
+  /** True when the request named no permissions, so it gets only its own folder. */
+  ownFolderOnly: boolean;
+  /**
+   * True when that folder is one many requests share: the request had no
+   * requester origin (the default domain's folder) or its host can't be read
+   * ({@link GENERIC_APP_ID_WITHOUT_HOST}).
+   */
+  ownFolderShared: boolean;
 }
 
 export function prepareDelegationSession({
@@ -662,11 +685,14 @@ export function prepareDelegationSession({
   nonce,
   issuedAt,
 }: PrepareDelegationSessionInput): PrepareDelegationSessionResult {
-  const isCliBaseline = permissions !== undefined;
+  const ownFolderOnly = permissions === undefined;
+  const siweDomain = domain ?? SIWE_DOMAIN;
+  const appId = genericAppId(siweDomain);
+  const ownFolderShared = ownFolderOnly && (appId === genericAppId(SIWE_DOMAIN) || appId === GENERIC_APP_ID_WITHOUT_HOST);
   const fallbackSpaceId = makeSpaceId(address, chainId, prefix);
-  const baselineAbilities = isCliBaseline
-    ? sessionAbilitiesFromPermissions(permissions!, { address, chainId }, { deviceTransaction })
-    : defaultSessionAbilities(fallbackSpaceId);
+  const baselineAbilities = ownFolderOnly
+    ? ownFolderSessionAbilities(siweDomain, { address, chainId })
+    : sessionAbilitiesFromPermissions(permissions, { address, chainId }, { deviceTransaction });
   const spaceId = primaryRoutingSpace(Object.keys(baselineAbilities.spaceAbilities), fallbackSpaceId);
 
   const now = issuedAt ?? new Date();
@@ -674,7 +700,7 @@ export function prepareDelegationSession({
   const baseConfig = {
     address,
     chainId,
-    domain: domain ?? SIWE_DOMAIN,
+    domain: siweDomain,
     ...(nonce ? { nonce } : {}),
     issuedAt: now.toISOString(),
     expirationTime: expirationTime.toISOString(),
@@ -754,5 +780,7 @@ export function prepareDelegationSession({
     spaceId,
     baselineAbilities,
     requestedSpaces: delegationSpaces(selectedEntries, baselineAbilities),
+    ownFolderOnly,
+    ownFolderShared,
   };
 }

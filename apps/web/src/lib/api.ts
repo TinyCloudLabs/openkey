@@ -1,5 +1,6 @@
 // API client for key management
 import { getSessionToken, isEmbedContext } from './embed-passkey';
+import { webSignFlowHeaders } from './web-sign-flow';
 import { isDefiniteRefusal, ServerRefusalError } from './server-reply';
 import { isPreTermsPage, isTermsRequired, sendToTerms } from './terms';
 import type { RenewalLease } from './renewal-leases';
@@ -289,19 +290,26 @@ export const api = {
     /** TC-2927: the owner allowed the extra permissions this exact message carries, on the warning screen. */
     elevatedAcknowledged?: boolean,
     passkeyAssertion?: ApprovalPasskeyAssertion,
+    /** The sign page's own flow id; see `signMessagePasskey`. */
+    webFlowId?: string,
   ): Promise<{ signature: string; address: string }> {
     return fetchAPI(`/api/keys/${keyId}/sign`, {
       method: 'POST',
+      headers: webFlowId ? webSignFlowHeaders(webFlowId) : undefined,
       body: JSON.stringify({
         message, requestOrigin, ...(elevatedAcknowledged ? { elevatedAcknowledged: true } : {}), passkeyAssertion,
       }),
     });
   },
 
-  /** TC-3442: whether approving this signature needs the passkey, with the challenge for exactly this message. */
-  async signMessagePasskey(keyId: string, message: string, requestOrigin?: string): Promise<ApprovalPasskeyNeed> {
+  /**
+   * TC-3442: whether approving this signature needs the passkey, with the challenge for exactly this message.
+   * `webFlowId` is the sign page's own flow id: a passkey sign-in made for that flow covers the approval.
+   */
+  async signMessagePasskey(keyId: string, message: string, requestOrigin?: string, webFlowId?: string): Promise<ApprovalPasskeyNeed> {
     return fetchAPI(`/api/keys/${keyId}/sign/passkey`, {
       method: 'POST',
+      headers: webFlowId ? webSignFlowHeaders(webFlowId) : undefined,
       body: JSON.stringify({ message, requestOrigin }),
     });
   },

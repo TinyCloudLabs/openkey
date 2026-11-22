@@ -81,7 +81,10 @@
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
   import ElevatedWarning from "$lib/components/signing/elevated-warning.svelte";
+  import ClaimedPresentation from "$lib/components/signing/claimed-presentation.svelte";
+  import type { ClaimedPresentationView } from "$lib/claimed-presentation";
   import type { RenewalChoice, ShortenOnlyExpiry } from "$lib/components/signing/signing-adapter-types";
+  import type { ApproveVisibility } from "$lib/approve-visibility";
   import { ONCE_DEFAULT_EXPIRY_MS, onceDefaultExpiryMs, requestedExpiryMs } from "$lib/approval-expiry";
   import { isOnceTier } from "$lib/renewal-default";
 
@@ -152,12 +155,16 @@
     /** The renewal checkbox (TC-2933); set only where the requester signed a renewal request. */
     renewal?: RenewalChoice | null;
     /**
-     * The warning screen for extra permissions (TC-2927): decrypt or key creation on the encryption network, or on
-     * keys outside the app's own area. Set only by the signing pages that carry the owner's decision to the server.
+     * The warning screen for extra permissions (TC-2927): decrypt, key creation, or blocking and unblocking keys on the
+     * encryption network, or on keys outside the app's own area. Set only by the signing pages that carry the owner's decision to the server.
      * Approve opens the screen first when the selection carries one; `splittable` is false where the request cannot be
      * narrowed (exact bytes): approve or cancel it whole. `onDecide` gets the action ids the owner allowed.
      */
     elevated?: { splittable: boolean; onDecide: (allowed: string[]) => void } | null;
+    /** Reports whether the Approve button is in plain view; see `approve-visibility.ts`. */
+    approveVisibility?: ApproveVisibility | null;
+    /** The app's own words about a plain `signMessage()` request (name, who it is for, reason); shown under the requester line. */
+    claimed?: ClaimedPresentationView | null;
     onApprove: () => void;
     onCancel: () => void;
     onRetry?: () => void;
@@ -194,6 +201,8 @@
     onceExpiryDefault = false,
     renewal = null,
     elevated = null,
+    approveVisibility = null,
+    claimed = null,
     onApprove,
     onCancel,
     onRetry,
@@ -581,10 +590,13 @@
     actionIds: string[];
     decrypt: boolean;
     create: boolean;
+    block: boolean;
+    unblock: boolean;
     where: string | null;
   }
-  // One group per selected grant that carries decrypt or key creation on the encryption network, or on keys outside
-  // the app's own `apps/` area. The same `elevatedKindOf` decides on the server, so both see the same permissions.
+  // One group per selected grant that carries decrypt, key creation, or blocking or unblocking of keys on the
+  // encryption network, or on keys outside the app's own `apps/` area. The same `elevatedKindOf` decides on the
+  // server, so both see the same permissions.
   const elevatedGroups = $derived.by((): ElevatedGroup[] => {
     if (!elevated) return [];
     return selectedGrants.flatMap((grant): ElevatedGroup[] => {
@@ -594,14 +606,19 @@
         return kind === null ? [] : [{ action, kind }];
       });
       if (picked.length === 0) return [];
-      return [{
-        id: grant.id,
-        kind: picked[0]!.kind,
-        actionIds: picked.map(({ action }) => action.id),
-        decrypt: picked.some(({ action }) => elevatedAbilityVerb(action.ability) === "decrypt"),
-        create: picked.some(({ action }) => elevatedAbilityVerb(action.ability) === "key.create"),
-        where: elevatedWhere(entry),
-      }];
+      const has = (verb: string) => picked.some(({ action }) => elevatedAbilityVerb(action.ability) === verb);
+      return [
+        {
+          id: grant.id,
+          kind: picked[0]!.kind,
+          actionIds: picked.map(({ action }) => action.id),
+          decrypt: has("decrypt"),
+          create: has("key.create"),
+          block: has("key.block"),
+          unblock: has("key.unblock"),
+          where: elevatedWhere(entry),
+        },
+      ];
     });
   });
   let allowedElevated = $state<Set<string>>(new Set());
@@ -617,7 +634,12 @@
   const elevatedCards = $derived(
     pendingElevatedGroups.map((group) => ({
       id: group.id,
-      ...elevatedCard(group.kind, { decrypt: group.decrypt, create: group.create }, elevatedSite, elevatedWhereText(group.where)),
+      ...elevatedCard(
+        group.kind,
+        { decrypt: group.decrypt, create: group.create, block: group.block, unblock: group.unblock },
+        elevatedSite,
+        elevatedWhereText(group.where),
+      ),
     })),
   );
   const notApprovedRows = $derived(
@@ -670,6 +692,19 @@
   const approveButtonDisabled = $derived(
     previewPending || onceDefaultPending || layoutBlocked || refused || approveDisabled || Boolean(approveBlockedReason) || approveBlockedByFailure || nodeChecking || declining,
   );
+
+  // A page that offers the one-passkey cover watches its Approve button: the cover counts only while the button is in
+  // plain view, and the 500 ms restarts each time Approve becomes actionable.
+  let approveButton = $state<HTMLButtonElement | null>(null);
+  $effect(() => {
+    const visibility = approveVisibility;
+    if (!visibility) return;
+    visibility.watch(approveButton);
+    return () => visibility.watch(null);
+  });
+  $effect(() => {
+    if (!approveButtonDisabled) approveVisibility?.restart();
+  });
   const approveLabel = $derived(
     isMalformedRecap
       ? "Cannot approve"
@@ -720,6 +755,11 @@
     {/if}
     <p id="signing-approval-hint" class="hint">{hint}</p>
   </header>
+
+  <!-- The app's own words about a plain sign request, under the verified origin and marked as unchecked. -->
+  {#if claimed}
+    <ClaimedPresentation view={claimed} />
+  {/if}
 
   {#if context}
     <div class="context">{@render context()}</div>
@@ -1265,6 +1305,7 @@
     <button
       type="button"
       class="approve"
+      bind:this={approveButton}
       onclick={handleApproveClick}
       disabled={approveButtonDisabled}
       aria-disabled={approveButtonDisabled}

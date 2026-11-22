@@ -83,7 +83,7 @@
   error={transport.error}
   approveBlockedReason={transport.approveBlockedReason ?? null}
   refused={transport.refused ?? false}
-  previewPending={transport.canUseAuthorizeSign && !transport.previewReady}
+  previewPending={(transport.canUseAuthorizeSign && !transport.previewReady) || (transport.passkeyPending ?? false)}
   {layoutBlocked}
   stickyActions
   {peerRecognition}
@@ -92,6 +92,8 @@
   renewal={transport.renewal ?? null}
   onceExpiryDefault={transport.expiry?.onceDefault ?? false}
   elevated={transport.elevated ?? null}
+  approveVisibility={transport.approveVisibility ?? null}
+  claimed={transport.claimedPresentation ?? null}
   {onApprove}
   {onCancel}
   onRetry={transport.retryPreview}

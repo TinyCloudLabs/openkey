@@ -1,6 +1,7 @@
 import type { Handle } from '@sveltejs/kit';
 import { accountHostname, accountOrigin, consoleHostname, consoleOrigin } from '$lib/console-host';
 import { routeConsoleHost } from '$lib/console-routing';
+import { withFramePolicy } from '$lib/frame-policy';
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({
@@ -43,7 +44,7 @@ function reservedConsoleHostPage(accountOrigin: string) {
 
 import { isTinyCloudSetupWidgetRoute } from './routes/widget/tinycloud-setup/route-match';
 
-export const handle: Handle = async ({ event, resolve }) => {
+export const handle: Handle = async ({ event, resolve: resolveRequest }) => {
   const route = routeConsoleHost({
     hostname: event.url.hostname,
     pathname: event.url.pathname,
@@ -70,19 +71,22 @@ export const handle: Handle = async ({ event, resolve }) => {
     });
   }
 
-  const response = await resolve(event);
-  // TC-3657: `/widget/tinycloud-setup` sets `ssr=false` on its layout, so neither a
-  // `+page.server.ts` nor a `+layout.server.ts` `setHeaders` call reaches the HTML
-  // document; only the `__data.json` payload. Set the framing headers here in the request
-  // handler so the document itself carries them regardless of SSR mode. Matching on
-  // `event.route.id` (the normalised route template SvelteKit resolves after decoding)
-  // rather than the raw pathname closes the percent-encoded-ASCII bypass: a URL like
-  // `/widget/tinycloud%2Dsetup` decodes to the same route template and still gets the
-  // headers. The client-side guard in `+layout.ts` is a belt-and-braces check.
-  if (isTinyCloudSetupWidgetRoute(event.route?.id ?? '')) {
-    response.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
-    response.headers.set('X-Frame-Options', 'DENY');
-    response.headers.set('Referrer-Policy', 'no-referrer');
-  }
-  return response;
+  const resolve: typeof resolveRequest = async (request, options) => {
+    const response = await resolveRequest(request, options);
+    // TC-3657: `/widget/tinycloud-setup` sets `ssr=false` on its layout, so neither a
+    // `+page.server.ts` nor a `+layout.server.ts` `setHeaders` call reaches the HTML
+    // document; only the `__data.json` payload. Set the framing headers here in the request
+    // handler so the document itself carries them regardless of SSR mode. Matching on
+    // `event.route.id` (the normalised route template SvelteKit resolves after decoding)
+    // rather than the raw pathname closes the percent-encoded-ASCII bypass: a URL like
+    // `/widget/tinycloud%2Dsetup` decodes to the same route template and still gets the
+    // headers. The client-side guard in `+layout.ts` is a belt-and-braces check.
+    if (isTinyCloudSetupWidgetRoute(request.route?.id ?? '')) {
+      response.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
+      response.headers.set('X-Frame-Options', 'DENY');
+      response.headers.set('Referrer-Policy', 'no-referrer');
+    }
+    return response;
+  };
+  return withFramePolicy(await resolve(event), event.url.pathname);
 };
