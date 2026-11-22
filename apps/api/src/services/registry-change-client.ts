@@ -185,7 +185,7 @@ function expandIpv6Groups(raw: string): number[] | null {
 }
 
 function isBlockedIpv4(octets: [number, number, number, number], allowLoopback: boolean): boolean {
-  const [a, b] = octets;
+  const [a, b, c] = octets;
   // Loopback 127.0.0.0/8
   if (a === 127) return !allowLoopback;
   // Unspecified 0.0.0.0/8
@@ -198,15 +198,25 @@ function isBlockedIpv4(octets: [number, number, number, number], allowLoopback: 
   if (a === 100 && b >= 64 && b <= 127) return true;
   // Link-local & cloud metadata 169.254.0.0/16 (incl. 169.254.169.254)
   if (a === 169 && b === 254) return true;
-  // Multicast (224.0.0.0/4) and reserved/broadcast (240.0.0.0/4)
+  // IETF Protocol Assignments 192.0.0.0/24
+  if (a === 192 && b === 0 && c === 0) return true;
+  // Benchmarking 198.18.0.0/15
+  if (a === 198 && (b === 18 || b === 19)) return true;
+  // Multicast (224.0.0.0/4), reserved (240.0.0.0/4), and limited broadcast (255.255.255.255)
   if (a >= 224) return true;
   return false;
 }
 
+function ipv4OctetsFromHexGroups(hi: number, lo: number): [number, number, number, number] {
+  return [(hi >> 8) & 0xff, hi & 0xff, (lo >> 8) & 0xff, lo & 0xff];
+}
+
 /**
- * F1 SSRF filter: returns true when `ip` is loopback (unless `allowLoopback`),
- * private (RFC1918/ULA), link-local, CGNAT, metadata (`169.254.169.254`, `fd00:ec2::254`),
- * unspecified, multicast, or reserved.
+ * F1 + N3 SSRF filter: returns true when `ip` is loopback (unless `allowLoopback`),
+ * private (RFC1918/ULA), link-local, CGNAT, IETF 192.0.0.0/24, benchmarking 198.18.0.0/15,
+ * metadata (`169.254.169.254`, `fd00:ec2::254`), unspecified, multicast, reserved (240/4),
+ * limited broadcast (255.255.255.255), or an IPv6 address embedding a blocked IPv4 via
+ * `::/96`, `::ffff:0:0/96`, `::ffff:0:0:0/96`, `64:ff9b::/96` (NAT64), or `2002::/16` (6to4).
  */
 export function isBlockedProbeIp(rawIp: string, allowLoopback: boolean): boolean {
   const ip = rawIp.startsWith('[') && rawIp.endsWith(']') ? rawIp.slice(1, -1) : rawIp;
@@ -222,17 +232,25 @@ export function isBlockedProbeIp(rawIp: string, allowLoopback: boolean): boolean
     if (allZero) return true; // :: unspecified
     const isLoopback6 = groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1;
     if (isLoopback6) return !allowLoopback; // ::1
+    // IPv4-compatible ::/96 (after :: and ::1 handled above)
+    if (groups.slice(0, 6).every((g) => g === 0)) {
+      return isBlockedIpv4(ipv4OctetsFromHexGroups(groups[6]!, groups[7]!), allowLoopback);
+    }
     // IPv4-mapped ::ffff:0:0/96
-    const isIpv4Mapped =
-      groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff;
-    if (isIpv4Mapped) {
-      const octets: [number, number, number, number] = [
-        (groups[6]! >> 8) & 0xff,
-        groups[6]! & 0xff,
-        (groups[7]! >> 8) & 0xff,
-        groups[7]! & 0xff,
-      ];
-      return isBlockedIpv4(octets, allowLoopback);
+    if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
+      return isBlockedIpv4(ipv4OctetsFromHexGroups(groups[6]!, groups[7]!), allowLoopback);
+    }
+    // IPv4-translated ::ffff:0:0:0/96 (RFC 2765)
+    if (groups.slice(0, 4).every((g) => g === 0) && groups[4] === 0xffff && groups[5] === 0) {
+      return isBlockedIpv4(ipv4OctetsFromHexGroups(groups[6]!, groups[7]!), allowLoopback);
+    }
+    // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052)
+    if (groups[0] === 0x0064 && groups[1] === 0xff9b && groups.slice(2, 6).every((g) => g === 0)) {
+      return isBlockedIpv4(ipv4OctetsFromHexGroups(groups[6]!, groups[7]!), allowLoopback);
+    }
+    // 6to4 2002::/16 (RFC 3056 — embedded IPv4 in bits 16-47 = groups[1..2])
+    if (groups[0] === 0x2002) {
+      return isBlockedIpv4(ipv4OctetsFromHexGroups(groups[1]!, groups[2]!), allowLoopback);
     }
     // Unique local fc00::/7 (includes fd00:ec2::254 AWS IMDSv2 IPv6 metadata)
     if ((groups[0]! & 0xfe00) === 0xfc00) return true;

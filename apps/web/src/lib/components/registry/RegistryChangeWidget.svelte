@@ -19,22 +19,18 @@
   const API_BASE = import.meta.env.VITE_API_URL || '';
 
   interface Props {
-    surface: 'popup' | 'embed';
     embeddedRefusalMessage?: string | null;
   }
 
-  let { surface, embeddedRefusalMessage = null }: Props = $props();
+  let { embeddedRefusalMessage = null }: Props = $props();
 
   const configuredOrigin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
   let widgetState = $state<RegistryChangeWidgetState>(initialState(untrack(() => embeddedRefusalMessage)));
-  let contentEl = $state<HTMLElement | undefined>(undefined);
   let initialized = false;
-  let lastPostedHeight = -1;
 
   function counterpartyWindow(): Window | null {
     if (typeof window === 'undefined') return null;
-    if (surface === 'popup') return window.opener;
-    return window.parent && window.parent !== window ? window.parent : null;
+    return window.opener;
   }
 
   function postBack(envelope: RegistryChangePostBack | null) {
@@ -48,26 +44,7 @@
     }
   }
 
-  function emitResize() {
-    if (surface !== 'embed' || !contentEl) return;
-    const target = counterpartyWindow();
-    const targetOrigin = widgetState.verifiedRequestingOrigin ?? configuredOrigin;
-    if (!target || !targetOrigin) return;
-    const height = Math.ceil(contentEl.scrollHeight);
-    if (height <= 0 || height === lastPostedHeight) return;
-    lastPostedHeight = height;
-    const payload = widgetState.requestId
-      ? { type: 'openkey:resize', height, requestId: widgetState.requestId, protocolVersion: 1 }
-      : { type: 'openkey:resize', height };
-    try {
-      target.postMessage(payload, targetOrigin);
-    } catch {
-      /* parent gone */
-    }
-  }
-
   function closeSoon() {
-    if (surface !== 'popup') return;
     setTimeout(() => {
       try {
         window.close();
@@ -110,11 +87,10 @@
         response.ok
           ? { ok: true, body }
           : { ok: false, status: response.status, body },
-        surface,
       );
       widgetState = preserveError && next.phase === 'review' ? { ...next, error: preserveError } : next;
     } catch {
-      widgetState = applyPrepareResult(widgetState, { ok: false, status: 0, body: { error: 'prepare_failed' } }, surface);
+      widgetState = applyPrepareResult(widgetState, { ok: false, status: 0, body: { error: 'prepare_failed' } });
     }
   }
 
@@ -217,30 +193,12 @@
     };
   });
 
-  $effect(() => {
-    if (surface !== 'embed' || !contentEl || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(() => emitResize());
-    observer.observe(contentEl);
-    emitResize();
-    return () => observer.disconnect();
-  });
-
-  $effect(() => {
-    void widgetState.phase;
-    void widgetState.diffRows;
-    void widgetState.warnings;
-    void widgetState.error;
-    emitResize();
-  });
-
   const currentTitle = $derived(screenTitle(widgetState));
   const currentOriginLine = $derived(screenOriginLine(widgetState));
 </script>
 
 <main
-  bind:this={contentEl}
   class="rc-shell"
-  data-surface={surface}
   data-testid="registry-change-widget"
 >
   {#if widgetState.phase === 'embedded-refused'}

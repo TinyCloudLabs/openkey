@@ -1,8 +1,7 @@
 // TC-3893: pure state machine, diff builder, and Monica's final copy constants
 // (tc3890-wording-monica.md §1, follow-up 16:30Z, restore-any-version 16:31Z,
-// F3/F5/F6/F8 review copy 16:49Z-16:54Z) for the registry-change & undo/restore
-// consent screen on both popup (`/widget/registry-change`) and embed
-// (`/widget/embed/registry-change`).
+// F3/F5/F6/F8 review copy 16:49Z-16:54Z, N1 popup-only) for the registry-change
+// & undo/restore consent screen (`/widget/registry-change`).
 
 export const TINYCLOUD_ONE_ORIGINS: ReadonlySet<string> = new Set([
   'https://tinycloud.one',
@@ -50,10 +49,8 @@ export const REGISTRY_CHANGE_COPY = {
   identityUnreachable: (host: string) => `Couldn't reach ${host} to confirm what it is.`,
   identityMismatch: (host: string) => `${host} doesn't match the identity it was listed with.`,
   identityWarningFooter: 'You can approve anyway, but check this host with whoever asked you to move.',
-  nodeDidRequiredPopup: (host: string) =>
+  nodeDidRequired: (host: string) =>
     `Couldn't reach ${host} to confirm which host it is, so nothing was changed. The app that asked needs to fix this; you can close this window.`,
-  nodeDidRequiredEmbed: (host: string) =>
-    `Couldn't reach ${host} to confirm which host it is, so nothing was changed. The app that asked needs to fix this; you can go back to the app.`,
   approveButton: 'Approve with passkey',
   approvingButton: 'Approving…',
   cancelButton: 'Cancel',
@@ -86,7 +83,6 @@ export type RegistryChangePhase =
 
 export type RegistryChangeMode = 'change' | 'undo';
 export type RegistryUndoKind = 'undo-last' | 'restore';
-export type RegistryWidgetSurface = 'popup' | 'embed';
 
 export interface RegistryRecordPayloadView {
   version: 2;
@@ -429,7 +425,6 @@ export function applyPrepareResult(
   result:
     | { ok: true; body: PrepareResponseBody }
     | { ok: false; status: number; body: { error?: string; code?: string; host?: string; message?: string } },
-  surface: RegistryWidgetSurface = 'popup',
 ): RegistryChangeWidgetState {
   if (result.ok) {
     const { diffRows, encryptionBeforeHost, encryptionAfterHost } = buildDiffView(
@@ -461,10 +456,7 @@ export function applyPrepareResult(
   const code = result.body.code ?? result.body.error;
   if (result.status === 422 && code === 'registry_change_node_did_required') {
     const host = result.body.host || 'that host';
-    const message = surface === 'embed'
-      ? REGISTRY_CHANGE_COPY.nodeDidRequiredEmbed(host)
-      : REGISTRY_CHANGE_COPY.nodeDidRequiredPopup(host);
-    return { ...state, phase: 'error', error: message };
+    return { ...state, phase: 'error', error: REGISTRY_CHANGE_COPY.nodeDidRequired(host) };
   }
   if (result.status === 400 && code === 'registry_change_invalid_node') {
     return { ...state, phase: 'invalid', error: REGISTRY_CHANGE_COPY.refusedUrl };

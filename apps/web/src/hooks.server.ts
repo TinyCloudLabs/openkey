@@ -43,10 +43,7 @@ function reservedConsoleHostPage(accountOrigin: string) {
 }
 
 import { isTinyCloudSetupWidgetRoute } from './routes/widget/tinycloud-setup/route-match';
-import {
-  isRegistryChangeEmbedWidgetRoute,
-  isRegistryChangePopupWidgetRoute,
-} from './routes/widget/registry-change/route-match';
+import { isRegistryChangePopupWidgetRoute } from './routes/widget/registry-change/route-match';
 
 export const handle: Handle = async ({ event, resolve: resolveRequest }) => {
   const route = routeConsoleHost({
@@ -89,8 +86,6 @@ export const handle: Handle = async ({ event, resolve: resolveRequest }) => {
     if (isTinyCloudSetupWidgetRoute(routeId) || isRegistryChangePopupWidgetRoute(routeId)) {
       response.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
       response.headers.set('X-Frame-Options', 'DENY');
-      response.headers.set('Referrer-Policy', 'no-referrer');
-    } else if (isRegistryChangeEmbedWidgetRoute(routeId)) {
       response.headers.set('Referrer-Policy', 'no-referrer');
     }
     return response;

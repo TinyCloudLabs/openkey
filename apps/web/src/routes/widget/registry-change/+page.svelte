@@ -4,4 +4,4 @@
   let { data }: { data: { embeddedRefusalMessage: string | null } } = $props();
 </script>
 
-<RegistryChangeWidget surface="popup" embeddedRefusalMessage={data.embeddedRefusalMessage} />
+<RegistryChangeWidget embeddedRefusalMessage={data.embeddedRefusalMessage} />

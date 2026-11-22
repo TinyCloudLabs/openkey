@@ -318,7 +318,7 @@ describe('registry-change widget state machine', () => {
     expect(notesRow?.afterHost).toBe(REGISTRY_CHANGE_COPY.noChange);
   });
 
-  test('F6 & Monica final copy: 422 registry_change_node_did_required uses popup vs embed wording; final unsigned strings match verbatim', () => {
+  test('F6 & N1 popup-only copy: 422 registry_change_node_did_required uses Monica popup wording; final unsigned strings match verbatim', () => {
     const counterparty = {};
     const preparing = applyRequestMessage(initialState(null), {
       origin: 'https://app.example',
@@ -336,21 +336,10 @@ describe('registry-change widget state machine', () => {
     const popupErr = applyPrepareResult(
       preparing,
       { ok: false, status: 422, body: { error: 'registry_change_node_did_required', host: 'node-b.example:8443' } },
-      'popup',
     );
     expect(popupErr.phase).toBe('error');
     expect(popupErr.error).toBe(
       "Couldn't reach node-b.example:8443 to confirm which host it is, so nothing was changed. The app that asked needs to fix this; you can close this window.",
-    );
-
-    const embedErr = applyPrepareResult(
-      preparing,
-      { ok: false, status: 422, body: { error: 'registry_change_node_did_required', host: 'node-b.example:8443' } },
-      'embed',
-    );
-    expect(embedErr.phase).toBe('error');
-    expect(embedErr.error).toBe(
-      "Couldn't reach node-b.example:8443 to confirm which host it is, so nothing was changed. The app that asked needs to fix this; you can go back to the app.",
     );
 
     expect(REGISTRY_CHANGE_COPY.missingRecord).toBe('No location is set for your account.');

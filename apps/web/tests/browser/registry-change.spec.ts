@@ -2,10 +2,11 @@ import { test, expect, type Page, type Route } from '@playwright/test';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { ORIGIN } from './e2e-port';
 
-// TC-3893: browser specs for the registry-change consent screen on BOTH popup
-// (`/widget/registry-change`) and embed (`/widget/embed/registry-change`), including
-// the separate encryption-node callout, identity warnings (warn-only), passkey approval,
-// stale re-prepare, refused URL handling, cancel, and popup framing headers.
+// TC-3893 (N1 popup-only): browser specs for the registry-change popup consent screen
+// (`/widget/registry-change`), including the separate encryption-node callout, identity
+// warnings (warn-only), passkey approval, stale re-prepare, refused URL handling, F3
+// mode-only diff, F6 422 copy, undo/restore, cancel, framing headers, and removal of
+// `/widget/embed/registry-change`.
 
 const ADDRESS = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const SUBJECT = `did:pkh:eip155:1:${ADDRESS}`;
@@ -107,9 +108,8 @@ async function attachVirtualAuthenticator(page: Page) {
   });
 }
 
-async function openRegistryChangeWidget(
+async function openRegistryChangePopup(
   page: Page,
-  surface: 'popup' | 'embed',
   requestPayload: Record<string, unknown> = {
     nodes: [{ url: 'https://node-b.example:8443' }],
     encryptionNode: 'https://node-b.example:8443',
@@ -126,26 +126,13 @@ async function openRegistryChangeWidget(
     });
   });
 
-  let widgetPage = page;
-  if (surface === 'popup') {
-    const popupPromise = page.waitForEvent('popup');
-    await page.evaluate(() => {
-      (window as unknown as HostWindow).rcWindow = window.open(
-        `/widget/registry-change?origin=${encodeURIComponent(location.origin)}`,
-      )!;
-    });
-    widgetPage = await popupPromise;
-  } else {
-    await page.evaluate(() => {
-      const iframe = document.createElement('iframe');
-      iframe.id = 'rc-frame';
-      iframe.src = `/widget/embed/registry-change?origin=${encodeURIComponent(location.origin)}`;
-      iframe.style.width = '460px';
-      iframe.style.height = '640px';
-      document.body.append(iframe);
-      (window as unknown as HostWindow).rcWindow = iframe.contentWindow!;
-    });
-  }
+  const popupPromise = page.waitForEvent('popup');
+  await page.evaluate(() => {
+    (window as unknown as HostWindow).rcWindow = window.open(
+      `/widget/registry-change?origin=${encodeURIComponent(location.origin)}`,
+    )!;
+  });
+  const widgetPage = await popupPromise;
 
   await attachVirtualAuthenticator(widgetPage);
   const received = () => page.evaluate(() => (window as unknown as HostWindow).received);
@@ -165,328 +152,310 @@ async function openRegistryChangeWidget(
     );
   }, requestPayload);
 
-  const view = surface === 'popup' ? widgetPage : page.frameLocator('#rc-frame');
-  return { view, widgetPage, received };
+  return { view: widgetPage, widgetPage, received };
 }
 
-for (const surface of ['popup', 'embed'] as const) {
-  test(`${surface}: shows diff, encryption callout, identity warnings, and approves with passkey`, async ({ page }) => {
-    const prepareHeaders: Array<Record<string, string>> = [];
-    const prepareBodies: unknown[] = [];
-    const publishBodies: Array<Record<string, unknown>> = [];
+test('popup: shows diff, encryption callout, identity warnings, and approves with passkey', async ({ page }) => {
+  const prepareHeaders: Array<Record<string, string>> = [];
+  const prepareBodies: unknown[] = [];
+  const publishBodies: Array<Record<string, unknown>> = [];
 
-    await page.context().addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
-    await page.context().route('**/api/registry-change/**', async (route) => {
-      const req = route.request();
-      const path = new URL(req.url()).pathname;
-      if (path === '/api/registry-change/prepare') {
-        prepareHeaders.push(req.headers());
-        prepareBodies.push(req.postDataJSON());
-        return json(
-          route,
-          makePrepareResponse({
-            encryptionChanged: true,
-            identity: [
-              { url: 'https://node-b.example:8443', did: NODE_B, status: 'unreachable' },
-            ],
-          }),
-        );
-      }
-      if (path === '/api/registry-change/publish') {
-        publishBodies.push(req.postDataJSON() as Record<string, unknown>);
-        return json(route, { sequence: 5, recordHash: RECORD_HASH });
-      }
-      return json(route, {});
-    });
-
-    const { view, received } = await openRegistryChangeWidget(page, surface);
-
-    await expect(view.getByRole('heading', { name: 'Move where your data lives?' })).toBeVisible();
-    // Verified origin comes from event.origin (ORIGIN), never the spoofed payload origin.
-    await expect(view.getByTestId('registry-change-origin')).toContainText(`${ORIGIN} wants to change where your data lives.`);
-    await expect(view.getByTestId('registry-change-origin')).not.toContainText('spoofed-app.example');
-
-    // Before/after table shows canonical host + non-default port and No change for untouched space.
-    const table = view.getByTestId('registry-change-diff-table');
-    await expect(table).toContainText('default');
-    await expect(table).toContainText('node-a.example');
-    await expect(table).toContainText('node-b.example:8443');
-    await expect(table).toContainText('notes');
-    await expect(table).toContainText('No change');
-
-    // Encryption change callout is rendered separately in its own colour with Monica's exact copy.
-    const encCallout = view.getByTestId('registry-change-encryption-callout');
-    await expect(encCallout).toBeVisible();
-    await expect(encCallout).toContainText(
-      'New secrets and keys will be held at node-b.example:8443. Whoever runs it can open secrets you save after this.',
-    );
-
-    // Identity warning is shown, and Approve stays enabled (warn-only, not a block).
-    const warnings = view.getByTestId('registry-change-identity-warnings');
-    await expect(warnings).toContainText("Couldn't reach node-b.example:8443 to confirm what it is.");
-    await expect(warnings).toContainText('You can approve anyway, but check this host with whoever asked you to move.');
-
-    // Verify prepare sent verified origin in header, NOT in body, and NEVER sent an Authorization header (F4).
-    expect(prepareHeaders[0]?.['x-openkey-requesting-origin']).toBe(ORIGIN);
-    expect(prepareHeaders[0]?.authorization).toBeUndefined();
-    expect('requestingOrigin' in (prepareBodies[0] as Record<string, unknown>)).toBe(false);
-
-    const approveBtn = view.getByRole('button', { name: 'Approve with passkey' });
-    await expect(approveBtn).toBeEnabled();
-    await approveBtn.click();
-
-    // Publish received changeId + real WebAuthn passkeyAssertion.
-    await expect.poll(() => publishBodies.length).toBe(1);
-    expect(publishBodies[0]?.changeId).toBe('change-ticket-1');
-    expect((publishBodies[0]?.passkeyAssertion as { challengeToken?: string })?.challengeToken).toBe('tok-1');
-
-    await expect.poll(async () =>
-      (await received()).find((m) => m.type === 'openkey:registry-change:response'),
-    ).toEqual({
-      type: 'openkey:registry-change:response',
-      requestId: 'rc-req-1',
-      protocolVersion: 1,
-      success: true,
-      status: 'published',
-      sequence: 5,
-      recordHash: RECORD_HASH,
-    });
-  });
-
-  test(`${surface}: omits encryption callout when encryptionChanged is false and handles stale 409 re-prepare`, async ({ page }) => {
-    let prepareCalls = 0;
-    let publishCalls = 0;
-
-    await page.context().addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
-    await page.context().route('**/api/registry-change/**', async (route) => {
-      const path = new URL(route.request().url()).pathname;
-      if (path === '/api/registry-change/prepare') {
-        prepareCalls += 1;
-        return json(route, makePrepareResponse({ encryptionChanged: false, token: `tok-${prepareCalls}` }));
-      }
-      if (path === '/api/registry-change/publish') {
-        publishCalls += 1;
-        if (publishCalls === 1) {
-          return json(route, { error: 'registry_change_stale' }, 409);
-        }
-        return json(route, { sequence: 6, recordHash: RECORD_HASH });
-      }
-      return json(route, {});
-    });
-
-    const { view, received } = await openRegistryChangeWidget(page, surface);
-
-    await expect(view.getByTestId('registry-change-review')).toBeVisible();
-    await expect(view.getByTestId('registry-change-encryption-callout')).toHaveCount(0);
-
-    // First approve gets 409 stale -> shows stale screen with Review again button.
-    await view.getByRole('button', { name: 'Approve with passkey' }).click();
-    await expect(view.getByTestId('registry-change-stale')).toBeVisible();
-    await expect(view.getByTestId('registry-change-stale')).toContainText('This changed while you were looking');
-
-    // Clicking Review again re-calls /prepare and returns to review.
-    await view.getByRole('button', { name: 'Review again' }).click();
-    await expect.poll(() => prepareCalls).toBe(2);
-    await expect(view.getByTestId('registry-change-review')).toBeVisible();
-
-    // Cancel resolves cancelled.
-    await view.getByRole('button', { name: 'Cancel' }).click();
-    await expect.poll(async () =>
-      (await received()).find((m) => m.type === 'openkey:registry-change:response'),
-    ).toEqual({
-      type: 'openkey:registry-change:response',
-      requestId: 'rc-req-1',
-      protocolVersion: 1,
-      success: true,
-      status: 'cancelled',
-    });
-  });
-
-  test(`${surface}: refused invalid node URL shows Monica refusal copy and no Approve button`, async ({ page }) => {
-    await page.context().addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
-    await page.context().route('**/api/registry-change/prepare', (route) =>
-      json(route, { error: 'registry_change_invalid_node' }, 400),
-    );
-
-    const { view } = await openRegistryChangeWidget(page, surface, {
-      nodes: [{ url: 'not-a-url' }],
-    });
-
-    await expect(view.getByTestId('registry-change-error')).toContainText(
-      "This request lists a node address OpenKey can't read, so nothing was signed.",
-    );
-    await expect(view.getByRole('button', { name: 'Approve with passkey' })).toHaveCount(0);
-  });
-  test(`${surface}: undo/restore variant calls /undo/prepare, renders restore title + removed space, and approves with passkey`, async ({ page }) => {
-    const undoBodies: Array<Record<string, unknown>> = [];
-    const publishBodies: Array<Record<string, unknown>> = [];
-
-    await page.context().addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
-    await page.context().route('**/api/registry-change/**', async (route) => {
-      const req = route.request();
-      const path = new URL(req.url()).pathname;
-      if (path === '/api/registry-change/undo/prepare') {
-        undoBodies.push(req.postDataJSON() as Record<string, unknown>);
-        return json(route, {
-          ...makePrepareResponse({ encryptionChanged: true, token: 'tok-undo-1' }),
-          before: {
-            version: 2,
-            subject: SUBJECT,
-            nodes: [{ did: NODE_B, url: 'https://node-b.example:8443' }],
-            spaces: [
-              { space: SPACE_DEFAULT, nodes: [{ did: NODE_B, mode: 'read-write' }] },
-              { space: SPACE_NOTES, nodes: [{ did: NODE_B, mode: 'read-write' }] },
-            ],
-            encryptionNode: NODE_B,
-            updated_at: '2026-11-22T16:00:00.000Z',
-            sequence: 6,
-          },
-          after: {
-            version: 2,
-            subject: SUBJECT,
-            nodes: [{ did: NODE_A, url: 'https://node-a.example' }],
-            spaces: [
-              { space: SPACE_DEFAULT, nodes: [{ did: NODE_A, mode: 'read-write' }] },
-            ],
-            encryptionNode: NODE_A,
-            updated_at: '2026-11-22T16:30:00.000Z',
-            sequence: 7,
-          },
-          undoKind: 'restore',
-          restoredBeforeDate: '2026-11-20T10:00:00.000Z',
-        });
-      }
-      if (path === '/api/registry-change/publish') {
-        publishBodies.push(req.postDataJSON() as Record<string, unknown>);
-        return json(route, { sequence: 7, recordHash: RECORD_HASH });
-      }
-      return json(route, {});
-    });
-
-    await page.goto('/__parity_harness');
-    await page.evaluate(() => {
-      const host = window as unknown as HostWindow;
-      host.received = [];
-      window.addEventListener('message', (event) => {
-        if (event.origin === location.origin && event.source === host.rcWindow) host.received.push(event.data);
-      });
-    });
-
-    let widgetPage = page;
-    if (surface === 'popup') {
-      const popupPromise = page.waitForEvent('popup');
-      await page.evaluate(() => {
-        (window as unknown as HostWindow).rcWindow = window.open(
-          `/widget/registry-change?origin=${encodeURIComponent(location.origin)}`,
-        )!;
-      });
-      widgetPage = await popupPromise;
-    } else {
-      await page.evaluate(() => {
-        const iframe = document.createElement('iframe');
-        iframe.id = 'rc-frame';
-        iframe.src = `/widget/embed/registry-change?origin=${encodeURIComponent(location.origin)}`;
-        iframe.style.width = '460px';
-        iframe.style.height = '640px';
-        document.body.append(iframe);
-        (window as unknown as HostWindow).rcWindow = iframe.contentWindow!;
-      });
-    }
-    await attachVirtualAuthenticator(widgetPage);
-    const received = () => page.evaluate(() => (window as unknown as HostWindow).received);
-    await expect.poll(async () => (await received()).some((m) => m.type === 'openkey:ready')).toBe(true);
-
-    await page.evaluate(() => {
-      (window as unknown as HostWindow).rcWindow.postMessage(
-        { type: 'openkey:registry-undo:request', requestId: 'rc-undo-1', protocolVersion: 1, historyId: 'hist-old-1' },
-        location.origin,
+  await page.context().addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
+  await page.context().route('**/api/registry-change/**', async (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/api/registry-change/prepare') {
+      prepareHeaders.push(req.headers());
+      prepareBodies.push(req.postDataJSON());
+      return json(
+        route,
+        makePrepareResponse({
+          encryptionChanged: true,
+          identity: [
+            { url: 'https://node-b.example:8443', did: NODE_B, status: 'unreachable' },
+          ],
+        }),
       );
-    });
-
-    const view = surface === 'popup' ? widgetPage : page.frameLocator('#rc-frame');
-    await expect(view.getByRole('heading', { name: 'Restore an earlier version?' })).toBeVisible();
-    // Non-One localhost origin uses `{origin}` form, never "TinyCloud One", with locale date (F8).
-    const expectedLocaleDate = await page.evaluate(() => new Date('2026-11-20T10:00:00.000Z').toLocaleDateString());
-    await expect(view.getByTestId('registry-change-origin')).toContainText(
-      `${ORIGIN} wants to put back where your data lived before ${expectedLocaleDate}.`,
-    );
-    await expect(view.getByTestId('registry-change-diff-table')).toContainText('Not set');
-    expect(undoBodies).toEqual([{ historyId: 'hist-old-1' }]);
-
-    await view.getByRole('button', { name: 'Approve with passkey' }).click();
-    await expect.poll(() => publishBodies.length).toBe(1);
-    await expect.poll(async () =>
-      (await received()).find((m) => m.type === 'openkey:registry-change:response'),
-    ).toEqual({
-      type: 'openkey:registry-change:response',
-      requestId: 'rc-undo-1',
-      protocolVersion: 1,
-      success: true,
-      status: 'published',
-      sequence: 7,
-      recordHash: RECORD_HASH,
-    });
+    }
+    if (path === '/api/registry-change/publish') {
+      publishBodies.push(req.postDataJSON() as Record<string, unknown>);
+      return json(route, { sequence: 5, recordHash: RECORD_HASH });
+    }
+    return json(route, {});
   });
 
-  test(`${surface}: F3 mode-only diff renders changed row and F6 422 shows Monica surface-specific copy`, async ({ page }) => {
-    await page.context().route('**/api/registry-change/prepare', (route) =>
-      json(route, {
-        ...makePrepareResponse({ encryptionChanged: false }),
+  const { view, received } = await openRegistryChangePopup(page);
+
+  await expect(view.getByRole('heading', { name: 'Move where your data lives?' })).toBeVisible();
+  // Verified origin comes from event.origin (ORIGIN), never the spoofed payload origin.
+  await expect(view.getByTestId('registry-change-origin')).toContainText(`${ORIGIN} wants to change where your data lives.`);
+  await expect(view.getByTestId('registry-change-origin')).not.toContainText('spoofed-app.example');
+
+  // Before/after table shows canonical host + non-default port and No change for untouched space.
+  const table = view.getByTestId('registry-change-diff-table');
+  await expect(table).toContainText('default');
+  await expect(table).toContainText('node-a.example');
+  await expect(table).toContainText('node-b.example:8443');
+  await expect(table).toContainText('notes');
+  await expect(table).toContainText('No change');
+
+  // Encryption change callout is rendered separately in its own colour with Monica's exact copy.
+  const encCallout = view.getByTestId('registry-change-encryption-callout');
+  await expect(encCallout).toBeVisible();
+  await expect(encCallout).toContainText(
+    'New secrets and keys will be held at node-b.example:8443. Whoever runs it can open secrets you save after this.',
+  );
+
+  // Identity warning is shown, and Approve stays enabled (warn-only, not a block).
+  const warnings = view.getByTestId('registry-change-identity-warnings');
+  await expect(warnings).toContainText("Couldn't reach node-b.example:8443 to confirm what it is.");
+  await expect(warnings).toContainText('You can approve anyway, but check this host with whoever asked you to move.');
+
+  // Verify prepare sent verified origin in header, NOT in body, and NEVER sent an Authorization header (F4).
+  expect(prepareHeaders[0]?.['x-openkey-requesting-origin']).toBe(ORIGIN);
+  expect(prepareHeaders[0]?.authorization).toBeUndefined();
+  expect('requestingOrigin' in (prepareBodies[0] as Record<string, unknown>)).toBe(false);
+
+  const approveBtn = view.getByRole('button', { name: 'Approve with passkey' });
+  await expect(approveBtn).toBeEnabled();
+  await approveBtn.click();
+
+  // Publish received changeId + real WebAuthn passkeyAssertion.
+  await expect.poll(() => publishBodies.length).toBe(1);
+  expect(publishBodies[0]?.changeId).toBe('change-ticket-1');
+  expect((publishBodies[0]?.passkeyAssertion as { challengeToken?: string })?.challengeToken).toBe('tok-1');
+
+  await expect.poll(async () =>
+    (await received()).find((m) => m.type === 'openkey:registry-change:response'),
+  ).toEqual({
+    type: 'openkey:registry-change:response',
+    requestId: 'rc-req-1',
+    protocolVersion: 1,
+    success: true,
+    status: 'published',
+    sequence: 5,
+    recordHash: RECORD_HASH,
+  });
+});
+
+test('popup: omits encryption callout when encryptionChanged is false and handles stale 409 re-prepare', async ({ page }) => {
+  let prepareCalls = 0;
+  let publishCalls = 0;
+
+  await page.context().addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
+  await page.context().route('**/api/registry-change/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/registry-change/prepare') {
+      prepareCalls += 1;
+      return json(route, makePrepareResponse({ encryptionChanged: false, token: `tok-${prepareCalls}` }));
+    }
+    if (path === '/api/registry-change/publish') {
+      publishCalls += 1;
+      if (publishCalls === 1) {
+        return json(route, { error: 'registry_change_stale' }, 409);
+      }
+      return json(route, { sequence: 6, recordHash: RECORD_HASH });
+    }
+    return json(route, {});
+  });
+
+  const { view, received } = await openRegistryChangePopup(page);
+
+  await expect(view.getByTestId('registry-change-review')).toBeVisible();
+  await expect(view.getByTestId('registry-change-encryption-callout')).toHaveCount(0);
+
+  // First approve gets 409 stale -> shows stale screen with Review again button.
+  await view.getByRole('button', { name: 'Approve with passkey' }).click();
+  await expect(view.getByTestId('registry-change-stale')).toBeVisible();
+  await expect(view.getByTestId('registry-change-stale')).toContainText('This changed while you were looking');
+
+  // Clicking Review again re-calls /prepare and returns to review.
+  await view.getByRole('button', { name: 'Review again' }).click();
+  await expect.poll(() => prepareCalls).toBe(2);
+  await expect(view.getByTestId('registry-change-review')).toBeVisible();
+
+  // Cancel resolves cancelled.
+  await view.getByRole('button', { name: 'Cancel' }).click();
+  await expect.poll(async () =>
+    (await received()).find((m) => m.type === 'openkey:registry-change:response'),
+  ).toEqual({
+    type: 'openkey:registry-change:response',
+    requestId: 'rc-req-1',
+    protocolVersion: 1,
+    success: true,
+    status: 'cancelled',
+  });
+});
+
+test('popup: refused invalid node URL shows Monica refusal copy and no Approve button', async ({ page }) => {
+  await page.context().addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
+  await page.context().route('**/api/registry-change/prepare', (route) =>
+    json(route, { error: 'registry_change_invalid_node' }, 400),
+  );
+
+  const { view } = await openRegistryChangePopup(page, {
+    nodes: [{ url: 'not-a-url' }],
+  });
+
+  await expect(view.getByTestId('registry-change-error')).toContainText(
+    "This request lists a node address OpenKey can't read, so nothing was signed.",
+  );
+  await expect(view.getByRole('button', { name: 'Approve with passkey' })).toHaveCount(0);
+});
+
+test('popup: undo/restore variant calls /undo/prepare, renders restore title + removed space, and approves with passkey', async ({ page }) => {
+  const undoBodies: Array<Record<string, unknown>> = [];
+  const publishBodies: Array<Record<string, unknown>> = [];
+
+  await page.context().addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
+  await page.context().route('**/api/registry-change/**', async (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/api/registry-change/undo/prepare') {
+      undoBodies.push(req.postDataJSON() as Record<string, unknown>);
+      return json(route, {
+        ...makePrepareResponse({ encryptionChanged: true, token: 'tok-undo-1' }),
         before: {
           version: 2,
           subject: SUBJECT,
-          nodes: [{ did: NODE_A, url: 'https://node-a.example' }],
-          spaces: [{ space: SPACE_DEFAULT, nodes: [{ did: NODE_A, mode: 'read-only' }] }],
-          encryptionNode: NODE_A,
-          updated_at: '2026-11-22T15:00:00.000Z',
-          sequence: 4,
+          nodes: [{ did: NODE_B, url: 'https://node-b.example:8443' }],
+          spaces: [
+            { space: SPACE_DEFAULT, nodes: [{ did: NODE_B, mode: 'read-write' }] },
+            { space: SPACE_NOTES, nodes: [{ did: NODE_B, mode: 'read-write' }] },
+          ],
+          encryptionNode: NODE_B,
+          updated_at: '2026-11-22T16:00:00.000Z',
+          sequence: 6,
         },
         after: {
           version: 2,
           subject: SUBJECT,
           nodes: [{ did: NODE_A, url: 'https://node-a.example' }],
-          spaces: [{ space: SPACE_DEFAULT, nodes: [{ did: NODE_A, mode: 'read-write' }] }],
+          spaces: [
+            { space: SPACE_DEFAULT, nodes: [{ did: NODE_A, mode: 'read-write' }] },
+          ],
           encryptionNode: NODE_A,
-          updated_at: '2026-11-22T16:00:00.000Z',
-          sequence: 5,
+          updated_at: '2026-11-22T16:30:00.000Z',
+          sequence: 7,
         },
-        identity: [{ url: 'https://node-a.example', did: NODE_A, status: 'ok' }],
-      }),
-    );
+        undoKind: 'restore',
+        restoredBeforeDate: '2026-11-20T10:00:00.000Z',
+      });
+    }
+    if (path === '/api/registry-change/publish') {
+      publishBodies.push(req.postDataJSON() as Record<string, unknown>);
+      return json(route, { sequence: 7, recordHash: RECORD_HASH });
+    }
+    return json(route, {});
+  });
 
-    const { view } = await openRegistryChangeWidget(page, surface, {
-      nodes: [{ url: 'https://node-a.example' }],
-      spaces: [{ space: SPACE_DEFAULT, nodes: [{ url: 'https://node-a.example', mode: 'read-write' }] }],
+  await page.goto('/__parity_harness');
+  await page.evaluate(() => {
+    const host = window as unknown as HostWindow;
+    host.received = [];
+    window.addEventListener('message', (event) => {
+      if (event.origin === location.origin && event.source === host.rcWindow) host.received.push(event.data);
     });
-    await expect(view.getByTestId('registry-change-mode-only-row')).toContainText(
-      'default: node-a.example, read-only → read and write',
+  });
+
+  const popupPromise = page.waitForEvent('popup');
+  await page.evaluate(() => {
+    (window as unknown as HostWindow).rcWindow = window.open(
+      `/widget/registry-change?origin=${encodeURIComponent(location.origin)}`,
+    )!;
+  });
+  const view = await popupPromise;
+  await attachVirtualAuthenticator(view);
+  const received = () => page.evaluate(() => (window as unknown as HostWindow).received);
+  await expect.poll(async () => (await received()).some((m) => m.type === 'openkey:ready')).toBe(true);
+
+  await page.evaluate(() => {
+    (window as unknown as HostWindow).rcWindow.postMessage(
+      { type: 'openkey:registry-undo:request', requestId: 'rc-undo-1', protocolVersion: 1, historyId: 'hist-old-1' },
+      location.origin,
     );
   });
 
-  test(`${surface}: F6 422 registry_change_node_did_required shows Monica ${surface} copy with no Approve button`, async ({ page }) => {
-    await page.context().route('**/api/registry-change/prepare', (route) =>
-      json(route, { error: 'registry_change_node_did_required', host: 'node-b.example:8443' }, 422),
-    );
+  await expect(view.getByRole('heading', { name: 'Restore an earlier version?' })).toBeVisible();
+  // Non-One localhost origin uses `{origin}` form, never "TinyCloud One", with locale date (F8).
+  const expectedLocaleDate = await page.evaluate(() => new Date('2026-11-20T10:00:00.000Z').toLocaleDateString());
+  await expect(view.getByTestId('registry-change-origin')).toContainText(
+    `${ORIGIN} wants to put back where your data lived before ${expectedLocaleDate}.`,
+  );
+  await expect(view.getByTestId('registry-change-diff-table')).toContainText('Not set');
+  expect(undoBodies).toEqual([{ historyId: 'hist-old-1' }]);
 
-    const { view } = await openRegistryChangeWidget(page, surface, {
-      nodes: [{ url: 'https://node-b.example:8443' }],
-    });
-    const expectedTail = surface === 'embed' ? 'you can go back to the app.' : 'you can close this window.';
-    await expect(view.getByTestId('registry-change-error')).toContainText(
-      `Couldn't reach node-b.example:8443 to confirm which host it is, so nothing was changed. The app that asked needs to fix this; ${expectedTail}`,
-    );
-    await expect(view.getByRole('button', { name: 'Approve with passkey' })).toHaveCount(0);
+  await view.getByRole('button', { name: 'Approve with passkey' }).click();
+  await expect.poll(() => publishBodies.length).toBe(1);
+  await expect.poll(async () =>
+    (await received()).find((m) => m.type === 'openkey:registry-change:response'),
+  ).toEqual({
+    type: 'openkey:registry-change:response',
+    requestId: 'rc-undo-1',
+    protocolVersion: 1,
+    success: true,
+    status: 'published',
+    sequence: 7,
+    recordHash: RECORD_HASH,
   });
-}
+});
 
-test('framing headers: popup route sends frame-ancestors none + X-Frame-Options DENY; embed route allows framing', async ({ request }) => {
+test('popup: F3 mode-only diff renders changed row', async ({ page }) => {
+  await page.context().route('**/api/registry-change/prepare', (route) =>
+    json(route, {
+      ...makePrepareResponse({ encryptionChanged: false }),
+      before: {
+        version: 2,
+        subject: SUBJECT,
+        nodes: [{ did: NODE_A, url: 'https://node-a.example' }],
+        spaces: [{ space: SPACE_DEFAULT, nodes: [{ did: NODE_A, mode: 'read-only' }] }],
+        encryptionNode: NODE_A,
+        updated_at: '2026-11-22T15:00:00.000Z',
+        sequence: 4,
+      },
+      after: {
+        version: 2,
+        subject: SUBJECT,
+        nodes: [{ did: NODE_A, url: 'https://node-a.example' }],
+        spaces: [{ space: SPACE_DEFAULT, nodes: [{ did: NODE_A, mode: 'read-write' }] }],
+        encryptionNode: NODE_A,
+        updated_at: '2026-11-22T16:00:00.000Z',
+        sequence: 5,
+      },
+      identity: [{ url: 'https://node-a.example', did: NODE_A, status: 'ok' }],
+    }),
+  );
+
+  const { view } = await openRegistryChangePopup(page, {
+    nodes: [{ url: 'https://node-a.example' }],
+    spaces: [{ space: SPACE_DEFAULT, nodes: [{ url: 'https://node-a.example', mode: 'read-write' }] }],
+  });
+  await expect(view.getByTestId('registry-change-mode-only-row')).toContainText(
+    'default: node-a.example, read-only → read and write',
+  );
+});
+
+test('popup: F6 422 registry_change_node_did_required shows Monica popup copy with no Approve button', async ({ page }) => {
+  await page.context().route('**/api/registry-change/prepare', (route) =>
+    json(route, { error: 'registry_change_node_did_required', host: 'node-b.example:8443' }, 422),
+  );
+
+  const { view } = await openRegistryChangePopup(page, {
+    nodes: [{ url: 'https://node-b.example:8443' }],
+  });
+  await expect(view.getByTestId('registry-change-error')).toContainText(
+    "Couldn't reach node-b.example:8443 to confirm which host it is, so nothing was changed. The app that asked needs to fix this; you can close this window.",
+  );
+  await expect(view.getByRole('button', { name: 'Approve with passkey' })).toHaveCount(0);
+});
+
+test('N1 framing & route removal: /widget/registry-change sends frame-ancestors none + DENY; /widget/embed/registry-change is 404', async ({ request }) => {
   const popupRes = await request.get('/widget/registry-change');
+  expect(popupRes.status()).toBe(200);
   expect(popupRes.headers()['content-security-policy']).toContain("frame-ancestors 'none'");
   expect(popupRes.headers()['x-frame-options']).toBe('DENY');
   expect(popupRes.headers()['referrer-policy']).toBe('no-referrer');
 
   const embedRes = await request.get('/widget/embed/registry-change');
-  expect(embedRes.headers()['content-security-policy'] ?? '').not.toContain("frame-ancestors 'none'");
-  expect(embedRes.headers()['x-frame-options']).toBeUndefined();
-  expect(embedRes.headers()['referrer-policy']).toBe('no-referrer');
+  expect(embedRes.status()).toBe(404);
 });

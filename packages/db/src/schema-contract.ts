@@ -74,7 +74,7 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   // migration so lexical order matches apply order.
   ['20261122_0002_tinycloud_setup_tables', 'a70e40ec6d8c438f61dbe7784fdba3f17b69af069ee1d717af571803fb6f36cc'],
   // TC-3893: previous registry record history stored before publishing a registry change.
-  ['20261122_0003_registry_change_history', 'db4d3620f78423dde3e49c955c1e6ee3fa82dc779f253991d710153f416f41ed'],
+  ['20261122_0003_registry_change_history', 'c1e40deb71814ca31e64ab2da5b811d11c35090db36e17ab3d02d9c0f5d772a0'],
 ]);
 
 export type SchemaContractDatabase = {

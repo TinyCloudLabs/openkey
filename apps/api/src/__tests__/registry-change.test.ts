@@ -176,6 +176,7 @@ interface StoredHistoryRow {
   newRecordHash: string;
   newSequence: number;
   createdAt: Date;
+  publishedAt: Date | null;
 }
 
 interface VerificationRow {
@@ -198,6 +199,7 @@ function createFakePrisma(opts: {
     countsForStepUp: boolean;
   }>;
   onHistoryCreate?: (row: StoredHistoryRow) => void;
+  onHistoryUpdate?: (row: StoredHistoryRow) => void;
 } = {}) {
   const mode = opts.passkeyApprovalMode ?? 'NEVER';
   const passkeys = opts.passkeys ? opts.passkeys.map((p) => ({ ...p })) : [];
@@ -269,9 +271,17 @@ function createFakePrisma(opts: {
     },
     registryChangeHistory: {
       create: async ({ data }: { data: StoredHistoryRow }) => {
-        historyRows.push(data);
-        opts.onHistoryCreate?.(data);
-        return data;
+        const row: StoredHistoryRow = { ...data, publishedAt: data.publishedAt ?? null };
+        historyRows.push(row);
+        opts.onHistoryCreate?.(row);
+        return row;
+      },
+      update: async ({ where, data }: { where: { id: string }; data: Partial<StoredHistoryRow> }) => {
+        const row = historyRows.find((r) => r.id === where.id);
+        if (!row) throw new Error('Row not found');
+        Object.assign(row, data);
+        opts.onHistoryUpdate?.(row);
+        return row;
       },
       delete: async ({ where }: { where: { id: string } }) => {
         const idx = historyRows.findIndex((r) => r.id === where.id);
@@ -285,12 +295,13 @@ function createFakePrisma(opts: {
         where,
         take,
       }: {
-        where: { userId: string; newSequence?: { lte?: number } };
+        where: { userId: string; newSequence?: { lte?: number }; publishedAt?: { not?: null } };
         take: number;
       }) =>
         historyRows
           .filter((r) => {
             if (r.userId !== where.userId) return false;
+            if (where.publishedAt && where.publishedAt.not === null && r.publishedAt === null) return false;
             if (where.newSequence?.lte !== undefined && r.newSequence > where.newSequence.lte) return false;
             return true;
           })
@@ -321,6 +332,8 @@ function createHarness(opts: {
   onProbeFetch?: (url: string, init?: RequestInit) => Promise<Response | undefined>;
   getServerTime?: () => Date;
   putStatus?: number;
+  registryReadStatus?: number;
+  signMessageThrows?: boolean;
   tamperAcceptedPut?: boolean;
 } = {}) {
   const credential = makeTestWebAuthnCredential();
@@ -333,6 +346,7 @@ function createHarness(opts: {
     passkeyApprovalMode: opts.passkeyApprovalMode ?? 'NEVER',
     passkeys: opts.noPasskey ? [] : [credential.passkeyRow],
     onHistoryCreate: () => events.push('history.create'),
+    onHistoryUpdate: () => events.push('history.update'),
   });
 
   const defaultTestEmailSender: EmailSender = {
@@ -370,6 +384,9 @@ function createHarness(opts: {
 
     if (urlStr.startsWith(`${REGISTRY_URL}/v2/locations/`)) {
       if (method === 'GET') {
+        if (opts.registryReadStatus && opts.registryReadStatus !== 200) {
+          return new Response(JSON.stringify({ error: 'registry error' }), { status: opts.registryReadStatus });
+        }
         if (!currentRecord) {
           return new Response(JSON.stringify({ error: 'location record not found' }), {
             status: 404,
@@ -445,7 +462,10 @@ function createHarness(opts: {
     resolveHost,
     rp: RP,
     ...(opts.getServerTime ? { getServerTime: opts.getServerTime } : {}),
-    signMessage: async (_descriptor, _sealed, message) => OWNER_ACCOUNT.signMessage({ message }),
+    signMessage: async (_descriptor, _sealed, message) => {
+      if (opts.signMessageThrows) throw new Error('TEE unseal/sign failed');
+      return OWNER_ACCOUNT.signMessage({ message });
+    },
     sessionMiddleware: async (c, next) => {
       c.set('user', { id: USER_ID, email: USER_EMAIL });
       c.set('session', { id: SESSION_ID, userId: USER_ID, expiresAt: new Date(2099, 0, 1) });
@@ -803,12 +823,13 @@ describe('POST /api/registry-change/publish security invariants', () => {
     expect(pubRes.status).toBe(200);
     expect(await pubRes.json()).toEqual({ sequence: 5, recordHash: prep.recordHash });
 
-    // Strict ordering: history stored BEFORE PUT, email sent AFTER PUT!
-    expect(events).toEqual(['history.create', 'registry.PUT', 'email.send']);
+    // Strict ordering: history stored BEFORE PUT, publishedAt stamped AFTER PUT, email sent AFTER!
+    expect(events).toEqual(['history.create', 'registry.PUT', 'history.update', 'email.send']);
     expect(historyRows).toHaveLength(1);
     expect(historyRows[0]?.previousRecord).toEqual(initial);
     expect(historyRows[0]?.newSequence).toBe(5);
     expect(historyRows[0]?.newRecordHash).toBe(prep.recordHash);
+    expect(historyRows[0]?.publishedAt).toEqual(fixedNow);
     expect(getCurrentRecord()?.sequence).toBe(5);
 
     // Notice email uses Monica's exact copy and path.
@@ -1106,6 +1127,7 @@ describe('GET /api/registry-change/history, POST /undo/prepare (REPLACE), and On
       newRecordHash: 'e'.repeat(64),
       newSequence: 5,
       createdAt: new Date('2026-11-22T17:00:00.000Z'),
+      publishedAt: new Date('2026-11-22T17:00:00.000Z'),
     });
     setCurrentRecord(await makeSignedV2Record({ sequence: 5 }));
 
@@ -1137,6 +1159,7 @@ describe('GET /api/registry-change/history, POST /undo/prepare (REPLACE), and On
       newRecordHash: 'f'.repeat(64),
       newSequence: 4,
       createdAt: new Date('2026-11-22T17:00:00.000Z'),
+      publishedAt: new Date('2026-11-22T17:00:00.000Z'),
     });
 
     const res = await callUndoPrepare(app, { historyId: 'hist-other-owner' });
@@ -1385,6 +1408,7 @@ describe('R-reg review #3 security & contract hardening (F1, F2, F3, F4, F6, F7)
         newRecordHash: '1'.repeat(64),
         newSequence: 4,
         createdAt: new Date('2026-11-22T15:00:00.000Z'),
+        publishedAt: new Date('2026-11-22T15:00:00.000Z'),
       },
       {
         id: 'hist-phantom',
@@ -1395,6 +1419,7 @@ describe('R-reg review #3 security & contract hardening (F1, F2, F3, F4, F6, F7)
         newRecordHash: '2'.repeat(64),
         newSequence: 5, // > current.sequence (4)!
         createdAt: new Date('2026-11-22T15:05:00.000Z'),
+        publishedAt: new Date('2026-11-22T15:05:00.000Z'),
       },
     );
     const histRes = await histHarness.app.request('/api/registry-change/history?limit=10');
@@ -1590,5 +1615,202 @@ describe('R-reg review #3 security & contract hardening (F1, F2, F3, F4, F6, F7)
     });
     const prepDev = await callPrepare(devNoEmail.app, { request: { nodes: [{ url: NODE_B_URL }] } });
     expect(prepDev.status).toBe(200);
+  });
+
+  test('N3: blocks 192.0.0.0/24, 198.18.0.0/15, 240.0.0.0/4, 255.255.255.255 and IPv6 embedded IPv4 prefixes (::/96, ::ffff:0:0/96, ::ffff:0:0:0/96, 64:ff9b::/96, 2002::/16)', async () => {
+    // New IPv4 special-use ranges (blocked even with allowLoopback=true).
+    for (const ip of [
+      '192.0.0.1',
+      '192.0.0.254',
+      '198.18.0.1',
+      '198.19.255.254',
+      '240.0.0.1',
+      '254.254.254.254',
+      '255.255.255.255',
+    ]) {
+      expect(isBlockedProbeIp(ip, true), ip).toBe(true);
+    }
+    // Adjacent public IPs remain allowed.
+    for (const ip of ['192.0.1.1', '198.17.0.1', '198.20.0.1', '223.255.255.254']) {
+      expect(isBlockedProbeIp(ip, false), ip).toBe(false);
+    }
+
+    // Embedded IPv4 in IPv6: blocked private/metadata/special-use targets across all 5 prefixes.
+    for (const ip of [
+      // ::/96 (IPv4-compatible)
+      '::10.0.0.1',
+      '::169.254.169.254',
+      '::192.0.0.1',
+      '::198.18.0.1',
+      '::240.0.0.1',
+      '::255.255.255.255',
+      // ::ffff:0:0/96 (IPv4-mapped)
+      '::ffff:10.0.0.1',
+      '::ffff:192.0.0.1',
+      '::ffff:198.18.0.1',
+      '::ffff:240.0.0.1',
+      '::ffff:255.255.255.255',
+      // ::ffff:0:0:0/96 (IPv4-translated RFC 2765)
+      '::ffff:0:10.0.0.1',
+      '::ffff:0:169.254.169.254',
+      '::ffff:0:192.0.0.1',
+      '::ffff:0:198.19.0.1',
+      '::ffff:0:240.0.0.1',
+      '::ffff:0:255.255.255.255',
+      // 64:ff9b::/96 (NAT64 well-known prefix)
+      '64:ff9b::10.0.0.1',
+      '64:ff9b::169.254.169.254',
+      '64:ff9b::192.0.0.1',
+      '64:ff9b::198.18.0.1',
+      '64:ff9b::240.0.0.1',
+      '64:ff9b::255.255.255.255',
+      // 2002::/16 (6to4 — bits 16-47 = embedded IPv4)
+      '2002:0a00:0001::1', // 10.0.0.1
+      '2002:a9fe:a9fe::1', // 169.254.169.254
+      '2002:c000:0001::1', // 192.0.0.1
+      '2002:c612:0001::1', // 198.18.0.1
+      '2002:f000:0001::1', // 240.0.0.1
+      '2002:ffff:ffff::1', // 255.255.255.255
+    ]) {
+      expect(isBlockedProbeIp(ip, true), ip).toBe(true);
+    }
+
+    // Embedded loopback respects allowLoopback (blocked in prod, allowed in dev/test).
+    for (const ip of [
+      '::127.0.0.1',
+      '::ffff:127.0.0.1',
+      '::ffff:0:127.0.0.1',
+      '64:ff9b::127.0.0.1',
+      '2002:7f00:0001::1',
+    ]) {
+      expect(isBlockedProbeIp(ip, false), `${ip} prod`).toBe(true);
+      expect(isBlockedProbeIp(ip, true), `${ip} dev`).toBe(false);
+    }
+
+    // Embedded public IPv4 (93.184.216.34 = 0x5db8d822) is NOT blocked across all 5 prefixes.
+    for (const ip of [
+      '::93.184.216.34',
+      '::ffff:93.184.216.34',
+      '::ffff:0:93.184.216.34',
+      '64:ff9b::93.184.216.34',
+      '2002:5db8:d822::1',
+    ]) {
+      expect(isBlockedProbeIp(ip, false), ip).toBe(false);
+    }
+
+    // End-to-end: hosts resolving to NAT64 metadata or 6to4 metadata are NOT fetched.
+    const initial = await makeSignedV2Record();
+    const { app, fetchedUrls } = createHarness({
+      initialRecord: initial,
+      isProduction: true,
+      resolveHost: async (host) => {
+        if (host === 'nat64-imds.example') return ['64:ff9b::169.254.169.254'];
+        if (host === 'sixtofour-imds.example') return ['2002:a9fe:a9fe::1'];
+        return ['93.184.216.34'];
+      },
+    });
+    const res = await callPrepare(app, {
+      request: {
+        nodes: [
+          { url: 'https://nat64-imds.example', did: NODE_B_DID },
+          { url: 'https://sixtofour-imds.example', did: NODE_C_DID },
+        ],
+      },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { identity: Array<{ url: string; status: string }> };
+    expect(body.identity).toEqual([
+      { url: 'https://nat64-imds.example', did: NODE_B_DID, status: 'unreachable' },
+      { url: 'https://sixtofour-imds.example', did: NODE_C_DID, status: 'unreachable' },
+    ]);
+    expect(fetchedUrls.filter((f) => !f.url.startsWith(REGISTRY_URL))).toHaveLength(0);
+  });
+
+  test('N4(a)+(b): GET /history fails CLOSED (503) when registry read fails; excludes unpublished crash-phantom rows; undo refuses unpublished rows', async () => {
+    const initial = await makeSignedV2Record({ sequence: 4 });
+
+    // N4(a): registry read fails -> GET /history returns 503 registry_history_unavailable (NEVER unfiltered rows!).
+    const failingRegistry = createHarness({
+      initialRecord: initial,
+      registryReadStatus: 500,
+    });
+    failingRegistry.historyRows.push({
+      id: 'hist-must-not-leak',
+      userId: USER_ID,
+      subject: SUBJECT,
+      requestingOrigin: APP_ORIGIN,
+      previousRecord: initial,
+      newRecordHash: '3'.repeat(64),
+      newSequence: 4,
+      createdAt: new Date('2026-11-22T15:00:00.000Z'),
+      publishedAt: new Date('2026-11-22T15:00:00.000Z'),
+    });
+    const failHistRes = await failingRegistry.app.request('/api/registry-change/history?limit=10');
+    expect(failHistRes.status).toBe(503);
+    expect((await failHistRes.json() as { error: string }).error).toBe('registry_history_unavailable');
+
+    // N4(b): crash-phantom row (publishedAt === null) is excluded from GET /history AND refused by /undo/prepare!
+    const crashHarness = createHarness({ initialRecord: initial });
+    crashHarness.historyRows.push(
+      {
+        id: 'hist-published',
+        userId: USER_ID,
+        subject: SUBJECT,
+        requestingOrigin: APP_ORIGIN,
+        previousRecord: initial,
+        newRecordHash: '4'.repeat(64),
+        newSequence: 4,
+        createdAt: new Date('2026-11-22T15:00:00.000Z'),
+        publishedAt: new Date('2026-11-22T15:00:01.000Z'),
+      },
+      {
+        id: 'hist-crash-phantom',
+        userId: USER_ID,
+        subject: SUBJECT,
+        requestingOrigin: APP_ORIGIN,
+        previousRecord: initial,
+        newRecordHash: '5'.repeat(64),
+        newSequence: 4,
+        createdAt: new Date('2026-11-22T15:01:00.000Z'),
+        publishedAt: null, // crash before accepted==prepared completed!
+      },
+    );
+
+    const histRes = await crashHarness.app.request('/api/registry-change/history?limit=10');
+    expect(histRes.status).toBe(200);
+    const histBody = await histRes.json() as { history: Array<{ id: string }> };
+    expect(histBody.history.map((r) => r.id)).toEqual(['hist-published']);
+
+    const undoPhantomRes = await callUndoPrepare(crashHarness.app, { historyId: 'hist-crash-phantom' });
+    expect(undoPhantomRes.status).toBe(404);
+    expect((await undoPhantomRes.json() as { error: string }).error).toBe('history_not_found');
+
+    // Undo of the real published row still sees it as `undo-last` even with an unpublished crash phantom present.
+    const undoRealRes = await callUndoPrepare(crashHarness.app, { historyId: 'hist-published' });
+    expect(undoRealRes.status).toBe(200);
+    expect((await undoRealRes.json() as { undoKind: string }).undoKind).toBe('undo-last');
+  });
+
+  test('N4(c): signer throw returns 502, deletes pre-stored history row, issues 0 PUTs, and sends 0 emails', async () => {
+    const initial = await makeSignedV2Record({ sequence: 4 });
+    const { app, credential, events, historyRows, sentEmails, getCurrentRecord } = createHarness({
+      initialRecord: initial,
+      signMessageThrows: true,
+    });
+
+    const prep = await (await callPrepare(app, { request: { nodes: [{ url: NODE_B_URL }] } })).json() as {
+      changeId: string;
+      passkey: { challengeToken: string; options: { challenge: string } };
+    };
+    const pubRes = await callPublish(app, {
+      changeId: prep.changeId,
+      passkeyAssertion: credential.signOffer(prep.passkey),
+    });
+    expect(pubRes.status).toBe(502);
+    expect((await pubRes.json() as { error: string }).error).toBe('registry_publish_failed');
+    expect(historyRows).toHaveLength(0);
+    expect(events).toEqual(['history.create']); // no registry.PUT, no history.update, no email.send!
+    expect(sentEmails).toHaveLength(0);
+    expect(getCurrentRecord()?.sequence).toBe(4);
   });
 });

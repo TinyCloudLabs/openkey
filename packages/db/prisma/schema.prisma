@@ -1150,14 +1150,15 @@ model TinyCloudSetupRateLimitBucket {
 // TC-3893: previous registry location record snapshots stored before publishing a
 // registry change, so the owner can review recent changes and undo in TinyCloud One.
 model RegistryChangeHistory {
-  id               String   @id
+  id               String    @id
   userId           String
   subject          String
   requestingOrigin String
   previousRecord   Json
   newRecordHash    String
   newSequence      Int
-  createdAt        DateTime @default(now())
+  createdAt        DateTime  @default(now())
+  publishedAt      DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

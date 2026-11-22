@@ -1359,18 +1359,21 @@ export class OpenKey {
   /**
    * TC-3893: request a change to the owner's TinyCloud location registry record.
    *
-   * Opens OpenKey's dedicated consent screen (`widget/registry-change` in popup mode,
-   * `widget/embed/registry-change` in iframe mode). OpenKey reads the current record,
-   * sets sequence = current + 1, displays the before/after diff and any identity warnings,
+   * Always opens OpenKey's dedicated popup consent screen (`/widget/registry-change`).
+   * Any `mode: 'iframe'` option (or instance-level iframe mode) is ignored because
+   * registry-change approval requires cookie-only same-site OpenKey auth and passkey
+   * verification in a top-level popup. OpenKey reads the current record, sets
+   * sequence = current + 1, displays the before/after diff and any identity warnings,
    * requires a passkey assertion bound to the exact record hash, stores the previous
    * record for undo, signs and publishes the new record, and sends a notice email.
    */
   async requestRegistryChange(
     request: RegistryChangeRequest,
-    opts?: { mode?: OpenKeyMode },
+    _opts?: { mode?: OpenKeyMode },
   ): Promise<RegistryChangeResult> {
-    const mode = this.resolveMode(opts?.mode);
-    const reserved = mode === 'popup' ? this.reservePopup('registry-change') : null;
+    // N1: registry changes always use the top-level popup; mode:'iframe' is ignored.
+    const mode: OpenKeyMode = 'popup';
+    const reserved = this.reservePopup('registry-change');
     try {
       return await this.openFlow<RegistryChangeResult>(
         'registry-change',
@@ -1398,13 +1401,17 @@ export class OpenKey {
   /**
    * TC-3893: request restoring the owner's TinyCloud location registry record to the
    * stored previous version of a history entry (server-built exact REPLACE at sequence + 1).
+   *
+   * Always opens OpenKey's dedicated popup consent screen (`/widget/registry-change`);
+   * any `mode: 'iframe'` option (or instance-level iframe mode) is ignored.
    */
   async requestRegistryUndo(
     request: RegistryUndoRequest,
-    opts?: { mode?: OpenKeyMode },
+    _opts?: { mode?: OpenKeyMode },
   ): Promise<RegistryChangeResult> {
-    const mode = this.resolveMode(opts?.mode);
-    const reserved = mode === 'popup' ? this.reservePopup('registry-change') : null;
+    // N1: registry undo/restore always uses the top-level popup; mode:'iframe' is ignored.
+    const mode: OpenKeyMode = 'popup';
+    const reserved = this.reservePopup('registry-change');
     try {
       return await this.openFlow<RegistryChangeResult>(
         'registry-change',
@@ -2275,12 +2282,6 @@ export class OpenKey {
                   resolve({ address: data.address, keyId: data.keyId } as T);
                 } else if (data.type === 'openkey:sign-out:response') {
                   resolve({ requestId: data.requestId, revoked: data.revoked === true } as T);
-                } else if (data.type === 'openkey:registry-change:response') {
-                  if (data.status === 'published') {
-                    resolve({ status: 'published', sequence: data.sequence, recordHash: data.recordHash } as T);
-                  } else {
-                    resolve({ status: 'cancelled' } as T);
-                  }
                 } else if (data.type === 'openkey:externalSign:approve') {
                   resolve({
                     authorizationContextToken: (data as any).authorizationContextToken,

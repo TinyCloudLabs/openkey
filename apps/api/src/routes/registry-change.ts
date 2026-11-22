@@ -384,9 +384,11 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
         previousRecord: true,
         newSequence: true,
         createdAt: true,
+        publishedAt: true,
       },
     });
-    if (!row || row.userId !== userId || row.subject !== subject) {
+    // N4(b): undo/restore may only target rows that completed publish (publishedAt != null).
+    if (!row || row.userId !== userId || row.subject !== subject || row.publishedAt === null) {
       return c.json({ error: 'history_not_found' }, 404);
     }
 
@@ -421,7 +423,7 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
     }
 
     const latestRow = (await deps.prisma.registryChangeHistory.findMany({
-      where: { userId },
+      where: { userId, publishedAt: { not: null } },
       orderBy: [{ createdAt: 'desc' }, { newSequence: 'desc' }],
       take: 1,
       select: { id: true },
@@ -583,8 +585,9 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
       throw error;
     }
 
-    // Store PREVIOUS record BEFORE PUT so undo data is durable if the connection drops right
-    // after the registry accepts the PUT; clean up that row on PUT/verification failure (F2).
+    // Store PREVIOUS record BEFORE PUT with publishedAt = null so undo data is durable
+    // on connection drop; clean up on PUT/signer/verification failure (F2) and stamp
+    // publishedAt ONLY after accepted == prepared succeeds (N4(b)).
     const historyRowId = randomUUID();
     await deps.prisma.registryChangeHistory.create({
       data: {
@@ -596,6 +599,7 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
         newRecordHash: decoded.recordHash,
         newSequence: payload.sequence,
         createdAt: now,
+        publishedAt: null,
       },
     });
 
@@ -616,11 +620,17 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
         },
       });
     } catch (error) {
-      // F2: remove phantom history row when PUT or accepted==prepared verification failed.
+      // F2 + N4(b): remove phantom history row when signing, PUT, or accepted==prepared failed.
       await deps.prisma.registryChangeHistory.delete({ where: { id: historyRowId } }).catch(() => undefined);
       if (error instanceof RegistryChangeError) return registryErrorResponse(c, error);
       return c.json({ error: 'registry_publish_failed' }, 502);
     }
+
+    // N4(b): mark the history row published ONLY after accepted == prepared succeeded.
+    await deps.prisma.registryChangeHistory.update({
+      where: { id: historyRowId },
+      data: { publishedAt: now },
+    });
 
     // Send the post-publish notice email via Resend.
     const ownerEmail = user.email
@@ -655,31 +665,37 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
       limit = Math.min(parsed, 50);
     }
 
-    // F2 defense-in-depth: read current verified sequence best-effort so phantom rows with
-    // newSequence > current.sequence are excluded from history responses.
-    let currentSequence: number | null = null;
+    // N4(a): fail CLOSED if the verified registry read fails — never return unfiltered rows.
     const primary = await prisma.ethereumKey.findFirst({
       where: primaryKeyWhere(userId),
       select: { address: true },
     });
-    if (primary) {
-      const deps = resolveDeps();
-      try {
-        const current = await readCurrentLocationRecordV2({
-          subject: subjectFromAddress(primary.address),
-          ...(deps?.registryUrl ? { registryUrl: deps.registryUrl } : {}),
-          ...(deps?.fetch ? { fetch: deps.fetch } : {}),
-        });
-        currentSequence = current?.sequence ?? null;
-      } catch {
-        currentSequence = null;
-      }
+    if (!primary) {
+      return c.json({ history: [] });
     }
 
+    const deps = resolveDeps();
+    let current;
+    try {
+      current = await readCurrentLocationRecordV2({
+        subject: subjectFromAddress(primary.address),
+        ...(deps?.registryUrl ? { registryUrl: deps.registryUrl } : {}),
+        ...(deps?.fetch ? { fetch: deps.fetch } : {}),
+      });
+    } catch {
+      return c.json({ error: 'registry_history_unavailable' }, 503);
+    }
+    if (!current) {
+      return c.json({ history: [] });
+    }
+    const currentSequence = current.sequence;
+
+    // N4(b): return only published rows (publishedAt != null) at or below verified current.sequence.
     const rows = await prisma.registryChangeHistory.findMany({
       where: {
         userId,
-        ...(currentSequence !== null ? { newSequence: { lte: currentSequence } } : {}),
+        publishedAt: { not: null },
+        newSequence: { lte: currentSequence },
       },
       orderBy: [{ createdAt: 'desc' }, { newSequence: 'desc' }],
       take: limit,
@@ -690,12 +706,11 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
         newRecordHash: true,
         newSequence: true,
         createdAt: true,
+        publishedAt: true,
       },
     });
 
-    const filtered = currentSequence !== null
-      ? rows.filter((row) => row.newSequence <= currentSequence!)
-      : rows;
+    const filtered = rows.filter((row) => row.publishedAt !== null && row.newSequence <= currentSequence);
 
     return c.json({
       history: filtered.map((row) => ({

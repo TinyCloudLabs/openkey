@@ -10,6 +10,7 @@ CREATE TABLE "registry_change_history" (
   "newRecordHash" TEXT NOT NULL,
   "newSequence" INTEGER NOT NULL,
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "publishedAt" TIMESTAMP(3),
   CONSTRAINT "registry_change_history_userId_fkey" FOREIGN KEY ("userId") REFERENCES "user"("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 

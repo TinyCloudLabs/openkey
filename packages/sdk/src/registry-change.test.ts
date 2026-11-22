@@ -1,5 +1,5 @@
 // TC-3893: SDK unit tests for OpenKey.requestRegistryChange and OpenKey.requestRegistryUndo
-// in both popup and iframe modes.
+// (N1 popup-only: always opens /widget/registry-change, ignoring mode:'iframe').
 // @ts-expect-error bun:test is a runtime-only module; tsc doesn't ship types
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { OpenKey } from './index';
@@ -157,64 +157,67 @@ describe('OpenKey.requestRegistryChange', () => {
     expect(await promise).toEqual({ status: 'cancelled' });
   });
 
-  test('iframe mode opens /widget/embed/registry-change and resolves published', async () => {
+  test('N1: mode:"iframe" (instance and per-call) is ignored and always opens the /widget/registry-change popup', async () => {
     const posted: Array<{ msg: any; targetOrigin: string }> = [];
-    let iframeSrc = '';
-    const iframeContentWindow = {
-      postMessage(msg: any, targetOrigin: string) { posted.push({ msg, targetOrigin }); },
-    };
-
-    const makeEl = (tag: string) => {
-      const el: any = {
-        tagName: tag.toUpperCase(),
-        style: {},
-        className: '',
-        textContent: '',
-        children: [] as any[],
-        attributes: {} as Record<string, string>,
-        classList: { add() {}, remove() {} },
-        setAttribute(k: string, v: string) { el.attributes[k] = v; },
-        addEventListener() {},
-        appendChild(child: any) { el.children.push(child); return child; },
-        remove() {},
-        attachShadow() { return { appendChild() {}, querySelector: () => null }; },
+    const openedUrls: string[] = [];
+    let iframeCreated = false;
+    const makePopupWindow = () => {
+      const win = {
+        closed: false,
+        location: { href: '' },
+        close() { this.closed = true; },
+        postMessage(msg: any, targetOrigin: string) { posted.push({ msg, targetOrigin }); },
       };
-      if (tag === 'iframe') {
-        Object.defineProperty(el, 'src', {
-          get: () => iframeSrc,
-          set: (v: string) => { iframeSrc = v; },
-        });
-        el.contentWindow = iframeContentWindow;
-      }
-      return el;
+      Object.defineProperty(win.location, 'href', {
+        set(val: string) { openedUrls.push(val); },
+        get() { return openedUrls.at(-1) ?? ''; },
+      });
+      return win;
     };
+    const popups: ReturnType<typeof makePopupWindow>[] = [];
 
     (globalThis as { document?: unknown }).document = {
-      createElement: makeEl,
+      createElement: (tag: string) => {
+        if (tag === 'iframe') iframeCreated = true;
+        throw new Error(`Unexpected DOM element created in popup-only flow: ${tag}`);
+      },
       body: { appendChild() {} },
     };
     (globalThis as { window?: unknown }).window = {
       location: { origin: APP_ORIGIN },
-      innerHeight: 900,
-      matchMedia: () => ({ matches: false }),
+      screenX: 0,
+      screenY: 0,
+      outerWidth: 1200,
+      outerHeight: 800,
+      innerHeight: 800,
       navigator: { userAgent: 'Mozilla/5.0 Chrome/130.0.0.0' },
+      open: () => {
+        const win = makePopupWindow();
+        popups.push(win);
+        return win;
+      },
       dispatchEvent: () => true,
       addEventListener: (type: string, fn: Listener) => { if (type === 'message') listeners.push(fn); },
       removeEventListener: (type: string, fn: Listener) => { if (type === 'message') listeners = listeners.filter((l) => l !== fn); },
     };
 
     const ok = new OpenKey({ host: HOST, mode: 'iframe' });
-    const promise = ok.requestRegistryChange({ nodes: [{ url: 'https://node-b.example' }] });
+    const promise = ok.requestRegistryChange(
+      { nodes: [{ url: 'https://node-b.example' }] },
+      { mode: 'iframe' },
+    );
+    const popup1 = popups[0]!;
 
-    expect(iframeSrc).toBe(`${HOST}/widget/embed/registry-change?origin=${encodeURIComponent(APP_ORIGIN)}`);
+    expect(iframeCreated).toBe(false);
+    expect(openedUrls[0]).toBe(`${HOST}/widget/registry-change?origin=${encodeURIComponent(APP_ORIGIN)}`);
 
-    dispatchWindowMessage({ origin: HOST, source: iframeContentWindow, data: { type: 'openkey:ready', protocolVersion: 1 } });
+    dispatchWindowMessage({ origin: HOST, source: popup1, data: { type: 'openkey:ready', protocolVersion: 1 } });
     expect(posted).toHaveLength(1);
     const requestId = posted[0]?.msg.requestId as string;
 
     dispatchWindowMessage({
       origin: HOST,
-      source: iframeContentWindow,
+      source: popup1,
       data: {
         type: 'openkey:registry-change:response',
         requestId,
@@ -231,6 +234,26 @@ describe('OpenKey.requestRegistryChange', () => {
       sequence: 7,
       recordHash: 'c'.repeat(64),
     });
+
+    // Undo also ignores mode:'iframe' and uses the popup.
+    const undoPromise = ok.requestRegistryUndo({ historyId: 'hist-iframe-ignored' }, { mode: 'iframe' });
+    const popup2 = popups[1]!;
+    expect(iframeCreated).toBe(false);
+    expect(openedUrls.at(-1)).toBe(`${HOST}/widget/registry-change?origin=${encodeURIComponent(APP_ORIGIN)}`);
+    dispatchWindowMessage({ origin: HOST, source: popup2, data: { type: 'openkey:ready', protocolVersion: 1 } });
+    const undoRequestId = posted.at(-1)?.msg.requestId as string;
+    dispatchWindowMessage({
+      origin: HOST,
+      source: popup2,
+      data: {
+        type: 'openkey:registry-change:response',
+        requestId: undoRequestId,
+        protocolVersion: 1,
+        success: true,
+        status: 'cancelled',
+      },
+    });
+    expect(await undoPromise).toEqual({ status: 'cancelled' });
   });
 
   test('requestRegistryUndo sends openkey:registry-undo:request with historyId and resolves published', async () => {
