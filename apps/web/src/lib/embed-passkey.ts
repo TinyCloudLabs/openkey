@@ -210,7 +210,7 @@ export async function revokeEmbeddedSession(
 
 /** Plain words for the replies a person meets most: a passkey OpenKey does not know, and a passkey request that ran out. */
 export const PASSKEY_NOT_KNOWN_TEXT = "OpenKey doesn't know this passkey. Choose another way to sign in.";
-export const PASSKEY_REQUEST_EXPIRED_TEXT = 'The passkey request timed out. Tap Passkey to try again.';
+export const PASSKEY_REQUEST_EXPIRED_TEXT = 'This passkey request has ended. Tap Passkey to try again.';
 
 /**
  * What the frame says when a passkey call is refused. Plain words for a passkey the account does not have
