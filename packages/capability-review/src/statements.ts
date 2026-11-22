@@ -2009,6 +2009,39 @@ export interface SummaryStatement {
 
 const SUMMARY_SEVERITY_RANK: Record<PermissionSeverity, number> = { standard: 0, attention: 1, sensitive: 2 };
 
+const NAMED_SECRET_PATH_RE = /^vault\/secrets\/([A-Z][A-Z0-9_]*)$/;
+
+/**
+ * The secret's name when the grants are exactly a read of one named secret
+ * (`tinycloud.kv/get` on `vault/secrets/NAME` in the signer's own secrets
+ * space) and decrypt on the signer's own encryption network; otherwise null.
+ */
+export function oneNamedSecret(grants: readonly CapabilityGrant[]): string | null {
+  if (grants.length !== 2) return null;
+  const read = grants.find((grant) => grant.family === "secret-read");
+  const decrypt = grants.find((grant) => grant.family === "encryption-decrypt");
+  if (!read || !decrypt) return null;
+  if (read.ownedBySelf !== true || decrypt.ownedBySelf !== true) return null;
+  if (read.serviceMismatch === true || read.appScopeNearMiss === true || decrypt.serviceMismatch === true) return null;
+  if (read.service !== "tinycloud.kv" || !isSecretsSpace(read.space)) return null;
+  if (read.actions.length !== 1 || read.actions[0]!.ability !== "tinycloud.kv/get") return null;
+  if (decrypt.actions.length !== 1 || decrypt.actions[0]!.ability !== "tinycloud.encryption/decrypt") return null;
+  const view = canonicalEncryptionUrn(decrypt);
+  if (view.kind !== "urn" || view.parsed.kind !== "network") return null;
+  return NAMED_SECRET_PATH_RE.exec(read.path)?.[1] ?? null;
+}
+
+/** The key of the decrypt row of a one-named-secret request; the page puts its note under this row. */
+export const NAMED_SECRET_DECRYPT_ROW = "decrypt-named-secret";
+
+/** The two summary rows of a one-named-secret request (`oneNamedSecret`). */
+function oneNamedSecretRows(name: string): SummaryStatement[] {
+  return [
+    { key: "read-named-secret", primaryText: `Read the secret ${name}`, severity: "sensitive", unmapped: false, codeSpans: false },
+    { key: NAMED_SECRET_DECRYPT_ROW, primaryText: "Decrypt your data", severity: "sensitive", unmapped: false, codeSpans: false },
+  ];
+}
+
 /**
  * The rows of the approval summary for the grants currently selected. Repeated
  * sentences collapse into one row at the strongest severity; unmapped rows
@@ -2016,6 +2049,8 @@ const SUMMARY_SEVERITY_RANK: Record<PermissionSeverity, number> = { standard: 0,
  * so what the header says always matches the rows marked Sensitive.
  */
 export function buildSummaryStatements(grants: readonly CapabilityGrant[]): SummaryStatement[] {
+  const secret = oneNamedSecret(grants);
+  if (secret !== null) return oneNamedSecretRows(secret);
   const grouped = new Map<string, SummaryStatement>();
   for (const grant of grants) {
     for (const statement of buildStatements(grant)) {

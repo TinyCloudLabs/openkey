@@ -158,3 +158,29 @@ export function delegateRequester(approvedCallback: string | null): DelegateRequ
   const endpoint = `${url.origin}${url.pathname}`;
   return Object.hasOwn(REQUESTER_BY_CALLBACK_ENDPOINT, endpoint) ? REQUESTER_BY_CALLBACK_ENDPOINT[endpoint]! : CLI_REQUESTER;
 }
+
+/** The name and return line for a one-tap request signed by TinyCloud One's own key. */
+export const TINYCLOUD_ONE_REQUESTER: DelegateRequester = { displayName: 'TinyCloud One', returnTo: 'TinyCloud One' };
+
+/**
+ * TinyCloud One's stable request-signing keys (`did:key`), one per
+ * deployment. Empty until One's key is set; another deployment (preview, dev)
+ * lists its own in `VITE_TINYCLOUD_ONE_REQUESTER_DIDS`.
+ */
+export const TINYCLOUD_ONE_REQUESTER_DIDS: readonly string[] = [];
+
+/** A configured requester key: an Ed25519 `did:key` (`did:key:z6Mk…`). */
+export function isEd25519DidKey(entry: string): boolean {
+  return /^did:key:z6Mk[1-9A-HJ-NP-Za-km-z]{44}$/.test(entry);
+}
+
+/**
+ * Who is asking in a one-tap approval request. `issuer` is the request's
+ * signer, which the API checks against the request's signature before `/load`
+ * returns it; nothing else in a signed request names the requester. Only a
+ * listed TinyCloud One key is named; null for every other signer, which the
+ * page shows as not verified.
+ */
+export function approvalRequester(issuer: string, oneRequesterDids: readonly string[]): DelegateRequester | null {
+  return oneRequesterDids.includes(issuer) ? TINYCLOUD_ONE_REQUESTER : null;
+}

@@ -784,6 +784,13 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
      client registered for it (`docs/resource-server-token-status.md`); none of
      these establishes an assistant's acceptance. See
      `docs/share-device-authorization.md` ("Ordinary `/delegate` links").
+   - Optional: `VITE_TINYCLOUD_ONE_REQUESTER_DIDS` (comma-separated Ed25519
+     `did:key:z6Mk…` keys). A one-tap approval request (`/a/…`) signed by one
+     of these keys is shown as requested by TinyCloud One, with "return to
+     TinyCloud One" on its last page; any other signer is shown as not
+     verified, with no requester name. Each deployment (production, preview,
+     dev) lists the key its TinyCloud One gateway signs with; the built-in list
+     (`TINYCLOUD_ONE_REQUESTER_DIDS`) is empty until production's key is set.
 
 4. Deploy
 
