@@ -5,7 +5,7 @@
 import { describe, expect, test } from 'bun:test';
 import { parseCapabilityReview, type CapabilityReviewModel } from '../../../../packages/capability-review/src/index';
 import { FIXTURE_META, makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
-import { isOnceTier, isSensitiveTier, renewalStartsTicked } from './renewal-default';
+import { isOnceTier, renewalNeedsSensitiveConfirm, renewalStartsTicked } from './renewal-default';
 
 const OWNER = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
 
@@ -79,15 +79,15 @@ describe('isOnceTier (narrowed: broad-only; drives the 1h expiry start)', () => 
   });
 });
 
-describe('isSensitiveTier (broad: drives renewal opt-in and the D7 confirm)', () => {
-  test('plain KV access is not Sensitive', () => {
-    expect(isSensitiveTier(ordinary)).toBe(false);
+describe('renewalNeedsSensitiveConfirm (broad: drives renewal opt-in and the D7 confirm)', () => {
+  test('plain KV access asks for nothing', () => {
+    expect(renewalNeedsSensitiveConfirm(ordinary)).toBe(false);
   });
 
-  test('every grant that reaches secret data or decryption is Sensitive', () => {
-    expect(isSensitiveTier(decrypt)).toBe(true);
-    expect(isSensitiveTier(secret)).toBe(true);
-    expect(isSensitiveTier(wholeNetworkDecrypt)).toBe(true);
-    expect(isSensitiveTier(wholeVault)).toBe(true);
+  test('every grant that reaches secret data or decryption asks', () => {
+    expect(renewalNeedsSensitiveConfirm(decrypt)).toBe(true);
+    expect(renewalNeedsSensitiveConfirm(secret)).toBe(true);
+    expect(renewalNeedsSensitiveConfirm(wholeNetworkDecrypt)).toBe(true);
+    expect(renewalNeedsSensitiveConfirm(wholeVault)).toBe(true);
   });
 });
