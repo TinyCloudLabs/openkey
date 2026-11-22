@@ -38,10 +38,13 @@
     type CapabilityReviewModel,
     type DeclaredAppScope,
     checkSiweOrigin,
+    REGISTRY_RECORD_SIGN_REFUSED,
+    registryRecordSignRefusal,
     isSiweShaped,
     siweExpirationTime,
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
+  import RegistryRecordRefusal from '$lib/components/signing/registry-record-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
   import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
   import {
@@ -1257,11 +1260,14 @@
 
   // TC-1486: a SIWE-shaped message that does not name the verified requesting
   // origin (or arrives unattributed) is never signed and has no override.
+  // Hardening: registry record signing is refused the same way, unless the requester is TinyCloud One / Home.
   // Every signing path below re-checks this; the server enforces it too.
   const siweRefusal = $derived.by(() => {
     if (!message) return null;
+    const registry = registryRecordSignRefusal(message, origin);
+    if (registry) return { registry: true as const, code: REGISTRY_RECORD_SIGN_REFUSED.code, message: registry.message };
     const check = checkSiweOrigin(message, origin);
-    return check.siwe && !check.ok ? check : null;
+    return check.siwe && !check.ok ? { registry: false as const, code: check.code, message: check.message } : null;
   });
   let refusalReported = false;
   $effect(() => {
@@ -1272,7 +1278,10 @@
     sendResponse({
       type: 'openkey:sign:response',
       success: false,
-      error: { code: 'UNKNOWN', message: `SIWE_ORIGIN_REFUSED: ${siweRefusal.code}` },
+      error: {
+        code: 'UNKNOWN',
+        message: siweRefusal.registry ? 'REGISTRY_RECORD_SIGN_REFUSED' : `SIWE_ORIGIN_REFUSED: ${siweRefusal.code}`,
+      },
     });
   });
 
@@ -1443,7 +1452,11 @@
   </header>
 
   {#if siweRefusal}
-    <SiweOriginRefusal reason={siweRefusal.message} code={siweRefusal.code} onclose={closeRefused} />
+    {#if siweRefusal.registry}
+      <RegistryRecordRefusal variant="popup" onclose={closeRefused} />
+    {:else}
+      <SiweOriginRefusal reason={siweRefusal.message} code={siweRefusal.code} onclose={closeRefused} />
+    {/if}
   {:else if replyFailureStatus !== null}
     <ServerReplyRefusal status={replyFailureStatus} onclose={closeRefused} />
   {:else if !$session.data}

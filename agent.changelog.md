@@ -3,6 +3,12 @@
 Track changes to agent-facing development guidance for OpenKey. Add a concise entry when
 `agent.dev.md` or related agent workflow expectations change.
 
+## 2026-11-22
+
+- API deploys (deploy-api.yml, tc-492-production-cutover.yml) write the image into the compose only
+  by digest, fail on any tag-only or `${VAR}` image, attest build provenance, and publish the
+  measured app-compose on the release `openkey-api-<commit>` (TC-3837).
+
 ## 2026-11-21
 
 - Share sender smoke now follows production Pages check completion instead of

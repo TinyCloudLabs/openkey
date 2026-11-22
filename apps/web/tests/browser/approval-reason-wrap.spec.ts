@@ -12,7 +12,7 @@ const LONG_TOKEN = `${DID}${'f'.repeat(120)}`;
 
 function config(reason: string) {
   const recap = `urn:recap:${Buffer.from(JSON.stringify({ att: { [`${SPACE}/kv/books/`]: { 'tinycloud.kv/get': [{}], 'tinycloud.kv/put': [{}] } }, prf: [] })).toString('base64url')}`;
-  const message = ['cli.tinycloud.xyz wants you to sign in with your Ethereum account:', OWNER, '', 'URI: did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw', 'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-24T00:00:00.000Z', 'Resources:', `- ${recap}`].join('\n');
+  const message = ['cli.tinycloud.xyz wants you to sign in with your Ethereum account:', OWNER, '', '', 'URI: did:key:z6MktwupdmLXVVqTzCw4i46r4uGyosGXRnR3XjN4Zq7oMMsw', 'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-24T00:00:00.000Z', 'Resources:', `- ${recap}`].join('\n');
   const model = parseCapabilityReview({
     message, signer: { label: 'Selected key', address: OWNER, chainId: 1, provenance: 'managed' }, editable: false,
     metadataTrust: { status: 'unsigned', reason: 'no manifest' }, reason: { text: reason, source: 'caller' },
