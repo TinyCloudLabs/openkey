@@ -1,0 +1,82 @@
+# TC-3837: after a production API deploy, publish the exact app-compose the openkey-api CVM measured,
+# as an asset of the GitHub release `openkey-api-<commit>`. Its sha256 is the compose_hash in the
+# CVM's attestation, and the images inside are pinned by digest, so anyone can turn an attested
+# compose_hash into the code it runs. Called by deploy-api.yml and tc-492-production-cutover.yml.
+name: Publish API app-compose
+
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: Full commit the deployed image was built from
+        type: string
+        required: true
+      image:
+        description: Deployed API image, <repository>@sha256:<digest>
+        type: string
+        required: true
+    secrets:
+      PHALA_CLOUD_API_KEY:
+        required: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # The production environment holds the Phala key this job reads the measurement with.
+    environment: production
+    permissions:
+      contents: write
+    steps:
+      # The workflow's own commit, which has the script, not necessarily the deployed one.
+      - uses: actions/checkout@v4
+
+      - name: Install Phala CLI
+        run: npm install -g phala@1.1.22
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Read the measured app-compose
+        id: measured
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          EXPECTED_API_IMAGE: ${{ inputs.image }}
+        run: bun scripts/measured-app-compose.ts "$RUNNER_TEMP/app-compose.json"
+
+      - name: Publish it beside the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ inputs.commit }}
+          IMAGE: ${{ inputs.image }}
+          COMPOSE_HASH: ${{ steps.measured.outputs.compose_hash }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit must be a full SHA" >&2; exit 1; }
+          tag="openkey-api-${COMMIT}"
+          # One asset per measured compose: a re-run of the same commit builds a new digest, so a new compose.
+          asset="$RUNNER_TEMP/app-compose.${COMPOSE_HASH}.json"
+          mv "$RUNNER_TEMP/app-compose.json" "$asset"
+          echo "${COMPOSE_HASH}  ${asset}" | sha256sum -c -
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            notes=$(cat <<EOF
+          The OpenKey API (api.openkey.so) as deployed to its Phala dstack CVM from ${COMMIT}.
+
+          Each \`app-compose.<compose_hash>.json\` asset is the exact app-compose the CVM measured for one deploy of this commit:
+          - \`sha256sum app-compose.<compose_hash>.json\` equals the \`compose_hash\` in the CVM's attestation (the \`compose-hash\` event in RTMR3);
+          - every \`image:\` in its \`docker_compose_file\` is pinned by \`@sha256:\` digest;
+          - \`gh attestation verify oci://docker.io/<repository>@<digest> --repo ${GITHUB_REPOSITORY}\` shows which workflow and commit built the API image.
+          EOF
+            )
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --latest=false \
+              --title "openkey-api ${COMMIT::12}" --notes "$notes"
+          fi
+          gh release upload "$tag" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
+          {
+            echo "### Measured app-compose published"
+            echo
+            echo "Image: \`${IMAGE}\`"
+            echo "compose_hash: \`${COMPOSE_HASH}\`"
+            echo "Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${tag}"
+          } >> "$GITHUB_STEP_SUMMARY"

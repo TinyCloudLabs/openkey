@@ -99,6 +99,17 @@ jobs:
       )
     runs-on: ubuntu-latest
     environment: production
+    # Listed because the provenance attestation needs id-token and attestations; the rest is what
+    # the default read-only token gave this job (checkout, and check runs for require-green).
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      id-token: write
+      attestations: write
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+      deployed: ${{ steps.phala-deploy.outputs.deployed }}
     steps:
       - uses: actions/checkout@v4
 
@@ -166,15 +177,32 @@ jobs:
       - name: Scan the Docker image
         run: scripts/security/scan-image.sh "${DOCKER_IMAGE}:${GITHUB_SHA}"
 
+      # TC-3837: the compose names the image by the digest this push returned, never by tag, so the
+      # measured compose pins the exact image that was scanned. The registry must resolve the tag to
+      # the same digest, or something else pushed in between.
       - name: Push Docker image
+        id: push
         run: |
           set -euo pipefail
-          docker push "${DOCKER_IMAGE}:${GITHUB_SHA}"
+          docker push "${DOCKER_IMAGE}:${GITHUB_SHA}" | tee "$RUNNER_TEMP/push.log"
+          digest=$(sed -n -E "s/^${GITHUB_SHA}: digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p" "$RUNNER_TEMP/push.log")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::docker push reported no digest for ${DOCKER_IMAGE}:${GITHUB_SHA}" >&2; exit 1; }
+          registry=$(docker buildx imagetools inspect "${DOCKER_IMAGE}:${GITHUB_SHA}" --format '{{json .Manifest.Digest}}' | jq -r .)
+          [ "$registry" = "$digest" ] || { echo "::error::the registry resolves ${DOCKER_IMAGE}:${GITHUB_SHA} to ${registry}, not the pushed ${digest}" >&2; exit 1; }
           docker push "${DOCKER_IMAGE}:latest"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "image=${DOCKER_IMAGE}@${digest}" >> "$GITHUB_OUTPUT"
 
-      - name: Update compose with image tag
-        run: |
-          sed -i "s|\${DOCKER_IMAGE}|${{ env.DOCKER_IMAGE }}:${{ github.sha }}|g" docker-compose.prod.yml
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: docker.io/${{ env.DOCKER_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+
+      - name: Pin the compose to the pushed digest
+        env:
+          IMAGE: ${{ steps.push.outputs.image }}
+        run: sed -i "s|\${DOCKER_IMAGE}|${IMAGE}|g" docker-compose.prod.yml
 
       # The guest runs docker compose v2.26.0 (dstack 0.5.15 base image). Its schema refuses long-form
       # `devices` ("services.key-recovery.devices.0 must be a string"), which stopped the witness boot.
@@ -205,6 +233,11 @@ jobs:
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      # Every production deploy: no image in the compose sent to Phala may be a tag or a variable.
+      - name: Require every compose image pinned by digest
+        run: bun scripts/compose-image-digests.ts docker-compose.prod.yml
+
       - name: Deploy and verify production migrations
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -217,6 +250,7 @@ jobs:
           bun run db:migrate:deploy:production
 
       - name: Deploy to Phala Cloud
+        id: phala-deploy
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
         run: |
@@ -229,6 +263,7 @@ jobs:
             --image "$PHALA_OS_IMAGE" \
             --compose docker-compose.prod.yml \
             --wait
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
 
       # Fail closed if the deploy left the CVM on a different OS image.
       - name: Verify production OS image after deploy
@@ -249,7 +284,7 @@ jobs:
             echo "### Production API deployed"
             echo ""
             echo "Commit: [\`${GITHUB_SHA::7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})"
-            echo "Image: \`${{ env.DOCKER_IMAGE }}:${GITHUB_SHA}\`"
+            echo "Image: \`${{ steps.push.outputs.image }}\`"
             echo "Deployments: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/deployments/production"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -319,3 +354,17 @@ jobs:
             exit 1
           fi
           echo "TC-1012: $raw_url is closed on the gateway (curl exit $rc, $closed consecutive)"
+
+  # TC-3837: publish the app-compose the CVM measured, once the deploy reached the CVM, even if a
+  # later health check failed: that compose is what runs.
+  publish-compose:
+    needs: deploy
+    if: ${{ !cancelled() && needs.deploy.outputs.deployed == 'true' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-api-compose.yml
+    with:
+      commit: ${{ github.sha }}
+      image: ${{ needs.deploy.outputs.image }}
+    secrets:
+      PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}

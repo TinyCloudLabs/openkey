@@ -345,6 +345,15 @@ jobs:
     if: github.ref == 'refs/heads/main' && inputs.mode == 'cutover'
     runs-on: ubuntu-latest
     environment: production
+    # The workflow's read permissions, plus id-token and attestations for the provenance attestation.
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    outputs:
+      deployed: ${{ steps.apply.outputs.deployed }}
+      image: skgbafa/openkey-api@${{ steps.build.outputs.digest }}
     steps:
       - name: Validate destructive-cutover confirmation
         env:
@@ -490,6 +499,30 @@ jobs:
           push: true
           no-cache: true
           tags: skgbafa/openkey-api:${{ inputs.candidate_sha }}
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: docker.io/skgbafa/openkey-api
+          subject-digest: ${{ steps.build.outputs.digest }}
+
+      # TC-3837: pin and check the compose before the freeze, so a compose that names any image by tag
+      # or variable stops the cutover while nothing has changed. The candidate commit predates
+      # scripts/compose-image-digests.ts, so the check is inline.
+      - name: Pin the compose to the built digest and require every image pinned
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "build did not return an immutable digest" >&2; exit 1; }
+          sed -i "s|\${DOCKER_IMAGE}|skgbafa/openkey-api@${IMAGE_DIGEST}|g" docker-compose.prod.yml
+          if grep -nE '^[[:space:]]+build:' docker-compose.prod.yml; then
+            echo "::error::docker-compose.prod.yml builds an image in the CVM" >&2; exit 1
+          fi
+          if grep -nE '^[[:space:]]+image:' docker-compose.prod.yml \
+            | grep -vE ':[[:space:]]+image:[[:space:]]+[A-Za-z0-9][A-Za-z0-9._/:-]*@sha256:[0-9a-f]{64}[[:space:]]*$'; then
+            echo "::error::docker-compose.prod.yml has an image not pinned by @sha256 digest" >&2; exit 1
+          fi
 
       - name: Freeze writes, revalidate, and create final rollback backup
         env:
@@ -652,6 +685,7 @@ jobs:
           printf 'old-api-restarted\n' > tc492-phase.txt
 
       - name: Apply reviewed migrations and deploy immutable image
+        id: apply
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
@@ -680,8 +714,8 @@ jobs:
             --argjson candidates "$ACCEPTED_CANDIDATE_COUNT" \
             '.phase == "expanded" and .candidateDigestSha256 == $digest and .deterministicCandidateCount == $candidates and .existingCanonicalCount == $candidates and .unassignedCandidateCount == 0 and .selectionConflictCount == 0 and .predictedAddressChangeCount == 0 and .canonicalWithoutEligibleKeyCount == 0 and .tenantCustodyKeyCount == 0' \
             tc492-post.json >/dev/null
-          sed -i "s|\${DOCKER_IMAGE}|skgbafa/openkey-api@${IMAGE_DIGEST}|g" docker-compose.prod.yml
           phala deploy --api-token "$PHALA_CLOUD_API_KEY" --cvm-id openkey-api --compose docker-compose.prod.yml --no-public-logs --no-public-sysinfo --no-dev-os --image "$PHALA_OS_IMAGE" --wait
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
           phala ps openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/containers-after.json
           EXPECTED_IMAGE="skgbafa/openkey-api@${IMAGE_DIGEST}" node <<'NODE'
           const fs = require('node:fs');
@@ -787,3 +821,16 @@ jobs:
             openid-configuration.json
           if-no-files-found: warn
           retention-days: 90
+
+  # TC-3837: publish the app-compose the CVM measured once the candidate reached it.
+  publish-compose:
+    needs: cutover
+    if: ${{ !cancelled() && needs.cutover.outputs.deployed == 'true' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-api-compose.yml
+    with:
+      commit: ${{ inputs.candidate_sha }}
+      image: ${{ needs.cutover.outputs.image }}
+    secrets:
+      PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}

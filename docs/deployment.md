@@ -652,6 +652,27 @@ dispatch `deploy-api.yml` after the merge: its migration step runs
 To require API-before-web with this main-only workflow, split the API/database
 and web changes into separate merges.
 
+#### Image digest, provenance and the published compose (TC-3837)
+
+The deploy writes the API image into `docker-compose.prod.yml` by the digest
+the push returned (`skgbafa/openkey-api@sha256:…`), never by tag, and
+`scripts/compose-image-digests.ts` stops the deploy, before migrations, if any
+service image is a tag or a variable. The measured `compose_hash` therefore
+names the exact image that was scanned. The push carries a GitHub build
+provenance attestation:
+
+```bash
+gh attestation verify oci://docker.io/skgbafa/openkey-api@sha256:<digest> --repo TinyCloudLabs/openkey
+```
+
+Once the deploy reaches the CVM, `publish-api-compose.yml` reads the CVM's
+attestation from Phala, requires that the `compose-hash` event, Phala's
+`compose_hash` and sha256 of the measured app-compose agree and that the api
+service runs the pushed digest, then uploads that app-compose as
+`app-compose.<compose_hash>.json` to the release `openkey-api-<commit>`.
+`sha256sum` of the asset equals the `compose_hash` in the attestation. A failure
+there fails the deploy run, which also holds back the Share sender smoke.
+
 #### Release order when web and API ship together
 
 When one release changes both the web and the API, release them as a pair, in
@@ -728,7 +749,9 @@ serving.
    bun run db:migrate:prod
    ```
 
-3. Update `docker-compose.prod.yml` with the image tag
+3. Update `docker-compose.prod.yml` with the image digest the push printed
+   (`skgbafa/openkey-api@sha256:…`), not the tag, and check it with
+   `bun scripts/compose-image-digests.ts docker-compose.prod.yml`
 
 4. Deploy via Phala CLI:
    ```bash
