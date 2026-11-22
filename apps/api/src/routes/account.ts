@@ -786,7 +786,7 @@ accountRouter.post('/delete', async (c) => {
   }
   if (appleTokens === 'PASSKEY') return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
   if (appleTokens === 'EMAIL') return c.json(EMAIL_STEP_UP_REQUIRED, 403);
-  if (appleTokens === 'LEASES') return c.json({ error: 'A permission started renewing meanwhile. Nothing was deleted. Try again.', code: 'renewal_leases_not_stopped' }, 409);
+  if (appleTokens === 'LEASES') return c.json({ error: 'A permission started renewing after you confirmed, so nothing was deleted. Try again.', code: 'renewal_leases_not_stopped' }, 409);
   if (appleTokens === 'KEYS') return c.json({ error: 'Your keys changed after you confirmed, so nothing was deleted. Try again.', code: 'ethereum_keys_changed' }, 409);
 
   await revokeStoredAppleTokens(appleTokens);
