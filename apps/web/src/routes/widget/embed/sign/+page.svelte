@@ -189,13 +189,17 @@
   // This page's own flow id for one sign request, drawn here and never taken from the app's request.
   const webFlowId = newWebSignFlowId();
   // The flow id is named on offers and approvals only while the cover can be honoured here: not in a frame without
-  // observer v2, and not after a tap was held back because Approve had not been in plain view.
+  // observer v2, and not after a tap reached a covered offer before it counted.
   const approveVisibility = createApproveVisibility();
   let coverWithdrawn = $state(false);
+  // Set while the offer is fetched again without the flow id, so a second tap cannot start a second approval.
+  let coverRefetch = $state<'preview' | 'exact' | null>(null);
   const coverFlowId = $derived(approveVisibility.coverUsable && !coverWithdrawn ? webFlowId : undefined);
   const coverHeaders = () => (coverFlowId ? webSignFlowHeaders(coverFlowId) : {});
   function withdrawCover(previewed: boolean) {
     coverWithdrawn = true;
+    error = '';
+    coverRefetch = previewed ? 'preview' : 'exact';
     if (previewed) invalidatePreviewForSelectionEdit();
     else exactBytePasskey = null;
   }
@@ -1152,7 +1156,7 @@
   async function approveAndSign() {
     if (refused) return;
     if (!key || !message) return;
-    if (signing || previewStopped) return;
+    if (signing || previewStopped || coverRefetch !== null) return;
     if (siweRefusal) {
       error = siweRefusal.message;
       return;
@@ -1182,8 +1186,8 @@
         return;
       }
     }
-    // A covered offer is used only while Approve has been in plain view; otherwise the page asks for the passkey
-    // as it does without a cover, and this tap sends nothing.
+    // A covered offer counts only while Approve has been in plain view. Before that, this tap is answered with the
+    // passkey: the page stops naming the flow, fetches the offer again and goes on once it lands.
     if (coverNotHonoured(passkeyNeed, approveVisibility)) {
       withdrawCover(approved !== null);
       return;
@@ -1314,6 +1318,18 @@
     heldPreview = null;
     previewRevision++;
   }
+
+  // The fresh offer a withdrawn cover waits for: when it lands the tap that withdrew the cover goes on to the passkey
+  // prompt; when its fetch fails the page shows the failure and the next tap tries again.
+  $effect(() => {
+    const waiting = coverRefetch;
+    if (waiting === null) return;
+    const landed = waiting === 'preview' ? currentPreview() !== null : exactByteGate.action === 'send';
+    const failed = waiting === 'preview' ? !previewing && (error !== '' || refused) : exactBytePasskeyFetch === 'failed';
+    if (!landed && !failed) return;
+    coverRefetch = null;
+    if (landed) untrack(() => { void approveAndSign(); });
+  });
 
   function retryPreview() {
     if (!canUseAuthorizeSignFn() || signing || previewing || heldPreview || previewStopped || !error) return;

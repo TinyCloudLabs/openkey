@@ -896,12 +896,13 @@ sign-in made **for this sign request** counts as that request's approval passkey
   `delay: 100`, threshold 1.0, `lib/approve-visibility.ts`) and honours the cover after the observer has reported
   the button fully in view, not covered and not faded for 500 ms without a break, and only while the latest
   report still says so. The 500 ms restarts whenever Approve becomes actionable again.
-- When a tap arrives on a `flowCover` offer without that, it sends nothing. The page stops naming the flow, fetches
-  the offer again without the flow header, and the next tap asks for the passkey as it does without a cover.
-  A browser without observer v2 (Safari, Firefox) never names the flow in a frame, so it asks for the passkey at
-  once. A page that is not framed, such as the pop-up window, is not gated.
+- When a tap arrives on a `flowCover` offer without that, the page asks for the passkey on that tap: it stops naming
+  the flow, fetches the offer again without the flow header, and runs the passkey prompt for the same tap. If that
+  fetch fails, the page shows the offer failure and the next tap tries again. A browser without observer v2
+  (Safari, Firefox) never names the flow in a frame, so it asks for the passkey at once. A page that is not framed,
+  such as the pop-up window, is not gated.
 - The observer samples at most every 100 ms, so an element placed over Approve between two samples is not seen
-  until the next one; that latency is the window. Observer v2 is available in Chrome only.
+  until the next one, so that 100 ms is a gap the check cannot see. Observer v2 is available in Chrome only.
 - The web server answers `/auth/login` with `Content-Security-Policy: frame-ancestors 'none'`
   (`apps/web/src/hooks.server.ts`, `lib/frame-policy.ts`), so no page can frame the login page. `/widget/sign`,
   `/widget/embed/sign` and every other page keep their headers.

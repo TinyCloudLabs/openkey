@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { compile } from 'svelte/compiler';
-import type { ApprovalPasskeyNeed } from './approval-passkey';
+import { passkeyApprovalCopy, type ApprovalPasskeyNeed } from './approval-passkey';
 
 const win = new Window({ url: 'http://openkey.test/' });
 (win as unknown as { postMessage: () => void }).postMessage = () => {};
@@ -105,10 +105,11 @@ type Shared = {
   offerCalls: unknown[][];
   signCalls: unknown[][];
   prompts: Array<ApprovalPasskeyNeed | null>;
+  failFresh: boolean;
 };
 const store = globalThis as unknown as { __cover: Shared };
 const shared = (): Shared => store.__cover;
-const reset = () => { store.__cover = { options: null, offerCalls: [], signCalls: [], prompts: [] }; };
+const reset = () => { store.__cover = { options: null, offerCalls: [], signCalls: [], prompts: [], failFresh: false }; };
 
 const KEY = { id: 'key_1', address: '0x1111111111111111111111111111111111111111', keyIndex: 0, keyType: 'MANAGED', label: 'Key' };
 const ASSERTION = { challengeToken: 'challenge-1', response: { id: 'credential-1' } };
@@ -141,6 +142,7 @@ const baseStubs = (pageUrl: string): Record<string, string> => ({
     listKeys: async () => ({ keys: [${JSON.stringify(KEY)}] }),
     signMessagePasskey: async (...args) => {
       globalThis.__cover.offerCalls.push(args);
+      if (!args[3] && globalThis.__cover.failFresh) throw new Error('offer down');
       return args[3] ? ${JSON.stringify(COVERED)} : ${JSON.stringify(REQUIRED)};
     },
     signMessage: async (...args) => {
@@ -309,51 +311,71 @@ for (const { name } of PAGES) {
       });
     });
 
-    test('Approve in view for 499 ms is not the cover: the tap sends nothing, a fresh offer is fetched without the flow id, and the next tap asks for the passkey', async () => {
+    test('Approve in view for 499 ms is not the cover: one tap fetches a fresh offer without the flow id, then asks for the passkey and signs with the assertion and no flow id', async () => {
       await withPage(name, { framed: true, observer: 2 }, async ({ approve, tap }) => {
         await until(() => !approve().disabled, 'Approve to be ready');
         report(true);
         advance(499);
         tap();
-        await until(() => shared().offerCalls.length === 2, 'the fresh offer request');
-
-        expect(shared().signCalls).toEqual([]);
-        expect(shared().prompts).toEqual([]);
-        expect(flowOf(shared().offerCalls[1], 3)).toBeUndefined();
-
-        await until(() => !approve().disabled, 'Approve to be ready again');
-        tap();
         await until(() => shared().signCalls.length === 1, 'the sign request');
 
+        expect(shared().offerCalls).toHaveLength(2);
+        expect(flowOf(shared().offerCalls[1], 3)).toBeUndefined();
         expect(shared().prompts).toEqual([REQUIRED]);
         expect(shared().signCalls[0]![4]).toEqual(ASSERTION);
         expect(flowOf(shared().signCalls[0], 5)).toBeUndefined();
-        expect(shared().offerCalls).toHaveLength(2);
+        expect(shared().signCalls).toHaveLength(1);
       });
     });
 
-    test('a report that Approve is covered or faded, however long it was in view before, is not the cover', async () => {
+    test('a report that Approve is covered or faded, however long it was in view before, is answered with the passkey on that tap', async () => {
       await withPage(name, { framed: true, observer: 2 }, async ({ approve, tap }) => {
         await until(() => !approve().disabled, 'Approve to be ready');
         report(true);
         advance(5_000);
         report(false);
         tap();
-        await until(() => shared().offerCalls.length === 2, 'the fresh offer request');
+        await until(() => shared().signCalls.length === 1, 'the sign request');
 
-        expect(shared().signCalls).toEqual([]);
         expect(flowOf(shared().offerCalls[1], 3)).toBeUndefined();
+        expect(shared().signCalls[0]![4]).toEqual(ASSERTION);
+        expect(flowOf(shared().signCalls[0], 5)).toBeUndefined();
       });
     });
 
-    test('a report that never came is not the cover', async () => {
+    test('a report that never came is answered with the passkey on that tap', async () => {
       await withPage(name, { framed: true, observer: 2 }, async ({ approve, tap }) => {
         await until(() => !approve().disabled, 'Approve to be ready');
         advance(5_000);
         tap();
-        await until(() => shared().offerCalls.length === 2, 'the fresh offer request');
+        await until(() => shared().signCalls.length === 1, 'the sign request');
 
+        expect(shared().prompts).toEqual([REQUIRED]);
+        expect(shared().signCalls[0]![4]).toEqual(ASSERTION);
+      });
+    });
+
+    test('when the fresh offer fails the page shows the offer failure and signs nothing, and the next tap tries again', async () => {
+      await withPage(name, { framed: true, observer: 2 }, async ({ approve, tap }) => {
+        await until(() => !approve().disabled, 'Approve to be ready');
+        shared().failFresh = true;
+        report(true);
+        advance(499);
+        tap();
+        await until(() => (document.body.querySelector('[role="alert"]')?.textContent ?? '').includes(passkeyApprovalCopy.offerFailed), 'the offer failure');
+
+        expect(shared().offerCalls).toHaveLength(2);
+        expect(flowOf(shared().offerCalls[1], 3)).toBeUndefined();
         expect(shared().signCalls).toEqual([]);
+        expect(shared().prompts).toEqual([]);
+
+        shared().failFresh = false;
+        tap();
+        await until(() => shared().offerCalls.length === 3, 'the offer fetched again');
+        await until(() => !approve().disabled, 'Approve to be ready again');
+        tap();
+        await until(() => shared().signCalls.length === 1, 'the sign request');
+        expect(shared().signCalls[0]![4]).toEqual(ASSERTION);
       });
     });
 
@@ -481,6 +503,7 @@ async function withPreviewPage(
         // The offer is covered when the flow id is named and asks for the passkey when it is not.
         passkey: headers['x-openkey-passkey-flow'] ? COVERED : REQUIRED,
       };
+      if (shared().failFresh && !headers['x-openkey-passkey-flow']) { status = 500; answer = { error: 'preview down' }; }
     }
     if (name === 'authorize-sign') {
       status = 200;
@@ -540,39 +563,52 @@ for (const { name } of PAGES) {
       });
     });
 
-    test('Approve in view for 499 ms is not the cover: a fresh preview is fetched without the flow id, and the next tap sends the assertion without it', async () => {
-      await withPreviewPage(name, async ({ approve, tap, named }) => {
+    test('Approve in view for 499 ms is not the cover: one tap fetches a fresh preview without the flow id, then asks for the passkey and approves with the assertion and no flow id', async () => {
+      await withPreviewPage(name, async ({ tap, named }) => {
         report(true);
         advance(499);
         tap();
-        await untilTimers(() => named('authorize-sign-preview').length === 2, 'the fresh preview');
-
-        expect(named('authorize-sign')).toEqual([]);
-        expect(named('authorize-sign-preview')[1]!.headers[HEADER]).toBeUndefined();
-        expect(shared().prompts).toEqual([]);
-
-        await untilTimers(() => !approve().disabled, 'Approve to be ready again');
-        tap();
         await untilTimers(() => named('authorize-sign').length === 1, 'the approval');
 
+        expect(named('authorize-sign-preview')).toHaveLength(2);
+        expect(named('authorize-sign-preview')[1]!.headers[HEADER]).toBeUndefined();
         const approval = named('authorize-sign')[0]!;
         expect(shared().prompts).toEqual([REQUIRED]);
         expect(approval.body.passkeyAssertion).toEqual(ASSERTION);
         expect(approval.headers[HEADER]).toBeUndefined();
         expect(approval.body.previewApprovalToken).toBe('approval-2');
+        expect(named('authorize-sign')).toHaveLength(1);
       });
     });
 
-    test('a cover placed over Approve after it was in view for long is not the cover', async () => {
+    test('a cover placed over Approve after it was in view for long is answered with the passkey on that tap', async () => {
       await withPreviewPage(name, async ({ tap, named }) => {
         report(true);
         advance(10_000);
         report(false);
         tap();
-        await untilTimers(() => named('authorize-sign-preview').length === 2, 'the fresh preview');
+        await untilTimers(() => named('authorize-sign').length === 1, 'the approval');
 
-        expect(named('authorize-sign')).toEqual([]);
+        expect(named('authorize-sign-preview')).toHaveLength(2);
         expect(named('authorize-sign-preview')[1]!.headers[HEADER]).toBeUndefined();
+        expect(shared().prompts).toEqual([REQUIRED]);
+        expect(named('authorize-sign')[0]!.body.passkeyAssertion).toEqual(ASSERTION);
+        expect(named('authorize-sign')[0]!.headers[HEADER]).toBeUndefined();
+      });
+    });
+
+    test('when the fresh preview fails the page shows the failure, asks for no passkey and signs nothing', async () => {
+      await withPreviewPage(name, async ({ tap, named }) => {
+        shared().failFresh = true;
+        report(true);
+        advance(499);
+        tap();
+        await untilTimers(() => document.body.querySelector('[role="alert"]') !== null, 'the failure');
+
+        expect(named('authorize-sign-preview')).toHaveLength(2);
+        expect(named('authorize-sign-preview')[1]!.headers[HEADER]).toBeUndefined();
+        expect(named('authorize-sign')).toEqual([]);
+        expect(shared().prompts).toEqual([]);
       });
     });
   });

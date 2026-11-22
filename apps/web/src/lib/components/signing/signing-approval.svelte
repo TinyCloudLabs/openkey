@@ -689,7 +689,7 @@
   );
 
   // A page that offers the one-passkey cover watches its Approve button: the cover counts only while the button is in
-  // plain view, and the window restarts each time Approve becomes actionable.
+  // plain view, and the 500 ms restarts each time Approve becomes actionable.
   let approveButton = $state<HTMLButtonElement | null>(null);
   $effect(() => {
     const visibility = approveVisibility;
