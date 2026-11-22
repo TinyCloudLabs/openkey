@@ -25,5 +25,6 @@ export * from "./key-resource.js";
 export * from "./elevated.js";
 export * from "./elevated-copy.js";
 export * from "./owner-revocation.js";
+export * from "./siwe-fields.js";
 export * from "./registry-record.js";
 export * from "./renewal-sensitive.js";

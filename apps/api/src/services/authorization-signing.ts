@@ -29,7 +29,7 @@
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { AdmittedAppKey } from "./app-key-refusal";
-import { expirationTimeOf } from "./approval-expiry";
+import { siweExpirationTime } from "@openkey/capability-review";
 
 const CONTEXT_TTL_MS = 5 * 60 * 1000;
 
@@ -1042,7 +1042,7 @@ export function peekPreviewApprovalExpiry(
   if (!stored || stored.userId !== owner.userId || stored.authorizationContextToken !== owner.authorizationContextToken) {
     return undefined;
   }
-  return expirationTimeOf(stored.signedMessage);
+  return siweExpirationTime(stored.signedMessage) ?? undefined;
 }
 
 export type PreviewApprovalCheckError =
