@@ -97,6 +97,21 @@ describe("a grant on every secret reads as all secrets, never one secret", () =>
   });
 });
 
+// The bare `secrets` key, written in a form the node's key grammar refuses, so it reads only once lower-cased and
+// percent-decoded: exactly `default/secrets`, with no trailing slash.
+describe("the bare secrets key in an unreadable form reads as all secrets", () => {
+  it.each(["/Secrets", "/SECRETS", "/secret%73", "/Secret%53", "/%53ecrets"])(
+    "decrypt on default%s",
+    (tail: string) => {
+      const grants = request(tail);
+      expect(allSecretsAbility(encryptionGrant(grants), DECRYPT)).toBe("prefix-decrypt");
+      expect(allSecretsReach(grants)).toEqual({ kind: "read", alsoWholeAccount: false });
+      expect(oneNamedSecret(grants)).toBeNull();
+      expect(approvalLifetimeCapSeconds(grants, 30 * 86_400)).toBe(SECRET_GRANT_MAX_SECONDS);
+    },
+  );
+});
+
 describe("grants that are not all secrets keep their own reading", () => {
   it("one secret's own key reads as that one secret, with no all-secrets card", () => {
     const grants = request("/secrets/openai_api_key");
