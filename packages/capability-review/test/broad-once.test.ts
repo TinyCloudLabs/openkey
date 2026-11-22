@@ -91,7 +91,7 @@ describe("grantIsBroadOnce: broad shapes stay at the one-hour start", () => {
     ).toBe(true);
   });
 
-  it("an encryption prefix nested deeper than apps/<id>/ is broad-once", () => {
+  it("an encryption prefix nested deeper than apps/<id>/ keeps the app's length (inside one app)", () => {
     expect(
       grantIsBroadOnce(
         grant({
@@ -102,7 +102,7 @@ describe("grantIsBroadOnce: broad shapes stay at the one-hour start", () => {
           family: "encryption-decrypt",
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("an invalid encryption URN stays broad-once (fail closed)", () => {
@@ -189,7 +189,7 @@ describe("grantIsBroadOnce: broad shapes stay at the one-hour start", () => {
     ).toBe(true);
   });
 
-  it("a `secret-mutation` on the SQL secrets catalog is broad-once (KV-only narrow allow)", () => {
+  it("a `secret-mutation` on the SQL secrets catalog keeps the app's length", () => {
     expect(
       grantIsBroadOnce(
         grant({
@@ -200,10 +200,10 @@ describe("grantIsBroadOnce: broad shapes stay at the one-hour start", () => {
           family: "secret-mutation",
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it("a `secret-read` on the SQL secrets catalog is broad-once (KV-only narrow allow)", () => {
+  it("a `secret-read` on the SQL secrets catalog keeps the app's length", () => {
     expect(
       grantIsBroadOnce(
         grant({
@@ -214,7 +214,7 @@ describe("grantIsBroadOnce: broad shapes stay at the one-hour start", () => {
           family: "secret-read",
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("an unknown mutation on `tinycloud.secrets` with a non-empty path is broad-once (unlisted service)", () => {
@@ -231,7 +231,7 @@ describe("grantIsBroadOnce: broad shapes stay at the one-hour start", () => {
     ).toBe(true);
   });
 
-  it("a KV named-secret path with a lowercase scope directory `vault/secrets/scoped` is broad-once (segment-prefix escape)", () => {
+  it("a KV path under a lowercase scope directory `vault/secrets/scoped` keeps the app's length (a sub-prefix)", () => {
     expect(
       grantIsBroadOnce(
         grant({
@@ -242,10 +242,10 @@ describe("grantIsBroadOnce: broad shapes stay at the one-hour start", () => {
           family: "secret-read",
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it("a KV named-secret path with a lowercase scope directory `secrets/scoped` is broad-once (segment-prefix escape)", () => {
+  it("a KV path under a lowercase scope directory `secrets/scoped` keeps the app's length (a sub-prefix)", () => {
     expect(
       grantIsBroadOnce(
         grant({
@@ -256,10 +256,10 @@ describe("grantIsBroadOnce: broad shapes stay at the one-hour start", () => {
           family: "secret-read",
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it("a KV named-secret path whose name begins with a digit is broad-once", () => {
+  it("a KV named-secret path whose name begins with a digit keeps the app's length", () => {
     expect(
       grantIsBroadOnce(
         grant({
@@ -270,10 +270,10 @@ describe("grantIsBroadOnce: broad shapes stay at the one-hour start", () => {
           family: "secret-read",
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it("a KV named-secret path with a dot in the name is broad-once", () => {
+  it("a KV named-secret path with a dot in the name keeps the app's length", () => {
     expect(
       grantIsBroadOnce(
         grant({
@@ -284,7 +284,7 @@ describe("grantIsBroadOnce: broad shapes stay at the one-hour start", () => {
           family: "secret-read",
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 
@@ -317,7 +317,7 @@ describe("grantIsBroadOnce: exact-named shapes follow the app's ask", () => {
     ).toBe(false);
   });
 
-  it("a KV named-secret path with an inner `/` is broad-once (not a single segment)", () => {
+  it("a KV named-secret path with an inner `/` keeps the app's length (a sub-prefix)", () => {
     expect(
       grantIsBroadOnce(
         grant({
@@ -328,7 +328,7 @@ describe("grantIsBroadOnce: exact-named shapes follow the app's ask", () => {
           family: "secret-read",
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("an encryption `kind: \"key\"` grant is not broad-once", () => {
@@ -359,7 +359,7 @@ describe("grantIsBroadOnce: exact-named shapes follow the app's ask", () => {
     ).toBe(false);
   });
 
-  it("an encryption prefix with an `apps/<appId>/<extra>/` deeper path is broad-once", () => {
+  it("an encryption prefix with an `apps/<appId>/<extra>/` deeper path keeps the app's length", () => {
     expect(
       grantIsBroadOnce(
         grant({
@@ -370,6 +370,6 @@ describe("grantIsBroadOnce: exact-named shapes follow the app's ask", () => {
           family: "encryption-decrypt",
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
