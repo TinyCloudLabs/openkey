@@ -21,6 +21,8 @@ const REFUSAL = {
 };
 const ALLOWED_ORIGINS = [
   'https://home.tinycloud.xyz',
+  'https://secrets.tinycloud.xyz',
+  'https://share.tinycloud.xyz',
   'https://tinycloud.one',
 ];
 

@@ -16,7 +16,7 @@ const REFUSAL = {
   error: "Only TinyCloud One can request a signature that sets the account's node location through OpenKey. Nothing was signed.",
   code: 'registry_record_sign_refused',
 };
-const ALLOWED_ORIGINS = ['https://home.tinycloud.xyz', 'https://tinycloud.one'];
+const ALLOWED_ORIGINS = ['https://home.tinycloud.xyz', 'https://secrets.tinycloud.xyz', 'https://share.tinycloud.xyz', 'https://tinycloud.one'];
 
 let calls: string[] = [];
 const unseal = mock(async () => privateKey);
