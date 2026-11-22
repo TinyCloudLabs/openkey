@@ -53,3 +53,6 @@ a5697b11997d3dde714be4f5292a7340ab59b9a1:apps/api/src/__tests__/org-owner-check.
 62d3a097dcbe404dc1855fcc54d4a6b182c94b06:project/.github/workflows/ci-cd.yml:generic-api-key:62
 62d3a097dcbe404dc1855fcc54d4a6b182c94b06:project/.github/workflows/ci-cd.yml:generic-api-key:86
 51e0d9f0c68c0d8cad5c55658cb2c3e49ed6f054:scripts/local-pglite-device-smoke.ts:generic-api-key:25
+
+# Test fixture naming the API image by a tag that is a public git commit SHA, which the digest-pin test expects the measured compose check to refuse; not a credential
+b4d7ced9c7364287e6412465b7c515dc7260bf9a:scripts/measured-app-compose.test.ts:generic-api-key:59
