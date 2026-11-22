@@ -254,6 +254,13 @@ async function delegateRouter() {
   return (await import('../routes/delegate?delegate-autosign' as string)).delegateRouter;
 }
 
+// TC-3443: a request with no permissions gets only its own folder, so this test names the whole space.
+const wholeSpace = (space: string) => [
+  { service: 'tinycloud.kv', space, path: '', actions: ['tinycloud.kv/put', 'tinycloud.kv/get', 'tinycloud.kv/del', 'tinycloud.kv/list', 'tinycloud.kv/metadata'] },
+  { service: 'tinycloud.sql', space, path: '', actions: ['tinycloud.sql/read', 'tinycloud.sql/write', 'tinycloud.sql/admin'] },
+  { service: 'tinycloud.capabilities', space, path: '', actions: ['tinycloud.capabilities/read'] },
+];
+
 describe('evaluateBootstrapSessionScope', () => {
   test('accepts bootstrap session capabilities from the imported allowlist', () => {
     const spaceId = bootstrapSpaceId(address, chainId, 'default');
@@ -837,6 +844,7 @@ describe('delegateRouter Auto-Sign integration', () => {
         jwk,
         host: 'https://node.tinycloud.xyz',
         prefix: 'openkey',
+        permissions: wholeSpace('openkey'),
       }),
     });
 

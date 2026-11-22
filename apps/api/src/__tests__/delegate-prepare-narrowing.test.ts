@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { makeSpaceId, parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
 import {
   assertRequiredActions,
-  defaultSessionAbilities,
+  ownFolderSessionAbilities,
   prepareDelegationSession,
   sessionAbilitiesFromPermissions,
   type RecapEntry,
@@ -182,7 +182,7 @@ describe('assertRequiredActions follows the request baseline', () => {
   });
 
   test('the default consent baseline still requires it', () => {
-    expect(() => assertRequiredActions([kvList], defaultSessionAbilities(space))).toThrow('capabilities/read is required for this delegation');
+    expect(() => assertRequiredActions([kvList], ownFolderSessionAbilities('cli.tinycloud.xyz', signer))).toThrow('capabilities/read is required for this delegation');
   });
 
   test('prepare marks nothing required for the TC-658 secrets-list request', () => {
