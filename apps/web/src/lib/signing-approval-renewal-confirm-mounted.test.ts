@@ -12,7 +12,9 @@ import { compile } from 'svelte/compiler';
 import { parseCapabilityReview } from '../../../../packages/capability-review/src/index';
 import type { CapabilityReviewModel } from '../../../../packages/capability-review/src/index';
 import { FIXTURE_META, makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
+import { RENEWAL_SENSITIVE_CASES, renewalSensitiveReviewMessage } from '../../../../packages/capability-review/test/fixtures/renewal-sensitive-grants';
 import { renewalWindowExpiryAt } from './approval-expiry';
+import { renewalStartsTicked } from './renewal-default';
 
 const win = new Window({ url: 'http://openkey.test/' });
 Object.assign(globalThis, {
@@ -105,13 +107,17 @@ const D = 24 * 60 * 60 * 1000;
 const OWNER = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
 
 // A 30-day request; `sensitive` adds decrypt on a secret's key.
-function model(sensitive: boolean): CapabilityReviewModel {
+function requestMessage(sensitive: boolean): string {
   const att: Record<string, Record<string, unknown[]>> = {
     [`${FIXTURE_META.ownSpace}/kv/courier/`]: { 'tinycloud.kv/get': [{}] },
   };
   if (sensitive) att[`urn:tinycloud:encryption:${OWNER}:default/secrets/openai_api_key`] = { 'tinycloud.encryption/decrypt': [{}] };
+  return siweWithResources([makeRecapResource(att)], { expirationTime: '2026-08-30T00:00:00.000Z' });
+}
+
+function model(message: string): CapabilityReviewModel {
   return parseCapabilityReview({
-    message: siweWithResources([makeRecapResource(att)], { expirationTime: '2026-08-30T00:00:00.000Z' }),
+    message,
     signer: { label: 'Key', address: FIXTURE_META.address, chainId: FIXTURE_META.chainId, provenance: 'managed' },
     editable: true,
     metadataTrust: { status: 'unsigned', reason: 'no manifest' },
@@ -126,10 +132,10 @@ function model(sensitive: boolean): CapabilityReviewModel {
   });
 }
 
-function render(sensitive: boolean, leaseMs: number | null) {
+function render(message: string | boolean, leaseMs: number | null) {
   const target = document.createElement('div');
   document.body.appendChild(target);
-  const m = model(sensitive);
+  const m = model(typeof message === 'string' ? message : requestMessage(message));
   const selection = new Set<string>(m.permissions.flatMap((grant) => grant.actions.filter((action) => action.selected).map((action) => action.id)));
   const confirms: Array<true | undefined> = [];
   const app = mount(Approval, {
@@ -187,4 +193,27 @@ describe('a confirmed window counts from the message start', () => {
     expect(renewalWindowExpiryAt(7 * D, message('Issued At: 2026-11-22T12:05:00.000Z'), now)).toBe('2026-11-29T12:00:30.000Z');
     expect(renewalWindowExpiryAt(7 * D, 'not a SIWE', now)).toBe('2026-11-29T12:00:30.000Z');
   });
+});
+
+// Rows of the shared TC-3821 list the page used to tick through without a confirm, though the API refuses the lease
+// without one: each now asks first, and the box starts unticked even on a standing request.
+describe('grants the API leases only with the confirm, which the page used to miss', () => {
+  const missed = RENEWAL_SENSITIVE_CASES.filter((row) => row.formerDeadEnd);
+  test('the shared list names the three', () => {
+    expect(missed.map((row) => row.name)).toEqual(['key.create on the secrets/ prefix', 'key.describe on one secret', 'every ability on the whole network']);
+  });
+  for (const row of missed) {
+    test(`${row.name}: ticking asks "Renew sensitive access?", and the box starts unticked`, () => {
+      const message = renewalSensitiveReviewMessage(row);
+      expect(renewalStartsTicked('standing', model(message).permissions)).toBe(false);
+      const { target, confirms, cleanup } = render(message, null);
+      expect(box(target).checked).toBe(false);
+      toggle(target);
+      expect(target.querySelector('#renewal-confirm-heading')?.textContent).toBe('Renew sensitive access?');
+      expect(confirms).toEqual([]);
+      clickButton(target, 'Turn on renewal');
+      expect(confirms).toEqual([true]);
+      cleanup();
+    });
+  }
 });

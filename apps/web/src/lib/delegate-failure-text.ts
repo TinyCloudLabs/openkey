@@ -22,8 +22,10 @@ export interface DelegateFailureTextOptions {
 
 const SERVER_MESSAGE_MAX = 300;
 
+/** The server's words for a failed reply: its `message`, or for a renewal refusal (TC-3821) its `error`, the owner's copy. */
 export function delegateServerMessage(body: unknown): string | undefined {
-  const message = (body as { message?: unknown } | null)?.message;
+  const reply = body as { message?: unknown; error?: unknown; code?: unknown } | null;
+  const message = reply?.code === 'renewal_refused' ? reply.error : reply?.message;
   return typeof message === 'string' && message.trim() ? message.slice(0, SERVER_MESSAGE_MAX) : undefined;
 }
 

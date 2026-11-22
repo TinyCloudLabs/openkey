@@ -118,7 +118,7 @@ export const SENSITIVE_RENEWAL_WINDOW_SECONDS = 7 * 86_400;
 const SECRETS_KEY_PREFIX = 'secrets/';
 
 function unreadableGrant(): RenewalLeaseError {
-  return new RenewalLeaseError('renewal_refused', "Renewal can't be set up for this approval: OpenKey could not read one of its permissions.", 400);
+  return new RenewalLeaseError('renewal_refused', "Renewal can't be set up for this approval, because OpenKey couldn't read one of its permissions. Untick renewal and approve without it, or ask the app for a new link.", 400);
 }
 
 /**
@@ -165,7 +165,7 @@ export function leaseReachesSecrets(siwe: string): boolean {
 export function assertLeaseableGrant(siwe: string, sensitiveConfirmed: boolean): void {
   if (!leaseReachesSecrets(siwe)) return;
   if (!sensitiveConfirmed) {
-    throw new RenewalLeaseError('renewal_refused', 'Renewing access to secrets or decryption needs your confirmation. Tick renewal again and confirm, or approve without renewal.', 400);
+    throw new RenewalLeaseError('renewal_refused', 'Renewing access to your secrets or encrypted data needs your confirmation. Confirm "Renew sensitive access?" to keep renewal, or untick renewal and approve without it.', 400);
   }
   let message: SiweMessage;
   try {
@@ -177,7 +177,7 @@ export function assertLeaseableGrant(siwe: string, sensitiveConfirmed: boolean):
   const anchor = Date.parse(message.notBefore ?? message.issuedAt ?? '');
   if (!Number.isFinite(end) || !Number.isFinite(anchor) || end <= anchor) throw unreadableGrant();
   if (end - anchor > SENSITIVE_RENEWAL_WINDOW_SECONDS * 1000) {
-    throw new RenewalLeaseError('renewal_refused', 'Access to secrets or decryption renews for at most 7 days at a time. Choose 7 days or less.', 400);
+    throw new RenewalLeaseError('renewal_refused', 'Each renewal of access to your secrets or encrypted data lasts at most 7 days. Choose 7 days or less.', 400);
   }
 }
 

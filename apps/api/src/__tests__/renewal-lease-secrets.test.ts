@@ -163,7 +163,7 @@ describe('a grant OpenKey cannot read is refused (fail closed)', () => {
     for (const confirmed of [false, true]) {
       const result = await lease(grant({ [`urn:tinycloud:encryption:${ownerDid}:Default/secrets/x`]: ['tinycloud.encryption/decrypt'] }, DAY), confirmed);
       expect(result.error).toMatchObject({ code: 'renewal_refused', status: 400 });
-      expect(result.error!.message).toContain('could not read');
+      expect(result.error!.message).toContain("couldn't read one of its permissions");
       expect(result.asked).toEqual([]);
     }
   });
