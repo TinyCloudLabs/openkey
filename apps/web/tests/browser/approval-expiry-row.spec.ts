@@ -58,7 +58,7 @@ test('the approval face and Expires row use the same prepared lifetime', async (
     has: page.getByText('Expires', { exact: true }),
   });
   const expiryValue = expiryRow.locator('.value');
-  await expect(face).toHaveText(/^This permission expires in 30 days, on /);
+  await expect(face).toHaveText(/^This app's access to your data lasts 30 days, until /);
   await page.getByText('Advanced details', { exact: true }).click();
   await expect(expiryValue).toHaveText(expiresAt(30 * day));
   await testInfo.attach('30-day prepared expiry', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
@@ -69,13 +69,13 @@ test('the approval face and Expires row use the same prepared lifetime', async (
   try {
     await started.promise;
     await expect(oneDay).toBeDisabled();
-    expect(await face.innerText()).toMatch(/^This permission expires in 30 days, on /);
+    expect(await face.innerText()).toMatch(/^This app's access to your data lasts 30 days, until /);
     await expect(expiryValue).toHaveText(expiresAt(30 * day));
   } finally {
     response.resolve();
   }
 
-  await expect(face).toHaveText('This permission expires in 1 day');
+  await expect(face).toHaveText("This app's access to your data lasts 1 day.");
   await expect(expiryValue).toHaveText(expiresAt(day));
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
   await testInfo.attach('shortened prepared expiry', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });

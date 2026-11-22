@@ -10,7 +10,7 @@
     requesterRelay?: boolean;
     /** SIWE Expiration Time of the delegation being reviewed. */
     expiresAt: string;
-    /** False where the approval screen's own expiry line ("This permission expires in …") already shows it. */
+    /** False where the approval screen's own expiry line ("This app's access to your data lasts …") already shows it. */
     showExpires?: boolean;
     /** The owner confirmed they trust an unrecognized node; required to approve. */
     acknowledged?: boolean;

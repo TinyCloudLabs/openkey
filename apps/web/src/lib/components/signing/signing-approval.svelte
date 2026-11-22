@@ -85,8 +85,14 @@
   import type { ClaimedPresentationView } from "$lib/claimed-presentation";
   import type { RenewalChoice, ShortenOnlyExpiry } from "$lib/components/signing/signing-adapter-types";
   import type { ApproveVisibility } from "$lib/approve-visibility";
-  import { ONCE_DEFAULT_EXPIRY_MS, onceDefaultExpiryMs, requestedExpiryMs } from "$lib/approval-expiry";
-  import { isOnceTier } from "$lib/renewal-default";
+  import {
+    ONCE_DEFAULT_EXPIRY_MS,
+    accessLastsLine,
+    onceDefaultExpiryMs,
+    remainingAccessMs,
+    requestedExpiryMs,
+  } from "$lib/approval-expiry";
+  import { isOnceTier, isSensitiveTier } from "$lib/renewal-default";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -148,8 +154,9 @@
     expiryMaxMs?: number | null;
     shortenOnlyExpiry?: ShortenOnlyExpiry | null;
     /**
-     * Set by the surfaces that write the choice into the signed message: a one-time approval (secrets or decrypt)
-     * that asks for longer than an hour starts at one hour, until the owner picks a time (TC-3111).
+     * Set by the surfaces that write the choice into the signed message: a one-time approval that can open all
+     * secrets or all encrypted data and asks for longer than an hour starts at one hour, until the owner picks a
+     * time.
      */
     onceExpiryDefault?: boolean;
     /** The renewal checkbox (TC-2933); set only where the requester signed a renewal request. */
@@ -217,6 +224,10 @@
   const requestedExpiry = $derived(
     requestedExpiryMs(model.immutable?.issuedAt, model.immutable?.expirationTime),
   );
+  // Where the surface signs the message as written, the access lasts until its own Expiration Time.
+  const signedAsWrittenMs = $derived(
+    model.protocol === "tinycloud-siwe-recap" ? remainingAccessMs(model.expiry) : null,
+  );
   const permissionSections = $derived.by(() => {
     const reviewGrants = renderPlan
       .filter((bucket) => bucket.severity !== "standard")
@@ -273,7 +284,7 @@
   const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
   const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
 
-  // A signed request that includes secrets or decrypt starts as a whole at one hour or less.
+  // A signed request that can open all secrets or all encrypted data starts as a whole at one hour or less.
   const onceTier = $derived(isOnceTier(shortenOnlyExpiry ? model.permissions : selectedGrants));
   const onceDefaultMs = $derived(
     onceExpiryDefault && onExpiryChange && model.protocol === "tinycloud-siwe-recap"
@@ -281,7 +292,7 @@
       : null,
   );
   const expiryFoldMaxMs = $derived(shortenOnlyExpiry
-    ? (onceDefaultMs ?? shortenOnlyExpiry.startMs)
+    ? shortenOnlyExpiry.startMs
     : expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null,
   );
   let ownerChoseExpiry = $state(false);
@@ -862,11 +873,13 @@
         onceSite={onceDefaultShown && !shortenOnlyExpiry ? onceNoteSite : null}
         onceNote={signedOnceNote}
         {renewal}
-        sensitive={isOnceTier(selectedGrants)}
+        sensitive={isSensitiveTier(selectedGrants)}
         {requestedBy}
         chooser={false}
         permissionCount={summaryStatements.length}
       />
+    {:else if !onExpiryChange && signedAsWrittenMs !== null}
+      <p class="summary-note" data-testid="approval-access-line">{accessLastsLine("app", signedAsWrittenMs)}</p>
     {/if}
 
     {#if hostFacts}
