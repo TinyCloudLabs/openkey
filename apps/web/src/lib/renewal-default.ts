@@ -1,7 +1,8 @@
 // Two predicates for the approval screen: one for the one-hour expiry start
-// (`isOnceTier`, narrow), one for the renewal opt-in and the "Renew sensitive
-// access?" confirm (`isSensitiveTier`, broad). Both read capability-review's
-// structural classifiers so the catalog and the UI agree on the set.
+// (`isOnceTier`: access to all secrets or all encrypted data), one for the
+// renewal opt-in and the "Renew sensitive access?" confirm (`isSensitiveTier`:
+// any secret or decryption access). Both read capability-review's structural
+// classifiers so the catalog and the UI agree on the set.
 import {
   grantIsBroadOnce,
   grantReachesSecretDataOrDecryption,
@@ -9,9 +10,9 @@ import {
 } from '@openkey/capability-review';
 
 /**
- * The broad one-hour approval tier: any grant that reaches secret data or
- * decryption AND is not one of the exact-named shapes capability-review's
- * `grantIsBroadOnce` allows through. Drives `onceDefaultExpiryMs` and the
+ * The one-hour approval tier: any grant capability-review's
+ * `grantIsBroadOnce` places there (access to all secrets or all encrypted
+ * data, or a shape it cannot place). Drives `onceDefaultExpiryMs` and the
  * matching copy note; never drives the renewal checkbox or the "Renew
  * sensitive access?" confirm step.
  */

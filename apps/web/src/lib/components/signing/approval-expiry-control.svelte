@@ -1,7 +1,7 @@
 <script lang="ts">
   // How long the approval lasts, and whether it renews (TC-2272, TC-2933).
   // One line: a renewal checkbox where the requester can use a renewal lease,
-  // otherwise "This permission expires in <window>". The window and the lease
+  // otherwise "This app's access to your data lasts <window>." The window and the lease
   // are changed in approval-expiry-chooser.svelte: under a closed fold here, or
   // where the screen sets `chooser` false and shows the chooser itself. It only
   // reports the choices; the server writes the window into the signed message
@@ -11,9 +11,9 @@
     LONG_EXPIRY_WARNING,
     MAX_LEASE_MS,
     SENSITIVE_RENEWAL_WINDOW_MS,
+    accessLastsLine,
     defaultLeaseMs,
     formatDuration,
-    formatDurationWithEnd,
   } from "$lib/approval-expiry";
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
@@ -48,6 +48,8 @@
     onceNote?: string | null;
     /** Show the "How long it lasts" fold here. False where the screen shows ApprovalExpiryChooser elsewhere. */
     chooser?: boolean;
+    /** Who holds the access, as the line names them: an app, or the device of a device sign-in. */
+    holder?: "app" | "device";
   }
 
   let {
@@ -64,6 +66,7 @@
     onceSite = null,
     onceNote = null,
     chooser = true,
+    holder = "app",
   }: Props = $props();
 
   let confirming = $state(false);
@@ -71,6 +74,7 @@
   let checkbox = $state<HTMLInputElement | null>(null);
 
   const shownMs = $derived(chosenMs ?? requestedMs);
+  const accessLine = $derived(shownMs === null ? "" : accessLastsLine(holder, shownMs));
   const leaseMaxMs = $derived(renewal ? Math.min(renewal.maxLeaseMs, MAX_LEASE_MS) : MAX_LEASE_MS);
   const proposedLeaseMs = $derived(renewal ? defaultLeaseMs(leaseMaxMs) : 0);
   const ticked = $derived(renewal !== null && renewal.leaseMs !== null);
@@ -150,18 +154,18 @@
           {#if renews}
             {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}
           {:else}
-            {permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDurationWithEnd(shownMs)}
+            {accessLine}
           {/if}
         </span>
       </label>
     {:else}
-      <p class="expiry-line" data-testid="approval-expiry-line">{permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDurationWithEnd(shownMs)}</p>
+      <p class="expiry-line" data-testid="approval-expiry-line">{accessLine}</p>
     {/if}
     {#if onceNote !== null}
       <p class="expiry-once-note" data-testid="approval-expiry-once-note">{onceNote}</p>
     {:else if onceSite !== null && requestedMs !== null}
       <p class="expiry-once-note" data-testid="approval-expiry-once-note">
-        {onceSite} asked for {formatDuration(requestedMs)}. Access to secrets or encrypted data starts at {formatDuration(shownMs)}. You can choose longer under How long it lasts.
+        {onceSite} asked for {formatDuration(requestedMs)}. Access that can open all your secrets or all your encrypted data starts at {formatDuration(shownMs)}. You can choose longer under How long it lasts.
       </p>
     {/if}
     {#if chooser}

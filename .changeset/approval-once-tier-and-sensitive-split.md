@@ -2,4 +2,6 @@
 "@openkey/web": minor
 ---
 
-The approval expiry starts at one hour for broad secret and decryption access, and follows the app's requested length for a single named secret or an app-scoped `apps/<appId>/` encryption grant. For any approval that reaches secret data or decryption, the renewal checkbox is unticked by default and the "Renew sensitive access?" confirm appears. The Sensitive warning on the summary and the row count are unchanged.
+An approval that can open all your secrets or all your encrypted data starts at 1 hour. Every other approval starts at the length the app asked for, one named secret included. For any approval that reaches secret data or decryption, the renewal checkbox starts unticked, and ticking it shows the "Renew sensitive access?" confirm.
+
+Details: TC-3111
