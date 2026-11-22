@@ -1,4 +1,4 @@
-// The sign pop-up and the login page refuse to be framed; the signing iframe and every other page keep their headers.
+// The login page refuses to be framed; the sign pages and every other page keep their headers.
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
@@ -9,16 +9,17 @@ import { framePolicyFor, withFramePolicy } from './frame-policy';
 const POLICY = "frame-ancestors 'none'";
 
 describe('which pages refuse framing', () => {
-  test('the sign pop-up and the login page, with or without a trailing slash', () => {
-    for (const path of ['/widget/sign', '/widget/sign/', '/auth/login', '/auth/login/']) {
+  test('the login page, with or without a trailing slash', () => {
+    for (const path of ['/auth/login', '/auth/login/']) {
       expect(framePolicyFor(path), path).toBe(POLICY);
     }
   });
 
-  test('the signing iframe stays framable, and so does every other page', () => {
+  test('the sign pages stay framable, and so does every other page', () => {
     for (const path of [
+      '/widget/sign', '/widget/sign/', '/widget/sign/extra',
       '/widget/embed/sign', '/widget/embed/connect', '/widget/embed', '/widget/connect', '/widget/sign-typed-data', '/widget/signing',
-      '/widget/sign/extra', '/widget', '/auth/login/extra', '/auth/register', '/auth/recover', '/auth/terms', '/auth/social',
+      '/widget', '/auth/login/extra', '/auth/register', '/auth/recover', '/auth/terms', '/auth/social',
       '/', '/dashboard', '/delegate', '/oauth/consent', '/console', '/device', '/constructor', '/__proto__', '/toString',
     ]) {
       expect(framePolicyFor(path), path).toBeNull();
@@ -27,8 +28,8 @@ describe('which pages refuse framing', () => {
 });
 
 describe('the response', () => {
-  test('gets the policy on the two pages and keeps everything else', async () => {
-    for (const path of ['/widget/sign', '/auth/login']) {
+  test('gets the policy on the login page and keeps everything else', async () => {
+    for (const path of ['/auth/login']) {
       const original = new Response('<html></html>', { status: 200, statusText: 'OK', headers: { 'content-type': 'text/html', 'x-keep': '1' } });
       const result = withFramePolicy(original, path);
       expect(result.headers.get('content-security-policy')).toBe(POLICY);
@@ -42,7 +43,7 @@ describe('the response', () => {
 
   test('joins a policy the response already has instead of replacing it', () => {
     const original = new Response('', { headers: { 'content-security-policy': "default-src 'self'" } });
-    const result = withFramePolicy(original, '/widget/sign');
+    const result = withFramePolicy(original, '/auth/login');
     expect(result.headers.get('content-security-policy')).toBe(`default-src 'self', ${POLICY}`);
   });
 
@@ -55,7 +56,7 @@ describe('the response', () => {
   });
 
   test('every other page gets the same response back, untouched', () => {
-    for (const path of ['/widget/embed/sign', '/dashboard', '/']) {
+    for (const path of ['/widget/embed/sign', '/widget/sign', '/dashboard', '/']) {
       const original = new Response('x', { headers: { 'content-type': 'text/html' } });
       const result = withFramePolicy(original, path);
       expect(result).toBe(original);

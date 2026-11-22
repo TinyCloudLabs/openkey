@@ -890,9 +890,9 @@ sign-in made **for this sign request** counts as that request's approval passkey
 - The digest, token and selection checks of the approval are unchanged. Account-level actions (lowering the
   approval setting, TinyCloud manage-key mode, enabling an app, account deletion, passkey enrolment and removal,
   key export or recovery) never read the cover.
-- The web server answers `/widget/sign` and `/auth/login` with `Content-Security-Policy: frame-ancestors 'none'`
-  (`apps/web/src/hooks.server.ts`, `lib/frame-policy.ts`), so no page can frame the pop-up or the login page. The
-  signing iframe `/widget/embed/sign` and every other page keep their headers.
+- The web server answers `/auth/login` with `Content-Security-Policy: frame-ancestors 'none'`
+  (`apps/web/src/hooks.server.ts`, `lib/frame-policy.ts`), so no page can frame the login page. `/widget/sign`,
+  `/widget/embed/sign` and every other page keep their headers.
 - Not covered: typed-data signing, Nostr approval, the connect page and the delegate handoff pages. Their Approve
   keeps asking for its own passkey.
 
