@@ -95,6 +95,16 @@ describe('approval request lifetime for secrets', () => {
     await expect(f.window({ expiryMs: 31 * DAY_MS })).rejects.toMatchObject({ code: 'request_binding' });
   });
 
+  for (const action of ['tinycloud.secrets/get', 'tinycloud.secrets/read', 'tinycloud.secrets/list', 'tinycloud.secrets/rotate']) {
+    test(`a request that signed 30 days and uses the secrets service (${action}) is refused past 7 days`, async () => {
+      const f = fixture([{ service: 'tinycloud.secrets', space: secretRead.space, path: 'mailchimp-api-key', actions: [action] }]);
+      await expect(f.window({ expiryMs: 7 * DAY_MS })).resolves.toBeDefined();
+      await expect(f.window({ signedSiwe: f.siwe(7 * DAY_MS) })).resolves.toBeDefined();
+      await expect(f.window({ expiryMs: 7 * DAY_MS + 1000 })).rejects.toMatchObject({ code: 'request_binding' });
+      await expect(f.window({ signedSiwe: f.siwe(8 * DAY_MS) })).rejects.toMatchObject({ code: 'request_binding' });
+    });
+  }
+
   test('a shorter signed lifetime stays the limit', async () => {
     const f = fixture([secretRead, secretKey], 3_600);
     await expect(f.window({ expiryMs: 3_600_000 })).resolves.toBeDefined();

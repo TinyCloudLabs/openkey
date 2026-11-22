@@ -338,3 +338,24 @@ describe('every KV read of the secrets vault', () => {
     expect(expiryOf(bytes)).toBeGreaterThan(before + 29 * DAY_MS);
   });
 });
+
+// Any action of the secrets service is held to 7 days, with no flag.
+const SECRETS_SERVICE_SHAPES: Array<[string, Record<string, string[]>]> = [
+  ['get', { [`${SPACE}/secrets/mailchimp-api-key`]: ['tinycloud.secrets/get'] }],
+  ['list', { [`${SPACE}/secrets/mailchimp-api-key`]: ['tinycloud.secrets/list'] }],
+  ['an action the service is not known to have', { [`${SPACE}/secrets/mailchimp-api-key`]: ['tinycloud.secrets/rotate'] }],
+];
+
+describe('every action of the secrets service', () => {
+  test.each(SECRETS_SERVICE_SHAPES)("%s: the frame signs the app's 30 days as 7", async (_name, raw) => {
+    const before = Date.now();
+    expectSevenDays(await approve(raw, 30 * DAY_MS), before);
+  });
+
+  test.each(SECRETS_SERVICE_SHAPES)('%s: POST /sign refuses 30 days, nothing signed', async (_name, raw) => {
+    const res = await post('/sign', { address, chainId: 1, message: siweFor(raw, 30 * DAY_MS), type: 'siwe', keyId: keyRecord.id });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ approved: false, code: SECRET_REFUSED.code, reason: SECRET_REFUSED.error });
+    expect(signed).toEqual([]);
+  });
+});

@@ -194,8 +194,8 @@ export function decryptsSecrets(entries: readonly SecretReachEntry[]): boolean {
 /**
  * The longest a signed approval request may last: what its requester signed, but never more than
  * `SECRET_GRANT_MAX_SECONDS` when it may `decrypt` or `key.create` on a key or prefix under `secrets/`, `decrypt` a
- * whole network, or read the secrets vault in the KV store (`secretLifetimeCapApplies`, the rule every other path
- * holds, with the network always on here). The page offers no more and the server refuses more.
+ * whole network, read the secrets vault in the KV store, or use the `secrets` service (`secretLifetimeCapApplies`, the
+ * rule every other path holds, with the network always on here). The page offers no more and the server refuses more.
  */
 export function approvalLifetimeCapSeconds(entries: readonly SecretReachEntry[], signedSeconds: number): number {
   return secretLifetimeCapApplies(entries, { networkDecrypt: true }) ? Math.min(signedSeconds, SECRET_GRANT_MAX_SECONDS) : signedSeconds;
@@ -222,14 +222,24 @@ function kvReadsSecrets(entry: SecretReachEntry): boolean {
 }
 
 /**
+ * Is this a grant on the `secrets` service? Whatever its action or path, it counts: no action of that service is known
+ * to return only ciphertext or names, so every one fails closed.
+ */
+function secretsServiceGrant(entry: SecretReachEntry): boolean {
+  return /^(?:tinycloud\.)?secrets$/i.test(entry.service ?? "") && entry.actions.length > 0;
+}
+
+/**
  * Is a grant made outside a signed approval request (a sign-in popup or frame, a pasted link, a raw signature) held
  * to `SECRET_GRANT_MAX_SECONDS`? Yes when it may `decrypt` or `key.create` on a key or prefix under `secrets/` (or on
- * an encryption resource that cannot be read), or read the secrets vault in the KV store (`kvReadsSecrets`), and, only
- * when `networkDecrypt` is on, when it may `decrypt` a whole network (behind `OPENKEY_NETWORK_DECRYPT_CAP`).
+ * an encryption resource that cannot be read), read the secrets vault in the KV store (`kvReadsSecrets`), or use the
+ * `secrets` service (`secretsServiceGrant`), and, only when `networkDecrypt` is on, when it may `decrypt` a whole
+ * network (behind `OPENKEY_NETWORK_DECRYPT_CAP`).
  */
 export function secretLifetimeCapApplies(entries: readonly SecretReachEntry[], options: { networkDecrypt: boolean }): boolean {
   return entries.some((entry) =>
     capReachOf(entry, ["decrypt", "key.create"]) === "secrets" ||
     kvReadsSecrets(entry) ||
+    secretsServiceGrant(entry) ||
     (options.networkDecrypt && capReachOf(entry, ["decrypt"]) === "network"));
 }

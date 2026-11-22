@@ -232,3 +232,27 @@ describe('raw signing of a KV read of the secrets vault', () => {
     expect(signed.status, await signed.clone().text()).toBe(200);
   });
 });
+
+// Any action of the secrets service is held to 7 days, with no flag: nothing shows that one returns only ciphertext.
+const SECRETS_SERVICE_SHAPES: Array<[string, Record<string, string[]>]> = [
+  ['get', { [`${SPACE}/secrets/mailchimp-api-key`]: ['tinycloud.secrets/get'] }],
+  ['read', { [`${SPACE}/secrets/mailchimp-api-key`]: ['tinycloud.secrets/read'] }],
+  ['list on the whole service', { [`${SPACE}/secrets/`]: ['tinycloud.secrets/list'] }],
+  ['an action the service is not known to have', { [`${SPACE}/secrets/mailchimp-api-key`]: ['tinycloud.secrets/rotate'] }],
+];
+
+describe('raw signing of a grant on the secrets service', () => {
+  test.each(SECRETS_SERVICE_SHAPES)('%s for 8 days is refused, before the key is unsealed', async (_name, raw) => {
+    const res = await sign(siweFor(raw, 8 * DAY_MS));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(REFUSED);
+    expect(unseal).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
+  test.each(SECRETS_SERVICE_SHAPES)('%s for 7 days is signed', async (_name, raw) => {
+    const res = await sign(siweFor(raw, 7 * DAY_MS));
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(calls).toEqual(['sign']);
+  });
+});

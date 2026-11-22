@@ -1,10 +1,10 @@
 // A grant on secret keys made outside a signed approval request lasts 7 days at most. A sign-in popup or
 // frame, a pasted link and `/authorize-sign` are clamped to it before anything is signed; signed bytes that ask for
 // more (`/complete`, raw `/sign`) are refused, because they cannot be shortened. "Secret keys" are `decrypt` or
-// `key.create` on a key or prefix under `default/secrets/`, or on an encryption resource that cannot be read, and a KV
-// read of the secrets vault (`get`, `list`, `metadata` or `sync` on `vault/secrets` or a path under it); a whole
-// network's `decrypt` joins them only while `OPENKEY_NETWORK_DECRYPT_CAP=enabled`. A signed approval
-// request (`/a/`) is held by its own window check (`approvalLifetimeCapSeconds`), network included.
+// `key.create` on a key or prefix under `default/secrets/`, or on an encryption resource that cannot be read, a KV
+// read of the secrets vault (`get`, `list`, `metadata` or `sync` on `vault/secrets` or a path under it), and any action
+// of the `secrets` service; a whole network's `decrypt` joins them only while `OPENKEY_NETWORK_DECRYPT_CAP=enabled`.
+// A signed approval request (`/a/`) is held by its own window check (`approvalLifetimeCapSeconds`), network included.
 import { SECRET_GRANT_MAX_SECONDS, secretLifetimeCapApplies } from '@openkey/capability-review';
 import { signedSiweExpirationTime } from '../routes/delegate-validation';
 import { recapResources } from './app-key-refusal';
@@ -60,9 +60,9 @@ export function permissionsHeldToSecretCap(permissions: readonly PermissionLike[
 }
 
 /**
- * The entries a ReCap resource stands for: its encryption reading (a key URN, or a resource that cannot be read), and,
- * for `kv` abilities, a KV entry on the path after `<space>/kv/`. A KV resource that does not have that shape counts as
- * the secrets vault (fail closed).
+ * The entries a ReCap resource stands for: its encryption reading (a key URN, or a resource that cannot be read),
+ * for `kv` abilities a KV entry on the path after `<space>/kv/` (a KV resource that does not have that shape counts as
+ * the secrets vault), and for `secrets` abilities a `secrets` service entry (fail closed, whatever the path).
  */
 function reachEntriesOf([resource, actions]: [string, string[]]): ReachEntry[] {
   const entries: ReachEntry[] = [{ service: 'tinycloud.encryption', space: 'encryption', path: resource, actions }];
@@ -71,6 +71,8 @@ function reachEntriesOf([resource, actions]: [string, string[]]): ReachEntry[] {
     const path = /^[^/]*\/kv\/(.*)$/s.exec(resource)?.[1] ?? 'vault/secrets/';
     entries.push({ service: 'tinycloud.kv', space: '', path, actions: kvActions });
   }
+  const secretsActions = actions.filter((action) => /^(?:tinycloud\.)?secrets\//i.test(action));
+  if (secretsActions.length > 0) entries.push({ service: 'tinycloud.secrets', space: '', path: resource, actions: secretsActions });
   return entries;
 }
 

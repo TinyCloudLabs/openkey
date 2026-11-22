@@ -249,6 +249,21 @@ describe("the 7-day cap outside a signed approval request", () => {
     expect(secretLifetimeCapApplies(grantsFor(READ_OPENAI), off)).toBe(true);
   });
 
+  it("holds any action on the secrets service, on any path, whatever the network flag", () => {
+    const entry = (service: string, path: string, action: string) => ({ service, space: SECRETS_SPACE, path, actions: [action] });
+    for (const service of ["tinycloud.secrets", "secrets", "Tinycloud.Secrets"]) {
+      for (const action of ["tinycloud.secrets/get", "tinycloud.secrets/read", "tinycloud.secrets/list", "tinycloud.secrets/metadata", "tinycloud.secrets/put", "tinycloud.secrets/rotate"]) {
+        for (const path of ["mailchimp-api-key", "", "scoped/work/API_KEY"]) {
+          expect(secretLifetimeCapApplies([entry(service, path, action)], off), `${service} ${action} ${path}`).toBe(true);
+          expect(secretLifetimeCapApplies([entry(service, path, action)], on), `${service} ${action} ${path}`).toBe(true);
+        }
+      }
+    }
+    expect(approvalLifetimeCapSeconds([entry("tinycloud.secrets", "x", "tinycloud.secrets/get")], 30 * 86_400)).toBe(SECRET_GRANT_MAX_SECONDS);
+    expect(approvalLifetimeCapSeconds([entry("tinycloud.secrets", "x", "tinycloud.secrets/get")], 3_600)).toBe(3_600);
+    expect(secretLifetimeCapApplies([entry("tinycloud.sql", "x", "tinycloud.sql/read")], on)).toBe(false);
+  });
+
   it("reads grants parsed from a SIWE the same way", () => {
     expect(secretLifetimeCapApplies(grantsFor({ ...READ_OPENAI, [OPENAI_KEY]: [DECRYPT] }), off)).toBe(true);
     expect(secretLifetimeCapApplies(grantsFor({ [NETWORK]: [DECRYPT] }), off)).toBe(false);
