@@ -23,6 +23,18 @@ const SECRETS_NETWORK = "default";
 /** The prefix that covers every secret key. */
 const ALL_SECRETS_PREFIX = "secrets/";
 
+/**
+ * Is this key or prefix on the `default` network shown as all secrets: the `secrets` key itself (no trailing `/`), or
+ * any prefix under `secrets/` (`secrets/`, `secrets/scoped/`, `secrets/scoped/<scope>/`)? A prefix opens every secret
+ * key beneath it. The node reads the bare `secrets` key as one exact key that covers no secret, so showing it as all
+ * secrets overstates it, the safe way (Naomi, 13:05Z). One secret's exact key (`isSecretKeyPath`) is not.
+ */
+export function coversManySecrets(parsed: { kind: "key" | "prefix"; network: string; keyPath: string }): boolean {
+  if (parsed.network !== SECRETS_NETWORK) return false;
+  const keyPath = parsed.keyPath.toLowerCase();
+  return parsed.kind === "prefix" ? keyPath.startsWith(ALL_SECRETS_PREFIX) : keyPath === "secrets";
+}
+
 /** Is this the key path of one secret's key (global or scoped)? */
 export function isSecretKeyPath(keyPath: string): boolean {
   return SECRET_KEY_PATH.test(keyPath);
@@ -88,16 +100,44 @@ export interface AllSecretsReach {
   alsoWholeAccount: boolean;
 }
 
-/** Does this entry's ability belong to the all-secrets card: decrypt on a bare network, decrypt or `key.create` on `secrets/`? */
+/**
+ * Would this encryption resource, which `parseEncryptionResource` cannot read, name `secrets` or a path under
+ * `secrets/` on a `default` network once percent-decoded and lower-cased (`Secrets/`, `SECRETS/x`, `secrets%2F`)? Read
+ * this way only to pick the all-secrets card; the grant and the bytes signed stay as written (TC-3800, option A).
+ */
+function unreadableNamesSecrets(resource: string): boolean {
+  let decoded = resource;
+  for (let pass = 0; pass < 5; pass += 1) {
+    let next: string;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      break;
+    }
+    if (next === decoded) break;
+    decoded = next;
+  }
+  const path = /^urn:tinycloud:encryption:.+?:default\/(.*)$/s.exec(decoded.toLowerCase())?.[1];
+  return path !== undefined && (path === "secrets" || path.startsWith(ALL_SECRETS_PREFIX));
+}
+
+/**
+ * Does this entry's ability belong to the all-secrets card: decrypt on a bare network, decrypt or `key.create` on
+ * `secrets` or a prefix under it, or on an unreadable path that names them (`unreadableNamesSecrets`)?
+ */
 export function allSecretsAbility(entry: Omit<SecretReachEntry, "actions">, ability: string): "network-decrypt" | "prefix-decrypt" | "prefix-create" | null {
   if (entry.service !== "encryption" && entry.service !== "tinycloud.encryption") return null;
   const resource = encryptionResourceOfEntry(entry);
   if (resource === null) return null;
   const parsed = parseEncryptionResource(resource);
-  if (parsed === null) return null;
   const verb = elevatedAbilityVerb(ability);
-  if (parsed.kind === "network") return verb === "decrypt" ? "network-decrypt" : null;
-  if (parsed.kind !== "prefix" || parsed.network !== SECRETS_NETWORK || parsed.keyPath !== ALL_SECRETS_PREFIX) return null;
+  if (parsed === null) {
+    if (!unreadableNamesSecrets(resource)) return null;
+  } else if (parsed.kind === "network") {
+    return verb === "decrypt" ? "network-decrypt" : null;
+  } else if (!coversManySecrets(parsed)) {
+    return null;
+  }
   return verb === "decrypt" ? "prefix-decrypt" : verb === "key.create" ? "prefix-create" : null;
 }
 
@@ -136,7 +176,9 @@ function capReachOf(entry: SecretReachEntry, verbs: readonly string[]): CapReach
   const parsed = resource === null ? null : parseEncryptionResource(resource);
   if (parsed === null) return "secrets";
   if (parsed.kind === "network") return "network";
-  return parsed.network === SECRETS_NETWORK && parsed.keyPath.toLowerCase().startsWith(ALL_SECRETS_PREFIX) ? "secrets" : null;
+  return coversManySecrets(parsed) || (parsed.network === SECRETS_NETWORK && parsed.keyPath.toLowerCase().startsWith(ALL_SECRETS_PREFIX))
+    ? "secrets"
+    : null;
 }
 
 /** Does this entry decrypt secrets: a key or prefix under `secrets/`, or a whole network (fails closed)? */

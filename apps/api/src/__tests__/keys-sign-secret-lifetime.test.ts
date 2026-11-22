@@ -165,18 +165,21 @@ describe('raw signing of a grant on secret keys, in odd forms', () => {
     const res = await sign(`0x${Buffer.from(siweFor(secret, 30 * DAY_MS), 'utf8').toString('hex').toUpperCase()}`, 'raw');
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual(REFUSED);
+    expect(calls).toEqual([]);
   });
 
   test('abilities named without the tinycloud. prefix are refused', async () => {
     const res = await sign(siweFor({ [urn('/secrets/openai_api_key')]: ['encryption/decrypt'] }, 30 * DAY_MS));
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual(REFUSED);
+    expect(calls).toEqual([]);
   });
 
   test('SECRETS/ in capitals is held like secrets/', async () => {
     const res = await sign(siweFor({ [urn('/SECRETS/openai_api_key')]: [`${E}decrypt`] }, 30 * DAY_MS));
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual(REFUSED);
+    expect(calls).toEqual([]);
   });
 
   test('a ReCap that cannot be read is refused, and nothing is signed', async () => {

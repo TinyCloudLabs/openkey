@@ -250,18 +250,53 @@ describe('POST /sign (session principal, Auto-Sign) refuses signed bytes over 7 
     expect(signed).toEqual([]);
   });
 
-  test('a whole network decrypt for 30 days: refused only with the network cap on, in the wider words', async () => {
+  // Auto-Sign signs only bootstrap scopes; anything else that passes the 7-day guard goes on to the approval screen.
+  test('a whole network decrypt for 30 days: sent on to approval with the network cap off, refused with it on in the wider words', async () => {
     const message = siweFor({ [urn('')]: [`${E}decrypt`] }, 30 * DAY_MS);
     const off = await sign(message);
-    expect((await off.clone().json() as { code?: string }).code).not.toBe('secret_lifetime_exceeded');
+    expect(off.status).toBe(200);
+    expect(await off.json()).toMatchObject({ approved: false, needsApproval: true });
     process.env.OPENKEY_NETWORK_DECRYPT_CAP = 'enabled';
     const on = await sign(message);
     expect(on.status).toBe(400);
     expect(await on.json()).toEqual({ approved: false, code: NETWORK_REFUSED.code, reason: NETWORK_REFUSED.error });
+    expect(signed).toEqual([]);
   });
 
-  test("one secret's key for 7 days is not refused for its lifetime", async () => {
+  test("one secret's key for 7 days passes the guard and is sent on to approval", async () => {
     const res = await sign(siweFor(SECRET_SHAPES[0]![1], 7 * DAY_MS - 60_000));
-    expect((await res.json() as { code?: string }).code).not.toBe('secret_lifetime_exceeded');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ approved: false, needsApproval: true });
+  });
+});
+
+// Every shape OpenKey shows as all secrets: `secrets` itself, a prefix under it, or a path the node's key grammar
+// refuses but that reads as one of them once lower-cased and percent-decoded. The frame takes each (and the page shows
+// the all-secrets card); each is held to 7 days.
+const ALL_SECRETS_SHAPES: Array<[string, Record<string, string[]>]> = [
+  '/secrets', '/secrets/scoped/work/', '/secrets/scoped/', '/Secrets/', '/SECRETS/', '/SECRETS/x', '/Secrets/openai_api_key',
+  '/secrets%2F', '/secrets%2f', '/secrets%2Fopenai_api_key', '/secrets%2fx',
+].map((rest) => [`decrypt on default${rest}`, { [urn(rest)]: [`${E}decrypt`] }]);
+
+describe('every shape of a grant on all secrets', () => {
+  test.each(ALL_SECRETS_SHAPES)('%s: /authorize-sign-prepare offers it as a warned permission', async (_name, raw) => {
+    const prepared = await post('/authorize-sign-prepare', {
+      keyId: keyRecord.id, siwe: siweFor(raw, DAY_MS), jwk, host: HOST, requestOrigin: ORIGIN, reportedOrigin: ORIGIN,
+    });
+    expect(prepared.status, await prepared.clone().text()).toBe(200);
+    const { allowedActionIds } = await prepared.json() as { allowedActionIds: string[] };
+    expect(elevatedIds(allowedActionIds)).toEqual([expect.stringContaining(Object.keys(raw)[0]!)]);
+  });
+
+  test.each(ALL_SECRETS_SHAPES)("%s: the frame signs the app's 30 days as 7", async (_name, raw) => {
+    const before = Date.now();
+    expectSevenDays(await approve(raw, 30 * DAY_MS), before);
+  });
+
+  test.each(ALL_SECRETS_SHAPES)('%s: POST /sign refuses 30 days, nothing signed', async (_name, raw) => {
+    const res = await post('/sign', { address, chainId: 1, message: siweFor(raw, 30 * DAY_MS), type: 'siwe', keyId: keyRecord.id });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ approved: false, code: SECRET_REFUSED.code, reason: SECRET_REFUSED.error });
+    expect(signed).toEqual([]);
   });
 });

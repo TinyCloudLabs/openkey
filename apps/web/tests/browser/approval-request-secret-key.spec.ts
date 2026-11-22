@@ -181,3 +181,34 @@ test('decrypt on the whole network starts at one hour and shows the all-secrets 
   await expect(fold.getByRole('alert')).toHaveText('This approval can last up to 1 hour.');
   expect(expiries.at(-1)).toBe(`${HOUR}s`);
 });
+
+// Every grant OpenKey shows as all secrets: `secrets` itself, a prefix under it, or a path that only reads as one of
+// them once lower-cased and percent-decoded. The API's /prepare refuses each of these today; the page still never
+// shows them as one secret if bytes carrying one reach it.
+for (const rest of [
+  '/secrets/', '/secrets', '/secrets/scoped/work/', '/secrets/scoped/', '/Secrets/', '/SECRETS/', '/SECRETS/x',
+  '/Secrets/openai_api_key', '/secrets%2F', '/secrets%2f', '/secrets%2Fopenai_api_key', '/secrets%2fx',
+]) {
+  test(`decrypt on default${rest} shows the all-secrets card, never the one-secret card`, async ({ page }) => {
+    const resource = `${network}${rest}`;
+    const decrypt = { service: 'tinycloud.encryption', space: 'encryption', path: resource, ability: DECRYPT, resource };
+    const expiries = await openReview(page, { grants: [secret, decrypt], grantLifetimeSeconds: 7 * DAY, suggestedLifetimeSeconds: 7 * DAY });
+    await expect(approve(page)).toBeEnabled();
+    const card = page.getByTestId('all-secrets-card');
+    await expect(card.getByRole('heading')).toHaveText('Let this app read all your secrets?');
+    await expect(page.getByRole('dialog')).not.toContainText('Read the secret OPENAI_API_KEY');
+    await expect(page.getByRole('dialog')).not.toContainText('Lets it open only this secret.');
+    await expect(page.getByRole('dialog')).not.toContainText(/to use one secret/);
+    await expect(line(page)).toHaveText("This app's access to your data lasts 1 hour.");
+    expect(expiries.at(-1)).toBe(`${HOUR}s`);
+  });
+}
+
+test("one secret's own key still shows the one-secret card, with no all-secrets card", async ({ page }) => {
+  await openReview(page, { grants: [secret, keyDecrypt], grantLifetimeSeconds: 7 * DAY, suggestedLifetimeSeconds: 7 * DAY });
+  await expect(approve(page)).toBeEnabled();
+  await expect(page.getByTestId('all-secrets-card')).toHaveCount(0);
+  await expect(page.getByRole('dialog').locator('.summary-statement .statement-primary')).toHaveText(['Read the secret OPENAI_API_KEY']);
+  await expect(page.getByRole('dialog')).toContainText('Lets it open only this secret.');
+  await expect(page.getByRole('dialog')).toContainText(/to use one secret/);
+});

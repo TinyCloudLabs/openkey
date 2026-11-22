@@ -110,3 +110,39 @@ describe('prepareDelegationSession — one secret\'s own key (TC-3800)', () => {
     }
   });
 });
+
+// The popup and the signed approval request page (`/a/`) build their bytes here, so neither can carry a grant on
+// every secret: `secrets` itself, a prefix under it, or a path that only reads as one of them once lower-cased and
+// percent-decoded.
+describe('prepareDelegationSession refuses every shape of a grant on all secrets (TC-3800)', () => {
+  test.each([
+    'secrets', 'secrets/', 'secrets/scoped/', 'secrets/scoped/work/', 'Secrets/', 'SECRETS/', 'SECRETS/x', 'Secrets/openai_api_key',
+    'secrets%2F', 'secrets%2f', 'secrets%2Fopenai_api_key', 'secrets%2fx',
+  ])('default/%s, for decrypt and for key.create', (tail: string) => {
+    for (const actions of [[DECRYPT], [CREATE]]) {
+      expect(refusal(request(keyUrn(tail), actions)).details?.[0]?.path, `${tail} ${actions}`).toMatch(/^permissions\[1\]\./);
+    }
+  });
+});
+
+// Naomi 13:35:53Z: name and scope segments are at most 64 bytes, inclusive; 65 is refused.
+describe('prepareDelegationSession — secret key segments of 64 bytes (TC-3800)', () => {
+  const at64 = 'a'.repeat(64);
+  const at65 = 'a'.repeat(65);
+
+  test('signs a 64-byte name, scope and scoped name', () => {
+    for (const tail of [`secrets/${at64}`, `secrets/scoped/${at64}/${at64}`]) {
+      const path = keyUrn(tail);
+      const siwe = prepare(request(path, [DECRYPT, CREATE])).prepared.siwe;
+      expect(recapAtt(siwe)[path], tail).toEqual({ [DECRYPT]: [{}], [CREATE]: [{}] });
+    }
+  });
+
+  test('refuses a 65-byte name, scope or scoped name, and a 64-character name of 65 bytes', () => {
+    for (const tail of [`secrets/${at65}`, `secrets/scoped/${at65}/x`, `secrets/scoped/work/${at65}`, `secrets/${'a'.repeat(63)}é`]) {
+      const error = refusal(request(keyUrn(tail)));
+      expect(error.details?.[0]?.path, tail).toBe('permissions[1].path');
+      expect(error.message, tail).toContain('names an invalid secret key');
+    }
+  });
+});

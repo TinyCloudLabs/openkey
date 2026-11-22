@@ -44,7 +44,7 @@ import { ENCRYPTION_URN_PREFIX, parseEncryptionResource } from "./encryption-res
 import { isAppsKeyResource, parseKeyResource } from "./key-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import { feedGrantStatement } from "./feed-grant.js";
-import { exactSecretKeyPath, secretKeyDisplayName, secretOfKvPath } from "./secret-keys.js";
+import { coversManySecrets, exactSecretKeyPath, secretKeyDisplayName, secretOfKvPath } from "./secret-keys.js";
 import { KV_VERBS, SECRETS_KNOWN_VERBS, SQL_DATABASE_VERBS } from "./known-verbs.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
@@ -412,7 +412,8 @@ export function grantIsBroadOnce(grant: CapabilityGrant): boolean {
     if (view.kind !== "urn") return true;
     const parsed = view.parsed;
     if (parsed.kind === "network") return true;
-    if (parsed.kind === "key") return false;
+    // An exact key stays one key, except `default/secrets` itself, shown as all secrets (TC-3800).
+    if (parsed.kind === "key") return coversManySecrets(parsed);
     // Only `apps/<appId>/…` provably stays inside one app's keys.
     const segments = parsed.keyPath.slice(0, -1).split("/");
     return segments.length < 2 || segments[0] !== "apps";
