@@ -184,6 +184,9 @@
   // Over two days the day the longest grant ends too: "30 days, until 17 Dec,".
   const lifetime = (seconds: number) =>
     daysOverTwoDays(seconds * 1000) === null ? duration(seconds) : `${duration(seconds)}, until ${formatEndDay(seconds * 1000)},`;
+  // The same end the note names: its day over two days, otherwise just "your access ends".
+  const grantEnd = (seconds: number) =>
+    daysOverTwoDays(seconds * 1000) === null ? 'your access ends' : formatEndDay(seconds * 1000);
   let started = false;
   $effect(() => { if (ready && !started) { started = true; prepare(); } });
   const summary = $derived(model && preview ? nativeAccessSummary(model, selection, preview.client.name) : null);
@@ -253,8 +256,8 @@
           <dt>Returns to</dt><dd><code>{preview.redirectScheme}://</code></dd>
           <dt>Signing key</dt><dd>{model.signer.label} <code>{model.signer.address}</code></dd>
           <dt>App identity</dt><dd>{trustLabel[model.metadataTrust.status]}</dd>
-          {#if model.expiry}<dt>Expires</dt><dd>{formatLocalAccessEnd(model.expiry)}</dd>{/if}
-          <dt>Renewals</dt><dd>Each renewal lasts {duration(preview.ttlSeconds)} from approval.</dd>
+          {#if model.expiry}<dt>Current period ends</dt><dd>{formatLocalAccessEnd(model.expiry)}</dd>{/if}
+          <dt>Renewals</dt><dd>{preview.client.name} renews it up to {duration(preview.ttlSeconds)} at a time while you use it, until {grantEnd(preview.grantLifetimeSeconds)}.</dd>
         </dl>
         {#if model.metadataTrust.reason}
           <p class="note">{model.metadataTrust.reason}</p>
