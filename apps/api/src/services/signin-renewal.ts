@@ -120,6 +120,8 @@ export async function setUpSignInLease(db: Pick<PrismaClient, '$transaction'>, o
   signature: string;
   spaceId: string;
   leaseLifetimeSeconds: number;
+  /** The owner confirmed renewing sensitive access in the preview (TC-3821). */
+  sensitiveConfirmed: boolean;
   signOwner?: (message: string) => Promise<string>;
 }): Promise<SignInLease> {
   if (!renewalLeasesEnabled()) throw new RenewalLeaseError('renewal_disabled', renewalUnavailableMessage('sign-in', 'after-signing'), 400);
@@ -143,6 +145,7 @@ export async function setUpSignInLease(db: Pick<PrismaClient, '$transaction'>, o
     },
     now: new Date(),
     appAdmits: true,
+    sensitiveConfirmed: owner.sensitiveConfirmed,
   });
   if (!owner.signOwner) {
     const now = Date.now();

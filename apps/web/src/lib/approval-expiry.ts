@@ -44,6 +44,17 @@ export const MAX_LEASE_MS = 365 * D;
 /** Spec D6 rule 3: renewing access to secrets or decrypt uses a 7-day window. */
 export const SENSITIVE_RENEWAL_WINDOW_MS = 7 * D;
 
+/**
+ * The Expiration Time for a window chosen with a confirmed sensitive renewal (TC-3821): `ms` from the message's own
+ * Not Before, else its Issued At. The node renews each window from that start, and the server refuses a sensitive
+ * lease whose window is over 7 days, so counting from now (seconds after the app signed) would land just over.
+ * Counts from now when the message has neither.
+ */
+export function renewalWindowExpiryAt(ms: number, message: string, now: number = Date.now()): string {
+  const start = Date.parse(/^Not Before: (.+)$/m.exec(message)?.[1]?.trim() ?? /^Issued At: (.+)$/m.exec(message)?.[1]?.trim() ?? '');
+  return new Date((Number.isFinite(start) ? Math.min(start, now) : now) + ms).toISOString();
+}
+
 /** One-time approvals (the Once tier: secrets or decrypt) start at one hour (spec D6). */
 export const ONCE_DEFAULT_EXPIRY_MS = H;
 
