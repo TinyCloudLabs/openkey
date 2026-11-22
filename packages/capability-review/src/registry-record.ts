@@ -17,13 +17,13 @@ export const REGISTRY_RECORD_SIGN_REFUSED = {
   code: "registry_record_sign_refused",
   title: "This app's request can't be signed",
   popupBody:
-    "It would set which TinyCloud node holds your data. Only TinyCloud One can ask for that, so this app can't. Nothing was signed. You can close this window.",
+    "It would set which TinyCloud node holds your data. Only TinyCloud's own apps can ask for that, so this app can't. Nothing was signed. You can close this window.",
   embedBody:
-    "It would set which TinyCloud node holds your data. Only TinyCloud One can ask for that, so this app can't. Nothing was signed. You can go back to the app.",
+    "It would set which TinyCloud node holds your data. Only TinyCloud's own apps can ask for that, so this app can't. Nothing was signed. You can go back to the app.",
   popupButton: "Close",
   embedButton: "Back to the app",
   apiMessage:
-    "Only TinyCloud One can request a signature that sets the account's node location through OpenKey. Nothing was signed.",
+    "Only TinyCloud's own apps can request a signature that sets the account's node location through OpenKey. Nothing was signed.",
 } as const;
 
 const V1_FIELDS = ["version", "subject", "multiaddrs", "updated_at", "sequence"] as const;
