@@ -44,6 +44,7 @@ import { ENCRYPTION_URN_PREFIX, parseEncryptionResource } from "./encryption-res
 import { isAppsKeyResource, parseKeyResource } from "./key-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import { feedGrantStatement } from "./feed-grant.js";
+import { KV_VERBS, SECRETS_KNOWN_VERBS, SQL_DATABASE_VERBS } from "./known-verbs.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
   KV_SECRET_SERVICES_PROOF,
@@ -386,66 +387,56 @@ export function grantReachesSecretDataOrDecryption(
 }
 
 /**
- * True for the broad one-hour approval tier: a grant that reaches secret
- * data or decryption and is NOT one of the exact-named shapes the owner
- * can safely sign for longer. `grantIsNarrowNamed` lists those exact
- * shapes. Every other Sensitive grant, including an encryption URN that
- * fails to parse, stays broad and fails closed to the one-hour start.
+ * True for the one-hour approval tier: a grant that reaches secret data or
+ * decryption AND reaches all of it. The tier is:
+ * - encryption on a whole network URN, on a one-segment prefix (`apps/`,
+ *   `shared/`), or on a deeper prefix outside `apps/<appId>/`;
+ * - KV or secrets-service access to the whole vault (`""`, `vault`,
+ *   `vault/secrets`, `secrets`, with or without a trailing `/`);
+ * - any shape this cannot place: an encryption URN that does not parse, a
+ *   mismatched service, an unknown service on the secrets space, or a KV,
+ *   SQL or secrets-service ability outside the service's known verbs, even
+ *   on one named secret.
+ * One named secret, a secret sub-prefix, SQL on the secrets catalog, an exact
+ * encryption key and a prefix inside `apps/<appId>/` return false, so the
+ * approval starts at the length the app asked for.
  */
 export function grantIsBroadOnce(grant: CapabilityGrant): boolean {
   if (!grantReachesSecretDataOrDecryption(grant)) return false;
-  return !grantIsNarrowNamed(grant);
-}
-
-/**
- * True for the two Sensitive shapes an approval screen can safely let an
- * app ask for longer than one hour: (1) a KV `secret-read` or
- * `secret-mutation` whose path is `vault/secrets/<name>` or
- * `secrets/<name>`, where `<name>` matches the js-sdk secret-name grammar
- * `^[A-Z][A-Z0-9_]*$`; and (2) an encryption grant whose canonical URN
- * parses as an exact `kind: "key"`, or as a `kind: "prefix"` of exactly
- * `apps/<appId>/`, with `<appId>` a single non-empty segment with no `/`.
- * SQL in the secrets space (the "secret catalog" family) and every other
- * encryption `prefix` or `network` shape return false, as does an
- * encryption URN that does not parse. Callers combine this with
- * `grantReachesSecretDataOrDecryption` through `grantIsBroadOnce`.
- */
-function grantIsNarrowNamed(grant: CapabilityGrant): boolean {
-  if (grant.family === "secret-read" || grant.family === "secret-mutation") {
-    if (!KV_SERVICES.has(grant.service)) return false;
-    const path = grant.path;
-    const name = path.startsWith("vault/secrets/")
-      ? path.slice("vault/secrets/".length)
-      : path.startsWith("secrets/")
-        ? path.slice("secrets/".length)
-        : null;
-    // Node matches KV paths at segment boundaries, and the js-sdk secret-name
-    // grammar (`^[A-Z][A-Z0-9_]*$`) forbids any lowercase scope directory
-    // name. That turns a one-segment allow into one literal secret.
-    return name !== null && SECRET_NAME_RE.test(name);
-  }
+  if (grant.serviceMismatch === true) return true;
   if (ENCRYPTION_SERVICES.has(grant.service)) {
     const view = canonicalEncryptionUrn(grant);
-    if (view.kind !== "urn") return false;
+    if (view.kind !== "urn") return true;
     const parsed = view.parsed;
-    if (parsed.kind === "key") return true;
-    if (parsed.kind === "prefix") {
-      const kp = parsed.keyPath;
-      if (!kp.startsWith("apps/") || !kp.endsWith("/")) return false;
-      const appId = kp.slice("apps/".length, -1);
-      return appId !== "" && !appId.includes("/");
-    }
-    return false;
+    if (parsed.kind === "network") return true;
+    if (parsed.kind === "key") return false;
+    // Only `apps/<appId>/…` provably stays inside one app's keys.
+    const segments = parsed.keyPath.slice(0, -1).split("/");
+    return segments.length < 2 || segments[0] !== "apps";
   }
-  return false;
+  const known = SQL_SERVICES.has(grant.service)
+    ? SQL_DATABASE_VERBS
+    : KV_SERVICES.has(grant.service)
+      ? KV_VERBS
+      : SECRETS_SERVICES.has(grant.service)
+        ? SECRETS_KNOWN_VERBS
+        : null;
+  if (known === null) return true;
+  if (grant.actions.some((action) => !known.has(verbOf(action.ability)))) return true;
+  return !SQL_SERVICES.has(grant.service) && WHOLE_VAULT_PATHS.has(grant.path);
 }
 
-// The js-sdk secret-name grammar (`secrets/paths.ts:3`): a non-empty name
-// starting with an uppercase letter, then uppercase, digits, or underscores.
-// Rules out any lowercase scope directory like `scoped` (which the node's
-// segment-boundary matcher would treat as a prefix over
-// `vault/secrets/scoped/dev/<name>`).
-const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
+// KV paths that cover every secret: the whole space, the vault and the
+// secrets directory, with or without the trailing `/`.
+const WHOLE_VAULT_PATHS = new Set([
+  "",
+  "vault",
+  "vault/",
+  "vault/secrets",
+  "vault/secrets/",
+  "secrets",
+  "secrets/",
+]);
 
 const KV_SERVICES = new Set(["tinycloud.kv", "kv"]);
 const SQL_SERVICES = new Set(["tinycloud.sql", "sql"]);
