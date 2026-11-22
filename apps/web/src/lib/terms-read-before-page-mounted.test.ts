@@ -56,17 +56,20 @@ const { mount, unmount, flushSync } = (await import(SVELTE_CLIENT)) as SvelteCli
 
 // ---- what the test and the pages share ------------------------------------
 
-type Session = { data: { user: { id: string; email: string } } | null; isPending: boolean };
+type Session = { data: { user: { id: string; email: string } } | null; isPending: boolean; refetch: () => void };
 interface Scene {
   url: string;
   session: ReturnType<typeof writable<Session>>;
   posts: unknown[];
+  refetches: number;
 }
 const scene = (): Scene => (globalThis as unknown as { __scene: Scene }).__scene;
+// The session store's `refetch`, as better-auth's `useSession()` carries it: the layout calls it from Try again.
+const refetchSession = () => { scene().refetches += 1; };
 
-const SIGNED_IN: Session = { data: { user: { id: 'user_1', email: 'sam@example.test' } }, isPending: false };
-const SIGNED_OUT: Session = { data: null, isPending: false };
-const PENDING: Session = { data: null, isPending: true };
+const SIGNED_IN: Session = { data: { user: { id: 'user_1', email: 'sam@example.test' } }, isPending: false, refetch: refetchSession };
+const SIGNED_OUT: Session = { data: null, isPending: false, refetch: refetchSession };
+const PENDING: Session = { data: null, isPending: true, refetch: refetchSession };
 
 const EMPTY_SOURCE = '<div data-testid="stub"></div>';
 const STUBS: Record<string, string> = {
@@ -93,14 +96,19 @@ function compileSource(source: string, name: string): string {
 
 const emptyUrl = compileSource(EMPTY_SOURCE, 'empty');
 const termsStepUrl = compileSource('<div data-testid="terms-step"></div>', 'terms-step');
+const tryAgainUrl = compileSource(
+  '<script>let { onretry } = $props();</script><button data-testid="terms-check-failed" onclick={onretry}>Try again</button>',
+  'try-again',
+);
 const stubs: Record<string, string> = {
   ...STUBS,
   '$lib/components/admin-console-link.svelte': `export { default } from '${emptyUrl}';`,
   '$lib/renewal-leases': "export const renewalLeaseCopy = { signOutKeepsRenewing: '', stopRenewalsLink: '' };",
   // The bound on a session that does not answer, shortened.
-  '$lib/terms': `export * from '${pathToFileURL(join(WEB_ROOT, 'src/lib/terms.ts')).href}'; export const TERMS_CHECK_TIMEOUT_MS = 200;`,
+  '$lib/terms': `export * from '${pathToFileURL(join(WEB_ROOT, 'src/lib/terms.ts')).href}'; export const SESSION_CHECK_TIMEOUT_MS = 200;`,
   '$lib/components/auth/terms-step.svelte': `export { default } from '${termsStepUrl}';`,
-  '$lib/components/auth/terms-check-failed.svelte': `export { default } from '${emptyUrl}';`,
+  // Try again: a button that calls `onretry`.
+  '$lib/components/auth/terms-check-failed.svelte': `export { default } from '${tryAgainUrl}';`,
 };
 
 const compiledFiles = new Map<string, string>();
@@ -167,7 +175,7 @@ const Wrappers = {
 };
 
 const { termsGate, termsRefused } = (await import(pathToFileURL(join(WEB_ROOT, 'src/lib/terms-gate.ts')).href)) as {
-  termsGate: { follow: (subject: string | null) => void };
+  termsGate: { follow: (subject: string | null) => void; agreed: () => void };
   termsRefused: () => void;
 };
 
@@ -197,28 +205,38 @@ interface Run {
   requests: string[];
   /** Answers the held Terms status read: whether the Terms are owed, or a credential that no longer signs anyone in. */
   answer: (result: boolean | 'signed-out') => void;
+  /** The account agrees to the Terms: the API answers its calls, and the gate opens. */
+  agree: () => void;
   target: HTMLElement;
   session: Scene['session'];
   /** `openkey:ready` posts to the opener. */
   ready: () => number;
   checking: () => boolean;
+  /** The page itself is mounted (the pop-up posted to its opener, the dashboard drew its chrome). */
+  shown: () => boolean;
+  /** The gate's Try again button, while it shows. */
+  tryAgain: () => HTMLElement | null;
+  /** How many times the layout was asked to read the session again. */
+  refetches: () => number;
 }
 
 async function withPage(
   page: keyof typeof PAGES,
-  options: { session: Session; release?: 'on' | 'off' },
+  options: { session: Session; release?: 'on' | 'off'; neverAgreed?: boolean },
   act: (run: Run) => Promise<void>,
 ): Promise<void> {
   termsGate.follow(null);
   const session = writable<Session>(options.session);
   const posts: unknown[] = [];
-  (globalThis as unknown as { __scene: Scene }).__scene = { url: PAGES[page].url, session, posts };
+  (globalThis as unknown as { __scene: Scene }).__scene = { url: PAGES[page].url, session, posts, refetches: 0 };
   sessionStorage.setItem('openkey_dev_terms_release', options.release ?? 'on');
   Object.defineProperty(win, 'opener', { value: { postMessage: (data: unknown) => posts.push(data) }, configurable: true });
 
   const requests: string[] = [];
   const held = Promise.withResolvers<boolean | 'signed-out'>();
   const realFetch = globalThis.fetch;
+  // A never-agreed account is refused its key list until it agrees.
+  let agreed = !options.neverAgreed;
   const realConsole = { error: console.error, log: console.log, warn: console.warn };
   console.error = () => {};
   console.log = () => {};
@@ -231,6 +249,9 @@ async function withPage(
         ? new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 })
         : new Response(JSON.stringify({ ...STATUS, requiresAcceptance: result }), { status: 200 }));
     }
+    if (path === '/api/keys' && !agreed) {
+      return new Response(JSON.stringify({ error: 'terms_required' }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
     return new Response(JSON.stringify({ keys: [], leases: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   }) as unknown as typeof fetch;
 
@@ -241,10 +262,17 @@ async function withPage(
     await act({
       requests,
       answer: (result) => held.resolve(result),
+      agree: () => {
+        agreed = true;
+        termsGate.agreed();
+      },
       target,
       session,
       ready: () => posts.filter((post) => (post as { type?: string }).type === 'openkey:ready').length,
       checking: () => target.querySelector('[data-testid="terms-checking"]') !== null,
+      shown: () => (page === 'connect' ? posts.length > 0 : target.querySelector('main') !== null),
+      tryAgain: () => target.querySelector<HTMLElement>('[data-testid="terms-check-failed"]'),
+      refetches: () => scene().refetches,
     });
   } finally {
     unmount(app);
@@ -330,13 +358,50 @@ for (const name of ['connect', 'dashboard'] as const) {
       });
     });
 
-    test('a session that never answers stops holding the page after the bound', async () => {
-      await withPage(name, { session: PENDING }, async ({ requests, ready, checking }) => {
+    test('a session that never answers shows Try again at the bound, never the page; Try again reads the session again', async () => {
+      await withPage(name, { session: PENDING }, async ({ requests, session, answer, shown, checking, tryAgain, refetches }) => {
         await settle();
         expect(checking()).toBe(true);
-        await until(() => !checking(), 'the page, once the session has not answered within the bound');
+        await until(() => tryAgain() !== null, 'Try again, once the session has not answered within the bound');
+        expect(checking()).toBe(false);
+        expect(shown()).toBe(false);
         expect(requests).toEqual([]);
-        expect(ready()).toBe(name === 'connect' ? 1 : 0);
+
+        tryAgain()!.click();
+        await until(() => checking(), 'the spinner, while the session is read again');
+        expect(refetches()).toBe(1);
+        expect(tryAgain()).toBeNull();
+
+        session.set({ ...SIGNED_IN, refetch: refetchSession });
+        await until(() => requests.includes('GET /api/account/terms'), 'the Terms read');
+        await settle();
+        expect(shown()).toBe(false);
+        expect(accountCalls(requests)).toEqual([]);
+
+        answer(false);
+        await until(() => PAGES[name].calls.every((call) => requests.includes(call)), 'the page calls');
+        await settle();
+        expect(shown()).toBe(true);
+        expect(accountCalls(requests).sort()).toEqual([...PAGES[name].calls].sort());
+      });
+    });
+
+    test('a session that answers after the bound ends the failed state and goes on to the Terms read', async () => {
+      await withPage(name, { session: PENDING }, async ({ requests, session, answer, shown, tryAgain }) => {
+        await until(() => tryAgain() !== null, 'Try again');
+        expect(requests).toEqual([]);
+
+        session.set({ ...SIGNED_IN, refetch: refetchSession });
+        await until(() => requests.includes('GET /api/account/terms'), 'the Terms read');
+        await settle();
+        expect(tryAgain()).toBeNull();
+        expect(shown()).toBe(false);
+        expect(accountCalls(requests)).toEqual([]);
+
+        answer(true);
+        await settle();
+        expect(shown()).toBe(false);
+        expect(accountCalls(requests)).toEqual([]);
       });
     });
   });
@@ -375,4 +440,48 @@ describe('a sign-in made on the pop-up', () => {
       expect(ready()).toBe(1);
     });
   });
+});
+
+// A never-agreed account on the pop-up: the API refuses its key list with 403 `terms_required` until it agrees, so a
+// single keys call before Agree shows in the requests, in the page's error text and in a status read it triggers.
+describe('a never-agreed account on the pop-up', () => {
+  for (const start of ['a reload (session pending)', 'a window open and signed in'] as const) {
+    test(`${start}: one status read, no keys call until Agree, no refusal text, one keys call after`, async () => {
+      await withPage('connect', { session: start.startsWith('a reload') ? PENDING : SIGNED_IN, neverAgreed: true }, async ({ requests, session, answer, agree, ready, checking, target }) => {
+        if (start.startsWith('a reload')) session.set(SIGNED_IN);
+        await until(() => requests.includes('GET /api/account/terms'), 'the Terms read');
+        await settle();
+        const termsReads = () => requests.filter((request) => request === 'GET /api/account/terms').length;
+        const keysCalls = () => requests.filter((request) => request.endsWith('/api/keys')).length;
+        expect(termsReads()).toBe(1);
+        expect(keysCalls()).toBe(0);
+        expect(checking()).toBe(true);
+
+        // A refused call elsewhere asks for a fresh check while the read is still held.
+        termsRefused();
+        await settle();
+        expect(keysCalls()).toBe(0);
+
+        answer(true);
+        await until(() => target.querySelector('[data-testid="terms-step"]') !== null, 'the Terms');
+        await settle();
+        expect(keysCalls()).toBe(0);
+        expect(ready()).toBe(0);
+
+        // And again while the Terms are shown.
+        termsRefused();
+        await settle();
+        expect(target.querySelector('[data-testid="terms-step"]')).not.toBeNull();
+        expect(keysCalls()).toBe(0);
+        expect(document.body.textContent).not.toContain('terms_required');
+
+        agree();
+        await until(() => keysCalls() === 1, 'the keys');
+        await settle();
+        expect(keysCalls()).toBe(1);
+        expect(ready()).toBeGreaterThan(0);
+        expect(document.body.textContent).not.toContain('terms_required');
+      });
+    });
+  }
 });
