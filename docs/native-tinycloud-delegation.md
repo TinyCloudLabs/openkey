@@ -893,6 +893,9 @@ sign-in made **for this sign request** counts as that request's approval passkey
 - A click on Approve that arrives less than 500 ms after the button became actionable (preview shown, nothing
   blocking) is ignored, so a page placed over the frame cannot time a click onto it right after the user's own
   sign-in. The window restarts each time Approve becomes actionable again.
+- The web server answers `/widget/sign` and `/auth/login` with `Content-Security-Policy: frame-ancestors 'none'`
+  (`apps/web/src/hooks.server.ts`, `lib/frame-policy.ts`), so no page can frame the pop-up or the login page. The
+  signing iframe `/widget/embed/sign` and every other page keep their headers.
 - Not covered: typed-data signing, Nostr approval, the connect page and the delegate handoff pages. Their Approve
   keeps asking for its own passkey.
 
