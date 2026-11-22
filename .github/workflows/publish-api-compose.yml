@@ -22,6 +22,13 @@ permissions:
 
 jobs:
   publish:
+    # Only manual runs of this repository's main: both deploy workflows are workflow_dispatch only and
+    # refuse other refs. A failed run is still read, because it may have reached the CVM.
+    if: >-
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.conclusion != 'skipped'
     runs-on: ubuntu-latest
     # The production environment holds the Phala key this job reads the measurement with.
     environment: production
@@ -29,11 +36,16 @@ jobs:
       actions: read
       contents: write
     steps:
+      # The record is data from another run: it is validated here and reaches later steps only
+      # through env. Its image is checked again against the live attestation. Its commit must be the
+      # deploy run's own commit (Deploy API); TC-492 records the candidate it validated against PR #170.
       - name: Read the deploy record
         id: record
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_WORKFLOW_PATH: ${{ github.event.workflow_run.path }}
         run: |
           set -euo pipefail
           count=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts" \
@@ -43,11 +55,18 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          [ "$count" = "1" ] || { echo "::error::run ${RUN_ID} has ${count} api-deploy-record artifacts" >&2; exit 1; }
           gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name api-deploy-record --dir "$RUNNER_TEMP/record"
-          commit=$(jq -r '.commit' "$RUNNER_TEMP/record/record.json")
-          image=$(jq -r '.image' "$RUNNER_TEMP/record/record.json")
+          commit=$(jq -r '.commit | strings' "$RUNNER_TEMP/record/record.json")
+          image=$(jq -r '.image | strings' "$RUNNER_TEMP/record/record.json")
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the deploy record's commit is not a full SHA" >&2; exit 1; }
-          [[ "$image" =~ ^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ ]] || { echo "::error::the deploy record's image is not pinned by digest" >&2; exit 1; }
+          [[ "$image" =~ ^skgbafa/openkey-api@sha256:[0-9a-f]{64}$ ]] || { echo "::error::the deploy record's image is not skgbafa/openkey-api pinned by digest" >&2; exit 1; }
+          case "$RUN_WORKFLOW_PATH" in
+            .github/workflows/deploy-api.yml)
+              [ "$commit" = "$RUN_HEAD_SHA" ] || { echo "::error::the deploy record names ${commit}, not the run's commit ${RUN_HEAD_SHA}" >&2; exit 1; } ;;
+            .github/workflows/tc-492-production-cutover.yml) ;;
+            *) echo "::error::unexpected triggering workflow ${RUN_WORKFLOW_PATH}" >&2; exit 1 ;;
+          esac
           {
             echo "found=true"
             echo "commit=${commit}"
