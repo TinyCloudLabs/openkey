@@ -19,7 +19,7 @@
     carryPopupSignFlow, newWebSignFlowId, releaseWebSignFlow, takePopupSignFlow, webSignFlowHeaders,
   } from '$lib/web-sign-flow';
   import {
-    coverNotHonoured, createApproveVisibility, reviewSnapshot, sameReview, type ReviewSnapshot,
+    coverNotHonoured, createApproveVisibility, offersCover, reviewSnapshot, sameReview, type ReviewSnapshot,
   } from '$lib/approve-visibility';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
@@ -809,6 +809,8 @@
   const exactByteGate = $derived(approvalPasskeyGate({
     input: exactBytePasskeyInput, held: exactBytePasskey, fetch: exactBytePasskeyFetch,
   }));
+  // Approve is watched for visibility only while the offer it answers is a flow cover.
+  const coverOffered = $derived(offersCover(heldPreview?.passkey) || offersCover(exactBytePasskey?.need));
   $effect(() => {
     const input = exactBytePasskeyInput;
     void exactBytePasskeyRevision;
@@ -1487,7 +1489,7 @@
       initialSelection={reviewSelection}
       transport={{
         approving: signing,
-        approveVisibility,
+        approveVisibility: coverOffered ? approveVisibility : undefined,
         passkeyPending: exactByteGate.action === 'wait',
         host: messageHost,
         error: error || offerFailure,

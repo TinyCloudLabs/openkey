@@ -107,10 +107,11 @@ type Shared = {
   prompts: Array<ApprovalPasskeyNeed | null>;
   failFresh: boolean;
   changeFresh: boolean;
+  plainOffer: boolean;
 };
 const store = globalThis as unknown as { __cover: Shared };
 const shared = (): Shared => store.__cover;
-const reset = () => { store.__cover = { options: null, offerCalls: [], signCalls: [], prompts: [], failFresh: false, changeFresh: false }; };
+const reset = () => { store.__cover = { options: null, offerCalls: [], signCalls: [], prompts: [], failFresh: false, changeFresh: false, plainOffer: false }; };
 
 const KEY = { id: 'key_1', address: '0x1111111111111111111111111111111111111111', keyIndex: 0, keyType: 'MANAGED', label: 'Key' };
 const ASSERTION = { challengeToken: 'challenge-1', response: { id: 'credential-1' } };
@@ -144,6 +145,7 @@ const baseStubs = (pageUrl: string): Record<string, string> => ({
     signMessagePasskey: async (...args) => {
       globalThis.__cover.offerCalls.push(args);
       if (!args[3] && globalThis.__cover.failFresh) throw new Error('offer down');
+      if (globalThis.__cover.plainOffer) return { required: false };
       return args[3] ? ${JSON.stringify(COVERED)} : ${JSON.stringify(REQUIRED)};
     },
     signMessage: async (...args) => {
@@ -257,10 +259,11 @@ type Screen = { approve: () => HTMLButtonElement; tap: () => void };
 
 async function withPage(
   pageName: 'popup' | 'embed',
-  setup: { framed: boolean; observer: 1 | 2 | null },
+  setup: { framed: boolean; observer: 1 | 2 | null; plain?: boolean },
   body: (screen: Screen) => Promise<void>,
 ) {
   reset();
+  shared().plainOffer = setup.plain === true;
   FakeObserver.all = [];
   if (setup.observer === null) dropObserver();
   else useObserver(setup.observer);
@@ -468,8 +471,10 @@ type Call = { name: string; headers: Record<string, string>; body: Record<string
 async function withPreviewPage(
   pageName: 'popup' | 'embed',
   body: (screen: Screen & { calls: Call[]; named: (name: string) => Call[] }) => Promise<void>,
+  options: { plain?: boolean } = {},
 ) {
   reset();
+  shared().plainOffer = options.plain === true;
   useObserver(2);
   setTop({});
   const calls: Call[] = [];
@@ -503,7 +508,7 @@ async function withPreviewPage(
           return { service, space, path, actions: [ability] };
         }),
         // The offer is covered when the flow id is named and asks for the passkey when it is not.
-        passkey: headers['x-openkey-passkey-flow'] ? COVERED : REQUIRED,
+        passkey: shared().plainOffer ? { required: false } : headers['x-openkey-passkey-flow'] ? COVERED : REQUIRED,
       };
       if (shared().failFresh && !headers['x-openkey-passkey-flow']) { status = 500; answer = { error: 'preview down' }; }
     }
@@ -649,6 +654,46 @@ for (const { name } of PAGES) {
         expect(named('authorize-sign')[0]!.body.passkeyAssertion).toEqual(ASSERTION);
         expect(named('authorize-sign')[0]!.headers[HEADER]).toBeUndefined();
         expect(named('authorize-sign-preview')).toHaveLength(2);
+      });
+    });
+  });
+}
+
+// An observer v2 on a button in a cross-origin frame can keep a plain click from reaching it, so only an offer that is
+// a flow cover is watched. Any other offer is never observed and its tap goes straight through.
+for (const { name } of PAGES) {
+  describe(`the ${name} page in a frame never observes Approve for an offer that is not a flow cover`, () => {
+    test('an exact-byte offer without the cover marker leaves Approve unobserved and signs on the first tap', async () => {
+      await withPage(name, { framed: true, observer: 2, plain: true }, async ({ approve, tap }) => {
+        await until(() => !approve().disabled, 'Approve to be ready');
+        expect(FakeObserver.all.some((observer) => observer.targets.size > 0)).toBe(false);
+        tap();
+        await until(() => shared().signCalls.length === 1, 'the sign request');
+        expect(shared().prompts).toEqual([{ required: false }]);
+        expect(shared().offerCalls).toHaveLength(1);
+      });
+    });
+
+    test('a covered exact-byte offer puts Approve under observation', async () => {
+      await withPage(name, { framed: true, observer: 2 }, async ({ approve }) => {
+        await until(() => !approve().disabled, 'Approve to be ready');
+        expect(FakeObserver.all.filter((observer) => observer.targets.size > 0)).toHaveLength(1);
+      });
+    });
+
+    test('a preview offer without the cover marker leaves Approve unobserved and approves on the first tap', async () => {
+      await withPreviewPage(name, async ({ tap, named }) => {
+        expect(FakeObserver.all.some((observer) => observer.targets.size > 0)).toBe(false);
+        tap();
+        await untilTimers(() => named('authorize-sign').length === 1, 'the approval');
+        expect(shared().prompts).toEqual([{ required: false }]);
+        expect(named('authorize-sign-preview')).toHaveLength(1);
+      }, { plain: true });
+    });
+
+    test('a covered preview offer puts Approve under observation', async () => {
+      await withPreviewPage(name, async () => {
+        expect(FakeObserver.all.filter((observer) => observer.targets.size > 0)).toHaveLength(1);
       });
     });
   });

@@ -17,7 +17,7 @@
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import { newWebSignFlowId, releaseWebSignFlow, webSignFlowHeaders } from '$lib/web-sign-flow';
   import {
-    coverNotHonoured, createApproveVisibility, reviewSnapshot, sameReview, type ReviewSnapshot,
+    coverNotHonoured, createApproveVisibility, offersCover, reviewSnapshot, sameReview, type ReviewSnapshot,
   } from '$lib/approve-visibility';
   import Button from '$lib/components/ui/button.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
@@ -922,6 +922,8 @@
   const exactByteGate = $derived(approvalPasskeyGate({
     input: exactBytePasskeyInput, held: exactBytePasskey, fetch: exactBytePasskeyFetch,
   }));
+  // Approve is watched for visibility only while the offer it answers is a flow cover.
+  const coverOffered = $derived(offersCover(heldPreview?.passkey) || offersCover(exactBytePasskey?.need));
   $effect(() => {
     const input = exactBytePasskeyInput;
     void exactBytePasskeyRevision;
@@ -1584,7 +1586,7 @@
         layoutBlocked={v2 ? !layoutReady : !frameSettled}
         transport={{
           approving: signing,
-          approveVisibility,
+          approveVisibility: coverOffered ? approveVisibility : undefined,
           passkeyPending: exactByteGate.action === 'wait',
           host: messageHost,
           error: error || layoutError || offerFailure,

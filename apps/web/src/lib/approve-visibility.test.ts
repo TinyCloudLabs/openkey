@@ -6,6 +6,7 @@ import {
   COVER_VISIBLE_MS,
   coverNotHonoured,
   createApproveVisibility,
+  offersCover,
   reviewSnapshot,
   sameReview,
   type VisibilityEntryLike,
@@ -251,5 +252,15 @@ describe('whether a refetched offer is for the request that was shown', () => {
     expect(sameReview(reviewSnapshot(null, '', null), reviewSnapshot('', '', null))).toBe(false);
     expect(sameReview(shown, null)).toBe(false);
     expect(sameReview(null, null)).toBe(false);
+  });
+});
+
+describe('which offers the tracker is handed for', () => {
+  test('only an offer that asks for no passkey because of the flow cover is a cover', () => {
+    expect(offersCover({ required: false, flowCover: true })).toBe(true);
+    expect(offersCover({ required: false })).toBe(false);
+    expect(offersCover({ required: true, flowCover: true } as unknown as ApprovalPasskeyNeed)).toBe(false);
+    expect(offersCover(null)).toBe(false);
+    expect(offersCover(undefined)).toBe(false);
   });
 });

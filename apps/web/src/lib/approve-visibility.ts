@@ -5,6 +5,8 @@
 // cover is not honoured the page names no flow, fetches the offer again and asks for the approval passkey on that tap
 // as it does without a cover. A page that is not framed has nothing to overlay it and is not gated. A sample comes at
 // most every `SAMPLE_DELAY_MS`, so an element placed over the button between two samples is not seen until the next one.
+// The page hands the tracker to the approval screen only while the offer is a flow cover: an offer that is not one is
+// never observed, because an observer v2 on a button in a cross-origin frame can keep a plain click from reaching it.
 
 import type { ApprovalPasskeyNeed } from './approval-passkey';
 
@@ -106,13 +108,18 @@ export function createApproveVisibility(options: {
   };
 }
 
+/** True when the offer asks for no passkey only because this flow's sign-in covers it. */
+export function offersCover(need: ApprovalPasskeyNeed | null | undefined): boolean {
+  return need !== null && need !== undefined && !need.required && need.flowCover === true;
+}
+
 /**
- * True when the offer asks for no passkey only because this flow's sign-in covers it, and Approve has not been in plain
- * view long enough for that cover to count. The page then asks for the passkey on that tap: it fetches the offer again
- * without the flow id and goes on to the passkey prompt.
+ * True when the offer is a flow cover and Approve has not been in plain view long enough for that cover to count. The
+ * page then asks for the passkey on that tap: it fetches the offer again without the flow id and goes on to the
+ * passkey prompt.
  */
 export function coverNotHonoured(need: ApprovalPasskeyNeed | null, visibility: ApproveVisibility): boolean {
-  return need !== null && !need.required && need.flowCover === true && !visibility.honoursCover();
+  return offersCover(need) && !visibility.honoursCover();
 }
 
 /**

@@ -4,9 +4,10 @@ import { HOST } from './e2e-port';
 import { makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
 
 // A framed sign iframe honours the web flow's one-passkey cover only while the browser's intersection observer v2
-// reports Approve in plain view. Both tests run the real Chromium observer against the real page: the harness parent
+// reports Approve in plain view. The tests run the real Chromium observer against the real page: the harness parent
 // frames /widget/embed/sign, the mocked preview waives the passkey with `flowCover: true` whenever the request names
 // the flow, and a real WebAuthn ceremony (virtual authenticator) answers the offer the API makes without it.
+// An offer that is not a flow cover is never observed.
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const recapSiwe = siweWithResources([makeRecapResource({
   [`tinycloud:pkh:eip155:1:${address}:default/capabilities`]: { 'tinycloud.capabilities/read': [{}] },
@@ -44,7 +45,7 @@ async function virtualAuthenticator(page: Page) {
 }
 
 /** The preview waives the passkey when the request names the flow and offers a challenge when it does not. */
-async function mockApi(page: Page) {
+async function mockApi(page: Page, options: { plain?: boolean } = {}) {
   const previews: Seen[] = [];
   const signs: Seen[] = [];
   await page.context().addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
@@ -64,7 +65,7 @@ async function mockApi(page: Page) {
         authorizationContextToken: 'context', previewApprovalToken: `preview-${previews.length}`,
         previewApprovalExpiresAt: new Date(Date.now() + 60_000).toISOString(),
         signedMessage: recapSiwe, selectedActionKeys: body.selectedActionIds,
-        passkey: flow ? { required: false, flowCover: true } : offer(`token-${previews.length}`),
+        passkey: options.plain ? { required: false } : flow ? { required: false, flowCover: true } : offer(`token-${previews.length}`),
         permissions: body.selectedActionIds.map((id) => {
           const [service, space, path, ability] = id.split('\0');
           return { service, space, path, actions: [ability] };
@@ -89,6 +90,16 @@ async function openFramedSign(page: Page) {
     const credentials = navigator.credentials;
     const get = credentials.get.bind(credentials);
     credentials.get = (options) => { w.__gets += 1; return get(options); };
+  });
+  // Counts the elements of the Approve button that any observer is asked to watch, in every frame.
+  await page.context().addInitScript(() => {
+    const w = window as unknown as { __watched: number };
+    w.__watched = 0;
+    const observe = IntersectionObserver.prototype.observe;
+    IntersectionObserver.prototype.observe = function (target: Element) {
+      if (target.matches('button.approve')) w.__watched += 1;
+      return observe.call(this, target);
+    };
   });
   await page.goto('/__parity_harness');
   await page.evaluate(() => {
@@ -124,6 +135,8 @@ async function openFramedSign(page: Page) {
   // The iframe approves only once the host has applied the frame's height.
   await expect(approve).toBeEnabled({ timeout: 30_000 });
   const frame = () => page.frames().find((f) => f.url().includes('/widget/embed/sign'))!;
+  // What the sign page's own observer has watched so far, before the probe below adds its own.
+  const watchedByPage = await frame().evaluate(() => (window as unknown as { __watched: number }).__watched);
   // Watches Approve with the frame's own observer v2, the same report the page's gate reads.
   await frame().evaluate(() => {
     const w = window as unknown as { __probe: Probe };
@@ -137,7 +150,7 @@ async function openFramedSign(page: Page) {
   });
   const probe = () => frame().evaluate(() => (window as unknown as { __probe: Probe }).__probe);
   const ceremonies = () => frame().evaluate(() => (window as unknown as { __gets: number }).__gets);
-  return { approve, probe, ceremonies };
+  return { approve, probe, ceremonies, watchedByPage };
 }
 
 for (const covered of [true, false]) {
@@ -146,6 +159,7 @@ for (const covered of [true, false]) {
     : 'Approve in plain view for over 500 ms: the tap uses the cover, runs no passkey ceremony and names the flow', async ({ page }) => {
     const calls = await mockApi(page);
     const h = await openFramedSign(page);
+    expect(h.watchedByPage).toBeGreaterThan(0);
     expect(calls.previews).toHaveLength(1);
     expect(calls.previews[0]!.flow).toMatch(FLOW_SHAPE);
 
@@ -191,3 +205,14 @@ for (const covered of [true, false]) {
     }
   });
 }
+
+test('an offer that is not a flow cover leaves Approve unobserved, and the tap signs with no ceremony', async ({ page }) => {
+  const calls = await mockApi(page, { plain: true });
+  const h = await openFramedSign(page);
+  expect(h.watchedByPage).toBe(0);
+  await h.approve.click();
+  await expect.poll(() => calls.signs.length).toBe(1);
+  expect(calls.previews).toHaveLength(1);
+  expect(await h.ceremonies()).toBe(0);
+  expect(calls.signs[0]!.body).not.toHaveProperty('passkeyAssertion');
+});

@@ -895,7 +895,9 @@ sign-in made **for this sign request** counts as that request's approval passkey
   while Approve is in plain view: it watches the button with an intersection observer v2 (`trackVisibility`,
   `delay: 100`, threshold 1.0, `lib/approve-visibility.ts`) and honours the cover after the observer has reported
   the button fully in view, not covered and not faded for 500 ms without a break, and only while the latest
-  report still says so. The 500 ms restarts whenever Approve becomes actionable again.
+  report still says so. The 500 ms restarts whenever Approve becomes actionable again. The button is watched only
+  while the offer on screen is a `flowCover` offer; an offer that is not one is never observed and its tap goes
+  straight through.
 - When a tap arrives on a `flowCover` offer without that, the page asks for the passkey on that tap: it stops naming
   the flow, fetches the offer again without the flow header and runs the passkey prompt for the same tap (in the
   iframe once the host has applied the review's layout). The tap goes on only when the fresh offer is for exactly
