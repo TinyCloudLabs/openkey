@@ -41,7 +41,6 @@
   // render their own copy of `error`: it is shown once, above the buttons.
 
   import { tick, type Snippet } from "svelte";
-  import type { ApproveGuard } from "$lib/approve-guard";
   import type {
     CapabilityAction,
     CapabilityGrant,
@@ -159,8 +158,6 @@
      * narrowed (exact bytes): approve or cancel it whole. `onDecide` gets the action ids the owner allowed.
      */
     elevated?: { splittable: boolean; onDecide: (allowed: string[]) => void } | null;
-    /** Ignores a click on Approve that arrives soon after the button became actionable; set by the web sign pages. */
-    approveGuard?: ApproveGuard | null;
     onApprove: () => void;
     onCancel: () => void;
     onRetry?: () => void;
@@ -197,7 +194,6 @@
     onceExpiryDefault = false,
     renewal = null,
     elevated = null,
-    approveGuard = null,
     onApprove,
     onCancel,
     onRetry,
@@ -687,17 +683,6 @@
   const approveButtonDisabled = $derived(
     previewPending || onceDefaultPending || layoutBlocked || refused || approveDisabled || Boolean(approveBlockedReason) || approveBlockedByFailure || nodeChecking || declining,
   );
-
-  // Tracked after the page shows the enabled button, so the window never starts before the owner can see it.
-  $effect(() => {
-    approveGuard?.track(!approveButtonDisabled);
-  });
-
-  // The owner's own activation of the button, by pointer or keyboard. A click inside the guard's window is ignored.
-  function handleApproveButtonClick() {
-    if (approveGuard && !approveGuard.ready()) return;
-    handleApproveClick();
-  }
   const approveLabel = $derived(
     isMalformedRecap
       ? "Cannot approve"
@@ -1293,7 +1278,7 @@
     <button
       type="button"
       class="approve"
-      onclick={handleApproveButtonClick}
+      onclick={handleApproveClick}
       disabled={approveButtonDisabled}
       aria-disabled={approveButtonDisabled}
       aria-describedby={nodeChecking ? "host-node-status" : undefined}

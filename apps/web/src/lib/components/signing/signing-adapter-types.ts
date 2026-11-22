@@ -1,5 +1,3 @@
-import type { ApproveGuard } from '$lib/approve-guard';
-
 // Substantive-adapter transport interfaces.
 //
 // The three OpenKey signing surface adapters (CLI, popup, iframe) each own
@@ -112,8 +110,6 @@ export interface CliSigningTransport {
 
 /** Transport injected by the widget popup and iframe routes. */
 export interface WidgetSigningTransport {
-  /** Ignores a click on Approve that arrives soon after the button became actionable. */
-  approveGuard?: ApproveGuard;
   /** Set once the server has refused this request for good: Approve is off and this is shown in its place. */
   approveBlockedReason?: string | null;
   /**
