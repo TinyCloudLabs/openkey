@@ -16,6 +16,7 @@
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import { newWebSignFlowId, releaseWebSignFlow, webSignFlowHeaders } from '$lib/web-sign-flow';
+  import { coverNotHonoured, createApproveVisibility } from '$lib/approve-visibility';
   import Button from '$lib/components/ui/button.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
@@ -187,6 +188,17 @@
   const origin = $page.url.searchParams.get('origin') || '*';
   // This page's own flow id for one sign request, drawn here and never taken from the app's request.
   const webFlowId = newWebSignFlowId();
+  // The flow id is named on offers and approvals only while the cover can be honoured here: not in a frame without
+  // observer v2, and not after a tap was held back because Approve had not been in plain view.
+  const approveVisibility = createApproveVisibility();
+  let coverWithdrawn = $state(false);
+  const coverFlowId = $derived(approveVisibility.coverUsable && !coverWithdrawn ? webFlowId : undefined);
+  const coverHeaders = () => (coverFlowId ? webSignFlowHeaders(coverFlowId) : {});
+  function withdrawCover(previewed: boolean) {
+    coverWithdrawn = true;
+    if (previewed) invalidatePreviewForSelectionEdit();
+    else exactBytePasskey = null;
+  }
   const requester = originAuthority(origin);
   const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const v2 = $page.url.searchParams.get('protocolVersion') === '2';
@@ -909,7 +921,7 @@
     const [offerKeyId, offerMessage, offerOrigin] = JSON.parse(input) as [string, string, string | null];
     let current = true;
     exactBytePasskeyFetch = 'pending';
-    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined, webFlowId).then(
+    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined, coverFlowId).then(
       (need) => {
         if (!current) return;
         exactBytePasskey = { input, need };
@@ -1084,7 +1096,7 @@
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
         withSessionCredential({
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...webSignFlowHeaders(webFlowId) },
+          headers: { 'Content-Type': 'application/json', ...coverHeaders() },
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
@@ -1170,6 +1182,12 @@
         return;
       }
     }
+    // A covered offer is used only while Approve has been in plain view; otherwise the page asks for the passkey
+    // as it does without a cover, and this tap sends nothing.
+    if (coverNotHonoured(passkeyNeed, approveVisibility)) {
+      withdrawCover(approved !== null);
+      return;
+    }
     signing = true;
     error = '';
     // TC-3442: the passkey prompt comes first, straight from the tap. A dismissed prompt reached nothing: the same
@@ -1207,7 +1225,7 @@
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign`,
           withSessionCredential({
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...webSignFlowHeaders(webFlowId) },
+            headers: { 'Content-Type': 'application/json', ...coverHeaders() },
             body: JSON.stringify({
               authorizationContextToken,
               // Sol CRITICAL-1: /authorize-sign requires the preview
@@ -1246,7 +1264,7 @@
       // Exact-byte signing cannot narrow the request: show every parsed
       // action and report the full set rather than a UI-only selection.
       const result = await api.signMessage(
-        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion, webFlowId,
+        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion, coverFlowId,
       );
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
@@ -1531,6 +1549,7 @@
         layoutBlocked={v2 ? !layoutReady : !frameSettled}
         transport={{
           approving: signing,
+          approveVisibility,
           passkeyPending: exactByteGate.action === 'wait',
           host: messageHost,
           error: error || layoutError || offerFailure,

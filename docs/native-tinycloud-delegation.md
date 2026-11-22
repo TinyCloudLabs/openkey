@@ -890,6 +890,18 @@ sign-in made **for this sign request** counts as that request's approval passkey
 - The digest, token and selection checks of the approval are unchanged. Account-level actions (lowering the
   approval setting, TinyCloud manage-key mode, enabling an app, account deletion, passkey enrolment and removal,
   key export or recovery) never read the cover.
+- An offer that the cover waives carries `flowCover: true` (never on a native offer, nor on an offer the setting
+  waives). A sign page inside a frame (its window's top is another window, or cannot be read) uses that cover only
+  while Approve is in plain view: it watches the button with an intersection observer v2 (`trackVisibility`,
+  `delay: 100`, threshold 1.0, `lib/approve-visibility.ts`) and honours the cover after the observer has reported
+  the button fully in view, not covered and not faded for 500 ms without a break, and only while the latest
+  report still says so. The window restarts whenever Approve becomes actionable again.
+- When a tap arrives on a `flowCover` offer without that, it sends nothing. The page stops naming the flow, fetches
+  the offer again without the flow header, and the next tap asks for the passkey as it does without a cover.
+  A browser without observer v2 (Safari, Firefox) never names the flow in a frame, so it asks for the passkey at
+  once. A page that is not framed, such as the pop-up window, is not gated.
+- The observer samples at most every 100 ms, so an element placed over Approve between two samples is not seen
+  until the next one; that latency is the window. Observer v2 is available in Chrome only.
 - The web server answers `/auth/login` with `Content-Security-Policy: frame-ancestors 'none'`
   (`apps/web/src/hooks.server.ts`, `lib/frame-policy.ts`), so no page can frame the login page. `/widget/sign`,
   `/widget/embed/sign` and every other page keep their headers.

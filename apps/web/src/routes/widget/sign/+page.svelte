@@ -18,6 +18,7 @@
   import {
     carryPopupSignFlow, newWebSignFlowId, releaseWebSignFlow, takePopupSignFlow, webSignFlowHeaders,
   } from '$lib/web-sign-flow';
+  import { coverNotHonoured, createApproveVisibility } from '$lib/approve-visibility';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
@@ -196,6 +197,17 @@
   // This page's own flow id for one sign request, drawn here and never taken from the app's request. The pop-up
   // returns from the login page as a new page load, so the id the user left with is the one carried in this tab.
   const webFlowId = takePopupSignFlow() ?? newWebSignFlowId();
+  // The flow id is named on offers and approvals only while the cover can be honoured here: not in a frame without
+  // observer v2, and not after a tap was held back because Approve had not been in plain view.
+  const approveVisibility = createApproveVisibility();
+  let coverWithdrawn = $state(false);
+  const coverFlowId = $derived(approveVisibility.coverUsable && !coverWithdrawn ? webFlowId : undefined);
+  const coverHeaders = () => (coverFlowId ? webSignFlowHeaders(coverFlowId) : {});
+  function withdrawCover(previewed: boolean) {
+    coverWithdrawn = true;
+    if (previewed) invalidatePreviewForSelectionEdit();
+    else exactBytePasskey = null;
+  }
   const requester = originAuthority(origin);
   const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
@@ -796,7 +808,7 @@
     const [offerKeyId, offerMessage, offerOrigin] = JSON.parse(input) as [string, string, string | null];
     let current = true;
     exactBytePasskeyFetch = 'pending';
-    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined, webFlowId).then(
+    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined, coverFlowId).then(
       (need) => {
         if (!current) return;
         exactBytePasskey = { input, need };
@@ -971,7 +983,7 @@
         {
           method: 'POST',
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json', ...webSignFlowHeaders(webFlowId) },
+          headers: { 'Content-Type': 'application/json', ...coverHeaders() },
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
@@ -1056,6 +1068,12 @@
         return;
       }
     }
+    // A covered offer is used only while Approve has been in plain view; otherwise the page asks for the passkey
+    // as it does without a cover, and this tap sends nothing.
+    if (coverNotHonoured(passkeyNeed, approveVisibility)) {
+      withdrawCover(approved !== null);
+      return;
+    }
     signing = true;
     error = '';
     // TC-3442: the passkey prompt comes first, straight from the tap. A dismissed prompt reached nothing: the same
@@ -1094,7 +1112,7 @@
           {
             method: 'POST',
             credentials: 'include',
-            headers: { 'Content-Type': 'application/json', ...webSignFlowHeaders(webFlowId) },
+            headers: { 'Content-Type': 'application/json', ...coverHeaders() },
             body: JSON.stringify({
               authorizationContextToken,
               // Sol CRITICAL-1: the sealed preview-approval token is
@@ -1139,7 +1157,7 @@
       // capabilities in the response are the caller's original set (no
       // narrowing happened server-side).
       const result = await api.signMessage(
-        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion, webFlowId,
+        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion, coverFlowId,
       );
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
@@ -1441,6 +1459,7 @@
       initialSelection={reviewSelection}
       transport={{
         approving: signing,
+        approveVisibility,
         passkeyPending: exactByteGate.action === 'wait',
         host: messageHost,
         error: error || offerFailure,
