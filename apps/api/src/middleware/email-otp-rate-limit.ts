@@ -1,4 +1,4 @@
-import type { MiddlewareHandler } from 'hono';
+import type { Env, Hono, MiddlewareHandler } from 'hono';
 
 // Limits for Better Auth's email-code endpoints, keyed on the target email rather than the client address. The
 // address Better Auth would use is the first `x-forwarded-for` entry, which a caller can choose freely, and every
@@ -50,6 +50,22 @@ function tooManyRequests(retryAfterSeconds: number): Response {
   });
 }
 
+/**
+ * Better Auth's own answer to a body that is not JSON. Its router admits any content type whose base merely
+ * contains `application/json` and may then parse the body as a form, which this limiter would not read; only an
+ * exact `application/json` base passes here.
+ */
+function unsupportedMediaType(contentType: string): Response {
+  const message = contentType
+    ? `Content-Type "${contentType}" is not allowed. Allowed types: application/json`
+    : 'Content-Type is required. Allowed types: application/json';
+  return new Response(JSON.stringify({ message, code: 'UNSUPPORTED_MEDIA_TYPE' }), {
+    status: 415,
+    statusText: '415',
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 /** Better Auth lowercases the email; trimming as well keeps whitespace variants of one address on one key. */
 function normalizedEmail(body: unknown): string | null {
   if (!body || typeof body !== 'object' || Array.isArray(body) || !('email' in body)) return null;
@@ -86,6 +102,9 @@ export function createEmailOtpRateLimit(options: {
     const limits = EMAIL_OTP_LIMITS[path];
     if (!limits) return next();
 
+    const contentType = c.req.header('content-type') ?? '';
+    if (contentType.split(';')[0]!.trim().toLowerCase() !== 'application/json') return unsupportedMediaType(contentType);
+
     // Read from a clone so Better Auth receives the untouched body. A body Better Auth would refuse counts only
     // against the shared ceiling, and Better Auth's validation answers it.
     const email = normalizedEmail(await c.req.raw.clone().json().catch(() => null));
@@ -111,4 +130,13 @@ export function createEmailOtpRateLimit(options: {
     }
     return next();
   };
+}
+
+/**
+ * Mounts the limiter on Better Auth's `/api/auth` routes under the same condition as Better Auth's own limiter
+ * (NODE_ENV=production), so local and test runs are unlimited. Call it before the auth handler is registered.
+ */
+export function mountEmailOtpRateLimit<E extends Env>(app: Hono<E>, nodeEnv: string | undefined, now?: () => number): void {
+  if (nodeEnv !== 'production') return;
+  app.use('/api/auth/*', createEmailOtpRateLimit({ basePath: '/api/auth', now }));
 }
