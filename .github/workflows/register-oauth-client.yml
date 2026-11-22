@@ -29,7 +29,7 @@ on:
           - native
           - spa
       uri:
-        description: 'Application website URL (optional); on update, an HTTPS URL replaces it, empty leaves it unchanged and none clears'
+        description: 'Application website URL (optional); on update, an HTTPS URL replaces it, empty keeps it and none clears'
         required: false
       client_id:
         description: 'Existing enabled client ID: update its branding and website, and with tinycloud_native_delegation replace its existing delegation ceiling (optional)'
