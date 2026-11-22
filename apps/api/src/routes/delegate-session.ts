@@ -14,7 +14,7 @@ import {
 } from '@tinycloud/node-sdk-wasm';
 import { CAPABILITIES, ENCRYPTION, KV, SQL } from '@tinycloud/bootstrap';
 import { getAddress } from 'viem';
-import { parseEncryptionResource } from '@openkey/capability-review';
+import { exactSecretKeyPath, parseEncryptionResource } from '@openkey/capability-review';
 import {
   DelegateRequestError,
   shortServiceName,
@@ -442,13 +442,20 @@ const ENCRYPTION_NETWORK_NAME = /^[a-z0-9][a-z0-9-]*$/;
 // The one key folder a raw entry may name besides a bare network: the `share/` folder of the signer's own
 // network (the CLI's `builtin:share-publishing` manifest, TC-2349). Exactly this suffix, nothing after it.
 const SHARE_KEY_FOLDER_SUFFIX = '/share/';
+// One secret's own key (TC-3800): `default/secrets/<name>` or `default/secrets/scoped/<scope>/<name>`.
+const SECRET_KEY_TAIL_PREFIX = 'default/secrets/';
+const SECRET_KEY_SEGMENT = '[a-z0-9][a-z0-9._-]{0,63}';
+const ENCRYPTION_KEY_CREATE = 'tinycloud.encryption/key.create';
 
 /**
  * A raw encryption entry carries no space (`space` absent or `encryption`),
  * grants only `tinycloud.encryption/decrypt`, and names a network the signer
  * owns, that network's `share/` folder, or one exact `default/share/<id>` key.
- * Bare networks retain their case-insensitive owner check. Named resources
- * require canonical owner bytes and a network name of at most 64 characters.
+ * One secret's exact key (`default/secrets/<name>`, `default/secrets/scoped/<scope>/<name>`)
+ * may also be granted `tinycloud.encryption/key.create`; its path segments are
+ * lowercase and never normalised. Bare networks retain their case-insensitive
+ * owner check. Named resources require canonical owner bytes and a network
+ * name of at most 64 characters.
  */
 function assertRawEncryptionPermission(
   entry: DelegationPermissionEntry,
@@ -474,8 +481,9 @@ function assertRawEncryptionPermission(
       [{ path: `permissions[${index}].actions`, message: 'Expected the decrypt action', expected: ENCRYPTION.DECRYPT }],
     );
   }
+  const secretKeyPath = exactSecretKeyPath(entry.path);
   entry.actions.forEach((action, actionIndex) => {
-    if (action !== ENCRYPTION.DECRYPT) {
+    if (action !== ENCRYPTION.DECRYPT && !(secretKeyPath !== null && action === ENCRYPTION_KEY_CREATE)) {
       throw new DelegateRequestError(
         'invalid_permissions',
         `permissions[${index}].actions[${actionIndex}] is not available on a raw encryption network; only ${ENCRYPTION.DECRYPT} is`,
@@ -507,6 +515,23 @@ function assertRawEncryptionPermission(
     );
   }
   const tail = network[3]!;
+  if (tail.startsWith(SECRET_KEY_TAIL_PREFIX)) {
+    if (secretKeyPath === null) {
+      throw new DelegateRequestError(
+        'invalid_permissions',
+        `permissions[${index}].path names an invalid secret key; it must be ${SECRET_KEY_TAIL_PREFIX}<name> or ${SECRET_KEY_TAIL_PREFIX}scoped/<scope>/<name>, each part matching ${SECRET_KEY_SEGMENT}`,
+        [{ path: `permissions[${index}].path`, message: `Secret key path parts must match ${SECRET_KEY_SEGMENT}`, value: entry.path }],
+      );
+    }
+    if (network[2] !== getAddress(signer.address)) {
+      throw new DelegateRequestError(
+        'invalid_permissions',
+        `permissions[${index}].path must use the canonical owner DID for a named encryption resource`,
+        [{ path: `permissions[${index}].path`, message: 'Expected the canonical signing account DID', value: entry.path }],
+      );
+    }
+    return;
+  }
   const isShareFolder = tail.endsWith(SHARE_KEY_FOLDER_SUFFIX);
   const networkName = isShareFolder ? tail.slice(0, -SHARE_KEY_FOLDER_SUFFIX.length) : tail;
   const key = !isShareFolder && tail.includes('/') ? parseEncryptionResource(entry.path) : null;

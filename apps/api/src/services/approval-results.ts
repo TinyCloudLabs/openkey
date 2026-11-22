@@ -8,6 +8,7 @@ import { verifySessionProofClaims } from './native-delegation/session-proof';
 import { allocateDelegationCode, delegationClaimHash, type ApprovalCode, type ApprovalCodeDelivery, type ApprovalCodeStore } from '../routes/delegation-codes';
 import { logApprovalCodeAllocationFailure, logApprovalCodeCleanupFailure } from '../log';
 import type { ApprovalResultRenewal, RenewalStage } from './renewal-lease';
+import { approvalLifetimeCapSeconds } from '@openkey/capability-review';
 
 export interface ApprovalRequestRecord {
   id: string;
@@ -134,8 +135,10 @@ export class ApprovalResultService {
       input.host !== request.nodeOrigin || !sameJson(input.permissions, request.permissions)) {
       throw new ApprovalResultError('request_binding', 'Delegation binding does not match the immutable approval request', 400);
     }
-    // The requester signed the longest lifetime it will accept; the owner may pick a shorter one.
-    if (input.expiryMs !== undefined && input.expiryMs > request.grantLifetimeSeconds * 1000) {
+    // The requester signed the longest lifetime it will accept; the owner may pick a shorter one. A request that
+    // decrypts secrets lasts 7 days at most, whatever it signed (TC-3800).
+    const lifetimeSeconds = approvalLifetimeCapSeconds(request.permissions, request.grantLifetimeSeconds);
+    if (input.expiryMs !== undefined && input.expiryMs > lifetimeSeconds * 1000) {
       throw new ApprovalResultError('request_binding', 'Grant lifetime exceeds the immutable approval request', 400);
     }
     if (input.signedSiwe !== undefined) {
@@ -143,7 +146,7 @@ export class ApprovalResultService {
       try { siwe = new SiweMessage(input.signedSiwe); } catch { throw new ApprovalResultError('invalid_delegation', 'Approval requires a canonical SIWE', 400); }
       const expiry = Date.parse(siwe.expirationTime ?? '');
       if (siwe.prepareMessage() !== input.signedSiwe || siwe.uri !== strictSessionDid(request.targetPublicJwk) || !Number.isFinite(expiry) || expiry <= now.getTime() ||
-        expiry > now.getTime() + request.grantLifetimeSeconds * 1000 + 5000) {
+        expiry > now.getTime() + lifetimeSeconds * 1000 + 5000) {
         throw new ApprovalResultError('request_binding', 'Signed target or expiry does not match the approval request', 400);
       }
     }

@@ -62,6 +62,7 @@
   } from '$lib/delegate-space-setup';
   import { ownFolderOnlyLine } from '$lib/delegate-own-folder';
   import {
+    approvalLifetimeCapSeconds,
     parseCapabilityReview,
     defaultSelection,
     type CapabilityReviewModel,
@@ -735,8 +736,10 @@
       requestedPermissions = request.permissions;
       approvalIssuer = typeof request.issuer === 'string' ? request.issuer : '';
       requestReason = normalizeReason(request.reason);
-      expiryMaxMs = request.grantLifetimeSeconds * 1000;
-      const startSeconds = approvalRequestStartSeconds(request.grantLifetimeSeconds, request.suggestedLifetimeSeconds);
+      // A request that decrypts secrets lasts 7 days at most, whatever it signed (TC-3800); the server refuses more.
+      const maxSeconds = approvalLifetimeCapSeconds(request.permissions, request.grantLifetimeSeconds);
+      expiryMaxMs = maxSeconds * 1000;
+      const startSeconds = approvalRequestStartSeconds(maxSeconds, request.suggestedLifetimeSeconds);
       approvalRequestStartMs = Math.max(MIN_EXPIRY_MS, startSeconds * 1000);
       expiryParam = `${startSeconds}s`;
       // The box only shows where this OpenKey has leases on (`renewalAvailable`); otherwise the plain line, and finite.
@@ -2177,6 +2180,9 @@
                     startMs: approvalRequestStartMs,
                     onceNote: APPROVAL_EXPIRY.onceStart,
                     limitNote: (ms) => fill(APPROVAL_EXPIRY.shortenLimit, { duration: formatDuration(ms) }),
+                    lengthNote: (startMs, maxMs) => startMs < maxMs
+                      ? fill(APPROVAL_EXPIRY.lengthen, { start: formatDuration(startMs), max: formatDuration(maxMs) })
+                      : fill(APPROVAL_EXPIRY.lengthFixed, { max: formatDuration(maxMs) }),
                   },
                   onChange: changeApprovalExpiry,
                 },

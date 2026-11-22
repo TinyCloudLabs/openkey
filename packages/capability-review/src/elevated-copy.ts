@@ -3,6 +3,7 @@
 // `copy.ts` to one phone line. UI components still take every word of the screen from here.
 
 import type { ElevatedKind } from "./elevated.js";
+import type { AllSecretsReach } from "./secret-keys.js";
 
 // The extra warning screen for permissions an app may ask for only with a per-permission decision: decrypt, key
 // creation, or blocking and unblocking keys on the encryption network, or on keys outside the app's own. `site` is the
@@ -39,15 +40,19 @@ export function elevatedWholeNote(site: string | null): string {
   return `${elevatedSubject(site)} sent this as one request, so you can approve all of it or none of it.`;
 }
 
+// A heading asked as a question (the all-secrets card) reads as a statement after a label.
+const QUESTION_MARK = /\?$/;
+
 /** One row on the review after a rejection. */
 export function elevatedNotApprovedRow(heading: string): string {
-  return `Not approved: ${heading}`;
+  return `Not approved: ${heading.replace(QUESTION_MARK, "")}`;
 }
 
 /** Polite announcements; never an alert. */
 export function elevatedDecidedAnnouncement(heading: string, allowed: boolean, left: number): string {
   const verb = allowed ? "Allowed" : "Rejected";
-  return left === 0 ? `${verb}: ${heading}. All decided.` : `${verb}: ${heading}. ${left} left to decide.`;
+  const what = heading.replace(QUESTION_MARK, "");
+  return left === 0 ? `${verb}: ${what}. All decided.` : `${verb}: ${what}. ${left} left to decide.`;
 }
 
 export function elevatedRejectedCountAnnouncement(count: number): string {
@@ -98,6 +103,37 @@ export function elevatedCard(
   return {
     heading: `Unlock encrypted items in ${where}`,
     body: `${who} could unlock the encrypted items in ${where}, ${LAST_FOR_AS_LONG}.`,
+  };
+}
+
+/** Said on the all-secrets card when no site is verified. */
+export const ALL_SECRETS_UNVERIFIED_CUE = "OpenKey can't confirm which site asked.";
+
+/**
+ * The all-secrets card (TC-3800, Monica's W3a-W3c): a request that can open every secret, by decrypt on the
+ * `secrets/` prefix or on a whole encryption network. `site` is the verified site; with none the card names "this
+ * app" and says so in `cue`. The "older encrypted data" sentence is said only when a whole-network decrypt is in the
+ * same request: the `secrets/` prefix alone does not open data encrypted to the account key.
+ */
+export function allSecretsCard(
+  reach: AllSecretsReach,
+  site: string | null,
+): { heading: string; body: string; cue: string | null } {
+  const verified = site !== null && site.length > 0;
+  const who = verified ? site : "this app";
+  const cue = verified ? null : ALL_SECRETS_UNVERIFIED_CUE;
+  if (reach.kind === "whole-account") {
+    return {
+      heading: `Let ${who} open all your encrypted data?`,
+      body: "That covers every secret and everything else you've encrypted in TinyCloud. Allow this only for an app you trust.",
+      cue,
+    };
+  }
+  const trust = "Allow this only for your own tools on a device you trust.";
+  return {
+    heading: reach.kind === "read-and-add" ? `Let ${who} read and add all your secrets?` : `Let ${who} read all your secrets?`,
+    body: reach.alsoWholeAccount ? `It can also open older encrypted data on your account. ${trust}` : trust,
+    cue,
   };
 }
 
