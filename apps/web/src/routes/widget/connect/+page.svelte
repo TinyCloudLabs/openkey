@@ -9,6 +9,7 @@
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
   import { connectAuthResponse } from '$lib/connect-widget';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
+  import { termsGate } from '$lib/terms-gate';
 
   const session = authClient.useSession();
 
@@ -46,9 +47,15 @@
     }
   });
 
-  // Reactively load keys when session becomes available
+  // Load keys once the account is known to have agreed to the Terms: a sign-in made on this page is read first, and
+  // the API refuses a not-yet-agreed account's key list. A fresh check (a refused call) loads them after the account
+  // agrees.
   $effect(() => {
-    if ($session.data && !keysLoaded) {
+    if (!$session.data || $termsGate.phase !== 'open') {
+      keysLoaded = false;
+      return;
+    }
+    if (!keysLoaded) {
       keysLoaded = true;
       loadKeys();
     }

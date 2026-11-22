@@ -279,26 +279,37 @@ function currentRequestResource(): unknown {
   return (endpointContext.getStore()?.body as { resource?: unknown } | undefined)?.resource;
 }
 function withMcpAccessTokenLifetime<T extends ReturnType<typeof oauthProvider>>(plugin: T): T {
-  const cappedLifetime = (seconds: number) => {
+  // An Apple reviewer's tokens end on the source deadline in whole seconds: exp = iat + lifetime <= floor(deadline).
+  // The provider samples an integral iat and reads `accessTokenExpiresIn` (or `idTokenExpiresIn`) in the same
+  // synchronous step, so the second this getter reads is iat's. It reads `refreshTokenExpiresIn` for that same iat only
+  // after `customTokenResponseFields` has awaited the native code exchange, when the clock may be seconds later. The
+  // access read keeps its second for the endpoint call and the refresh read subtracts that second. A second read
+  // after iat only shortens a lifetime, so exp never passes the deadline (the database adapter also caps every row).
+  const accessTokenSecond = new WeakMap<object, number>();
+  const cappedLifetime = (seconds: number, token: 'access' | 'id' | 'refresh') => {
     const reviewer = capturedReviewer();
     if (!reviewer) return seconds;
-    // Native provider tokens use an integral iat sampled before this getter.
-    // Avoid subtracting the fractional second twice while keeping exp <= the
-    // source deadline (the database adapter also caps every row).
-    const remaining = reviewer.store === 'apple'
-      ? Math.floor((reviewer.deadline ?? Date.now()) / 1000) - Math.floor(Date.now() / 1000)
-      : Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
+    let remaining: number;
+    if (reviewer.store === 'apple') {
+      const call = endpointContext.getStore();
+      let second = Math.floor(Date.now() / 1000);
+      if (call && token === 'access') accessTokenSecond.set(call, second);
+      if (call && token === 'refresh') second = accessTokenSecond.get(call) ?? second;
+      remaining = Math.floor((reviewer.deadline ?? Date.now()) / 1000) - second;
+    } else {
+      remaining = Math.floor(((reviewer.deadline ?? Date.now()) - Date.now()) / 1000);
+    }
     return Math.max(0, Math.min(REVIEWER_MAX_SECONDS, seconds, remaining));
   };
   Object.defineProperty(plugin.options, 'accessTokenExpiresIn', {
     enumerable: true,
-    get: () => cappedLifetime(accessTokenExpiresInFor(currentRequestResource())),
+    get: () => cappedLifetime(accessTokenExpiresInFor(currentRequestResource()), 'access'),
   });
   Object.defineProperty(plugin.options, 'idTokenExpiresIn', {
-    enumerable: true, get: () => cappedLifetime(3600),
+    enumerable: true, get: () => cappedLifetime(3600, 'id'),
   });
   Object.defineProperty(plugin.options, 'refreshTokenExpiresIn', {
-    enumerable: true, get: () => cappedLifetime(7 * 24 * 3600),
+    enumerable: true, get: () => cappedLifetime(7 * 24 * 3600, 'refresh'),
   });
   return plugin;
 }

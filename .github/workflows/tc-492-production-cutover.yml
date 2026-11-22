@@ -345,6 +345,12 @@ jobs:
     if: github.ref == 'refs/heads/main' && inputs.mode == 'cutover'
     runs-on: ubuntu-latest
     environment: production
+    # The workflow's read permissions, plus id-token and attestations for the provenance attestation.
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
     steps:
       - name: Validate destructive-cutover confirmation
         env:
@@ -490,6 +496,30 @@ jobs:
           push: true
           no-cache: true
           tags: skgbafa/openkey-api:${{ inputs.candidate_sha }}
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: docker.io/skgbafa/openkey-api
+          subject-digest: ${{ steps.build.outputs.digest }}
+
+      # TC-3837: pin and check the compose before the freeze, so a compose that names any image by tag
+      # or variable stops the cutover while nothing has changed. The candidate commit predates
+      # scripts/compose-image-digests.ts, so the check is inline.
+      - name: Pin the compose to the built digest and require every image pinned
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "build did not return an immutable digest" >&2; exit 1; }
+          sed -i "s|\${DOCKER_IMAGE}|skgbafa/openkey-api@${IMAGE_DIGEST}|g" docker-compose.prod.yml
+          if grep -nE '^[[:space:]]+build:' docker-compose.prod.yml; then
+            echo "::error::docker-compose.prod.yml builds an image in the CVM" >&2; exit 1
+          fi
+          if grep -nE '^[[:space:]]+image:' docker-compose.prod.yml \
+            | grep -vE ':[[:space:]]+image:[[:space:]]+[A-Za-z0-9][A-Za-z0-9._/:-]*@sha256:[0-9a-f]{64}[[:space:]]*$'; then
+            echo "::error::docker-compose.prod.yml has an image not pinned by @sha256 digest" >&2; exit 1
+          fi
 
       - name: Freeze writes, revalidate, and create final rollback backup
         env:
@@ -652,12 +682,14 @@ jobs:
           printf 'old-api-restarted\n' > tc492-phase.txt
 
       - name: Apply reviewed migrations and deploy immutable image
+        id: apply
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           ACCEPTED_DIGEST: ${{ inputs.accepted_candidate_digest }}
           ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail
           thaw_sql=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
@@ -680,8 +712,11 @@ jobs:
             --argjson candidates "$ACCEPTED_CANDIDATE_COUNT" \
             '.phase == "expanded" and .candidateDigestSha256 == $digest and .deterministicCandidateCount == $candidates and .existingCanonicalCount == $candidates and .unassignedCandidateCount == 0 and .selectionConflictCount == 0 and .predictedAddressChangeCount == 0 and .canonicalWithoutEligibleKeyCount == 0 and .tenantCustodyKeyCount == 0' \
             tc492-post.json >/dev/null
-          sed -i "s|\${DOCKER_IMAGE}|skgbafa/openkey-api@${IMAGE_DIGEST}|g" docker-compose.prod.yml
           phala deploy --api-token "$PHALA_CLOUD_API_KEY" --cvm-id openkey-api --compose docker-compose.prod.yml --no-public-logs --no-public-sysinfo --no-dev-os --image "$PHALA_OS_IMAGE" --wait
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/api-deploy-record"
+          jq -n --arg commit "$CANDIDATE_SHA" --arg image "skgbafa/openkey-api@${IMAGE_DIGEST}" '{commit: $commit, image: $image}' \
+            > "$RUNNER_TEMP/api-deploy-record/record.json"
           phala ps openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/containers-after.json
           EXPECTED_IMAGE="skgbafa/openkey-api@${IMAGE_DIGEST}" node <<'NODE'
           const fs = require('node:fs');
@@ -701,6 +736,17 @@ jobs:
           NODE
           rm -f /tmp/containers-after.json
           printf 'candidate-deployed\n' > tc492-phase.txt
+
+      # TC-3837: publish-api-compose.yml reads this record when this run completes and publishes the
+      # app-compose the CVM measured, as soon as the candidate reached the CVM.
+      - name: Record the deployed image for the compose publication
+        if: ${{ always() && steps.apply.outputs.deployed == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: api-deploy-record
+          path: ${{ runner.temp }}/api-deploy-record/record.json
+          if-no-files-found: error
+          retention-days: 90
 
       # Fail closed if the deploy left the CVM on a different OS image.
       - name: Verify production OS image after deploy

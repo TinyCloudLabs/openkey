@@ -19,6 +19,8 @@
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
   import { originAuthority } from '$lib/requester-display';
+  import { registryTypedDataSignRefusal } from '@openkey/capability-review';
+  import RegistryRecordRefusal from '$lib/components/signing/registry-record-refusal.svelte';
 
   type KeyCredential = { token: string | null; sessionId: string | null | undefined };
   let keyReadCredential: KeyCredential | null = null;
@@ -145,12 +147,26 @@
     return () => { active = false; };
   });
 
+  // Hardening: typed-data signing. The registry's node-location struct is refused unless the requester is TinyCloud One;
+  // the host is told once, and nothing is offered or sent to the API.
+  const registryRefusal = $derived(typedData ? registryTypedDataSignRefusal(typedData, origin) : null);
+  let registryRefusalReported = false;
+  $effect(() => {
+    if (!registryRefusal || registryRefusalReported) return;
+    registryRefusalReported = true;
+    sendResponse({
+      type: 'openkey:signTypedData:response',
+      success: false,
+      error: { code: 'UNKNOWN', message: 'REGISTRY_RECORD_SIGN_REFUSED' },
+    });
+  });
+
   // TC-3442: whether Sign needs the passkey, with the challenge for exactly this key and data. Fetched once the request
   // and its key are on screen; a passkey refusal spends the challenge, so the revision fetches a new one. Sign sends
   // nothing until the offer for the current request has landed: it waits while the fetch is in flight and fetches
   // again after a failure.
   const passkeyOfferInput = $derived(
-    key && key.keyType === 'MANAGED' && key.archivedAt == null && !archivedKey && typedData ? `${requestVersion}:${key.id}` : null,
+    key && key.keyType === 'MANAGED' && key.archivedAt == null && !archivedKey && typedData && !registryRefusal ? `${requestVersion}:${key.id}` : null,
   );
   let passkeyOffer = $state<{ input: string; need: ApprovalPasskeyNeed } | null>(null);
   let passkeyOfferRevision = $state(0);
@@ -168,7 +184,7 @@
     }
     let current = true;
     passkeyOfferFetch = 'pending';
-    api.signTypedDataPasskey(offerKey.id, data).then(
+    api.signTypedDataPasskey(offerKey.id, data, origin ?? undefined).then(
       (need) => {
         if (!current) return;
         passkeyOffer = { input, need };
@@ -220,7 +236,7 @@
   }
 
   async function signTypedData() {
-    if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing) return;
+    if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing || registryRefusal) return;
 
     const credential = keyOwnerCredential;
     if (!checkKeyCredential(credential)) return;
@@ -248,7 +264,7 @@
     }
 
     try {
-      const result = await api.signTypedData(key.id, typedData, passkeyAssertion);
+      const result = await api.signTypedData(key.id, typedData, passkeyAssertion, origin ?? undefined);
       if (version !== requestVersion) return;
       if (!checkKeyCredential(credential)) return;
       sendResponse({
@@ -319,7 +335,9 @@
 
   <!-- Card body -->
   <div class="bg-white border border-surface-200 rounded-2xl shadow-sm p-5">
-    {#if !signedIn}
+    {#if registryRefusal}
+      <RegistryRecordRefusal variant="embed" onclose={sendClose} />
+    {:else if !signedIn}
       <EmbeddedSignIn
         prompt="Sign in to review and sign this data"
         note={signInNote}
