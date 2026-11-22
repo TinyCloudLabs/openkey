@@ -197,7 +197,7 @@
   // This page's own flow id for one sign request, drawn here and never taken from the app's request. The pop-up
   // returns from the login page as a new page load, so the id the user left with is the one carried in this tab.
   const webFlowId = takePopupSignFlow() ?? newWebSignFlowId();
-  // In a frame, a click on Approve soon after it became actionable is ignored: a page over the frame cannot time one onto it.
+  // In a frame, a click on Approve soon after it became actionable is ignored.
   const approveGuard = approveGuardForFrame();
   const requester = originAuthority(origin);
   const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;

@@ -1,6 +1,5 @@
-// A click on Approve that arrives right after the control became actionable is ignored. A page that covers the embedded
-// sign frame with its own element can steer a click onto Approve the moment the review appears; a person reading the
-// request does not act within half a second. The window restarts every time Approve becomes actionable again.
+// A click on Approve that arrives right after the control became actionable is ignored. It makes a click land only
+// after Approve has been shown for half a second. The 500 ms restarts every time Approve becomes actionable again.
 
 /** How long Approve must have been actionable before a click counts. */
 export const APPROVE_SETTLE_MS = 500;

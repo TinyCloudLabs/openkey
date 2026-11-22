@@ -188,7 +188,7 @@
   const origin = $page.url.searchParams.get('origin') || '*';
   // This page's own flow id for one sign request, drawn here and never taken from the app's request.
   const webFlowId = newWebSignFlowId();
-  // In a frame, a click on Approve soon after it became actionable is ignored: a page over the frame cannot time one onto it.
+  // In a frame, a click on Approve soon after it became actionable is ignored.
   const approveGuard = approveGuardForFrame();
   const requester = originAuthority(origin);
   const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
