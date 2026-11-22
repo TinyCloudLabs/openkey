@@ -62,9 +62,12 @@ async function open(page: Page, request: Record<string, unknown>, message: strin
 }
 
 
-// Share's request as the post-deploy capture lists it: the share/ key folder, the recipient's files-for-you mailbox and
-// its capabilities read, and the sender history records.
-function shareRequest(owner: string) {
+// Share's request: its library sign-in signs a 30-day session (Share's SIGN_IN_SESSION_MS) over the share/ key folder,
+// the recipient's files-for-you mailbox with its capabilities read, and the sender history records. The signed length is
+// a parameter so the start is checked against what the request itself asks.
+const SIGNED_AT = Date.parse('2026-07-31T00:00:00.000Z');
+
+function shareRequest(owner: string, days: number) {
   const space = (name: string) => `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${address}:${name}`;
   const network = `urn:tinycloud:encryption:${owner}:default`;
   const att: Record<string, Record<string, unknown[]>> = {
@@ -73,21 +76,24 @@ function shareRequest(owner: string) {
     [`${space('files-for-you')}/kv/v1/`]: { 'tinycloud.kv/get': [{}], 'tinycloud.kv/list': [{}], 'tinycloud.kv/put': [{}] },
     [`${network}/share/`]: { 'tinycloud.encryption/key.create': [{}], 'tinycloud.encryption/decrypt': [{}] },
   };
-  return siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
+  const expirationTime = new Date(SIGNED_AT + days * 86_400_000).toISOString();
+  return siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN, expirationTime });
 }
 
 const ownerDid = `did:pkh:eip155:${FIXTURE_META.chainId}:${address}`;
 
-test('a share/ folder request starts at the length the app asked for, with no one-hour note', async ({ page }) => {
-  const { frame, previews } = await open(page, { expiryChangeable: true }, shareRequest(ownerDid));
-  await expect(frame.getByTestId('approval-expiry-line')).toContainText('7 days');
-  await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
-  await expect.poll(() => previews.length).toBe(1);
-  expect(previews[0]).not.toHaveProperty('expirationTime');
-});
+for (const days of [7, 30]) {
+  test(`a share/ folder request that signs ${days} days starts at ${days} days, with no one-hour note`, async ({ page }) => {
+    const { frame, previews } = await open(page, { expiryChangeable: true }, shareRequest(ownerDid, days));
+    await expect(frame.getByTestId('approval-expiry-line')).toContainText(`${days} days`);
+    await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+    await expect.poll(() => previews.length).toBe(1);
+    expect(previews[0]).not.toHaveProperty('expirationTime');
+  });
+}
 
 test('the owner is not held to the start: a longer pick and the hour itself both apply', async ({ page }) => {
-  const { frame, previews } = await open(page, { expiryChangeable: true }, shareRequest(ownerDid));
+  const { frame, previews } = await open(page, { expiryChangeable: true }, shareRequest(ownerDid, 30));
   await frame.getByText('Advanced details', { exact: true }).click();
   await frame.getByText('How long it lasts', { exact: true }).click();
   await frame.getByLabel('Or type a time').fill('2d');
@@ -101,7 +107,7 @@ test('the owner is not held to the start: a longer pick and the hour itself both
 
 test('the same folder under another owner keeps the one-hour start', async ({ page }) => {
   const other = `did:pkh:eip155:${FIXTURE_META.chainId}:0x2222222222222222222222222222222222222222`;
-  const { frame } = await open(page, { expiryChangeable: true }, shareRequest(other));
+  const { frame } = await open(page, { expiryChangeable: true }, shareRequest(other, 30));
   await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
-  await expect(frame.getByTestId('approval-expiry-once-note')).toContainText('asked for 7 days');
+  await expect(frame.getByTestId('approval-expiry-once-note')).toContainText('asked for 30 days');
 });
