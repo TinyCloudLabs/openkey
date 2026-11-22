@@ -16,6 +16,7 @@ import {
   RENEWAL_FAILED_MESSAGE,
   RenewalLeaseError,
   admitLease,
+  assertLeaseableGrant,
   parseRenewalChoice,
   prepareRenewalStage,
   renewalLeasesEnabled,
@@ -226,6 +227,19 @@ export async function bindApprovalRenewal(body: { approvalRequestId?: unknown; r
 }
 
 /**
+ * TC-3821: the preview's grant, checked for the bound leased choice before the owner sees it, so a lease the server
+ * would refuse at approval (secrets without the owner's confirm, or a window over 7 days) is refused here instead.
+ */
+export function checkApprovalLeaseGrant(siwe: string, bound: BoundRenewalChoice | undefined): void {
+  if (bound?.choice !== 'leased') return;
+  try {
+    assertLeaseableGrant(siwe, bound.sensitiveConfirmed === true);
+  } catch (error) {
+    renewalFailure(error);
+  }
+}
+
+/**
  * Approving may repeat the renewal choice the preview bound, but never change it (TC-2933): a body that names
  * any other choice or length is refused before anything is signed. A body without one uses the bound choice.
  */
@@ -293,7 +307,10 @@ export async function saveApprovalDelegation(
   try {
     // An unsigned saved step carries no authority: it is rebuilt from this approval, so a changed choice is never
     // replaced by an older one. A wallet signature over the older bytes then fails its owner check.
-    stage = await prepareRenewalStage({ userId, host: options.host, leaseLifetimeSeconds: choice.leaseLifetimeSeconds, delegation, now: new Date() });
+    stage = await prepareRenewalStage({
+      userId, host: options.host, leaseLifetimeSeconds: choice.leaseLifetimeSeconds, delegation, now: new Date(),
+      sensitiveConfirmed: choice.sensitiveConfirmed === true,
+    });
     await service.saveRenewal(id, stage, marker);
     if (!signOwner) {
       // The owner's wallet signs the lease next; the request stays open for that step.

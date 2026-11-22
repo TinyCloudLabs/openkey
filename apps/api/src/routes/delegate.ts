@@ -142,11 +142,11 @@ import { PreparedHandoffError } from '../services/prepared-handoff';
 import { preparedHandoffService } from './prepared-handoffs';
 import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
-import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, confirmBoundRenewal, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
+import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, checkApprovalLeaseGrant, confirmBoundRenewal, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
 import { bindSignInRenewalRequest, recordedSignInLease, setUpSignInLease, signInRenewalFailure, takePendingSignInLease, type SignInLease } from '../services/signin-renewal';
 import type { SignInRenewalRequest } from '../services/authorization-signing';
-import { parseRenewalChoice, renewalLeasesEnabled, renewalUnavailableMessage, signLease } from '../services/renewal-lease';
+import { assertLeaseableGrant, parseRenewalChoice, renewalLeasesEnabled, renewalUnavailableMessage, signLease } from '../services/renewal-lease';
 import {
   approvalPasskeyOffer,
   approvalPasskeyOfferInFlow,
@@ -2172,6 +2172,8 @@ delegateRouter.post('/prepare', async (c) => {
   // Device approvals: the bytes handed to the wallet are a subset of what the device requested.
   const deviceSubset = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
   if (deviceSubset) return c.json(deviceSubset.body, deviceSubset.status);
+  // TC-3821: a leased choice on a grant reaching secrets needs the owner's confirm and a window of at most 7 days.
+  checkApprovalLeaseGrant(preparedResult.prepared.siwe, renewal);
 
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
@@ -3814,6 +3816,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
         signedMessage,
         signature,
         leaseLifetimeSeconds: sealedRenewal.leaseLifetimeSeconds,
+        sensitiveConfirmed: sealedRenewal.sensitiveConfirmed === true,
         signOwner: isExternal ? undefined : (message) => signManagedKey(key, key.sealedBlob!, message),
       });
     } catch (error) {
@@ -4131,6 +4134,16 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   });
   if (!previewSubset.ok) {
     return c.json({ error: previewSubset.message, code: previewSubset.code, reason: previewSubset.reason }, 400);
+  }
+  // TC-3821: the lease these exact bytes would carry is refused here, before the owner sees the preview, when the
+  // grant reaches secrets without the owner's confirm or with a window over 7 days.
+  if (renewalChoice?.choice === 'leased') {
+    try {
+      assertLeaseableGrant(preparedSignedMessage, renewalChoice.sensitiveConfirmed === true);
+    } catch (error) {
+      const refused = signInRenewalFailure(error);
+      return c.json(refused.body, refused.status);
+    }
   }
 
   // Preview grants + selection. `service` is canonicalized to the
