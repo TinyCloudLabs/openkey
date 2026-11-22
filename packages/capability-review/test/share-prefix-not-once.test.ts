@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { grantIsBroadOnce, parseCapabilityReview, type CapabilityGrant } from "../src/index.js";
+import { grantIsBroadOnce, grantIsOwnShareFolder, parseCapabilityReview, type CapabilityGrant } from "../src/index.js";
 import { FIXTURE_META, makeRecapResource, siweWithResources } from "./fixtures/index";
 
 // The owner's own `default/share/` folder holds shared-file keys only: a decrypt or key.create on it, or on a prefix
@@ -106,5 +106,28 @@ describe("a signed request is read the same way", () => {
   it("another owner's share/ decrypt keeps the one-hour start", () => {
     const other = `urn:tinycloud:encryption:did:pkh:eip155:${FIXTURE_META.chainId}:0x2222222222222222222222222222222222222222:default`;
     expect(share({ [`${other}/share/`]: { "tinycloud.encryption/decrypt": [{}] } }).some(grantIsBroadOnce)).toBe(true);
+  });
+});
+
+describe("grantIsOwnShareFolder names the signer's own share/ folder and nothing else", () => {
+  it.each([["/share/"], ["/share/abc123/"], ["/share/abc123/inner/"]])("the prefix %s", (tail) => {
+    expect(grantIsOwnShareFolder(decrypt(urn(tail)))).toBe(true);
+  });
+
+  it("a key.create on the share/ prefix", () => {
+    expect(grantIsOwnShareFolder(decrypt(urn("/share/"), true, "tinycloud.encryption/key.create"))).toBe(true);
+  });
+
+  it.each([
+    ["an exact share key", urn("/share/abc123"), true],
+    ["another owner", urn("/share/"), false],
+    ["an unknown owner", urn("/share/"), null],
+    ["another network", urn("/share/", "other"), true],
+    ["a look-alike folder", urn("/shared/"), true],
+    ["the apps folder", urn("/apps/x/"), true],
+    ["the secrets folder", urn("/secrets/"), true],
+    ["the whole network", urn(""), true],
+  ] as const)("not %s", (_label, resource, ownedBySelf) => {
+    expect(grantIsOwnShareFolder(decrypt(resource, ownedBySelf))).toBe(false);
   });
 });
