@@ -75,3 +75,30 @@ export function registryRecordSignRefusal(
   if (registryRecordSignOriginAllowed(requestOrigin) || !isRegistryRecordPayload(message)) return null;
   return { reason: "registry_record", message: REGISTRY_RECORD_SIGN_REFUSED.apiMessage };
 }
+
+/** The EIP-712 domain name of the registry contract, and its struct, compared without case or surrounding spaces. */
+const REGISTRY_TYPED_DOMAIN_NAME = "tinycloudregistry";
+const REGISTRY_TYPED_PRIMARY_TYPE = "setnode";
+
+const folded = (value: unknown): string | null => (typeof value === "string" ? value.trim().toLowerCase() : null);
+
+/**
+ * Is this EIP-712 request the registry's node-location struct: its primary type, any struct it defines, or its domain
+ * name is the registry's? Case and surrounding spaces do not matter.
+ */
+export function isRegistryTypedData(typedData: unknown): boolean {
+  if (typedData === null || typeof typedData !== "object") return false;
+  const { domain, types, primaryType } = typedData as { domain?: unknown; types?: unknown; primaryType?: unknown };
+  if (folded(primaryType) === REGISTRY_TYPED_PRIMARY_TYPE) return true;
+  if (domain !== null && typeof domain === "object" && folded((domain as { name?: unknown }).name) === REGISTRY_TYPED_DOMAIN_NAME) return true;
+  return types !== null && typeof types === "object" && Object.keys(types).some((name) => folded(name) === REGISTRY_TYPED_PRIMARY_TYPE);
+}
+
+/** The refusal for this typed data and requesting origin, or null when it may go on to the other checks. */
+export function registryTypedDataSignRefusal(
+  typedData: unknown,
+  requestOrigin: unknown,
+): { reason: "registry_record"; message: string } | null {
+  if (registryRecordSignOriginAllowed(requestOrigin) || !isRegistryTypedData(typedData)) return null;
+  return { reason: "registry_record", message: REGISTRY_RECORD_SIGN_REFUSED.apiMessage };
+}
