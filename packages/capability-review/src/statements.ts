@@ -1503,6 +1503,21 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
       return verb === "get" || verb === "read" || verb === "select";
     });
     const hasValueMutation = verbs.hasWrite || verbs.hasSchema;
+    // A delete is named in the sentence whenever the grant has one, next to an update when the grant also writes.
+    const mutationVerbs = abilityStrings.map(verbOf).filter((verb) => MUTATION_VERBS.has(verb));
+    const hasValueDelete = mutationVerbs.some((verb) => verb === "del" || verb === "delete");
+    if (hasValueDelete) {
+      const alsoUpdates = verbs.hasSchema || mutationVerbs.some((verb) => verb !== "del" && verb !== "delete");
+      const values = grant.ownedBySelf === false ? "another user's secret values" : "secret values";
+      const action = hasValueRead
+        ? alsoUpdates
+          ? "Read, update and delete"
+          : "Read and delete"
+        : alsoUpdates
+          ? "Update and delete"
+          : "Delete";
+      return { primaryText: `${action} ${values}`, service, resource };
+    }
     if (hasValueRead && hasValueMutation) {
       return {
         primaryText:
