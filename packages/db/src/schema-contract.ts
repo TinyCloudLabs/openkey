@@ -67,13 +67,12 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261121_0003_native_withdraw_stepup_tokens', '0058b9b249016025ce123121ee48ffad03241060d6c708100f9958dd8179cf48'],
   ['20261121_0004_native_stepup_delegation', '71c7f4491f6e63320acb9ef34c76ff54ec0bce2e880764e725b3500fa9c0e6bb'],
   ['20261121_0005_native_approval_passkey_method', '450234c3f53249bd91b0f9d92823d24cd377458e1db114a503c08fe588ccf76e'],
-  // TC-3657: Prisma-backed stores for OpenKey's outside-app one-tap TinyCloud setup
-  // endpoint. Required so the API cannot go live without the two tables that back the
-  // single-use nonce invariant and the per-owner rate limit. Numbered 0006 because
-  // S1b (merged at 15e213cd) claimed 0001-0004 and TC-3596 (merged at 4b6c594c) claimed
-  // 0005. If a later slice claims 0006 first the OpenKey driver renumbers.
-  ['20261121_0006_tinycloud_setup_tables', 'a70e40ec6d8c438f61dbe7784fdba3f17b69af069ee1d717af571803fb6f36cc'],
   ['20261122_0001_terms_acceptance_embed_audit', 'b57be1d1b87aca2d43ae5b0447d9a2f6bf7bd840b48a2cd8fc0e0b638897dea1'],
+  // Prisma-backed stores for OpenKey's outside-app one-tap TinyCloud setup endpoint.
+  // Required so the API cannot go live without the two tables that back the single-use
+  // nonce invariant and the per-owner rate limit. Dated after the terms-acceptance
+  // migration so lexical order matches apply order.
+  ['20261122_0002_tinycloud_setup_tables', 'a70e40ec6d8c438f61dbe7784fdba3f17b69af069ee1d717af571803fb6f36cc'],
 ]);
 
 export type SchemaContractDatabase = {
