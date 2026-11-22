@@ -402,7 +402,9 @@ if (!process.env.OPENKEY_APPLE_REVIEW_TEST_CHILD) {
       expect(grant).toBeUndefined();
       const started = Date.now();
       expect(await module.reviewerCleanupNode.wipe(row)).toBeUndefined();
-      expect(grant.expiry.getTime() - started).toBeLessThanOrEqual(45_000);
+      const ended = Date.now();
+      expect(grant.expiry.getTime()).toBeLessThanOrEqual(ended + 45_000);
+      expect(grant.expiry.getTime()).toBeGreaterThanOrEqual(started + 45_000);
       const expectedSql = ['xyz.tinycloud.tinychat/threads', 'xyz.tinycloud.tinychat/home_feed', 'xyz.tinycloud.tinychat/feed/', 'xyz.tinycloud.tinychat/canvas', 'xyz.tinycloud.tinychat/connectors', 'xyz.tinycloud.tinychat/details', 'xyz.tinycloud.tinychat/summaries', 'xyz.tinycloud.tinychat/transcripts', 'xyz.tinycloud.sample.healthlog/healthlog', 'xyz.tinycloud.sample.recipes/recipes'];
       const expected = [{ service: 'kv', space: spaceId, path: '', actions: ['tinycloud.kv/del', 'tinycloud.kv/get', 'tinycloud.kv/list'] },
         ...expectedSql.map(path => ({ service: 'sql', space: spaceId, path, actions: ['tinycloud.sql/read', 'tinycloud.sql/schema', 'tinycloud.sql/write'] }))];
