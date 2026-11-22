@@ -62,6 +62,7 @@
     grantHeading,
     PROTOCOL_HEADLINE,
     PROTOCOL_HINT,
+    SIWE_WITHOUT_EXPIRY,
     sensitiveRowsCallout,
     abbreviateDid,
     abbreviateSpaceId,
@@ -1060,6 +1061,11 @@
           <div class="row">
             <span class="label">Expires</span>
             <span class="value">{model.expiry}</span>
+          </div>
+        {:else if model.protocol === "siwe-plain" || model.protocol === "tinycloud-siwe-recap"}
+          <div class="row" data-testid="siwe-no-expiry">
+            <span class="label">Expires</span>
+            <span class="value">{SIWE_WITHOUT_EXPIRY}</span>
           </div>
         {/if}
       </section>
