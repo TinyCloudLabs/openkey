@@ -104,6 +104,8 @@
   renewal={transport.renewal ?? null}
   onceExpiryDefault={transport.expiry?.onceDefault ?? false}
   elevated={transport.elevated ?? null}
+  approveVisibility={transport.approveVisibility ?? null}
+  claimed={transport.claimedPresentation ?? null}
   {onApprove}
   {onCancel}
   onRetry={transport.retryPreview}

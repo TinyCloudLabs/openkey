@@ -224,8 +224,8 @@ export function decodeBase64UrlJson(value: string): unknown {
  * The `/delegate` `permissions` parameter (`{ permissions, reason? }`). Throws
  * unless it decodes to a non-empty list of permission entries (string
  * `service` and `path`, a string `space` when present, string `actions`): a
- * request whose permissions cannot be read must be refused, never widened to
- * the default abilities. A raw encryption network carries no space.
+ * request whose permissions cannot be read must be refused, never treated as
+ * a request that names none (the own folder). A raw encryption network carries no space.
  */
 export function decodeDelegatePermissionsParam(value: string): { permissions: DevicePermission[]; reason?: unknown } {
   const payload = decodeBase64UrlJson(value);
@@ -251,7 +251,7 @@ export function decodeDelegatePermissionsParam(value: string): { permissions: De
 
 /**
  * Read `/delegate`'s `permissions` parameter by presence: null only when it is
- * absent (the ordinary default abilities apply). A present parameter, even
+ * absent (the request then gets only its own folder). A present parameter, even
  * `?permissions=` or a bare `?permissions`, must decode to a non-empty list
  * or the request is refused.
  */

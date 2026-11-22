@@ -221,9 +221,12 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
   describe('the release file', () => {
     const valid = { version: VERSION, requiredVersion: null, textSha256: SHA, whatChanged: null, privacyChanged: false };
 
-    test('the checked-in file parses, and turns no gate on', async () => {
+    test('the checked-in file is a valid release: a date version and a 64-hex text hash', async () => {
       const shipped = JSON.parse(await readFile(join(root, 'apps/api/src/terms-release.json'), 'utf8'));
-      expect(termsRelease(shipped)).toBeNull();
+      const parsed = termsRelease(shipped);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.version).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(parsed!.textSha256).toMatch(/^[0-9a-f]{64}$/);
     });
 
     test('a release defaults its required version to itself; an editorial one may require less', () => {

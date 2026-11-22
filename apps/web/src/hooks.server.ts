@@ -1,6 +1,7 @@
 import type { Handle } from '@sveltejs/kit';
 import { accountHostname, accountOrigin, consoleHostname, consoleOrigin } from '$lib/console-host';
 import { routeConsoleHost } from '$lib/console-routing';
+import { withFramePolicy } from '$lib/frame-policy';
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({
@@ -68,5 +69,5 @@ export const handle: Handle = async ({ event, resolve }) => {
     });
   }
 
-  return resolve(event);
+  return withFramePolicy(await resolve(event), event.url.pathname);
 };

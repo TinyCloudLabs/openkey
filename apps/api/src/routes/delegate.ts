@@ -42,7 +42,7 @@ import {
   signedSiweExpirationTime,
 } from './delegate-validation';
 import {
-  defaultSessionAbilities,
+  ownFolderSessionAbilities,
   SIWE_DOMAIN,
   sessionAbilitiesFromPermissions,
   validatePermissions,
@@ -70,7 +70,6 @@ import { countPrivateSessionJwk, log, logError, logMetric, logSessionJwk, record
 export {
   prepareDelegationSession,
   assertBaselineSubset,
-  DEFAULT_ABILITIES,
 } from './delegate-session';
 import {
   evaluateAutoSignPolicy,
@@ -150,10 +149,16 @@ import type { SignInRenewalRequest } from '../services/authorization-signing';
 import { parseRenewalChoice, renewalLeasesEnabled, renewalUnavailableMessage, signLease } from '../services/renewal-lease';
 import {
   approvalPasskeyOffer,
+  approvalPasskeyOfferInFlow,
   approvalRequestDigest,
   checkApprovalPasskey,
+  checkApprovalPasskeySpendingFlow,
+  clearFlowPasskey,
+  FLOW_PASSKEY_HEADER,
   messageApprovalSensitivity,
   passkeyApprovalModes,
+  releaseFlowPasskey,
+  webFlowIdFromHeader,
   type ApprovalBinding,
 } from '../services/approval-passkey';
 
@@ -810,7 +815,7 @@ function requiredActionIdSet(entries: RecapEntry[]): Set<string> {
 
 /**
  * Digest of a delegation's request baseline: the ability maps derived from
- * the CLI `permissions` (or the defaults). `/prepare` binds it to the
+ * the request's `permissions` (or the own folder when it names none). `/prepare` binds it to the
  * authorization context; `/complete` and the managed approval recompute it
  * from the `permissions` they receive and consume refuses a mismatch, so the
  * subset check at completion runs against the request that was prepared.
@@ -1737,7 +1742,7 @@ delegateRouter.post('/', async (c) => {
     try {
       baseline = permissions
         ? sessionAbilitiesFromPermissions(permissions, { address, chainId }, { deviceTransaction: body.deviceTransactionId !== undefined })
-        : defaultSessionAbilities(bound.spaceId);
+        : ownFolderSessionAbilities(extractImmutableSiweFields(bound.originalSiwe, { address, chainId, spaceId: bound.spaceId }).domain, { address, chainId });
       assertBaselineSubset(preparedEntries, baseline);
       assertRequiredActions(preparedEntries, baseline);
     } catch (e) {
@@ -2313,6 +2318,8 @@ delegateRouter.post('/prepare', async (c) => {
     permissions: preparedResult.permissions,
     selectedActionKeys: preparedResult.selectedActionKeys,
     edited: preparedResult.edited,
+    ownFolderOnly: preparedResult.ownFolderOnly,
+    ownFolderShared: preparedResult.ownFolderShared,
     reason,
     // Versioned protocol: /complete MUST echo this token.
     authorizationContext: {
@@ -2346,10 +2353,10 @@ delegateRouter.post('/complete', async (c) => {
     /** Optional; may only repeat the renewal choice the preview bound (TC-2933). */
     renewal?: unknown;
     /**
-     * The CLI-supplied permissions that were the baseline for /prepare.
-     * When present, this is used instead of DEFAULT_ABILITIES for the
-     * subset check that guards against a compromised frontend crafting a
-     * broader SIWE. Optional; falls back to DEFAULT_ABILITIES when absent.
+     * The permissions that were the baseline for /prepare: the subset check
+     * that guards against a compromised frontend crafting a broader SIWE runs
+     * against them. Optional; when absent the baseline is the own folder of
+     * the signed SIWE's domain, as /prepare chose.
      * Raw encryption entries must name a network owned by the SIWE signer.
      */
     permissions?: unknown;
@@ -2450,15 +2457,19 @@ delegateRouter.post('/complete', async (c) => {
   let baseline: SessionAbilities;
   try {
     const entries = parsePreparedRecap(body.prepared.siwe);
+    const signer = { address: signedFields.address, chainId: signedFields.chainId };
+    // With no permissions, the baseline is the own folder of the account the
+    // request was prepared for, not of the signer. A SIWE re-signed by another
+    // address passes this subset check, and the checks after it decide:
+    // prepared.address (key-mismatch), the signature, then the context bindings.
     const preview = typeof body.authorizationContextToken === 'string'
       ? peekAuthorizationContext(body.authorizationContextToken) : undefined;
-    const defaultSpaceId = preview?.ok ? preview.value.spaceId : preparedSpaceId;
+    const [, , , preparedChainId, preparedOwner] = (preview?.ok ? preview.value.spaceId : preparedSpaceId).split(':');
     baseline = baselinePermissions
-      ? sessionAbilitiesFromPermissions(baselinePermissions, {
-          address: signedFields.address,
-          chainId: signedFields.chainId,
-        }, { deviceTransaction: body.deviceTransactionId !== undefined })
-      : defaultSessionAbilities(defaultSpaceId);
+      ? sessionAbilitiesFromPermissions(baselinePermissions, signer, { deviceTransaction: body.deviceTransactionId !== undefined })
+      : ownFolderSessionAbilities(signedFields.domain, preparedOwner
+        ? { address: preparedOwner, chainId: Number(preparedChainId) }
+        : signer);
     assertBaselineSubset(entries, baseline);
     assertRequiredActions(entries, baseline);
   } catch (e) {
@@ -2792,6 +2803,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       reason?: string;
       manifestId?: string;
       manifestDigest?: string;
+      /** Reported owner identifier. Compared with the key-derived owner; never used as a value. */
+      owner?: string;
       manifests?: Array<{
         name?: string;
         appId?: string;
@@ -3079,9 +3092,16 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
             : null;
         if (reportedOrigin && declaredDigest) {
           try {
+            // `owner` is derived from the signing key and resolves `{owner}`
+            // in the published manifest. The envelope's owner is only a hint
+            // compared against it, never a value.
             const bindResult = await fetchAndBindWellKnownManifest({
               reportedOrigin,
               declaredDigest,
+              owner: Number.isInteger(chainId)
+                ? `did:pkh:eip155:${chainId}:${keyAddress}`
+                : undefined,
+              ownerHint: typeof envelope.owner === 'string' ? envelope.owner : undefined,
             });
             if (bindResult.ok) {
               metadataTrust = {
@@ -3754,17 +3774,21 @@ delegateRouter.post('/authorize-sign', async (c) => {
     return c.json(elevatedNotDecidedBody(), 403);
   }
   // TC-3442: the account's passkey setting, checked before any token is spent or key unsealed. An external wallet's
-  // own signature is its confirmation.
+  // own signature is its confirmation. A passkey sign-in this web sign flow was opened with covers the check for
+  // five minutes; the cover is spent the moment this approval passes the gate.
+  const webFlow = webFlowIdFromHeader(c.req.header(FLOW_PASSKEY_HEADER));
   if (!isExternal) {
-    const passkeyRefusal = await checkApprovalPasskey(
+    const gate = await checkApprovalPasskeySpendingFlow(
       prisma,
       { userId: user.id, sessionId: c.get('session')?.id ?? null },
       authorizeSignPasskeyBinding(body.authorizationContextToken, body.previewApprovalToken!, boundAddress, signedMessage),
       messageApprovalSensitivity(signedMessage, boundAddress),
       body.passkeyAssertion,
+      webFlow,
     );
-    if (passkeyRefusal) return c.json(passkeyRefusal, 403);
+    if (gate.refusal) return c.json(gate.refusal, 403);
   }
+  await clearFlowPasskey(prisma, webFlow);
   // Both checked claims still have to reference the stored records. This
   // synchronous call compares both, checks both expiries, then deletes both
   // without an await between either comparison and either deletion. Only
@@ -3853,6 +3877,22 @@ delegateRouter.post('/authorize-sign', async (c) => {
     ...(sealedRenewal ? { renewalChoice: sealedRenewal.choice } : {}),
     ...(signInLease ?? {}),
   });
+});
+
+/**
+ * POST /api/delegate/authorize-sign-release
+ *
+ * A web sign page that is cancelled, refused or closed without approving ends the passkey cover its own sign-in
+ * recorded (`x-openkey-passkey-flow`), so a later approval in that flow asks for a passkey. Only the calling
+ * session's cover for the named flow is ended; any other value in the header ends nothing.
+ */
+delegateRouter.post('/authorize-sign-release', async (c) => {
+  await releaseFlowPasskey(
+    prisma,
+    { userId: c.get('user').id, sessionId: c.get('session')?.id ?? null },
+    webFlowIdFromHeader(c.req.header(FLOW_PASSKEY_HEADER)),
+  );
+  return c.json({ released: true });
 });
 
 /**
@@ -4170,18 +4210,19 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     renewal: renewalChoice,
   });
   // TC-3442: whether Approve needs the passkey, with the challenge for exactly these bytes. Re-issued with every
-  // preview, so a changed selection or expiry gets its own.
+  // preview, so a changed selection or expiry gets its own. None when this web sign flow's own passkey sign-in covers it.
   const boundKey = await prisma.ethereumKey.findFirst({
     where: { id: bound.keyId, userId: user.id, archivedAt: null },
     select: { keyType: true },
   });
   const passkey = !boundKey || boundKey.keyType === 'EXTERNAL'
     ? { required: false as const }
-    : await approvalPasskeyOffer(
+    : await approvalPasskeyOfferInFlow(
       prisma,
       { userId: user.id, sessionId: c.get('session')?.id ?? null },
       authorizeSignPasskeyBinding(body.authorizationContextToken!, previewApproval.token, ensureEip55(bound.keyAddress), preparedSignedMessage),
       messageApprovalSensitivity(preparedSignedMessage, bound.keyAddress),
+      webFlowIdFromHeader(c.req.header(FLOW_PASSKEY_HEADER)),
     );
 
   return c.json({
