@@ -86,6 +86,7 @@
     type ElevatedKind,
   } from "@openkey/capability-review";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
+  import { NETWORK_DECRYPT_CAP } from "$lib/network-decrypt-cap";
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
   import ElevatedWarning from "$lib/components/signing/elevated-warning.svelte";
@@ -313,9 +314,10 @@
       : null,
   );
   // A grant on secret keys made outside a signed approval request (popup, frame, pasted link) lasts 7 days at most
-  // (TC-3800): the server clamps a longer one, so the screen offers no more. A signed request has its own maximum.
+  // (TC-3800), and so does a whole network's decrypt where the network cap is on: the server clamps a longer one, so
+  // the screen offers no more. A signed request has its own maximum.
   const secretCapMs = $derived(
-    !shortenOnlyExpiry && secretLifetimeCapApplies(model.permissions, { networkDecrypt: false })
+    !shortenOnlyExpiry && secretLifetimeCapApplies(model.permissions, { networkDecrypt: NETWORK_DECRYPT_CAP })
       ? SECRET_GRANT_MAX_SECONDS * 1000
       : null,
   );

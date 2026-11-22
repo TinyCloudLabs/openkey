@@ -95,7 +95,11 @@ async function sign(message: string, format = 'personal_sign') {
 const hex = (text: string) => `0x${Buffer.from(text, 'utf8').toString('hex')}`;
 
 const REFUSED = {
-  error: 'Access to your secrets can last up to 7 days. Ask again with an expiry of 7 days or less.',
+  error: 'This request asks for secret access longer than 7 days. Secret access lasts at most 7 days, so ask again with an expiry of 7 days or less.',
+  code: 'secret_lifetime_exceeded',
+};
+const NETWORK_REFUSED = {
+  error: 'This request asks for access to secrets or encrypted data longer than 7 days. Access to secrets or encrypted data lasts at most 7 days, so ask again with an expiry of 7 days or less.',
   code: 'secret_lifetime_exceeded',
 };
 
@@ -129,13 +133,56 @@ describe('raw signing of a grant on secret keys', () => {
     process.env.OPENKEY_NETWORK_DECRYPT_CAP = 'enabled';
     const res = await sign(siwe);
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual(REFUSED);
+    expect(await res.json()).toEqual(NETWORK_REFUSED);
     expect((await sign(siweFor({ [urn('')]: [`${E}decrypt`] }, 7 * DAY_MS))).status).toBe(200);
+  });
+
+  test('a secret key beside a whole network decrypt, with the network cap on, gets the wider words', async () => {
+    process.env.OPENKEY_NETWORK_DECRYPT_CAP = 'enabled';
+    const res = await sign(siweFor({ [urn('')]: [`${E}decrypt`], [urn('/secrets/openai_api_key')]: [`${E}decrypt`] }, 30 * DAY_MS));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(NETWORK_REFUSED);
   });
 
   test('decrypt on share/ for 30 days is not held to 7 days', async () => {
     process.env.OPENKEY_NETWORK_DECRYPT_CAP = 'enabled';
     const res = await sign(siweFor({ [urn('/share/')]: [`${E}decrypt`] }, 30 * DAY_MS));
     expect(res.status, await res.clone().text()).toBe(200);
+  });
+});
+
+describe('raw signing of a grant on secret keys, in odd forms', () => {
+  const secret = SECRET_SHAPES[0]![1];
+
+  test('a message with no Expiration Time is refused', async () => {
+    const res = await sign(siweFor(secret, 30 * DAY_MS).replace(/^Expiration Time: .+\n/m, ''));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(REFUSED);
+    expect(calls).toEqual([]);
+  });
+
+  test('hex in capitals is refused', async () => {
+    const res = await sign(`0x${Buffer.from(siweFor(secret, 30 * DAY_MS), 'utf8').toString('hex').toUpperCase()}`, 'raw');
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(REFUSED);
+  });
+
+  test('abilities named without the tinycloud. prefix are refused', async () => {
+    const res = await sign(siweFor({ [urn('/secrets/openai_api_key')]: ['encryption/decrypt'] }, 30 * DAY_MS));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(REFUSED);
+  });
+
+  test('SECRETS/ in capitals is held like secrets/', async () => {
+    const res = await sign(siweFor({ [urn('/SECRETS/openai_api_key')]: [`${E}decrypt`] }, 30 * DAY_MS));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(REFUSED);
+  });
+
+  test('a ReCap that cannot be read is refused, and nothing is signed', async () => {
+    const siwe = siweFor({ [urn('/share/')]: [`${E}decrypt`] }, 30 * DAY_MS);
+    const res = await sign(siwe.replace(/^- urn:recap:[A-Za-z0-9_-]+$/m, '- urn:recap:%%%not-base64%%%'));
+    expect(res.status).toBe(400);
+    expect(calls).toEqual([]);
   });
 });

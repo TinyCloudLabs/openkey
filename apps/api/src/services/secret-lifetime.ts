@@ -14,7 +14,15 @@ export const SECRET_GRANT_MAX_MS = SECRET_GRANT_MAX_SECONDS * 1000;
 const CLOCK_SKEW_MS = 5_000;
 
 export const SECRET_LIFETIME_CODE = 'secret_lifetime_exceeded';
-export const SECRET_LIFETIME_MESSAGE = 'Access to your secrets can last up to 7 days. Ask again with an expiry of 7 days or less.';
+/** Monica's O1e: a grant on secret keys. */
+export const SECRET_LIFETIME_MESSAGE =
+  'This request asks for secret access longer than 7 days. Secret access lasts at most 7 days, so ask again with an expiry of 7 days or less.';
+/** Monica's O1e, network variant: a whole network's `decrypt`, held only while `OPENKEY_NETWORK_DECRYPT_CAP=enabled`. */
+export const NETWORK_LIFETIME_MESSAGE =
+  'This request asks for access to secrets or encrypted data longer than 7 days. Access to secrets or encrypted data lasts at most 7 days, so ask again with an expiry of 7 days or less.';
+
+/** What holds a grant to 7 days: secret keys, or (with the flag) a whole network's `decrypt`, which says more. */
+export type SecretLifetimeReach = 'secrets' | 'network';
 
 /** `OPENKEY_NETWORK_DECRYPT_CAP=enabled` also holds a whole network's `decrypt` to 7 days. Off by default. */
 export function networkDecryptCapEnabled(): boolean {
@@ -29,22 +37,32 @@ export interface PermissionLike {
   actions: readonly string[];
 }
 
-/** Are these delegation permissions held to 7 days? */
-export function permissionsHeldToSecretCap(permissions: readonly PermissionLike[]): boolean {
-  return secretLifetimeCapApplies(
-    permissions.map(({ service, space, path, actions }) => ({ service, space: space ?? '', path, actions })),
-    { networkDecrypt: networkDecryptCapEnabled() },
-  );
+interface ReachEntry {
+  service: string;
+  space: string;
+  path: string;
+  actions: readonly string[];
 }
 
-/** Is this SIWE message held to 7 days? A ReCap that cannot be read is (the other refusals report it). */
-export function siweHeldToSecretCap(siwe: string): boolean {
+/** `network` when the flag is on and some entry is a whole network's `decrypt`; else `secrets` when held at all. */
+function reachOf(entries: readonly ReachEntry[]): SecretLifetimeReach | null {
+  const networkDecrypt = networkDecryptCapEnabled();
+  if (!secretLifetimeCapApplies(entries, { networkDecrypt })) return null;
+  const network = networkDecrypt && entries.some((entry) =>
+    !secretLifetimeCapApplies([entry], { networkDecrypt: false }) && secretLifetimeCapApplies([entry], { networkDecrypt: true }));
+  return network ? 'network' : 'secrets';
+}
+
+/** Are these delegation permissions held to 7 days? */
+export function permissionsHeldToSecretCap(permissions: readonly PermissionLike[]): boolean {
+  return reachOf(permissions.map(({ service, space, path, actions }) => ({ service, space: space ?? '', path, actions }))) !== null;
+}
+
+/** What holds this SIWE message to 7 days, or null. A ReCap that cannot be read is held (the other refusals report it). */
+function siweSecretReach(siwe: string): SecretLifetimeReach | null {
   const resources = recapResources(siwe);
-  if (resources === null) return true;
-  return secretLifetimeCapApplies(
-    resources.map(([resource, actions]) => ({ service: 'tinycloud.encryption', space: 'encryption', path: resource, actions })),
-    { networkDecrypt: networkDecryptCapEnabled() },
-  );
+  if (resources === null) return 'secrets';
+  return reachOf(resources.map(([resource, actions]) => ({ service: 'tinycloud.encryption', space: 'encryption', path: resource, actions })));
 }
 
 /** A lifetime for these permissions: `expiryMs`, or 7 days when they are held to 7 days and it is longer. */
@@ -54,26 +72,32 @@ export function clampSecretExpiryMs(expiryMs: number, permissions: readonly Perm
 
 /** The latest Expiration Time this SIWE message may carry, as an ISO time, or null when it is not held to 7 days. */
 export function secretCapExpirationTime(siwe: string, now: number): string | null {
-  return siweHeldToSecretCap(siwe) ? new Date(now + SECRET_GRANT_MAX_MS).toISOString() : null;
+  return siweSecretReach(siwe) !== null ? new Date(now + SECRET_GRANT_MAX_MS).toISOString() : null;
 }
 
 /**
- * Do these signed (or about to be signed) bytes ask for more than 7 days on secret keys? True when the message is held
- * to 7 days and its Expiration Time is missing or more than 7 days (and the skew) from `now`.
+ * Do these signed (or about to be signed) bytes ask for more than 7 days on secret keys? What holds them, when the
+ * message is held to 7 days and its Expiration Time is missing or more than 7 days (and the skew) from `now`; else null.
  */
-export function exceedsSecretLifetime(siwe: string, now: number): boolean {
-  if (!siweHeldToSecretCap(siwe)) return false;
+export function exceedsSecretLifetime(siwe: string, now: number): SecretLifetimeReach | null {
+  const reach = siweSecretReach(siwe);
+  if (reach === null) return null;
   const expirationTime = signedSiweExpirationTime(siwe);
-  return expirationTime === undefined || Date.parse(expirationTime) > now + SECRET_GRANT_MAX_MS + CLOCK_SKEW_MS;
+  return expirationTime === undefined || Date.parse(expirationTime) > now + SECRET_GRANT_MAX_MS + CLOCK_SKEW_MS ? reach : null;
 }
 
 /** Same check for a message as the signer will cover it: as written, and as UTF-8 when it is `0x` hex. */
-export function messageExceedsSecretLifetime(message: string, now: number): boolean {
-  if (exceedsSecretLifetime(message, now)) return true;
+export function messageExceedsSecretLifetime(message: string, now: number): SecretLifetimeReach | null {
+  const asWritten = exceedsSecretLifetime(message, now);
+  if (asWritten !== null) return asWritten;
   const decoded = decodeHexUtf8(message);
-  return decoded !== null && exceedsSecretLifetime(decoded, now);
+  return decoded === null ? null : exceedsSecretLifetime(decoded, now);
 }
 
-export function secretLifetimeBody(): { error: string; code: string } {
-  return { error: SECRET_LIFETIME_MESSAGE, code: SECRET_LIFETIME_CODE };
+export function secretLifetimeMessage(reach: SecretLifetimeReach): string {
+  return reach === 'network' ? NETWORK_LIFETIME_MESSAGE : SECRET_LIFETIME_MESSAGE;
+}
+
+export function secretLifetimeBody(reach: SecretLifetimeReach): { error: string; code: string } {
+  return { error: secretLifetimeMessage(reach), code: SECRET_LIFETIME_CODE };
 }

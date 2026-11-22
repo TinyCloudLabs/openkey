@@ -115,11 +115,11 @@ import {
 } from '../services/app-key-refusal';
 import {
   SECRET_LIFETIME_CODE,
-  SECRET_LIFETIME_MESSAGE,
   clampSecretExpiryMs,
   exceedsSecretLifetime,
   secretCapExpirationTime,
   secretLifetimeBody,
+  secretLifetimeMessage,
 } from '../services/secret-lifetime';
 import { allowedElevatedIds, elevatedDecided, elevatedNotDecidedBody } from '../services/elevated-decision';
 import { elevatedActionsOf } from '@openkey/capability-review';
@@ -1160,7 +1160,8 @@ delegateRouter.post('/sign', async (c) => {
         if (!policy.allowed) throw new Error(`message_rejected:${policy.reason}`);
         const appKeyRefusal = appKeyRefusalForSiwe(candidate.message as string);
         if (appKeyRefusal) throw new Error(`message_rejected:${appKeyRefusalMessage(appKeyRefusal, 'non_browser')}`);
-        if (exceedsSecretLifetime(candidate.message as string, Date.now())) throw new Error(`message_rejected:${SECRET_LIFETIME_MESSAGE}`);
+        const lifetimeReach = exceedsSecretLifetime(candidate.message as string, Date.now());
+        if (lifetimeReach) throw new Error(`message_rejected:${secretLifetimeMessage(lifetimeReach)}`);
         const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
         return { signature, identity };
       });
@@ -1367,8 +1368,9 @@ delegateRouter.post('/sign', async (c) => {
     }, appKeyRefusalStatus(signAppKeyRefusal));
   }
   // TC-3800: signed bytes cannot be shortened, so more than 7 days on secret keys is refused.
-  if (exceedsSecretLifetime(body.message, Date.now())) {
-    return c.json({ approved: false, code: SECRET_LIFETIME_CODE, reason: SECRET_LIFETIME_MESSAGE }, 400);
+  const signLifetimeReach = exceedsSecretLifetime(body.message, Date.now());
+  if (signLifetimeReach) {
+    return c.json({ approved: false, code: SECRET_LIFETIME_CODE, reason: secretLifetimeMessage(signLifetimeReach) }, 400);
   }
 
   let address: string;
@@ -1861,7 +1863,8 @@ delegateRouter.post('/', async (c) => {
     await checkApprovalDelegation(body, { signedSiwe: bound.originalSiwe });
     const tokenAppKeyRefusal = appKeyRefusalForSiwe(bound.originalSiwe, preparedEntries);
     if (tokenAppKeyRefusal) return c.json(appKeyRefusalBody(tokenAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(tokenAppKeyRefusal));
-    if (exceedsSecretLifetime(bound.originalSiwe, Date.now())) return c.json(secretLifetimeBody(), 400);
+    const tokenLifetimeReach = exceedsSecretLifetime(bound.originalSiwe, Date.now());
+    if (tokenLifetimeReach) return c.json(secretLifetimeBody(tokenLifetimeReach), 400);
     // TC-3442: the account's passkey setting, before the context is spent or the key unsealed.
     const passkeyRefusal = await checkApprovalPasskey(
       prisma,
@@ -2536,7 +2539,8 @@ delegateRouter.post('/complete', async (c) => {
     return c.json({ error: 'The signed SIWE must include a valid Expiration Time', code: 'missing_expiration_time' }, 400);
   }
   // TC-3800: signed bytes cannot be shortened, so more than 7 days on secret keys is refused.
-  if (exceedsSecretLifetime(body.prepared.siwe, Date.now())) return c.json(secretLifetimeBody(), 400);
+  const completeLifetimeReach = exceedsSecretLifetime(body.prepared.siwe, Date.now());
+  if (completeLifetimeReach) return c.json(secretLifetimeBody(completeLifetimeReach), 400);
 
   let contextClaim: AuthorizationContextClaim | undefined;
   let signInAppOrigin: string | undefined;
@@ -3705,7 +3709,8 @@ delegateRouter.post('/authorize-sign', async (c) => {
     return c.json({ error: signSubset.message, code: signSubset.code, reason: signSubset.reason }, 400);
   }
   // TC-3800: the preview brought a grant on secret keys back to 7 days; bytes that still ask for more are refused.
-  if (exceedsSecretLifetime(signedMessage, Date.now())) return c.json(secretLifetimeBody(), 400);
+  const signedLifetimeReach = exceedsSecretLifetime(signedMessage, Date.now());
+  if (signedLifetimeReach) return c.json(secretLifetimeBody(signedLifetimeReach), 400);
 
   // Validate the single-use preview approval without consuming it. The
   // final selection and bytes must match exactly what the user previewed.

@@ -21,20 +21,22 @@ const keyUrn = (tail: string) => `urn:tinycloud:encryption:${OWNER}:default${tai
 const DECRYPT = 'tinycloud.encryption/decrypt';
 const CREATE = 'tinycloud.encryption/key.create';
 const DAY_MS = 86_400_000;
-// An externally held wallet key: OpenKey never sees its private key.
-const externalKey = {
-  id: 'key_ext', userId: user.id, address: wallet.address, keyType: 'EXTERNAL', archivedAt: null, sealedBlob: null, sealingContext: null,
-};
+// An externally held wallet key (OpenKey never sees its private key), and a managed key OpenKey signs with.
+const keyBase = { userId: user.id, address: wallet.address, archivedAt: null, sealingContext: null };
+const externalKey = { ...keyBase, id: 'key_ext', keyType: 'EXTERNAL', sealedBlob: null };
+const managedKey = { ...keyBase, id: 'key_managed', keyType: 'MANAGED', sealedBlob: 'sealed-blob' };
+const keys = [externalKey, managedKey];
 
 const prisma = {
   ethereumKey: {
-    findFirst: mock(async () => externalKey),
-    findMany: mock(async () => [externalKey]),
-    findUnique: mock(async () => externalKey),
+    findFirst: mock(async ({ where }: { where: { id?: string } }) => keys.find((key) => key.id === where.id) ?? null),
+    findMany: mock(async () => keys),
+    findUnique: mock(async () => managedKey),
   },
   user: { findUnique: mock(async () => ({ autoSignEnabled: true })) },
   tinyCloudBootstrapState: {},
 };
+const signedByOpenKey: string[] = [];
 
 replaceModules({
   '../middleware/session': () => ({
@@ -46,11 +48,21 @@ replaceModules({
   }),
 });
 await mockModules({
+  '../services/tinycloud-bootstrap': () => ({ ensureTinyCloudBootstrap: mock(async () => ({ status: 'complete' as const })) }),
   '@openkey/db': () => ({ createPrismaClient: () => prisma }),
   '@openkey/tee': () => ({
     createTeeClient: () => ({ deriveKey: mock(async () => new Uint8Array(32)), getQuote: mock(async () => 'quote'), isInTee: () => false }),
     unseal: mock(async () => walletKey),
-    createWalletFromPrivateKey: (key: string) => privateKeyToAccount(key as `0x${string}`),
+    createWalletFromPrivateKey: (key: string) => {
+      const account = privateKeyToAccount(key as `0x${string}`);
+      return {
+        ...account,
+        signMessage: async (args: { message: string }) => {
+          signedByOpenKey.push(args.message);
+          return account.signMessage(args);
+        },
+      };
+    },
     generatePrivateKey: () => walletKey,
     getAddressFromPrivateKey: () => wallet.address,
   }),
@@ -78,7 +90,10 @@ beforeAll(async () => {
   }));
 });
 
-beforeEach(() => resetContexts?.());
+beforeEach(() => {
+  resetContexts?.();
+  signedByOpenKey.length = 0;
+});
 afterEach(() => {
   delete process.env.OPENKEY_NETWORK_DECRYPT_CAP;
 });
@@ -96,8 +111,8 @@ function permissionsFor(path: string, actions: string[]) {
 }
 const expiryLine = (siwe: string) => /^Expiration Time: (.+)$/m.exec(siwe)?.[1] ?? '';
 const lifetime = (prepared: { body: Record<string, any> }) => Date.parse(expiryLine(prepared.body.prepared.siwe)) - Date.now();
-async function prepareWith(permissions: unknown, extra: Record<string, unknown>) {
-  const prepared = await post('/prepare', { keyId: externalKey.id, jwk, host, permissions, ...extra });
+async function prepareWith(permissions: unknown, extra: Record<string, unknown>, keyId = externalKey.id) {
+  const prepared = await post('/prepare', { keyId, jwk, host, permissions, ...extra });
   expect(prepared.status, JSON.stringify(prepared.body)).toBe(200);
   return prepared;
 }
@@ -117,7 +132,18 @@ function expectSevenDays(prepared: { body: Record<string, any> }) {
   expect(lifetime(prepared)).toBeLessThanOrEqual(7 * DAY_MS);
   expect(lifetime(prepared)).toBeGreaterThan(7 * DAY_MS - 60_000);
 }
+const signedLifetime = (siwe: string) => Date.parse(expiryLine(siwe)) - Date.now();
 
+const SECRET_REFUSED = {
+  error: 'This request asks for secret access longer than 7 days. Secret access lasts at most 7 days, so ask again with an expiry of 7 days or less.',
+  code: 'secret_lifetime_exceeded',
+};
+const NETWORK_REFUSED = {
+  error: 'This request asks for access to secrets or encrypted data longer than 7 days. Access to secrets or encrypted data lasts at most 7 days, so ask again with an expiry of 7 days or less.',
+  code: 'secret_lifetime_exceeded',
+};
+
+// The popup and link accept only a secret's own key under `secrets/` (the prefix itself is refused there).
 const SECRET_SHAPES: Array<[string, string, string[]]> = [
   ["decrypt on one secret's key", keyUrn('/secrets/openai_api_key'), [DECRYPT]],
   ['decrypt and key.create on a scoped secret key', keyUrn('/secrets/scoped/work/api_key'), [DECRYPT, CREATE]],
@@ -143,6 +169,75 @@ describe('/prepare holds a grant on secret keys to 7 days', () => {
   });
 });
 
+describe('/complete refuses signed bytes that ask for more than 7 days on secret keys', () => {
+  test.each(SECRET_SHAPES)('%s: a wallet signature over 30 days is refused', async (_name, path, actions) => {
+    const permissions = permissionsFor(path, actions);
+    const prepared = await prepareWith(permissions, { expiry: '2d', expiryChosen: true });
+    const longer = prepared.body.prepared.siwe.replace(
+      /^Expiration Time: .+$/m,
+      `Expiration Time: ${new Date(Date.now() + 30 * DAY_MS).toISOString()}`,
+    );
+    const tampered = { body: { ...prepared.body, prepared: { ...prepared.body.prepared, siwe: longer } } };
+    const res = await post('/complete', await completeBody(tampered, permissions));
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual(SECRET_REFUSED);
+  });
+});
+
+describe('the managed POST /delegate', () => {
+  const managed = (body: Record<string, unknown>) => post('/', { keyId: managedKey.id, jwk, host, ...body });
+
+  test.each(SECRET_SHAPES)("%s (legacy): a link's 30 days and the owner's year are signed as 7 days", async (_name, path, actions) => {
+    for (const extra of [{ expiry: '30d' }, { expiry: '31536000s', expiryChosen: true, expiryChangeable: true }]) {
+      const res = await managed({ permissions: permissionsFor(path, actions), ...extra });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(signedLifetime(res.body.signedMessage)).toBeLessThanOrEqual(7 * DAY_MS);
+      expect(signedLifetime(res.body.signedMessage)).toBeGreaterThan(7 * DAY_MS - 60_000);
+    }
+  });
+
+  test('legacy, whole network decrypt: 30 days with the network cap off, 7 with it on', async () => {
+    const network = permissionsFor(keyUrn(''), [DECRYPT]);
+    const off = await managed({ permissions: network, expiry: '30d' });
+    expect(off.status, JSON.stringify(off.body)).toBe(200);
+    expect(signedLifetime(off.body.signedMessage)).toBeGreaterThan(29 * DAY_MS);
+    process.env.OPENKEY_NETWORK_DECRYPT_CAP = 'enabled';
+    const on = await managed({ permissions: network, expiry: '30d' });
+    expect(on.status, JSON.stringify(on.body)).toBe(200);
+    expect(signedLifetime(on.body.signedMessage)).toBeLessThanOrEqual(7 * DAY_MS);
+  });
+
+  test.each(SECRET_SHAPES)('%s (versioned): the prepared 7 days are signed', async (_name, path, actions) => {
+    const permissions = permissionsFor(path, actions);
+    const prepared = await prepareWith(permissions, { expiry: '30d' }, managedKey.id);
+    const res = await managed({
+      permissions,
+      prepared: prepared.body.prepared,
+      authorizationContextToken: prepared.body.authorizationContext.token,
+      selectedActionIds: prepared.body.selectedActionKeys,
+      protocolVersion: 1,
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(signedLifetime(res.body.signedMessage)).toBeLessThanOrEqual(7 * DAY_MS);
+  });
+
+  test('versioned, whole network decrypt prepared for 30 days, then the network cap turned on: refused, nothing signed', async () => {
+    const network = permissionsFor(keyUrn(''), [DECRYPT]);
+    const prepared = await prepareWith(network, { expiry: '30d' }, managedKey.id);
+    process.env.OPENKEY_NETWORK_DECRYPT_CAP = 'enabled';
+    const res = await managed({
+      permissions: network,
+      prepared: prepared.body.prepared,
+      authorizationContextToken: prepared.body.authorizationContext.token,
+      selectedActionIds: prepared.body.selectedActionKeys,
+      protocolVersion: 1,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual(NETWORK_REFUSED);
+    expect(signedByOpenKey).toEqual([]);
+  });
+});
+
 describe('a whole network decrypt follows OPENKEY_NETWORK_DECRYPT_CAP', () => {
   const network = permissionsFor(keyUrn(''), [DECRYPT]);
 
@@ -162,9 +257,6 @@ describe('a whole network decrypt follows OPENKEY_NETWORK_DECRYPT_CAP', () => {
     process.env.OPENKEY_NETWORK_DECRYPT_CAP = 'enabled';
     const res = await post('/complete', await completeBody(prepared, network));
     expect(res.status).toBe(400);
-    expect(res.body).toEqual({
-      error: 'Access to your secrets can last up to 7 days. Ask again with an expiry of 7 days or less.',
-      code: 'secret_lifetime_exceeded',
-    });
+    expect(res.body).toEqual(NETWORK_REFUSED);
   });
 });

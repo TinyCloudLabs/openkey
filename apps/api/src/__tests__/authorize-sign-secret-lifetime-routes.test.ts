@@ -10,7 +10,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { verifyMessage } from 'ethers';
 import { mockModules, replaceModules } from './mock-module';
-import type { delegateRouter } from '../routes/delegate';
+import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -79,7 +79,18 @@ let resetContexts: typeof _resetAuthorizationContextStoreForTests;
 
 // Loaded after the module mocks above, under their own specifiers so no other test file's copies are reused.
 beforeAll(async () => {
-  ({ delegateRouter: router } = await import('../routes/delegate?authorize-sign-secret-lifetime' as string));
+  let setSignerAuth: typeof setDelegateSignerAuthMiddlewareForTests;
+  ({ delegateRouter: router, setDelegateSignerAuthMiddlewareForTests: setSignerAuth } = await import(
+    '../routes/delegate?authorize-sign-secret-lifetime' as string
+  ));
+  // POST /sign as the owner's own browser session (the Auto-Sign path).
+  setSignerAuth(createMiddleware(async (c, next) => {
+    c.set('user', user);
+    c.set('delegateSignerPrincipal', { kind: 'session', userId: user.id });
+    c.set('delegateSignerOauthContext', null);
+    c.set('delegateSignerAuthFailure', null);
+    await next();
+  }));
   ({ _resetAuthorizationContextStoreForTests: resetContexts } = await import(
     '../services/authorization-signing?authorize-sign-secret-lifetime' as string
   ));
@@ -197,5 +208,60 @@ describe('a whole network decrypt follows OPENKEY_NETWORK_DECRYPT_CAP', () => {
     process.env.OPENKEY_NETWORK_DECRYPT_CAP = 'enabled';
     const before = Date.now();
     expectSevenDays(await approve(network, 30 * DAY_MS), before);
+  });
+});
+
+const SECRET_REFUSED = {
+  error: 'This request asks for secret access longer than 7 days. Secret access lasts at most 7 days, so ask again with an expiry of 7 days or less.',
+  code: 'secret_lifetime_exceeded',
+};
+const NETWORK_REFUSED = {
+  error: 'This request asks for access to secrets or encrypted data longer than 7 days. Access to secrets or encrypted data lasts at most 7 days, so ask again with an expiry of 7 days or less.',
+  code: 'secret_lifetime_exceeded',
+};
+
+describe('/authorize-sign refuses a preview that outlives the cap', () => {
+  test('a whole network decrypt previewed for 30 days, then the network cap turned on: refused, nothing signed', async () => {
+    const prepared = await post('/authorize-sign-prepare', {
+      keyId: keyRecord.id, siwe: siweFor({ [urn('')]: [`${E}decrypt`] }, 30 * DAY_MS), jwk, host: HOST, requestOrigin: ORIGIN, reportedOrigin: ORIGIN,
+    });
+    expect(prepared.status).toBe(200);
+    const { authorizationContextToken, allowedActionIds } = await prepared.json() as { authorizationContextToken: string; allowedActionIds: string[] };
+    const preview = await post('/authorize-sign-preview', {
+      authorizationContextToken, selectedActionIds: allowedActionIds, elevatedDecision: { allowed: elevatedIds(allowedActionIds) },
+    });
+    expect(preview.status).toBe(200);
+    const { previewApprovalToken } = await preview.json() as { previewApprovalToken: string };
+    process.env.OPENKEY_NETWORK_DECRYPT_CAP = 'enabled';
+    const res = await post('/authorize-sign', { authorizationContextToken, previewApprovalToken, selectedActionIds: allowedActionIds, protocolVersion: 1 });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(NETWORK_REFUSED);
+    expect(signed).toEqual([]);
+  });
+});
+
+describe('POST /sign (session principal, Auto-Sign) refuses signed bytes over 7 days', () => {
+  const sign = (message: string) => post('/sign', { address, chainId: 1, message, type: 'siwe', keyId: keyRecord.id });
+
+  test.each(SECRET_SHAPES)('%s for 30 days: refused, nothing signed', async (_name, raw) => {
+    const res = await sign(siweFor(raw, 30 * DAY_MS));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ approved: false, code: SECRET_REFUSED.code, reason: SECRET_REFUSED.error });
+    expect(signed).toEqual([]);
+  });
+
+  test('a whole network decrypt for 30 days: refused only with the network cap on, in the wider words', async () => {
+    const message = siweFor({ [urn('')]: [`${E}decrypt`] }, 30 * DAY_MS);
+    const off = await sign(message);
+    expect((await off.clone().json() as { code?: string }).code).not.toBe('secret_lifetime_exceeded');
+    process.env.OPENKEY_NETWORK_DECRYPT_CAP = 'enabled';
+    const on = await sign(message);
+    expect(on.status).toBe(400);
+    expect(await on.json()).toEqual({ approved: false, code: NETWORK_REFUSED.code, reason: NETWORK_REFUSED.error });
+  });
+
+  test("one secret's key for 7 days is not refused for its lifetime", async () => {
+    const res = await sign(siweFor(SECRET_SHAPES[0]![1], 7 * DAY_MS - 60_000));
+    expect((await res.json() as { code?: string }).code).not.toBe('secret_lifetime_exceeded');
   });
 });
