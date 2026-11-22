@@ -312,6 +312,56 @@ To verify a response:
    `version === 1`, your nonce and the expected `address`.
 8. Reject `inTee: false` and the development mock quote.
 
+### Public attestation (TC-3842)
+
+`GET /attestation?nonce=<nonce>` needs no session. It is modelled on
+tinycloud-node's `/attestation` (`tinycloud-node-server/src/routes/attestation.rs`)
+so one verifier handles both services
+(`apps/api/src/routes/attestation.ts`).
+
+- `nonce` is required: 1-64 characters of `A-Z a-z 0-9 - _`. Anything else,
+  including a missing nonce, gets 400.
+- The binding preimage is
+  `so.openkey/tee-key/v1\0:<identity>:<nonce>`. `\0` is the two characters
+  backslash and zero, not a NUL byte, as in the node's preimage.
+- `identity` is `<issuer>#<thumbprints>`: the OIDC issuer
+  (`https://api.openkey.so/api/auth` in production), then the RFC 7638 SHA-256
+  JWK thumbprints (base64url) of every key `<issuer>/jwks` serves, sorted and
+  joined with `,`. These are the keys OpenKey signs ID and access tokens with.
+- The quote's REPORTDATA is SHA-256 of the UTF-8 `key_binding`, followed by
+  32 zero bytes. As for the key quote, OpenKey checks this before answering 200.
+
+```json
+{
+  "mode": "dstack",
+  "quote": "<hex TDX quote>",
+  "event_log": "<dstack event log JSON>",
+  "compose_hash": "<hex, from the guest agent's Info>",
+  "app_id": "<hex, from the guest agent's Info>",
+  "identity": "https://api.openkey.so/api/auth#<thumbprint>,...",
+  "key_binding": "so.openkey/tee-key/v1\\0:<identity>:<nonce>",
+  "key_binding_sha256": "<hex>",
+  "timestamp": "<RFC 3339, host time, not attested>"
+}
+```
+
+Outside a TEE it answers `{"mode":"classic","message":"This instance is not
+running in a TEE"}`. A failure to read the signing keys, the app info or a
+bound quote is 503 `{"error":"quote_unavailable"}`. The whole process is capped
+at 60 quotes a minute (429), because no client address is trustworthy behind
+the proxy.
+
+To verify a response, follow steps 1-5 and 8 above. Then:
+- check that REPORTDATA is SHA-256 of `key_binding` followed by 32 zero bytes;
+- check that `key_binding` has your nonce and the identity;
+- fetch `<issuer>/jwks` and recompute the thumbprints;
+- take `compose_hash` and `app_id` from the replayed event log, not from the
+  JSON.
+
+The binding says that this measured code served those signing keys when it
+quoted. The keys are stored in the database, not derived in the TEE, so it
+doesn't prove that no other system holds them.
+
 ### Environment Configuration
 
 | Variable | Value | Description |

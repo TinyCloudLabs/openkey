@@ -60,6 +60,7 @@ import { createNativeDelegationConsentRouter } from './routes/native-delegation-
 import { handleNativeRenewOrRevoke } from './services/native-delegation/renew-revoke';
 import { handleNativeStepUpRequest } from './services/native-delegation/step-up';
 import { createTeeClient, resolveTeeMode } from '@openkey/tee';
+import { createAttestationRouter } from './routes/attestation';
 import { resealLegacyAtBoot } from './services/legacy-reseal-boot';
 import {
   protocolAwareCors,
@@ -264,6 +265,14 @@ const readSigningKeys = async () => {
 };
 const tokenAudiences = oauthValidAudiences(process.env.BETTER_AUTH_URL!);
 const reviewerTokenVerifier = createAccessTokenVerifier({ issuer: oauthIssuer, getJwks: readSigningKeys });
+
+// TC-3842: public, sessionless attestation: a fresh TDX quote over OpenKey's issuer and signing keys
+// and the caller's nonce, in tinycloud-node's /attestation shape.
+app.route('/attestation', createAttestationRouter({
+  tee: createTeeClient(),
+  issuer: oauthIssuer,
+  readSigningKeys,
+}));
 
 // Token status check for registered resource servers (the hosted MCP server).
 // The provider's own /oauth2/introspect, further down, is untouched.
