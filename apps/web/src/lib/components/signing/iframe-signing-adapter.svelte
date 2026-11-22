@@ -92,6 +92,7 @@
   renewal={transport.renewal ?? null}
   onceExpiryDefault={transport.expiry?.onceDefault ?? false}
   elevated={transport.elevated ?? null}
+  approveGuard={transport.approveGuard ?? null}
   {onApprove}
   {onCancel}
   onRetry={transport.retryPreview}

@@ -18,6 +18,7 @@
   import {
     carryPopupSignFlow, newWebSignFlowId, releaseWebSignFlow, takePopupSignFlow, webSignFlowHeaders,
   } from '$lib/web-sign-flow';
+  import { approveGuardForFrame } from '$lib/approve-guard';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
@@ -196,6 +197,8 @@
   // This page's own flow id for one sign request, drawn here and never taken from the app's request. The pop-up
   // returns from the login page as a new page load, so the id the user left with is the one carried in this tab.
   const webFlowId = takePopupSignFlow() ?? newWebSignFlowId();
+  // In a frame, a click on Approve soon after it became actionable is ignored: a page over the frame cannot time one onto it.
+  const approveGuard = approveGuardForFrame();
   const requester = originAuthority(origin);
   const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
@@ -1440,6 +1443,7 @@
       model={reviewModel}
       initialSelection={reviewSelection}
       transport={{
+        approveGuard,
         approving: signing,
         passkeyPending: exactByteGate.action === 'wait',
         host: messageHost,

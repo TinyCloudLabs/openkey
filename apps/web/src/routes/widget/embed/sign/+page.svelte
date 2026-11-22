@@ -16,6 +16,7 @@
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import { newWebSignFlowId, releaseWebSignFlow, webSignFlowHeaders } from '$lib/web-sign-flow';
+  import { approveGuardForFrame } from '$lib/approve-guard';
   import Button from '$lib/components/ui/button.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
@@ -187,6 +188,8 @@
   const origin = $page.url.searchParams.get('origin') || '*';
   // This page's own flow id for one sign request, drawn here and never taken from the app's request.
   const webFlowId = newWebSignFlowId();
+  // In a frame, a click on Approve soon after it became actionable is ignored: a page over the frame cannot time one onto it.
+  const approveGuard = approveGuardForFrame();
   const requester = originAuthority(origin);
   const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const v2 = $page.url.searchParams.get('protocolVersion') === '2';
@@ -1530,6 +1533,7 @@
         initialSelection={reviewSelection}
         layoutBlocked={v2 ? !layoutReady : !frameSettled}
         transport={{
+          approveGuard,
           approving: signing,
           passkeyPending: exactByteGate.action === 'wait',
           host: messageHost,

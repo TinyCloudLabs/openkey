@@ -887,6 +887,9 @@ sign-in made **for this sign request** counts as that request's approval passkey
 - The digest, token and selection checks of the approval are unchanged. Account-level actions (lowering the
   approval setting, TinyCloud manage-key mode, enabling an app, account deletion, passkey enrolment and removal,
   key export or recovery) never read the cover.
+- A click on Approve that arrives less than 500 ms after the button became actionable (preview shown, nothing
+  blocking) is ignored, so a page placed over the frame cannot time a click onto it right after the user's own
+  sign-in. The window restarts each time Approve becomes actionable again.
 - Not covered: typed-data signing, Nostr approval, the connect page and the delegate handoff pages. Their Approve
   keeps asking for its own passkey.
 
