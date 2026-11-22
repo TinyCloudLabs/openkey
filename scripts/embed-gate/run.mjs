@@ -34,7 +34,6 @@ import { createServer } from "node:http";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
 import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode, reopenInbox, waitForMail } from "./qa-mail.mjs";
 import { judgeSignFace, scrub } from "./judge.mjs";
 
@@ -44,7 +43,8 @@ const API = "https://api.openkey.so";
 const HOST = process.env.EMBED_GATE_HOST_ORIGIN ?? "https://tinycloud.one";
 const TARGET = process.env.EMBED_GATE_TARGET ?? "candidate";
 const OUT = process.env.EMBED_GATE_OUT ?? join(process.cwd(), "embed-gate-out");
-const LABEL = process.env.EMBED_GATE_INBOX_LABEL ?? "share-okgate";
+// Fixed: openkey's QA_MAIL_READ_TOKEN reads only `share-` run ids, and a cleanup run may act only on this label's addresses.
+const LABEL = "share-okgate";
 const DRY = process.env.EMBED_GATE_DRY === "1"; // stops at the connect frame: no mail, no account
 // Cleanup only: deletes the account an earlier run with this 12-hex run id left behind, then reads back that the
 // address has no account. No new account is made.
@@ -74,6 +74,16 @@ const report = {
 };
 const save = () => writeFileSync(join(OUT, "report.json"), JSON.stringify(report, null, 2));
 const artifact = (name, value) => writeFileSync(join(OUT, name), typeof value === "string" ? scrub(value) : JSON.stringify(value, null, 2));
+const runIdOf = (address) => /^tcqa\+[a-z0-9-]+-([0-9a-f]{12})-[0-9a-f]{8}@/.exec(address)?.[1] ?? "unknown";
+// The cleanup ledger (artifact cleanup-ledger.json, uploaded even when the job fails or is cancelled): this
+// run's QA account by label and run id, written before sign-up. Neither it nor the log holds the address, a hash
+// of it or a code: QA_MAIL_ADDRESS_SECRET rebuilds the address from the run id (dispatch cleanup_run_id).
+const writeLedger = (state) => {
+  const entry = { label: LABEL, runId: runIdOf(inbox.address), state,
+    githubRunId: process.env.GITHUB_RUN_ID ?? null, sha: process.env.EMBED_GATE_SHA ?? null, at: new Date().toISOString() };
+  writeFileSync(join(OUT, "cleanup-ledger.json"), JSON.stringify(entry, null, 2));
+  process.stderr.write(`embed-gate ledger: ${state} label ${entry.label} run id ${entry.runId}\n`);
+};
 let shots = 0;
 const snap = async (page, name) => {
   const mask = page.frames().flatMap((frame) => [frame.locator("input"), frame.getByText(/qa-mail\.tinycloud\.xyz/)]);
@@ -525,6 +535,8 @@ try {
       throw new GateFailure("dry_run_stop");
     }
     inbox = createInbox(LABEL);
+    // The ledger holds this run's account before OpenKey can make it, so a crash or a killed runner never loses it.
+    writeLedger("signing-up");
     await button(connect, "Continue with email").first().click({ timeout: 10_000 });
     await until("connect-email-field", () => connect.locator('input[type="email"]').isVisible(), 30_000);
     await connect.locator('input[type="email"]').fill(inbox.address);
@@ -707,13 +719,14 @@ try {
       report.account.deleted = false;
       leg("cleanup", "FAIL", { verdict: error instanceof GateFailure ? error.verdict : scrub(String(error?.message ?? error)).slice(0, 200) });
     }
-    // A leaked QA account fails the run, whatever the legs said. Its 12-hex run id and a hash of the address
-    // (never the address) go in the summary so leaks can be counted and found (Bobbie, Clarissa, #690 review).
+    // A leaked QA account fails the run, whatever the legs said. Its 12-hex run id (never the address) goes in
+    // the summary so leaks can be counted and cleaned up (Bobbie, #690 review).
     if (report.account.deleted !== true) {
       report.result = "failed";
-      report.account.leakedRunId = /^tcqa\+[a-z0-9-]+-([0-9a-f]{12})-[0-9a-f]{8}@/.exec(inbox?.address ?? "")?.[1] ?? "unknown";
-      report.account.leakedAddressSha256 = inbox ? createHash("sha256").update(inbox.address).digest("hex").slice(0, 16) : "unknown";
-    } else if (report.mode === "cleanup-only") {
+      report.account.leakedRunId = inbox ? runIdOf(inbox.address) : "unknown";
+    }
+    if (inbox) writeLedger(report.account.deleted === true ? "deleted" : "LEAKED");
+    if (report.account.deleted === true && report.mode === "cleanup-only") {
       // Read back: the address must now sign in as a stranger ("Create a new account"), which is never pressed.
       try {
         const gone = await readBackGone(browser);
@@ -747,6 +760,6 @@ function summary() {
   lines.push("", `Terms owed by the new account: ${report.terms.owed === null ? "not decided" : report.terms.owed} (${report.terms.source ?? "n/a"})`,
     `OpenKey frame paths: ${[...new Set(report.frames.map((f) => f.path))].join(", ") || "none"}`,
     `Refused frames: ${report.refusedFrames.length}; approvals: ${report.approvals.length}; passkey assertions: ${report.passkey.asserted}`,
-    `QA account deleted: ${report.account.deleted ?? "n/a"}${report.account.leakedRunId ? ` (LEAKED: run id ${report.account.leakedRunId}, address sha256 ${report.account.leakedAddressSha256})` : ""}; duration ${Math.round(since() / 1000)} s`, "");
+    `QA account deleted: ${report.account.deleted ?? "n/a"}${report.account.leakedRunId ? ` (LEAKED: run id ${report.account.leakedRunId})` : ""}; duration ${Math.round(since() / 1000)} s`, "");
   return lines.join("\n");
 }
