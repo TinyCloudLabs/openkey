@@ -9,6 +9,10 @@ on:
         description: Inspect serving instances, rollback image, and migration state without changes
         type: boolean
         default: false
+      override_reason:
+        description: Skips the Share sender smoke before the deploy. Needs a written reason, which the run summary records
+        type: string
+        default: ''
 
 concurrency:
   group: production-api
@@ -50,12 +54,35 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: bun scripts/inspect-api-production.ts
 
+  # Runs the Share sender smoke against production before this deploy changes it. A red smoke stops the
+  # deploy. `override_reason` skips the smoke and is recorded in the run summary.
+  smoke-gate:
+    if: github.ref == 'refs/heads/main' && !inputs.preflight_only && inputs.override_reason == ''
+    uses: ./.github/workflows/share-sender-smoke.yml
+    secrets: inherit
+
   deploy:
-    if: github.ref == 'refs/heads/main' && !inputs.preflight_only
+    needs: smoke-gate
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && !inputs.preflight_only && (
+        needs.smoke-gate.result == 'success' ||
+        (needs.smoke-gate.result == 'skipped' && inputs.override_reason != '')
+      )
     runs-on: ubuntu-latest
     environment: production
     steps:
       - uses: actions/checkout@v4
+
+      - name: Record the smoke override
+        if: inputs.override_reason != ''
+        env:
+          OVERRIDE_REASON: ${{ inputs.override_reason }}
+        run: |
+          {
+            echo "### Share sender smoke skipped"
+            echo
+            echo "Run by ${GITHUB_ACTOR} with override_reason: ${OVERRIDE_REASON}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install Phala CLI
         run: npm install -g phala@1.1.22
