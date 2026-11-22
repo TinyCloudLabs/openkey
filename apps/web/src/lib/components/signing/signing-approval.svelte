@@ -81,6 +81,8 @@
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
   import ElevatedWarning from "$lib/components/signing/elevated-warning.svelte";
+  import ClaimedPresentation from "$lib/components/signing/claimed-presentation.svelte";
+  import type { ClaimedPresentationView } from "$lib/claimed-presentation";
   import type { RenewalChoice, ShortenOnlyExpiry } from "$lib/components/signing/signing-adapter-types";
   import { ONCE_DEFAULT_EXPIRY_MS, onceDefaultExpiryMs, requestedExpiryMs } from "$lib/approval-expiry";
   import { isOnceTier } from "$lib/renewal-default";
@@ -158,6 +160,8 @@
      * narrowed (exact bytes): approve or cancel it whole. `onDecide` gets the action ids the owner allowed.
      */
     elevated?: { splittable: boolean; onDecide: (allowed: string[]) => void } | null;
+    /** The app's own words about a plain `signMessage()` request (name, who it is for, reason); shown under the requester line. */
+    claimed?: ClaimedPresentationView | null;
     onApprove: () => void;
     onCancel: () => void;
     onRetry?: () => void;
@@ -194,6 +198,7 @@
     onceExpiryDefault = false,
     renewal = null,
     elevated = null,
+    claimed = null,
     onApprove,
     onCancel,
     onRetry,
@@ -733,6 +738,11 @@
     {/if}
     <p id="signing-approval-hint" class="hint">{hint}</p>
   </header>
+
+  <!-- The app's own words about a plain sign request, under the verified origin and marked as unchecked. -->
+  {#if claimed}
+    <ClaimedPresentation view={claimed} />
+  {/if}
 
   {#if context}
     <div class="context">{@render context()}</div>

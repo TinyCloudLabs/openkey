@@ -16,6 +16,7 @@
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
+  import { claimedPresentation, claimedPresentationView } from '$lib/claimed-presentation';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import { serverActionId } from '$lib/delegate-review-selection';
@@ -68,6 +69,10 @@
   let keyProblem = $state<'missing' | 'transient' | null>(null);
   let keyReadGeneration = 0;
   const expectedAddress = $derived(parseSIWE(message)?.message.address.toLowerCase() ?? null);
+  const claimedView = $derived.by(() => {
+    const claimed = claimedPresentation({ presentation: plainPresentation, origin });
+    return claimed ? claimedPresentationView(claimed) : null;
+  });
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
@@ -162,6 +167,9 @@
   // NEVER treats it as verified — trust is decided by the server prepare
   // response.
   let requestPresentation = $state<Record<string, unknown> | null>(null);
+  // The `presentation` of a plain signMessage() request: what the app says about itself. Display-only; read only by
+  // `claimedView`, which decides what may be shown. It is not sent to the API, the signer or the opener.
+  let plainPresentation = $state<unknown>(null);
   // Server-decided trust for the presentation envelope. Populated after
   // /authorize-sign-prepare returns. Starts null so we fail closed to the
   // `unsigned` model until the server responds.
@@ -212,6 +220,7 @@
           transport = createWidgetTransport({
             origin,
             container,
+            showsPresentation: true,
             onRequest: handleTransportRequest,
             onClose: handleTransportClose,
             onInvalid: (reason, event) => {
@@ -307,6 +316,8 @@
       data.presentation && typeof data.presentation === 'object'
         ? (data.presentation as Record<string, unknown>)
         : null;
+    // A TinyCloud authorization request carries its own envelope (above); the app's own words belong to a plain signMessage().
+    plainPresentation = null;
     // Server-decided trust is not known yet — starts null, populated after
     // the first /authorize-sign-prepare call. Editing/reset invalidates
     // the preview but keeps the trust decision (which is bound into the
@@ -512,14 +523,14 @@
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
       requestedKeyId = keyId;
-      // Legacy path: envelope forwarding. The legacy path has weaker
-      // origin/version guarantees, so we only accept `presentation` as
-      // display-only and never upgrade trust off of it — the server
-      // prepare call remains the sole trust authority.
+      // A plain signMessage() (no protocol version) carries the app's own words in `presentation`; they are shown only
+      // after `claimedPresentation` has judged them and are never read as a manifest envelope or sent anywhere.
+      const plain = incomingProtocolVersion === null;
       requestPresentation =
-        event.data.presentation && typeof event.data.presentation === 'object'
+        !plain && event.data.presentation && typeof event.data.presentation === 'object'
           ? event.data.presentation
           : null;
+      plainPresentation = plain ? event.data.presentation ?? null : null;
       serverMetadataTrust = null;
       serverVerifiedManifest = null;
       keyFetched = false; // Reset so effect can run
@@ -1463,6 +1474,7 @@
           },
         },
         invalidatePreview: invalidatePreviewForSelectionEdit,
+        claimedPresentation: claimedView,
       }}
     />
   {:else}
