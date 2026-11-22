@@ -76,6 +76,9 @@ jobs:
       # The workflow's own commit (main), which has the script, not necessarily the deployed one.
       - uses: actions/checkout@v4
         if: steps.record.outputs.found == 'true'
+        with:
+          # This job holds contents: write; gh reads GH_TOKEN, so nothing needs the token in .git/config.
+          persist-credentials: false
 
       - name: Install Phala CLI
         if: steps.record.outputs.found == 'true'
@@ -120,7 +123,7 @@ jobs:
           Each \`app-compose.<compose_hash>.json\` asset is the exact app-compose the CVM measured for one deploy of this commit:
           - \`sha256sum app-compose.<compose_hash>.json\` equals the \`compose_hash\` in the CVM's attestation (the \`compose-hash\` event in RTMR3);
           - every \`image:\` in its \`docker_compose_file\` is pinned by \`@sha256:\` digest;
-          - \`gh attestation verify oci://docker.io/<repository>@<digest> --repo ${GITHUB_REPOSITORY}\` shows which workflow and commit built the API image.
+          - \`gh attestation verify oci://docker.io/<repository>@<digest> --repo ${GITHUB_REPOSITORY}\` shows which workflow run built the API image. Its source commit is the commit that workflow ran from: for a Deploy API run, the commit above; for a TC-492 cutover, \`main\` at dispatch, while the image was built from the candidate commit above.
           EOF
             )
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --latest=false \
