@@ -97,6 +97,8 @@ const stubs: Record<string, string> = {
   ...STUBS,
   '$lib/components/admin-console-link.svelte': `export { default } from '${emptyUrl}';`,
   '$lib/renewal-leases': "export const renewalLeaseCopy = { signOutKeepsRenewing: '', stopRenewalsLink: '' };",
+  // The bound on a session that does not answer, shortened.
+  '$lib/terms': `export * from '${pathToFileURL(join(WEB_ROOT, 'src/lib/terms.ts')).href}'; export const TERMS_CHECK_TIMEOUT_MS = 200;`,
   '$lib/components/auth/terms-step.svelte': `export { default } from '${termsStepUrl}';`,
   '$lib/components/auth/terms-check-failed.svelte': `export { default } from '${emptyUrl}';`,
 };
@@ -193,8 +195,8 @@ const settle = async () => {
 interface Run {
   /** `METHOD /path` for every request made, in order. */
   requests: string[];
-  /** Answers the held Terms status read. */
-  answer: (requiresAcceptance: boolean) => void;
+  /** Answers the held Terms status read: whether the Terms are owed, or a credential that no longer signs anyone in. */
+  answer: (result: boolean | 'signed-out') => void;
   target: HTMLElement;
   session: Scene['session'];
   /** `openkey:ready` posts to the opener. */
@@ -215,7 +217,7 @@ async function withPage(
   Object.defineProperty(win, 'opener', { value: { postMessage: (data: unknown) => posts.push(data) }, configurable: true });
 
   const requests: string[] = [];
-  const held = Promise.withResolvers<boolean>();
+  const held = Promise.withResolvers<boolean | 'signed-out'>();
   const realFetch = globalThis.fetch;
   const realConsole = { error: console.error, log: console.log, warn: console.warn };
   console.error = () => {};
@@ -224,7 +226,11 @@ async function withPage(
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = new URL(String(input), 'https://openkey.test').pathname;
     requests.push(`${init?.method ?? 'GET'} ${path}`);
-    if (path === '/api/account/terms') return held.promise.then((requiresAcceptance) => new Response(JSON.stringify({ ...STATUS, requiresAcceptance }), { status: 200 }));
+    if (path === '/api/account/terms') {
+      return held.promise.then((result) => result === 'signed-out'
+        ? new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 })
+        : new Response(JSON.stringify({ ...STATUS, requiresAcceptance: result }), { status: 200 }));
+    }
     return new Response(JSON.stringify({ keys: [], leases: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   }) as unknown as typeof fetch;
 
@@ -234,7 +240,7 @@ async function withPage(
   try {
     await act({
       requests,
-      answer: (requiresAcceptance) => held.resolve(requiresAcceptance),
+      answer: (result) => held.resolve(result),
       target,
       session,
       ready: () => posts.filter((post) => (post as { type?: string }).type === 'openkey:ready').length,
@@ -309,6 +315,28 @@ for (const name of ['connect', 'dashboard'] as const) {
         expect(target.querySelector('main, button')).toBe(before);
         expect(before!.isConnected).toBe(true);
         expect(ready()).toBe(readyBefore);
+      });
+    });
+
+    test('a status read that finds the credential signed out releases the page instead of holding it', async () => {
+      await withPage(name, { session: SIGNED_IN }, async ({ requests, answer, ready, checking }) => {
+        await until(() => requests.includes('GET /api/account/terms'), 'the Terms read');
+        expect(checking()).toBe(true);
+        answer('signed-out');
+        await until(() => !checking(), 'the page');
+        await settle();
+        expect(checking()).toBe(false);
+        expect(ready()).toBe(name === 'connect' ? 1 : 0);
+      });
+    });
+
+    test('a session that never answers stops holding the page after the bound', async () => {
+      await withPage(name, { session: PENDING }, async ({ requests, ready, checking }) => {
+        await settle();
+        expect(checking()).toBe(true);
+        await until(() => !checking(), 'the page, once the session has not answered within the bound');
+        expect(requests).toEqual([]);
+        expect(ready()).toBe(name === 'connect' ? 1 : 0);
       });
     });
   });

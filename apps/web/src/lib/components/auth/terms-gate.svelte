@@ -4,14 +4,18 @@
   import TermsStep from '$lib/components/auth/terms-step.svelte';
   import { termsGate } from '$lib/terms-gate';
   import { termsCheckedFirst } from '$lib/terms-release';
+  import { TERMS_CHECK_TIMEOUT_MS } from '$lib/terms';
 
   // The Terms step as a gate in front of a page (window, pop-up, native sheet) or inside the embedded frame's card,
   // following `termsGate`: when the Terms are owed, the Terms in place of the page; when the status can't be read, Try
   // again. In a build with a Terms release, a page is not shown until the account's status is known: the gate shows a
-  // spinner while the session is read and while the status is read, so the page makes no account call before the read
-  // resolves. The first time the page is shown releases it for good: a later check (a refused call) keeps it mounted,
-  // with its own loaders, focus and state, and a sign-in made on it waits for the status in the page itself. A build
-  // with no release holds nothing. The frame's card, which has no page behind it, shows a spinner.
+  // spinner while the session is read (for at most `TERMS_CHECK_TIMEOUT_MS`) and while the status is read, so the page
+  // makes no account call before the read resolves. A status read that finds the credential signed out releases the
+  // page. The first time the page is shown releases it for good: a later check (a refused call) keeps it mounted, with
+  // its own loaders, focus and state. A sign-in made on the page waits for the status only on widget/connect, which
+  // loads its keys when the gate is open; widget/sign and widget/sign-typed-data list keys as soon as the session
+  // exists, and the API refuses those calls until the account has agreed. A build with no release holds nothing. The
+  // frame's card, which has no page behind it, shows a spinner.
   interface Props {
     surface: 'web' | 'native' | 'embed';
     email?: string | null;
@@ -35,8 +39,22 @@
   }: Props = $props();
 
   const phase = $derived($termsGate.phase);
+  // A session that does not answer within the bound stops holding the page.
+  let sessionWaitedOut = $state(false);
+  $effect(() => {
+    if (!sessionPending) return;
+    const timer = setTimeout(() => { sessionWaitedOut = true; }, TERMS_CHECK_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  });
+  // Once the gate has left `idle`, `idle` is a status read that found the credential signed out, not a check yet to start.
+  let read = $state(false);
+  $effect.pre(() => {
+    if (phase !== 'idle') read = true;
+  });
   // The page waits while the session or the status is read: a signed-in account whose check has not started yet waits too.
-  const waiting = $derived(termsCheckedFirst() && (sessionPending || phase === 'checking' || (signedIn && phase === 'idle')));
+  const waiting = $derived(
+    termsCheckedFirst() && ((sessionPending && !sessionWaitedOut) || phase === 'checking' || (signedIn && phase === 'idle' && !read)),
+  );
   let released = $state(false);
   $effect.pre(() => {
     if (!waiting) released = true;
