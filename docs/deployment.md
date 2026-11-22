@@ -764,7 +764,8 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
 1. Connect your repository to Cloudflare Pages
 
 2. Configure build settings:
-   - Build command: `bun run build --filter @openkey/web`
+   - Build command: `bun run build --filter @openkey/web` (ends with `bun run audit:web`, the
+     artifact audit; a finding fails the build. See `docs/security/required-checks.md`.)
    - Build output: `apps/web/.svelte-kit/cloudflare`
    - Root directory: `/`
 
