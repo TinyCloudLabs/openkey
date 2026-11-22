@@ -5,6 +5,8 @@
 // whose input is set: an empty input leaves the stored value alone, and `none` clears it. The two
 // are different results, so a field is absent from the update data, never `null`, when it is empty.
 
+import { validateOAuthClientMetadataUrl } from '../apps/api/src/services/oauth-redirect-uris';
+
 export type BrandingEnv = Readonly<Record<string, string | undefined>>;
 
 export interface BrandingFields {
@@ -61,4 +63,18 @@ export function updateBranding(env: BrandingEnv): Partial<BrandingFields> {
     ...(parsed.themeBackgroundColor !== undefined ? { themeBackgroundColor: parsed.themeBackgroundColor } : {}),
     ...(parsed.themeAccentColor !== undefined ? { themeAccentColor: parsed.themeAccentColor } : {}),
   };
+}
+
+/**
+ * The application website of an existing client (TC-3660): undefined = empty input (unchanged),
+ * null = `none` (clear), string = the new value. Same URL rules as the admin routes, and HTTPS only.
+ */
+export function updateWebsite(env: BrandingEnv): { uri?: string | null } {
+  const rawValue = env.CLIENT_URI?.trim();
+  if (!rawValue) return {};
+  if (rawValue.toLowerCase() === 'none') return { uri: null };
+  if (!validateOAuthClientMetadataUrl(rawValue).valid || new URL(rawValue).protocol !== 'https:') {
+    throw new Error('CLIENT_URI must be an HTTPS URL without credentials or a fragment');
+  }
+  return { uri: rawValue };
 }

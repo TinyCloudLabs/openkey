@@ -74,13 +74,23 @@ const jwk = encodeBase64UrlJson({ kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAA
 const link = `/delegate?did=did:key:z6Mk&jwk=${jwk}`;
 const signInPrompt = (page: Page) => page.getByRole('heading', { name: 'Sign in to review this request' });
 
-test.describe('the session check on /delegate', () => {
+// With a Terms release (the suite's build) the root layout's Terms gate holds the page, with its spinner, while the
+// session is read; with no release the page shows its own checking state.
+for (const release of ['on', 'off'] as const) test.describe(`the session check on /delegate with ${release === 'on' ? 'a' : 'no'} Terms release`, () => {
+  test.beforeEach(({ page }) => page.addInitScript((mode) => sessionStorage.setItem('openkey_dev_terms_release', mode), release));
+  const checkingState = (page: Page) => release === 'on'
+    ? page.getByTestId('terms-checking')
+    : page.locator('[role="status"] [aria-current="step"]');
+  const expectChecking = (page: Page) => release === 'on'
+    ? expect(checkingState(page)).toBeVisible()
+    : expect(checkingState(page)).toHaveText('Checking your OpenKey account');
+
   test('a signed-in owner sees a checking state, never the sign-in prompt', async ({ page }) => {
     await watchForSignInPrompt(page);
     const releaseSession = await mock(page, signedInSession);
     await page.goto(link);
 
-    await expect(page.locator('[role="status"] [aria-current="step"]')).toHaveText('Checking your OpenKey account');
+    await expectChecking(page);
     await expect(signInPrompt(page)).toHaveCount(0);
     await expect(page.getByRole('link', { name: 'Continue with email' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Use a passkey instead' })).toHaveCount(0);
@@ -97,7 +107,7 @@ test.describe('the session check on /delegate', () => {
     const releaseSession = await mock(page, null);
     await page.goto(link);
 
-    await expect(page.locator('[role="status"] [aria-current="step"]')).toHaveText('Checking your OpenKey account');
+    await expectChecking(page);
     await expect(signInPrompt(page)).toHaveCount(0);
 
     releaseSession();
