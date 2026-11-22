@@ -186,3 +186,80 @@ describe('every other typed data is signed as before, from any origin', () => {
     }
   });
 });
+
+describe('a domain that is the registry contract itself', () => {
+  const PROXIES = ['0xbA1bf1B4C72d779f3dd21a8f29a70A82fD4dc3B7', '0x89e5DEc611f357b7274B3d74fF3E2e03075ec1F8'];
+  const DOMAIN_TYPES = [
+    { name: 'name', type: 'string' },
+    { name: 'version', type: 'string' },
+    { name: 'chainId', type: 'uint256' },
+    { name: 'verifyingContract', type: 'address' },
+  ];
+  const nameBytes = Array.from(new TextEncoder().encode('TinyCloudRegistry'));
+  const unhashable = [
+    { ...MAIL, domain: { name: 'Example' }, types: { EIP712Domain: [{ name: 'name', type: 'NoSuchType' }], Mail: MAIL.types.Mail } },
+    { ...MAIL, domain: { name: 'Example', verifyingContract: 'not an address' } },
+  ];
+  const refusedShapes: Array<[string, Record<string, unknown>]> = [
+    ['a name that is not a string, with the domain fields declared', {
+      ...MAIL,
+      domain: { name: nameBytes, version: '1', chainId: 1, verifyingContract: PROXIES[0] },
+      types: { EIP712Domain: DOMAIN_TYPES, Mail: MAIL.types.Mail },
+    }],
+    ...PROXIES.flatMap((proxy): Array<[string, Record<string, unknown>]> => [
+      [`the contract ${proxy} alone`, { ...MAIL, domain: { verifyingContract: proxy } }],
+      [`the contract ${proxy} in lower case`, { ...MAIL, domain: { name: 'Example', chainId: 5, verifyingContract: proxy.toLowerCase() } }],
+      [`the contract ${proxy} in upper case digits`, { ...MAIL, domain: { name: 'Example', verifyingContract: `0x${proxy.slice(2).toUpperCase()}` } }],
+    ]),
+    ['a domain that cannot be hashed', unhashable[0]!],
+    ['a verifying contract that is not an address', unhashable[1]!],
+  ];
+
+  test.each(refusedShapes)('%s is refused from another origin or none, and not signed', async (_label, typedData) => {
+    for (const path of ['/key_1/sign-typed-data', '/key_1/sign-typed-data/passkey']) {
+      for (const requestOrigin of [FOREIGN, undefined]) {
+        const res = await post(path, { ...typedData, ...(requestOrigin ? { requestOrigin } : {}) });
+        expect(res.status, `${path} ${requestOrigin}`).toBe(403);
+        expect(await res.json()).toEqual(REFUSAL);
+      }
+    }
+    expect(calls).toEqual([]);
+    expect(unseal).not.toHaveBeenCalled();
+    expect(prisma.ethereumKey.findFirst).not.toHaveBeenCalled();
+  });
+
+  test.each(PROXIES)('the contract %s signs for TinyCloud One', async (proxy) => {
+    const res = await signTypedData({ ...MAIL, domain: { name: 'Example', version: '1', chainId: 1, verifyingContract: proxy }, requestOrigin: 'https://tinycloud.one' });
+    expect(res.status).toBe(200);
+    expect(calls).toEqual(['sign']);
+  });
+
+  test.each([
+    ['a domain with a name', { name: 'Example', version: '1', chainId: 1 }],
+    ['a domain with another contract', { name: 'Example', version: '1', chainId: 1, verifyingContract: '0x1111111111111111111111111111111111111111' }],
+    ['a domain with no fields', {}],
+    ['a domain with a number as the chain', { name: 'Example', chainId: 11155111 }],
+  ])('%s still signs from any origin', async (_label, domain) => {
+    for (const requestOrigin of [FOREIGN, undefined]) {
+      calls = [];
+      const res = await signTypedData({ ...MAIL, domain, ...(requestOrigin ? { requestOrigin } : {}) });
+      expect(res.status, String(requestOrigin)).toBe(200);
+      expect(calls).toEqual(['sign']);
+    }
+  });
+});
+
+describe('a typed-data body that is not an object', () => {
+  test.each(['/key_1/sign-typed-data', '/key_1/sign-typed-data/passkey'])('%s answers 400', async (path) => {
+    const { keysRouter } = await import('../routes/keys?keys-sign-typed-data-registry' as string);
+    for (const body of ['null', '7', '"text"']) {
+      const res = await keysRouter.request(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
+        body,
+      });
+      expect(res.status, body).toBe(400);
+    }
+    expect(calls).toEqual([]);
+  });
+});

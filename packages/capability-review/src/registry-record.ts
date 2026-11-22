@@ -1,3 +1,5 @@
+import { getTypesForEIP712Domain, hashDomain } from "viem";
+
 // Hardening: registry record signing. A signed location-registry record (v1 or v2) is signed as its canonical JSON,
 // text or the 0x hex of its UTF-8 bytes. Such a payload is signed only for the TinyCloud One / Home production origins below;
 // every other origin, and an unattributed request, is refused before an approval is offered.
@@ -91,7 +93,47 @@ export function isRegistryTypedData(typedData: unknown): boolean {
   const { domain, types, primaryType } = typedData as { domain?: unknown; types?: unknown; primaryType?: unknown };
   if (folded(primaryType) === REGISTRY_TYPED_PRIMARY_TYPE) return true;
   if (domain !== null && typeof domain === "object" && folded((domain as { name?: unknown }).name) === REGISTRY_TYPED_DOMAIN_NAME) return true;
-  return types !== null && typeof types === "object" && Object.keys(types).some((name) => folded(name) === REGISTRY_TYPED_PRIMARY_TYPE);
+  if (types !== null && typeof types === "object" && Object.keys(types).some((name) => folded(name) === REGISTRY_TYPED_PRIMARY_TYPE)) return true;
+  return registryDomainByAddressOrSeparator(typedData);
+}
+
+// The registry contracts are upgradeable proxies, so the domain is also recognised by where it points and by the
+// separator it hashes to, whatever the request calls it or however it declares its domain fields.
+const REGISTRY_PROXIES = [
+  { chainId: 1, address: "0xbA1bf1B4C72d779f3dd21a8f29a70A82fD4dc3B7" },
+  { chainId: 11155111, address: "0x89e5DEc611f357b7274B3d74fF3E2e03075ec1F8" },
+] as const;
+
+type DomainArg = Parameters<typeof hashDomain>[0];
+
+/** The domain separator as viem computes it for a typed-data request: explicit `EIP712Domain` types win. */
+function domainSeparatorOf(domain: DomainArg["domain"], types: object): string {
+  return hashDomain({
+    domain,
+    types: { EIP712Domain: getTypesForEIP712Domain({ domain }), ...types } as DomainArg["types"],
+  });
+}
+
+const REGISTRY_DOMAIN_SEPARATORS: ReadonlySet<string> = new Set(
+  REGISTRY_PROXIES.map(({ chainId, address }) =>
+    domainSeparatorOf({ name: "TinyCloudRegistry", version: "1", chainId, verifyingContract: address }, {}),
+  ),
+);
+const REGISTRY_PROXY_ADDRESSES: ReadonlySet<string> = new Set(REGISTRY_PROXIES.map(({ address }) => address.toLowerCase()));
+
+/** True when the request's domain points at a registry proxy or hashes to a registry separator; a domain that cannot be hashed counts. */
+function registryDomainByAddressOrSeparator(typedData: object): boolean {
+  const { domain, types } = typedData as { domain?: unknown; types?: unknown };
+  if (domain !== null && typeof domain === "object") {
+    const contract = folded((domain as { verifyingContract?: unknown }).verifyingContract);
+    if (contract !== null && REGISTRY_PROXY_ADDRESSES.has(contract)) return true;
+  }
+  try {
+    const explicit = types !== null && typeof types === "object" ? types : {};
+    return REGISTRY_DOMAIN_SEPARATORS.has(domainSeparatorOf(domain as DomainArg["domain"], explicit));
+  } catch {
+    return true;
+  }
 }
 
 /** The refusal for this typed data and requesting origin, or null when it may go on to the other checks. */

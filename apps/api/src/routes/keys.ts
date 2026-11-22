@@ -373,6 +373,7 @@ keysRouter.post('/:keyId/sign-typed-data/passkey', async (c) => {
   const user = c.get('user');
   const keyId = c.req.param('keyId');
   const typedBody = await c.req.json<{ domain?: unknown; types?: unknown; primaryType?: unknown; message?: unknown; requestOrigin?: unknown }>();
+  if (typedBody === null || typeof typedBody !== 'object') return c.json({ error: 'Invalid typed data: body must be an object' }, 400);
   const registryRefusal = registryTypedDataRefusalResponse(typedBody);
   if (registryRefusal) return c.json(registryRefusal, 403);
   const checked = checkedTypedData(typedBody);
@@ -507,6 +508,7 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
     /** Verified origin of the requesting site, as for `/sign`. */
     requestOrigin?: string;
   }>();
+  if (body === null || typeof body !== 'object') return c.json({ error: 'Invalid typed data: body must be an object' }, 400);
   const registryRefusal = registryTypedDataRefusalResponse(body);
   if (registryRefusal) return c.json(registryRefusal, 403);
 
