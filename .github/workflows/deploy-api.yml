@@ -107,9 +107,6 @@ jobs:
       checks: read
       id-token: write
       attestations: write
-    outputs:
-      image: ${{ steps.push.outputs.image }}
-      deployed: ${{ steps.phala-deploy.outputs.deployed }}
     steps:
       - uses: actions/checkout@v4
 
@@ -253,6 +250,7 @@ jobs:
         id: phala-deploy
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          IMAGE: ${{ steps.push.outputs.image }}
         run: |
           phala deploy \
             --api-token "$PHALA_CLOUD_API_KEY" \
@@ -263,7 +261,20 @@ jobs:
             --image "$PHALA_OS_IMAGE" \
             --compose docker-compose.prod.yml \
             --wait
-          echo "deployed=true" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/api-deploy-record"
+          jq -n --arg commit "$GITHUB_SHA" --arg image "$IMAGE" '{commit: $commit, image: $image}' \
+            > "$RUNNER_TEMP/api-deploy-record/record.json"
+
+      # TC-3837: publish-api-compose.yml reads this record when this run completes and publishes the
+      # app-compose the CVM measured. It runs as its own workflow so its result never decides this
+      # run's conclusion, which the Share sender smoke and the next deploy's smoke gate key on.
+      - name: Record the deployed image for the compose publication
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: api-deploy-record
+          path: ${{ runner.temp }}/api-deploy-record/record.json
+          if-no-files-found: error
+          retention-days: 90
 
       # Fail closed if the deploy left the CVM on a different OS image.
       - name: Verify production OS image after deploy
@@ -354,17 +365,3 @@ jobs:
             exit 1
           fi
           echo "TC-1012: $raw_url is closed on the gateway (curl exit $rc, $closed consecutive)"
-
-  # TC-3837: publish the app-compose the CVM measured, once the deploy reached the CVM, even if a
-  # later health check failed: that compose is what runs.
-  publish-compose:
-    needs: deploy
-    if: ${{ !cancelled() && needs.deploy.outputs.deployed == 'true' }}
-    permissions:
-      contents: write
-    uses: ./.github/workflows/publish-api-compose.yml
-    with:
-      commit: ${{ github.sha }}
-      image: ${{ needs.deploy.outputs.image }}
-    secrets:
-      PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}

@@ -351,9 +351,6 @@ jobs:
       actions: read
       id-token: write
       attestations: write
-    outputs:
-      deployed: ${{ steps.apply.outputs.deployed }}
-      image: skgbafa/openkey-api@${{ steps.build.outputs.digest }}
     steps:
       - name: Validate destructive-cutover confirmation
         env:
@@ -692,6 +689,7 @@ jobs:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           ACCEPTED_DIGEST: ${{ inputs.accepted_candidate_digest }}
           ACCEPTED_CANDIDATE_COUNT: ${{ inputs.accepted_candidate_count }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail
           thaw_sql=$(psql "$DATABASE_URL" --no-psqlrc --tuples-only --no-align --command \
@@ -716,6 +714,9 @@ jobs:
             tc492-post.json >/dev/null
           phala deploy --api-token "$PHALA_CLOUD_API_KEY" --cvm-id openkey-api --compose docker-compose.prod.yml --no-public-logs --no-public-sysinfo --no-dev-os --image "$PHALA_OS_IMAGE" --wait
           echo "deployed=true" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/api-deploy-record"
+          jq -n --arg commit "$CANDIDATE_SHA" --arg image "skgbafa/openkey-api@${IMAGE_DIGEST}" '{commit: $commit, image: $image}' \
+            > "$RUNNER_TEMP/api-deploy-record/record.json"
           phala ps openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/containers-after.json
           EXPECTED_IMAGE="skgbafa/openkey-api@${IMAGE_DIGEST}" node <<'NODE'
           const fs = require('node:fs');
@@ -735,6 +736,17 @@ jobs:
           NODE
           rm -f /tmp/containers-after.json
           printf 'candidate-deployed\n' > tc492-phase.txt
+
+      # TC-3837: publish-api-compose.yml reads this record when this run completes and publishes the
+      # app-compose the CVM measured, as soon as the candidate reached the CVM.
+      - name: Record the deployed image for the compose publication
+        if: ${{ always() && steps.apply.outputs.deployed == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: api-deploy-record
+          path: ${{ runner.temp }}/api-deploy-record/record.json
+          if-no-files-found: error
+          retention-days: 90
 
       # Fail closed if the deploy left the CVM on a different OS image.
       - name: Verify production OS image after deploy
@@ -821,16 +833,3 @@ jobs:
             openid-configuration.json
           if-no-files-found: warn
           retention-days: 90
-
-  # TC-3837: publish the app-compose the CVM measured once the candidate reached it.
-  publish-compose:
-    needs: cutover
-    if: ${{ !cancelled() && needs.cutover.outputs.deployed == 'true' }}
-    permissions:
-      contents: write
-    uses: ./.github/workflows/publish-api-compose.yml
-    with:
-      commit: ${{ inputs.candidate_sha }}
-      image: ${{ needs.cutover.outputs.image }}
-    secrets:
-      PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}

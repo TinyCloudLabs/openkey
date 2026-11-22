@@ -665,13 +665,15 @@ provenance attestation:
 gh attestation verify oci://docker.io/skgbafa/openkey-api@sha256:<digest> --repo TinyCloudLabs/openkey
 ```
 
-Once the deploy reaches the CVM, `publish-api-compose.yml` reads the CVM's
-attestation from Phala, requires that the `compose-hash` event, Phala's
-`compose_hash` and sha256 of the measured app-compose agree and that the api
-service runs the pushed digest, then uploads that app-compose as
-`app-compose.<compose_hash>.json` to the release `openkey-api-<commit>`.
-`sha256sum` of the asset equals the `compose_hash` in the attestation. A failure
-there fails the deploy run, which also holds back the Share sender smoke.
+When a deploy run that reached the CVM completes, its own workflow,
+`publish-api-compose.yml`, takes the image from the run's `api-deploy-record`
+artifact and reads the CVM's attestation from Phala. It requires that the
+`compose-hash` event, Phala's `compose_hash` and sha256 of the measured
+app-compose agree and that the api service runs that image, then uploads that
+app-compose as `app-compose.<compose_hash>.json` to the release
+`openkey-api-<commit>`. `sha256sum` of the asset equals the `compose_hash` in
+the attestation. A failure fails the publish run, not the deploy run, so the
+Share sender smoke and the next deploy's smoke gate are unaffected.
 
 #### Release order when web and API ship together
 
