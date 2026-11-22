@@ -216,9 +216,29 @@ setting's name, and a pass logs `measured_settings_verified`. To change one, cha
 from outside that the live API serves them (`scripts/probe-api-settings.ts`). `WEBAUTHN_ORIGIN`, `CORS_ORIGIN`,
 `API_PORT` and the ingress `DSTACK_GATEWAY_DOMAIN` stay in the encrypted env. Names these settings replace may
 remain in the CVM's `allowed_envs`; the compose doesn't reference them, so their stored values have no effect.
-Removing them takes an encrypted-env save, a separate operator step. If a deploy stops at boot with
-`config_invalid`, roll back as for any failed deploy: `gh run rerun <run id of the last good deploy-api.yml run>`
-redeploys that commit's compose and image, which read these names from the encrypted env.
+Removing them takes an encrypted-env save, a separate operator step.
+
+Rolling back a deploy that stops at boot with `config_invalid`: re-run only the `deploy` job of the last good
+`deploy-api.yml` run. That redeploys that commit's compose and image, which read these names from the encrypted
+env. A full `gh run rerun <run id>` does not work here: it re-runs `smoke-gate` first, which requires a healthy
+`/health` on the serving API and fails while the API is down, so `deploy` is skipped. Run:
+
+```bash
+job=$(gh run view <run id of the last good deploy-api.yml run> --repo TinyCloudLabs/openkey \
+  --json jobs --jq '.jobs[] | select(.name == "deploy") | .databaseId')
+gh run rerun --job "$job" --repo TinyCloudLabs/openkey
+```
+
+GitHub keeps that run's `smoke-gate` success, so `deploy` runs without the health check. This works while the run
+is less than 30 days old (GitHub's re-run limit) and no migration has been applied since it ran. Otherwise revert
+the change on `main` and dispatch `deploy-api.yml` with `override_reason` set, which skips `smoke-gate` and
+records the reason in the run summary. Either path takes about 20 minutes, 35 at most.
+
+`OPENKEY_NATIVE_RENEW_DISABLED` and `OAUTH_DYNAMIC_CLIENT_REGISTRATION` are kill switches, and they are in this
+set: an encrypted-env save no longer turns them. To turn one, merge a pull request that changes its literal in
+`docker-compose.prod.yml` (`OPENKEY_NATIVE_RENEW_DISABLED=true`; `OAUTH_DYNAMIC_CLIENT_REGISTRATION=false`) and
+dispatch `deploy-api.yml`, about 20 minutes and 35 at most. In an emergency the pull request is that one line;
+if the API is down, dispatch with `override_reason` so `smoke-gate` doesn't stop the deploy.
 
 | Variable | Description |
 |----------|-------------|

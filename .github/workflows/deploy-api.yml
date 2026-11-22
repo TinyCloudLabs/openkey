@@ -1,5 +1,6 @@
 # Deploys are manual: `gh workflow run deploy-api.yml --ref main`, run by the release coordinator.
-# Rollback: `gh run rerun <last good run>`.
+# Rollback: re-run only the `deploy` job of the last good run, `gh run rerun --job <its deploy job id>`; a full
+# `gh run rerun` re-runs smoke-gate, which fails while the API is down. Steps: docs/deployment.md (TC-3840).
 name: Deploy API to Phala Cloud
 
 on:
