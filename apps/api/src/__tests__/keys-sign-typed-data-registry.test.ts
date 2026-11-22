@@ -16,7 +16,7 @@ const REFUSAL = {
   error: "Only TinyCloud One can request a signature that sets the account's node location through OpenKey. Nothing was signed.",
   code: 'registry_record_sign_refused',
 };
-const ALLOWED_ORIGINS = ['https://home.tinycloud.xyz', 'https://tinycloud.one', 'https://app.tinycloud.one'];
+const ALLOWED_ORIGINS = ['https://home.tinycloud.xyz', 'https://tinycloud.one'];
 
 let calls: string[] = [];
 const unseal = mock(async () => privateKey);
@@ -261,5 +261,17 @@ describe('a typed-data body that is not an object', () => {
       expect(res.status, body).toBe(400);
     }
     expect(calls).toEqual([]);
+  });
+});
+
+describe('the app subdomain of One is not an allowed origin', () => {
+  test('the registry struct from it is refused on both typed-data routes', async () => {
+    for (const path of ['/key_1/sign-typed-data', '/key_1/sign-typed-data/passkey']) {
+      const res = await post(path, { ...setNode(), requestOrigin: 'https://app.tinycloud.one' });
+      expect(res.status, path).toBe(403);
+      expect(await res.json()).toEqual(REFUSAL);
+    }
+    expect(calls).toEqual([]);
+    expect(unseal).not.toHaveBeenCalled();
   });
 });

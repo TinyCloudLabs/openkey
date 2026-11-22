@@ -8,7 +8,6 @@ import { getTypesForEIP712Domain, hashDomain } from "viem";
 export const REGISTRY_RECORD_SIGN_ORIGINS: readonly string[] = [
   "https://home.tinycloud.xyz",
   "https://tinycloud.one",
-  "https://app.tinycloud.one",
 ];
 
 /** Words for the refusal, in one place: the popup page, the embed page and the API error. */
