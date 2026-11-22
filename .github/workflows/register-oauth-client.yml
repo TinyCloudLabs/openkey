@@ -1,7 +1,7 @@
 name: Register OAuth Client
 
 # Manually register a public (PKCE-only) OAuth client in the prod database, or update
-# the branding fields of an existing enabled client by setting client_id.
+# the branding fields and website of an existing enabled client by setting client_id.
 # OpenKey uses pre-registered clients only, and the prod ADMIN_API_KEY lives
 # solely in the Phala CVM env — this workflow provides an auditable
 # registration path using the same DATABASE_URL secret the deploy workflow's
@@ -29,10 +29,10 @@ on:
           - native
           - spa
       uri:
-        description: 'Application website URL (optional)'
+        description: 'Application website URL (optional); on update, an HTTPS URL replaces it, empty leaves it unchanged and none clears'
         required: false
       client_id:
-        description: 'Existing enabled client ID: update its branding, and with tinycloud_native_delegation replace its existing delegation ceiling (optional)'
+        description: 'Existing enabled client ID: update its branding and website, and with tinycloud_native_delegation replace its existing delegation ceiling (optional)'
         required: false
       icon:
         description: 'HTTPS icon URL (optional); on update, empty leaves unchanged and none clears'
