@@ -6,6 +6,7 @@ import {
   COVER_VISIBLE_MS,
   coverNotHonoured,
   createApproveVisibility,
+  reviewSnapshot,
   sameReview,
   type VisibilityEntryLike,
   type VisibilityObserver,
@@ -239,5 +240,16 @@ describe('whether a refetched offer is for the request that was shown', () => {
 
   test('no snapshot of what was shown never continues', () => {
     expect(sameReview(null, shown)).toBe(false);
+  });
+
+  test('an absent input has no snapshot, so two absent inputs do not match and the tap does not continue', () => {
+    for (const absent of [undefined, null, '']) expect(reviewSnapshot(absent, '', null)).toBeNull();
+    expect(reviewSnapshot('["key","message",null]', '', null)).toEqual(
+      { input: '["key","message",null]', signedMessage: '', renewalLeaseMs: null },
+    );
+    expect(sameReview(reviewSnapshot(undefined, '', null), reviewSnapshot(undefined, '', null))).toBe(false);
+    expect(sameReview(reviewSnapshot(null, '', null), reviewSnapshot('', '', null))).toBe(false);
+    expect(sameReview(shown, null)).toBe(false);
+    expect(sameReview(null, null)).toBe(false);
   });
 });

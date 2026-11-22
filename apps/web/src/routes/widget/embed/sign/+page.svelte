@@ -16,7 +16,9 @@
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import { newWebSignFlowId, releaseWebSignFlow, webSignFlowHeaders } from '$lib/web-sign-flow';
-  import { coverNotHonoured, createApproveVisibility, sameReview, type ReviewSnapshot } from '$lib/approve-visibility';
+  import {
+    coverNotHonoured, createApproveVisibility, reviewSnapshot, sameReview, type ReviewSnapshot,
+  } from '$lib/approve-visibility';
   import Button from '$lib/components/ui/button.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
@@ -199,9 +201,9 @@
   // The request the owner saw when the cover was withdrawn: the continued tap signs only that.
   let coverShown: ReviewSnapshot | null = null;
   function withdrawCover(approved: HeldPreview | null) {
-    coverShown = {
-      input: approved?.input ?? exactBytePasskeyInput ?? '', signedMessage: approved?.signedMessage ?? '', renewalLeaseMs,
-    };
+    coverShown = approved
+      ? reviewSnapshot(approved.input, approved.signedMessage, renewalLeaseMs)
+      : reviewSnapshot(exactBytePasskeyInput, '', renewalLeaseMs);
     coverWithdrawn = true;
     error = '';
     coverRefetch = approved ? 'preview' : 'exact';
@@ -1335,9 +1337,9 @@
     const failed = waiting === 'preview' ? !previewing && (error !== '' || refused) : exactBytePasskeyFetch === 'failed';
     if (!landed && !failed) return;
     if (landed) {
-      const fresh: ReviewSnapshot = {
-        input: preview?.input ?? exactBytePasskey?.input ?? '', signedMessage: preview?.signedMessage ?? '', renewalLeaseMs,
-      };
+      const fresh = preview
+        ? reviewSnapshot(preview.input, preview.signedMessage, renewalLeaseMs)
+        : reviewSnapshot(exactBytePasskey?.input, '', renewalLeaseMs);
       if (!sameReview(coverShown, fresh)) {
         coverRefetch = null;
         return;

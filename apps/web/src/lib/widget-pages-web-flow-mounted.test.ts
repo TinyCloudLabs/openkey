@@ -1,6 +1,6 @@
 // One passkey per web sign interaction, as the production pages send it. Mounts the sign pop-up (widget/sign), the sign
 // iframe (widget/embed/sign) and the embedded sign-in, and checks which flow id each call carries: the id the page drew
-// itself, never one from the app's request, on the preview, the approval, the exact-byte offer and signature, and the
+// itself, never one from the app's request, on the preview, the approval, the exact-byte offer and signature and the
 // passkey sign-in; the pop-up's id crosses the login redirect in the tab's storage; a cancelled request releases it.
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { afterAll, describe, expect, test } from 'bun:test';

@@ -18,7 +18,9 @@
   import {
     carryPopupSignFlow, newWebSignFlowId, releaseWebSignFlow, takePopupSignFlow, webSignFlowHeaders,
   } from '$lib/web-sign-flow';
-  import { coverNotHonoured, createApproveVisibility, sameReview, type ReviewSnapshot } from '$lib/approve-visibility';
+  import {
+    coverNotHonoured, createApproveVisibility, reviewSnapshot, sameReview, type ReviewSnapshot,
+  } from '$lib/approve-visibility';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
@@ -208,9 +210,9 @@
   // The request the owner saw when the cover was withdrawn: the continued tap signs only that.
   let coverShown: ReviewSnapshot | null = null;
   function withdrawCover(approved: HeldPreview | null) {
-    coverShown = {
-      input: approved?.input ?? exactBytePasskeyInput ?? '', signedMessage: approved?.signedMessage ?? '', renewalLeaseMs,
-    };
+    coverShown = approved
+      ? reviewSnapshot(approved.input, approved.signedMessage, renewalLeaseMs)
+      : reviewSnapshot(exactBytePasskeyInput, '', renewalLeaseMs);
     coverWithdrawn = true;
     error = '';
     coverRefetch = approved ? 'preview' : 'exact';
@@ -1227,9 +1229,9 @@
     const landed = waiting === 'preview' ? preview !== null : exactByteGate.action === 'send';
     const failed = waiting === 'preview' ? !previewing && (error !== '' || refused) : exactBytePasskeyFetch === 'failed';
     if (!landed && !failed) return;
-    const fresh: ReviewSnapshot = {
-      input: preview?.input ?? exactBytePasskey?.input ?? '', signedMessage: preview?.signedMessage ?? '', renewalLeaseMs,
-    };
+    const fresh = preview
+      ? reviewSnapshot(preview.input, preview.signedMessage, renewalLeaseMs)
+      : reviewSnapshot(exactBytePasskey?.input, '', renewalLeaseMs);
     coverRefetch = null;
     if (landed && sameReview(coverShown, fresh)) untrack(() => { void approveAndSign(); });
   });

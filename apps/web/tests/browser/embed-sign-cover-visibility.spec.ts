@@ -175,7 +175,7 @@ for (const covered of [true, false]) {
     expect(calls.signs).toHaveLength(1);
     const approval = calls.signs[0]!;
     if (covered) {
-      // One tap: a fresh offer without the flow, the ceremony, and the approval with its assertion and no flow.
+      // One tap: a fresh offer without the flow, then the ceremony, then the approval with its assertion and no flow.
       expect(calls.previews).toHaveLength(2);
       expect(calls.previews[1]!.flow).toBeUndefined();
       expect(await h.ceremonies()).toBe(1);

@@ -897,7 +897,7 @@ sign-in made **for this sign request** counts as that request's approval passkey
   the button fully in view, not covered and not faded for 500 ms without a break, and only while the latest
   report still says so. The 500 ms restarts whenever Approve becomes actionable again.
 - When a tap arrives on a `flowCover` offer without that, the page asks for the passkey on that tap: it stops naming
-  the flow, fetches the offer again without the flow header, and runs the passkey prompt for the same tap (in the
+  the flow, fetches the offer again without the flow header and runs the passkey prompt for the same tap (in the
   iframe once the host has applied the review's layout). The tap goes on only when the fresh offer is for exactly
   the request shown at the tap: the same key, message and selection, chosen expiry, allowed extra permissions,
   sealed bytes and renewal lease. A different request is left on screen and waits for a new tap, which then asks for

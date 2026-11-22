@@ -274,7 +274,7 @@ if (process.env.OPENKEY_WEB_FLOW_PASSKEY_CHILD !== '1') {
       await expectRefusal(await authorize(otherSession, forB.approval, id), 'passkey_approval_required');
 
       const context = await prepareContext(owner, signedIn.auth);
-      // Another flow id, no header, and the id in the body or the query string.
+      // Another flow id, no header, or the id in the body or the query string.
       expect((await previewOf(signedIn.auth, context, newFlowId())).passkey.required).toBe(true);
       expect((await previewOf(signedIn.auth, context, null)).passkey.required).toBe(true);
       const inBody = await post('/api/delegate/authorize-sign-preview', signedIn.auth,
@@ -319,7 +319,7 @@ if (process.env.OPENKEY_WEB_FLOW_PASSKEY_CHILD !== '1') {
       await expectRefusal(await authorize(signedIn.auth, preview.approval, flowId), 'passkey_approval_required');
     });
 
-    test('a sign-in records nothing without a user-verified step-up passkey, a session, and a well-formed web id', async () => {
+    test('a sign-in records nothing without a user-verified step-up passkey, a session or a well-formed web id', async () => {
       const owner = await account();
       const passkey = await createSoftPasskey(prisma, owner.userId, true, web);
       const valid = randomBytes(24).toString('base64url');

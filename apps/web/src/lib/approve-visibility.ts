@@ -118,16 +118,27 @@ export function coverNotHonoured(need: ApprovalPasskeyNeed | null, visibility: A
 /**
  * What the review put in front of the owner for one request: the preview input (key, message, selection, chosen
  * expiry, allowed extra permissions) or the exact-byte offer input, the exact bytes the preview sealed (empty on the
- * exact-byte path, whose bytes are the message in the input), and the owner's renewal lease.
+ * exact-byte path, whose bytes are the message in the input) and the owner's renewal lease.
  */
 export type ReviewSnapshot = { input: string; signedMessage: string; renewalLeaseMs: number | null };
 
+/** The snapshot of a request, or null when it has no input: nothing was shown that a refetched offer could match. */
+export function reviewSnapshot(
+  input: string | null | undefined,
+  signedMessage: string,
+  renewalLeaseMs: number | null,
+): ReviewSnapshot | null {
+  return input ? { input, signedMessage, renewalLeaseMs } : null;
+}
+
 /**
  * True when a refetched offer is for exactly the request the owner saw at the tap. Only then does that tap go on to
- * the passkey prompt; any difference leaves the page showing the new request and waiting for a new tap.
+ * the passkey prompt; any difference, and a missing snapshot on either side, leaves the page showing the new request
+ * and waiting for a new tap.
  */
-export function sameReview(shown: ReviewSnapshot | null, fresh: ReviewSnapshot): boolean {
+export function sameReview(shown: ReviewSnapshot | null, fresh: ReviewSnapshot | null): boolean {
   return shown !== null
+    && fresh !== null
     && shown.input === fresh.input
     && shown.signedMessage === fresh.signedMessage
     && shown.renewalLeaseMs === fresh.renewalLeaseMs;
