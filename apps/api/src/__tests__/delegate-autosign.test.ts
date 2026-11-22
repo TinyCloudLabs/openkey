@@ -1065,7 +1065,7 @@ describe('Auto-Sign and a sign-in message with no Expiration Time (TC-3844)', ()
         approved: false,
         needsApproval: true,
         code: 'auto_sign_needs_expiry',
-        reason: 'OpenKey Auto-Sign only signs a sign-in message with an expiration time',
+        reason: "Auto-Sign signs only sign-in messages that have an expiration time. This message has none, so it needs the owner's approval.",
       });
       expect(signedMessages).toEqual([]);
       expect(log.lines.filter((line) => line.event === 'siwe_signed')).toEqual([]);

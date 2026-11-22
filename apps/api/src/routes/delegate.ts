@@ -1412,7 +1412,7 @@ delegateRouter.post('/sign', async (c) => {
   const siweFacts = signedSiweFacts(body.message);
   if (!siweFacts?.expiry) {
     return c.json(openKeyApprovalRequired(
-      'OpenKey Auto-Sign only signs a sign-in message with an expiration time',
+      "Auto-Sign signs only sign-in messages that have an expiration time. This message has none, so it needs the owner's approval.",
       'auto_sign_needs_expiry',
     ));
   }
