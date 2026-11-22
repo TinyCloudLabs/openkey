@@ -9,6 +9,7 @@ import { mcpAuthorizeNeedsFreshSignIn, withLoginPrompt } from '../mcp-authorize-
 import { storedOpaqueAccessToken, storedRefreshToken, storedToken, type ProviderTokenOptions } from './provider-tokens';
 import { authoritativeQuery, matchesAuthoritativeQuery } from './par';
 import { nativeUserRetryAfter } from './user-rate-limit';
+import { noRepeatsOutsideSignedNames } from '../oauth-signed-query';
 
 /**
  * Fail-closed guards in front of better-auth's OAuth provider (spec:
@@ -300,9 +301,9 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
 
   async function guardAuthorize(c: Context): Promise<Decision> {
     const params = new URL(c.req.url).searchParams;
-    const duplicate = duplicateKey(params);
     const invalid = (): Decision => ({ redirect: `${AUTH_BASE_PATH}/error?error=invalid_request` });
-    if (duplicate) return invalid();
+    // A signed continuation repeats only `ba_param`, the provider's list of signed names.
+    if (!noRepeatsOutsideSignedNames(params)) return invalid();
     const requestId = params.get('tinycloud_request');
     if (params.has('tinycloud_request')) {
       if (params.has('request_uri')) return invalid();
@@ -557,7 +558,7 @@ export function createProviderInterceptors({ database, tokens, provider, getSess
     if (typeof query !== 'string') return invalid;
     const params = new URLSearchParams(query);
     const clientId = params.get('client_id');
-    if (duplicateKey(params) || params.has('tinycloud_request') || params.has('request_uri') ||
+    if (!noRepeatsOutsideSignedNames(params) || params.has('tinycloud_request') || params.has('request_uri') ||
       scopeList(params.get('scope')).includes(TINYCLOUD_DELEGATION_SCOPE) ||
       (!params.has('scope') && clientId && await anyDelegationClient([clientId]))) {
       return invalid;

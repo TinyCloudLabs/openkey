@@ -317,7 +317,7 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
       expect(after.expiresAt.getTime()).toBe(after.createdAt.getTime() + 30 * DAY);
     });
 
-    test('parallel refreshes of one token: one succeeds and extends the session once; the others get the provider\'s invalid_grant and its reuse detection removes the spent token', async () => {
+    test('parallel refreshes of one token: one succeeds and extends the session once; the others get the provider\'s invalid_grant and no second token is issued', async () => {
       for (let round = 0; round < 4; round++) {
         const { cookie, sessionId } = await signedIn();
         const { clientId, tokens } = await connectMcp(cookie);
@@ -331,8 +331,12 @@ if (process.env.OPENKEY_MCP_OAUTH_TEST_CHILD !== '1') {
           expect(loser.body.error_description).not.toContain('connection that authorized');
         }
         expect(near((await session(sessionId)).expiresAt, Date.now() + 6 * DAY), `round ${round}`).toBe(true);
-        // Reuse detection ran: the spent token's row is gone. (The winner's new row may be written just after it.)
-        expect((await refreshRows(clientId)).filter((row) => row.revoked !== null), `round ${round}`).toHaveLength(0);
+        // The provider (>= 1.6.35) revokes the spent token with a compare-and-set, so a loser either loses that
+        // race or, arriving after it, runs reuse detection and deletes the family. Either way at most the winner's
+        // token stays live, and at most the spent token stays as a revoked row.
+        const rows = await refreshRows(clientId);
+        expect(rows.filter((row) => row.revoked === null).length, `round ${round}`).toBeLessThanOrEqual(1);
+        expect(rows.filter((row) => row.revoked !== null).length, `round ${round}`).toBeLessThanOrEqual(1);
       }
     });
 

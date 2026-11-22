@@ -87,3 +87,30 @@ test('native login re-entry keeps tinycloud_request and the signed provider enve
   expect(query.get('ba_pl')).toBe('session');
   expect(query.has('ignored')).toBe(false);
 });
+
+describe('safeOAuthAuthorizeQuery with a ba_param-signed query (oauth-provider >= 1.6.18)', () => {
+  const signed: [string, string][] = [
+    ['client_id', 'native'], ['tinycloud_request', 'request-1'], ['prompt', 'consent'], ['exp', '123'], ['ba_iat', '100'],
+    ...['ba_iat', 'ba_param', 'client_id', 'exp', 'prompt', 'tinycloud_request'].map((name): [string, string] => ['ba_param', name]),
+    ['sig', 'signature'],
+  ];
+
+  test('keeps the signed form exactly, ba_param list included', () => {
+    expect(safeOAuthAuthorizeQuery(new URLSearchParams(signed))).toBe(new URLSearchParams(signed).toString());
+  });
+
+  test('drops an extra parameter the signature does not name, even an allowlisted one', () => {
+    const query = new URLSearchParams(safeOAuthAuthorizeQuery(new URLSearchParams([...signed, ['login_hint', 'other@example.test'], ['ba_pl', 'x']])));
+    expect(query.has('login_hint')).toBe(false);
+    expect(query.has('ba_pl')).toBe(false);
+    expect(query.toString()).toBe(new URLSearchParams(signed).toString());
+  });
+
+  test('passes a tampered value or a duplicate through unrepaired, in order, for the API to refuse', () => {
+    const tampered = new URLSearchParams(signed);
+    tampered.set('tinycloud_request', 'request-2');
+    expect(safeOAuthAuthorizeQuery(tampered)).toBe(tampered.toString());
+    const duplicate = new URLSearchParams([['tinycloud_request', 'request-2'], ...signed]);
+    expect(new URLSearchParams(safeOAuthAuthorizeQuery(duplicate)).getAll('tinycloud_request')).toEqual(['request-2', 'request-1']);
+  });
+});

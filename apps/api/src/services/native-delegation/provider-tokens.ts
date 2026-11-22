@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 /**
- * Token normalization of @better-auth/oauth-provider 1.6.10, driven by the
+ * Token normalization of @better-auth/oauth-provider 1.6.35, driven by the
  * provider's own configured options. The provider does not export
  * `decodeRefreshToken` or `getStoredToken`; these mirror them step for step
  * (`dist/index.mjs` `decodeRefreshToken`, the opaque access-token prefix

@@ -297,6 +297,22 @@ if (!process.env.OPENKEY_APPLE_REVIEW_TEST_CHILD) {
     }
   }, 60_000);
 
+  test('the authorize dispatched after consent is checked against the PAR row: a narrowed scope is refused', async () => {
+    const flow = await startBoundaryFlow();
+    const prepare = await call(`/api/oauth/tinycloud/requests/${flow.requestId}/prepare`, 'POST', {}, { cookie: flow.cookie });
+    expect(prepare.status, await prepare.clone().text()).toBe(200);
+    const preview = await prepare.json() as { revision: unknown; digest: unknown; sessionSiwe: unknown };
+    const approve = await call(`/api/oauth/tinycloud/requests/${flow.requestId}/approve`, 'POST', { revision: preview.revision, digest: preview.digest, sessionSiwe: preview.sessionSiwe }, { cookie: flow.cookie });
+    expect(approve.status, await approve.clone().text()).toBe(200);
+    // The provider carries a consent body's `scope` into the authorize it dispatches; only that dispatch sees it.
+    const narrowed = await call('/api/auth/oauth2/consent', 'POST', { accept: true, scope: 'openid email tinycloud:delegation', oauth_query: flow.consentQuery }, { cookie: flow.cookie });
+    const body = await narrowed.text();
+    expect(narrowed.status, body).toBe(403);
+    expect(body).toContain('REVIEWER_SIGN_IN_REFUSED');
+    const consent = await call('/api/auth/oauth2/consent', 'POST', { accept: true, oauth_query: flow.consentQuery }, { cookie: flow.cookie });
+    expect(consent.status, await consent.clone().text()).toBe(200);
+  });
+
   test('TC-2720 stays unchanged for an ordinary user on the very same Home client', async () => {
     const { serializeSignedCookie } = await import('better-call');
     const userId = 'ordinary-home-owner';

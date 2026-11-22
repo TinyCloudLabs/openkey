@@ -270,6 +270,52 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     expect(refresh.expiresAt.getTime()).toBeLessThanOrEqual(source.createdAt.getTime() + 3600_000);
   });
 
+  // The provider (>= 1.6.18) finishes a sign-in and an accepted consent by dispatching /oauth2/authorize inside
+  // the same request. The reviewer hook must check that dispatch too. A trigger re-points the binding's redirect URI
+  // after the outer request has passed the hook, so only the dispatched authorize can see it and refuse.
+  async function withBindingMovedOn(table: 'session' | 'oauth_consent', run: () => Promise<void>) {
+    const before = await database.reviewerAccount.findUniqueOrThrow({ where: { store: 'openai' } });
+    await database.$executeRawUnsafe(`CREATE FUNCTION reviewer_binding_moved() RETURNS trigger AS $$ BEGIN
+      UPDATE "reviewer_account" SET "redirectUri" = 'https://elsewhere.example/callback' WHERE store = 'openai'; RETURN NEW; END $$ LANGUAGE plpgsql`);
+    await database.$executeRawUnsafe(`CREATE TRIGGER reviewer_binding_moved AFTER INSERT OR UPDATE ON "${table}" FOR EACH ROW EXECUTE FUNCTION reviewer_binding_moved()`);
+    try { await run(); } finally {
+      await database.$executeRawUnsafe(`DROP TRIGGER reviewer_binding_moved ON "${table}"`);
+      await database.$executeRawUnsafe('DROP FUNCTION reviewer_binding_moved()');
+      await database.reviewerAccount.update({ where: { store: 'openai' }, data: { redirectUri: before.redirectUri } });
+    }
+  }
+
+  test('the authorize dispatched after a reviewer sign-in is checked, and refuses a binding that moved on', async () => {
+    await withBindingMovedOn('session', async () => {
+      const result = await call('/api/auth/sign-in/reviewer', 'POST', { email: 'openai-review@tinycloud.xyz', code, oauth_query: signedQuery });
+      const body = await result.text();
+      expect(result.status, body).toBe(403);
+      expect(body).toContain('REVIEWER_SIGN_IN_REFUSED');
+      expect(body).not.toContain('code=');
+    });
+    const control = await call('/api/auth/sign-in/reviewer', 'POST', { email: 'openai-review@tinycloud.xyz', code, oauth_query: signedQuery });
+    expect(control.status, await control.clone().text()).toBe(200);
+  });
+
+  test('the authorize dispatched after an accepted consent is checked, and refuses a binding that moved on', async () => {
+    await database.oauthConsent.deleteMany({ where: { userId: 'reviewer-owner', clientId } });
+    const authorization = await call('/api/auth/oauth2/authorize?' + signedQuery, 'GET', undefined, { cookie });
+    expect(authorization.status, await authorization.clone().text()).toBe(302);
+    const consentQuery = new URL(authorization.headers.get('location')!).searchParams.toString();
+    const issued = await database.verification.count();
+    await withBindingMovedOn('oauth_consent', async () => {
+      const consent = await call('/api/auth/oauth2/consent', 'POST', { accept: true, oauth_query: consentQuery }, { cookie });
+      const body = await consent.text();
+      expect(consent.status, body).toBe(403);
+      expect(body).toContain('REVIEWER_SIGN_IN_REFUSED');
+      expect(body).not.toContain('code=');
+    });
+    expect(await database.verification.count()).toBe(issued);
+    const control = await call('/api/auth/oauth2/consent', 'POST', { accept: true, oauth_query: consentQuery }, { cookie });
+    expect(control.status, await control.clone().text()).toBe(200);
+    expect(new URL((await control.json() as { url: string }).url).searchParams.get('code')).toBeTruthy();
+  });
+
   test('a non-reset provision retry leaves an installed account intact', async () => {
     const before = await accounts.reviewerForUser(database, 'reviewer-owner');
     const sessions = await database.session.count({ where: { userId: 'reviewer-owner' } });

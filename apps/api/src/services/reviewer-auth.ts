@@ -11,6 +11,7 @@ import {
   REVIEWER_MAX_SECONDS, captureReviewer, capturedReviewer, reviewerActive, reviewerCodeMatches,
   reviewerFailure, reviewerForEmail, reviewerForUser, type ReviewerBinding,
 } from './reviewer-accounts';
+import { canonicalSignedQuery, queryRecordParams, signedQueryNamesExact } from './oauth-signed-query';
 
 const REFUSAL = { code: 'REVIEWER_SIGN_IN_REFUSED', message: "Couldn't sign in with those details. Check the review account and code, then try again." };
 const ALLOWED_AUTH_PATHS = new Set([
@@ -27,19 +28,17 @@ export function reviewerBrowserRequest(headers: Headers, origin: string): boolea
     && (headers.get('origin') === origin || (!headers.has('origin') && headers.get('sec-fetch-site') === 'same-origin'));
 }
 
+// Accepts only the provider's signed form (services/oauth-signed-query.ts): an exact `ba_param` list, no other
+// repeated key, and a signature over the sorted entries.
 export async function signedReviewerQuery(value: unknown, secret: string): Promise<URLSearchParams | null> {
   if (typeof value !== 'string' || value.length > 16384) return null;
   const query = new URLSearchParams(value);
-  const seen = new Set<string>();
-  for (const key of query.keys()) {
-    if (seen.has(key)) return null;
-    seen.add(key);
-  }
+  if (!signedQueryNamesExact(query)) return null;
   const signature = query.get('sig');
   const expiresAt = Number(query.get('exp'));
   if (!signature || !Number.isFinite(expiresAt) || expiresAt * 1000 < Date.now()) return null;
+  const expected = await makeSignature(canonicalSignedQuery(query), secret);
   query.delete('sig');
-  const expected = await makeSignature(query.toString(), secret);
   const a = Buffer.from(signature);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b) ? query : null;
@@ -56,8 +55,11 @@ export function reviewerQueryMatches(binding: ReviewerBinding, query: URLSearchP
     && scopes.every((scope) => ['openid', 'email', 'offline_access', 'tinycloud:mcp'].includes(scope));
 }
 
-async function reviewerContinuationMatches(database: PrismaClient, binding: ReviewerBinding, query: URLSearchParams, allowApproved = false) {
-  return binding.store === 'apple' ? reviewerNativeQuery(database, binding, query, allowApproved) : reviewerQueryMatches(binding, query);
+async function reviewerContinuationMatches(
+  database: PrismaClient, binding: ReviewerBinding, query: URLSearchParams, allowApproved = false, consentGiven = false,
+) {
+  return binding.store === 'apple'
+    ? reviewerNativeQuery(database, binding, query, allowApproved, consentGiven) : reviewerQueryMatches(binding, query);
 }
 
 export function reviewerAuth(database: PrismaClient, origin: string): BetterAuthPlugin {
@@ -112,7 +114,13 @@ export function reviewerAuth(database: PrismaClient, origin: string): BetterAuth
           const body = ctx.body as Record<string, unknown> | undefined;
           const binding = (body?.email ? await reviewerForEmail(database, body.email) : null)
             ?? (body?.newEmail ? await reviewerForEmail(database, body.newEmail) : null);
-          if (binding) {
+          // The provider (>= 1.6.18) continues a sign-in, consent or continue request by dispatching /oauth2/authorize
+          // inside the same request, and this hook checks that dispatch like any other authorize. One from sign-in
+          // still carries the reviewer's sign-in body; one from consent has `prompt=consent` removed by the provider.
+          const outerPath = ctx.path === '/oauth2/authorize' && ctx.request ? new URL(ctx.request.url).pathname : undefined;
+          const dispatchedFrom = outerPath && ['/api/auth/sign-in/reviewer', '/api/auth/oauth2/consent', '/api/auth/oauth2/continue']
+            .includes(outerPath) ? outerPath.slice('/api/auth'.length) : undefined;
+          if (binding && dispatchedFrom !== '/sign-in/reviewer') {
             if (ctx.path === '/email-otp/send-verification-otp') return ctx.json({ success: true });
             if (ctx.path === '/sign-in/email-otp') return signIn(ctx, true);
             if (ctx.path !== '/sign-in/reviewer') throw refused();
@@ -139,9 +147,11 @@ export function reviewerAuth(database: PrismaClient, origin: string): BetterAuth
           }
           if (['/oauth2/authorize', '/oauth2/consent', '/oauth2/continue'].includes(ctx.path)) {
             const query = ctx.path === '/oauth2/authorize'
-              ? new URLSearchParams(ctx.query as Record<string, string>)
+              ? queryRecordParams(ctx.query as Record<string, unknown> | undefined)
               : await signedReviewerQuery(body?.oauth_query, ctx.context.secret);
-            if (!query || !await reviewerContinuationMatches(database, reviewer, query, true)) throw refused();
+            if (!query || !await reviewerContinuationMatches(database, reviewer, query, true, dispatchedFrom === '/oauth2/consent')) {
+              throw refused();
+            }
           }
         }),
       }],

@@ -9,7 +9,9 @@ function refused(): never { throw new HTTPException(403, { message: 'Reviewer na
 type Database = PrismaClient | Prisma.TransactionClient;
 type NativeRequest = Prisma.TinyCloudNativeRequestGetPayload<Record<string, never>>;
 
-export async function reviewerNativeQuery(database: Database, binding: ReviewerBinding, query: URLSearchParams, allowApproved = false): Promise<boolean> {
+export async function reviewerNativeQuery(
+  database: Database, binding: ReviewerBinding, query: URLSearchParams, allowApproved = false, consentGiven = false,
+): Promise<boolean> {
   if (!appleReviewEnabled() || binding.store !== 'apple' || binding.clientId !== APPLE_REVIEW_CLIENT_ID) return false;
   const id = query.get('tinycloud_request');
   if (!id || query.has('resource')) return false;
@@ -20,6 +22,8 @@ export async function reviewerNativeQuery(database: Database, binding: ReviewerB
   // remains checked against the binding in the persisted PAR row; only an
   // already authenticated reviewer may resume without that display hint.
   if (allowApproved && !query.has('login_hint')) expected.delete('login_hint');
+  // After an accepted consent the provider authorizes with `prompt=consent` removed.
+  if (consentGiven && !query.has('prompt')) expected.delete('prompt');
   return Boolean(row && (row.status === 'RESOLVED' || (allowApproved && row.status === 'APPROVED')) && row.expiresAt > new Date()
     && row.clientId === binding.clientId && row.redirectUri === binding.redirectUri
     && row.loginMethod === 'email' && (!row.loginHint || normalizedReviewerEmail(row.loginHint) === binding.email)

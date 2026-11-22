@@ -370,6 +370,7 @@ export const auth = betterAuth({
     },
   },
 
+  // No magicLink plugin, which keeps CVE-2026-114607 unreachable. Adding magicLink before better-auth 1.7.7 makes it account takeover; revisit with the 1.7 migration.
   plugins: [
     {
       id: 'revoke-other-sessions',
