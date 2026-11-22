@@ -1,3 +1,5 @@
+import { parseSiweFields, serializeSiwe } from '@openkey/capability-review';
+
 // TC-2272: the user may change when an approval expires. The new time replaces
 // the `Expiration Time:` line of the SIWE the server is about to preview or
 // sign; no other byte changes. The app's own time is only the default.
@@ -36,14 +38,9 @@ export function validateExpirationOverride(
   return { ok: true, value };
 }
 
-const EXPIRATION_LINE = /^Expiration Time: .+$/gm;
-
-/** The SIWE with its one `Expiration Time:` line replaced; null when it does not have exactly one. */
+/** The SIWE with its `Expiration Time` field replaced; null when it does not parse (`parseSiweFields`) or has no expiry. */
 export function withExpirationTime(siwe: string, expirationTime: string): string | null {
-  if ((siwe.match(EXPIRATION_LINE) ?? []).length !== 1) return null;
-  return siwe.replace(/^Expiration Time: .+$/m, `Expiration Time: ${expirationTime}`);
-}
-
-export function expirationTimeOf(siwe: string): string | undefined {
-  return siwe.match(/^Expiration Time: (.+)$/m)?.[1]?.trim();
+  const parsed = parseSiweFields(siwe);
+  if (!parsed.ok || parsed.fields.expirationTime === undefined) return null;
+  return serializeSiwe({ ...parsed.fields, expirationTime });
 }

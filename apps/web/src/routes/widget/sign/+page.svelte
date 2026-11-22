@@ -26,7 +26,7 @@
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import { serverActionId } from '$lib/delegate-review-selection';
-  import { expiryAt, siweExpiration } from '$lib/approval-expiry';
+  import { expiryAt } from '$lib/approval-expiry';
   import { MAX_LEASE_MS, defaultLeaseMs } from '$lib/approval-expiry';
   import { renewalStartsTicked } from '$lib/renewal-default';
   import { PREVIEW_EXPIRED_MESSAGE, signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
@@ -39,6 +39,7 @@
     type DeclaredAppScope,
     checkSiweOrigin,
     isSiweShaped,
+    siweExpirationTime,
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
@@ -741,7 +742,7 @@
       // visible through the approval that actually signs them.
       // Before the preview the access lines show the chosen time (from now); after it, the sealed bytes' own.
       reviewModel = previewSignedMessage
-        ? { ...nextReviewModel, rawMessage: previewSignedMessage, expiry: siweExpiration(previewSignedMessage) ?? nextReviewModel.expiry }
+        ? { ...nextReviewModel, rawMessage: previewSignedMessage, expiry: siweExpirationTime(previewSignedMessage) ?? nextReviewModel.expiry }
         : expiryChoiceMs !== null
           ? { ...nextReviewModel, expiry: expiryAt(expiryChoiceMs) }
           : nextReviewModel;

@@ -686,8 +686,8 @@ describe("subset validation", () => {
   });
 
   it("rejects an altered immutable field", () => {
-    const base = parseCapabilityReview(ctx());
-    const cand = parseCapabilityReview(ctx());
+    const base = parseCapabilityReview(ctx({ message: REAL_RECAP_BOOTSTRAP }));
+    const cand = parseCapabilityReview(ctx({ message: REAL_RECAP_BOOTSTRAP }));
     cand.immutable!.nonce = "tampered";
     const check = assertBaselineSubset(base, cand);
     expect(check.ok).toBe(false);

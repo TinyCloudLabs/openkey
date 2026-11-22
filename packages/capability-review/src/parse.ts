@@ -15,6 +15,7 @@ import { actionId, permissionId } from "./ids.js";
 import { classifyRecapEntry, classifySeverityFromActions } from "./classify.js";
 import { isKeyDeleteAbility } from "./key-resource.js";
 import { parseEncryptionResource } from "./encryption-resource.js";
+import { parseSiweFields, siweExpirationTime } from "./siwe-fields.js";
 import type {
   CapabilityAction,
   CapabilityGrant,
@@ -79,9 +80,6 @@ const SIWE_ADDRESS_LINE = /^0x[a-fA-F0-9]{40}$/m;
 const SIWE_URI_LINE = /^URI: (.+)$/m;
 const SIWE_VERSION_LINE = /^Version: (.+)$/m;
 const SIWE_CHAIN_LINE = /^Chain ID: (\d+)$/m;
-const SIWE_NONCE_LINE = /^Nonce: (.+)$/m;
-const SIWE_ISSUED_LINE = /^Issued At: (.+)$/m;
-const SIWE_EXPIRATION_LINE = /^Expiration Time: (.+)$/m;
 // ReCap capabilities are appended by TinyCloud as a resources list.
 const SIWE_RESOURCE_LINE = /^- (.+)$/gm;
 
@@ -156,38 +154,27 @@ function looksLikeSiwe(message: string): boolean {
   );
 }
 
-function firstMatch(re: RegExp, text: string): string | null {
-  const m = text.match(re);
-  return m && m[1] ? m[1] : null;
-}
-
+/** The immutable fields, read by the shared grammar (`parseSiweFields`); null when the message does not parse or has no expiry. */
 function parseImmutableSiweFields(
   message: string,
   signer: SignerInfo,
 ): ImmutableSiweFields | null {
-  const domain = firstMatch(SIWE_DOMAIN_LINE, message);
-  const addrMatch = message.match(SIWE_ADDRESS_LINE);
-  const chainRaw = firstMatch(SIWE_CHAIN_LINE, message);
-  const nonce = firstMatch(SIWE_NONCE_LINE, message);
-  const issuedAt = firstMatch(SIWE_ISSUED_LINE, message);
-  const expirationTime = firstMatch(SIWE_EXPIRATION_LINE, message);
-  if (!domain || !addrMatch || !chainRaw || !nonce || !issuedAt || !expirationTime) {
-    return null;
-  }
-  const address = addrMatch[0];
-  const chainId = Number(chainRaw);
+  const parsed = parseSiweFields(message);
+  if (!parsed.ok) return null;
+  const fields = parsed.fields;
+  if (fields.expirationTime === undefined) return null;
   // The prepared session carries the JWK as an out-of-band field, not in
   // the SIWE. Keep the placeholder null so the caller can back-fill it
   // after issuing the /prepare context.
   return {
-    address,
-    chainId,
-    domain,
-    issuedAt,
-    expirationTime,
+    address: fields.address,
+    chainId: Number(fields.chainId),
+    domain: `${fields.scheme !== undefined ? `${fields.scheme}://` : ""}${fields.domain}`,
+    issuedAt: fields.issuedAt,
+    expirationTime: fields.expirationTime,
     spaceId: /* filled by caller */ signer.address, // placeholder; caller must overwrite
     jwk: null,
-    nonce,
+    nonce: fields.nonce,
   };
 }
 
@@ -803,7 +790,7 @@ export function parseCapabilityReview(
 
   // 2. Parse SIWE-level fields.
   const immutable = parseImmutableSiweFields(ctx.message, ctx.signer);
-  const expiration = firstMatch(SIWE_EXPIRATION_LINE, ctx.message);
+  const expiration = siweExpirationTime(ctx.message);
 
   const { entries, warnings: recapWarnings } = parseRecapResources(ctx.message);
   warnings.push(...recapWarnings);
