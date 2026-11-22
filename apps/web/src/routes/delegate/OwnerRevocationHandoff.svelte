@@ -12,7 +12,7 @@
   import { OwnerMessageError } from '$lib/delegate-failure-text';
   import { ServerReplyError } from '$lib/server-reply';
   import StopPage from '$lib/components/approval/stop-page.svelte';
-  import { ownerRevocationAddress, parseOwnerRevocationRequest, renderSiweLiteral, type OwnerRevocationRequest } from '@openkey/capability-review';
+  import { ownerRevocationAddress, parseOwnerRevocationRequest, renderSiweLiteral, siweExpirationTime, type OwnerRevocationRequest } from '@openkey/capability-review';
   import Button from '$lib/components/ui/button.svelte';
   import CodeBox from '$lib/components/approval/code-box.svelte';
   import DonePage from '$lib/components/approval/done-page.svelte';
@@ -320,7 +320,7 @@
   const signedInOn = $derived(!loaderOn && !ended && !!$session.data && loginRequired && !signedOut);
   const slipAt = $derived(loaderOn ? 0 : cardOn || signedInOn ? 1 : cancelled ? 3 : code ? (delivered ? 4 : 3) : 2);
   const slipLast = $derived(code && !delivered && !cancelled ? 'code' : 'terminal');
-  const expiresAt = $derived(siwe.match(/^Expiration Time: (.+)$/m)?.[1]);
+  const expiresAt = $derived(siweExpirationTime(siwe) ?? undefined);
   const keyName = (choice: EthereumKey) => choice.label ?? fill(REVOKE_REVIEW.keyFallback, { n: choice.keyIndex });
   const shortCid = (cid: string) => `${cid.slice(0, 10)}…${cid.slice(-6)}`;
 </script>

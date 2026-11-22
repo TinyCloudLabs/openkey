@@ -36,6 +36,7 @@ test('the approval face and Expires row use the same prepared lifetime', async (
     }
     const siwe = [
       'app.example.test wants you to sign in with your Ethereum account:', address, '',
+      '',
       `URI: ${audience}#${audience.slice('did:key:'.length)}`,
       'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', `Issued At: ${issuedAt.toISOString()}`,
       `Expiration Time: ${expiresAt(seconds)}`, 'Resources:',

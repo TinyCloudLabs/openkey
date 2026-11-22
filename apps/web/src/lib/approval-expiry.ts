@@ -180,11 +180,6 @@ export function expiryAt(ms: number, now: number = Date.now()): string {
   return new Date(now + ms).toISOString();
 }
 
-/** The `Expiration Time:` of a SIWE message, or null. */
-export function siweExpiration(message: string): string | null {
-  return /^Expiration Time: (.+)$/m.exec(message)?.[1]?.trim() ?? null;
-}
-
 /** Shown where the requester signed the longest time it accepts (signed CLI and device requests). */
 export function expiryLimitNote(maxMs: number): string {
   return `This app asked for up to ${formatDuration(maxMs)}. To allow longer, the app has to ask again.`;

@@ -15,6 +15,7 @@ const kvPut = 'tinycloud.kv/put';
 const sqlRead = 'tinycloud.sql/read';
 const siwe = (resources: Record<string, Record<string, unknown[]>>) => [
   'openkey.so wants you to sign in with your Ethereum account:', address, '',
+  '',
   'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
   'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-07T04:00:00.000Z',
   'Expiration Time: 2026-10-07T05:00:00.000Z', 'Resources:', `- ${makeRecapResource(resources)}`,

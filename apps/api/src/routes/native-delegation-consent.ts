@@ -7,6 +7,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createMiddleware } from 'hono/factory';
 import { Hono } from 'hono';
 import { Prisma, type PrismaClient } from '@openkey/db';
+import { parseSiweFields, serializeSiwe } from '@openkey/capability-review';
 import { ensureEip55, generateHostSIWEMessage, completeSessionSetup, siweToDelegationHeaders } from '@tinycloud/node-sdk-wasm';
 import { activateSessionWithHost, submitHostDelegation } from '@tinycloud/sdk-core';
 import { createWalletFromPrivateKey } from '@openkey/tee';
@@ -44,8 +45,20 @@ export function preparationDigest(preview: unknown): string {
   return createHash('sha256').update(JSON.stringify(sorted(preview))).digest('base64url');
 }
 export function sameApprovedSiwe(preview: string, rebuilt: string): boolean {
-  const strip = (s: string) => s.split('\n').map(line => /^(Issued At|Expiration Time): /.test(line) ? line.slice(0, line.indexOf(':') + 1) : line).join('\n');
-  return strip(preview) === strip(rebuilt);
+  const strip = (s: string) => {
+    const parsed = parseSiweFields(s);
+    if (!parsed.ok) return null;
+    const { fields } = parsed;
+    return serializeSiwe({ ...fields, issuedAt: '', ...(fields.expirationTime !== undefined ? { expirationTime: '' } : {}) });
+  };
+  const stripped = strip(preview);
+  return stripped !== null && stripped === strip(rebuilt);
+}
+/** Seconds from a SIWE's Issued At to its Expiration Time, read by `parseSiweFields`; NaN when it does not parse or has no expiry. */
+function siweTtlSeconds(siwe: string): number {
+  const parsed = parseSiweFields(siwe);
+  if (!parsed.ok || parsed.fields.expirationTime === undefined) return Number.NaN;
+  return (Date.parse(parsed.fields.expirationTime) - Date.parse(parsed.fields.issuedAt)) / 1000;
 }
 function permitted(value: unknown, ceiling: Parameters<typeof validatePermissions>[1]): NativePermission[] {
   try { return validatePermissions(value, ceiling); }
@@ -302,8 +315,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       if (!sameTinyCloudHost(revision.tinycloudHost, ceiling.tinycloudHost)) fail(409, 'preparation_superseded');
       const permissions = permitted(revision.permissions, ceiling);
       const ttl = Math.min(ceiling.maxDelegationTtlSeconds, ceiling.grantLifetimeSeconds);
-      const timestamps = /Issued At: ([^\n]+)\nExpiration Time: ([^\n]+)/.exec(revision.sessionSiwe);
-      const revisionTtl = timestamps ? (Date.parse(timestamps[2]!) - Date.parse(timestamps[1]!)) / 1000 : NaN;
+      const revisionTtl = siweTtlSeconds(revision.sessionSiwe);
       if (!Number.isInteger(revisionTtl) || revisionTtl > ttl) fail(409, 'preparation_superseded');
       if (!row.siweNonce) fail(409, 'preparation_mismatch');
       const signedAt = new Date();
@@ -463,8 +475,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       if (!preKey || !privateKey || gate.key.id !== revision.keyId || gate.key.id !== preKey.id || gate.key.sealedBlob !== preKey.sealedBlob ||
         ensureEip55(gate.key.address) !== revision.address) fail(409, 'preparation_mismatch');
       if (!sameTinyCloudHost(revision.tinycloudHost, gate.ceiling.tinycloudHost)) fail(409, 'preparation_superseded');
-      const timestamps = /Issued At: ([^\n]+)\nExpiration Time: ([^\n]+)/.exec(revision.sessionSiwe);
-      const revisionTtl = timestamps ? (Date.parse(timestamps[2]!) - Date.parse(timestamps[1]!)) / 1000 : NaN;
+      const revisionTtl = siweTtlSeconds(revision.sessionSiwe);
       if (!Number.isInteger(revisionTtl) || revisionTtl > gate.maxTtl) fail(409, 'preparation_superseded');
       if (!row.siweNonce) fail(409, 'preparation_mismatch');
       const signedAt = new Date();

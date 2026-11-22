@@ -19,8 +19,11 @@
 // Both messages go through a strict EIP-4361 / EIP-5573 parser first. Anything
 // it cannot read losslessly is refused.
 
+import { parseSiweFields, SIWE_URI_PATTERN, type SiweFields } from '@openkey/capability-review';
 import { actionKey, isRawRecapEntry, parsePreparedRecap, type RecapEntry } from '../routes/delegate-session';
 import { LATEST_SIWE_TIME_MS } from './approval-expiry';
+
+export { serializeSiwe } from '@openkey/capability-review';
 
 // ---------------------------------------------------------------------------
 // Strict JSON (duplicate keys refused)
@@ -135,7 +138,6 @@ function canonicalJson(value: JsonValue): string {
 const RECAP_PREFIX = 'urn:recap:';
 export const DELEGATION_MODE_KEY = 'xyz.tinycloud.policy/delegationMode';
 export type DelegationMode = 'terminal' | 'attenuable';
-const URI_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:\S+$/;
 const ABILITY_PATTERN = /^[^/\s]+\/\S+$/;
 const PROOF_PATTERN = /^\S+$/;
 const RECAP_STATEMENT_PREFIX =
@@ -186,7 +188,7 @@ export function decodeRecapUri(uri: string): Recap {
   if (!isJsonObject(rawAtt) || Object.keys(rawAtt).length === 0) throw new Error('ReCap att must be a non-empty object');
   const att: Attenuation = new Map();
   for (const [resource, rawAbilities] of Object.entries(rawAtt)) {
-    if (!URI_PATTERN.test(resource)) throw new Error(`ReCap resource ${JSON.stringify(resource)} is not a URI`);
+    if (!SIWE_URI_PATTERN.test(resource)) throw new Error(`ReCap resource ${JSON.stringify(resource)} is not a URI`);
     if (!isJsonObject(rawAbilities) || Object.keys(rawAbilities).length === 0) {
       throw new Error(`ReCap resource ${resource} must name at least one ability`);
     }
@@ -235,149 +237,31 @@ export function recapStatement(att: Attenuation): string {
 // SIWE (EIP-4361)
 // ---------------------------------------------------------------------------
 
-export interface StrictSiwe {
-  scheme?: string;
-  domain: string;
-  address: string;
-  statement?: string;
-  uri: string;
-  version: string;
-  chainId: string;
-  nonce: string;
-  issuedAt: string;
-  expirationTime?: string;
-  notBefore?: string;
-  requestId?: string;
-  /** Every resource as written; absent when the message has no `Resources:` line. */
-  resources?: string[];
+/** A SIWE read by `parseSiweFields`, with its decoded ReCap. */
+export interface StrictSiwe extends SiweFields {
   /** The decoded `urn:recap:` resource, when the message has one. */
   recap?: Recap;
-}
-
-const HEADER = /^(?:([A-Za-z][A-Za-z0-9+.-]*):\/\/)?(\S+) wants you to sign in with your Ethereum account:$/;
-const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
-const CHAIN_ID = /^[1-9][0-9]*$/;
-const NONCE = /^[A-Za-z0-9]{8,}$/;
-const DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
-const REQUEST_ID = /^(?:[A-Za-z0-9\-._~!$&'()*+,;=:@]|%[0-9A-Fa-f]{2})*$/;
-// Every C0 control except line feed, and DEL.
-const CONTROL = /[\u0000-\u0009\u000b-\u001f\u007f]/;
-
-function isDateTime(value: string): boolean {
-  return DATE_TIME.test(value) && Number.isFinite(Date.parse(value));
-}
-
-export function serializeSiwe(siwe: StrictSiwe): string {
-  const lines = [
-    `${siwe.scheme !== undefined ? `${siwe.scheme}://` : ''}${siwe.domain} wants you to sign in with your Ethereum account:`,
-    siwe.address,
-    '',
-  ];
-  if (siwe.statement !== undefined) lines.push(siwe.statement);
-  lines.push(
-    '',
-    `URI: ${siwe.uri}`,
-    `Version: ${siwe.version}`,
-    `Chain ID: ${siwe.chainId}`,
-    `Nonce: ${siwe.nonce}`,
-    `Issued At: ${siwe.issuedAt}`,
-  );
-  if (siwe.expirationTime !== undefined) lines.push(`Expiration Time: ${siwe.expirationTime}`);
-  if (siwe.notBefore !== undefined) lines.push(`Not Before: ${siwe.notBefore}`);
-  if (siwe.requestId !== undefined) lines.push(`Request ID: ${siwe.requestId}`);
-  if (siwe.resources !== undefined) lines.push('Resources:', ...siwe.resources.map((r) => `- ${r}`));
-  return lines.join('\n');
 }
 
 export type StrictSiweOutcome = { ok: true; siwe: StrictSiwe } | { ok: false; message: string };
 
 /**
- * Parse an EIP-4361 message with an optional EIP-5573 ReCap. Every field must
- * appear in grammar order at most once, every value must be well formed, there
- * is no other line, and re-serializing the result reproduces the input byte
- * for byte.
+ * Parse an EIP-4361 message with an optional EIP-5573 ReCap: the shared
+ * grammar (`parseSiweFields`, the node's), and a canonical, well-formed ReCap
+ * when the message has one.
  */
 export function parseStrictSiwe(message: string): StrictSiweOutcome {
+  const parsed = parseSiweFields(message);
+  if (!parsed.ok) return parsed;
+  const siwe: StrictSiwe = parsed.fields;
+  const recaps = (siwe.resources ?? []).filter((r) => r.startsWith(RECAP_PREFIX));
+  if (recaps.length > 1) return { ok: false, message: 'more than one urn:recap: resource' };
   try {
-    return { ok: true, siwe: parseOrThrow(message) };
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message : 'unparsable SIWE' };
-  }
-}
-
-function parseOrThrow(message: string): StrictSiwe {
-  if (CONTROL.test(message)) throw new Error('message contains a control character');
-  const lines = message.split('\n');
-  let n = 0;
-  const line = (): string => {
-    const current = lines[n];
-    if (current === undefined) throw new Error('message ends early');
-    return current;
-  };
-  const required = (label: string, valid: (value: string) => boolean): string => {
-    const current = line();
-    if (!current.startsWith(`${label}: `)) throw new Error(`line ${n + 1}: expected "${label}:"`);
-    const value = current.slice(label.length + 2);
-    if (!valid(value)) throw new Error(`line ${n + 1}: invalid ${label}`);
-    n += 1;
-    return value;
-  };
-  const optional = (label: string, valid: (value: string) => boolean): string | undefined =>
-    lines[n]?.startsWith(`${label}: `) ? required(label, valid) : undefined;
-
-  const header = HEADER.exec(line());
-  if (!header) throw new Error('line 1: not a SIWE header');
-  n += 1;
-  const address = line();
-  if (!ADDRESS.test(address)) throw new Error('line 2: not an address');
-  n += 1;
-  if (line() !== '') throw new Error('line 3: expected a blank line');
-  n += 1;
-  let statement: string | undefined;
-  if (line() !== '') {
-    statement = line();
-    n += 1;
-  }
-  if (line() !== '') throw new Error(`line ${n + 1}: expected a blank line`);
-  n += 1;
-
-  const siwe: StrictSiwe = {
-    ...(header[1] !== undefined ? { scheme: header[1] } : {}),
-    domain: header[2]!,
-    address,
-    ...(statement !== undefined ? { statement } : {}),
-    uri: required('URI', (v) => URI_PATTERN.test(v)),
-    version: required('Version', (v) => v === '1'),
-    chainId: required('Chain ID', (v) => CHAIN_ID.test(v) && Number.isSafeInteger(Number(v))),
-    nonce: required('Nonce', (v) => NONCE.test(v)),
-    issuedAt: required('Issued At', isDateTime),
-  };
-  const expirationTime = optional('Expiration Time', isDateTime);
-  if (expirationTime !== undefined) siwe.expirationTime = expirationTime;
-  const notBefore = optional('Not Before', isDateTime);
-  if (notBefore !== undefined) siwe.notBefore = notBefore;
-  const requestId = optional('Request ID', (v) => REQUEST_ID.test(v));
-  if (requestId !== undefined) siwe.requestId = requestId;
-
-  if (n < lines.length && lines[n] === 'Resources:') {
-    n += 1;
-    const resources: string[] = [];
-    for (; n < lines.length; n += 1) {
-      const current = lines[n]!;
-      if (!current.startsWith('- ') || !URI_PATTERN.test(current.slice(2))) {
-        throw new Error(`line ${n + 1}: not a resource`);
-      }
-      resources.push(current.slice(2));
-    }
-    if (new Set(resources).size !== resources.length) throw new Error('a resource is listed twice');
-    const recaps = resources.filter((r) => r.startsWith(RECAP_PREFIX));
-    if (recaps.length > 1) throw new Error('more than one urn:recap: resource');
-    siwe.resources = resources;
     if (recaps[0] !== undefined) siwe.recap = decodeRecapUri(recaps[0]);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : 'unparsable ReCap' };
   }
-  if (n !== lines.length) throw new Error(`line ${n + 1}: unexpected line`);
-  if (serializeSiwe(siwe) !== message) throw new Error('message does not re-serialize to the same bytes');
-  return siwe;
+  return { ok: true, siwe };
 }
 
 // ---------------------------------------------------------------------------
