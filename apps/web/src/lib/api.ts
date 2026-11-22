@@ -319,10 +319,11 @@ export const api = {
     keyId: string,
     data: { domain: any; types: any; primaryType: string; message: any },
     passkeyAssertion?: ApprovalPasskeyAssertion,
+    requestOrigin?: string,
   ): Promise<{ signature: string; address: string }> {
     return fetchAPI(`/api/keys/${keyId}/sign-typed-data`, {
       method: 'POST',
-      body: JSON.stringify({ ...data, passkeyAssertion }),
+      body: JSON.stringify({ ...data, passkeyAssertion, requestOrigin }),
     });
   },
 
@@ -330,10 +331,11 @@ export const api = {
   async signTypedDataPasskey(
     keyId: string,
     data: { domain: any; types: any; primaryType: string; message: any },
+    requestOrigin?: string,
   ): Promise<ApprovalPasskeyNeed> {
     return fetchAPI(`/api/keys/${keyId}/sign-typed-data/passkey`, {
       method: 'POST',
-      body: JSON.stringify(data),
+      body: JSON.stringify({ ...data, requestOrigin }),
     });
   },
 

@@ -22,7 +22,6 @@ const REFUSAL = {
 const ALLOWED_ORIGINS = [
   'https://home.tinycloud.xyz',
   'https://tinycloud.one',
-  'https://app.tinycloud.one',
 ];
 
 let calls: string[] = [];
@@ -245,5 +244,17 @@ describe('typed data cannot carry a registry record signature', () => {
     for (const record of [V1, V2]) {
       expect(await recoverMessageAddress({ message: JSON.stringify(record), signature: body.signature })).not.toBe(address);
     }
+  });
+});
+
+describe('the app subdomain of One is not an allowed origin', () => {
+  test('a registry record from it is refused on both sign routes', async () => {
+    for (const path of ['/key_1/sign', '/key_1/sign/passkey']) {
+      const res = await post(path, { message: JSON.stringify(V1), requestOrigin: 'https://app.tinycloud.one' });
+      expect(res.status, path).toBe(403);
+      expect(await res.json()).toEqual(REFUSAL);
+    }
+    expect(calls).toEqual([]);
+    expect(unseal).not.toHaveBeenCalled();
   });
 });

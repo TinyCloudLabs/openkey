@@ -77,12 +77,16 @@ describe("registryRecordSignRefusal", () => {
     expect([...REGISTRY_RECORD_SIGN_ORIGINS]).toEqual([
       "https://home.tinycloud.xyz",
       "https://tinycloud.one",
-      "https://app.tinycloud.one",
     ]);
     for (const origin of REGISTRY_RECORD_SIGN_ORIGINS) {
       expect(registryRecordSignOriginAllowed(origin)).toBe(true);
       expect(registryRecordSignRefusal(record, origin)).toBeNull();
     }
+  });
+
+  it("refuses the app subdomain of One", () => {
+    expect(registryRecordSignOriginAllowed("https://app.tinycloud.one")).toBe(false);
+    expect(registryRecordSignRefusal(record, "https://app.tinycloud.one")).not.toBeNull();
   });
 
   it.each([
