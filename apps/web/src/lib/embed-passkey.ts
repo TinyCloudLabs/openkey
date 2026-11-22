@@ -208,6 +208,26 @@ export async function revokeEmbeddedSession(
   }
 }
 
+/** Plain words for the replies a person meets most: a passkey OpenKey does not know, and a passkey request that ran out. */
+export const PASSKEY_NOT_KNOWN_TEXT = "OpenKey doesn't know this passkey. Choose another way to sign in.";
+export const PASSKEY_REQUEST_EXPIRED_TEXT = 'The passkey request timed out. Tap Passkey to try again.';
+
+/**
+ * What the frame says when a passkey call is refused. Plain words for a passkey the account does not have
+ * (`PASSKEY_NOT_FOUND`) and for a passkey request that ran out (the API's own "Challenge token ..." replies); else the
+ * server's own words from `error` (the API's replies) or `message` (Better Auth's replies); else `HTTP <status>` with
+ * the reply's `code` when it has one. Every tap on Passkey asks the API for a fresh challenge.
+ */
+export function passkeyFailureText(body: unknown, status: number): string {
+  const reply = (body && typeof body === 'object' ? body : {}) as { error?: unknown; message?: unknown; code?: unknown };
+  if (reply.code === 'PASSKEY_NOT_FOUND') return PASSKEY_NOT_KNOWN_TEXT;
+  if (typeof reply.error === 'string' && reply.error.startsWith('Challenge token ')) return PASSKEY_REQUEST_EXPIRED_TEXT;
+  for (const words of [reply.error, reply.message]) {
+    if (typeof words === 'string' && words.trim() !== '') return words;
+  }
+  return typeof reply.code === 'string' && reply.code !== '' ? `HTTP ${status} · ${reply.code}` : `HTTP ${status}`;
+}
+
 /**
  * Passkey sign-in for the iframe. `flowHeaders` names the web sign flow the sign-in was opened for (see
  * `webSignFlowHeaders`); it goes only with the verification, where the API records it.
@@ -221,7 +241,7 @@ export async function embedSignInPasskey(flowHeaders: Record<string, string> = {
   });
   if (!optionsRes.ok) {
     const err = await optionsRes.json().catch(() => ({ error: 'Failed to get passkey options' }));
-    throw new Error(err.error || `HTTP ${optionsRes.status}`);
+    throw new Error(passkeyFailureText(err, optionsRes.status));
   }
   const options = await optionsRes.json();
   const { challengeToken, ...authOptions } = options;
@@ -237,7 +257,7 @@ export async function embedSignInPasskey(flowHeaders: Record<string, string> = {
   });
   if (!verifyRes.ok) {
     const err = await verifyRes.json().catch(() => ({ error: 'Passkey verification failed' }));
-    throw new Error(err.error || `HTTP ${verifyRes.status}`);
+    throw new Error(passkeyFailureText(err, verifyRes.status));
   }
   const result = await verifyRes.json();
 
@@ -258,7 +278,7 @@ export async function embedRegisterPasskey(name?: string): Promise<any> {
   });
   if (!optionsRes.ok) {
     const err = await optionsRes.json().catch(() => ({ error: 'Failed to get registration options' }));
-    throw new Error(err.error || `HTTP ${optionsRes.status}`);
+    throw new Error(passkeyFailureText(err, optionsRes.status));
   }
   const options = await optionsRes.json();
   const { challengeToken, ...registrationOptions } = options;
@@ -274,7 +294,7 @@ export async function embedRegisterPasskey(name?: string): Promise<any> {
   });
   if (!verifyRes.ok) {
     const err = await verifyRes.json().catch(() => ({ error: 'Registration verification failed' }));
-    throw new Error(err.error || `HTTP ${verifyRes.status}`);
+    throw new Error(passkeyFailureText(err, verifyRes.status));
   }
   const result = await verifyRes.json();
 
