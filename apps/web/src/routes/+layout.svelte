@@ -99,6 +99,7 @@
     returnTo={$page.url.pathname + $page.url.search}
     sessionPending={$session.isPending}
     signedIn={!!$session.data?.user}
+    onretrysession={() => void $session.refetch()}
   >
     {@render shell()}
   </TermsGate>
