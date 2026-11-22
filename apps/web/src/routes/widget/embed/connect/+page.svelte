@@ -6,6 +6,9 @@
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
   import { connectAuthResponse } from '$lib/connect-widget';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
+  import TermsGate from '$lib/components/auth/terms-gate.svelte';
+  import { termsGate } from '$lib/terms-gate';
+  import { SIGN_IN_AGAIN_TO_AGREE } from '$lib/terms';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
@@ -23,11 +26,27 @@
   let keysLoaded = $state(false);
   let initialized = $state(false);
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
-  // Track embed auth separately since better-auth session store won't update
+  // Track embed auth separately since better-auth session store won't update. A stored token is a credential, not
+  // yet a signed-in account: the Terms check reads it first (and drops it if it no longer signs anyone in).
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
+  let signInNote = $state<string | null>(null);
 
-  // Derived: whether user is authenticated (either via cookies or embed token)
-  const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  const signedIn = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  // In the frame the keys load only once the account is known to have agreed to the Terms (a window's layout
+  // holds its pages the same way).
+  const isAuthenticated = $derived(signedIn && (!inIframe || $termsGate.phase === 'open'));
+
+  $effect(() => {
+    if (inIframe) termsGate.follow(embedAuthenticated ? getSessionToken() : null, () => signedOut(false));
+  });
+
+  function signedOut(again: boolean) {
+    clearSessionToken();
+    embedAuthenticated = false;
+    keysLoaded = false;
+    keys = [];
+    signInNote = again ? SIGN_IN_AGAIN_TO_AGREE : null;
+  }
 
   // Every message goes to the exact embedding origin; never '*' (TC-688).
   const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
@@ -59,10 +78,15 @@
     return () => observer.disconnect();
   });
 
-  // Reactively load keys when session becomes available
+  // Load keys once the account may use them; a fresh Terms check (a refused call) loads them again afterwards.
   $effect(() => {
-    if (isAuthenticated && !keysLoaded) {
+    if (!isAuthenticated) {
+      keysLoaded = false;
+      return;
+    }
+    if (!keysLoaded) {
       keysLoaded = true;
+      error = '';
       loadKeys();
     }
   });
@@ -229,7 +253,7 @@
 
   <!-- Card body -->
   <div class="bg-white border border-surface-200 rounded-2xl shadow-sm p-5">
-    {#if !isAuthenticated}
+    {#if !signedIn}
       {#if error}
         <div class="mb-4 w-full rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">
           {error}
@@ -237,12 +261,15 @@
       {/if}
       <EmbeddedSignIn
         prompt="Sign in to continue. We'll ask before creating a new account."
-        onauthenticated={() => { embedAuthenticated = true; }}
+        note={signInNote}
+        onauthenticated={() => { signInNote = null; embedAuthenticated = true; }}
         {hasEoa}
         onuseexternalwallet={useExternalWallet}
         {passkeysSupported}
         onrecover={recover}
       />
+    {:else if !isAuthenticated}
+      <TermsGate surface="embed" onsignedout={signedOut} />
     {:else if loading}
       <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6">
         <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24">
@@ -284,14 +311,12 @@
     {/if}
   </div>
 
-  {#if isAuthenticated}
+  <!-- The Terms card has its own Sign out; while the Terms are checked (or the check failed) Sign out stays here. -->
+  {#if signedIn && $termsGate.phase !== 'required'}
     <button
       onclick={() => {
         if (inIframe) {
-          clearSessionToken();
-          embedAuthenticated = false;
-          keysLoaded = false;
-          keys = [];
+          signedOut(false);
         } else {
           authClient.signOut();
         }
@@ -300,6 +325,8 @@
     >
       Sign out
     </button>
+  {:else if signedIn}
+    <!-- The Terms card is showing, with its own Sign out. -->
   {:else if !passkeysSupported}
     <!-- Register and Recover set up passkeys. Email sign-in already creates
          accounts and recovers existing ones, so point there instead. -->

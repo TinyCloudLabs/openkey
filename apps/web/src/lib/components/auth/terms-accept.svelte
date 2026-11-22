@@ -1,22 +1,27 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import NativeShell from '$lib/components/auth/native-shell.svelte';
+  import { createFrameSettleGate } from '$lib/frame-settle-gate';
   import { PRIVACY_URL, TERMS_URL, effectiveDate, type TermsStatus } from '$lib/terms';
 
   // Required screen: shown after sign-in, before anything else, to any account
   // that has not accepted the CURRENT terms. It has no close and no skip. Agree
   // continues. On the web a small "Other options" box leads to the ways out that
   // need no agreement (sign out, disconnect apps, delete the account); the native
-  // sheet has Don't agree (sign out) here instead.
+  // sheet has Don't agree (sign out) here instead. In the embedded frame the card is compact, has Sign out as
+  // its way out, and Agree waits until the frame has stopped moving (as Approve does), so a page around the
+  // frame cannot slide Agree under a click meant for something else.
   //   first   - the account has never accepted terms
   //   updated - the account accepted an older version and must accept the new one
   // The date and "What changed" come only from the API; when it has none, nothing is shown.
   interface Props {
     kind: 'first' | 'updated';
-    surface: 'web' | 'native';
+    surface: 'web' | 'native' | 'embed';
     release: TermsStatus;
-    email: string;
+    /** "Signed in as"; the embedded frame holds no address and shows none. */
+    email?: string | null;
     /** The native sheet's OAuth client, for its branding. */
     clientId?: string | null;
     /** App the user was on their way to (consent / approval link), if any. */
@@ -27,11 +32,44 @@
     otherOptions?: string | null;
     /** Native: what Don't agree does. */
     declineNote?: string;
+    /** Embedded frame: the host has acknowledged the frame's layout (v2 sign). Agree also waits for it. */
+    layoutReady?: boolean;
     onaccept: () => void;
     ondecline: () => void;
   }
 
-  let { kind, surface, release, email, clientId = null, appName = null, busy = null, error = null, otherOptions = null, declineNote = '', onaccept, ondecline }: Props = $props();
+  let { kind, surface, release, email = null, clientId = null, appName = null, busy = null, error = null, otherOptions = null, declineNote = '', layoutReady = true, onaccept, ondecline }: Props = $props();
+
+  // Embedded frame only: Agree is armed once the frame and Agree's own box have been still (frame-settle-gate.ts).
+  let frameSettled = $state(false);
+  onMount(() => {
+    if (surface !== 'embed') return;
+    const gate = createFrameSettleGate({
+      schedule: (run, ms) => {
+        const id = setTimeout(run, ms);
+        return () => clearTimeout(id);
+      },
+      nextFrame: (run) => {
+        const id = requestAnimationFrame(run);
+        return () => cancelAnimationFrame(id);
+      },
+      sample: () => {
+        const agree = document.querySelector('[data-testid="terms-agree"]');
+        if (!agree) return [window.innerWidth, window.innerHeight];
+        const box = agree.getBoundingClientRect();
+        return [window.innerWidth, window.innerHeight, box.top, box.left, box.width, box.height];
+      },
+      onChange: (settled) => { frameSettled = settled; },
+    });
+    const resized = () => gate.resized();
+    window.addEventListener('resize', resized);
+    gate.show();
+    return () => {
+      window.removeEventListener('resize', resized);
+      gate.destroy();
+    };
+  });
+  const agreeArmed = $derived(surface !== 'embed' || (frameSettled && layoutReady));
 
   const title = $derived(
     kind === 'updated'
@@ -110,6 +148,61 @@
     </section>
     <p class="nb-note signed-in">Signed in as {email}</p>
   </NativeShell>
+{:else if surface === 'embed'}
+  <div class="flex w-full flex-col py-2 text-left" data-testid="terms-accept">
+    <h2 class="mb-2 text-center text-lg font-bold text-surface-900">{title}</h2>
+    <p class="mb-4 text-center text-sm text-surface-500">{lede}</p>
+
+    {#if whatChanged}
+      <p class="mb-3 rounded-xl border border-primary-200 bg-primary-50 px-3 py-2 text-sm text-primary-900" data-testid="terms-what-changed">
+        <span class="font-semibold">What changed:</span> {whatChanged}
+      </p>
+    {/if}
+
+    <ul class="mb-4 flex flex-col gap-2" aria-label="Documents to read">
+      {#each documents as doc}
+        <li>
+          <a
+            href={doc.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="flex min-h-12 items-center gap-3 rounded-xl border border-surface-200 px-3 py-2 no-underline transition-colors hover:border-surface-500 hover:bg-surface-50"
+          >
+            <span class="text-surface-500">{@render docIcon()}</span>
+            <span class="flex min-w-0 flex-1 flex-col">
+              <span class="text-sm text-surface-500"><span class="font-semibold text-surface-900">{doc.label}</span>{doc.rest}</span>
+            </span>
+            <span class="text-surface-400">{@render externalIcon()}</span>
+            <span class="sr-only">(opens in a new tab)</span>
+          </a>
+        </li>
+      {/each}
+    </ul>
+
+    {#if error}
+      <div class="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">{error}</div>
+    {/if}
+    <Button
+      onclick={onaccept}
+      disabled={busy !== null || !agreeArmed}
+      aria-busy={busy === 'accept'}
+      class="w-full rounded-xl"
+      data-testid="terms-agree"
+    >
+      {busy === 'accept' ? 'Saving…' : 'Agree and continue'}
+    </Button>
+    <p class="mt-3 text-center text-xs text-surface-500">
+      By selecting Agree and continue, you agree to the Terms of Service and acknowledge the Privacy Policy.
+    </p>
+    <button
+      type="button"
+      onclick={ondecline}
+      disabled={busy !== null}
+      class="mt-2 self-center py-2 text-xs text-surface-500 underline underline-offset-2 hover:text-surface-700 disabled:opacity-50"
+    >
+      {busy === 'decline' ? 'Signing out…' : 'Sign out'}
+    </button>
+  </div>
 {:else}
   <div class="flex min-h-screen items-center justify-center bg-surface-50 px-4 py-12">
     <div class="w-full max-w-md">
@@ -182,7 +275,9 @@
         {/if}
       </Card>
 
-      <p class="mt-6 text-center text-xs text-surface-400">Signed in as {email}</p>
+      {#if email}
+        <p class="mt-6 text-center text-xs text-surface-400">Signed in as {email}</p>
+      {/if}
     </div>
   </div>
 {/if}

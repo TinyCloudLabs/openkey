@@ -49,8 +49,9 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
+  import TermsCheckFailed from '$lib/components/auth/terms-check-failed.svelte';
   import TermsStep from '$lib/components/auth/terms-step.svelte';
-  import { oauthClientName, pendingTerms, type TermsStatus } from '$lib/terms';
+  import { checkTerms, oauthClientName, type TermsStatus } from '$lib/terms';
 
   // 'passkey' is the enrolment offer; 'passkeySignIn' and 'social' are native-mode landing steps.
   // 'social' is the frame shown while opening a provider or checking its return.
@@ -123,18 +124,37 @@
   let socialConfirmation = $state<SocialContinuation | null>(null);
   const socialName = $derived(socialProvider ? socialProviderName(socialProvider) : null);
   // TC-3232: an account that has not accepted the current Terms sees them right after signing in,
-  // before the passkey offer or anything else; `afterTerms` is where sign-in was headed.
+  // before the passkey offer or anything else; `afterTerms` is where sign-in was headed. When the
+  // status can't be read, Try again; sign-in never continues past an unread status.
   let terms = $state<{ status: TermsStatus; email: string; appName: string | null } | null>(null);
+  let termsCheckFailed = $state(false);
   let afterTerms: (() => void | Promise<void>) | null = null;
+  // This sign-in's account is known to have agreed: later steps don't read the status again.
+  let termsSettled = false;
 
   async function askTermsFirst(next: () => void | Promise<void>): Promise<boolean> {
-    const status = await pendingTerms();
-    if (!status) return false;
+    if (termsSettled) return false;
+    const result = await checkTerms();
+    if (result.state === 'accepted') {
+      termsSettled = true;
+      return false;
+    }
+    afterTerms = next;
+    if (result.state !== 'required') {
+      termsCheckFailed = true;
+      return true;
+    }
     const session = await authClient.getSession().catch(() => null);
     const clientId = getOAuthQuery() ? new URLSearchParams(getOAuthQuery()).get('client_id') : null;
-    terms = { status, email: session?.data?.user.email ?? email, appName: clientId ? await oauthClientName(clientId) : null };
-    afterTerms = next;
+    terms = { status: result.status, email: session?.data?.user.email ?? email, appName: clientId ? await oauthClientName(clientId) : null };
     return true;
+  }
+
+  async function retryTermsCheck() {
+    const next = afterTerms;
+    termsCheckFailed = false;
+    afterTerms = null;
+    if (next && !await askTermsFirst(next)) await next();
   }
 
   async function termsAccepted() {
@@ -144,12 +164,15 @@
     oauthRedirectUrl = undefined;
     terms = null;
     afterTerms = null;
+    termsSettled = true;
     await next?.();
   }
 
   function signInAgain() {
     terms = null;
+    termsCheckFailed = false;
     afterTerms = null;
+    termsSettled = false;
     otp = '';
     error = '';
     step = 'email';
@@ -656,6 +679,8 @@
     onaccepted={termsAccepted}
     onsignin={signInAgain}
   />
+{:else if termsCheckFailed}
+  <TermsCheckFailed onretry={retryTermsCheck} />
 {:else if native}
   <NativeShell clientId={native.clientId} heading={(name) => `Sign in to ${name}`}>
     {#if error}
