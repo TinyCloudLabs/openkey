@@ -10,6 +10,7 @@ import {
   allSecretsCard,
   allSecretsReach,
   approvalLifetimeCapSeconds,
+  decryptsSecrets,
   buildSummaryStatements,
   exactSecretKeyPath,
   grantDecryptsOneSecret,
@@ -17,6 +18,7 @@ import {
   oneNamedSecret,
   parseCapabilityReview,
   secretOfKvPath,
+  secretLifetimeCapApplies,
 } from "../src/index.js";
 import type { CapabilityGrant } from "../src/index.js";
 import { FIXTURE_META, makeRecapResource, siweWithResources } from "./fixtures/index.js";
@@ -180,5 +182,46 @@ describe("the 7-day cap on secrets", () => {
       expect(approvalLifetimeCapSeconds([entry(path, [...actions])], MONTH), path).toBe(MONTH);
     }
     expect(approvalLifetimeCapSeconds([{ service: "tinycloud.kv", space: SECRETS_SPACE, path: "vault/secrets/OPENAI_API_KEY", actions: [KV_GET] }], MONTH)).toBe(MONTH);
+  });
+
+  it("caps a decrypt it cannot read the key of, so an unparseable resource never escapes the cap", () => {
+    for (const path of ["urn:tinycloud:encryption:not-a-did", "urn:tinycloud:encryption:", "garbage"]) {
+      expect(decryptsSecrets([entry(path, [DECRYPT])]), path).toBe(true);
+      expect(approvalLifetimeCapSeconds([entry(path, [DECRYPT])], MONTH), path).toBe(SECRET_GRANT_MAX_SECONDS);
+      expect(secretLifetimeCapApplies([entry(path, [CREATE])], { networkDecrypt: false }), path).toBe(true);
+    }
+  });
+});
+
+describe("the 7-day cap outside a signed approval request", () => {
+  const entry = (path: string, actions: string[]) => ({ service: "tinycloud.encryption", space: "encryption", path, actions });
+  const off = { networkDecrypt: false };
+  const on = { networkDecrypt: true };
+
+  it("holds decrypt and key.create on a secret's key or a prefix under secrets/, whatever the network flag", () => {
+    for (const path of [OPENAI_KEY, ALL_SECRETS, `${NETWORK}/secrets/scoped/work/api_key`, `${NETWORK}/SECRETS/x`]) {
+      for (const actions of [[DECRYPT], [CREATE], ["encryption/decrypt"]]) {
+        expect(secretLifetimeCapApplies([entry(path, actions)], off), `${path} ${actions}`).toBe(true);
+        expect(secretLifetimeCapApplies([entry(path, actions)], on), `${path} ${actions}`).toBe(true);
+      }
+    }
+  });
+
+  it("holds a whole network's decrypt only with the network flag, and never its key.create", () => {
+    expect(secretLifetimeCapApplies([entry(NETWORK, [DECRYPT])], off)).toBe(false);
+    expect(secretLifetimeCapApplies([entry(NETWORK, [DECRYPT])], on)).toBe(true);
+    expect(secretLifetimeCapApplies([entry(NETWORK, [CREATE])], on)).toBe(false);
+  });
+
+  it("leaves share/, other folders, other networks and kv alone", () => {
+    for (const path of [`${NETWORK}/share/`, `${NETWORK}/qa/`, `urn:tinycloud:encryption:${OWNER}:team/secrets/x`]) {
+      expect(secretLifetimeCapApplies([entry(path, [DECRYPT, CREATE])], on), path).toBe(false);
+    }
+    expect(secretLifetimeCapApplies([{ service: "tinycloud.kv", space: SECRETS_SPACE, path: "vault/secrets/OPENAI_API_KEY", actions: [KV_GET] }], on)).toBe(false);
+  });
+
+  it("reads grants parsed from a SIWE the same way", () => {
+    expect(secretLifetimeCapApplies(grantsFor({ ...READ_OPENAI, [OPENAI_KEY]: [DECRYPT] }), off)).toBe(true);
+    expect(secretLifetimeCapApplies(grantsFor({ [NETWORK]: [DECRYPT] }), off)).toBe(false);
   });
 });

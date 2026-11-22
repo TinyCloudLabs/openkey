@@ -81,6 +81,8 @@
     allSecretsCard,
     allSecretsReach,
     grantDecryptsOneSecret,
+    secretLifetimeCapApplies,
+    SECRET_GRANT_MAX_SECONDS,
     type ElevatedKind,
   } from "@openkey/capability-review";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
@@ -310,11 +312,22 @@
       ? onceDefaultExpiryMs(onceTier, shortenOnlyExpiry?.startMs ?? requestedExpiry)
       : null,
   );
+  // A grant on secret keys made outside a signed approval request (popup, frame, pasted link) lasts 7 days at most
+  // (TC-3800): the server clamps a longer one, so the screen offers no more. A signed request has its own maximum.
+  const secretCapMs = $derived(
+    !shortenOnlyExpiry && secretLifetimeCapApplies(model.permissions, { networkDecrypt: false })
+      ? SECRET_GRANT_MAX_SECONDS * 1000
+      : null,
+  );
+  const unsignedMaxMs = $derived.by(() => {
+    const bounded = expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null;
+    return secretCapMs === null ? bounded : Math.min(bounded ?? secretCapMs, secretCapMs);
+  });
   // A signed request may be made longer than its start, up to the maximum its requester signed (TC-3800), unless it
   // can open all secrets or all encrypted data: then the start (the requester's own suggestion) stays the most.
   const expiryFoldMaxMs = $derived(shortenOnlyExpiry
     ? (onceTier ? shortenOnlyExpiry.startMs : Math.max(expiryMaxMs ?? 0, shortenOnlyExpiry.startMs))
-    : expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null,
+    : unsignedMaxMs,
   );
   let ownerChoseExpiry = $state(false);
   let onceDefaultSent = $state(false);
@@ -333,6 +346,16 @@
     } else if (onceDefaultSent) {
       onceDefaultSent = false;
       if (expiryMs === ONCE_DEFAULT_EXPIRY_MS) onExpiryChange(null);
+    }
+  });
+  // An app's longer time on secret keys starts at the 7 days the server allows (the one-hour start, where it applies,
+  // is shorter and goes first).
+  let secretCapSent = $state(false);
+  $effect(() => {
+    if (secretCapSent || approving || previewPending || !onExpiryChange || ownerChoseExpiry || onceDefaultMs !== null) return;
+    if (secretCapMs !== null && expiryMs === null && requestedExpiry !== null && requestedExpiry > secretCapMs) {
+      secretCapSent = true;
+      onExpiryChange(secretCapMs);
     }
   });
   function chooseExpiry(ms: number | null) {
@@ -949,7 +972,7 @@
       <ApprovalExpiryControl
         requestedMs={requestedExpiry}
         chosenMs={expiryMs}
-        maxMs={expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null}
+        maxMs={unsignedMaxMs}
         disabled={approving}
         onChange={chooseExpiry}
         onceSite={onceDefaultShown && !shortenOnlyExpiry ? onceNoteSite : null}

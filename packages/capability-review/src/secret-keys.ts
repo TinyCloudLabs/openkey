@@ -119,19 +119,34 @@ export function allSecretsReach(entries: readonly SecretReachEntry[]): AllSecret
 /** The longest a signed approval request that decrypts secrets may last, whatever the app signs (Sam's D7, TC-3800). */
 export const SECRET_GRANT_MAX_SECONDS = 7 * 24 * 60 * 60;
 
+/** Where an encryption entry's listed verbs reach, for the 7-day cap. */
+type CapReach = "secrets" | "network" | null;
+
 /**
- * Does this entry decrypt secrets: a key or prefix under `secrets/` (one secret, a scope, or every secret), or a
- * whole encryption network, which opens every secret kept under it?
+ * Where this entry's `verbs` reach: `secrets` for a key or prefix under `default/secrets/` (one secret, a scope, or
+ * every secret), `network` for a whole encryption network (which opens every secret kept under it), otherwise null.
+ * Fails closed: an encryption entry with one of the verbs whose resource cannot be read counts as `secrets`.
  */
-function entryDecryptsSecrets(entry: SecretReachEntry): boolean {
-  if (entry.service !== "encryption" && entry.service !== "tinycloud.encryption") return false;
+function capReachOf(entry: SecretReachEntry, verbs: readonly string[]): CapReach {
+  if (!/^(?:tinycloud\.)?encryption$/i.test(entry.service ?? "")) return null;
+  if (!entry.actions.some((action) => verbs.includes(elevatedAbilityVerb(typeof action === "string" ? action : action.ability)))) {
+    return null;
+  }
   const resource = encryptionResourceOfEntry(entry);
   const parsed = resource === null ? null : parseEncryptionResource(resource);
-  if (parsed === null) return false;
-  const onSecrets = parsed.kind === "network" ||
-    (parsed.network === SECRETS_NETWORK && parsed.keyPath.startsWith(ALL_SECRETS_PREFIX));
-  return onSecrets &&
-    entry.actions.some((action) => elevatedAbilityVerb(typeof action === "string" ? action : action.ability) === "decrypt");
+  if (parsed === null) return "secrets";
+  if (parsed.kind === "network") return "network";
+  return parsed.network === SECRETS_NETWORK && parsed.keyPath.toLowerCase().startsWith(ALL_SECRETS_PREFIX) ? "secrets" : null;
+}
+
+/** Does this entry decrypt secrets: a key or prefix under `secrets/`, or a whole network (fails closed)? */
+function entryDecryptsSecrets(entry: SecretReachEntry): boolean {
+  return capReachOf(entry, ["decrypt"]) !== null;
+}
+
+/** Does any entry decrypt secrets (`entryDecryptsSecrets`): a key or prefix under `secrets/`, or a whole network? */
+export function decryptsSecrets(entries: readonly SecretReachEntry[]): boolean {
+  return entries.some(entryDecryptsSecrets);
 }
 
 /**
@@ -140,5 +155,17 @@ function entryDecryptsSecrets(entry: SecretReachEntry): boolean {
  * included). The page offers no more and the server refuses more.
  */
 export function approvalLifetimeCapSeconds(entries: readonly SecretReachEntry[], signedSeconds: number): number {
-  return entries.some(entryDecryptsSecrets) ? Math.min(signedSeconds, SECRET_GRANT_MAX_SECONDS) : signedSeconds;
+  return decryptsSecrets(entries) ? Math.min(signedSeconds, SECRET_GRANT_MAX_SECONDS) : signedSeconds;
+}
+
+/**
+ * Is a grant made outside a signed approval request (a sign-in popup or frame, a pasted link, a raw signature) held
+ * to `SECRET_GRANT_MAX_SECONDS`? Yes when it may `decrypt` or `key.create` on a key or prefix under `secrets/` (or on
+ * an encryption resource that cannot be read), and, only when `networkDecrypt` is on, when it may `decrypt` a whole
+ * network (Sam's D3, behind `OPENKEY_NETWORK_DECRYPT_CAP`).
+ */
+export function secretLifetimeCapApplies(entries: readonly SecretReachEntry[], options: { networkDecrypt: boolean }): boolean {
+  return entries.some((entry) =>
+    capReachOf(entry, ["decrypt", "key.create"]) === "secrets" ||
+    (options.networkDecrypt && capReachOf(entry, ["decrypt"]) === "network"));
 }

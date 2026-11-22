@@ -113,6 +113,14 @@ import {
   type AdmittedAppKey,
   UNREADABLE_RECAP_MESSAGE,
 } from '../services/app-key-refusal';
+import {
+  SECRET_LIFETIME_CODE,
+  SECRET_LIFETIME_MESSAGE,
+  clampSecretExpiryMs,
+  exceedsSecretLifetime,
+  secretCapExpirationTime,
+  secretLifetimeBody,
+} from '../services/secret-lifetime';
 import { allowedElevatedIds, elevatedDecided, elevatedNotDecidedBody } from '../services/elevated-decision';
 import { elevatedActionsOf } from '@openkey/capability-review';
 import { admitAppKeys, appIdForOrigin, appKeyAdmissionRefusal, type ManifestKeys } from '../services/app-key-gate';
@@ -1152,6 +1160,7 @@ delegateRouter.post('/sign', async (c) => {
         if (!policy.allowed) throw new Error(`message_rejected:${policy.reason}`);
         const appKeyRefusal = appKeyRefusalForSiwe(candidate.message as string);
         if (appKeyRefusal) throw new Error(`message_rejected:${appKeyRefusalMessage(appKeyRefusal, 'non_browser')}`);
+        if (exceedsSecretLifetime(candidate.message as string, Date.now())) throw new Error(`message_rejected:${SECRET_LIFETIME_MESSAGE}`);
         const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
         return { signature, identity };
       });
@@ -1246,9 +1255,10 @@ delegateRouter.post('/sign', async (c) => {
       },
     });
     if (!policy.allowed) return auditDenial(policy.code, policy.evidence);
-    // A message that names an app key or key.delete is outside the approved
-    // storage records: it is denied and recorded like every other denial.
-    if (typeof candidate.message === 'string' && appKeyRefusalForSiwe(candidate.message)) {
+    // A message that names an app key or key.delete, or asks for more than 7 days on secret keys (TC-3800), is outside
+    // the approved storage records: it is denied and recorded like every other denial.
+    if (typeof candidate.message === 'string' &&
+      (appKeyRefusalForSiwe(candidate.message) || exceedsSecretLifetime(candidate.message, Date.now()))) {
       return auditDenial('wrong_capability', policy.evidence);
     }
     if (!key || !key.sealedBlob || !policy.evidence.nonceDigest) {
@@ -1355,6 +1365,10 @@ delegateRouter.post('/sign', async (c) => {
       code: appKeyRefusalCode(signAppKeyRefusal),
       reason: appKeyRefusalMessage(signAppKeyRefusal, 'non_browser'),
     }, appKeyRefusalStatus(signAppKeyRefusal));
+  }
+  // TC-3800: signed bytes cannot be shortened, so more than 7 days on secret keys is refused.
+  if (exceedsSecretLifetime(body.message, Date.now())) {
+    return c.json({ approved: false, code: SECRET_LIFETIME_CODE, reason: SECRET_LIFETIME_MESSAGE }, 400);
   }
 
   let address: string;
@@ -1619,7 +1633,8 @@ delegateRouter.post('/', async (c) => {
   }
   let expiryMs: number;
   try {
-    expiryMs = resolveRequestExpiryMs(body);
+    // TC-3800: a grant on secret keys lasts 7 days at most.
+    expiryMs = clampSecretExpiryMs(resolveRequestExpiryMs(body), permissions);
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
@@ -1846,6 +1861,7 @@ delegateRouter.post('/', async (c) => {
     await checkApprovalDelegation(body, { signedSiwe: bound.originalSiwe });
     const tokenAppKeyRefusal = appKeyRefusalForSiwe(bound.originalSiwe, preparedEntries);
     if (tokenAppKeyRefusal) return c.json(appKeyRefusalBody(tokenAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(tokenAppKeyRefusal));
+    if (exceedsSecretLifetime(bound.originalSiwe, Date.now())) return c.json(secretLifetimeBody(), 400);
     // TC-3442: the account's passkey setting, before the context is spent or the key unsealed.
     const passkeyRefusal = await checkApprovalPasskey(
       prisma,
@@ -2174,7 +2190,8 @@ delegateRouter.post('/prepare', async (c) => {
   }
   let expiryMs: number;
   try {
-    expiryMs = resolveRequestExpiryMs(body);
+    // TC-3800: a grant on secret keys lasts 7 days at most.
+    expiryMs = clampSecretExpiryMs(resolveRequestExpiryMs(body), permissions);
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
@@ -2518,6 +2535,8 @@ delegateRouter.post('/complete', async (c) => {
   if (!expirationTime) {
     return c.json({ error: 'The signed SIWE must include a valid Expiration Time', code: 'missing_expiration_time' }, 400);
   }
+  // TC-3800: signed bytes cannot be shortened, so more than 7 days on secret keys is refused.
+  if (exceedsSecretLifetime(body.prepared.siwe, Date.now())) return c.json(secretLifetimeBody(), 400);
 
   let contextClaim: AuthorizationContextClaim | undefined;
   let signInAppOrigin: string | undefined;
@@ -3685,6 +3704,8 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (!signSubset.ok) {
     return c.json({ error: signSubset.message, code: signSubset.code, reason: signSubset.reason }, 400);
   }
+  // TC-3800: the preview brought a grant on secret keys back to 7 days; bytes that still ask for more are refused.
+  if (exceedsSecretLifetime(signedMessage, Date.now())) return c.json(secretLifetimeBody(), 400);
 
   // Validate the single-use preview approval without consuming it. The
   // final selection and bytes must match exactly what the user previewed.
@@ -4041,6 +4062,13 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
       );
     }
     expirationOverride = checked.value;
+  }
+  // TC-3800: a grant on secret keys lasts 7 days at most, whatever the app asked or the owner picked. A later time is
+  // brought back to 7 days from now, also for an app that did not opt in to a changed expiry: a shorter grant is
+  // within what it asked for.
+  const secretCap = secretCapExpirationTime(bound.originalSiwe, Date.now());
+  if (secretCap !== null && !(Date.parse(expirationOverride ?? immutable.expirationTime) <= Date.parse(secretCap))) {
+    expirationOverride = secretCap;
   }
   if (appKeyGroupPartial(
     admittedAppKeyActionIds(originalEntries, bound.admittedAppKeys, computeActionKey),
