@@ -16,6 +16,7 @@ import { createSealingContext, deriveKeyForRecord } from '../services/key-sealin
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { checkSignableMessage } from '../services/siwe-origin';
+import { invalidSiweMessage } from '../services/siwe-message-refusal';
 import {
   appKeyRefusalBody,
   appKeyRefusalForMessage,
@@ -411,6 +412,8 @@ keysRouter.post('/:keyId/sign', async (c) => {
   }
   const registryRefusal = registryRecordRefusalResponse(body);
   if (registryRefusal) return c.json(registryRefusal, 403);
+  const invalidSiwe = invalidSiweMessage(body.message);
+  if (invalidSiwe) return c.json(invalidSiwe, 400);
   const siweCheck = checkSignableMessage(body.message, body.requestOrigin);
   if (siweCheck.siwe && !siweCheck.ok) {
     return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);

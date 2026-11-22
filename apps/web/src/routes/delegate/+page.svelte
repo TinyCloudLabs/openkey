@@ -53,7 +53,7 @@
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, CODE_AND_APPROVAL_EXPIRED_TEXT, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
-  import { MAX_LEASE_MS, MIN_EXPIRY_MS, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
+  import { MAX_LEASE_MS, MIN_EXPIRY_MS, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, requestedExpiryMs } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -64,6 +64,7 @@
   import {
     parseCapabilityReview,
     defaultSelection,
+    siweExpirationTime,
     type CapabilityReviewModel,
   } from '@openkey/capability-review';
   import { renewalStartsTicked } from '$lib/renewal-default';
@@ -606,7 +607,7 @@
   );
   const hostNeedsAcknowledgment = $derived(hostCheck?.ok === true && !hostCheck.recognized);
   let hostAcknowledged = $state(false);
-  const delegationExpiresAt = $derived(/^Expiration Time:\s*(.+)$/m.exec(siweMessage)?.[1]?.trim() ?? '');
+  const delegationExpiresAt = $derived(siweExpirationTime(siweMessage) ?? '');
 
   // Device approvals never trust the link: the reason and every binding it
   // carries must come from (or equal) the server's pending request. Key
@@ -1024,7 +1025,7 @@
       // bytes here means the user reviews text that no longer matches
       // what will be signed. Assign a fresh model object so Svelte
       // reactivity picks up the change.
-      reviewModel = { ...reviewModel, rawMessage: siweMessage, expiry: siweExpiration(siweMessage) ?? reviewModel.expiry };
+      reviewModel = { ...reviewModel, rawMessage: siweMessage, expiry: siweExpirationTime(siweMessage) ?? reviewModel.expiry };
     }
     approveBlockedByFailure = false;
   }
