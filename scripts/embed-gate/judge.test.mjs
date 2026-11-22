@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { judgeSignFace, scrub } from "./judge.mjs";
+import { judgeSignFace, judgeTermsCard, scrub } from "./judge.mjs";
 
-const { signFaces } = JSON.parse(readFileSync(new URL("./expected-screens.json", import.meta.url), "utf8"));
+const { signFaces, terms } = JSON.parse(readFileSync(new URL("./expected-screens.json", import.meta.url), "utf8"));
 const host = { hostOrigin: "https://tinycloud.one" };
 const face = (permissions, note = "These permissions renew automatically for up to 90 days", requester = "tinycloud.one") => [
   "Sign Message", "Authorize capabilities", "", `Requested by ${requester}`, "", "Review the access this app is asking for.", "",
@@ -39,4 +39,21 @@ test("two expiry notes, or an unrelated screen, are refused", () => {
 test("scrub removes addresses, emails and codes", () => {
   const out = scrub("tcqa+share-okgate-a1-b2@qa-mail.tinycloud.xyz 0xd9Fbf2af3d21311c179775f26B3557B4FDD787d4 code 123456 Bearer abc.def");
   assert.equal(out, "<email> <address> code <6digits> Bearer <token>");
+});
+
+// The embedded Terms card's innerText as Chromium lays it out (terms-accept.svelte, embed branch).
+const card = (lede = "OpenKey and TinyCloud are run by TinyCloud, Inc. To use your account, agree to our Terms of Service. Our Privacy Policy explains what we collect, why, and your rights.", extra = []) => [
+  "Accept the Terms and Privacy Policy", lede, ...extra,
+  "Terms of Service, effective Nov 22, 2026", "(opens in a new tab)", "Privacy Policy: what we collect, why, and your rights", "(opens in a new tab)",
+  "Agree and continue", "By selecting Agree and continue, you agree to the Terms of Service and acknowledge the Privacy Policy.", "Sign out",
+].join("\n");
+
+test("the embedded Terms card for a first agreement is the expected one", () => {
+  assert.equal(judgeTermsCard(card(), terms.embedCard.hrefs, terms.embedCard).ok, true);
+});
+
+test("a Terms card with other copy, a What changed note, or other links fails closed", () => {
+  assert.equal(judgeTermsCard(card("To keep using your OpenKey account, agree to the updated Terms of Service."), terms.embedCard.hrefs, terms.embedCard).textMatches, false);
+  assert.equal(judgeTermsCard(card(undefined, ["What changed: the arbitration clause"]), terms.embedCard.hrefs, terms.embedCard).ok, false);
+  assert.equal(judgeTermsCard(card(), ["https://tinycloud.xyz/terms", "https://example.com/privacy"], terms.embedCard).hrefsMatch, false);
 });

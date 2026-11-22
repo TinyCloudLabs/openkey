@@ -10,8 +10,9 @@
 //   embed-new     host page -> Sign in -> OpenKey connect frame -> email code -> Create a new account
 //                 -> every sign review approved -> host signed in. Records the Terms state.
 //   terms-owing   the embed-new run when the new account OWED the Terms (GET /api/account/terms says
-//                 requiresAcceptance): the frame must stay on /widget/embed/* and show the framed notice.
-//                 Terms not owed (Terms off) = UNVERIFIED, never PASS.
+//                 requiresAcceptance): the frame stays on /widget/embed/connect and shows the Terms card
+//                 (expected-screens.json terms.embedCard, exact), one "Agree and continue" there, the accept
+//                 answers 2xx. Terms not owed (Terms off) = UNVERIFIED, never PASS.
 //   own-window    https://openkey.so/auth/login in its own window: email code -> passkey created by a
 //                 virtual authenticator made in this run (no stored key) -> dashboard.
 //   embed-passkey a new browser profile: host page -> Sign in -> Passkey -> sign reviews -> signed in, as
@@ -31,11 +32,12 @@
 // screenshots mask every input and the run's QA mail address (this repository's artifacts are public).
 import { chromium } from "@playwright/test";
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode, reopenInbox, waitForMail } from "./qa-mail.mjs";
-import { judgeSignFace, scrub } from "./judge.mjs";
+import { judgeSignFace, judgeTermsCard, scrub } from "./judge.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OPENKEY = "https://openkey.so";
@@ -149,6 +151,7 @@ function watchNetwork(context, label) {
     if (!FIRST_PARTY.test(url.hostname)) return;
     const status = response.status();
     if (url.hostname === "api.openkey.so" && url.pathname === "/api/auth/passkey/verify-registration" && status === 200) report.passkey.verifiedRegistration = true;
+    if (url.hostname === "api.openkey.so" && url.pathname === "/api/account/terms/accept") report.terms.accept = { label, atMs: since(), status };
     if (url.hostname === "api.openkey.so" && url.pathname === "/api/account/terms" && status === 200) {
       const body = await response.json().catch(() => null);
       if (body && typeof body === "object") report.terms.observed.push({ label, atMs: since(), version: body.version ?? null, requiresAcceptance: body.requiresAcceptance ?? null });
@@ -419,6 +422,8 @@ async function registerPasskey(page, context) {
     ["dashboard", page.getByRole("heading", { name: "Your Keys", exact: true })],
   ], 30_000);
   if (landed === "terms") {
+    // Once the account agreed in the frame, its own window must not ask again.
+    if (report.terms.agreedIn === "embed-frame") { await snap(page, "own-window-terms-again"); fail("terms_prompt_after_agreement", { agreedIn: "embed-frame" }); }
     report.terms.agreedIn = "own-window";
     await page.getByRole("button", { name: "Agree and continue", exact: true }).click({ timeout: 10_000 });
     landed = await screen(page, "own-window-after-terms", [
@@ -637,22 +642,33 @@ try {
     await connect.getByRole("button", { name: "Create a new account", exact: true }).click({ timeout: 10_000 });
     accountMayExist = true;
     report.account.created = true;
-    // A new account that owes the Terms meets the framed notice (#685) and agrees in a window of its own.
+    // A new account that owes the Terms meets the Terms card inside the connect frame and agrees there.
     const next = await screen(page, "connect-after-create", [
-      ["terms-notice", connect.getByRole("heading", { name: EXPECTED.terms.framedNoticeHeading, exact: true })],
+      ["terms-card", connect.getByTestId("terms-accept")],
       ["sign", () => Boolean(frameAt(page, "/widget/embed/sign"))],
     ], 60_000, connect);
-    if (next === "terms-notice") {
-      report.terms.framedNotice = true;
-      await snap(page, "embed-new-terms-notice");
-      const opened = context.waitForEvent("page", { timeout: 30_000 });
-      await connect.getByRole("button", { name: EXPECTED.terms.openButton, exact: true }).click({ timeout: 10_000 });
-      const terms = await opened;
-      await terms.waitForLoadState("domcontentloaded");
-      const termsScreen = await screen(terms, "terms-window", [["agree", terms.getByRole("button", { name: "Agree and continue", exact: true })]], 45_000);
-      report.terms.window = { path: pathOf(terms.url()), screen: termsScreen };
-      await terms.getByRole("button", { name: "Agree and continue", exact: true }).click({ timeout: 10_000 });
-      report.terms.agreedIn = "terms-window";
+    if (next === "terms-card") {
+      const shownAtMs = since();
+      const cardLocator = connect.getByTestId("terms-accept");
+      const text = await cardLocator.innerText({ timeout: 10_000 });
+      const hrefs = await cardLocator.locator("a[href]").evaluateAll((links) => links.map((link) => link.getAttribute("href")));
+      const judged = judgeTermsCard(text, hrefs, EXPECTED.terms.embedCard);
+      // textSha256 is the sha256 of the card text as judged (whitespace-collapsed). The release's textSha256 is the
+      // published Terms document's, which the card links to and does not show; both are recorded, not compared.
+      const release = JSON.parse(readFileSync(join(HERE, "../../apps/api/src/terms-release.json"), "utf8"));
+      report.terms.card = {
+        shownAtMs, path: pathOf(connect.url()), textMatches: judged.textMatches, hrefsMatch: judged.hrefsMatch, hrefs,
+        textSha256: createHash("sha256").update(judged.text).digest("hex"), releaseVersion: release.version, releaseTextSha256: release.textSha256,
+      };
+      artifact("terms-card.txt", judged.text);
+      await snap(page, "embed-new-terms-card");
+      if (!judged.ok) fail("terms_card_unexpected", { textMatches: judged.textMatches, hrefsMatch: judged.hrefsMatch });
+      const agree = connect.getByTestId("terms-agree");
+      await until("terms-agree-armed", () => agree.isEnabled(), 15_000);
+      await agree.click({ timeout: 10_000 });
+      report.terms.agreedIn = "embed-frame";
+      await until("terms-accept-answered", () => Boolean(report.terms.accept), 30_000);
+      if (report.terms.accept.status < 200 || report.terms.accept.status >= 300) fail("terms_accept_refused", { status: report.terms.accept.status });
     }
     const approvals = await approveUntilSignedIn(page, context, "embed-new");
     await snap(page, "embed-new-signed-in");
@@ -687,10 +703,11 @@ try {
   {
     const embedRead = report.terms.observed.find((entry) => entry.label === "embed-new");
     const ownRead = report.terms.observed.find((entry) => entry.label === "own-window-read");
-    const owed = report.terms.framedNotice === true || report.terms.refusedForTerms === true || embedRead?.requiresAcceptance === true;
+    const owed = report.terms.card !== undefined || report.terms.refusedForTerms === true || embedRead?.requiresAcceptance === true;
     report.terms.owed = owed;
     report.terms.source = embedRead ? "embed GET /api/account/terms" : ownRead ? "own-window GET /api/account/terms" : "not observed";
-    if (owed) leg("terms-owing", "PASS", { notice: report.terms.framedNotice === true, agreedIn: report.terms.agreedIn ?? null });
+    if (owed && report.terms.card === undefined) fail("terms_owed_without_terms_card", { agreedIn: report.terms.agreedIn ?? null });
+    if (owed) leg("terms-owing", "PASS", { card: true, agreedIn: report.terms.agreedIn ?? null, accept: report.terms.accept?.status ?? null });
     else leg("terms-owing", "UNVERIFIED", { reason: ownRead?.version === null || embedRead?.version === null ? "terms off (Terms version null)" : "the new account did not owe the Terms", requiresAcceptance: embedRead?.requiresAcceptance ?? ownRead?.requiresAcceptance ?? null });
   }
 

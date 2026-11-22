@@ -22,6 +22,17 @@ export function scrub(text) {
 
 const lineList = (text) => String(text).split("\n").map((line) => line.trim()).filter(Boolean);
 
+/** The embedded frame's Terms card text, whitespace-collapsed, without the links' screen-reader "(opens in a new tab)". */
+export const termsCardText = (text) => String(text).replace(/\(opens in a new tab\)/g, " ").replace(/\s+/g, " ").trim();
+
+/** Judges the embedded frame's Terms card against expected-screens.json `terms.embedCard`: exact text and links. */
+export function judgeTermsCard(text, hrefs, expected) {
+  const actual = termsCardText(text);
+  const textMatches = actual === expected.text;
+  const hrefsMatch = JSON.stringify(hrefs) === JSON.stringify(expected.hrefs);
+  return { ok: textMatches && hrefsMatch, textMatches, hrefsMatch, text: actual };
+}
+
 /**
  * Judges the visible text of a sign review frame against the expected faces.
  * Returns { ok: true, face } or { ok: false, reason, ... }.
