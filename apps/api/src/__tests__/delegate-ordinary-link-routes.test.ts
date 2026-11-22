@@ -351,7 +351,7 @@ describe('ordinary delegation lifetime', () => {
 });
 
 describe('signing routes without device enforcement', () => {
-  test('/sign and /host refuse deviceTransactionId before signing', async () => {
+  test('/sign refuses deviceTransactionId before signing', async () => {
     const sign = await post('/sign', {
       address: wallet.address,
       chainId: 1,
