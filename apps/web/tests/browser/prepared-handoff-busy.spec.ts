@@ -5,6 +5,7 @@
 // (SHOT_DIR) is the 390px phone width.
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
 const space = `tinycloud:pkh:eip155:1:${address}:default`;
@@ -58,6 +59,7 @@ async function setup(page: Page, replyFor: { call: 'prepare' | 'preview' | 'sign
     }
     return json(route, 404, { error: `unexpected ${path}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   const input = { transportVersion: 2, request: { protocolVersion: 1, siwe, jwk, host, sessionDid: 'did:key:cli-session', keyId: key.id }, delivery: { handoffId, state, cancelSecret } };
   await page.goto(`/delegate#tv2=${Buffer.from(JSON.stringify(input)).toString('base64url')}`);
 }
@@ -116,6 +118,7 @@ test('the owner revocation page shows the busy wording on a 409', async ({ page 
     if (path === '/api/delegate/owner-revocation/prepare') return json(route, 409, { code: 'handoff_signing', error: 'Handoff is being signed' });
     return json(route, 404, { error: `unexpected ${path}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   const request = { kind: 'owner-revocation', ownerDid: `did:pkh:eip155:1:${address}`, cid: 'bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgzz7nazxe', nonce: '0123456789abcdef0123456789abcdef', expiresAt: new Date(Date.now() + 590_000).toISOString() };
   await page.goto(`/delegate#tv2=${Buffer.from(JSON.stringify({ transportVersion: 2, request, delivery: { handoffId, state, cancelSecret } })).toString('base64url')}`);
   await expect(page.getByRole('alert')).toHaveText(BUSY);

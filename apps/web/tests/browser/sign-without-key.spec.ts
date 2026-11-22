@@ -8,6 +8,7 @@ import { test, expect, type Page, type Route, type FrameLocator } from '@playwri
 import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { HOST } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const ADDRESS_A = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const ADDRESS_B = '0x1111111111111111111111111111111111111111';
@@ -90,6 +91,7 @@ async function mockApi(page: Page, account: Account) {
     }
     return json(route, 404, { error: `unmocked ${path}` });
   });
+  await page.context().route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 }
 
 function newAccount(keys: Key[], signedIn = true): Account {

@@ -7,6 +7,7 @@
 import { test, expect, type FrameLocator, type Page } from '@playwright/test';
 import { HOST, ORIGIN } from './e2e-port';
 import { FIXTURE_META, makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const SHOTS = process.env.TC2927_SHOTS_DIR;
@@ -34,6 +35,7 @@ async function open(page: Page, resources: Array<Record<string, Record<string, u
     await route.fulfill({ json: { signature: '0x' + '11'.repeat(65), address } });
   });
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.route('**/api/delegate/authorize-sign-prepare', (route) => route.fulfill({
     headers: { Date: new Date().toUTCString() },
     json: { authorizationContextToken: 'context-token', expiresAt: new Date(Date.now() + 300_000).toISOString() },

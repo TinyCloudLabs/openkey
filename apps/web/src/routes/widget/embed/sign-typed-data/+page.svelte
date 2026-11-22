@@ -8,9 +8,12 @@
     type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed, type PasskeyOfferFetch,
   } from '$lib/approval-passkey';
   import { activeKeys, ARCHIVED_KEY_MESSAGE } from '$lib/delegate-key-selection';
-  import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
+  import { clearSessionToken, getSessionToken, isEmbedContext } from '$lib/embed-passkey';
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
+  import TermsGate from '$lib/components/auth/terms-gate.svelte';
+  import { termsGate } from '$lib/terms-gate';
+  import { SIGN_IN_AGAIN_TO_AGREE } from '$lib/terms';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
@@ -40,9 +43,22 @@
   let requestVersion = $state(0);
   let initialized = $state(false);
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
+  // A stored token is a credential, not yet a signed-in account: the Terms check reads it first (and drops it if it
+  // no longer signs anyone in).
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
+  let signInNote = $state<string | null>(null);
 
-  const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  const signedIn = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  // In the frame the request is read only once the account is known to have agreed to the Terms.
+  const isAuthenticated = $derived(signedIn && (!inIframe || $termsGate.phase === 'open'));
+  $effect(() => {
+    if (inIframe) termsGate.follow(embedAuthenticated ? getSessionToken() : null, () => termsSignedOut(false));
+  });
+  function termsSignedOut(again: boolean) {
+    clearSessionToken();
+    embedAuthenticated = false;
+    signInNote = again ? SIGN_IN_AGAIN_TO_AGREE : null;
+  }
 
   // Exact embedding origin; never '*' (TC-690).
   const origin = resolveWidgetOrigin($page.url.searchParams.get('origin'));
@@ -303,12 +319,15 @@
 
   <!-- Card body -->
   <div class="bg-white border border-surface-200 rounded-2xl shadow-sm p-5">
-    {#if !isAuthenticated}
+    {#if !signedIn}
       <EmbeddedSignIn
         prompt="Sign in to review and sign this data"
-        onauthenticated={() => { embedAuthenticated = true; }}
+        note={signInNote}
+        onauthenticated={() => { signInNote = null; embedAuthenticated = true; }}
         {passkeysSupported}
       />
+    {:else if !isAuthenticated}
+      <TermsGate surface="embed" onsignedout={termsSignedOut} />
     {:else if loading}
       <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6">
         <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24">

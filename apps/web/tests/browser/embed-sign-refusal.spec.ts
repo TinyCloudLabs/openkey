@@ -6,6 +6,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
 import { HOST } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const siwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, HOST);
@@ -18,6 +19,7 @@ async function openFramed(page: Page, prepare: { status: number; body: unknown }
   await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
   await page.route('**/api/keys/**', (route) => route.fulfill({ json: { key: { id: 'selected-key', address, publicKey: '0x02', keyIndex: 0, label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z' } } }));
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   let prepares = 0;
   await page.route('**/api/delegate/authorize-sign-prepare', (route) => {
     prepares += 1;

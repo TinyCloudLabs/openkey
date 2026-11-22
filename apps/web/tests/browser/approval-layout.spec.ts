@@ -1,6 +1,7 @@
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource, siweWithResources, FIXTURE_META } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const id = 'abcdefghijklmnopqrstuvwxyz';
 const reference = `/a/${id}#v=4&k=${'A'.repeat(43)}&c=bafkreia${'a'.repeat(52)}`;
@@ -37,6 +38,7 @@ async function serve(context: BrowserContext) {
     writes.push(path);
     return route.fulfill({ status: 404, json: { error: 'Unexpected local test request' } });
   });
+  await context.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return writes;
 }
 

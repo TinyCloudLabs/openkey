@@ -3,6 +3,9 @@
 // fields the next step needs. An empty body, text that is not JSON, or an
 // object without those fields is an unreadable reply: nothing is approved.
 
+import { isTermsRequired } from './terms';
+import { termsRefused } from './terms-gate';
+
 /** String 20: shown when a reply cannot be read. The HTTP status is not part of it. */
 export const SERVER_REPLY_TITLE = "OpenKey couldn't finish this request";
 export const SERVER_REPLY_BODY =
@@ -99,6 +102,8 @@ export async function readReply(
         ? failure.error
         : `HTTP ${response.status}`;
     const code = failure !== null && typeof failure === 'object' && 'code' in failure && typeof failure.code === 'string' ? failure.code : '';
+    // The account owes the current Terms (a release went live during the request): the Terms show in place.
+    if (isTermsRequired(response.status, failure)) termsRefused();
     if (isDefiniteRefusal(response.status, code)) {
       throw new ServerRefusalError(text, response.status, code);
     }

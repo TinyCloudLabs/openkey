@@ -5,6 +5,7 @@
 
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const json = (route: Route, body: unknown, status = 200, headers: Record<string, string> = {}) =>
   route.fulfill({ status, contentType: 'application/json', headers, body: JSON.stringify(body) });
@@ -50,6 +51,7 @@ async function mockApi(page: Page) {
     if (path.startsWith('/api/auth/passkey/list-user-passkeys')) return json(route, []);
     return json(route, { error: `unmocked ${path}` }, 404);
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return state;
 }
 

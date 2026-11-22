@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { ORIGIN } from './e2e-port';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 // TC-3442: in Settings, taking shared control of TinyCloud signing and allowing an app may need the passkey. The
 // confirm step holds the offer for its change and the confirm click sends the answer with it; blocking never asks.
@@ -65,6 +66,7 @@ async function setup(page: Page, initial: { mode: string; appEnabled: boolean },
     }
     return json(route, {});
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return calls;
 }
 

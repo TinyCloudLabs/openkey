@@ -1,0 +1,55 @@
+# Reviewed gitleaks baseline (gitleaks git, full history, 2026-11-22, gitleaks 8.30.1 + .gitleaks.toml).
+# Every entry was checked by hand; none is a live credential. Format: <commit>:<file>:<rule>:<line>.
+# Add an entry only after the same review; a value that could be live is rotated, never baselined.
+
+# dstack key-derivation known answers, derived from dstack's public simulator app key (sdk/simulator/appkeys.json), not a production key
+6870df071fe84b5e61902c3014c173011e130e8f:packages/tee/tests/dstack-key-derivation.kat.test.ts:generic-api-key:42
+6870df071fe84b5e61902c3014c173011e130e8f:packages/tee/tests/dstack-key-derivation.kat.test.ts:generic-api-key:43
+6870df071fe84b5e61902c3014c173011e130e8f:packages/tee/tests/dstack-key-derivation.kat.test.ts:generic-api-key:48
+6870df071fe84b5e61902c3014c173011e130e8f:packages/tee/tests/dstack-key-derivation.kat.test.ts:generic-api-key:49
+74411b710d322c194183c6281c19cf2fab299b23:packages/tee/tests/dstack-key-derivation.kat.test.ts:generic-api-key:55
+74411b710d322c194183c6281c19cf2fab299b23:packages/tee/tests/dstack-key-derivation.kat.test.ts:generic-api-key:56
+74411b710d322c194183c6281c19cf2fab299b23:packages/tee/tests/dstack-key-derivation.kat.test.ts:generic-api-key:65
+74411b710d322c194183c6281c19cf2fab299b23:packages/tee/tests/dstack-key-derivation.kat.test.ts:generic-api-key:66
+bebcf73d7a516fd1a51e2e92c8eb67e61d5da205:packages/tee/tests/legacy-root.test.ts:generic-api-key:28
+d9bbfe66d16dfd66b434ccea9f112b381fe1835a:packages/tee/tests/legacy-root.test.ts:generic-api-key:29
+bebcf73d7a516fd1a51e2e92c8eb67e61d5da205:packages/tee/tests/legacy-root.test.ts:generic-api-key:32
+d9bbfe66d16dfd66b434ccea9f112b381fe1835a:packages/tee/tests/legacy-root.test.ts:generic-api-key:33
+
+# Migration and guard checksums (sha256 of committed SQL), public by design
+5eaa03545d6ffffe8fabe02109cba1bcb9c864a6:scripts/deploy-production-migrations.ts:generic-api-key:46
+bc28342349d5b77710689ff3811d9c76479471dc:scripts/deploy-production-migrations.ts:generic-api-key:48
+244a38d0cd20406b71de0118539dca32ac5823e6:scripts/deploy-production-migrations.ts:generic-api-key:48
+17a944d5df85a702c97fc4eaa5a2220ab248d81f:scripts/native-delegation-schema-guards.ts:generic-api-key:13
+5b993e2e6fe129e360ca973466aaa4e850c348ae:scripts/native-delegation-schema-guards.ts:generic-api-key:13
+
+# OPENKEY_LEGACY_APP_ID: the openkey-api Phala app id, public (EXPECTED_APP_ID in deploy-api.yml)
+36253f47abd33bc5aef6a6227f57415f4f03e786:apps/api/src/services/legacy-reseal.test.ts:generic-api-key:217
+7f053ae1eeb7fcbd4c1ba6fe2b98badaeda82d40:apps/api/src/services/legacy-reseal.test.ts:generic-api-key:315
+9b17e05adc51dc40e4c58d433bbcb6e8bef5e482:docker-compose.prod.yml:generic-api-key:68
+68a28b7ebb2b0797f158fdba14f7a0cf538adfa3:docker-compose.prod.yml:generic-api-key:68
+
+# JWS test vectors signed with throwaway Ed25519 keys generated in the test; private half discarded
+a5697b11997d3dde714be4f5292a7340ab59b9a1:apps/api/src/__tests__/org-owner-check.test.ts:jwt:27
+4b8c4d52fa526876c6b278ac8b04294e5fbf1773:apps/api/src/__tests__/org-owner-check.test.ts:jwt:27
+2988c17ec1f4b1e4b1db123398544281910e434e:apps/api/src/__tests__/org-registration.test.ts:jwt:213
+
+# Fixture strings that are not keys: SIWE vector text with a public key, a key commitment, an object path, a client id, a fake token, a short DID
+294199b224635e2e4ae70bb13cfbc0d9fcf34050:apps/api/src/__tests__/app-read-discovery.test.ts:generic-api-key:35
+46d399cc8d2066c8fd7e2e261a2c38138599c43f:apps/api/src/__tests__/native-ceiling-update.test.ts:generic-api-key:340
+9b75d365a3ed878720859fe1e4e7ddd86e4cc70f:apps/api/src/__tests__/native-delegation-interceptors.test.ts:generic-api-key:41
+5b993e2e6fe129e360ca973466aaa4e850c348ae:apps/api/src/__tests__/native-delegation-interceptors.test.ts:generic-api-key:46
+0f2ba55c77a508d387f39712e30f31c8fd8994cb:apps/api/src/services/device-authorization.test.ts:generic-api-key:171
+4a19ee1e639bf13b417a8bb82d90e599e39c33df:apps/api/src/services/device-authorization.test.ts:generic-api-key:173
+0f17b19c0e1b6107d7663ee1cc1018d6f4c18465:apps/api/src/services/fixtures/org-issuer-authorization-v1/signed-vectors.json:generic-api-key:11
+0f17b19c0e1b6107d7663ee1cc1018d6f4c18465:apps/api/src/services/fixtures/org-issuer-authorization-v1/signed-vectors.json:generic-api-key:18
+0f17b19c0e1b6107d7663ee1cc1018d6f4c18465:apps/api/src/services/fixtures/org-issuer-authorization-v1/signed-vectors.json:generic-api-key:27
+294199b224635e2e4ae70bb13cfbc0d9fcf34050:apps/web/tests/browser/app-read-discovery.spec.ts:generic-api-key:25
+85a58c0c88933080aab5d47e114cbb01f2561eb1:apps/web/tests/browser/app-read-discovery.spec.ts:generic-api-key:26
+344dde3d6ef57f85b6963617f7dbb9623f3c9347:packages/tee/tests/fixtures/escrow-header-v1.json:generic-api-key:12
+
+# Test-only secrets: a test BetterAuth secret, a hex-sequence dev sealing key, a 'test-' CI encryption key in the removed project/ scaffold
+4e43d9188d635f52bd03e5b1f09742f2c608a362:apps/api/src/__tests__/signin-renewal-routes.test.ts:generic-api-key:60
+62d3a097dcbe404dc1855fcc54d4a6b182c94b06:project/.github/workflows/ci-cd.yml:generic-api-key:62
+62d3a097dcbe404dc1855fcc54d4a6b182c94b06:project/.github/workflows/ci-cd.yml:generic-api-key:86
+51e0d9f0c68c0d8cad5c55658cb2c3e49ed6f054:scripts/local-pglite-device-smoke.ts:generic-api-key:25

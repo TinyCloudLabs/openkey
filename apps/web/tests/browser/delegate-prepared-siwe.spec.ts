@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
 import { fullCodeFromBox, recordClipboard } from './approval-code-fixtures';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
 const space = `tinycloud:pkh:eip155:1:${address}:default`;
@@ -57,6 +58,7 @@ async function setup(page: Page, options: { keyId?: string; callback?: string; n
     if (path === '/api/delegate/authorize-sign') return json(route, 200, { ...(options.narrowed ? narrowedResult : rawResult), deliveryState: state, selectedKeyId: preparedKeyId });
     return json(route, 404, { error: `unexpected ${path}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   const input = { transportVersion: 2, request: { protocolVersion: 1, siwe: options.siwe ?? siwe, jwk, host, sessionDid: 'did:key:cli-session', ...options.keyId ? { keyId: options.keyId } : {} }, delivery: { handoffId, state, cancelSecret, ...options.callback ? { callback: options.callback } : {} } };
   const url = `/delegate#tv2=${Buffer.from(JSON.stringify(input)).toString('base64url')}`;
   if (options.entry === 'conflict') {
@@ -314,6 +316,7 @@ test('cancel before authenticated claim clears only tab-scoped request data', as
 
 test('invalid fragments fail explicitly and leave no pending request', async ({ page }) => {
   await page.route('**/api/auth/get-session', route => json(route, 200, { session: { id: 's', userId: 'u', expiresAt: '2026-10-16T18:00:00.000Z' }, user: { id: 'u' } }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto('/delegate#tv2=not-a-json-request');
   await expect(page.getByRole('heading', { name: 'This link is cut off' })).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');

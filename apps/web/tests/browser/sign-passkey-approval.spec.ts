@@ -2,6 +2,7 @@ import { test, expect, type Page, type Route } from '@playwright/test';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { HOST, ORIGIN } from './e2e-port';
 import { makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 // TC-3442: Approve on a message signature answers the API's passkey offer when the account's setting asks for it, and
 // the approval carries the assertion. The server-authoritative path gets its offer with each preview; the exact-byte
@@ -78,6 +79,7 @@ async function mockApi(page: Page, opts: { required: boolean; refuseFirst: boole
     }
     return json(route, {});
   });
+  await page.context().route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return calls;
 }
 
