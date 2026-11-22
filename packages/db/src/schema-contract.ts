@@ -67,6 +67,7 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261121_0004_native_stepup_delegation', '71c7f4491f6e63320acb9ef34c76ff54ec0bce2e880764e725b3500fa9c0e6bb'],
   ['20261121_0005_native_approval_passkey_method', '450234c3f53249bd91b0f9d92823d24cd377458e1db114a503c08fe588ccf76e'],
   ['20261122_0001_terms_acceptance_embed_audit', 'b57be1d1b87aca2d43ae5b0447d9a2f6bf7bd840b48a2cd8fc0e0b638897dea1'],
+  ['20261122_0002_account_deletion_audit', '246a66a0bf6939026392943fb894bdbff2d83a14697e47a916d4875d9b6517ed'],
 ]);
 
 export type SchemaContractDatabase = {
