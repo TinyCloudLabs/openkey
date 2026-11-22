@@ -31,8 +31,8 @@
 // screenshots mask every input and the run's QA mail address (this repository's artifacts are public).
 import { chromium } from "@playwright/test";
 import { createServer } from "node:http";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode, reopenInbox, waitForMail } from "./qa-mail.mjs";
 import { judgeSignFace, scrub } from "./judge.mjs";
@@ -49,6 +49,11 @@ const DRY = process.env.EMBED_GATE_DRY === "1"; // stops at the connect frame: n
 // Cleanup only: deletes the account an earlier run with this 12-hex run id left behind, then reads back that the
 // address has no account. No new account is made.
 const CLEANUP_RUN_ID = process.env.EMBED_GATE_CLEANUP_RUN_ID ?? "";
+// The run's passkey (credential id and private key of a throwaway test key), written the moment it registers so
+// the job's always() cleanup step can still delete a passkey account after this process dies (Bobbie, 10:50Z).
+// Runner tmp only, mode 0600, outside the uploaded report folder; never logged, uploaded or cached.
+const PASSKEY_FILE = process.env.EMBED_GATE_PASSKEY_FILE ?? "";
+if (PASSKEY_FILE && !relative(resolve(OUT), resolve(PASSKEY_FILE)).startsWith("..")) throw new Error("EMBED_GATE_PASSKEY_FILE must lie outside EMBED_GATE_OUT, which is uploaded");
 const EXPECTED = JSON.parse(readFileSync(process.env.EMBED_GATE_EXPECTED ?? join(HERE, "expected-screens.json"), "utf8"));
 const SDK_BUNDLE = process.env.EMBED_GATE_SDK ?? join(HERE, "../../packages/sdk/dist/index.mjs");
 const MAX_APPROVALS = 4;
@@ -78,8 +83,8 @@ const runIdOf = (address) => /^tcqa\+[a-z0-9-]+-([0-9a-f]{12})-[0-9a-f]{8}@/.exe
 // The cleanup ledger (artifact cleanup-ledger.json, uploaded even when the job fails or is cancelled): this
 // run's QA account by label and run id, written before sign-up. Neither it nor the log holds the address, a hash
 // of it or a code: QA_MAIL_ADDRESS_SECRET rebuilds the address from the run id (dispatch cleanup_run_id).
-const writeLedger = (state) => {
-  const entry = { label: LABEL, runId: runIdOf(inbox.address), state,
+const writeLedger = (state, outcome = {}) => {
+  const entry = { label: LABEL, runId: runIdOf(inbox.address), state, ...outcome,
     githubRunId: process.env.GITHUB_RUN_ID ?? null, sha: process.env.EMBED_GATE_SHA ?? null, at: new Date().toISOString() };
   writeFileSync(join(OUT, "cleanup-ledger.json"), JSON.stringify(entry, null, 2));
   process.stderr.write(`embed-gate ledger: ${state} label ${entry.label} run id ${entry.runId}\n`);
@@ -444,6 +449,10 @@ async function registerPasskey(page, context) {
   if (made.length !== 1) fail("virtual_authenticator_holds_unexpected_credentials", { count: made.length });
   credentials = made.map(({ credentialId, isResidentCredential, rpId, privateKey, userHandle }) => ({ credentialId, isResidentCredential, rpId, privateKey, userHandle }));
   highestSignCount = Math.max(highestSignCount, made[0].signCount ?? 0);
+  if (PASSKEY_FILE) {
+    writeFileSync(PASSKEY_FILE, JSON.stringify({ runId: runIdOf(inbox.address), credentials, highestSignCount }), { mode: 0o600 });
+    chmodSync(PASSKEY_FILE, 0o600);
+  }
   if (credentials[0].rpId !== "openkey.so") fail("passkey_rp_id_unexpected", { rpId: credentials[0].rpId });
   report.passkey.registered = 1;
   report.passkey.registeredAfterMs = since() - before;
@@ -464,21 +473,32 @@ async function deleteAccount(browser) {
     if (landed === "login" && credentials.length) {
       // With the run's passkey present the login page may sign in by itself (passkey in the email field, PR run
       // 45013152670); otherwise "Use a passkey instead". No email code is spent.
-      const passkey = page.getByRole("button", { name: /^(Use a passkey instead|Sign in with a passkey)$/ });
-      const next = await screen(page, "cleanup-passkey-login", [
-        ["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })],
-        ["dashboard", page.getByRole("heading", { name: "Your Keys", exact: true })],
-        ["passkey-button", passkey],
-      ], 30_000);
-      // The page may sign in by itself between the check and the click; the screen below decides.
-      if (next === "passkey-button") await passkey.first().click({ timeout: 10_000 }).catch(() => {});
-      const signed = await screen(page, "cleanup-signed-in", [
-        ["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })],
-        ["dashboard", page.getByRole("heading", { name: "Your Keys", exact: true })],
-      ], 45_000);
-      if (signed === "dashboard") await page.goto(`${OPENKEY}/dashboard/settings/delete-account`, { waitUntil: "domcontentloaded", timeout: 60_000 });
-      await screen(page, "cleanup-explain", [["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })]], 45_000);
-    } else if (landed === "login") {
+      try {
+        const passkey = page.getByRole("button", { name: /^(Use a passkey instead|Sign in with a passkey)$/ });
+        const next = await screen(page, "cleanup-passkey-login", [
+          ["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })],
+          ["dashboard", page.getByRole("heading", { name: "Your Keys", exact: true })],
+          ["passkey-button", passkey],
+        ], 30_000);
+        // The page may sign in by itself between the check and the click; the screen below decides.
+        if (next === "passkey-button") await passkey.first().click({ timeout: 10_000 }).catch(() => {});
+        const signed = await screen(page, "cleanup-signed-in", [
+          ["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })],
+          ["dashboard", page.getByRole("heading", { name: "Your Keys", exact: true })],
+        ], 45_000);
+        if (signed === "dashboard") await page.goto(`${OPENKEY}/dashboard/settings/delete-account`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+        await screen(page, "cleanup-explain", [["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })]], 45_000);
+        landed = "explain";
+      } catch (error) {
+        // A passkey whose account is already gone signs in nowhere; the email sign-in below then lands on
+        // "Create a new account" (no_account). A first-party refusal still stops cleanup.
+        const verdict = error instanceof GateFailure ? error.verdict : "error";
+        if (verdict.startsWith("first_party_")) throw error;
+        report.cleanupPasskeyFallback = verdict;
+        stopped = null;
+      }
+    }
+    if (landed === "login") {
       landed = await ownWindowEmailSignIn(page, "/dashboard/settings/delete-account");
       if (landed === "new-account") return { deleted: false, reason: "no_account" };
       if (landed === "terms") await page.getByRole("button", { name: "Agree and continue", exact: true }).click({ timeout: 10_000 });
@@ -571,6 +591,14 @@ let accountMayExist = false;
 try {
   if (CLEANUP_RUN_ID) {
     inbox = reopenInbox(LABEL, CLEANUP_RUN_ID);
+    // The always() cleanup step of the run's own job: the passkey that run registered, if it got that far.
+    if (PASSKEY_FILE && existsSync(PASSKEY_FILE)) {
+      const saved = JSON.parse(readFileSync(PASSKEY_FILE, "utf8"));
+      if (saved.runId !== CLEANUP_RUN_ID) throw new Error("the passkey file belongs to another run id");
+      credentials = saved.credentials;
+      highestSignCount = saved.highestSignCount ?? 0;
+      report.cleanupPasskey = "loaded";
+    }
     accountMayExist = true;
     report.mode = "cleanup-only";
     throw new GateFailure("cleanup_only");
@@ -781,7 +809,9 @@ try {
       report.result = "failed";
       report.account.leakedRunId = inbox ? runIdOf(inbox.address) : "unknown";
     }
-    if (inbox) writeLedger(report.account.deleted === true ? "deleted" : "LEAKED");
+    // The job's always() cleanup step reads these: it never retries an account that met a 429 (Naomi, 10:46Z).
+    if (inbox) writeLedger(report.account.deleted === true ? "deleted" : "LEAKED", report.account.deleted === true ? {} : {
+      cleanupVerdict: report.legs.cleanup?.verdict ?? null, metRateLimit: report.network.some((entry) => entry.status === 429) });
     if (report.account.deleted === true && report.mode === "cleanup-only") {
       // Read back: the address must now sign in as a stranger ("Create a new account"), which is never pressed.
       try {

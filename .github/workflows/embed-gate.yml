@@ -130,11 +130,44 @@ jobs:
           EMBED_GATE_CANDIDATE_SPKI: ${{ steps.candidate.outputs.spki }}
           EMBED_GATE_OUT: ${{ runner.temp }}/embed-gate
           EMBED_GATE_CLEANUP_RUN_ID: ${{ inputs.cleanup_run_id }}
+          EMBED_GATE_PASSKEY_FILE: ${{ runner.temp }}/embed-gate-passkey.json
           QA_MAIL_ADDRESS_SECRET: ${{ secrets.QA_MAIL_ADDRESS_SECRET }}
           QA_MAIL_READ_TOKEN: ${{ secrets.QA_MAIL_READ_TOKEN }}
         run: |
           set -o pipefail
           node scripts/embed-gate/run.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Backstop when the gate process could not delete its account (crash, step cancelled): this job still holds the
+      # run's passkey in runner tmp, the only proof that can delete a passkey account (Bobbie, 10:50Z). An account
+      # already gone counts as deleted. A 429 is not retried (Naomi, 10:46Z): the ledger keeps the account LEAKED.
+      # A lost runner runs no step: the ledger's run id goes to the existing operator removal.
+      - name: Delete the run's account if the gate could not
+        if: always() && !inputs.cleanup_run_id
+        env:
+          EMBED_GATE_TARGET: production
+          EMBED_GATE_SHA: ${{ env.SHA }}
+          EMBED_GATE_OUT: ${{ runner.temp }}/embed-gate/always-cleanup
+          EMBED_GATE_PASSKEY_FILE: ${{ runner.temp }}/embed-gate-passkey.json
+          QA_MAIL_ADDRESS_SECRET: ${{ secrets.QA_MAIL_ADDRESS_SECRET }}
+          QA_MAIL_READ_TOKEN: ${{ secrets.QA_MAIL_READ_TOKEN }}
+        run: |
+          set -o pipefail
+          ledger="$RUNNER_TEMP/embed-gate/cleanup-ledger.json"
+          if [ ! -f "$ledger" ]; then echo "The gate made no account."; exit 0; fi
+          state=$(jq -r .state "$ledger")
+          run_id=$(jq -r .runId "$ledger")
+          if [ "$state" = deleted ]; then echo "The gate deleted its account."; exit 0; fi
+          if [ "$(jq -r '.metRateLimit // false' "$ledger")" = true ]; then
+            echo "::error::The gate met a 429; account run id $run_id stays LEAKED for a scheduled cleanup."
+            exit 1
+          fi
+          # At most one OpenKey email code per 30 s across runs, and Better Auth's 60 s sign-in code window.
+          sleep 61
+          EMBED_GATE_CLEANUP_RUN_ID="$run_id" node scripts/embed-gate/run.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Wipe the run's passkey
+        if: always()
+        run: rm -f "$RUNNER_TEMP/embed-gate-passkey.json"
 
       - name: Upload the gate report and screenshots
         if: always()
