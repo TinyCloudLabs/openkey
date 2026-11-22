@@ -16,12 +16,6 @@ on:
       share_ref:
         description: Share branch or tag that provides the smoke
         default: main
-  workflow_call:
-    inputs:
-      share_ref:
-        description: Share branch or tag that provides the smoke
-        type: string
-        default: main
 
 permissions:
   contents: read

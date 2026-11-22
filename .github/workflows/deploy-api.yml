@@ -54,12 +54,36 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: bun scripts/inspect-api-production.ts
 
-  # Runs the Share sender smoke against production before this deploy changes it. A red smoke stops the
-  # deploy. `override_reason` skips the smoke and is recorded in the run summary.
+  # The latest completed Share sender smoke on main must be green and must have started after the deployed
+  # API commit finished deploying (on that commit or a later one). Otherwise the deploy stops. `override_reason`
+  # skips the check and is recorded in the run summary.
   smoke-gate:
     if: github.ref == 'refs/heads/main' && !inputs.preflight_only && inputs.override_reason == ''
-    uses: ./.github/workflows/share-sender-smoke.yml
-    secrets: inherit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a green smoke on the deployed API
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          deploys="$RUNNER_TEMP/deploy-runs.ndjson"
+          : > "$deploys"
+          while IFS=$'\t' read -r id sha updated; do
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/jobs" \
+              | jq -c --argjson id "$id" --arg sha "$sha" --arg updated "$updated" \
+                '{id: $id, head_sha: $sha, updated_at: $updated, jobs: [.jobs[] | {name, conclusion}]}' >> "$deploys"
+          done < <(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-api.yml/runs?branch=main&status=success&per_page=10" \
+            --jq '.workflow_runs[] | [.id, .head_sha, .updated_at] | @tsv')
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/share-sender-smoke.yml/runs?branch=main&per_page=50" \
+            --jq '.workflow_runs' > "$RUNNER_TEMP/smoke-runs.json"
+          jq -n --slurpfile d "$deploys" --slurpfile s "$RUNNER_TEMP/smoke-runs.json" '{deployRuns: $d, smokeRuns: $s[0]}' \
+            | node .github/scripts/share-smoke-gate.mjs | tee -a "$GITHUB_STEP_SUMMARY"
 
   deploy:
     needs: smoke-gate
