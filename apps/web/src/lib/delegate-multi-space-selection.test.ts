@@ -12,7 +12,7 @@ const permissions = spaces.map(space => {
   return { key, actions: [{ key: `${key}\0${ability}`, ability, required: false }] };
 });
 const message = [
-  'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
+  'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '', '',
   'URI: https://cli.tinycloud.xyz', 'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456',
   'Issued At: 2026-11-05T00:00:00.000Z', 'Expiration Time: 2026-11-06T00:00:00.000Z',
   'Resources:', `- ${makeRecapResource(Object.fromEntries(spaces.map(space => [`${space}/kv/same/path/`, { [ability]: [{}] }]))) }`,

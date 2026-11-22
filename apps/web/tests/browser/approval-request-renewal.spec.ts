@@ -32,6 +32,7 @@ function prepared(sensitive: boolean) {
   if (sensitive) att[decryptResource] = { [DECRYPT]: [{}] };
   const siwe = [
     'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
+    '',
     'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
     'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-11-13T00:00:00.000Z', 'Expiration Time: 2026-12-13T00:00:00.000Z',
     'Resources:', `- ${makeRecapResource(att)}`,

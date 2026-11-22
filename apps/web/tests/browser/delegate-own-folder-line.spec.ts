@@ -31,6 +31,7 @@ function prepareResponse(domain: string, folder: string, flags: { ownFolderOnly:
   const issuedAt = new Date();
   const siwe = [
     `${domain} wants you to sign in with your Ethereum account:`, address, '',
+    '',
     'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
     'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456',
     `Issued At: ${issuedAt.toISOString()}`, `Expiration Time: ${new Date(issuedAt.getTime() + 7 * 86_400_000).toISOString()}`,
