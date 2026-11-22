@@ -3,7 +3,8 @@ import type { EthereumKey } from './api';
 import { isPasskeyApprovalRefusal } from './approval-passkey';
 import { delegateServerMessage } from './delegate-failure-text';
 import { ServerReplyError } from './server-reply';
-import { isTermsRequired, sendToTerms } from './terms';
+import { isTermsRequired } from './terms';
+import { termsRefused } from './terms-gate';
 
 export class ApprovalReplyError extends Error {
   constructor(readonly status: number, readonly code?: unknown, readonly detail?: string, message = `HTTP ${status}`) {
@@ -41,7 +42,7 @@ export async function readHandoffReply(response: Response, valid?: (reply: Recor
   const body: unknown = await response.json().catch(() => null);
   const reply = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null;
   if (!response.ok) {
-    if (isTermsRequired(response.status, reply)) sendToTerms();
+    if (isTermsRequired(response.status, reply)) termsRefused();
     const passkeyMessage = isPasskeyApprovalRefusal(reply) && typeof reply?.error === 'string' ? reply.error : undefined;
     throw new ApprovalReplyError(response.status, reply?.code, delegateServerMessage(reply), passkeyMessage);
   }

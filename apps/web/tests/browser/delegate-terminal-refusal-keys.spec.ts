@@ -4,6 +4,7 @@
 
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const json = (route: Route, status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 const key = (id: string, keyIndex: number, address: string, isPrimary: boolean) =>
@@ -29,6 +30,7 @@ async function mock(page: Page, keys: unknown[], prepare: { status: number; body
     }
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return calls;
 }
 

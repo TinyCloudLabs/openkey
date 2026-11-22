@@ -6,6 +6,7 @@
 
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
 const space = `tinycloud:pkh:eip155:1:${address}:applications`;
@@ -43,6 +44,7 @@ async function exactMessage(page: Page, sessionSiwe: string): Promise<Shown> {
     if (path.endsWith('/prepare')) return json(route, { ...base, sessionSiwe });
     return json(route, { error: `unmocked ${path}` }, 404);
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
   await expect(page.getByRole('heading', { name: 'Exo wants access' })).toBeVisible();
   await page.locator('details.details > summary').click();
