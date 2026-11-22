@@ -1,31 +1,39 @@
 // TC-3893: registry-change API routes.
 //
 //   POST /api/registry-change/prepare
-//     - `rejectNonOpenKeySignRequest` + `requireSession`
-//     - Requesting app origin comes from the OpenKey-origin widget's verified postMessage
-//       handshake via `X-OpenKey-Requesting-Origin` (falling back to the verified HTTP
-//       `Origin` header), NEVER from any request body field.
+//     - `rejectNonBrowserControlRequest` (same-site OpenKey browser Origin, NO Bearer) + `requireSession`
+//     - Requesting app origin MUST come from `X-OpenKey-Requesting-Origin` (400 if missing/non-canonical),
+//       NEVER from any request body field and with no fallback to HTTP `Origin`.
+//     - In production, refuses with 503 `registry_change_notice_unavailable` if email sender is unconfigured.
+//     - Enforces request caps (nodes <= 16, spaces <= 64) before any fetch.
 //     - Per-owner rate limit (`registry_change_prepare`, default 20/h).
 //     - Reads current verified v2 record (409 `registry_record_missing` when absent).
 //     - Canonicalises node URLs (400 `registry_change_invalid_node` on unparseable),
-//       probes node identity (`ok | mismatch | unreachable`, warn-only), merges spaces
-//       without dropping unrelated spaces, sets sequence = current + 1 and updated_at = now.
+//       probes node identity with SSRF filter + concurrency <= 4 (`ok | mismatch | unreachable`, warn-only),
+//       returns 422 `registry_change_node_did_required` for a new unreachable host with no DID,
+//       merges spaces without dropping unrelated spaces, sets sequence = current + 1 and updated_at = now.
 //     - Mints single-use HMAC `changeId` ticket and ALWAYS creates a passkey offer bound to
 //       `{ purpose: 'registry_change', requestDigest: approvalRequestDigest(subject, requestingOrigin, recordHash) }`.
 //
+//   POST /api/registry-change/undo/prepare
+//     - `rejectNonBrowserControlRequest` + `requireSession` + `X-OpenKey-Requesting-Origin`
+//     - Loads any owned history row and builds an exact REPLACE payload from `previousRecord` at seq = current + 1.
+//
 //   POST /api/registry-change/publish
-//     - `rejectNonOpenKeySignRequest` + `requireSession`
+//     - `rejectNonBrowserControlRequest` + `requireSession`
 //     - Body: `{ changeId, passkeyAssertion }` (any origin in the body is ignored).
 //     - Per-owner rate limit (`registry_change_publish`, default 5/h).
 //     - Passkey ALWAYS required regardless of `passkeyApprovalMode` (`NEVER` does not apply).
 //     - Re-reads current v2 record; sequence/payload drift -> 409 `registry_change_stale`.
 //     - Consumes single-use `changeId` nonce (`rc:` prefix in `TinyCloudSetupConsumedNonce`).
-//     - Stores `previousRecord` (full signed current JSON) in `RegistryChangeHistory` BEFORE PUT.
+//     - Stores `previousRecord` (full signed current JSON) in `RegistryChangeHistory` BEFORE PUT;
+//       deletes that row if PUT or accepted==prepared verification fails (no phantom history).
 //     - Signs with `signManagedKey`, PUTs directly to the registry, verifies accepted == prepared.
 //     - Sends notice email via Resend with Monica's wording.
 //
 //   GET /api/registry-change/history?limit=10
-//     - `requireSession` (owner's own history rows, newest first).
+//     - `requireSession` (owner's own history rows, newest first, excluding rows with newSequence > current.sequence).
+//     - Credentialed CORS limited exclusively to TinyCloud One origins.
 
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { cors } from 'hono/cors';
@@ -35,7 +43,7 @@ import { createPrismaClient, type Prisma, type PrismaClient } from '@openkey/db'
 import { canonicalLocationPayloadV2, validateLocationRecordV2Payload, type LocationRecordV2Payload } from '@tinycloud/sdk-core';
 import { API_EXPOSED_HEADERS } from '../origin-policy';
 import { requireSession, type SessionContext } from '../middleware/session';
-import { rejectNonOpenKeySignRequest } from '../middleware/browser-control';
+import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
 import { primaryKeyWhere } from '../services/primary-key';
 import { signManagedKey } from '../services/managed-key-signing';
 import {
@@ -64,6 +72,8 @@ import {
   prepareRegistryUndoRecord,
   publishSignedLocationRecordV2,
   readCurrentLocationRecordV2,
+  validateRequestBounds,
+  type HostResolver,
 } from '../services/registry-change-client';
 import { sendRegistryChangeNoticeEmail } from '../services/registry-change-email';
 import type { EmailSender } from '../services/email-otp-delivery';
@@ -103,9 +113,11 @@ export interface RegistryChangeRouterDeps {
   readonly retryAfter: PerOwnerLimiter<RegistryChangeRateAction>;
   readonly prisma: PrismaClient;
   readonly emailSender: EmailSender | null;
+  readonly isProduction?: boolean;
   readonly getServerTime?: () => Date;
   readonly registryUrl?: string;
   readonly fetch?: typeof fetch;
+  readonly resolveHost?: HostResolver;
   readonly rp?: RelyingParty;
   /** Override signer for tests; defaults to TEE `signManagedKey`. */
   readonly signMessage?: (
@@ -113,7 +125,7 @@ export interface RegistryChangeRouterDeps {
     sealedBlob: string,
     message: string,
   ) => Promise<string>;
-  /** For tests. In production the default `rejectNonOpenKeySignRequest` runs. */
+  /** For tests. In production the default `rejectNonBrowserControlRequest` runs. */
   readonly originMiddleware?: MiddlewareHandler<SessionContext>;
   /** For tests. In production the default `requireSession` runs. */
   readonly sessionMiddleware?: MiddlewareHandler<SessionContext>;
@@ -124,6 +136,10 @@ export function registryChangePasskeyBinding(subject: string, requestingOrigin: 
     purpose: REGISTRY_CHANGE_TICKET_PURPOSE,
     requestDigest: approvalRequestDigest(subject, requestingOrigin, recordHash),
   };
+}
+
+function defaultIsProduction(): boolean {
+  return process.env.NODE_ENV === 'production' || process.env.TEE_MODE === 'production';
 }
 
 function defaultEmailSender(): EmailSender | null {
@@ -142,6 +158,17 @@ export function defaultRegistryChangeDeps(): RegistryChangeRouterDeps {
     prisma,
     emailSender: defaultEmailSender(),
   };
+}
+
+function registryErrorResponse(c: Context, error: RegistryChangeError) {
+  return c.json(
+    {
+      error: error.code,
+      message: error.message,
+      ...(error.host !== undefined ? { host: error.host } : {}),
+    },
+    error.status,
+  );
 }
 
 export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRouterDeps>): Hono<SessionContext> {
@@ -175,8 +202,9 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
   };
 
   const router = new Hono<SessionContext>();
+  // F4: reject any request carrying an Authorization header (cookie-session only from OpenKey origin).
   const originGuard: MiddlewareHandler<SessionContext> = injected?.originMiddleware ?? (async (c, next) => {
-    const refusal = rejectNonOpenKeySignRequest(c);
+    const refusal = rejectNonBrowserControlRequest(c);
     if (refusal) return refusal;
     await next();
   });
@@ -192,7 +220,14 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
     const deps = resolveDeps();
     if (!deps) return c.json({ error: 'registry_change_unavailable' }, 503);
 
-    const requestingOrigin = parseVerifiedOriginHeader(c);
+    const isProd = deps.isProduction ?? defaultIsProduction();
+    // F7: email notice is a required mitigation in production; refuse prepare when unconfigured.
+    if (isProd && !deps.emailSender) {
+      return c.json({ error: 'registry_change_notice_unavailable' }, 503);
+    }
+
+    // F4: require X-OpenKey-Requesting-Origin (no fallback to HTTP Origin, never from body).
+    const requestingOrigin = parseRequiredRequestingOriginHeader(c);
     if (!requestingOrigin) {
       return c.json({ error: 'requesting_origin_required' }, 400);
     }
@@ -201,10 +236,17 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       return c.json({ error: 'malformed_body' }, 400);
     }
-    // Never read requestingOrigin from the body; only `request` is parsed here.
     const requestPayload = (body as { request?: unknown }).request;
     if (!requestPayload || typeof requestPayload !== 'object' || Array.isArray(requestPayload)) {
       return c.json({ error: 'registry_change_invalid_node', message: 'Missing request object' }, 400);
+    }
+
+    // F1: enforce node (<=16) and space (<=64) caps + URL syntax BEFORE any fetch!
+    try {
+      validateRequestBounds(requestPayload);
+    } catch (error) {
+      if (error instanceof RegistryChangeError) return registryErrorResponse(c, error);
+      throw error;
     }
 
     const userId = c.get('user').id;
@@ -231,9 +273,7 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
         ...(deps.fetch ? { fetch: deps.fetch } : {}),
       });
     } catch (error) {
-      if (error instanceof RegistryChangeError) {
-        return c.json({ error: error.code, message: error.message }, error.status);
-      }
+      if (error instanceof RegistryChangeError) return registryErrorResponse(c, error);
       throw error;
     }
     if (!current) {
@@ -246,12 +286,12 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
         current,
         request: requestPayload,
         now,
+        allowLoopback: !isProd,
         ...(deps.fetch ? { fetch: deps.fetch } : {}),
+        ...(deps.resolveHost ? { resolveHost: deps.resolveHost } : {}),
       });
     } catch (error) {
-      if (error instanceof RegistryChangeError) {
-        return c.json({ error: error.code, message: error.message }, error.status);
-      }
+      if (error instanceof RegistryChangeError) return registryErrorResponse(c, error);
       throw error;
     }
 
@@ -300,7 +340,12 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
     const deps = resolveDeps();
     if (!deps) return c.json({ error: 'registry_change_unavailable' }, 503);
 
-    const requestingOrigin = parseVerifiedOriginHeader(c);
+    const isProd = deps.isProduction ?? defaultIsProduction();
+    if (isProd && !deps.emailSender) {
+      return c.json({ error: 'registry_change_notice_unavailable' }, 503);
+    }
+
+    const requestingOrigin = parseRequiredRequestingOriginHeader(c);
     if (!requestingOrigin) {
       return c.json({ error: 'requesting_origin_required' }, 400);
     }
@@ -353,9 +398,7 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
         ...(deps.fetch ? { fetch: deps.fetch } : {}),
       });
     } catch (error) {
-      if (error instanceof RegistryChangeError) {
-        return c.json({ error: error.code, message: error.message }, error.status);
-      }
+      if (error instanceof RegistryChangeError) return registryErrorResponse(c, error);
       throw error;
     }
     if (!current) {
@@ -368,12 +411,12 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
         current,
         previousRecord: row.previousRecord,
         now,
+        allowLoopback: !isProd,
         ...(deps.fetch ? { fetch: deps.fetch } : {}),
+        ...(deps.resolveHost ? { resolveHost: deps.resolveHost } : {}),
       });
     } catch (error) {
-      if (error instanceof RegistryChangeError) {
-        return c.json({ error: error.code, message: error.message }, error.status);
-      }
+      if (error instanceof RegistryChangeError) return registryErrorResponse(c, error);
       throw error;
     }
 
@@ -459,8 +502,6 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
       return c.json({ error: 'rate_limited' }, 429);
     }
 
-    // Decode without consuming the nonce so a failed passkey check or stale check
-    // never burns the ticket or signs anything.
     let decoded;
     try {
       decoded = deps.ticketStore.decode(changeId);
@@ -475,7 +516,6 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
     }
 
     // ALWAYS require a fresh passkey assertion bound to (subject, verifiedRequestingOrigin, recordHash).
-    // NEVER mode does NOT apply here.
     const passkeyBinding = registryChangePasskeyBinding(
       subject,
       decoded.verifiedRequestingOrigin,
@@ -502,9 +542,7 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
         ...(deps.fetch ? { fetch: deps.fetch } : {}),
       });
     } catch (error) {
-      if (error instanceof RegistryChangeError) {
-        return c.json({ error: error.code, message: error.message }, error.status);
-      }
+      if (error instanceof RegistryChangeError) return registryErrorResponse(c, error);
       throw error;
     }
     if (!current) {
@@ -517,7 +555,6 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
       return c.json({ error: 'registry_change_stale' }, 409);
     }
 
-    // Parse + validate the prepared payload from the HMAC-signed ticket.
     let payload: LocationRecordV2Payload;
     try {
       payload = validateLocationRecordV2Payload(JSON.parse(decoded.payloadCanonical));
@@ -528,7 +565,6 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
       return c.json({ error: 'registry_change_stale' }, 409);
     }
 
-    // Atomically consume the single-use nonce before storing history / signing / PUT.
     try {
       await deps.ticketStore.consume(
         changeId,
@@ -547,11 +583,12 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
       throw error;
     }
 
-    // Store the PREVIOUS record BEFORE publishing so undo data is durable even if
-    // the connection drops right after the registry accepts the PUT.
+    // Store PREVIOUS record BEFORE PUT so undo data is durable if the connection drops right
+    // after the registry accepts the PUT; clean up that row on PUT/verification failure (F2).
+    const historyRowId = randomUUID();
     await deps.prisma.registryChangeHistory.create({
       data: {
-        id: randomUUID(),
+        id: historyRowId,
         userId,
         subject,
         requestingOrigin: decoded.verifiedRequestingOrigin,
@@ -579,9 +616,9 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
         },
       });
     } catch (error) {
-      if (error instanceof RegistryChangeError) {
-        return c.json({ error: error.code, message: error.message }, error.status);
-      }
+      // F2: remove phantom history row when PUT or accepted==prepared verification failed.
+      await deps.prisma.registryChangeHistory.delete({ where: { id: historyRowId } }).catch(() => undefined);
+      if (error instanceof RegistryChangeError) return registryErrorResponse(c, error);
       return c.json({ error: 'registry_publish_failed' }, 502);
     }
 
@@ -618,8 +655,32 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
       limit = Math.min(parsed, 50);
     }
 
+    // F2 defense-in-depth: read current verified sequence best-effort so phantom rows with
+    // newSequence > current.sequence are excluded from history responses.
+    let currentSequence: number | null = null;
+    const primary = await prisma.ethereumKey.findFirst({
+      where: primaryKeyWhere(userId),
+      select: { address: true },
+    });
+    if (primary) {
+      const deps = resolveDeps();
+      try {
+        const current = await readCurrentLocationRecordV2({
+          subject: subjectFromAddress(primary.address),
+          ...(deps?.registryUrl ? { registryUrl: deps.registryUrl } : {}),
+          ...(deps?.fetch ? { fetch: deps.fetch } : {}),
+        });
+        currentSequence = current?.sequence ?? null;
+      } catch {
+        currentSequence = null;
+      }
+    }
+
     const rows = await prisma.registryChangeHistory.findMany({
-      where: { userId },
+      where: {
+        userId,
+        ...(currentSequence !== null ? { newSequence: { lte: currentSequence } } : {}),
+      },
       orderBy: [{ createdAt: 'desc' }, { newSequence: 'desc' }],
       take: limit,
       select: {
@@ -632,8 +693,12 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
       },
     });
 
+    const filtered = currentSequence !== null
+      ? rows.filter((row) => row.newSequence <= currentSequence!)
+      : rows;
+
     return c.json({
-      history: rows.map((row) => ({
+      history: filtered.map((row) => ({
         id: row.id,
         requestingOrigin: row.requestingOrigin,
         previousRecord: row.previousRecord,
@@ -667,17 +732,12 @@ function parseExactOrigin(raw: string | undefined): string | null {
 }
 
 /**
- * Derive the verified requesting origin from headers ONLY (never from the JSON body):
- * 1. `X-OpenKey-Requesting-Origin` set by the OpenKey-origin widget from the browser-verified
- *    `MessageEvent.origin` of the opener/parent postMessage handshake.
- * 2. Fallback to the verified HTTP `Origin` header when no widget header is sent.
+ * F4: require the `X-OpenKey-Requesting-Origin` header set by the OpenKey-origin widget
+ * from the browser-verified `MessageEvent.origin`. Never falls back to HTTP `Origin`,
+ * and never reads from the JSON request body.
  */
-function parseVerifiedOriginHeader(c: Context): string | null {
-  const widgetHeader = c.req.header(REQUESTING_ORIGIN_HEADER);
-  if (widgetHeader !== undefined) {
-    return parseExactOrigin(widgetHeader);
-  }
-  return parseExactOrigin(c.req.header('origin'));
+function parseRequiredRequestingOriginHeader(c: Context): string | null {
+  return parseExactOrigin(c.req.header(REQUESTING_ORIGIN_HEADER));
 }
 
 function subjectFromAddress(address: string): string {
@@ -686,5 +746,6 @@ function subjectFromAddress(address: string): string {
 
 export const _testing = {
   parseExactOrigin,
+  parseRequiredRequestingOriginHeader,
   subjectFromAddress,
 };

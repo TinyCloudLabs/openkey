@@ -36,7 +36,15 @@ import {
 } from '../services/tinycloud-setup-ticket';
 import { createInMemoryPerOwnerLimiter } from '../services/tinycloud-setup-rate-limit';
 import { createRegistryChangeTicketStore } from '../services/registry-change-ticket';
-import { canonicalNodeUrl, displayNodeHost } from '../services/registry-change-client';
+import {
+  MAX_IDENTITY_PROBE_CONCURRENCY,
+  MAX_REGISTRY_CHANGE_NODES,
+  MAX_REGISTRY_CHANGE_SPACES,
+  canonicalNodeUrl,
+  displayNodeHost,
+  isBlockedProbeIp,
+  type HostResolver,
+} from '../services/registry-change-client';
 import { REGISTRY_CHANGE_EMAIL_COPY, formatRegistryChangeNoticeEmail } from '../services/registry-change-email';
 import type { EmailSender } from '../services/email-otp-delivery';
 import {
@@ -265,11 +273,27 @@ function createFakePrisma(opts: {
         opts.onHistoryCreate?.(data);
         return data;
       },
+      delete: async ({ where }: { where: { id: string } }) => {
+        const idx = historyRows.findIndex((r) => r.id === where.id);
+        if (idx === -1) throw new Error('Row not found');
+        const [removed] = historyRows.splice(idx, 1);
+        return removed!;
+      },
       findUnique: async ({ where }: { where: { id: string } }) =>
         historyRows.find((r) => r.id === where.id) ?? null,
-      findMany: async ({ where, take }: { where: { userId: string }; take: number }) =>
+      findMany: async ({
+        where,
+        take,
+      }: {
+        where: { userId: string; newSequence?: { lte?: number } };
+        take: number;
+      }) =>
         historyRows
-          .filter((r) => r.userId === where.userId)
+          .filter((r) => {
+            if (r.userId !== where.userId) return false;
+            if (where.newSequence?.lte !== undefined && r.newSequence > where.newSequence.lte) return false;
+            return true;
+          })
           .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.newSequence - a.newSequence)
           .slice(0, take),
     },
@@ -291,12 +315,17 @@ function createHarness(opts: {
   noPasskey?: boolean;
   rateLimits?: Record<RegistryChangeRateAction, number>;
   realOrigin?: boolean;
+  isProduction?: boolean;
+  emailSender?: EmailSender | null;
+  resolveHost?: HostResolver;
+  onProbeFetch?: (url: string, init?: RequestInit) => Promise<Response | undefined>;
   getServerTime?: () => Date;
   putStatus?: number;
   tamperAcceptedPut?: boolean;
 } = {}) {
   const credential = makeTestWebAuthnCredential();
   const events: string[] = [];
+  const fetchedUrls: Array<{ url: string; method: string; redirect?: RequestRedirect }> = [];
   const sentEmails: Array<{ from: string; to: string; subject: string; html: string }> = [];
   let currentRecord: LocationRecordV2 | null = opts.initialRecord ?? null;
 
@@ -306,7 +335,7 @@ function createHarness(opts: {
     onHistoryCreate: () => events.push('history.create'),
   });
 
-  const emailSender: EmailSender = {
+  const defaultTestEmailSender: EmailSender = {
     emails: {
       send: async (msg) => {
         events.push('email.send');
@@ -315,6 +344,8 @@ function createHarness(opts: {
       },
     },
   };
+  const emailSender = opts.emailSender === undefined ? defaultTestEmailSender : opts.emailSender;
+  const resolveHost: HostResolver = opts.resolveHost ?? (async () => ['93.184.216.34']);
 
   const nodeFixtures: Record<string, MockNodeIdentity> = {
     [NODE_A_URL]: {
@@ -335,6 +366,7 @@ function createHarness(opts: {
   const mockFetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     const method = (init?.method ?? 'GET').toUpperCase();
+    fetchedUrls.push({ url: urlStr, method, ...(init?.redirect ? { redirect: init.redirect } : {}) });
 
     if (urlStr.startsWith(`${REGISTRY_URL}/v2/locations/`)) {
       if (method === 'GET') {
@@ -370,6 +402,11 @@ function createHarness(opts: {
       }
     }
 
+    if (opts.onProbeFetch) {
+      const custom = await opts.onProbeFetch(urlStr, init);
+      if (custom) return custom;
+    }
+
     for (const [origin, fixture] of Object.entries(nodeFixtures)) {
       if (urlStr === `${origin}/info`) {
         if (fixture.info === 'network-error' || !fixture.info) throw new TypeError('network error');
@@ -402,8 +439,10 @@ function createHarness(opts: {
     retryAfter,
     prisma,
     emailSender,
+    isProduction: opts.isProduction ?? false,
     registryUrl: REGISTRY_URL,
     fetch: mockFetch,
+    resolveHost,
     rp: RP,
     ...(opts.getServerTime ? { getServerTime: opts.getServerTime } : {}),
     signMessage: async (_descriptor, _sealed, message) => OWNER_ACCOUNT.signMessage({ message }),
@@ -419,6 +458,7 @@ function createHarness(opts: {
     app,
     credential,
     events,
+    fetchedUrls,
     sentEmails,
     historyRows,
     setupTicketStore,
@@ -1167,5 +1207,388 @@ describe('formatRegistryChangeNoticeEmail', () => {
     });
     expect(formatted.changes).toEqual(['default: node-a.example → node-b.example:8443']);
     expect(formatted.text).not.toContain('Secrets and keys:');
+  });
+});
+
+describe('R-reg review #3 security & contract hardening (F1, F2, F3, F4, F6, F7)', () => {
+  test('F1: caps request.nodes (<=16) and spaces (<=64) with 400 BEFORE any fetch', async () => {
+    const initial = await makeSignedV2Record();
+    const { app, fetchedUrls } = createHarness({ initialRecord: initial });
+
+    const tooManyNodes = Array.from({ length: MAX_REGISTRY_CHANGE_NODES + 1 }, (_, i) => ({
+      url: `https://node-${i}.example`,
+    }));
+    const nodesRes = await callPrepare(app, { request: { nodes: tooManyNodes } });
+    expect(nodesRes.status).toBe(400);
+    expect((await nodesRes.json() as { error: string }).error).toBe('registry_change_too_many_nodes');
+    expect(fetchedUrls).toHaveLength(0);
+
+    const tooManySpaces = Array.from({ length: MAX_REGISTRY_CHANGE_SPACES + 1 }, (_, i) => ({
+      space: `tinycloud:pkh:eip155:1:${ADDRESS.toLowerCase()}:s${i}`,
+      nodes: [{ url: NODE_B_URL }],
+    }));
+    const spacesRes = await callPrepare(app, {
+      request: {
+        nodes: [{ url: NODE_B_URL }],
+        spaces: tooManySpaces,
+      },
+    });
+    expect(spacesRes.status).toBe(400);
+    expect((await spacesRes.json() as { error: string }).error).toBe('registry_change_too_many_spaces');
+    expect(fetchedUrls).toHaveLength(0);
+  });
+
+  test('F1: SSRF filter skips probing private, link-local, CGNAT, ULA, metadata, and (in prod) loopback hosts; probes use redirect: error and concurrency <= 4', async () => {
+    expect(isBlockedProbeIp('10.0.0.1', true)).toBe(true);
+    expect(isBlockedProbeIp('172.16.0.1', true)).toBe(true);
+    expect(isBlockedProbeIp('192.168.1.1', true)).toBe(true);
+    expect(isBlockedProbeIp('100.64.0.1', true)).toBe(true);
+    expect(isBlockedProbeIp('169.254.169.254', true)).toBe(true);
+    expect(isBlockedProbeIp('fd00:ec2::254', true)).toBe(true);
+    expect(isBlockedProbeIp('fe80::1', true)).toBe(true);
+    expect(isBlockedProbeIp('::ffff:169.254.169.254', true)).toBe(true);
+    expect(isBlockedProbeIp('127.0.0.1', false)).toBe(true);
+    expect(isBlockedProbeIp('::1', false)).toBe(true);
+    expect(isBlockedProbeIp('127.0.0.1', true)).toBe(false);
+    expect(isBlockedProbeIp('::1', true)).toBe(false);
+    expect(isBlockedProbeIp('93.184.216.34', false)).toBe(false);
+
+    const initial = await makeSignedV2Record();
+    // Hostname resolving to AWS metadata IP + literal private IP + literal IPv6 metadata + loopback in prod: NONE may be fetched!
+    const prodHarness = createHarness({
+      initialRecord: initial,
+      isProduction: true,
+      resolveHost: async (host) => (host === 'imds-rebind.example' ? ['169.254.169.254'] : ['93.184.216.34']),
+    });
+    const ssrfRes = await callPrepare(prodHarness.app, {
+      request: {
+        nodes: [
+          { url: 'https://imds-rebind.example', did: NODE_B_DID },
+          { url: 'https://10.1.2.3:8443', did: NODE_C_DID },
+          { url: 'https://[fd00:ec2::254]', did: NODE_A_DID },
+          { url: 'http://127.0.0.1:8787', did: NODE_B_DID },
+        ],
+      },
+    });
+    // Note: NODE_B_DID appears twice above only if deduplicated — test distinct DIDs instead:
+    expect(ssrfRes.status).toBe(400); // conflicting DIDs on two URLs, check probes first!
+    const probeFetches = prodHarness.fetchedUrls.filter((f) => !f.url.startsWith(REGISTRY_URL));
+    expect(probeFetches).toHaveLength(0);
+
+    // Distinct valid DIDs on blocked private/metadata/loopback hosts -> 200 with unreachable warnings and 0 probe fetches.
+    const ssrfValid = await callPrepare(prodHarness.app, {
+      request: {
+        nodes: [
+          { url: 'https://imds-rebind.example', did: NODE_B_DID },
+          { url: 'https://10.1.2.3:8443', did: NODE_C_DID },
+          { url: 'http://127.0.0.1:8787', did: NODE_A_DID },
+        ],
+      },
+    });
+    expect(ssrfValid.status).toBe(200);
+    const ssrfBody = await ssrfValid.json() as { identity: Array<{ url: string; status: string }> };
+    expect(ssrfBody.identity).toEqual([
+      { url: 'https://imds-rebind.example', did: NODE_B_DID, status: 'unreachable' },
+      { url: 'https://10.1.2.3:8443', did: NODE_C_DID, status: 'unreachable' },
+      { url: 'http://127.0.0.1:8787', did: NODE_A_DID, status: 'unreachable' },
+    ]);
+    expect(prodHarness.fetchedUrls.filter((f) => !f.url.startsWith(REGISTRY_URL))).toHaveLength(0);
+
+    // Dev/test mode allows loopback probing, with redirect: 'error'.
+    const devHarness = createHarness({
+      initialRecord: initial,
+      isProduction: false,
+      nodes: {
+        'http://127.0.0.1:8787': {
+          info: { status: 200, body: { nodeId: NODE_B_DID } },
+          keys: { status: 200, body: { nodeDid: NODE_B_DID } },
+        },
+      },
+    });
+    const devLoopback = await callPrepare(devHarness.app, {
+      request: { nodes: [{ url: 'http://127.0.0.1:8787' }] },
+    });
+    expect(devLoopback.status).toBe(200);
+    const devProbeFetches = devHarness.fetchedUrls.filter((f) => f.url.startsWith('http://127.0.0.1:8787'));
+    expect(devProbeFetches).toHaveLength(2);
+    expect(devProbeFetches.every((f) => f.redirect === 'error')).toBe(true);
+
+    // Probe concurrency stays <= 4 nodes in flight (each node probes /info + /node-keys = 2 fetches).
+    let inFlightNodes = 0;
+    let peakNodes = 0;
+    const activeOrigins = new Set<string>();
+    const concHarness = createHarness({
+      initialRecord: initial,
+      onProbeFetch: async (url) => {
+        const origin = new URL(url).origin;
+        const isInfo = url.endsWith('/info');
+        if (isInfo) {
+          activeOrigins.add(origin);
+          inFlightNodes = activeOrigins.size;
+          if (inFlightNodes > peakNodes) peakNodes = inFlightNodes;
+        }
+        await new Promise((r) => setTimeout(r, 15));
+        if (isInfo) activeOrigins.delete(origin);
+        return new Response(JSON.stringify({ nodeId: NODE_B_DID, nodeDid: NODE_B_DID }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      },
+    });
+    const eightNodes = Array.from({ length: 8 }, (_, i) => ({
+      url: `https://conc-${i}.example`,
+    }));
+    await callPrepare(concHarness.app, { request: { nodes: eightNodes } });
+    expect(peakNodes).toBeGreaterThan(0);
+    expect(peakNodes).toBeLessThanOrEqual(MAX_IDENTITY_PROBE_CONCURRENCY);
+  });
+
+  test('F2: failed PUT and tampered PUT delete the pre-stored history row; GET /history excludes rows above current sequence', async () => {
+    const initial = await makeSignedV2Record({ sequence: 4 });
+
+    // Case 1: registry PUT returns 500 -> pre-stored history row is deleted!
+    const failPut = createHarness({ initialRecord: initial, putStatus: 500 });
+    const prep1 = await (await callPrepare(failPut.app, { request: { nodes: [{ url: NODE_B_URL }] } })).json() as {
+      changeId: string;
+      passkey: { challengeToken: string; options: { challenge: string } };
+    };
+    const pub1 = await callPublish(failPut.app, {
+      changeId: prep1.changeId,
+      passkeyAssertion: failPut.credential.signOffer(prep1.passkey),
+    });
+    expect(pub1.status).toBe(502);
+    expect(failPut.historyRows).toHaveLength(0);
+    expect(failPut.sentEmails).toHaveLength(0);
+
+    // Case 2: registry returns tampered accepted record -> pre-stored history row is deleted!
+    const tamperPut = createHarness({ initialRecord: initial, tamperAcceptedPut: true });
+    const prep2 = await (await callPrepare(tamperPut.app, { request: { nodes: [{ url: NODE_B_URL }] } })).json() as {
+      changeId: string;
+      passkey: { challengeToken: string; options: { challenge: string } };
+    };
+    const pub2 = await callPublish(tamperPut.app, {
+      changeId: prep2.changeId,
+      passkeyAssertion: tamperPut.credential.signOffer(prep2.passkey),
+    });
+    expect(pub2.status).toBe(502);
+    expect(tamperPut.historyRows).toHaveLength(0);
+
+    // Case 3: defense-in-depth — GET /history excludes phantom row with newSequence > current.sequence!
+    const histHarness = createHarness({ initialRecord: initial });
+    histHarness.historyRows.push(
+      {
+        id: 'hist-valid',
+        userId: USER_ID,
+        subject: SUBJECT,
+        requestingOrigin: APP_ORIGIN,
+        previousRecord: initial,
+        newRecordHash: '1'.repeat(64),
+        newSequence: 4,
+        createdAt: new Date('2026-11-22T15:00:00.000Z'),
+      },
+      {
+        id: 'hist-phantom',
+        userId: USER_ID,
+        subject: SUBJECT,
+        requestingOrigin: APP_ORIGIN,
+        previousRecord: initial,
+        newRecordHash: '2'.repeat(64),
+        newSequence: 5, // > current.sequence (4)!
+        createdAt: new Date('2026-11-22T15:05:00.000Z'),
+      },
+    );
+    const histRes = await histHarness.app.request('/api/registry-change/history?limit=10');
+    expect(histRes.status).toBe(200);
+    const histBody = await histRes.json() as { history: Array<{ id: string }> };
+    expect(histBody.history.map((r) => r.id)).toEqual(['hist-valid']);
+  });
+
+  test('F3: mode-only change appears in notice email with Monica exact wording', async () => {
+    const initial = await makeSignedV2Record({
+      sequence: 4,
+      spaces: [
+        { space: SPACE_DEFAULT, nodes: [{ did: NODE_A_DID, mode: 'read-only' }] },
+        { space: SPACE_NOTES, nodes: [{ did: NODE_A_DID, mode: 'read-write' }] },
+      ],
+    });
+    const { app, credential, sentEmails } = createHarness({ initialRecord: initial });
+
+    // Flip `default` on the SAME host from read-only -> read-write (mode-only change).
+    const prepRes = await callPrepare(app, {
+      request: {
+        nodes: [{ url: NODE_A_URL }],
+        spaces: [{ space: SPACE_DEFAULT, nodes: [{ url: NODE_A_URL, mode: 'read-write' }] }],
+      },
+    });
+    expect(prepRes.status).toBe(200);
+    const prep = await prepRes.json() as {
+      changeId: string;
+      passkey: { challengeToken: string; options: { challenge: string } };
+    };
+    const pubRes = await callPublish(app, {
+      changeId: prep.changeId,
+      passkeyAssertion: credential.signOffer(prep.passkey),
+    });
+    expect(pubRes.status).toBe(200);
+    expect(sentEmails).toHaveLength(1);
+    expect(sentEmails[0]?.html).toContain('default: node-a.example, read-only → read and write');
+
+    // Also verify reverse direction (read-write -> read-only) directly via formatter.
+    const reverse = formatRegistryChangeNoticeEmail({
+      to: USER_EMAIL,
+      requestingOrigin: APP_ORIGIN,
+      before: {
+        version: 2,
+        subject: SUBJECT,
+        nodes: [{ did: NODE_A_DID, url: NODE_A_URL }],
+        spaces: [{ space: SPACE_DEFAULT, nodes: [{ did: NODE_A_DID, mode: 'read-write' }] }],
+        encryptionNode: NODE_A_DID,
+        updated_at: '2026-11-22T15:00:00.000Z',
+        sequence: 4,
+      },
+      after: {
+        version: 2,
+        subject: SUBJECT,
+        nodes: [{ did: NODE_A_DID, url: NODE_A_URL }],
+        spaces: [{ space: SPACE_DEFAULT, nodes: [{ did: NODE_A_DID, mode: 'read-only' }] }],
+        encryptionNode: NODE_A_DID,
+        updated_at: '2026-11-22T15:05:00.000Z',
+        sequence: 5,
+      },
+      publishedAt: new Date('2026-11-22T15:05:00.000Z'),
+    });
+    expect(reverse.changes).toEqual(['default: node-a.example, read and write → read-only']);
+  });
+
+  test('F4: rejects Authorization header on prepare, undo/prepare, and publish; requires X-OpenKey-Requesting-Origin with no Origin fallback', async () => {
+    const initial = await makeSignedV2Record();
+    const { app } = createHarness({ initialRecord: initial, realOrigin: true });
+
+    // Bearer Authorization header MUST be rejected on all 3 mutating/prepare endpoints even with valid OpenKey Origin.
+    const bearerPrep = await callPrepare(
+      app,
+      { request: { nodes: [{ url: NODE_B_URL }] } },
+      { authorization: 'Bearer some-oauth-token' },
+    );
+    expect(bearerPrep.status).toBe(403);
+
+    const bearerUndo = await callUndoPrepare(
+      app,
+      { historyId: 'hist-1' },
+      { authorization: 'Bearer some-oauth-token' },
+    );
+    expect(bearerUndo.status).toBe(403);
+
+    const bearerPub = await callPublish(
+      app,
+      { changeId: 'ticket-1' },
+      { authorization: 'Bearer some-oauth-token' },
+    );
+    expect(bearerPub.status).toBe(403);
+
+    // Missing X-OpenKey-Requesting-Origin -> 400 (must NOT fall back to HTTP Origin!).
+    const missingHeaderPrep = await app.request('/api/registry-change/prepare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: OPENKEY_ORIGIN },
+      body: JSON.stringify({ request: { nodes: [{ url: NODE_B_URL }] } }),
+    });
+    expect(missingHeaderPrep.status).toBe(400);
+    expect((await missingHeaderPrep.json() as { error: string }).error).toBe('requesting_origin_required');
+
+    // Non-canonical X-OpenKey-Requesting-Origin (trailing path) -> 400.
+    const nonCanonicalPrep = await callPrepare(
+      app,
+      { request: { nodes: [{ url: NODE_B_URL }] } },
+      { [REQUESTING_ORIGIN_HEADER]: 'https://external-app.example/path' },
+    );
+    expect(nonCanonicalPrep.status).toBe(400);
+    expect((await nonCanonicalPrep.json() as { error: string }).error).toBe('requesting_origin_required');
+
+    // Missing X-OpenKey-Requesting-Origin on /undo/prepare -> 400.
+    const missingHeaderUndo = await app.request('/api/registry-change/undo/prepare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: OPENKEY_ORIGIN },
+      body: JSON.stringify({ historyId: 'hist-1' }),
+    });
+    expect(missingHeaderUndo.status).toBe(400);
+    expect((await missingHeaderUndo.json() as { error: string }).error).toBe('requesting_origin_required');
+  });
+
+  test('F6 (Option A): unreachable new host without did -> 422 registry_change_node_did_required; unreachable host WITH known did (supplied or current) -> 200 + warning + publish allowed', async () => {
+    const initial = await makeSignedV2Record();
+    const { app, credential } = createHarness({
+      initialRecord: initial,
+      nodes: {
+        [NODE_A_URL]: { info: 'network-error', keys: 'network-error' },
+        [NODE_B_URL]: { info: 'network-error', keys: 'network-error' },
+      },
+    });
+
+    // Branch 1: brand-new unreachable host WITHOUT did -> 422 registry_change_node_did_required (NOT 400!).
+    const missingDidRes = await callPrepare(app, {
+      request: { nodes: [{ url: NODE_B_URL }] },
+    });
+    expect(missingDidRes.status).toBe(422);
+    const missingDidBody = await missingDidRes.json() as { error: string; host?: string };
+    expect(missingDidBody.error).toBe('registry_change_node_did_required');
+    expect(missingDidBody.host).toBe('node-b.example:8443');
+
+    // Branch 2a: unreachable new host WITH supplied did -> 200 + unreachable warning + publish allowed.
+    const suppliedDidRes = await callPrepare(app, {
+      request: { nodes: [{ url: NODE_B_URL, did: NODE_B_DID }] },
+    });
+    expect(suppliedDidRes.status).toBe(200);
+    const suppliedDid = await suppliedDidRes.json() as {
+      changeId: string;
+      identity: Array<{ url: string; did: string | null; status: string }>;
+      passkey: { challengeToken: string; options: { challenge: string } };
+    };
+    expect(suppliedDid.identity).toEqual([{ url: NODE_B_URL, did: NODE_B_DID, status: 'unreachable' }]);
+
+    // Branch 2b: unreachable EXISTING host (known DID in current.nodes, omitted in request) -> 200 + unreachable warning + publish allowed!
+    const existingHostRes = await callPrepare(app, {
+      request: {
+        nodes: [{ url: NODE_A_URL }],
+        spaces: [{ space: SPACE_DEFAULT, nodes: [{ url: NODE_A_URL, mode: 'read-only' }] }],
+      },
+    });
+    expect(existingHostRes.status).toBe(200);
+    const existingHost = await existingHostRes.json() as {
+      changeId: string;
+      identity: Array<{ url: string; did: string | null; status: string }>;
+      passkey: { challengeToken: string; options: { challenge: string } };
+    };
+    expect(existingHost.identity).toEqual([{ url: NODE_A_URL, did: NODE_A_DID, status: 'unreachable' }]);
+
+    const pubRes = await callPublish(app, {
+      changeId: existingHost.changeId,
+      passkeyAssertion: credential.signOffer(existingHost.passkey),
+    });
+    expect(pubRes.status).toBe(200);
+  });
+
+  test('F7: production refuses prepare and undo/prepare with 503 registry_change_notice_unavailable when emailSender is unconfigured; dev/test allows it', async () => {
+    const initial = await makeSignedV2Record();
+
+    const prodNoEmail = createHarness({
+      initialRecord: initial,
+      isProduction: true,
+      emailSender: null,
+    });
+    const prepProd = await callPrepare(prodNoEmail.app, { request: { nodes: [{ url: NODE_B_URL }] } });
+    expect(prepProd.status).toBe(503);
+    expect((await prepProd.json() as { error: string }).error).toBe('registry_change_notice_unavailable');
+
+    const undoProd = await callUndoPrepare(prodNoEmail.app, { historyId: 'hist-1' });
+    expect(undoProd.status).toBe(503);
+    expect((await undoProd.json() as { error: string }).error).toBe('registry_change_notice_unavailable');
+
+    const devNoEmail = createHarness({
+      initialRecord: initial,
+      isProduction: false,
+      emailSender: null,
+    });
+    const prepDev = await callPrepare(devNoEmail.app, { request: { nodes: [{ url: NODE_B_URL }] } });
+    expect(prepDev.status).toBe(200);
   });
 });

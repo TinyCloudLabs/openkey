@@ -1,7 +1,8 @@
 // TC-3893: pure state machine, diff builder, and Monica's final copy constants
-// (tc3890-wording-monica.md §1, follow-up 16:30Z, restore-any-version 16:31Z) for the
-// registry-change & undo/restore consent screen on both popup (`/widget/registry-change`)
-// and embed (`/widget/embed/registry-change`).
+// (tc3890-wording-monica.md §1, follow-up 16:30Z, restore-any-version 16:31Z,
+// F3/F5/F6/F8 review copy 16:49Z-16:54Z) for the registry-change & undo/restore
+// consent screen on both popup (`/widget/registry-change`) and embed
+// (`/widget/embed/registry-change`).
 
 export const TINYCLOUD_ONE_ORIGINS: ReadonlySet<string> = new Set([
   'https://tinycloud.one',
@@ -12,9 +13,12 @@ function requesterLabel(origin: string): string {
   return TINYCLOUD_ONE_ORIGINS.has(origin) ? 'TinyCloud One' : origin;
 }
 
-function formatIsoDate(iso: string | null): string {
+/** F8: format dates with the user's locale (`toLocaleDateString`), matching TinyCloud One. */
+export function formatLocaleDate(iso: string | null, locale?: string): string {
   if (!iso) return '';
-  return iso.slice(0, 10);
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return iso.slice(0, 10);
+  return parsed.toLocaleDateString(locale);
 }
 
 export const REGISTRY_CHANGE_COPY = {
@@ -24,8 +28,8 @@ export const REGISTRY_CHANGE_COPY = {
   originLine: (origin: string) => `${origin} wants to change where your data lives.`,
   undoOriginLine: (origin: string) =>
     `${requesterLabel(origin)} wants to undo the last change to where your data lives.`,
-  restoreOriginLine: (origin: string, dateIso: string | null) =>
-    `${requesterLabel(origin)} wants to put back where your data lived before ${formatIsoDate(dateIso)}.`,
+  restoreOriginLine: (origin: string, dateIso: string | null, locale?: string) =>
+    `${requesterLabel(origin)} wants to put back where your data lived before ${formatLocaleDate(dateIso, locale)}.`,
   explainer:
     "After you approve, your apps save and read your data on the hosts below. Data already saved stays where it is, and these apps won't show it until you move back.",
   riskLine: 'Whoever runs a new host can read what you save there. Approve only if you trust it.',
@@ -36,19 +40,25 @@ export const REGISTRY_CHANGE_COPY = {
   },
   noChange: 'No change',
   notSet: 'Not set',
+  modeReadOnly: 'read-only',
+  modeReadWrite: 'read and write',
   encryptionRowLabel: 'Secrets and keys',
   encryptionChangedLine: (host: string) =>
     `New secrets and keys will be held at ${host}. Whoever runs it can open secrets you save after this.`,
   encryptionClearedLine:
-    'New secrets and keys will no longer be assigned to a dedicated encryption host.',
+    "Your secrets and keys would have no host. Apps can't open or save your encrypted data until one is set.",
   identityUnreachable: (host: string) => `Couldn't reach ${host} to confirm what it is.`,
   identityMismatch: (host: string) => `${host} doesn't match the identity it was listed with.`,
   identityWarningFooter: 'You can approve anyway, but check this host with whoever asked you to move.',
+  nodeDidRequiredPopup: (host: string) =>
+    `Couldn't reach ${host} to confirm which host it is, so nothing was changed. The app that asked needs to fix this; you can close this window.`,
+  nodeDidRequiredEmbed: (host: string) =>
+    `Couldn't reach ${host} to confirm which host it is, so nothing was changed. The app that asked needs to fix this; you can go back to the app.`,
   approveButton: 'Approve with passkey',
   approvingButton: 'Approving…',
   cancelButton: 'Cancel',
   loading: 'Checking your current settings…',
-  waiting: 'Waiting for request…',
+  waiting: "Waiting for the app's request…",
   passkeyPromptReason: 'Confirm moving where your data lives',
   staleTitle: 'This changed while you were looking',
   staleBody: "Your data's location was updated somewhere else. Review the new details before you approve.",
@@ -56,9 +66,9 @@ export const REGISTRY_CHANGE_COPY = {
   success: 'Done. Your apps use the new hosts from their next sign-in.',
   failure: "Couldn't change this. Nothing was changed. Try again.",
   refusedUrl: "This request lists a node address OpenKey can't read, so nothing was signed.",
-  missingRecord: 'No location is set for your account yet.',
+  missingRecord: 'No location is set for your account.',
   historyNotFound: "Couldn't find that earlier version. Nothing was changed.",
-  rateLimited: 'Too many tries. Try again later.',
+  rateLimited: 'Too many tries. Nothing was changed. Try again in a few minutes.',
   passkeyRequiredToUse: 'Add a passkey to your OpenKey account to change where your data lives.',
 } as const;
 
@@ -76,6 +86,7 @@ export type RegistryChangePhase =
 
 export type RegistryChangeMode = 'change' | 'undo';
 export type RegistryUndoKind = 'undo-last' | 'restore';
+export type RegistryWidgetSurface = 'popup' | 'embed';
 
 export interface RegistryRecordPayloadView {
   version: 2;
@@ -123,6 +134,8 @@ export interface RegistryChangeDiffRow {
   afterHost: string;
   changed: boolean;
   isEncryption: boolean;
+  /** Present on a single-host mode-only change: "{space}: {host}, read-only → read and write". */
+  modeOnlyLine?: string;
 }
 
 export interface IdentityWarningItem {
@@ -201,12 +214,13 @@ export function screenTitle(state: Pick<RegistryChangeWidgetState, 'mode' | 'und
 
 export function screenOriginLine(
   state: Pick<RegistryChangeWidgetState, 'mode' | 'undoKind' | 'verifiedRequestingOrigin' | 'restoredBeforeDate'>,
+  locale?: string,
 ): string | null {
   if (!state.verifiedRequestingOrigin) return null;
   if (state.mode === 'undo') {
     return state.undoKind === 'undo-last'
       ? REGISTRY_CHANGE_COPY.undoOriginLine(state.verifiedRequestingOrigin)
-      : REGISTRY_CHANGE_COPY.restoreOriginLine(state.verifiedRequestingOrigin, state.restoredBeforeDate);
+      : REGISTRY_CHANGE_COPY.restoreOriginLine(state.verifiedRequestingOrigin, state.restoredBeforeDate, locale);
   }
   return REGISTRY_CHANGE_COPY.originLine(state.verifiedRequestingOrigin);
 }
@@ -225,16 +239,41 @@ export function formatSpaceName(spaceUri: string): string {
   return idx >= 0 && idx + 1 < spaceUri.length ? spaceUri.slice(idx + 1) : spaceUri;
 }
 
-function hostsForSpace(
+function modeLabel(mode: string): string {
+  return mode === 'read-only'
+    ? REGISTRY_CHANGE_COPY.modeReadOnly
+    : REGISTRY_CHANGE_COPY.modeReadWrite;
+}
+
+type ResolvedMembership = { host: string; mode: string };
+
+function resolveMemberships(
   memberships: ReadonlyArray<{ did: string; mode: string }> | undefined,
   urlByDid: ReadonlyMap<string, string>,
-): string {
-  if (!memberships || memberships.length === 0) return REGISTRY_CHANGE_COPY.notSet;
+): ResolvedMembership[] {
+  if (!memberships) return [];
   return memberships
     .map((m) => {
       const url = urlByDid.get(m.did);
-      return url ? formatDisplayHost(url) : m.did;
+      return { host: url ? formatDisplayHost(url) : m.did, mode: m.mode };
     })
+    .sort((a, b) => a.host.localeCompare(b.host) || a.mode.localeCompare(b.mode));
+}
+
+function membershipsEqual(a: ResolvedMembership[], b: ResolvedMembership[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((item, i) => item.host === b[i]!.host && item.mode === b[i]!.mode);
+}
+
+function hostsOnlyEqual(a: ResolvedMembership[], b: ResolvedMembership[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((item, i) => item.host === b[i]!.host);
+}
+
+function formatMemberships(memberships: ResolvedMembership[], showModes: boolean): string {
+  if (memberships.length === 0) return REGISTRY_CHANGE_COPY.notSet;
+  return memberships
+    .map((m) => (showModes ? `${m.host} (${modeLabel(m.mode)})` : m.host))
     .join(', ');
 }
 
@@ -254,15 +293,31 @@ export function buildDiffView(
 
   const allSpaceUris = [...new Set([...beforeSpaces.keys(), ...afterSpaces.keys()])].sort();
   const diffRows: RegistryChangeDiffRow[] = allSpaceUris.map((spaceUri) => {
-    const beforeHost = hostsForSpace(beforeSpaces.get(spaceUri), beforeUrls);
-    const afterHostRaw = hostsForSpace(afterSpaces.get(spaceUri), afterUrls);
-    const changed = beforeHost !== afterHostRaw;
+    const beforeMem = resolveMemberships(beforeSpaces.get(spaceUri), beforeUrls);
+    const afterMem = resolveMemberships(afterSpaces.get(spaceUri), afterUrls);
+    const changed = !membershipsEqual(beforeMem, afterMem);
+    const sameHosts = hostsOnlyEqual(beforeMem, afterMem);
+    const showModes =
+      (changed && sameHosts) ||
+      beforeMem.some((m) => m.mode === 'read-only') ||
+      afterMem.some((m) => m.mode === 'read-only');
+
+    const label = formatSpaceName(spaceUri);
+    const beforeHost = formatMemberships(beforeMem, showModes);
+    const afterHost = changed ? formatMemberships(afterMem, showModes) : REGISTRY_CHANGE_COPY.noChange;
+
+    const modeOnlyLine =
+      changed && sameHosts && beforeMem.length === 1 && afterMem.length === 1
+        ? `${label}: ${beforeMem[0]!.host}, ${modeLabel(beforeMem[0]!.mode)} → ${modeLabel(afterMem[0]!.mode)}`
+        : undefined;
+
     return {
-      label: formatSpaceName(spaceUri),
+      label,
       beforeHost,
-      afterHost: changed ? afterHostRaw : REGISTRY_CHANGE_COPY.noChange,
+      afterHost,
       changed,
       isEncryption: false,
+      ...(modeOnlyLine ? { modeOnlyLine } : {}),
     };
   });
 
@@ -373,7 +428,8 @@ export function applyPrepareResult(
   state: RegistryChangeWidgetState,
   result:
     | { ok: true; body: PrepareResponseBody }
-    | { ok: false; status: number; body: { error?: string; code?: string; message?: string } },
+    | { ok: false; status: number; body: { error?: string; code?: string; host?: string; message?: string } },
+  surface: RegistryWidgetSurface = 'popup',
 ): RegistryChangeWidgetState {
   if (result.ok) {
     const { diffRows, encryptionBeforeHost, encryptionAfterHost } = buildDiffView(
@@ -403,6 +459,13 @@ export function applyPrepareResult(
   }
 
   const code = result.body.code ?? result.body.error;
+  if (result.status === 422 && code === 'registry_change_node_did_required') {
+    const host = result.body.host || 'that host';
+    const message = surface === 'embed'
+      ? REGISTRY_CHANGE_COPY.nodeDidRequiredEmbed(host)
+      : REGISTRY_CHANGE_COPY.nodeDidRequiredPopup(host);
+    return { ...state, phase: 'error', error: message };
+  }
   if (result.status === 400 && code === 'registry_change_invalid_node') {
     return { ...state, phase: 'invalid', error: REGISTRY_CHANGE_COPY.refusedUrl };
   }

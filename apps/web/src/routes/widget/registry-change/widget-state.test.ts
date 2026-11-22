@@ -11,6 +11,7 @@ import {
   applyRequestMessage,
   buildDiffView,
   buildIdentityWarnings,
+  formatLocaleDate,
   initialState,
   screenOriginLine,
   screenTitle,
@@ -264,9 +265,14 @@ describe('registry-change widget state machine', () => {
         restoredBeforeDate: '2026-11-20T12:00:00.000Z',
       },
     });
+    const expectedDate = formatLocaleDate('2026-11-20T12:00:00.000Z');
     expect(screenTitle(restoreReview)).toBe('Restore an earlier version?');
     expect(screenOriginLine(restoreReview)).toBe(
-      'TinyCloud One wants to put back where your data lived before 2026-11-20.',
+      `TinyCloud One wants to put back where your data lived before ${expectedDate}.`,
+    );
+    // F8: locale date matches toLocaleDateString (not raw ISO YYYY-MM-DD).
+    expect(screenOriginLine(restoreReview, 'en-US')).toBe(
+      `TinyCloud One wants to put back where your data lived before ${new Date('2026-11-20T12:00:00.000Z').toLocaleDateString('en-US')}.`,
     );
 
     // Non-One origin never renders "TinyCloud One".
@@ -277,6 +283,81 @@ describe('registry-change widget state machine', () => {
         verifiedRequestingOrigin: 'https://other.example',
         restoredBeforeDate: '2026-11-20T12:00:00.000Z',
       }),
-    ).toBe('https://other.example wants to put back where your data lived before 2026-11-20.');
+    ).toBe(`https://other.example wants to put back where your data lived before ${expectedDate}.`);
+  });
+
+  test('F3: mode-only change shows as changed with Monica mode-only line and read-only host labels', () => {
+    const beforeRo: RegistryRecordPayloadView = {
+      ...BEFORE,
+      spaces: [
+        { space: SPACE_DEFAULT, nodes: [{ did: NODE_A, mode: 'read-only' }] },
+        { space: SPACE_NOTES, nodes: [{ did: NODE_A, mode: 'read-write' }] },
+      ],
+    };
+    const afterRw: RegistryRecordPayloadView = {
+      ...BEFORE,
+      sequence: 3,
+      spaces: [
+        { space: SPACE_DEFAULT, nodes: [{ did: NODE_A, mode: 'read-write' }] },
+        { space: SPACE_NOTES, nodes: [{ did: NODE_A, mode: 'read-write' }] },
+      ],
+    };
+
+    const view = buildDiffView(beforeRo, afterRw, false);
+    const defaultRow = view.diffRows.find((r) => r.label === 'default');
+    expect(defaultRow).toEqual({
+      label: 'default',
+      beforeHost: 'node-a.example (read-only)',
+      afterHost: 'node-a.example (read and write)',
+      changed: true,
+      isEncryption: false,
+      modeOnlyLine: 'default: node-a.example, read-only → read and write',
+    });
+    const notesRow = view.diffRows.find((r) => r.label === 'notes');
+    expect(notesRow?.changed).toBe(false);
+    expect(notesRow?.afterHost).toBe(REGISTRY_CHANGE_COPY.noChange);
+  });
+
+  test('F6 & Monica final copy: 422 registry_change_node_did_required uses popup vs embed wording; final unsigned strings match verbatim', () => {
+    const counterparty = {};
+    const preparing = applyRequestMessage(initialState(null), {
+      origin: 'https://app.example',
+      source: counterparty,
+      counterparty,
+      configuredOrigin: 'https://app.example',
+      data: {
+        type: 'openkey:registry-change:request',
+        requestId: 'req-422',
+        protocolVersion: 1,
+        request: { nodes: [{ url: 'https://node-b.example:8443' }] },
+      },
+    });
+
+    const popupErr = applyPrepareResult(
+      preparing,
+      { ok: false, status: 422, body: { error: 'registry_change_node_did_required', host: 'node-b.example:8443' } },
+      'popup',
+    );
+    expect(popupErr.phase).toBe('error');
+    expect(popupErr.error).toBe(
+      "Couldn't reach node-b.example:8443 to confirm which host it is, so nothing was changed. The app that asked needs to fix this; you can close this window.",
+    );
+
+    const embedErr = applyPrepareResult(
+      preparing,
+      { ok: false, status: 422, body: { error: 'registry_change_node_did_required', host: 'node-b.example:8443' } },
+      'embed',
+    );
+    expect(embedErr.phase).toBe('error');
+    expect(embedErr.error).toBe(
+      "Couldn't reach node-b.example:8443 to confirm which host it is, so nothing was changed. The app that asked needs to fix this; you can go back to the app.",
+    );
+
+    expect(REGISTRY_CHANGE_COPY.missingRecord).toBe('No location is set for your account.');
+    expect(REGISTRY_CHANGE_COPY.waiting).toBe("Waiting for the app's request…");
+    expect(REGISTRY_CHANGE_COPY.rateLimited).toBe('Too many tries. Nothing was changed. Try again in a few minutes.');
+    expect(REGISTRY_CHANGE_COPY.encryptionClearedLine).toBe(
+      "Your secrets and keys would have no host. Apps can't open or save your encrypted data until one is set.",
+    );
   });
 });

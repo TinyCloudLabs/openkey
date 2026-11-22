@@ -1,6 +1,6 @@
 // TC-3893: post-publish notice email sent via the Resend client (same EmailSender
 // interface as `email-otp-delivery.ts` and `auth.ts`). Wording is Monica's final copy
-// from tc3890-wording-monica.md §2.
+// from tc3890-wording-monica.md §2 + 16:49Z F3 mode labels.
 
 import type { LocationRecordV2Payload } from '@tinycloud/sdk-core';
 import type { EmailSender } from './email-otp-delivery';
@@ -14,6 +14,8 @@ export const REGISTRY_CHANGE_EMAIL_COPY = {
   subject: 'Where your TinyCloud data lives was changed',
   notSet: 'Not set',
   encryptionLabel: 'Secrets and keys',
+  modeReadOnly: 'read-only',
+  modeReadWrite: 'read and write',
   whatChangedHeading: 'What changed:',
   newDataLine: 'Your apps save new data at the new hosts. Data you saved before stays where it was.',
   undoPrefix: "If this wasn't you, undo it in TinyCloud One → Settings → Where your data lives:",
@@ -47,7 +49,7 @@ function escapeHtml(value: string): string {
 }
 
 function formatUtcDate(date: Date): { date: string; time: string } {
-  const iso = date.toISOString(); // YYYY-MM-DDTHH:MM:SS.sssZ
+  const iso = date.toISOString();
   return {
     date: iso.slice(0, 10),
     time: iso.slice(11, 16),
@@ -59,16 +61,40 @@ function spaceDisplayName(spaceUri: string): string {
   return lastColon >= 0 && lastColon + 1 < spaceUri.length ? spaceUri.slice(lastColon + 1) : spaceUri;
 }
 
-function formatSpaceHosts(
+function modeLabel(mode: string): string {
+  return mode === 'read-only'
+    ? REGISTRY_CHANGE_EMAIL_COPY.modeReadOnly
+    : REGISTRY_CHANGE_EMAIL_COPY.modeReadWrite;
+}
+
+type ResolvedMembership = { host: string; mode: string };
+
+function resolveSpaceMemberships(
   nodes: ReadonlyArray<{ did: string; mode: string }>,
   nodeUrlByDid: ReadonlyMap<string, string>,
-): string {
-  if (nodes.length === 0) return REGISTRY_CHANGE_EMAIL_COPY.notSet;
+): ResolvedMembership[] {
   return nodes
     .map((m) => {
       const url = nodeUrlByDid.get(m.did);
-      return url ? displayNodeHost(url) : m.did;
+      return { host: url ? displayNodeHost(url) : m.did, mode: m.mode };
     })
+    .sort((a, b) => a.host.localeCompare(b.host) || a.mode.localeCompare(b.mode));
+}
+
+function membershipsEqual(a: ResolvedMembership[], b: ResolvedMembership[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((item, i) => item.host === b[i]!.host && item.mode === b[i]!.mode);
+}
+
+function hostsOnlyEqual(a: ResolvedMembership[], b: ResolvedMembership[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((item, i) => item.host === b[i]!.host);
+}
+
+function formatMembershipList(memberships: ResolvedMembership[], showModes: boolean): string {
+  if (memberships.length === 0) return REGISTRY_CHANGE_EMAIL_COPY.notSet;
+  return memberships
+    .map((m) => (showModes ? `${m.host} (${modeLabel(m.mode)})` : m.host))
     .join(', ');
 }
 
@@ -85,10 +111,22 @@ export function formatRegistryChangeNoticeEmail(input: RegistryChangeNoticeInput
   const changes: string[] = [];
 
   for (const spaceUri of allSpaces) {
-    const oldHost = formatSpaceHosts(beforeSpaces.get(spaceUri) ?? [], beforeUrls);
-    const newHost = formatSpaceHosts(afterSpaces.get(spaceUri) ?? [], afterUrls);
-    if (oldHost !== newHost) {
-      changes.push(`${spaceDisplayName(spaceUri)}: ${oldHost} → ${newHost}`);
+    const beforeMem = resolveSpaceMemberships(beforeSpaces.get(spaceUri) ?? [], beforeUrls);
+    const afterMem = resolveSpaceMemberships(afterSpaces.get(spaceUri) ?? [], afterUrls);
+    if (membershipsEqual(beforeMem, afterMem)) continue;
+
+    const name = spaceDisplayName(spaceUri);
+    // F3 mode-only change on a single host: "{space}: {host}, read-only → read and write" (Monica 16:49Z).
+    if (beforeMem.length === 1 && afterMem.length === 1 && hostsOnlyEqual(beforeMem, afterMem)) {
+      changes.push(`${name}: ${beforeMem[0]!.host}, ${modeLabel(beforeMem[0]!.mode)} → ${modeLabel(afterMem[0]!.mode)}`);
+    } else {
+      const showModes =
+        hostsOnlyEqual(beforeMem, afterMem) ||
+        beforeMem.some((m) => m.mode === 'read-only') ||
+        afterMem.some((m) => m.mode === 'read-only');
+      const oldText = formatMembershipList(beforeMem, showModes);
+      const newText = formatMembershipList(afterMem, showModes);
+      changes.push(`${name}: ${oldText} → ${newText}`);
     }
   }
 

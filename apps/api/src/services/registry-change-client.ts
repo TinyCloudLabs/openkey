@@ -1,13 +1,16 @@
-// TC-3893: registry-change record builder, node URL canonicaliser, identity probe
-// (warn-only), and direct v2 registry reader/publisher.
+// TC-3893: registry-change record builder, node URL canonicaliser, SSRF-safe identity
+// probe (warn-only), and direct v2 registry reader/publisher.
 //
 // Direct PUT is used instead of `publishLocationRecordV2` so unreachable or mismatched
 // nodes warn on the consent screen without blocking sovereign approval, while keeping
-// every safety guard: strict URL canonicalisation, location-registry v2 validation,
+// every safety guard: strict URL canonicalisation, node/space caps, DNS-based SSRF
+// filtering before probing, bounded probe concurrency, location-registry v2 validation,
 // never dropping unrelated spaces, re-read drift check before signing, and verifying
 // that the registry's accepted record matches the signed prepared bytes.
 
 import { createHash } from 'node:crypto';
+import { lookup as dnsLookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import {
   DEFAULT_TINYCLOUD_LOCATION_REGISTRY_URL,
   LocationRecordValidationError,
@@ -29,6 +32,11 @@ const REGISTRY_TIMEOUT_MS = 5_000;
 const NODE_IDENTITY_TIMEOUT_MS = 5_000;
 const MAX_REGISTRY_BYTES = 64 * 1024;
 const MAX_NODE_IDENTITY_BYTES = 16 * 1024;
+
+/** F1 caps: enforced before any DNS lookup or network probe. */
+export const MAX_REGISTRY_CHANGE_NODES = 16;
+export const MAX_REGISTRY_CHANGE_SPACES = 64;
+export const MAX_IDENTITY_PROBE_CONCURRENCY = 4;
 
 export interface RegistryChangeNodeInput {
   url: string;
@@ -59,12 +67,16 @@ export interface NodeIdentityResult {
   readonly status: NodeIdentityStatus;
 }
 
+export type HostResolver = (hostname: string) => Promise<string[]>;
+
 export class RegistryChangeError extends Error {
-  readonly status: 400 | 409 | 502;
-  constructor(public readonly code: string, message: string, status: 400 | 409 | 502) {
+  readonly status: 400 | 409 | 422 | 502;
+  readonly host?: string;
+  constructor(public readonly code: string, message: string, status: 400 | 409 | 422 | 502, host?: string) {
     super(message);
     this.name = 'RegistryChangeError';
     this.status = status;
+    if (host !== undefined) this.host = host;
   }
 }
 
@@ -123,6 +135,168 @@ export function isValidV2NodeDid(did: unknown): did is string {
   }
 }
 
+function parseIpv4Octets(ip: string): [number, number, number, number] | null {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  const nums = parts.map((p) => (/^\d+$/.test(p) ? Number(p) : -1));
+  if (nums.some((n) => n < 0 || n > 255)) return null;
+  return nums as [number, number, number, number];
+}
+
+function expandIpv6Groups(raw: string): number[] | null {
+  let ip = raw.toLowerCase();
+  if (ip.startsWith('[') && ip.endsWith(']')) ip = ip.slice(1, -1);
+  const zoneIdx = ip.indexOf('%');
+  if (zoneIdx !== -1) ip = ip.slice(0, zoneIdx);
+
+  // Convert embedded IPv4 tail (e.g. ::ffff:169.254.169.254) into two 16-bit hex groups.
+  const lastColon = ip.lastIndexOf(':');
+  if (lastColon !== -1 && ip.slice(lastColon + 1).includes('.')) {
+    const octets = parseIpv4Octets(ip.slice(lastColon + 1));
+    if (!octets) return null;
+    const hi = ((octets[0] << 8) | octets[1]).toString(16);
+    const lo = ((octets[2] << 8) | octets[3]).toString(16);
+    ip = `${ip.slice(0, lastColon + 1)}${hi}:${lo}`;
+  }
+
+  const halves = ip.split('::');
+  if (halves.length > 2) return null;
+  const parseSide = (side: string): number[] | null => {
+    if (side === '') return [];
+    const tokens = side.split(':');
+    const out: number[] = [];
+    for (const token of tokens) {
+      if (!/^[0-9a-f]{1,4}$/.test(token)) return null;
+      out.push(Number.parseInt(token, 16));
+    }
+    return out;
+  };
+
+  const left = parseSide(halves[0]!);
+  const right = halves.length === 2 ? parseSide(halves[1]!) : [];
+  if (!left || !right) return null;
+
+  if (halves.length === 1) {
+    return left.length === 8 ? left : null;
+  }
+  const missing = 8 - (left.length + right.length);
+  if (missing < 1) return null;
+  return [...left, ...new Array<number>(missing).fill(0), ...right];
+}
+
+function isBlockedIpv4(octets: [number, number, number, number], allowLoopback: boolean): boolean {
+  const [a, b] = octets;
+  // Loopback 127.0.0.0/8
+  if (a === 127) return !allowLoopback;
+  // Unspecified 0.0.0.0/8
+  if (a === 0) return true;
+  // RFC1918 private: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+  if (a === 10) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  // CGNAT 100.64.0.0/10
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  // Link-local & cloud metadata 169.254.0.0/16 (incl. 169.254.169.254)
+  if (a === 169 && b === 254) return true;
+  // Multicast (224.0.0.0/4) and reserved/broadcast (240.0.0.0/4)
+  if (a >= 224) return true;
+  return false;
+}
+
+/**
+ * F1 SSRF filter: returns true when `ip` is loopback (unless `allowLoopback`),
+ * private (RFC1918/ULA), link-local, CGNAT, metadata (`169.254.169.254`, `fd00:ec2::254`),
+ * unspecified, multicast, or reserved.
+ */
+export function isBlockedProbeIp(rawIp: string, allowLoopback: boolean): boolean {
+  const ip = rawIp.startsWith('[') && rawIp.endsWith(']') ? rawIp.slice(1, -1) : rawIp;
+  const kind = isIP(ip);
+  if (kind === 4) {
+    const octets = parseIpv4Octets(ip);
+    return !octets || isBlockedIpv4(octets, allowLoopback);
+  }
+  if (kind === 6) {
+    const groups = expandIpv6Groups(ip);
+    if (!groups) return true;
+    const allZero = groups.every((g) => g === 0);
+    if (allZero) return true; // :: unspecified
+    const isLoopback6 = groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1;
+    if (isLoopback6) return !allowLoopback; // ::1
+    // IPv4-mapped ::ffff:0:0/96
+    const isIpv4Mapped =
+      groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff;
+    if (isIpv4Mapped) {
+      const octets: [number, number, number, number] = [
+        (groups[6]! >> 8) & 0xff,
+        groups[6]! & 0xff,
+        (groups[7]! >> 8) & 0xff,
+        groups[7]! & 0xff,
+      ];
+      return isBlockedIpv4(octets, allowLoopback);
+    }
+    // Unique local fc00::/7 (includes fd00:ec2::254 AWS IMDSv2 IPv6 metadata)
+    if ((groups[0]! & 0xfe00) === 0xfc00) return true;
+    // Link-local fe80::/10
+    if ((groups[0]! & 0xffc0) === 0xfe80) return true;
+    // Multicast ff00::/8
+    if ((groups[0]! & 0xff00) === 0xff00) return true;
+    return false;
+  }
+  // Unrecognised address format -> fail closed (block probe).
+  return true;
+}
+
+export async function defaultHostResolver(hostname: string): Promise<string[]> {
+  const bare = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+  if (isIP(bare) !== 0) return [bare];
+  const entries = await dnsLookup(bare, { all: true, verbatim: true });
+  return entries.map((e) => e.address);
+}
+
+async function isHostAllowedForProbe(
+  canonicalUrl: string,
+  allowLoopback: boolean,
+  resolveHost: HostResolver,
+): Promise<boolean> {
+  let hostname: string;
+  try {
+    hostname = new URL(canonicalUrl).hostname;
+  } catch {
+    return false;
+  }
+  const bare = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+  if (isIP(bare) !== 0) {
+    return !isBlockedProbeIp(bare, allowLoopback);
+  }
+  let addresses: string[];
+  try {
+    addresses = await resolveHost(bare);
+  } catch {
+    return false;
+  }
+  if (addresses.length === 0) return false;
+  return addresses.every((addr) => !isBlockedProbeIp(addr, allowLoopback));
+}
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex++;
+        results[currentIndex] = await fn(items[currentIndex]!, currentIndex);
+      }
+    }),
+  );
+  return results;
+}
+
 async function fetchJsonBounded(
   url: string,
   fetchImpl: typeof fetch,
@@ -151,15 +325,31 @@ async function fetchJsonBounded(
   }
 }
 
+export interface NodeIdentityProbeOptions {
+  readonly fetch?: typeof fetch;
+  readonly resolveHost?: HostResolver;
+  readonly allowLoopback?: boolean;
+}
+
 /**
- * Probe `{url}/info` and `{url}/.well-known/tinycloud/node-keys` in parallel.
+ * Resolve host and check SSRF filter, then probe `{url}/info` and
+ * `{url}/.well-known/tinycloud/node-keys` in parallel (no redirects).
  * Returns `ok | mismatch | unreachable` — warning only, never blocks.
  */
 export async function checkNodeIdentity(
   canonicalUrl: string,
   expectedDid?: string,
-  fetchImpl: typeof fetch = fetch,
+  opts: NodeIdentityProbeOptions = {},
 ): Promise<NodeIdentityResult> {
+  const fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
+  const resolveHost = opts.resolveHost ?? defaultHostResolver;
+  const allowLoopback = opts.allowLoopback ?? false;
+
+  const allowed = await isHostAllowedForProbe(canonicalUrl, allowLoopback, resolveHost);
+  if (!allowed) {
+    return { url: canonicalUrl, did: expectedDid ?? null, status: 'unreachable' };
+  }
+
   const [infoRes, keysRes] = await Promise.all([
     fetchJsonBounded(`${canonicalUrl}/info`, fetchImpl, NODE_IDENTITY_TIMEOUT_MS, MAX_NODE_IDENTITY_BYTES),
     fetchJsonBounded(`${canonicalUrl}/.well-known/tinycloud/node-keys`, fetchImpl, NODE_IDENTITY_TIMEOUT_MS, MAX_NODE_IDENTITY_BYTES),
@@ -189,8 +379,6 @@ export async function checkNodeIdentity(
     return { url: canonicalUrl, did: infoValid, status: 'ok' };
   }
 
-  // One endpoint was unreachable and the other answered; treat missing endpoint as unreachable
-  // unless the answering endpoint already contradicts expectedDid.
   const observedDid = infoValid ?? keysValid;
   if (!infoOk || !keysOk) {
     if (expectedDid !== undefined && observedDid !== null && observedDid !== expectedDid) {
@@ -295,25 +483,38 @@ export function payloadWithoutSignature(record: LocationRecordV2): LocationRecor
 }
 
 /**
- * Validate + canonicalise the caller's request, probe node identities (warn-only),
- * merge with `current` without dropping unrelated spaces, set `sequence = current + 1`
- * and `updated_at = now`, and validate against location-registry v2 rules.
+ * Validate caps + request shape before any registry or node network call (F1).
  */
-export async function prepareRegistryChangeRecord(options: {
-  current: LocationRecordV2;
-  request: unknown;
-  now: Date;
-  fetch?: typeof fetch;
-}): Promise<PreparedRegistryChange> {
-  const { current, now } = options;
-  const fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
-
-  if (!options.request || typeof options.request !== 'object' || Array.isArray(options.request)) {
+export function validateRequestBounds(request: unknown): {
+  nodes: Array<{ url: string; did?: string }>;
+  rawSpaces: unknown[] | undefined;
+  rawEncryptionNode: unknown;
+} {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
     throw new RegistryChangeError('registry_change_invalid_node', 'Request must be an object', 400);
   }
-  const rawReq = options.request as Record<string, unknown>;
+  const rawReq = request as Record<string, unknown>;
   if (!Array.isArray(rawReq.nodes) || rawReq.nodes.length === 0) {
     throw new RegistryChangeError('registry_change_invalid_node', 'At least one node is required', 400);
+  }
+  if (rawReq.nodes.length > MAX_REGISTRY_CHANGE_NODES) {
+    throw new RegistryChangeError(
+      'registry_change_too_many_nodes',
+      `At most ${MAX_REGISTRY_CHANGE_NODES} nodes may be requested at once`,
+      400,
+    );
+  }
+  if (rawReq.spaces !== undefined) {
+    if (!Array.isArray(rawReq.spaces)) {
+      throw new RegistryChangeError('registry_change_invalid_node', 'spaces must be an array', 400);
+    }
+    if (rawReq.spaces.length > MAX_REGISTRY_CHANGE_SPACES) {
+      throw new RegistryChangeError(
+        'registry_change_too_many_spaces',
+        `At most ${MAX_REGISTRY_CHANGE_SPACES} spaces may be requested at once`,
+        400,
+      );
+    }
   }
 
   const parsedNodes: Array<{ url: string; did?: string }> = [];
@@ -341,10 +542,41 @@ export async function prepareRegistryChangeRecord(options: {
     parsedNodes.push(did !== undefined ? { url: canonicalUrl, did } : { url: canonicalUrl });
   }
 
-  // Probe node identities in parallel (warn-only; never blocks when DID is known).
+  return {
+    nodes: parsedNodes,
+    rawSpaces: rawReq.spaces as unknown[] | undefined,
+    rawEncryptionNode: rawReq.encryptionNode,
+  };
+}
+
+/**
+ * Validate + canonicalise the caller's request, probe node identities (SSRF-filtered,
+ * bounded concurrency <= 4, warn-only), merge with `current` without dropping unrelated
+ * spaces, set `sequence = current + 1` and `updated_at = now`, and validate against
+ * location-registry v2 rules.
+ */
+export async function prepareRegistryChangeRecord(options: {
+  current: LocationRecordV2;
+  request: unknown;
+  now: Date;
+  fetch?: typeof fetch;
+  resolveHost?: HostResolver;
+  allowLoopback?: boolean;
+}): Promise<PreparedRegistryChange> {
+  const { current, now } = options;
+  const { nodes: parsedNodes, rawSpaces, rawEncryptionNode } = validateRequestBounds(options.request);
+
+  // Probe node identities with bounded concurrency <= 4 (SSRF-filtered, warn-only).
   const currentByUrl = new Map(current.nodes.map((node) => [node.url, node]));
-  const identity = await Promise.all(
-    parsedNodes.map((node) => checkNodeIdentity(node.url, node.did, fetchImpl)),
+  const identity = await mapWithConcurrency(
+    parsedNodes,
+    MAX_IDENTITY_PROBE_CONCURRENCY,
+    (node) =>
+      checkNodeIdentity(node.url, node.did, {
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+        ...(options.resolveHost ? { resolveHost: options.resolveHost } : {}),
+        ...(options.allowLoopback !== undefined ? { allowLoopback: options.allowLoopback } : {}),
+      }),
   );
 
   const resolvedNodesByUrl = new Map<string, { url: string; did: string }>();
@@ -353,13 +585,14 @@ export async function prepareRegistryChangeRecord(options: {
     const idResult = identity[i]!;
     const resolvedDid = reqNode.did ?? idResult.did ?? currentByUrl.get(reqNode.url)?.did ?? null;
     if (!resolvedDid || !isValidV2NodeDid(resolvedDid)) {
+      const host = displayNodeHost(reqNode.url);
       throw new RegistryChangeError(
-        'registry_change_invalid_node',
-        `Could not determine node DID for ${reqNode.url}`,
-        400,
+        'registry_change_node_did_required',
+        `Couldn't reach ${host} to discover its node identity; provide node did or try again when reachable`,
+        422,
+        host,
       );
     }
-    // Reflect the resolved DID in the identity result returned to the client.
     if (idResult.did === null) {
       identity[i] = { ...idResult, did: resolvedDid };
     }
@@ -374,11 +607,8 @@ export async function prepareRegistryChangeRecord(options: {
     ]),
   );
 
-  if (rawReq.spaces !== undefined) {
-    if (!Array.isArray(rawReq.spaces)) {
-      throw new RegistryChangeError('registry_change_invalid_node', 'spaces must be an array', 400);
-    }
-    for (const item of rawReq.spaces) {
+  if (rawSpaces !== undefined) {
+    for (const item of rawSpaces) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) {
         throw new RegistryChangeError('registry_change_invalid_node', 'Each space entry must be an object', 400);
       }
@@ -421,12 +651,12 @@ export async function prepareRegistryChangeRecord(options: {
 
   // Resolve `encryptionNode` per pinned contract: canonical node URL matching request.nodes[].url, or null, or omitted (preserve).
   let encryptionNode: string | null;
-  if (rawReq.encryptionNode === undefined) {
+  if (rawEncryptionNode === undefined) {
     encryptionNode = current.encryptionNode;
-  } else if (rawReq.encryptionNode === null) {
+  } else if (rawEncryptionNode === null) {
     encryptionNode = null;
-  } else if (typeof rawReq.encryptionNode === 'string') {
-    const canonicalUrl = canonicalNodeUrl(rawReq.encryptionNode);
+  } else if (typeof rawEncryptionNode === 'string') {
+    const canonicalUrl = canonicalNodeUrl(rawEncryptionNode);
     if (!canonicalUrl) {
       throw new RegistryChangeError('registry_change_invalid_node', 'encryptionNode URL could not be parsed', 400);
     }
@@ -511,9 +741,10 @@ export async function prepareRegistryUndoRecord(options: {
   previousRecord: unknown;
   now: Date;
   fetch?: typeof fetch;
+  resolveHost?: HostResolver;
+  allowLoopback?: boolean;
 }): Promise<PreparedRegistryChange> {
   const { current, now } = options;
-  const fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
 
   let stored: LocationRecordV2Payload;
   try {
@@ -548,8 +779,15 @@ export async function prepareRegistryUndoRecord(options: {
     throw error;
   }
 
-  const identity = await Promise.all(
-    after.nodes.map((node) => checkNodeIdentity(node.url, node.did, fetchImpl)),
+  const identity = await mapWithConcurrency(
+    after.nodes,
+    MAX_IDENTITY_PROBE_CONCURRENCY,
+    (node) =>
+      checkNodeIdentity(node.url, node.did, {
+        ...(options.fetch ? { fetch: options.fetch } : {}),
+        ...(options.resolveHost ? { resolveHost: options.resolveHost } : {}),
+        ...(options.allowLoopback !== undefined ? { allowLoopback: options.allowLoopback } : {}),
+      }),
   );
 
   const before = payloadWithoutSignature(current);

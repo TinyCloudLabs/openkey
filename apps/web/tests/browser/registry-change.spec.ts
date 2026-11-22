@@ -226,8 +226,9 @@ for (const surface of ['popup', 'embed'] as const) {
     await expect(warnings).toContainText("Couldn't reach node-b.example:8443 to confirm what it is.");
     await expect(warnings).toContainText('You can approve anyway, but check this host with whoever asked you to move.');
 
-    // Verify prepare sent verified origin in header and NOT in body.
+    // Verify prepare sent verified origin in header, NOT in body, and NEVER sent an Authorization header (F4).
     expect(prepareHeaders[0]?.['x-openkey-requesting-origin']).toBe(ORIGIN);
+    expect(prepareHeaders[0]?.authorization).toBeUndefined();
     expect('requestingOrigin' in (prepareBodies[0] as Record<string, unknown>)).toBe(false);
 
     const approveBtn = view.getByRole('button', { name: 'Approve with passkey' });
@@ -404,9 +405,10 @@ for (const surface of ['popup', 'embed'] as const) {
 
     const view = surface === 'popup' ? widgetPage : page.frameLocator('#rc-frame');
     await expect(view.getByRole('heading', { name: 'Restore an earlier version?' })).toBeVisible();
-    // Non-One localhost origin uses `{origin}` form, never "TinyCloud One".
+    // Non-One localhost origin uses `{origin}` form, never "TinyCloud One", with locale date (F8).
+    const expectedLocaleDate = await page.evaluate(() => new Date('2026-11-20T10:00:00.000Z').toLocaleDateString());
     await expect(view.getByTestId('registry-change-origin')).toContainText(
-      `${ORIGIN} wants to put back where your data lived before 2026-11-20.`,
+      `${ORIGIN} wants to put back where your data lived before ${expectedLocaleDate}.`,
     );
     await expect(view.getByTestId('registry-change-diff-table')).toContainText('Not set');
     expect(undoBodies).toEqual([{ historyId: 'hist-old-1' }]);
@@ -424,6 +426,56 @@ for (const surface of ['popup', 'embed'] as const) {
       sequence: 7,
       recordHash: RECORD_HASH,
     });
+  });
+
+  test(`${surface}: F3 mode-only diff renders changed row and F6 422 shows Monica surface-specific copy`, async ({ page }) => {
+    await page.context().route('**/api/registry-change/prepare', (route) =>
+      json(route, {
+        ...makePrepareResponse({ encryptionChanged: false }),
+        before: {
+          version: 2,
+          subject: SUBJECT,
+          nodes: [{ did: NODE_A, url: 'https://node-a.example' }],
+          spaces: [{ space: SPACE_DEFAULT, nodes: [{ did: NODE_A, mode: 'read-only' }] }],
+          encryptionNode: NODE_A,
+          updated_at: '2026-11-22T15:00:00.000Z',
+          sequence: 4,
+        },
+        after: {
+          version: 2,
+          subject: SUBJECT,
+          nodes: [{ did: NODE_A, url: 'https://node-a.example' }],
+          spaces: [{ space: SPACE_DEFAULT, nodes: [{ did: NODE_A, mode: 'read-write' }] }],
+          encryptionNode: NODE_A,
+          updated_at: '2026-11-22T16:00:00.000Z',
+          sequence: 5,
+        },
+        identity: [{ url: 'https://node-a.example', did: NODE_A, status: 'ok' }],
+      }),
+    );
+
+    const { view } = await openRegistryChangeWidget(page, surface, {
+      nodes: [{ url: 'https://node-a.example' }],
+      spaces: [{ space: SPACE_DEFAULT, nodes: [{ url: 'https://node-a.example', mode: 'read-write' }] }],
+    });
+    await expect(view.getByTestId('registry-change-mode-only-row')).toContainText(
+      'default: node-a.example, read-only → read and write',
+    );
+  });
+
+  test(`${surface}: F6 422 registry_change_node_did_required shows Monica ${surface} copy with no Approve button`, async ({ page }) => {
+    await page.context().route('**/api/registry-change/prepare', (route) =>
+      json(route, { error: 'registry_change_node_did_required', host: 'node-b.example:8443' }, 422),
+    );
+
+    const { view } = await openRegistryChangeWidget(page, surface, {
+      nodes: [{ url: 'https://node-b.example:8443' }],
+    });
+    const expectedTail = surface === 'embed' ? 'you can go back to the app.' : 'you can close this window.';
+    await expect(view.getByTestId('registry-change-error')).toContainText(
+      `Couldn't reach node-b.example:8443 to confirm which host it is, so nothing was changed. The app that asked needs to fix this; ${expectedTail}`,
+    );
+    await expect(view.getByRole('button', { name: 'Approve with passkey' })).toHaveCount(0);
   });
 }
 

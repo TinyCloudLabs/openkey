@@ -2,7 +2,6 @@
   import { untrack } from 'svelte';
   import { page } from '$app/stores';
   import { confirmWithPasskey, PasskeyPromptError, passkeyApprovalCopy, type ApprovalPasskeyOffer } from '$lib/approval-passkey';
-  import { withSessionCredential } from '$lib/embed-passkey';
   import { resolveWidgetOrigin } from '$lib/widget-transport';
   import {
     REGISTRY_CHANGE_COPY,
@@ -96,27 +95,26 @@
       : { request: requestPayload };
 
     try {
-      const response = await fetch(
-        endpoint,
-        withSessionCredential({
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-openkey-requesting-origin': requestingOrigin,
-          },
-          body: JSON.stringify(bodyPayload),
-        }),
-      );
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'content-type': 'application/json',
+          'x-openkey-requesting-origin': requestingOrigin,
+        },
+        body: JSON.stringify(bodyPayload),
+      });
       const body = await response.json().catch(() => ({}));
       const next = applyPrepareResult(
         widgetState,
         response.ok
           ? { ok: true, body }
           : { ok: false, status: response.status, body },
+        surface,
       );
       widgetState = preserveError && next.phase === 'review' ? { ...next, error: preserveError } : next;
     } catch {
-      widgetState = applyPrepareResult(widgetState, { ok: false, status: 0, body: { error: 'prepare_failed' } });
+      widgetState = applyPrepareResult(widgetState, { ok: false, status: 0, body: { error: 'prepare_failed' } }, surface);
     }
   }
 
@@ -144,17 +142,15 @@
     }
 
     try {
-      const response = await fetch(
-        `${API_BASE}/api/registry-change/publish`,
-        withSessionCredential({
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            changeId,
-            passkeyAssertion,
-          }),
+      const response = await fetch(`${API_BASE}/api/registry-change/publish`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          changeId,
+          passkeyAssertion,
         }),
-      );
+      });
       const body = await response.json().catch(() => ({}));
       const update = applyPublishResult(
         widgetState,
@@ -315,9 +311,13 @@
         <tbody>
           {#each widgetState.diffRows as row (row.label)}
             <tr class:rc-row-encryption={row.isEncryption && row.changed}>
-              <td>{row.label}</td>
-              <td>{row.beforeHost}</td>
-              <td>{row.afterHost}</td>
+              {#if row.modeOnlyLine}
+                <td colspan="3" data-testid="registry-change-mode-only-row">{row.modeOnlyLine}</td>
+              {:else}
+                <td>{row.label}</td>
+                <td>{row.beforeHost}</td>
+                <td>{row.afterHost}</td>
+              {/if}
             </tr>
           {/each}
         </tbody>
