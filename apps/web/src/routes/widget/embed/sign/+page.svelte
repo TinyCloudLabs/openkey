@@ -14,6 +14,9 @@
   import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
   import { clearSessionToken, getSessionToken, isEmbedContext, withSessionCredential } from '$lib/embed-passkey';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
+  import TermsGate from '$lib/components/auth/terms-gate.svelte';
+  import { termsGate } from '$lib/terms-gate';
+  import { SIGN_IN_AGAIN_TO_AGREE, isTermsRequired } from '$lib/terms';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import { newWebSignFlowId, releaseWebSignFlow, webSignFlowHeaders } from '$lib/web-sign-flow';
   import {
@@ -87,7 +90,10 @@
   // is told USER_CANCELLED, so it keeps its connection).
   let keyProblem = $state<'missing' | 'transient' | null>(null);
   let contentEl = $state<HTMLDivElement | undefined>(undefined);
+  // A stored token is a credential, not yet a signed-in account: the Terms check reads it first (and drops it if it
+  // no longer signs anyone in).
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
+  let signInNote = $state<string | null>(null);
   let reviewModel = $state<CapabilityReviewModel | null>(null);
   let reviewSourceMessage = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
@@ -197,7 +203,31 @@
   let externalSignMode = $state(false);
   let expiryChangeable = $state(false);
 
-  const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  const signedIn = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  // In the frame the request is read only once the account is known to have agreed to the Terms (a window's layout
+  // holds its pages the same way).
+  const isAuthenticated = $derived(signedIn && (!inIframe || $termsGate.phase === 'open'));
+  // A step the person acts on before the review: sign in, the Terms, or a Terms check that failed. While the Terms are
+  // only being read the frame is not ready to show, so the host never sizes to the passing check.
+  const personStep = $derived(
+    !signedIn || (inIframe && ($termsGate.phase === 'required' || $termsGate.phase === 'failed')),
+  );
+  $effect(() => {
+    if (inIframe) termsGate.follow(embedAuthenticated ? getSessionToken() : null, () => termsSignedOut(false));
+  });
+  // Key selection that ran into a fresh Terms check (a refused call) starts again once the account has agreed.
+  let wasAuthenticated = false;
+  $effect(() => {
+    const now = isAuthenticated;
+    if (wasAuthenticated && !now && signedIn) untrack(retryKey);
+    wasAuthenticated = now;
+  });
+  function termsSignedOut(again: boolean) {
+    clearSessionToken();
+    embedAuthenticated = false;
+    signInNote = again ? SIGN_IN_AGAIN_TO_AGREE : null;
+    retryKey();
+  }
 
   const origin = $page.url.searchParams.get('origin') || '*';
   // This page's own flow id for one sign request, drawn here and never taken from the app's request.
@@ -462,7 +492,7 @@
         layoutGate?.measure(
           height,
           (!!review && review.getClientRects().length > 0 && getComputedStyle(review).visibility === 'visible') ||
-          ((!isAuthenticated || !!keyError) && content.getClientRects().length > 0),
+          ((personStep || !!keyError) && content.getClientRects().length > 0),
         );
         return;
       }
@@ -528,9 +558,9 @@
   // binds its request ID. Measure the current step after that binding so
   // the hidden host frame always exposes Sign In or Cancel.
   $effect(() => {
-    if (!v2 || !requestSealed || (isAuthenticated && !keyError)) return;
+    if (!v2 || !requestSealed || !(personStep || keyError)) return;
     void tick().then(() => {
-      if ((isAuthenticated && !keyError) || !contentEl) return;
+      if (!(personStep || keyError) || !contentEl) return;
       layoutGate?.measure(
         Math.max(contentEl.scrollHeight, Math.ceil(contentEl.getBoundingClientRect().height)),
         true,
@@ -636,6 +666,7 @@
 
   /** A key read the server refused (404/403): the key is not this account's, so reading again cannot help. */
   function keyNotInAccount(failure: unknown): boolean {
+    if (failure instanceof Error && isTermsRequired(403, { error: failure.message })) return false;
     return failure instanceof Error && 'status' in failure && (failure.status === 404 || failure.status === 403);
   }
 
@@ -1554,13 +1585,16 @@
       <SiweOriginRefusal reason={siweRefusal.message} code={siweRefusal.code} onclose={closeRefused} />
     {:else if replyFailureStatus !== null}
       <ServerReplyRefusal status={replyFailureStatus} onclose={closeRefused} />
-    {:else if !isAuthenticated}
+    {:else if !signedIn}
       <EmbeddedSignIn
         prompt="Sign in to review and sign this message"
-        onauthenticated={() => { embedAuthenticated = true; }}
+        note={signInNote}
+        onauthenticated={() => { signInNote = null; embedAuthenticated = true; }}
         {passkeysSupported}
         flowId={webFlowId}
       />
+    {:else if !isAuthenticated}
+      <TermsGate surface="embed" layoutReady={v2 ? layoutReady : true} onsignedout={termsSignedOut} />
     {:else if loading}
       <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6">
         <svg class="w-6 h-6 animate-spin text-surface-400 mb-3" fill="none" viewBox="0 0 24 24">

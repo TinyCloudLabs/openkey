@@ -4,6 +4,7 @@
 
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const keyAddress = '0x1111111111111111111111111111111111111111';
 const otherAddress = '0x2222222222222222222222222222222222222222';
@@ -33,6 +34,7 @@ async function mockApi(page: Page, prepares: string[] = []) {
     }
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 }
 
 async function openDelegate(page: Page, owner: string) {

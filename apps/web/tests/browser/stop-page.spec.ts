@@ -1,6 +1,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const email = 'owner@example.test';
 const wanted = '0xd559ccd9eb87c530a9a349262669386de93cf412';
@@ -56,6 +57,7 @@ async function mock(page: Page, respond?: (path: string, route: Route) => Promis
     if (path === '/api/keys') return json(route, 200, { keys: [key] });
     return respond?.(path, route) ?? json(route, 404, {});
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return calls;
 }
 

@@ -2,6 +2,7 @@ import { test, expect, type Page, type Route } from '@playwright/test';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { HOST } from './e2e-port';
 import { makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 // A framed sign iframe honours the web flow's one-passkey cover only while the browser's intersection observer v2
 // reports Approve in plain view. The tests run the real Chromium observer against the real page: the harness parent
@@ -78,6 +79,7 @@ async function mockApi(page: Page, options: { plain?: boolean } = {}) {
     }
     return json(route, {});
   });
+  await page.context().route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return { previews, signs };
 }
 

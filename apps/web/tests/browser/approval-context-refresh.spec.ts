@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const id = 'abcdefghijklmnopqrstuvwxyz';
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
@@ -105,6 +106,7 @@ async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scena
     }
     return reply(404, { error: `Unexpected QA request ${pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto(path);
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
   await page.locator('summary').filter({ hasText: 'Advanced details' }).click();

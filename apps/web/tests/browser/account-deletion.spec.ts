@@ -6,6 +6,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const SHOTS = process.env.DELETE_ACCOUNT_SHOTS_DIR;
 const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -53,6 +54,7 @@ async function setup(page: Page, account: Account, overrides: Record<string, (ro
     if (path.includes('tinycloud')) return json(route, { tinyCloudManageKeyEnabled: true, mode: 'APP_MANAGED', policyEpoch: 0, apps: [], activity: [] });
     return json(route, {});
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return calls;
 }
 

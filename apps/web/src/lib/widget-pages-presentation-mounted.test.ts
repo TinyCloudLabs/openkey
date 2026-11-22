@@ -15,6 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { compile } from 'svelte/compiler';
 import type { ApprovalPasskeyNeed } from './approval-passkey';
+import { termsAcceptedStubs } from './terms-accepted-stubs';
 
 const win = new Window({ url: 'http://openkey.test/' });
 (win as unknown as { postMessage: () => void }).postMessage = () => {};
@@ -182,6 +183,7 @@ for (const [pageName, page] of Object.entries(PAGES)) {
     const stubs: Record<string, string> = {
       ...baseStubs(page.url(origin)),
       '$lib/components/auth/embedded-sign-in.svelte': `export { default } from '${emptyUrl}';`,
+      ...termsAcceptedStubs(emptyUrl),
     };
     const realAdapterUrl = compileComponent(page.adapterFile, name, stubs);
     stubs[page.adapter] = `export { default } from '${compileSource(wrapperSource(realAdapterUrl), `${name}-wrapper`)}';`;

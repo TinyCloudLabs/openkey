@@ -1,5 +1,6 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 // TC-3442: Approve on a Nostr signing request creates a signing grant. When the account's passkey setting asks, the
 // tap answers the grant's passkey offer and the grant carries the assertion; a passkey refusal keeps the card up with
@@ -42,6 +43,7 @@ async function setup(page: Page, opts: { required: boolean; refuseFirstGrant?: b
     }
     return json(route, {});
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return calls;
 }
 
