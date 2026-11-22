@@ -7,7 +7,8 @@ import { termsCheckedFirst } from './terms-release';
  * pop-up (cookie session), an embedded frame's page drives it for the frame's session token.
  *
  *   idle      - no one is signed in, or no check has started
- *   checking  - the status is being read; a page goes on loading, the frame's card shows a spinner
+ *   checking  - the status is being read; a window's page is not shown until the first read resolves (a later read
+ *               keeps the page mounted), the frame's card shows a spinner
  *   open      - nothing is owed: the page is shown
  *   required  - the Terms are shown in place of the page until the account agrees
  *   failed    - the status could not be read: Try again, never the page

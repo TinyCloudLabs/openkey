@@ -14,9 +14,9 @@
   let { children }: { children: Snippet } = $props();
 
   // The Terms step for a window or pop-up (cookie session): once someone is signed in, the account's status is read
-  // alongside the page, and the Terms take the page's place while they are owed. The embedded frame runs its own (its
-  // session token, in its card). Sign-in, the Terms and their ways out, and the sign-out pages work before an account
-  // agrees.
+  // before the page is shown (the gate holds it while the session and the status are read), and the Terms take the
+  // page's place while they are owed. The embedded frame runs its own (its session token, in its card). Sign-in, the
+  // Terms and their ways out, and the sign-out pages work before an account agrees.
   const framed = browser && isEmbedContext();
   const session = authClient.useSession();
   const gated = $derived(
@@ -97,6 +97,8 @@
     email={$session.data?.user.email ?? null}
     clientId={native?.clientId ?? null}
     returnTo={$page.url.pathname + $page.url.search}
+    sessionPending={$session.isPending}
+    signedIn={!!$session.data?.user}
   >
     {@render shell()}
   </TermsGate>
