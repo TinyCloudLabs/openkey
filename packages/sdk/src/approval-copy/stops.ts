@@ -311,6 +311,17 @@ export const STOPS = {
     buttons: [],
     support: statusAndReply,
   },
+  /**
+   * TC-3821: the API refused renewal for this grant (secrets or encrypted data without the confirm, a window over 7
+   * days, or a permission it couldn't read). The server's own words replace this body; retrying the same choice never helps.
+   */
+  renewalRefused: {
+    placement: 'inline',
+    title: '',
+    body: 'Renewal can’t be set up for this approval. Untick renewal and approve without it.',
+    buttons: [],
+    support: statusAndReply,
+  },
 } as const satisfies Record<string, Stop | InlineLines>;
 
 export type StopId = keyof typeof STOPS;
@@ -343,6 +354,7 @@ const BY_CODE: Record<string, StopView['id']> = {
   handoff_signing: 'S24',
   handoff_context_unavailable: 'S14',
   renewal_already_signed: 'renewalLength',
+  renewal_refused: 'renewalRefused',
   reply_unreadable: 'S27',
   'key-mismatch': 'S16',
   'user-mismatch': 'S15',
@@ -452,7 +464,8 @@ export function approvalStop(id: StopView['id'], context: StopContext = {}): Sto
     id,
     placement: stop.placement,
     title,
-    body: fill(body, values),
+    // The API's renewal refusal is the owner's copy as written, never a template.
+    body: id === 'renewalRefused' && detail?.trim() ? detail.trim().slice(0, 300) : fill(body, values),
     marker: stop.marker ?? STOP_PARTS.marker,
     buttons: id === 'S25' && fixedKey ? ['close'] : stop.buttons,
     support: [support, fact].filter(Boolean).join(' · '),

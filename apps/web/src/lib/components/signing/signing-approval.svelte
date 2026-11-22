@@ -86,7 +86,7 @@
   import type { RenewalChoice, ShortenOnlyExpiry } from "$lib/components/signing/signing-adapter-types";
   import type { ApproveVisibility } from "$lib/approve-visibility";
   import { ONCE_DEFAULT_EXPIRY_MS, onceDefaultExpiryMs, requestedExpiryMs } from "$lib/approval-expiry";
-  import { isOnceTier } from "$lib/renewal-default";
+  import { isOnceTier, renewalNeedsSensitiveConfirm } from "$lib/renewal-default";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -862,7 +862,7 @@
         onceSite={onceDefaultShown && !shortenOnlyExpiry ? onceNoteSite : null}
         onceNote={signedOnceNote}
         {renewal}
-        sensitive={isOnceTier(selectedGrants)}
+        sensitive={renewalNeedsSensitiveConfirm(selectedGrants)}
         {requestedBy}
         chooser={false}
         permissionCount={summaryStatements.length}
