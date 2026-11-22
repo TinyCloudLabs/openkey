@@ -80,6 +80,21 @@ jobs:
         with:
           persist-credentials: false
 
+      # A PR can't loosen its own audit: use the base commit's .gitleaks.toml. Until the base has
+      # one (the PR that adds it), the PR's copy stays.
+      - name: Use the base commit's gitleaks config
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          if git cat-file -e "$BASE_SHA:.gitleaks.toml" 2>/dev/null; then
+            git show "$BASE_SHA:.gitleaks.toml" > .gitleaks.toml
+          else
+            echo "::notice::.gitleaks.toml is not on the base commit yet; using this PR's copy"
+          fi
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76 # v2.0.2
         with:
@@ -118,6 +133,21 @@ jobs:
             GIT_SHA=${{ github.sha }}
           cache-from: type=gha,scope=openkey-api-image
           tags: openkey-api:scan
+
+      # A PR can't widen its own baseline: use the base commit's .trivyignore.yaml. Until the base
+      # has one (the PR that adds it), the PR's copy stays.
+      - name: Use the base commit's trivy baseline
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          if git cat-file -e "$BASE_SHA:.trivyignore.yaml" 2>/dev/null; then
+            git show "$BASE_SHA:.trivyignore.yaml" > .trivyignore.yaml
+          else
+            echo "::notice::.trivyignore.yaml is not on the base commit yet; using this PR's copy"
+          fi
 
       - name: Scan the API image
         run: scripts/security/scan-image.sh openkey-api:scan

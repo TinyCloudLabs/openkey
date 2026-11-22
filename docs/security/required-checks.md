@@ -64,7 +64,12 @@ don't widen the allow-list without a security review.
   Baseline changes go in their own PR and take effect once it has merged.
 - `.trivyignore.yaml`: the 82 fixable CRITICAL/HIGH advisories in the production image of
   `d1d16d4f` (2026-11-22), each pinned to its package version by purl. They are known debt,
-  not accepted risk: remove an entry when its upgrade lands.
+  not accepted risk: remove an entry when its upgrade lands. Every entry has `expired_at`:
+  2026-12-06 for the 4 CRITICALs and 2026-12-22 for the rest. Once an entry expires it stops
+  suppressing, and the scan fails. The owner is Bobbie's better-auth/OpenSSL triage.
+- In a pull request, the web artifact audit and the API image scan also use the base commit's
+  `.gitleaks.toml` and `.trivyignore.yaml`. The PR's own copy is used only while the base has
+  none.
 
 Pinned tools (`scripts/security/install-tool.mjs`): gitleaks 8.30.1, trivy 0.76.2, with sha256
 from each release's checksums file.
