@@ -16,6 +16,10 @@ import { log, logError } from '../log';
  *
  * The quote's REPORTDATA is SHA-256 of the UTF-8 key_binding followed by 32 zero bytes;
  * `@openkey/tee` checks that before this answers 200. This route does not verify the quote.
+ *
+ * Limit: a 200 proves this measured code served these signing keys when it quoted. The keys live
+ * in the database, not in the TEE, so it doesn't prove that no other system holds them. A
+ * TEE-derived signing key is a one-way step (new identity), outside this route.
  */
 export const KEY_BINDING_DOMAIN = 'so.openkey/tee-key/v1\\0';
 
