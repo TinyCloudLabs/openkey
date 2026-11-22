@@ -52,6 +52,7 @@
   import TermsCheckFailed from '$lib/components/auth/terms-check-failed.svelte';
   import TermsStep from '$lib/components/auth/terms-step.svelte';
   import { checkTerms, oauthClientName, type TermsStatus } from '$lib/terms';
+  import { termsCheckedFirst } from '$lib/terms-release';
 
   // 'passkey' is the enrolment offer; 'passkeySignIn' and 'social' are native-mode landing steps.
   // 'social' is the frame shown while opening a provider or checking its return.
@@ -133,7 +134,7 @@
   let termsSettled = false;
 
   async function askTermsFirst(next: () => void | Promise<void>): Promise<boolean> {
-    if (termsSettled) return false;
+    if (termsSettled || !termsCheckedFirst()) return false;
     const result = await checkTerms();
     if (result.state === 'accepted') {
       termsSettled = true;

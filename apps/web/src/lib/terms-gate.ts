@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import { checkTerms, type TermsStatus } from './terms';
+import { termsCheckedFirst } from './terms-release';
 
 /**
  * Where this page's signed-in account stands with the Terms. One per page: the root layout drives it for a window or
@@ -13,7 +14,8 @@ import { checkTerms, type TermsStatus } from './terms';
  *
  * A check is started by a new sign-in (a new subject) and by `recheck()`, which a refused call (`terms_required`: a
  * release went live while the page was open) runs. An account found to have agreed is remembered for its subject,
- * so moving between pages reads nothing again.
+ * so moving between pages reads nothing again. A build with no Terms release (`termsCheckedFirst`) opens a new
+ * subject without reading; a refused call still reads the status and shows the Terms in place.
  */
 export type TermsGatePhase = 'idle' | 'checking' | 'open' | 'required' | 'failed';
 export interface TermsGateState {
@@ -22,7 +24,7 @@ export interface TermsGateState {
   status: TermsStatus | null;
 }
 
-export function createTermsGate(check: typeof checkTerms = checkTerms) {
+export function createTermsGate(check: typeof checkTerms = checkTerms, checkedFirst: () => boolean = termsCheckedFirst) {
   const state = writable<TermsGateState>({ phase: 'idle', status: null });
   let phase: TermsGatePhase = 'idle';
   let subject: string | null = null;
@@ -70,6 +72,11 @@ export function createTermsGate(check: typeof checkTerms = checkTerms) {
       if (next === null) {
         run++;
         set({ phase: 'idle', status: null });
+        return;
+      }
+      if (!checkedFirst()) {
+        run++;
+        set({ phase: 'open', status: null });
         return;
       }
       void read();

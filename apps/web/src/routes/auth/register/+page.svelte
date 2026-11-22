@@ -21,6 +21,7 @@
   import TermsCheckFailed from '$lib/components/auth/terms-check-failed.svelte';
   import TermsStep from '$lib/components/auth/terms-step.svelte';
   import { checkTerms, type TermsStatus } from '$lib/terms';
+  import { termsCheckedFirst } from '$lib/terms-release';
 
   let { data } = $props();
 
@@ -39,6 +40,7 @@
   let termsRetry = $state<(() => void | Promise<void>) | null>(null);
 
   async function askTermsFirst(next: () => void | Promise<void>): Promise<boolean> {
+    if (!termsCheckedFirst()) return false;
     const result = await checkTerms();
     if (result.state === 'accepted') return false;
     if (result.state !== 'required') {

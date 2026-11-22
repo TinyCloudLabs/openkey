@@ -51,10 +51,14 @@ function deferredChecks() {
   return { check, checks, answer };
 }
 
+// A build with a Terms release, and one without.
+const releaseOn = () => true;
+const releaseOff = () => false;
+
 describe('the Terms gate', () => {
   test('a signed-in account is checked, then given the Terms, and Agree opens the page', async () => {
     const { check, checks, answer } = deferredChecks();
-    const gate = createTermsGate(check);
+    const gate = createTermsGate(check, releaseOn);
     gate.follow('user_1');
     expect(get(gate).phase).toBe('checking');
     await answer(0, { state: 'required', status: STATUS });
@@ -65,7 +69,7 @@ describe('the Terms gate', () => {
 
   test('moving between pages with the same account reads nothing again', async () => {
     const { check, checks, answer } = deferredChecks();
-    const gate = createTermsGate(check);
+    const gate = createTermsGate(check, releaseOn);
     gate.follow('user_1');
     await answer(0, { state: 'accepted' });
     gate.follow('user_1');
@@ -75,7 +79,7 @@ describe('the Terms gate', () => {
 
   test('an answer for an account that has since signed out is ignored', async () => {
     const { check, checks, answer } = deferredChecks();
-    const gate = createTermsGate(check);
+    const gate = createTermsGate(check, releaseOn);
     gate.follow('user_1');
     gate.follow('user_2');
     void answer(1, { state: 'required', status: STATUS });
@@ -85,7 +89,7 @@ describe('the Terms gate', () => {
 
   test('a refused call reads the status again and gives the Terms when they are owed', async () => {
     const { check, checks, answer } = deferredChecks();
-    const gate = createTermsGate(check);
+    const gate = createTermsGate(check, releaseOn);
     gate.follow('user_1');
     await answer(0, { state: 'accepted' });
     gate.recheck();
@@ -96,11 +100,31 @@ describe('the Terms gate', () => {
 
   test('a credential that signs no one in resets the gate and tells the page', async () => {
     const { check, checks, answer } = deferredChecks();
-    const gate = createTermsGate(check);
+    const gate = createTermsGate(check, releaseOn);
     let signedOut = 0;
     gate.follow('token_1', () => { signedOut++; });
     await answer(0, { state: 'signed-out' });
     expect(get(gate).phase).toBe('idle');
     expect(signedOut).toBe(1);
+  });
+});
+
+describe('the Terms gate in a build with no Terms release', () => {
+  test('a signed-in account opens the page without reading the status', () => {
+    const { check, checks } = deferredChecks();
+    const gate = createTermsGate(check, releaseOff);
+    gate.follow('user_1');
+    expect(get(gate).phase).toBe('open');
+    expect(checks).toHaveLength(0);
+  });
+
+  test('a refused call reads the status and gives the Terms in place', async () => {
+    const { check, checks, answer } = deferredChecks();
+    const gate = createTermsGate(check, releaseOff);
+    gate.follow('user_1');
+    gate.recheck();
+    expect(checks).toHaveLength(1);
+    await answer(0, { state: 'required', status: STATUS });
+    expect(get(gate)).toEqual({ phase: 'required', status: STATUS });
   });
 });
