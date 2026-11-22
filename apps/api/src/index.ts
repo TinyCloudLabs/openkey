@@ -60,6 +60,7 @@ import { createNativeDelegationConsentRouter } from './routes/native-delegation-
 import { handleNativeRenewOrRevoke } from './services/native-delegation/renew-revoke';
 import { handleNativeStepUpRequest } from './services/native-delegation/step-up';
 import { createTeeClient, resolveTeeMode } from '@openkey/tee';
+import { checkMeasuredSettings, type MeasuredSettingsResult } from './measured-settings';
 import { resealLegacyAtBoot } from './services/legacy-reseal-boot';
 import {
   protocolAwareCors,
@@ -460,6 +461,22 @@ const ALL_SCOPES = ['openid', 'email', 'keys', 'offline_access'];
 // Reviewer authority is settled before Bun can serve this module. A failure leaves every
 // reviewer refused and does not stop the API for ordinary users.
 log('info', 'api_starting');
+// TC-3840: inside the TEE, refuse to start unless every setting that decides who can sign is a literal in the
+// compose this instance was measured with, and the process sees exactly that value. Only the setting names are
+// logged, never their values.
+if (resolveTeeMode() === 'production') {
+  let measured: MeasuredSettingsResult;
+  try {
+    measured = checkMeasuredSettings(await createTeeClient().measuredAppCompose(), process.env);
+  } catch {
+    measured = { ok: false, unreadable: true };
+  }
+  if (!measured.ok) {
+    if (measured.unreadable) logConfigInvalid('measured_app_compose');
+    else for (const name of measured.settings) logConfigInvalid(name);
+    throw new Error('Invalid API configuration');
+  }
+}
 // TC-3554: one-time re-seal of keys sealed under the pre-move root. Off unless the compose enables it. Any
 // failure ends the process here, before Bun can serve this module: the API never listens on a half-migrated
 // database. Finished rows stay finished, so the restart policy resumes where this stopped. The process holds

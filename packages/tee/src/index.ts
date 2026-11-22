@@ -9,6 +9,11 @@ export interface TeeClient {
    * quote carries the 32-byte digest followed by 32 zero bytes.
    */
   getQuote(binding: string): Promise<TeeQuote>;
+  /**
+   * The app-compose JSON this instance measured, exactly as the guest agent reports it
+   * (`tcb_info.app_compose`). Throws outside a TEE.
+   */
+  measuredAppCompose(): Promise<string>;
   isInTee(): boolean;
 }
 
@@ -153,6 +158,15 @@ function createProductionClient(): TeeClient {
       return { quote, eventLog: result.event_log, reportDataSha256: digest.toString('hex') };
     },
 
+    async measuredAppCompose(): Promise<string> {
+      const client = await getDstackClient();
+      const appCompose = (await client.info()).tcb_info?.app_compose;
+      if (typeof appCompose !== 'string' || appCompose.length === 0) {
+        throw new Error('dstack info has no measured app_compose');
+      }
+      return appCompose;
+    },
+
     isInTee: () => true,
   };
 }
@@ -180,6 +194,10 @@ function createMockClient(): TeeClient {
         eventLog: '[]',
         reportDataSha256: createHash('sha256').update(binding, 'utf8').digest('hex'),
       };
+    },
+
+    async measuredAppCompose(): Promise<string> {
+      throw new Error('the development TEE mock has no measured app-compose');
     },
 
     isInTee: () => false,

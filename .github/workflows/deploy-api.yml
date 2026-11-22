@@ -192,6 +192,20 @@ jobs:
           "$bin" version | grep -q "${COMPOSE_VERSION}"
           "$bin" -f docker-compose.prod.yml config -q
 
+      # TC-3840: the ingress gateway is a fixed value in the compose. Refuse to deploy if the CVM reports another
+      # gateway: the ingress would publish a CNAME to the wrong one. Moving gateways is a reviewed compose change.
+      - name: Check the compose gateway is the one the CVM reports (TC-3840)
+        env:
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+        run: |
+          set -euo pipefail
+          base_domain=$(phala cvms get openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json | jq -r '.gateway.base_domain // empty')
+          if ! grep -qxF "      - GATEWAY_DOMAIN=gateway.${base_domain}" docker-compose.prod.yml || [ -z "$base_domain" ]; then
+            echo "::error::TC-3840: the openkey-api CVM reports gateway '${base_domain}', which is not the compose's fixed GATEWAY_DOMAIN" >&2
+            exit 1
+          fi
+          echo "TC-3840: the compose gateway matches the CVM's gateway.base_domain ${base_domain}"
+
       # Apply the tracked migrations before shipping the code. Raw migration SQL
       # installs custody and tenant-boundary guards that `prisma db push` omits.
       # The API container intentionally does not contain or run the schema engine.
@@ -319,3 +333,10 @@ jobs:
             exit 1
           fi
           echo "TC-1012: $raw_url is closed on the gateway (curl exit $rc, $closed consecutive)"
+
+      # TC-3840: the settings fixed in the compose are the ones the live API serves (issuer, passkey rpId,
+      # CORS origins, the account origin, the Google client id). Anonymous requests, as the sign-in page makes.
+      - name: Verify the live API serves the compose's signing settings (TC-3840)
+        env:
+          API_URL: https://api.openkey.so
+        run: bun scripts/probe-api-settings.ts
