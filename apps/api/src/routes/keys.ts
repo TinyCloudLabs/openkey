@@ -15,7 +15,7 @@ import { createSealingContext, deriveKeyForRecord } from '../services/key-sealin
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { checkSignableMessage } from '../services/siwe-origin';
-import { invalidSiweMessage } from '../services/siwe-message-refusal';
+import { invalidSiweMessage, signedSiweFacts } from '../services/siwe-message-refusal';
 import {
   appKeyRefusalBody,
   appKeyRefusalForMessage,
@@ -38,7 +38,7 @@ import {
   type ApprovalBinding,
 } from '../services/approval-passkey';
 
-import { log, logError } from '../log';
+import { log, logError, logSiweSigned } from '../log';
 const prisma = createPrismaClient();
 const tee = createTeeClient();
 
@@ -463,6 +463,8 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const signature = await account.signMessage({
     message: format === 'raw' ? { raw: body.message as Hex } : body.message,
   });
+  const siweFacts = signedSiweFacts(body.message);
+  if (siweFacts) logSiweSigned('/api/keys/:keyId/sign', siweFacts, body.requestOrigin);
 
   return c.json({
     signature,
