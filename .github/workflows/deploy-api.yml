@@ -10,7 +10,7 @@ on:
         type: boolean
         default: false
       override_reason:
-        description: Skips the Share sender smoke before the deploy. Needs a written reason, which the run summary records
+        description: Skips the Share sender smoke and the embed gate before the deploy. Needs a written reason, which the run summary records
         type: string
         default: ''
 
@@ -90,12 +90,24 @@ jobs:
             '{serving: $serving, deployRuns: $d, smokeRuns: $s}' \
             | node .github/scripts/share-smoke-gate.mjs | tee -a "$GITHUB_STEP_SUMMARY"
 
+  # The web built from this commit, framed by the real https://tinycloud.one against the production API,
+  # must pass the embed gate (TC-3766). `override_reason` skips it with the smoke gate.
+  embed-gate:
+    if: github.ref == 'refs/heads/main' && !inputs.preflight_only && inputs.override_reason == ''
+    uses: ./.github/workflows/embed-gate.yml
+    with:
+      sha: ${{ github.sha }}
+      target: candidate
+    secrets:
+      QA_MAIL_ADDRESS_SECRET: ${{ secrets.QA_MAIL_ADDRESS_SECRET }}
+      QA_MAIL_READ_TOKEN: ${{ secrets.QA_MAIL_READ_TOKEN }}
+
   deploy:
-    needs: smoke-gate
+    needs: [smoke-gate, embed-gate]
     if: >-
       !cancelled() && github.ref == 'refs/heads/main' && !inputs.preflight_only && (
-        needs.smoke-gate.result == 'success' ||
-        (needs.smoke-gate.result == 'skipped' && inputs.override_reason != '')
+        (needs.smoke-gate.result == 'success' && needs.embed-gate.result == 'success') ||
+        (needs.smoke-gate.result == 'skipped' && needs.embed-gate.result == 'skipped' && inputs.override_reason != '')
       )
     runs-on: ubuntu-latest
     environment: production
@@ -108,7 +120,7 @@ jobs:
           OVERRIDE_REASON: ${{ inputs.override_reason }}
         run: |
           {
-            echo "### Share sender smoke skipped"
+            echo "### Share sender smoke and embed gate skipped"
             echo
             echo "Run by ${GITHUB_ACTOR} with override_reason: ${OVERRIDE_REASON}"
           } >> "$GITHUB_STEP_SUMMARY"
