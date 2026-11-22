@@ -897,7 +897,8 @@ sign-in made **for this sign request** counts as that request's approval passkey
   the button fully in view, not covered and not faded for 500 ms without a break, and only while the latest
   report still says so. The 500 ms restarts whenever Approve becomes actionable again.
 - When a tap arrives on a `flowCover` offer without that, the page asks for the passkey on that tap: it stops naming
-  the flow, fetches the offer again without the flow header, and runs the passkey prompt for the same tap. If that
+  the flow, fetches the offer again without the flow header, and runs the passkey prompt for the same tap (in the
+  iframe once the host has applied the review's layout). If that
   fetch fails, the page shows the offer failure and the next tap tries again. A browser without observer v2
   (Safari, Firefox) never names the flow in a frame, so it asks for the passkey at once. A page that is not framed,
   such as the pop-up window, is not gated.

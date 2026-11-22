@@ -1319,14 +1319,16 @@
     previewRevision++;
   }
 
-  // The fresh offer a withdrawn cover waits for: when it lands the tap that withdrew the cover goes on to the passkey
-  // prompt; when its fetch fails the page shows the failure and the next tap tries again.
+  // The fresh offer a withdrawn cover waits for: when it lands, and the host has applied the review's layout, the tap
+  // that withdrew the cover goes on to the passkey prompt; when its fetch fails the page shows the failure and the
+  // next tap tries again.
   $effect(() => {
     const waiting = coverRefetch;
     if (waiting === null) return;
     const landed = waiting === 'preview' ? currentPreview() !== null : exactByteGate.action === 'send';
     const failed = waiting === 'preview' ? !previewing && (error !== '' || refused) : exactBytePasskeyFetch === 'failed';
     if (!landed && !failed) return;
+    if (landed && v2 && !layoutReady) return;
     coverRefetch = null;
     if (landed) untrack(() => { void approveAndSign(); });
   });
