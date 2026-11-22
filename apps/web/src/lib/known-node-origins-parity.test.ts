@@ -94,7 +94,8 @@ describe('watchHostPeer', () => {
     expect(states).toEqual([{ state: 'checking' }, { state: 'known', origin: KNOWN_NODE_ORIGINS[0]! }]);
   });
 
-  test('another key, or a failing node, is other', async () => {
+  // test-ruling: TC-3853 (a failed lookup is its own state): a failing node is failed, not other.
+  test('another key is other; a failing node is failed', async () => {
     stubFetch(async () => new Response('did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH', { status: 200 }));
     const first = collect();
     watchHostPeer(FACTS, undefined, first.report);
@@ -107,7 +108,7 @@ describe('watchHostPeer', () => {
     const second = collect();
     watchHostPeer(FACTS, undefined, second.report);
     await settle();
-    expect(second.states.at(-1)).toEqual({ state: 'other' });
+    expect(second.states.at(-1)).toEqual({ state: 'failed' });
   });
 
   test('a request with no node key reports nothing to check', () => {

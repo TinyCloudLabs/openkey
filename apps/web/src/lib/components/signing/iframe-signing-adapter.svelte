@@ -47,14 +47,18 @@
   }
 
   // Node key on a host approval: look it up on the known nodes. The state is
-  // shown in the approval view; it never enables or disables anything else.
+  // shown in the approval view, which keeps Approve disabled while it is checked and, for the `credentials` space,
+  // unless the node is confirmed (TC-3853).
   const hostFacts = $derived(readSpaceHostFacts(model, selection));
   const hostFactsKey = $derived(
     hostFacts ? JSON.stringify([hostFacts.spaces.map((space) => space.spaceId), hostFacts.peerDid]) : "",
   );
   let peerRecognition = $state<PeerRecognitionState | null>(null);
+  // TC-3853: "Try again" after a failed lookup runs it again.
+  let nodeCheckRun = $state(0);
   $effect(() => {
     void hostFactsKey;
+    void nodeCheckRun;
     return watchHostPeer(untrack(() => hostFacts), import.meta.env.VITE_DELEGATE_NODE_ORIGINS, (next) => {
       peerRecognition = next;
     }, untrack(() => transport.host));
@@ -87,6 +91,7 @@
   {layoutBlocked}
   stickyActions
   {peerRecognition}
+  onRetryNodeCheck={() => (nodeCheckRun += 1)}
   expiryMs={transport.expiry?.chosenMs ?? null}
   onExpiryChange={transport.expiry?.onChange}
   renewal={transport.renewal ?? null}
