@@ -1,0 +1,142 @@
+name: OpenKey embed gate
+
+# Pre-release gate for the embedded OpenKey (TC-3766: a framed sign-in that left /widget/embed/ and was
+# refused by the frame policy reached production with no check that framed OpenKey inside a real app).
+#
+# One run = one fresh QA account (qa-mail email code, a `share-okgate` run id) driven through the real
+# https://tinycloud.one against the OpenKey web under test and the PRODUCTION API:
+#   target=candidate   the web built from this commit, served inside the runner as https://openkey.so
+#                      (wrangler pages dev + a throwaway certificate, Chromium --host-resolver-rules and an
+#                      SPKI pin; only openkey.so is mapped, api.openkey.so is production)
+#   target=production  the live https://openkey.so (calibration, or a check after a publish)
+# Legs: embed sign-up (and the Terms-owing case when the account owes them), own-window email sign-in with
+# a passkey made by a virtual authenticator in the runner (no stored key), embed passkey sign-in, pop-up
+# sign-in (@openkey/sdk popup mode), own-window passkey sign-in, then the account is deleted.
+# Pass = every OpenKey frame stays on /widget/embed/*, every sign review matches
+# scripts/embed-gate/expected-screens.json exactly, and every leg signs in as the same account. The
+# Terms-owing leg is UNVERIFIED (never PASS) while production asks no account to agree to the Terms.
+# scripts/embed-gate/run.mjs has the rules; its report and screenshots are the run's artifact.
+#
+# No caches are restored here: this job holds the QA mail secrets (see web-browser-tests.yml on cache scope).
+
+on:
+  pull_request:
+    paths:
+      - apps/web/**
+      - packages/sdk/**
+      - packages/capability-review/**
+      - scripts/embed-gate/**
+      - .github/workflows/embed-gate.yml
+  workflow_dispatch:
+    inputs:
+      target:
+        description: candidate = the web built from the dispatched ref; production = live openkey.so
+        type: choice
+        options: [candidate, production]
+        default: candidate
+  workflow_call:
+    inputs:
+      sha:
+        description: Commit whose web is the candidate
+        type: string
+        required: true
+      target:
+        type: string
+        default: candidate
+    secrets:
+      QA_MAIL_ADDRESS_SECRET:
+        required: true
+      QA_MAIL_READ_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+# One gate run at a time per ref, never cancelled halfway: a cancelled run would leave its QA account.
+concurrency:
+  group: embed-gate-${{ github.ref }}-${{ inputs.sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  embed-gate:
+    name: Embed gate (${{ inputs.target || 'candidate' }})
+    # Pinned for Playwright's Chromium install, as web-browser-tests.yml (TC-3071).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      TARGET: ${{ inputs.target || 'candidate' }}
+      SHA: ${{ inputs.sha || github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+          persist-credentials: false
+
+      - name: Test the gate's judge
+        run: node --test scripts/embed-gate/judge.test.mjs
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2 (the commit tc-492-production-cutover.yml pins)
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      # The signing pages load @openkey/capability-review from its dist/; the pop-up leg serves packages/sdk/dist/index.mjs.
+      - name: Build packages
+        run: |
+          bun run db:generate
+          bun run build --filter @openkey/db --filter @openkey/tee --filter @openkey/capability-review --filter @openkey/sdk
+
+      # The production Pages build's public settings (docs/deployment.md "Cloudflare Pages"). VITE_DELEGATE_*
+      # are left to their built-in lists: the live bundle carried no origin beyond them on 2026-11-22.
+      - name: Build the candidate web
+        if: env.TARGET == 'candidate'
+        working-directory: apps/web
+        env:
+          VITE_API_URL: https://api.openkey.so
+          VITE_CONSOLE_ORIGIN: https://console.openkey.so
+        run: bunx vite build
+
+      - name: Install Chromium
+        timeout-minutes: 15
+        working-directory: apps/web
+        run: |
+          for attempt in 1 2 3; do
+            bunx playwright install --with-deps chromium && exit 0
+            echo "Playwright install attempt $attempt failed" >&2
+            sleep 15
+          done
+          exit 1
+
+      - name: Serve the candidate as https://openkey.so
+        id: candidate
+        if: env.TARGET == 'candidate'
+        run: bash scripts/embed-gate/serve-candidate.sh >> "$GITHUB_OUTPUT"
+
+      - name: Run the embed gate
+        env:
+          EMBED_GATE_TARGET: ${{ env.TARGET }}
+          EMBED_GATE_SHA: ${{ env.SHA }}
+          EMBED_GATE_CANDIDATE_PORT: ${{ steps.candidate.outputs.port }}
+          EMBED_GATE_CANDIDATE_SPKI: ${{ steps.candidate.outputs.spki }}
+          EMBED_GATE_OUT: ${{ runner.temp }}/embed-gate
+          QA_MAIL_ADDRESS_SECRET: ${{ secrets.QA_MAIL_ADDRESS_SECRET }}
+          QA_MAIL_READ_TOKEN: ${{ secrets.QA_MAIL_READ_TOKEN }}
+        run: |
+          set -o pipefail
+          node scripts/embed-gate/run.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the gate report and screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: embed-gate-${{ env.TARGET }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/embed-gate
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Stop the candidate server
+        if: always() && steps.candidate.outputs.pid != ''
+        run: kill "${{ steps.candidate.outputs.pid }}" 2>/dev/null || true

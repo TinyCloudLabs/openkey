@@ -73,6 +73,9 @@ it detects drift. `db:push` remains a local-development command only.
 ### Post-deploy: Share sender sign-in
 - `.github/workflows/share-sender-smoke.yml` runs `scripts/share-sender-smoke.sh` after every web deploy and every successful API deploy. A new throwaway mail.tm OpenKey account signs in to production Share, creates a share and opens it (TC-994). Run the script by hand as part of any manual deploy smoke. A failure means OpenKey broke an embedding app; its JSON report names the failing request.
 
+### Pre-release: embed gate
+- `.github/workflows/embed-gate.yml` runs `scripts/embed-gate/run.mjs` on pull requests that touch the web, the SDK or capability-review, on dispatch, and as a `workflow_call`. The web built from the commit is served inside the runner as `https://openkey.so` (production API) and framed by the real `https://tinycloud.one`; a fresh qa-mail account signs up in the frame, adds a passkey made by a virtual authenticator in the runner, signs in again in the frame, in a pop-up and in OpenKey's own window, and is then deleted. It fails when an OpenKey frame leaves `/widget/embed/` or is refused (TC-3766), when a sign review differs from `scripts/embed-gate/expected-screens.json`, or on a production 5xx, 429 or unexpected 403. When TinyCloud One's requested permissions or OpenKey's review copy change on purpose, update `expected-screens.json` in the same change. The Terms-owing leg reports UNVERIFIED while production asks no account to agree to the Terms.
+
 ## Auth Architecture (better-auth)
 
 - **Version**: `^1.5.5` (across monorepo, except `@better-auth/cli` which is at `1.5.0-beta.13`)
