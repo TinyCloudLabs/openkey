@@ -2,6 +2,7 @@
 // (version, effective date, what changed); the web bundle holds nothing but the two document links.
 import { DELETE_ACCOUNT_PATH } from './account-deletion';
 import { API_BASE } from './auth-client';
+import { getSessionToken, isEmbedContext } from './embed-passkey';
 
 export const TERMS_URL = 'https://tinycloud.xyz/terms';
 export const PRIVACY_URL = 'https://tinycloud.xyz/privacy';
@@ -24,6 +25,16 @@ export class TermsVersionMismatch extends Error {
   }
 }
 
+/** The embedded frame's sign-in screen, after Agree found its sign-in more than 10 minutes old. */
+export const SIGN_IN_AGAIN_TO_AGREE = 'Sign in again to agree to the Terms. Agreeing here needs a recent sign-in.';
+
+/** The embedded frame's sign-in is too old to stand in for a person agreeing: sign in again, then agree. */
+export class TermsSignInAgain extends Error {
+  constructor() {
+    super('terms_step_up');
+  }
+}
+
 /** 'Dec 1, 2026' for '2026-12-01'; null for anything else, so no date is shown. */
 export function effectiveDate(value: string | null): string | null {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
@@ -32,34 +43,81 @@ export function effectiveDate(value: string | null): string | null {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 }
 
+/**
+ * The credential this surface's account calls use: the frame's session token in an embedded frame (third-party
+ * cookies are blocked there), the cookie session anywhere else. The same rule as `fetchAPI`.
+ */
+function withSurfaceCredential(init: RequestInit): RequestInit {
+  const token = isEmbedContext() ? getSessionToken() : null;
+  if (!token) return { ...init, credentials: 'include' };
+  return { ...init, credentials: 'omit', headers: { ...(init.headers as Record<string, string>), Authorization: `Bearer ${token}` } };
+}
+
 export async function loadTermsStatus(): Promise<TermsStatus> {
-  const response = await fetch(`${API_BASE}/api/account/terms`, { credentials: 'include', headers: { Accept: 'application/json' } });
+  const response = await fetch(`${API_BASE}/api/account/terms`, withSurfaceCredential({ headers: { Accept: 'application/json' } }));
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
 
+/** A Terms check that has no answer by then is a failed check (Try again), never a page held blank. */
+export const TERMS_CHECK_TIMEOUT_MS = 8_000;
+
 /**
- * The status when this account must accept before going on, else null. A failed check is null: the
- * API refuses the account's requests anyway, and that refusal brings it back here.
+ * Where the signed-in account stands with the Terms, read from `GET /api/account/terms`:
+ *   accepted   - nothing is owed
+ *   required   - the account agrees before anything else (`status` is the release to show)
+ *   signed-out - the credential no longer signs anyone in
+ *   failed     - the answer could not be read in `TERMS_CHECK_TIMEOUT_MS`; never taken to mean "accepted"
  */
-export async function pendingTerms(): Promise<TermsStatus | null> {
+export type TermsCheck =
+  | { state: 'accepted' }
+  | { state: 'required'; status: TermsStatus }
+  | { state: 'signed-out' }
+  | { state: 'failed' };
+
+export async function checkTerms(fetchImpl: typeof fetch = fetch, timeoutMs = TERMS_CHECK_TIMEOUT_MS): Promise<TermsCheck> {
+  // One deadline for the request and its body.
+  const signal = AbortSignal.timeout(timeoutMs);
+  let response: Response;
   try {
-    const status = await loadTermsStatus();
-    return status.requiresAcceptance ? status : null;
+    response = await fetchImpl(`${API_BASE}/api/account/terms`, withSurfaceCredential({ headers: { Accept: 'application/json' }, signal }));
   } catch {
-    return null;
+    return { state: 'failed' };
   }
+  if (response.status === 401) return { state: 'signed-out' };
+  if (!response.ok) return { state: 'failed' };
+  const status = await response.json().catch(() => null) as TermsStatus | null;
+  if (!status || typeof status !== 'object' || typeof status.requiresAcceptance !== 'boolean') return { state: 'failed' };
+  return status.requiresAcceptance ? { state: 'required', status } : { state: 'accepted' };
 }
 
-/** Records acceptance of `version`. A native sheet names its OAuth client, which the API checks. */
+/** The page embedding this frame, as the frame can see it; the API keeps it only as the frame's claim. */
+function embeddingOrigin(): string | undefined {
+  const ancestors = (window.location as Location & { ancestorOrigins?: DOMStringList }).ancestorOrigins;
+  if (ancestors && ancestors.length > 0) return ancestors[0];
+  return new URLSearchParams(window.location.search).get('origin') ?? undefined;
+}
+
+/**
+ * Records acceptance of `version`. A native sheet names its OAuth client, which the API checks. In an embedded
+ * frame the session token agrees and the API records the surface itself; a sign-in older than the API allows
+ * throws `TermsSignInAgain`.
+ */
 export async function acceptTerms(version: string, nativeClientId?: string | null): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/account/terms/accept`, {
+  const embedded = isEmbedContext() && getSessionToken() !== null;
+  const body = embedded
+    ? { version, embedOrigin: embeddingOrigin() }
+    : nativeClientId ? { version, surface: 'native', clientId: nativeClientId } : { version };
+  const response = await fetch(`${API_BASE}/api/account/terms/accept`, withSurfaceCredential({
     method: 'POST',
-    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(nativeClientId ? { version, surface: 'native', clientId: nativeClientId } : { version }),
-  });
+    body: JSON.stringify(body),
+  }));
   if (response.status === 409) throw new TermsVersionMismatch();
+  if (response.status === 403) {
+    const reply = await response.json().catch(() => null);
+    if (reply?.error === 'terms_step_up') throw new TermsSignInAgain();
+  }
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 }
 
@@ -74,12 +132,6 @@ export function isTermsRequired(status: number, body: unknown): boolean {
  */
 export function isPreTermsPage(pathname: string): boolean {
   return pathname.startsWith('/auth/') || pathname === DELETE_ACCOUNT_PATH;
-}
-
-/** Sends the browser to the Terms screen, which brings it back to this page once the account accepts. */
-export function sendToTerms(): void {
-  const { pathname, search, hash } = window.location;
-  window.location.assign(`/auth/terms?returnTo=${encodeURIComponent(pathname + search + hash)}`);
 }
 
 /** The provider-signed authorize query on this page (everything up to and including `sig`), if any. */

@@ -56,6 +56,9 @@ export default defineConfig({
     command: `vite dev --port ${E2E_PORT} --strictPort`,
     url: `${ORIGIN}/__parity_harness`,
     cwd: '../..',
+    // The checked-in terms-release.json may have no release; the suite runs the dev server as a build with one, so
+    // the Terms are read first. A spec says `off` for its own page in sessionStorage (src/lib/terms-release.ts).
+    env: { VITE_OPENKEY_TERMS_RELEASE: 'on' },
     reuseExistingServer: !process.env.CI,
     timeout: 180000,
   },
