@@ -133,6 +133,8 @@ function canonicalJson(value: JsonValue): string {
 // ---------------------------------------------------------------------------
 
 const RECAP_PREFIX = 'urn:recap:';
+export const DELEGATION_MODE_KEY = 'xyz.tinycloud.policy/delegationMode';
+export type DelegationMode = 'terminal' | 'attenuable';
 const URI_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:\S+$/;
 const ABILITY_PATTERN = /^[^/\s]+\/\S+$/;
 const PROOF_PATTERN = /^\S+$/;
@@ -145,6 +147,7 @@ export type Attenuation = Map<string, Map<string, JsonObject[]>>;
 export interface Recap {
   att: Attenuation;
   prf: string[];
+  delegationMode?: DelegationMode;
 }
 
 function compareBytes(a: string, b: string): number {
@@ -162,8 +165,22 @@ export function decodeRecapUri(uri: string): Recap {
   const payload = parseStrictJson(json);
   if (!isJsonObject(payload)) throw new Error('ReCap payload is not an object');
   const keys = Object.keys(payload).sort();
-  if (keys.length !== 2 || keys[0] !== 'att' || keys[1] !== 'prf') {
-    throw new Error(`ReCap payload must have exactly "att" and "prf", got ${JSON.stringify(keys)}`);
+  const hasDelegationMode = Object.hasOwn(payload, DELEGATION_MODE_KEY);
+  const allowedKeys = hasDelegationMode
+    ? keys.length === 3 && keys[0] === 'att' && keys[1] === 'prf' && keys[2] === DELEGATION_MODE_KEY
+    : keys.length === 2 && keys[0] === 'att' && keys[1] === 'prf';
+  if (!allowedKeys) {
+    throw new Error(
+      `ReCap payload must have "att", "prf", and optional "${DELEGATION_MODE_KEY}", got ${JSON.stringify(keys)}`,
+    );
+  }
+  let delegationMode: DelegationMode | undefined;
+  if (hasDelegationMode) {
+    const rawMode = payload[DELEGATION_MODE_KEY];
+    if (rawMode !== 'terminal' && rawMode !== 'attenuable') {
+      throw new Error(`ReCap "${DELEGATION_MODE_KEY}" must be "terminal" or "attenuable"`);
+    }
+    delegationMode = rawMode;
   }
   const rawAtt = payload.att;
   if (!isJsonObject(rawAtt) || Object.keys(rawAtt).length === 0) throw new Error('ReCap att must be a non-empty object');
@@ -188,7 +205,7 @@ export function decodeRecapUri(uri: string): Recap {
     throw new Error('ReCap prf must be an array of proof identifiers');
   }
   if (new Set(rawPrf).size !== rawPrf.length) throw new Error('ReCap prf repeats a proof');
-  return { att, prf: rawPrf };
+  return delegationMode !== undefined ? { att, prf: rawPrf, delegationMode } : { att, prf: rawPrf };
 }
 
 /**
@@ -385,6 +402,7 @@ export type SignedSubsetReason =
   | 'resources'
   | 'capability'
   | 'proof'
+  | 'delegation_mode'
   | 'selection';
 
 export const SIGNED_SUBSET_REFUSAL_CODE = 'signed_exceeds_request';
@@ -506,6 +524,9 @@ export function checkSignedSubset(input: SignedSubsetInput): SignedSubsetOutcome
   }
   for (const proof of signed.recap.prf) {
     if (!requested.recap.prf.includes(proof)) return refuse('proof', `Proof ${proof} was not requested`);
+  }
+  if (requested.recap.delegationMode !== signed.recap.delegationMode) {
+    return refuse('delegation_mode', 'The signed delegation mode differs from the requested one');
   }
 
   // The selection is expressed in action ids over the parsed request. Both

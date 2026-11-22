@@ -39,6 +39,7 @@
 
 import { prepareSession, parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
 import { entriesToSessionAbilities, type RecapEntry } from '../routes/delegate-session';
+import { DELEGATION_MODE_KEY, decodeRecapUri, type DelegationMode } from './signed-subset';
 
 export interface NarrowResult {
   siwe: string;
@@ -163,6 +164,17 @@ function nonRecapResourceLines(lines: string[], resourcesIdx: number | null): st
   return out;
 }
 
+function recapResourceLines(lines: string[], resourcesIdx: number | null): string[] {
+  if (resourcesIdx === null) return [];
+  const out: string[] = [];
+  for (let i = resourcesIdx + 1; i < lines.length; i += 1) {
+    const l = lines[i]!;
+    if (!/^- /.test(l)) break;
+    if (/^- urn:recap:/.test(l)) out.push(l);
+  }
+  return out;
+}
+
 /**
  * Regenerate a narrowed SIWE that preserves every immutable header field
  * (URI, Version, Chain ID, Nonce, Issued At, Expiration Time, Not Before,
@@ -177,6 +189,31 @@ export function narrowSiwePreservingImmutable(input: NarrowInput): NarrowOutcome
       ok: false,
       code: 'siwe_not_parseable',
       message: 'Original SIWE does not conform to the expected grammar (header/address/URI).',
+    };
+  }
+  const origRecapLines = recapResourceLines(orig.lines, orig.resourcesIdx);
+  if (origRecapLines.length === 0) {
+    return {
+      ok: false,
+      code: 'siwe_no_recap_resource',
+      message: 'Original SIWE has no urn:recap: resource line.',
+    };
+  }
+  if (origRecapLines.length > 1) {
+    return {
+      ok: false,
+      code: 'siwe_not_parseable',
+      message: 'Original SIWE carries more than one urn:recap: resource.',
+    };
+  }
+  let originalDelegationMode: DelegationMode | undefined;
+  try {
+    originalDelegationMode = decodeRecapUri(origRecapLines[0]!.slice(2)).delegationMode;
+  } catch (e) {
+    return {
+      ok: false,
+      code: 'siwe_not_parseable',
+      message: e instanceof Error ? e.message : 'Original SIWE ReCap is not well formed.',
     };
   }
   const { spaceAbilities, rawAbilities } = entriesToSessionAbilities(input.narrowedEntries);
@@ -244,21 +281,17 @@ export function narrowSiwePreservingImmutable(input: NarrowInput): NarrowOutcome
     };
   }
 
-  // Sol continuation contract (caveats): if the caller supplied a
-  // baseline caveat map, rewrite each `- urn:recap:` line so that
-  // every surviving (resource, ability) pair carries the ORIGINAL
-  // caveats. WASM emits `[{}]` regardless of input caveats, so
-  // trusting its payload verbatim would silently BROADEN authority
-  // on any ability the baseline restricted with meaningful caveats.
-  //
-  // Removed resources / removed abilities keep their caveats with
-  // them (they're gone from the payload entirely, which is the
-  // "whole-ability/whole-resource removal is allowed" rule).
+  // Sol continuation contract (caveats) + TC-3810 (delegation mode):
+  // If the caller supplied a baseline caveat map, rewrite each `- urn:recap:`
+  // line so every surviving (resource, ability) pair carries the ORIGINAL
+  // caveats. And if the original SIWE carried `xyz.tinycloud.policy/delegationMode`,
+  // preserve that exact mode on the rewritten payload (WASM does not emit it).
+  // Never add, drop, or flip the delegation mode.
   let narrowedRecapLines: string[];
-  if (input.baselineCaveats) {
+  if (input.baselineCaveats || originalDelegationMode !== undefined) {
     const rewritten: string[] = [];
     for (const line of narrowedRecapLinesRaw) {
-      const rewrittenLine = rewriteRecapLineCaveats(line, input.baselineCaveats);
+      const rewrittenLine = rewriteRecapLine(line, input.baselineCaveats, originalDelegationMode);
       if (!rewrittenLine.ok) {
         return {
           ok: false,
@@ -339,31 +372,51 @@ export function narrowSiwePreservingImmutable(input: NarrowInput): NarrowOutcome
         'Rebuilt SIWE ReCap does not exactly match the narrowed abilities — refusing to sign a divergent regeneration.',
     };
   }
+  const rebuiltAnchor = anchor(rebuiltSiwe);
+  const rebuiltRecapLines = rebuiltAnchor
+    ? recapResourceLines(rebuiltAnchor.lines, rebuiltAnchor.resourcesIdx)
+    : [];
+  if (rebuiltRecapLines.length !== 1) {
+    return {
+      ok: false,
+      code: 'narrowed_recap_extract_failed',
+      message: 'Rebuilt SIWE must carry exactly one urn:recap: resource.',
+    };
+  }
+  let rebuiltDelegationMode: DelegationMode | undefined;
+  try {
+    rebuiltDelegationMode = decodeRecapUri(rebuiltRecapLines[0]!.slice(2)).delegationMode;
+  } catch (e) {
+    return {
+      ok: false,
+      code: 'narrowed_recap_extract_failed',
+      message: e instanceof Error ? e.message : 'Rebuilt SIWE ReCap is not well formed.',
+    };
+  }
+  if (rebuiltDelegationMode !== originalDelegationMode) {
+    return {
+      ok: false,
+      code: 'narrowed_recap_mismatch',
+      message:
+        'Rebuilt SIWE ReCap delegation mode does not match the original — refusing to sign a divergent regeneration.',
+    };
+  }
 
   return { ok: true, siwe: rebuiltSiwe };
 }
 
 /**
- * Rewrite the `att` block of a `- urn:recap:...` line so every surviving
- * (resource, ability) pair carries the ORIGINAL baseline caveat multiset.
+ * Rewrite a `- urn:recap:...` line to preserve original baseline caveats (when
+ * supplied) and the original top-level `xyz.tinycloud.policy/delegationMode`
+ * (when present).
  *
- * The WASM emitter unconditionally writes `[{}]` for every ability regardless
- * of input caveats, so blindly accepting its payload would silently BROADEN
- * authority on any ability the baseline restricted with meaningful caveats.
- * This helper walks the WASM payload, overwrites the caveat array with the
- * baseline caveats when the (resource, ability) exists in `baselineCaveats`,
- * and leaves the ability alone otherwise (whole-ability/whole-resource
- * removals are legal — those keys simply do not appear in the WASM payload).
- *
- * The output uses `base64url` (no padding) — the canonical URN form. Rebuild
- * order: keys emitted in insertion order so the resulting URN is
- * byte-for-byte identical to a "same abilities, same caveats" payload the
- * WASM emitter would produce if it took caveats as input. Verifiers walk
- * the ATT map by key, so key order is not part of the authority contract.
+ * Canonical key order emitted: `att`, `prf`, and (only when present)
+ * `xyz.tinycloud.policy/delegationMode`, encoded as unpadded `base64url`.
  */
-function rewriteRecapLineCaveats(
+function rewriteRecapLine(
   line: string,
-  baselineCaveats: Record<string, Record<string, unknown[]>>,
+  baselineCaveats: Record<string, Record<string, unknown[]>> | undefined,
+  delegationMode: DelegationMode | undefined,
 ):
   | { ok: true; line: string }
   | { ok: false; message: string } {
@@ -387,23 +440,32 @@ function rewriteRecapLineCaveats(
   if (!parsed || typeof parsed !== 'object' || !parsed.att || typeof parsed.att !== 'object') {
     return { ok: false, message: 'urn:recap: payload missing att block' };
   }
-  // Rewrite in place: for each (resource, ability) present in the WASM output,
-  // if the baseline had the same pair, use the baseline caveats. Otherwise
-  // leave the WASM caveats untouched (this preserves the [{}]  default for
-  // abilities the baseline never carried — the RecapEntry contract does not
-  // require caveats to exist).
-  for (const [resource, abilityMap] of Object.entries(parsed.att)) {
-    const baselineAbilityMap = baselineCaveats[resource];
-    if (!baselineAbilityMap) continue;
-    for (const ability of Object.keys(abilityMap)) {
-      const baselineList = baselineAbilityMap[ability];
-      if (Array.isArray(baselineList)) {
-        abilityMap[ability] = baselineList;
+  if (baselineCaveats) {
+    // Rewrite in place: for each (resource, ability) present in the WASM output,
+    // if the baseline had the same pair, use the baseline caveats. Otherwise
+    // leave the WASM caveats untouched (this preserves the [{}] default for
+    // abilities the baseline never carried — the RecapEntry contract does not
+    // require caveats to exist).
+    for (const [resource, abilityMap] of Object.entries(parsed.att)) {
+      const baselineAbilityMap = baselineCaveats[resource];
+      if (!baselineAbilityMap) continue;
+      for (const ability of Object.keys(abilityMap)) {
+        const baselineList = baselineAbilityMap[ability];
+        if (Array.isArray(baselineList)) {
+          abilityMap[ability] = baselineList;
+        }
       }
     }
   }
-  // Re-encode. Keep prf as the WASM emitted it (typically empty).
-  const rebuiltJson = JSON.stringify(parsed);
+  // Re-encode in canonical top-level key order: att, prf, then optional delegationMode.
+  const rebuiltPayload: Record<string, unknown> = {
+    att: parsed.att,
+    prf: Array.isArray(parsed.prf) ? parsed.prf : [],
+  };
+  if (delegationMode !== undefined) {
+    rebuiltPayload[DELEGATION_MODE_KEY] = delegationMode;
+  }
+  const rebuiltJson = JSON.stringify(rebuiltPayload);
   const rebuiltEncoded = Buffer.from(rebuiltJson, 'utf8')
     .toString('base64')
     .replace(/\+/g, '-')
