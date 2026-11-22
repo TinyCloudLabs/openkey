@@ -278,6 +278,12 @@ async function approveUntilSignedIn(page, context, label, { passkeyFrames = fals
         fail("unexpected_elevated_warning", { label });
       }
       if (ready) {
+        // The verified browser origin is inside the folded "Advanced details"; open it as a reader would.
+        const details = dialog.locator("details").filter({ has: sign.locator("summary", { hasText: /^Advanced details$/ }) }).first();
+        if (await details.count() && !(await details.evaluate((element) => element.open).catch(() => true))) {
+          await details.locator("summary").first().click({ timeout: 5000 });
+          await until(`${label}-advanced-details-open`, () => details.evaluate((element) => element.open), 5000);
+        }
         const text = await sign.locator("body").innerText({ timeout: 5000 }).catch(() => "");
         const verdict = judgeSignFace(text, EXPECTED.signFaces, { hostOrigin: HOST });
         artifact(`${label}-sign-${approvals + 1}.txt`, text);
