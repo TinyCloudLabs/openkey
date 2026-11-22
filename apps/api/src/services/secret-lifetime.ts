@@ -5,8 +5,7 @@
 // read of the secrets vault (`get`, `list`, `metadata` or `sync` on `vault/secrets` or a path under it), and any action
 // of the `secrets` service; a whole network's `decrypt` joins them only while `OPENKEY_NETWORK_DECRYPT_CAP=enabled`.
 // A signed approval request (`/a/`) is held by its own window check (`approvalLifetimeCapSeconds`), network included.
-import { SECRET_GRANT_MAX_SECONDS, secretLifetimeCapApplies } from '@openkey/capability-review';
-import { signedSiweExpirationTime } from '../routes/delegate-validation';
+import { SECRET_GRANT_MAX_SECONDS, secretLifetimeCapApplies, siweExpirationTime } from '@openkey/capability-review';
 import { recapResources } from './app-key-refusal';
 import { decodeHexUtf8 } from './siwe-origin';
 
@@ -100,8 +99,8 @@ export function secretCapExpirationTime(siwe: string, now: number): string | nul
 export function exceedsSecretLifetime(siwe: string, now: number): SecretLifetimeReach | null {
   const reach = siweSecretReach(siwe);
   if (reach === null) return null;
-  const expirationTime = signedSiweExpirationTime(siwe);
-  return expirationTime === undefined || Date.parse(expirationTime) > now + SECRET_GRANT_MAX_MS + CLOCK_SKEW_MS ? reach : null;
+  const expirationTime = siweExpirationTime(siwe);
+  return expirationTime === null || !(Date.parse(expirationTime) <= now + SECRET_GRANT_MAX_MS + CLOCK_SKEW_MS) ? reach : null;
 }
 
 /** Same check for a message as the signer will cover it: as written, and as UTF-8 when it is `0x` hex. */
