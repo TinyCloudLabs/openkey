@@ -7,6 +7,7 @@
 // server agree on the set.
 import {
   grantIsBroadOnce,
+  grantIsOwnShareFolder,
   grantReachesSecretDataOrDecryption,
   renewalEntryVerdict,
   type CapabilityGrant,
@@ -30,15 +31,17 @@ export function isOnceTier(grants: readonly CapabilityGrant[]): boolean {
  * `leaseReachesSecrets` in apps/api/src/services/renewal-lease.ts runs) does not call it `none`. The last keeps the
  * screen from ever asking about fewer grants than the server later refuses: it covers the encryption permissions the
  * others miss (a key.create on `secrets/`, key.describe on one secret, every ability on the whole network), and an
- * unreadable encryption permission counts, since the API refuses its lease outright. Used only for renewal (the
- * confirm and the box default), never for the expiry tier.
+ * unreadable encryption permission counts, since the API refuses its lease outright. The signer's own `default/share/`
+ * folder (`grantIsOwnShareFolder`) is the app's working key and asks nothing: the server's rule calls it `none`.
+ * Used only for renewal (the confirm and the box default), never for the expiry tier.
  */
 export function renewalNeedsSensitiveConfirm(grants: readonly CapabilityGrant[]): boolean {
   return isOnceTier(grants) || grants.some((grant) =>
-    grantReachesSecretDataOrDecryption(grant) ||
-    renewalEntryVerdict({
-      service: grant.service, space: grant.space, path: grant.path, actions: grant.actions.map((action) => action.ability),
-    }) !== 'none');
+    !grantIsOwnShareFolder(grant) && (
+      grantReachesSecretDataOrDecryption(grant) ||
+      renewalEntryVerdict({
+        service: grant.service, space: grant.space, path: grant.path, actions: grant.actions.map((action) => action.ability),
+      }) !== 'none'));
 }
 
 /**
