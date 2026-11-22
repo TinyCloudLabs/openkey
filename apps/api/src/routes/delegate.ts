@@ -2797,6 +2797,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       reason?: string;
       manifestId?: string;
       manifestDigest?: string;
+      /** Reported owner identifier. Compared with the key-derived owner; never used as a value. */
+      owner?: string;
       manifests?: Array<{
         name?: string;
         appId?: string;
@@ -3084,9 +3086,16 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
             : null;
         if (reportedOrigin && declaredDigest) {
           try {
+            // `owner` is derived from the signing key and resolves `{owner}`
+            // in the published manifest. The envelope's owner is only a hint
+            // compared against it, never a value.
             const bindResult = await fetchAndBindWellKnownManifest({
               reportedOrigin,
               declaredDigest,
+              owner: Number.isInteger(chainId)
+                ? `did:pkh:eip155:${chainId}:${keyAddress}`
+                : undefined,
+              ownerHint: typeof envelope.owner === 'string' ? envelope.owner : undefined,
             });
             if (bindResult.ok) {
               metadataTrust = {
