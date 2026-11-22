@@ -57,6 +57,7 @@
     spaceSetupNoticeText,
     type SpaceSetupNotice,
   } from '$lib/delegate-space-setup';
+  import { ownFolderOnlyLine } from '$lib/delegate-own-folder';
   import {
     parseCapabilityReview,
     defaultSelection,
@@ -192,6 +193,7 @@
   let shortCode = $state('');
   let shortCodeFailure = $state<{ status: number; code: unknown } | null>(null);
   let spaceSetup = $state<SpaceSetupNotice | null>(null);
+  let ownFolderLine = $state<string | null>(null);
   let spaceReadiness = $state<ReturnType<typeof spaceReadinessResult>>(null);
   let callbackFailed = $state(false);
   let callbackInFlight = $state(false);
@@ -942,6 +944,7 @@
 
     siweMessage = data.prepared?.siwe || '';
     spaceSetup = parseSpaceSetup(data.spaceSetup);
+    ownFolderLine = ownFolderOnlyLine(data);
     permissionOptions = permissions;
     selectedActionKeys = Array.isArray(data.selectedActionKeys)
       ? data.selectedActionKeys.filter((key: unknown): key is string => typeof key === 'string')
@@ -1013,6 +1016,7 @@
     preparedData = null;
     siweMessage = '';
     spaceSetup = null;
+    ownFolderLine = null;
     spaceReadiness = null;
     permissionOptions = [];
     selectedActionKeys = [];
@@ -1524,8 +1528,8 @@
           jwk,
           edited,
           reason: requestReason || undefined,
-          // Forward the CLI-supplied baseline so the server can validate the
-          // signed SIWE against the CLI request instead of DEFAULT_ABILITIES.
+          // Forward the requested baseline so the server checks the signed
+          // SIWE against it; without it the server checks the own folder.
           ...(requestedPermissions.length > 0
             ? { permissions: requestedPermissions }
             : {}),
@@ -2092,6 +2096,9 @@
               Your browser wallet will prompt you to sign a message to authorize this delegation.
             {/if}
           </div>
+        {/if}
+        {#if ownFolderLine}
+          <div role="note" class="p-3 border rounded-xl text-sm bg-surface-50 border-surface-200 text-surface-700">{ownFolderLine}</div>
         {/if}
         {#if spaceSetup}
           <div
