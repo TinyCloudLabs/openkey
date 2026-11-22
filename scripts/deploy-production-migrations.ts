@@ -95,6 +95,8 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   // the pre-tc488-additive path; production is on `full`, but we follow the pattern so
   // the sha-vs-file check continues to work for everyone.
   ['20261122_0002_tinycloud_setup_tables', 'a70e40ec6d8c438f61dbe7784fdba3f17b69af069ee1d717af571803fb6f36cc'],
+  // TC-3893: additive table storing previous registry records before publishing a change.
+  ['20261122_0003_registry_change_history', 'db4d3620f78423dde3e49c955c1e6ee3fa82dc779f253991d710153f416f41ed'],
 ]);
 
 export type MigrationRow = {

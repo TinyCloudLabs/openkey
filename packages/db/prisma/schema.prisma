@@ -54,6 +54,7 @@ model User {
   preparedHandoffs               PreparedHandoff[]
   tinyCloudNativeGrants          TinyCloudNativeGrant[]
   termsAcceptances               TermsAcceptance[]
+  registryChangeHistory          RegistryChangeHistory[]
 
   @@map("user")
 }
@@ -1144,4 +1145,22 @@ model TinyCloudSetupRateLimitBucket {
   updatedAt     DateTime @updatedAt
   @@index([windowStartMs], map: "tinycloud_setup_rate_limit_bucket_window")
   @@map("tinycloud_setup_rate_limit_bucket")
+}
+
+// TC-3893: previous registry location record snapshots stored before publishing a
+// registry change, so the owner can review recent changes and undo in TinyCloud One.
+model RegistryChangeHistory {
+  id               String   @id
+  userId           String
+  subject          String
+  requestingOrigin String
+  previousRecord   Json
+  newRecordHash    String
+  newSequence      Int
+  createdAt        DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("registry_change_history")
 }

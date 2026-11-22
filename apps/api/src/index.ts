@@ -31,6 +31,7 @@ import { passkeyProxyRouter } from './routes/passkey-proxy';
 import { secretsRouter } from './routes/secrets';
 import { variablesRouter } from './routes/variables';
 import { createTinyCloudSetupRouter } from './routes/tinycloud-setup';
+import { createRegistryChangeRouter, createRegistryHistoryCorsMiddleware } from './routes/registry-change';
 import { delegateRouter } from './routes/delegate';
 import { preparedHandoffRouter } from './routes/prepared-handoffs';
 import { ownerRevocationRouter } from './routes/owner-revocation-runtime';
@@ -136,11 +137,18 @@ app.use('/api/delegate/sign', cors({
 // and PKCE plus session proofs, not cookies, authenticate them. Every other
 // route, including the cookie-authenticated consent routes, keeps the
 // restricted credentialed policy.
-app.use('*', protocolAwareCors(cors({
+// Registry change history: credentialed CORS for TinyCloud One origins only (TC-3893).
+const registryHistoryCors = createRegistryHistoryCorsMiddleware();
+const defaultProtocolCors = protocolAwareCors(cors({
   origin: corsOriginPolicy('http://localhost:5173'),
   credentials: true,
   exposeHeaders: API_EXPOSED_HEADERS,
-})));
+}));
+app.use('*', (c, next) =>
+  new URL(c.req.url).pathname === '/api/registry-change/history'
+    ? registryHistoryCors(c, next)
+    : defaultProtocolCors(c, next),
+);
 
 // Health check: traffic is accepted only when the database migration contract
 // required by this Prisma client is present and checksum-verified.
@@ -411,6 +419,7 @@ app.route('/api/internal/scoreboard', scoreboardMetricsRouter);
 app.route('/api/secrets', secretsRouter);
 app.route('/api/variables', variablesRouter);
 app.route('/api/tinycloud-setup', createTinyCloudSetupRouter());
+app.route('/api/registry-change', createRegistryChangeRouter());
 
 // Delegate route (CLI auth flow)
 app.route('/api/delegate/handoffs', preparedHandoffRouter);
