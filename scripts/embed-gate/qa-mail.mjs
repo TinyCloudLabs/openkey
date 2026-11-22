@@ -1,5 +1,6 @@
 // Copied from TinyCloud Share test/e2e-prod/qa-mail.mjs @66c082df (the Share sender smoke's client) for the
-// OpenKey embed gate; the only change is the label rule in createInbox (a `share-` or `tinychat-` run id).
+// OpenKey embed gate; the changes are the label rule in createInbox (a `share-` or `tinychat-` run id) and
+// reopenInbox (the same inbox again from its run id, to delete an account a stopped run left behind).
 // Private per-run test inboxes on TinyCloud's own QA mail (qa-mail.tinycloud.xyz) for the production smokes.
 // An inbox is a signed address made in memory from QA_MAIL_ADDRESS_SECRET:
 //   tcqa+<label>-<12 random hex>-<8 hex tag>@qa-mail.tinycloud.xyz
@@ -21,10 +22,20 @@ const inboxes = [];
 
 /** A new private inbox, `tcqa+<label>-<random>-<tag>@qa-mail.tinycloud.xyz`. `label` is `share-…` or `tinychat-…`, 24 characters at most. */
 export function createInbox(label) {
+  return inboxFor(label, randomBytes(6).toString("hex"));
+}
+
+/** The inbox an earlier run made with `label` and its 12-hex `random` part (the address is derived, never stored). */
+export function reopenInbox(label, random) {
+  if (!/^[0-9a-f]{12}$/.test(random)) throw new Error("a test inbox's run id is 12 lower-case hex characters");
+  return inboxFor(label, random);
+}
+
+function inboxFor(label, random) {
   const secret = process.env.QA_MAIL_ADDRESS_SECRET ?? "";
   if (secret.length < 32 || !process.env.QA_MAIL_READ_TOKEN) throw new Error("QA_MAIL_ADDRESS_SECRET and QA_MAIL_READ_TOKEN must be set");
   if (!/^(share|tinychat)-[a-z0-9-]{0,14}[a-z0-9]$/.test(label) || label.length > 24) throw new Error("a test inbox's label must start with share- or tinychat- (24 characters at most)");
-  const stem = `tcqa+${label}-${randomBytes(6).toString("hex")}`;
+  const stem = `tcqa+${label}-${random}`;
   const inbox = { address: `${stem}-${createHmac("sha256", secret).update(stem).digest("hex").slice(0, 8)}@${DOMAIN}`, messages: [], deleted: new Set() };
   inboxes.push(inbox);
   return inbox;

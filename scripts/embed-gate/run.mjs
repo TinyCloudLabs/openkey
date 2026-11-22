@@ -34,7 +34,8 @@ import { createServer } from "node:http";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode, waitForMail } from "./qa-mail.mjs";
+import { createHash } from "node:crypto";
+import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode, reopenInbox, waitForMail } from "./qa-mail.mjs";
 import { judgeSignFace, scrub } from "./judge.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -45,6 +46,9 @@ const TARGET = process.env.EMBED_GATE_TARGET ?? "candidate";
 const OUT = process.env.EMBED_GATE_OUT ?? join(process.cwd(), "embed-gate-out");
 const LABEL = process.env.EMBED_GATE_INBOX_LABEL ?? "share-okgate";
 const DRY = process.env.EMBED_GATE_DRY === "1"; // stops at the connect frame: no mail, no account
+// Cleanup only: deletes the account an earlier run with this 12-hex run id left behind, then reads back that the
+// address has no account. No new account is made.
+const CLEANUP_RUN_ID = process.env.EMBED_GATE_CLEANUP_RUN_ID ?? "";
 const EXPECTED = JSON.parse(readFileSync(process.env.EMBED_GATE_EXPECTED ?? join(HERE, "expected-screens.json"), "utf8"));
 const SDK_BUNDLE = process.env.EMBED_GATE_SDK ?? join(HERE, "../../packages/sdk/dist/index.mjs");
 const MAX_APPROVALS = 4;
@@ -442,6 +446,20 @@ async function deleteAccount(browser) {
   }
 }
 
+/** After a delete: true when the address signs in as a stranger (OpenKey offers "Create a new account", never pressed). */
+async function readBackGone(browser) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
+  watchNetwork(context, "read-back");
+  const page = await context.newPage();
+  try {
+    const landed = await ownWindowEmailSignIn(page);
+    await snap(page, "read-back");
+    return landed === "new-account";
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
 // ---- pop-up host page (local) ----------------------------------------------------------------------
 
 function startPopupHost() {
@@ -486,6 +504,12 @@ const addresses = { embedNew: [], embedPasskey: [], popup: null };
 let accountMayExist = false;
 
 try {
+  if (CLEANUP_RUN_ID) {
+    inbox = reopenInbox(LABEL, CLEANUP_RUN_ID);
+    accountMayExist = true;
+    report.mode = "cleanup-only";
+    throw new GateFailure("cleanup_only");
+  }
   // embed-new (+ terms-owing) ------------------------------------------------------------------------
   {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
@@ -662,10 +686,14 @@ try {
   report.result = Object.values(report.legs).every((entry) => entry.status === "PASS" || entry.status === "UNVERIFIED") ? "passed" : "failed";
 } catch (error) {
   const failure = error instanceof GateFailure ? error : stopped ?? new GateFailure("error", { message: scrub(String(error?.message ?? error)).split("\n")[0].slice(0, 300) });
-  if (stopped && failure !== stopped) report.failure = { verdict: stopped.verdict, detail: stopped.detail, then: failure.verdict };
-  else report.failure = { verdict: failure.verdict, detail: failure.detail };
-  report.result = failure.verdict === "dry_run_stop" ? "dry" : "failed";
-  for (const page of browser.contexts().flatMap((context) => context.pages())) await snap(page, "failure");
+  if (failure.verdict === "cleanup_only") {
+    report.result = "cleanup";
+  } else {
+    if (stopped && failure !== stopped) report.failure = { verdict: stopped.verdict, detail: stopped.detail, then: failure.verdict };
+    else report.failure = { verdict: failure.verdict, detail: failure.detail };
+    report.result = failure.verdict === "dry_run_stop" ? "dry" : "failed";
+    for (const page of browser.contexts().flatMap((context) => context.pages())) await snap(page, "failure");
+  }
 } finally {
   // cleanup -----------------------------------------------------------------------------------------
   if (accountMayExist) {
@@ -679,11 +707,22 @@ try {
       report.account.deleted = false;
       leg("cleanup", "FAIL", { verdict: error instanceof GateFailure ? error.verdict : scrub(String(error?.message ?? error)).slice(0, 200) });
     }
-    // A leaked QA account fails the run, whatever the legs said. Its 12-hex run id (not the address, which
-    // needs the secret's tag) goes in the summary so leaks can be counted (Bobbie, #690 review).
+    // A leaked QA account fails the run, whatever the legs said. Its 12-hex run id and a hash of the address
+    // (never the address) go in the summary so leaks can be counted and found (Bobbie, Clarissa, #690 review).
     if (report.account.deleted !== true) {
       report.result = "failed";
       report.account.leakedRunId = /^tcqa\+[a-z0-9-]+-([0-9a-f]{12})-[0-9a-f]{8}@/.exec(inbox?.address ?? "")?.[1] ?? "unknown";
+      report.account.leakedAddressSha256 = inbox ? createHash("sha256").update(inbox.address).digest("hex").slice(0, 16) : "unknown";
+    } else if (report.mode === "cleanup-only") {
+      // Read back: the address must now sign in as a stranger ("Create a new account"), which is never pressed.
+      try {
+        const gone = await readBackGone(browser);
+        leg("read-back", gone ? "PASS" : "FAIL", { noAccount: gone });
+        report.result = gone ? "passed" : "failed";
+      } catch (error) {
+        leg("read-back", "FAIL", { verdict: error instanceof GateFailure ? error.verdict : scrub(String(error?.message ?? error)).slice(0, 200) });
+        report.result = "failed";
+      }
     }
   }
   if (inbox) report.inboxDeleted = await deleteInboxes().then(({ deleted, total }) => deleted === total).catch(() => false);
@@ -699,7 +738,7 @@ try {
 
 function summary() {
   const lines = [`## OpenKey embed gate: ${report.result.toUpperCase()}`, "",
-    `Target: ${TARGET}${report.candidate?.sha ? ` (${report.candidate.sha.slice(0, 12)})` : ""}; host page ${HOST}; API ${API}`, ""];
+    `Target: ${TARGET}${report.candidate?.sha ? ` (${report.candidate.sha.slice(0, 12)})` : ""}; host page ${HOST}; API ${API}${report.mode ? `; mode ${report.mode} (run id ${CLEANUP_RUN_ID})` : ""}`, ""];
   for (const [name, entry] of Object.entries(report.legs)) {
     const extra = name === "terms-owing" && entry.status === "UNVERIFIED" ? ` (${entry.reason})` : "";
     lines.push(`- ${name}: ${entry.status}${extra}`);
@@ -708,6 +747,6 @@ function summary() {
   lines.push("", `Terms owed by the new account: ${report.terms.owed === null ? "not decided" : report.terms.owed} (${report.terms.source ?? "n/a"})`,
     `OpenKey frame paths: ${[...new Set(report.frames.map((f) => f.path))].join(", ") || "none"}`,
     `Refused frames: ${report.refusedFrames.length}; approvals: ${report.approvals.length}; passkey assertions: ${report.passkey.asserted}`,
-    `QA account deleted: ${report.account.deleted ?? "n/a"}${report.account.leakedRunId ? ` (LEAKED: run id ${report.account.leakedRunId})` : ""}; duration ${Math.round(since() / 1000)} s`, "");
+    `QA account deleted: ${report.account.deleted ?? "n/a"}${report.account.leakedRunId ? ` (LEAKED: run id ${report.account.leakedRunId}, address sha256 ${report.account.leakedAddressSha256})` : ""}; duration ${Math.round(since() / 1000)} s`, "");
   return lines.join("\n");
 }

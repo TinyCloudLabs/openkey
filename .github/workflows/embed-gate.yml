@@ -34,6 +34,10 @@ on:
         type: choice
         options: [candidate, production]
         default: candidate
+      cleanup_run_id:
+        description: Cleanup only (use with target production) - the 12-hex run id of an earlier run whose QA account was left behind; deletes it and reads back that it is gone. Makes no new account
+        type: string
+        default: ''
   workflow_call:
     inputs:
       sha:
@@ -122,6 +126,7 @@ jobs:
           EMBED_GATE_CANDIDATE_PORT: ${{ steps.candidate.outputs.port }}
           EMBED_GATE_CANDIDATE_SPKI: ${{ steps.candidate.outputs.spki }}
           EMBED_GATE_OUT: ${{ runner.temp }}/embed-gate
+          EMBED_GATE_CLEANUP_RUN_ID: ${{ inputs.cleanup_run_id }}
           QA_MAIL_ADDRESS_SECRET: ${{ secrets.QA_MAIL_ADDRESS_SECRET }}
           QA_MAIL_READ_TOKEN: ${{ secrets.QA_MAIL_READ_TOKEN }}
         run: |
