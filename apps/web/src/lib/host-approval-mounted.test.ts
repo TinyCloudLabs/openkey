@@ -3,7 +3,7 @@
 // and mounted in happy-dom, as in `signing-approval-parity-mounted.test.ts`.
 
 // @ts-expect-error bun:test is a runtime-only module; tsc doesn't ship types
-import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, jest, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -21,7 +21,7 @@ afterAll(() => {
 process.env.HOME = HOME;
 
 import { Window } from 'happy-dom';
-import { parseCapabilityReview } from '../../../../packages/capability-review/src/index';
+import { HOST_PEER_CHECK_TIMEOUT_MS, parseCapabilityReview } from '../../../../packages/capability-review/src/index';
 import type { CapabilityReviewModel } from '../../../../packages/capability-review/src/index';
 
 const win = new Window({ url: 'http://openkey.test/' });
@@ -98,6 +98,7 @@ async function compileSvelte(libRelPath: string): Promise<string> {
 const SigningApproval = (await import(await compileSvelte('components/signing/signing-approval.svelte'))).default;
 const PopupAdapter = (await import(await compileSvelte('components/signing/popup-signing-adapter.svelte'))).default;
 const IframeAdapter = (await import(await compileSvelte('components/signing/iframe-signing-adapter.svelte'))).default;
+const CliAdapter = (await import(await compileSvelte('components/signing/cli-signing-adapter.svelte'))).default;
 
 const OWNER = '0x1111111111111111111111111111111111111111';
 const PEER = 'did:key:z6Mkj8ZndSavdU1RqiTepC1hj4jcKHC5qELaBUxBKrPteD25';
@@ -665,5 +666,81 @@ describe.each([['popup', PopupAdapter], ['iframe', IframeAdapter]])('%s adapter:
     expect(status()).toBe('Not confirmed as a known TinyCloud node');
     expect(retry()).toBeNull();
     expect(mounted.approve.disabled).toBe(true);
+  });
+
+  test('a node that never answers is the failed state once the 5 s check ends: Approve stays disabled', async () => {
+    jest.useFakeTimers();
+    try {
+      // The lookup hangs until the check aborts it.
+      globalThis.fetch = ((_input: unknown, init?: RequestInit) => {
+        const { promise, reject } = Promise.withResolvers<Response>();
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        return promise;
+      }) as typeof fetch;
+      mounted = mountCredentials();
+      await settle();
+      expect(status()).toBe('Checking the node…');
+      expect(mounted.approve.disabled).toBe(true);
+      jest.advanceTimersByTime(HOST_PEER_CHECK_TIMEOUT_MS);
+      await settle();
+      expect(status()).toBe("Couldn't check this node");
+      expect(mounted.approve.disabled).toBe(true);
+      expect(retry()).not.toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+// TC-3853 (Naomi 14:01:22Z): /delegate runs no node lookup, so for `credentials` it fails closed. The reviewer's case:
+// a /delegate link asking `tinycloud.space/host` on `credentials` for the requester's own did:key.
+describe('/delegate (CLI adapter) host request', () => {
+  let mounted: (Mounted & { delegated: () => number }) | null = null;
+  afterEach(() => {
+    mounted?.destroy();
+    mounted = null;
+  });
+  function mountCli(model: Review): Mounted & { delegated: () => number } {
+    const created = win.document.createElement('div');
+    win.document.body.appendChild(created);
+    const target = created as unknown as HTMLElement;
+    let delegated = 0;
+    const transport = {
+      approving: false, error: null,
+      approveDelegate: () => {
+        delegated += 1;
+      },
+      goBack: () => {}, updateSelection: () => {},
+    };
+    const instance = mount(CliAdapter, { target, props: { model, initialSelection: selectionOf(model), transport } });
+    flushSync();
+    return {
+      target,
+      approve: target.querySelector('button.approve') as HTMLButtonElement,
+      approveCalls: () => delegated,
+      delegated: () => delegated,
+      destroy: () => { unmount(instance); target.remove(); },
+    };
+  }
+
+  test('credentials: not confirmed, Approve disabled with the reason, and no click signs', () => {
+    mounted = mountCli(credentialsModel());
+    expect(mounted.approve.disabled).toBe(true);
+    expect(text(mounted.target.querySelector('.host-node-status'))).toBe('Not confirmed as a known TinyCloud node');
+    expect(text(mounted.target.querySelector('[data-testid="node-unconfirmed-reason"]'))).toBe(CREDENTIALS_UNCONFIRMED);
+    expect(mounted.approve.getAttribute('aria-describedby')).toBe('node-unconfirmed-reason');
+    trustedClick(mounted.approve);
+    mounted.approve.removeAttribute('disabled');
+    trustedClick(mounted.approve);
+    expect(mounted.delegated()).toBe(0);
+  });
+
+  test('any other space: unchanged, Approve enabled and it signs', () => {
+    mounted = mountCli(modelFor(hostSiweFor('default')));
+    expect(mounted.target.querySelector('.host-node-status')).toBeNull();
+    expect(mounted.target.querySelector('[data-testid="node-unconfirmed-reason"]')).toBeNull();
+    expect(mounted.approve.disabled).toBe(false);
+    trustedClick(mounted.approve);
+    expect(mounted.delegated()).toBe(1);
   });
 });

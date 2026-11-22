@@ -697,10 +697,11 @@
 
   const nodeChecking = $derived(peerRecognition?.state === "checking");
   // TC-3853: the `credentials` space is hosted only on a node OpenKey confirms. Any other space keeps the warning and
-  // an enabled Approve. A credentials request that names no single node key (`did:key`) has no node to confirm.
+  // an enabled Approve. For `credentials` the check fails closed: no node key (`did:key`) to look up, or no lookup at
+  // all (the /delegate page runs none), counts as not confirmed.
   const hostsCredentials = $derived(Boolean(hostFacts?.spaces.some((space) => isCredentialsSpaceId(space.spaceId))));
   const nodeState = $derived(
-    !hostFacts ? null : hostFacts.peerDid ? (peerRecognition?.state ?? null) : hostsCredentials ? "other" : null,
+    !hostFacts ? null : ((hostFacts.peerDid ? peerRecognition?.state : null) ?? (hostsCredentials ? "other" : null)),
   );
   const credentialsNodeBlocked = $derived(hostsCredentials && (nodeState === "other" || nodeState === "failed"));
   const nodeCheckFailed = $derived(nodeState === "failed");
