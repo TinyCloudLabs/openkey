@@ -382,6 +382,13 @@ async function post(path: string, body: Record<string, unknown>) {
   return result;
 }
 
+// TC-3443: a request with no permissions gets only its own folder, so these tests name the whole space.
+const wholeSpace = (space: string) => [
+  { service: 'tinycloud.kv', space, path: '', actions: ['tinycloud.kv/put', 'tinycloud.kv/get', 'tinycloud.kv/del', 'tinycloud.kv/list', 'tinycloud.kv/metadata'] },
+  { service: 'tinycloud.sql', space, path: '', actions: ['tinycloud.sql/read', 'tinycloud.sql/write', 'tinycloud.sql/admin'] },
+  { service: 'tinycloud.capabilities', space, path: '', actions: ['tinycloud.capabilities/read'] },
+];
+
 async function prepare(extra: Record<string, unknown> = {}) {
   const prepared = await post('/prepare', { keyId: keyRecord.id, jwk, host, ...extra });
   expect(prepared.status).toBe(200);
@@ -396,11 +403,12 @@ function skipAgents() {
 }
 
 async function managedApproval(reqHost: string, extra: Record<string, unknown> = {}) {
-  const prepared = await prepare({ prefix: 'agents', host: reqHost, ...extra });
+  const prepared = await prepare({ prefix: 'agents', permissions: wholeSpace('agents'), host: reqHost, ...extra });
   return post('/', {
     keyId: keyRecord.id,
     jwk,
     host: reqHost,
+    permissions: wholeSpace('agents'),
     prepared: prepared.prepared,
     authorizationContextToken: prepared.authorizationContext.token,
     selectedActionIds: prepared.selectedActionKeys,
@@ -409,7 +417,7 @@ async function managedApproval(reqHost: string, extra: Record<string, unknown> =
 }
 
 async function legacyApproval(reqHost: string) {
-  return post('/', { keyId: keyRecord.id, jwk, host: reqHost, prefix: 'agents' });
+  return post('/', { keyId: keyRecord.id, jwk, host: reqHost, prefix: 'agents', permissions: wholeSpace('agents') });
 }
 
 describe('TC-943 prod host pair (pre-merge)', () => {
@@ -494,7 +502,7 @@ describe('TC-943 prod host pair (pre-merge)', () => {
 
   for (const reqHost of requestHosts) {
     test(`/prepare discloses setup for ${reqHost} and checks completion under the configured host`, async () => {
-      const result = await prepare({ prefix: 'agents', host: reqHost });
+      const result = await prepare({ prefix: 'agents', permissions: wholeSpace('agents'), host: reqHost });
       expect(result.host).toBe(reqHost);
       expect(result.spaceSetup).toEqual({ space: 'agents', plan: 'setup' });
       expect(result.spaceSetup).not.toHaveProperty('bootstrapHost');
@@ -569,7 +577,7 @@ describe('TC-943 local dev host stays exact', () => {
   });
 
   test('/prepare preserves setup for the exact local host', async () => {
-    expect((await prepare({ prefix: 'agents', host: localHost })).spaceSetup).toEqual({ space: 'agents', plan: 'setup' });
+    expect((await prepare({ prefix: 'agents', permissions: wholeSpace('agents'), host: localHost })).spaceSetup).toEqual({ space: 'agents', plan: 'setup' });
     expect(isTinyCloudBootstrapComplete).toHaveBeenCalledWith(expect.anything(), {
       keyId: 'key_1', chainId: 1, host: localHost,
     });
@@ -578,7 +586,7 @@ describe('TC-943 local dev host stays exact', () => {
 
 describe('/prepare space setup disclosure', () => {
   test('discloses setup for a managed key with auto-sign enabled', async () => {
-    expect((await prepare({ prefix: 'agents' })).spaceSetup).toEqual({
+    expect((await prepare({ prefix: 'agents', permissions: wholeSpace('agents') })).spaceSetup).toEqual({
       space: 'agents',
       plan: 'setup',
     });
@@ -586,7 +594,7 @@ describe('/prepare space setup disclosure', () => {
 
   test('reports when auto-sign is disabled', async () => {
     autoSignEnabled = false;
-    expect((await prepare({ prefix: 'agents' })).spaceSetup).toEqual({
+    expect((await prepare({ prefix: 'agents', permissions: wholeSpace('agents') })).spaceSetup).toEqual({
       space: 'agents',
       plan: 'auto-sign-off',
     });
@@ -594,7 +602,7 @@ describe('/prepare space setup disclosure', () => {
 
   test('reports external wallet setup behavior', async () => {
     keyRecord.keyType = 'EXTERNAL';
-    expect((await prepare({ prefix: 'agents' })).spaceSetup).toEqual({
+    expect((await prepare({ prefix: 'agents', permissions: wholeSpace('agents') })).spaceSetup).toEqual({
       space: 'agents',
       plan: 'external-wallet',
     });
@@ -606,7 +614,7 @@ describe('/prepare space setup disclosure', () => {
   });
 
   test('omits non-canonical spaces', async () => {
-    expect((await prepare({ prefix: 'not-a-bootstrap-space' })).spaceSetup).toBeNull();
+    expect((await prepare({ prefix: 'not-a-bootstrap-space', permissions: wholeSpace('not-a-bootstrap-space') })).spaceSetup).toBeNull();
   });
 
   test('omits a host other than the trusted bootstrap host', async () => {
@@ -802,8 +810,8 @@ describe('versioned /complete validates every binding before consuming the conte
       success: true,
       skipped: [`tinycloud:pkh:eip155:1:${account.address}:agents`],
     }) as any);
-    const prepared = await prepare({ prefix: 'agents' });
-    const result = await post('/complete', await completeBody(prepared));
+    const prepared = await prepare({ prefix: 'agents', permissions: wholeSpace('agents') });
+    const result = await post('/complete', { ...(await completeBody(prepared)), permissions: wholeSpace('agents') });
     expect(result.status).toBe(200);
     expect(result.body.spaceReady).toBe(false);
     expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
@@ -1012,11 +1020,12 @@ describe('managed approval checks everything caller-controlled before consuming 
       success: true,
       skipped: [`tinycloud:pkh:eip155:1:${account.address}:agents`],
     }) as any);
-    const prepared = await prepare({ prefix: 'agents' });
+    const prepared = await prepare({ prefix: 'agents', permissions: wholeSpace('agents') });
     const approved = await post('/', {
       keyId: keyRecord.id,
       jwk,
       host,
+      permissions: wholeSpace('agents'),
       prepared: prepared.prepared,
       authorizationContextToken: prepared.authorizationContext.token,
       selectedActionIds: prepared.selectedActionKeys,

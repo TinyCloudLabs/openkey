@@ -5,7 +5,8 @@
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import {
-    answerApprovalPasskey, isPasskeyApprovalRefusal, type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed,
+    answerApprovalPasskey, approvalPasskeyGate, isPasskeyApprovalRefusal, passkeyApprovalCopy,
+    type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed, type PasskeyOfferFetch,
   } from '$lib/approval-passkey';
   import { ARCHIVED_KEY_MESSAGE, autoSelectKey, signingKeyChoices } from '$lib/delegate-key-selection';
   import { parseSIWE } from '$lib/siwe-parser';
@@ -14,7 +15,14 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
+  import {
+    carryPopupSignFlow, newWebSignFlowId, releaseWebSignFlow, takePopupSignFlow, webSignFlowHeaders,
+  } from '$lib/web-sign-flow';
+  import {
+    coverNotHonoured, createApproveVisibility, offersCover, reviewSnapshot, sameReview, type ReviewSnapshot,
+  } from '$lib/approve-visibility';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
+  import { claimedPresentation, claimedPresentationView } from '$lib/claimed-presentation';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import { serverActionId } from '$lib/delegate-review-selection';
@@ -67,6 +75,10 @@
   let keyProblem = $state<'missing' | 'transient' | null>(null);
   let keyReadGeneration = 0;
   const expectedAddress = $derived(parseSIWE(message)?.message.address.toLowerCase() ?? null);
+  const claimedView = $derived.by(() => {
+    const claimed = claimedPresentation({ presentation: plainPresentation, origin });
+    return claimed ? claimedPresentationView(claimed) : null;
+  });
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
@@ -100,8 +112,9 @@
   let previewing = $state(false);
   // TC-2272: how long from approval the user chose; null keeps the app's own expiry.
   let expiryChoiceMs = $state<number | null>(null);
-  // TC-2927: the extra permissions (decrypt or key creation on the encryption network or on keys outside the app's own
-  // area) the owner allowed on the warning screen. The preview records them and signing refuses an undecided one.
+  // TC-2927: the extra permissions (decrypt, key creation, or blocking and unblocking keys on the encryption network
+  // or on keys outside the app's own area) the owner allowed on the warning screen. The preview records them and
+  // signing refuses an undecided one.
   let elevatedAllowed = $state<string[]>([]);
   // Sol MAJOR-3 (continuation): when the SDK passes `externalSign: true`
   // on the sign request, the widget MUST NOT call /authorize-sign at
@@ -160,6 +173,9 @@
   // NEVER treats it as verified — trust is decided by the server prepare
   // response.
   let requestPresentation = $state<Record<string, unknown> | null>(null);
+  // The `presentation` of a plain signMessage() request: what the app says about itself. Display-only; read only by
+  // `claimedView`, which decides what may be shown. It is not sent to the API, the signer or the opener.
+  let plainPresentation = $state<unknown>(null);
   // Server-decided trust for the presentation envelope. Populated after
   // /authorize-sign-prepare returns. Starts null so we fail closed to the
   // `unsigned` model until the server responds.
@@ -188,6 +204,29 @@
   // path (Sol MAJOR-4). Versioned callers (protocolVersion >= 1) MUST use
   // a real origin — '*' is refused for editing/rewriting flows.
   const origin = $page.url.searchParams.get('origin') || '*';
+  // This page's own flow id for one sign request, drawn here and never taken from the app's request. The pop-up
+  // returns from the login page as a new page load, so the id the user left with is the one carried in this tab.
+  const webFlowId = takePopupSignFlow() ?? newWebSignFlowId();
+  // The flow id is named on offers and approvals only while the cover can be honoured here: not in a frame without
+  // observer v2, and not after a tap reached a covered offer before it counted.
+  const approveVisibility = createApproveVisibility();
+  let coverWithdrawn = $state(false);
+  // Set while the offer is fetched again without the flow id, so a second tap cannot start a second approval.
+  let coverRefetch = $state<'preview' | 'exact' | null>(null);
+  const coverFlowId = $derived(approveVisibility.coverUsable && !coverWithdrawn ? webFlowId : undefined);
+  const coverHeaders = () => (coverFlowId ? webSignFlowHeaders(coverFlowId) : {});
+  // The request the owner saw when the cover was withdrawn: the continued tap signs only that.
+  let coverShown: ReviewSnapshot | null = null;
+  function withdrawCover(approved: HeldPreview | null) {
+    coverShown = approved
+      ? reviewSnapshot(approved.input, approved.signedMessage, renewalLeaseMs)
+      : reviewSnapshot(exactBytePasskeyInput, '', renewalLeaseMs);
+    coverWithdrawn = true;
+    error = '';
+    coverRefetch = approved ? 'preview' : 'exact';
+    if (approved) invalidatePreviewForSelectionEdit();
+    else exactBytePasskey = null;
+  }
   const requester = originAuthority(origin);
   const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
@@ -210,6 +249,7 @@
           transport = createWidgetTransport({
             origin,
             container,
+            showsPresentation: true,
             onRequest: handleTransportRequest,
             onClose: handleTransportClose,
             onInvalid: (reason, event) => {
@@ -305,6 +345,8 @@
       data.presentation && typeof data.presentation === 'object'
         ? (data.presentation as Record<string, unknown>)
         : null;
+    // A TinyCloud authorization request carries its own envelope (above); the app's own words belong to a plain signMessage().
+    plainPresentation = null;
     // Server-decided trust is not known yet — starts null, populated after
     // the first /authorize-sign-prepare call. Editing/reset invalidates
     // the preview but keeps the trust decision (which is bound into the
@@ -510,14 +552,14 @@
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
       requestedKeyId = keyId;
-      // Legacy path: envelope forwarding. The legacy path has weaker
-      // origin/version guarantees, so we only accept `presentation` as
-      // display-only and never upgrade trust off of it — the server
-      // prepare call remains the sole trust authority.
+      // A plain signMessage() (no protocol version) carries the app's own words in `presentation`; they are shown only
+      // after `claimedPresentation` has judged them and are never read as a manifest envelope or sent anywhere.
+      const plain = incomingProtocolVersion === null;
       requestPresentation =
-        event.data.presentation && typeof event.data.presentation === 'object'
+        !plain && event.data.presentation && typeof event.data.presentation === 'object'
           ? event.data.presentation
           : null;
+      plainPresentation = plain ? event.data.presentation ?? null : null;
       serverMetadataTrust = null;
       serverVerifiedManifest = null;
       keyFetched = false; // Reset so effect can run
@@ -765,6 +807,8 @@
 
   // TC-3442: the exact-byte path asks whether Approve needs the passkey for exactly this key, message and site. An
   // external key never gets an offer; a passkey refusal spends the challenge, so the revision fetches a new one.
+  // Approve sends nothing until the offer for the current input has landed: it waits while the fetch is in flight and
+  // fetches again after a failure.
   const exactBytePasskeyInput = $derived.by(() =>
     key && key.keyType === 'MANAGED' && !externalSignMode && message && reviewModel && !siweRefusal && !canUseAuthorizeSignFn()
       ? JSON.stringify([key.id, message, origin === '*' ? null : origin])
@@ -772,18 +816,33 @@
   );
   let exactBytePasskey = $state<{ input: string; need: ApprovalPasskeyNeed } | null>(null);
   let exactBytePasskeyRevision = $state(0);
+  let exactBytePasskeyFetch = $state<PasskeyOfferFetch>('idle');
+  const exactByteGate = $derived(approvalPasskeyGate({
+    input: exactBytePasskeyInput, held: exactBytePasskey, fetch: exactBytePasskeyFetch,
+  }));
+  // Approve is watched for visibility only while the offer it answers is a flow cover.
+  const coverOffered = $derived(offersCover(heldPreview?.passkey) || offersCover(exactBytePasskey?.need));
   $effect(() => {
     const input = exactBytePasskeyInput;
     void exactBytePasskeyRevision;
-    if (input === null) return;
+    if (input === null) {
+      exactBytePasskeyFetch = 'idle';
+      return;
+    }
     const [offerKeyId, offerMessage, offerOrigin] = JSON.parse(input) as [string, string, string | null];
     let current = true;
-    // A failed fetch leaves the offer unknown: Approve goes without an assertion and a refusal fetches again.
-    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined)
-      .then((need) => { if (current) exactBytePasskey = { input, need }; })
-      .catch(() => {});
+    exactBytePasskeyFetch = 'pending';
+    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined, coverFlowId).then(
+      (need) => {
+        if (!current) return;
+        exactBytePasskey = { input, need };
+        exactBytePasskeyFetch = 'idle';
+      },
+      () => { if (current) exactBytePasskeyFetch = 'failed'; },
+    );
     return () => { current = false; };
   });
+  const offerFailure = $derived(exactBytePasskeyFetch === 'failed' ? passkeyApprovalCopy.offerFailed : '');
 
   function currentPreview(): HeldPreview | null {
     const preview = heldPreview;
@@ -948,7 +1007,7 @@
         {
           method: 'POST',
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...coverHeaders() },
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
@@ -1007,7 +1066,7 @@
   async function approveAndSign() {
     if (refused) return;
     if (!key || !message) return;
-    if (signing || previewStopped) return;
+    if (signing || previewStopped || coverRefetch !== null) return;
     if (siweRefusal) {
       error = siweRefusal.message;
       return;
@@ -1023,11 +1082,22 @@
       if (!previewing) invalidatePreviewForSelectionEdit();
       return;
     }
-    const passkeyNeed = externalSignMode
-      ? null
-      : approved
-        ? approved.passkey
-        : exactBytePasskey?.input === exactBytePasskeyInput ? exactBytePasskey.need : null;
+    // Without the offer for these bytes nothing is sent: Approve waits for the fetch in flight, or fetches again.
+    let passkeyNeed: ApprovalPasskeyNeed | null = null;
+    if (!externalSignMode) {
+      if (approved) passkeyNeed = approved.passkey;
+      else if (exactByteGate.action === 'send') passkeyNeed = exactByteGate.need;
+      else {
+        if (exactByteGate.action === 'retry') exactBytePasskeyRevision++;
+        return;
+      }
+    }
+    // A covered offer counts only while Approve has been in plain view. Before that, this tap is answered with the
+    // passkey: the page stops naming the flow, fetches the offer again and goes on once it lands.
+    if (coverNotHonoured(passkeyNeed, approveVisibility)) {
+      withdrawCover(approved);
+      return;
+    }
     signing = true;
     error = '';
     // TC-3442: the passkey prompt comes first, straight from the tap. A dismissed prompt reached nothing: the same
@@ -1066,7 +1136,7 @@
           {
             method: 'POST',
             credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...coverHeaders() },
             body: JSON.stringify({
               authorizationContextToken,
               // Sol CRITICAL-1: the sealed preview-approval token is
@@ -1111,7 +1181,7 @@
       // capabilities in the response are the caller's original set (no
       // narrowing happened server-side).
       const result = await api.signMessage(
-        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion,
+        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion, coverFlowId,
       );
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
@@ -1161,6 +1231,23 @@
     heldPreview = null;
     previewRevision++;
   }
+
+  // The fresh offer a withdrawn cover waits for. When it lands for exactly the request the owner saw at the tap, that
+  // tap goes on to the passkey prompt. A request that differs stays on screen for a new tap, and a failed fetch shows
+  // the failure so that the next tap tries again.
+  $effect(() => {
+    const waiting = coverRefetch;
+    if (waiting === null) return;
+    const preview = waiting === 'preview' ? currentPreview() : null;
+    const landed = waiting === 'preview' ? preview !== null : exactByteGate.action === 'send';
+    const failed = waiting === 'preview' ? !previewing && (error !== '' || refused) : exactBytePasskeyFetch === 'failed';
+    if (!landed && !failed) return;
+    const fresh = preview
+      ? reviewSnapshot(preview.input, preview.signedMessage, renewalLeaseMs)
+      : reviewSnapshot(exactBytePasskey?.input, '', renewalLeaseMs);
+    coverRefetch = null;
+    if (landed && sameReview(coverShown, fresh)) untrack(() => { void approveAndSign(); });
+  });
 
   function retryPreview() {
     if (!canUseAuthorizeSignFn() || signing || previewing || heldPreview || previewStopped || !error) return;
@@ -1221,11 +1308,18 @@
     return true;
   }
 
+  // A request that ends without an approval ends the passkey cover its own sign-in recorded.
+  function releaseFlow() {
+    if ($session.data) void releaseWebSignFlow(webFlowId);
+  }
+
   function closeRefused() {
+    releaseFlow();
     sendClose();
   }
 
   function reconnect() {
+    releaseFlow();
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
@@ -1238,6 +1332,7 @@
   }
 
   function cancel() {
+    releaseFlow();
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
@@ -1353,7 +1448,10 @@
   {:else if !$session.data}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p class="mb-4">Sign in to sign messages</p>
-      <Button href={withPasskeysFlag(`/auth/login?redirect=/widget/sign?origin=${encodeURIComponent(origin)}`, passkeysSupported)}>Sign In</Button>
+      <Button
+        href={withPasskeysFlag(`/auth/login?redirect=/widget/sign?origin=${encodeURIComponent(origin)}`, passkeysSupported)}
+        onclick={() => carryPopupSignFlow(webFlowId)}
+      >Sign In</Button>
     </div>
   {:else if loading}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
@@ -1402,8 +1500,10 @@
       initialSelection={reviewSelection}
       transport={{
         approving: signing,
+        approveVisibility: coverOffered ? approveVisibility : undefined,
+        passkeyPending: exactByteGate.action === 'wait',
         host: messageHost,
-        error,
+        error: error || offerFailure,
         approveBlockedReason: refusalMessage,
         refused,
         canUseAuthorizeSign: canUseAuthorizeSignFn(),
@@ -1440,6 +1540,7 @@
           },
         },
         invalidatePreview: invalidatePreviewForSelectionEdit,
+        claimedPresentation: claimedView,
       }}
     />
   {:else}

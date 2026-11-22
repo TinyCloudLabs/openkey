@@ -218,8 +218,10 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
     });
     if (consumed.count !== 1) return invalidProof();
     await startSessionProofJtiSweep(db);
-    // TC-3232: like a refresh, a renewal waits for the account to accept the current Terms. The grant and
-    // its token stay as they are, so the app renews once the user has agreed. Revoking stays open.
+    // TC-3232: like a refresh, a renewal waits for the account to accept the current Terms. This answer leaves
+    // the grant and its token as they are, but a native client may not wait: sdk-capacitor 0.2.0-beta.0 treats
+    // this 400 invalid_grant as terminal, calls /revoke (which stays open) and wipes its session, so such an app
+    // does not renew after the user agrees; the user signs in to it again. Observed in a local rehearsal.
     if (operation === 'renew' && !await hasAcceptedTerms(db, candidate.userId)) {
       const { error_description, terms_url } = termsRequired();
       return Response.json({ error: 'invalid_grant', error_description, terms_url }, {

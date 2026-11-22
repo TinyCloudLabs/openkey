@@ -30,6 +30,9 @@ describe("elevatedKindOf", () => {
     ["decrypt on an exact key outside apps/", urn("/secrets/k"), `${E}decrypt`, "encryption-keys"],
     ["the short service and ability names", urn("/qa/"), "encryption/decrypt", "encryption-keys"],
     ["an upper-case verb", urn("/qa/"), `${E}Decrypt`, "encryption-keys"],
+    ["key.block on the whole network", urn(""), `${E}key.block`, "encryption-network"],
+    ["key.unblock on a folder", urn("/qa/"), `${E}key.unblock`, "encryption-keys"],
+    ["key.block on an exact key outside apps/", urn("/share/abc"), `${E}key.block`, "encryption-keys"],
   ])("%s", (_name, resource, ability, kind) => {
     expect(elevatedKindOf(parserForm(resource), ability)).toBe(kind as never);
     expect(elevatedKindOf(reportedForm(resource), ability)).toBe(kind as never);
@@ -38,10 +41,10 @@ describe("elevatedKindOf", () => {
   test.each([
     ["network.create alone", urn(""), `${E}network.create`],
     ["network.revoke", urn(""), `${E}network.revoke`],
-    ["key.block outside apps/", urn("/qa/"), `${E}key.block`],
     ["key.delete (refused elsewhere)", urn("/qa/"), `${E}key.delete`],
     ["an app's own keys", urn("/apps/xyz.tinycloud.listen/"), `${E}decrypt`],
     ["an app's own key", urn("/apps/xyz.tinycloud.listen/k"), `${E}key.create`],
+    ["an app's own key being blocked", urn("/apps/xyz.tinycloud.listen/k"), `${E}key.block`],
     ["an app's own keys in any case", urn("/Apps/xyz.tinycloud.listen/"), `${E}decrypt`],
   ])("%s needs no extra warning", (_name, resource, ability) => {
     expect(elevatedKindOf(parserForm(resource), ability)).toBeNull();
@@ -129,6 +132,29 @@ describe("the warning copy", () => {
     expect(elevatedCard("encryption-keys", { decrypt: true, create: false }, "x.test", where).heading).toBe("Unlock encrypted items in a folder named share");
     expect(elevatedCard("encryption-keys", { decrypt: false, create: true }, "x.test", where).heading).toBe("Create encryption keys in a folder named share");
     expect(elevatedCard("encryption-keys", { decrypt: true, create: true }, "x.test", where).heading).toBe("Unlock and create encrypted items in a folder named share");
+  });
+
+  test("the control card: Sam's example, word for word", () => {
+    const card = elevatedCard("encryption-keys", { decrypt: false, create: false, block: true }, "example.com", elevatedWhereText("Shared"));
+    expect(card.heading).toBe("Control access to encryption keys in a folder named Shared");
+    expect(card.body).toBe(
+      "example.com could block encryption keys in a folder named Shared, for as long as this approval lasts. Until the key is unblocked, requests to unlock the items it protects are refused, including your own.",
+    );
+  });
+
+  test("the control card: the whole account heading, every action the grant carries in order, and the refusal sentence only when blocking is included", () => {
+    const network = elevatedCard("encryption-network", { decrypt: true, create: false, block: true, unblock: true }, "example.com", elevatedWhereText(null));
+    expect(network.heading).toBe("Control access to encryption keys anywhere in your account");
+    expect(network.body.startsWith("example.com could unlock encrypted items and block and unblock encryption keys anywhere in your account, for as long as this approval lasts.")).toBe(true);
+    expect(network.body.endsWith("including your own.")).toBe(true);
+    const unblock = elevatedCard("encryption-keys", { decrypt: false, create: false, unblock: true }, null, elevatedWhereText("Shared"));
+    expect(unblock.body).toBe("This request could unblock encryption keys in a folder named Shared, for as long as this approval lasts.");
+    const pair = elevatedCard("encryption-keys", { decrypt: false, create: true, unblock: true }, "x.test", elevatedWhereText("Shared"));
+    expect(pair.body).toBe("x.test could create and unblock encryption keys in a folder named Shared, for as long as this approval lasts.");
+    const all = elevatedCard("encryption-network", { decrypt: true, create: true, block: true, unblock: true }, null, elevatedWhereText(null));
+    expect(all.body.startsWith("This request could unlock encrypted items and create, block and unblock encryption keys anywhere in your account, for as long as this approval lasts.")).toBe(true);
+    const both = elevatedCard("encryption-network", { decrypt: false, create: false, block: true, unblock: true }, "example.com", elevatedWhereText(null));
+    expect(both.body.startsWith("example.com could block and unblock encryption keys anywhere in your account, for as long as this approval lasts.")).toBe(true);
   });
 
   test("no card ever says 'until {date}' (the approval can renew)", () => {

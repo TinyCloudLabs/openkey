@@ -858,6 +858,62 @@ counts as that request's approval passkey:
   app, account deletion, passkey enrolment and removal, and key export or recovery keep asking for their own
   passkey. Email-code and social sign-ins make no cover and are asked once, at Approve.
 
+### One passkey per web sign interaction
+
+The web sign pop-up (`/widget/sign`) and the sign iframe (`/widget/embed/sign`) follow the same rule: a passkey
+sign-in made **for this sign request** counts as that request's approval passkey.
+
+- Each sign page draws its own flow id, `w.` and 24 random bytes in base64url (`^w\.[A-Za-z0-9_-]{32}$`), when it
+  loads. The id is never read from the app's request or its `postMessage`. The `w.` prefix keeps the web ids apart
+  from native request ids, which are checked against a resolved request row; a web id has no server row.
+- The page names the id in `x-openkey-passkey-flow` on its passkey sign-in: the iframe's own
+  `/api/passkey/verify-authentication` call, the cookie sign-in inside the page and the pop-up's login page. The
+  pop-up leaves for `/auth/login` and comes back as a new page, so it keeps its id in the tab's `sessionStorage`
+  (`openkey_sign_flow`) when the user selects Sign In. The login page sends it only when the redirect target is
+  `/widget/sign` and the stored value has the web shape; the pop-up removes it when it loads, so one visit to the
+  login page serves one sign page.
+- OpenKey records the same cover as for a native request (`openkey-flow-passkey:<session id>:<flow id>`, five
+  minutes, that session and that flow only) when the assertion carries the user-verified flag, the passkey counts
+  for step-up and the sign-in issued the session. A web id is recorded only in the `w.` shape; a native-shaped id
+  sent by a web page records nothing, and an id sent in a body, a query string or `postMessage` is never read.
+- The sign pages send the id on the calls that offer or check the approval passkey:
+  `POST /api/delegate/authorize-sign-preview` (offer), `POST /api/delegate/authorize-sign` (check),
+  `POST /api/keys/:id/sign/passkey` (offer) and `POST /api/keys/:id/sign` (check). `authorize-sign-prepare` offers
+  no passkey. The user's approval-passkey setting still decides whether Approve asks for a passkey; the cover only
+  replaces the second prompt.
+- The check that lets an approval through on the cover spends it with one delete that reports whether it removed
+  the row, so it covers one approval: of parallel approvals for one flow exactly one passes on the cover and the
+  others need their own passkey. The offers only read the cover. The native consent routes keep their cover until
+  the request is approved or denied, so an approve that fails after the gate can be retried. A request that ends
+  without approval (cancel, refusal, reconnect) calls `POST /api/delegate/authorize-sign-release` with the id, which
+  deletes that session's cover for that id; otherwise it expires after five minutes.
+- The digest, token and selection checks of the approval are unchanged. Account-level actions (lowering the
+  approval setting, TinyCloud manage-key mode, enabling an app, account deletion, passkey enrolment and removal,
+  key export or recovery) never read the cover.
+- An offer that the cover waives carries `flowCover: true` (never on a native offer, nor on an offer the setting
+  waives). A sign page inside a frame (its window's top is another window, or cannot be read) uses that cover only
+  while Approve is in plain view: it watches the button with an intersection observer v2 (`trackVisibility`,
+  `delay: 100`, threshold 1.0, `lib/approve-visibility.ts`) and honours the cover after the observer has reported
+  the button fully in view, not covered and not faded for 500 ms without a break, and only while the latest
+  report still says so. The 500 ms restarts whenever Approve becomes actionable again. The button is watched only
+  while the offer on screen is a `flowCover` offer; an offer that is not one is never observed and its tap goes
+  straight through.
+- When a tap arrives on a `flowCover` offer without that, the page asks for the passkey on that tap: it stops naming
+  the flow, fetches the offer again without the flow header and runs the passkey prompt for the same tap (in the
+  iframe once the host has applied the review's layout). The tap goes on only when the fresh offer is for exactly
+  the request shown at the tap: the same key, message and selection, chosen expiry, allowed extra permissions,
+  sealed bytes and renewal lease. A different request is left on screen and waits for a new tap, which then asks for
+  the passkey. If the fetch fails, the page shows the offer failure and the next tap tries again. A browser without
+  observer v2 (Safari, Firefox) never names the flow in a frame, so it asks for the passkey at once. A page that is
+  not framed, such as the pop-up window, is not gated.
+- The observer samples at most every 100 ms, so an element placed over Approve between two samples is not seen
+  until the next one, so that 100 ms is a gap the check cannot see. Observer v2 is available in Chrome only.
+- The web server answers `/auth/login` with `Content-Security-Policy: frame-ancestors 'none'`
+  (`apps/web/src/hooks.server.ts`, `lib/frame-policy.ts`), so no page can frame the login page. `/widget/sign`,
+  `/widget/embed/sign` and every other page keep their headers.
+- Not covered: typed-data signing, Nostr approval, the connect page and the delegate handoff pages. Their Approve
+  keeps asking for its own passkey.
+
 ### Consent errors
 
 | HTTP | `error` | Cause |

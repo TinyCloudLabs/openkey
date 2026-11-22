@@ -208,7 +208,11 @@ export async function revokeEmbeddedSession(
   }
 }
 
-export async function embedSignInPasskey(): Promise<{ session: any; user: any; sessionToken: string }> {
+/**
+ * Passkey sign-in for the iframe. `flowHeaders` names the web sign flow the sign-in was opened for (see
+ * `webSignFlowHeaders`); it goes only with the verification, where the API records it.
+ */
+export async function embedSignInPasskey(flowHeaders: Record<string, string> = {}): Promise<{ session: any; user: any; sessionToken: string }> {
   // 1. Get authentication options + challengeToken
   const optionsRes = await fetch(`${API_BASE}/api/passkey/generate-authenticate-options`, {
     method: 'POST',
@@ -228,7 +232,7 @@ export async function embedSignInPasskey(): Promise<{ session: any; user: any; s
   // 3. Verify with server, get session token back
   const verifyRes = await fetch(`${API_BASE}/api/passkey/verify-authentication`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...flowHeaders },
     body: JSON.stringify({ response: assertion, challengeToken }),
   });
   if (!verifyRes.ok) {
