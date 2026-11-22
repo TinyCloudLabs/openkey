@@ -16,16 +16,13 @@ const user = { id: 'user_1', email: 'test@example.com' };
 const SPACE = `tinycloud:pkh:eip155:1:${address}:default`;
 const FOREIGN = 'https://thirdparty.example';
 const REFUSAL = {
-  error: "Only TinyCloud One and the TinyCloud CLI can request a signature that sets the account's node location. Nothing was signed.",
+  error: "Only TinyCloud One can request a signature that sets the account's node location through OpenKey. Nothing was signed.",
   code: 'registry_record_sign_refused',
 };
 const ALLOWED_ORIGINS = [
   'https://home.tinycloud.xyz',
   'https://tinycloud.one',
   'https://app.tinycloud.one',
-  'tauri://localhost',
-  'http://tauri.localhost',
-  'tinycloudone://app.tinycloud.one',
 ];
 
 let calls: string[] = [];
@@ -143,6 +140,10 @@ describe('/api/keys/:keyId/sign refuses a registry record payload from any other
       'https://HOME.tinycloud.xyz',
       'https://home.tinycloud.xyz/',
       'https://sub.tinycloud.one',
+      'tauri://localhost',
+      'http://tauri.localhost',
+      'tinycloudone://app.tinycloud.one',
+      'http://localhost:5173',
       'tauri://localhost:1420',
     ];
     for (const requestOrigin of lookalikes) {

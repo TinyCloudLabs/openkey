@@ -78,14 +78,25 @@ describe("registryRecordSignRefusal", () => {
       "https://home.tinycloud.xyz",
       "https://tinycloud.one",
       "https://app.tinycloud.one",
-      "tauri://localhost",
-      "http://tauri.localhost",
-      "tinycloudone://app.tinycloud.one",
     ]);
     for (const origin of REGISTRY_RECORD_SIGN_ORIGINS) {
       expect(registryRecordSignOriginAllowed(origin)).toBe(true);
       expect(registryRecordSignRefusal(record, origin)).toBeNull();
     }
+  });
+
+  it.each([
+    ["a Tauri app", "tauri://localhost"],
+    ["a Tauri app on Windows and Android", "http://tauri.localhost"],
+    ["the native One app scheme", "tinycloudone://app.tinycloud.one"],
+    ["a local dev server", "http://localhost:5173"],
+    ["a loopback address", "http://127.0.0.1:3000"],
+    ["a subdomain of One", "https://evil.tinycloud.one"],
+    ["a subdomain of Home", "https://app.home.tinycloud.xyz"],
+    ["a lookalike of One", "https://tinycloud.one.example.com"],
+  ])("refuses a record from %s", (_label, origin) => {
+    expect(registryRecordSignOriginAllowed(origin)).toBe(false);
+    expect(registryRecordSignRefusal(record, origin)?.reason).toBe("registry_record");
   });
 
   it.each([
@@ -117,13 +128,13 @@ describe("registryRecordSignRefusal", () => {
   it("carries Monica's words", () => {
     expect(REGISTRY_RECORD_SIGN_REFUSED.title).toBe("This app's request can't be signed");
     expect(REGISTRY_RECORD_SIGN_REFUSED.popupBody).toBe(
-      "It would set which TinyCloud node holds your data. Only TinyCloud One or the TinyCloud CLI can ask for that, so this app can't. Nothing was signed. You can close this window.",
+      "It would set which TinyCloud node holds your data. Only TinyCloud One can ask for that, so this app can't. Nothing was signed. You can close this window.",
     );
     expect(REGISTRY_RECORD_SIGN_REFUSED.embedBody).toBe(
-      "It would set which TinyCloud node holds your data. Only TinyCloud One or the TinyCloud CLI can ask for that, so this app can't. Nothing was signed. You can go back to the app.",
+      "It would set which TinyCloud node holds your data. Only TinyCloud One can ask for that, so this app can't. Nothing was signed. You can go back to the app.",
     );
     expect(REGISTRY_RECORD_SIGN_REFUSED.apiMessage).toBe(
-      "Only TinyCloud One and the TinyCloud CLI can request a signature that sets the account's node location. Nothing was signed.",
+      "Only TinyCloud One can request a signature that sets the account's node location through OpenKey. Nothing was signed.",
     );
     expect([REGISTRY_RECORD_SIGN_REFUSED.popupButton, REGISTRY_RECORD_SIGN_REFUSED.embedButton]).toEqual(["Close", "Back to the app"]);
   });

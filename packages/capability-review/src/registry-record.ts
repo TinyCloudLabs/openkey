@@ -1,5 +1,5 @@
 // Hardening: registry record signing. A signed location-registry record (v1 or v2) is signed as its canonical JSON,
-// text or the 0x hex of its UTF-8 bytes. Such a payload is signed only for the TinyCloud One / Home origins below;
+// text or the 0x hex of its UTF-8 bytes. Such a payload is signed only for the TinyCloud One / Home production origins below;
 // every other origin, and an unattributed request, is refused before an approval is offered.
 
 /** Origins that may ask for a registry record signature, compared as exact strings. */
@@ -7,9 +7,6 @@ export const REGISTRY_RECORD_SIGN_ORIGINS: readonly string[] = [
   "https://home.tinycloud.xyz",
   "https://tinycloud.one",
   "https://app.tinycloud.one",
-  "tauri://localhost",
-  "http://tauri.localhost",
-  "tinycloudone://app.tinycloud.one",
 ];
 
 /** Words for the refusal, in one place: the popup page, the embed page and the API error. */
@@ -17,13 +14,13 @@ export const REGISTRY_RECORD_SIGN_REFUSED = {
   code: "registry_record_sign_refused",
   title: "This app's request can't be signed",
   popupBody:
-    "It would set which TinyCloud node holds your data. Only TinyCloud One or the TinyCloud CLI can ask for that, so this app can't. Nothing was signed. You can close this window.",
+    "It would set which TinyCloud node holds your data. Only TinyCloud One can ask for that, so this app can't. Nothing was signed. You can close this window.",
   embedBody:
-    "It would set which TinyCloud node holds your data. Only TinyCloud One or the TinyCloud CLI can ask for that, so this app can't. Nothing was signed. You can go back to the app.",
+    "It would set which TinyCloud node holds your data. Only TinyCloud One can ask for that, so this app can't. Nothing was signed. You can go back to the app.",
   popupButton: "Close",
   embedButton: "Back to the app",
   apiMessage:
-    "Only TinyCloud One and the TinyCloud CLI can request a signature that sets the account's node location. Nothing was signed.",
+    "Only TinyCloud One can request a signature that sets the account's node location through OpenKey. Nothing was signed.",
 } as const;
 
 const V1_FIELDS = ["version", "subject", "multiaddrs", "updated_at", "sequence"] as const;
