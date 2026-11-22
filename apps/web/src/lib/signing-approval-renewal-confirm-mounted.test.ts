@@ -185,7 +185,7 @@ describe('the sensitive-access confirm in the renewal choice', () => {
 });
 
 describe('a confirmed window counts from the message start', () => {
-  const message = (lines: string) => `openkey.so wants you to sign in with your Ethereum account:\n${FIXTURE_META.address}\n\nURI: did:key:z\nVersion: 1\nChain ID: 1\nNonce: n\n${lines}`;
+  const message = (lines: string) => `openkey.so wants you to sign in with your Ethereum account:\n${FIXTURE_META.address}\n\n\nURI: https://openkey.so\nVersion: 1\nChain ID: 1\nNonce: abcdefgh12345678\n${lines}`;
   test('from Issued At, or Not Before when present, never later than now', () => {
     const now = Date.parse('2026-11-22T12:00:30.000Z');
     expect(renewalWindowExpiryAt(7 * D, message('Issued At: 2026-11-22T12:00:00.000Z'), now)).toBe('2026-11-29T12:00:00.000Z');

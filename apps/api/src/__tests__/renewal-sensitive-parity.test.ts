@@ -8,7 +8,8 @@ import { parseCapabilityReview } from '../../../../packages/capability-review/sr
 import { FIXTURE_META } from '../../../../packages/capability-review/test/fixtures/index';
 import { RENEWAL_SENSITIVE_CASES, type RenewalSensitiveCase } from '../../../../packages/capability-review/test/fixtures/renewal-sensitive-grants';
 import { renewalNeedsSensitiveConfirm } from '../../../web/src/lib/renewal-default';
-import { RenewalLeaseError, leaseReachesSecrets } from '../services/renewal-lease';
+import { RenewalLeaseError, assertLeaseableGrant, leaseReachesSecrets } from '../services/renewal-lease';
+import { renewalWindowExpiryAt } from '../../../web/src/lib/approval-expiry';
 
 const jwk = { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' };
 
@@ -33,8 +34,8 @@ function server(message: string): boolean | 'unreadable' {
   }
 }
 
-function web(message: string): boolean {
-  const model = parseCapabilityReview({
+function review(message: string) {
+  return parseCapabilityReview({
     message,
     signer: { label: 'Key', address: FIXTURE_META.address, chainId: FIXTURE_META.chainId, provenance: 'managed' },
     editable: true,
@@ -48,7 +49,10 @@ function web(message: string): boolean {
     requesterAddress: null,
     requesterVerified: false,
   });
-  return renewalNeedsSensitiveConfirm(model.permissions);
+}
+
+function web(message: string): boolean {
+  return renewalNeedsSensitiveConfirm(review(message).permissions);
 }
 
 describe('the web renewal confirm and the API lease rule agree on the shared grants', () => {
@@ -60,6 +64,61 @@ describe('the web renewal confirm and the API lease rule agree on the shared gra
       expect({ api, page }).toEqual({ api: row.server, page: row.web });
       // Wherever the API would refuse an unconfirmed lease, the page asks for the confirm first.
       if (api !== false) expect(page).toBe(true);
+    });
+  }
+});
+
+// TC-3826: a fake `Expiration Time:` line in the statement, behind a line separator the node's reader does not treat
+// as a line break, must never be read as the grant's window. The message's real expiry is 400 days out and the fake
+// line says 1 day, so a reader fooled by it would see a short window on a long grant.
+describe('a fake Expiration Time line behind a line separator', () => {
+  const issuedAt = Date.parse('2026-11-22T00:00:00.000Z');
+  const FAKE = new Date(issuedAt + 86_400_000).toISOString();
+
+  function attack(att: Record<string, string[]>, separator: string): string {
+    const real = prepareSession({
+      address: FIXTURE_META.address, chainId: FIXTURE_META.chainId, domain: 'openkey.so', spaceId: FIXTURE_META.ownSpace, jwk,
+      issuedAt: new Date(issuedAt).toISOString(), expirationTime: new Date(issuedAt + 400 * 86_400_000).toISOString(),
+      abilities: {},
+      rawAbilities: att,
+    } as unknown as Parameters<typeof prepareSession>[0]).siwe;
+    const lines = real.split('\n');
+    // The statement sits between the address and the URI line; the fake line goes in front of it.
+    const at = lines.indexOf('') + 1;
+    lines[at] = `Expiration Time: ${FAKE}${separator} ${lines[at]}`;
+    return lines.join('\n');
+  }
+  const SECRET = RENEWAL_SENSITIVE_CASES.find((row) => row.server === true)!.att;
+
+  for (const [name, separator] of [['CR', '\r'], ['U+2028', '\u2028'], ['U+2029', '\u2029']] as const) {
+    test(`${name}: the API refuses the lease as unreadable, sensitive grant or not, confirmed or not`, () => {
+      for (const att of [SECRET, {}]) {
+        const message = attack(att, separator);
+        expect(server(message)).toBe('unreadable');
+        // The web agrees the message is unreadable: the review model marks it non-signable (`malformed-recap`, warning
+        // `unparseable-siwe`) and reads no permissions, so the page never reaches a renewal confirm (TC-3826).
+        const model = review(message);
+        expect(model.protocol).toBe('malformed-recap');
+        expect(model.parseWarnings.map((warning) => warning.code)).toContain('unparseable-siwe');
+        expect(model.permissions).toEqual([]);
+        for (const confirmed of [true, false]) {
+          let thrown: unknown = null;
+          try {
+            assertLeaseableGrant(message, confirmed);
+          } catch (error) {
+            thrown = error;
+          }
+          expect(thrown).toBeInstanceOf(RenewalLeaseError);
+          expect(thrown).toMatchObject({ code: 'renewal_refused', status: 400 });
+          if (att === SECRET) expect((thrown as Error).message).toContain("couldn't read one of its permissions");
+        }
+      }
+    });
+
+    test(`${name}: the web counts a chosen window from now, never from the fake line`, () => {
+      const message = attack(SECRET, separator);
+      const now = Date.parse('2026-11-22T12:00:00.000Z');
+      expect(renewalWindowExpiryAt(7 * 86_400_000, message, now)).toBe(new Date(now + 7 * 86_400_000).toISOString());
     });
   }
 });
