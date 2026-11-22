@@ -1,7 +1,9 @@
 // TC-3232: the required Terms acceptance. The API is the gate and the only source of the release
 // (version, effective date, what changed); the web bundle holds nothing but the two document links.
+import { writable } from 'svelte/store';
 import { DELETE_ACCOUNT_PATH } from './account-deletion';
 import { API_BASE } from './auth-client';
+import { isEmbedContext } from './embed-passkey';
 
 export const TERMS_URL = 'https://tinycloud.xyz/terms';
 export const PRIVACY_URL = 'https://tinycloud.xyz/privacy';
@@ -32,8 +34,10 @@ export function effectiveDate(value: string | null): string | null {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 }
 
-export async function loadTermsStatus(): Promise<TermsStatus> {
-  const response = await fetch(`${API_BASE}/api/account/terms`, { credentials: 'include', headers: { Accept: 'application/json' } });
+export async function loadTermsStatus(
+  withCredential: (init: RequestInit) => RequestInit = (init) => ({ ...init, credentials: 'include' }),
+): Promise<TermsStatus> {
+  const response = await fetch(`${API_BASE}/api/account/terms`, withCredential({ headers: { Accept: 'application/json' } }));
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
@@ -76,8 +80,19 @@ export function isPreTermsPage(pathname: string): boolean {
   return pathname.startsWith('/auth/') || pathname === DELETE_ACCOUNT_PATH;
 }
 
-/** Sends the browser to the Terms screen, which brings it back to this page once the account accepts. */
+/** True once a framed page is refused for the Terms. The frame has no cookie session to take the Terms screen with. */
+export const framedTermsRequired = writable(false);
+
+/**
+ * Sends the browser to the Terms screen, which brings it back to this page once the account accepts. A framed page
+ * holds only a session token and the Terms screen needs the cookie session, so it stays where it is and asks for
+ * the Terms in a window of their own (`framedTermsRequired`).
+ */
 export function sendToTerms(): void {
+  if (isEmbedContext()) {
+    framedTermsRequired.set(true);
+    return;
+  }
   const { pathname, search, hash } = window.location;
   window.location.assign(`/auth/terms?returnTo=${encodeURIComponent(pathname + search + hash)}`);
 }
