@@ -332,7 +332,8 @@ so one verifier handles both services
   auth secret, as Better Auth's signer does) and that private key signs a fresh
   challenge the served public key verifies. Any other served key, such as a
   public key written into the table without its private key, is left out of
-  `identity` and counted in `excluded_keys`. If none passes, the answer is 503.
+  `identity` and counted in `excluded_keys` (informational, not bound by the
+  quote). If none passes, the answer is 503.
 - The quote's REPORTDATA is SHA-256 of the UTF-8 `key_binding`, followed by
   32 zero bytes. As for the key quote, OpenKey checks this before answering 200.
 
@@ -360,9 +361,11 @@ the proxy.
 To verify a response, follow steps 1-5 and 8 above. Then:
 - check that REPORTDATA is SHA-256 of `key_binding` followed by 32 zero bytes;
 - check that `key_binding` has your nonce and the identity;
-- fetch `<issuer>/jwks` and recompute the thumbprints. A served key missing
-  from `identity` (`excluded_keys` above 0) is one OpenKey could not show it
-  holds; don't trust a token signed with it;
+- fetch `<issuer>/jwks` and recompute the thumbprints. Treat a served key
+  missing from `identity` as one OpenKey could not show it holds, and don't
+  trust a token signed with it. `excluded_keys` is informational only: it is
+  not in `key_binding`, so anyone between you and OpenKey can change it without
+  breaking the quote. Count the missing keys yourself;
 - take `compose_hash` and `app_id` from the replayed event log, not from the
   JSON.
 
