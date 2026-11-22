@@ -1,6 +1,6 @@
 // Key management routes
 import { Hono } from 'hono';
-import { REGISTRY_RECORD_SIGN_REFUSED, registryRecordSignRefusal } from '@openkey/capability-review';
+import { REGISTRY_RECORD_SIGN_REFUSED, registryRecordSignRefusal, registryTypedDataSignRefusal } from '@openkey/capability-review';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey, type TeeQuote } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
@@ -313,6 +313,12 @@ function registryRecordRefusalResponse(body: SignBody) {
   return { error: REGISTRY_RECORD_SIGN_REFUSED.apiMessage, code: REGISTRY_RECORD_SIGN_REFUSED.code };
 }
 
+// Hardening: typed-data signing. The registry's node-location struct gets the same refusal as a registry record.
+function registryTypedDataRefusalResponse(body: { domain?: unknown; types?: unknown; primaryType?: unknown; requestOrigin?: unknown }) {
+  if (!registryTypedDataSignRefusal(body, body.requestOrigin)) return null;
+  return { error: REGISTRY_RECORD_SIGN_REFUSED.apiMessage, code: REGISTRY_RECORD_SIGN_REFUSED.code };
+}
+
 /** TC-3442: a passkey on a message signature confirms this key, format, message and requesting site. */
 function signPasskeyBinding(keyId: string, body: SignBody): ApprovalBinding {
   return {
@@ -367,7 +373,11 @@ keysRouter.post('/:keyId/sign-typed-data/passkey', async (c) => {
   if (originRefusal) return originRefusal;
   const user = c.get('user');
   const keyId = c.req.param('keyId');
-  const checked = checkedTypedData(await c.req.json());
+  const typedBody = await c.req.json<{ domain?: unknown; types?: unknown; primaryType?: unknown; message?: unknown; requestOrigin?: unknown }>();
+  if (typedBody === null || typeof typedBody !== 'object') return c.json({ error: 'Invalid typed data: body must be an object' }, 400);
+  const registryRefusal = registryTypedDataRefusalResponse(typedBody);
+  if (registryRefusal) return c.json(registryRefusal, 403);
+  const checked = checkedTypedData(typedBody);
   if (!checked.ok) return c.json({ error: checked.error }, 400);
   const key = await prisma.ethereumKey.findFirst({ where: { id: keyId, userId: user.id, archivedAt: null }, select: { keyType: true } });
   if (!key) return c.json({ error: 'Key not found' }, 404);
@@ -498,7 +508,12 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
     message: any;
     /** TC-3442: `{ challengeToken, response }` for the challenge from `/sign-typed-data/passkey`. */
     passkeyAssertion?: unknown;
+    /** Verified origin of the requesting site, as for `/sign`. */
+    requestOrigin?: string;
   }>();
+  if (body === null || typeof body !== 'object') return c.json({ error: 'Invalid typed data: body must be an object' }, 400);
+  const registryRefusal = registryTypedDataRefusalResponse(body);
+  if (registryRefusal) return c.json(registryRefusal, 403);
 
   const key = await prisma.ethereumKey.findFirst({
     where: { id: keyId, userId: user.id, archivedAt: null },

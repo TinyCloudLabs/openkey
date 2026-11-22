@@ -12,6 +12,8 @@
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
   import { originAuthority } from '$lib/requester-display';
+  import { registryTypedDataSignRefusal } from '@openkey/capability-review';
+  import RegistryRecordRefusal from '$lib/components/signing/registry-record-refusal.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
@@ -108,12 +110,26 @@
     return () => { active = false; };
   });
 
+  // Hardening: typed-data signing. The registry's node-location struct is refused unless the requester is TinyCloud One;
+  // the host is told once, and nothing is offered or sent to the API.
+  const registryRefusal = $derived(typedData ? registryTypedDataSignRefusal(typedData, origin) : null);
+  let registryRefusalReported = false;
+  $effect(() => {
+    if (!registryRefusal || registryRefusalReported) return;
+    registryRefusalReported = true;
+    sendResponse({
+      type: 'openkey:signTypedData:response',
+      success: false,
+      error: { code: 'UNKNOWN', message: 'REGISTRY_RECORD_SIGN_REFUSED' },
+    });
+  });
+
   // TC-3442: whether Sign needs the passkey, with the challenge for exactly this key and data. Fetched once the request
   // and its key are on screen; a passkey refusal spends the challenge, so the revision fetches a new one. Sign sends
   // nothing until the offer for the current request has landed: it waits while the fetch is in flight and fetches
   // again after a failure.
   const passkeyOfferInput = $derived(
-    key && key.keyType === 'MANAGED' && key.archivedAt == null && !archivedKey && typedData ? `${requestVersion}:${key.id}` : null,
+    key && key.keyType === 'MANAGED' && key.archivedAt == null && !archivedKey && typedData && !registryRefusal ? `${requestVersion}:${key.id}` : null,
   );
   let passkeyOffer = $state<{ input: string; need: ApprovalPasskeyNeed } | null>(null);
   let passkeyOfferRevision = $state(0);
@@ -131,7 +147,7 @@
     }
     let current = true;
     passkeyOfferFetch = 'pending';
-    api.signTypedDataPasskey(offerKey.id, data).then(
+    api.signTypedDataPasskey(offerKey.id, data, origin ?? undefined).then(
       (need) => {
         if (!current) return;
         passkeyOffer = { input, need };
@@ -159,7 +175,7 @@
   }
 
   async function signTypedData() {
-    if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing) return;
+    if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing || registryRefusal) return;
 
     const version = requestVersion;
     // Without the offer for this data nothing is sent: Sign waits for the fetch in flight, or fetches again.
@@ -185,7 +201,7 @@
     }
 
     try {
-      const result = await api.signTypedData(key.id, typedData, passkeyAssertion);
+      const result = await api.signTypedData(key.id, typedData, passkeyAssertion, origin ?? undefined);
       if (version !== requestVersion) return;
       sendResponse({
         type: 'openkey:signTypedData:response',
@@ -251,7 +267,9 @@
     </button>
   </header>
 
-  {#if !$session.data}
+  {#if registryRefusal}
+    <RegistryRecordRefusal variant="popup" onclose={sendClose} />
+  {:else if !$session.data}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p class="mb-4">Sign in to sign data</p>
       <Button href={withPasskeysFlag(`/auth/login?redirect=/widget/sign-typed-data?origin=${encodeURIComponent(origin ?? '')}`, passkeysSupported)}>Sign In</Button>
