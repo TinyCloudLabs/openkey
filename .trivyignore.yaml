@@ -1,0 +1,362 @@
+# Trivy baseline for the API image (skgbafa/openkey-api), part of the pre-release security check.
+# Generated 2026-11-22 from `trivy image --severity CRITICAL,HIGH --ignore-unfixed` (trivy 0.76.2) on
+# skgbafa/openkey-api:d1d16d4f5b134637d2c25804f403b6a487e6c18f, the image deployed from main that day.
+# These are today's known findings, accepted only so that NEW ones fail the scan; each is a fixable
+# dependency or base-image upgrade, not a reviewed exception. Entries match one package version (purl),
+# so the same CVE in another package or version still fails. Remove an entry when its upgrade lands.
+vulnerabilities:
+  - id: CVE-2025-68121
+    statement: "baseline 2026-11-22, CRITICAL: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-114607
+    statement: "baseline 2026-11-22, CRITICAL: better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    purls:
+      - "pkg:npm/better-auth@1.5.0-beta.13"
+      - "pkg:npm/better-auth@1.6.10"
+  - id: CVE-2026-31789
+    statement: "baseline 2026-11-22, CRITICAL: libcrypto3 3.3.4-r0, libssl3 3.3.4-r0"
+    purls:
+      - "pkg:apk/alpine/libcrypto3@3.3.4-r0"
+      - "pkg:apk/alpine/libssl3@3.3.4-r0"
+  - id: CVE-2026-53512
+    statement: "baseline 2026-11-22, CRITICAL: better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    purls:
+      - "pkg:npm/better-auth@1.5.0-beta.13"
+      - "pkg:npm/better-auth@1.6.10"
+  - id: CVE-2025-15467
+    statement: "baseline 2026-11-22, HIGH: libcrypto3 3.3.4-r0, libssl3 3.3.4-r0"
+    purls:
+      - "pkg:apk/alpine/libcrypto3@3.3.4-r0"
+      - "pkg:apk/alpine/libssl3@3.3.4-r0"
+  - id: CVE-2025-61726
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2025-61729
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2025-69421
+    statement: "baseline 2026-11-22, HIGH: libcrypto3 3.3.4-r0, libssl3 3.3.4-r0"
+    purls:
+      - "pkg:apk/alpine/libcrypto3@3.3.4-r0"
+      - "pkg:apk/alpine/libssl3@3.3.4-r0"
+  - id: CVE-2026-107891
+    statement: "baseline 2026-11-22, HIGH: musl 1.2.5-r1, musl-utils 1.2.5-r1"
+    purls:
+      - "pkg:apk/alpine/musl-utils@1.2.5-r1"
+      - "pkg:apk/alpine/musl@1.2.5-r1"
+  - id: CVE-2026-109383
+    statement: "baseline 2026-11-22, HIGH: undici 7.29.1"
+    purls:
+      - "pkg:npm/undici@7.29.1"
+  - id: CVE-2026-109829
+    statement: "baseline 2026-11-22, HIGH: undici 7.29.1"
+    purls:
+      - "pkg:npm/undici@7.29.1"
+  - id: CVE-2026-109869
+    statement: "baseline 2026-11-22, HIGH: undici 7.29.1"
+    purls:
+      - "pkg:npm/undici@7.29.1"
+  - id: CVE-2026-111943
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-112942
+    statement: "baseline 2026-11-22, HIGH: vite 6.4.1, vite 8.0.2"
+    purls:
+      - "pkg:npm/vite@6.4.1"
+      - "pkg:npm/vite@8.0.2"
+  - id: CVE-2026-121707
+    statement: "baseline 2026-11-22, HIGH: effect 3.18.4"
+    purls:
+      - "pkg:npm/effect@3.18.4"
+  - id: CVE-2026-128120
+    statement: "baseline 2026-11-22, HIGH: @sveltejs/kit 2.50.2"
+    purls:
+      - "pkg:npm/%40sveltejs/kit@2.50.2"
+  - id: CVE-2026-22184
+    statement: "baseline 2026-11-22, HIGH: zlib 1.3.1-r1"
+    purls:
+      - "pkg:apk/alpine/zlib@1.3.1-r1"
+  - id: CVE-2026-25679
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-27145
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-27606
+    statement: "baseline 2026-11-22, HIGH: rollup 4.57.1"
+    purls:
+      - "pkg:npm/rollup@4.57.1"
+  - id: CVE-2026-28387
+    statement: "baseline 2026-11-22, HIGH: libcrypto3 3.3.4-r0, libssl3 3.3.4-r0"
+    purls:
+      - "pkg:apk/alpine/libcrypto3@3.3.4-r0"
+      - "pkg:apk/alpine/libssl3@3.3.4-r0"
+  - id: CVE-2026-28388
+    statement: "baseline 2026-11-22, HIGH: libcrypto3 3.3.4-r0, libssl3 3.3.4-r0"
+    purls:
+      - "pkg:apk/alpine/libcrypto3@3.3.4-r0"
+      - "pkg:apk/alpine/libssl3@3.3.4-r0"
+  - id: CVE-2026-28389
+    statement: "baseline 2026-11-22, HIGH: libcrypto3 3.3.4-r0, libssl3 3.3.4-r0"
+    purls:
+      - "pkg:apk/alpine/libcrypto3@3.3.4-r0"
+      - "pkg:apk/alpine/libssl3@3.3.4-r0"
+  - id: CVE-2026-28390
+    statement: "baseline 2026-11-22, HIGH: libcrypto3 3.3.4-r0, libssl3 3.3.4-r0"
+    purls:
+      - "pkg:apk/alpine/libcrypto3@3.3.4-r0"
+      - "pkg:apk/alpine/libssl3@3.3.4-r0"
+  - id: CVE-2026-29045
+    statement: "baseline 2026-11-22, HIGH: hono 4.11.4"
+    purls:
+      - "pkg:npm/hono@4.11.4"
+  - id: CVE-2026-29087
+    statement: "baseline 2026-11-22, HIGH: @hono/node-server 1.19.9"
+    purls:
+      - "pkg:npm/%40hono/node-server@1.19.9"
+  - id: CVE-2026-32280
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-32281
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-32283
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-32887
+    statement: "baseline 2026-11-22, HIGH: effect 3.18.4"
+    purls:
+      - "pkg:npm/effect@3.18.4"
+  - id: CVE-2026-33671
+    statement: "baseline 2026-11-22, HIGH: picomatch 4.0.3"
+    purls:
+      - "pkg:npm/picomatch@4.0.3"
+  - id: CVE-2026-33811
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-33814
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-33818
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-35209
+    statement: "baseline 2026-11-22, HIGH: defu 6.1.4"
+    purls:
+      - "pkg:npm/defu@6.1.4"
+  - id: CVE-2026-39356
+    statement: "baseline 2026-11-22, HIGH: drizzle-orm 0.41.0"
+    purls:
+      - "pkg:npm/drizzle-orm@0.41.0"
+  - id: CVE-2026-39363
+    statement: "baseline 2026-11-22, HIGH: vite 6.4.1, vite 8.0.2"
+    purls:
+      - "pkg:npm/vite@6.4.1"
+      - "pkg:npm/vite@8.0.2"
+  - id: CVE-2026-39364
+    statement: "baseline 2026-11-22, HIGH: vite 8.0.2"
+    purls:
+      - "pkg:npm/vite@8.0.2"
+  - id: CVE-2026-39820
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-39821
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-39822
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-39836
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-40073
+    statement: "baseline 2026-11-22, HIGH: @sveltejs/kit 2.50.2"
+    purls:
+      - "pkg:npm/%40sveltejs/kit@2.50.2"
+  - id: CVE-2026-40200
+    statement: "baseline 2026-11-22, HIGH: musl 1.2.5-r1, musl-utils 1.2.5-r1"
+    purls:
+      - "pkg:apk/alpine/musl-utils@1.2.5-r1"
+      - "pkg:apk/alpine/musl@1.2.5-r1"
+  - id: CVE-2026-40345
+    statement: "baseline 2026-11-22, HIGH: deepmerge-ts 7.1.5"
+    purls:
+      - "pkg:npm/deepmerge-ts@7.1.5"
+  - id: CVE-2026-42499
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-42504
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-44635
+    statement: "baseline 2026-11-22, HIGH: kysely 0.28.14"
+    purls:
+      - "pkg:npm/kysely@0.28.14"
+  - id: CVE-2026-45337
+    statement: "baseline 2026-11-22, HIGH: better-auth 1.6.10"
+    purls:
+      - "pkg:npm/better-auth@1.6.10"
+  - id: CVE-2026-45623
+    statement: "baseline 2026-11-22, HIGH: postcss 8.5.6, postcss 8.5.8"
+    purls:
+      - "pkg:npm/postcss@8.5.6"
+      - "pkg:npm/postcss@8.5.8"
+  - id: CVE-2026-4800
+    statement: "baseline 2026-11-22, HIGH: lodash 4.17.21"
+    purls:
+      - "pkg:npm/lodash@4.17.21"
+  - id: CVE-2026-48779
+    statement: "baseline 2026-11-22, HIGH: ws 7.5.10, ws 8.17.1, ws 8.18.3"
+    purls:
+      - "pkg:npm/ws@7.5.10"
+      - "pkg:npm/ws@8.17.1"
+      - "pkg:npm/ws@8.18.3"
+  - id: CVE-2026-53514
+    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    purls:
+      - "pkg:npm/better-auth@1.5.0-beta.13"
+      - "pkg:npm/better-auth@1.6.10"
+  - id: CVE-2026-53516
+    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    purls:
+      - "pkg:npm/better-auth@1.5.0-beta.13"
+      - "pkg:npm/better-auth@1.6.10"
+  - id: CVE-2026-53517
+    statement: "baseline 2026-11-22, HIGH: @better-auth/oauth-provider 1.6.10, better-auth 1.5.0-beta.13"
+    purls:
+      - "pkg:npm/%40better-auth/oauth-provider@1.6.10"
+      - "pkg:npm/better-auth@1.5.0-beta.13"
+  - id: CVE-2026-53518
+    statement: "baseline 2026-11-22, HIGH: @better-auth/oauth-provider 1.6.10, better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    purls:
+      - "pkg:npm/%40better-auth/oauth-provider@1.6.10"
+      - "pkg:npm/better-auth@1.5.0-beta.13"
+      - "pkg:npm/better-auth@1.6.10"
+  - id: CVE-2026-54290
+    statement: "baseline 2026-11-22, HIGH: hono 4.11.4"
+    purls:
+      - "pkg:npm/hono@4.11.4"
+  - id: CVE-2026-56853
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-56858
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-56859
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-56860
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-56862
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-67213
+    statement: "baseline 2026-11-22, HIGH: nanoid 3.3.11"
+    purls:
+      - "pkg:npm/nanoid@3.3.11"
+  - id: CVE-2026-67214
+    statement: "baseline 2026-11-22, HIGH: nanoid 3.3.11"
+    purls:
+      - "pkg:npm/nanoid@3.3.11"
+  - id: CVE-2026-73086
+    statement: "baseline 2026-11-22, HIGH: nanoid 3.3.11"
+    purls:
+      - "pkg:npm/nanoid@3.3.11"
+  - id: CVE-2026-73088
+    statement: "baseline 2026-11-22, HIGH: browserslist 4.28.1"
+    purls:
+      - "pkg:npm/browserslist@4.28.1"
+  - id: CVE-2026-73089
+    statement: "baseline 2026-11-22, HIGH: browserslist 4.28.1"
+    purls:
+      - "pkg:npm/browserslist@4.28.1"
+  - id: CVE-2026-73646
+    statement: "baseline 2026-11-22, HIGH: postcss 8.5.6, postcss 8.5.8"
+    purls:
+      - "pkg:npm/postcss@8.5.6"
+      - "pkg:npm/postcss@8.5.8"
+  - id: CVE-2026-78667
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-78669
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: CVE-2026-87018
+    statement: "baseline 2026-11-22, HIGH: undici 7.29.1"
+    purls:
+      - "pkg:npm/undici@7.29.1"
+  - id: CVE-2026-92708
+    statement: "baseline 2026-11-22, HIGH: devalue 5.6.2"
+    purls:
+      - "pkg:npm/devalue@5.6.2"
+  - id: CVE-2026-93749
+    statement: "baseline 2026-11-22, HIGH: source-map-js 1.2.1"
+    purls:
+      - "pkg:npm/source-map-js@1.2.1"
+  - id: CVE-2026-97031
+    statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
+    purls:
+      - "pkg:golang/stdlib@v1.23.12"
+  - id: GHSA-3f6p-5ww8-9rcr
+    statement: "baseline 2026-11-22, HIGH: mysql2 3.15.3"
+    purls:
+      - "pkg:npm/mysql2@3.15.3"
+  - id: GHSA-86j7-9j95-vpqj
+    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    purls:
+      - "pkg:npm/better-auth@1.5.0-beta.13"
+      - "pkg:npm/better-auth@1.6.10"
+  - id: GHSA-9h47-pqcx-hjr4
+    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    purls:
+      - "pkg:npm/better-auth@1.5.0-beta.13"
+      - "pkg:npm/better-auth@1.6.10"
+  - id: GHSA-mcm9-63f2-9j32
+    statement: "baseline 2026-11-22, HIGH: devalue 5.6.2"
+    purls:
+      - "pkg:npm/devalue@5.6.2"
+  - id: GHSA-q84f-53jg-9ppm
+    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    purls:
+      - "pkg:npm/better-auth@1.5.0-beta.13"
+      - "pkg:npm/better-auth@1.6.10"
+  - id: GHSA-qq9h-g4jm-xgf3
+    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    purls:
+      - "pkg:npm/better-auth@1.5.0-beta.13"
+      - "pkg:npm/better-auth@1.6.10"
+  - id: GHSA-r4xp-prcw-77qf
+    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    purls:
+      - "pkg:npm/better-auth@1.5.0-beta.13"
+      - "pkg:npm/better-auth@1.6.10"
+  - id: GHSA-r9w8-h9r3-54w4
+    statement: "baseline 2026-11-22, HIGH: devalue 5.6.2"
+    purls:
+      - "pkg:npm/devalue@5.6.2"
