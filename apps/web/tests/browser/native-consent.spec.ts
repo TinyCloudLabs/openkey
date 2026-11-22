@@ -9,6 +9,7 @@ const kvGet = 'tinycloud.kv/get';
 const kvPut = 'tinycloud.kv/put';
 const siwe = (withPut: boolean) => [
   'openkey.so wants you to sign in with your Ethereum account:', address, '',
+  '',
   'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
   'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-07T04:00:00.000Z',
   'Expiration Time: 2026-10-07T05:00:00.000Z', 'Resources:',
@@ -143,8 +144,10 @@ test.describe('compact native consent', () => {
   });
 
   test('parser warnings stay reachable inside Details', async ({ page }) => {
-    const [recap] = siwe(true).split('\n').filter(line => line.startsWith('- urn:recap:'));
-    const duplicated = `${siwe(true)}\n${recap}`;
+    // A second, different recap that grants the same action again: the SIWE reader refuses a resource line that is
+    // repeated byte for byte (it would be unreadable, not a warning).
+    const again = `- ${makeRecapResource({ [`${space}/kv/xyz.tinycloud.tinychat/threads/`]: { [kvGet]: [{ note: 'again' }] } })}`;
+    const duplicated = `${siwe(true)}\n${again}`;
     await page.route('**/api/**', route => {
       const path = new URL(route.request().url()).pathname;
       if (path === '/api/auth/get-session') return json(route, sessionBody);
