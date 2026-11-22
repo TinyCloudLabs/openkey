@@ -1,12 +1,14 @@
 import { getTypesForEIP712Domain, hashDomain } from "viem";
 
 // Hardening: registry record signing. A signed location-registry record (v1 or v2) is signed as its canonical JSON,
-// text or the 0x hex of its UTF-8 bytes. Such a payload is signed only for the TinyCloud One / Home production origins below;
-// every other origin, and an unattributed request, is refused before an approval is offered.
+// text or the 0x hex of its UTF-8 bytes. Such a payload is signed only for the TinyCloud One, Home, Secrets and Share production
+// origins below; every other origin, and an unattributed request, is refused before an approval is offered.
 
 /** Origins that may ask for a registry record signature, compared as exact strings. */
 export const REGISTRY_RECORD_SIGN_ORIGINS: readonly string[] = [
   "https://home.tinycloud.xyz",
+  "https://secrets.tinycloud.xyz",
+  "https://share.tinycloud.xyz",
   "https://tinycloud.one",
 ];
 

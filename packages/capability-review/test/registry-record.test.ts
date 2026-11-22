@@ -73,9 +73,11 @@ describe("isRegistryRecordPayload", () => {
 describe("registryRecordSignRefusal", () => {
   const record = JSON.stringify(V1);
 
-  it("allows exactly the TinyCloud One and Home origins", () => {
+  it("allows exactly the TinyCloud One, Home, Secrets and Share origins", () => {
     expect([...REGISTRY_RECORD_SIGN_ORIGINS]).toEqual([
       "https://home.tinycloud.xyz",
+      "https://secrets.tinycloud.xyz",
+      "https://share.tinycloud.xyz",
       "https://tinycloud.one",
     ]);
     for (const origin of REGISTRY_RECORD_SIGN_ORIGINS) {
@@ -87,6 +89,17 @@ describe("registryRecordSignRefusal", () => {
   it("refuses the app subdomain of One", () => {
     expect(registryRecordSignOriginAllowed("https://app.tinycloud.one")).toBe(false);
     expect(registryRecordSignRefusal(record, "https://app.tinycloud.one")).not.toBeNull();
+  });
+
+  it.each([
+    ["a subdomain of Secrets", "https://evil.secrets.tinycloud.xyz"],
+    ["a lookalike of Secrets", "https://secrets.tinycloud.xyz.example.com"],
+    ["plain http for Share", "http://share.tinycloud.xyz"],
+    ["Share with a trailing slash", "https://share.tinycloud.xyz/"],
+    ["the Secrets host with a port", "https://secrets.tinycloud.xyz:8443"],
+  ])("refuses a record from %s", (_label, origin) => {
+    expect(registryRecordSignOriginAllowed(origin)).toBe(false);
+    expect(registryRecordSignRefusal(record, origin)).not.toBeNull();
   });
 
   it.each([
