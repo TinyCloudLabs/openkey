@@ -193,22 +193,43 @@ export function decryptsSecrets(entries: readonly SecretReachEntry[]): boolean {
 
 /**
  * The longest a signed approval request may last: what its requester signed, but never more than
- * `SECRET_GRANT_MAX_SECONDS` when it may `decrypt` or `key.create` on a key or prefix under `secrets/`, or `decrypt` a
- * whole network (`secretLifetimeCapApplies`, the rule every other path holds, with the network always on here). The
- * page offers no more and the server refuses more.
+ * `SECRET_GRANT_MAX_SECONDS` when it may `decrypt` or `key.create` on a key or prefix under `secrets/`, `decrypt` a
+ * whole network, or read the secrets vault in the KV store (`secretLifetimeCapApplies`, the rule every other path
+ * holds, with the network always on here). The page offers no more and the server refuses more.
  */
 export function approvalLifetimeCapSeconds(entries: readonly SecretReachEntry[], signedSeconds: number): number {
   return secretLifetimeCapApplies(entries, { networkDecrypt: true }) ? Math.min(signedSeconds, SECRET_GRANT_MAX_SECONDS) : signedSeconds;
 }
 
+/** The KV abilities that read what the secrets vault holds: a sealed value, the names, or the change feed. */
+const KV_READ_VERBS: ReadonlySet<string> = new Set(["get", "list", "metadata", "sync"]);
+
+/**
+ * Does a KV path hold secrets: `vault/secrets` and everything under it (one secret, a scope, every secret), or
+ * `secrets` and everything under it? A path above them (the whole space, `vault`) is not read here. A leading `/` is
+ * ignored.
+ */
+function kvPathHoldsSecrets(path: string): boolean {
+  const clean = path.replace(/^\/+/, "");
+  return clean === "secrets" || clean.startsWith("vault/secrets") || clean.startsWith("secrets/");
+}
+
+/** Does this entry read the secrets vault in the KV store (`KV_READ_VERBS` on a path that `kvPathHoldsSecrets`)? */
+function kvReadsSecrets(entry: SecretReachEntry): boolean {
+  return /^(?:tinycloud\.)?kv$/i.test(entry.service ?? "") &&
+    entry.actions.some((action) => KV_READ_VERBS.has(elevatedAbilityVerb(typeof action === "string" ? action : action.ability))) &&
+    kvPathHoldsSecrets(entry.path);
+}
+
 /**
  * Is a grant made outside a signed approval request (a sign-in popup or frame, a pasted link, a raw signature) held
  * to `SECRET_GRANT_MAX_SECONDS`? Yes when it may `decrypt` or `key.create` on a key or prefix under `secrets/` (or on
- * an encryption resource that cannot be read), and, only when `networkDecrypt` is on, when it may `decrypt` a whole
- * network (Sam's D3, behind `OPENKEY_NETWORK_DECRYPT_CAP`).
+ * an encryption resource that cannot be read), or read the secrets vault in the KV store (`kvReadsSecrets`), and, only
+ * when `networkDecrypt` is on, when it may `decrypt` a whole network (Sam's D3, behind `OPENKEY_NETWORK_DECRYPT_CAP`).
  */
 export function secretLifetimeCapApplies(entries: readonly SecretReachEntry[], options: { networkDecrypt: boolean }): boolean {
   return entries.some((entry) =>
     capReachOf(entry, ["decrypt", "key.create"]) === "secrets" ||
+    kvReadsSecrets(entry) ||
     (options.networkDecrypt && capReachOf(entry, ["decrypt"]) === "network"));
 }

@@ -73,8 +73,23 @@ describe('approval request lifetime for secrets (TC-3800)', () => {
     });
   }
 
-  test('a request that decrypts nothing keeps the lifetime it signed', async () => {
-    const f = fixture([secretRead]);
+  for (const [name, read] of [
+    ['a secret\'s sealed value', secretRead],
+    ['the whole vault', { ...secretRead, path: 'vault/secrets/' }],
+    ['a scoped secret', { ...secretRead, path: 'vault/secrets/scoped/work/API_KEY' }],
+    ['the names in the vault', { ...secretRead, path: 'vault/secrets/', actions: ['tinycloud.kv/list'] }],
+  ] as const) {
+    test(`a request that signed 30 days and only reads ${name} in the KV store is refused past 7 days`, async () => {
+      const f = fixture([read]);
+      await expect(f.window({ expiryMs: 7 * DAY_MS })).resolves.toBeDefined();
+      await expect(f.window({ signedSiwe: f.siwe(7 * DAY_MS) })).resolves.toBeDefined();
+      await expect(f.window({ expiryMs: 7 * DAY_MS + 1000 })).rejects.toMatchObject({ code: 'request_binding' });
+      await expect(f.window({ signedSiwe: f.siwe(8 * DAY_MS) })).rejects.toMatchObject({ code: 'request_binding' });
+    });
+  }
+
+  test('a request that reads no secret keeps the lifetime it signed', async () => {
+    const f = fixture([{ ...secretRead, path: 'notes/a' }]);
     await expect(f.window({ expiryMs: 30 * DAY_MS })).resolves.toBeDefined();
     await expect(f.window({ signedSiwe: f.siwe(30 * DAY_MS) })).resolves.toBeDefined();
     await expect(f.window({ expiryMs: 31 * DAY_MS })).rejects.toMatchObject({ code: 'request_binding' });

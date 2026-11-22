@@ -147,7 +147,7 @@ for (const [name, grants] of [['secrets', [notes, secret]], ['decrypt', [notes, 
     await fold.getByLabel('Or type a time').fill('31d');
     await fold.getByRole('button', { name: 'Set' }).click();
     const limit = fold.getByRole('alert');
-    await expect(limit).toHaveText(`This approval can last up to ${name === 'decrypt' ? '7 days' : '30 days'}.`);
+    await expect(limit).toHaveText('This approval can last up to 7 days.');
     expect(expiries.at(-1)).toBe('7200s');
     if (name === 'secrets') {
       await testInfo.attach('secrets expiry limit', { body: await limit.innerText(), contentType: 'text/plain' });

@@ -188,7 +188,19 @@ describe("the 7-day cap on secrets", () => {
     for (const [path, actions] of [[NETWORK, [CREATE]], [`${NETWORK}/share/`, [DECRYPT]], [`urn:tinycloud:encryption:${OWNER}:team/secrets/x`, [DECRYPT]]] as const) {
       expect(approvalLifetimeCapSeconds([entry(path, [...actions])], MONTH), path).toBe(MONTH);
     }
-    expect(approvalLifetimeCapSeconds([{ service: "tinycloud.kv", space: SECRETS_SPACE, path: "vault/secrets/OPENAI_API_KEY", actions: [KV_GET] }], MONTH)).toBe(MONTH);
+    expect(approvalLifetimeCapSeconds([{ service: "tinycloud.kv", space: SECRETS_SPACE, path: "notes/a", actions: [KV_GET] }], MONTH)).toBe(MONTH);
+    expect(approvalLifetimeCapSeconds([{ service: "tinycloud.kv", space: SECRETS_SPACE, path: "vault/secrets/OPENAI_API_KEY", actions: ["tinycloud.kv/put", "tinycloud.kv/del"] }], MONTH)).toBe(MONTH);
+  });
+
+  it("caps a KV read of the secrets vault at 7 days: one secret, a scope or every secret", () => {
+    for (const path of ["vault/secrets/OPENAI_API_KEY", "vault/secrets/scoped/work/API_KEY", "vault/secrets/", "vault/secrets", "/vault/secrets/X", "secrets/X", "secrets"]) {
+      for (const ability of [KV_GET, "tinycloud.kv/list", "tinycloud.kv/metadata", "tinycloud.kv/sync", "kv/get"]) {
+        const kv = { service: "tinycloud.kv", space: SECRETS_SPACE, path, actions: [ability] };
+        expect(approvalLifetimeCapSeconds([kv], MONTH), `${path} ${ability}`).toBe(SECRET_GRANT_MAX_SECONDS);
+        expect(approvalLifetimeCapSeconds([kv], 3600), `${path} ${ability}`).toBe(3600);
+      }
+    }
+    expect(approvalLifetimeCapSeconds([{ service: "kv", space: SECRETS_SPACE, path: "vault/secrets/X", actions: [KV_GET] }], MONTH)).toBe(SECRET_GRANT_MAX_SECONDS);
   });
 
   it("caps a decrypt it cannot read the key of, so an unparseable resource never escapes the cap", () => {
@@ -224,7 +236,17 @@ describe("the 7-day cap outside a signed approval request", () => {
     for (const path of [`${NETWORK}/share/`, `${NETWORK}/qa/`, `urn:tinycloud:encryption:${OWNER}:team/secrets/x`]) {
       expect(secretLifetimeCapApplies([entry(path, [DECRYPT, CREATE])], on), path).toBe(false);
     }
-    expect(secretLifetimeCapApplies([{ service: "tinycloud.kv", space: SECRETS_SPACE, path: "vault/secrets/OPENAI_API_KEY", actions: [KV_GET] }], on)).toBe(false);
+    expect(secretLifetimeCapApplies([{ service: "tinycloud.kv", space: SECRETS_SPACE, path: "notes/a", actions: [KV_GET] }], on)).toBe(false);
+    expect(secretLifetimeCapApplies([{ service: "tinycloud.kv", space: SECRETS_SPACE, path: "vault/sender-history/v2/records/", actions: [KV_GET] }], on)).toBe(false);
+  });
+
+  it("holds a read of the secrets vault in the KV store, whatever the network flag, and never a write", () => {
+    for (const path of ["vault/secrets/OPENAI_API_KEY", "vault/secrets/", "vault/secrets/scoped/work/API_KEY"]) {
+      expect(secretLifetimeCapApplies([{ service: "tinycloud.kv", space: SECRETS_SPACE, path, actions: [KV_GET] }], off), path).toBe(true);
+      expect(secretLifetimeCapApplies([{ service: "tinycloud.kv", space: SECRETS_SPACE, path, actions: [KV_GET] }], on), path).toBe(true);
+      expect(secretLifetimeCapApplies([{ service: "tinycloud.kv", space: SECRETS_SPACE, path, actions: ["tinycloud.kv/put"] }], on), path).toBe(false);
+    }
+    expect(secretLifetimeCapApplies(grantsFor(READ_OPENAI), off)).toBe(true);
   });
 
   it("reads grants parsed from a SIWE the same way", () => {

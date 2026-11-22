@@ -476,3 +476,24 @@ describe('OAuth manage-key signer with a 30-day secret key recap on an earlier l
     expect(signerCalls).toBe(1);
   });
 });
+
+// TC-3800: a KV read of the secrets vault on an earlier line is held to 7 days like a secret key.
+const VAULT_RESOURCE = `tinycloud:pkh:eip155:1:${address}:default/kv/vault/secrets/`;
+
+describe('CoordinationOS signer with a 30-day KV read of the secrets vault on an earlier line', () => {
+  test('when the policy lets the message through, it is denied and recorded', async () => {
+    policyAllows = true;
+    const body = thirtyDayBody(false);
+    const recapLine = /^- urn:recap:[A-Za-z0-9_-]+$/m.exec(body.message)?.[0];
+    if (!recapLine) throw new Error('fixture does not contain a ReCap resource');
+    const vaultRecapLine = Buffer.from(
+      JSON.stringify({ att: { [VAULT_RESOURCE]: { 'tinycloud.kv/get': [{}] } }, prf: [] }),
+      'utf8',
+    ).toString('base64url');
+    const refused = await sign({ ...body, message: body.message.replace(recapLine, `- urn:recap:${vaultRecapLine}\n${recapLine}`) });
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ approved: false, code: 'wrong_capability' });
+    expect(signerCalls).toBe(0);
+    expect(decisions.map((decision) => [decision.decision, decision.reasonCode])).toEqual([['DENY', 'wrong_capability']]);
+  });
+});

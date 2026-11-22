@@ -260,3 +260,61 @@ describe('a whole network decrypt follows OPENKEY_NETWORK_DECRYPT_CAP', () => {
     expect(res.body).toEqual(NETWORK_REFUSED);
   });
 });
+
+// A read of the secrets vault in the KV store (a secret's sealed value, a scope, the whole vault, the names) is held to
+// 7 days like a grant on secret keys, on every path, with no flag.
+const kvVaultPermissions = (path: string, ability = 'tinycloud.kv/get') => [
+  { service: 'tinycloud.kv', space: SPACE, path: 'notes/', actions: ['tinycloud.kv/get'] },
+  { service: 'tinycloud.kv', space: SPACE, path, actions: [ability] },
+];
+const KV_VAULT_SHAPES: Array<[string, ReturnType<typeof kvVaultPermissions>]> = [
+  ['get on one secret', kvVaultPermissions('vault/secrets/OPENAI_API_KEY')],
+  ['get on a scoped secret', kvVaultPermissions('vault/secrets/scoped/work/API_KEY')],
+  ['get on the whole vault', kvVaultPermissions('vault/secrets/')],
+  ['list on the whole vault', kvVaultPermissions('vault/secrets/', 'tinycloud.kv/list')],
+];
+
+describe('a KV read of the secrets vault is held to 7 days', () => {
+  test.each(KV_VAULT_SHAPES)("%s: /prepare turns a link's 30 days and the owner's year into 7, and /complete signs it", async (_name, permissions) => {
+    expectSevenDays(await prepareWith(permissions, { expiry: '30d' }));
+    const prepared = await prepareWith(permissions, { expiry: '31536000s', expiryChosen: true, expiryChangeable: true });
+    expectSevenDays(prepared);
+    const res = await post('/complete', await completeBody(prepared, permissions));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.expiresAt).toBe(expiryLine(prepared.body.prepared.siwe));
+  });
+
+  test.each(KV_VAULT_SHAPES)('%s: /complete refuses a wallet signature over 30 days', async (_name, permissions) => {
+    const prepared = await prepareWith(permissions, { expiry: '2d', expiryChosen: true });
+    const longer = prepared.body.prepared.siwe.replace(
+      /^Expiration Time: .+$/m,
+      `Expiration Time: ${new Date(Date.now() + 30 * DAY_MS).toISOString()}`,
+    );
+    const tampered = { body: { ...prepared.body, prepared: { ...prepared.body.prepared, siwe: longer } } };
+    const res = await post('/complete', await completeBody(tampered, permissions));
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual(SECRET_REFUSED);
+  });
+
+  test.each(KV_VAULT_SHAPES)('%s: the managed POST /delegate signs 7 days, legacy and versioned', async (_name, permissions) => {
+    const managed = (body: Record<string, unknown>) => post('/', { keyId: managedKey.id, jwk, host, ...body });
+    const legacy = await managed({ permissions, expiry: '30d' });
+    expect(legacy.status, JSON.stringify(legacy.body)).toBe(200);
+    expect(signedLifetime(legacy.body.signedMessage)).toBeLessThanOrEqual(7 * DAY_MS);
+    expect(signedLifetime(legacy.body.signedMessage)).toBeGreaterThan(7 * DAY_MS - 60_000);
+    const prepared = await prepareWith(permissions, { expiry: '30d' }, managedKey.id);
+    const versioned = await managed({
+      permissions,
+      prepared: prepared.body.prepared,
+      authorizationContextToken: prepared.body.authorizationContext.token,
+      selectedActionIds: prepared.body.selectedActionKeys,
+      protocolVersion: 1,
+    });
+    expect(versioned.status, JSON.stringify(versioned.body)).toBe(200);
+    expect(signedLifetime(versioned.body.signedMessage)).toBeLessThanOrEqual(7 * DAY_MS);
+  });
+
+  test('a read of another folder keeps the 30 days', async () => {
+    expect(lifetime(await prepareWith(kvVaultPermissions('notes/a'), { expiry: '30d' }))).toBeGreaterThan(29 * DAY_MS);
+  });
+});

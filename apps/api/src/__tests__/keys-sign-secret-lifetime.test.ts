@@ -189,3 +189,46 @@ describe('raw signing of a grant on secret keys, in odd forms', () => {
     expect(calls).toEqual([]);
   });
 });
+
+// A read of the secrets vault in the KV store is held to 7 days like a grant on secret keys, with no flag.
+const KV_VAULT_SHAPES: Array<[string, Record<string, string[]>]> = [
+  ['get on one secret', { [`${SPACE}/kv/vault/secrets/OPENAI_API_KEY`]: ['tinycloud.kv/get'] }],
+  ['get on a scoped secret', { [`${SPACE}/kv/vault/secrets/scoped/work/API_KEY`]: ['tinycloud.kv/get'] }],
+  ['get on the whole vault', { [`${SPACE}/kv/vault/secrets/`]: ['tinycloud.kv/get'] }],
+  ['list on the whole vault', { [`${SPACE}/kv/vault/secrets/`]: ['tinycloud.kv/list'] }],
+  ['get, named without the tinycloud. prefix', { [`${SPACE}/kv/vault/secrets/OPENAI_API_KEY`]: ['kv/get'] }],
+];
+
+describe('raw signing of a KV read of the secrets vault', () => {
+  test.each(KV_VAULT_SHAPES)('%s for 8 days is refused, as text and as hex, before the key is unsealed', async (_name, raw) => {
+    const siwe = siweFor(raw, 8 * DAY_MS);
+    for (const [message, format] of [[siwe, 'personal_sign'], [hex(siwe), 'raw']] as const) {
+      const res = await sign(message, format);
+      expect(res.status, format).toBe(400);
+      expect(await res.json()).toEqual(REFUSED);
+    }
+    expect(unseal).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
+  test.each(KV_VAULT_SHAPES)('%s for 7 days is signed', async (_name, raw) => {
+    const res = await sign(siweFor(raw, 7 * DAY_MS));
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(calls).toEqual(['sign']);
+  });
+
+  test('a read of another folder for 30 days is signed', async () => {
+    const res = await sign(siweFor({ [`${SPACE}/kv/notes/`]: ['tinycloud.kv/get'] }, 30 * DAY_MS));
+    expect(res.status, await res.clone().text()).toBe(200);
+  });
+
+  test('a KV read on a resource that cannot be read as a space path counts as the vault: 8 days is refused, 7 signed', async () => {
+    const raw = { [`${SPACE}/share/x`]: ['tinycloud.kv/get'] };
+    const refused = await sign(siweFor(raw, 8 * DAY_MS));
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toEqual(REFUSED);
+    expect(calls).toEqual([]);
+    const signed = await sign(siweFor(raw, 7 * DAY_MS));
+    expect(signed.status, await signed.clone().text()).toBe(200);
+  });
+});

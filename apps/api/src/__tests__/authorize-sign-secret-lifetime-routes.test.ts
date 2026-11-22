@@ -303,3 +303,38 @@ describe('every shape of a grant on all secrets', () => {
     expect(signed).toEqual([]);
   });
 });
+
+// A read of the secrets vault in the KV store (one secret's sealed value, a scope, the whole vault, its names) is held
+// to 7 days like a grant on secret keys, with no flag.
+const KV_VAULT_SHAPES: Array<[string, Record<string, string[]>]> = [
+  ['get on one secret', { [`${SPACE}/kv/vault/secrets/OPENAI_API_KEY`]: ['tinycloud.kv/get'] }],
+  ['get on a scoped secret', { [`${SPACE}/kv/vault/secrets/scoped/work/API_KEY`]: ['tinycloud.kv/get'] }],
+  ['get on the whole vault', { [`${SPACE}/kv/vault/secrets/`]: ['tinycloud.kv/get'] }],
+  ['list on the whole vault', { [`${SPACE}/kv/vault/secrets/`]: ['tinycloud.kv/list'] }],
+];
+
+describe('every KV read of the secrets vault', () => {
+  test.each(KV_VAULT_SHAPES)("%s: the frame signs the app's 30 days as 7", async (_name, raw) => {
+    const before = Date.now();
+    expectSevenDays(await approve(raw, 30 * DAY_MS), before);
+  });
+
+  test.each(KV_VAULT_SHAPES)("%s: the frame signs the owner's 30 days as 7", async (_name, raw) => {
+    const before = Date.now();
+    const ownerPicks = new Date(Date.now() + 30 * DAY_MS).toISOString();
+    expectSevenDays(await approve(raw, DAY_MS, { expiryChangeable: true, ownerPicks }), before);
+  });
+
+  test.each(KV_VAULT_SHAPES)('%s: POST /sign refuses 30 days, nothing signed', async (_name, raw) => {
+    const res = await post('/sign', { address, chainId: 1, message: siweFor(raw, 30 * DAY_MS), type: 'siwe', keyId: keyRecord.id });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ approved: false, code: SECRET_REFUSED.code, reason: SECRET_REFUSED.error });
+    expect(signed).toEqual([]);
+  });
+
+  test('a read of another folder keeps its 30 days', async () => {
+    const before = Date.now();
+    const bytes = await approve({ [`${SPACE}/kv/notes/`]: ['tinycloud.kv/get'] }, 30 * DAY_MS);
+    expect(expiryOf(bytes)).toBeGreaterThan(before + 29 * DAY_MS);
+  });
+});

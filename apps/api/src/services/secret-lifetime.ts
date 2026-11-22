@@ -1,7 +1,8 @@
 // TC-3800: a grant on secret keys made outside a signed approval request lasts 7 days at most. A sign-in popup or
 // frame, a pasted link and `/authorize-sign` are clamped to it before anything is signed; signed bytes that ask for
 // more (`/complete`, raw `/sign`) are refused, because they cannot be shortened. "Secret keys" are `decrypt` or
-// `key.create` on a key or prefix under `default/secrets/`, or on an encryption resource that cannot be read; a whole
+// `key.create` on a key or prefix under `default/secrets/`, or on an encryption resource that cannot be read, and a KV
+// read of the secrets vault (`get`, `list`, `metadata` or `sync` on `vault/secrets` or a path under it); a whole
 // network's `decrypt` joins them only while `OPENKEY_NETWORK_DECRYPT_CAP=enabled` (Sam's D3). A signed approval
 // request (`/a/`) is held by its own window check (`approvalLifetimeCapSeconds`), network included.
 import { SECRET_GRANT_MAX_SECONDS, secretLifetimeCapApplies } from '@openkey/capability-review';
@@ -58,11 +59,26 @@ export function permissionsHeldToSecretCap(permissions: readonly PermissionLike[
   return reachOf(permissions.map(({ service, space, path, actions }) => ({ service, space: space ?? '', path, actions }))) !== null;
 }
 
+/**
+ * The entries a ReCap resource stands for: its encryption reading (a key URN, or a resource that cannot be read), and,
+ * for `kv` abilities, a KV entry on the path after `<space>/kv/`. A KV resource that does not have that shape counts as
+ * the secrets vault (fail closed).
+ */
+function reachEntriesOf([resource, actions]: [string, string[]]): ReachEntry[] {
+  const entries: ReachEntry[] = [{ service: 'tinycloud.encryption', space: 'encryption', path: resource, actions }];
+  const kvActions = actions.filter((action) => /^(?:tinycloud\.)?kv\//i.test(action));
+  if (kvActions.length > 0) {
+    const path = /^[^/]*\/kv\/(.*)$/s.exec(resource)?.[1] ?? 'vault/secrets/';
+    entries.push({ service: 'tinycloud.kv', space: '', path, actions: kvActions });
+  }
+  return entries;
+}
+
 /** What holds this SIWE message to 7 days, or null. A ReCap that cannot be read is held (the other refusals report it). */
 function siweSecretReach(siwe: string): SecretLifetimeReach | null {
   const resources = recapResources(siwe);
   if (resources === null) return 'secrets';
-  return reachOf(resources.map(([resource, actions]) => ({ service: 'tinycloud.encryption', space: 'encryption', path: resource, actions })));
+  return reachOf(resources.flatMap(reachEntriesOf));
 }
 
 /** A lifetime for these permissions: `expiryMs`, or 7 days when they are held to 7 days and it is longer. */
