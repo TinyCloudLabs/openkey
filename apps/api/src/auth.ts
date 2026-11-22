@@ -50,6 +50,7 @@ import { appleRelayEmailUndeliverable } from './services/apple-notifications';
 import { signInCodeStorage } from './services/email-code-storage';
 import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
+import { EMAIL_OTP_ADDRESS_LIMIT_OFF } from './middleware/email-otp-rate-limit';
 import { exchangeNativeCode, generateNativeRefreshToken, withNativeTokenGuardErrors } from './services/native-delegation/code-exchange';
 import { providerTokenOptions } from './services/native-delegation/provider-tokens';
 import { emailSignupConfirmation } from './services/email-signup-confirmation';
@@ -332,6 +333,12 @@ export const auth = betterAuth({
     provider: 'postgresql',
     transaction: true,
   }),
+
+  // The email-code endpoints are limited per target email by middleware/email-otp-rate-limit.ts, ahead of this
+  // handler; the address-keyed limit is off for them because the address is caller-chosen or shared.
+  rateLimit: {
+    customRules: EMAIL_OTP_ADDRESS_LIMIT_OFF,
+  },
 
   // Passwords stay disabled; email OTP is the default authentication path.
   emailAndPassword: {

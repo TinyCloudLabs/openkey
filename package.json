@@ -14,6 +14,7 @@
     "dev:portless:web": "turbo run dev:portless --filter @openkey/web",
     "dev:portless:api": "turbo run dev:portless --filter @openkey/api",
     "build": "turbo build",
+    "audit:web": "node scripts/security/audit-artifact.mjs --gitleaks apps/web/.svelte-kit/cloudflare apps/web/.svelte-kit/output/server apps/web/.svelte-kit/cloudflare-tmp",
     "lint": "turbo lint",
     "typecheck": "bun run scripts/generate-prisma.ts --then bun node_modules/.bin/turbo --env-mode=loose typecheck",
     "changeset": "changeset",

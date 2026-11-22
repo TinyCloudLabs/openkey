@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite dev",
     "dev:portless": "PORTLESS_WILDCARD=1 portless run --name openkey vite dev",
-    "build": "vite build",
+    "build": "vite build && cd ../.. && bun run audit:web",
     "preview": "vite preview",
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "test:cloudflare-artifact": "vite build && bun test tests/cloudflare-artifact.test.ts",
