@@ -2,6 +2,6 @@
 "@openkey/api": patch
 ---
 
-Hardening: accept and preserve the signed ReCap delegation-mode field (`xyz.tinycloud.policy/delegationMode`) without changing signing defaults.
+Hardening: signed delegations keep their delegation-mode field. Signing defaults aren't affected.
 
 Details: TC-3810
