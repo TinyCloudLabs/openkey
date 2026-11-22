@@ -1,3 +1,4 @@
+// @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
 import { Window } from 'happy-dom';
 import { get } from 'svelte/store';
