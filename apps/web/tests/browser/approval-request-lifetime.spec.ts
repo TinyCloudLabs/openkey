@@ -148,7 +148,7 @@ for (const [name, grants] of [['secrets', [notes, secret]], ['decrypt', [notes, 
     await fold.getByLabel('Or type a time').fill('31d');
     await fold.getByRole('button', { name: 'Set' }).click();
     const limit = fold.getByRole('alert');
-    await expect(limit).toHaveText('This approval can last up to 30 days.');
+    await expect(limit).toHaveText('This approval can last up to 7 days.');
     expect(expiries.at(-1)).toBe('7200s');
     if (name === 'secrets') {
       await testInfo.attach('secrets expiry limit', { body: await limit.innerText(), contentType: 'text/plain' });
@@ -163,7 +163,7 @@ for (const [name, grants] of [['secrets', [notes, secret]], ['decrypt', [notes, 
   });
 }
 
-test('the fold can shorten a 30-day suggestion but cannot use the longer signed maximum', async ({ page }) => {
+test('the fold can lengthen a suggestion up to the signed maximum', async ({ page }) => {
   const expiries = await openReview(page, { grantLifetimeSeconds: 60 * DAY, suggestedLifetimeSeconds: 30 * DAY });
   await expect(approve(page)).toBeEnabled();
   await expect(line(page)).toContainText('30 days');
@@ -171,8 +171,8 @@ test('the fold can shorten a 30-day suggestion but cannot use the longer signed 
   const fold = await openFold(page);
   await fold.getByLabel('Or type a time').fill('31d');
   await fold.getByRole('button', { name: 'Set' }).click();
-  await expect(fold.getByRole('alert')).toHaveText('This approval can last up to 30 days.');
-  expect(expiries.at(-1)).toBe(`${30 * DAY}s`);
+  await expect(line(page)).toContainText('31 days');
+  expect(expiries.at(-1)).toBe(`${31 * DAY}s`);
 
   await fold.getByRole('button', { name: '7 days', exact: true }).click();
   await expect(approve(page)).toBeEnabled();

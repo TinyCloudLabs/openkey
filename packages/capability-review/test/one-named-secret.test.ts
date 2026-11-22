@@ -1,6 +1,6 @@
 // A one-tap request to use one named secret: a read of exactly `vault/secrets/NAME` in the signer's own secrets
-// space plus decrypt on the signer's own encryption network. Its rows name the secret; any other shape keeps the
-// ordinary rows.
+// space plus decrypt on that secret's own key (`default/secrets/<name>`). Its rows name the secret; any other shape
+// keeps the ordinary rows.
 
 import { describe, expect, it } from "bun:test";
 
@@ -12,7 +12,7 @@ const OTHER = "0x2222222222222222222222222222222222222222";
 const secrets = (owner: string) => `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${owner}:secrets`;
 const network = (owner: string) => `urn:tinycloud:encryption:did:pkh:eip155:${FIXTURE_META.chainId}:${owner}:default`;
 const READ_OPENAI = { [`${secrets(FIXTURE_META.address)}/kv/vault/secrets/OPENAI_API_KEY`]: ["tinycloud.kv/get"] };
-const DECRYPT = { [network(FIXTURE_META.address)]: ["tinycloud.encryption/decrypt"] };
+const DECRYPT = { [`${network(FIXTURE_META.address)}/secrets/openai_api_key`]: ["tinycloud.encryption/decrypt"] };
 
 function grantsFor(att: Record<string, string[]>): CapabilityGrant[] {
   return parseCapabilityReview({
@@ -42,17 +42,17 @@ function grantsFor(att: Record<string, string[]>): CapabilityGrant[] {
 }
 
 describe("one named secret", () => {
-  it("names the secret, then the decrypt row, both Sensitive", () => {
+  it("names the secret in one Sensitive row", () => {
     const grants = grantsFor({ ...READ_OPENAI, ...DECRYPT });
     expect(oneNamedSecret(grants)).toBe("OPENAI_API_KEY");
     expect(buildSummaryStatements(grants).map((row) => [row.key, row.primaryText, row.severity])).toEqual([
-      ["read-named-secret", "Read the secret OPENAI_API_KEY", "sensitive"],
-      [NAMED_SECRET_DECRYPT_ROW, "Decrypt your data", "sensitive"],
+      [NAMED_SECRET_DECRYPT_ROW, "Read the secret OPENAI_API_KEY", "sensitive"],
     ]);
   });
 
   it("keeps the ordinary rows for any other shape", () => {
     const cases: Record<string, Record<string, string[]>> = {
+      "the network, not the secret's key": { ...READ_OPENAI, [network(FIXTURE_META.address)]: ["tinycloud.encryption/decrypt"] },
       "read without decrypt": READ_OPENAI,
       "decrypt without read": DECRYPT,
       "a third permission": { ...READ_OPENAI, ...DECRYPT, [`tinycloud:pkh:eip155:1:${FIXTURE_META.address}:default/kv/notes/`]: ["tinycloud.kv/get"] },
@@ -66,9 +66,9 @@ describe("one named secret", () => {
     };
     for (const [name, att] of Object.entries(cases)) {
       const grants = grantsFor(att);
-      const rows = buildSummaryStatements(grants).map((row) => row.primaryText);
-      expect({ name, secret: oneNamedSecret(grants), plainDecrypt: rows.includes("Decrypt your data") })
-        .toEqual({ name, secret: null, plainDecrypt: false });
+      const rows = buildSummaryStatements(grants).map((row) => row.key);
+      expect({ name, secret: oneNamedSecret(grants), oneSecretRow: rows.includes(NAMED_SECRET_DECRYPT_ROW) })
+        .toEqual({ name, secret: null, oneSecretRow: false });
     }
   });
 });

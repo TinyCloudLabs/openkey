@@ -1,4 +1,4 @@
-// A one-tap request to use one named secret (read `vault/secrets/NAME` and decrypt) gets its own heading and rows.
+// A one-tap request to use one named secret (read `vault/secrets/NAME` and decrypt on that secret's own key) gets its own heading and rows.
 // Its signer is not a listed TinyCloud One key, so the page names no requester and says it is not verified.
 // Every API call is answered by `page.route`; no API server runs.
 
@@ -20,13 +20,13 @@ const KV_GET = 'tinycloud.kv/get';
 const notes = { service: 'tinycloud.kv', space: SPACE, path: 'notes/', ability: KV_GET, resource: `${SPACE}/kv/notes/` };
 const SECRETS = `tinycloud:pkh:eip155:1:${ADDRESS}:secrets`;
 const secret = { service: 'tinycloud.kv', space: SECRETS, path: 'vault/secrets/OPENAI_API_KEY', ability: KV_GET, resource: `${SECRETS}/kv/vault/secrets/OPENAI_API_KEY` };
-const network = `urn:tinycloud:encryption:${OWNER}:default`;
+const secretKey = `urn:tinycloud:encryption:${OWNER}:default/secrets/openai_api_key`;
 const decrypt = {
   service: 'tinycloud.encryption',
   space: 'encryption',
-  path: network,
+  path: secretKey,
   ability: 'tinycloud.encryption/decrypt',
-  resource: network,
+  resource: secretKey,
 };
 
 function respond(route: Route, body: unknown, status = 200) {
@@ -108,7 +108,7 @@ async function openReview(page: Page, options: {
   return expiries;
 }
 
-const DECRYPT_NOTE = 'Lets it open your encrypted data, including this secret. Until each secret has its own key, this covers all of them.';
+const DECRYPT_NOTE = 'Lets it open only this secret.';
 
 test('one named secret: plain heading and rows, no requester claimed', async ({ page }) => {
   await openReview(page, { grants: [secret, decrypt] });
@@ -121,8 +121,8 @@ test('one named secret: plain heading and rows, no requester claimed', async ({ 
   await expect(dialog).not.toContainText('TinyCloud One');
   await expect(dialog).not.toContainText('TinyCloud CLI');
   await expect(page.getByRole('region', { name: 'Delegation destination' }).getByText('Returned to')).toHaveCount(0);
-  await expect(dialog.locator('.summary-statement .statement-primary')).toHaveText(['Read the secret OPENAI_API_KEY', 'Decrypt your data']);
-  await expect(dialog.locator('.summary-statement').nth(1)).toContainText(DECRYPT_NOTE);
+  await expect(dialog.locator('.summary-statement .statement-primary')).toHaveText(['Read the secret OPENAI_API_KEY']);
+  await expect(dialog.locator('.summary-statement').nth(0)).toContainText(DECRYPT_NOTE);
 });
 
 test('anything beyond the one secret keeps the ordinary heading and rows', async ({ page }) => {
@@ -131,7 +131,7 @@ test('anything beyond the one secret keeps the ordinary heading and rows', async
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
   await expect(dialog.getByRole('heading', { level: 2 })).toHaveText('Authorize capabilities');
   await expect(dialog).toContainText('Review the access this app is asking for.');
-  await expect(dialog).not.toContainText('Read the secret');
+  await expect(dialog).toContainText('Read the secret OPENAI_API_KEY');
   await expect(dialog).not.toContainText(DECRYPT_NOTE);
 });
 

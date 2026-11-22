@@ -77,9 +77,16 @@
     elevatedRejectedCountAnnouncement,
     elevatedWhere,
     elevatedWhereText,
+    allSecretsAbility,
+    allSecretsCard,
+    allSecretsReach,
+    grantDecryptsOneSecret,
+    secretLifetimeCapApplies,
+    SECRET_GRANT_MAX_SECONDS,
     type ElevatedKind,
   } from "@openkey/capability-review";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
+  import { NETWORK_DECRYPT_CAP } from "$lib/network-decrypt-cap";
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
   import ElevatedWarning from "$lib/components/signing/elevated-warning.svelte";
@@ -306,9 +313,23 @@
       ? onceDefaultExpiryMs(onceTier, shortenOnlyExpiry?.startMs ?? requestedExpiry)
       : null,
   );
+  // A grant on secret keys made outside a signed approval request (popup, frame, pasted link) lasts 7 days at most,
+  // and so does a whole network's decrypt where the network cap is on: the server clamps a longer one, so
+  // the screen offers no more. A signed request has its own maximum.
+  const secretCapMs = $derived(
+    !shortenOnlyExpiry && secretLifetimeCapApplies(model.permissions, { networkDecrypt: NETWORK_DECRYPT_CAP })
+      ? SECRET_GRANT_MAX_SECONDS * 1000
+      : null,
+  );
+  const unsignedMaxMs = $derived.by(() => {
+    const bounded = expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null;
+    return secretCapMs === null ? bounded : Math.min(bounded ?? secretCapMs, secretCapMs);
+  });
+  // A signed request may be made longer than its start, up to the maximum its requester signed, unless it
+  // can open all secrets or all encrypted data: then the start (the requester's own suggestion) stays the most.
   const expiryFoldMaxMs = $derived(shortenOnlyExpiry
-    ? shortenOnlyExpiry.startMs
-    : expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null,
+    ? (onceTier ? shortenOnlyExpiry.startMs : Math.max(expiryMaxMs ?? 0, shortenOnlyExpiry.startMs))
+    : unsignedMaxMs,
   );
   let ownerChoseExpiry = $state(false);
   let onceDefaultSent = $state(false);
@@ -329,6 +350,16 @@
       if (expiryMs === ONCE_DEFAULT_EXPIRY_MS) onExpiryChange(null);
     }
   });
+  // An app's longer time on secret keys starts at the 7 days the server allows (the one-hour start, where it applies,
+  // is shorter and goes first).
+  let secretCapSent = $state(false);
+  $effect(() => {
+    if (secretCapSent || approving || previewPending || !onExpiryChange || ownerChoseExpiry || onceDefaultMs !== null) return;
+    if (secretCapMs !== null && expiryMs === null && requestedExpiry !== null && requestedExpiry > secretCapMs) {
+      secretCapSent = true;
+      onExpiryChange(secretCapMs);
+    }
+  });
   function chooseExpiry(ms: number | null) {
     ownerChoseExpiry = true;
     onExpiryChange?.(ms);
@@ -338,6 +369,13 @@
     shortenOnlyExpiry && onceTier && renewal?.leaseMs == null &&
     (expiryMs ?? shortenOnlyExpiry.startMs) <= ONCE_DEFAULT_EXPIRY_MS
       ? shortenOnlyExpiry.onceNote
+      : null,
+  );
+  // A signed request for a secret's own key says where it starts and the most it can be.
+  const signedLengthNote = $derived(
+    shortenOnlyExpiry && !onceTier && renewal?.leaseMs == null && expiryFoldMaxMs !== null &&
+    model.permissions.some(grantDecryptsOneSecret)
+      ? shortenOnlyExpiry.lengthNote(shortenOnlyExpiry.startMs, expiryFoldMaxMs)
       : null,
   );
 
@@ -621,17 +659,29 @@
     block: boolean;
     unblock: boolean;
     where: string | null;
+    /** The all-secrets card: decrypt on a whole network, decrypt or key creation on `secrets/`. */
+    allSecrets: boolean;
   }
+  // What the request reaches across all secrets: the all-secrets card on the warning screen, or above the summary on
+  // a screen without one (a link, the command line).
+  const allSecrets = $derived(allSecretsReach(selectedGrants));
   // One group per selected grant that carries decrypt, key creation, or blocking or unblocking of keys on the
   // encryption network, or on keys outside the app's own `apps/` area. The same `elevatedKindOf` decides on the
-  // server, so both see the same permissions.
+  // server, so both see the same permissions. Every action that can open all secrets goes on one card of its own,
+  // first, whichever grant carries it.
   const elevatedGroups = $derived.by((): ElevatedGroup[] => {
     if (!elevated) return [];
-    return selectedGrants.flatMap((grant): ElevatedGroup[] => {
+    const allSecretsActionIds: string[] = [];
+    const groups = selectedGrants.flatMap((grant): ElevatedGroup[] => {
       const entry = { service: grant.service, space: grant.space, path: grant.path };
       const picked = grant.actions.flatMap((action) => {
         const kind = elevatedKindOf(entry, action.ability);
-        return kind === null ? [] : [{ action, kind }];
+        if (kind === null) return [];
+        if (allSecrets !== null && allSecretsAbility(entry, action.ability) !== null) {
+          allSecretsActionIds.push(action.id);
+          return [];
+        }
+        return [{ action, kind }];
       });
       if (picked.length === 0) return [];
       const has = (verb: string) => picked.some(({ action }) => elevatedAbilityVerb(action.ability) === verb);
@@ -645,9 +695,25 @@
           block: has("key.block"),
           unblock: has("key.unblock"),
           where: elevatedWhere(entry),
+          allSecrets: false,
         },
       ];
     });
+    if (allSecretsActionIds.length === 0) return groups;
+    return [
+      {
+        id: "all-secrets",
+        kind: "encryption-network",
+        actionIds: allSecretsActionIds,
+        decrypt: true,
+        create: false,
+        block: false,
+        unblock: false,
+        where: null,
+        allSecrets: true,
+      },
+      ...groups,
+    ];
   });
   let allowedElevated = $state<Set<string>>(new Set());
   let rejectedCards = $state<Array<{ heading: string; actionIds: string[] }>>([]);
@@ -660,16 +726,23 @@
   // never a name the app supplies; "This request" where nothing is verified.
   const elevatedSite = $derived(originHost ?? null);
   const elevatedCards = $derived(
-    pendingElevatedGroups.map((group) => ({
-      id: group.id,
-      ...elevatedCard(
-        group.kind,
-        { decrypt: group.decrypt, create: group.create, block: group.block, unblock: group.unblock },
-        elevatedSite,
-        elevatedWhereText(group.where),
-      ),
-    })),
+    pendingElevatedGroups.map((group) => {
+      if (group.allSecrets && allSecrets !== null) {
+        const card = allSecretsCard(allSecrets, elevatedSite);
+        return { id: group.id, heading: card.heading, body: card.cue === null ? card.body : `${card.body} ${card.cue}` };
+      }
+      return {
+        id: group.id,
+        ...elevatedCard(
+          group.kind,
+          { decrypt: group.decrypt, create: group.create, block: group.block, unblock: group.unblock },
+          elevatedSite,
+          elevatedWhereText(group.where),
+        ),
+      };
+    }),
   );
+  const allSecretsSummaryCard = $derived(!elevated && allSecrets !== null ? allSecretsCard(allSecrets, originHost ?? null) : null);
   const notApprovedRows = $derived(
     rejectedCards.filter((card) => card.actionIds.every((id) => !selection.has(id))).map((card) => elevatedNotApprovedRow(card.heading)),
   );
@@ -845,6 +918,15 @@
     {#if identity && summaryStatements.length > 0}
       <p class="summary-lead">{appRequestingLine(identity.name)}</p>
     {/if}
+    {#if allSecretsSummaryCard}
+      <div class="all-secrets" role="note" aria-labelledby="all-secrets-heading" data-testid="all-secrets-card">
+        <h3 class="all-secrets-heading" id="all-secrets-heading">{allSecretsSummaryCard.heading}</h3>
+        <p class="all-secrets-body">{allSecretsSummaryCard.body}</p>
+        {#if allSecretsSummaryCard.cue}
+          <p class="all-secrets-body">{allSecretsSummaryCard.cue}</p>
+        {/if}
+      </div>
+    {/if}
     {#if summaryStatements.length > 0}
       <ul class="summary-statements">
         {#each summaryStatements as statement (statement.key)}
@@ -860,6 +942,8 @@
             </span>
             {#if oneSecretShown && statement.key === NAMED_SECRET_DECRYPT_ROW}
               <span class="statement-detail">{oneSecret!.decryptNote}</span>
+            {:else if statement.detail}
+              <span class="statement-detail">{statement.detail}</span>
             {/if}
           </li>
         {/each}
@@ -890,11 +974,12 @@
       <ApprovalExpiryControl
         requestedMs={requestedExpiry}
         chosenMs={expiryMs}
-        maxMs={expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null}
+        maxMs={unsignedMaxMs}
         disabled={approving}
         onChange={chooseExpiry}
         onceSite={onceDefaultShown && !shortenOnlyExpiry ? onceNoteSite : null}
         onceNote={signedOnceNote}
+        lengthNote={signedLengthNote}
         {renewal}
         sensitive={renewalNeedsSensitiveConfirm(selectedGrants)}
         {requestedBy}
@@ -1408,6 +1493,26 @@
     margin: 0 0 6px;
     unicode-bidi: isolate;
     overflow-wrap: anywhere;
+  }
+  /* The all-secrets card on a screen without the warning screen: the same colours as the Sensitive callout. */
+  .all-secrets {
+    background: #fff7ed;
+    border: 1px solid #fdba74;
+    border-radius: 12px;
+    padding: 10px 12px;
+    color: #9a3412;
+  }
+  .all-secrets-heading {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.4;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  .all-secrets-body {
+    margin: 4px 0 0;
+    font-size: 13px;
+    line-height: 1.45;
   }
   .requester-line {
     font-size: 13px;

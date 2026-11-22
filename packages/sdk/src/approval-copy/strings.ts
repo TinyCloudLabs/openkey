@@ -36,6 +36,10 @@ export const LOADER = {
 export const APPROVAL_EXPIRY = {
   onceStart: 'Requests that can open all your secrets or all your encrypted data start at 1 hour. You can choose longer, up to what the app asked for.',
   shortenLimit: 'This approval can last up to {duration}.',
+  /** A signed request for a secret's own key whose start is shorter than its maximum. */
+  lengthen: 'This request starts at {start}, as the app asked. You can choose up to {max}.',
+  /** The same request when it starts at its maximum. Shorter lengths are still offered. */
+  lengthFixed: "This request lasts {max}, as the app asked. That's the most it can be.",
 } as const;
 
 /**
@@ -46,8 +50,8 @@ export const ONE_SECRET = {
   heading: '{requester} wants to use one secret',
   headingUnnamed: 'A request to use one secret',
   hint: 'Review it, choose how long, then approve.',
-  /** Under the "Decrypt your data" row. */
-  decryptNote: 'Lets it open your encrypted data, including this secret. Until each secret has its own key, this covers all of them.',
+  /** Under the "Read the secret {NAME}" row, shown only when the request's one decrypt is that secret's own key. */
+  decryptNote: 'Lets it open only this secret.',
 } as const;
 
 /**

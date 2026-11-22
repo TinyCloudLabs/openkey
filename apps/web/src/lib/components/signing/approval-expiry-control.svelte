@@ -46,6 +46,8 @@
      */
     onceSite?: string | null;
     onceNote?: string | null;
+    /** On a signed request for a secret's own key: its start and the most it can be. Null shows no note. */
+    lengthNote?: string | null;
     /** Show the "How long it lasts" fold here. False where the screen shows ApprovalExpiryChooser elsewhere. */
     chooser?: boolean;
     /** Who holds the access, as the line names them: an app, or the device of a device sign-in. */
@@ -65,6 +67,7 @@
     permissionCount = 1,
     onceSite = null,
     onceNote = null,
+    lengthNote = null,
     chooser = true,
     holder = "app",
   }: Props = $props();
@@ -168,6 +171,9 @@
       <p class="expiry-once-note" data-testid="approval-expiry-once-note">
         {onceSite} asked for {formatDuration(requestedMs)}. Access that can open all your secrets or all your encrypted data starts at {formatDuration(shownMs)}. You can choose longer under How long it lasts.
       </p>
+    {/if}
+    {#if lengthNote !== null}
+      <p class="expiry-once-note" data-testid="approval-expiry-length-note">{lengthNote}</p>
     {/if}
     {#if chooser}
       <details class="expiry-fold">

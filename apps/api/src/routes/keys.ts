@@ -24,6 +24,7 @@ import {
   exactShareKeyRefusalForMessage,
   messageHasElevatedPermissions,
 } from '../services/app-key-refusal';
+import { messageExceedsSecretLifetime, secretLifetimeBody } from '../services/secret-lifetime';
 import { ELEVATED_NOT_DECIDED_CODE, elevatedNotDecidedBody } from '../services/elevated-decision';
 import { rejectNonBrowserControlRequest, rejectNonOpenKeySignRequest } from '../middleware/browser-control';
 import {
@@ -427,6 +428,12 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const shareRefusal = exactShareKeyRefusalForMessage(body.message);
   if (shareRefusal) {
     return c.json(appKeyRefusalBody(shareRefusal, 'browser'), appKeyRefusalStatus(shareRefusal));
+  }
+  // These bytes cannot be shortened, so more than 7 days of `decrypt` or `key.create` on secret keys (or, with
+  // `OPENKEY_NETWORK_DECRYPT_CAP=enabled`, of a whole network's `decrypt`) is refused. Checked before unseal.
+  const lifetimeReach = messageExceedsSecretLifetime(body.message, Date.now());
+  if (lifetimeReach) {
+    return c.json(secretLifetimeBody(lifetimeReach), 400);
   }
   // TC-2927: `decrypt`, `key.create`, `key.block` or `key.unblock` on the encryption network, or on keys outside the
   // site's own `apps/`, is signed only after the owner decided on it on the warning screen. These exact bytes cannot be
