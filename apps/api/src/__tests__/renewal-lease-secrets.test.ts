@@ -6,6 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import { Wallet } from 'ethers';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import {
+  MAX_LEASE_SECONDS,
   RenewalLeaseError,
   SENSITIVE_RENEWAL_WINDOW_SECONDS,
   parseRenewalChoice,
@@ -105,6 +106,50 @@ describe('a lease the app asked for, on a grant that reaches secrets, without th
       }
     });
   }
+});
+
+// Naomi's N3 ruling: each renewed window is at most 7 days, and a lease's total life is at most 365 days, after which
+// the owner approves again from scratch. The total is the owner's lease length, capped on every path that sets it.
+describe('a lease on a grant that reaches secrets never lasts more than 365 days in total', () => {
+  async function leaseFor(seconds: number) {
+    const fake = node();
+    try {
+      const stage = await prepareRenewalStage({
+        userId: 'owner', host: HOST, leaseLifetimeSeconds: seconds, delegation: grant(SECRET_DECRYPT, SENSITIVE_RENEWAL_WINDOW_SECONDS), now: new Date(),
+        fetchImpl: fake.fetchImpl, sensitiveConfirmed: true,
+      });
+      return { stage, error: null, asked: fake.asked };
+    } catch (error) {
+      return { stage: null, error: error as RenewalLeaseError, asked: fake.asked };
+    }
+  }
+
+  test('365 days with 7-day windows is accepted, and the lease ends exactly 365 days after approval', async () => {
+    const result = await leaseFor(MAX_LEASE_SECONDS);
+    expect(result.error).toBeNull();
+    expect(Date.parse(result.stage!.leaseExpiresAt) - Date.parse(result.stage!.approvedAt)).toBe(365 * DAY * 1000);
+  });
+
+  test('one second more, or a lifetime that is not a positive whole number, is refused before the node is asked', async () => {
+    for (const seconds of [MAX_LEASE_SECONDS + 1, 400 * DAY, 0, -1, 1.5, Number.NaN]) {
+      const result = await leaseFor(seconds);
+      expect(result.error).toMatchObject({ code: 'request_binding', status: 400 });
+      expect(result.asked).toEqual([]);
+    }
+  });
+
+  test('the owner choice for such a grant is refused past 365 days, confirmed or not', () => {
+    const signed = { version: 1 as const, leaseLifetimeSeconds: MAX_LEASE_SECONDS };
+    expect(parseRenewalChoice({ choice: 'leased', leaseLifetimeSeconds: MAX_LEASE_SECONDS, sensitiveConfirmed: true }, signed, true))
+      .toEqual({ choice: 'leased', leaseLifetimeSeconds: MAX_LEASE_SECONDS, sensitiveConfirmed: true });
+    for (const confirmed of [true, undefined]) {
+      expect(() => parseRenewalChoice(
+        { choice: 'leased', leaseLifetimeSeconds: MAX_LEASE_SECONDS + 1, ...(confirmed ? { sensitiveConfirmed: true } : {}) },
+        { version: 1, leaseLifetimeSeconds: MAX_LEASE_SECONDS + 1 },
+        true,
+      )).toThrow('does not match');
+    }
+  });
 });
 
 describe('the owner confirmed renewing sensitive access', () => {

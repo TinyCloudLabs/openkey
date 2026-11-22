@@ -299,6 +299,9 @@ export async function prepareRenewalStage(input: {
   sensitiveConfirmed?: boolean;
 }): Promise<RenewalStage> {
   const { delegation } = input;
+  if (!Number.isSafeInteger(input.leaseLifetimeSeconds) || input.leaseLifetimeSeconds <= 0 || input.leaseLifetimeSeconds > MAX_LEASE_SECONDS) {
+    throw new RenewalLeaseError('request_binding', 'Renewal choice does not match the approval request', 400);
+  }
   const header = delegation.delegationHeader as { Authorization?: unknown } | undefined;
   const originalCid = delegation.delegationCid;
   const signedSiwe = delegation.siwe;
