@@ -62,6 +62,8 @@
     grantHeading,
     PROTOCOL_HEADLINE,
     PROTOCOL_HINT,
+    NAMED_SECRET_DECRYPT_ROW,
+    oneNamedSecret,
     sensitiveRowsCallout,
     abbreviateDid,
     abbreviateSpaceId,
@@ -172,6 +174,16 @@
     approveVisibility?: ApproveVisibility | null;
     /** The app's own words about a plain `signMessage()` request (name, who it is for, reason); shown under the requester line. */
     claimed?: ClaimedPresentationView | null;
+    /**
+     * The words for a request for one named secret, set only by the one-tap approval: its heading, the line
+     * under it, and the note under the decrypt row. Used while the selection is exactly that request.
+     */
+    oneSecret?: { headline: string; hint: string; decryptNote: string } | null;
+    /**
+     * Set only by a one-tap approval whose signer OpenKey can't name: the "Requested by" value, with a line under
+     * it, while the request names no requester.
+     */
+    unverifiedRequester?: { name: string; line: string } | null;
     onApprove: () => void;
     onCancel: () => void;
     onRetry?: () => void;
@@ -210,6 +222,8 @@
     elevated = null,
     approveVisibility = null,
     claimed = null,
+    oneSecret = null,
+    unverifiedRequester = null,
     onApprove,
     onCancel,
     onRetry,
@@ -264,8 +278,6 @@
     model.permissions.some((grant) => grant.actions.some((action) => action.editable)),
   );
   const isMalformedRecap = $derived(model.protocol === "malformed-recap");
-  const headline = $derived(PROTOCOL_HEADLINE[model.protocol]);
-  const hint = $derived(PROTOCOL_HINT[model.protocol]);
 
   // Summary copy and the sensitive count describe only actions the user is
   // currently approving. Advanced details deliberately retains the baseline
@@ -283,6 +295,9 @@
   // Sensitive below it (capability-review `buildSummaryStatements`).
   const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
   const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
+  const oneSecretShown = $derived(oneSecret !== null && oneNamedSecret(selectedGrants) !== null);
+  const headline = $derived(oneSecretShown ? oneSecret!.headline : PROTOCOL_HEADLINE[model.protocol]);
+  const hint = $derived(oneSecretShown ? oneSecret!.hint : PROTOCOL_HINT[model.protocol]);
 
   // A signed request that can open all secrets or all encrypted data starts as a whole at one hour or less.
   const onceTier = $derived(isOnceTier(shortenOnlyExpiry ? model.permissions : selectedGrants));
@@ -341,6 +356,8 @@
   // Names that come from a manifest are app-supplied text: they are shown only
   // after the display rules (`appDisplayName`), everywhere on this view.
   const requesterName = $derived(appDisplayName(model.requester.displayName) ?? originHost ?? "");
+  const requesterUnverified = $derived(!requesterName && unverifiedRequester !== null);
+  const requesterShown = $derived(requesterUnverified ? unverifiedRequester!.name : requesterName);
   const manifestNameShown = $derived(appDisplayName(model.requester.manifestName));
   const requestedBy = $derived(originHost ?? requesterName);
   // The note under the expiry line names who asked as the screen does: the verified origin, or "This request" where
@@ -761,8 +778,11 @@
     {:else}
       <h2 id="signing-approval-headline" class="headline" tabindex="-1">{headline}</h2>
       <p class="requester-line">
-        Requested by <span class="requester-name">{requesterName}</span>
+        Requested by <span class="requester-name">{requesterShown}</span>
       </p>
+      {#if requesterUnverified}
+        <p class="requester-line">{unverifiedRequester!.line}</p>
+      {/if}
     {/if}
     <p id="signing-approval-hint" class="hint">{hint}</p>
   </header>
@@ -838,6 +858,9 @@
                 <span class="summary-sensitive-pill">Sensitive</span>
               {/if}
             </span>
+            {#if oneSecretShown && statement.key === NAMED_SECRET_DECRYPT_ROW}
+              <span class="statement-detail">{oneSecret!.decryptNote}</span>
+            {/if}
           </li>
         {/each}
       </ul>
@@ -952,7 +975,7 @@
       <section class="identity" aria-label="Requester identity">
       <div class="row">
         <span class="label">Requester</span>
-        <span class="value">{requesterName}</span>
+        <span class="value">{requesterShown}</span>
       </div>
 
       {#if model.requester.verifiedOrigin}
@@ -1483,6 +1506,12 @@
     line-height: 1.45;
     font-weight: 600;
     color: #0f172a;
+  }
+  .statement-detail {
+    margin-top: 2px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #475569;
   }
   .statement-line {
     display: flex;
