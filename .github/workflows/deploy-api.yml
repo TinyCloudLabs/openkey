@@ -54,9 +54,9 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: bun scripts/inspect-api-production.ts
 
-  # The latest completed Share sender smoke on main must be green and must have started after the deployed
-  # API commit finished deploying (on that commit or a later one). Otherwise the deploy stops. `override_reason`
-  # skips the check and is recorded in the run summary.
+  # The latest Share sender smoke on main that ran (not skipped) must be green, must have started after the
+  # serving API commit's deploy job finished, and must have run on that commit or a later one. Otherwise the
+  # deploy stops. `override_reason` skips the check and is recorded in the run summary.
   smoke-gate:
     if: github.ref == 'refs/heads/main' && !inputs.preflight_only && inputs.override_reason == ''
     runs-on: ubuntu-latest
@@ -67,22 +67,27 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Require a green smoke on the deployed API
+      - name: Require a green smoke on the serving API
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          serving=$(curl -fsS -m 15 https://api.openkey.so/health | jq -er '.commit | select(test("^[0-9a-f]{40}$"))')
           deploys="$RUNNER_TEMP/deploy-runs.ndjson"
           : > "$deploys"
-          while IFS=$'\t' read -r id sha updated; do
-            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/jobs" \
-              | jq -c --argjson id "$id" --arg sha "$sha" --arg updated "$updated" \
-                '{id: $id, head_sha: $sha, updated_at: $updated, jobs: [.jobs[] | {name, conclusion}]}' >> "$deploys"
-          done < <(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-api.yml/runs?branch=main&status=success&per_page=10" \
-            --jq '.workflow_runs[] | [.id, .head_sha, .updated_at] | @tsv')
-          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/share-sender-smoke.yml/runs?branch=main&per_page=50" \
-            --jq '.workflow_runs' > "$RUNNER_TEMP/smoke-runs.json"
-          jq -n --slurpfile d "$deploys" --slurpfile s "$RUNNER_TEMP/smoke-runs.json" '{deployRuns: $d, smokeRuns: $s[0]}' \
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-api.yml/runs?branch=main&status=success&head_sha=${serving}&per_page=20" \
+            --jq '.workflow_runs[].id' | while read -r id; do
+              gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/jobs" \
+                | jq -c '{jobs: [.jobs[] | {name, conclusion, completed_at}]}' >> "$deploys"
+            done
+          smokes="$RUNNER_TEMP/smoke-runs.ndjson"
+          : > "$smokes"
+          for conclusion in success failure cancelled timed_out; do
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/share-sender-smoke.yml/runs?branch=main&status=${conclusion}&per_page=1" \
+              --jq '.workflow_runs[0] // empty | {id, status, conclusion, head_sha, run_started_at, html_url}' >> "$smokes"
+          done
+          jq -n --arg serving "$serving" --slurpfile d "$deploys" --slurpfile s "$smokes" \
+            '{serving: $serving, deployRuns: $d, smokeRuns: $s}' \
             | node .github/scripts/share-smoke-gate.mjs | tee -a "$GITHUB_STEP_SUMMARY"
 
   deploy:
