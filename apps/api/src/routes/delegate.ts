@@ -153,7 +153,7 @@ import {
   approvalPasskeyOfferInFlow,
   approvalRequestDigest,
   checkApprovalPasskey,
-  checkApprovalPasskeyInFlow,
+  checkApprovalPasskeySpendingFlow,
   clearFlowPasskey,
   FLOW_PASSKEY_HEADER,
   messageApprovalSensitivity,
@@ -3764,7 +3764,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // five minutes; the cover is spent the moment this approval passes the gate.
   const webFlow = webFlowIdFromHeader(c.req.header(FLOW_PASSKEY_HEADER));
   if (!isExternal) {
-    const gate = await checkApprovalPasskeyInFlow(
+    const gate = await checkApprovalPasskeySpendingFlow(
       prisma,
       { userId: user.id, sessionId: c.get('session')?.id ?? null },
       authorizeSignPasskeyBinding(body.authorizationContextToken, body.previewApprovalToken!, boundAddress, signedMessage),

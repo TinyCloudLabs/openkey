@@ -422,6 +422,30 @@ export async function checkApprovalPasskeyInFlow(
   return refusal ? { refusal } : { refusal: null, method: 'REQUEST_PASSKEY' };
 }
 
+/**
+ * `checkApprovalPasskeyInFlow` for the web sign routes: the cover that lets the approval through is spent by the check
+ * itself, one delete that reports whether this call removed the row, so of two parallel approvals exactly one passes on
+ * the cover and the other needs its own passkey. A cover that is gone or expired falls back to the approval's own
+ * assertion. The offers stay read-only (`approvalPasskeyOfferInFlow`).
+ */
+export async function checkApprovalPasskeySpendingFlow(
+  db: ApprovalDatabase, subject: ApprovalSubject, binding: ApprovalBinding, sensitivity: ApprovalSensitivity,
+  assertion: unknown, flowId: string | null, rp = relyingParty(), now = new Date(),
+): Promise<{ refusal: ApprovalPasskeyRefusal } | { refusal: null; method: ApprovalPasskeyMethod }> {
+  if (!await approvalNeedsPasskey(db, subject.userId, sensitivity)) return { refusal: null, method: 'NOT_REQUIRED' };
+  if (subject.sessionId !== null && flowId !== null && isFlowId(flowId)) {
+    const spent = await db.verification.deleteMany({
+      where: { identifier: flowIdentifier(subject.sessionId, flowId), userId: subject.userId, expiresAt: { gt: now } },
+    });
+    if (spent.count === 1) {
+      log('info', 'approval_passkey_flow_covered');
+      return { refusal: null, method: 'FLOW_PASSKEY' };
+    }
+  }
+  const refusal = await checkApprovalPasskey(db, subject, binding, sensitivity, assertion, rp, now);
+  return refusal ? { refusal } : { refusal: null, method: 'REQUEST_PASSKEY' };
+}
+
 /** `approvalPasskeyOffer` for the same kind of route: no challenge when this request's own sign-in already counts. */
 export async function approvalPasskeyOfferInFlow(
   db: ApprovalDatabase, subject: ApprovalSubject, binding: ApprovalBinding, sensitivity: ApprovalSensitivity,

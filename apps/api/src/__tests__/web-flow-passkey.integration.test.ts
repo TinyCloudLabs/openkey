@@ -471,7 +471,7 @@ if (process.env.OPENKEY_WEB_FLOW_PASSKEY_CHILD !== '1') {
       const readers: Record<string, number> = {};
       for (const file of files) {
         const source = await readFile(join(root, 'apps/api/src', file), 'utf8');
-        const count = (source.match(/\b(checkApprovalPasskeyInFlow|approvalPasskeyOfferInFlow|flowPasskeyCovers)\(/g) ?? []).length;
+        const count = (source.match(/\b(checkApprovalPasskeyInFlow|checkApprovalPasskeySpendingFlow|approvalPasskeyOfferInFlow|flowPasskeyCovers)\(/g) ?? []).length;
         if (count > 0) readers[file] = count;
       }
       expect(Object.keys(readers).sort()).toEqual([

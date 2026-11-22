@@ -29,7 +29,7 @@ import {
   approvalPasskeyOfferInFlow,
   approvalRequestDigest,
   checkApprovalPasskey,
-  checkApprovalPasskeyInFlow,
+  checkApprovalPasskeySpendingFlow,
   clearFlowPasskey,
   FLOW_PASSKEY_HEADER,
   messageApprovalSensitivity,
@@ -427,7 +427,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   // TC-3442: the account's passkey setting, before the key is unsealed. A passkey sign-in the web sign page was opened
   // with covers it for five minutes; the cover is spent the moment this approval passes the gate.
   const webFlow = webFlowIdFromHeader(c.req.header(FLOW_PASSKEY_HEADER));
-  const gate = await checkApprovalPasskeyInFlow(
+  const gate = await checkApprovalPasskeySpendingFlow(
     prisma, { userId: user.id, sessionId: c.get('session')?.id ?? null }, signPasskeyBinding(keyId, body),
     messageApprovalSensitivity(body.message, key.address), body.passkeyAssertion, webFlow,
   );

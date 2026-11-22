@@ -881,8 +881,11 @@ sign-in made **for this sign request** counts as that request's approval passkey
   `POST /api/keys/:id/sign/passkey` (offer) and `POST /api/keys/:id/sign` (check). `authorize-sign-prepare` offers
   no passkey. The user's approval-passkey setting still decides whether Approve asks for a passkey; the cover only
   replaces the second prompt.
-- The approval that passes the check ends the cover, so it covers one approval. A request that ends without
-  approval (cancel, refusal, reconnect) calls `POST /api/delegate/authorize-sign-release` with the id, which
+- The check that lets an approval through on the cover spends it with one delete that reports whether it removed
+  the row, so it covers one approval: of parallel approvals for one flow exactly one passes on the cover and the
+  others need their own passkey. The offers only read the cover. The native consent routes keep their cover until
+  the request is approved or denied, so an approve that fails after the gate can be retried. A request that ends
+  without approval (cancel, refusal, reconnect) calls `POST /api/delegate/authorize-sign-release` with the id, which
   deletes that session's cover for that id; otherwise it expires after five minutes.
 - The digest, token and selection checks of the approval are unchanged. Account-level actions (lowering the
   approval setting, TinyCloud manage-key mode, enabling an app, account deletion, passkey enrolment and removal,
