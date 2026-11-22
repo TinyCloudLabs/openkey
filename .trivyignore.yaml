@@ -4,6 +4,8 @@
 # These are today's known findings, accepted only so that NEW ones fail the scan; each is a fixable
 # dependency or base-image upgrade, not a reviewed exception. Entries match one package version (purl),
 # so the same CVE in another package or version still fails. Remove an entry when its upgrade lands.
+# Entries whose statement starts "reviewed" are the exception: a finding in the current version that
+# was checked and is unreachable with our configuration, for the reason given.
 # Owner: Bobbie's better-auth/OpenSSL triage (worker 6972d51e); upgrade due before expired_at (2026-12-06 for the 4 CRITICALs, 2026-12-22 for the rest), after which an entry stops suppressing.
 vulnerabilities:
   - id: CVE-2025-68121
@@ -13,10 +15,11 @@ vulnerabilities:
       - "pkg:golang/stdlib@v1.23.12"
   - id: CVE-2026-114607
     expired_at: 2026-12-06
-    statement: "baseline 2026-11-22, CRITICAL: better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    statement: "reviewed 2026-11-22, CRITICAL: better-auth 1.5.0-beta.13, 1.6.10 (baseline), 1.6.35; unreachable: no magicLink plugin (auth.ts:10). Adding magicLink before better-auth 1.7.7 makes this account takeover; revisit with the 1.7 migration"
     purls:
       - "pkg:npm/better-auth@1.5.0-beta.13"
       - "pkg:npm/better-auth@1.6.10"
+      - "pkg:npm/better-auth@1.6.35"
   - id: CVE-2026-31789
     expired_at: 2026-12-06
     statement: "baseline 2026-11-22, CRITICAL: libcrypto3 3.3.4-r0, libssl3 3.3.4-r0"
@@ -422,10 +425,11 @@ vulnerabilities:
       - "pkg:npm/devalue@5.6.2"
   - id: GHSA-q84f-53jg-9ppm
     expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    statement: "reviewed 2026-11-22, HIGH: better-auth 1.5.0-beta.13, 1.6.10 (baseline), 1.6.35; unreachable: no deviceAuthorization() plugin (auth.ts:10; /api/device-authorizations is our own service). Fixed in 1.7.0-rc.3; revisit with the 1.7 migration"
     purls:
       - "pkg:npm/better-auth@1.5.0-beta.13"
       - "pkg:npm/better-auth@1.6.10"
+      - "pkg:npm/better-auth@1.6.35"
   - id: GHSA-qq9h-g4jm-xgf3
     expired_at: 2026-12-22
     statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
@@ -434,10 +438,11 @@ vulnerabilities:
       - "pkg:npm/better-auth@1.6.10"
   - id: GHSA-r4xp-prcw-77qf
     expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    statement: "reviewed 2026-11-22, HIGH: better-auth 1.5.0-beta.13, 1.6.10 (baseline), 1.6.35; unreachable: no oAuthProxy plugin (auth.ts:10), OAuth state in the database, implicit linking off (auth.ts:366). Fixed in 1.7.7; revisit with the 1.7 migration"
     purls:
       - "pkg:npm/better-auth@1.5.0-beta.13"
       - "pkg:npm/better-auth@1.6.10"
+      - "pkg:npm/better-auth@1.6.35"
   - id: GHSA-r9w8-h9r3-54w4
     expired_at: 2026-12-22
     statement: "baseline 2026-11-22, HIGH: devalue 5.6.2"
