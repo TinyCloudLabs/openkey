@@ -2,6 +2,6 @@
 "@openkey/web": patch
 ---
 
-A window's page is held behind a loading state until the account's Terms status is read, so the page makes no account call before the read resolves. The connect pop-up loads keys after the account has agreed to the Terms, including after a sign-in made on the pop-up.
+OpenKey pages show "Loading" until they have read whether your account has agreed to the Terms, and make no account call before then. The connect pop-up loads your keys only after you have agreed.
 
 Details: TC-3766
