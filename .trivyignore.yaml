@@ -4,7 +4,9 @@
 # These are today's known findings, accepted only so that NEW ones fail the scan; each is a fixable
 # dependency or base-image upgrade, not a reviewed exception. Entries match one package version (purl),
 # so the same CVE in another package or version still fails. Remove an entry when its upgrade lands.
-# Owner: Bobbie's better-auth/OpenSSL triage (worker 6972d51e); upgrade due before expired_at (2026-12-06 for the 4 CRITICALs, 2026-12-22 for the rest), after which an entry stops suppressing.
+# Entries whose statement starts "reviewed" are the exception: a finding in the current version that
+# was checked and is unreachable with our configuration, for the reason given.
+# Owner: Bobbie's better-auth/OpenSSL triage (worker 6972d51e); upgrade due before expired_at (2026-12-06 for the CRITICALs, 2026-12-22 for the rest), after which an entry stops suppressing.
 vulnerabilities:
   - id: CVE-2025-68121
     expired_at: 2026-12-06
@@ -13,28 +15,9 @@ vulnerabilities:
       - "pkg:golang/stdlib@v1.23.12"
   - id: CVE-2026-114607
     expired_at: 2026-12-06
-    statement: "baseline 2026-11-22, CRITICAL: better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    statement: "reviewed 2026-11-22, CRITICAL: better-auth 1.6.35; unreachable: no magicLink plugin (auth.ts:10). Adding magicLink before better-auth 1.7.7 makes this account takeover; revisit with the 1.7 migration"
     purls:
-      - "pkg:npm/better-auth@1.5.0-beta.13"
-      - "pkg:npm/better-auth@1.6.10"
-  - id: CVE-2026-31789
-    expired_at: 2026-12-06
-    statement: "baseline 2026-11-22, CRITICAL: libcrypto3 3.3.4-r0, libssl3 3.3.4-r0"
-    purls:
-      - "pkg:apk/alpine/libcrypto3@3.3.4-r0"
-      - "pkg:apk/alpine/libssl3@3.3.4-r0"
-  - id: CVE-2026-53512
-    expired_at: 2026-12-06
-    statement: "baseline 2026-11-22, CRITICAL: better-auth 1.5.0-beta.13, better-auth 1.6.10"
-    purls:
-      - "pkg:npm/better-auth@1.5.0-beta.13"
-      - "pkg:npm/better-auth@1.6.10"
-  - id: CVE-2025-15467
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: libcrypto3 3.3.4-r0, libssl3 3.3.4-r0"
-    purls:
-      - "pkg:apk/alpine/libcrypto3@3.3.4-r0"
-      - "pkg:apk/alpine/libssl3@3.3.4-r0"
+      - "pkg:npm/better-auth@1.6.35"
   - id: CVE-2025-61726
     expired_at: 2026-12-22
     statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
@@ -45,12 +28,6 @@ vulnerabilities:
     statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
     purls:
       - "pkg:golang/stdlib@v1.23.12"
-  - id: CVE-2025-69421
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: libcrypto3 3.3.4-r0, libssl3 3.3.4-r0"
-    purls:
-      - "pkg:apk/alpine/libcrypto3@3.3.4-r0"
-      - "pkg:apk/alpine/libssl3@3.3.4-r0"
   - id: CVE-2026-107891
     expired_at: 2026-12-22
     statement: "baseline 2026-11-22, HIGH: musl 1.2.5-r1, musl-utils 1.2.5-r1"
@@ -113,30 +90,6 @@ vulnerabilities:
     statement: "baseline 2026-11-22, HIGH: rollup 4.57.1"
     purls:
       - "pkg:npm/rollup@4.57.1"
-  - id: CVE-2026-28387
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: libcrypto3 3.3.4-r0, libssl3 3.3.4-r0"
-    purls:
-      - "pkg:apk/alpine/libcrypto3@3.3.4-r0"
-      - "pkg:apk/alpine/libssl3@3.3.4-r0"
-  - id: CVE-2026-28388
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: libcrypto3 3.3.4-r0, libssl3 3.3.4-r0"
-    purls:
-      - "pkg:apk/alpine/libcrypto3@3.3.4-r0"
-      - "pkg:apk/alpine/libssl3@3.3.4-r0"
-  - id: CVE-2026-28389
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: libcrypto3 3.3.4-r0, libssl3 3.3.4-r0"
-    purls:
-      - "pkg:apk/alpine/libcrypto3@3.3.4-r0"
-      - "pkg:apk/alpine/libssl3@3.3.4-r0"
-  - id: CVE-2026-28390
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: libcrypto3 3.3.4-r0, libssl3 3.3.4-r0"
-    purls:
-      - "pkg:apk/alpine/libcrypto3@3.3.4-r0"
-      - "pkg:apk/alpine/libssl3@3.3.4-r0"
   - id: CVE-2026-29045
     expired_at: 2026-12-22
     statement: "baseline 2026-11-22, HIGH: hono 4.11.4"
@@ -192,11 +145,6 @@ vulnerabilities:
     statement: "baseline 2026-11-22, HIGH: defu 6.1.4"
     purls:
       - "pkg:npm/defu@6.1.4"
-  - id: CVE-2026-39356
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: drizzle-orm 0.41.0"
-    purls:
-      - "pkg:npm/drizzle-orm@0.41.0"
   - id: CVE-2026-39363
     expired_at: 2026-12-22
     statement: "baseline 2026-11-22, HIGH: vite 6.4.1, vite 8.0.2"
@@ -254,16 +202,6 @@ vulnerabilities:
     statement: "baseline 2026-11-22, HIGH: stdlib v1.23.12"
     purls:
       - "pkg:golang/stdlib@v1.23.12"
-  - id: CVE-2026-44635
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: kysely 0.28.14"
-    purls:
-      - "pkg:npm/kysely@0.28.14"
-  - id: CVE-2026-45337
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: better-auth 1.6.10"
-    purls:
-      - "pkg:npm/better-auth@1.6.10"
   - id: CVE-2026-45623
     expired_at: 2026-12-22
     statement: "baseline 2026-11-22, HIGH: postcss 8.5.6, postcss 8.5.8"
@@ -282,31 +220,6 @@ vulnerabilities:
       - "pkg:npm/ws@7.5.10"
       - "pkg:npm/ws@8.17.1"
       - "pkg:npm/ws@8.18.3"
-  - id: CVE-2026-53514
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
-    purls:
-      - "pkg:npm/better-auth@1.5.0-beta.13"
-      - "pkg:npm/better-auth@1.6.10"
-  - id: CVE-2026-53516
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
-    purls:
-      - "pkg:npm/better-auth@1.5.0-beta.13"
-      - "pkg:npm/better-auth@1.6.10"
-  - id: CVE-2026-53517
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: @better-auth/oauth-provider 1.6.10, better-auth 1.5.0-beta.13"
-    purls:
-      - "pkg:npm/%40better-auth/oauth-provider@1.6.10"
-      - "pkg:npm/better-auth@1.5.0-beta.13"
-  - id: CVE-2026-53518
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: @better-auth/oauth-provider 1.6.10, better-auth 1.5.0-beta.13, better-auth 1.6.10"
-    purls:
-      - "pkg:npm/%40better-auth/oauth-provider@1.6.10"
-      - "pkg:npm/better-auth@1.5.0-beta.13"
-      - "pkg:npm/better-auth@1.6.10"
   - id: CVE-2026-54290
     expired_at: 2026-12-22
     statement: "baseline 2026-11-22, HIGH: hono 4.11.4"
@@ -352,16 +265,6 @@ vulnerabilities:
     statement: "baseline 2026-11-22, HIGH: nanoid 3.3.11"
     purls:
       - "pkg:npm/nanoid@3.3.11"
-  - id: CVE-2026-73088
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: browserslist 4.28.1"
-    purls:
-      - "pkg:npm/browserslist@4.28.1"
-  - id: CVE-2026-73089
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: browserslist 4.28.1"
-    purls:
-      - "pkg:npm/browserslist@4.28.1"
   - id: CVE-2026-73646
     expired_at: 2026-12-22
     statement: "baseline 2026-11-22, HIGH: postcss 8.5.6, postcss 8.5.8"
@@ -403,18 +306,6 @@ vulnerabilities:
     statement: "baseline 2026-11-22, HIGH: mysql2 3.15.3"
     purls:
       - "pkg:npm/mysql2@3.15.3"
-  - id: GHSA-86j7-9j95-vpqj
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
-    purls:
-      - "pkg:npm/better-auth@1.5.0-beta.13"
-      - "pkg:npm/better-auth@1.6.10"
-  - id: GHSA-9h47-pqcx-hjr4
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
-    purls:
-      - "pkg:npm/better-auth@1.5.0-beta.13"
-      - "pkg:npm/better-auth@1.6.10"
   - id: GHSA-mcm9-63f2-9j32
     expired_at: 2026-12-22
     statement: "baseline 2026-11-22, HIGH: devalue 5.6.2"
@@ -422,22 +313,14 @@ vulnerabilities:
       - "pkg:npm/devalue@5.6.2"
   - id: GHSA-q84f-53jg-9ppm
     expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    statement: "reviewed 2026-11-22, HIGH: better-auth 1.6.35; unreachable: no deviceAuthorization() plugin (auth.ts:10; /api/device-authorizations is our own service). Fixed in 1.7.0-rc.3; revisit with the 1.7 migration"
     purls:
-      - "pkg:npm/better-auth@1.5.0-beta.13"
-      - "pkg:npm/better-auth@1.6.10"
-  - id: GHSA-qq9h-g4jm-xgf3
-    expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
-    purls:
-      - "pkg:npm/better-auth@1.5.0-beta.13"
-      - "pkg:npm/better-auth@1.6.10"
+      - "pkg:npm/better-auth@1.6.35"
   - id: GHSA-r4xp-prcw-77qf
     expired_at: 2026-12-22
-    statement: "baseline 2026-11-22, HIGH: better-auth 1.5.0-beta.13, better-auth 1.6.10"
+    statement: "reviewed 2026-11-22, HIGH: better-auth 1.6.35; unreachable: no oAuthProxy plugin (auth.ts:10), OAuth state in the database, implicit linking off (auth.ts:366). Fixed in 1.7.7; revisit with the 1.7 migration"
     purls:
-      - "pkg:npm/better-auth@1.5.0-beta.13"
-      - "pkg:npm/better-auth@1.6.10"
+      - "pkg:npm/better-auth@1.6.35"
   - id: GHSA-r9w8-h9r3-54w4
     expired_at: 2026-12-22
     statement: "baseline 2026-11-22, HIGH: devalue 5.6.2"

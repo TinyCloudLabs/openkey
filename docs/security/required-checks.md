@@ -62,11 +62,16 @@ don't widen the allow-list without a security review.
   A pull request is scanned with the `.gitleaksignore` and `.gitleaks.toml` of its base commit
   (if absent, an empty baseline and the default rules), so a PR can't allowlist its own leak.
   Baseline changes go in their own PR and take effect once it has merged.
-- `.trivyignore.yaml`: the 82 fixable CRITICAL/HIGH advisories in the production image of
+- `.trivyignore.yaml`: the fixable CRITICAL/HIGH advisories (82 at first, 62 after the better-auth
+  1.6.35 and OpenSSL upgrade) in the production image of
   `d1d16d4f` (2026-11-22), each pinned to its package version by purl. They are known debt,
   not accepted risk: remove an entry when its upgrade lands. Every entry has `expired_at`:
-  2026-12-06 for the 4 CRITICALs and 2026-12-22 for the rest. Once an entry expires it stops
+  2026-12-06 for the CRITICALs and 2026-12-22 for the rest. Once an entry expires it stops
   suppressing, and the scan fails. The owner is Bobbie's better-auth/OpenSSL triage.
+  Three entries are reviewed exceptions instead: CVE-2026-114607, GHSA-q84f-53jg-9ppm and
+  GHSA-r4xp-prcw-77qf also cover better-auth 1.6.35, which still has them (fixed only in 1.7).
+  Each needs a plugin we don't load (magicLink, deviceAuthorization, oAuthProxy); the
+  statement gives the reason. They are revisited with the 1.7 migration.
 - In a pull request, the web artifact audit and the API image scan also use the base commit's
   `.gitleaks.toml` and `.trivyignore.yaml`. The PR's own copy is used only while the base has
   none.
