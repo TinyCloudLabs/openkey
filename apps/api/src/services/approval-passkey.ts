@@ -446,13 +446,17 @@ export async function checkApprovalPasskeySpendingFlow(
   return refusal ? { refusal } : { refusal: null, method: 'REQUEST_PASSKEY' };
 }
 
-/** `approvalPasskeyOffer` for the same kind of route: no challenge when this request's own sign-in already counts. */
+/**
+ * `approvalPasskeyOffer` for the same kind of route: no challenge when this request's own sign-in already counts. An
+ * offer waived by a web sign flow's cover carries `flowCover: true`, so the sign page can hold the cover to its
+ * visibility check; a native request's cover and an offer waived by the setting carry no marker.
+ */
 export async function approvalPasskeyOfferInFlow(
   db: ApprovalDatabase, subject: ApprovalSubject, binding: ApprovalBinding, sensitivity: ApprovalSensitivity,
   flowId: string | null, rp = relyingParty(), now = new Date(),
-): Promise<{ required: false } | ({ required: true } & ApprovalPasskeyOffer)> {
+): Promise<{ required: false; flowCover?: true } | ({ required: true } & ApprovalPasskeyOffer)> {
   if (await approvalNeedsPasskey(db, subject.userId, sensitivity) && await flowPasskeyCovers(db, subject, flowId, now)) {
-    return { required: false };
+    return flowId !== null && WEB_FLOW_ID.test(flowId) ? { required: false, flowCover: true } : { required: false };
   }
   return approvalPasskeyOffer(db, subject, binding, sensitivity, rp, now);
 }

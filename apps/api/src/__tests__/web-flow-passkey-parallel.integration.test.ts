@@ -155,7 +155,7 @@ if (process.env.OPENKEY_WEB_FLOW_PARALLEL_CHILD !== '1') {
     const previewed = await post('/api/delegate/authorize-sign-preview', auth,
       { authorizationContextToken, selectedActionIds: allowedActionIds }, flow(id));
     expect(previewed.status, await previewed.clone().text()).toBe(200);
-    const body = await previewed.json() as { previewApprovalToken: string; passkey: { required: boolean } };
+    const body = await previewed.json() as { previewApprovalToken: string; passkey: { required: boolean; flowCover?: true } };
     return {
       passkey: body.passkey,
       approval: { authorizationContextToken, previewApprovalToken: body.previewApprovalToken, selectedActionIds: allowedActionIds, protocolVersion: 1 },
@@ -178,8 +178,8 @@ if (process.env.OPENKEY_WEB_FLOW_PARALLEL_CHILD !== '1') {
       const signedIn = await popupSignIn(passkey, id);
       const first = await previewOf(signedIn.auth, await prepareContext(owner, signedIn.auth), id);
       const second = await previewOf(signedIn.auth, await prepareContext(owner, signedIn.auth), id);
-      expect(first.passkey).toEqual({ required: false });
-      expect(second.passkey).toEqual({ required: false });
+      expect(first.passkey).toEqual({ required: false, flowCover: true });
+      expect(second.passkey).toEqual({ required: false, flowCover: true });
 
       const responses = await Promise.all([first, second].map((preview) =>
         post('/api/delegate/authorize-sign', signedIn.auth, preview.approval, flow(id))));
@@ -234,10 +234,10 @@ if (process.env.OPENKEY_WEB_FLOW_PARALLEL_CHILD !== '1') {
       const id = newFlowId();
       const signedIn = await popupSignIn(passkey, id);
       const context = await prepareContext(owner, signedIn.auth);
-      for (let i = 0; i < 4; i++) expect((await previewOf(signedIn.auth, context, id)).passkey).toEqual({ required: false });
+      for (let i = 0; i < 4; i++) expect((await previewOf(signedIn.auth, context, id)).passkey).toEqual({ required: false, flowCover: true });
       const offers = await Promise.all(Array.from({ length: 4 }, () =>
         post(`/api/keys/${owner.keyId}/sign/passkey`, signedIn.auth, { message: 'hello', requestOrigin: web }, flow(id))));
-      for (const offer of offers) expect(await offer.json()).toEqual({ required: false });
+      for (const offer of offers) expect(await offer.json()).toEqual({ required: false, flowCover: true });
       expect(await flowRows(owner.userId)).toBe(1);
     });
 

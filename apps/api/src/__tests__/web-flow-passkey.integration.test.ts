@@ -172,7 +172,7 @@ if (process.env.OPENKEY_WEB_FLOW_PASSKEY_CHILD !== '1') {
     return await prepared.json() as { authorizationContextToken: string; allowedActionIds: string[] };
   }
 
-  type Offer = { required: false } | { required: true; challengeToken: string; options: PublicKeyCredentialRequestOptionsJSON };
+  type Offer = { required: false; flowCover?: true } | { required: true; challengeToken: string; options: PublicKeyCredentialRequestOptionsJSON };
 
   async function previewOf(auth: Record<string, string>, context: { authorizationContextToken: string; allowedActionIds: string[] }, id: string | null) {
     const { authorizationContextToken, allowedActionIds } = context;
@@ -211,10 +211,10 @@ if (process.env.OPENKEY_WEB_FLOW_PASSKEY_CHILD !== '1') {
 
         const context = await prepareContext(owner, signedIn.auth);
         const first = await previewOf(signedIn.auth, context, id);
-        expect(first.passkey).toEqual({ required: false });
+        expect(first.passkey).toEqual({ required: false, flowCover: true });
         // A new preview (a changed selection) is covered too and does not extend the five minutes.
         const again = await previewOf(signedIn.auth, context, id);
-        expect(again.passkey).toEqual({ required: false });
+        expect(again.passkey).toEqual({ required: false, flowCover: true });
         expect((await prisma.verification.findFirstOrThrow({ where: { id: row.id } })).expiresAt.getTime()).toBe(recordedExpiry);
 
         const signed = await authorize(signedIn.auth, again.approval, id);
@@ -234,7 +234,7 @@ if (process.env.OPENKEY_WEB_FLOW_PASSKEY_CHILD !== '1') {
       const body = { message: 'hello', requestOrigin: embedder };
 
       const offered = await post(`${path}/passkey`, signedIn.auth, body, 'POST', flow(id));
-      expect(await offered.json()).toEqual({ required: false });
+      expect(await offered.json()).toEqual({ required: false, flowCover: true });
       const uncovered = await post(`${path}/passkey`, signedIn.auth, body);
       expect((await uncovered.json() as Offer).required).toBe(true);
 
@@ -291,7 +291,7 @@ if (process.env.OPENKEY_WEB_FLOW_PASSKEY_CHILD !== '1') {
       } });
       expect((await previewOf(signedIn.auth, context, nativeShaped)).passkey.required).toBe(true);
       // The control: the same session and flow id.
-      expect((await previewOf(signedIn.auth, context, id)).passkey).toEqual({ required: false });
+      expect((await previewOf(signedIn.auth, context, id)).passkey).toEqual({ required: false, flowCover: true });
     });
 
     test('five minutes from the assertion: an expired cover asks again, and previews do not extend it', async () => {
