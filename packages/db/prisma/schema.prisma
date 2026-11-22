@@ -1112,3 +1112,17 @@ model ReviewerCleanup {
   @@index([retryAt, completedAt], map: "reviewer_cleanup_due")
   @@map("reviewer_cleanup")
 }
+
+// Proof that a delete happened, kept after the account it ended is gone (TC-3903). One row per ethereum
+// address the deleted account held; didHash is SHA-256 (hex) of the lowercase `did:pkh:eip155:1:<address>`
+// and the only identifier stored: no user id, no email, no address, no IP. No relation to User on purpose,
+// like ReviewerCleanup, so the cascade cannot take the row. Not unique: the same address on a later
+// account writes another row at its own deletion.
+model AccountDeletionAudit {
+  id        String   @id @default(cuid())
+  deletedAt DateTime @default(now())
+  didHash   String
+
+  @@index([didHash])
+  @@map("account_deletion_audit")
+}

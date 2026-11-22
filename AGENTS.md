@@ -107,7 +107,7 @@ The order of files in that run differs between machines, so state one file leave
 ## Environment Files
 
 - `.env` - Local development
-- `.env.prod` - Production secrets (not committed). Required keys: `DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `RESEND_API_KEY`, `BETTER_AUTH_SECRET`, `ADMIN_API_KEY`, `CORS_ORIGIN`, `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGIN`, `BETTER_AUTH_URL`, `CLOUDFLARE_API_TOKEN`. `TEE_MODE` is hardcoded to `production` in `docker-compose.prod.yml`; the API refuses to start unless it is `production`, or `development` with `NODE_ENV` unset, `development` or `test` (TC-966)
+- `.env.prod` - Production secrets (not committed). Required keys: `DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `RESEND_API_KEY`, `BETTER_AUTH_SECRET`, `ADMIN_API_KEY`, `CORS_ORIGIN`, `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGIN`, `BETTER_AUTH_URL`, `CLOUDFLARE_API_TOKEN`, `BILLING_API_URL`, `ACCOUNT_DELETE_SERVICE_SECRET` (TC-3903: account deletion cancels billing; unset it refuses with 503). `TEE_MODE` is hardcoded to `production` in `docker-compose.prod.yml`; the API refuses to start unless it is `production`, or `development` with `NODE_ENV` unset, `development` or `test` (TC-966)
 
 ## Common Commands
 

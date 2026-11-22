@@ -1,4 +1,5 @@
 // Account management routes
+import { createHash } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { symmetricDecrypt } from 'better-auth/crypto';
 import { createPrismaClient } from '@openkey/db';
@@ -47,6 +48,7 @@ import { revokeAppleToken } from '../services/social-confirmation';
 import { revokeStoredAppleTokens } from '../services/apple-revocation';
 import { appleRelayEmailUndeliverable } from '../services/apple-notifications';
 import { liveLeaseWhere, revokeRenewalLeases, type LeaseRevocationReport } from '../services/renewal-lease-revocation';
+import { cancelBillingForAccountDelete } from '../services/billing-account-delete';
 import { createRenewalLeaseRouter } from './renewal-leases';
 
 const prisma = createPrismaClient();
@@ -711,10 +713,18 @@ accountRouter.post('/delete', async (c) => {
   const leases = await revokeRenewalLeases(prisma, user.id, { kind: 'all' });
   if (leases.notStopped.length > 0) return renewalLeasesNotStopped(c, leases.notStopped);
 
-  // Count and delete every user key. TC-488 removed tenant-managed keys.
-  const keyCount = await prisma.ethereumKey.count({
-    where: { userId: user.id },
-  });
+  // Every ethereum address the account holds: billing cancels per address and the audit hashes one DID
+  // per address. TC-488 removed tenant-managed keys.
+  const addresses = (await prisma.ethereumKey.findMany({
+    where: { userId: user.id }, select: { address: true },
+  })).map((key) => key.address.toLowerCase());
+
+  // Billing before the database goes (TC-3903): it owns the Stripe subscription and billing records, and
+  // its call is idempotent, so a retry after a crash between these calls and the commit settles the rest.
+  // Refusing deletes nothing, so the user can retry; deleting first would keep the subscription billing.
+  if (!await cancelBillingForAccountDelete(addresses)) {
+    return c.json({ error: 'billing_unavailable' }, 503);
+  }
 
   // Delete all user data in transaction
   let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | 'PASSKEY' | 'EMAIL' | 'LEASES';
@@ -734,6 +744,16 @@ accountRouter.post('/delete', async (c) => {
       where: { userId: user.id, providerId: 'apple', refreshToken: { not: null } },
       select: { refreshToken: true, appleClientId: true },
     });
+
+    // The audit rows outlive the account: sha256 of the lowercase did:pkh:eip155:1:<address> and the
+    // deletion time only — never the address, the user id or any other identifier. Written here so they
+    // exist exactly when the delete commits, and so a blocked delete writes none (TC-3903). An account
+    // holding no address has no DID to hash: there is no row.
+    if (addresses.length > 0) {
+      await tx.accountDeletionAudit.createMany({
+        data: addresses.map((address) => ({ didHash: createHash('sha256').update(`did:pkh:eip155:1:${address}`).digest('hex') })),
+      });
+    }
 
     // Delete all ethereum keys (sealed blobs will be unrecoverable)
     await tx.ethereumKey.deleteMany({ where: { userId: user.id } });
@@ -767,7 +787,7 @@ accountRouter.post('/delete', async (c) => {
   return c.json({
     success: true,
     message: 'Account permanently deleted',
-    keysDeleted: keyCount,
+    keysDeleted: addresses.length,
   });
 });
 
