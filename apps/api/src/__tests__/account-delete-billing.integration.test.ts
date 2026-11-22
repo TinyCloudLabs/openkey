@@ -2,9 +2,9 @@
 // account is gone. The billing service is a loopback stand-in answering POST /api/account-delete/<address>
 // the way the contract fixes it; nothing else on the network is touched. Runs on PGlite, in a spawned
 // child so DATABASE_URL can point at it before the API modules open it.
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { PGlite } from '@electric-sql/pglite';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
@@ -54,7 +54,7 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
   // records the bearer it saw. `mode`: `ok` answers the contract's 200, `fail` a 5xx `{ok:false}`, and
   // `stall` never answers so the client's own ten-second timeout fires.
   const billing = {
-    server: createServer(), origin: '', mode: 'ok' as 'ok' | 'fail' | 'stall',
+    server: createServer(), origin: '', mode: 'ok' as 'ok' | 'fail' | 'stall', canceled: 1,
     calls: [] as string[], authorization: null as string | null,
   };
   billing.server.on('request', (request, response) => {
@@ -70,7 +70,7 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
       return;
     }
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.end('{"ok":true,"deleted":{"subscriptions":1},"stripe":{"canceled":1,"deleted":0}}');
+    response.end(`{"ok":true,"deleted":{"subscriptions":${billing.canceled}},"stripe":{"canceled":${billing.canceled},"deleted":0}}`);
   });
 
   // One test enrols a key the moment billing has been settled, in the gap before the delete transaction:
@@ -155,13 +155,16 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
     return { userId, cookie, delete: () => call(cookie, '/api/account/delete', { confirmation: 'DELETE MY ACCOUNT' }) };
   }
 
-  // Audit rows are append-only and earlier tests leave theirs behind, so row assertions are scoped to
-  // this test's own DID hashes (sha256 of the lowercase did:pkh:eip155:1:<address>).
-  const auditCountFor = (addresses: string[]) => prisma.accountDeletionAudit.count({
-    where: { didHash: { in: addresses.map((a) => createHash('sha256').update(`did:pkh:eip155:1:${a.toLowerCase()}`).digest('hex')) } },
+  // The audit table is append-only; tests assert on its whole contents, so each starts empty. The stub
+  // also resets between tests.
+  beforeEach(async () => {
+    await prisma.accountDeletionAudit.deleteMany();
+    billing.mode = 'ok';
+    billing.canceled = 1;
   });
+  const auditRows = () => prisma.accountDeletionAudit.findMany({ select: { hadSubscription: true, billingOk: true } });
 
-  test('billing is asked once per address before the delete, and the audit rows carry only the DID hash', async () => {
+  test('billing is asked once per address before the delete; one audit row reports them settled', async () => {
     const addresses = [
       `0x${randomBytes(20).toString('hex')}`,
       `0x${randomBytes(20).toString('hex').replace(/./g, (c) => (/[a-f]/.test(c) ? c.toUpperCase() : c))}`,
@@ -177,12 +180,7 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
     expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(0);
     expect(await prisma.ethereumKey.count({ where: { userId: owner.userId } })).toBe(0);
 
-    expect(await auditCountFor(addresses)).toBe(addresses.length);
-    // Only the hash and the deletion time exist: the address and every other identifier are absent.
-    for (const row of await prisma.accountDeletionAudit.findMany()) {
-      expect(Object.keys(row).sort()).toEqual(['deletedAt', 'didHash', 'id']);
-      expect(row.didHash).toMatch(/^[0-9a-f]{64}$/);
-    }
+    expect(await auditRows()).toEqual([{ hadSubscription: true, billingOk: true }]);
 
     // Repeating the request is sane: the session went with the account, so it is just unauthenticated.
     const again = await owner.delete();
@@ -203,14 +201,14 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
     }
     expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(1);
     expect(await prisma.ethereumKey.count({ where: { userId: owner.userId } })).toBe(1);
-    expect(await auditCountFor([address])).toBe(0);
+    expect(await auditRows()).toEqual([]);
 
     // The same account retries once billing answers; the step-up marker was never spent by the refusal.
     const deleted = await owner.delete();
     expect(deleted.status).toBe(200);
     expect(billing.calls).toEqual([`/api/account-delete/${address}`, `/api/account-delete/${address}`]);
     expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(0);
-    expect(await auditCountFor([address])).toBe(1);
+    expect(await auditRows()).toEqual([{ hadSubscription: true, billingOk: true }]);
   });
 
   test('a billing call that never answers refuses the deletion with 503 and deletes nothing', async () => {
@@ -226,19 +224,18 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
     }
     expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(1);
     expect(await prisma.ethereumKey.count({ where: { userId: owner.userId } })).toBe(1);
-    expect(await auditCountFor([address])).toBe(0);
+    expect(await auditRows()).toEqual([]);
   }, 30_000); // the client's own ~10s timeout is what this test exercises
 
   test('an account with no ethereum keys asks billing nothing and still deletes', async () => {
     const owner = await account([]);
     billing.calls.length = 0;
-    const before = await prisma.accountDeletionAudit.count();
     const deleted = await owner.delete();
     expect(deleted.status).toBe(200);
     expect(billing.calls).toEqual([]);
     expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(0);
-    // No DID exists for an address the account never had: there is nothing to hash and no row.
-    expect(await prisma.accountDeletionAudit.count()).toBe(before);
+    // One row: there was nothing to cancel and billing is settled (vacuously) for zero addresses.
+    expect(await auditRows()).toEqual([{ hadSubscription: false, billingOk: true }]);
   });
 
   test('with billing unconfigured the deletion skips the calls and still deletes (non-production)', async () => {
@@ -253,7 +250,7 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
       expect(deleted.status).toBe(200);
       expect(billing.calls).toEqual([]);
       expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(0);
-      expect(await auditCountFor([address])).toBe(1);
+      expect(await auditRows()).toEqual([{ hadSubscription: false, billingOk: false }]);
     } finally {
       process.env.BILLING_API_URL = saved.BILLING_API_URL;
       process.env.ACCOUNT_DELETE_SERVICE_SECRET = saved.ACCOUNT_DELETE_SERVICE_SECRET;
@@ -271,11 +268,11 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
     expect(enrollOnBillingSettled).toBeUndefined(); // the enrolment really landed between billing and the tx
     expect(refused.status).toBe(409);
     expect(await refused.json()).toMatchObject({ code: 'ethereum_keys_changed' });
-    // The new key was never sent to billing and nothing was deleted.
+    // The new key was never sent to billing and nothing was deleted — no audit row either.
     expect(billing.calls).toEqual([`/api/account-delete/${first}`]);
     expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(1);
     expect(await prisma.ethereumKey.count({ where: { userId: owner.userId } })).toBe(2);
-    expect(await auditCountFor([first, second])).toBe(0);
+    expect(await auditRows()).toEqual([]);
 
     // The retry bills both addresses — the first again, idempotently — then deletes.
     const deleted = await owner.delete();
@@ -283,7 +280,27 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
     expect(billing.calls.slice(1).sort()).toEqual([`/api/account-delete/${first}`, `/api/account-delete/${second}`].sort());
     expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(0);
     expect(await prisma.ethereumKey.count({ where: { userId: owner.userId } })).toBe(0);
-    expect(await auditCountFor([first, second])).toBe(2);
+    expect(await auditRows()).toEqual([{ hadSubscription: true, billingOk: true }]);
+  });
+
+  test('hadSubscription follows stripe.canceled in billing\'s answer, and 0 counts as false', async () => {
+    billing.canceled = 0;
+    const free = await account([`0x${randomBytes(20).toString('hex')}`]);
+    expect((await free.delete()).status).toBe(200);
+    expect(await auditRows()).toEqual([{ hadSubscription: false, billingOk: true }]);
+
+    await prisma.accountDeletionAudit.deleteMany();
+    billing.canceled = 2;
+    const paying = await account([`0x${randomBytes(20).toString('hex')}`]);
+    expect((await paying.delete()).status).toBe(200);
+    expect(await auditRows()).toEqual([{ hadSubscription: true, billingOk: true }]);
+  });
+
+  test('the audit table has only id, deletedAt, hadSubscription and billingOk — no identifier can creep back', async () => {
+    // $queryRaw is untyped; the assertion below proves the shape.
+    const rows: Array<{ column_name: string }> = await prisma.$queryRaw`
+      SELECT column_name FROM information_schema.columns WHERE table_name = 'account_deletion_audit'`;
+    expect(rows.map((row) => row.column_name).sort()).toEqual(['billingOk', 'deletedAt', 'hadSubscription', 'id']);
   });
 
   test('the plan fails closed in production and skips only when fully unconfigured', async () => {

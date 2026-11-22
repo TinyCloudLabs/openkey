@@ -1,5 +1,4 @@
 // Account management routes
-import { createHash } from 'node:crypto';
 import { Hono, type Context } from 'hono';
 import { symmetricDecrypt } from 'better-auth/crypto';
 import { createPrismaClient } from '@openkey/db';
@@ -713,8 +712,8 @@ accountRouter.post('/delete', async (c) => {
   const leases = await revokeRenewalLeases(prisma, user.id, { kind: 'all' });
   if (leases.notStopped.length > 0) return renewalLeasesNotStopped(c, leases.notStopped);
 
-  // Every ethereum address the account holds: billing cancels per address and the audit hashes one DID
-  // per address. TC-488 removed tenant-managed keys.
+  // Every ethereum address the account holds: billing cancels per address. TC-488 removed
+  // tenant-managed keys.
   const addresses = (await prisma.ethereumKey.findMany({
     where: { userId: user.id }, select: { address: true },
   })).map((key) => key.address.toLowerCase());
@@ -722,7 +721,10 @@ accountRouter.post('/delete', async (c) => {
   // Billing before the database goes (TC-3903): it owns the Stripe subscription and billing records, and
   // its call is idempotent, so a retry after a crash between these calls and the commit settles the rest.
   // Refusing deletes nothing, so the user can retry; deleting first would keep the subscription billing.
-  if (!await cancelBillingForAccountDelete(addresses)) {
+  // A later abort below (KEYS/LEASES, or a step-up consumed elsewhere) leaves the account alive with
+  // Stripe already cancelled — accepted: the user asked to delete and the retry completes it.
+  const billing = await cancelBillingForAccountDelete(addresses);
+  if (!billing.ok) {
     return c.json({ error: 'billing_unavailable' }, 503);
   }
 
@@ -751,15 +753,13 @@ accountRouter.post('/delete', async (c) => {
       select: { refreshToken: true, appleClientId: true },
     });
 
-    // The audit rows outlive the account: sha256 of the lowercase did:pkh:eip155:1:<address> and the
-    // deletion time only — never the address, the user id or any other identifier. Written here so they
-    // exist exactly when the delete commits, and so a blocked delete writes none (TC-3903). An account
-    // holding no address has no DID to hash: there is no row.
-    if (addresses.length > 0) {
-      await tx.accountDeletionAudit.createMany({
-        data: addresses.map((address) => ({ didHash: createHash('sha256').update(`did:pkh:eip155:1:${address}`).digest('hex') })),
-      });
-    }
+    // One audit row per deletion, surviving the account: when it happened, whether billing was settled
+    // and whether a subscription was cancelled. No identifier of any kind — an unkeyed hash of a public
+    // address is still identifying — so nothing here can point back at anyone (TC-3903). Written inside
+    // the transaction so a row exists exactly when the delete commits; a blocked delete writes none.
+    await tx.accountDeletionAudit.create({
+      data: { hadSubscription: billing.hadSubscription, billingOk: billing.billingOk },
+    });
 
     // Delete all ethereum keys (sealed blobs will be unrecoverable)
     await tx.ethereumKey.deleteMany({ where: { userId: user.id } });

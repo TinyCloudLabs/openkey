@@ -25,6 +25,7 @@ const tx = {
   verification: { deleteMany: async () => ({ count: 0 }) },
   user: { delete: async ({ where }: { where: { id: string } }) => { deletedUsers.push(where.id); return {}; } },
   renewalLease: { findMany: async () => [], count: async () => 0 },
+  accountDeletionAudit: { create: async () => ({}) },
 };
 
 const prisma = {

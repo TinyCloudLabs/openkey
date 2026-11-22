@@ -49,12 +49,18 @@ export function billingAccountDeletePlan(env: NodeJS.ProcessEnv = process.env): 
   return { kind: 'unavailable' };
 }
 
+interface CancelOneResult {
+  ok: boolean;
+  /** stripe.canceled from a 2xx answer; missing or invalid counts as 0. */
+  canceled: number;
+}
+
 async function cancelOne(
   deps: Pick<BillingAccountDeleteDeps, 'fetch'>,
   baseUrl: string,
   secret: string,
   address: string,
-): Promise<boolean> {
+): Promise<CancelOneResult> {
   try {
     const response = await deps.fetch(`${baseUrl}/api/account-delete/${address}`, {
       method: 'POST',
@@ -62,39 +68,63 @@ async function cancelOne(
       redirect: 'error',
       signal: AbortSignal.timeout(BILLING_ACCOUNT_DELETE_TIMEOUT_MS),
     });
-    await response.body?.cancel();
-    return response.status >= 200 && response.status < 300;
+    const ok = response.status >= 200 && response.status < 300;
+    let canceled = 0;
+    if (ok) {
+      const body: unknown = await response.json().catch(() => null);
+      if (typeof body === 'object' && body !== null && 'stripe' in body) {
+        const stripe = body.stripe;
+        if (typeof stripe === 'object' && stripe !== null && 'canceled' in stripe && typeof stripe.canceled === 'number') {
+          canceled = stripe.canceled;
+        }
+      }
+    } else {
+      await response.body?.cancel();
+    }
+    return { ok, canceled };
   } catch {
-    return false;
+    return { ok: false, canceled: 0 };
   }
+}
+
+export interface AccountDeleteBillingOutcome {
+  /** false refuses the deletion: billing could not be settled — non-2xx, timeout or missing config. */
+  ok: boolean;
+  /** Billing was called for every address and every call returned 2xx; false only for the dev/test skip. */
+  billingOk: boolean;
+  /** Any billing answer reported stripe.canceled > 0. */
+  hadSubscription: boolean;
 }
 
 /**
  * Cancels billing for every `addresses` entry (already lowercase). Counts only are logged; never the
- * addresses themselves. `true` once billing is settled for all of them: each call succeeded, there were
- * none, or the environment skips billing. `false` refuses the deletion before anything is deleted.
+ * addresses themselves. `ok` once billing is settled for all of them: each call succeeded, there were
+ * none, or the environment skips billing — the outcome fields feed the deletion's audit row.
  */
 export async function cancelBillingForAccountDelete(
   addresses: readonly string[],
   deps: BillingAccountDeleteDeps = defaultDeps,
-): Promise<boolean> {
+): Promise<AccountDeleteBillingOutcome> {
   const plan = billingAccountDeletePlan();
   if (plan.kind === 'skip') {
     if (addresses.length > 0) logAccountDeleteBilling('skipped_unconfigured', { addresses: addresses.length });
-    return true;
+    return { ok: true, billingOk: false, hadSubscription: false };
   }
   if (plan.kind === 'unavailable') {
     logAccountDeleteBilling('unavailable', { addresses: addresses.length, failed: 0 });
-    return false;
+    return { ok: false, billingOk: false, hadSubscription: false };
   }
   let failed = 0;
+  let hadSubscription = false;
   for (const address of addresses) {
-    if (!await cancelOne(deps, plan.baseUrl, plan.secret, address)) failed += 1;
+    const result = await cancelOne(deps, plan.baseUrl, plan.secret, address);
+    if (!result.ok) failed += 1;
+    if (result.canceled > 0) hadSubscription = true;
   }
   if (failed > 0) {
     logAccountDeleteBilling('unavailable', { addresses: addresses.length, failed });
-    return false;
+    return { ok: false, billingOk: false, hadSubscription };
   }
   if (addresses.length > 0) logAccountDeleteBilling('settled', { addresses: addresses.length });
-  return true;
+  return { ok: true, billingOk: true, hadSubscription };
 }

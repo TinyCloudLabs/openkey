@@ -1113,16 +1113,17 @@ model ReviewerCleanup {
   @@map("reviewer_cleanup")
 }
 
-// Proof that a delete happened, kept after the account it ended is gone (TC-3903). One row per ethereum
-// address the deleted account held; didHash is SHA-256 (hex) of the lowercase `did:pkh:eip155:1:<address>`
-// and the only identifier stored: no user id, no email, no address, no IP. No relation to User on purpose,
-// like ReviewerCleanup, so the cascade cannot take the row. Not unique: the same address on a later
-// account writes another row at its own deletion.
+// Proof that a delete happened, kept after the account it ended is gone (TC-3903). One row per deletion.
+// No identifier of any kind: an unkeyed hash of a public address is still identifying, so there is no
+// DID hash, no address, no user id, no email and no IP — nothing that can point back at anyone.
+// hadSubscription: any billing answer for this deletion reported stripe.canceled > 0.
+// billingOk: billing was called for every address and every call returned 2xx; false only on the
+// dev/test unconfigured skip — production never reaches the write without billing success.
 model AccountDeletionAudit {
-  id        String   @id @default(cuid())
-  deletedAt DateTime @default(now())
-  didHash   String
+  id              String   @id @default(cuid())
+  deletedAt       DateTime @default(now())
+  hadSubscription Boolean
+  billingOk       Boolean
 
-  @@index([didHash])
   @@map("account_deletion_audit")
 }
