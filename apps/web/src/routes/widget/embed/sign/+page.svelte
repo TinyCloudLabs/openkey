@@ -15,8 +15,13 @@
   import { clearSessionToken, getSessionToken, isEmbedContext, withSessionCredential } from '$lib/embed-passkey';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
+  import { newWebSignFlowId, releaseWebSignFlow, webSignFlowHeaders } from '$lib/web-sign-flow';
+  import {
+    coverNotHonoured, createApproveVisibility, offersCover, reviewSnapshot, sameReview, type ReviewSnapshot,
+  } from '$lib/approve-visibility';
   import Button from '$lib/components/ui/button.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
+  import { claimedPresentation, claimedPresentationView } from '$lib/claimed-presentation';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import { serverActionId } from '$lib/delegate-review-selection';
@@ -64,6 +69,10 @@
   let keyChoices = $state<EthereumKey[]>([]);
   let keyChoicesLoaded = $state(false);
   const expectedAddress = $derived(parseSIWE(message)?.message.address.toLowerCase() ?? null);
+  const claimedView = $derived.by(() => {
+    const claimed = claimedPresentation({ presentation: plainPresentation, origin });
+    return claimed ? claimedPresentationView(claimed) : null;
+  });
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
@@ -103,6 +112,9 @@
   // Presentation envelope forwarded by the SDK. Display-only. Trust is
   // set only from the server prepare response (see below).
   let requestPresentation = $state<Record<string, unknown> | null>(null);
+  // The `presentation` of a plain signMessage() request: what the app says about itself. Display-only; read only by
+  // `claimedView`, which decides what may be shown. It is not sent to the API, the signer or the host page.
+  let plainPresentation = $state<unknown>(null);
   let serverMetadataTrust = $state<
     { status: 'verified' | 'origin-bound' | 'unsigned'; reason: string } | null
   >(null);
@@ -173,8 +185,9 @@
     if (windowMs !== undefined) expiryChoiceMs = windowMs;
     invalidatePreviewForSelectionEdit();
   }
-  // TC-2927: the extra permissions (decrypt or key creation on the encryption network or on keys outside the app's own
-  // area) the owner allowed on the warning screen. The preview records them and signing refuses an undecided one.
+  // TC-2927: the extra permissions (decrypt, key creation, or blocking and unblocking keys on the encryption network
+  // or on keys outside the app's own area) the owner allowed on the warning screen. The preview records them and
+  // signing refuses an undecided one.
   let elevatedAllowed = $state<string[]>([]);
   // Sol MAJOR-3 (continuation): external-key review mode. See widget/sign.
   let externalSignMode = $state(false);
@@ -183,6 +196,28 @@
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
   const origin = $page.url.searchParams.get('origin') || '*';
+  // This page's own flow id for one sign request, drawn here and never taken from the app's request.
+  const webFlowId = newWebSignFlowId();
+  // The flow id is named on offers and approvals only while the cover can be honoured here: not in a frame without
+  // observer v2, and not after a tap reached a covered offer before it counted.
+  const approveVisibility = createApproveVisibility();
+  let coverWithdrawn = $state(false);
+  // Set while the offer is fetched again without the flow id, so a second tap cannot start a second approval.
+  let coverRefetch = $state<'preview' | 'exact' | null>(null);
+  const coverFlowId = $derived(approveVisibility.coverUsable && !coverWithdrawn ? webFlowId : undefined);
+  const coverHeaders = () => (coverFlowId ? webSignFlowHeaders(coverFlowId) : {});
+  // The request the owner saw when the cover was withdrawn: the continued tap signs only that.
+  let coverShown: ReviewSnapshot | null = null;
+  function withdrawCover(approved: HeldPreview | null) {
+    coverShown = approved
+      ? reviewSnapshot(approved.input, approved.signedMessage, renewalLeaseMs)
+      : reviewSnapshot(exactBytePasskeyInput, '', renewalLeaseMs);
+    coverWithdrawn = true;
+    error = '';
+    coverRefetch = approved ? 'preview' : 'exact';
+    if (approved) invalidatePreviewForSelectionEdit();
+    else exactBytePasskey = null;
+  }
   const requester = originAuthority(origin);
   const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const v2 = $page.url.searchParams.get('protocolVersion') === '2';
@@ -254,6 +289,7 @@
           transport = createWidgetTransport({
             origin,
             container: 'iframe',
+            showsPresentation: true,
             protocolVersion: v2 ? 2 : 1,
             requestId: phaseRequestId ?? undefined,
             onRequest: handleTransportRequest,
@@ -374,11 +410,16 @@
     renewalDefaulted = false;
     // Envelope (display-only). Widget transport already validated + size-
     // bounded the object. Trust decision is deferred to /authorize-sign-
-    // prepare and populated into serverMetadataTrust below.
+    // prepare and populated into serverMetadataTrust below. A plain signMessage()
+    // (no authorization protocol) carries the app's own words in `presentation`
+    // instead: shown only after `claimedPresentation` has judged them, never read
+    // as a manifest envelope and never sent anywhere.
+    const plain = authorizationProtocolVersion === null;
     requestPresentation =
-      data.presentation && typeof data.presentation === 'object'
+      !plain && data.presentation && typeof data.presentation === 'object'
         ? (data.presentation as Record<string, unknown>)
         : null;
+    plainPresentation = plain ? data.presentation ?? null : null;
     serverMetadataTrust = null;
     serverVerifiedManifest = null;
     reviewModel = null;
@@ -675,10 +716,14 @@
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
       requestedKeyId = keyId;
+      // A plain signMessage() carries the app's own words in `presentation`; they are shown only after
+      // `claimedPresentation` has judged them and are never read as a manifest envelope or sent anywhere.
+      const plain = authorizationProtocolVersion === null;
       requestPresentation =
-        event.data.presentation && typeof event.data.presentation === 'object'
+        !plain && event.data.presentation && typeof event.data.presentation === 'object'
           ? event.data.presentation
           : null;
+      plainPresentation = plain ? event.data.presentation ?? null : null;
       serverMetadataTrust = null;
       serverVerifiedManifest = null;
       keyFetched = false;
@@ -895,6 +940,8 @@
   const exactByteGate = $derived(approvalPasskeyGate({
     input: exactBytePasskeyInput, held: exactBytePasskey, fetch: exactBytePasskeyFetch,
   }));
+  // Approve is watched for visibility only while the offer it answers is a flow cover.
+  const coverOffered = $derived(offersCover(heldPreview?.passkey) || offersCover(exactBytePasskey?.need));
   $effect(() => {
     const input = exactBytePasskeyInput;
     void exactBytePasskeyRevision;
@@ -905,7 +952,7 @@
     const [offerKeyId, offerMessage, offerOrigin] = JSON.parse(input) as [string, string, string | null];
     let current = true;
     exactBytePasskeyFetch = 'pending';
-    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined).then(
+    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined, coverFlowId).then(
       (need) => {
         if (!current) return;
         exactBytePasskey = { input, need };
@@ -1080,7 +1127,7 @@
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
         withSessionCredential({
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...coverHeaders() },
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
@@ -1136,7 +1183,7 @@
   async function approveAndSign() {
     if (refused) return;
     if (!key || !message) return;
-    if (signing || previewStopped) return;
+    if (signing || previewStopped || coverRefetch !== null) return;
     if (siweRefusal) {
       error = siweRefusal.message;
       return;
@@ -1165,6 +1212,12 @@
         if (exactByteGate.action === 'retry') exactBytePasskeyRevision++;
         return;
       }
+    }
+    // A covered offer counts only while Approve has been in plain view. Before that, this tap is answered with the
+    // passkey: the page stops naming the flow, fetches the offer again and goes on once it lands.
+    if (coverNotHonoured(passkeyNeed, approveVisibility)) {
+      withdrawCover(approved);
+      return;
     }
     signing = true;
     error = '';
@@ -1203,7 +1256,7 @@
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign`,
           withSessionCredential({
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...coverHeaders() },
             body: JSON.stringify({
               authorizationContextToken,
               // Sol CRITICAL-1: /authorize-sign requires the preview
@@ -1242,7 +1295,7 @@
       // Exact-byte signing cannot narrow the request: show every parsed
       // action and report the full set rather than a UI-only selection.
       const result = await api.signMessage(
-        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion,
+        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion, coverFlowId,
       );
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
@@ -1292,6 +1345,30 @@
     heldPreview = null;
     previewRevision++;
   }
+
+  // The fresh offer a withdrawn cover waits for. When it lands for exactly the request the owner saw at the tap, and
+  // the host has applied the review's layout, that tap goes on to the passkey prompt. A request that differs stays on
+  // screen for a new tap, and a failed fetch shows the failure so that the next tap tries again.
+  $effect(() => {
+    const waiting = coverRefetch;
+    if (waiting === null) return;
+    const preview = waiting === 'preview' ? currentPreview() : null;
+    const landed = waiting === 'preview' ? preview !== null : exactByteGate.action === 'send';
+    const failed = waiting === 'preview' ? !previewing && (error !== '' || refused) : exactBytePasskeyFetch === 'failed';
+    if (!landed && !failed) return;
+    if (landed) {
+      const fresh = preview
+        ? reviewSnapshot(preview.input, preview.signedMessage, renewalLeaseMs)
+        : reviewSnapshot(exactBytePasskey?.input, '', renewalLeaseMs);
+      if (!sameReview(coverShown, fresh)) {
+        coverRefetch = null;
+        return;
+      }
+      if (v2 && !layoutReady) return;
+    }
+    coverRefetch = null;
+    if (landed) untrack(() => { void approveAndSign(); });
+  });
 
   function retryPreview() {
     if (!canUseAuthorizeSignFn() || signing || previewing || heldPreview || previewStopped || !error) return;
@@ -1350,12 +1427,19 @@
     return true;
   }
 
+  // A request that ends without an approval ends the passkey cover its own sign-in recorded.
+  function releaseFlow() {
+    if (isAuthenticated) void releaseWebSignFlow(webFlowId);
+  }
+
   function closeRefused() {
+    releaseFlow();
     sendClose();
   }
 
   function reconnect() {
     keyReadGeneration++;
+    releaseFlow();
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
@@ -1369,6 +1453,7 @@
 
   function cancel() {
     keyReadGeneration++;
+    releaseFlow();
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
@@ -1466,6 +1551,7 @@
         prompt="Sign in to review and sign this message"
         onauthenticated={() => { embedAuthenticated = true; }}
         {passkeysSupported}
+        flowId={webFlowId}
       />
     {:else if loading}
       <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6">
@@ -1518,6 +1604,7 @@
         layoutBlocked={v2 ? !layoutReady : !frameSettled}
         transport={{
           approving: signing,
+          approveVisibility: coverOffered ? approveVisibility : undefined,
           passkeyPending: exactByteGate.action === 'wait',
           host: messageHost,
           error: error || layoutError || offerFailure,
@@ -1555,6 +1642,7 @@
             },
           },
           invalidatePreview: invalidatePreviewForSelectionEdit,
+          claimedPresentation: claimedView,
         }}
       />
     {:else}

@@ -1,14 +1,9 @@
 // Secrets CRUD routes - encrypted storage via TinyCloud vault
 import { Hono } from 'hono';
-import { createPrismaClient } from '@openkey/db';
-import { createTeeClient, unseal } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { tinyCloudService } from '../services/tinycloud-service';
-import { deriveKeyForRecord } from '../services/key-sealing';
-
-const prisma = createPrismaClient();
-const tee = createTeeClient();
+import { getUserPrivateKey, restoreTinyCloudSession } from '../services/tinycloud-session';
 
 // Name validation: must start with letter, contain only letters/numbers/underscores, max 256 chars
 const NAME_REGEX = /^[A-Za-z][A-Za-z0-9_]*$/;
@@ -23,21 +18,6 @@ function validateName(name: string): string | null {
     return 'Name must start with a letter and contain only letters, numbers, and underscores';
   }
   return null;
-}
-
-async function getUserPrivateKey(userId: string): Promise<string | null> {
-  const key = await prisma.ethereumKey.findFirst({
-    where: { userId, keyIndex: 0, keyType: 'MANAGED', archivedAt: null },
-  });
-
-  if (!key || !key.sealedBlob) {
-    return null;
-  }
-
-  const sealingKey = await deriveKeyForRecord(tee, key);
-  const privateKey = await unseal(key.sealedBlob, sealingKey) as string;
-  // Strip 0x prefix if present
-  return privateKey.startsWith('0x') ? privateKey.slice(2) : privateKey;
 }
 
 export const secretsRouter = new Hono<SessionContext>();
@@ -64,18 +44,8 @@ secretsRouter.post('/enable', async (c) => {
 secretsRouter.get('/status', async (c) => {
   const user = c.get('user');
 
-  let enabled = await tinyCloudService.isEnabledForUser(user.id);
-
   // Auto-restore session if user has a managed key (survives server restarts)
-  if (!enabled) {
-    const privateKey = await getUserPrivateKey(user.id);
-    if (privateKey) {
-      try {
-        await tinyCloudService.enableForUser(user.id, privateKey);
-        enabled = true;
-      } catch { /* user has key but TC session failed — treat as not enabled */ }
-    }
-  }
+  const enabled = await restoreTinyCloudSession(user.id);
 
   if (!enabled) {
     return c.json({ enabled: false });
@@ -100,6 +70,7 @@ secretsRouter.get('/status', async (c) => {
 secretsRouter.get('/', async (c) => {
   const user = c.get('user');
 
+  await restoreTinyCloudSession(user.id); // after an API restart the session is gone until it is restored
   const secrets = await tinyCloudService.listSecrets(user.id);
   return c.json({ secrets });
 });

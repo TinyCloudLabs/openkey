@@ -40,8 +40,11 @@ export async function confirmWithPasskey(offer: ApprovalPasskeyOffer): Promise<A
   return { challengeToken: offer.challengeToken, response };
 }
 
-/** What an approval screen gets from the API before Approve: whether the tap needs the passkey, with its challenge. */
-export type ApprovalPasskeyNeed = { required: false } | ({ required: true } & ApprovalPasskeyOffer);
+/**
+ * What an approval screen gets from the API before Approve: whether the tap needs the passkey, with its challenge.
+ * `flowCover` marks an offer that asks for none because this sign flow's own passkey sign-in covers it.
+ */
+export type ApprovalPasskeyNeed = { required: false; flowCover?: true } | ({ required: true } & ApprovalPasskeyOffer);
 
 /** The browser's passkey prompt was dismissed or failed. Nothing reached the API, so the same offer can be tried again. */
 export class PasskeyPromptError extends Error {
