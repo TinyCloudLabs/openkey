@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { expect, test, type Page } from '@playwright/test';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 test.use({ viewport: { width: 390, height: 844 } });
 
@@ -36,6 +37,7 @@ async function deviceApi(page: Page, options: { signedIn?: boolean; admin?: bool
     };
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 }
 
 for (const signedIn of [false, true]) {
@@ -137,6 +139,7 @@ test('a stale admin answer never restores console navigation', async ({ page }) 
     }
     return route.fulfill({ json: {} });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto('/dashboard/api-keys');
   await expect.poll(() => calls).toBe(1);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));

@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { HOST, ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0x1111111111111111111111111111111111111111';
 
@@ -7,6 +8,7 @@ test('failed selected-key read shows a stable cancellable error in the v2 iframe
   await page.addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
   await page.route('**/api/keys/**', (route) => route.fulfill({ status: 404, json: { error: 'Key not found' } }));
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto('/__parity_harness');
   await page.evaluate(() => {
     const iframe = document.createElement('iframe');
@@ -78,6 +80,7 @@ for (const surface of ['sign', 'embed/sign', 'sign-typed-data', 'embed/sign-type
     await page.route('**/api/auth/get-session**', (route) => route.fulfill({
       json: { session: { id: 's', userId: 'u' }, user: { id: 'u' } },
     }));
+    await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
     await page.route('**/api/keys/**', (route) => {
       if (route.request().method() !== 'GET') {
         signingRequests++;

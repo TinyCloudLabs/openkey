@@ -7,6 +7,7 @@ import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
 import { fullCodeFromBox, recordClipboard } from './approval-code-fixtures';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const CAPS_READ = 'tinycloud.capabilities/read';
 const KV_GET = 'tinycloud.kv/get';
@@ -60,6 +61,7 @@ async function mock(page: Page, keys: unknown[], delegation: Record<string, unkn
     }
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return prepared;
 }
 
