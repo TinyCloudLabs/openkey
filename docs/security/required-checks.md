@@ -80,6 +80,10 @@ The required-status-checks rule applies to every update of main, so it also bloc
 whose commit lacks green checks. `integration_id` 15368 is GitHub Actions: a check with the same
 name from another app doesn't count.
 
+The ruleset keeps `bypass_actors: []`. No agent merges with `--admin` or uses a ruleset bypass to
+get past red or pending checks. The one exception is a rollback, on Naomi's word. Secret scanning
+is gitleaks only; this spec doesn't depend on GitHub Secret Protection.
+
 ### Current (read 2026-11-22)
 
 `gh api repos/TinyCloudLabs/openkey/rulesets/27215997`:
