@@ -292,7 +292,7 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
     const display = await call('/api/delegate/prepare', 'GET', undefined, { cookie });
     expect(display.status).toBe(200);
     expect(await display.json()).toEqual({ key: { address, did: `did:pkh:eip155:1:${address}` } });
-    for (const path of ['/api/delegate/host', '/api/delegate/sign', '/api/delegate/authorize-sign', '/api/delegation-codes', '/api/device-authorizations', '/api/keys/fixture-key/sign']) {
+    for (const path of ['/api/delegate/sign', '/api/delegate/authorize-sign', '/api/delegation-codes', '/api/device-authorizations', '/api/keys/fixture-key/sign']) {
       expect((await call(path, 'POST', {}, { cookie })).status).toBe(403);
     }
   });

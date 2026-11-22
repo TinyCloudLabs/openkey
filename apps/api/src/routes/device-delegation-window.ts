@@ -83,7 +83,7 @@ function deviceSignedSubsetRefusal(record: DeviceAuthorizationRecord, signedSiwe
 
 /**
  * Signing routes that do not enforce device transactions (the authorize-sign
- * routes, `/api/delegate/sign`, `/api/delegate/host`, and
+ * routes, `/api/delegate/sign`, and
  * `/api/keys/:keyId/sign`) refuse a request carrying `deviceTransactionId`
  * rather than silently signing it without the device constraints.
  */
