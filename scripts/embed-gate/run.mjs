@@ -359,37 +359,21 @@ const stepUpCodeIn = (text) => {
 };
 const stepUpCode = (subject) => waitForMail(inbox, { subject, extract: stepUpCodeIn, used: usedMail, timeout: 150_000, failure: "no OpenKey step-up code arrived in the test inbox" });
 
-// Better Auth's email-OTP routes allow 3 calls per 60 s per client, and the count only resets after 60 s with
-// none (node_modules/better-auth/dist/plugins/email-otp/index.mjs:75-103). PR run 45012700587 met that 429 on
-// its second sign-in code. Every sign-in code request waits until 61 s have passed since the last one.
-let lastOtpRequest = 0;
-async function paceOtp(label) {
-  const wait = lastOtpRequest + 61_000 - Date.now();
+// Email codes are paced. Naomi, 10:46Z, until the OpenKey rate-limit read lands: at most one OpenKey email-code
+// send per 30 s, and a 429 stops the run with no retry. Better Auth's sign-in code routes also allow 3 calls per
+// 60 s per client, and the count resets only after 60 s with none
+// (node_modules/better-auth/dist/plugins/email-otp/index.mjs:75-103; PR run 45012700587 met that 429). So any
+// code send waits 30 s after the last send, and a sign-in code send waits 61 s after the last sign-in send.
+const pace = { anySend: 0, signInSend: 0 };
+async function paceEmailCode(label, { signIn }) {
+  const wait = Math.max(pace.anySend + 30_000, signIn ? pace.signInSend + 61_000 : 0) - Date.now();
   if (wait > 0) {
-    report.otpPacing = [...(report.otpPacing ?? []), { label, waitedMs: wait }];
+    report.emailCodePacing = [...(report.emailCodePacing ?? []), { label, waitedMs: wait }];
     await sleep(wait);
   }
   check();
-  lastOtpRequest = Date.now();
-}
-
-/**
- * Cleanup and read-back only: on a first-party 429, wait once for 61 s with no calls, then try once more
- * (Clarissa, 10:36Z). Each attempt starts with no stop recorded; its own watcher records any refusal.
- */
-async function onceMoreAfter429(label, attempt) {
-  stopped = null;
-  try {
-    return await attempt();
-  } catch (error) {
-    const verdict = error instanceof GateFailure ? error.verdict : stopped?.verdict;
-    if (verdict !== "first_party_429") throw error;
-    report.retriedAfter429 = [...(report.retriedAfter429 ?? []), { label, atMs: since() }];
-    await sleep(61_000);
-    lastOtpRequest = Date.now() - 61_000;
-    stopped = null;
-    return attempt();
-  }
+  pace.anySend = Date.now();
+  if (signIn) pace.signInSend = pace.anySend;
 }
 
 /** Email sign-in on https://openkey.so/auth/login in its own window; returns the screen it lands on. */
@@ -398,7 +382,7 @@ async function ownWindowEmailSignIn(page, redirect) {
   const email = page.locator('input[type="email"]').first();
   await until("own-window-email-field", () => email.isVisible(), 30_000);
   await email.fill(inbox.address);
-  await paceOtp("own-window");
+  await paceEmailCode("own-window", { signIn: true });
   await page.getByRole("button", { name: "Continue with email", exact: true }).click({ timeout: 10_000 });
   await screen(page, "own-window-check-email", [["otp", page.locator("input#otp")]], 30_000);
   await page.locator("input#otp").fill(await code());
@@ -415,6 +399,7 @@ async function ownWindowEmailSignIn(page, redirect) {
 /** The step-up dialog an add-passkey meets with a session alone: an email code, then the retry. */
 async function stepUpByEmail(page) {
   const dialog = page.getByRole("dialog");
+  await paceEmailCode("passkey-step-up", { signIn: false });
   await dialog.getByRole("button", { name: "Email me a code", exact: true }).click({ timeout: 10_000 });
   await dialog.locator("#passkey-step-up-code").fill(await stepUpCode(/add a passkey to your OpenKey account/));
   await dialog.getByRole("button", { name: "Verify code", exact: true }).click({ timeout: 10_000 });
@@ -500,29 +485,20 @@ async function deleteAccount(browser) {
       if (landed === "secure") await page.getByRole("button", { name: "Skip for now", exact: true }).click({ timeout: 10_000 });
       await screen(page, "cleanup-explain", [["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })]], 45_000);
     }
-    const confirm = async () => {
-      await page.getByRole("button", { name: "Continue", exact: true }).click({ timeout: 10_000 });
-      await page.locator("#delete-confirmation").fill(EXPECTED.deleteConfirmation);
-      await page.getByRole("button", { name: "Continue", exact: true }).click({ timeout: 10_000 });
-      return screen(page, "cleanup-verify", [
-        ["passkey", page.getByRole("button", { name: "Verify with passkey and delete", exact: true })],
-        ["email", page.getByRole("button", { name: "Send code", exact: true })],
-      ], 30_000);
-    };
-    let method = await confirm();
-    if (method === "passkey" && credentials.length === 0) {
-      // An account whose passkey left with its run (cleanup-only) deletes by passkey only, and OpenKey keeps an
-      // only passkey: add one here (email step-up), then delete with it.
-      report.cleanupAddedPasskey = true;
-      await page.goto(`${OPENKEY}/dashboard`, { waitUntil: "domcontentloaded", timeout: 60_000 });
-      await registerPasskey(page, context);
-      await page.goto(`${OPENKEY}/dashboard/settings/delete-account`, { waitUntil: "domcontentloaded", timeout: 60_000 });
-      await screen(page, "cleanup-explain-again", [["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })]], 45_000);
-      method = await confirm();
-    }
+    await page.getByRole("button", { name: "Continue", exact: true }).click({ timeout: 10_000 });
+    await page.locator("#delete-confirmation").fill(EXPECTED.deleteConfirmation);
+    await page.getByRole("button", { name: "Continue", exact: true }).click({ timeout: 10_000 });
+    const method = await screen(page, "cleanup-verify", [
+      ["passkey", page.getByRole("button", { name: "Verify with passkey and delete", exact: true })],
+      ["email", page.getByRole("button", { name: "Send code", exact: true })],
+    ], 30_000);
+    // An account whose step-up passkey left with its run deletes only by that passkey: a passkey added by email
+    // proof never counts for step-up (apps/api/src/services/passkey-enrolment.ts:32-34, passkey-freshness.ts:188).
+    if (method === "passkey" && credentials.length === 0) fail("cleanup_needs_lost_passkey");
     if (method === "passkey") {
       await page.getByRole("button", { name: "Verify with passkey and delete", exact: true }).click({ timeout: 10_000 });
     } else {
+      await paceEmailCode("delete-step-up", { signIn: false });
       await page.getByRole("button", { name: "Send code", exact: true }).click({ timeout: 10_000 });
       await page.locator("#delete-code").fill(await stepUpCode(/delete your OpenKey account/));
       await page.getByRole("button", { name: "Verify and delete account", exact: true }).click({ timeout: 10_000 });
@@ -619,7 +595,7 @@ try {
     await button(connect, "Continue with email").first().click({ timeout: 10_000 });
     await until("connect-email-field", () => connect.locator('input[type="email"]').isVisible(), 30_000);
     await connect.locator('input[type="email"]').fill(inbox.address);
-    await paceOtp("embed-new");
+    await paceEmailCode("embed-new", { signIn: true });
     await button(connect, "Send code").first().click({ timeout: 10_000 });
     const codeField = connect.locator('input[autocomplete="one-time-code"], input[inputmode="numeric"], input[type="text"]').first();
     await until("connect-code-field", () => codeField.isVisible(), 30_000);
@@ -789,8 +765,9 @@ try {
 } finally {
   // cleanup -----------------------------------------------------------------------------------------
   if (accountMayExist) {
+    stopped = null; // cleanup runs after a stop; its own watcher records any refusal. A 429 here ends LEAKED (Naomi, 10:46Z).
     try {
-      const result = await onceMoreAfter429("cleanup", () => deleteAccount(browser));
+      const result = await deleteAccount(browser);
       // "no_account": the run stopped before OpenKey created the account; nothing to delete, nothing leaked.
       report.account.deleted = result.deleted || result.reason === "no_account";
       leg("cleanup", report.account.deleted ? "PASS" : "FAIL", result);
@@ -808,7 +785,7 @@ try {
     if (report.account.deleted === true && report.mode === "cleanup-only") {
       // Read back: the address must now sign in as a stranger ("Create a new account"), which is never pressed.
       try {
-        const gone = await onceMoreAfter429("read-back", () => readBackGone(browser));
+        const gone = await readBackGone(browser);
         leg("read-back", gone ? "PASS" : "FAIL", { noAccount: gone });
         report.result = gone ? "passed" : "failed";
       } catch (error) {
