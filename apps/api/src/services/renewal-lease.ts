@@ -11,7 +11,7 @@
 // returned: nothing is saved, and the app has the node admit it.
 import { randomBytes } from 'node:crypto';
 import { completeSessionSetup, ensureEip55, parseRecapFromSiwe, prepareSession } from '@tinycloud/node-sdk-wasm';
-import { elevatedAbilityVerb, encryptionResourceOfEntry, parseEncryptionResource } from '@openkey/capability-review';
+import { renewalEntryVerdict } from '@openkey/capability-review';
 import {
   admitOwnerRenewalLease,
   assertRenewalNodeIdentity,
@@ -115,17 +115,16 @@ export function parseRenewalChoice(
 /** Spec D6/D7 (TC-3821): the longest each renewed window of a grant that reaches secrets may last. */
 export const SENSITIVE_RENEWAL_WINDOW_SECONDS = 7 * 86_400;
 
-const SECRETS_KEY_PREFIX = 'secrets/';
-
 function unreadableGrant(): RenewalLeaseError {
   return new RenewalLeaseError('renewal_refused', "Renewal can't be set up for this approval, because OpenKey couldn't read one of its permissions. Untick renewal and approve without it, or ask the app for a new link.", 400);
 }
 
 /**
- * Whether a lease on this grant needs the owner's confirm (TC-3821): any encryption permission on a `secrets/` key or
- * prefix (one secret, a scope, or every secret), or decrypt (or `*`) on a whole encryption network, which opens every
- * secret under it. Fails closed: a ReCap that does not parse, or an encryption permission whose resource is not a valid
- * encryption URN, refuses the lease outright. A SIWE with no ReCap grants nothing and needs no confirm.
+ * Whether a lease on this grant needs the owner's confirm (TC-3821), by the rule the approval screen shares
+ * (`renewalEntryVerdict` in @openkey/capability-review): an encryption permission on a `secrets/` key or prefix, or
+ * decrypt on a whole encryption network. Fails closed: a ReCap that does not parse, or an encryption permission whose
+ * resource is not a valid encryption URN, refuses the lease outright. A SIWE with no ReCap grants nothing and needs no
+ * confirm.
  */
 export function leaseReachesSecrets(siwe: string): boolean {
   let entries: Array<{ service?: string; space: string; path: string; actions: string[] }>;
@@ -141,17 +140,9 @@ export function leaseReachesSecrets(siwe: string): boolean {
       entry.actions.some((action) => typeof action !== 'string')) {
       throw unreadableGrant();
     }
-    const resource = encryptionResourceOfEntry(entry);
-    const encryption = resource !== null || entry.service === 'encryption' || entry.service === 'tinycloud.encryption' ||
-      entry.actions.some((action) => action.toLowerCase().startsWith('tinycloud.encryption/'));
-    if (!encryption) continue;
-    const parsed = resource === null ? null : parseEncryptionResource(resource);
-    if (parsed === null) throw unreadableGrant();
-    if (parsed.kind === 'network') {
-      if (entry.actions.some((action) => ['decrypt', '*'].includes(elevatedAbilityVerb(action)))) reaches = true;
-    } else if (parsed.keyPath.startsWith(SECRETS_KEY_PREFIX)) {
-      reaches = true;
-    }
+    const verdict = renewalEntryVerdict(entry);
+    if (verdict === 'unreadable') throw unreadableGrant();
+    if (verdict === 'confirm') reaches = true;
   }
   return reaches;
 }

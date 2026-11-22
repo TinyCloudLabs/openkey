@@ -1,9 +1,7 @@
 // Whether the renewal box starts ticked (TC-2933), from spec #322's tier table.
 import {
-  elevatedAbilityVerb,
-  encryptionResourceOfEntry,
   grantReachesSecretDataOrDecryption,
-  parseEncryptionResource,
+  renewalEntryVerdict,
   type CapabilityGrant,
 } from '@openkey/capability-review';
 
@@ -13,29 +11,16 @@ export function isOnceTier(grants: readonly CapabilityGrant[]): boolean {
 }
 
 /**
- * TC-3821: a grant the API leases only after the owner's "Renew sensitive access?" confirm, mirroring
- * `leaseReachesSecrets` in apps/api/src/services/renewal-lease.ts: any encryption permission on a `secrets/` key or
- * prefix, or decrypt (or `*`) on a whole encryption network. An encryption resource that does not parse counts too:
- * the API refuses its lease outright.
- */
-function grantLeasesSecrets(grant: CapabilityGrant): boolean {
-  const resource = encryptionResourceOfEntry(grant);
-  if (resource === null) return false;
-  const parsed = parseEncryptionResource(resource);
-  if (parsed === null) return true;
-  if (parsed.kind === 'network') {
-    return grant.actions.some((action) => ['decrypt', '*'].includes(elevatedAbilityVerb(action.ability)));
-  }
-  return parsed.keyPath.startsWith('secrets/');
-}
-
-/**
  * TC-3821: renewing these grants needs the owner's "Renew sensitive access?" confirm, exactly where the API requires
- * it: the Once tier, and every grant `grantLeasesSecrets` matches. Used only for renewal (the confirm and the box
- * default), never for the expiry tier.
+ * it: the Once tier, and every grant the shared `renewalEntryVerdict` (the rule `leaseReachesSecrets` in
+ * apps/api/src/services/renewal-lease.ts runs) does not call `none`. An unreadable encryption permission counts: the
+ * API refuses its lease outright. Used only for renewal (the confirm and the box default), never for the expiry tier.
  */
 export function renewalNeedsSensitiveConfirm(grants: readonly CapabilityGrant[]): boolean {
-  return isOnceTier(grants) || grants.some(grantLeasesSecrets);
+  return isOnceTier(grants) || grants.some((grant) =>
+    renewalEntryVerdict({
+      service: grant.service, space: grant.space, path: grant.path, actions: grant.actions.map((action) => action.ability),
+    }) !== 'none');
 }
 
 /**
