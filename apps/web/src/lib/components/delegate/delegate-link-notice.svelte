@@ -6,8 +6,10 @@
     hostRecognized: boolean;
     /** Validated callback URL, or null when the page shows a paste code. */
     callback: string | null;
-    /** The API encrypts delivery for the immutable request's CLI key. */
+    /** The API encrypts delivery for the immutable request's key. */
     requesterRelay?: boolean;
+    /** Who the relayed result is for: a TinyCloud One key, or any other requester. */
+    relayTo?: string;
     /** SIWE Expiration Time of the delegation being reviewed. */
     expiresAt: string;
     /** False where the approval screen's own expiry line ("This permission expires in …") already shows it. */
@@ -16,10 +18,10 @@
     acknowledged?: boolean;
   }
 
-  let { host, hostRecognized, callback, requesterRelay = false, expiresAt, showExpires = true, acknowledged = $bindable(false) }: Props = $props();
+  let { host, hostRecognized, callback, requesterRelay = false, relayTo = 'Requesting CLI', expiresAt, showExpires = true, acknowledged = $bindable(false) }: Props = $props();
 
   const returnsTo = $derived.by(() => {
-    if (requesterRelay) return 'Requesting CLI';
+    if (requesterRelay) return relayTo;
     if (!callback) return '';
     const url = new URL(callback);
     return `${url.origin}${url.pathname}`;

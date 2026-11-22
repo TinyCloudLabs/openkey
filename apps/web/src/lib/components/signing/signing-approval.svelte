@@ -62,6 +62,8 @@
     grantHeading,
     PROTOCOL_HEADLINE,
     PROTOCOL_HINT,
+    NAMED_SECRET_DECRYPT_ROW,
+    oneNamedSecret,
     sensitiveRowsCallout,
     abbreviateDid,
     abbreviateSpaceId,
@@ -165,6 +167,11 @@
     approveVisibility?: ApproveVisibility | null;
     /** The app's own words about a plain `signMessage()` request (name, who it is for, reason); shown under the requester line. */
     claimed?: ClaimedPresentationView | null;
+    /**
+     * The words for a request for one named secret, set only by the one-tap approval: its heading, the line
+     * under it, and the note under the decrypt row. Used while the selection is exactly that request.
+     */
+    oneSecret?: { headline: string; hint: string; decryptNote: string } | null;
     onApprove: () => void;
     onCancel: () => void;
     onRetry?: () => void;
@@ -203,6 +210,7 @@
     elevated = null,
     approveVisibility = null,
     claimed = null,
+    oneSecret = null,
     onApprove,
     onCancel,
     onRetry,
@@ -253,8 +261,6 @@
     model.permissions.some((grant) => grant.actions.some((action) => action.editable)),
   );
   const isMalformedRecap = $derived(model.protocol === "malformed-recap");
-  const headline = $derived(PROTOCOL_HEADLINE[model.protocol]);
-  const hint = $derived(PROTOCOL_HINT[model.protocol]);
 
   // Summary copy and the sensitive count describe only actions the user is
   // currently approving. Advanced details deliberately retains the baseline
@@ -272,6 +278,9 @@
   // Sensitive below it (capability-review `buildSummaryStatements`).
   const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
   const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
+  const oneSecretShown = $derived(oneSecret !== null && oneNamedSecret(selectedGrants) !== null);
+  const headline = $derived(oneSecretShown ? oneSecret!.headline : PROTOCOL_HEADLINE[model.protocol]);
+  const hint = $derived(oneSecretShown ? oneSecret!.hint : PROTOCOL_HINT[model.protocol]);
 
   // A signed request that includes secrets or decrypt starts as a whole at one hour or less.
   const onceTier = $derived(isOnceTier(shortenOnlyExpiry ? model.permissions : selectedGrants));
@@ -827,6 +836,9 @@
                 <span class="summary-sensitive-pill">Sensitive</span>
               {/if}
             </span>
+            {#if oneSecretShown && statement.key === NAMED_SECRET_DECRYPT_ROW}
+              <span class="statement-detail">{oneSecret!.decryptNote}</span>
+            {/if}
           </li>
         {/each}
       </ul>
@@ -1470,6 +1482,12 @@
     line-height: 1.45;
     font-weight: 600;
     color: #0f172a;
+  }
+  .statement-detail {
+    margin-top: 2px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #475569;
   }
   .statement-line {
     display: flex;

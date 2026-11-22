@@ -38,6 +38,18 @@ export const APPROVAL_EXPIRY = {
   shortenLimit: 'This approval can last up to {duration}.',
 } as const;
 
+/**
+ * A signed approval request for one named secret and decrypt. `{requester}` is named only when OpenKey knows it
+ * from the request's signature; any other request gets `headingUnnamed`.
+ */
+export const ONE_SECRET = {
+  heading: '{requester} wants to use one secret',
+  headingUnnamed: 'A request to use one secret',
+  hint: 'Review it, choose how long, then approve.',
+  /** Under the "Decrypt your data" row. */
+  decryptNote: 'Lets it open your encrypted data, including this secret. Until each secret has its own key, this covers all of them.',
+} as const;
+
 export const CLOSE_TAB = 'Close this tab';
 export const TAB_KEPT_OPEN = 'Your browser kept this tab open. Close it from your browser.';
 

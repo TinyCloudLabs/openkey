@@ -11,7 +11,7 @@
   import SignInCard from '$lib/components/approval/sign-in-card.svelte';
   import Slip from '$lib/components/approval/slip.svelte';
   import StopPage from '$lib/components/approval/stop-page.svelte';
-  import { APPROVAL_EXPIRY, CODE, DONE, STOPS, STOP_PARTS, approvalStop, codeDestinationWord, fill, safeCode, stopForReply, supportLine, type StopView } from '@openkey/sdk/approval-copy';
+  import { APPROVAL_EXPIRY, CODE, DONE, ONE_SECRET, STOPS, STOP_PARTS, approvalStop, codeDestinationWord, fill, safeCode, stopForReply, supportLine, type StopView } from '@openkey/sdk/approval-copy';
   import { formatLocalAccessEnd } from '$lib/access-end';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
   import {
@@ -37,11 +37,15 @@
     KNOWN_NODE_ORIGINS,
     REGISTERED_CALLBACK_ENDPOINTS,
     checkDelegateCallback,
+    approvalRequester,
     delegateRequester,
     checkDelegateHost,
     isCanonicalHttpsEndpoint,
     isCanonicalHttpsOrigin,
     isLoopbackHostname,
+    isEd25519DidKey,
+    TINYCLOUD_ONE_REQUESTER,
+    TINYCLOUD_ONE_REQUESTER_DIDS,
     withConfiguredEntries,
   } from '$lib/delegate-link-policy';
   import { preparedMatchesSelection, reviewSelectionToActionKeys, selectedServerActionIds } from '$lib/delegate-review-selection';
@@ -551,6 +555,8 @@
   }
   let requestedPermissions = $state<RequestedPermission[]>([]);
   let requestReason = $state(normalizeReason(reasonParam));
+  // The signer of a one-tap request, as the API checked it at /load; it alone can name the requester.
+  let approvalIssuer = $state('');
   // Set when a `permissions` parameter is present (even empty) but
   // unreadable: the request is refused rather than falling back to the
   // default abilities, which apply only when the parameter is absent.
@@ -584,7 +590,17 @@
     ? callbackCheck.reason
     : hostCheck?.ok === false ? hostCheck.reason : '');
   const approvedCallback = $derived(callbackCheck?.ok ? callbackCheck.callback : null);
-  const requester = $derived(delegateRequester(approvedCallback));
+  const requester = $derived(approvalRequestMode
+    ? approvalRequester(approvalIssuer, withConfiguredEntries(TINYCLOUD_ONE_REQUESTER_DIDS, import.meta.env.VITE_TINYCLOUD_ONE_REQUESTER_DIDS, isEd25519DidKey))
+    : delegateRequester(approvedCallback));
+  // A one-tap request for one named secret names TinyCloud One in its heading only when One's key signed it.
+  const oneSecretWords = $derived(approvalRequestMode
+    ? {
+        headline: requester === TINYCLOUD_ONE_REQUESTER ? fill(ONE_SECRET.heading, { requester: requester.displayName }) : ONE_SECRET.headingUnnamed,
+        hint: ONE_SECRET.hint,
+        decryptNote: ONE_SECRET.decryptNote,
+      }
+    : null);
   const showLoopbackHint = $derived(
     shouldShowLoopbackHint({ delegating, approvedCallback, deviceTransactionId, callbackInFlight, pasteCode }),
   );
@@ -716,6 +732,7 @@
       jwk = request.targetPublicJwk;
       host = request.nodeOrigin;
       requestedPermissions = request.permissions;
+      approvalIssuer = typeof request.issuer === 'string' ? request.issuer : '';
       requestReason = normalizeReason(request.reason);
       expiryMaxMs = request.grantLifetimeSeconds * 1000;
       const startSeconds = approvalRequestStartSeconds(request.grantLifetimeSeconds, request.suggestedLifetimeSeconds);
@@ -2085,7 +2102,7 @@
         {#if deviceTransactionId}
           <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} />
         {:else}
-          <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
+          <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} relayTo={requester === TINYCLOUD_ONE_REQUESTER ? requester.displayName : undefined} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
         {/if}
 
         {#if selectedKey.keyType === 'EXTERNAL'}
@@ -2128,6 +2145,7 @@
               context={cliContext}
               onEditingStateChange={(editing) => { reviewEditing = editing; }}
               showSigner={keys.length > 1}
+              oneSecret={oneSecretWords}
               transport={{
                 approving: delegating || updatingPermissions,
                 error,

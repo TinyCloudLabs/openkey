@@ -10,6 +10,7 @@ export {
   DONE,
   FRAME,
   LOADER,
+  ONE_SECRET,
   POPUP_WINDOW,
   REVOKE_REVIEW,
   SIGN_IN,
