@@ -1,4 +1,4 @@
-// `/api/keys/:keyId/sign` (TC-3800): signed bytes cannot be shortened, so a message that may `decrypt` or `key.create`
+// `/api/keys/:keyId/sign`: signed bytes cannot be shortened, so a message that may `decrypt` or `key.create`
 // on a key or prefix under `default/secrets/` for more than 7 days is refused before the key is unsealed. A whole
 // network's `decrypt` is refused the same way only while `OPENKEY_NETWORK_DECRYPT_CAP=enabled`.
 

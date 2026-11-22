@@ -737,7 +737,7 @@
       requestedPermissions = request.permissions;
       approvalIssuer = typeof request.issuer === 'string' ? request.issuer : '';
       requestReason = normalizeReason(request.reason);
-      // A request that decrypts secrets lasts 7 days at most, whatever it signed (TC-3800); the server refuses more.
+      // A request that decrypts secrets lasts 7 days at most, whatever it signed; the server refuses more.
       const maxSeconds = approvalLifetimeCapSeconds(request.permissions, request.grantLifetimeSeconds);
       expiryMaxMs = maxSeconds * 1000;
       const startSeconds = approvalRequestStartSeconds(maxSeconds, request.suggestedLifetimeSeconds);

@@ -1256,7 +1256,7 @@ delegateRouter.post('/sign', async (c) => {
       },
     });
     if (!policy.allowed) return auditDenial(policy.code, policy.evidence);
-    // A message that names an app key or key.delete, or asks for more than 7 days on secret keys (TC-3800), is outside
+    // A message that names an app key or key.delete, or asks for more than 7 days on secret keys, is outside
     // the approved storage records: it is denied and recorded like every other denial.
     if (typeof candidate.message === 'string' &&
       (appKeyRefusalForSiwe(candidate.message) || exceedsSecretLifetime(candidate.message, Date.now()))) {
@@ -1367,7 +1367,7 @@ delegateRouter.post('/sign', async (c) => {
       reason: appKeyRefusalMessage(signAppKeyRefusal, 'non_browser'),
     }, appKeyRefusalStatus(signAppKeyRefusal));
   }
-  // TC-3800: signed bytes cannot be shortened, so more than 7 days on secret keys is refused.
+  // Signed bytes cannot be shortened, so more than 7 days on secret keys is refused.
   const signLifetimeReach = exceedsSecretLifetime(body.message, Date.now());
   if (signLifetimeReach) {
     return c.json({ approved: false, code: SECRET_LIFETIME_CODE, reason: secretLifetimeMessage(signLifetimeReach) }, 400);
@@ -1635,7 +1635,7 @@ delegateRouter.post('/', async (c) => {
   }
   let expiryMs: number;
   try {
-    // TC-3800: a grant on secret keys lasts 7 days at most.
+    // A grant on secret keys lasts 7 days at most.
     expiryMs = clampSecretExpiryMs(resolveRequestExpiryMs(body), permissions);
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
@@ -2193,7 +2193,7 @@ delegateRouter.post('/prepare', async (c) => {
   }
   let expiryMs: number;
   try {
-    // TC-3800: a grant on secret keys lasts 7 days at most.
+    // A grant on secret keys lasts 7 days at most.
     expiryMs = clampSecretExpiryMs(resolveRequestExpiryMs(body), permissions);
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
@@ -2538,7 +2538,7 @@ delegateRouter.post('/complete', async (c) => {
   if (!expirationTime) {
     return c.json({ error: 'The signed SIWE must include a valid Expiration Time', code: 'missing_expiration_time' }, 400);
   }
-  // TC-3800: signed bytes cannot be shortened, so more than 7 days on secret keys is refused.
+  // Signed bytes cannot be shortened, so more than 7 days on secret keys is refused.
   const completeLifetimeReach = exceedsSecretLifetime(body.prepared.siwe, Date.now());
   if (completeLifetimeReach) return c.json(secretLifetimeBody(completeLifetimeReach), 400);
 
@@ -3708,7 +3708,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (!signSubset.ok) {
     return c.json({ error: signSubset.message, code: signSubset.code, reason: signSubset.reason }, 400);
   }
-  // TC-3800: the preview brought a grant on secret keys back to 7 days; bytes that still ask for more are refused.
+  // The preview brought a grant on secret keys back to 7 days; bytes that still ask for more are refused.
   const signedLifetimeReach = exceedsSecretLifetime(signedMessage, Date.now());
   if (signedLifetimeReach) return c.json(secretLifetimeBody(signedLifetimeReach), 400);
 
@@ -4068,7 +4068,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     }
     expirationOverride = checked.value;
   }
-  // TC-3800: a grant on secret keys lasts 7 days at most, whatever the app asked or the owner picked. A later time is
+  // A grant on secret keys lasts 7 days at most, whatever the app asked or the owner picked. A later time is
   // brought back to 7 days from now, also for an app that did not opt in to a changed expiry: a shorter grant is
   // within what it asked for.
   const secretCap = secretCapExpirationTime(bound.originalSiwe, Date.now());

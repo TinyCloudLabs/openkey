@@ -1,4 +1,4 @@
-// Per-secret encryption keys (TC-3800). A secret `NAME` is encrypted to its own key on the owner's `default` network:
+// Per-secret encryption keys. A secret `NAME` is encrypted to its own key on the owner's `default` network:
 // `secrets/<name>` for a global secret, `secrets/scoped/<scope>/<name>` for a scoped one, `<name>` being `NAME` in
 // lowercase. Its ciphertext stays at the KV path `vault/secrets/NAME` (`vault/secrets/scoped/<scope>/NAME`).
 //
@@ -27,7 +27,7 @@ const ALL_SECRETS_PREFIX = "secrets/";
  * Is this key or prefix on the `default` network shown as all secrets: the `secrets` key itself (no trailing `/`), or
  * any prefix under `secrets/` (`secrets/`, `secrets/scoped/`, `secrets/scoped/<scope>/`)? A prefix opens every secret
  * key beneath it. The node reads the bare `secrets` key as one exact key that covers no secret, so showing it as all
- * secrets overstates it, the safe way (Naomi, 13:05Z). One secret's exact key (`isSecretKeyPath`) is not.
+ * secrets overstates it, the safe way. One secret's exact key (`isSecretKeyPath`) is not.
  */
 export function coversManySecrets(parsed: { kind: "key" | "prefix"; network: string; keyPath: string }): boolean {
   if (parsed.network !== SECRETS_NETWORK) return false;
@@ -103,7 +103,7 @@ export interface AllSecretsReach {
 /**
  * Would this encryption resource, which `parseEncryptionResource` cannot read, name `secrets` or a path under
  * `secrets/` on a `default` network once percent-decoded and lower-cased (`Secrets/`, `SECRETS/x`, `secrets%2F`)? Read
- * this way only to pick the all-secrets card; the grant and the bytes signed stay as written (TC-3800, option A).
+ * this way only to pick the all-secrets card; the grant and the bytes signed stay as written.
  */
 function unreadableNamesSecrets(resource: string): boolean {
   let decoded = resource;
@@ -156,7 +156,7 @@ export function allSecretsReach(entries: readonly SecretReachEntry[]): AllSecret
   return wholeAccount ? { kind: "whole-account", alsoWholeAccount: false } : null;
 }
 
-/** The longest a signed approval request that decrypts secrets may last, whatever the app signs (Sam's D7, TC-3800). */
+/** The longest a signed approval request that decrypts secrets may last, whatever the app signs. */
 export const SECRET_GRANT_MAX_SECONDS = 7 * 24 * 60 * 60;
 
 /** Where an encryption entry's listed verbs reach, for the 7-day cap. */
@@ -225,7 +225,7 @@ function kvReadsSecrets(entry: SecretReachEntry): boolean {
  * Is a grant made outside a signed approval request (a sign-in popup or frame, a pasted link, a raw signature) held
  * to `SECRET_GRANT_MAX_SECONDS`? Yes when it may `decrypt` or `key.create` on a key or prefix under `secrets/` (or on
  * an encryption resource that cannot be read), or read the secrets vault in the KV store (`kvReadsSecrets`), and, only
- * when `networkDecrypt` is on, when it may `decrypt` a whole network (Sam's D3, behind `OPENKEY_NETWORK_DECRYPT_CAP`).
+ * when `networkDecrypt` is on, when it may `decrypt` a whole network (behind `OPENKEY_NETWORK_DECRYPT_CAP`).
  */
 export function secretLifetimeCapApplies(entries: readonly SecretReachEntry[], options: { networkDecrypt: boolean }): boolean {
   return entries.some((entry) =>

@@ -36,9 +36,9 @@ export const LOADER = {
 export const APPROVAL_EXPIRY = {
   onceStart: 'Requests that can open all your secrets or all your encrypted data start at 1 hour. You can choose longer, up to what the app asked for.',
   shortenLimit: 'This approval can last up to {duration}.',
-  /** Monica's W2a (TC-3800): a signed request for a secret's own key whose start is shorter than its maximum. */
+  /** A signed request for a secret's own key whose start is shorter than its maximum. */
   lengthen: 'This request starts at {start}, as the app asked. You can choose up to {max}.',
-  /** Monica's W2b: the same request when it starts at its maximum. Shorter lengths are still offered. */
+  /** The same request when it starts at its maximum. Shorter lengths are still offered. */
   lengthFixed: "This request lasts {max}, as the app asked. That's the most it can be.",
 } as const;
 
@@ -50,7 +50,7 @@ export const ONE_SECRET = {
   heading: '{requester} wants to use one secret',
   headingUnnamed: 'A request to use one secret',
   hint: 'Review it, choose how long, then approve.',
-  /** Under the "Read the secret {NAME}" row, shown only when the request's one decrypt is that secret's own key (W1). */
+  /** Under the "Read the secret {NAME}" row, shown only when the request's one decrypt is that secret's own key. */
   decryptNote: 'Lets it open only this secret.',
 } as const;
 

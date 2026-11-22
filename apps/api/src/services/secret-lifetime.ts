@@ -1,9 +1,9 @@
-// TC-3800: a grant on secret keys made outside a signed approval request lasts 7 days at most. A sign-in popup or
+// A grant on secret keys made outside a signed approval request lasts 7 days at most. A sign-in popup or
 // frame, a pasted link and `/authorize-sign` are clamped to it before anything is signed; signed bytes that ask for
 // more (`/complete`, raw `/sign`) are refused, because they cannot be shortened. "Secret keys" are `decrypt` or
 // `key.create` on a key or prefix under `default/secrets/`, or on an encryption resource that cannot be read, and a KV
 // read of the secrets vault (`get`, `list`, `metadata` or `sync` on `vault/secrets` or a path under it); a whole
-// network's `decrypt` joins them only while `OPENKEY_NETWORK_DECRYPT_CAP=enabled` (Sam's D3). A signed approval
+// network's `decrypt` joins them only while `OPENKEY_NETWORK_DECRYPT_CAP=enabled`. A signed approval
 // request (`/a/`) is held by its own window check (`approvalLifetimeCapSeconds`), network included.
 import { SECRET_GRANT_MAX_SECONDS, secretLifetimeCapApplies } from '@openkey/capability-review';
 import { signedSiweExpirationTime } from '../routes/delegate-validation';
@@ -15,10 +15,10 @@ export const SECRET_GRANT_MAX_MS = SECRET_GRANT_MAX_SECONDS * 1000;
 const CLOCK_SKEW_MS = 5_000;
 
 export const SECRET_LIFETIME_CODE = 'secret_lifetime_exceeded';
-/** Monica's O1e: a grant on secret keys. */
+/** The refusal for a grant on secret keys. */
 export const SECRET_LIFETIME_MESSAGE =
   'This request asks for secret access longer than 7 days. Secret access lasts at most 7 days, so ask again with an expiry of 7 days or less.';
-/** Monica's O1e, network variant: a whole network's `decrypt`, held only while `OPENKEY_NETWORK_DECRYPT_CAP=enabled`. */
+/** The refusal for a whole network's `decrypt`, held only while `OPENKEY_NETWORK_DECRYPT_CAP=enabled`. */
 export const NETWORK_LIFETIME_MESSAGE =
   'This request asks for access to secrets or encrypted data longer than 7 days. Access to secrets or encrypted data lasts at most 7 days, so ask again with an expiry of 7 days or less.';
 

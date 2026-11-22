@@ -1,4 +1,4 @@
-// TC-3800: decrypt or key creation on `default/secrets` itself, on any prefix under `secrets/`, or on a path that only
+// Decrypt or key creation on `default/secrets` itself, on any prefix under `secrets/`, or on a path that only
 // reads as one of them once lower-cased and percent-decoded (`Secrets/`, `secrets%2F`) reads as all secrets: the
 // all-secrets card, a one-hour start, 7 days at most, and never one secret. One secret's own key still reads as that
 // one secret.

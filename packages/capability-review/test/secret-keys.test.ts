@@ -1,4 +1,4 @@
-// TC-3800: one secret's own key (`default/secrets/<name>`) reads as that one secret and keeps the app's length; a
+// One secret's own key (`default/secrets/<name>`) reads as that one secret and keeps the app's length; a
 // grant that can open every secret (a whole network, or the `secrets/` prefix) gets the all-secrets card and the
 // one-hour start; any request that decrypts secrets lasts 7 days at most.
 
@@ -84,13 +84,13 @@ describe("secret key paths", () => {
 });
 
 describe("one secret's own key in the summary", () => {
-  it("a read and decrypt of one secret is one row with the secret's name (W1)", () => {
+  it("a read and decrypt of one secret is one row with the secret's name", () => {
     const grants = grantsFor({ ...READ_OPENAI, [OPENAI_KEY]: [DECRYPT] });
     expect(oneNamedSecret(grants)).toBe("OPENAI_API_KEY");
     expect(buildSummaryStatements(grants).map((row) => [row.key, row.primaryText])).toEqual([[NAMED_SECRET_DECRYPT_ROW, "Read the secret OPENAI_API_KEY"]]);
   });
 
-  it("key.create on one secret's key says it can't read any secret (W4), under the row", () => {
+  it("key.create on one secret's key says it can't read any secret, under the row", () => {
     expect(rows({ [OPENAI_KEY]: [CREATE] })).toEqual([
       ["Create a key for the new secret openai_api_key.", "attention", "It can't read any of your secrets."],
     ]);
@@ -142,7 +142,7 @@ describe("the all-secrets card", () => {
     expect(reach({ ...READ_OPENAI, [OPENAI_KEY]: [DECRYPT, CREATE] })).toBeNull();
   });
 
-  it("says Monica's W3 words, with the older-data sentence only beside a network decrypt", () => {
+  it("says the card's words, with the older-data sentence only beside a network decrypt", () => {
     const trust = "Allow this only for your own tools on a device you trust.";
     expect(allSecretsCard({ kind: "read-and-add", alsoWholeAccount: true }, "secrets.tinycloud.xyz")).toEqual({
       heading: "Let secrets.tinycloud.xyz read and add all your secrets?",

@@ -136,7 +136,7 @@ export class ApprovalResultService {
       throw new ApprovalResultError('request_binding', 'Delegation binding does not match the immutable approval request', 400);
     }
     // The requester signed the longest lifetime it will accept; the owner may pick a shorter one. A request that
-    // decrypts secrets lasts 7 days at most, whatever it signed (TC-3800).
+    // decrypts secrets lasts 7 days at most, whatever it signed.
     const lifetimeSeconds = approvalLifetimeCapSeconds(request.permissions, request.grantLifetimeSeconds);
     if (input.expiryMs !== undefined && input.expiryMs > lifetimeSeconds * 1000) {
       throw new ApprovalResultError('request_binding', 'Grant lifetime exceeds the immutable approval request', 400);

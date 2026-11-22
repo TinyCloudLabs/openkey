@@ -46,7 +46,7 @@
      */
     onceSite?: string | null;
     onceNote?: string | null;
-    /** On a signed request for a secret's own key: its start and the most it can be (TC-3800). Null shows no note. */
+    /** On a signed request for a secret's own key: its start and the most it can be. Null shows no note. */
     lengthNote?: string | null;
     /** Show the "How long it lasts" fold here. False where the screen shows ApprovalExpiryChooser elsewhere. */
     chooser?: boolean;

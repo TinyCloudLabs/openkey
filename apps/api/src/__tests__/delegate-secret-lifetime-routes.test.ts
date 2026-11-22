@@ -1,4 +1,4 @@
-// TC-3800: on the /delegate popup and a pasted link (/prepare, /complete) a grant that may `decrypt` or `key.create`
+// On the /delegate popup and a pasted link (/prepare, /complete) a grant that may `decrypt` or `key.create`
 // on a key or prefix under `default/secrets/` lasts 7 days at most, whether the link or the owner asked for more:
 // /prepare brings the expiry back to 7 days, and /complete refuses signed bytes that still ask for more. A whole
 // network's `decrypt` is held the same way only while `OPENKEY_NETWORK_DECRYPT_CAP=enabled`.

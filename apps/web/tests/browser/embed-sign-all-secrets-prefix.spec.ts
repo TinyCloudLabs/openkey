@@ -1,4 +1,4 @@
-// TC-3800: on the embedded sign-in frame, decrypt on `default/secrets` itself, a prefix under `secrets/`, or a path that
+// On the embedded sign-in frame, decrypt on `default/secrets` itself, a prefix under `secrets/`, or a path that
 // only reads as one of them once lower-cased and percent-decoded (`Secrets/`, `secrets%2F`), opens the warning screen
 // on the all-secrets card; one secret's own key does not. The frame's API (/authorize-sign-prepare takes each of these)
 // is answered by `page.route`.

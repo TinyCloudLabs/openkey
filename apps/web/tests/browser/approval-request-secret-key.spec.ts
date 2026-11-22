@@ -1,4 +1,4 @@
-// TC-3800: a signed approval request for one secret's own key (`default/secrets/<name>`) starts at what the app
+// A signed approval request for one secret's own key (`default/secrets/<name>`) starts at what the app
 // suggested and may be lengthened up to what it signed, never past 7 days; a whole-network decrypt starts at one hour
 // and shows the all-secrets card. Every API call is answered by `page.route`; no API server runs.
 

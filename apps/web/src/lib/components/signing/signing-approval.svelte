@@ -313,8 +313,8 @@
       ? onceDefaultExpiryMs(onceTier, shortenOnlyExpiry?.startMs ?? requestedExpiry)
       : null,
   );
-  // A grant on secret keys made outside a signed approval request (popup, frame, pasted link) lasts 7 days at most
-  // (TC-3800), and so does a whole network's decrypt where the network cap is on: the server clamps a longer one, so
+  // A grant on secret keys made outside a signed approval request (popup, frame, pasted link) lasts 7 days at most,
+  // and so does a whole network's decrypt where the network cap is on: the server clamps a longer one, so
   // the screen offers no more. A signed request has its own maximum.
   const secretCapMs = $derived(
     !shortenOnlyExpiry && secretLifetimeCapApplies(model.permissions, { networkDecrypt: NETWORK_DECRYPT_CAP })
@@ -325,7 +325,7 @@
     const bounded = expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null;
     return secretCapMs === null ? bounded : Math.min(bounded ?? secretCapMs, secretCapMs);
   });
-  // A signed request may be made longer than its start, up to the maximum its requester signed (TC-3800), unless it
+  // A signed request may be made longer than its start, up to the maximum its requester signed, unless it
   // can open all secrets or all encrypted data: then the start (the requester's own suggestion) stays the most.
   const expiryFoldMaxMs = $derived(shortenOnlyExpiry
     ? (onceTier ? shortenOnlyExpiry.startMs : Math.max(expiryMaxMs ?? 0, shortenOnlyExpiry.startMs))
@@ -371,7 +371,7 @@
       ? shortenOnlyExpiry.onceNote
       : null,
   );
-  // A signed request for a secret's own key says where it starts and the most it can be (TC-3800).
+  // A signed request for a secret's own key says where it starts and the most it can be.
   const signedLengthNote = $derived(
     shortenOnlyExpiry && !onceTier && renewal?.leaseMs == null && expiryFoldMaxMs !== null &&
     model.permissions.some(grantDecryptsOneSecret)
@@ -659,7 +659,7 @@
     block: boolean;
     unblock: boolean;
     where: string | null;
-    /** The all-secrets card: decrypt on a whole network, decrypt or key creation on `secrets/` (TC-3800). */
+    /** The all-secrets card: decrypt on a whole network, decrypt or key creation on `secrets/`. */
     allSecrets: boolean;
   }
   // What the request reaches across all secrets: the all-secrets card on the warning screen, or above the summary on
@@ -1494,7 +1494,7 @@
     unicode-bidi: isolate;
     overflow-wrap: anywhere;
   }
-  /* The all-secrets card (TC-3800) on a screen without the warning screen: the same colours as the Sensitive callout. */
+  /* The all-secrets card on a screen without the warning screen: the same colours as the Sensitive callout. */
   .all-secrets {
     background: #fff7ed;
     border: 1px solid #fdba74;

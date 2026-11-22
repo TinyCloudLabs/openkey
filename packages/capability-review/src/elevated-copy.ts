@@ -110,7 +110,7 @@ export function elevatedCard(
 export const ALL_SECRETS_UNVERIFIED_CUE = "OpenKey can't confirm which site asked.";
 
 /**
- * The all-secrets card (TC-3800, Monica's W3a-W3c): a request that can open every secret, by decrypt on the
+ * The all-secrets card: a request that can open every secret, by decrypt on the
  * `secrets/` prefix or on a whole encryption network. `site` is the verified site; with none the card names "this
  * app" and says so in `cue`. The "older encrypted data" sentence is said only when a whole-network decrypt is in the
  * same request: the `secrets/` prefix alone does not open data encrypted to the account key.

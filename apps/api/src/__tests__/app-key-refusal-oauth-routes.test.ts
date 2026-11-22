@@ -426,7 +426,7 @@ describe('OAuth manage-key signer with an apps/ recap on an earlier line', () =>
   });
 });
 
-// TC-3800: a secret key's recap on an earlier line, in a message that lasts 30 days.
+// A secret key's recap on an earlier line, in a message that lasts 30 days.
 const SECRET_URN = `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default/secrets/openai_api_key`;
 const THIRTY_DAYS_MS = 30 * 86_400_000;
 
@@ -477,7 +477,7 @@ describe('OAuth manage-key signer with a 30-day secret key recap on an earlier l
   });
 });
 
-// TC-3800: a KV read of the secrets vault on an earlier line is held to 7 days like a secret key.
+// A KV read of the secrets vault on an earlier line is held to 7 days like a secret key.
 const VAULT_RESOURCE = `tinycloud:pkh:eip155:1:${address}:default/kv/vault/secrets/`;
 
 describe('CoordinationOS signer with a 30-day KV read of the secrets vault on an earlier line', () => {

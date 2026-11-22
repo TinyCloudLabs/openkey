@@ -442,7 +442,7 @@ const ENCRYPTION_NETWORK_NAME = /^[a-z0-9][a-z0-9-]*$/;
 // The one key folder a raw entry may name besides a bare network: the `share/` folder of the signer's own
 // network (the CLI's `builtin:share-publishing` manifest, TC-2349). Exactly this suffix, nothing after it.
 const SHARE_KEY_FOLDER_SUFFIX = '/share/';
-// One secret's own key (TC-3800): `default/secrets/<name>` or `default/secrets/scoped/<scope>/<name>`.
+// One secret's own key: `default/secrets/<name>` or `default/secrets/scoped/<scope>/<name>`.
 const SECRET_KEY_TAIL_PREFIX = 'default/secrets/';
 const SECRET_KEY_SEGMENT = '[a-z0-9][a-z0-9._-]{0,63}';
 const ENCRYPTION_KEY_CREATE = 'tinycloud.encryption/key.create';

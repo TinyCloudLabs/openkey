@@ -6,7 +6,7 @@ import {
   type DelegationPermissionEntry,
 } from '../routes/delegate-session';
 
-// TC-3800: a request may name one secret's own key, `default/secrets/<name>` or
+// A request may name one secret's own key, `default/secrets/<name>` or
 // `default/secrets/scoped/<scope>/<name>`, for decrypt and key.create, in the
 // signer's own account only. Every other named key or folder keeps its rule.
 
@@ -48,7 +48,7 @@ function refusal(permissions: DelegationPermissionEntry[]): DelegateRequestError
   return error;
 }
 
-describe('prepareDelegationSession — one secret\'s own key (TC-3800)', () => {
+describe('prepareDelegationSession — one secret\'s own key', () => {
   test('signs decrypt and key.create on a global and a scoped secret key as raw resources', () => {
     for (const tail of ['secrets/openai_api_key', 'secrets/scoped/work.team/openai_api_key']) {
       const path = keyUrn(tail);
@@ -114,7 +114,7 @@ describe('prepareDelegationSession — one secret\'s own key (TC-3800)', () => {
 // The popup and the signed approval request page (`/a/`) build their bytes here, so neither can carry a grant on
 // every secret: `secrets` itself, a prefix under it, or a path that only reads as one of them once lower-cased and
 // percent-decoded.
-describe('prepareDelegationSession refuses every shape of a grant on all secrets (TC-3800)', () => {
+describe('prepareDelegationSession refuses every shape of a grant on all secrets', () => {
   test.each([
     'secrets', 'secrets/', 'secrets/scoped/', 'secrets/scoped/work/', 'Secrets/', 'SECRETS/', 'SECRETS/x', 'Secrets/openai_api_key',
     'secrets%2F', 'secrets%2f', 'secrets%2Fopenai_api_key', 'secrets%2fx',
@@ -125,8 +125,8 @@ describe('prepareDelegationSession refuses every shape of a grant on all secrets
   });
 });
 
-// Naomi 13:35:53Z: name and scope segments are at most 64 bytes, inclusive; 65 is refused.
-describe('prepareDelegationSession — secret key segments of 64 bytes (TC-3800)', () => {
+// Name and scope segments are at most 64 bytes, inclusive; 65 is refused.
+describe('prepareDelegationSession — secret key segments of 64 bytes', () => {
   const at64 = 'a'.repeat(64);
   const at65 = 'a'.repeat(65);
 

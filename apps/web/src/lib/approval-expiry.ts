@@ -44,7 +44,7 @@ export const MAX_LEASE_MS = 365 * D;
 /** Spec D6 rule 3: renewing access to secrets or decrypt uses a 7-day window. */
 export const SENSITIVE_RENEWAL_WINDOW_MS = 7 * D;
 
-/** One-time approvals (the Once tier: access to all secrets or all encrypted data) start at one hour (spec D6). */
+/** One-time approvals (the Once tier: access to all secrets or all encrypted data) start at one hour. */
 export const ONCE_DEFAULT_EXPIRY_MS = H;
 
 /**

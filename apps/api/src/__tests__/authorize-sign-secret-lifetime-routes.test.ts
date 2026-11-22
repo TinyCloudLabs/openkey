@@ -1,4 +1,4 @@
-// TC-3800: in the frame (/authorize-sign-preview, /authorize-sign) a grant that may `decrypt` or `key.create` on a key
+// In the frame (/authorize-sign-preview, /authorize-sign) a grant that may `decrypt` or `key.create` on a key
 // or prefix under `default/secrets/` lasts 7 days at most, whatever the app asked or the owner picked: the preview
 // brings a later expiry back to 7 days from now and those are the bytes signed. A whole network's `decrypt` is held
 // the same way only while `OPENKEY_NETWORK_DECRYPT_CAP=enabled`.

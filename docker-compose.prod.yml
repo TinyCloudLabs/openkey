@@ -48,7 +48,7 @@ services:
       - SCOREBOARD_EXCLUDE_CLIENT_IDS=${SCOREBOARD_EXCLUDE_CLIENT_IDS:-}
       - SCOREBOARD_EXCLUDE_EMAIL_PREFIXES=${SCOREBOARD_EXCLUDE_EMAIL_PREFIXES:-}
       - OPENKEY_NATIVE_RENEW_DISABLED=${OPENKEY_NATIVE_RENEW_DISABLED:-}
-      # TC-3800: off unless exactly `enabled` (7 days for a whole network's decrypt outside /a/).
+      # Off unless exactly `enabled` (7 days for a whole network's decrypt outside /a/).
       - OPENKEY_NETWORK_DECRYPT_CAP=${OPENKEY_NETWORK_DECRYPT_CAP:-}
       # Renewal leases: public settings, written here rather than sealed, so turning them on or off is a
       # reviewed compose change and never touches the sealed environment. The DIDs are the production node's,

@@ -412,7 +412,7 @@ export function grantIsBroadOnce(grant: CapabilityGrant): boolean {
     if (view.kind !== "urn") return true;
     const parsed = view.parsed;
     if (parsed.kind === "network") return true;
-    // An exact key stays one key, except `default/secrets` itself, shown as all secrets (TC-3800).
+    // An exact key stays one key, except `default/secrets` itself, shown as all secrets.
     if (parsed.kind === "key") return coversManySecrets(parsed);
     // Only `apps/<appId>/…` provably stays inside one app's keys.
     const segments = parsed.keyPath.slice(0, -1).split("/");
@@ -2051,7 +2051,7 @@ function secretReadText(name: string): string {
   return `Read the secret ${name}`;
 }
 
-// Monica's W4 is two sentences; the second goes under the row so the row stays one line on a phone.
+// The note is two sentences; the second goes under the row so the row stays one line on a phone.
 const SECRET_KEY_CREATE_DETAIL = "It can't read any of your secrets.";
 
 function namedKeyVerbOf(ability: string): NamedKeyVerb | undefined {
@@ -2065,7 +2065,7 @@ function ownSecretKeyPath(grant: CapabilityGrant): string | null {
   return view.kind === "urn" ? exactSecretKeyPath(view.resource) : null;
 }
 
-/** Does this grant decrypt one secret's own key in the signer's own account (TC-3800)? */
+/** Does this grant decrypt one secret's own key in the signer's own account? */
 export function grantDecryptsOneSecret(grant: CapabilityGrant): boolean {
   return ownSecretKeyPath(grant) !== null && grant.actions.some((action) => namedKeyVerbOf(action.ability) === "decrypt");
 }
@@ -2078,7 +2078,7 @@ function ownSecretKvOf(grant: CapabilityGrant): { name: string; keyPath: string 
 }
 
 /**
- * Rows for a grant on one secret's own key, or on one secret's KV path paired with decrypt on its key (TC-3800).
+ * Rows for a grant on one secret's own key, or on one secret's KV path paired with decrypt on its key.
  * The secret is named by the KV path the request pairs with its key (`vault/secrets/OPENAI_API_KEY`), otherwise by
  * the key's own lowercase name. Null for every other grant, which keeps its ordinary rows.
  */

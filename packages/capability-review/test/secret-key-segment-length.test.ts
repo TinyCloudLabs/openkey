@@ -1,4 +1,4 @@
-// TC-3800, Naomi 13:35:53Z: a secret's name and scope segments are at most 64 bytes, inclusive. 64 is allowed (live
+// A secret's name and scope segments are at most 64 bytes, inclusive. 64 is allowed (live
 // names are exactly 64) and 65 is refused. The grammar is ASCII only, so a segment with any multi-byte character is
 // refused whatever its character count.
 

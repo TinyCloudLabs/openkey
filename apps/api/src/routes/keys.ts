@@ -426,7 +426,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (shareRefusal) {
     return c.json(appKeyRefusalBody(shareRefusal, 'browser'), appKeyRefusalStatus(shareRefusal));
   }
-  // TC-3800: these bytes cannot be shortened, so more than 7 days of `decrypt` or `key.create` on secret keys (or, with
+  // These bytes cannot be shortened, so more than 7 days of `decrypt` or `key.create` on secret keys (or, with
   // `OPENKEY_NETWORK_DECRYPT_CAP=enabled`, of a whole network's `decrypt`) is refused. Checked before unseal.
   const lifetimeReach = messageExceedsSecretLifetime(body.message, Date.now());
   if (lifetimeReach) {

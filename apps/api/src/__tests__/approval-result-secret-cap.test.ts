@@ -5,7 +5,7 @@ import { SiweMessage } from 'siwe';
 import { ApprovalResultService, type ApprovalRequestRecord, type ApprovalRequestStore } from '../services/approval-results';
 import { strictSessionDid } from '../services/device-authorization';
 
-// TC-3800: an approval request that decrypts secrets (a secret's own key, a prefix under `secrets/`, or a whole
+// An approval request that decrypts secrets (a secret's own key, a prefix under `secrets/`, or a whole
 // network) lasts 7 days at most, whatever its requester signed. The server refuses a longer one.
 
 const DAY_MS = 86_400_000;
@@ -44,7 +44,7 @@ function fixture(permissions: unknown[], grantLifetimeSeconds = 30 * 86_400) {
 const secretKey = { service: 'tinycloud.encryption', space: 'encryption', path: `${NETWORK}/secrets/openai_api_key`, actions: [DECRYPT] };
 const secretRead = { service: 'tinycloud.kv', space: `tinycloud:pkh:eip155:1:${OWNER}:secrets`, path: 'vault/secrets/OPENAI_API_KEY', actions: ['tinycloud.kv/get'] };
 
-describe('approval request lifetime for secrets (TC-3800)', () => {
+describe('approval request lifetime for secrets', () => {
   for (const [name, decrypt] of [
     ['a secret\'s own key', secretKey],
     ['every secret', { ...secretKey, path: `${NETWORK}/secrets/` }],

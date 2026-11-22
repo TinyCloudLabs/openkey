@@ -1,4 +1,4 @@
-// TC-3800: a decrypt or key creation on `default/secrets` itself, a prefix under `secrets/`, or a path that only reads as
+// A decrypt or key creation on `default/secrets` itself, a prefix under `secrets/`, or a path that only reads as
 // one of them once lower-cased and percent-decoded (`Secrets/`, `secrets%2F`), shows the all-secrets card and never the
 // one-secret card, on a screen with the warning (a sign-in popup or frame) and on one without (a link, the command
 // line). One secret's own key still shows the one-secret card. Mounts the production approval view in happy-dom.
