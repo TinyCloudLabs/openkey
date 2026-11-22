@@ -1169,6 +1169,8 @@ Operators can set `OPENKEY_NATIVE_RENEW_DISABLED=true` (case-insensitive) or
 `{"error":"consent_required"}` before proof verification, key unsealing, signing,
 token rotation, grant writes, or decision logging. The environment is read per
 request; changing it requires recreating the API container with the new value.
+In production the value is fixed in `docker-compose.prod.yml` (TC-3840), so
+turning the switch on is a compose PR and an API deploy.
 Unset, empty, `false`, `0`, or any other value leaves renewals enabled. Native
 revoke remains available. Provider `/api/auth/oauth2/token` refresh handling
 is independent. In the TinyChat path, the SDK treats `consent_required` as

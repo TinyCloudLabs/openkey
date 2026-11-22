@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ErrorHandler, MiddlewareHandler } from 'hono';
 import { TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './services/tinycloud-hosts';
+import { MEASURED_SETTINGS } from './measured-settings';
 
 export type ApiEnv = { Variables: { requestId: string } };
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -54,7 +55,7 @@ const EVENTS = {
   auth_social_email_review_refused: true, auth_social_email_review_confirmed: true,
   analytics_token_exchange_failed: true, analytics_unique_user_failed: true, analytics_token_tracking_failed: true,
   analytics_authorization_failed: true, analytics_authorization_tracking_failed: true, oauth_client_scopes_updated: true,
-  oauth_client_scopes_update_failed: true, api_starting: true, request: true, api_error: true,
+  oauth_client_scopes_update_failed: true, api_starting: true, measured_settings_verified: true, request: true, api_error: true,
   delegate_session_activation_warning: true, delegate_session_activation_failed: true, delegate_session_revoke_failed: true,
   delegate_authorization_context_issue_failed: true, owner_revocation_sign_failed: true, delegate_space_setup_notice_failed: true, delegate_session_jwk: true,
   delegate_origin_bind_failed: true, tinycloud_bootstrap_failed: true, primary_key_changed: true, key_quote_failed: true,
@@ -89,7 +90,12 @@ const EVENTS = {
   unlisted_event: true,
 } as const satisfies Record<string, true>;
 type EventName = keyof typeof EVENTS;
-const CONFIG_KEYS: Record<string, true> = { BETTER_AUTH_URL: true, TERMS_RELEASE: true };
+const CONFIG_KEYS: Record<string, true> = {
+  BETTER_AUTH_URL: true, TERMS_RELEASE: true,
+  // TC-3840: the measured app-compose is unreadable, or a measured setting is not its literal there.
+  measured_app_compose: true,
+  ...Object.fromEntries(MEASURED_SETTINGS.map((name) => [name, true] as const)),
+};
 const ERROR_CODES: Record<string, true> = {
   P2002: true, P2025: true, P2010: true, P2034: true, tinycloud_bootstrap_failed: true,
   tinycloud_bootstrap_crashed: true, tinycloud_bootstrap_in_progress: true,

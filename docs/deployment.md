@@ -207,18 +207,51 @@ The release owner sets `SCOREBOARD_EXCLUSIONS` in the sealed API environment thr
 existing complete-env procedure. `deploy-api.yml` is unchanged. Keep the legacy exclusion
 env alongside it for rollback. Details: TC-1480
 
+Settings that decide who can sign are fixed in `docker-compose.prod.yml`, never read from the encrypted env
+(TC-3840): `compose_hash` covers the compose text but not encrypted env values, so a value set only in the env
+would change who can sign while nothing a verifier sees changes. Inside the TEE the API refuses to start unless
+each of them is a literal `NAME=value` in the compose it was measured with, and the process sees exactly that
+value (`apps/api/src/measured-settings.ts`, `MEASURED_SETTINGS`); the refusal logs `config_invalid` with the
+setting's name, and a pass logs `measured_settings_verified`. To change one, change the compose in a reviewed PR. After each deploy, `deploy-api.yml` checks
+from outside that the live API serves them (`scripts/probe-api-settings.ts`). `CORS_ORIGIN`, `API_PORT` and the
+ingress `DSTACK_GATEWAY_DOMAIN` stay in the encrypted env. Names these settings replace may
+remain in the CVM's `allowed_envs`; the compose doesn't reference them, so their stored values have no effect.
+Removing them takes an encrypted-env save, a separate operator step.
+
+Rolling back a deploy that stops at boot with `config_invalid`: re-run only the `deploy` job of the last good
+`deploy-api.yml` run. That redeploys that commit's compose and image, which read these names from the encrypted
+env. A full `gh run rerun <run id>` does not work here: it re-runs `smoke-gate` first, which requires a healthy
+`/health` on the serving API and fails while the API is down, so `deploy` is skipped. Run:
+
+```bash
+job=$(gh run view <run id of the last good deploy-api.yml run> --repo TinyCloudLabs/openkey \
+  --json jobs --jq '.jobs[] | select(.name == "deploy") | .databaseId')
+gh run rerun --job "$job" --repo TinyCloudLabs/openkey
+```
+
+GitHub keeps that run's `smoke-gate` success, so `deploy` runs without the health check. This works while the run
+is less than 30 days old (GitHub's re-run limit) and no migration has been applied since it ran. Otherwise revert
+the change on `main` and dispatch `deploy-api.yml` with `override_reason` set, which skips `smoke-gate` and
+records the reason in the run summary. Either path takes about 20 minutes, 35 at most.
+
+`OPENKEY_NATIVE_RENEW_DISABLED` and `OAUTH_DYNAMIC_CLIENT_REGISTRATION` are kill switches, and they are in this
+set: an encrypted-env save doesn't turn them. To turn one, merge a pull request that changes its literal in
+`docker-compose.prod.yml` (`OPENKEY_NATIVE_RENEW_DISABLED=true`; `OAUTH_DYNAMIC_CLIENT_REGISTRATION=false`) and
+dispatch `deploy-api.yml`, about 20 minutes and 35 at most. In an emergency the pull request is that one line;
+if the API is down, dispatch with `override_reason` so `smoke-gate` doesn't stop the deploy.
+
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `BETTER_AUTH_SECRET` | 32+ character random secret for session encryption |
-| `BETTER_AUTH_URL` | `https://api.openkey.so` |
-| `APPROVAL_RESULT_RETENTION_SECONDS` | `600` (10 min, Sam 2026-10-29), fixed in production compose for collecting approved CLI results. The result deadline is capped by the signed grant expiry. |
-| `OAUTH_DYNAMIC_CLIENT_REGISTRATION` | Keep `true` for MCP clients that register automatically; set `false` only as an emergency disable |
-| `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs; code includes the exact broad `https://mcp.tinycloud.xyz/mcp`, the public `https://mcp.tinycloud.xyz/chatgpt/mcp`, and the directory `https://mcp.tinycloud.xyz/claude/mcp`, `/grok/mcp` and `/muse/mcp` audiences. Preserve any additional configured resources. |
-| `WEBAUTHN_RP_ID` | `openkey.so` |
-| `WEBAUTHN_ORIGIN` | `https://openkey.so` |
+| `BETTER_AUTH_URL` | `https://api.openkey.so`, fixed in production Compose (TC-3840), not set in the encrypted env |
+| `APPROVAL_RESULT_RETENTION_SECONDS` | `600` (10 min, ruling of 2026-10-29), fixed in production compose for collecting approved CLI results. The result deadline is capped by the signed grant expiry. |
+| `OAUTH_DYNAMIC_CLIENT_REGISTRATION` | `true` (for MCP clients that register automatically), fixed in production Compose (TC-3840). An emergency disable is a compose PR setting `false` |
+| `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs, fixed in production Compose as `https://mcp.tinycloud.xyz/mcp` (TC-3840); code includes the exact broad `https://mcp.tinycloud.xyz/mcp`, the public `https://mcp.tinycloud.xyz/chatgpt/mcp`, and the directory `https://mcp.tinycloud.xyz/claude/mcp`, `/grok/mcp` and `/muse/mcp` audiences. |
+| `WEBAUTHN_RP_ID` | `openkey.so`, fixed in production Compose (TC-3840), not set in the encrypted env |
+| `WEBAUTHN_ORIGIN` | `https://openkey.so`, fixed in production Compose (TC-3840), not set in the encrypted env. The account origin, and the origin of the `terms_url` the API returns (`https://openkey.so/auth/terms`) |
 | `CONSOLE_ORIGIN` | `https://console.openkey.so` |
-| `GOOGLE_CLIENT_ID` | Google OAuth client ID |
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID, fixed in production Compose (TC-3840), not set in the encrypted env |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
 | `APPLE_SIGN_IN_ENABLED` | Hardcoded `true` in production Compose; Apple is offered only when `APPLE_PRIVATE_KEY` is set in the encrypted env (TC-1188) |
 | `APPLE_NATIVE_SIGN_IN_ENABLED` | Hardcoded `true` in `docker-compose.prod.yml`, matching the live CVM; the API does not read it |
@@ -226,7 +259,7 @@ env alongside it for rollback. Details: TC-1480
 | `APPLE_TEAM_ID` | Apple Developer Team ID; fixed in production Compose, not set in the encrypted env |
 | `APPLE_KEY_ID` | Sign in with Apple private-key ID; fixed in production Compose, not set in the encrypted env |
 | `APPLE_PRIVATE_KEY` | Apple `.p8` ES256 private key (literal or escaped newlines), set in the encrypted env |
-| `APPLE_APP_BUNDLE_IDENTIFIERS` | Reserved comma-separated audiences for a future PAR-bound native flow; not active |
+| `APPLE_APP_BUNDLE_IDENTIFIERS` | Reserved comma-separated audiences for a future PAR-bound native flow; not active. Fixed empty in production Compose (TC-3840) |
 | `APPLE_WEBHOOK_AUDIENCE` | Primary App ID (`so.openkey`) that Apple addresses server-to-server notifications to; fixed in production Compose, not set in the encrypted env. The webhook is not found while Apple sign-in is disabled |
 | `TEE_MODE` | Not read from the env: `docker-compose.prod.yml` hardcodes `production`, and the API refuses to start otherwise (TC-966) |
 | `RESEND_API_KEY` | Resend API key for emails |
@@ -235,14 +268,14 @@ env alongside it for rollback. Details: TC-1480
 | `ADMIN_API_KEY` | Bearer token for organization plan fixtures and app registration |
 | `INTERNAL_METRICS_TOKEN` | Bearer token for `/api/internal/metrics`, including counts-only `/native-renewals` by public OAuth client ID; unset = 503, missing/wrong bearer = 401. `GET /api/internal/metrics` also returns a counts-only `users` block (TC-2356): total accounts, one count per exclusive bucket in precedence order (`team_by_wallet`, `qa_prefix` (local part starts with `tcqa-`, `tcqa+` or the older `qa-`), `internal_team_domain`, `disposable_mail_domain`, `internal_agent_or_qa`, `test_or_throwaway_domain`, `plus_addressed`, `test_like_name`, `never_completed_signup`, `explicit_exclusions`, `bot_like`), `real` (what is left), `realActive` (`d1`/`d7`/`d30`, by last session update), `realNew7d`, and `apps` (`{name, real7d, real30d}`: distinct real accounts with an OAuth access token in the window, by client display name; names are cleaned and cut to 60 characters, only apps with at least 5 real users in 30 days are listed by name, at most 50, and every other app is summed as distinct users into one `other apps` row); `unclassifiedDomains` (`{domain, accounts}`: email domains with at least 5 accounts that no list covers and that are not major webmail, biggest first, max 200, so new disposable domains surface); `users` is `null` if that query fails. The same path also accepts a token-gated `POST` with an optional JSON body `{"disposableDomains": [...]}` (at most 5,000 lowercase hostnames, body at most 1 MB; anything else is 400 `Invalid disposableDomains`): the maintained list the internal Worker keeps, merged with the built-in and env lists for that request only (not stored, not echoed), so OpenKey makes no outbound calls for it. |
 | `OPENKEY_METRICS_READ_TOKEN` | Separate bearer for `/api/internal/scoreboard/*`. Grants **aggregate counts only** (`GET /protocol-users` -> `{count}`, `GET /app-users` -> `{total, active7d}`); neither endpoint takes input, so the token cannot be used to look up addresses or accounts. `/protocol-users` is capped at 30 calls/min per process (429) and audit-logged (status and count only). Unset = 503 |
-| `NODE_STATS_URL` / `NODE_STATS_READ_TOKEN` | Full URL of the node's read-only `GET /admin/stats` (TC-1482) and its read-only bearer. OpenKey fetches the owner addresses from it for `/protocol-users` (owners with data beyond the automatic `account` space; account-only owners are excluded). The URL must be `https:`; the response is capped at 16 MiB and concurrent calls share one node request; unset or failing node = 503, never a partial count. Expected response: `200 {"owners": ["0x<40 hex>", ...]}` |
+| `NODE_STATS_URL` / `NODE_STATS_READ_TOKEN` | Full URL of the node's read-only `GET /admin/stats` (TC-1482) and its read-only bearer. The URL is fixed empty in production Compose (TC-3840), so `/protocol-users` answers 503 until a compose PR sets it; the bearer stays in the encrypted env. OpenKey fetches the owner addresses from it for `/protocol-users` (owners with data beyond the automatic `account` space; account-only owners are excluded). The URL must be `https:`; the response is capped at 16 MiB and concurrent calls share one node request; unset or failing node = 503, never a partial count. Expected response: `200 {"owners": ["0x<40 hex>", ...]}` |
 | `SCOREBOARD_EXCLUSIONS` | JSON identities derived from the shared `list.csv` by `python3 scripts/scoreboard-exclusions.py /var/tmp/test-identities/list.csv`. Capture stdout privately, never in deploy logs. CSV columns must be exactly `kind,value,evidence`. Kinds: `address`, `did_pkh`, `email`, `did_key`, `email_domain`. Every list row applies; evidence is not a filter. Details: TC-1480 |
 | `SCOREBOARD_EXCLUDE_USER_IDS` | Retain the existing value alongside `SCOREBOARD_EXCLUSIONS` for rollback to an older release. The scoreboard counts and `accounts.*` do not read it or fall back to it; the `explicit_exclusions` bucket of `/api/internal/metrics` `users` still reads it, in addition to `SCOREBOARD_EXCLUSIONS` (accounts matched by the shared list land in that bucket too). Both are passed through Compose; rolling back code requires no env change. Details: TC-1480 |
 | `SCOREBOARD_EXCLUDE_CLIENT_IDS` | Comma-separated OAuth client ids omitted from app-user counts. Details: TC-1480 |
 | `SCOREBOARD_EXCLUDE_EMAIL_PREFIXES` | Comma-separated email prefixes matched case-insensitively by `/api/internal/scoreboard/app-users` and `/api/internal/scoreboard/protocol-users`. Both endpoints always exclude the built-in `qa-sm-smoke-` prefix. |
 | `SCOREBOARD_EXCLUDE_ADDRESSES` | Comma-separated EVM wallet addresses of team members (compared lowercase; invalid entries are ignored). Each is mapped through `ethereum_keys.address` to its account, so every key of that person is excluded: the `team_by_wallet` bucket of `/api/internal/metrics` `users`, checked first. Addresses are never returned or logged. |
 | `SCOREBOARD_DISPOSABLE_DOMAINS` | Comma-separated extra disposable-mail domains (a leading `@` or `*.` is accepted; subdomains match; entries that are not domains, major webmail domains, our own team domains and country suffixes such as `co.uk` are ignored, so a bad list can never mark them disposable). An entry from this variable or from the Worker's POST list only takes effect once it matches at least 5 accounts (the built-in list has no such floor), so a token holder cannot probe how many accounts sit at a domain, added to the built-in list (mailinator, guerrillamail family, sharklasers, mail.tm/mail.gw and our mail.tm domains fldubai.com and maxxspace.com, maildrop, 10minutemail, yopmail, temp-mail/tempmail, trashmail, getnada, Mailpit/MailHog/MailCatcher). Feeds the `disposable_mail_domain` bucket, together with the built-in list and the `disposableDomains` the internal Worker sends in a `POST` to `/api/internal/metrics`. Mail.tm rotates domains: add the new one here, no code deploy needed; applies after the API container is recreated with the new environment. |
-| `OPENKEY_NATIVE_RENEW_DISABLED` | `true` or `1` refuses native delegation renewals with HTTP 400 `consent_required`; unset, empty, or any other value leaves renewals enabled. Changes apply after the API container is recreated with the new environment. |
+| `OPENKEY_NATIVE_RENEW_DISABLED` | `true` or `1` refuses native delegation renewals with HTTP 400 `consent_required`; unset, empty, or any other value leaves renewals enabled. Fixed empty in production Compose (TC-3840): turning it on is a compose PR and a deploy. |
 | `OPENKEY_RENEWAL_LEASES` | Hardcoded `enabled` in `docker-compose.prod.yml`, not sealed, so turning leases on or off never touches the sealed environment. To turn them off, a one-line PR sets `OPENKEY_RENEWAL_LEASES=` (empty) and `deploy-api.yml` redeploys the compose (no env file); to turn them on again, the same with `enabled`. Leases are off unless this is exactly `enabled`. While off, a request that asked for renewal is approved finite and a leased choice is refused with 400 `renewal_disabled`; leases already granted keep renewing on the node and can still be stopped in Settings. Setting it to `stop` also revokes the live leases OpenKey signed. The API checks about 30 seconds after boot and every five minutes thereafter. Each pass logs how many live leases require an external wallet's signature. Enable only after the web that shows the renewal choice is live. |
 | `OPENKEY_RENEWAL_NODE_DID` / `OPENKEY_RENEWAL_RENEWER_DID` | Hardcoded in `docker-compose.prod.yml` (public values, not sealed): the production TinyCloud node's DID and its renewer DID, exactly as the node advertises them at `https://node.tinycloud.xyz/.well-known/tinycloud/node-keys` (`nodeDid`, `renewerDid`). Re-read them after a node upgrade; if the node's values change, update the compose before the next API deploy. Without both, or if they don't match the node, no production lease is made. |
 | `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for canonical user-key bootstrap |

@@ -1,5 +1,6 @@
 # Deploys are manual: `gh workflow run deploy-api.yml --ref main`, run by the release coordinator.
-# Rollback: `gh run rerun <last good run>`.
+# Rollback: re-run only the `deploy` job of the last good run, `gh run rerun --job <its deploy job id>`; a full
+# `gh run rerun` re-runs smoke-gate, which fails while the API is down. Steps: docs/deployment.md (TC-3840).
 name: Deploy API to Phala Cloud
 
 on:
@@ -319,3 +320,10 @@ jobs:
             exit 1
           fi
           echo "TC-1012: $raw_url is closed on the gateway (curl exit $rc, $closed consecutive)"
+
+      # TC-3840: the settings fixed in the compose are the ones the live API serves (issuer, passkey rpId,
+      # CORS origins, the account origin, the Google client id). Anonymous requests, as the sign-in page makes.
+      - name: Verify the live API serves the compose's signing settings (TC-3840)
+        env:
+          API_URL: https://api.openkey.so
+        run: bun scripts/probe-api-settings.ts
