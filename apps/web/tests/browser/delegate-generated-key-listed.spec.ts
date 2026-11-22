@@ -4,6 +4,7 @@
 
 import { test, expect, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const json = (route: Route, status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 const jwk = encodeBase64UrlJson({ kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
@@ -19,6 +20,7 @@ test('a failed prepare stops after generating one key', async ({ page }) => {
     if (url.pathname === '/api/delegate/prepare') return json(route, 400, { code: 'invalid_permissions', error: 'x' });
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}`);
   await expect(page.getByText('No keys found. Generate your first key to connect.')).toBeVisible();

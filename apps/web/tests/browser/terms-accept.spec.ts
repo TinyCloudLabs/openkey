@@ -105,10 +105,11 @@ test('Don’t agree signs out and nothing is accepted', async ({ page }) => {
   expect(calls.find((call) => call.path === '/api/auth/oauth2/consent')?.body).toEqual({ accept: false, oauth_query: SIGNED });
 });
 
-test('a refused API call opens the Terms, and Agree returns to the page', async ({ page }) => {
+test('an account that owes the Terms sees them in place of the page, and Agree shows the page', async ({ page }) => {
   await mockApi(page, FIRST);
   await page.goto('/dashboard');
-  await expect(page).toHaveURL('/auth/terms?returnTo=%2Fdashboard');
+  await expect(page.getByRole('heading', { name: 'Accept the Terms and Privacy Policy' })).toBeVisible();
+  await expect(page).toHaveURL('/dashboard');
   await page.getByRole('button', { name: 'Agree and continue' }).click();
   await expect(page).toHaveURL('/dashboard');
   await expect(page.getByText('0xabc')).toBeVisible();

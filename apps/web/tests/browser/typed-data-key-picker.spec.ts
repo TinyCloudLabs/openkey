@@ -1,6 +1,7 @@
 // QA-only fixtures and mocked APIs; typed-data owner choice never reaches a live account.
 import { test, expect, type Page } from '@playwright/test';
 import { HOST } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const key = (id: string, keyIndex: number, isPrimary = false, keyType = 'MANAGED') => ({
   id, keyIndex, isPrimary, keyType, label: `Key ${keyIndex}`,
@@ -36,6 +37,7 @@ async function setup(
   await page.route('**/api/auth/get-session**', route => route.fulfill({
     json: { session: { id: 'qa-session', userId: 'qa-user' }, user: { id: 'qa-user' } },
   }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.route('**/api/keys', async route => {
     listRequests++;
     await options.readGate;

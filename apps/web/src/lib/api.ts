@@ -2,7 +2,8 @@
 import { getSessionToken, isEmbedContext } from './embed-passkey';
 import { webSignFlowHeaders } from './web-sign-flow';
 import { isDefiniteRefusal, ServerRefusalError } from './server-reply';
-import { isPreTermsPage, isTermsRequired, sendToTerms } from './terms';
+import { isTermsRequired } from './terms';
+import { termsRefused } from './terms-gate';
 import type { RenewalLease } from './renewal-leases';
 import type {
   ApprovalPasskeyAssertion, ApprovalPasskeyNeed, ApprovalPasskeyOffer, PasskeyApprovalMode, PasskeyApprovalSetting,
@@ -39,9 +40,9 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly =
   if (!res.ok) {
     const error = await res.json().catch(() => ({ error: 'Unknown error' }));
     const detail = error?.error;
-    // TC-3232: the account has not accepted the current Terms. The sign-in pages and the ways out (deletion
-    // included) work before it does; anywhere else the Terms screen is shown, and brings the user back here.
-    if (isTermsRequired(res.status, error) && !isPreTermsPage(window.location.pathname)) sendToTerms();
+    // TC-3232: the account owes the current Terms (a release went live while the page was open): the page's
+    // Terms gate checks again and shows the Terms in place.
+    if (isTermsRequired(res.status, error)) termsRefused();
     const message = typeof detail === 'string' ? detail : detail?.message;
     // A definite refusal of a sign-in keeps its code so the widget can tell the app (TC-2291).
     if (isDefiniteRefusal(res.status, error?.code)) throw new ServerRefusalError(message || `HTTP ${res.status}`, res.status, error.code);
@@ -318,10 +319,11 @@ export const api = {
     keyId: string,
     data: { domain: any; types: any; primaryType: string; message: any },
     passkeyAssertion?: ApprovalPasskeyAssertion,
+    requestOrigin?: string,
   ): Promise<{ signature: string; address: string }> {
     return fetchAPI(`/api/keys/${keyId}/sign-typed-data`, {
       method: 'POST',
-      body: JSON.stringify({ ...data, passkeyAssertion }),
+      body: JSON.stringify({ ...data, passkeyAssertion, requestOrigin }),
     });
   },
 
@@ -329,10 +331,11 @@ export const api = {
   async signTypedDataPasskey(
     keyId: string,
     data: { domain: any; types: any; primaryType: string; message: any },
+    requestOrigin?: string,
   ): Promise<ApprovalPasskeyNeed> {
     return fetchAPI(`/api/keys/${keyId}/sign-typed-data/passkey`, {
       method: 'POST',
-      body: JSON.stringify(data),
+      body: JSON.stringify({ ...data, requestOrigin }),
     });
   },
 
