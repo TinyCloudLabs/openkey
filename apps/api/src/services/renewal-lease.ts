@@ -11,7 +11,7 @@
 // returned: nothing is saved, and the app has the node admit it.
 import { randomBytes } from 'node:crypto';
 import { completeSessionSetup, ensureEip55, parseRecapFromSiwe, prepareSession } from '@tinycloud/node-sdk-wasm';
-import { renewalEntryVerdict } from '@openkey/capability-review';
+import { parseSiweFields, renewalEntryVerdict } from '@openkey/capability-review';
 import {
   admitOwnerRenewalLease,
   assertRenewalNodeIdentity,
@@ -122,11 +122,12 @@ function unreadableGrant(): RenewalLeaseError {
 /**
  * Whether a lease on this grant needs the owner's confirm (TC-3821), by the rule the approval screen shares
  * (`renewalEntryVerdict` in @openkey/capability-review): an encryption permission on a `secrets/` key or prefix, or
- * decrypt on a whole encryption network. Fails closed: a ReCap that does not parse, or an encryption permission whose
- * resource is not a valid encryption URN, refuses the lease outright. A SIWE with no ReCap grants nothing and needs no
- * confirm.
+ * decrypt on a whole encryption network. Fails closed: a message the node's reader (`parseSiweFields`) rejects, a ReCap
+ * that does not parse, or an encryption permission whose resource is not a valid encryption URN, refuses the lease
+ * outright. A SIWE with no ReCap grants nothing and needs no confirm.
  */
 export function leaseReachesSecrets(siwe: string): boolean {
+  if (!parseSiweFields(siwe).ok) throw unreadableGrant();
   let entries: Array<{ service?: string; space: string; path: string; actions: string[] }>;
   try {
     entries = parseRecapFromSiwe(siwe) as typeof entries;
@@ -158,14 +159,11 @@ export function assertLeaseableGrant(siwe: string, sensitiveConfirmed: boolean):
   if (!sensitiveConfirmed) {
     throw new RenewalLeaseError('renewal_refused', 'Renewing access to your secrets or encrypted data needs your confirmation. Confirm "Renew sensitive access?" to keep renewal, or untick renewal and approve without it.', 400);
   }
-  let message: SiweMessage;
-  try {
-    message = new SiweMessage(siwe);
-  } catch {
-    throw unreadableGrant();
-  }
-  const end = message.expirationTime ? Date.parse(message.expirationTime) : NaN;
-  const anchor = Date.parse(message.notBefore ?? message.issuedAt ?? '');
+  const parsed = parseSiweFields(siwe);
+  if (!parsed.ok) throw unreadableGrant();
+  const { fields } = parsed;
+  const end = Date.parse(fields.expirationTime ?? '');
+  const anchor = Date.parse(fields.notBefore ?? fields.issuedAt);
   if (!Number.isFinite(end) || !Number.isFinite(anchor) || end <= anchor) throw unreadableGrant();
   if (end - anchor > SENSITIVE_RENEWAL_WINDOW_SECONDS * 1000) {
     throw new RenewalLeaseError('renewal_refused', 'Each renewal of access to your secrets or encrypted data lasts at most 7 days. Choose 7 days or less.', 400);
