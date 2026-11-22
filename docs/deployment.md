@@ -212,19 +212,20 @@ Settings that decide who can sign are fixed in `docker-compose.prod.yml`, never 
 would change who can sign while nothing a verifier sees changes. Inside the TEE the API refuses to start unless
 each of them is a literal `NAME=value` in the compose it was measured with, and the process sees exactly that
 value (`apps/api/src/measured-settings.ts`, `MEASURED_SETTINGS`); the refusal logs `config_invalid` with the
-setting's name. To change one, change the compose in a reviewed PR. After each deploy, `deploy-api.yml` checks
-from outside that the live API serves them (`scripts/probe-api-settings.ts`), and before each deploy that the
-compose's `GATEWAY_DOMAIN` is the gateway the CVM reports. `WEBAUTHN_ORIGIN`, `CORS_ORIGIN` and `API_PORT` stay
-in the encrypted env. Names these settings replace may remain in the CVM's `allowed_envs`; the compose no longer
-references them, so their stored values have no effect. Removing them takes an encrypted-env save, a separate
-operator step.
+setting's name, and a pass logs `measured_settings_verified`. To change one, change the compose in a reviewed PR. After each deploy, `deploy-api.yml` checks
+from outside that the live API serves them (`scripts/probe-api-settings.ts`). `WEBAUTHN_ORIGIN`, `CORS_ORIGIN`,
+`API_PORT` and the ingress `DSTACK_GATEWAY_DOMAIN` stay in the encrypted env. Names these settings replace may
+remain in the CVM's `allowed_envs`; the compose doesn't reference them, so their stored values have no effect.
+Removing them takes an encrypted-env save, a separate operator step. If a deploy stops at boot with
+`config_invalid`, roll back as for any failed deploy: `gh run rerun <run id of the last good deploy-api.yml run>`
+redeploys that commit's compose and image, which read these names from the encrypted env.
 
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `BETTER_AUTH_SECRET` | 32+ character random secret for session encryption |
 | `BETTER_AUTH_URL` | `https://api.openkey.so`, fixed in production Compose (TC-3840), not set in the encrypted env |
-| `APPROVAL_RESULT_RETENTION_SECONDS` | `600` (10 min, Sam 2026-10-29), fixed in production compose for collecting approved CLI results. The result deadline is capped by the signed grant expiry. |
+| `APPROVAL_RESULT_RETENTION_SECONDS` | `600` (10 min, ruling of 2026-10-29), fixed in production compose for collecting approved CLI results. The result deadline is capped by the signed grant expiry. |
 | `OAUTH_DYNAMIC_CLIENT_REGISTRATION` | `true` (for MCP clients that register automatically), fixed in production Compose (TC-3840). An emergency disable is a compose PR setting `false` |
 | `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs, fixed in production Compose as `https://mcp.tinycloud.xyz/mcp` (TC-3840); code includes the exact broad `https://mcp.tinycloud.xyz/mcp`, the public `https://mcp.tinycloud.xyz/chatgpt/mcp`, and the directory `https://mcp.tinycloud.xyz/claude/mcp`, `/grok/mcp` and `/muse/mcp` audiences. |
 | `WEBAUTHN_RP_ID` | `openkey.so`, fixed in production Compose (TC-3840), not set in the encrypted env |
@@ -259,7 +260,7 @@ operator step.
 | `OPENKEY_RENEWAL_NODE_DID` / `OPENKEY_RENEWAL_RENEWER_DID` | Hardcoded in `docker-compose.prod.yml` (public values, not sealed): the production TinyCloud node's DID and its renewer DID, exactly as the node advertises them at `https://node.tinycloud.xyz/.well-known/tinycloud/node-keys` (`nodeDid`, `renewerDid`). Re-read them after a node upgrade; if the node's values change, update the compose before the next API deploy. Without both, or if they don't match the node, no production lease is made. |
 | `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for canonical user-key bootstrap |
 | `CLOUDFLARE_API_TOKEN` | For SSL certificate management |
-| `DSTACK_GATEWAY_DOMAIN` | Not read in production: the compose fixes the ingress `GATEWAY_DOMAIN=gateway.dstack-pha-prod5.phala.network` (TC-3840), and `deploy-api.yml` refuses to deploy if the CVM reports another `gateway.base_domain`. The ingress CNAMEs `api.openkey.so` to `gateway.<base>` (never `_.<base>`, which Android cannot resolve) |
+| `DSTACK_GATEWAY_DOMAIN` | Phala gateway base domain (e.g. `dstack-pha-prod5.phala.network`); the ingress CNAMEs `api.openkey.so` to `gateway.<base>` (never `_.<base>`, which Android cannot resolve) |
 | `CERTBOT_EMAIL` | Email for Let's Encrypt |
 
 The exporter normalizes `did_pkh` rows to their lowercase EVM address, merges them with

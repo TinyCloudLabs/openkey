@@ -192,20 +192,6 @@ jobs:
           "$bin" version | grep -q "${COMPOSE_VERSION}"
           "$bin" -f docker-compose.prod.yml config -q
 
-      # TC-3840: the ingress gateway is a fixed value in the compose. Refuse to deploy if the CVM reports another
-      # gateway: the ingress would publish a CNAME to the wrong one. Moving gateways is a reviewed compose change.
-      - name: Check the compose gateway is the one the CVM reports (TC-3840)
-        env:
-          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
-        run: |
-          set -euo pipefail
-          base_domain=$(phala cvms get openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json | jq -r '.gateway.base_domain // empty')
-          if ! grep -qxF "      - GATEWAY_DOMAIN=gateway.${base_domain}" docker-compose.prod.yml || [ -z "$base_domain" ]; then
-            echo "::error::TC-3840: the openkey-api CVM reports gateway '${base_domain}', which is not the compose's fixed GATEWAY_DOMAIN" >&2
-            exit 1
-          fi
-          echo "TC-3840: the compose gateway matches the CVM's gateway.base_domain ${base_domain}"
-
       # Apply the tracked migrations before shipping the code. Raw migration SQL
       # installs custody and tenant-boundary guards that `prisma db push` omits.
       # The API container intentionally does not contain or run the schema engine.

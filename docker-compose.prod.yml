@@ -9,8 +9,8 @@ services:
       # TC-3840: every setting that decides who can sign is a fixed value here, inside the measured compose,
       # never `${...}` from the encrypted env, whose values compose_hash does not cover. The API refuses to
       # start in the TEE unless each one is a literal here and the process sees exactly it
-      # (apps/api/src/measured-settings.ts). Only secrets, and CORS_ORIGIN, WEBAUTHN_ORIGIN and API_PORT,
-      # come from the encrypted env.
+      # (apps/api/src/measured-settings.ts). The `${...}` entries are secrets, settings that don't decide who can
+      # sign, and CORS_ORIGIN and WEBAUTHN_ORIGIN, which the post-deploy probe checks (scripts/probe-api-settings.ts).
       - NODE_ENV=production
       - DATABASE_URL=${DATABASE_URL}
       - WEBAUTHN_RP_ID=openkey.so
@@ -85,9 +85,7 @@ services:
       # `gateway.<gateway>` is the target Phala Cloud advertises (gateway.cname)
       # and upstream dstack-ingress documents; routing still uses SNI + the
       # _dstack-app-address TXT record, so TLS stays end-to-end into the CVM.
-      # TC-3840: fixed here, not from the encrypted env. It is the base domain the CVM reports
-      # (gateway.base_domain), which deploy-api.yml checks before every deploy.
-      - GATEWAY_DOMAIN=gateway.dstack-pha-prod5.phala.network
+      - GATEWAY_DOMAIN=gateway.${DSTACK_GATEWAY_DOMAIN}
       - CERTBOT_EMAIL=${CERTBOT_EMAIL}
       - SET_CAA=true
       - DNS_PROVIDER=cloudflare

@@ -476,6 +476,7 @@ if (resolveTeeMode() === 'production') {
     else for (const name of measured.settings) logConfigInvalid(name);
     throw new Error('Invalid API configuration');
   }
+  log('info', 'measured_settings_verified');
 }
 // TC-3554: one-time re-seal of keys sealed under the pre-move root. Off unless the compose enables it. Any
 // failure ends the process here, before Bun can serve this module: the API never listens on a half-migrated
