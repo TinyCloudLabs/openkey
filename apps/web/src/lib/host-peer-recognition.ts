@@ -12,11 +12,26 @@ import {
 } from '@openkey/capability-review';
 import { KNOWN_NODE_ORIGINS, isCanonicalHttpsOrigin, withConfiguredEntries } from './delegate-link-policy';
 
-/** What the approval view shows about the node key. */
+/**
+ * What the approval view shows about the node key. `failed` is a lookup that got no key back from the node for some
+ * space (no answer, an error status, an oversized answer, a timeout); `other` is every other non-match.
+ */
 export type PeerRecognitionState =
   | { state: 'checking' }
   | { state: 'known'; origin: string }
-  | { state: 'other' };
+  | { state: 'other' }
+  | { state: 'failed' };
+
+/** The result of one lookup: the shared recognition, or `failed` when a node asked gave no key back. */
+export type NodeCheck = HostPeerRecognition | { kind: 'failed' };
+
+/**
+ * TC-3853: whether `spaceId` names the `credentials` space, parsed as the node parses a space id (the name is what
+ * follows the last `:`) and compared exactly, as its credentials policy does (`name().as_str() != "credentials"`).
+ */
+export function isCredentialsSpaceId(spaceId: string): boolean {
+  return spaceId.slice(spaceId.lastIndexOf(':') + 1) === 'credentials';
+}
 
 const MAX_PEER_ANSWER_LENGTH = 200;
 
@@ -66,20 +81,32 @@ export async function fetchNodePeer(origin: string, spaceId: string, signal: Abo
   return text.length <= MAX_PEER_ANSWER_LENGTH ? text.trim() : null;
 }
 
-/** Look the node key up. Anything but a match is `other`. */
-export function recognizeFacts(
+/**
+ * Look the node key up. A match is `known`; a lookup where some node asked gave no key back (no answer, an error
+ * status, an oversized answer, a timeout) is `failed`; anything else is `other`.
+ */
+export async function recognizeFacts(
   facts: SpaceHostFacts,
   extraOrigins: string | undefined,
   host?: string | null,
-): Promise<HostPeerRecognition> {
+): Promise<NodeCheck> {
   const nodeOrigins = probeOriginsFor(host, extraOrigins);
-  if (facts.peerDid === null || nodeOrigins.length === 0) return Promise.resolve({ kind: 'other' });
-  return recognizeHostPeer({
+  if (facts.peerDid === null || nodeOrigins.length === 0) return { kind: 'other' };
+  let asked = 0;
+  let answered = 0;
+  const result = await recognizeHostPeer({
     spaces: facts.spaces.map((space) => space.spaceId),
     peerDid: facts.peerDid,
     nodeOrigins,
-    fetchPeer: fetchNodePeer,
+    fetchPeer: async (origin, spaceId, signal) => {
+      asked += 1;
+      const answer = await fetchNodePeer(origin, spaceId, signal);
+      if (answer !== null) answered += 1;
+      return answer;
+    },
   });
+  // A lookup still in flight when the check ended (the timeout) also gave no key back.
+  return result.kind === 'other' && answered < asked ? { kind: 'failed' } : result;
 }
 
 /**
@@ -104,7 +131,8 @@ export function watchHostPeer(
   let current = true;
   report({ state: 'checking' });
   void recognizeFacts(facts, extraOrigins, host).then((result) => {
-    if (current) report(result.kind === 'known' ? { state: 'known', origin: result.origin } : { state: 'other' });
+    if (!current) return;
+    report(result.kind === 'known' ? { state: 'known', origin: result.origin } : { state: result.kind });
   });
   return () => {
     current = false;

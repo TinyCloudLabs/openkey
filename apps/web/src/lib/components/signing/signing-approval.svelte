@@ -77,7 +77,7 @@
     elevatedWhereText,
     type ElevatedKind,
   } from "@openkey/capability-review";
-  import type { PeerRecognitionState } from "$lib/host-peer-recognition";
+  import { isCredentialsSpaceId, type PeerRecognitionState } from "$lib/host-peer-recognition";
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
   import ElevatedWarning from "$lib/components/signing/elevated-warning.svelte";
@@ -131,6 +131,10 @@
      * view then shows the space only.
      */
     peerRecognition?: PeerRecognitionState | null;
+    /** Runs the node lookup again; offered with "Try again" when the lookup failed for the `credentials` space. */
+    onRetryNodeCheck?: () => void;
+    /** Who can fix an unconfirmed `credentials` node: the app (widget surfaces) or the sender of a `/delegate` link. */
+    requestedVia?: "app" | "link";
     /**
      * The approval expiry the user chose, in ms from approval; null keeps what
      * the app asked for. The line shows only on surfaces that pass
@@ -193,6 +197,8 @@
     context,
     showSigner = false,
     peerRecognition = null,
+    onRetryNodeCheck,
+    requestedVia = "app",
     expiryMs = null,
     onExpiryChange,
     expiryBounded = false,
@@ -558,6 +564,13 @@
   const NODE_CHECKING = "Checking the node…";
   const NODE_NOT_CONFIRMED = "Not confirmed as a known TinyCloud node";
   const NODE_NOT_CONFIRMED_NOTE = "Approving lets this node store and serve your new space.";
+  const NODE_CHECK_FAILED = "Couldn't check this node";
+  const CREDENTIALS_NODE_UNCONFIRMED_REASON =
+    "Your credentials space can be hosted only on a node OpenKey can confirm as a TinyCloud node, and it can't confirm this one. Only the app that sent you here can fix this. You can decline.";
+  const CREDENTIALS_NODE_UNCONFIRMED_LINK_REASON =
+    "Your credentials space can be hosted only on a node OpenKey can confirm as a TinyCloud node, and it can't confirm this one. Only whoever sent you this link can fix this. You can decline.";
+  const CREDENTIALS_NODE_CHECK_FAILED_REASON =
+    "OpenKey couldn't get an answer from this node to check it. That alone doesn't mean anything is wrong with it. Try again, or decline.";
 
   const hostFacts = $derived(readSpaceHostFacts(model, selection));
   let copiedValue = $state<string | null>(null);
@@ -688,9 +701,18 @@
   });
 
   const nodeChecking = $derived(peerRecognition?.state === "checking");
+  // TC-3853: the `credentials` space is hosted only on a node OpenKey confirms. Any other space keeps the warning and
+  // an enabled Approve. For `credentials` the check fails closed: no node key (`did:key`) to look up, or no lookup at
+  // all (the /delegate page runs none), counts as not confirmed.
+  const hostsCredentials = $derived(Boolean(hostFacts?.spaces.some((space) => isCredentialsSpaceId(space.spaceId))));
+  const nodeState = $derived(
+    !hostFacts ? null : ((hostFacts.peerDid ? peerRecognition?.state : null) ?? (hostsCredentials ? "other" : null)),
+  );
+  const credentialsNodeBlocked = $derived(hostsCredentials && (nodeState === "other" || nodeState === "failed"));
+  const nodeCheckFailed = $derived(nodeState === "failed");
   const approveDisabled = $derived(approving || isMalformedRecap);
   const approveButtonDisabled = $derived(
-    previewPending || onceDefaultPending || layoutBlocked || refused || approveDisabled || Boolean(approveBlockedReason) || approveBlockedByFailure || nodeChecking || declining,
+    previewPending || onceDefaultPending || layoutBlocked || refused || approveDisabled || Boolean(approveBlockedReason) || approveBlockedByFailure || nodeChecking || credentialsNodeBlocked || declining,
   );
 
   // A page that offers the one-passkey cover watches its Approve button: the cover counts only while the button is in
@@ -909,12 +931,14 @@
           </div>
         {/if}
       </dl>
-      {#if hostFacts.peerDid && peerRecognition}
-        <div class="host-node-status" id="host-node-status" role="status" aria-live="polite" data-node-state={peerRecognition.state}>
-          {#if peerRecognition.state === "checking"}
+      {#if nodeState}
+        <div class="host-node-status" id="host-node-status" role="status" aria-live="polite" data-node-state={nodeState}>
+          {#if nodeState === "checking"}
             <p class="host-marker">{NODE_CHECKING}</p>
-          {:else if peerRecognition.state === "known"}
+          {:else if peerRecognition?.state === "known"}
             <p class="host-marker">Known TinyCloud node at <span class="mono">{peerRecognition.origin}</span></p>
+          {:else if credentialsNodeBlocked}
+            <p class="host-marker">{nodeCheckFailed ? NODE_CHECK_FAILED : NODE_NOT_CONFIRMED}</p>
           {:else}
             <p class="host-marker">{NODE_NOT_CONFIRMED}</p>
             <p class="host-marker-note">{NODE_NOT_CONFIRMED_NOTE}</p>
@@ -1302,14 +1326,24 @@
     {#if onRetry}
       <button type="button" class="cancel" onclick={onRetry} disabled={approving}>Try again</button>
     {/if}
+    {#if credentialsNodeBlocked && nodeCheckFailed && onRetryNodeCheck}
+      <button type="button" class="cancel" data-testid="node-check-retry" onclick={onRetryNodeCheck}>Try again</button>
+    {/if}
+    <!-- Below the button row on a wide screen; directly under Approve once the buttons stack (see the media query). -->
+    {#if credentialsNodeBlocked}
+      <p class="approve-blocked node-reason" id="node-unconfirmed-reason" data-testid="node-unconfirmed-reason">
+        {nodeCheckFailed
+          ? CREDENTIALS_NODE_CHECK_FAILED_REASON
+          : requestedVia === "link" ? CREDENTIALS_NODE_UNCONFIRMED_LINK_REASON : CREDENTIALS_NODE_UNCONFIRMED_REASON}
+      </p>
+    {/if}
     <button
       type="button"
       class="approve"
       bind:this={approveButton}
       onclick={handleApproveClick}
       disabled={approveButtonDisabled}
-      aria-disabled={approveButtonDisabled}
-      aria-describedby={nodeChecking ? "host-node-status" : undefined}
+      aria-describedby={nodeChecking ? "host-node-status" : credentialsNodeBlocked ? "node-unconfirmed-reason" : undefined}
     >
       {approveLabel}
     </button>
@@ -1563,7 +1597,8 @@
     border-color: #a7d7b8;
     background: #f3fbf6;
   }
-  .host-node-status[data-node-state="other"] {
+  .host-node-status[data-node-state="other"],
+  .host-node-status[data-node-state="failed"] {
     border-color: #f1d28a;
     background: #fffaf0;
   }
@@ -2032,7 +2067,12 @@
   }
   .actions {
     display: flex;
+    flex-wrap: wrap;
     gap: 10px;
+  }
+  .node-reason {
+    order: 1;
+    flex-basis: 100%;
   }
   .action-region {
     display: flex;
@@ -2121,6 +2161,10 @@
 
     .actions {
       flex-direction: column-reverse;
+    }
+
+    .node-reason {
+      order: 0;
     }
 
     .cancel,

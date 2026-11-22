@@ -103,6 +103,7 @@
   shortenOnlyExpiry={transport.expiry?.shortenOnly ?? null}
   renewal={transport.renewal ?? null}
   {showSigner}
+  requestedVia="link"
   {onApprove}
   {onCancel}
   cancelText={transport.decline ? "Back" : undefined}
