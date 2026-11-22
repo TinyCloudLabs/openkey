@@ -401,7 +401,8 @@ export function grantReachesSecretDataOrDecryption(
  *   SQL or secrets-service ability outside the service's known verbs, even
  *   on one named secret.
  * One named secret, a secret sub-prefix, SQL on the secrets catalog, an exact
- * encryption key and a prefix inside `apps/<appId>/` return false, so the
+ * encryption key, a prefix inside `apps/<appId>/` and the signer's own
+ * `default/share/` folder (and any prefix under it) return false, so the
  * approval starts at the length the app asked for.
  */
 export function grantIsBroadOnce(grant: CapabilityGrant): boolean {
@@ -414,6 +415,8 @@ export function grantIsBroadOnce(grant: CapabilityGrant): boolean {
     if (parsed.kind === "network") return true;
     // An exact key stays one key, except `default/secrets` itself, shown as all secrets.
     if (parsed.kind === "key") return coversManySecrets(parsed);
+    // The owner's own `default/share/` folder, and anything under it, is shared-file keys: it keeps the app's length.
+    if (grant.ownedBySelf === true && parsed.network === "default" && parsed.keyPath.startsWith("share/")) return false;
     // Only `apps/<appId>/…` provably stays inside one app's keys.
     const segments = parsed.keyPath.slice(0, -1).split("/");
     return segments.length < 2 || segments[0] !== "apps";
