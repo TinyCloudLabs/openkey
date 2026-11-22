@@ -356,7 +356,7 @@ export function buildIdentityWarnings(identity: ReadonlyArray<NodeIdentityView>)
 
 /**
  * Capture the incoming `openkey:registry-change:request` or `openkey:registry-undo:request`
- * message from the verified counterparty (`window.opener` for popup, `window.parent` for embed).
+ * message from the verified popup counterparty (`window.opener`).
  *
  * Security invariants:
  *   - `verifiedRequestingOrigin` is captured EXCLUSIVELY from `event.origin`, NEVER from

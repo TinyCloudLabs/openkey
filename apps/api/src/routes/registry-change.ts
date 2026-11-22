@@ -40,7 +40,13 @@ import { cors } from 'hono/cors';
 import { createHash, randomUUID } from 'node:crypto';
 import { Resend } from 'resend';
 import { createPrismaClient, type Prisma, type PrismaClient } from '@openkey/db';
-import { canonicalLocationPayloadV2, validateLocationRecordV2Payload, type LocationRecordV2Payload } from '@tinycloud/sdk-core';
+import {
+  canonicalLocationPayloadV2,
+  validateLocationRecordV2Payload,
+  type LocationRecordV2,
+  type LocationRecordV2Payload,
+} from '@tinycloud/sdk-core';
+import { logRegistryChangeHistoryStampFailed } from '../log';
 import { API_EXPOSED_HEADERS } from '../origin-policy';
 import { requireSession, type SessionContext } from '../middleware/session';
 import { rejectNonBrowserControlRequest } from '../middleware/browser-control';
@@ -382,13 +388,13 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
         userId: true,
         subject: true,
         previousRecord: true,
+        newRecordHash: true,
         newSequence: true,
         createdAt: true,
         publishedAt: true,
       },
     });
-    // N4(b): undo/restore may only target rows that completed publish (publishedAt != null).
-    if (!row || row.userId !== userId || row.subject !== subject || row.publishedAt === null) {
+    if (!row || row.userId !== userId || row.subject !== subject) {
       return c.json({ error: 'history_not_found' }, 404);
     }
 
@@ -407,6 +413,13 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
       return c.json({ error: 'registry_record_missing' }, 409);
     }
 
+    // N4(b) + N5: undo/restore may only target published rows (publishedAt != null, or
+    // unstamped row whose sequence + hash match the verified current registry record).
+    const currentHash = recordPayloadHash(current);
+    if (!isRowPublished(row, current.sequence, currentHash)) {
+      return c.json({ error: 'history_not_found' }, 404);
+    }
+
     let prepared;
     try {
       prepared = await prepareRegistryUndoRecord({
@@ -423,11 +436,17 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
     }
 
     const latestRow = (await deps.prisma.registryChangeHistory.findMany({
-      where: { userId, publishedAt: { not: null } },
+      where: {
+        userId,
+        OR: [
+          { publishedAt: { not: null } },
+          { newSequence: current.sequence, newRecordHash: currentHash },
+        ],
+      },
       orderBy: [{ createdAt: 'desc' }, { newSequence: 'desc' }],
       take: 1,
-      select: { id: true },
-    }))[0];
+      select: { id: true, publishedAt: true, newSequence: true, newRecordHash: true },
+    })).find((candidate) => isRowPublished(candidate, current.sequence, currentHash));
     const isLatestUndo = latestRow?.id === row.id && row.newSequence === current.sequence;
 
     const passkeyBinding = registryChangePasskeyBinding(subject, requestingOrigin, prepared.recordHash);
@@ -604,7 +623,7 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
     });
 
     const sealedBlob = primary.sealedPrivateKey;
-    const keyDescriptor = { userId: primary.userId, sealingContext: primary.sealingContext ?? null };
+    const keyDescriptor = { userId: primary.userId ?? userId, sealingContext: primary.sealingContext ?? null };
     const signFn = deps.signMessage ?? signManagedKey;
 
     let accepted;
@@ -626,11 +645,26 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
       return c.json({ error: 'registry_publish_failed' }, 502);
     }
 
-    // N4(b): mark the history row published ONLY after accepted == prepared succeeded.
-    await deps.prisma.registryChangeHistory.update({
-      where: { id: historyRowId },
-      data: { publishedAt: now },
-    });
+    // N4(b) + N5: mark the history row published ONLY after accepted == prepared succeeded.
+    // Retry once on transient DB error; if stamping still fails, log only the opaque history
+    // id and still return success + send notice email because the registry change is live.
+    let stamped = false;
+    let lastStampError: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await deps.prisma.registryChangeHistory.update({
+          where: { id: historyRowId },
+          data: { publishedAt: now },
+        });
+        stamped = true;
+        break;
+      } catch (error) {
+        lastStampError = error;
+      }
+    }
+    if (!stamped) {
+      logRegistryChangeHistoryStampFailed(historyRowId, lastStampError);
+    }
 
     // Send the post-publish notice email via Resend.
     const ownerEmail = user.email
@@ -689,13 +723,18 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
       return c.json({ history: [] });
     }
     const currentSequence = current.sequence;
+    const currentHash = recordPayloadHash(current);
 
-    // N4(b): return only published rows (publishedAt != null) at or below verified current.sequence.
+    // N4(b) + N5: return only published rows (publishedAt != null, or an unstamped row whose
+    // sequence + recordHash match the verified current registry record) at or below current.sequence.
     const rows = await prisma.registryChangeHistory.findMany({
       where: {
         userId,
-        publishedAt: { not: null },
         newSequence: { lte: currentSequence },
+        OR: [
+          { publishedAt: { not: null } },
+          { newSequence: currentSequence, newRecordHash: currentHash },
+        ],
       },
       orderBy: [{ createdAt: 'desc' }, { newSequence: 'desc' }],
       take: limit,
@@ -710,7 +749,9 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
       },
     });
 
-    const filtered = rows.filter((row) => row.publishedAt !== null && row.newSequence <= currentSequence);
+    const filtered = rows.filter(
+      (row) => row.newSequence <= currentSequence && isRowPublished(row, currentSequence, currentHash),
+    );
 
     return c.json({
       history: filtered.map((row) => ({
@@ -753,6 +794,23 @@ function parseExactOrigin(raw: string | undefined): string | null {
  */
 function parseRequiredRequestingOriginHeader(c: Context): string | null {
   return parseExactOrigin(c.req.header(REQUESTING_ORIGIN_HEADER));
+}
+
+function recordPayloadHash(record: LocationRecordV2): string {
+  return createHash('sha256')
+    .update(canonicalLocationPayloadV2(payloadWithoutSignature(record)), 'utf8')
+    .digest('hex');
+}
+
+function isRowPublished(
+  row: { publishedAt: Date | null; newSequence: number; newRecordHash: string },
+  currentSequence: number,
+  currentHash: string,
+): boolean {
+  return (
+    row.publishedAt !== null ||
+    (row.newSequence === currentSequence && row.newRecordHash === currentHash)
+  );
 }
 
 function subjectFromAddress(address: string): string {

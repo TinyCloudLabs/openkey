@@ -86,6 +86,7 @@ const EVENTS = {
   legacy_reseal_done: true, legacy_reseal_failed: true, legacy_reseal_progress: true, legacy_reseal_quarantined: true,
   sign_origin_refused: true,
   approval_passkey_verified: true, approval_passkey_refused: true, approval_passkey_flow_covered: true, approval_passkey_flow_record_failed: true,
+  registry_change_history_stamp_failed: true, registry_change_notice_email_unconfigured: true, registry_change_notice_email_failed: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;
 type EventName = keyof typeof EVENTS;
@@ -176,6 +177,13 @@ export function logLegacyResealFailed(error: unknown): void {
     if (typeof rowId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(rowId)) fields.row_id = rowId;
   }
   emit('error', 'legacy_reseal_failed', fields);
+}
+
+/** TC-3893 (N5): opaque history row id only when stamping publishedAt fails after a live PUT. */
+export function logRegistryChangeHistoryStampFailed(historyId: string, error?: unknown): void {
+  const fields: Record<string, string | undefined> = { ...safeErrorFields(error) };
+  if (/^[A-Za-z0-9_-]{1,64}$/.test(historyId)) fields.history_id = historyId;
+  emit('warn', 'registry_change_history_stamp_failed', fields);
 }
 
 /** Reviewer operations are read by the API operations team. Fields are fixed: never ids, addresses or codes. */

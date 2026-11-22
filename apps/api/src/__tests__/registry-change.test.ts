@@ -200,11 +200,13 @@ function createFakePrisma(opts: {
   }>;
   onHistoryCreate?: (row: StoredHistoryRow) => void;
   onHistoryUpdate?: (row: StoredHistoryRow) => void;
+  historyUpdateFailCount?: number;
 } = {}) {
   const mode = opts.passkeyApprovalMode ?? 'NEVER';
   const passkeys = opts.passkeys ? opts.passkeys.map((p) => ({ ...p })) : [];
   const verifications: VerificationRow[] = [];
   const historyRows: StoredHistoryRow[] = [];
+  let remainingUpdateFailures = opts.historyUpdateFailCount ?? 0;
 
   const client = {
     ethereumKey: {
@@ -277,6 +279,10 @@ function createFakePrisma(opts: {
         return row;
       },
       update: async ({ where, data }: { where: { id: string }; data: Partial<StoredHistoryRow> }) => {
+        if (remainingUpdateFailures > 0) {
+          remainingUpdateFailures -= 1;
+          throw new Error('simulated DB update failure');
+        }
         const row = historyRows.find((r) => r.id === where.id);
         if (!row) throw new Error('Row not found');
         Object.assign(row, data);
@@ -295,7 +301,12 @@ function createFakePrisma(opts: {
         where,
         take,
       }: {
-        where: { userId: string; newSequence?: { lte?: number }; publishedAt?: { not?: null } };
+        where: {
+          userId: string;
+          newSequence?: { lte?: number };
+          publishedAt?: { not?: null };
+          OR?: Array<{ publishedAt?: { not?: null }; newSequence?: number; newRecordHash?: string }>;
+        };
         take: number;
       }) =>
         historyRows
@@ -303,6 +314,15 @@ function createFakePrisma(opts: {
             if (r.userId !== where.userId) return false;
             if (where.publishedAt && where.publishedAt.not === null && r.publishedAt === null) return false;
             if (where.newSequence?.lte !== undefined && r.newSequence > where.newSequence.lte) return false;
+            if (where.OR && where.OR.length > 0) {
+              const matchesOr = where.OR.some((branch) => {
+                if (branch.publishedAt && branch.publishedAt.not === null && r.publishedAt === null) return false;
+                if (branch.newSequence !== undefined && r.newSequence !== branch.newSequence) return false;
+                if (branch.newRecordHash !== undefined && r.newRecordHash !== branch.newRecordHash) return false;
+                return true;
+              });
+              if (!matchesOr) return false;
+            }
             return true;
           })
           .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.newSequence - a.newSequence)
@@ -334,6 +354,7 @@ function createHarness(opts: {
   putStatus?: number;
   registryReadStatus?: number;
   signMessageThrows?: boolean;
+  historyUpdateFailCount?: number;
   tamperAcceptedPut?: boolean;
 } = {}) {
   const credential = makeTestWebAuthnCredential();
@@ -347,6 +368,7 @@ function createHarness(opts: {
     passkeys: opts.noPasskey ? [] : [credential.passkeyRow],
     onHistoryCreate: () => events.push('history.create'),
     onHistoryUpdate: () => events.push('history.update'),
+    ...(opts.historyUpdateFailCount ? { historyUpdateFailCount: opts.historyUpdateFailCount } : {}),
   });
 
   const defaultTestEmailSender: EmailSender = {
@@ -1309,7 +1331,7 @@ describe('R-reg review #3 security & contract hardening (F1, F2, F3, F4, F6, F7)
       },
     });
     expect(ssrfValid.status).toBe(200);
-    const ssrfBody = await ssrfValid.json() as { identity: Array<{ url: string; status: string }> };
+    const ssrfBody = await ssrfValid.json() as { identity: Array<{ url: string; did: string | null; status: string }> };
     expect(ssrfBody.identity).toEqual([
       { url: 'https://imds-rebind.example', did: NODE_B_DID, status: 'unreachable' },
       { url: 'https://10.1.2.3:8443', did: NODE_C_DID, status: 'unreachable' },
@@ -1671,6 +1693,8 @@ describe('R-reg review #3 security & contract hardening (F1, F2, F3, F4, F6, F7)
       '2002:c612:0001::1', // 198.18.0.1
       '2002:f000:0001::1', // 240.0.0.1
       '2002:ffff:ffff::1', // 255.255.255.255
+      // Deprecated site-local fec0::/10
+      'fec0::1',
     ]) {
       expect(isBlockedProbeIp(ip, true), ip).toBe(true);
     }
@@ -1718,7 +1742,7 @@ describe('R-reg review #3 security & contract hardening (F1, F2, F3, F4, F6, F7)
       },
     });
     expect(res.status).toBe(200);
-    const body = await res.json() as { identity: Array<{ url: string; status: string }> };
+    const body = await res.json() as { identity: Array<{ url: string; did: string | null; status: string }> };
     expect(body.identity).toEqual([
       { url: 'https://nat64-imds.example', did: NODE_B_DID, status: 'unreachable' },
       { url: 'https://sixtofour-imds.example', did: NODE_C_DID, status: 'unreachable' },
@@ -1812,5 +1836,71 @@ describe('R-reg review #3 security & contract hardening (F1, F2, F3, F4, F6, F7)
     expect(events).toEqual(['history.create']); // no registry.PUT, no history.update, no email.send!
     expect(sentEmails).toHaveLength(0);
     expect(getCurrentRecord()?.sequence).toBe(4);
+  });
+
+  test('N5: publishedAt stamp failure retries once, still returns 200 + sends email, and row is visible/undoable via verified sequence+hash match; mismatched unstamped row stays hidden', async () => {
+    const initial = await makeSignedV2Record({ sequence: 4 });
+
+    // Case 1a: transient single failure succeeds on the single retry and stamps publishedAt.
+    const transient = createHarness({ initialRecord: initial, historyUpdateFailCount: 1 });
+    const prepRetry = await (await callPrepare(transient.app, { request: { nodes: [{ url: NODE_B_URL }] } })).json() as {
+      changeId: string;
+      passkey: { challengeToken: string; options: { challenge: string } };
+    };
+    const pubRetry = await callPublish(transient.app, {
+      changeId: prepRetry.changeId,
+      passkeyAssertion: transient.credential.signOffer(prepRetry.passkey),
+    });
+    expect(pubRetry.status).toBe(200);
+    expect(transient.historyRows).toHaveLength(1);
+    expect(transient.historyRows[0]?.publishedAt).not.toBeNull();
+    expect(transient.sentEmails).toHaveLength(1);
+
+    // Case 1b: both stamp attempts fail -> publish STILL returns 200, email IS sent,
+    // and the unstamped row IS visible in GET /history and accepted by /undo/prepare
+    // because (newSequence, newRecordHash) matches the verified current registry record!
+    const stampFail = createHarness({ initialRecord: initial, historyUpdateFailCount: 5 });
+    const prep = await (await callPrepare(stampFail.app, { request: { nodes: [{ url: NODE_B_URL }] } })).json() as {
+      changeId: string;
+      recordHash: string;
+      passkey: { challengeToken: string; options: { challenge: string } };
+    };
+    const pub = await callPublish(stampFail.app, {
+      changeId: prep.changeId,
+      passkeyAssertion: stampFail.credential.signOffer(prep.passkey),
+    });
+    expect(pub.status).toBe(200);
+    expect(await pub.json()).toEqual({ sequence: 5, recordHash: prep.recordHash });
+    expect(stampFail.sentEmails).toHaveLength(1);
+    expect(stampFail.historyRows).toHaveLength(1);
+    expect(stampFail.historyRows[0]?.publishedAt).toBeNull();
+
+    // Case 2: add an unstamped row at the SAME sequence (5) with a NON-matching hash -> stays HIDDEN!
+    stampFail.historyRows.push({
+      id: 'hist-unstamped-wrong-hash',
+      userId: USER_ID,
+      subject: SUBJECT,
+      requestingOrigin: APP_ORIGIN,
+      previousRecord: initial,
+      newRecordHash: '0'.repeat(64),
+      newSequence: 5,
+      createdAt: new Date('2026-11-22T17:30:00.000Z'),
+      publishedAt: null,
+    });
+
+    const histRes = await stampFail.app.request('/api/registry-change/history?limit=10');
+    expect(histRes.status).toBe(200);
+    const histBody = await histRes.json() as { history: Array<{ id: string }> };
+    expect(histBody.history.map((r) => r.id)).toEqual([stampFail.historyRows[0]!.id]);
+
+    // Unstamped row whose hash matches verified current is accepted by /undo/prepare as undo-last.
+    const undoMatched = await callUndoPrepare(stampFail.app, { historyId: stampFail.historyRows[0]!.id });
+    expect(undoMatched.status).toBe(200);
+    expect((await undoMatched.json() as { undoKind: string }).undoKind).toBe('undo-last');
+
+    // Unstamped row whose hash does NOT match verified current is refused by /undo/prepare.
+    const undoMismatched = await callUndoPrepare(stampFail.app, { historyId: 'hist-unstamped-wrong-hash' });
+    expect(undoMismatched.status).toBe(404);
+    expect((await undoMismatched.json() as { error: string }).error).toBe('history_not_found');
   });
 });

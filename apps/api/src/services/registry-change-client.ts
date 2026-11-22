@@ -256,6 +256,8 @@ export function isBlockedProbeIp(rawIp: string, allowLoopback: boolean): boolean
     if ((groups[0]! & 0xfe00) === 0xfc00) return true;
     // Link-local fe80::/10
     if ((groups[0]! & 0xffc0) === 0xfe80) return true;
+    // Deprecated site-local fec0::/10 (RFC 3879)
+    if ((groups[0]! & 0xffc0) === 0xfec0) return true;
     // Multicast ff00::/8
     if ((groups[0]! & 0xff00) === 0xff00) return true;
     return false;
