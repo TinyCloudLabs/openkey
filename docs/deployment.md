@@ -235,7 +235,7 @@ the change on `main` and dispatch `deploy-api.yml` with `override_reason` set, w
 records the reason in the run summary. Either path takes about 20 minutes, 35 at most.
 
 `OPENKEY_NATIVE_RENEW_DISABLED` and `OAUTH_DYNAMIC_CLIENT_REGISTRATION` are kill switches, and they are in this
-set: an encrypted-env save no longer turns them. To turn one, merge a pull request that changes its literal in
+set: an encrypted-env save doesn't turn them. To turn one, merge a pull request that changes its literal in
 `docker-compose.prod.yml` (`OPENKEY_NATIVE_RENEW_DISABLED=true`; `OAUTH_DYNAMIC_CLIENT_REGISTRATION=false`) and
 dispatch `deploy-api.yml`, about 20 minutes and 35 at most. In an emergency the pull request is that one line;
 if the API is down, dispatch with `override_reason` so `smoke-gate` doesn't stop the deploy.
