@@ -1,0 +1,13 @@
+{
+  "description": "GitHub Actions checks that must be green on the exact commit before deploy-api.yml deploys it or changesets.yml publishes it (.github/scripts/require-green.mjs). Every one runs on push to main. Keep in sync with docs/security/required-checks.md.",
+  "checks": [
+    "API test suite",
+    "Renewal lease tests on Postgres",
+    "Web browser specs",
+    "dstack key-derivation known answer",
+    "TEE mode fails closed",
+    "gitleaks",
+    "Web artifact audit",
+    "API image scan"
+  ]
+}

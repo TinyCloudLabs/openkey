@@ -87,11 +87,26 @@ export async function termsStatus(database: TermsDatabase, userId: string, relea
   };
 }
 
+/** How an acceptance in the embedded frame showed that a person was present. */
+export type EmbedAcceptanceAudit = {
+  sessionId: string;
+  proof: 'session_created';
+  proofAt: Date;
+  requestOrigin: string | null;
+  embedOriginClaimed: string | null;
+};
+
 /**
  * Records that the account accepted `release.version`. A second acceptance of the same version (another
  * tab, a retry) keeps the first row: the insert skips a row the (userId, version) key already holds.
  */
-export async function recordTermsAcceptance(database: TermsDatabase, userId: string, release: TermsRelease, surface: string): Promise<void> {
+export async function recordTermsAcceptance(
+  database: TermsDatabase,
+  userId: string,
+  release: TermsRelease,
+  surface: string,
+  audit?: EmbedAcceptanceAudit,
+): Promise<void> {
   const build = readBuildInfo();
   await database.termsAcceptance.createMany({
     data: [{
@@ -102,6 +117,7 @@ export async function recordTermsAcceptance(database: TermsDatabase, userId: str
       textSha256: release.textSha256,
       surface,
       appVersion: `${build.version}+${build.commit}`,
+      ...audit,
     }],
     skipDuplicates: true,
   });

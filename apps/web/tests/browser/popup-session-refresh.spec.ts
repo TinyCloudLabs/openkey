@@ -4,6 +4,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
 const space = `tinycloud:pkh:eip155:1:${address}:default`;
@@ -51,6 +52,7 @@ async function mockWithPopupSession(page: Page) {
     if (url.pathname === '/api/delegate/prepare') return json(route, 200, prepared);
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   // The popup's own page: it signs the account in (server side) and tells its opener, as /auth/social/callback does.
   // A popup is a new page of the same context: the route must be on the context, not on the opener page.
   await page.context().route('**/auth/social/callback**', (route) => {

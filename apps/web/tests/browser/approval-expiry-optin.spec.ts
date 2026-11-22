@@ -4,6 +4,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 import { HOST, ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 import {
   EXPLORER_PERMISSION_POPUP_REQUEST,
   FIXTURE_META,
@@ -21,6 +22,7 @@ async function open(page: Page, request: Record<string, unknown>, message: strin
     id: 'selected-key', address, publicKey: '0x02', keyIndex: 0, label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z',
   } } }));
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.route('**/api/delegate/authorize-sign-prepare', (route) => route.fulfill({ headers: { Date: new Date().toUTCString() }, json: { authorizationContextToken: 'context-token', expiresAt: new Date(Date.now() + 300_000).toISOString() } }));
   await page.route('**/api/delegate/authorize-sign-preview', async (route) => {
     const body = route.request().postDataJSON() as Record<string, unknown>;

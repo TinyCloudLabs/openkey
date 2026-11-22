@@ -5,6 +5,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
 import { HOST } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const siwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, HOST);
@@ -36,6 +37,7 @@ async function mockServer(page: Page): Promise<Server> {
   await page.context().route('**/api/auth/get-session**', (route) => route.fulfill({ json: {
     session: { id: `session-${server.account}` }, user: { id: `user-${server.account}` },
   } }));
+  await page.context().route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.context().route('**/api/delegate/authorize-sign-prepare', (route) => {
     server.prepares++;
     const context = `context-${server.prepares}`;

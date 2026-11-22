@@ -7,12 +7,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:tes
 import { PGlite } from '@electric-sql/pglite';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { serializeSignedCookie } from 'better-call';
 import type { PrismaClient } from '@openkey/db';
 
 const root = resolve(import.meta.dir, '../../../..');
+// test-ruling TC-3766 openkey #684 apps/api/src/__tests__/terms-release-shipped.integration.test.ts (2026-11-22): yes to (1), with one addition. The existing cases are skipped only when the checked-in release has version === null, and they run unchanged when it's set again (the reverse PR restores them). Add one case that runs only when version === null: the API boots, GET /api/account/terms reports requiresAcceptance:false, and a token request to /api/keys is not 403 terms_required. Nothing else in the file changes.
 if (process.env.OPENKEY_TEST_REAL_TERMS_RELEASE !== '1') {
   test('the shipped Terms release gates an unaccepted account', async () => {
     const child = Bun.spawn([process.execPath, 'test', import.meta.path], {
@@ -42,6 +44,7 @@ if (process.env.OPENKEY_TEST_REAL_TERMS_RELEASE !== '1') {
     expect(exitCode, stdout + stderr).toBe(0);
   }, 120_000);
 } else {
+  const unreleased = JSON.parse(readFileSync(join(root, 'apps/api/src/terms-release.json'), 'utf8')).version === null;
   const api = 'https://api.openkey.test';
   const web = 'https://openkey.test';
   let directory: string;
@@ -96,7 +99,7 @@ if (process.env.OPENKEY_TEST_REAL_TERMS_RELEASE !== '1') {
 
   const get = (path: string, cookie: string) => app.fetch(new Request(`${api}${path}`, { headers: { cookie, origin: web } }));
 
-  test('an account that has not accepted is refused, and the screen can read the shipped version', async () => {
+  test.skipIf(unreleased)('an account that has not accepted is refused, and the screen can read the shipped version', async () => {
     const { cookie } = await account('new');
     const refused = await get('/api/keys', cookie);
     expect(refused.status, await refused.clone().text()).toBe(403);
@@ -106,7 +109,7 @@ if (process.env.OPENKEY_TEST_REAL_TERMS_RELEASE !== '1') {
     expect(await status.json()).toMatchObject({ version: shipped.version, requiresAcceptance: true, previouslyAccepted: false });
   });
 
-  test('an app-review account is recorded as accepting the shipped version at start', async () => {
+  test.skipIf(unreleased)('an app-review account is recorded as accepting the shipped version at start', async () => {
     const { userId } = await account('reviewer');
     await prisma.reviewerAccount.update({ where: { store: 'apple' }, data: { userId } });
     try {
@@ -123,7 +126,7 @@ if (process.env.OPENKEY_TEST_REAL_TERMS_RELEASE !== '1') {
 
   // Seeing what you hold before deleting the account: an account that has not accepted can list its secrets'
   // names and read its variables (names and values) with its browser session, and nothing else about them.
-  describe('reading your own secrets and variables before agreeing', () => {
+  describe.skipIf(unreleased)('reading your own secrets and variables before agreeing', () => {
     // The service stands in for the TinyCloud node: a session is open for an account once it is `open`, and the
     // lists fail without one, as they do after an API restart.
     let writes: string[];
@@ -233,5 +236,15 @@ if (process.env.OPENKEY_TEST_REAL_TERMS_RELEASE !== '1') {
       const accepted = await send('GET', '/api/secrets', { authorization: `Bearer ${token}` });
       expect(accepted.status).toBe(200);
     });
+  });
+
+  test.skipIf(!unreleased)('the checked-in release has no version, so nothing is gated', async () => {
+    const { cookie } = await account('unreleased');
+    const status = await get('/api/account/terms', cookie);
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({ requiresAcceptance: false });
+    const keys = await get('/api/keys', cookie);
+    expect(keys.status, await keys.clone().text()).not.toBe(403);
+    expect(await keys.clone().json().catch(() => ({}))).not.toMatchObject({ error: 'terms_required' });
   });
 }

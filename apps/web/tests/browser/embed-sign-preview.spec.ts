@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { HOST } from './e2e-port';
 import { EXPLORER_PERMISSION_POPUP_REQUEST, makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const siwe = EXPLORER_PERMISSION_POPUP_REQUEST.replace(/^explorer\.tinycloud\.xyz/, HOST);
@@ -30,6 +31,7 @@ async function openSigning(page: Page, surface: 'popup' | 'iframe', options: {
   await page.context().route('**/api/auth/get-session**', route => route.fulfill({ json: {
     session: { id: 'test-session' }, user: { id: 'test-user' },
   } }));
+  await page.context().route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   let signingPage = page;
   const now = () => signingPage.evaluate(() => Date.now());
   await page.context().route('**/api/delegate/authorize-sign-prepare', async route => {
@@ -333,6 +335,7 @@ test('ordinary v2 SIWE ReCap signs exact bytes without entering authorization pr
     } } });
   });
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.route('**/api/delegate/authorize-sign-prepare', (route) => {
     prepares++;
     return route.fulfill({ json: { authorizationContextToken: 'fixture' } });

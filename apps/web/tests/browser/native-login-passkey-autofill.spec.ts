@@ -7,6 +7,7 @@
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { PASSKEY_FALLBACK_COPY } from '../../src/lib/passkey-fallback-copy';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const json = (route: Route, body: unknown, status = 200) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -58,6 +59,7 @@ async function mockApi(page: Page) {
     }
     return json(route, { error: `unmocked ${path}` }, 404);
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.route('https://app.test/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<p>app</p>' }));
   const verifyHeaders: Array<Record<string, string>> = [];
   await page.route(VERIFY, (route) => {

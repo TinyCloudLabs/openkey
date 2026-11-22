@@ -17,6 +17,7 @@
   //  - Response payloads to the parent only ever carry public identity data
   //    (keyId/pubkey/npub) or a signed event - never a sessionToken, and
   //    never secret/nsec material (which never leaves the API/TEE).
+  import { untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type NostrKey, type SignedNostrEvent, type UnsignedNostrEvent } from '$lib/api';
   import {
@@ -28,7 +29,7 @@
     type ApprovalPasskeyNeed,
     type PasskeyOfferFetch,
   } from '$lib/approval-passkey';
-  import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
+  import { clearSessionToken, getSessionToken, isEmbedContext } from '$lib/embed-passkey';
   import { parseCanonicalOrigin, parseNostrRelayUrl, extractRelayTag } from '$lib/nostr-origin';
   import {
     createVersionedIframeTransport,
@@ -36,12 +37,17 @@
     type VersionedWidgetTransport,
   } from '$lib/widget-transport';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
+  import TermsGate from '$lib/components/auth/terms-gate.svelte';
+  import { termsGate } from '$lib/terms-gate';
+  import { SIGN_IN_AGAIN_TO_AGREE, isTermsRequired } from '$lib/terms';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
 
   type NostrErrorCode = 'USER_CANCELLED' | 'TIMEOUT' | 'INTERACTION_REQUIRED' | 'UNAUTHORIZED' | 'UNKNOWN';
   type Mode = 'connect' | 'sign' | null;
-  type Step = 'idle' | 'sign-in' | 'consent' | 'working' | 'error';
+  // 'terms': the request waits for the Terms check. The frame stays hidden while the check runs and is shown only when
+  // the Terms are owed or the check failed; an account that has agreed continues silently.
+  type Step = 'idle' | 'sign-in' | 'terms' | 'consent' | 'working' | 'error';
 
   const session = authClient.useSession();
   const inIframe = typeof window !== 'undefined' && isEmbedContext();
@@ -54,8 +60,22 @@
   const passkeysSupported = typeof window === 'undefined'
     || passkeysSupportedFromParams(new URL(window.location.href).searchParams);
 
+  // A stored token is a credential, not yet a signed-in account: the Terms check reads it first (and drops it if it
+  // no longer signs anyone in).
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
-  const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  let signInNote = $state<string | null>(null);
+  const signedIn = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  // A window's layout holds this page until its account has agreed; in the frame this page checks itself.
+  const termsOpen = $derived(!inIframe || $termsGate.phase === 'open');
+  $effect(() => {
+    if (inIframe) termsGate.follow(embedAuthenticated ? getSessionToken() : null, () => termsSignedOut(false));
+  });
+  $effect(() => {
+    if (step !== 'terms') return;
+    const phase = $termsGate.phase;
+    if (termsOpen) untrack(resume);
+    else if (phase === 'required' || phase === 'failed') untrack(reveal);
+  });
 
   let mode = $state<Mode>(null);
   let step = $state<Step>(targetOrigin ? 'idle' : 'error');
@@ -163,9 +183,13 @@
   // ===== connect() =====
 
   async function startConnect() {
-    if (!isAuthenticated) {
+    if (!signedIn) {
       step = 'sign-in';
       reveal();
+      return;
+    }
+    if (!termsOpen) {
+      step = 'terms';
       return;
     }
     await runConnect();
@@ -180,6 +204,10 @@
       step = 'consent';
       loadGrantPasskey();
     } catch (e: any) {
+      if (inIframe && isTermsRequired(403, { error: e?.message })) {
+        step = 'terms';
+        return;
+      }
       failConnect('UNKNOWN', e?.message || 'Failed to load your Nostr identity');
     }
   }
@@ -293,9 +321,13 @@
   // ===== signEvent() =====
 
   async function startSign() {
-    if (!isAuthenticated) {
+    if (!signedIn) {
       step = 'sign-in';
       reveal();
+      return;
+    }
+    if (!termsOpen) {
+      step = 'terms';
       return;
     }
     await attemptSign(false);
@@ -308,6 +340,10 @@
       const { event: signed } = await api.nostr.signEvent(pendingKeyId, pendingEvent, targetOrigin);
       respondSign(true, undefined, signed);
     } catch (e: any) {
+      if (inIframe && isTermsRequired(403, { error: e?.message })) {
+        step = 'terms';
+        return;
+      }
       if (!afterGrant && e?.status === 403 && e?.message === 'interaction_required') {
         step = 'consent';
         loadGrantPasskey();
@@ -358,9 +394,26 @@
   }
 
   function onAuthenticated() {
+    signInNote = null;
     embedAuthenticated = true;
+    // The new session's Terms check decides when the request continues.
+    if (inIframe) step = 'terms';
+    else resume();
+  }
+
+  function resume() {
     if (mode === 'connect') void runConnect();
     else if (mode === 'sign') void attemptSign(false);
+  }
+
+  function termsSignedOut(again: boolean) {
+    clearSessionToken();
+    embedAuthenticated = false;
+    signInNote = again ? SIGN_IN_AGAIN_TO_AGREE : null;
+    if (mode) {
+      step = 'sign-in';
+      reveal();
+    }
   }
 
   function eventSummary(evt: UnsignedNostrEvent | null): { title: string; detail: string } {
@@ -396,9 +449,12 @@
     {:else if step === 'sign-in'}
       <EmbeddedSignIn
         prompt={mode === 'sign' ? 'Sign in to approve this signing request' : "Sign in to connect. We'll ask before creating a new account."}
+        note={signInNote}
         onauthenticated={onAuthenticated}
         {passkeysSupported}
       />
+    {:else if step === 'terms'}
+      <TermsGate surface="embed" onsignedout={termsSignedOut} />
     {:else if step === 'consent' && mode === 'connect'}
       <div class="flex flex-col gap-3">
         <p class="text-surface-500 text-sm">Connect your OpenKey Nostr identity to this app.</p>

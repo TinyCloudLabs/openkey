@@ -3,7 +3,8 @@
   import { safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
   import { daysOverTwoDays, formatDuration, formatEndDay } from '$lib/approval-expiry';
   import { formatLocalAccessEnd } from '$lib/access-end';
-  import { isTermsRequired, sendToTerms } from '$lib/terms';
+  import { isTermsRequired } from '$lib/terms';
+  import { termsRefused } from '$lib/terms-gate';
   import NativeShell from '$lib/components/auth/native-shell.svelte';
   import { nativeAccessSummary } from '$lib/native-access';
   import {
@@ -66,7 +67,7 @@
       method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const data = await response.json().catch(() => ({}));
-    if (isTermsRequired(response.status, data)) sendToTerms();
+    if (isTermsRequired(response.status, data)) termsRefused();
     if (!response.ok) {
       const failure = new Error(data.error_description ?? data.error ?? `${action} failed (${response.status})`);
       throw Object.assign(failure, { code: typeof data.code === 'string' ? data.code : undefined, errorCode: typeof data.error === 'string' ? data.error : undefined });
@@ -128,6 +129,7 @@
       body: JSON.stringify({ accept, oauth_query: oauthQuery() }),
     });
     const data = await response.json().catch(() => ({}));
+    if (isTermsRequired(response.status, data)) termsRefused();
     if (!response.ok) throw new Error(data.error ?? data.message ?? 'Consent failed');
     const target = safeOAuthNavigationUrl(data.uri ?? data.url ?? (typeof data.redirect === 'string' ? data.redirect : undefined));
     if (!target) throw new Error('The application returned an unsafe redirect URI');
