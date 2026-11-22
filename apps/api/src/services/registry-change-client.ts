@@ -278,12 +278,24 @@ async function isHostAllowedForProbe(
   allowLoopback: boolean,
   resolveHost: HostResolver,
 ): Promise<boolean> {
-  let hostname: string;
+  let url: URL;
   try {
-    hostname = new URL(canonicalUrl).hostname;
+    url = new URL(canonicalUrl);
   } catch {
     return false;
   }
+  // Bobbie ruling: in production (allowLoopback === false), restrict probes strictly to
+  // HTTPS port 443 (implicit :443 parses as url.port === ''). No production TinyCloud node
+  // serves HTTP :80 or custom ports. Dev/test (allowLoopback === true) stays unchanged.
+  if (!allowLoopback) {
+    const effectivePort = url.port === ''
+      ? (url.protocol === 'https:' ? '443' : url.protocol === 'http:' ? '80' : '')
+      : url.port;
+    if (url.protocol !== 'https:' || effectivePort !== '443') {
+      return false;
+    }
+  }
+  const hostname = url.hostname;
   const bare = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
   if (isIP(bare) !== 0) {
     return !isBlockedProbeIp(bare, allowLoopback);
@@ -298,23 +310,34 @@ async function isHostAllowedForProbe(
   return addresses.every((addr) => !isBlockedProbeIp(addr, allowLoopback));
 }
 
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let nextIndex = 0;
-  const workerCount = Math.min(Math.max(1, limit), items.length);
-  await Promise.all(
-    Array.from({ length: workerCount }, async () => {
-      while (nextIndex < items.length) {
-        const currentIndex = nextIndex++;
-        results[currentIndex] = await fn(items[currentIndex]!, currentIndex);
-      }
-    }),
-  );
-  return results;
+type RequestScheduler = <T>(fn: () => Promise<T>) => Promise<T>;
+
+/**
+ * Cap in-flight probe HTTP requests globally per prepare/undo call to `limit` (4 requests
+ * total across all nodes and both `/info` + `/.well-known/tinycloud/node-keys` paths).
+ */
+function createRequestConcurrencyLimiter(limit: number): RequestScheduler {
+  const max = Math.max(1, limit);
+  let active = 0;
+  const queue: Array<() => void> = [];
+
+  const release = () => {
+    active -= 1;
+    const next = queue.shift();
+    if (next) next();
+  };
+
+  return async <T>(fn: () => Promise<T>): Promise<T> => {
+    if (active >= max) {
+      await new Promise<void>((resolve) => { queue.push(resolve); });
+    }
+    active += 1;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  };
 }
 
 async function fetchJsonBounded(
@@ -349,11 +372,12 @@ export interface NodeIdentityProbeOptions {
   readonly fetch?: typeof fetch;
   readonly resolveHost?: HostResolver;
   readonly allowLoopback?: boolean;
+  readonly scheduleRequest?: RequestScheduler;
 }
 
 /**
- * Resolve host and check SSRF filter, then probe `{url}/info` and
- * `{url}/.well-known/tinycloud/node-keys` in parallel (no redirects).
+ * Resolve host and check SSRF/port filter, then probe `{url}/info` and
+ * `{url}/.well-known/tinycloud/node-keys` through the request concurrency limiter (no redirects).
  * Returns `ok | mismatch | unreachable` — warning only, never blocks.
  */
 export async function checkNodeIdentity(
@@ -364,6 +388,7 @@ export async function checkNodeIdentity(
   const fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
   const resolveHost = opts.resolveHost ?? defaultHostResolver;
   const allowLoopback = opts.allowLoopback ?? false;
+  const schedule = opts.scheduleRequest ?? (<T>(fn: () => Promise<T>) => fn());
 
   const allowed = await isHostAllowedForProbe(canonicalUrl, allowLoopback, resolveHost);
   if (!allowed) {
@@ -371,8 +396,8 @@ export async function checkNodeIdentity(
   }
 
   const [infoRes, keysRes] = await Promise.all([
-    fetchJsonBounded(`${canonicalUrl}/info`, fetchImpl, NODE_IDENTITY_TIMEOUT_MS, MAX_NODE_IDENTITY_BYTES),
-    fetchJsonBounded(`${canonicalUrl}/.well-known/tinycloud/node-keys`, fetchImpl, NODE_IDENTITY_TIMEOUT_MS, MAX_NODE_IDENTITY_BYTES),
+    schedule(() => fetchJsonBounded(`${canonicalUrl}/info`, fetchImpl, NODE_IDENTITY_TIMEOUT_MS, MAX_NODE_IDENTITY_BYTES)),
+    schedule(() => fetchJsonBounded(`${canonicalUrl}/.well-known/tinycloud/node-keys`, fetchImpl, NODE_IDENTITY_TIMEOUT_MS, MAX_NODE_IDENTITY_BYTES)),
   ]);
 
   const infoOk = infoRes.ok && infoRes.status >= 200 && infoRes.status < 300
@@ -586,17 +611,18 @@ export async function prepareRegistryChangeRecord(options: {
   const { current, now } = options;
   const { nodes: parsedNodes, rawSpaces, rawEncryptionNode } = validateRequestBounds(options.request);
 
-  // Probe node identities with bounded concurrency <= 4 (SSRF-filtered, warn-only).
+  // Probe node identities with at most 4 concurrent HTTP requests total (SSRF/port-filtered, warn-only).
   const currentByUrl = new Map(current.nodes.map((node) => [node.url, node]));
-  const identity = await mapWithConcurrency(
-    parsedNodes,
-    MAX_IDENTITY_PROBE_CONCURRENCY,
-    (node) =>
+  const scheduleRequest = createRequestConcurrencyLimiter(MAX_IDENTITY_PROBE_CONCURRENCY);
+  const identity = await Promise.all(
+    parsedNodes.map((node) =>
       checkNodeIdentity(node.url, node.did, {
         ...(options.fetch ? { fetch: options.fetch } : {}),
         ...(options.resolveHost ? { resolveHost: options.resolveHost } : {}),
         ...(options.allowLoopback !== undefined ? { allowLoopback: options.allowLoopback } : {}),
+        scheduleRequest,
       }),
+    ),
   );
 
   const resolvedNodesByUrl = new Map<string, { url: string; did: string }>();
@@ -799,15 +825,16 @@ export async function prepareRegistryUndoRecord(options: {
     throw error;
   }
 
-  const identity = await mapWithConcurrency(
-    after.nodes,
-    MAX_IDENTITY_PROBE_CONCURRENCY,
-    (node) =>
+  const scheduleRequest = createRequestConcurrencyLimiter(MAX_IDENTITY_PROBE_CONCURRENCY);
+  const identity = await Promise.all(
+    after.nodes.map((node) =>
       checkNodeIdentity(node.url, node.did, {
         ...(options.fetch ? { fetch: options.fetch } : {}),
         ...(options.resolveHost ? { resolveHost: options.resolveHost } : {}),
         ...(options.allowLoopback !== undefined ? { allowLoopback: options.allowLoopback } : {}),
+        scheduleRequest,
       }),
+    ),
   );
 
   const before = payloadWithoutSignature(current);

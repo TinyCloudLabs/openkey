@@ -5,7 +5,7 @@
 import type { LocationRecordV2Payload } from '@tinycloud/sdk-core';
 import type { EmailSender } from './email-otp-delivery';
 import { displayNodeHost } from './registry-change-client';
-import { log, logError } from '../log';
+import { log, logRegistryChangeNoticeFailed } from '../log';
 
 export const REGISTRY_CHANGE_EMAIL_FROM = 'OpenKey <noreply@openkey.so>';
 export const DEFAULT_ONE_REGISTRY_SETTINGS_URL = 'https://tinycloud.one/chat/settings';
@@ -28,6 +28,7 @@ export interface RegistryChangeNoticeInput {
   readonly before: LocationRecordV2Payload;
   readonly after: LocationRecordV2Payload;
   readonly publishedAt: Date;
+  readonly historyId?: string;
   readonly undoUrl?: string;
 }
 
@@ -198,12 +199,12 @@ export async function sendRegistryChangeNoticeEmail(
       html: formatted.html,
     });
     if (result.error) {
-      log('warn', 'registry_change_notice_email_failed');
+      logRegistryChangeNoticeFailed(input.historyId);
       return false;
     }
     return true;
-  } catch (error) {
-    logError('warn', 'registry_change_notice_email_failed', error);
+  } catch {
+    logRegistryChangeNoticeFailed(input.historyId);
     return false;
   }
 }

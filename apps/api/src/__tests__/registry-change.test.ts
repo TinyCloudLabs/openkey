@@ -41,6 +41,7 @@ import {
   MAX_REGISTRY_CHANGE_NODES,
   MAX_REGISTRY_CHANGE_SPACES,
   canonicalNodeUrl,
+  checkNodeIdentity,
   displayNodeHost,
   isBlockedProbeIp,
   type HostResolver,
@@ -1358,34 +1359,34 @@ describe('R-reg review #3 security & contract hardening (F1, F2, F3, F4, F6, F7)
     expect(devProbeFetches).toHaveLength(2);
     expect(devProbeFetches.every((f) => f.redirect === 'error')).toBe(true);
 
-    // Probe concurrency stays <= 4 nodes in flight (each node probes /info + /node-keys = 2 fetches).
-    let inFlightNodes = 0;
-    let peakNodes = 0;
-    const activeOrigins = new Set<string>();
+    // Probe concurrency stays <= 4 concurrent HTTP REQUESTS total (across 8 nodes x 2 paths = 16 requests).
+    let inFlightRequests = 0;
+    let peakRequests = 0;
+    let totalRequests = 0;
     const concHarness = createHarness({
       initialRecord: initial,
-      onProbeFetch: async (url) => {
-        const origin = new URL(url).origin;
-        const isInfo = url.endsWith('/info');
-        if (isInfo) {
-          activeOrigins.add(origin);
-          inFlightNodes = activeOrigins.size;
-          if (inFlightNodes > peakNodes) peakNodes = inFlightNodes;
+      onProbeFetch: async () => {
+        totalRequests += 1;
+        inFlightRequests += 1;
+        if (inFlightRequests > peakRequests) peakRequests = inFlightRequests;
+        try {
+          await new Promise((r) => setTimeout(r, 15));
+          return new Response(JSON.stringify({ nodeId: NODE_B_DID, nodeDid: NODE_B_DID }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        } finally {
+          inFlightRequests -= 1;
         }
-        await new Promise((r) => setTimeout(r, 15));
-        if (isInfo) activeOrigins.delete(origin);
-        return new Response(JSON.stringify({ nodeId: NODE_B_DID, nodeDid: NODE_B_DID }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        });
       },
     });
     const eightNodes = Array.from({ length: 8 }, (_, i) => ({
       url: `https://conc-${i}.example`,
     }));
     await callPrepare(concHarness.app, { request: { nodes: eightNodes } });
-    expect(peakNodes).toBeGreaterThan(0);
-    expect(peakNodes).toBeLessThanOrEqual(MAX_IDENTITY_PROBE_CONCURRENCY);
+    expect(totalRequests).toBe(16);
+    expect(peakRequests).toBeGreaterThan(0);
+    expect(peakRequests).toBeLessThanOrEqual(MAX_IDENTITY_PROBE_CONCURRENCY);
   });
 
   test('F2: failed PUT and tampered PUT delete the pre-stored history row; GET /history excludes rows above current sequence', async () => {
@@ -1902,5 +1903,183 @@ describe('R-reg review #3 security & contract hardening (F1, F2, F3, F4, F6, F7)
     const undoMismatched = await callUndoPrepare(stampFail.app, { historyId: 'hist-unstamped-wrong-hash' });
     expect(undoMismatched.status).toBe(404);
     expect((await undoMismatched.json() as { error: string }).error).toBe('history_not_found');
+  });
+
+  test('Bobbie port ruling: production probes allow HTTPS :443 only (refusing :8443, :22, :80 without fetch; F6 422 applies when DID absent); dev/test unchanged', async () => {
+    const initial = await makeSignedV2Record();
+    const NODE_443_URL = 'https://node-443.example';
+
+    // Direct probe filter checks in production (allowLoopback = false):
+    // :8443, :22, and :80 (both https:80 and http:80) must NOT fetch and return unreachable.
+    const directFetched: string[] = [];
+    const trackingFetch = (async (input: string | URL | Request) => {
+      const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      directFetched.push(urlStr);
+      return new Response(JSON.stringify({ nodeId: NODE_B_DID, nodeDid: NODE_B_DID }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    const publicDns: HostResolver = async () => ['93.184.216.34'];
+
+    for (const blockedUrl of [
+      'https://node-b.example:8443',
+      'https://node-b.example:22',
+      'https://node-b.example:80',
+      'http://node-b.example:80',
+      'http://node-b.example',
+    ]) {
+      const res = await checkNodeIdentity(blockedUrl, NODE_B_DID, {
+        allowLoopback: false,
+        fetch: trackingFetch,
+        resolveHost: publicDns,
+      });
+      expect(res, blockedUrl).toEqual({ url: blockedUrl, did: NODE_B_DID, status: 'unreachable' });
+    }
+    expect(directFetched).toHaveLength(0);
+
+    // Explicit :443 and implicit https (:443) ARE allowed and probed in production.
+    const explicit443 = await checkNodeIdentity('https://node-443.example:443', undefined, {
+      allowLoopback: false,
+      fetch: trackingFetch,
+      resolveHost: publicDns,
+    });
+    expect(explicit443.status).toBe('ok');
+    expect(directFetched).toHaveLength(2);
+
+    const implicit443 = await checkNodeIdentity(NODE_443_URL, undefined, {
+      allowLoopback: false,
+      fetch: trackingFetch,
+      resolveHost: publicDns,
+    });
+    expect(implicit443.status).toBe('ok');
+    expect(directFetched).toHaveLength(4);
+
+    // Route-level in production:
+    // 1) Supplied DID on :8443, :22, :80 -> 200 with unreachable warnings and 0 probe fetches.
+    const prodHarness = createHarness({
+      initialRecord: initial,
+      isProduction: true,
+      nodes: {
+        [NODE_443_URL]: {
+          info: { status: 200, body: { nodeId: NODE_B_DID } },
+          keys: { status: 200, body: { nodeDid: NODE_B_DID } },
+        },
+      },
+    });
+    const prodBlockedWithDid = await callPrepare(prodHarness.app, {
+      request: {
+        nodes: [
+          { url: 'https://node-8443.example:8443', did: NODE_A_DID },
+          { url: 'https://node-22.example:22', did: NODE_B_DID },
+          { url: 'https://node-80.example:80', did: NODE_C_DID },
+        ],
+      },
+    });
+    expect(prodBlockedWithDid.status).toBe(200);
+    const blockedBody = await prodBlockedWithDid.json() as {
+      identity: Array<{ url: string; did: string | null; status: string }>;
+    };
+    expect(blockedBody.identity).toEqual([
+      { url: 'https://node-8443.example:8443', did: NODE_A_DID, status: 'unreachable' },
+      { url: 'https://node-22.example:22', did: NODE_B_DID, status: 'unreachable' },
+      { url: 'https://node-80.example:80', did: NODE_C_DID, status: 'unreachable' },
+    ]);
+    expect(prodHarness.fetchedUrls.filter((f) => !f.url.startsWith(REGISTRY_URL))).toHaveLength(0);
+
+    // 2) F6 applies: brand-new host on disallowed port (:8443) WITHOUT a DID -> 422 registry_change_node_did_required, 0 probe fetches.
+    const prodNoDid = await callPrepare(prodHarness.app, {
+      request: { nodes: [{ url: 'https://node-8443.example:8443' }] },
+    });
+    expect(prodNoDid.status).toBe(422);
+    expect(await prodNoDid.json()).toMatchObject({
+      error: 'registry_change_node_did_required',
+      host: 'node-8443.example:8443',
+    });
+    expect(prodHarness.fetchedUrls.filter((f) => !f.url.startsWith(REGISTRY_URL))).toHaveLength(0);
+
+    // 3) Explicit :443 (normalised to implicit https) succeeds and probes in production.
+    const prod443 = await callPrepare(prodHarness.app, {
+      request: { nodes: [{ url: 'https://node-443.example:443' }] },
+    });
+    expect(prod443.status).toBe(200);
+    const prod443Body = await prod443.json() as {
+      identity: Array<{ url: string; did: string | null; status: string }>;
+    };
+    expect(prod443Body.identity).toEqual([{ url: NODE_443_URL, did: NODE_B_DID, status: 'ok' }]);
+    expect(prodHarness.fetchedUrls.filter((f) => f.url.startsWith(NODE_443_URL))).toHaveLength(2);
+
+    // 4) Dev/test (isProduction: false) keeps :8443 probing unchanged.
+    const devHarness = createHarness({ initialRecord: initial, isProduction: false });
+    const dev8443 = await callPrepare(devHarness.app, {
+      request: { nodes: [{ url: NODE_B_URL }] },
+    });
+    expect(dev8443.status).toBe(200);
+    const dev8443Body = await dev8443.json() as {
+      identity: Array<{ url: string; did: string | null; status: string }>;
+    };
+    expect(dev8443Body.identity).toEqual([{ url: NODE_B_URL, did: NODE_B_DID, status: 'ok' }]);
+    expect(devHarness.fetchedUrls.filter((f) => f.url.startsWith(NODE_B_URL))).toHaveLength(2);
+  });
+
+  test('Bobbie notice-failure note: failed email send logs registry_change_notice_failed (history_id only), publish still returns 200, and GET /history still shows the change', async () => {
+    const initial = await makeSignedV2Record({ sequence: 4 });
+    const failingEmailSender: EmailSender = {
+      emails: {
+        send: async () => ({ error: { name: 'internal_server_error', statusCode: 500 } }),
+      },
+    };
+    const { app, credential, historyRows } = createHarness({
+      initialRecord: initial,
+      emailSender: failingEmailSender,
+    });
+
+    const prep = await (await callPrepare(app, { request: { nodes: [{ url: NODE_B_URL }] } })).json() as {
+      changeId: string;
+      recordHash: string;
+      passkey: { challengeToken: string; options: { challenge: string } };
+    };
+
+    const capturedLines: string[] = [];
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      capturedLines.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+      return true;
+    }) as typeof process.stdout.write;
+
+    let pub: Response;
+    try {
+      pub = await callPublish(app, {
+        changeId: prep.changeId,
+        passkeyAssertion: credential.signOffer(prep.passkey),
+      });
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+
+    expect(pub.status).toBe(200);
+    expect(await pub.json()).toEqual({ sequence: 5, recordHash: prep.recordHash });
+    expect(historyRows).toHaveLength(1);
+    const rowId = historyRows[0]!.id;
+    expect(historyRows[0]!.publishedAt).not.toBeNull();
+
+    // Logged `registry_change_notice_failed` with ONLY base fields + history_id (no email/subject/PII).
+    const noticeLines = capturedLines
+      .flatMap((chunk) => chunk.split('\n'))
+      .filter((line) => line.includes('registry_change_notice_failed'));
+    expect(noticeLines).toHaveLength(1);
+    const parsed = JSON.parse(noticeLines[0]!) as Record<string, unknown>;
+    expect(parsed.event).toBe('registry_change_notice_failed');
+    expect(parsed.history_id).toBe(rowId);
+    expect(Object.keys(parsed).sort()).toEqual(['event', 'history_id', 'level', 'request_id', 'ts']);
+    expect(noticeLines[0]).not.toContain(USER_EMAIL);
+    expect(noticeLines[0]).not.toContain(APP_ORIGIN);
+
+    // One's GET /history still shows the published change.
+    const histRes = await app.request('/api/registry-change/history?limit=10');
+    expect(histRes.status).toBe(200);
+    const histBody = await histRes.json() as { history: Array<{ id: string; newSequence: number }> };
+    expect(histBody.history.map((r) => r.id)).toEqual([rowId]);
+    expect(histBody.history[0]?.newSequence).toBe(5);
   });
 });

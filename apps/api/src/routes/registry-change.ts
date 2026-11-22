@@ -677,6 +677,7 @@ export function createRegistryChangeRouter(injected?: Partial<RegistryChangeRout
         before: payloadWithoutSignature(current),
         after: payload,
         publishedAt: now,
+        historyId: historyRowId,
       });
     }
 
