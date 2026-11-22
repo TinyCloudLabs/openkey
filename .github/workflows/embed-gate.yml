@@ -56,9 +56,12 @@ on:
 permissions:
   contents: read
 
-# One gate run at a time per ref, never cancelled halfway: a cancelled run would leave its QA account.
+# One gate run at a time across the repository, never cancelled halfway: a cancelled run would leave its QA
+# account, and two runs at once could share Better Auth's 60 s email-code window (3 calls) and meet a 429.
+# GitHub keeps one run waiting behind the running one; a newer waiting run replaces an older waiting one
+# (which has made no account yet).
 concurrency:
-  group: embed-gate-${{ github.ref }}-${{ inputs.sha || github.sha }}
+  group: openkey-embed-gate
   cancel-in-progress: false
 
 jobs:

@@ -359,6 +359,25 @@ async function paceOtp(label) {
   lastOtpRequest = Date.now();
 }
 
+/**
+ * Cleanup and read-back only: on a first-party 429, wait once for 61 s with no calls, then try once more
+ * (Clarissa, 10:36Z). Each attempt starts with no stop recorded; its own watcher records any refusal.
+ */
+async function onceMoreAfter429(label, attempt) {
+  stopped = null;
+  try {
+    return await attempt();
+  } catch (error) {
+    const verdict = error instanceof GateFailure ? error.verdict : stopped?.verdict;
+    if (verdict !== "first_party_429") throw error;
+    report.retriedAfter429 = [...(report.retriedAfter429 ?? []), { label, atMs: since() }];
+    await sleep(61_000);
+    lastOtpRequest = Date.now() - 61_000;
+    stopped = null;
+    return attempt();
+  }
+}
+
 /** Email sign-in on https://openkey.so/auth/login in its own window; returns the screen it lands on. */
 async function ownWindowEmailSignIn(page, redirect) {
   await page.goto(`${OPENKEY}/auth/login${redirect ? `?redirect=${encodeURIComponent(redirect)}` : ""}`, { waitUntil: "domcontentloaded", timeout: 60_000 });
@@ -726,9 +745,8 @@ try {
 } finally {
   // cleanup -----------------------------------------------------------------------------------------
   if (accountMayExist) {
-    stopped = null; // cleanup runs after a stop; its own watcher records any refusal
     try {
-      const result = await deleteAccount(browser);
+      const result = await onceMoreAfter429("cleanup", () => deleteAccount(browser));
       // "no_account": the run stopped before OpenKey created the account; nothing to delete, nothing leaked.
       report.account.deleted = result.deleted || result.reason === "no_account";
       leg("cleanup", report.account.deleted ? "PASS" : "FAIL", result);
@@ -746,7 +764,7 @@ try {
     if (report.account.deleted === true && report.mode === "cleanup-only") {
       // Read back: the address must now sign in as a stranger ("Create a new account"), which is never pressed.
       try {
-        const gone = await readBackGone(browser);
+        const gone = await onceMoreAfter429("read-back", () => readBackGone(browser));
         leg("read-back", gone ? "PASS" : "FAIL", { noAccount: gone });
         report.result = gone ? "passed" : "failed";
       } catch (error) {
