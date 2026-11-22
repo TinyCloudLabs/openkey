@@ -7,6 +7,8 @@
 // sign-in that created it. Signing in again creates a new session with a new
 // `createdAt`.
 
+import type { BetterAuthPlugin } from 'better-auth';
+import { createAuthMiddleware } from 'better-auth/api';
 import { log } from '../log';
 
 /** The most a web session may live, counted from the sign-in that created it. */
@@ -50,4 +52,34 @@ export async function capSessionRefresh(
   }
   const latest = createdAt + CAP_MS;
   return requested > latest ? { data: { expiresAt: new Date(latest) } } : undefined;
+}
+
+/**
+ * Since 1.6.35 Better Auth gives the session cookie of a `/get-session` refresh the full
+ * `session.expiresIn` as Max-Age, whatever expiry the hook above (or the reviewer cap) set. This
+ * after hook brings the cookie's Max-Age back to the session's own remaining lifetime, as before:
+ * a capped session's cookie ends with it, and an ended session's cookie gets no positive lifetime.
+ */
+export function sessionCookieCapPlugin() {
+  return {
+    id: 'openkey-session-cookie-cap',
+    hooks: {
+      after: [{
+        matcher: (ctx) => ctx.path === '/get-session',
+        handler: createAuthMiddleware(async (ctx) => {
+          const headers = ctx.context.responseHeaders;
+          const expiresAt = timeMs((ctx.context.returned as { session?: { expiresAt?: unknown } } | null)?.session?.expiresAt);
+          const cookies = headers?.getSetCookie() ?? [];
+          const prefix = ctx.context.authCookies.sessionToken.name + '=';
+          if (!headers || !Number.isFinite(expiresAt) || !cookies.some((cookie) => cookie.startsWith(prefix))) return;
+          const remaining = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
+          headers.delete('set-cookie');
+          for (const cookie of cookies) {
+            headers.append('set-cookie', cookie.startsWith(prefix)
+              ? cookie.replace(/Max-Age=(\d+)/i, (_, value: string) => `Max-Age=${Math.min(Number(value), remaining)}`) : cookie);
+          }
+        }),
+      }],
+    },
+  } satisfies BetterAuthPlugin;
 }

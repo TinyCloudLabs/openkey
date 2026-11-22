@@ -298,8 +298,12 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
   });
 
   test('the authorize dispatched after an accepted consent is checked, and refuses a binding that moved on', async () => {
-    await database.oauthConsent.deleteMany({ where: { userId: 'reviewer-owner', clientId } });
-    const authorization = await call('/api/auth/oauth2/authorize?' + signedQuery, 'GET', undefined, { cookie });
+    // prompt=consent asks again without touching the consent row, whose age the earlier token is checked against.
+    const authorization = await call('/api/auth/oauth2/authorize?' + new URLSearchParams({
+      client_id: clientId, response_type: 'code', redirect_uri: callback, resource, prompt: 'consent',
+      scope: 'openid email offline_access tinycloud:mcp', state: 'reviewer-consent-state',
+      code_challenge_method: 'S256', code_challenge: await generateCodeChallenge(verifier),
+    }), 'GET', undefined, { cookie });
     expect(authorization.status, await authorization.clone().text()).toBe(302);
     const consentQuery = new URL(authorization.headers.get('location')!).searchParams.toString();
     const issued = await database.verification.count();
@@ -554,7 +558,8 @@ if (process.env.OPENKEY_REVIEWER_TEST_CHILD !== '1') {
       expect((await call('/api/keys', 'GET', undefined, { authorization: scheme + ' ' + accessToken })).status, scheme).toBe(403);
     }
     // The allowlisted token endpoint still answers the reviewer's own token.
-    expect((await call('/api/auth/oauth2/userinfo', 'GET', undefined, { authorization: 'Bearer ' + accessToken })).status).toBe(200);
+    const userinfo = await call('/api/auth/oauth2/userinfo', 'GET', undefined, { authorization: 'Bearer ' + accessToken });
+    expect(userinfo.status, await userinfo.clone().text()).toBe(200);
   });
 
   test('refresh cannot extend reviewer sign-in and an overlong row cannot authorize after one hour', async () => {
