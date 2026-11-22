@@ -345,12 +345,27 @@ const stepUpCodeIn = (text) => {
 };
 const stepUpCode = (subject) => waitForMail(inbox, { subject, extract: stepUpCodeIn, used: usedMail, timeout: 150_000, failure: "no OpenKey step-up code arrived in the test inbox" });
 
+// Better Auth's email-OTP routes allow 3 calls per 60 s per client, and the count only resets after 60 s with
+// none (node_modules/better-auth/dist/plugins/email-otp/index.mjs:75-103). PR run 45012700587 met that 429 on
+// its second sign-in code. Every sign-in code request waits until 61 s have passed since the last one.
+let lastOtpRequest = 0;
+async function paceOtp(label) {
+  const wait = lastOtpRequest + 61_000 - Date.now();
+  if (wait > 0) {
+    report.otpPacing = [...(report.otpPacing ?? []), { label, waitedMs: wait }];
+    await sleep(wait);
+  }
+  check();
+  lastOtpRequest = Date.now();
+}
+
 /** Email sign-in on https://openkey.so/auth/login in its own window; returns the screen it lands on. */
 async function ownWindowEmailSignIn(page, redirect) {
   await page.goto(`${OPENKEY}/auth/login${redirect ? `?redirect=${encodeURIComponent(redirect)}` : ""}`, { waitUntil: "domcontentloaded", timeout: 60_000 });
   const email = page.locator('input[type="email"]').first();
   await until("own-window-email-field", () => email.isVisible(), 30_000);
   await email.fill(inbox.address);
+  await paceOtp("own-window");
   await page.getByRole("button", { name: "Continue with email", exact: true }).click({ timeout: 10_000 });
   await screen(page, "own-window-check-email", [["otp", page.locator("input#otp")]], 30_000);
   await page.locator("input#otp").fill(await code());
@@ -541,6 +556,7 @@ try {
     await button(connect, "Continue with email").first().click({ timeout: 10_000 });
     await until("connect-email-field", () => connect.locator('input[type="email"]').isVisible(), 30_000);
     await connect.locator('input[type="email"]').fill(inbox.address);
+    await paceOtp("embed-new");
     await button(connect, "Send code").first().click({ timeout: 10_000 });
     const codeField = connect.locator('input[autocomplete="one-time-code"], input[inputmode="numeric"], input[type="text"]').first();
     await until("connect-code-field", () => codeField.isVisible(), 30_000);
