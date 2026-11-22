@@ -205,15 +205,29 @@ let credentials = []; // in memory only: the passkey this run registered
 let highestSignCount = 0;
 const nextSignCount = () => Math.max(highestSignCount + 1, Math.floor(Date.now() / 1000));
 
-/** A CDP virtual authenticator on a page or an out-of-process frame, holding this run's passkey. */
+/**
+ * A CDP virtual authenticator holding this run's passkey, on a page or an out-of-process frame. A frame that
+ * renders in its page's process (PR run 45013152670) shares the page's target: the page's authenticator serves it.
+ */
+const pageAuthenticators = new WeakMap();
 async function authenticator(context, target, label) {
-  const client = await context.newCDPSession(target);
+  let client;
+  try {
+    client = await context.newCDPSession(target);
+  } catch (error) {
+    if (typeof target.page !== "function" || !/does not have a separate CDP session/.test(String(error?.message))) throw error;
+    const page = target.page();
+    const existing = pageAuthenticators.get(page);
+    if (existing) return existing;
+    return authenticator(context, page, label);
+  }
   await client.send("WebAuthn.enable", { enableUI: false });
   const { authenticatorId } = await client.send("WebAuthn.addVirtualAuthenticator", { options: {
     protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true,
   } });
   for (const credential of credentials) await client.send("WebAuthn.addCredential", { authenticatorId, credential: { ...credential, signCount: nextSignCount() } });
   const state = { client, authenticatorId, asserted: 0 };
+  if (typeof target.page !== "function") pageAuthenticators.set(target, state);
   client.on("WebAuthn.credentialAsserted", (event) => {
     state.asserted += 1;
     report.passkey.asserted += 1;
@@ -462,20 +476,50 @@ async function deleteAccount(browser) {
       ["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })],
       ["login", page.locator('input[type="email"]')],
     ], 45_000);
-    if (landed === "login") {
+    if (landed === "login" && credentials.length) {
+      // With the run's passkey present the login page may sign in by itself (passkey in the email field, PR run
+      // 45013152670); otherwise "Use a passkey instead". No email code is spent.
+      const passkey = page.getByRole("button", { name: /^(Use a passkey instead|Sign in with a passkey)$/ });
+      const next = await screen(page, "cleanup-passkey-login", [
+        ["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })],
+        ["dashboard", page.getByRole("heading", { name: "Your Keys", exact: true })],
+        ["passkey-button", passkey],
+      ], 30_000);
+      // The page may sign in by itself between the check and the click; the screen below decides.
+      if (next === "passkey-button") await passkey.first().click({ timeout: 10_000 }).catch(() => {});
+      const signed = await screen(page, "cleanup-signed-in", [
+        ["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })],
+        ["dashboard", page.getByRole("heading", { name: "Your Keys", exact: true })],
+      ], 45_000);
+      if (signed === "dashboard") await page.goto(`${OPENKEY}/dashboard/settings/delete-account`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      await screen(page, "cleanup-explain", [["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })]], 45_000);
+    } else if (landed === "login") {
       landed = await ownWindowEmailSignIn(page, "/dashboard/settings/delete-account");
       if (landed === "new-account") return { deleted: false, reason: "no_account" };
       if (landed === "terms") await page.getByRole("button", { name: "Agree and continue", exact: true }).click({ timeout: 10_000 });
       if (landed === "secure") await page.getByRole("button", { name: "Skip for now", exact: true }).click({ timeout: 10_000 });
       await screen(page, "cleanup-explain", [["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })]], 45_000);
     }
-    await page.getByRole("button", { name: "Continue", exact: true }).click({ timeout: 10_000 });
-    await page.locator("#delete-confirmation").fill(EXPECTED.deleteConfirmation);
-    await page.getByRole("button", { name: "Continue", exact: true }).click({ timeout: 10_000 });
-    const method = await screen(page, "cleanup-verify", [
-      ["passkey", page.getByRole("button", { name: "Verify with passkey and delete", exact: true })],
-      ["email", page.getByRole("button", { name: "Send code", exact: true })],
-    ], 30_000);
+    const confirm = async () => {
+      await page.getByRole("button", { name: "Continue", exact: true }).click({ timeout: 10_000 });
+      await page.locator("#delete-confirmation").fill(EXPECTED.deleteConfirmation);
+      await page.getByRole("button", { name: "Continue", exact: true }).click({ timeout: 10_000 });
+      return screen(page, "cleanup-verify", [
+        ["passkey", page.getByRole("button", { name: "Verify with passkey and delete", exact: true })],
+        ["email", page.getByRole("button", { name: "Send code", exact: true })],
+      ], 30_000);
+    };
+    let method = await confirm();
+    if (method === "passkey" && credentials.length === 0) {
+      // An account whose passkey left with its run (cleanup-only) deletes by passkey only, and OpenKey keeps an
+      // only passkey: add one here (email step-up), then delete with it.
+      report.cleanupAddedPasskey = true;
+      await page.goto(`${OPENKEY}/dashboard`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      await registerPasskey(page, context);
+      await page.goto(`${OPENKEY}/dashboard/settings/delete-account`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      await screen(page, "cleanup-explain-again", [["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })]], 45_000);
+      method = await confirm();
+    }
     if (method === "passkey") {
       await page.getByRole("button", { name: "Verify with passkey and delete", exact: true }).click({ timeout: 10_000 });
     } else {
