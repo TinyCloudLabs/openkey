@@ -60,14 +60,16 @@ export function permissionsHeldToSecretCap(permissions: readonly PermissionLike[
 
 /**
  * The entries a ReCap resource stands for: its encryption reading (a key URN, or a resource that cannot be read),
- * for `kv` abilities a KV entry on the path after `<space>/kv/` (a KV resource that does not have that shape counts as
- * the secrets vault), and for `secrets` abilities a `secrets` service entry (fail closed, whatever the path).
+ * for `kv` abilities a KV entry on the path after the `kv` segment of `<space>/kv` or `<space>/kv/<path>` (an empty
+ * path, the whole space, when there is none; a KV resource with no `kv` segment counts as the secrets vault), and
+ * for `secrets` abilities a `secrets` service entry (fail closed, whatever the path).
  */
 function reachEntriesOf([resource, actions]: [string, string[]]): ReachEntry[] {
   const entries: ReachEntry[] = [{ service: 'tinycloud.encryption', space: 'encryption', path: resource, actions }];
   const kvActions = actions.filter((action) => /^(?:tinycloud\.)?kv\//i.test(action));
   if (kvActions.length > 0) {
-    const path = /^[^/]*\/kv\/(.*)$/s.exec(resource)?.[1] ?? 'vault/secrets/';
+    const match = /^[^/]*\/kv(?:\/(.*))?$/s.exec(resource);
+    const path = match === null ? 'vault/secrets/' : match[1] ?? '';
     entries.push({ service: 'tinycloud.kv', space: '', path, actions: kvActions });
   }
   const secretsActions = actions.filter((action) => /^(?:tinycloud\.)?secrets\//i.test(action));
