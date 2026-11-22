@@ -62,9 +62,6 @@ export async function loadTermsStatus(): Promise<TermsStatus> {
 /** A Terms check that has no answer by then is a failed check (Try again), never a page held blank. */
 export const TERMS_CHECK_TIMEOUT_MS = 8_000;
 
-/** A session read that has no answer by then is a failed check (Try again), never the page. */
-export const SESSION_CHECK_TIMEOUT_MS = 10_000;
-
 /**
  * Where the signed-in account stands with the Terms, read from `GET /api/account/terms`:
  *   accepted   - nothing is owed
