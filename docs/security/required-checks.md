@@ -22,7 +22,8 @@ None of them has a `paths:` filter, so each reports on every PR and can be requi
 
 - **Merge to main**: the ruleset below (Amos applies it).
 - **API deploy** (`deploy-api.yml`, `deploy` job) and **npm publish / version PR**
-  (`changesets.yml`, `release` job): the first step after checkout runs
+  (`changesets.yml` `release`, `manual-release.yml` `release`, `republish.yml` `republish`):
+  the first step after checkout runs
   `.github/scripts/require-green.mjs`, which fails unless every check in
   `.github/required-checks.json` concluded `success` on `$GITHUB_SHA`. It waits up to 40 min
   for checks still running; a missing, skipped, cancelled or failed check, or a GitHub API
@@ -166,3 +167,97 @@ EOF
 
 Undoing the ruleset leaves the deploy and publish gates in place; those change only by a PR to
 `.github/required-checks.json`.
+
+## Deploy tokens: environment change for Amos
+
+Ruling (Naomi, 2026-11-22 10:05Z): deploy tokens live only in main-limited production
+environments, and a PR or branch preview deploy gets no deploy token (build-only).
+
+### Current (read 2026-11-22, names only; no values read)
+
+- **Repo secrets**: `DATABASE_URL`, `DOCKER_REGISTRY_USERNAME`, `DOCKER_REGISTRY_PASSWORD`,
+  `PHALA_CLOUD_API_KEY`, `QA_MAIL_ADDRESS_SECRET`, `QA_MAIL_READ_TOKEN`.
+- **Org secrets this repo can read**: `NPM_TOKEN` (visibility `all`), `GH_TOKEN`,
+  `PHALA_CLOUD_API_KEY`, `DISPATCH_TOKEN` (all `selected`, openkey included), `CLOUDFLARE_ACCOUNT_ID`.
+- **Environment `production`**: branch policy `main` only (custom), `can_admins_bypass: true`,
+  env secrets `DATABASE_URL`, `PHALA_CLOUD_API_KEY`.
+- **Environments `pages-openkey`, `pages-openkey-demo`**: no branch policy and no secrets.
+  `record-pages-deployments.yml` uses them only to record deployments, with `github.token`.
+  Cloudflare builds previews through its own git integration and holds no GitHub token. I
+  couldn't read the Cloudflare project's preview variables (no Cloudflare API access)
+  [UNVERIFIED].
+
+Jobs that read deploy tokens:
+
+| job | secrets | environment today |
+|---|---|---|
+| deploy-api.yml `preflight`, `deploy`; tc-492-production-cutover.yml; baseline/backfill/drop/inspect/provision/register workflows | `DATABASE_URL`, `PHALA_CLOUD_API_KEY`, `DOCKER_REGISTRY_*` | `production` |
+| changesets.yml `release`, manual-release.yml `release`, republish.yml `republish` | `NPM_TOKEN`, `GH_TOKEN` | **none** |
+
+The gap: the repo-level `DATABASE_URL`, `PHALA_CLOUD_API_KEY` and `DOCKER_REGISTRY_*` copies, and
+the org-level `PHALA_CLOUD_API_KEY`, `NPM_TOKEN` and `GH_TOKEN`, are readable by a workflow on any
+branch pushed to this repo. Fork PRs get no secrets. The three npm publish jobs run with no
+environment at all.
+
+### After
+
+1. **Create `npm-production`** (main only, no admin bypass) and give it the npm tokens:
+   ```sh
+   R=repos/TinyCloudLabs/openkey
+   gh api -X PUT $R/environments/npm-production -F can_admins_bypass=false \
+     -F 'deployment_branch_policy[protected_branches]=false' -F 'deployment_branch_policy[custom_branch_policies]=true'
+   gh api -X POST $R/environments/npm-production/deployment-branch-policies -f name=main -f type=branch
+   gh secret set NPM_TOKEN --repo TinyCloudLabs/openkey --env npm-production   # value from its source, on stdin
+   gh secret set GH_TOKEN  --repo TinyCloudLabs/openkey --env npm-production
+   ```
+   This is a separate environment, not `production`, so npm jobs don't create API Deployment
+   records and can't reach `DATABASE_URL`/`PHALA_CLOUD_API_KEY`.
+2. **`production`**: add the Docker Hub credentials as env secrets, and turn off admin bypass
+   (send the branch policy again so the PUT doesn't clear it):
+   ```sh
+   gh secret set DOCKER_REGISTRY_USERNAME --repo TinyCloudLabs/openkey --env production
+   gh secret set DOCKER_REGISTRY_PASSWORD --repo TinyCloudLabs/openkey --env production
+   gh api -X PUT $R/environments/production -F can_admins_bypass=false \
+     -F 'deployment_branch_policy[protected_branches]=false' -F 'deployment_branch_policy[custom_branch_policies]=true'
+   ```
+3. **Then merge** the PR commit `ci: npm publish jobs run in the main-only npm-production
+   environment`. It adds `environment: npm-production` to the three npm jobs. It must not land
+   before step 1: GitHub creates an environment that a workflow references and that doesn't
+   exist yet, with no branch policy.
+4. **Remove the repo-level copies**, only after a `deploy-api.yml` deploy and a Release run have
+   succeeded with env secrets alone:
+   ```sh
+   for s in DATABASE_URL PHALA_CLOUD_API_KEY DOCKER_REGISTRY_USERNAME DOCKER_REGISTRY_PASSWORD; do
+     gh secret delete "$s" --repo TinyCloudLabs/openkey
+   done
+   ```
+5. **Org secrets** (repo id `1090590113`): take openkey off the selected-repo lists of
+   `PHALA_CLOUD_API_KEY` and `GH_TOKEN`:
+   ```sh
+   gh api -X DELETE orgs/TinyCloudLabs/actions/secrets/PHALA_CLOUD_API_KEY/repositories/1090590113
+   gh api -X DELETE orgs/TinyCloudLabs/actions/secrets/GH_TOKEN/repositories/1090590113
+   ```
+   Org `NPM_TOKEN` has visibility `all`, so narrowing it affects every repo. That is a
+   Bobbie/Naomi decision for the org, not this repo; until then the openkey env copy shadows it in
+   the npm jobs.
+
+### Verify
+
+```sh
+gh api $R/environments --jq '.environments[] | {name, can_admins_bypass, deployment_branch_policy}'
+gh api $R/environments/npm-production/deployment-branch-policies --jq '.branch_policies[].name'   # main
+gh api $R/environments/production/deployment-branch-policies --jq '.branch_policies[].name'       # main
+gh api $R/environments/npm-production/secrets --jq '.secrets[].name'
+gh api $R/actions/secrets --jq '.secrets[].name'   # after step 4: only QA_MAIL_*
+```
+
+### Undo
+
+- Step 3: revert the environment commit.
+- Step 1: `gh api -X DELETE $R/environments/npm-production`.
+- Step 2: delete the two env secrets with `gh secret delete … --env production`, and `PUT`
+  `production` with `can_admins_bypass=true` and the same branch-policy fields.
+- Step 5: `gh api -X PUT orgs/TinyCloudLabs/actions/secrets/<NAME>/repositories/1090590113`.
+- Step 4 can't be undone by copying: a deleted secret's value is gone. Restore it with
+  `gh secret set` from its source (Phala dashboard, Docker Hub, the DB provider). That's why it
+  comes last, after the env-only runs have passed.
