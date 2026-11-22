@@ -1,7 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
 import {
-  CLI_REQUESTER,
   TINYCLOUD_ONE_REQUESTER_DIDS,
   approvalRequester,
   isEd25519DidKey,
@@ -17,15 +16,15 @@ describe('approvalRequester', () => {
     expect(approvalRequester(ONE, listed)).toEqual({ displayName: 'TinyCloud One', returnTo: 'TinyCloud One' });
   });
 
-  test('any other signer keeps the CLI wording', () => {
+  test('any other signer is not verified: no requester is named', () => {
     const listed = withConfiguredEntries(TINYCLOUD_ONE_REQUESTER_DIDS, ONE, isEd25519DidKey);
     for (const issuer of [OTHER, '', ONE.toLowerCase(), `${ONE} `, ONE.slice(0, -1)]) {
-      expect(approvalRequester(issuer, listed)).toEqual(CLI_REQUESTER);
+      expect(approvalRequester(issuer, listed)).toBeNull();
     }
   });
 
   test('the built-in list names no one until TinyCloud One has a key', () => {
-    expect(approvalRequester(ONE, TINYCLOUD_ONE_REQUESTER_DIDS)).toEqual(CLI_REQUESTER);
+    expect(approvalRequester(ONE, TINYCLOUD_ONE_REQUESTER_DIDS)).toBeNull();
   });
 
   test('a configured entry that is not an Ed25519 did:key is ignored', () => {

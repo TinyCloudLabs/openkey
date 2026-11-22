@@ -178,8 +178,9 @@ export function isEd25519DidKey(entry: string): boolean {
  * Who is asking in a one-tap approval request. `issuer` is the request's
  * signer, which the API checks against the request's signature before `/load`
  * returns it; nothing else in a signed request names the requester. Only a
- * listed TinyCloud One key is named; every other signer keeps the CLI wording.
+ * listed TinyCloud One key is named; null for every other signer, which the
+ * page shows as not verified.
  */
-export function approvalRequester(issuer: string, oneRequesterDids: readonly string[]): DelegateRequester {
-  return oneRequesterDids.includes(issuer) ? TINYCLOUD_ONE_REQUESTER : CLI_REQUESTER;
+export function approvalRequester(issuer: string, oneRequesterDids: readonly string[]): DelegateRequester | null {
+  return oneRequesterDids.includes(issuer) ? TINYCLOUD_ONE_REQUESTER : null;
 }

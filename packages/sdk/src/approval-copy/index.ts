@@ -16,6 +16,7 @@ export {
   SIGN_IN,
   STOP_PARTS,
   TAB_KEPT_OPEN,
+  UNVERIFIED_REQUESTER,
   codeDestinationWord,
 } from './strings';
 export type { CodeDestination } from './strings';

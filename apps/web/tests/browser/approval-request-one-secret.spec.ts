@@ -1,9 +1,11 @@
 // A one-tap request to use one named secret (read `vault/secrets/NAME` and decrypt) gets its own heading and rows.
-// Its signer is not a listed TinyCloud One key, so the heading names no one and the requester stays TinyCloud CLI.
+// Its signer is not a listed TinyCloud One key, so the page names no requester and says it is not verified.
 // Every API call is answered by `page.route`; no API server runs.
 
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { approvalLink, mockApi } from './approval-end-pages-fixtures';
+import { approve, delegation } from './approval-code-fixtures';
 import { ORIGIN } from './e2e-port';
 
 const DAY = 86_400;
@@ -111,8 +113,11 @@ test('one named secret: plain heading and rows, no requester claimed', async ({ 
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
   await expect(dialog.getByRole('heading', { level: 2 })).toHaveText('A request to use one secret');
   await expect(dialog).toContainText('Review it, choose how long, then approve.');
-  await expect(dialog).toContainText('Requested by TinyCloud CLI');
+  await expect(dialog).toContainText('Requested by Not verified');
+  await expect(dialog).toContainText('OpenKey can’t confirm who made this link.');
   await expect(dialog).not.toContainText('TinyCloud One');
+  await expect(dialog).not.toContainText('TinyCloud CLI');
+  await expect(page.getByRole('region', { name: 'Delegation destination' }).getByText('Returned to')).toHaveCount(0);
   await expect(dialog.locator('.summary-statement .statement-primary')).toHaveText(['Read the secret OPENAI_API_KEY', 'Decrypt your data']);
   await expect(dialog.locator('.summary-statement').nth(1)).toContainText(DECRYPT_NOTE);
 });
@@ -125,4 +130,13 @@ test('anything beyond the one secret keeps the ordinary heading and rows', async
   await expect(dialog).toContainText('Review the access this app is asking for.');
   await expect(dialog).not.toContainText('Read the secret');
   await expect(dialog).not.toContainText(DECRYPT_NOTE);
+});
+
+test('an unverified approval ends without naming anyone to go back to', async ({ page }) => {
+  await mockApi(page, { signedIn: true, approveReply: { status: 200, body: delegation } });
+  await page.goto(approvalLink);
+  await approve(page);
+  await expect(page.getByRole('heading', { name: 'Approved. Go back to your agent.' })).toBeVisible();
+  await expect(page.getByText('You can close this window.', { exact: true })).toBeVisible();
+  await expect(page.getByText(/TinyCloud CLI|the CLI/)).toHaveCount(0);
 });

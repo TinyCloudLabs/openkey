@@ -172,6 +172,11 @@
      * under it, and the note under the decrypt row. Used while the selection is exactly that request.
      */
     oneSecret?: { headline: string; hint: string; decryptNote: string } | null;
+    /**
+     * Set only by a one-tap approval whose signer OpenKey can't name: the "Requested by" value, with a line under
+     * it, while the request names no requester.
+     */
+    unverifiedRequester?: { name: string; line: string } | null;
     onApprove: () => void;
     onCancel: () => void;
     onRetry?: () => void;
@@ -211,6 +216,7 @@
     approveVisibility = null,
     claimed = null,
     oneSecret = null,
+    unverifiedRequester = null,
     onApprove,
     onCancel,
     onRetry,
@@ -339,6 +345,8 @@
   // Names that come from a manifest are app-supplied text: they are shown only
   // after the display rules (`appDisplayName`), everywhere on this view.
   const requesterName = $derived(appDisplayName(model.requester.displayName) ?? originHost ?? "");
+  const requesterUnverified = $derived(!requesterName && unverifiedRequester !== null);
+  const requesterShown = $derived(requesterUnverified ? unverifiedRequester!.name : requesterName);
   const manifestNameShown = $derived(appDisplayName(model.requester.manifestName));
   const requestedBy = $derived(originHost ?? requesterName);
   // The note under the expiry line names who asked as the screen does: the verified origin, or "This request" where
@@ -759,8 +767,11 @@
     {:else}
       <h2 id="signing-approval-headline" class="headline" tabindex="-1">{headline}</h2>
       <p class="requester-line">
-        Requested by <span class="requester-name">{requesterName}</span>
+        Requested by <span class="requester-name">{requesterShown}</span>
       </p>
+      {#if requesterUnverified}
+        <p class="requester-line">{unverifiedRequester!.line}</p>
+      {/if}
     {/if}
     <p id="signing-approval-hint" class="hint">{hint}</p>
   </header>
@@ -951,7 +962,7 @@
       <section class="identity" aria-label="Requester identity">
       <div class="row">
         <span class="label">Requester</span>
-        <span class="value">{requesterName}</span>
+        <span class="value">{requesterShown}</span>
       </div>
 
       {#if model.requester.verifiedOrigin}

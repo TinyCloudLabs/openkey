@@ -8,7 +8,7 @@
     callback: string | null;
     /** The API encrypts delivery for the immutable request's key. */
     requesterRelay?: boolean;
-    /** Who the relayed result is for: a TinyCloud One key, or any other requester. */
+    /** Who the relayed result is for: a TinyCloud One key. Empty for any other requester, and the row is left out. */
     relayTo?: string;
     /** SIWE Expiration Time of the delegation being reviewed. */
     expiresAt: string;
@@ -18,7 +18,7 @@
     acknowledged?: boolean;
   }
 
-  let { host, hostRecognized, callback, requesterRelay = false, relayTo = 'Requesting CLI', expiresAt, showExpires = true, acknowledged = $bindable(false) }: Props = $props();
+  let { host, hostRecognized, callback, requesterRelay = false, relayTo = '', expiresAt, showExpires = true, acknowledged = $bindable(false) }: Props = $props();
 
   const returnsTo = $derived.by(() => {
     if (requesterRelay) return relayTo;
@@ -54,7 +54,7 @@
       <dt class="shrink-0 text-surface-400">Node</dt>
       <dd class="break-all text-right font-mono font-medium text-surface-900">{host}</dd>
     </div>
-    {#if callback || requesterRelay}
+    {#if returnsTo}
       <div class="flex justify-between gap-3">
         <dt class="shrink-0 text-surface-400">Returned to</dt>
         <dd class="break-all text-right font-mono text-surface-900">{returnsTo}</dd>
