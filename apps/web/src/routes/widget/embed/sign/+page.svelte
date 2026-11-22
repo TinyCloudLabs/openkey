@@ -21,6 +21,7 @@
   } from '$lib/approve-visibility';
   import Button from '$lib/components/ui/button.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
+  import { claimedPresentation, claimedPresentationView } from '$lib/claimed-presentation';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import { serverActionId } from '$lib/delegate-review-selection';
@@ -68,6 +69,10 @@
   let keyChoices = $state<EthereumKey[]>([]);
   let keyChoicesLoaded = $state(false);
   const expectedAddress = $derived(parseSIWE(message)?.message.address.toLowerCase() ?? null);
+  const claimedView = $derived.by(() => {
+    const claimed = claimedPresentation({ presentation: plainPresentation, origin });
+    return claimed ? claimedPresentationView(claimed) : null;
+  });
   let loading = $state(true);
   let signing = $state(false);
   let error = $state('');
@@ -107,6 +112,9 @@
   // Presentation envelope forwarded by the SDK. Display-only. Trust is
   // set only from the server prepare response (see below).
   let requestPresentation = $state<Record<string, unknown> | null>(null);
+  // The `presentation` of a plain signMessage() request: what the app says about itself. Display-only; read only by
+  // `claimedView`, which decides what may be shown. It is not sent to the API, the signer or the host page.
+  let plainPresentation = $state<unknown>(null);
   let serverMetadataTrust = $state<
     { status: 'verified' | 'origin-bound' | 'unsigned'; reason: string } | null
   >(null);
@@ -281,6 +289,7 @@
           transport = createWidgetTransport({
             origin,
             container: 'iframe',
+            showsPresentation: true,
             protocolVersion: v2 ? 2 : 1,
             requestId: phaseRequestId ?? undefined,
             onRequest: handleTransportRequest,
@@ -401,11 +410,16 @@
     renewalDefaulted = false;
     // Envelope (display-only). Widget transport already validated + size-
     // bounded the object. Trust decision is deferred to /authorize-sign-
-    // prepare and populated into serverMetadataTrust below.
+    // prepare and populated into serverMetadataTrust below. A plain signMessage()
+    // (no authorization protocol) carries the app's own words in `presentation`
+    // instead: shown only after `claimedPresentation` has judged them, never read
+    // as a manifest envelope and never sent anywhere.
+    const plain = authorizationProtocolVersion === null;
     requestPresentation =
-      data.presentation && typeof data.presentation === 'object'
+      !plain && data.presentation && typeof data.presentation === 'object'
         ? (data.presentation as Record<string, unknown>)
         : null;
+    plainPresentation = plain ? data.presentation ?? null : null;
     serverMetadataTrust = null;
     serverVerifiedManifest = null;
     reviewModel = null;
@@ -702,10 +716,14 @@
       messageHost = typeof event.data.host === 'string' ? event.data.host : '';
       keyId = event.data.keyId || null;
       requestedKeyId = keyId;
+      // A plain signMessage() carries the app's own words in `presentation`; they are shown only after
+      // `claimedPresentation` has judged them and are never read as a manifest envelope or sent anywhere.
+      const plain = authorizationProtocolVersion === null;
       requestPresentation =
-        event.data.presentation && typeof event.data.presentation === 'object'
+        !plain && event.data.presentation && typeof event.data.presentation === 'object'
           ? event.data.presentation
           : null;
+      plainPresentation = plain ? event.data.presentation ?? null : null;
       serverMetadataTrust = null;
       serverVerifiedManifest = null;
       keyFetched = false;
@@ -1624,6 +1642,7 @@
             },
           },
           invalidatePreview: invalidatePreviewForSelectionEdit,
+          claimedPresentation: claimedView,
         }}
       />
     {:else}
