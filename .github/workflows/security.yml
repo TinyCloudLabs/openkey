@@ -63,12 +63,13 @@ jobs:
           fi
           echo "baseline: $(grep -cvE '^\s*(#|$)' "$base/.gitleaksignore" || true) entries, config from ${BASE_SHA}"
           cd "$base"
-          gitleaks git --config "$config" --gitleaks-ignore-path "$base/.gitleaksignore" \
+          gitleaks git --config "$config" --gitleaks-ignore-path "$base/.gitleaksignore" --ignore-gitleaks-allow \
             --log-opts="${BASE_SHA}..${HEAD_SHA}" --redact --no-banner --exit-code 1 "$base"
 
+      # --ignore-gitleaks-allow: an inline `gitleaks:allow` comment must not hide a finding.
       - name: Scan the full history
         if: github.event_name != 'pull_request'
-        run: gitleaks git --config .gitleaks.toml --redact --no-banner --exit-code 1 .
+        run: gitleaks git --config .gitleaks.toml --ignore-gitleaks-allow --redact --no-banner --exit-code 1 .
 
   web-artifact:
     name: Web artifact audit

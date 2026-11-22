@@ -89,7 +89,8 @@ function runGitleaks(dirs) {
     const bin = installToolSync(scratch);
     for (const dir of dirs) {
       // -i points at an empty directory: the repo's .gitleaksignore baselines commits, never artifacts.
-      execFileSync(bin, ['dir', '--config', join(REPO_ROOT, '.gitleaks.toml'), '-i', scratch, '--redact', '--no-banner', '--exit-code', '1', dir], { stdio: 'inherit' });
+      // --ignore-gitleaks-allow: a `gitleaks:allow` comment in shipped code must not hide a finding.
+      execFileSync(bin, ['dir', '--config', join(REPO_ROOT, '.gitleaks.toml'), '-i', scratch, '--ignore-gitleaks-allow', '--redact', '--no-banner', '--exit-code', '1', dir], { stdio: 'inherit' });
     }
   } finally {
     rmSync(scratch, { recursive: true, force: true });
