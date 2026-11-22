@@ -56,7 +56,7 @@ describe('saving the measured app-compose (TC-3837)', () => {
   });
 
   test('a measured compose that names the api image by tag is refused', () => {
-    const { info, attestation } = reading(appCompose('skgbafa/openkey-api:0d0d319b9d3d1464586505a2b9c8d7f3d9da1d95'));
+    const { info, attestation } = reading(appCompose('skgbafa/openkey-api:sha-test'));
     expect(checkMeasurement(info, attestation, API_IMAGE)).toHaveProperty('problem');
   });
 });
