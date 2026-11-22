@@ -3,6 +3,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const OWN_LINE = "This app didn't say what it needs, so it only gets its own folder.";
 const SHARED_LINE = "This app didn't say what it needs or where it's from, so it only gets a folder that other apps like it can also use.";
@@ -61,6 +62,7 @@ async function openApproval(page: Page, query: string, prepared: unknown) {
     if (path === '/api/delegate/prepare') return json(route, prepared);
     return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: `Unmocked API: ${path}` }) });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}${query}`);
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
   return errors;

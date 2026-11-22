@@ -10,6 +10,7 @@ import { test, expect, type Locator, type Page } from '@playwright/test';
 import { HOST } from './e2e-port';
 import { parseCapabilityReview, type CapabilityReviewModel } from '../../../../packages/capability-review/src/index';
 import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 interface PageGlobals {
   __openkeyParityHarness?: unknown;
@@ -156,6 +157,7 @@ async function widgetBlock(page: Page, message: string): Promise<Shown> {
     label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z',
   } } }));
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto('/__parity_harness');
   await page.evaluate(() => {
     const iframe = document.createElement('iframe');

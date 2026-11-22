@@ -3,6 +3,7 @@
 // checked where they are the point of the test (the declined and failure messages).
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const id = 'abcdefghijklmnopqrstuvwxyz';
 const fragment = `#v=4&k=${'A'.repeat(43)}&c=bafkreia${'a'.repeat(52)}`;
@@ -76,6 +77,7 @@ async function serve(page: Page, options: Options = {}) {
     }
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return calls;
 }
 

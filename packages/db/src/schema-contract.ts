@@ -73,6 +73,7 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   // S1b (merged at 15e213cd) claimed 0001-0004 and TC-3596 (merged at 4b6c594c) claimed
   // 0005. If a later slice claims 0006 first the OpenKey driver renumbers.
   ['20261121_0006_tinycloud_setup_tables', 'a70e40ec6d8c438f61dbe7784fdba3f17b69af069ee1d717af571803fb6f36cc'],
+  ['20261122_0001_terms_acceptance_embed_audit', 'b57be1d1b87aca2d43ae5b0447d9a2f6bf7bd840b48a2cd8fc0e0b638897dea1'],
 ]);
 
 export type SchemaContractDatabase = {

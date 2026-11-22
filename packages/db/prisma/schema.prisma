@@ -69,10 +69,18 @@ model TermsAcceptance {
   // SHA-256 (hex) of the published text of this version.
   textSha256  String
   acceptedAt  DateTime @default(now())
-  // 'web', or 'native:<clientId>' when accepted in a native app's sign-in sheet.
+  // 'web'; 'native:<clientId>' when accepted in a native app's sign-in sheet; 'embed' when accepted in the
+  // embedded OpenKey frame (set by the server from the frame's session token, never from the request body).
   surface     String
   // The API build that recorded the acceptance.
   appVersion  String
+  // 'embed' only: the session that agreed, the proof a person was present ('session_created': a sign-in within
+  // 10 minutes) with its time, the request's Origin, and the embedding page's origin as the frame claimed it.
+  sessionId          String?
+  proof              String?
+  proofAt            DateTime?
+  requestOrigin      String?
+  embedOriginClaimed String?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

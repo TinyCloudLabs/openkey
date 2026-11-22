@@ -1,6 +1,7 @@
 // TC-3441 T5: /device asks one question, does your terminal show this code? "No" answers nothing; the typed code
 // is one input drawn as eight tiles.
 import { expect, test, type Page } from '@playwright/test';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 test.use({ viewport: { width: 390, height: 844 } });
 
@@ -35,6 +36,7 @@ async function deviceApi(page: Page, options: { signedIn?: boolean; lookupStatus
     }
     return route.fulfill({ json: {} });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return calls;
 }
 

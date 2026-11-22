@@ -5,6 +5,7 @@
 
 import { test, expect, type Page, type FrameLocator, type Locator } from '@playwright/test';
 import { ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const key = (id: string, keyIndex: number, address: string, isPrimary: boolean, keyType = 'MANAGED') =>
   ({ id, address, publicKey: '0x', keyIndex, label: `Key ${keyIndex}`, keyType, isPrimary, createdAt: '2026-01-01T00:00:00Z' });
@@ -28,6 +29,7 @@ async function mockApi(page: Page, list: unknown[]) {
   await page.route('**/api/keys', (route) => route.fulfill({ json: { keys: list } }));
   await page.route('**/api/auth/get-session**', (route) =>
     route.fulfill({ json: { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3_600_000).toISOString() }, user: { id: 'u', email: 'sam@example.test', name: 'Sam' } } }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 }
 
 async function expectPrimaryFirst(root: Page | FrameLocator, pick: (root: Page | FrameLocator, name: string) => Locator) {

@@ -43,6 +43,7 @@ import { approvalRequestRouter } from './routes/approval-requests';
 import { createDelegationCodeRouter, createPrismaDelegationCodeStore } from './routes/delegation-codes';
 import { requireSession } from './middleware/session';
 import { requireAccountOriginForSensitiveAuth } from './middleware/bearer-origin';
+import { mountEmailOtpRateLimit } from './middleware/email-otp-rate-limit';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 import { configuredSocialProviderIds } from './social-providers';
 import { API_EXPOSED_HEADERS, corsOriginPolicy } from './origin-policy';
@@ -97,6 +98,8 @@ app.use('/api/auth/reviewer/*', bodyLimit({ maxSize: 4096 }));
 app.use('/api/review-account/*', createReviewerAuthAudit(authPrisma));
 app.use('/api/auth/sign-in/reviewer', bodyLimit({ maxSize: 16384 }));
 app.use('/api/auth/sign-in/email-otp', bodyLimit({ maxSize: 16384 }));
+// Email-code sends and checks are limited per target email (and by a shared ceiling) before any other auth work.
+mountEmailOtpRateLimit(app, process.env.NODE_ENV);
 app.use('/api/auth/*', createReviewerAuthAudit(authPrisma));
 app.use('/api/*', createReviewerRouteGuard(authPrisma, async (headers) => {
   if (!headers.has('cookie') && !headers.has('authorization')) return [];

@@ -94,6 +94,7 @@ const preTc488AdditiveMigrations: ReadonlyMap<string, string> = new Map([
   // path; production is on `full`, but we follow the pattern so the sha-vs-file check
   // continues to work for everyone.
   ['20261121_0006_tinycloud_setup_tables', 'a70e40ec6d8c438f61dbe7784fdba3f17b69af069ee1d717af571803fb6f36cc'],
+  ['20261122_0001_terms_acceptance_embed_audit', 'b57be1d1b87aca2d43ae5b0447d9a2f6bf7bd840b48a2cd8fc0e0b638897dea1'],
 ]);
 
 export type MigrationRow = {

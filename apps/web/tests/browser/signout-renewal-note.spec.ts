@@ -2,6 +2,7 @@
 // account has renewing permissions. Every API call is answered by page.route.
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 const session = { session: { id: 's', userId: 'u', expiresAt: new Date(Date.now() + 3600000).toISOString() }, user: { id: 'u', email: 'owner@example.test', name: 'Owner' } };
@@ -26,6 +27,7 @@ async function setup(page: Page, leases: unknown[] | 'error') {
     if (path.includes('tinycloud')) return json(route, { tinyCloudManageKeyEnabled: true, mode: 'APP_MANAGED', policyEpoch: 0, apps: [], mcpApps: [], identityApps: [], activity: [] });
     return json(route, {});
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 }
 
 test('the dashboard says signing out leaves renewals on, and Stop renewals opens Renewing permissions', async ({ page }) => {
