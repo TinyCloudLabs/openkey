@@ -10,7 +10,8 @@
 // the node has admitted the lease. At an app sign-in (`signin-renewal.ts`, `appAdmits`) the lease is only signed and
 // returned: nothing is saved, and the app has the node admit it.
 import { randomBytes } from 'node:crypto';
-import { completeSessionSetup, ensureEip55, prepareSession } from '@tinycloud/node-sdk-wasm';
+import { completeSessionSetup, ensureEip55, parseRecapFromSiwe, prepareSession } from '@tinycloud/node-sdk-wasm';
+import { parseSiweFields, renewalEntryVerdict } from '@openkey/capability-review';
 import {
   admitOwnerRenewalLease,
   assertRenewalNodeIdentity,
@@ -72,7 +73,11 @@ export function renewalUnavailableMessage(subject: RenewalSubject, stage: 'befor
     : "Renewal stopped being available while you were approving, so this request didn't finish. Ask the app to send it again.";
 }
 
-export type RenewalChoice = { choice: 'finite' } | { choice: 'leased'; leaseLifetimeSeconds: number };
+/**
+ * `sensitiveConfirmed`: the owner ticked the box and then confirmed "Renew sensitive access?" (spec D7). A lease on a
+ * grant that reaches secrets is refused without it (TC-3821).
+ */
+export type RenewalChoice = { choice: 'finite' } | { choice: 'leased'; leaseLifetimeSeconds: number; sensitiveConfirmed?: true };
 
 /** The renewal request an approval request signed: its longest lease. */
 export interface SignedRenewalRequest {
@@ -99,11 +104,70 @@ export function parseRenewalChoice(
   if (choice.choice === 'finite' && Object.keys(choice).length === 1) return { choice: 'finite' };
   if (!enabled) throw new RenewalLeaseError('renewal_disabled', renewalUnavailableMessage(subject, 'before-signing'), 400);
   const seconds = choice.leaseLifetimeSeconds;
-  if (choice.choice !== 'leased' || Object.keys(choice).length !== 2 || typeof seconds !== 'number' || !Number.isSafeInteger(seconds) ||
+  const confirmed = choice.sensitiveConfirmed === true;
+  if (choice.choice !== 'leased' || Object.keys(choice).length !== (confirmed ? 3 : 2) || typeof seconds !== 'number' || !Number.isSafeInteger(seconds) ||
     seconds <= 0 || seconds > signed.leaseLifetimeSeconds || seconds > MAX_LEASE_SECONDS) {
     throw new RenewalLeaseError('request_binding', 'Renewal choice does not match the approval request', 400);
   }
-  return { choice: 'leased', leaseLifetimeSeconds: seconds };
+  return confirmed ? { choice: 'leased', leaseLifetimeSeconds: seconds, sensitiveConfirmed: true } : { choice: 'leased', leaseLifetimeSeconds: seconds };
+}
+
+/** Spec D6/D7 (TC-3821): the longest each renewed window of a grant that reaches secrets may last. */
+export const SENSITIVE_RENEWAL_WINDOW_SECONDS = 7 * 86_400;
+
+function unreadableGrant(): RenewalLeaseError {
+  return new RenewalLeaseError('renewal_refused', "Renewal can't be set up for this approval, because OpenKey couldn't read one of its permissions. Untick renewal and approve without it, or ask the app for a new link.", 400);
+}
+
+/**
+ * Whether a lease on this grant needs the owner's confirm (TC-3821), by the rule the approval screen shares
+ * (`renewalEntryVerdict` in @openkey/capability-review): an encryption permission on a `secrets/` key or prefix, or
+ * decrypt on a whole encryption network. Fails closed: a message the node's reader (`parseSiweFields`) rejects, a ReCap
+ * that does not parse, or an encryption permission whose resource is not a valid encryption URN, refuses the lease
+ * outright. A SIWE with no ReCap grants nothing and needs no confirm.
+ */
+export function leaseReachesSecrets(siwe: string): boolean {
+  if (!parseSiweFields(siwe).ok) throw unreadableGrant();
+  let entries: Array<{ service?: string; space: string; path: string; actions: string[] }>;
+  try {
+    entries = parseRecapFromSiwe(siwe) as typeof entries;
+  } catch {
+    throw unreadableGrant();
+  }
+  if (!Array.isArray(entries)) throw unreadableGrant();
+  let reaches = false;
+  for (const entry of entries) {
+    if (!entry || typeof entry.space !== 'string' || typeof entry.path !== 'string' || !Array.isArray(entry.actions) ||
+      entry.actions.some((action) => typeof action !== 'string')) {
+      throw unreadableGrant();
+    }
+    const verdict = renewalEntryVerdict(entry);
+    if (verdict === 'unreadable') throw unreadableGrant();
+    if (verdict === 'confirm') reaches = true;
+  }
+  return reaches;
+}
+
+/**
+ * TC-3821: refuses a lease on a grant that reaches secrets unless the owner confirmed it (`sensitiveConfirmed`) and the
+ * grant's own window is at most seven days. The node renews a grant for exactly that window each time: its expiry less
+ * its not-before, else its issued-at (tinycloud-node `renewal::period_seconds`). The total lease length stays the
+ * owner's choice within what the requester signed. Other grants are not checked beyond being readable.
+ */
+export function assertLeaseableGrant(siwe: string, sensitiveConfirmed: boolean): void {
+  if (!leaseReachesSecrets(siwe)) return;
+  if (!sensitiveConfirmed) {
+    throw new RenewalLeaseError('renewal_refused', 'Renewing access to your secrets or encrypted data needs your confirmation. Confirm "Renew sensitive access?" to keep renewal, or untick renewal and approve without it.', 400);
+  }
+  const parsed = parseSiweFields(siwe);
+  if (!parsed.ok) throw unreadableGrant();
+  const { fields } = parsed;
+  const end = Date.parse(fields.expirationTime ?? '');
+  const anchor = Date.parse(fields.notBefore ?? fields.issuedAt);
+  if (!Number.isFinite(end) || !Number.isFinite(anchor) || end <= anchor) throw unreadableGrant();
+  if (end - anchor > SENSITIVE_RENEWAL_WINDOW_SECONDS * 1000) {
+    throw new RenewalLeaseError('renewal_refused', 'Each renewal of access to your secrets or encrypted data lasts at most 7 days. Choose 7 days or less.', 400);
+  }
 }
 
 /** Saved on the approval request (its `renewal` column) at each step; never holds a private key. */
@@ -229,8 +293,13 @@ export async function prepareRenewalStage(input: {
   now: Date;
   fetchImpl?: typeof fetch;
   appAdmits?: boolean;
+  /** The owner confirmed renewing sensitive access (`RenewalChoice.sensitiveConfirmed`); a grant reaching secrets needs it. */
+  sensitiveConfirmed?: boolean;
 }): Promise<RenewalStage> {
   const { delegation } = input;
+  if (!Number.isSafeInteger(input.leaseLifetimeSeconds) || input.leaseLifetimeSeconds <= 0 || input.leaseLifetimeSeconds > MAX_LEASE_SECONDS) {
+    throw new RenewalLeaseError('request_binding', 'Renewal choice does not match the approval request', 400);
+  }
   const header = delegation.delegationHeader as { Authorization?: unknown } | undefined;
   const originalCid = delegation.delegationCid;
   const signedSiwe = delegation.siwe;
@@ -242,6 +311,8 @@ export async function prepareRenewalStage(input: {
     typeof delegation.spaceId !== 'string') {
     throw new RenewalLeaseError('invalid_delegation', 'The approved grant is incomplete', 400);
   }
+  // TC-3821: before the node is asked anything or a lease message exists.
+  assertLeaseableGrant(signedSiwe, input.sensitiveConfirmed === true);
   const siwe = new SiweMessage(signedSiwe);
   const nodeIdentity = await discoverRenewalNodeIdentity(input.host, input.fetchImpl);
   // Whole seconds so approvedAt + lifetime is exactly the signed end at millisecond precision.

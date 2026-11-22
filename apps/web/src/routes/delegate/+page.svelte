@@ -395,6 +395,8 @@
   let renewalPurpose: unknown = undefined;
   let renewalDefaulted = false;
   let renewalLeaseMs = $state<number | null>(null);
+  // TC-3821: the owner confirmed "Renew sensitive access?" for the ticked lease; cleared when the box is unticked.
+  let renewalConfirmed = $state(false);
   // Spec D12: standing access starts ticked; D7: never in the Once tier (secrets or decrypt); D11: no purpose is a task.
   // Ticking it re-prepares, so the preview the owner approves is the one that carries the lease.
   $effect(() => {
@@ -407,19 +409,21 @@
   // The owner's choice as /prepare binds it into the preview; null when the request did not ask for renewal.
   function renewalChoiceBody() {
     if (renewalMaxLeaseMs === null) return null;
-    return renewalLeaseMs === null ? { choice: 'finite' } : { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000) };
+    if (renewalLeaseMs === null) return { choice: 'finite' };
+    return { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000), ...(renewalConfirmed ? { sensitiveConfirmed: true } : {}) };
   }
   const RENEWAL_NOT_SET_UP = "Renewal wasn't set up, so nothing was approved. Try again.";
   // While an external wallet signs the lease: how long renewal lasts, shown in the prompt.
   let renewalSigningMs = $state<number | null>(null);
   // A changed lease (and, from the sensitive-access step, the window) is a new preview: prepare once with both.
-  async function changeRenewal(leaseMs: number | null, windowMs?: number | null) {
+  async function changeRenewal(leaseMs: number | null, windowMs?: number | null, sensitiveConfirmed?: true) {
     if (!selectedKey || !jwk) {
       error = 'Missing key or JWK parameter.';
       return;
     }
-    const previous = { lease: renewalLeaseMs, choice: expiryChoiceMs, chosen: expiryChosen, param: expiryParam, requested: requestedExpiryParam };
+    const previous = { lease: renewalLeaseMs, confirmed: renewalConfirmed, choice: expiryChoiceMs, chosen: expiryChosen, param: expiryParam, requested: requestedExpiryParam };
     renewalLeaseMs = leaseMs;
+    renewalConfirmed = leaseMs !== null && (sensitiveConfirmed === true || renewalConfirmed);
     if (windowMs !== undefined) {
       requestedExpiryParam ??= expiryParam;
       expiryChoiceMs = windowMs;
@@ -433,11 +437,12 @@
       applyPreparedDelegation(data);
     } catch (e: any) {
       renewalLeaseMs = previous.lease;
+      renewalConfirmed = previous.confirmed;
       expiryChoiceMs = previous.choice;
       expiryChosen = previous.chosen;
       expiryParam = previous.param;
       requestedExpiryParam = previous.requested;
-      error = delegateErrorMessage(e, () => changeRenewal(leaseMs, windowMs), true);
+      error = delegateErrorMessage(e, () => changeRenewal(leaseMs, windowMs, sensitiveConfirmed), true);
     } finally {
       updatingPermissions = false;
     }
@@ -2193,7 +2198,7 @@
                   renewal: {
                     leaseMs: renewalLeaseMs,
                     maxLeaseMs: renewalMaxLeaseMs,
-                    onChange: (ms: number | null, windowMs?: number | null) => { void changeRenewal(ms, windowMs); },
+                    onChange: (ms: number | null, windowMs?: number | null, sensitiveConfirmed?: true) => { void changeRenewal(ms, windowMs, sensitiveConfirmed); },
                   },
                 } : {}),
               }}

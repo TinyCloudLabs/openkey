@@ -101,7 +101,7 @@
     remainingAccessMs,
     requestedExpiryMs,
   } from "$lib/approval-expiry";
-  import { isOnceTier, isSensitiveTier } from "$lib/renewal-default";
+  import { isOnceTier, renewalNeedsSensitiveConfirm } from "$lib/renewal-default";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -981,7 +981,7 @@
         onceNote={signedOnceNote}
         lengthNote={signedLengthNote}
         {renewal}
-        sensitive={isSensitiveTier(selectedGrants)}
+        sensitive={renewalNeedsSensitiveConfirm(selectedGrants)}
         {requestedBy}
         chooser={false}
         permissionCount={summaryStatements.length}

@@ -2,6 +2,8 @@
 // parsing and showing a duration, turning the chosen one into the instant the
 // server writes into the signed message, and the renewal lease choices.
 
+import { parseSiweFields } from '@openkey/capability-review';
+
 const S = 1000;
 const M = 60 * S;
 const H = 60 * M;
@@ -43,6 +45,18 @@ export const MAX_LEASE_MS = 365 * D;
 
 /** Spec D6 rule 3: renewing access to secrets or decrypt uses a 7-day window. */
 export const SENSITIVE_RENEWAL_WINDOW_MS = 7 * D;
+
+/**
+ * The Expiration Time for a window chosen with a confirmed sensitive renewal (TC-3821): `ms` from the message's own
+ * Not Before, else its Issued At, read the way the node reads them (`parseSiweFields`). The node renews each window
+ * from that start, and the server refuses a sensitive lease whose window is over 7 days, so counting from now (seconds
+ * after the app signed) would land just over. Counts from now when the message does not parse.
+ */
+export function renewalWindowExpiryAt(ms: number, message: string, now: number = Date.now()): string {
+  const parsed = parseSiweFields(message);
+  const start = parsed.ok ? Date.parse(parsed.fields.notBefore ?? parsed.fields.issuedAt) : NaN;
+  return new Date((Number.isFinite(start) ? Math.min(start, now) : now) + ms).toISOString();
+}
 
 /** One-time approvals (the Once tier: access to all secrets or all encrypted data) start at one hour (spec D6). */
 export const ONCE_DEFAULT_EXPIRY_MS = H;
