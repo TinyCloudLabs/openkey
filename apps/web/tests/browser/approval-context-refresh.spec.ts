@@ -74,7 +74,7 @@ async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scena
         (att[resource] ??= {})[ability] = [{}];
       }
       const lifetimeSeconds = typeof body.expiry === 'string' ? Number.parseFloat(body.expiry) : 3600;
-      let siwe = ['cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '', `URI: ${target}#${target}`,
+      let siwe = ['cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '', '', `URI: ${target}#${target}`,
         'Version: 1', 'Chain ID: 1', `Nonce: qa12345${prepares}`, `Issued At: ${new Date().toISOString()}`,
         `Expiration Time: ${new Date(Date.now() + lifetimeSeconds * 1000).toISOString()}`, 'Resources:', `- ${makeRecapResource(att)}`].join('\n');
       if (prepares >= 3 && scenario === 'empty-siwe') siwe = '';

@@ -75,6 +75,7 @@ async function openReview(page: Page, options: {
       const expiration = new Date(now + Number(expiry.slice(0, -1)) * 1000);
       const siwe = [
         'app.example.test wants you to sign in with your Ethereum account:', ADDRESS, '',
+        '',
         `URI: ${AUDIENCE}#${AUDIENCE.slice('did:key:'.length)}`,
         'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', `Issued At: ${new Date(now).toISOString()}`,
         `Expiration Time: ${expiration.toISOString()}`, 'Resources:', `- ${recap}`,

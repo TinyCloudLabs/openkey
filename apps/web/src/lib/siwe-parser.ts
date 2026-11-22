@@ -3,6 +3,7 @@
  * Extracts structured fields and ReCap capabilities from a SIWE message string.
  */
 
+import { parseSiweFields } from '@openkey/capability-review';
 import { daysOverTwoDays } from './approval-expiry';
 
 export interface SIWEMessage {
@@ -55,8 +56,10 @@ export function parseSIWE(raw: string): ParsedSIWE | null {
   const version = extractField(raw, 'Version:');
   const chainId = parseInt(extractField(raw, 'Chain ID:') || '1', 10);
   const nonce = extractField(raw, 'Nonce:');
-  const issuedAt = extractField(raw, 'Issued At:');
-  const expirationTime = extractField(raw, 'Expiration Time:');
+  // TC-3826: the times as the node reads them, never a look-alike line in the statement.
+  const fields = parseSiweFields(raw);
+  const issuedAt = fields.ok ? fields.fields.issuedAt : undefined;
+  const expirationTime = fields.ok ? fields.fields.expirationTime : undefined;
 
   // Extract resources
   const resources: string[] = [];

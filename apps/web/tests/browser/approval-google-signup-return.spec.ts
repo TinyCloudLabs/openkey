@@ -19,6 +19,7 @@ const session = {
 function prepared() {
   const siwe = [
     'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
+    '',
     `URI: ${target}#${target}`, 'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456',
     'Issued At: 2026-10-03T00:00:00.000Z', 'Expiration Time: 2026-11-03T01:00:00.000Z',
     'Resources:', `- ${makeRecapResource({ [`${space}/capabilities`]: { [capabilities]: [{}] }, [`${space}/kv/notes/`]: { [read]: [{}] } })}`,

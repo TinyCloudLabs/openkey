@@ -32,6 +32,7 @@ function message(keys: string[]) {
   });
   return [
     'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
+    '',
     'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
     'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456',
     `Issued At: ${issuedAt.toISOString()}`, `Expiration Time: ${expirationTime.toISOString()}`,
