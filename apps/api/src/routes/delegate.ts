@@ -42,7 +42,7 @@ import {
   signedSiweExpirationTime,
 } from './delegate-validation';
 import {
-  defaultSessionAbilities,
+  ownFolderSessionAbilities,
   SIWE_DOMAIN,
   sessionAbilitiesFromPermissions,
   validatePermissions,
@@ -70,7 +70,6 @@ import { countPrivateSessionJwk, log, logError, logMetric, logSessionJwk, record
 export {
   prepareDelegationSession,
   assertBaselineSubset,
-  DEFAULT_ABILITIES,
 } from './delegate-session';
 import {
   evaluateAutoSignPolicy,
@@ -810,7 +809,7 @@ function requiredActionIdSet(entries: RecapEntry[]): Set<string> {
 
 /**
  * Digest of a delegation's request baseline: the ability maps derived from
- * the CLI `permissions` (or the defaults). `/prepare` binds it to the
+ * the request's `permissions` (or the own folder when it names none). `/prepare` binds it to the
  * authorization context; `/complete` and the managed approval recompute it
  * from the `permissions` they receive and consume refuses a mismatch, so the
  * subset check at completion runs against the request that was prepared.
@@ -1737,7 +1736,7 @@ delegateRouter.post('/', async (c) => {
     try {
       baseline = permissions
         ? sessionAbilitiesFromPermissions(permissions, { address, chainId }, { deviceTransaction: body.deviceTransactionId !== undefined })
-        : defaultSessionAbilities(bound.spaceId);
+        : ownFolderSessionAbilities(extractImmutableSiweFields(bound.originalSiwe, { address, chainId, spaceId: bound.spaceId }).domain, { address, chainId });
       assertBaselineSubset(preparedEntries, baseline);
       assertRequiredActions(preparedEntries, baseline);
     } catch (e) {
@@ -2313,6 +2312,8 @@ delegateRouter.post('/prepare', async (c) => {
     permissions: preparedResult.permissions,
     selectedActionKeys: preparedResult.selectedActionKeys,
     edited: preparedResult.edited,
+    ownFolderOnly: preparedResult.ownFolderOnly,
+    ownFolderShared: preparedResult.ownFolderShared,
     reason,
     // Versioned protocol: /complete MUST echo this token.
     authorizationContext: {
@@ -2346,10 +2347,10 @@ delegateRouter.post('/complete', async (c) => {
     /** Optional; may only repeat the renewal choice the preview bound (TC-2933). */
     renewal?: unknown;
     /**
-     * The CLI-supplied permissions that were the baseline for /prepare.
-     * When present, this is used instead of DEFAULT_ABILITIES for the
-     * subset check that guards against a compromised frontend crafting a
-     * broader SIWE. Optional; falls back to DEFAULT_ABILITIES when absent.
+     * The permissions that were the baseline for /prepare: the subset check
+     * that guards against a compromised frontend crafting a broader SIWE runs
+     * against them. Optional; when absent the baseline is the own folder of
+     * the signed SIWE's domain, as /prepare chose.
      * Raw encryption entries must name a network owned by the SIWE signer.
      */
     permissions?: unknown;
@@ -2450,15 +2451,19 @@ delegateRouter.post('/complete', async (c) => {
   let baseline: SessionAbilities;
   try {
     const entries = parsePreparedRecap(body.prepared.siwe);
+    const signer = { address: signedFields.address, chainId: signedFields.chainId };
+    // With no permissions, the baseline is the own folder of the account the
+    // request was prepared for, not of the signer. A SIWE re-signed by another
+    // address passes this subset check, and the checks after it decide:
+    // prepared.address (key-mismatch), the signature, then the context bindings.
     const preview = typeof body.authorizationContextToken === 'string'
       ? peekAuthorizationContext(body.authorizationContextToken) : undefined;
-    const defaultSpaceId = preview?.ok ? preview.value.spaceId : preparedSpaceId;
+    const [, , , preparedChainId, preparedOwner] = (preview?.ok ? preview.value.spaceId : preparedSpaceId).split(':');
     baseline = baselinePermissions
-      ? sessionAbilitiesFromPermissions(baselinePermissions, {
-          address: signedFields.address,
-          chainId: signedFields.chainId,
-        }, { deviceTransaction: body.deviceTransactionId !== undefined })
-      : defaultSessionAbilities(defaultSpaceId);
+      ? sessionAbilitiesFromPermissions(baselinePermissions, signer, { deviceTransaction: body.deviceTransactionId !== undefined })
+      : ownFolderSessionAbilities(signedFields.domain, preparedOwner
+        ? { address: preparedOwner, chainId: Number(preparedChainId) }
+        : signer);
     assertBaselineSubset(entries, baseline);
     assertRequiredActions(entries, baseline);
   } catch (e) {
