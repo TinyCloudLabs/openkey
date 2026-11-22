@@ -232,29 +232,29 @@ describe('formatDurationWithEnd', () => {
   const now = Date.UTC(2026, 10, 18, 4, 30);
 
   test('over two days names the length and the day it ends, month first', () => {
-    expect(formatDurationWithEnd(30 * D, now, 'UTC')).toBe('30 days, on Dec 18');
-    expect(formatDurationWithEnd(700 * H, now, 'UTC')).toBe('30 days, on Dec 17');
+    expect(formatDurationWithEnd(30 * D, now, 'UTC')).toBe('30 days, until Dec 18');
+    expect(formatDurationWithEnd(700 * H, now, 'UTC')).toBe('30 days, until Dec 17');
   });
 
   test('the day follows the instant, not the rounded days', () => {
     // 23:30 UTC plus 30 days is still the 18th; plus 30 days 1 hour is the 19th.
     const late = Date.UTC(2026, 10, 18, 23, 30);
-    expect(formatDurationWithEnd(30 * D, late, 'UTC')).toBe('30 days, on Dec 18');
-    expect(formatDurationWithEnd(30 * D + H, late, 'UTC')).toBe('31 days, on Dec 19');
+    expect(formatDurationWithEnd(30 * D, late, 'UTC')).toBe('30 days, until Dec 18');
+    expect(formatDurationWithEnd(30 * D + H, late, 'UTC')).toBe('31 days, until Dec 19');
   });
 
   test('the day is the owner\'s own, not the UTC one', () => {
     // The window ends Dec 18 02:00 UTC: still the evening of Dec 17 in New York, already Dec 18 afternoon in Tokyo.
     const start = Date.UTC(2026, 10, 18, 2, 0);
-    expect(formatDurationWithEnd(30 * D, start, 'UTC')).toBe('30 days, on Dec 18');
-    expect(formatDurationWithEnd(30 * D, start, 'America/New_York')).toBe('30 days, on Dec 17');
-    expect(formatDurationWithEnd(30 * D, start, 'Asia/Tokyo')).toBe('30 days, on Dec 18');
-    expect(formatDurationWithEnd(30 * D, Date.UTC(2026, 10, 17, 20, 0), 'Asia/Tokyo')).toBe('30 days, on Dec 18');
+    expect(formatDurationWithEnd(30 * D, start, 'UTC')).toBe('30 days, until Dec 18');
+    expect(formatDurationWithEnd(30 * D, start, 'America/New_York')).toBe('30 days, until Dec 17');
+    expect(formatDurationWithEnd(30 * D, start, 'Asia/Tokyo')).toBe('30 days, until Dec 18');
+    expect(formatDurationWithEnd(30 * D, Date.UTC(2026, 10, 17, 20, 0), 'Asia/Tokyo')).toBe('30 days, until Dec 18');
   });
 
   test('a day in another year carries the year', () => {
-    expect(formatDurationWithEnd(60 * D, now, 'UTC')).toBe('60 days, on Jan 17, 2027');
-    expect(formatDurationWithEnd(365 * D, now, 'UTC')).toBe('1 year, on Nov 18, 2027');
+    expect(formatDurationWithEnd(60 * D, now, 'UTC')).toBe('60 days, until Jan 17, 2027');
+    expect(formatDurationWithEnd(365 * D, now, 'UTC')).toBe('1 year, until Nov 18, 2027');
   });
 
   test('two days or less has no date', () => {

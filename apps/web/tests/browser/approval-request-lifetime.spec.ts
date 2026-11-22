@@ -10,10 +10,10 @@ const OWNER = `did:pkh:eip155:1:${ADDRESS}`;
 const SPACE = `tinycloud:pkh:eip155:1:${ADDRESS}:default`;
 const AUDIENCE = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
 const KV_GET = 'tinycloud.kv/get';
-const ONCE_NOTE = '1 hour is the most for a request that includes secrets or decryption.';
+const ONCE_NOTE = 'Requests that can open all your secrets or all your encrypted data start at 1 hour. You can choose longer, up to what the app asked for.';
 
 const notes = { service: 'tinycloud.kv', space: SPACE, path: 'notes/', ability: KV_GET, resource: `${SPACE}/kv/notes/` };
-const secret = { service: 'tinycloud.kv', space: SPACE, path: 'vault/secrets/DEPLOY_KEY', ability: KV_GET, resource: `${SPACE}/kv/vault/secrets/DEPLOY_KEY` };
+const secret = { service: 'tinycloud.kv', space: SPACE, path: 'vault/secrets/', ability: KV_GET, resource: `${SPACE}/kv/vault/secrets/` };
 const network = `urn:tinycloud:encryption:${OWNER}:default`;
 const decrypt = {
   service: 'tinycloud.encryption',
@@ -114,7 +114,7 @@ async function openFold(page: Page) {
 test('the approval face shows the requested 30 days', async ({ page }, testInfo) => {
   const expiries = await openReview(page);
   await expect(approve(page)).toBeEnabled();
-  await expect(line(page)).toHaveText(/^This permission expires in 30 days, on /);
+  await expect(line(page)).toHaveText(/^This app's access to your data lasts 30 days, until /);
   await expect(page.getByText('How long it lasts', { exact: true })).toBeHidden();
   await expect(page.getByTestId('approval-expiry-once-note')).toHaveCount(0);
   expect(expiries.at(-1)).toBe(`${30 * DAY}s`);
@@ -127,7 +127,7 @@ for (const [name, grants] of [['secrets', [notes, secret]], ['decrypt', [notes, 
     const expiries = await openReview(page, { grants: [...grants] });
     const note = page.getByTestId('approval-expiry-once-note');
     await expect(approve(page)).toBeEnabled();
-    await expect(line(page)).toHaveText('These permissions expire in 1 hour');
+    await expect(line(page)).toHaveText("This app's access to your data lasts 1 hour.");
     await expect(note).toBeVisible();
     await expect(note).toHaveText(ONCE_NOTE);
     expect(expiries.at(-1)).toBe('3600s');
@@ -140,12 +140,16 @@ for (const [name, grants] of [['secrets', [notes, secret]], ['decrypt', [notes, 
     }
 
     const fold = await openFold(page);
-    await expect(fold.getByRole('button', { name: '24 hours' })).toHaveCount(0);
+    await expect(fold.getByRole('button', { name: '24 hours' })).toBeVisible();
     await fold.getByLabel('Or type a time').fill('2h');
     await fold.getByRole('button', { name: 'Set' }).click();
+    await expect(line(page)).toHaveText("This app's access to your data lasts 2 hours.");
+    expect(expiries.at(-1)).toBe('7200s');
+    await fold.getByLabel('Or type a time').fill('31d');
+    await fold.getByRole('button', { name: 'Set' }).click();
     const limit = fold.getByRole('alert');
-    await expect(limit).toHaveText('This approval can last up to 1 hour.');
-    expect(expiries.at(-1)).toBe('3600s');
+    await expect(limit).toHaveText('This approval can last up to 30 days.');
+    expect(expiries.at(-1)).toBe('7200s');
     if (name === 'secrets') {
       await testInfo.attach('secrets expiry limit', { body: await limit.innerText(), contentType: 'text/plain' });
       await testInfo.attach('secrets expiry limit', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
@@ -154,7 +158,7 @@ for (const [name, grants] of [['secrets', [notes, secret]], ['decrypt', [notes, 
     await fold.getByLabel('Or type a time').fill('30m');
     await fold.getByRole('button', { name: 'Set' }).click();
     await expect(approve(page)).toBeEnabled();
-    await expect(line(page)).toHaveText('These permissions expire in 30 minutes');
+    await expect(line(page)).toHaveText("This app's access to your data lasts 30 minutes.");
     expect(expiries.at(-1)).toBe('1800s');
   });
 }

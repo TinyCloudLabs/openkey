@@ -50,7 +50,7 @@
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, CODE_AND_APPROVAL_EXPIRED_TEXT, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
-  import { MAX_LEASE_MS, MIN_EXPIRY_MS, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, requestedExpiryMs } from '$lib/approval-expiry';
+  import { MAX_LEASE_MS, MIN_EXPIRY_MS, accessLastsLine, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, remainingAccessMs, requestedExpiryMs } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -598,6 +598,8 @@
   const hostNeedsAcknowledgment = $derived(hostCheck?.ok === true && !hostCheck.recognized);
   let hostAcknowledged = $state(false);
   const delegationExpiresAt = $derived(siweExpirationTime(siweMessage) ?? '');
+  // The raw-SIWE fallback signs the message as written, so the access lasts until its own Expiration Time.
+  const fallbackAccessMs = $derived(remainingAccessMs(delegationExpiresAt));
 
   // Device approvals never trust the link: the reason and every binding it
   // carries must come from (or equal) the server's pending request. Key
@@ -2219,6 +2221,9 @@
 
           {#if siweMessage}
             <div class="flex flex-col gap-3">
+              {#if fallbackAccessMs !== null}
+                <p class="text-sm text-surface-700" data-testid="approval-access-line">{accessLastsLine('app', fallbackAccessMs)}</p>
+              {/if}
               <SiweMessage message={siweMessage} theme="light" hidePermissions={permissionOptions.length > 0} />
             </div>
 

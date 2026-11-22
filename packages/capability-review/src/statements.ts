@@ -44,6 +44,7 @@ import { ENCRYPTION_URN_PREFIX, parseEncryptionResource } from "./encryption-res
 import { isAppsKeyResource, parseKeyResource } from "./key-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import { feedGrantStatement } from "./feed-grant.js";
+import { KV_VERBS, SECRETS_KNOWN_VERBS, SQL_DATABASE_VERBS } from "./known-verbs.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
   KV_SECRET_SERVICES_PROOF,
@@ -384,6 +385,58 @@ export function grantReachesSecretDataOrDecryption(
   }
   return false;
 }
+
+/**
+ * True for the one-hour approval tier: a grant that reaches secret data or
+ * decryption AND reaches all of it. The tier is:
+ * - encryption on a whole network URN, on a one-segment prefix (`apps/`,
+ *   `shared/`), or on a deeper prefix outside `apps/<appId>/`;
+ * - KV or secrets-service access to the whole vault (`""`, `vault`,
+ *   `vault/secrets`, `secrets`, with or without a trailing `/`);
+ * - any shape this cannot place: an encryption URN that does not parse, a
+ *   mismatched service, an unknown service on the secrets space, or a KV,
+ *   SQL or secrets-service ability outside the service's known verbs, even
+ *   on one named secret.
+ * One named secret, a secret sub-prefix, SQL on the secrets catalog, an exact
+ * encryption key and a prefix inside `apps/<appId>/` return false, so the
+ * approval starts at the length the app asked for.
+ */
+export function grantIsBroadOnce(grant: CapabilityGrant): boolean {
+  if (!grantReachesSecretDataOrDecryption(grant)) return false;
+  if (grant.serviceMismatch === true) return true;
+  if (ENCRYPTION_SERVICES.has(grant.service)) {
+    const view = canonicalEncryptionUrn(grant);
+    if (view.kind !== "urn") return true;
+    const parsed = view.parsed;
+    if (parsed.kind === "network") return true;
+    if (parsed.kind === "key") return false;
+    // Only `apps/<appId>/…` provably stays inside one app's keys.
+    const segments = parsed.keyPath.slice(0, -1).split("/");
+    return segments.length < 2 || segments[0] !== "apps";
+  }
+  const known = SQL_SERVICES.has(grant.service)
+    ? SQL_DATABASE_VERBS
+    : KV_SERVICES.has(grant.service)
+      ? KV_VERBS
+      : SECRETS_SERVICES.has(grant.service)
+        ? SECRETS_KNOWN_VERBS
+        : null;
+  if (known === null) return true;
+  if (grant.actions.some((action) => !known.has(verbOf(action.ability)))) return true;
+  return !SQL_SERVICES.has(grant.service) && WHOLE_VAULT_PATHS.has(grant.path);
+}
+
+// KV paths that cover every secret: the whole space, the vault and the
+// secrets directory, with or without the trailing `/`.
+const WHOLE_VAULT_PATHS = new Set([
+  "",
+  "vault",
+  "vault/",
+  "vault/secrets",
+  "vault/secrets/",
+  "secrets",
+  "secrets/",
+]);
 
 const KV_SERVICES = new Set(["tinycloud.kv", "kv"]);
 const SQL_SERVICES = new Set(["tinycloud.sql", "sql"]);

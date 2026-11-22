@@ -122,7 +122,7 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
   for (const code of ['context-expired', 'context-not-found']) {
     test(`${keyType} ${code} refresh keeps the selection and completes approval`, async ({ page }) => {
       const flow = await open(page, keyType, 'success', code);
-      await expect(page.locator('.expiry-line')).toHaveText(/These permissions expire in 7 days/);
+      await expect(page.locator('.expiry-line')).toHaveText(/This app's access to your data lasts 7 days/);
       await page.getByRole('button', { name: 'Approve', exact: true }).click();
       await expect(page.getByRole('heading', { name: /Authenticated|Approved/ })).toBeVisible();
       expect(flow.counts()).toEqual({ prepares: 3, approvals: 2 });
@@ -194,7 +194,7 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
 }
 test('an unsuggested one-hour request displays and signs its requested lifetime', async ({ page }) => {
   const flow = await open(page, 'MANAGED', 'success', 'context-expired', { grantLifetimeSeconds: 3600 });
-  await expect(page.locator('.expiry-line')).toHaveText(/These permissions expire in 1 hour/);
+  await expect(page.locator('.expiry-line')).toHaveText(/This app's access to your data lasts 1 hour/);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   await expect(page.getByRole('heading', { name: /Authenticated|Approved/ })).toBeVisible();
   const prepares = flow.calls.filter(call => call.path === '/api/delegate/prepare');
