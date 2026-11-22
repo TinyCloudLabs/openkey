@@ -3,6 +3,7 @@
 // when they are requested. Every API call is answered by `page.route`.
 
 import { expect, test, type Page, type Route } from '@playwright/test';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const sessionBody = {
   session: { id: 'session-1', userId: 'user-1', expiresAt: new Date(Date.now() + 3_600_000).toISOString() },
@@ -19,6 +20,7 @@ async function mockApi(page: Page) {
     if (path.endsWith('/oauth2/public-client')) return json(route, { client_name: 'Sample App' });
     return json(route, {});
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 }
 
 /** `signed` params come before `sig`, as the authorize endpoint signs them; `unsigned` follow it. */

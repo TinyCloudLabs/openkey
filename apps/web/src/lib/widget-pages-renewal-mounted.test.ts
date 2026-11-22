@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Window } from 'happy-dom';
 import { compile } from 'svelte/compiler';
+import { termsAcceptedStubs } from './terms-accepted-stubs';
 
 const win = new Window({ url: 'http://openkey.test/' });
 (win as unknown as { postMessage: () => void }).postMessage = () => {};
@@ -154,6 +155,7 @@ for (const page of PAGES) {
     ...baseStubs(page.url),
     [page.adapter]: `export { default } from '${adapterUrl}';`,
     '$lib/components/auth/embedded-sign-in.svelte': `export { default } from '${emptyUrl}';`,
+    ...termsAcceptedStubs(emptyUrl),
   };
   Pages[page.name] = (await import(compileComponent(page.file, page.name, stubs))).default;
 }

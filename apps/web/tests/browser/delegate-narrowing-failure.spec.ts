@@ -7,6 +7,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0x1111111111111111111111111111111111111111';
 const space = `tinycloud:pkh:eip155:1:${address}:secrets`;
@@ -101,6 +102,7 @@ async function mockApi(page: Page, calls: { prepares: unknown[]; approvals: unkn
     }
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 }
 
 async function openDelegate(page: Page, permissions: unknown[]) {
