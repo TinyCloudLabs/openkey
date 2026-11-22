@@ -34,7 +34,7 @@ import { createServer } from "node:http";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode } from "./qa-mail.mjs";
+import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode, waitForMail } from "./qa-mail.mjs";
 import { judgeSignFace, scrub } from "./judge.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -103,7 +103,11 @@ async function until(what, probe, timeout = 30_000, poll = 250) {
 async function screen(page, what, screens, timeout = 45_000, frame = page) {
   try {
     return await until(what, async () => {
-      for (const [name, locator] of screens) if (await locator.first().isVisible().catch(() => false)) return name;
+      // A screen is a locator, or a probe for what no locator shows (e.g. the frame navigated to the sign page).
+      for (const [name, locator] of screens) {
+        const shown = await Promise.resolve().then(() => (typeof locator === "function" ? locator() : locator.first().isVisible())).catch(() => false);
+        if (shown) return name;
+      }
       return undefined;
     }, timeout, 300);
   } catch (error) {
@@ -312,6 +316,13 @@ async function approveUntilSignedIn(page, context, label, { passkeyFrames = fals
 
 const usedMail = new Set();
 const code = () => openKeyCode(inbox, { used: usedMail, timeout: 150_000 });
+// Step-up codes (add a passkey, delete the account) come in another template: "Use this code to …:" then the code
+// (apps/api/src/services/email-otp-step-up.ts EMAILS).
+const stepUpCodeIn = (text) => {
+  const codes = new Set([...text.matchAll(/Use this code to [^0-9]{0,160}?(\d{6})(?!\d)/gi)].map((match) => match[1]));
+  return codes.size === 1 ? [...codes][0] : undefined;
+};
+const stepUpCode = (subject) => waitForMail(inbox, { subject, extract: stepUpCodeIn, used: usedMail, timeout: 150_000, failure: "no OpenKey step-up code arrived in the test inbox" });
 
 /** Email sign-in on https://openkey.so/auth/login in its own window; returns the screen it lands on. */
 async function ownWindowEmailSignIn(page, redirect) {
@@ -336,7 +347,7 @@ async function ownWindowEmailSignIn(page, redirect) {
 async function stepUpByEmail(page) {
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "Email me a code", exact: true }).click({ timeout: 10_000 });
-  await dialog.locator("#passkey-step-up-code").fill(await code());
+  await dialog.locator("#passkey-step-up-code").fill(await stepUpCode(/add a passkey to your OpenKey account/));
   await dialog.getByRole("button", { name: "Verify code", exact: true }).click({ timeout: 10_000 });
 }
 
@@ -414,7 +425,7 @@ async function deleteAccount(browser) {
       await page.getByRole("button", { name: "Verify with passkey and delete", exact: true }).click({ timeout: 10_000 });
     } else {
       await page.getByRole("button", { name: "Send code", exact: true }).click({ timeout: 10_000 });
-      await page.locator("#delete-code").fill(await code());
+      await page.locator("#delete-code").fill(await stepUpCode(/delete your OpenKey account/));
       await page.getByRole("button", { name: "Verify and delete account", exact: true }).click({ timeout: 10_000 });
     }
     await screen(page, "cleanup-done", [["done", page.getByRole("heading", { name: "Your account was deleted", exact: true })]], 45_000);
@@ -494,7 +505,7 @@ try {
     await button(connect, "Verify").first().click({ timeout: 10_000 });
     const landed = await screen(page, "connect-after-code", [
       ["new-account", connect.getByRole("button", { name: "Create a new account", exact: true })],
-      ["sign", page.locator('iframe[src^="https://openkey.so/widget/embed/sign"]')],
+      ["sign", () => Boolean(frameAt(page, "/widget/embed/sign"))],
     ], 45_000, connect);
     if (landed !== "new-account") fail("fresh_address_was_not_asked_to_create_an_account");
     await connect.getByRole("button", { name: "Create a new account", exact: true }).click({ timeout: 10_000 });
@@ -503,7 +514,7 @@ try {
     // A new account that owes the Terms meets the framed notice (#685) and agrees in a window of its own.
     const next = await screen(page, "connect-after-create", [
       ["terms-notice", connect.getByRole("heading", { name: EXPECTED.terms.framedNoticeHeading, exact: true })],
-      ["sign", page.locator('iframe[src^="https://openkey.so/widget/embed/sign"]')],
+      ["sign", () => Boolean(frameAt(page, "/widget/embed/sign"))],
     ], 60_000, connect);
     if (next === "terms-notice") {
       report.terms.framedNotice = true;
@@ -655,14 +666,19 @@ try {
     stopped = null; // cleanup runs after a stop; its own watcher records any refusal
     try {
       const result = await deleteAccount(browser);
-      report.account.deleted = result.deleted;
-      leg("cleanup", result.deleted ? "PASS" : "FAIL", result);
+      // "no_account": the run stopped before OpenKey created the account; nothing to delete, nothing leaked.
+      report.account.deleted = result.deleted || result.reason === "no_account";
+      leg("cleanup", report.account.deleted ? "PASS" : "FAIL", result);
     } catch (error) {
       report.account.deleted = false;
       leg("cleanup", "FAIL", { verdict: error instanceof GateFailure ? error.verdict : scrub(String(error?.message ?? error)).slice(0, 200) });
     }
-    // A leaked QA account fails the run, whatever the legs said.
-    if (report.account.deleted !== true) report.result = "failed";
+    // A leaked QA account fails the run, whatever the legs said. Its 12-hex run id (not the address, which
+    // needs the secret's tag) goes in the summary so leaks can be counted (Bobbie, #690 review).
+    if (report.account.deleted !== true) {
+      report.result = "failed";
+      report.account.leakedRunId = /^tcqa\+[a-z0-9-]+-([0-9a-f]{12})-[0-9a-f]{8}@/.exec(inbox?.address ?? "")?.[1] ?? "unknown";
+    }
   }
   if (inbox) report.inboxDeleted = await deleteInboxes().then(({ deleted, total }) => deleted === total).catch(() => false);
   credentials = [];
@@ -686,6 +702,6 @@ function summary() {
   lines.push("", `Terms owed by the new account: ${report.terms.owed === null ? "not decided" : report.terms.owed} (${report.terms.source ?? "n/a"})`,
     `OpenKey frame paths: ${[...new Set(report.frames.map((f) => f.path))].join(", ") || "none"}`,
     `Refused frames: ${report.refusedFrames.length}; approvals: ${report.approvals.length}; passkey assertions: ${report.passkey.asserted}`,
-    `QA account deleted: ${report.account.deleted ?? "n/a"}; duration ${Math.round(since() / 1000)} s`, "");
+    `QA account deleted: ${report.account.deleted ?? "n/a"}${report.account.leakedRunId ? ` (LEAKED: run id ${report.account.leakedRunId})` : ""}; duration ${Math.round(since() / 1000)} s`, "");
   return lines.join("\n");
 }
