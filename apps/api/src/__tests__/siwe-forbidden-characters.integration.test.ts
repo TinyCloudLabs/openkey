@@ -99,6 +99,21 @@ if (!process.env.TC_SIWE_FORBIDDEN_CHILD) {
       await expectRefused(await post('/api/delegate', { keyId: key.id, jwk, host, prepared: { siwe: attack } }), `${name} managed POST`);
     }
 
+    // N1: the node may accept these, but OpenKey's reader refuses them, so it
+    // would show no expiry; /sign refuses them rather than sign uncapped.
+    const standard = siwe('');
+    for (const [name, unreadable] of [
+      ['nonce with hyphens', standard.replace('Nonce: abcdef12345678', 'Nonce: abcd-efgh-1234')],
+      ['lower-case t and z', standard.replace(`Expiration Time: ${real}`, `Expiration Time: ${real.replace('T', 't').replace('Z', 'z')}`)],
+      ['space separator', standard.replace(`Expiration Time: ${real}`, `Expiration Time: ${real.replace('T', ' ')}`)],
+      ['Request ID with a space', `${standard}\nRequest ID: a b`],
+    ] as const) {
+      expect(unreadable, name).not.toBe(standard);
+      await expectRefused(await post(`/api/keys/${key.id}/sign`, { message: unreadable, requestOrigin: OPENKEY }), `${name} /sign text`);
+      await expectRefused(await post(`/api/keys/${key.id}/sign`, { message: hex(unreadable), format: 'raw', requestOrigin: OPENKEY }), `${name} /sign raw hex`);
+      await expectRefused(await post(`/api/keys/${key.id}/sign`, { message: hex(unreadable), requestOrigin: OPENKEY }), `${name} /sign personal hex`);
+    }
+
     // The same text with no line separator is an ordinary statement: it signs.
     const normal = await post(`/api/keys/${key.id}/sign`, { message: siwe(`Expiration Time: ${fake} `), requestOrigin: OPENKEY });
     const normalText = await normal.text();

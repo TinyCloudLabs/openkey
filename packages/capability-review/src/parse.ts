@@ -16,6 +16,7 @@ import { classifyRecapEntry, classifySeverityFromActions } from "./classify.js";
 import { isKeyDeleteAbility } from "./key-resource.js";
 import { parseEncryptionResource } from "./encryption-resource.js";
 import { parseSiweFields, siweExpirationTime } from "./siwe-fields.js";
+import { PROTOCOL_HINT } from "./copy.js";
 import type {
   CapabilityAction,
   CapabilityGrant,
@@ -518,12 +519,11 @@ function decodeRecapUri(
  * Extract ReCap resource lines and split them into (service, space, path,
  * actions) tuples. Empty on non-ReCap SIWE.
  *
- * ReCap resources take one of two forms:
- *   - `urn:recap:<b64>` (canonical wire form): base64url-encoded JSON with an
- *     `att` map keyed by resource URI. This is what a signed TinyCloud SIWE
- *     actually carries; see decodeRecapUri.
- *   - `<service>/<verb>:<space>[/<path>]` (legacy expanded form): kept for
- *     backward compatibility with older tinycloud-node revisions.
+ * The canonical wire form is `urn:recap:<b64>`: base64url-encoded JSON with an
+ * `att` map keyed by resource URI (see decodeRecapUri). The node accepts only
+ * URI resources, and parseCapabilityReview refuses any SIWE the node's grammar
+ * refuses before this runs, so the old expanded `<service>/<verb>:<space>`
+ * lines (not URIs) never reach it.
  *
  * Emits warnings for malformed input instead of throwing.
  */
@@ -545,79 +545,12 @@ function parseRecapResources(message: string): {
       continue;
     }
 
-    // Legacy expanded form: <service>/<verb>:<space>[/<path>]
-    const firstColon = raw.indexOf(":");
-    if (firstColon < 0) {
-      warnings.push({
-        code: "malformed-space",
-        message: `Resource "${raw}" is missing a service:space separator.`,
-      });
-      continue;
-    }
-    const head = raw.slice(0, firstColon);
-    const rest = raw.slice(firstColon + 1);
-    const slash = head.indexOf("/");
-    if (slash < 0) {
-      warnings.push({
-        code: "malformed-space",
-        message: `Resource "${raw}" is missing a service/action separator.`,
-      });
-      continue;
-    }
-    const service = head.slice(0, slash);
-    const action = head.slice(slash + 1);
-    // The space URI is `tinycloud:...:<name>`; the path is anything after
-    // the space name. We split on the LAST `:` after `tinycloud:` to keep
-    // colons inside path elements.
-    let space = rest;
-    let path = "";
-    if (rest.startsWith("tinycloud:")) {
-      // Walk forward `tinycloud:pkh:eip155:<chain>:<addr>:<name>[/<path>]`
-      // Path is delimited by the FIRST `/` after the space name.
-      const slashIdx = rest.indexOf("/");
-      if (slashIdx >= 0) {
-        space = rest.slice(0, slashIdx);
-        path = rest.slice(slashIdx + 1);
-      } else {
-        space = rest;
-        path = "";
-      }
-    }
-    // Legacy expanded form (`<service>/<verb>:<space>[/<path>]`) has no
-    // separate resource-side short-service segment on the wire; the
-    // service is fully implied by the ability head. resourceService is
-    // therefore null (no wire signal to compare against) and
-    // serviceMismatch is false. Include the null resourceService in the
-    // grouping key to keep this branch symmetrical with decodeRecapUri.
-    const key = `${service}\x00${space}\x00${path}\x00`;
-    let entry = grouped.get(key);
-    if (!entry) {
-      entry = {
-        service,
-        space,
-        path,
-        actions: [],
-        caveatsByAbility: {},
-        resourceService: null,
-        serviceMismatch: false,
-      };
-      grouped.set(key, entry);
-    }
-    // Dedupe actions but flag the duplicate so callers can note the redundancy.
-    const qualified = `${service}/${action}`;
-    if (entry.actions.includes(qualified)) {
-      warnings.push({
-        code: "duplicate-action",
-        message: `Action ${qualified} appears multiple times for ${space}/${path}.`,
-      });
-    } else {
-      entry.actions.push(qualified);
-    }
-    // Legacy expanded form cannot encode caveats — record empty list so
-    // downstream comparisons treat every ability uniformly.
-    if (entry.caveatsByAbility[qualified] === undefined) {
-      entry.caveatsByAbility[qualified] = [];
-    }
+    // Any other resource is a URI, whose scheme cannot hold the
+    // `<service>/<verb>` a TinyCloud grant needs.
+    warnings.push({
+      code: "malformed-space",
+      message: `Resource "${raw}" is missing a service/action separator.`,
+    });
   }
 
   // Deterministic order: sort grants by (service, space, path) and actions
@@ -776,6 +709,26 @@ export function parseCapabilityReview(
     return {
       version: 1,
       protocol: "legacy-message",
+      rawMessage: ctx.message,
+      requester: ctx.requester,
+      reason: ctx.reason,
+      signer: ctx.signer,
+      expiry: null,
+      immutable: null,
+      metadataTrust: ctx.metadataTrust,
+      permissions: [],
+      parseWarnings: warnings,
+    };
+  }
+
+  // 1b. TC-3826: a SIWE the node's grammar refuses has no fields or expiry
+  //     OpenKey can show truthfully, so it is never signable: the same
+  //     non-signable state as a malformed ReCap.
+  if (!parseSiweFields(ctx.message).ok) {
+    warnings.push({ code: "unparseable-siwe", message: PROTOCOL_HINT["malformed-recap"] });
+    return {
+      version: 1,
+      protocol: "malformed-recap",
       rawMessage: ctx.message,
       requester: ctx.requester,
       reason: ctx.reason,

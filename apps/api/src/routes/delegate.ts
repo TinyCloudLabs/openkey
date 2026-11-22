@@ -1546,7 +1546,7 @@ delegateRouter.post('/', async (c) => {
     return c.json({ error: 'keyId, jwk, and host are required' }, 400);
   }
   if (typeof body.prepared?.siwe === 'string') {
-    const invalidEchoedSiwe = invalidSiweMessage(body.prepared.siwe);
+    const invalidEchoedSiwe = invalidSiweMessage(body.prepared.siwe, 'characters');
     if (invalidEchoedSiwe) return c.json(invalidEchoedSiwe, 400);
   }
   if (body.approvalRequestId !== undefined && (body.protocolVersion !== 1 || !body.authorizationContextToken)) {
@@ -1952,7 +1952,7 @@ delegateRouter.post('/', async (c) => {
   } catch (e) {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
-  const invalidPreparedSiwe = invalidSiweMessage(preparedResult.prepared.siwe);
+  const invalidPreparedSiwe = invalidSiweMessage(preparedResult.prepared.siwe, 'characters');
   if (invalidPreparedSiwe) return c.json(invalidPreparedSiwe, 400);
 
   const expirationTime = siweExpirationTime(preparedResult.prepared.siwe);
@@ -2402,7 +2402,7 @@ delegateRouter.post('/complete', async (c) => {
   if (typeof body.prepared.siwe !== 'string') {
     return c.json({ error: 'prepared.siwe must be a string' }, 400);
   }
-  const invalidCompleteSiwe = invalidSiweMessage(body.prepared.siwe);
+  const invalidCompleteSiwe = invalidSiweMessage(body.prepared.siwe, 'characters');
   if (invalidCompleteSiwe) return c.json(invalidCompleteSiwe, 400);
   // TC-547: the signer is the address in the signed SIWE. The prepared
   // object `/prepare` returns (and the web echoes back) carries no
@@ -2825,7 +2825,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   if (typeof body.siwe !== 'string') {
     return c.json({ error: 'siwe must be a string', code: 'invalid_siwe' }, 400);
   }
-  const invalidRequestSiwe = invalidSiweMessage(body.siwe);
+  const invalidRequestSiwe = invalidSiweMessage(body.siwe, 'characters');
   if (invalidRequestSiwe) return c.json(invalidRequestSiwe, 400);
   const ticket = handoffTicket(body);
   // TC-1486: refuse a SIWE that names a different site than the verified
@@ -3732,7 +3732,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (signEncryptionRefusal) {
     return c.json(appKeyRefusalBody(signEncryptionRefusal, 'browser'), appKeyRefusalStatus(signEncryptionRefusal));
   }
-  const invalidSignedSiwe = invalidSiweMessage(signedMessage);
+  const invalidSignedSiwe = invalidSiweMessage(signedMessage, 'characters');
   if (invalidSignedSiwe) return c.json(invalidSignedSiwe, 400);
   // The preview sealed which extra permissions the owner explicitly allowed (TC-2927). The bytes are the previewed
   // ones, so this holds already; it is checked again here so no signature covers an elevated permission the owner

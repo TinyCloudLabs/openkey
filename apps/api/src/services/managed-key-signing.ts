@@ -17,7 +17,7 @@ export async function signManagedKey(
   message: string,
 ): Promise<Hex> {
   // TC-3826 backstop: every route refuses such a SIWE with a 400 first.
-  if (invalidSiweMessage(message)) throw new Error('refusing to sign a SIWE with a forbidden character');
+  if (invalidSiweMessage(message, 'characters')) throw new Error('refusing to sign a SIWE with a forbidden character');
   const privateKey = await unsealManagedKey(key, sealedBlob);
   const { createWalletFromPrivateKey } = await import('@openkey/tee');
   return createWalletFromPrivateKey(privateKey).signMessage({ message });
