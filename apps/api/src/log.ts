@@ -207,15 +207,19 @@ export type SiweSignRoute = '/api/keys/:keyId/sign' | '/api/delegate/sign';
 
 /**
  * TC-3844: one line per sign-in message a sign route signed: the route, whether it had an `Expiration Time`
- * (`siwe_expiry`), whether it carries a ReCap, and the requesting app's origin (scheme, host and port only; `other`
- * when it is not an http(s) origin). Never the message, address, nonce, key or user.
+ * (`siwe_expiry`), whether it carries a ReCap, and `claimed_origin` (scheme, host and port only; `none` when absent,
+ * `other` when it is not an http(s) origin). Never the message, address, nonce, key or user.
+ *
+ * `claimed_origin` is what the client says, not a verified origin: `body.requestOrigin` on `/api/keys/:keyId/sign`
+ * (the widget's claim) and the `Origin` header on `/api/delegate/sign` (any non-browser caller can set it). It is for
+ * counting only: never use it for a security decision or an alert.
  */
-export function logSiweSigned(route: SiweSignRoute, facts: { expiry: boolean; recap: boolean }, origin: string | null | undefined): void {
+export function logSiweSigned(route: SiweSignRoute, facts: { expiry: boolean; recap: boolean }, claimedOrigin: string | null | undefined): void {
   emit('info', 'siwe_signed', {
     route,
     siwe_expiry: facts.expiry ? 'present' : 'absent',
     recap: facts.recap,
-    origin: httpOrigin(origin),
+    claimed_origin: httpOrigin(claimedOrigin),
   });
 }
 

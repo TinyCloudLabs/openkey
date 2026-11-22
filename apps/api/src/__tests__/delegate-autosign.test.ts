@@ -1103,7 +1103,7 @@ describe('Auto-Sign and a sign-in message with no Expiration Time (TC-3844)', ()
       route: '/api/delegate/sign',
       siwe_expiry: 'present',
       recap: true,
-      origin: 'http://localhost:5173',
+      claimed_origin: 'http://localhost:5173',
     });
     const line = JSON.stringify(events[0]);
     for (const secret of [address, address.toLowerCase(), user.id, keyRecord.id, message.match(/^Nonce: (.+)$/m)![1]!]) {

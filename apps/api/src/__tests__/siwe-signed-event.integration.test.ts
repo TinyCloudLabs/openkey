@@ -102,7 +102,7 @@ if (!process.env.TC_SIWE_SIGNED_EVENT_CHILD) {
       return fields;
     };
     const expected = (expiry: 'present' | 'absent', withRecap: boolean) => ({
-      level: 'info', event: 'siwe_signed', route: '/api/keys/:keyId/sign', siwe_expiry: expiry, recap: withRecap, origin: OPENKEY,
+      level: 'info', event: 'siwe_signed', route: '/api/keys/:keyId/sign', siwe_expiry: expiry, recap: withRecap, claimed_origin: OPENKEY,
     });
 
     try {
