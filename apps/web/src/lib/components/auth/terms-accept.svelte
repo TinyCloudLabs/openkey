@@ -70,6 +70,10 @@
     };
   });
   const agreeArmed = $derived(surface !== 'embed' || (frameSettled && layoutReady));
+  // `disabled` alone does not hold a click a script dispatches on the button: the handler checks the gate itself.
+  function agree() {
+    if (busy === null && agreeArmed) onaccept();
+  }
 
   const title = $derived(
     kind === 'updated'
@@ -183,7 +187,7 @@
       <div class="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">{error}</div>
     {/if}
     <Button
-      onclick={onaccept}
+      onclick={agree}
       disabled={busy !== null || !agreeArmed}
       aria-busy={busy === 'accept'}
       class="w-full rounded-xl"
