@@ -867,14 +867,14 @@ sign-in made **for this sign request** counts as that request's approval passkey
   loads. The id is never read from the app's request or its `postMessage`. The `w.` prefix keeps the web ids apart
   from native request ids, which are checked against a resolved request row; a web id has no server row.
 - The page names the id in `x-openkey-passkey-flow` on its passkey sign-in: the iframe's own
-  `/api/passkey/verify-authentication` call, the cookie sign-in inside the page, and the pop-up's login page. The
+  `/api/passkey/verify-authentication` call, the cookie sign-in inside the page and the pop-up's login page. The
   pop-up leaves for `/auth/login` and comes back as a new page, so it keeps its id in the tab's `sessionStorage`
   (`openkey_sign_flow`) when the user selects Sign In. The login page sends it only when the redirect target is
   `/widget/sign` and the stored value has the web shape; the pop-up removes it when it loads, so one visit to the
   login page serves one sign page.
 - OpenKey records the same cover as for a native request (`openkey-flow-passkey:<session id>:<flow id>`, five
   minutes, that session and that flow only) when the assertion carries the user-verified flag, the passkey counts
-  for step-up, and the sign-in issued the session. A web id is recorded only in the `w.` shape; a native-shaped id
+  for step-up and the sign-in issued the session. A web id is recorded only in the `w.` shape; a native-shaped id
   sent by a web page records nothing, and an id sent in a body, a query string or `postMessage` is never read.
 - The sign pages send the id on the calls that offer or check the approval passkey:
   `POST /api/delegate/authorize-sign-preview` (offer), `POST /api/delegate/authorize-sign` (check),
