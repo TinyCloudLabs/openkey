@@ -482,12 +482,15 @@ for (const pageName of PAGE_NAMES) {
       }
       const [without, withWords] = runs;
 
-      // The string the signer got is the request's message, byte for byte, and the whole call is the same.
+      // The string the signer got is the request's message, byte for byte, and the whole call is the same apart from
+      // the page's own flow id, which is the last argument and differs for each page.
       expect(withWords!.signCalls[0]![1]).toBe(withWords!.message);
       expect(without!.signCalls[0]![1]).toBe(without!.message);
       expect(withWords!.message).toBe(without!.message);
-      expect(withWords!.signCalls).toEqual(without!.signCalls);
-      expect(withWords!.offerCalls).toEqual(without!.offerCalls);
+      for (const call of [...withWords!.signCalls, ...without!.signCalls]) expect(call[call.length - 1]).toMatch(/^w\.[A-Za-z0-9_-]{32}$/);
+      expect(withWords!.signCalls.map((call) => call.slice(0, -1))).toEqual(without!.signCalls.map((call) => call.slice(0, -1)));
+      for (const call of [...withWords!.offerCalls, ...without!.offerCalls]) expect(call[call.length - 1]).toMatch(/^w\.[A-Za-z0-9_-]{32}$/);
+      expect(withWords!.offerCalls.map((call) => call.slice(0, -1))).toEqual(without!.offerCalls.map((call) => call.slice(0, -1)));
       expect(withWords!.sent).toEqual(without!.sent);
 
       // None of the app's words, nor the icon, is in anything the page sent to the signer, the API or the app.

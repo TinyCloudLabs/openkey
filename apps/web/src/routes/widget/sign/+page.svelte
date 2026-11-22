@@ -15,6 +15,12 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
+  import {
+    carryPopupSignFlow, newWebSignFlowId, releaseWebSignFlow, takePopupSignFlow, webSignFlowHeaders,
+  } from '$lib/web-sign-flow';
+  import {
+    coverNotHonoured, createApproveVisibility, offersCover, reviewSnapshot, sameReview, type ReviewSnapshot,
+  } from '$lib/approve-visibility';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import { claimedPresentation, claimedPresentationView } from '$lib/claimed-presentation';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
@@ -198,6 +204,29 @@
   // path (Sol MAJOR-4). Versioned callers (protocolVersion >= 1) MUST use
   // a real origin — '*' is refused for editing/rewriting flows.
   const origin = $page.url.searchParams.get('origin') || '*';
+  // This page's own flow id for one sign request, drawn here and never taken from the app's request. The pop-up
+  // returns from the login page as a new page load, so the id the user left with is the one carried in this tab.
+  const webFlowId = takePopupSignFlow() ?? newWebSignFlowId();
+  // The flow id is named on offers and approvals only while the cover can be honoured here: not in a frame without
+  // observer v2, and not after a tap reached a covered offer before it counted.
+  const approveVisibility = createApproveVisibility();
+  let coverWithdrawn = $state(false);
+  // Set while the offer is fetched again without the flow id, so a second tap cannot start a second approval.
+  let coverRefetch = $state<'preview' | 'exact' | null>(null);
+  const coverFlowId = $derived(approveVisibility.coverUsable && !coverWithdrawn ? webFlowId : undefined);
+  const coverHeaders = () => (coverFlowId ? webSignFlowHeaders(coverFlowId) : {});
+  // The request the owner saw when the cover was withdrawn: the continued tap signs only that.
+  let coverShown: ReviewSnapshot | null = null;
+  function withdrawCover(approved: HeldPreview | null) {
+    coverShown = approved
+      ? reviewSnapshot(approved.input, approved.signedMessage, renewalLeaseMs)
+      : reviewSnapshot(exactBytePasskeyInput, '', renewalLeaseMs);
+    coverWithdrawn = true;
+    error = '';
+    coverRefetch = approved ? 'preview' : 'exact';
+    if (approved) invalidatePreviewForSelectionEdit();
+    else exactBytePasskey = null;
+  }
   const requester = originAuthority(origin);
   const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
@@ -791,6 +820,8 @@
   const exactByteGate = $derived(approvalPasskeyGate({
     input: exactBytePasskeyInput, held: exactBytePasskey, fetch: exactBytePasskeyFetch,
   }));
+  // Approve is watched for visibility only while the offer it answers is a flow cover.
+  const coverOffered = $derived(offersCover(heldPreview?.passkey) || offersCover(exactBytePasskey?.need));
   $effect(() => {
     const input = exactBytePasskeyInput;
     void exactBytePasskeyRevision;
@@ -801,7 +832,7 @@
     const [offerKeyId, offerMessage, offerOrigin] = JSON.parse(input) as [string, string, string | null];
     let current = true;
     exactBytePasskeyFetch = 'pending';
-    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined).then(
+    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined, coverFlowId).then(
       (need) => {
         if (!current) return;
         exactBytePasskey = { input, need };
@@ -976,7 +1007,7 @@
         {
           method: 'POST',
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...coverHeaders() },
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
@@ -1035,7 +1066,7 @@
   async function approveAndSign() {
     if (refused) return;
     if (!key || !message) return;
-    if (signing || previewStopped) return;
+    if (signing || previewStopped || coverRefetch !== null) return;
     if (siweRefusal) {
       error = siweRefusal.message;
       return;
@@ -1060,6 +1091,12 @@
         if (exactByteGate.action === 'retry') exactBytePasskeyRevision++;
         return;
       }
+    }
+    // A covered offer counts only while Approve has been in plain view. Before that, this tap is answered with the
+    // passkey: the page stops naming the flow, fetches the offer again and goes on once it lands.
+    if (coverNotHonoured(passkeyNeed, approveVisibility)) {
+      withdrawCover(approved);
+      return;
     }
     signing = true;
     error = '';
@@ -1099,7 +1136,7 @@
           {
             method: 'POST',
             credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...coverHeaders() },
             body: JSON.stringify({
               authorizationContextToken,
               // Sol CRITICAL-1: the sealed preview-approval token is
@@ -1144,7 +1181,7 @@
       // capabilities in the response are the caller's original set (no
       // narrowing happened server-side).
       const result = await api.signMessage(
-        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion,
+        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion, coverFlowId,
       );
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
@@ -1194,6 +1231,23 @@
     heldPreview = null;
     previewRevision++;
   }
+
+  // The fresh offer a withdrawn cover waits for. When it lands for exactly the request the owner saw at the tap, that
+  // tap goes on to the passkey prompt. A request that differs stays on screen for a new tap, and a failed fetch shows
+  // the failure so that the next tap tries again.
+  $effect(() => {
+    const waiting = coverRefetch;
+    if (waiting === null) return;
+    const preview = waiting === 'preview' ? currentPreview() : null;
+    const landed = waiting === 'preview' ? preview !== null : exactByteGate.action === 'send';
+    const failed = waiting === 'preview' ? !previewing && (error !== '' || refused) : exactBytePasskeyFetch === 'failed';
+    if (!landed && !failed) return;
+    const fresh = preview
+      ? reviewSnapshot(preview.input, preview.signedMessage, renewalLeaseMs)
+      : reviewSnapshot(exactBytePasskey?.input, '', renewalLeaseMs);
+    coverRefetch = null;
+    if (landed && sameReview(coverShown, fresh)) untrack(() => { void approveAndSign(); });
+  });
 
   function retryPreview() {
     if (!canUseAuthorizeSignFn() || signing || previewing || heldPreview || previewStopped || !error) return;
@@ -1254,11 +1308,18 @@
     return true;
   }
 
+  // A request that ends without an approval ends the passkey cover its own sign-in recorded.
+  function releaseFlow() {
+    if ($session.data) void releaseWebSignFlow(webFlowId);
+  }
+
   function closeRefused() {
+    releaseFlow();
     sendClose();
   }
 
   function reconnect() {
+    releaseFlow();
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
@@ -1271,6 +1332,7 @@
   }
 
   function cancel() {
+    releaseFlow();
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
@@ -1386,7 +1448,10 @@
   {:else if !$session.data}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p class="mb-4">Sign in to sign messages</p>
-      <Button href={withPasskeysFlag(`/auth/login?redirect=/widget/sign?origin=${encodeURIComponent(origin)}`, passkeysSupported)}>Sign In</Button>
+      <Button
+        href={withPasskeysFlag(`/auth/login?redirect=/widget/sign?origin=${encodeURIComponent(origin)}`, passkeysSupported)}
+        onclick={() => carryPopupSignFlow(webFlowId)}
+      >Sign In</Button>
     </div>
   {:else if loading}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
@@ -1435,6 +1500,7 @@
       initialSelection={reviewSelection}
       transport={{
         approving: signing,
+        approveVisibility: coverOffered ? approveVisibility : undefined,
         passkeyPending: exactByteGate.action === 'wait',
         host: messageHost,
         error: error || offerFailure,

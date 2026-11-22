@@ -84,6 +84,7 @@
   import ClaimedPresentation from "$lib/components/signing/claimed-presentation.svelte";
   import type { ClaimedPresentationView } from "$lib/claimed-presentation";
   import type { RenewalChoice, ShortenOnlyExpiry } from "$lib/components/signing/signing-adapter-types";
+  import type { ApproveVisibility } from "$lib/approve-visibility";
   import { ONCE_DEFAULT_EXPIRY_MS, onceDefaultExpiryMs, requestedExpiryMs } from "$lib/approval-expiry";
   import { isOnceTier } from "$lib/renewal-default";
 
@@ -160,6 +161,8 @@
      * narrowed (exact bytes): approve or cancel it whole. `onDecide` gets the action ids the owner allowed.
      */
     elevated?: { splittable: boolean; onDecide: (allowed: string[]) => void } | null;
+    /** Reports whether the Approve button is in plain view; see `approve-visibility.ts`. */
+    approveVisibility?: ApproveVisibility | null;
     /** The app's own words about a plain `signMessage()` request (name, who it is for, reason); shown under the requester line. */
     claimed?: ClaimedPresentationView | null;
     onApprove: () => void;
@@ -198,6 +201,7 @@
     onceExpiryDefault = false,
     renewal = null,
     elevated = null,
+    approveVisibility = null,
     claimed = null,
     onApprove,
     onCancel,
@@ -688,6 +692,19 @@
   const approveButtonDisabled = $derived(
     previewPending || onceDefaultPending || layoutBlocked || refused || approveDisabled || Boolean(approveBlockedReason) || approveBlockedByFailure || nodeChecking || declining,
   );
+
+  // A page that offers the one-passkey cover watches its Approve button: the cover counts only while the button is in
+  // plain view, and the 500 ms restarts each time Approve becomes actionable.
+  let approveButton = $state<HTMLButtonElement | null>(null);
+  $effect(() => {
+    const visibility = approveVisibility;
+    if (!visibility) return;
+    visibility.watch(approveButton);
+    return () => visibility.watch(null);
+  });
+  $effect(() => {
+    if (!approveButtonDisabled) approveVisibility?.restart();
+  });
   const approveLabel = $derived(
     isMalformedRecap
       ? "Cannot approve"
@@ -1288,6 +1305,7 @@
     <button
       type="button"
       class="approve"
+      bind:this={approveButton}
       onclick={handleApproveClick}
       disabled={approveButtonDisabled}
       aria-disabled={approveButtonDisabled}

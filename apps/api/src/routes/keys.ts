@@ -26,9 +26,14 @@ import { ELEVATED_NOT_DECIDED_CODE, elevatedNotDecidedBody } from '../services/e
 import { rejectNonBrowserControlRequest, rejectNonOpenKeySignRequest } from '../middleware/browser-control';
 import {
   approvalPasskeyOffer,
+  approvalPasskeyOfferInFlow,
   approvalRequestDigest,
   checkApprovalPasskey,
+  checkApprovalPasskeySpendingFlow,
+  clearFlowPasskey,
+  FLOW_PASSKEY_HEADER,
   messageApprovalSensitivity,
+  webFlowIdFromHeader,
   type ApprovalBinding,
 } from '../services/approval-passkey';
 
@@ -341,9 +346,9 @@ keysRouter.post('/:keyId/sign/passkey', async (c) => {
   const key = await prisma.ethereumKey.findFirst({ where: { id: keyId, userId: user.id, archivedAt: null }, select: { keyType: true, address: true } });
   if (!key) return c.json({ error: 'Key not found' }, 404);
   if (key.keyType === 'EXTERNAL') return c.json({ required: false });
-  return c.json(await approvalPasskeyOffer(
+  return c.json(await approvalPasskeyOfferInFlow(
     prisma, { userId: user.id, sessionId: c.get('session')?.id ?? null }, signPasskeyBinding(keyId, body),
-    messageApprovalSensitivity(body.message, key.address),
+    messageApprovalSensitivity(body.message, key.address), webFlowIdFromHeader(c.req.header(FLOW_PASSKEY_HEADER)),
   ));
 });
 
@@ -419,12 +424,15 @@ keysRouter.post('/:keyId/sign', async (c) => {
     return c.json({ error: 'External keys must be signed client-side' }, 400);
   }
 
-  // TC-3442: the account's passkey setting, before the key is unsealed.
-  const passkeyRefusal = await checkApprovalPasskey(
+  // TC-3442: the account's passkey setting, before the key is unsealed. A passkey sign-in the web sign page was opened
+  // with covers it for five minutes; the cover is spent the moment this approval passes the gate.
+  const webFlow = webFlowIdFromHeader(c.req.header(FLOW_PASSKEY_HEADER));
+  const gate = await checkApprovalPasskeySpendingFlow(
     prisma, { userId: user.id, sessionId: c.get('session')?.id ?? null }, signPasskeyBinding(keyId, body),
-    messageApprovalSensitivity(body.message, key.address), body.passkeyAssertion,
+    messageApprovalSensitivity(body.message, key.address), body.passkeyAssertion, webFlow,
   );
-  if (passkeyRefusal) return c.json(passkeyRefusal, 403);
+  if (gate.refusal) return c.json(gate.refusal, 403);
+  await clearFlowPasskey(prisma, webFlow);
 
   const sealingKey = await deriveKeyForRecord(tee, key);
   const privateKey = await unseal(key.sealedBlob!, sealingKey) as Hex;

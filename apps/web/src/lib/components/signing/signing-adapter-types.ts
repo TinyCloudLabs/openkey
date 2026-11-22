@@ -19,6 +19,7 @@
 // non-authorization concerns; those never enter the adapter and never
 // enter the parity test.
 
+import type { ApproveVisibility } from '$lib/approve-visibility';
 import type { ClaimedPresentationView } from "$lib/claimed-presentation";
 
 /** The renewal checkbox (TC-2933), offered only where the requester signed a renewal request. */
@@ -114,6 +115,8 @@ export interface CliSigningTransport {
 export interface WidgetSigningTransport {
   /** Set once the server has refused this request for good: Approve is off and this is shown in its place. */
   approveBlockedReason?: string | null;
+  /** Reports whether Approve is in plain view, for the one-passkey cover; see `approve-visibility.ts`. */
+  approveVisibility?: ApproveVisibility;
   /**
    * The TinyCloud node the request names (the sign request's `host`), or empty when it names none. The host
    * approval looks the node key up only there, and only if it is a known node (TC-2309).

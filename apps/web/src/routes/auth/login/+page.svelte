@@ -19,6 +19,7 @@
     nativeSocialReturnUrls,
     type NativeSocialProvider,
   } from '$lib/native-mode';
+  import { popupSignFlowForLogin, webSignFlowHeaders } from '$lib/web-sign-flow';
   import {
     accountExistsMessage,
     confirmSocialContinuation,
@@ -501,7 +502,13 @@
 
   // One passkey per interaction: a passkey sign-in opened from a native request names it, so Approve for that
   // request asks for nothing more (TC-3596). The API accepts it only for a resolved request and a verified passkey.
-  const passkeyFlow = native ? { fetchOptions: { headers: { 'x-openkey-passkey-flow': native.requestId } } } : undefined;
+  // A sign-in that returns the user to the web sign pop-up names that pop-up's own flow instead, so its Approve
+  // asks for nothing more. The API accepts it only for a verified passkey that counts for step-up.
+  function passkeyFlow() {
+    if (native) return { fetchOptions: { headers: { 'x-openkey-passkey-flow': native.requestId } } };
+    const webFlow = popupSignFlowForLogin($page.url.searchParams.get('redirect'), $page.url.origin);
+    return webFlow ? { fetchOptions: { headers: webSignFlowHeaders(webFlow) } } : undefined;
+  }
 
   async function signInWithPasskey() {
     // The modal ceremony replaces the autofill request, and starts only once that request has settled:
@@ -510,7 +517,7 @@
     error = '';
     await supersedePasskeyAutofill();
     try {
-      const result = await authClient.signIn.passkey(passkeyFlow);
+      const result = await authClient.signIn.passkey(passkeyFlow());
       if (!result.error) {
         passkeySignedIn = true;
         handlePostSignIn();
@@ -544,7 +551,7 @@
     void autofillRestart;
     const autofill = startPasskeyAutofill({
       ...browserPasskeyAutofill,
-      signIn: () => authClient.signIn.passkey({ autoFill: true, ...passkeyFlow }),
+      signIn: () => authClient.signIn.passkey({ autoFill: true, ...passkeyFlow() }),
       onSignedIn: () => {
         passkeySignedIn = true;
         handlePostSignIn();
