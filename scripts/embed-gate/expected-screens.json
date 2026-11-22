@@ -2,7 +2,7 @@
   "_about": "The embed gate's expected screens. A sign review is approved only on an exact match with one entry of signFaces (judge.mjs). A change to what TinyCloud One asks for, or to OpenKey's review copy, makes the gate fail closed until this file is updated in a reviewed change. Sources: the TinyCloud One sign-in face observed 2026-11-22 (QA fixture p2/x12, renewal and 30-day forms), OpenKey apps/web signing-approval.svelte, #685 framed-terms-notice.svelte.",
   "host": {
     "signInButton": "Sign in",
-    "signedInMarkers": ["Settings"]
+    "signedInMarkers": ["Home", "Chat", "You"]
   },
   "terms": {
     "framedNoticeHeading": "Agree to the Terms to continue",

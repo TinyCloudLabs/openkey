@@ -258,7 +258,8 @@ async function approveUntilSignedIn(page, context, label, { passkeyFrames = fals
   const signedIn = async () => {
     if (await page.getByRole("button", { name: EXPECTED.host.signInButton, exact: true }).count() > 0) return false;
     for (const name of EXPECTED.host.signedInMarkers) {
-      const marker = page.getByRole("link", { name, exact: true }).or(page.getByRole("button", { name, exact: true }));
+      // The signed-in navigation (Home, Chat, You); by role where it has one, else by its text.
+      const marker = page.getByRole("link", { name, exact: true }).or(page.getByRole("button", { name, exact: true })).or(page.getByText(name, { exact: true }));
       if (!(await marker.first().isVisible().catch(() => false))) return false;
     }
     return !frameAt(page, "/widget/embed/sign");
