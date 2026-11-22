@@ -106,7 +106,7 @@ The order of files in that run differs between machines, so state one file leave
 ## Environment Files
 
 - `.env` - Local development
-- `.env.prod` - Production secrets (not committed). Required keys: `DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `RESEND_API_KEY`, `BETTER_AUTH_SECRET`, `ADMIN_API_KEY`, `CORS_ORIGIN`, `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGIN`, `BETTER_AUTH_URL`, `CLOUDFLARE_API_TOKEN`. `TEE_MODE` is hardcoded to `production` in `docker-compose.prod.yml`; the API refuses to start unless it is `production`, or `development` with `NODE_ENV` unset, `development` or `test` (TC-966)
+- `.env.prod` - Production secrets (not committed). Required keys: `DATABASE_URL`, `GOOGLE_CLIENT_SECRET`, `RESEND_API_KEY`, `BETTER_AUTH_SECRET`, `ADMIN_API_KEY`, `CORS_ORIGIN`, `CLOUDFLARE_API_TOKEN`. `TEE_MODE` is hardcoded to `production` in `docker-compose.prod.yml`; the API refuses to start unless it is `production`, or `development` with `NODE_ENV` unset, `development` or `test` (TC-966). The settings that decide who can sign (`BETTER_AUTH_URL`, `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGIN`, `GOOGLE_CLIENT_ID` and the rest of `MEASURED_SETTINGS` in `apps/api/src/measured-settings.ts`) are literals in `docker-compose.prod.yml`, not `.env.prod` keys; the API refuses to start in the TEE if they differ (TC-3840)
 
 ## Common Commands
 

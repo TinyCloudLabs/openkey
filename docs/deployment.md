@@ -213,8 +213,8 @@ would change who can sign while nothing a verifier sees changes. Inside the TEE 
 each of them is a literal `NAME=value` in the compose it was measured with, and the process sees exactly that
 value (`apps/api/src/measured-settings.ts`, `MEASURED_SETTINGS`); the refusal logs `config_invalid` with the
 setting's name, and a pass logs `measured_settings_verified`. To change one, change the compose in a reviewed PR. After each deploy, `deploy-api.yml` checks
-from outside that the live API serves them (`scripts/probe-api-settings.ts`). `WEBAUTHN_ORIGIN`, `CORS_ORIGIN`,
-`API_PORT` and the ingress `DSTACK_GATEWAY_DOMAIN` stay in the encrypted env. Names these settings replace may
+from outside that the live API serves them (`scripts/probe-api-settings.ts`). `CORS_ORIGIN`, `API_PORT` and the
+ingress `DSTACK_GATEWAY_DOMAIN` stay in the encrypted env. Names these settings replace may
 remain in the CVM's `allowed_envs`; the compose doesn't reference them, so their stored values have no effect.
 Removing them takes an encrypted-env save, a separate operator step.
 
@@ -249,7 +249,7 @@ if the API is down, dispatch with `override_reason` so `smoke-gate` doesn't stop
 | `OAUTH_DYNAMIC_CLIENT_REGISTRATION` | `true` (for MCP clients that register automatically), fixed in production Compose (TC-3840). An emergency disable is a compose PR setting `false` |
 | `OAUTH_VALID_AUDIENCES` | Comma-separated additional OAuth resource URLs, fixed in production Compose as `https://mcp.tinycloud.xyz/mcp` (TC-3840); code includes the exact broad `https://mcp.tinycloud.xyz/mcp`, the public `https://mcp.tinycloud.xyz/chatgpt/mcp`, and the directory `https://mcp.tinycloud.xyz/claude/mcp`, `/grok/mcp` and `/muse/mcp` audiences. |
 | `WEBAUTHN_RP_ID` | `openkey.so`, fixed in production Compose (TC-3840), not set in the encrypted env |
-| `WEBAUTHN_ORIGIN` | `https://openkey.so` |
+| `WEBAUTHN_ORIGIN` | `https://openkey.so`, fixed in production Compose (TC-3840), not set in the encrypted env. The account origin, and the origin of the `terms_url` the API returns (`https://openkey.so/auth/terms`) |
 | `CONSOLE_ORIGIN` | `https://console.openkey.so` |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID, fixed in production Compose (TC-3840), not set in the encrypted env |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |

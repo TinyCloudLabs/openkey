@@ -10,11 +10,11 @@ services:
       # never `${...}` from the encrypted env, whose values compose_hash does not cover. The API refuses to
       # start in the TEE unless each one is a literal here and the process sees exactly it
       # (apps/api/src/measured-settings.ts). The `${...}` entries are secrets, settings that don't decide who can
-      # sign, and CORS_ORIGIN and WEBAUTHN_ORIGIN, which the post-deploy probe checks (scripts/probe-api-settings.ts).
+      # sign, and CORS_ORIGIN, which the post-deploy probe checks (scripts/probe-api-settings.ts).
       - NODE_ENV=production
       - DATABASE_URL=${DATABASE_URL}
       - WEBAUTHN_RP_ID=openkey.so
-      - WEBAUTHN_ORIGIN=${WEBAUTHN_ORIGIN}
+      - WEBAUTHN_ORIGIN=https://openkey.so
       - GOOGLE_CLIENT_ID=1051579421474-908fn36cpqiqke8gqik0badgn0fmfkam.apps.googleusercontent.com
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       # Apple web sign-in is on (TC-1188); offered only when the Apple

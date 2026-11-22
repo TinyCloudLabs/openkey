@@ -12,8 +12,6 @@ import { resolve } from 'node:path';
 // CORS_ORIGIN stays in the encrypted env, so it has no compose value. These are the origins
 // docs/deployment.md lists for it; the probe checks each is allowed and an unknown one is not.
 const EXPECTED_CORS_ORIGINS = ['https://openkey.so', 'https://console.openkey.so'];
-// Used only while WEBAUTHN_ORIGIN stays in the encrypted env (docs/deployment.md).
-const DOCUMENTED_ACCOUNT_ORIGIN = 'https://openkey.so';
 const FOREIGN_ORIGIN = 'https://probe.invalid';
 
 /** The `api` service's literal `NAME=value` entries; interpolated entries are left out. */
@@ -82,7 +80,7 @@ async function main(): Promise<void> {
 
   // WEBAUTHN_ORIGIN: account routes refuse any other browser origin before they look for a session, so the
   // account origin gets 401 (no session) and a CORS-only origin gets 403.
-  const accountOrigin = literals.get('WEBAUTHN_ORIGIN') ?? DOCUMENTED_ACCOUNT_ORIGIN;
+  const accountOrigin = required(literals, 'WEBAUTHN_ORIGIN');
   for (const [origin, expected] of [[accountOrigin, 401], [EXPECTED_CORS_ORIGINS[1]!, 403]] as const) {
     const response = await fetch(`${api}/api/device-authorizations/probe/approve`, { method: 'POST', headers: { Origin: origin } });
     check(`account-origin route status for ${origin} (WEBAUTHN_ORIGIN)`, response.status, expected);
@@ -91,8 +89,8 @@ async function main(): Promise<void> {
   // GOOGLE_CLIENT_ID: the Google redirect carries the client id.
   const social = await json(await fetch(`${api}/api/auth/sign-in/social`, {
     method: 'POST',
-    headers: { Origin: DOCUMENTED_ACCOUNT_ORIGIN, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ provider: 'google', callbackURL: DOCUMENTED_ACCOUNT_ORIGIN, disableRedirect: true }),
+    headers: { Origin: accountOrigin, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider: 'google', callbackURL: accountOrigin, disableRedirect: true }),
   }));
   const redirect = field(social, 'url');
   const clientId = typeof redirect === 'string' ? new URL(redirect).searchParams.get('client_id') : null;
