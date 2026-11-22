@@ -223,6 +223,11 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
 
     test('the checked-in file is a valid release: a date version and a 64-hex text hash', async () => {
       const shipped = JSON.parse(await readFile(join(root, 'apps/api/src/terms-release.json'), 'utf8'));
+      // test-ruling TC-3766 openkey #684 apps/api/src/__tests__/terms-acceptance.integration.test.ts:222 (2026-11-22): yes, exactly as you wrote it. When the checked-in version is null, expect termsRelease(shipped) to be null and return; otherwise the date and hash assertions run unchanged. Nothing else changes.
+      if (shipped.version === null) {
+        expect(termsRelease(shipped)).toBeNull();
+        return;
+      }
       const parsed = termsRelease(shipped);
       expect(parsed).not.toBeNull();
       expect(parsed!.version).toMatch(/^\d{4}-\d{2}-\d{2}$/);
