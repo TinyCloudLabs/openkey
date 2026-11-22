@@ -66,6 +66,8 @@ permissions:
 
 env:
   PHALA_CLI_VERSION: 1.1.19
+  # Public GHCR package the cutover builds and the CVM pulls without credentials.
+  API_IMAGE: ghcr.io/tinycloudlabs/openkey-api
   # Production dstack OS the openkey-api CVM must run (the Phala KMS only releases app keys to this image).
   PHALA_OS_IMAGE: dstack-0.5.15
   PHALA_OS_IMAGE_HASH: 4597735f1a38ad8ec9f781356b88737fc052062deb7c9aaa4be89bf1b35643ca
@@ -268,7 +270,7 @@ jobs:
           const fs = require('node:fs');
           const data = JSON.parse(fs.readFileSync('/tmp/containers.json', 'utf8'));
           const matches = data.containers?.filter((container) =>
-            typeof container.image === 'string' && /^skgbafa\/openkey-api(?::[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$/.test(container.image)) ?? [];
+            typeof container.image === 'string' && /^(?:skgbafa\/openkey-api|ghcr\.io\/tinycloudlabs\/openkey-api)(?::[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$/.test(container.image)) ?? [];
           if (matches.length !== 1) {
             throw new Error('could not identify the running api container image');
           }
@@ -282,8 +284,8 @@ jobs:
             image_digest=$(docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest.Digest}}' | jq -r .)
           fi
           [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "could not resolve old API image digest" >&2; exit 1; }
-          jq -n --arg imageReference "$image_ref" --arg imageDigest "$image_digest" \
-            '{schema:"openkey.tc492.runtime-before.v2",imageRepository:"skgbafa/openkey-api",imageReference:$imageReference,imageDigest:$imageDigest}' \
+          jq -n --arg imageRepository "${image_ref%%[@:]*}" --arg imageReference "$image_ref" --arg imageDigest "$image_digest" \
+            '{schema:"openkey.tc492.runtime-before.v2",imageRepository:$imageRepository,imageReference:$imageReference,imageDigest:$imageDigest}' \
             > tc492-runtime-before.json
           rm -f /tmp/current-api-image.txt /tmp/containers.json
 
@@ -345,12 +347,14 @@ jobs:
     if: github.ref == 'refs/heads/main' && inputs.mode == 'cutover'
     runs-on: ubuntu-latest
     environment: production
-    # The workflow's read permissions, plus id-token and attestations for the provenance attestation.
+    # The workflow's read permissions, plus id-token and attestations for the provenance attestation and
+    # packages for the GHCR push.
     permissions:
       contents: read
       actions: read
       id-token: write
       attestations: write
+      packages: write
     steps:
       - name: Validate destructive-cutover confirmation
         env:
@@ -480,11 +484,12 @@ jobs:
             exit 1
           fi
 
-      - name: Log in to Docker Hub
+      - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
-          username: ${{ secrets.DOCKER_REGISTRY_USERNAME }}
-          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
 
@@ -495,12 +500,32 @@ jobs:
           context: .
           push: true
           no-cache: true
-          tags: skgbafa/openkey-api:${{ inputs.candidate_sha }}
+          tags: ${{ env.API_IMAGE }}:${{ inputs.candidate_sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      # The CVM pulls without registry credentials: a private package would stop it at pull, after the freeze.
+      - name: Check the image pulls without credentials
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          repository=${API_IMAGE#ghcr.io/}
+          refuse() {
+            echo "::error::${API_IMAGE}@${DIGEST} does not pull without credentials. Make the GHCR package public (package settings, Change visibility), then re-run." >&2
+            exit 1
+          }
+          token=$(curl -fsS "https://ghcr.io/token?scope=repository:${repository}:pull" | jq -r '.token // empty') || refuse
+          [ -n "$token" ] || refuse
+          served=$(curl -fsS -o /dev/null -D - -H "Authorization: Bearer ${token}" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/${repository}/manifests/${DIGEST}" | tr -d '\r' | sed -n -E 's/^docker-content-digest: (sha256:[0-9a-f]{64})$/\1/ip') || refuse
+          [ "$served" = "$DIGEST" ] || refuse
 
       - name: Attest build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-name: docker.io/skgbafa/openkey-api
+          subject-name: ${{ env.API_IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
 
       # TC-3837: pin and check the compose before the freeze, so a compose that names any image by tag
@@ -512,7 +537,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "build did not return an immutable digest" >&2; exit 1; }
-          sed -i "s|\${DOCKER_IMAGE}|skgbafa/openkey-api@${IMAGE_DIGEST}|g" docker-compose.prod.yml
+          sed -i "s|\${DOCKER_IMAGE}|${API_IMAGE}@${IMAGE_DIGEST}|g" docker-compose.prod.yml
           if grep -nE '^[[:space:]]+build:' docker-compose.prod.yml; then
             echo "::error::docker-compose.prod.yml builds an image in the CVM" >&2; exit 1
           fi
@@ -539,7 +564,7 @@ jobs:
           const fs = require('node:fs');
           const data = JSON.parse(fs.readFileSync('/tmp/containers-before-freeze.json', 'utf8'));
           const matches = data.containers?.filter((container) =>
-            typeof container.image === 'string' && /^skgbafa\/openkey-api(?::[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$/.test(container.image)) ?? [];
+            typeof container.image === 'string' && /^(?:skgbafa\/openkey-api|ghcr\.io\/tinycloudlabs\/openkey-api)(?::[A-Za-z0-9._-]+|@sha256:[0-9a-f]{64})$/.test(container.image)) ?? [];
           if (matches.length !== 1) {
             throw new Error('could not identify the running pre-freeze api image');
           }
@@ -715,10 +740,10 @@ jobs:
           phala deploy --api-token "$PHALA_CLOUD_API_KEY" --cvm-id openkey-api --compose docker-compose.prod.yml --no-public-logs --no-public-sysinfo --no-dev-os --image "$PHALA_OS_IMAGE" --wait
           echo "deployed=true" >> "$GITHUB_OUTPUT"
           mkdir -p "$RUNNER_TEMP/api-deploy-record"
-          jq -n --arg commit "$CANDIDATE_SHA" --arg image "skgbafa/openkey-api@${IMAGE_DIGEST}" '{commit: $commit, image: $image}' \
+          jq -n --arg commit "$CANDIDATE_SHA" --arg image "${API_IMAGE}@${IMAGE_DIGEST}" '{commit: $commit, image: $image}' \
             > "$RUNNER_TEMP/api-deploy-record/record.json"
           phala ps openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json > /tmp/containers-after.json
-          EXPECTED_IMAGE="skgbafa/openkey-api@${IMAGE_DIGEST}" node <<'NODE'
+          EXPECTED_IMAGE="${API_IMAGE}@${IMAGE_DIGEST}" node <<'NODE'
           const fs = require('node:fs');
           const data = JSON.parse(fs.readFileSync('/tmp/containers-after.json', 'utf8'));
           const matches = data.containers?.filter((container) => container.image === process.env.EXPECTED_IMAGE) ?? [];
