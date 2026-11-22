@@ -44,7 +44,7 @@ export function billingAccountDeletePlan(env: NodeJS.ProcessEnv = process.env): 
   const secret = env.ACCOUNT_DELETE_SERVICE_SECRET?.trim();
   if (baseUrl && secret) return { kind: 'call', baseUrl: baseUrl.replace(/\/+$/, ''), secret };
   // The isDev formula used across the API: anything but NODE_ENV/TEE_MODE production.
-  const production = process.env.NODE_ENV === 'production' || process.env.TEE_MODE === 'production';
+  const production = env.NODE_ENV === 'production' || env.TEE_MODE === 'production';
   if (!baseUrl && !secret && !production) return { kind: 'skip' };
   return { kind: 'unavailable' };
 }

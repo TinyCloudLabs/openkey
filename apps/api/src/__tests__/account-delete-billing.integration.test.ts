@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { serializeSignedCookie } from 'better-call';
 import type { PrismaClient } from '@openkey/db';
+import { mockModules } from './mock-module';
 
 const root = resolve(import.meta.dir, '../../../..');
 const ORIGIN = 'https://openkey.test';
@@ -70,6 +71,29 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
     }
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end('{"ok":true,"deleted":{"subscriptions":1},"stripe":{"canceled":1,"deleted":0}}');
+  });
+
+  // One test enrols a key the moment billing has been settled, in the gap before the delete transaction:
+  // the transaction's re-read under the user lock must catch it and abort retryably.
+  let enrollOnBillingSettled: { userId: string; address: string } | undefined;
+  await mockModules({
+    '../services/billing-account-delete': (actual) => ({
+      cancelBillingForAccountDelete: async (
+        addresses: readonly string[],
+        deps?: Parameters<typeof actual.cancelBillingForAccountDelete>[1],
+      ) => {
+        const settled = await actual.cancelBillingForAccountDelete(addresses, deps);
+        const enroll = enrollOnBillingSettled;
+        enrollOnBillingSettled = undefined;
+        if (enroll) {
+          await prisma.ethereumKey.create({ data: {
+            userId: enroll.userId, address: enroll.address, publicKey: enroll.address,
+            keyIndex: 1, keyType: 'EXTERNAL', sealedBlob: null, sealingContext: null,
+          } });
+        }
+        return settled;
+      },
+    }),
   });
 
   beforeAll(async () => {
@@ -236,24 +260,43 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
     }
   });
 
+  test('a key enrolled between the billing calls and the delete transaction aborts retryably; the retry bills it', async () => {
+    const first = `0x${randomBytes(20).toString('hex')}`;
+    const owner = await account([first]);
+    const second = `0x${randomBytes(20).toString('hex')}`;
+    billing.calls.length = 0;
+    enrollOnBillingSettled = { userId: owner.userId, address: second };
+
+    const refused = await owner.delete();
+    expect(enrollOnBillingSettled).toBeUndefined(); // the enrolment really landed between billing and the tx
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ code: 'ethereum_keys_changed' });
+    // The new key was never sent to billing and nothing was deleted.
+    expect(billing.calls).toEqual([`/api/account-delete/${first}`]);
+    expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(1);
+    expect(await prisma.ethereumKey.count({ where: { userId: owner.userId } })).toBe(2);
+    expect(await auditCountFor([first, second])).toBe(0);
+
+    // The retry bills both addresses — the first again, idempotently — then deletes.
+    const deleted = await owner.delete();
+    expect(deleted.status).toBe(200);
+    expect(billing.calls.slice(1).sort()).toEqual([`/api/account-delete/${first}`, `/api/account-delete/${second}`].sort());
+    expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(0);
+    expect(await prisma.ethereumKey.count({ where: { userId: owner.userId } })).toBe(0);
+    expect(await auditCountFor([first, second])).toBe(2);
+  });
+
   test('the plan fails closed in production and skips only when fully unconfigured', async () => {
     const { billingAccountDeletePlan } = await import('../services/billing-account-delete');
-    const saved = { NODE_ENV: process.env.NODE_ENV, TEE_MODE: process.env.TEE_MODE };
-    try {
-      process.env.NODE_ENV = 'production';
-      delete process.env.TEE_MODE;
-      expect(billingAccountDeletePlan({})).toEqual({ kind: 'unavailable' });
-      expect(billingAccountDeletePlan({ BILLING_API_URL: 'https://billing.test' })).toEqual({ kind: 'unavailable' });
-      process.env.NODE_ENV = 'test';
-      expect(billingAccountDeletePlan({})).toEqual({ kind: 'skip' });
-      // Half-configured is a misconfiguration, never a skip, whatever the environment.
-      expect(billingAccountDeletePlan({ BILLING_API_URL: 'https://billing.test' })).toEqual({ kind: 'unavailable' });
-      expect(billingAccountDeletePlan({ ACCOUNT_DELETE_SERVICE_SECRET: 's' })).toEqual({ kind: 'unavailable' });
-      expect(billingAccountDeletePlan({ BILLING_API_URL: 'https://billing.test/', ACCOUNT_DELETE_SERVICE_SECRET: 's' }))
-        .toEqual({ kind: 'call', baseUrl: 'https://billing.test', secret: 's' });
-    } finally {
-      process.env.NODE_ENV = saved.NODE_ENV;
-      if (saved.TEE_MODE === undefined) delete process.env.TEE_MODE; else process.env.TEE_MODE = saved.TEE_MODE;
-    }
+    expect(billingAccountDeletePlan({ NODE_ENV: 'production' })).toEqual({ kind: 'unavailable' });
+    expect(billingAccountDeletePlan({ TEE_MODE: 'production' })).toEqual({ kind: 'unavailable' });
+    expect(billingAccountDeletePlan({ NODE_ENV: 'production', BILLING_API_URL: 'https://billing.test' })).toEqual({ kind: 'unavailable' });
+    expect(billingAccountDeletePlan({ NODE_ENV: 'test' })).toEqual({ kind: 'skip' });
+    expect(billingAccountDeletePlan({ TEE_MODE: 'development' })).toEqual({ kind: 'skip' });
+    // Half-configured is a misconfiguration, never a skip, whatever the environment.
+    expect(billingAccountDeletePlan({ NODE_ENV: 'test', BILLING_API_URL: 'https://billing.test' })).toEqual({ kind: 'unavailable' });
+    expect(billingAccountDeletePlan({ NODE_ENV: 'test', ACCOUNT_DELETE_SERVICE_SECRET: 's' })).toEqual({ kind: 'unavailable' });
+    expect(billingAccountDeletePlan({ BILLING_API_URL: 'https://billing.test/', ACCOUNT_DELETE_SERVICE_SECRET: 's' }))
+      .toEqual({ kind: 'call', baseUrl: 'https://billing.test', secret: 's' });
   });
 }

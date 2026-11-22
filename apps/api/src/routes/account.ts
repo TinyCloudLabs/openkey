@@ -727,11 +727,17 @@ accountRouter.post('/delete', async (c) => {
   }
 
   // Delete all user data in transaction
-  let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | 'PASSKEY' | 'EMAIL' | 'LEASES';
+  let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | 'PASSKEY' | 'EMAIL' | 'LEASES' | 'KEYS';
   try { appleTokens = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${user.id} FOR UPDATE`;
     // A lease approved since the revocations above would outlive the keys; a retry stops it first.
     if (await tx.renewalLease.count({ where: liveLeaseWhere(user.id, { kind: 'all' }, new Date()) }) > 0) return 'LEASES';
+    // A key enrolled since the snapshot above was never sent to billing and would be deleted with no
+    // cancellation and no audit row; the retry calls billing for the new set, idempotently (TC-3903).
+    const locked = new Set((await tx.ethereumKey.findMany({
+      where: { userId: user.id }, select: { address: true },
+    })).map((key) => key.address.toLowerCase()));
+    if (locked.size !== addresses.length || addresses.some((address) => !locked.has(address))) return 'KEYS';
     if (!passkeyStepUp) {
       // A passkey that counts, enrolled since the check, needs the passkey
       // step-up instead; the deletion code is spent only by a deletion that commits.
@@ -781,6 +787,7 @@ accountRouter.post('/delete', async (c) => {
   if (appleTokens === 'PASSKEY') return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
   if (appleTokens === 'EMAIL') return c.json(EMAIL_STEP_UP_REQUIRED, 403);
   if (appleTokens === 'LEASES') return c.json({ error: 'A permission started renewing meanwhile. Nothing was deleted. Try again.', code: 'renewal_leases_not_stopped' }, 409);
+  if (appleTokens === 'KEYS') return c.json({ error: 'Your keys changed meanwhile. Nothing was deleted. Try again.', code: 'ethereum_keys_changed' }, 409);
 
   await revokeStoredAppleTokens(appleTokens);
 
