@@ -5,6 +5,7 @@
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
 import { ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const HOUR = 3_600;
 const DAY = 86_400;
@@ -92,6 +93,7 @@ async function openReview(page: Page, options: {
     }
     return respond(route, { error: `Unmocked ${url.pathname}` }, 404);
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 
   await page.goto(`/a/${ID}#v=4&k=${'A'.repeat(43)}&c=bafkreia${'a'.repeat(52)}`);
   return expiries;
