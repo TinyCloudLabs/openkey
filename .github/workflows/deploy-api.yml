@@ -113,6 +113,14 @@ jobs:
             echo "Run by ${GITHUB_ACTOR} with override_reason: ${OVERRIDE_REASON}"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Pre-release security check: refuse to ship a commit unless every check in
+      # .github/required-checks.json passed on this exact SHA (waits up to 40 min for running ones).
+      # Unlike smoke-gate, override_reason does not skip it.
+      - name: Require green checks on the shipped commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/require-green.mjs "$GITHUB_SHA"
+
       - name: Install Phala CLI
         run: npm install -g phala@1.1.22
 
@@ -139,11 +147,14 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      - name: Build and Push Docker image
+      # Build, scan the exact image, then push it: an image with a new fixable CRITICAL/HIGH
+      # finding (one not in .trivyignore.yaml) never reaches the registry or the CVM.
+      - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: true
+          load: true
+          push: false
           build-args: |
             GIT_SHA=${{ github.sha }}
           cache-from: type=gha,scope=openkey-api-image
@@ -151,6 +162,15 @@ jobs:
           tags: |
             ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
             ${{ env.DOCKER_IMAGE }}:latest
+
+      - name: Scan the Docker image
+        run: scripts/security/scan-image.sh "${DOCKER_IMAGE}:${GITHUB_SHA}"
+
+      - name: Push Docker image
+        run: |
+          set -euo pipefail
+          docker push "${DOCKER_IMAGE}:${GITHUB_SHA}"
+          docker push "${DOCKER_IMAGE}:latest"
 
       - name: Update compose with image tag
         run: |
