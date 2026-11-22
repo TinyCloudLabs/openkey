@@ -15,6 +15,7 @@
   import { clearSessionToken, getSessionToken, isEmbedContext, withSessionCredential } from '$lib/embed-passkey';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
+  import { newWebSignFlowId, releaseWebSignFlow, webSignFlowHeaders } from '$lib/web-sign-flow';
   import Button from '$lib/components/ui/button.svelte';
   import IframeSigningAdapter from '$lib/components/signing/iframe-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
@@ -184,6 +185,8 @@
   const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
 
   const origin = $page.url.searchParams.get('origin') || '*';
+  // This page's own flow id for one sign request, drawn here and never taken from the app's request.
+  const webFlowId = newWebSignFlowId();
   const requester = originAuthority(origin);
   const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const v2 = $page.url.searchParams.get('protocolVersion') === '2';
@@ -906,7 +909,7 @@
     const [offerKeyId, offerMessage, offerOrigin] = JSON.parse(input) as [string, string, string | null];
     let current = true;
     exactBytePasskeyFetch = 'pending';
-    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined).then(
+    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined, webFlowId).then(
       (need) => {
         if (!current) return;
         exactBytePasskey = { input, need };
@@ -1081,7 +1084,7 @@
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
         withSessionCredential({
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...webSignFlowHeaders(webFlowId) },
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
@@ -1204,7 +1207,7 @@
           `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign`,
           withSessionCredential({
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...webSignFlowHeaders(webFlowId) },
             body: JSON.stringify({
               authorizationContextToken,
               // Sol CRITICAL-1: /authorize-sign requires the preview
@@ -1243,7 +1246,7 @@
       // Exact-byte signing cannot narrow the request: show every parsed
       // action and report the full set rather than a UI-only selection.
       const result = await api.signMessage(
-        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion,
+        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion, webFlowId,
       );
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
@@ -1351,12 +1354,19 @@
     return true;
   }
 
+  // A request that ends without an approval ends the passkey cover its own sign-in recorded.
+  function releaseFlow() {
+    if (isAuthenticated) void releaseWebSignFlow(webFlowId);
+  }
+
   function closeRefused() {
+    releaseFlow();
     sendClose();
   }
 
   function reconnect() {
     keyReadGeneration++;
+    releaseFlow();
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
@@ -1370,6 +1380,7 @@
 
   function cancel() {
     keyReadGeneration++;
+    releaseFlow();
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
@@ -1467,6 +1478,7 @@
         prompt="Sign in to review and sign this message"
         onauthenticated={() => { embedAuthenticated = true; }}
         {passkeysSupported}
+        flowId={webFlowId}
       />
     {:else if loading}
       <div class="flex flex-col items-center justify-center text-center text-surface-400 py-6">

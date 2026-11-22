@@ -150,10 +150,16 @@ import type { SignInRenewalRequest } from '../services/authorization-signing';
 import { parseRenewalChoice, renewalLeasesEnabled, renewalUnavailableMessage, signLease } from '../services/renewal-lease';
 import {
   approvalPasskeyOffer,
+  approvalPasskeyOfferInFlow,
   approvalRequestDigest,
   checkApprovalPasskey,
+  checkApprovalPasskeyInFlow,
+  clearFlowPasskey,
+  FLOW_PASSKEY_HEADER,
   messageApprovalSensitivity,
   passkeyApprovalModes,
+  releaseFlowPasskey,
+  webFlowIdFromHeader,
   type ApprovalBinding,
 } from '../services/approval-passkey';
 
@@ -3754,17 +3760,21 @@ delegateRouter.post('/authorize-sign', async (c) => {
     return c.json(elevatedNotDecidedBody(), 403);
   }
   // TC-3442: the account's passkey setting, checked before any token is spent or key unsealed. An external wallet's
-  // own signature is its confirmation.
+  // own signature is its confirmation. A passkey sign-in this web sign flow was opened with covers the check for
+  // five minutes; the cover is spent the moment this approval passes the gate.
+  const webFlow = webFlowIdFromHeader(c.req.header(FLOW_PASSKEY_HEADER));
   if (!isExternal) {
-    const passkeyRefusal = await checkApprovalPasskey(
+    const gate = await checkApprovalPasskeyInFlow(
       prisma,
       { userId: user.id, sessionId: c.get('session')?.id ?? null },
       authorizeSignPasskeyBinding(body.authorizationContextToken, body.previewApprovalToken!, boundAddress, signedMessage),
       messageApprovalSensitivity(signedMessage, boundAddress),
       body.passkeyAssertion,
+      webFlow,
     );
-    if (passkeyRefusal) return c.json(passkeyRefusal, 403);
+    if (gate.refusal) return c.json(gate.refusal, 403);
   }
+  await clearFlowPasskey(prisma, webFlow);
   // Both checked claims still have to reference the stored records. This
   // synchronous call compares both, checks both expiries, then deletes both
   // without an await between either comparison and either deletion. Only
@@ -3853,6 +3863,22 @@ delegateRouter.post('/authorize-sign', async (c) => {
     ...(sealedRenewal ? { renewalChoice: sealedRenewal.choice } : {}),
     ...(signInLease ?? {}),
   });
+});
+
+/**
+ * POST /api/delegate/authorize-sign-release
+ *
+ * A web sign page that is cancelled, refused or closed without approving ends the passkey cover its own sign-in
+ * recorded (`x-openkey-passkey-flow`), so a later approval in that flow asks for a passkey. Only the calling
+ * session's cover for the named flow is ended; any other value in the header ends nothing.
+ */
+delegateRouter.post('/authorize-sign-release', async (c) => {
+  await releaseFlowPasskey(
+    prisma,
+    { userId: c.get('user').id, sessionId: c.get('session')?.id ?? null },
+    webFlowIdFromHeader(c.req.header(FLOW_PASSKEY_HEADER)),
+  );
+  return c.json({ released: true });
 });
 
 /**
@@ -4170,18 +4196,19 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     renewal: renewalChoice,
   });
   // TC-3442: whether Approve needs the passkey, with the challenge for exactly these bytes. Re-issued with every
-  // preview, so a changed selection or expiry gets its own.
+  // preview, so a changed selection or expiry gets its own. None when this web sign flow's own passkey sign-in covers it.
   const boundKey = await prisma.ethereumKey.findFirst({
     where: { id: bound.keyId, userId: user.id, archivedAt: null },
     select: { keyType: true },
   });
   const passkey = !boundKey || boundKey.keyType === 'EXTERNAL'
     ? { required: false as const }
-    : await approvalPasskeyOffer(
+    : await approvalPasskeyOfferInFlow(
       prisma,
       { userId: user.id, sessionId: c.get('session')?.id ?? null },
       authorizeSignPasskeyBinding(body.authorizationContextToken!, previewApproval.token, ensureEip55(bound.keyAddress), preparedSignedMessage),
       messageApprovalSensitivity(preparedSignedMessage, bound.keyAddress),
+      webFlowIdFromHeader(c.req.header(FLOW_PASSKEY_HEADER)),
     );
 
   return c.json({

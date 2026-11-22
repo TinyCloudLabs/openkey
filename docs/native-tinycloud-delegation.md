@@ -858,6 +858,38 @@ counts as that request's approval passkey:
   app, account deletion, passkey enrolment and removal, and key export or recovery keep asking for their own
   passkey. Email-code and social sign-ins make no cover and are asked once, at Approve.
 
+### One passkey per web sign interaction
+
+The web sign pop-up (`/widget/sign`) and the sign iframe (`/widget/embed/sign`) follow the same rule: a passkey
+sign-in made **for this sign request** counts as that request's approval passkey.
+
+- Each sign page draws its own flow id, `w.` and 24 random bytes in base64url (`^w\.[A-Za-z0-9_-]{32}$`), when it
+  loads. The id is never read from the app's request or its `postMessage`. The `w.` prefix keeps the web ids apart
+  from native request ids, which are checked against a resolved request row; a web id has no server row.
+- The page names the id in `x-openkey-passkey-flow` on its passkey sign-in: the iframe's own
+  `/api/passkey/verify-authentication` call, the cookie sign-in inside the page, and the pop-up's login page. The
+  pop-up leaves for `/auth/login` and comes back as a new page, so it keeps its id in the tab's `sessionStorage`
+  (`openkey_sign_flow`) when the user selects Sign In. The login page sends it only when the redirect target is
+  `/widget/sign` and the stored value has the web shape; the pop-up removes it when it loads, so one visit to the
+  login page serves one sign page.
+- OpenKey records the same cover as for a native request (`openkey-flow-passkey:<session id>:<flow id>`, five
+  minutes, that session and that flow only) when the assertion carries the user-verified flag, the passkey counts
+  for step-up, and the sign-in issued the session. A web id is recorded only in the `w.` shape; a native-shaped id
+  sent by a web page records nothing, and an id sent in a body, a query string or `postMessage` is never read.
+- The sign pages send the id on the calls that offer or check the approval passkey:
+  `POST /api/delegate/authorize-sign-preview` (offer), `POST /api/delegate/authorize-sign` (check),
+  `POST /api/keys/:id/sign/passkey` (offer) and `POST /api/keys/:id/sign` (check). `authorize-sign-prepare` offers
+  no passkey. The user's approval-passkey setting still decides whether Approve asks for a passkey; the cover only
+  replaces the second prompt.
+- The approval that passes the check ends the cover, so it covers one approval. A request that ends without
+  approval (cancel, refusal, reconnect) calls `POST /api/delegate/authorize-sign-release` with the id, which
+  deletes that session's cover for that id; otherwise it expires after five minutes.
+- The digest, token and selection checks of the approval are unchanged. Account-level actions (lowering the
+  approval setting, TinyCloud manage-key mode, enabling an app, account deletion, passkey enrolment and removal,
+  key export or recovery) never read the cover.
+- Not covered: typed-data signing, Nostr approval, the connect page and the delegate handoff pages. Their Approve
+  keeps asking for its own passkey.
+
 ### Consent errors
 
 | HTTP | `error` | Cause |

@@ -19,6 +19,7 @@
     nativeSocialReturnUrls,
     type NativeSocialProvider,
   } from '$lib/native-mode';
+  import { popupSignFlowForLogin, webSignFlowHeaders } from '$lib/web-sign-flow';
   import {
     accountExistsMessage,
     confirmSocialContinuation,
@@ -482,7 +483,13 @@
     try {
       // One passkey per interaction: a passkey sign-in opened from a native request names it, so Approve for that
       // request asks for nothing more (TC-3596). The API accepts it only for a resolved request and a verified passkey.
-      const result = await authClient.signIn.passkey(native ? { fetchOptions: { headers: { 'x-openkey-passkey-flow': native.requestId } } } : undefined);
+      // A sign-in that returns the user to the web sign pop-up names that pop-up's own flow instead, so its Approve
+      // asks for nothing more. The API accepts it only for a verified passkey that counts for step-up.
+      const webFlow = native ? null : popupSignFlowForLogin($page.url.searchParams.get('redirect'), $page.url.origin);
+      const result = await authClient.signIn.passkey(
+        native ? { fetchOptions: { headers: { 'x-openkey-passkey-flow': native.requestId } } }
+          : webFlow ? { fetchOptions: { headers: webSignFlowHeaders(webFlow) } } : undefined,
+      );
       if (result.error) {
         error = authErrorMessage(result.error, 'Passkey sign-in failed');
       } else {

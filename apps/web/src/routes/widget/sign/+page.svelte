@@ -15,6 +15,9 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
+  import {
+    carryPopupSignFlow, newWebSignFlowId, releaseWebSignFlow, takePopupSignFlow, webSignFlowHeaders,
+  } from '$lib/web-sign-flow';
   import PopupSigningAdapter from '$lib/components/signing/popup-signing-adapter.svelte';
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
@@ -190,6 +193,9 @@
   // path (Sol MAJOR-4). Versioned callers (protocolVersion >= 1) MUST use
   // a real origin — '*' is refused for editing/rewriting flows.
   const origin = $page.url.searchParams.get('origin') || '*';
+  // This page's own flow id for one sign request, drawn here and never taken from the app's request. The pop-up
+  // returns from the login page as a new page load, so the id the user left with is the one carried in this tab.
+  const webFlowId = takePopupSignFlow() ?? newWebSignFlowId();
   const requester = originAuthority(origin);
   const reconnectHint = `Go back to ${requester || 'the requesting app'} and connect again to choose a key.`;
   const passkeysSupported = passkeysSupportedFromParams($page.url.searchParams);
@@ -790,7 +796,7 @@
     const [offerKeyId, offerMessage, offerOrigin] = JSON.parse(input) as [string, string, string | null];
     let current = true;
     exactBytePasskeyFetch = 'pending';
-    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined).then(
+    api.signMessagePasskey(offerKeyId, offerMessage, offerOrigin ?? undefined, webFlowId).then(
       (need) => {
         if (!current) return;
         exactBytePasskey = { input, need };
@@ -965,7 +971,7 @@
         {
           method: 'POST',
           credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...webSignFlowHeaders(webFlowId) },
           body: JSON.stringify({
             authorizationContextToken: token,
             selectedActionIds: selectedIds,
@@ -1088,7 +1094,7 @@
           {
             method: 'POST',
             credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...webSignFlowHeaders(webFlowId) },
             body: JSON.stringify({
               authorizationContextToken,
               // Sol CRITICAL-1: the sealed preview-approval token is
@@ -1133,7 +1139,7 @@
       // capabilities in the response are the caller's original set (no
       // narrowing happened server-side).
       const result = await api.signMessage(
-        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion,
+        key.id, message, origin === '*' ? undefined : origin, elevatedAllowed.length > 0, passkeyAssertion, webFlowId,
       );
       const effectivePermissions = reviewModel
         ? reviewModel.permissions.map((grant) => ({
@@ -1243,11 +1249,18 @@
     return true;
   }
 
+  // A request that ends without an approval ends the passkey cover its own sign-in recorded.
+  function releaseFlow() {
+    if ($session.data) void releaseWebSignFlow(webFlowId);
+  }
+
   function closeRefused() {
+    releaseFlow();
     sendClose();
   }
 
   function reconnect() {
+    releaseFlow();
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
@@ -1260,6 +1273,7 @@
   }
 
   function cancel() {
+    releaseFlow();
     if (!refusalSent) {
       sendResponse({
         type: 'openkey:sign:response',
@@ -1375,7 +1389,10 @@
   {:else if !$session.data}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p class="mb-4">Sign in to sign messages</p>
-      <Button href={withPasskeysFlag(`/auth/login?redirect=/widget/sign?origin=${encodeURIComponent(origin)}`, passkeysSupported)}>Sign In</Button>
+      <Button
+        href={withPasskeysFlag(`/auth/login?redirect=/widget/sign?origin=${encodeURIComponent(origin)}`, passkeysSupported)}
+        onclick={() => carryPopupSignFlow(webFlowId)}
+      >Sign In</Button>
     </div>
   {:else if loading}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
