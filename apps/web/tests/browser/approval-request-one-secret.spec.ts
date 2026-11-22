@@ -7,6 +7,7 @@ import { makeRecapResource } from '../../../../packages/capability-review/test/f
 import { approvalLink, mockApi } from './approval-end-pages-fixtures';
 import { approve, delegation } from './approval-code-fixtures';
 import { ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const DAY = 86_400;
 const ID = 'abcdefghijklmnopqrstuvwxyz';
@@ -100,6 +101,7 @@ async function openReview(page: Page, options: {
     }
     return respond(route, { error: `Unmocked ${url.pathname}` }, 404);
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 
   await page.goto(`/a/${ID}#v=4&k=${'A'.repeat(43)}&c=bafkreia${'a'.repeat(52)}`);
   return expiries;
