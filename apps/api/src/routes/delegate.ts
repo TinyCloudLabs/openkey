@@ -4151,11 +4151,14 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     preparedSignedMessage = previewNarrowed.siwe;
   }
 
-  // A selection in the one-hour tier starts at one hour when the owner picked nothing (what the approval
-  // screen's `onceDefaultExpiryMs` sends): the app asked for its own time but the tier defaults shorter.
-  // A pick stands, an app that asked for an hour or less keeps it, and a chosen renewal keeps the app's time:
-  // standing access is an owner choice and `assertLeaseableGrant` holds its window to 7 days.
-  if (!ownerPickedExpiry && renewalChoice?.choice !== 'leased' && siweBroadOnceTier(preparedSignedMessage, bound.keyAddress)) {
+  const selectedOnceTier = selectionUnchanged ? boundOnceTier : siweBroadOnceTier(preparedSignedMessage, bound.keyAddress);
+  const appRenewalWindow = !ownerPickedExpiry && renewalChoice?.choice === 'leased' && selectedOnceTier
+    ? preparedSignedMessage
+    : undefined;
+
+  // A selection in the one-hour tier starts at one hour when the owner picked nothing.
+  // An app that asked for an hour or less keeps its time. A chosen renewal uses the app's window.
+  if (!ownerPickedExpiry && renewalChoice?.choice !== 'leased' && selectedOnceTier) {
     const onceStartMs = Date.now() + 60 * 60 * 1000;
     if (Date.parse(immutable.expirationTime) > onceStartMs) {
       expirationOverride = new Date(onceStartMs).toISOString();
@@ -4188,7 +4191,8 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   // grant reaches secrets without the owner's confirm or with a window over 7 days.
   if (renewalChoice?.choice === 'leased') {
     try {
-      assertLeaseableGrant(preparedSignedMessage, renewalChoice.sensitiveConfirmed === true);
+      // Check the app's requested renewal window before a finite secret cap can shorten it.
+      assertLeaseableGrant(appRenewalWindow ?? preparedSignedMessage, renewalChoice.sensitiveConfirmed === true);
     } catch (error) {
       const refused = signInRenewalFailure(error);
       return c.json(refused.body, refused.status);

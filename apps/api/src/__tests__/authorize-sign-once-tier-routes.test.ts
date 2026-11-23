@@ -4,7 +4,7 @@
 // Grants outside the tier keep the app's own time and the `expiry_not_changeable` refusal.
 
 import './tc1777-test-env';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
@@ -313,6 +313,21 @@ describe('a chosen renewal keeps the app\'s own time', () => {
     expect(signed).toEqual([]);
   });
 
+  test("a confirmed lease refuses the app's 30-day window even when the secret cap would fit", async () => {
+    const issuedAt = new Date();
+    setSystemTime(issuedAt);
+    try {
+      const prepared = await prepare(PREFIX_DECRYPT, 30 * DAY_MS, {
+        expiryChangeable: true, host: NODE, issuedAt, renewal: { version: 1, leaseLifetimeSeconds: 90 * 86_400 },
+      });
+      const shown = await preview(prepared, undefined, undefined, CONFIRMED_LEASE);
+      expect(shown).toMatchObject({ status: 400, body: { code: 'renewal_refused' } });
+      expect(signed).toEqual([]);
+    } finally {
+      setSystemTime();
+    }
+  });
+
   test('a confirmed lease with a window of 7 days signs that window', async () => {
     const prepared = await leasePrepare(PREFIX_DECRYPT, 30 * DAY_MS);
     const issuedAt = Date.parse(new SiweMessage(prepared.siwe).issuedAt!);
@@ -328,5 +343,9 @@ describe('a chosen renewal keeps the app\'s own time', () => {
       renewal: CONFIRMED_LEASE,
     });
     expect(res.status, await res.clone().text()).toBe(200);
+    const result = await res.json() as { signedMessage: string; signature: string };
+    expect(result.signedMessage).toBe(shown.body.signedMessage);
+    expect(expiryOf(result.signedMessage)).toBe(Date.parse(window));
+    expect(verifyMessage(result.signedMessage, result.signature)).toBe(address);
   });
 });
