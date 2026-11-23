@@ -300,13 +300,13 @@ describe('a selection of a request that reads the vault and the whole space', ()
 });
 
 describe('a whole network decrypt, with the network cap off (the default)', () => {
-  test.each(SEQUENCES)('%s: signed for one hour without an owner pick, the pick otherwise', async (_name, sequence) => {
+  test.each(SEQUENCES)('%s: signed for one hour without an owner pick, 7 days for a longer pick', async (_name, sequence) => {
     const before = Date.now();
     const { signedMessage } = await signSequence({ [urn('')]: [`${E}decrypt`] }, 30 * DAY_MS, sequence);
     if (sequence.ownerPicks === undefined) {
       expectLifetime(signedMessage, before, HOUR_MS);
     } else {
-      expect(expiryOf(signedMessage)).toBe(Date.parse(sequence.ownerPicks));
+      expectLifetime(signedMessage, before, 7 * DAY_MS);
     }
   });
 });
