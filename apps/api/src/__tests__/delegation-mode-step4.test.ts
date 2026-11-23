@@ -615,6 +615,107 @@ describe('TC-3810 step 4: third-party flows mint terminal; plain /delegate honor
     expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
   });
 
+  test('device + managed-key /delegate flow (doManagedDelegate) completes terminal, attenuable, and undeclared, and refuses tampered mode', async () => {
+    const digest = (value: string) => createHash('sha256').update(value).digest('base64url');
+    const startDevice = async () =>
+      (
+        await deviceService.start(
+          {
+            deviceSecretHash: digest(`secret-managed-${Math.random()}`),
+            codeChallenge: digest(`verifier-managed-${Math.random()}`),
+            sessionDid: sessionDidForPublicJwk(jwk),
+            publicJwk: jwk,
+            relayPublicJwk: generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey.export({
+              format: 'jwk',
+            }) as Record<string, unknown>,
+            permissions: perms,
+            nodeOrigin: host,
+            shareOrigin: 'https://share.tinycloud.xyz',
+            delegationTtlSeconds: 60,
+          },
+          `198.51.100.${Math.floor(Math.random() * 200) + 10}`,
+        )
+      ).transactionId;
+
+    // 1. Declared terminal, 2. Declared attenuable, 3. Undeclared — all complete through POST /prepare -> POST /.
+    for (const declared of ['terminal', 'attenuable', undefined] as const) {
+      activateSessionWithHost.mockClear();
+      signManagedMessage.mockClear();
+      const deviceTransactionId = await startDevice();
+      const prepared = await post('/prepare', {
+        keyId: managed.id,
+        jwk,
+        host,
+        expiry: '60s',
+        permissions: perms,
+        deviceTransactionId,
+        ...(declared !== undefined ? { delegationMode: declared } : {}),
+      });
+      expect(prepared.status).toBe(200);
+      const prepPayload = prepared.body.prepared as Record<string, unknown> & { siwe: string };
+      const parsedPrep = parseStrictSiwe(prepPayload.siwe);
+      expect(parsedPrep.ok).toBe(true);
+      if (!parsedPrep.ok) return;
+      expect(parsedPrep.siwe.recap?.delegationMode).toBe(declared);
+
+      const approved = await post('/', {
+        keyId: managed.id,
+        jwk,
+        host,
+        expiry: '60s',
+        permissions: perms,
+        deviceTransactionId,
+        prepared: prepPayload,
+        authorizationContextToken: (prepared.body.authorizationContext as { token: string }).token,
+        selectedActionIds: prepared.body.selectedActionKeys,
+        protocolVersion: 1,
+        ...(declared !== undefined ? { delegationMode: declared } : {}),
+      });
+      expect(approved.status).toBe(200);
+      const parsedSigned = parseStrictSiwe(approved.body.siwe as string);
+      expect(parsedSigned.ok).toBe(true);
+      if (!parsedSigned.ok) return;
+      expect(parsedSigned.siwe.recap?.delegationMode).toBe(declared);
+      expect(signManagedMessage).toHaveBeenCalledTimes(1);
+      expect(activateSessionWithHost).toHaveBeenCalledTimes(1);
+    }
+
+    // 4. Tampering with the mode in POST / (dropped or flipped) is refused before signing or activation.
+    activateSessionWithHost.mockClear();
+    signManagedMessage.mockClear();
+    const tamperedTx = await startDevice();
+    const preparedTerm = await post('/prepare', {
+      keyId: managed.id,
+      jwk,
+      host,
+      expiry: '60s',
+      permissions: perms,
+      deviceTransactionId: tamperedTx,
+      delegationMode: 'terminal',
+    });
+    expect(preparedTerm.status).toBe(200);
+    const prepPayload = preparedTerm.body.prepared as Record<string, unknown> & { siwe: string };
+    for (const tamperedMode of [undefined, 'attenuable'] as const) {
+      const refused = await post('/', {
+        keyId: managed.id,
+        jwk,
+        host,
+        expiry: '60s',
+        permissions: perms,
+        deviceTransactionId: tamperedTx,
+        prepared: { ...prepPayload, siwe: rewriteRecapMode(prepPayload.siwe, tamperedMode) },
+        authorizationContextToken: (preparedTerm.body.authorizationContext as { token: string }).token,
+        selectedActionIds: preparedTerm.body.selectedActionKeys,
+        protocolVersion: 1,
+        delegationMode: 'terminal',
+      });
+      expect(refused.status).toBe(400);
+      expect(refused.body.code).toBe('prepared_siwe_mismatch');
+    }
+    expect(signManagedMessage).not.toHaveBeenCalled();
+    expect(activateSessionWithHost).not.toHaveBeenCalled();
+  });
+
   test('plain /delegate honors auth request --grant terminal declaration, attenuable declaration, and keeps undeclared absent', async () => {
     const grantTerminal = await post('/prepare', {
       keyId: managed.id,

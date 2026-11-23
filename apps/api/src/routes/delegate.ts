@@ -1846,7 +1846,11 @@ delegateRouter.post('/', async (c) => {
     if (!expirationTime) {
       return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
     }
-    const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: bound.originalSiwe });
+    const deviceWindow = await deviceDelegationWindowError(body, {
+      host,
+      signedSiwe: bound.originalSiwe,
+      delegationMode: bound.delegationMode,
+    });
     if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
     await checkApprovalDelegation(body, { signedSiwe: bound.originalSiwe });
     const tokenAppKeyRefusal = appKeyRefusalForSiwe(bound.originalSiwe, preparedEntries);
