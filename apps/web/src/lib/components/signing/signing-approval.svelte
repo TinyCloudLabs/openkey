@@ -316,6 +316,8 @@
   const summaryStatements = $derived(
     buildSummaryStatements(selectedGrants.filter((grant) => !grant.renewalOnly)),
   );
+  const secretStatements = $derived(summaryStatements.filter((statement) => statement.secret !== undefined));
+  const groupSecrets = $derived(secretStatements.length >= 4);
   const effectiveStatements = $derived(
     renewalOn && renewalOnlyStatements.length > 0 ? buildSummaryStatements(selectedGrants) : summaryStatements,
   );
@@ -982,7 +984,29 @@
     {#if summaryStatements.length > 0}
       <ul class="summary-statements">
         {#each summaryStatements as statement (statement.key)}
-          {@render summaryRow(statement)}
+          {#if groupSecrets && statement.secret !== undefined}
+            {#if statement === secretStatements[0]}
+              <li class="summary-statement" data-severity="sensitive">
+                <details class="secret-summary">
+                  <summary>
+                    <span class="statement-line">
+                      <span class="statement-primary">Read {secretStatements.length} secrets</span>
+                      <span class="summary-sensitive-pill">Sensitive</span>
+                    </span>
+                    <span class="link show-secrets">Show the secrets</span>
+                    <span class="link hide-secrets">Hide the secrets</span>
+                  </summary>
+                  <ul class="secret-statements">
+                    {#each secretStatements as row (row.key)}
+                      <li><code class="mono">{row.secret!.name}</code></li>
+                    {/each}
+                  </ul>
+                </details>
+              </li>
+            {/if}
+          {:else}
+            {@render summaryRow(statement)}
+          {/if}
         {/each}
       </ul>
     {:else if !isMalformedRecap && effectiveStatements.length === 0}
@@ -1670,6 +1694,24 @@
     line-height: 1.45;
     font-weight: 600;
     color: #0f172a;
+  }
+  .secret-summary > summary {
+    cursor: pointer;
+    list-style: none;
+  }
+  .secret-summary > summary::-webkit-details-marker {
+    display: none;
+  }
+  .secret-summary:not([open]) .hide-secrets,
+  .secret-summary[open] .show-secrets {
+    display: none;
+  }
+  .secret-statements {
+    margin: 6px 0 0;
+    padding-inline-start: 18px;
+  }
+  .secret-statements > li + li {
+    margin-top: 4px;
   }
   .statement-detail {
     margin-top: 2px;
