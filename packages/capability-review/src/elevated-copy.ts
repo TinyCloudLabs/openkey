@@ -83,7 +83,7 @@ export function elevatedCard(
   if (kind === "encryption-keys" && exactKey !== null && abilities.decrypt && abilities.create) {
     return {
       heading: `Create and use one encryption key: ${exactKey}`,
-      body: `${who} could create the encryption key named ${exactKey} and unlock the items encrypted with it, ${LAST_FOR_AS_LONG}. It can't use any other key.`,
+      body: `${who} could create the encryption key named ${exactKey} and unlock the items encrypted with it, ${LAST_FOR_AS_LONG}. This permission covers only that key.`,
     };
   }
   if (kind === "encryption-network") {

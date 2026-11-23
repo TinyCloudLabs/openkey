@@ -196,7 +196,7 @@ describe('The warning screen for an exact encryption key', () => {
     expect(found).toHaveLength(1);
     expect(text(found[0]!.querySelector('h2'))).toContain('Create and use one encryption key: abc');
     expect(text(found[0]!)).toContain(
-      'gk.gbafa.com could create the encryption key named abc and unlock the items encrypted with it, for as long as this approval lasts. It can\'t use any other key.',
+      'gk.gbafa.com could create the encryption key named abc and unlock the items encrypted with it, for as long as this approval lasts. This permission covers only that key.',
     );
     expect(text(found[0]!)).not.toContain('folder');
     cleanup();
@@ -208,7 +208,7 @@ describe('The warning screen for an exact encryption key', () => {
     const found = cards(target);
     expect(found).toHaveLength(1);
     expect(text(found[0]!.querySelector('h2'))).toContain('Unlock and create encrypted items in a folder named share');
-    expect(text(found[0]!)).not.toContain('any other key');
+    expect(text(found[0]!)).not.toContain('covers only that key');
     cleanup();
   });
 

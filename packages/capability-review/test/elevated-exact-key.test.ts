@@ -50,7 +50,7 @@ describe("the card for one exact key", () => {
   test("unlock and create on one key reads in Monica's words", () => {
     expect(elevatedCard("encryption-keys", both, "gk.gbafa.com", where, "abc")).toEqual({
       heading: "Create and use one encryption key: abc",
-      body: "gk.gbafa.com could create the encryption key named abc and unlock the items encrypted with it, for as long as this approval lasts. It can't use any other key.",
+      body: "gk.gbafa.com could create the encryption key named abc and unlock the items encrypted with it, for as long as this approval lasts. This permission covers only that key.",
     });
   });
 
