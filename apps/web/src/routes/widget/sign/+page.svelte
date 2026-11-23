@@ -32,6 +32,7 @@
   import { PREVIEW_EXPIRED_MESSAGE, signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
   import {
     parseCapabilityReview,
+    RENEWAL_ONLY_COPY,
     parseSiweChainId,
     defaultSelection,
     annotateAppScopedGrants,
@@ -131,6 +132,8 @@
   // TC-2933: the app's renewal ask (only ever with expiryChangeable), sent at prepare. The box shows only where the
   // prepare answer offers it (`renewalMaxLeaseMs`); `renewalLeaseMs` is the owner's lease, null while unticked.
   let renewalAsk: WidgetRenewalAsk | null = null;
+  let renewalOnlyResources: string[] | undefined;
+  let renewalTurnedOff = $state(false);
   let renewalMaxLeaseMs = $state<number | null>(null);
   let renewalLeaseMs = $state<number | null>(null);
   // TC-3821: the owner confirmed "Renew sensitive access?" for the ticked lease; cleared when the box is unticked.
@@ -161,6 +164,7 @@
   }
   // A changed lease (and, from the sensitive-access step, the window) is a new preview carrying both.
   function changeRenewal(leaseMs: number | null, windowMs?: number | null, sensitiveConfirmed?: true) {
+    renewalTurnedOff = leaseMs === null;
     renewalLeaseMs = leaseMs;
     renewalConfirmed = leaseMs !== null && (sensitiveConfirmed === true || renewalConfirmed);
     if (windowMs !== undefined) expiryChoiceMs = windowMs;
@@ -346,6 +350,8 @@
     // approval shows no expiry control and the app's own expiry is signed.
     expiryChangeable = data.expiryChangeable === true;
     renewalAsk = data.renewal && typeof data.renewal === 'object' ? (data.renewal as WidgetRenewalAsk) : null;
+    renewalOnlyResources = Array.isArray(data.renewalOnlyResources) ? data.renewalOnlyResources : undefined;
+    renewalTurnedOff = false;
     renewalMaxLeaseMs = null;
     renewalLeaseMs = null;
     renewalConfirmed = false;
@@ -709,6 +715,7 @@
           provenance: key.keyType === 'EXTERNAL' ? 'external' : 'managed',
         },
         editable: canEdit,
+        renewalOnlyResources,
         metadataTrust: effectiveTrust,
         reason: envelopeReasonText
           ? { text: envelopeReasonText, source: 'caller' }
@@ -790,16 +797,15 @@
     return reviewModel.protocol !== 'malformed-recap';
   }
 
-  // Convert the current review selection to canonical action IDs.
-  function currentSelectedActionIds(): string[] {
-    return requestedActionIds(reviewModel, reviewSelection);
-  }
+  const renewalOnlyNeedsPreview = $derived(
+    reviewModel?.permissions.some((grant) => grant.renewalOnly) === true && !canUseAuthorizeSignFn(),
+  );
 
   // A stable value avoids refetching when display-only metadata rebuilds the review model.
   const previewInput = $derived.by(() =>
     key && canUseAuthorizeSignFn() && !siweRefusal
       ? JSON.stringify([currentRequestId, key.id, message,
-          [...currentSelectedActionIds()].sort(), expiryChoiceMs, elevatedAllowed])
+          requestedActionIds(reviewModel, reviewSelection).sort(), expiryChoiceMs, elevatedAllowed])
       : null,
   );
 
@@ -872,11 +878,6 @@
     if (!canUseAuthorizeSignFn()) return;
     if (signing || previewStopped) return;
     const isCurrent = () => !previewStopped && revision === previewRevision && input === previewInput;
-    const selectedIds = currentSelectedActionIds();
-    // TC-3821: a confirmed sensitive renewal counts the window from the message's own start, as the node renews it.
-    const requestedExpiry = expiryChoiceMs === null
-      ? null
-      : renewalConfirmed && renewalLeaseMs !== null ? renewalWindowExpiryAt(expiryChoiceMs, message) : expiryAt(expiryChoiceMs);
     previewing = true;
     if (keepPasskeyRefusal) keepPasskeyRefusal = false;
     else error = '';
@@ -1017,6 +1018,12 @@
         }
       }
       if (!isCurrent()) return;
+      // Resolve the renewal offer before narrowing the selection for this preview.
+      const selectedIds = requestedActionIds(reviewModel, reviewSelection, renewalLeaseMs !== null);
+      // TC-3821: a confirmed sensitive renewal counts the window from the message's own start, as the node renews it.
+      const requestedExpiry = expiryChoiceMs === null
+        ? null
+        : renewalConfirmed && renewalLeaseMs !== null ? renewalWindowExpiryAt(expiryChoiceMs, message) : expiryAt(expiryChoiceMs);
       const previewStarted = performance.now();
       const previewRes = await fetch(
         `${(import.meta.env.VITE_API_URL || '')}/api/delegate/authorize-sign-preview`,
@@ -1080,7 +1087,7 @@
 
   // The click captures one current preview; later state changes cannot replace its bytes or token.
   async function approveAndSign() {
-    if (refused) return;
+    if (refused || renewalOnlyNeedsPreview) return;
     if (!key || !message) return;
     if (signing || previewStopped || coverRefetch !== null) return;
     if (siweRefusal) {
@@ -1530,7 +1537,9 @@
         passkeyPending: exactByteGate.action === 'wait',
         host: messageHost,
         error: error || offerFailure,
-        approveBlockedReason: refusalMessage,
+        approveBlockedReason: refusalMessage ?? (renewalOnlyNeedsPreview
+          ? RENEWAL_ONLY_COPY.previewRequired(originAuthority(origin) ?? RENEWAL_ONLY_COPY.appFallback)
+          : null),
         refused,
         canUseAuthorizeSign: canUseAuthorizeSignFn(),
         previewReady: currentPreview() !== null,
@@ -1553,7 +1562,7 @@
             }
           : undefined,
         renewal: canUseAuthorizeSignFn() && renewalMaxLeaseMs !== null
-          ? { leaseMs: renewalLeaseMs, maxLeaseMs: renewalMaxLeaseMs, onChange: changeRenewal }
+          ? { leaseMs: renewalLeaseMs, maxLeaseMs: renewalMaxLeaseMs, turnedOff: renewalTurnedOff, onChange: changeRenewal }
           : undefined,
         // TC-2927: the warning screen for extra permissions. On the server-authoritative path the owner can reject one
         // and approve the rest; the exact-byte path cannot be narrowed, so it is all or nothing. The allowed ids go into the

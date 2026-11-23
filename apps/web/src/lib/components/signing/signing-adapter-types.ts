@@ -28,6 +28,8 @@ export interface RenewalChoice {
   leaseMs: number | null;
   /** The longest lease the requester signed (never more than a year). */
   maxLeaseMs: number;
+  /** The owner unticked the renewal checkbox during this review. */
+  turnedOff?: boolean;
   deviceSignIn?: true;
   /**
    * Reports the owner's lease (null: unticked). `windowMs`, when given, changes the expiry window in the

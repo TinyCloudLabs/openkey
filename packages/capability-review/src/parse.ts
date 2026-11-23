@@ -47,6 +47,8 @@ export interface ParseContext {
    * required-action heuristics.
    */
   requiredActionIds?: string[];
+  /** Exact encryption resources named by the widget renewal request. */
+  renewalOnlyResources?: readonly string[];
   /**
    * Explicit selection to render. If omitted, all parsed actions are
    * considered selected (default consent).
@@ -644,6 +646,7 @@ function buildGrants(
   signer: SignerInfo,
 ): CapabilityGrant[] {
   const signerAddress = signer.address.toLowerCase();
+  const renewalOnly = new Set(ctx.renewalOnlyResources);
   return entries.map((entry): CapabilityGrant => {
     // Resource ownership is relative to the signer. Application identity is
     // a separate manifest concern and must never be inferred from an EVM
@@ -660,6 +663,7 @@ function buildGrants(
     });
     const actions = buildActions(entry, ctx);
     const ownership = ownerFromSpace(entry.space);
+    // The URI of a top-level ReCap encryption resource is kept in space.
     const encryption = parseEncryptionResource(entry.space);
     // Top-level encryption resources use an owner DID rather than a
     // tinycloud: space. Check the chain as well as the address before saying
@@ -679,6 +683,7 @@ function buildGrants(
     const idService = effectiveServiceForId(entry.service, entry.resourceService);
     return {
       id: permissionId(idService, entry.space, entry.path),
+      ...(encryption?.kind === "key" && renewalOnly.has(entry.space) ? { renewalOnly: true as const } : {}),
       family,
       severity,
       service: entry.service,
