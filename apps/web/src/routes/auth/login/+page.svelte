@@ -536,10 +536,12 @@
   }
 
   async function signInWithPasskey() {
-    // The modal ceremony replaces the autofill request, and starts only once that request has settled:
-    // the browser keeps one ceremony at a time, so a late autofill ceremony would abort this one. An autofill
-    // sign-in the server was already verifying when this click arrived is the sign-in: its onSignedIn runs
-    // once and no second ceremony starts.
+    // A passkey sign-in that completed is the sign-in: the page is leaving, and a click in that gap starts no
+    // second ceremony. Otherwise the modal ceremony replaces the autofill request, and starts only once that
+    // request has settled: the browser keeps one ceremony at a time, so a late autofill ceremony would abort this
+    // one. An autofill sign-in the server was already verifying when this click arrived is the sign-in: its
+    // onSignedIn runs once and no second ceremony starts.
+    if (passkeySignedIn) return;
     loading = true;
     error = '';
     try {
