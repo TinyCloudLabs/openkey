@@ -91,6 +91,8 @@ export interface StatementEntry {
   showsRawText?: true;
   /** A second sentence shown in smaller type under the row, where one line cannot hold the whole statement. */
   detail?: string;
+  /** The name and exact key path behind a named secret read. */
+  secret?: { name: string; keyPath: string };
 }
 
 /** Family/action-aware structural verb classification. */
@@ -2041,6 +2043,8 @@ export interface SummaryStatement {
   codeSpans: boolean;
   /** The row's second sentence, shown under it (`StatementEntry.detail`). */
   detail?: string;
+  /** The named secret when the grants behind this row share one exact key path. */
+  secret?: StatementEntry["secret"];
 }
 
 const SUMMARY_SEVERITY_RANK: Record<PermissionSeverity, number> = { standard: 0, attention: 1, sensitive: 2 };
@@ -2124,7 +2128,7 @@ function secretKeyRows(
     if (verbs.length === 0 || verbs.some((verb) => verb !== "decrypt" && verb !== "create")) return null;
     const resource = resourceOf(grant);
     return verbs.map((verb) => verb === "decrypt"
-      ? { primaryText: secretReadText(name), service: grant.service, resource, severity: "sensitive" as const }
+      ? { primaryText: secretReadText(name), service: grant.service, resource, severity: "sensitive" as const, secret: { name, keyPath } }
       : {
           primaryText: `Create a key for the new secret ${name}.`,
           detail: SECRET_KEY_CREATE_DETAIL,
@@ -2136,7 +2140,13 @@ function secretKeyRows(
   const secret = ownSecretKvOf(grant);
   if (secret === null || !decryptKeys.has(secret.keyPath)) return null;
   if (grant.actions.length !== 1 || !KV_GET_ABILITIES.has(grant.actions[0]!.ability)) return null;
-  return [{ primaryText: secretReadText(secret.name), service: grant.service, resource: resourceOf(grant), severity: "sensitive" }];
+  return [{
+    primaryText: secretReadText(secret.name),
+    service: grant.service,
+    resource: resourceOf(grant),
+    severity: "sensitive",
+    secret,
+  }];
 }
 
 const KV_GET_ABILITIES = new Set(["tinycloud.kv/get", "kv/get"]);
@@ -2186,6 +2196,7 @@ export function buildSummaryStatements(grants: readonly CapabilityGrant[]): Summ
       const existing = grouped.get(primaryText);
       const rowSeverity = statement.severity ?? grant.severity;
       if (existing) {
+        if (existing.secret?.keyPath !== statement.secret?.keyPath) delete existing.secret;
         if (SUMMARY_SEVERITY_RANK[rowSeverity] > SUMMARY_SEVERITY_RANK[existing.severity]) {
           existing.severity = rowSeverity;
         }
@@ -2197,6 +2208,7 @@ export function buildSummaryStatements(grants: readonly CapabilityGrant[]): Summ
           unmapped: statement.literalEscaped === true,
           codeSpans: statement.codeSpans === true,
           ...(statement.detail !== undefined ? { detail: statement.detail } : {}),
+          ...(statement.secret !== undefined ? { secret: statement.secret } : {}),
         });
       }
     }

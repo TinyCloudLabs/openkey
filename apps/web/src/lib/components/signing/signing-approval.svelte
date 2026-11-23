@@ -308,6 +308,8 @@
   // header, come from one function so the header always counts the rows marked
   // Sensitive below it (capability-review `buildSummaryStatements`).
   const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
+  const secretStatements = $derived(summaryStatements.filter((statement) => statement.secret !== undefined));
+  const groupSecrets = $derived(secretStatements.length >= 4);
   const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
   const oneSecretShown = $derived(oneSecret !== null && oneNamedSecret(selectedGrants) !== null);
   const hint = $derived(oneSecretShown ? oneSecret!.hint : PROTOCOL_HINT[model.protocol]);
@@ -948,22 +950,44 @@
     {#if summaryStatements.length > 0}
       <ul class="summary-statements">
         {#each summaryStatements as statement (statement.key)}
-          <li
-            class="summary-statement"
-            data-severity={statement.severity}
-          >
-            <span class="statement-line">
-              <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans)}</span>
-              {#if statement.severity === "sensitive"}
-                <span class="summary-sensitive-pill">Sensitive</span>
-              {/if}
-            </span>
-            {#if oneSecretShown && statement.key === NAMED_SECRET_DECRYPT_ROW}
-              <span class="statement-detail">{oneSecret!.decryptNote}</span>
-            {:else if statement.detail}
-              <span class="statement-detail">{statement.detail}</span>
+          {#if groupSecrets && statement.secret !== undefined}
+            {#if statement === secretStatements[0]}
+              <li class="summary-statement" data-severity="sensitive">
+                <details class="secret-summary">
+                  <summary>
+                    <span class="statement-line">
+                      <span class="statement-primary">Read {secretStatements.length} secrets</span>
+                      <span class="summary-sensitive-pill">Sensitive</span>
+                    </span>
+                    <span class="link show-secrets">Show the secrets</span>
+                    <span class="link hide-secrets">Hide the secrets</span>
+                  </summary>
+                  <ul class="secret-statements">
+                    {#each secretStatements as row (row.key)}
+                      <li><code class="mono">{row.secret!.name}</code></li>
+                    {/each}
+                  </ul>
+                </details>
+              </li>
             {/if}
-          </li>
+          {:else}
+            <li
+              class="summary-statement"
+              data-severity={statement.severity}
+            >
+              <span class="statement-line">
+                <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans)}</span>
+                {#if statement.severity === "sensitive"}
+                  <span class="summary-sensitive-pill">Sensitive</span>
+                {/if}
+              </span>
+              {#if oneSecretShown && statement.key === NAMED_SECRET_DECRYPT_ROW}
+                <span class="statement-detail">{oneSecret!.decryptNote}</span>
+              {:else if statement.detail}
+                <span class="statement-detail">{statement.detail}</span>
+              {/if}
+            </li>
+          {/if}
         {/each}
       </ul>
     {:else if !isMalformedRecap}
@@ -1638,6 +1662,24 @@
     line-height: 1.45;
     font-weight: 600;
     color: #0f172a;
+  }
+  .secret-summary > summary {
+    cursor: pointer;
+    list-style: none;
+  }
+  .secret-summary > summary::-webkit-details-marker {
+    display: none;
+  }
+  .secret-summary:not([open]) .hide-secrets,
+  .secret-summary[open] .show-secrets {
+    display: none;
+  }
+  .secret-statements {
+    margin: 6px 0 0;
+    padding-inline-start: 18px;
+  }
+  .secret-statements > li + li {
+    margin-top: 4px;
   }
   .statement-detail {
     margin-top: 2px;
