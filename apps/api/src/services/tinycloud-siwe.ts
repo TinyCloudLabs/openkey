@@ -86,24 +86,22 @@ export type SpaceHostRequest =
 
 const SPACE_ID = /^tinycloud:pkh:eip155:(\d+):(0x[0-9a-fA-F]{40}):([^\s:/][^\s]*)$/;
 
-function recapResourcesMentionSpaceAbility(text: string): boolean {
-  for (const match of text.matchAll(/urn:recap:([A-Za-z0-9_-]+)/g)) {
-    if (Buffer.from(match[1]!, 'base64url').toString('utf8').includes(SPACE_ABILITY_PREFIX)) return true;
-  }
-  return false;
-}
+/** Any ReCap resource, in any case: the text is parsed whenever one is present, never judged from its raw bytes. */
+const RECAP_RESOURCE = /urn:recap:/i;
 
 /**
  * Reads what a message would let a site do with spaces: as written and, for `0x…` hex, as the UTF-8 bytes a signature
- * would cover. The targets come from the ReCap entries (owner address and name out of the space id), never from the
- * text around them. A ReCap that mentions a space ability and cannot be read to the end is `unreadable`, as is a
- * space-agnostic or wildcard ability or a target that is not a space id: the answer is then to refuse.
+ * would cover. A message with any ReCap resource is parsed by the same wasm parser the node reads it with, so JSON
+ * escapes, unicode escapes, duplicate keys and the rest are decoded exactly as the node decodes them; the raw bytes
+ * are never searched. The targets come from the parsed entries (owner address and name out of the space id), never
+ * from the text around them. A ReCap that cannot be parsed to the end is `unreadable`, as is a space-agnostic,
+ * wildcard or other space ability and a target that is not a space id: the answer is then to refuse.
  */
 export function spaceHostRequest(message: string): SpaceHostRequest {
   const decoded = decodeHexUtf8(message);
   const targets: SpaceHostTarget[] = [];
   for (const text of decoded === null ? [message] : [message, decoded]) {
-    if (!recapResourcesMentionSpaceAbility(text)) continue;
+    if (!RECAP_RESOURCE.test(text)) continue;
     let entries: RecapEntry[];
     try {
       entries = parseRecapFromSiwe(text) as RecapEntry[];
@@ -111,11 +109,14 @@ export function spaceHostRequest(message: string): SpaceHostRequest {
       return { kind: 'unreadable' };
     }
     if (!Array.isArray(entries)) return { kind: 'unreadable' };
-    let found = false;
     for (const entry of entries) {
-      const spaceActions = entry.service === 'space'
-        ? entry.actions ?? []
-        : (entry.actions ?? []).filter((action) => action.startsWith(SPACE_ABILITY_PREFIX) || action === '*');
+      if (!entry || typeof entry !== 'object' || !Array.isArray(entry.actions ?? [])) return { kind: 'unreadable' };
+      const service = typeof entry.service === 'string' ? entry.service.toLowerCase() : '';
+      const actions = entry.actions ?? [];
+      if (actions.some((action) => typeof action !== 'string')) return { kind: 'unreadable' };
+      const spaceActions = service === 'space' || service === 'tinycloud.space'
+        ? actions
+        : actions.filter((action) => action.toLowerCase().startsWith(SPACE_ABILITY_PREFIX) || action === '*');
       if (spaceActions.length === 0) continue;
       if (spaceActions.some((action) => action !== SPACE_HOST_ABILITY)) return { kind: 'unreadable' };
       const id = SPACE_ID.exec(entry.space ?? '');
@@ -127,9 +128,7 @@ export function spaceHostRequest(message: string): SpaceHostRequest {
         return { kind: 'unreadable' };
       }
       targets.push({ chainId: Number(id[1]), address, name: id[3]! });
-      found = true;
     }
-    if (!found) return { kind: 'unreadable' };
   }
   return targets.length === 0 ? { kind: 'none' } : { kind: 'hosts', targets };
 }

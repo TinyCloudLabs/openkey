@@ -8,6 +8,7 @@ import { generateHostSIWEMessage, prepareSession } from '@tinycloud/node-sdk-was
 import { privateKeyToAccount } from 'viem/accounts';
 import { startFakeTinyCloudNode, type FakeTinyCloudNode } from './fake-tinycloud-node';
 import { mockModules, replaceModules } from './mock-module';
+import { escapedHostSpellings, withRawRecap } from './space-host-recap';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
@@ -329,6 +330,18 @@ describe('a space host message from an app of another site', () => {
     expect(node.hostPosts).toEqual([]);
   }
 
+  /** Refused by this rule or, for a message the earlier SIWE checks already reject, by them: never a signature. */
+  async function expectNotSigned(message: string) {
+    for (const form of forms(message)) {
+      const signed = await sign(form);
+      expect([400, 403]).toContain(signed.status);
+      expect(signed.body.signature).toBeUndefined();
+    }
+    expect(unseal).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expect(node.hostPosts).toEqual([]);
+  }
+
   async function expectSigned(message: string) {
     for (const form of forms(message)) {
       const signed = await sign(form);
@@ -390,6 +403,42 @@ describe('a space host message from an app of another site', () => {
       expect(signed.body.signature).toBeUndefined();
     }
     expect(unseal).not.toHaveBeenCalled();
+  });
+
+  // The node reads the ReCap with a JSON parser that decodes escapes; so does the decision, and it is the same parser.
+  test('is refused for the primary space however the ability or the space id is spelled', async () => {
+    for (const hosted of [false, true]) {
+      state = null;
+      if (hosted) hostedPrimary();
+      for (const { json } of escapedHostSpellings(`${spaceId('default')}/space`)) {
+        await expectRefused(withRawRecap(hostSiwe('default'), json, `${spaceId('default')}/space`));
+      }
+    }
+    // The primary space's name spelled with a unicode escape, and in capitals.
+    hostedPrimary();
+    const escapedName = `{"att":{"${spaceId('d\\u0065fault')}/space":{"tinycloud.space/host":[{}]}},"prf":[]}`;
+    await expectRefused(withRawRecap(hostSiwe('default'), escapedName, `${spaceId('default')}/space`));
+  });
+
+  test('is refused for an ability in another case, a repeated key, or base64 that is not base64url', async () => {
+    hostedPrimary();
+    const resource = `${spaceId('public')}/space`;
+    await expectNotSigned(withRawRecap(hostSiwe('public'), `{"att":{"${resource}":{"TINYCLOUD.SPACE/HOST":[{}]}},"prf":[]}`, resource, 'TINYCLOUD.SPACE/HOST'));
+    await expectNotSigned(withRawRecap(hostSiwe('public'), `{"att":{"${resource}":{"tinycloud.space/host":[{}]},"${resource}":{"tinycloud.kv/get":[{}]}},"prf":[]}`, resource));
+    // Padded base64: the JSON is padded with spaces to a length that needs `=`.
+    let json = `{"att":{"${resource}":{"tinycloud.space/host":[{}]}},"prf":[]}`;
+    while (json.length % 3 !== 1) json += ' ';
+    const message = withRawRecap(hostSiwe('public'), json, resource);
+    const encoded = Buffer.from(json).toString('base64url');
+    expect(message).toContain(encoded);
+    await expectNotSigned(message.replace(encoded, Buffer.from(json).toString('base64')));
+  });
+
+  test('is signed for a non-primary space spelled with escapes once the primary space is hosted', async () => {
+    hostedPrimary();
+    for (const { json } of escapedHostSpellings(`${spaceId('public')}/space`)) {
+      await expectSigned(withRawRecap(hostSiwe('public'), json, `${spaceId('public')}/space`));
+    }
   });
 
   test('is refused for a space whose owner is not the key\'s owner', async () => {

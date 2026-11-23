@@ -1201,6 +1201,11 @@ delegateRouter.post('/sign', async (c) => {
         if (appKeyRefusal) throw new Error(`message_rejected:${appKeyRefusalMessage(appKeyRefusal, 'non_browser')}`);
         const lifetimeReach = exceedsSecretLifetime(candidate.message as string, Date.now());
         if (lifetimeReach) throw new Error(`message_rejected:${secretLifetimeMessage(lifetimeReach)}`);
+        // The policy above lets an `applications` host message through. Hosting a space for a client that is not
+        // TinyCloud's own is signed only once the owner's primary space is hosted (a complete stored bootstrap row).
+        if (await refusesThirdPartySpaceHost({
+          prisma: tx, message: candidate.message as string, key, authorities: [oauthClientProvisionAuthority(principal.clientId)],
+        })) throw new Error(HOST_SIGNING_FIRST_PARTY_ONLY);
         const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
         return { signature, identity };
       });
@@ -1219,6 +1224,7 @@ delegateRouter.post('/sign', async (c) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
       if (message === 'canonical_key_unavailable') return c.json({ approved: false, code: 'canonical_key_unavailable', reason: 'The canonical TinyCloud key is unavailable.' }, 403);
+      if (message === HOST_SIGNING_FIRST_PARTY_ONLY) return c.json({ approved: false, code: HOST_SIGNING_FIRST_PARTY_ONLY, reason: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE }, 403);
       if (message.startsWith('message_rejected:')) return c.json({ approved: false, code: 'message_rejected', reason: message.slice('message_rejected:'.length) }, 400);
       return c.json({
         approved: false,
@@ -1303,6 +1309,14 @@ delegateRouter.post('/sign', async (c) => {
     }
     if (!key || !key.sealedBlob || !policy.evidence.nonceDigest) {
       return auditDenial('key_unavailable', policy.evidence);
+    }
+    // The session policy signs only a kv ReCap on `applications`, so a space host message never gets here. This is the
+    // same rule as every other branch, from the server-known facts about the client, in case that policy widens.
+    if (await refusesThirdPartySpaceHost({
+      prisma, message: candidate.message as string, key,
+      authorities: [oauthClientProvisionAuthority(principal.clientId), originProvisionAuthority(oauthContext?.client?.tinycloudSessionOrigin)],
+    })) {
+      return auditDenial('wrong_capability', policy.evidence);
     }
 
     let grant;
@@ -1503,10 +1517,11 @@ delegateRouter.post('/sign', async (c) => {
     return c.json(openKeyApprovalRequired(autoSignDecision.reason, autoSignDecision.code));
   }
 
-  // Auto-Sign has no approval to ask on, so a space host message is signed here by the same rule as POST
-  // /api/keys/:id/sign: TinyCloud's own apps (by the Origin the browser sets), and any other site only for its own
-  // non-primary spaces once the owner's primary space is hosted. The asker is the Origin header alone.
-  if (!mayProvision(originProvisionAuthority(c.req.header('origin'))) && await refusesThirdPartySpaceHost({ prisma, message: body.message, key })) {
+  // This is the cookie-session branch: the signer middleware admits it only from OpenKey's own browser origin
+  // (`rejectNonOpenKeySignRequest`), and that origin is not in FIRST_PARTY_PROVISION_ORIGINS, so no one is first-party
+  // here. A space host message is signed only by the third-party rule of POST /api/keys/:id/sign: non-primary spaces
+  // of the key's owner once the owner's primary space is hosted. Nothing in the web app or the SDK sends one here.
+  if (await refusesThirdPartySpaceHost({ prisma, message: body.message, key, authorities: [originProvisionAuthority(c.req.header('origin'))] })) {
     return c.json({ approved: false, code: HOST_SIGNING_FIRST_PARTY_ONLY, reason: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE }, 403);
   }
 

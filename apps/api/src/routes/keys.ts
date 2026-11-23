@@ -13,7 +13,7 @@ import {
 import { awaitTinyCloudBootstrapWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
 import { parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
 import { HOST_SIGNING_FIRST_PARTY_ONLY, HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE, refusesThirdPartySpaceHost } from '../services/space-host-signing';
-import { mayProvision, originProvisionAuthority, UNATTRIBUTED_PROVISION_AUTHORITY } from '../services/provision-authority';
+import { originProvisionAuthority, UNATTRIBUTED_PROVISION_AUTHORITY } from '../services/provision-authority';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
@@ -466,7 +466,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   // signed bytes. TinyCloud's own apps are signed for. Any other site is signed for only to host its own non-primary
   // spaces for an owner whose primary space is already hosted (`refusesThirdPartySpaceHost`); every other message,
   // including a sign-in that names a space, is signed as before. Checked before the passkey gate and before unseal.
-  if (!mayProvision(authority) && await refusesThirdPartySpaceHost({ prisma, message: body.message, key })) {
+  if (await refusesThirdPartySpaceHost({ prisma, message: body.message, key, authorities: [authority] })) {
     return c.json({ error: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE, code: HOST_SIGNING_FIRST_PARTY_ONLY }, 403);
   }
 
