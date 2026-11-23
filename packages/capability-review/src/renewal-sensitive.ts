@@ -31,14 +31,16 @@ export type RenewalEntryVerdict = "none" | "confirm" | "unreadable" | "unknown-v
  */
 export function renewalEntryVerdict(entry: RenewalEntryLike): RenewalEntryVerdict {
   const resource = encryptionResourceOfEntry(entry);
-  const encryptionActions = entry.actions.filter((action) => /^(tinycloud\.)?encryption\//i.test(action));
   const encryption = resource !== null || entry.service === "encryption" || entry.service === "tinycloud.encryption" ||
-    encryptionActions.length > 0;
+    entry.actions.some((action) => /^(?:tinycloud\.)?encryption\//i.test(action));
   if (!encryption) return "none";
   const parsed = resource === null ? null : parseEncryptionResource(resource);
   if (parsed === null) return "unreadable";
-  if (encryptionActions.some((action) => !RENEWABLE_ENCRYPTION_VERBS.has(action.slice(action.indexOf("/") + 1)))) {
-    return "unknown-verb";
+  for (const action of entry.actions) {
+    const separator = action.indexOf("/");
+    const service = action.slice(0, separator);
+    if (separator < 0 || (service !== "encryption" && service !== "tinycloud.encryption") ||
+        !RENEWABLE_ENCRYPTION_VERBS.has(action.slice(separator + 1))) return "unknown-verb";
   }
   if (parsed.kind === "network") {
     return entry.actions.some((action) => ["decrypt", "*"].includes(elevatedAbilityVerb(action))) ? "confirm" : "none";

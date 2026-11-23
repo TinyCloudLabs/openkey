@@ -359,6 +359,10 @@ export async function prepareRenewalStage(input: {
 
 /** Puts the owner's signature on the saved lease message; the message is rebuilt and must match byte for byte. */
 export function signLease(stage: RenewalStage, signature: string): RenewalStage {
+  // An approval stage can survive a rollout that tightens the lease eligibility rules.
+  const grantSiwe = stage.delegation.siwe;
+  if (typeof grantSiwe !== 'string') throw unreadableGrant();
+  leaseReachesSecrets(grantSiwe);
   const prepared = leaseSiwe(stage);
   if (prepared.siwe !== stage.leaseSiwe) throw new RenewalLeaseError('lease_mismatch', 'Saved renewal lease changed', 409);
   const session = completeSessionSetup({ ...prepared, signature });
