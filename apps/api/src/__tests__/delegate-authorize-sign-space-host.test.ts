@@ -4,7 +4,7 @@
 // checked the SIWE against: TinyCloud's own apps are signed for; any other site only for its own non-primary spaces
 // once the owner's primary space is hosted; an unattributed request is another site.
 
-import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { generateHostSIWEMessage } from '@tinycloud/node-sdk-wasm';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -60,9 +60,14 @@ await mockModules({
 });
 
 let router: typeof import('../routes/delegate')['delegateRouter'];
+const savedOnSign = process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN;
 beforeAll(async () => {
   process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN = 'off';
   ({ delegateRouter: router } = await import('../routes/delegate?authorize-sign-space-host' as string));
+});
+afterAll(() => {
+  if (savedOnSign === undefined) delete process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN;
+  else process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN = savedOnSign;
 });
 beforeEach(() => {
   row = null;
