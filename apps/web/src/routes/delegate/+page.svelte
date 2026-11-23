@@ -2159,6 +2159,7 @@
               showSigner={keys.length > 1}
               oneSecret={oneSecretWords}
               unverifiedRequester={approvalRequestMode && !requester ? UNVERIFIED_REQUESTER : null}
+              signInApp={requester?.displayName ?? null}
               transport={{
                 approving: delegating || updatingPermissions,
                 error,
