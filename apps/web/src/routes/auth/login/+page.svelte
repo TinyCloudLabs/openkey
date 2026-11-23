@@ -179,6 +179,7 @@
     error = '';
     step = 'email';
     passkeySignedIn = false;
+    oauthRedirectUrl = undefined;
   }
 
   function getOAuthQuery(): string | undefined {
@@ -236,14 +237,13 @@
     }).catch((): SocialProviderId[] => []);
     providersLoaded.then((loaded) => { providers = loaded; });
     // A page restored from the back-forward cache (Back from the authorize URL, or from the provider
-    // mid-redirect) is a fresh sign-in: clear the busy state and the finished passkey sign-in, which
-    // would otherwise leave every guarded button inert.
+    // mid-redirect) is a fresh sign-in, possibly by another account: clear the busy state and everything the
+    // finished sign-in left (the passkey flag, the Terms state, the held OAuth redirect).
     const onPageShow = (event: PageTransitionEvent) => {
       if (!event.persisted) return;
       loading = false;
       loadingProvider = null;
-      passkeySignedIn = false;
-      if (native && step === 'social') step = 'email';
+      signInAgain();
     };
     window.addEventListener('pageshow', onPageShow);
     if (native) startNative(native, providersLoaded);
