@@ -32,6 +32,7 @@ import { parseManifestKeys, type ManifestKeys } from "./app-key-gate";
 import { appIdValid } from "./key-resource";
 
 const MANIFEST_PATH = "/.well-known/openkey-manifest.json";
+const APP_KEYS_PATH = "/.well-known/openkey-app-keys.json";
 const REQUEST_TIMEOUT_MS = 5_000;
 const MAX_BYTES = 64 * 1024;
 
@@ -129,6 +130,52 @@ export async function fetchAndBindWellKnownManifest(input: {
 }): Promise<OriginBindResult> {
   const { reportedOrigin, declaredDigest } = input;
 
+  // 1-3. Structural URL validation, private-host rejection, DNS pin.
+  const origin = await resolveGuardedOrigin(reportedOrigin);
+  if (!origin.ok) return { ok: false, reason: origin.reason };
+
+  // 4. Declared digest sanity: 64 lowercase hex chars.
+  const normalizedDeclared = declaredDigest.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(normalizedDeclared)) {
+    return { ok: false, reason: "declaredDigest is not a 64-char hex sha256" };
+  }
+
+  // 5. Fetch with timeout, size cap, no redirects.
+  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, MANIFEST_PATH);
+  if (!fetched.ok) return { ok: false, reason: fetched.reason };
+
+  // Parse, canonicalize, digest, compare, and extract as one fail-closed
+  // operation. The SDK computes the same canonical JSON digest from its
+  // in-memory manifest, so harmless whitespace or object-key ordering in the
+  // published file cannot break origin binding.
+  return bindWellKnownManifestBytes(
+    fetched.bytes,
+    normalizedDeclared,
+    input.owner,
+    input.ownerHint,
+  );
+}
+
+interface GuardedOriginOk {
+  ok: true;
+  url: URL;
+  pinnedAddress: string;
+}
+interface GuardedFailure {
+  ok: false;
+  reason: string;
+  /** The HTTP status, when the origin answered with a non-2xx one. */
+  status?: number;
+}
+type GuardedOrigin = GuardedOriginOk | GuardedFailure;
+type GuardedBytes = { ok: true; bytes: Uint8Array } | GuardedFailure;
+
+/**
+ * Steps 1-3 of every guarded fetch: the origin is an https origin with no
+ * path, its host is not literally private, and every address it resolves to
+ * is public. One validated address is returned for the connection to pin.
+ */
+async function resolveGuardedOrigin(reportedOrigin: string): Promise<GuardedOrigin> {
   // 1. Structural URL validation.
   let url: URL;
   try {
@@ -178,15 +225,15 @@ export async function fetchAndBindWellKnownManifest(input: {
   } catch {
     return { ok: false, reason: "reportedOrigin DNS lookup threw" };
   }
+  return { ok: true, url, pinnedAddress };
+}
 
-  // 4. Declared digest sanity: 64 lowercase hex chars.
-  const normalizedDeclared = declaredDigest.trim().toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(normalizedDeclared)) {
-    return { ok: false, reason: "declaredDigest is not a 64-char hex sha256" };
-  }
-
-  // 5. Fetch with timeout, size cap, no redirects.
-  //
+/**
+ * Step 5 of every guarded fetch: GET `path` on the validated origin, pinned to
+ * the validated address, no redirects, 5 seconds through the whole body, at
+ * most 64 KiB.
+ */
+async function fetchGuardedBytes(url: URL, pinnedAddress: string, path: string): Promise<GuardedBytes> {
   // Sol MAJOR-4: pin the connection to the DNS address that already
   // passed the private/reserved check (defeats DNS rebinding). We use
   // undici with a per-request Agent whose `connect` forces `hostname`
@@ -199,7 +246,7 @@ export async function fetchAndBindWellKnownManifest(input: {
   // complete body read. An attacker holding the TCP connection open by
   // trickling bytes cannot stall this call past REQUEST_TIMEOUT_MS —
   // the controller.abort() will surface as a body-read error.
-  const manifestUrl = `${url.origin}${MANIFEST_PATH}`;
+  const manifestUrl = `${url.origin}${path}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   // A per-call Agent avoids leaking sockets and keeps the pin scoped
@@ -217,7 +264,7 @@ export async function fetchAndBindWellKnownManifest(input: {
       {
         ...options,
         // `hostname` is the field the socket layer resolves and dials.
-        hostname: pinnedAddress!,
+        hostname: pinnedAddress,
       },
       callback,
     );
@@ -249,7 +296,7 @@ export async function fetchAndBindWellKnownManifest(input: {
     } catch {
       // best-effort
     }
-    return { ok: false, reason: `fetch returned status ${res.status}` };
+    return { ok: false, reason: `fetch returned status ${res.status}`, status: res.status };
   }
   // Enforce max size — read as bytes and abort if larger than MAX_BYTES.
   // The abort timer remains armed throughout — a slow trickle attack
@@ -307,18 +354,29 @@ export async function fetchAndBindWellKnownManifest(input: {
     // Defence in depth — the loop above returns on every error path.
     return { ok: false, reason: "response body did not complete" };
   }
-  const bytes = concatBytes(chunks, total);
+  return { ok: true, bytes: concatBytes(chunks, total) };
+}
 
-  // Parse, canonicalize, digest, compare, and extract as one fail-closed
-  // operation. The SDK computes the same canonical JSON digest from its
-  // in-memory manifest, so harmless whitespace or object-key ordering in the
-  // published file cannot break origin binding.
-  return bindWellKnownManifestBytes(
-    bytes,
-    normalizedDeclared,
-    input.owner,
-    input.ownerHint,
-  );
+export type AppKeysFileFetch =
+  | { ok: true; bytes: Uint8Array }
+  /** `missing`: the host answered 404 or 410. `unavailable`: anything else that stopped the fetch. */
+  | { ok: false; kind: "missing" | "unavailable"; reason: string };
+
+/**
+ * Fetch `https://<host>/.well-known/openkey-app-keys.json` through the same
+ * guards as the manifest. The file is never cached and never digest-checked:
+ * the caller reads the bytes it gets, once.
+ */
+export async function fetchAppKeysFile(host: string): Promise<AppKeysFileFetch> {
+  const origin = await resolveGuardedOrigin(`https://${host}`);
+  if (!origin.ok) return { ok: false, kind: "unavailable", reason: origin.reason };
+  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, APP_KEYS_PATH);
+  if (fetched.ok) return fetched;
+  return {
+    ok: false,
+    kind: fetched.status === 404 || fetched.status === 410 ? "missing" : "unavailable",
+    reason: fetched.reason,
+  };
 }
 
 type JsonValue =

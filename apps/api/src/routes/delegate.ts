@@ -126,6 +126,16 @@ import { allowedElevatedIds, elevatedDecided, elevatedNotDecidedBody } from '../
 import { elevatedActionsOf } from '@openkey/capability-review';
 import { admitAppKeys, appIdForOrigin, appKeyAdmissionRefusal, type ManifestKeys } from '../services/app-key-gate';
 import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch';
+import {
+  APP_KEY_ABILITIES,
+  APP_KEY_HANDOFF_DEFAULT_MS,
+  appKeyHandoffRefusal,
+  checkAppKeyHandoffSiwe,
+  parseAppKeyHandoff,
+  verifyAppKeyHandoffFile,
+  type AppKeyHandoffReason,
+  type AppKeyHandoffRequest,
+} from '../services/app-key-handoff';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
 import {
   canonicalizeCoordinationosOrigin,
@@ -2893,6 +2903,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     renewal?: unknown;
     requesterOrigin?: unknown;
     ticket?: string;
+    /** A prepared handoff's request for one exact app key: `{ appId, key }`, `key` relative to `apps/<appId>/`. Must equal the claimed request's. */
+    appKey?: unknown;
     transportVersion?: number;
     callback?: unknown;
     delivery?: unknown;
@@ -2921,6 +2933,17 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   const invalidRequestSiwe = invalidSiweMessage(body.siwe, 'characters');
   if (invalidRequestSiwe) return c.json(invalidRequestSiwe, 400);
   const ticket = handoffTicket(body);
+  // A ticket may ask for one exact app key; a request without a ticket never gets this mode.
+  const refuseAppKeyHandoff = (reason: AppKeyHandoffReason) => {
+    const refusal = appKeyHandoffRefusal(reason);
+    return c.json(refusal.body, refusal.status);
+  };
+  let appKeyRequest: AppKeyHandoffRequest | undefined;
+  if (body.appKey !== undefined) {
+    if (!ticket) return refuseAppKeyHandoff('ticket_required');
+    appKeyRequest = parseAppKeyHandoff(body.appKey) ?? undefined;
+    if (!appKeyRequest) return refuseAppKeyHandoff('request_invalid');
+  }
   // TC-1486: refuse a SIWE that names a different site than the verified
   // requester, or that arrives unattributed. Prepared-handoff tickets are
   // exempt: their request was bound at claim time and the requester is a
@@ -2936,7 +2959,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   const handoffTicketHash = ticket
     ? await activePreparedHandoffService.assertRequest(ticket, user.id, {
       keyId: body.keyId, siwe: body.siwe, jwk: body.jwk, host: body.host ?? '',
-      presentation: body.presentation, reportedOrigin: body.reportedOrigin,
+      presentation: body.presentation, reportedOrigin: body.reportedOrigin, appKey: body.appKey,
     })
     : undefined;
 
@@ -2991,7 +3014,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   const prepareSignAppKeyRefusal = appKeyRefusalForSiwe(body.siwe, originalEntries);
   let appKeyCandidate = false;
   if (prepareSignAppKeyRefusal) {
-    if (prepareSignAppKeyRefusal.reason !== 'apps_key' || ticket) {
+    if (prepareSignAppKeyRefusal.reason !== 'apps_key' || (ticket && !appKeyRequest)) {
       return c.json(appKeyRefusalBody(prepareSignAppKeyRefusal, ticket ? 'non_browser' : 'browser'), appKeyRefusalStatus(prepareSignAppKeyRefusal));
     }
     appKeyCandidate = true;
@@ -3241,7 +3264,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   // manifest may narrow the app's keys; otherwise the browser origin supplies
   // the app namespace and the user's approval remains the authority boundary.
   let admittedAppKeys: AdmittedAppKey[] | undefined;
-  if (appKeyCandidate) {
+  if (appKeyCandidate && !appKeyRequest) {
     const originAppId = appIdForOrigin(typeof body.requestOrigin === 'string' ? body.requestOrigin : '');
     const manifestBound = metadataTrust.status === 'origin-bound';
     const admission = admitAppKeys({
@@ -3276,6 +3299,39 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     const notAdmitted = appKeyRefusalForSiwe(body.siwe, originalEntries, admission.admitted);
     if (notAdmitted) return c.json(appKeyRefusalBody(notAdmitted, 'browser'), appKeyRefusalStatus(notAdmitted));
     admittedAppKeys = admission.admitted;
+  }
+
+  // A command-line request for one exact app key: the SIWE is exactly that key, and the app's own file lists it.
+  // Nothing else admits it. The file is fetched now, every time.
+  let appKeyInfo: Record<string, unknown> | undefined;
+  if (appKeyRequest) {
+    const checkedGrant = checkAppKeyHandoffSiwe({
+      siwe: body.siwe,
+      appKey: appKeyRequest,
+      ownerDid: `did:pkh:eip155:${chainId}:${keyAddress}`,
+      now: Date.now(),
+    });
+    if (!checkedGrant.ok) return refuseAppKeyHandoff(checkedGrant.reason);
+    // The parsed entries must agree with the text scan: one entry holding the two actions.
+    if (originalEntries.length !== 1 || originalEntries[0]!.actions.length !== APP_KEY_ABILITIES.length) {
+      return refuseAppKeyHandoff('recap');
+    }
+    const listed = await verifyAppKeyHandoffFile(appKeyRequest);
+    if (!listed.ok) return refuseAppKeyHandoff(listed.reason);
+    const notAdmitted = appKeyRefusalForSiwe(body.siwe, originalEntries, [checkedGrant.grant.admitted]);
+    if (notAdmitted) return c.json(appKeyRefusalBody(notAdmitted, 'non_browser'), appKeyRefusalStatus(notAdmitted));
+    admittedAppKeys = [checkedGrant.grant.admitted];
+    const requestedMs = Date.parse(checkedGrant.grant.expirationTime);
+    appKeyInfo = {
+      appId: appKeyRequest.appId,
+      host: listed.host,
+      key: appKeyRequest.key,
+      resource: checkedGrant.grant.admitted.resource,
+      abilities: ['decrypt', 'key.create'],
+      requestedExpiresAt: checkedGrant.grant.expirationTime,
+      defaultExpiresAt: new Date(Math.min(requestedMs, Date.now() + APP_KEY_HANDOFF_DEFAULT_MS)).toISOString(),
+      maxExpiresAt: checkedGrant.grant.expirationTime,
+    };
   }
 
   let signInRenewal: SignInRenewalRequest | undefined;
@@ -3343,6 +3399,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     verifiedManifest: issued.verifiedManifest,
     // The renewal box is offered only when the ask is bound: leases on, and a node OpenKey sets leases up on.
     ...(signInRenewal ? { renewal: { leaseLifetimeSeconds: signInRenewal.leaseLifetimeSeconds } } : {}),
+    ...(appKeyInfo ? { appKey: appKeyInfo } : {}),
   });
 });
 
@@ -4232,6 +4289,14 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     const onceStartMs = Date.now() + 60 * 60 * 1000;
     if (Date.parse(immutable.expirationTime) > onceStartMs) {
       expirationOverride = new Date(onceStartMs).toISOString();
+    }
+  }
+  // A command-line request for one exact app key starts at one hour; the owner may pick up to the time the CLI asked
+  // for (at most 7 days). A request for less keeps its time.
+  if (!ownerPickedExpiry && ticket && bound.admittedAppKeys?.length) {
+    const appKeyStartMs = Date.now() + APP_KEY_HANDOFF_DEFAULT_MS;
+    if (Date.parse(immutable.expirationTime) > appKeyStartMs) {
+      expirationOverride = new Date(appKeyStartMs).toISOString();
     }
   }
 
