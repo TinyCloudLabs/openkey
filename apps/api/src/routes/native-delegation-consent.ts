@@ -67,7 +67,7 @@ function permitted(value: unknown, ceiling: Parameters<typeof validatePermission
 function prepareSiwe(row: { sessionJwk: unknown }, permissions: Array<{ service: string; space: string; path: string; actions: string[] }>, key: { address: string }, ceiling: { siweDomain?: string }, nonce: string, ttlSeconds: number, at: Date) {
   return prepareDelegationSession({
     address: ensureEip55(key.address), chainId: 1, prefix: 'applications', jwk: row.sessionJwk as { kty: string; crv: string; x: string },
-    permissions, expiryMs: ttlSeconds * 1000, domain: ceiling.siweDomain ?? 'openkey.so', nonce, issuedAt: at,
+    permissions, expiryMs: ttlSeconds * 1000, domain: ceiling.siweDomain ?? 'openkey.so', nonce, issuedAt: at, delegationMode: 'terminal',
   });
 }
 function selectedPermissions(requested: NativePermission[], selection: unknown, spaceId: string): NativePermission[] {

@@ -86,6 +86,7 @@ const EVENTS = {
   legacy_reseal_done: true, legacy_reseal_failed: true, legacy_reseal_progress: true, legacy_reseal_quarantined: true,
   sign_origin_refused: true,
   approval_passkey_verified: true, approval_passkey_refused: true, approval_passkey_flow_covered: true, approval_passkey_flow_record_failed: true,
+  undeclared_delegation_mode_signin: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;
 type EventName = keyof typeof EVENTS;
@@ -484,4 +485,25 @@ export const apiErrorHandler: ErrorHandler<ApiEnv> = (error, c) => {
 /** Operations owns retries of retired synthetic spaces; never log SDK errors. */
 export function logReviewerCleanup(result: 'initial_wipe' | 'complete' | 'retry' | 'bound_exceeded' | 'parked', spaceId: string): void {
   emit(result === 'parked' ? 'warn' : result === 'retry' || result === 'bound_exceeded' ? 'error' : 'info', 'reviewer_cleanup', { result, space_id: spaceId, cleanup_dependency: 'TC-2817' });
+}
+
+/**
+ * TC-3810 (step 5 migration evidence): one line per undeclared sign-in
+ * (no `xyz.tinycloud.policy/delegationMode` in the request or SIWE).
+ * Carries ONLY the canonical origin (or `"unknown"`): never a user,
+ * session, DID, key, or resource.
+ */
+export function logUndeclaredDelegationModeSignIn(origin: string | null | undefined): void {
+  let safeOrigin = 'unknown';
+  if (typeof origin === 'string' && origin.length > 0 && origin.length <= 253) {
+    try {
+      const parsed = new URL(origin);
+      if ((parsed.protocol === 'https:' || parsed.protocol === 'http:') && parsed.origin === origin) {
+        safeOrigin = parsed.origin;
+      }
+    } catch {
+      // Non-URL input falls back to "unknown".
+    }
+  }
+  emit('info', 'undeclared_delegation_mode_signin', { origin: safeOrigin });
 }

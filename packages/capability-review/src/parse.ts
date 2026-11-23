@@ -21,6 +21,7 @@ import type {
   CapabilityAction,
   CapabilityGrant,
   CapabilityReviewModel,
+  DelegationMode,
   ImmutableSiweFields,
   MetadataTrust,
   ParseWarning,
@@ -29,6 +30,8 @@ import type {
   RequestProtocol,
   SignerInfo,
 } from "./model.js";
+
+const DELEGATION_MODE_KEY = "xyz.tinycloud.policy/delegationMode";
 
 export interface ParseContext {
   /** The raw message to review. Signed byte-for-byte in the legacy path. */
@@ -64,6 +67,12 @@ export interface ParseContext {
   reason: ReasonProvenance;
   /** Requester (app) identity, verified by the caller before parse. */
   requester: RequesterIdentity;
+  /**
+   * Optional request-level delegation mode declaration when the caller has not
+   * yet received the server-stamped preview SIWE. When the ReCap itself
+   * carries `xyz.tinycloud.policy/delegationMode`, the ReCap value wins.
+   */
+  delegationMode?: DelegationMode;
   /**
    * @deprecated App boundaries are derived from an origin-bound manifest's
    * app_id/prefix, never from an EVM resource owner. Retained for API
@@ -395,7 +404,7 @@ function decodeRecapUri(
   raw: string,
   grouped: Map<string, ParsedRecapEntry>,
   warnings: ParseWarning[],
-): void {
+): DelegationMode | undefined {
   const payload = raw.slice("urn:recap:".length);
   const decoded = decodeBase64Url(payload);
   if (decoded === null) {
@@ -403,7 +412,7 @@ function decodeRecapUri(
       code: "unrecognized-recap-namespace",
       message: "ReCap payload could not be base64url-decoded.",
     });
-    return;
+    return undefined;
   }
   let parsed: unknown;
   try {
@@ -413,22 +422,35 @@ function decodeRecapUri(
       code: "unrecognized-recap-namespace",
       message: "ReCap payload is not valid JSON.",
     });
-    return;
+    return undefined;
   }
   if (!parsed || typeof parsed !== "object") {
     warnings.push({
       code: "unrecognized-recap-namespace",
       message: "ReCap payload is not an object.",
     });
-    return;
+    return undefined;
   }
-  const att = (parsed as { att?: unknown }).att;
+  const obj = parsed as Record<string, unknown>;
+  let delegationMode: DelegationMode | undefined;
+  if (Object.prototype.hasOwnProperty.call(obj, DELEGATION_MODE_KEY)) {
+    const rawMode = obj[DELEGATION_MODE_KEY];
+    if (rawMode === "terminal" || rawMode === "attenuable") {
+      delegationMode = rawMode;
+    } else {
+      warnings.push({
+        code: "unrecognized-recap-namespace",
+        message: `ReCap "${DELEGATION_MODE_KEY}" must be "terminal" or "attenuable".`,
+      });
+    }
+  }
+  const att = obj.att;
   if (!att || typeof att !== "object") {
     warnings.push({
       code: "unrecognized-recap-namespace",
       message: "ReCap payload is missing an `att` map.",
     });
-    return;
+    return delegationMode;
   }
   for (const [resourceUri, abilityMapRaw] of Object.entries(
     att as Record<string, unknown>,
@@ -513,6 +535,7 @@ function decodeRecapUri(
       }
     }
   }
+  return delegationMode;
 }
 
 /**
@@ -530,9 +553,11 @@ function decodeRecapUri(
 function parseRecapResources(message: string): {
   entries: ParsedRecapEntry[];
   warnings: ParseWarning[];
+  delegationMode?: DelegationMode;
 } {
   const warnings: ParseWarning[] = [];
   const grouped = new Map<string, ParsedRecapEntry>();
+  let delegationMode: DelegationMode | undefined;
 
   SIWE_RESOURCE_LINE.lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -541,7 +566,8 @@ function parseRecapResources(message: string): {
 
     // Canonical wire form: base64url-encoded JSON payload.
     if (raw.startsWith("urn:recap:")) {
-      decodeRecapUri(raw, grouped, warnings);
+      const mode = decodeRecapUri(raw, grouped, warnings);
+      if (mode !== undefined) delegationMode = mode;
       continue;
     }
 
@@ -566,7 +592,7 @@ function parseRecapResources(message: string): {
     if (a.path !== b.path) return a.path < b.path ? -1 : 1;
     return 0;
   });
-  return { entries, warnings };
+  return delegationMode !== undefined ? { entries, warnings, delegationMode } : { entries, warnings };
 }
 
 function buildActions(
@@ -745,7 +771,7 @@ export function parseCapabilityReview(
   const immutable = parseImmutableSiweFields(ctx.message, ctx.signer);
   const expiration = siweExpirationTime(ctx.message);
 
-  const { entries, warnings: recapWarnings } = parseRecapResources(ctx.message);
+  const { entries, warnings: recapWarnings, delegationMode: recapDelegationMode } = parseRecapResources(ctx.message);
   warnings.push(...recapWarnings);
 
   // 3a. Malformed ReCap: the SIWE carried at least one `urn:recap:` resource
@@ -805,6 +831,7 @@ export function parseCapabilityReview(
   // 4. TinyCloud SIWE-ReCap: editable capabilities.
   const permissions = buildGrants(entries, ctx, ctx.signer);
   const protocol: RequestProtocol = "tinycloud-siwe-recap";
+  const delegationMode = recapDelegationMode ?? ctx.delegationMode;
   return {
     version: 1,
     protocol,
@@ -817,5 +844,6 @@ export function parseCapabilityReview(
     metadataTrust: ctx.metadataTrust,
     permissions,
     parseWarnings: warnings,
+    ...(delegationMode !== undefined ? { delegationMode } : {}),
   };
 }

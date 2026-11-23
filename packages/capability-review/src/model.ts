@@ -326,6 +326,8 @@ export type RequestProtocol =
    */
   | "malformed-recap";
 
+export type DelegationMode = "terminal" | "attenuable";
+
 export interface CapabilityReviewModel {
   /** Version tag so consumers can detect breaking model changes. */
   version: 1;
@@ -349,4 +351,10 @@ export interface CapabilityReviewModel {
   metadataTrust: MetadataTrust;
   permissions: CapabilityGrant[];
   parseWarnings: ParseWarning[];
+  /**
+   * Declared delegation mode from the top-level ReCap field
+   * `xyz.tinycloud.policy/delegationMode` (or request declaration). Omitted
+   * when undeclared.
+   */
+  delegationMode?: DelegationMode;
 }

@@ -69,6 +69,7 @@ function deviceSignedSubsetRefusal(record: DeviceAuthorizationRecord, signedSiwe
       jwk: record.publicJwk as unknown as DelegationJwk,
       permissions: record.permissions,
       deviceTransaction: true,
+      delegationMode: 'terminal',
       expiryMs: Date.parse(signed.expirationTime ?? '') - Date.parse(signed.issuedAt),
       nonce: signed.nonce,
       issuedAt: new Date(signed.issuedAt),

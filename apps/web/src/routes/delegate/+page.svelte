@@ -562,6 +562,16 @@
   }
   let requestedPermissions = $state<RequestedPermission[]>([]);
   let requestReason = $state(normalizeReason(reasonParam));
+  const rawDelegationModeParam = approvalRequestMode || deviceTransactionId
+    ? null
+    : $page.url.searchParams.get('delegationMode');
+  const initialDelegationMode: 'terminal' | 'attenuable' | undefined =
+    rawDelegationModeParam === null
+      ? undefined
+      : rawDelegationModeParam === 'attenuable'
+        ? 'attenuable'
+        : 'terminal';
+  let requestDelegationMode = $state<'terminal' | 'attenuable' | undefined>(initialDelegationMode);
   // The signer of a one-tap request, as the API checked it at /load; it alone can name the requester.
   let approvalIssuer = $state('');
   // Set when a `permissions` parameter is present (even empty) but
@@ -576,6 +586,9 @@
       const payloadReason = normalizeReason(payload.reason);
       if (payloadReason) {
         requestReason = payloadReason;
+      }
+      if (!deviceTransactionId && initialDelegationMode === undefined && payload.delegationMode !== undefined) {
+        requestDelegationMode = payload.delegationMode === 'attenuable' ? 'attenuable' : 'terminal';
       }
     }
   } catch {
@@ -950,6 +963,9 @@
     if (approvalRequestMode && renewalChoiceBody()) body.renewal = renewalChoiceBody();
     // The API refuses a device delegation outside the transaction's lifetime.
     if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
+    if (!approvalRequestMode && !deviceTransactionId && requestDelegationMode !== undefined) {
+      body.delegationMode = requestDelegationMode;
+    }
 
     const res = await fetch(`${API_URL}/api/delegate/prepare`, {
       method: 'POST',
@@ -1413,6 +1429,9 @@
         }
       }
       if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
+      if (!approvalRequestMode && !deviceTransactionId && requestDelegationMode !== undefined) {
+        body.delegationMode = requestDelegationMode;
+      }
 
       const res = await fetch(`${API_URL}/api/delegate`, {
         method: 'POST',

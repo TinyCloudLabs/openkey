@@ -21,6 +21,7 @@ import {
 } from './delegate-validation';
 import { logPermissionEntryUnknownFields } from '../log';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
+import { withRecapDelegationMode, type DelegationMode } from '../services/signed-subset';
 import { DEVICE_FLOW_ABILITIES, DEVICE_SECRETS_REFUSAL } from '../services/device-flow-abilities';
 
 export type DelegationJwk = { kty: string; crv: string; x: string };
@@ -675,6 +676,11 @@ export interface PrepareDelegationSessionInput {
   domain?: string;
   nonce?: string;
   issuedAt?: Date;
+  /**
+   * Optional ReCap delegation mode (`"terminal"` | `"attenuable"`). Device
+   * transactions default to `"terminal"`. Absent stays undeclared (step 4).
+   */
+  delegationMode?: DelegationMode;
 }
 
 export interface PrepareDelegationSessionResult {
@@ -709,7 +715,10 @@ export function prepareDelegationSession({
   domain,
   nonce,
   issuedAt,
+  delegationMode,
 }: PrepareDelegationSessionInput): PrepareDelegationSessionResult {
+  const effectiveDelegationMode: DelegationMode | undefined =
+    delegationMode ?? (deviceTransaction ? 'terminal' : undefined);
   const ownFolderOnly = permissions === undefined;
   const siweDomain = domain ?? SIWE_DOMAIN;
   const appId = genericAppId(siweDomain);
@@ -734,10 +743,13 @@ export function prepareDelegationSession({
   };
 
 
-  const baselinePrepared = prepareSession({
+  const rawBaselinePrepared = prepareSession({
     ...baseConfig,
     ...sessionAbilitiesConfig(baselineAbilities),
   });
+  const baselinePrepared = effectiveDelegationMode !== undefined
+    ? { ...rawBaselinePrepared, siwe: withRecapDelegationMode(rawBaselinePrepared.siwe, effectiveDelegationMode) }
+    : rawBaselinePrepared;
   const baselineEntries = parsePreparedRecap(baselinePrepared.siwe);
 
   if (baselineEntries.length === 0) {

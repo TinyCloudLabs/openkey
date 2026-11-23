@@ -236,6 +236,13 @@ export interface TinyCloudAuthorizationRequestV1 {
    * and `renewal` from the result.
    */
   renewal?: TinyCloudRenewalRequestV1;
+  /**
+   * Optional delegation mode declaration (`"terminal"` | `"attenuable"`).
+   * Exact `"attenuable"` asks OpenKey to show the onward-delegation consent
+   * line and sign `"attenuable"`; `"terminal"` (or any unknown non-undefined
+   * value) signs `"terminal"`.
+   */
+  delegationMode?: 'terminal' | 'attenuable';
 }
 
 export interface TinyCloudRenewalRequestV1 {
@@ -364,7 +371,7 @@ type MessageType =
   | { type: 'openkey:auth:request'; appName: string; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
-  | { type: 'openkey:sign:request'; message: string; keyId?: string; presentation?: SignMessagePresentationV1; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1; expiryChangeable?: true; renewal?: TinyCloudRenewalRequestV1 }
+  | { type: 'openkey:sign:request'; message: string; keyId?: string; presentation?: SignMessagePresentationV1; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1; expiryChangeable?: true; renewal?: TinyCloudRenewalRequestV1; delegationMode?: 'terminal' | 'attenuable' }
   | { type: 'openkey:sign:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
   | {
       type: 'openkey:sign:response';
@@ -1369,6 +1376,7 @@ export class OpenKey {
         // TC-2272: only an SDK that accepts a different signed expiry opts in; OpenKey then lets the user change it.
         ...(request.expiryChangeable === true ? { expiryChangeable: true as const } : {}),
         ...renewalRequestField(request),
+        ...(request.delegationMode !== undefined ? { delegationMode: request.delegationMode } : {}),
       },
       opts?.mode,
       reserved,
@@ -1466,6 +1474,7 @@ export class OpenKey {
         presentation: request.presentation,
         ...(request.expiryChangeable === true ? { expiryChangeable: true as const } : {}),
         ...renewalRequestField(request),
+        ...(request.delegationMode !== undefined ? { delegationMode: request.delegationMode } : {}),
         // Sol MAJOR-3 (continuation): tell the widget to hand us back
         // the previewApproval instead of asking OpenKey to sign
         // server-side with a managed key. The widget will still render
