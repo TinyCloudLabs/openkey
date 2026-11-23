@@ -45,7 +45,7 @@ const admitted = {
 };
 const permissions = [{ service: 'tinycloud.encryption', space: 'encryption', path: resource, actions: [`${E}decrypt`, `${E}key.create`] }];
 
-type Calls = { claim: number; prepare: Record<string, unknown>[]; preview: Record<string, unknown>[] };
+type Calls = { claim: number; sign: number; prepare: Record<string, unknown>[]; preview: Record<string, unknown>[] };
 
 /** Opens the prepared page for a tool that asks for `request.appKey`; `prepareReply` answers authorize-sign-prepare. */
 async function open(page: Page, options: {
@@ -53,14 +53,15 @@ async function open(page: Page, options: {
   prepareReply?: () => { status: number; body: unknown };
   previewMessage?: (candidate: string, attempt: number) => string;
   message?: string;
+  external?: boolean;
 } = {}) {
-  const calls: Calls = { claim: 0, prepare: [], preview: [] };
+  const calls: Calls = { claim: 0, sign: 0, prepare: [], preview: [] };
   await page.clock.setFixedTime(new Date(NOW));
   const message = options.message ?? siwe;
   await page.route('**/api/**', (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/api/auth/get-session') return json(route, 200, { session: { id: 's', userId: 'u', expiresAt: '2026-10-16T18:00:00.000Z' }, user: { id: 'u', email: 'owner@example.test' } });
-    if (path === '/api/keys') return json(route, 200, { keys: [key] });
+    if (path === '/api/keys') return json(route, 200, { keys: [{ ...key, keyType: options.external ? 'EXTERNAL' : key.keyType }] });
     if (path === '/api/delegate/handoffs/available') return json(route, 200, { transportVersion: 2 });
     if (path === '/api/delegate/handoffs/claim') { calls.claim += 1; return json(route, 201, { transportVersion: 2, ticket: handoffId, expiresAt: '2026-10-16T17:05:00.000Z' }); }
     if (path === '/api/delegate/handoffs/cancel-claimed') return json(route, 200, { cancelled: true });
@@ -78,6 +79,7 @@ async function open(page: Page, options: {
         previewApprovalToken: 'approved-preview', selectedActionKeys: body.selectedActionIds, permissions,
       });
     }
+    if (path === '/api/delegate/authorize-sign') calls.sign += 1;
     return json(route, 404, { error: `unexpected ${path}` });
   });
   await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
@@ -158,6 +160,43 @@ test.describe('a command-line tool asks for one exact app key', () => {
     await page.getByRole('button', { name: 'Preview signing message' }).click();
     await expect(page.locator('[data-support-line]')).toHaveText('HTTP 200 · reply_unreadable');
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+  });
+
+  test('an expired handoff stops when an external wallet returns its account', async ({ page }) => {
+    await page.clock.install({ time: new Date(NOW) });
+    await page.addInitScript(({ owner }) => {
+      const wallet = { open: false, signCalls: 0, resolveAccount: () => {} };
+      Object.assign(window, {
+        testWallet: wallet,
+        ethereum: { request: async ({ method }: { method: string }) => {
+          if (method === 'eth_requestAccounts') {
+            return new Promise<string[]>((resolve) => {
+              wallet.open = true;
+              wallet.resolveAccount = () => resolve([owner]);
+            });
+          }
+          wallet.signCalls += 1;
+          return '0xwallet-signature';
+        } },
+      });
+    }, { owner: address });
+    const calls = await open(page, { external: true });
+    await page.getByRole('button', { name: 'Preview signing message' }).click();
+    await page.getByRole('button', { name: 'Approve', exact: true }).click();
+    await expect.poll(() => page.evaluate(() =>
+      (window as Window & { testWallet: { open: boolean } }).testWallet.open,
+    )).toBe(true);
+
+    await page.clock.fastForward(300_001);
+    await expect(page.getByRole('heading', { name: 'This request expired' })).toBeVisible();
+    const walletSigns = await page.evaluate(async () => {
+      const wallet = (window as Window & { testWallet: { resolveAccount: () => void; signCalls: number } }).testWallet;
+      wallet.resolveAccount();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      return wallet.signCalls;
+    });
+    expect(walletSigns).toBe(0);
+    expect(calls.sign).toBe(0);
   });
 
   test('an app key grant without appKey stops before the claim', async ({ page }) => {

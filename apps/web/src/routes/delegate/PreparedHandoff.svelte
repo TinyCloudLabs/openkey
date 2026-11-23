@@ -5,7 +5,7 @@
   import { api, type EthereumKey } from '$lib/api';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import {
-    TICKET_APP_KEY_COPY, TICKET_APP_KEY_MAX_MS, buildStatements, defaultSelection, matchesTicketAppKeyPreview,
+    TICKET_APP_KEY_COPY, TICKET_APP_KEY_MAX_MS, admittedTicketAppKeyDefault, buildStatements, defaultSelection, matchesTicketAppKeyPreview,
     parseCapabilityReview, parseEncryptionResource, parseSiweFields, readTicketAppKey, renderLiteral, renderSiweLiteral,
     reviewTicketAppKey, siweExpirationTime, splitStatementCode, ticketAppKeyRefusal, ticketAppKeyRefusalText,
     ticketAppKeyText, validTicketAppKeyRequest, type CapabilityGrant, type CapabilityReviewModel,
@@ -449,20 +449,12 @@
     if (handoff !== activeHandoff) return;
     if (typeof prepared.authorizationContextToken !== 'string') throw new ServerReplyError(200);
     if (request.appKey) {
-      const admitted = prepared.appKey;
-      const signedCeiling = Date.parse(siweExpirationTime(request.siwe) ?? '');
-      if (!appKeyReview || !isRecord(admitted) || admitted.appId !== appKeyReview.appId ||
-          admitted.host !== appKeyReview.host || admitted.key !== request.appKey.key ||
-          typeof admitted.defaultExpiresAt !== 'string' || typeof admitted.maxExpiresAt !== 'string' ||
-          Date.parse(admitted.maxExpiresAt) !== signedCeiling) {
-        throw new ServerReplyError(200);
-      }
-      const defaultMs = Date.parse(admitted.defaultExpiresAt);
       const serverNow = replyTime();
-      if (!Number.isFinite(defaultMs) || defaultMs <= serverNow || defaultMs > signedCeiling) throw new ServerReplyError(200);
+      const expiresAt = admittedTicketAppKeyDefault(prepared.appKey, request.appKey, request.siwe, serverNow, ONCE_DEFAULT_EXPIRY_MS);
+      if (!appKeyReview || !expiresAt) throw new ServerReplyError(200);
       appKeyDefault = {
-        expiresAt: new Date(defaultMs).toISOString(),
-        durationMs: requestedExpiryMs(new Date(serverNow).toISOString(), admitted.defaultExpiresAt),
+        expiresAt,
+        durationMs: requestedExpiryMs(new Date(serverNow).toISOString(), expiresAt),
       };
     }
     contextToken = prepared.authorizationContextToken;
@@ -555,27 +547,35 @@
   }
 
   async function approve() {
-    if (!handoff || !key || !previewToken || !contextToken || busy || submitted) return;
+    if (!handoff || !key || !previewToken || !previewMessage || !contextToken || busy || submitted) return;
+    const activeHandoff = handoff;
+    const signingKey = key;
+    const approvedToken = previewToken;
+    const approvedMessage = previewMessage;
+    const approvalIsCurrent = () => handoff === activeHandoff && previewToken === approvedToken;
     busy = true;
     error = '';
     try {
       // TC-3442: the passkey prompt comes first, while the tap still counts as the user's gesture. Without one the tap
       // stays synchronous up to `submitted`, so a deadline passing mid-tap can't throw the handoff away.
-      const passkeyAssertion = key.keyType === 'EXTERNAL' || !passkeyNeed?.required ? undefined : await answerApprovalPasskey(passkeyNeed);
-      const body: Record<string, unknown> = { ticket, authorizationContextToken: contextToken, previewApprovalToken: previewToken, selectedActionIds: previewActions, protocolVersion: 1, ...(passkeyAssertion ? { passkeyAssertion } : {}) };
-      if (key.keyType === 'EXTERNAL') {
+      const passkeyAssertion = signingKey.keyType === 'EXTERNAL' || !passkeyNeed?.required ? undefined : await answerApprovalPasskey(passkeyNeed);
+      if (!approvalIsCurrent()) return;
+      const body: Record<string, unknown> = { ticket, authorizationContextToken: contextToken, previewApprovalToken: approvedToken, selectedActionIds: previewActions, protocolVersion: 1, ...(passkeyAssertion ? { passkeyAssertion } : {}) };
+      if (signingKey.keyType === 'EXTERNAL') {
         const provider = (window as Window & { ethereum?: { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
         if (!provider) throw new OwnerMessageError(STOPS.S32.lines.noWallet);
         const accounts = await provider.request({ method: 'eth_requestAccounts' });
+        if (!approvalIsCurrent()) return;
         if (!Array.isArray(accounts) || !accounts.every(value => typeof value === 'string')) throw new Error('Wallet returned invalid accounts.');
-        const account = accounts.find(value => value.toLowerCase() === key!.address.toLowerCase());
-        if (!account) throw new OwnerMessageError(fill(STOPS.S32.lines.walletLacks, { short: shortWallet(key.address) }));
+        const account = accounts.find(value => value.toLowerCase() === signingKey.address.toLowerCase());
+        if (!account) throw new OwnerMessageError(fill(STOPS.S32.lines.walletLacks, { short: shortWallet(signingKey.address) }));
         let signature: unknown;
         try {
-          signature = await provider.request({ method: 'personal_sign', params: [previewMessage, account] });
+          signature = await provider.request({ method: 'personal_sign', params: [approvedMessage, account] });
         } catch {
           throw new OwnerMessageError(STOPS.S32.lines.walletDeclined);
         }
+        if (!approvalIsCurrent()) return;
         if (typeof signature !== 'string') throw new OwnerMessageError(STOPS.S32.lines.walletDeclined);
         body.externalSignature = signature;
       }
@@ -593,19 +593,19 @@
       if (signed.protocolVersion !== 1 || typeof signed.signature !== 'string' || typeof signed.address !== 'string' ||
           !Array.isArray(signed.selectedActionKeys) || !signed.selectedActionKeys.every(value => typeof value === 'string') ||
           !Array.isArray(signed.permissions) ||
-          signed.signedMessage !== previewMessage || signed.selectedKeyId !== key.id || typeof signed.deliveryState !== 'string') {
+          signed.signedMessage !== approvedMessage || signed.selectedKeyId !== signingKey.id || typeof signed.deliveryState !== 'string') {
         throw new Error('Signed response differs from the reviewed request. Restart the CLI command.');
       }
       const result: Result = {
         protocolVersion: 1, address: signed.address, signature: signed.signature,
-        signedMessage: previewMessage, selectedActionKeys: signed.selectedActionKeys, permissions: signed.permissions,
+        signedMessage: approvedMessage, selectedActionKeys: signed.selectedActionKeys, permissions: signed.permissions,
       };
       const envelope = { transportVersion: 2, state: signed.deliveryState, selectedKeyId: signed.selectedKeyId, result };
       code = encode(envelope);
       phase = 'done';
-      if (handoff.delivery.callback) {
+      if (activeHandoff.delivery.callback) {
         try {
-          const response = await fetch(handoff.delivery.callback, { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(envelope) });
+          const response = await fetch(activeHandoff.delivery.callback, { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(envelope) });
           const receipt: unknown = await response.json().catch(() => null);
           if (!response.ok || !receipt || typeof receipt !== 'object' || !('accepted' in receipt) || receipt.accepted !== true) {
             throw new Error('CLI did not accept the response.');
@@ -614,6 +614,7 @@
         } catch { callbackFailed = true; }
       }
     } catch (cause) {
+      if (!approvalIsCurrent()) return;
       if (cause instanceof PasskeyPromptError) {
         error = cause.message;
       } else if (cause instanceof ApprovalReplyError && isPasskeyApprovalRefusal(cause)) {

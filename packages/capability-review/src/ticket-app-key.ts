@@ -38,12 +38,51 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function attenuation(resource: string): Record<string, unknown> | null {
+// JSON.parse has already validated the syntax. Scan object member names as
+// written so duplicates cannot disappear before we inspect the attenuation.
+function hasDuplicateJsonKeys(json: string): boolean {
+  const objects: Array<Set<string> | null> = [];
+  let expectKey = false;
+  let i = 0;
+  while (i < json.length) {
+    const ch = json[i]!;
+    if (ch === '"') {
+      let end = i + 1;
+      while (json[end] !== '"') end += json[end] === '\\' ? 2 : 1;
+      const keys = objects[objects.length - 1];
+      if (keys && expectKey) {
+        const key = JSON.parse(json.slice(i, end + 1)) as string;
+        if (keys.has(key)) return true;
+        keys.add(key);
+        expectKey = false;
+      }
+      i = end + 1;
+      continue;
+    }
+    if (ch === '{') {
+      objects.push(new Set());
+      expectKey = true;
+    } else if (ch === '[') {
+      objects.push(null);
+      expectKey = false;
+    } else if (ch === '}' || ch === ']') {
+      objects.pop();
+      expectKey = false;
+    } else if (ch === ',') {
+      expectKey = objects[objects.length - 1] instanceof Set;
+    }
+    i += 1;
+  }
+  return false;
+}
+
+function attenuation(resource: string, strict = false): Record<string, unknown> | null {
   if (!resource.startsWith(RECAP_PREFIX)) return null;
-  const json = decodeBase64Url(resource.slice(RECAP_PREFIX.length));
+  const json = decodeBase64Url(resource.slice(RECAP_PREFIX.length), strict);
   if (json === null) return null;
   try {
     const recap: unknown = JSON.parse(json);
+    if (strict && hasDuplicateJsonKeys(json)) return null;
     return record(recap) && record(recap.att) ? recap.att : null;
   } catch {
     return null;
@@ -63,14 +102,40 @@ export function validTicketAppKeyRequest(fields: SiweFields, appKey: TicketAppKe
     );
   }
   if (fields.resources?.length !== 1) return false;
-  const att = attenuation(fields.resources[0]!);
+  const att = attenuation(fields.resources[0]!, true);
   if (!att || Object.keys(att).length !== 1) return false;
-  const resource = `${KEY_RESOURCE_PREFIX}did:pkh:eip155:${fields.chainId}:${fields.address}:default/${ticketAppKeyPath(appKey)}`;
+  const resource = ticketAppKeyResource(fields, appKey);
   const abilities = att[resource];
   if (!record(abilities) || Object.keys(abilities).length !== 2 ||
       !noCaveats(abilities[DECRYPT]) || !noCaveats(abilities[CREATE])) return false;
   const end = Date.parse(fields.expirationTime ?? "");
   return end > now && end <= now + TICKET_APP_KEY_MAX_MS;
+}
+
+function ticketAppKeyResource(fields: SiweFields, appKey: TicketAppKey): string {
+  return `${KEY_RESOURCE_PREFIX}did:pkh:eip155:${fields.chainId}:${fields.address}:default/${ticketAppKeyPath(appKey)}`;
+}
+
+/** Check the server admitted the reviewed grant and read its default end. */
+export function admittedTicketAppKeyDefault(
+  reply: unknown, appKey: TicketAppKey, original: string, now: number, defaultWindowMs: number,
+): string | null {
+  const parsed = parseSiweFields(original);
+  if (!parsed.ok || !parsed.fields.expirationTime || !record(reply) ||
+      reply.appId !== appKey.appId || reply.host !== appHostForAppId(appKey.appId) || reply.key !== appKey.key ||
+      reply.resource !== ticketAppKeyResource(parsed.fields, appKey) ||
+      !Array.isArray(reply.abilities) || reply.abilities.length !== 2 ||
+      !reply.abilities.includes("decrypt") || !reply.abilities.includes("key.create") ||
+      typeof reply.requestedExpiresAt !== "string" || typeof reply.maxExpiresAt !== "string" ||
+      typeof reply.defaultExpiresAt !== "string") return null;
+
+  const ceiling = Date.parse(parsed.fields.expirationTime);
+  const end = Date.parse(reply.defaultExpiresAt);
+  // The HTTP Date header has whole-second precision.
+  const defaultCeiling = now + defaultWindowMs + 999;
+  if (Date.parse(reply.requestedExpiresAt) !== ceiling || Date.parse(reply.maxExpiresAt) !== ceiling ||
+      !(end > now && end <= ceiling && end <= defaultCeiling)) return null;
+  return new Date(end).toISOString();
 }
 
 /** The sealed candidate may differ from the reviewed message only at the accepted expiry field. */

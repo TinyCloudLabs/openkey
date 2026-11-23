@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   TICKET_APP_KEY_MAX_MS,
+  admittedTicketAppKeyDefault,
   matchesTicketAppKeyPreview,
   parseSiweFields,
   serializeSiwe,
@@ -33,6 +34,14 @@ describe("before claiming a prepared app key", () => {
     expect(validTicketAppKeyRequest(fields, undefined, now)).toBe(false);
     const legacy = makeRecapResource({ [resource.replace(/\/apps\/.+$/, "/qa/seal-v1")]: both });
     expect(validTicketAppKeyRequest({ ...fields, resources: [legacy] }, undefined, now)).toBe(true);
+  });
+
+  it("rejects duplicate JSON member names before counting the attenuation", () => {
+    const key = JSON.stringify(resource);
+    const abilities = JSON.stringify(both);
+    const json = `{"att":{${key}:${abilities},${key}:${abilities}},"prf":[]}`;
+    const duplicates = `urn:recap:${Buffer.from(json).toString("base64url")}`;
+    expect(validTicketAppKeyRequest({ ...fields, resources: [duplicates] }, appKey, now)).toBe(false);
   });
 
   const invalid: [string, Partial<SiweFields>][] = [
@@ -68,5 +77,45 @@ describe("before showing Approve for a sealed app key preview", () => {
     expect(matchesTicketAppKeyPreview(longMessage, longMessage, longEnd, now)).toBe(false);
     const shorterOriginal = serializeSiwe({ ...fields, expirationTime: new Date(now + 1800_000).toISOString() });
     expect(matchesTicketAppKeyPreview(shorterOriginal, preview, acceptedEnd, now)).toBe(false);
+  });
+});
+
+
+describe("before showing the admitted app key", () => {
+  const hour = 3_600_000;
+  const admitted = {
+    ...appKey,
+    host: "share.tinycloud.xyz",
+    resource,
+    abilities: ["decrypt", "key.create"],
+    requestedExpiresAt: fields.expirationTime,
+    maxExpiresAt: fields.expirationTime,
+    defaultExpiresAt: acceptedEnd,
+  };
+
+  it("uses the API default and accounts for whole-second HTTP Date precision", () => {
+    expect(admittedTicketAppKeyDefault(admitted, appKey, original, now, hour)).toBe(acceptedEnd);
+    const roundedEnd = new Date(now + hour + 999).toISOString();
+    expect(admittedTicketAppKeyDefault({ ...admitted, defaultExpiresAt: roundedEnd }, appKey, original, now, hour)).toBe(roundedEnd);
+  });
+
+  const invalid = [
+    ["different resource", { resource: resource + "-other" }],
+    ["different abilities", { abilities: ["decrypt", "key.block"] }],
+    ["different requested end", { requestedExpiresAt: acceptedEnd }],
+    ["different maximum end", { maxExpiresAt: acceptedEnd }],
+    ["default over an hour", { defaultExpiresAt: new Date(now + hour + 1000).toISOString() }],
+    ["expired default", { defaultExpiresAt: fields.issuedAt }],
+  ] as const;
+
+  it.each(invalid)("refuses a %s", (_label, change) => {
+    expect(admittedTicketAppKeyDefault({ ...admitted, ...change }, appKey, original, now, hour)).toBeNull();
+  });
+
+  it("refuses a default past the CLI's requested end", () => {
+    const shorterEnd = new Date(now + 1800_000).toISOString();
+    const shorter = serializeSiwe({ ...fields, expirationTime: shorterEnd });
+    const reply = { ...admitted, requestedExpiresAt: shorterEnd, maxExpiresAt: shorterEnd };
+    expect(admittedTicketAppKeyDefault(reply, appKey, shorter, now, hour)).toBeNull();
   });
 });
