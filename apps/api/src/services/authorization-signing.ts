@@ -93,6 +93,7 @@ export interface AuthorizationContextIssueInput {
   handoffTicketHash?: string;
   /** Immutable approval request selected by the consent preview. */
   approvalRequestId?: string;
+  deviceTransactionId?: string;
   /**
    * Server-decided trust for the presentation envelope. Bound at prepare
    * time so the widget cannot upgrade it in a later step. Display-only:
@@ -150,6 +151,7 @@ interface StoredContext {
   originalSiwe: string;
   handoffTicketHash?: string;
   approvalRequestId?: string;
+  deviceTransactionId?: string;
   metadataTrust: {
     status: "verified" | "origin-bound" | "unsigned";
     reason: string;
@@ -406,6 +408,7 @@ export function issueAuthorizationContext(
     originalSiwe: input.originalSiwe ?? "",
     handoffTicketHash: input.handoffTicketHash,
     approvalRequestId: input.approvalRequestId,
+    deviceTransactionId: input.deviceTransactionId,
     metadataTrust,
     verifiedManifest: input.verifiedManifest,
     appOrigin: input.appOrigin,
@@ -861,6 +864,7 @@ export interface PeekSuccess {
     originalSiwe: string;
     handoffTicketHash?: string;
     approvalRequestId?: string;
+    deviceTransactionId?: string;
     jwk: unknown;
     expirationTime: string;
     allowedActionIds: string[];
@@ -915,6 +919,7 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       originalSiwe: stored.originalSiwe,
       handoffTicketHash: stored.handoffTicketHash,
       approvalRequestId: stored.approvalRequestId,
+      deviceTransactionId: stored.deviceTransactionId,
       jwk: stored.jwk,
       expirationTime: stored.expirationTime,
       allowedActionIds: [...stored.allowedActionIds],
