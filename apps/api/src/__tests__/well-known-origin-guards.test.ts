@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, mock, spyOn, test } from 'bun:test';
-import { promises as dns } from 'node:dns';
+import { promises as dns, type LookupAddress } from 'node:dns';
 import { mockModules } from './mock-module';
 
 const transport = mock(async () => Response.json({}));
@@ -8,9 +8,10 @@ const { fetchAppKeysFile, fetchAndBindWellKnownManifest } = await import(
   '../services/manifest-origin-fetch?well-known-origin-guards' as string
 ) as typeof import('../services/manifest-origin-fetch');
 
-let lookup: ReturnType<typeof spyOn<typeof dns, 'lookup'>>;
+const allDns = dns as { lookup(host: string, options: { all: true }): Promise<LookupAddress[]> };
+let lookup: ReturnType<typeof spyOn<typeof allDns, 'lookup'>>;
 beforeEach(() => {
-  lookup = spyOn(dns, 'lookup');
+  lookup = spyOn(allDns, 'lookup');
 });
 afterEach(() => {
   lookup.mockRestore();
@@ -41,10 +42,26 @@ test('requires an explicit JSON media type on the app-keys file', async () => {
   await expect(fetchAppKeysFile('example.test')).resolves.toMatchObject({ ok: false, kind: 'invalid' });
 });
 
-test('a pending DNS lookup uses the same deadline as the request', async () => {
-  lookup.mockImplementationOnce(() => new Promise(() => {}));
-  await expect(fetchAppKeysFile('example.test')).resolves.toEqual({
-    ok: false, kind: 'unavailable', reason: 'reportedOrigin DNS lookup threw',
-  });
-  expect(transport).not.toHaveBeenCalled();
+test('timed-out DNS lookups keep their slots until the native lookup settles', async () => {
+  const releases: Array<(addresses: LookupAddress[]) => void> = [];
+  lookup.mockImplementation(() => new Promise(resolve => releases.push(resolve)));
+  const pending = Array.from({ length: 32 }, () => fetchAppKeysFile('example.test'));
+  const full = { ok: false, kind: 'busy', reason: 'DNS lookup capacity reached' };
+
+  try {
+    await expect(fetchAppKeysFile('example.test')).resolves.toEqual(full);
+    expect(await Promise.all(pending)).toEqual(Array.from({ length: 32 }, () => ({
+      ok: false, kind: 'unavailable', reason: 'reportedOrigin DNS lookup threw',
+    })));
+    await expect(fetchAppKeysFile('example.test')).resolves.toEqual(full);
+    expect(lookup).toHaveBeenCalledTimes(32);
+    expect(transport).not.toHaveBeenCalled();
+
+    for (const release of releases) release([]);
+    await Promise.resolve();
+    lookup.mockResolvedValueOnce([{ address: '93.184.216.34', family: 4 }]);
+    await expect(fetchAppKeysFile('example.test')).resolves.toMatchObject({ ok: true });
+  } finally {
+    for (const release of releases) release([]);
+  }
 }, 7_000);

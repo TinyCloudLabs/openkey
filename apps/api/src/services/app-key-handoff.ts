@@ -28,6 +28,7 @@ export type AppKeyHandoffReason =
   | 'recap'
   | 'account'
   | 'expiry'
+  | 'process_capacity'
   | 'file_unavailable'
   | 'file_missing'
   | 'file_invalid'
@@ -36,6 +37,7 @@ export type AppKeyHandoffReason =
 
 export type AppKeyHandoffCode =
   | 'app_key_request_invalid'
+  | 'app_key_fetch_busy'
   | 'app_keys_file_unavailable'
   | 'app_keys_file_missing'
   | 'app_keys_file_invalid'
@@ -48,6 +50,7 @@ const CODES: Record<AppKeyHandoffReason, AppKeyHandoffCode> = {
   recap: 'app_key_request_invalid',
   account: 'app_key_request_invalid',
   expiry: 'app_key_request_invalid',
+  process_capacity: 'app_key_fetch_busy',
   file_unavailable: 'app_keys_file_unavailable',
   file_missing: 'app_keys_file_missing',
   file_invalid: 'app_keys_file_invalid',
@@ -55,13 +58,14 @@ const CODES: Record<AppKeyHandoffReason, AppKeyHandoffCode> = {
   key_not_listed: 'app_key_not_listed',
 };
 
-const STATUSES: Record<AppKeyHandoffReason, 400 | 403> = {
+const STATUSES: Record<AppKeyHandoffReason, 400 | 403 | 429> = {
   request_invalid: 400,
   ticket_required: 400,
   app_id: 403,
   recap: 403,
   account: 403,
   expiry: 400,
+  process_capacity: 429,
   file_unavailable: 403,
   file_missing: 403,
   file_invalid: 403,
@@ -78,6 +82,7 @@ export const APP_KEY_HANDOFF_MESSAGES: Record<AppKeyHandoffReason, string> = {
   recap: "This request asks for more than the one app key it names. Nothing was approved.",
   account: "This request was made for a different account. Nothing was approved.",
   expiry: "This request lasts longer than 7 days. Nothing was approved.",
+  process_capacity: "OpenKey is busy and couldn't check {host}'s list of keys for command-line tools. Nothing was approved. Try again in a minute.",
   file_unavailable: "OpenKey couldn't check {host}'s list of keys for command-line tools. Nothing was approved. Try again.",
   file_missing: "OpenKey can't approve this request: {host} doesn't list keys that command-line tools can ask for. Nothing was approved.",
   file_invalid: "OpenKey can't approve this request: {host}'s list of keys for command-line tools can't be read. Nothing was approved.",
@@ -86,7 +91,7 @@ export const APP_KEY_HANDOFF_MESSAGES: Record<AppKeyHandoffReason, string> = {
 };
 
 export interface AppKeyHandoffRefusal {
-  status: 400 | 403;
+  status: 400 | 403 | 429;
   body: { error: string; code: AppKeyHandoffCode; reason: AppKeyHandoffReason };
 }
 
@@ -94,7 +99,10 @@ export interface AppKeyHandoffRefusal {
 export function appKeyHandoffRefusal(reason: AppKeyHandoffReason, appKey?: AppKeyHandoffRequest): AppKeyHandoffRefusal {
   const host = appKey ? appKeyHandoffHost(appKey.appId) ?? appKey.appId : 'this website';
   const keyName = appKey ? appKey.key.slice(appKey.key.lastIndexOf('/') + 1) : 'this key';
-  const error = APP_KEY_HANDOFF_MESSAGES[reason].replaceAll('{host}', host).replaceAll('{keyName}', keyName);
+  const message = reason === 'process_capacity' && !appKey
+    ? "OpenKey is busy and couldn't check apps' lists of keys for command-line tools. Nothing was approved. Try again in a minute."
+    : APP_KEY_HANDOFF_MESSAGES[reason];
+  const error = message.replaceAll('{host}', host).replaceAll('{keyName}', keyName);
   return { status: STATUSES[reason], body: { error, code: CODES[reason], reason } };
 }
 
@@ -220,6 +228,7 @@ export async function verifyAppKeyHandoffFile(
   if (host === null) return { ok: false, reason: 'app_id' };
   const fetched = await fetchFile(host);
   if (!fetched.ok) {
+    if (fetched.kind === 'busy') return { ok: false, reason: 'process_capacity' };
     if (fetched.kind === 'missing') return { ok: false, reason: 'file_missing' };
     return { ok: false, reason: fetched.kind === 'invalid' ? 'file_invalid' : 'file_unavailable' };
   }

@@ -27,7 +27,7 @@ const DAY = 24 * 60 * 60 * 1000;
 
 const sessionJwk = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
 
-type FileResult = { ok: true; bytes: Uint8Array } | { ok: false; kind: 'missing' | 'invalid' | 'unavailable'; reason: string };
+type FileResult = { ok: true; bytes: Uint8Array } | { ok: false; kind: 'missing' | 'invalid' | 'unavailable' | 'busy'; reason: string };
 const file = (body: unknown): FileResult => ({ ok: true, bytes: new TextEncoder().encode(typeof body === 'string' ? body : JSON.stringify(body)) });
 const listing = (over: Record<string, unknown> = {}) => ({
   type: 'openkey-app-keys',
@@ -227,6 +227,18 @@ describe('an admitted command-line app key', () => {
     await expect(refused.json()).resolves.toMatchObject({ code: 'expiry_exceeds_handoff' });
   });
 
+  test('preview accepts the exact default end shown at prepare', async () => {
+    const handoff = await claim(siweFor());
+    const { body } = await prepare(handoff);
+    const shownEnd = body.appKey.defaultExpiresAt as string;
+    const preview = await post('/authorize-sign-preview', {
+      authorizationContextToken: body.authorizationContextToken, selectedActionIds: body.allowedActionIds,
+      ticket: handoff.ticket, expirationTime: shownEnd,
+    });
+    expect(preview.status).toBe(200);
+    expect(expirationOf((await preview.json() as { signedMessage: string }).signedMessage)).toBe(Date.parse(shownEnd));
+  });
+
   test('a request for less than an hour keeps its time', async () => {
     const handoff = await claim(siweFor(undefined, 20 * 60_000));
     const { body } = await prepare(handoff);
@@ -347,5 +359,16 @@ test('claim returns the app-key refusal reason and owner message', async () => {
     code: 'app_key_request_invalid',
     reason: 'recap',
     error: 'This request asks for more than the one app key it names. Nothing was approved.',
+  });
+});
+
+test('prepare answers 429 with the process capacity reason and owner message', async () => {
+  fileResult = { ok: false, kind: 'busy', reason: 'DNS lookup capacity reached' };
+  const { res, body } = await prepare(await claim(siweFor()));
+  expect(res.status).toBe(429);
+  expect(body).toEqual({
+    code: 'app_key_fetch_busy',
+    reason: 'process_capacity',
+    error: "OpenKey is busy and couldn't check share.tinycloud.xyz's list of keys for command-line tools. Nothing was approved. Try again in a minute.",
   });
 });

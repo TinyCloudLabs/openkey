@@ -35,6 +35,8 @@ const MANIFEST_PATH = "/.well-known/openkey-manifest.json";
 const APP_KEYS_PATH = "/.well-known/openkey-app-keys.json";
 const REQUEST_TIMEOUT_MS = 5_000;
 const MAX_BYTES = 64 * 1024;
+const MAX_DNS_LOOKUPS = 32;
+let activeDnsLookups = 0;
 
 const reservedIPv6 = new net.BlockList();
 for (const [address, prefix] of [
@@ -184,6 +186,7 @@ interface GuardedFailure {
   /** The HTTP status, when the origin answered with a non-2xx one. */
   status?: number;
   invalidContentType?: boolean;
+  dnsCapacity?: boolean;
 }
 type GuardedOrigin = GuardedOriginOk | GuardedFailure;
 type GuardedBytes = { ok: true; bytes: Uint8Array } | GuardedFailure;
@@ -223,6 +226,9 @@ async function resolveGuardedOrigin(reportedOrigin: string, signal: AbortSignal)
   //  connection to it via a custom undici dispatcher below. TLS SNI /
   //  hostname validation stays bound to `url.hostname`, so the fetch
   //  refuses if the presented cert is not for the reported origin.
+  if (activeDnsLookups >= MAX_DNS_LOOKUPS) {
+    return { ok: false, reason: "DNS lookup capacity reached", dnsCapacity: true };
+  }
   let pinnedAddress: string | null = null;
   try {
     const addresses = await lookupBeforeDeadline(url.hostname, signal);
@@ -254,9 +260,19 @@ async function lookupBeforeDeadline(hostname: string, signal: AbortSignal) {
     signal.addEventListener("abort", onAbort, { once: true });
   });
   try {
-    return await Promise.race([dns.lookup(hostname, { all: true }), deadline]);
+    return await Promise.race([lookupWithSlot(hostname), deadline]);
   } finally {
     signal.removeEventListener("abort", onAbort!);
+  }
+}
+
+async function lookupWithSlot(hostname: string) {
+  activeDnsLookups++;
+  try {
+    return await dns.lookup(hostname, { all: true });
+  } finally {
+    // dns.lookup cannot be cancelled once native resolver work starts.
+    activeDnsLookups--;
   }
 }
 
@@ -328,7 +344,7 @@ async function fetchGuardedBytes(url: URL, pinnedAddress: string, path: string, 
 
 export type AppKeysFileFetch =
   | { ok: true; bytes: Uint8Array }
-  | { ok: false; kind: "missing" | "invalid" | "unavailable"; reason: string };
+  | { ok: false; kind: "missing" | "invalid" | "unavailable" | "busy"; reason: string };
 
 /**
  * Fetch `https://<host>/.well-known/openkey-app-keys.json` through the same
@@ -338,7 +354,7 @@ export type AppKeysFileFetch =
 export async function fetchAppKeysFile(host: string): Promise<AppKeysFileFetch> {
   const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   const origin = await resolveGuardedOrigin(`https://${host}`, signal);
-  if (!origin.ok) return { ok: false, kind: "unavailable", reason: origin.reason };
+  if (!origin.ok) return { ok: false, kind: origin.dnsCapacity ? "busy" : "unavailable", reason: origin.reason };
   const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, APP_KEYS_PATH, signal);
   if (fetched.ok) return fetched;
   if (fetched.invalidContentType) return { ok: false, kind: "invalid", reason: fetched.reason };

@@ -3320,7 +3320,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       return refuseAppKeyHandoff('recap');
     }
     const release = appKeyFetchLimit.acquire(user.id);
-    if (!release) return c.json({ error: 'Too many app key requests for this account', code: 'rate_limited' }, 429);
+    if (release === 'process') return refuseAppKeyHandoff('process_capacity');
+    if (release === 'account') return c.json({ error: 'Too many app key requests for this account', code: 'rate_limited' }, 429);
     const listed = await verifyAppKeyHandoffFile(appKeyRequest).finally(release);
     if (!listed.ok) return refuseAppKeyHandoff(listed.reason);
     const notAdmitted = appKeyRefusalForSiwe(body.siwe, originalEntries, [checkedGrant.grant.admitted]);

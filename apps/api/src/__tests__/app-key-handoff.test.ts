@@ -205,6 +205,14 @@ describe('appKeyHandoffRefusal', () => {
     expect(appKeyHandoffRefusal('file_app_mismatch', appKey).body.code).toBe('app_keys_file_invalid');
     expect(appKeyHandoffRefusal('file_unavailable', appKey).body.code).toBe('app_keys_file_unavailable');
     expect(appKeyHandoffRefusal('key_not_listed', appKey).body.code).toBe('app_key_not_listed');
+    expect(appKeyHandoffRefusal('process_capacity')).toEqual({
+      status: 429,
+      body: {
+        code: 'app_key_fetch_busy',
+        reason: 'process_capacity',
+        error: "OpenKey is busy and couldn't check apps' lists of keys for command-line tools. Nothing was approved. Try again in a minute.",
+      },
+    });
     expect(appKeyHandoffRefusal('expiry')).toMatchObject({ status: 400, body: { code: 'app_key_request_invalid' } });
   });
 
