@@ -55,7 +55,7 @@ export async function deliverNativeRenewal(
   const lease = await tx.renewalLease.findFirst({
     where: {
       leaseCid: input.leaseCid, userId: input.userId, originalCid: input.originalCid,
-      nativeRenewal: { is: { requestId: input.requestId, grantId: null, stopRequested: false } }, revokedAt: null, neverAdmittedAt: null, leaseExpiresAt: { gt: new Date() },
+      nativeRenewal: { is: { requestId: input.requestId, grantId: null, stopRequested: false } }, revokedAt: null, neverAdmittedAt: null,
     },
   });
   if (!lease) throw new RenewalLeaseError('renewal_stopped', 'Renewal was stopped for this lease', 409);

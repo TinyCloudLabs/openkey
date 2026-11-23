@@ -5,6 +5,7 @@
 // 20261012_0001_signin_polish_hints_branding, and session proof replay
 // protection from 20261012_0002_native_session_proof_jti, and the step-up
 // table and grant-revocation trigger of 20261121_0001_native_stepup.
+// The standing-lease migration also queues node revocation when native consent or a grant ends.
 // `prisma migrate diff` cannot see triggers or CHECK constraints, and the
 // consent-withdrawal triggers are what revoke native grants and tokens.
 
@@ -50,6 +51,10 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     stepup_delegation_columns: number;
     stepup_delegation_cascade: boolean;
     stepup_revoked_trigger: boolean;
+    native_renewal_columns: number;
+    native_renewal_lease_cascade: boolean;
+    native_renewal_grant_index: boolean;
+    native_renewal_stop_triggers: number;
   }>>(`
     SELECT
       EXISTS (SELECT 1 FROM information_schema.columns
@@ -136,7 +141,18 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
           AND NOT tgisinternal
           AND tgenabled <> 'D'
           AND tgname = 'tinycloud_native_stepup_revoked'
-          AND tgfoid = to_regprocedure('public.tinycloud_native_stepup_revoked()')) AS stepup_revoked_trigger
+          AND tgfoid = to_regprocedure('public.tinycloud_native_stepup_revoked()')) AS stepup_revoked_trigger,
+      (SELECT COUNT(*)::int FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'native_renewal_lease') AS native_renewal_columns,
+      EXISTS (SELECT 1 FROM pg_constraint
+        WHERE conname = 'native_renewal_lease_leaseCid_fkey' AND contype = 'f' AND confdeltype = 'c') AS native_renewal_lease_cascade,
+      to_regclass('public."native_renewal_lease_grantId_key"') IS NOT NULL AS native_renewal_grant_index,
+      (SELECT COUNT(*)::int FROM pg_trigger
+        WHERE NOT tgisinternal AND tgenabled <> 'D' AND tgfoid = to_regprocedure('public.queue_native_lease_stop()')
+          AND ((tgrelid = to_regclass('public.tinycloud_native_request')
+                AND tgname IN ('native_request_queue_lease_stop', 'native_request_delete_queue_lease_stop'))
+            OR (tgrelid = to_regclass('public.tinycloud_native_grant')
+                AND tgname IN ('native_grant_queue_lease_stop', 'native_grant_delete_queue_lease_stop')))) AS native_renewal_stop_triggers
   `);
   const verified = rows[0];
   if (
@@ -146,11 +162,12 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     // 27 native columns plus `reviewerEpoch`, `reviewerSessionId` and `reviewerDeadline` from 20261111_0002_reviewer_apple.
     // ... and `kind`, `grantId` and `appId` from 20261121_0002_native_request_kind.
     // ... and `approvalPasskeyMethod` from 20261121_0005_native_approval_passkey_method.
-    verified.request_columns !== 34 ||
-    verified.preparation_columns !== 12 ||
+    // ... and the renewal ask and lease CID from 20261123_0001_native_standing_renewal.
+    verified.request_columns !== 36 ||
+    verified.preparation_columns !== 13 ||
     !verified.preparation_host_column ||
-    // 24 native columns plus `reviewerEpoch` from 20261111_0001_reviewer_accounts.
-    verified.grant_columns !== 25 ||
+    // 24 native columns plus reviewer epoch and standing renewal lease CID.
+    verified.grant_columns !== 26 ||
     verified.status_checks !== 5 ||
     !verified.request_grant_cascade ||
     !verified.grant_refresh_index ||
@@ -170,7 +187,11 @@ export async function assertNativeDelegationSchema(database: GuardDatabase): Pro
     !verified.stepup_guard_trigger ||
     verified.stepup_delegation_columns !== 11 ||
     !verified.stepup_delegation_cascade ||
-    !verified.stepup_revoked_trigger
+    !verified.stepup_revoked_trigger ||
+    verified.native_renewal_columns !== 6 ||
+    !verified.native_renewal_lease_cascade ||
+    !verified.native_renewal_grant_index ||
+    verified.native_renewal_stop_triggers !== 4
   ) {
     throw new Error(`TC-773 native delegation schema verification failed: ${JSON.stringify(verified)}`);
   }
