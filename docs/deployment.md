@@ -664,7 +664,7 @@ names the exact image that was scanned. The CVM pulls without credentials, so
 the package must be public: the deploy fetches the pushed digest as an
 anonymous client before the migrations and stops if it can't. A new package
 starts private. Before the first deploy from GHCR, seed the package if needed,
-make it public and ensure `TinyCloudLabs/openkey` has Write under **Manage
+make it public and give `TinyCloudLabs/openkey` Write under **Manage
 Actions access** in the package settings. Images deployed before the move stay on Docker Hub as
 `skgbafa/openkey-api@sha256:…`, and the preflight accepts either repository as
 the rollback image. The push carries a GitHub build provenance attestation:
