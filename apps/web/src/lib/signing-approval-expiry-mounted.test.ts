@@ -419,7 +419,8 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
         get selection() { return state.get('selection') as Set<string>; },
         get expiryMs() { return state.get('expiry') as number | null; },
         editing: false, onApprove() {}, onCancel() {}, onSelectionChange() {}, onEditingChange() {},
-        onExpiryChange: (ms: number | null) => { calls.push(ms); state.set('expiry', ms); },
+        get approving() { return state.get('approving') === true; },
+        onExpiryChange: (ms: number | null) => { calls.push(ms); if (state.get('failToPrepare') !== true) state.set('expiry', ms); },
         onceExpiryDefault: true,
         ...props,
       },
@@ -687,6 +688,23 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
     const { target, calls, cleanup } = mounted(modelOf([decrypt]), signed(3 * D, 3 * D));
     expect(radioLabels(target)).toEqual(['1 hour', '3 days (what the app asked)']);
     expect(calls).toEqual([H]);
+    cleanup();
+  });
+
+  // The signed /a/<id> page disables the choice while it prepares the new length, and on a failed prepare keeps the
+  // old length as the one that will be signed.
+  test('a pick that could not be prepared leaves the radios on the length that will be signed', () => {
+    const { target, calls, state, cleanup } = mounted(modelOf([decrypt]), signed(7 * D, 30 * D));
+    state.set('failToPrepare', true);
+    radios(target)[1]!.click();
+    state.set('approving', true);
+    flushSync();
+    state.set('approving', false);
+    flushSync();
+    expect(calls).toEqual([H, 7 * D]);
+    expect(line(target)).toContain('1 hour');
+    expect(checkedLabel(target)).toBe('1 hour');
+    expect(radios(target).map((radio) => radio.checked)).toEqual([true, false]);
     cleanup();
   });
 });

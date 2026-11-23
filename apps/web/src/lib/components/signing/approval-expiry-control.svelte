@@ -78,6 +78,9 @@
   let confirming = $state(false);
   let confirmHeading = $state<HTMLHeadingElement | null>(null);
   let checkbox = $state<HTMLInputElement | null>(null);
+  let onceGroup = $state<HTMLFieldSetElement | null>(null);
+  // Counts the owner's picks, so the radios are checked against what will be signed after every pick.
+  let oncePicks = $state(0);
 
   const shownMs = $derived(chosenMs ?? requestedMs);
   const accessLine = $derived(shownMs === null ? "" : accessLastsLine(renewal?.deviceSignIn ? "device" : holder, shownMs));
@@ -132,6 +135,24 @@
     if (disabled) confirming = false;
   });
 
+  // A radio the owner clicked stays checked in the page even when the new length was not prepared (a failed
+  // re-prepare leaves the old length as the one that will be signed). Once the preview ends, the radios show
+  // the length that will be signed.
+  $effect(() => {
+    void oncePicks;
+    if (disabled || onceGroup === null) return;
+    const signedMs = shownMs;
+    const lengths = [ONCE_DEFAULT_EXPIRY_MS, onceChoice?.longer?.ms];
+    onceGroup.querySelectorAll<HTMLInputElement>('input[type="radio"]').forEach((radio, index) => {
+      radio.checked = lengths[index] === signedMs;
+    });
+  });
+
+  function pickOnce(ms: number) {
+    oncePicks += 1;
+    onChange(ms);
+  }
+
   function onKeydown(event: KeyboardEvent) {
     if (event.key === "Escape" && confirming) {
       event.stopPropagation();
@@ -181,7 +202,7 @@
     {/if}
     {#if onceChoice !== null}
       {#if onceChoice.longer !== null && renewal?.leaseMs == null && (shownMs === ONCE_DEFAULT_EXPIRY_MS || shownMs === onceChoice.longer.ms)}
-        <fieldset class="once-choice" data-testid="approval-expiry-once-choice" aria-describedby="{uid}-once-caution">
+        <fieldset class="once-choice" bind:this={onceGroup} data-testid="approval-expiry-once-choice" aria-describedby="{uid}-once-caution">
           <legend>How long</legend>
           <label class="once-option">
             <input
@@ -189,7 +210,7 @@
               name="{uid}-once-length"
               checked={shownMs === ONCE_DEFAULT_EXPIRY_MS}
               {disabled}
-              onchange={() => onChange(ONCE_DEFAULT_EXPIRY_MS)}
+              onchange={() => pickOnce(ONCE_DEFAULT_EXPIRY_MS)}
             />
             <span>{formatDuration(ONCE_DEFAULT_EXPIRY_MS)}</span>
           </label>
@@ -199,7 +220,7 @@
               name="{uid}-once-length"
               checked={shownMs === onceChoice.longer.ms}
               {disabled}
-              onchange={() => onChange(onceChoice.longer!.ms)}
+              onchange={() => pickOnce(onceChoice.longer!.ms)}
             />
             <span>{onceChoice.longer.label}</span>
           </label>

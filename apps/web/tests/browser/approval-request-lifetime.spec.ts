@@ -31,9 +31,10 @@ async function openReview(page: Page, options: {
   grantLifetimeSeconds?: number;
   suggestedLifetimeSeconds?: number;
   rejectOncePreview?: boolean;
+  rejectExpiry?: string;
 } = {}) {
   const {
-    grants = [notes], grantLifetimeSeconds = 30 * DAY, suggestedLifetimeSeconds, rejectOncePreview = false,
+    grants = [notes], grantLifetimeSeconds = 30 * DAY, suggestedLifetimeSeconds, rejectOncePreview = false, rejectExpiry,
   } = options;
   const expiries: string[] = [];
   await page.route('**/*', async (route) => {
@@ -69,6 +70,7 @@ async function openReview(page: Page, options: {
       const { expiry } = route.request().postDataJSON() as { expiry: string };
       expiries.push(expiry);
       if (rejectOncePreview && expiry === '3600s') return respond(route, { error: 'Preview unavailable' }, 500);
+      if (rejectExpiry === expiry) return respond(route, { error: 'Preview unavailable' }, 500);
 
       const recap = makeRecapResource(Object.fromEntries(grants.map(({ resource, ability }) => [resource, { [ability]: [{}] }])));
       const expiration = new Date(now + Number(expiry.slice(0, -1)) * 1000);
@@ -208,4 +210,18 @@ test('a failed one-hour preview leaves the longer secrets approval unavailable',
   await expect(page.getByRole('alert')).toContainText('(Error 500)');
   await expect(approve(page)).toBeDisabled();
   await expect(line(page)).toHaveCount(0);
+});
+
+// TC-4156: a length the owner picked but that could not be prepared is not what will be signed; the radios show
+// the length that was prepared last.
+test('a failed re-prepare leaves the one-time choice on the length that will be signed', async ({ page }) => {
+  const expiries = await openReview(page, { grants: [notes, decrypt], rejectExpiry: `${7 * DAY}s` });
+  const choice = page.getByRole('group', { name: 'How long', exact: true });
+  await expect(choice.getByRole('radio', { name: '1 hour' })).toBeChecked();
+  await choice.getByRole('radio', { name: '7 days (the longest allowed)' }).click();
+  await expect.poll(() => expiries.at(-1)).toBe(`${7 * DAY}s`);
+  await expect(page.getByRole('alert')).toContainText('(Error 500)');
+  await expect(choice.getByRole('radio', { name: '1 hour' })).toBeChecked();
+  await expect(choice.getByRole('radio', { name: '7 days (the longest allowed)' })).not.toBeChecked();
+  await expect(line(page)).toHaveText("This app's access to your data lasts 1 hour.");
 });
