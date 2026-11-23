@@ -57,8 +57,10 @@ export function chosenExpiryLengthMs(chosen: string, now: number): number {
  * passed (the request was prepared too long ago for a length this short).
  */
 export function anchorExpirationToIssuedAt(chosen: string, issuedAt: string, now: number): string | null {
-  const start = Date.parse(issuedAt);
-  if (!Number.isFinite(start)) return null;
+  const issued = Date.parse(issuedAt);
+  if (!Number.isFinite(issued)) return null;
+  // The app chooses Issued At: a later one than now never moves the end past now plus the length.
+  const start = Math.min(issued, now);
   let anchored = start + chosenExpiryLengthMs(chosen, now);
   if (anchored > LATEST_SIWE_TIME_MS) anchored -= Math.ceil((anchored - LATEST_SIWE_TIME_MS) / 1000) * 1000;
   return anchored > now ? new Date(anchored).toISOString() : null;

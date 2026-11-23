@@ -4239,8 +4239,8 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   // line of the bytes to sign; the preview approval seals the result.
   if (expirationOverride !== undefined) {
     // TC-3920: the signed length is the chosen length, counted from the Issued At the request already carries.
-    // A chosen renewal window is already counted from its own start.
-    if (expirationOverride !== immutable.expirationTime && renewalChoice?.choice !== 'leased') {
+    // A chosen renewal window is already counted from its own start; a prepared handoff keeps the exact end it was given.
+    if (!ticket && expirationOverride !== immutable.expirationTime && renewalChoice?.choice !== 'leased') {
       const anchored = anchorExpirationToIssuedAt(expirationOverride, immutable.issuedAt, Date.now());
       if (anchored === null) {
         return c.json(

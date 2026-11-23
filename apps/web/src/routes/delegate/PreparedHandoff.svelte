@@ -14,7 +14,7 @@
   import { ApprovalReplyError, compareWallets, readHandoffReply, releasedSigningCancellation, shortWallet, stopForApprovalError, stopKeyName } from '$lib/approval-stop';
   import { OwnerMessageError } from '$lib/delegate-failure-text';
   import StopPage from '$lib/components/approval/stop-page.svelte';
-  import { expiryAtCapped, requestedExpiryMs, windowStartMs } from '$lib/approval-expiry';
+  import { expiryAtCapped, requestedExpiryMs } from '$lib/approval-expiry';
   import ApprovalExpiryControl from '$lib/components/signing/approval-expiry-control.svelte';
   import { formatLocalAccessEnd } from '$lib/access-end';
   import CodeBox from '$lib/components/approval/code-box.svelte';
@@ -83,10 +83,10 @@
     return Number.isNaN(date.getTime()) ? null : { local: date.toLocaleString(), relative: timeUntilExpiry(value).text };
   });
   // The exact end the open fold shows after the choice: what the preview signs, else what a pick would give
-  // from the request's Issued At, else what the CLI asked for.
+  // from now, else what the CLI asked for.
   const foldEndsAt = $derived.by(() => {
     if (phase === 'preview') return siweExpirationTime(previewMessage);
-    if (expiryChoiceMs !== null) return new Date(windowStartMs(model?.immutable?.issuedAt) + expiryChoiceMs).toISOString();
+    if (expiryChoiceMs !== null) return new Date(Date.now() + expiryChoiceMs).toISOString();
     return siweExpirationTime(handoff?.request.siwe ?? '');
   });
   let key = $state<EthereumKey | null>(null);
@@ -660,7 +660,6 @@
         disabled={!expiryEditable}
         onChange={(ms) => { if (expiryEditable) expiryChoiceMs = ms; }}
         endsAt={foldEndsAt}
-        issuedAt={model?.immutable?.issuedAt}
         holder="device"
       />
       <h2 class="font-semibold">Requested abilities and spaces</h2>

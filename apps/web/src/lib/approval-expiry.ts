@@ -190,7 +190,8 @@ export function remainingAccessMs(expirationTime: string | null | undefined, now
  */
 export function windowStartMs(issuedAt: string | null | undefined, now: number = Date.now()): number {
   const start = Date.parse(issuedAt ?? '');
-  return Number.isFinite(start) ? start : now;
+  // The server counts from the earlier of Issued At and now, so a later Issued At never lengthens the grant.
+  return Number.isFinite(start) ? Math.min(start, now) : now;
 }
 
 /** The line every approval screen shows for how long the access lasts; `start` is when the window starts (`windowStartMs`). */

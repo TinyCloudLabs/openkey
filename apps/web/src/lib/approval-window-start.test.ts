@@ -4,8 +4,10 @@ import { expiryAt, formatDurationWithEnd, windowStartMs } from './approval-expir
 const D = 86_400_000;
 
 describe('the end day on the face is counted from the request\'s Issued At', () => {
-  test('windowStartMs reads Issued At and falls back to now', () => {
-    expect(windowStartMs('2026-11-18T23:59:50.000Z', 5)).toBe(Date.UTC(2026, 10, 18, 23, 59, 50));
+  test('windowStartMs reads Issued At, never later than now, and falls back to now', () => {
+    const later = Date.UTC(2026, 10, 19);
+    expect(windowStartMs('2026-11-18T23:59:50.000Z', later)).toBe(Date.UTC(2026, 10, 18, 23, 59, 50));
+    expect(windowStartMs('2026-11-20T00:00:00.000Z', later)).toBe(later);
     expect(windowStartMs(undefined, 5)).toBe(5);
     expect(windowStartMs('soon', 5)).toBe(5);
   });
