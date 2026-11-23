@@ -149,7 +149,7 @@ export function leaseReachesSecrets(siwe: string): boolean {
 }
 
 /**
- * The D7 confirmation and seven-day grant window apply to grants that reach secrets and the one-hour approval tier.
+ * The owner's confirmation and seven-day grant window apply to grants that reach secrets and the one-hour approval tier.
  * The node renews a grant for exactly that window each time: its expiry less its not-before, else its issued-at
  * (tinycloud-node `renewal::period_seconds`). The total lease length stays the owner's choice within what the requester
  * signed.
