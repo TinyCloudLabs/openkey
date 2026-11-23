@@ -68,7 +68,7 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261121_0005_native_approval_passkey_method', '450234c3f53249bd91b0f9d92823d24cd377458e1db114a503c08fe588ccf76e'],
   ['20261122_0001_terms_acceptance_embed_audit', 'b57be1d1b87aca2d43ae5b0447d9a2f6bf7bd840b48a2cd8fc0e0b638897dea1'],
   ['20261123_0001_native_standing_renewal', 'd393544e72a00e8644c9cb044f165fc18be56f5e84fd5b21f189d87a7ed0fbbf'],
-  ['20261124_0002_tinycloud_bootstrap_authority', '5562e50c4c6ea2bb9c43eaa90e3d6747005ee198426695c9b058a11abb0e917f'],
+  ['20261124_0002_tinycloud_bootstrap_authority', '1dc898a4ffa69aa926fcbd197f00e4543cd9d5afc13c8772f3b3e71386bbb44e'],
 ]);
 
 export type SchemaContractDatabase = {
