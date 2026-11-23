@@ -183,7 +183,6 @@ describe('leases on other grants are unchanged', () => {
       {},
       { [network]: ['tinycloud.encryption/key.create'] },
       { [`${network}/share/inbox`]: ['tinycloud.encryption/decrypt'] },
-      { [`${network}/secretsish/`]: ['tinycloud.encryption/decrypt'] },
     ]) {
       const result = await lease(grant(abilities, 30 * DAY));
       expect(result.error).toBeNull();

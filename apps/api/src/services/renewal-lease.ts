@@ -11,7 +11,7 @@
 // returned: nothing is saved, and the app has the node admit it.
 import { randomBytes } from 'node:crypto';
 import { completeSessionSetup, ensureEip55, parseRecapFromSiwe, prepareSession } from '@tinycloud/node-sdk-wasm';
-import { parseSiweFields, renewalEntryVerdict } from '@openkey/capability-review';
+import { grantIsBroadOnce, parseCapabilityReview, parseSiweFields, renewalEntryVerdict } from '@openkey/capability-review';
 import {
   admitOwnerRenewalLease,
   assertRenewalNodeIdentity,
@@ -149,19 +149,35 @@ export function leaseReachesSecrets(siwe: string): boolean {
 }
 
 /**
- * TC-3821: refuses a lease on a grant that reaches secrets unless the owner confirmed it (`sensitiveConfirmed`) and the
- * grant's own window is at most seven days. The node renews a grant for exactly that window each time: its expiry less
- * its not-before, else its issued-at (tinycloud-node `renewal::period_seconds`). The total lease length stays the
- * owner's choice within what the requester signed. Other grants are not checked beyond being readable.
+ * The owner's confirmation and seven-day grant window apply to grants that reach secrets and the one-hour approval tier.
+ * The node renews a grant for exactly that window each time: its expiry less its not-before, else its issued-at
+ * (tinycloud-node `renewal::period_seconds`). The total lease length stays the owner's choice within what the requester
+ * signed.
  */
 export function assertLeaseableGrant(siwe: string, sensitiveConfirmed: boolean): void {
-  if (!leaseReachesSecrets(siwe)) return;
-  if (!sensitiveConfirmed) {
-    throw new RenewalLeaseError('renewal_refused', 'Renewing access to your secrets or encrypted data needs your confirmation. Confirm "Renew sensitive access?" to keep renewal, or untick renewal and approve without it.', 400);
-  }
+  const reachesSecrets = leaseReachesSecrets(siwe);
   const parsed = parseSiweFields(siwe);
   if (!parsed.ok) throw unreadableGrant();
   const { fields } = parsed;
+
+  if (!reachesSecrets) {
+    // Use the approval screen's grant model, including resource service and signer ownership.
+    const { permissions } = parseCapabilityReview({
+      message: siwe,
+      signer: { label: 'OpenKey', address: fields.address, chainId: Number(fields.chainId), provenance: 'managed' },
+      editable: false,
+      metadataTrust: { status: 'unsigned', reason: 'server classification' },
+      reason: { text: '', source: 'none' },
+      requester: {
+        displayName: '', verifiedOrigin: null, appId: null, manifestName: null, manifestNameProvenance: 'none',
+        manifestId: null, manifestIdProvenance: 'none', manifestDigest: null, domainWarning: false, originWarning: false,
+      },
+    });
+    if (!permissions.some(grantIsBroadOnce)) return;
+  }
+  if (!sensitiveConfirmed) {
+    throw new RenewalLeaseError('renewal_refused', 'Renewing access to your secrets or encrypted data needs your confirmation. Confirm "Renew sensitive access?" to keep renewal, or untick renewal and approve without it.', 400);
+  }
   const end = Date.parse(fields.expirationTime ?? '');
   const anchor = Date.parse(fields.notBefore ?? fields.issuedAt);
   if (!Number.isFinite(end) || !Number.isFinite(anchor) || end <= anchor) throw unreadableGrant();
