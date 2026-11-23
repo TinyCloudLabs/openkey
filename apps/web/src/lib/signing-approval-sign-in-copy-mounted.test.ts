@@ -110,6 +110,9 @@ type Requester = {
   manifestIdProvenance?: 'verified' | 'origin-bound' | 'caller' | 'none';
   trust?: Trust;
   message?: string;
+  manifestName?: string | null;
+  manifestNameProvenance?: 'verified' | 'origin-bound' | 'caller' | 'none';
+  originWarning?: boolean;
 };
 
 function reviewOf(who: Requester = {}): CapabilityReviewModel {
@@ -124,13 +127,13 @@ function reviewOf(who: Requester = {}): CapabilityReviewModel {
       displayName: who.displayName ?? 'Food Tracker',
       verifiedOrigin: who.verifiedOrigin === undefined ? 'https://food.example' : who.verifiedOrigin,
       appId: null,
-      manifestName: null,
-      manifestNameProvenance: 'none',
+      manifestName: who.manifestName ?? null,
+      manifestNameProvenance: who.manifestNameProvenance ?? 'none',
       manifestId: who.manifestId ?? null,
       manifestIdProvenance: who.manifestIdProvenance ?? 'none',
       manifestDigest: null,
       domainWarning: false,
-      originWarning: false,
+      originWarning: who.originWarning ?? false,
     },
     requesterAddress: null,
     requesterVerified: false,
@@ -168,26 +171,55 @@ const manifestIdTag = (who: Requester) => {
 };
 
 describe('the heading of a sign-in review', () => {
-  test('names the app that is shown after "Requested by"', () => {
-    const { target, cleanup } = render(reviewOf());
-    expect(target.querySelector('#signing-approval-headline')?.textContent?.trim()).toBe('Sign in to Food Tracker');
-    expect(target.querySelector('.requester-line')?.textContent?.trim()).toBe('Requested by Food Tracker');
+  const VERIFIED = { manifestName: 'Food Tracker', manifestNameProvenance: 'verified' as const, trust: 'verified' as const };
+
+  test('names a manifest name OpenKey verified', () => {
+    expect(headlineOf({ ...VERIFIED, displayName: 'Food Tracker' })).toBe('Sign in to Food Tracker');
+  });
+
+  test('names the origin host for a manifest name that only the requesting origin vouches for', () => {
+    const { target, cleanup } = render(reviewOf({
+      displayName: 'OpenKey', manifestName: 'OpenKey', manifestNameProvenance: 'origin-bound', verifiedOrigin: 'https://attacker.example',
+    }));
+    expect(target.querySelector('#signing-approval-headline')?.textContent?.trim()).toBe('Sign in to attacker.example');
+    expect(target.querySelector('#signing-approval-headline')?.textContent).not.toContain('OpenKey');
     cleanup();
   });
 
-  test('names the browser authority where the app has no name of its own', () => {
-    expect(headlineOf({ displayName: '', verifiedOrigin: 'https://food.example' })).toBe('Sign in to food.example');
+  test('names the origin host for a name the app supplied or no name at all', () => {
+    expect(headlineOf({ displayName: 'Food Tracker', manifestName: 'Food Tracker', manifestNameProvenance: 'caller', trust: 'unsigned' })).toBe('Sign in to food.example');
+    expect(headlineOf({ displayName: 'food.example', trust: 'unsigned' })).toBe('Sign in to food.example');
+  });
+
+  test('names the origin host for a verified name that cannot be shown', () => {
+    expect(headlineOf({ ...VERIFIED, manifestName: 'Food\u202ETracker', displayName: 'Food Tracker' })).toBe('Sign in to food.example');
+  });
+
+  test('keeps the protocol heading for a wildcard origin', () => {
+    const { target, cleanup } = render(reviewOf({
+      displayName: 'Unknown origin', verifiedOrigin: null, originWarning: true, manifestName: 'OpenKey', manifestNameProvenance: 'origin-bound',
+    }));
+    expect(target.querySelector('#signing-approval-headline')?.textContent?.trim()).toBe('Authorize capabilities');
+    expect(target.querySelector('#signing-approval-headline')?.textContent).not.toContain('Unknown origin');
+    cleanup();
   });
 
   test('keeps the protocol heading where nothing names the requester', () => {
     expect(headlineOf({ displayName: '', verifiedOrigin: null })).toBe('Authorize capabilities');
   });
 
+  test('names a requester the surface took from OpenKey\'s own list when the request has no origin', () => {
+    const { target, cleanup } = render(reviewOf({ displayName: 'TinyCloud CLI', verifiedOrigin: null, trust: 'unsigned' }), { signInApp: 'TinyCloud CLI' });
+    expect(target.querySelector('#signing-approval-headline')?.textContent?.trim()).toBe('Sign in to TinyCloud CLI');
+    expect(target.querySelector('.requester-line')?.textContent?.trim()).toBe('Requested by TinyCloud CLI');
+    cleanup();
+  });
+
   test('keeps the protocol heading for a recap that hosts a new space on a node', () => {
     const space = `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}:default`;
     const hostRecap = makeRecapResource({ [`${space}/space`]: { 'tinycloud.space/host': [{}] } });
-    expect(headlineOf({ message: siweWithResources([hostRecap]) })).toBe('Authorize capabilities');
-    expect(headlineOf({ message: REAL_RECAP_WITH_PATH })).toBe('Sign in to Food Tracker');
+    expect(headlineOf({ ...VERIFIED, message: siweWithResources([hostRecap]) })).toBe('Authorize capabilities');
+    expect(headlineOf({ ...VERIFIED, message: REAL_RECAP_WITH_PATH })).toBe('Sign in to Food Tracker');
   });
 
   test('keeps the protocol heading for a requester OpenKey cannot name', () => {
@@ -200,7 +232,8 @@ describe('the heading of a sign-in review', () => {
   });
 
   test('shows a name with markup as text', () => {
-    const { target, cleanup } = render(reviewOf({ displayName: '<img src=x onerror=alert(1)>' }));
+    const { target, cleanup } = render(reviewOf({ ...VERIFIED, manifestName: '<img src=x onerror=alert(1)>', displayName: 'x' }));
+    expect(target.querySelector('#signing-approval-headline')?.textContent?.trim()).toBe('Sign in to <img src=x onerror=alert(1)>');
     expect(target.querySelector('#signing-approval-headline img')).toBeNull();
     cleanup();
   });
@@ -213,7 +246,7 @@ describe('the tag on the Manifest ID row', () => {
     for (const trust of ['origin-bound', 'verified'] as const) {
       expect(manifestIdTag({ trust, manifestId: ID, manifestIdProvenance: 'caller' })).toEqual({
         id: ID,
-        tag: "from the app's request; the manifest doesn't name one",
+        tag: "from the app's request, unverified; the manifest doesn't name one",
       });
     }
   });

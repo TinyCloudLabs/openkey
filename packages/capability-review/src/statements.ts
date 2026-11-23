@@ -2144,11 +2144,16 @@ const KV_GET_ABILITIES = new Set(["tinycloud.kv/get", "kv/get"]);
 /** The row a read of secrets the review cannot place reads as. */
 const READ_SECRETS_ROW = "Read secrets";
 
-/** The secret's name when this grant is exactly a read (`get`) of one secret's KV path in a secrets space; otherwise null. */
-function exactSecretRead(grant: CapabilityGrant): string | null {
+/**
+ * The secret when this grant is exactly a read (`get`) of one secret's unscoped KV path in a secrets space, with a
+ * key that names the space and the path; otherwise null. An app-scoped path names a scope the row would leave out.
+ */
+function exactSecretRead(grant: CapabilityGrant): { key: string; name: string } | null {
   if (!KV_SERVICES.has(grant.service) || grant.serviceMismatch === true || !isSecretsSpace(grant.space)) return null;
   if (grant.actions.length !== 1 || !KV_GET_ABILITIES.has(grant.actions[0]!.ability)) return null;
-  return secretOfKvPath(grant.path)?.name ?? null;
+  const secret = secretOfKvPath(grant.path);
+  if (secret === null || grant.path.split("/").length !== 3) return null;
+  return { key: `${grant.space}\0${grant.path}`, name: secret.name };
 }
 
 /**
@@ -2168,12 +2173,12 @@ export function buildSummaryStatements(grants: readonly CapabilityGrant[]): Summ
     if (grantDecryptsOneSecret(grant)) decryptKeys.add(ownSecretKeyPath(grant)!);
   }
   const rows = grants.map((grant) => ({ grant, statements: secretKeyRows(grant, names, decryptKeys) ?? buildStatements(grant) }));
-  // The plural row names its secret when every grant behind it reads the same one secret.
-  const readSecretsNames = new Set<string | null>(
-    rows.filter((row) => row.statements.some((statement) => statement.primaryText === READ_SECRETS_ROW))
-      .map((row) => exactSecretRead(row.grant)),
-  );
-  const namedRead = readSecretsNames.size === 1 ? ([...readSecretsNames][0] ?? null) : null;
+  // The plural row names its secret when every grant behind it reads that one secret in that one space.
+  const reads = rows
+    .filter((row) => row.statements.some((statement) => statement.primaryText === READ_SECRETS_ROW))
+    .map((row) => exactSecretRead(row.grant));
+  const [firstRead] = reads;
+  const namedRead = firstRead && reads.every((read) => read !== null && read.key === firstRead.key) ? firstRead.name : null;
   const grouped = new Map<string, SummaryStatement>();
   for (const { grant, statements } of rows) {
     for (const statement of statements) {

@@ -95,6 +95,27 @@ describe("a read of secrets the manifest declares under another path", () => {
     const model = annotateAppScopedGrants(reviewOf({ [read("ANTHROPIC_API_KEY")]: ["tinycloud.kv/get"] }), { secrets: declared("ANTHROPIC_API_KEY") });
     expect(buildSummaryStatements(model.permissions).map((row) => row.severity)).toEqual(["sensitive"]);
   });
+
+  it("keeps the plural row for a read under another app's scope, which names a scope the row would leave out", () => {
+    const scoped = `${SECRETS}/kv/vault/secrets/scoped/evil/AAA`;
+    expect(rowsOf({ [scoped]: ["tinycloud.kv/get"] }, declared("AAA"))).toEqual(["Read secrets"]);
+  });
+
+  it("keeps the plural row when the unscoped and a scoped path name the same secret", () => {
+    const rows = rowsOf(
+      { [read("AAA")]: ["tinycloud.kv/get"], [`${SECRETS}/kv/vault/secrets/scoped/evil/AAA`]: ["tinycloud.kv/get"] },
+      declared("AAA"),
+    );
+    expect(rows).toEqual(["Read secrets"]);
+  });
+
+  it("keeps the plural row when the same name is read in two secrets spaces", () => {
+    const rows = rowsOf(
+      { [read("AAA")]: ["tinycloud.kv/get"], [`${SECRETS}:x/kv/vault/secrets/AAA`]: ["tinycloud.kv/get"] },
+      declared("AAA"),
+    );
+    expect(rows).toEqual(["Read secrets"]);
+  });
 });
 
 describe("the label of a secret grant", () => {

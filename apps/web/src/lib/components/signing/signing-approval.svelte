@@ -192,6 +192,11 @@
      * it, while the request names no requester.
      */
     unverifiedRequester?: { name: string; line: string } | null;
+    /**
+     * The app a sign-in is for, set by a surface that took the name from OpenKey's own list of requesters and never
+     * from the request (the CLI link page). A manifest name or origin host the request carries is read from the model.
+     */
+    signInApp?: string | null;
     onApprove: () => void;
     onCancel: () => void;
     onRetry?: () => void;
@@ -231,6 +236,7 @@
     approveVisibility = null,
     claimed = null,
     oneSecret = null,
+    signInApp = null,
     unverifiedRequester = null,
     onApprove,
     onCancel,
@@ -398,12 +404,15 @@
   const requesterShown = $derived(requesterUnverified ? unverifiedRequester!.name : requesterName);
   const manifestNameShown = $derived(appDisplayName(model.requester.manifestName));
   const requestedBy = $derived(originHost ?? requesterName);
-  // The sign-in heading names an app or an origin. The "not verified" requester of a link is no name to put in it, and
-  // a recap that hosts a new space on a node sets up hosting for the owner, so it keeps the protocol heading.
+  // The sign-in heading is set in the largest text, so it names only what the request cannot write: a manifest name
+  // OpenKey verified, else the verified origin host, else a name the surface took from OpenKey's own list. A recap
+  // that hosts a new space on a node sets up hosting for the owner, so it keeps the protocol heading.
   const hostsSpace = $derived(readSpaceHostFacts(model) !== null);
-  const headline = $derived(
-    oneSecretShown ? oneSecret!.headline : protocolHeadline(model.protocol, hostsSpace ? null : requesterName || null),
+  const verifiedAppName = $derived(
+    model.requester.manifestNameProvenance === "verified" ? appDisplayName(model.requester.manifestName) : null,
   );
+  const headingApp = $derived(hostsSpace ? null : (verifiedAppName ?? originHost ?? signInApp));
+  const headline = $derived(oneSecretShown ? oneSecret!.headline : protocolHeadline(model.protocol, headingApp));
   // The id on a matched manifest comes from that manifest; an id the app sent beside a matched manifest that names
   // none is the app's own word, which the manifest neither confirms nor contradicts.
   const manifestMatched = $derived(model.metadataTrust.status === "origin-bound" || model.metadataTrust.status === "verified");
@@ -1156,7 +1165,7 @@
               from origin-bound manifest
             {:else if model.requester.manifestIdProvenance === "caller"}
               {#if manifestMatched}
-                from the app's request; the manifest doesn't name one
+                from the app's request, unverified; the manifest doesn't name one
               {:else}
                 caller-supplied, unverified
               {/if}
