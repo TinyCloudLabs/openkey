@@ -70,7 +70,8 @@ async function openReview(page: Page, options: {
       const { expiry } = route.request().postDataJSON() as { expiry: string };
       expiries.push(expiry);
       if (rejectOncePreview && expiry === '3600s') return respond(route, { error: 'Preview unavailable' }, 500);
-      if (rejectExpiry === expiry) return respond(route, { error: 'Preview unavailable' }, 500);
+      // Only a re-prepare fails: the first preview of the request must still open the review.
+      if (rejectExpiry === expiry && expiries.length > 1) return respond(route, { error: 'Preview unavailable' }, 500);
 
       const recap = makeRecapResource(Object.fromEntries(grants.map(({ resource, ability }) => [resource, { [ability]: [{}] }])));
       const expiration = new Date(now + Number(expiry.slice(0, -1)) * 1000);

@@ -22,6 +22,7 @@ export default defineConfig({
     },
   },
   server: {
+    fs: { strict: false },
     port: parseInt(process.env.WEB_PORT || '5173'),
     // `.localhost` enables portless (e.g. https://openkey.localhost) — see README.
     allowedHosts: ['openkey-web.ngrok.app', '.localhost'],
