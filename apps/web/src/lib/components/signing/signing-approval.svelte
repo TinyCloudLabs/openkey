@@ -57,6 +57,8 @@
     appKeyNotGrantableStatements,
     buildRenderPlan,
     buildSummaryStatements,
+    type SummaryStatement,
+    RENEWAL_ONLY_COPY,
     grantIsAppKeyDecrypt,
     sensitiveSummaryCount,
     grantHeading,
@@ -297,18 +299,28 @@
   // currently approving. Advanced details deliberately retains the baseline
   // grants so Edit/Reset can re-add a removed action, but a removed decrypt or
   // secret action must never survive in the top-level final review.
-  const selectedGrants = $derived(
+  const renewalOn = $derived(renewal?.leaseMs != null);
+  const selectedWithRenewal = $derived(
     model.permissions.flatMap((grant) => {
       const actions = grant.actions.filter((action) => selection.has(action.id));
       return actions.length > 0 ? [{ ...grant, actions }] : [];
     }),
   );
 
-  // Statements for the summary view. The rows, and the count in the Sensitive
-  // header, come from one function so the header always counts the rows marked
-  // Sensitive below it (capability-review `buildSummaryStatements`).
-  const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
-  const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
+  const selectedGrants = $derived(
+    renewalOn ? selectedWithRenewal : selectedWithRenewal.filter((grant) => !grant.renewalOnly),
+  );
+  const renewalOnlyStatements = $derived(
+    buildSummaryStatements(selectedWithRenewal.filter((grant) => grant.renewalOnly)),
+  );
+  const summaryStatements = $derived(
+    buildSummaryStatements(selectedGrants.filter((grant) => !grant.renewalOnly)),
+  );
+  const effectiveStatements = $derived(
+    renewalOn && renewalOnlyStatements.length > 0 ? buildSummaryStatements(selectedGrants) : summaryStatements,
+  );
+  const sensitiveCount = $derived(sensitiveSummaryCount(effectiveStatements));
+  const renewalSensitive = $derived(renewalNeedsSensitiveConfirm(selectedWithRenewal));
   const oneSecretShown = $derived(oneSecret !== null && oneNamedSecret(selectedGrants) !== null);
   const hint = $derived(oneSecretShown ? oneSecret!.hint : PROTOCOL_HINT[model.protocol]);
 
@@ -404,6 +416,12 @@
   const requesterShown = $derived(requesterUnverified ? unverifiedRequester!.name : requesterName);
   const manifestNameShown = $derived(appDisplayName(model.requester.manifestName));
   const requestedBy = $derived(originHost ?? requesterName);
+  const renewalOnlyLine = $derived.by(() => {
+    const app = requesterShown || RENEWAL_ONLY_COPY.appFallback;
+    if (!renewal) return previewPending ? null : RENEWAL_ONLY_COPY.unavailable(app);
+    if (renewal.turnedOff) return RENEWAL_ONLY_COPY.turnedOff(app);
+    return RENEWAL_ONLY_COPY.dependsOnRenewal(app);
+  });
   // The sign-in heading is set in the largest text, so it names only what the request cannot write: a manifest name
   // OpenKey verified, else the verified origin host, else a name the surface took from OpenKey's own list. A recap
   // that hosts a new space on a node sets up hosting for the owner, so it keeps the protocol heading.
@@ -428,8 +446,8 @@
     return rows.filter((row, index) => rows.findIndex((other) => other.primaryText === row.primaryText) === index);
   });
 
-  function isSelected(action: CapabilityAction): boolean {
-    return selection.has(action.id);
+  function isSelected(grant: CapabilityGrant, action: CapabilityAction): boolean {
+    return (!grant.renewalOnly || renewalOn) && selection.has(action.id);
   }
 
   // The app keys of a request are approved with the rest of it or removed as
@@ -912,7 +930,7 @@
     Count the badged rows only when mixed with unbadged rows. Not-granted
     informational rows are also unbadged; the individual badges always remain.
   -->
-  {#if sensitiveCount > 0 && sensitiveCount < summaryStatements.length + notGrantableStatements.length}
+  {#if sensitiveCount > 0 && sensitiveCount < effectiveStatements.length + notGrantableStatements.length}
     <p class="sensitive-callout" role="status" aria-live="polite">
       {sensitiveRowsCallout(sensitiveCount)}
     </p>
@@ -932,8 +950,24 @@
     Requester provenance and exact resource identifiers are deliberately kept
     in Advanced details so the first viewport is useful to ordinary users.
   -->
+  {#snippet summaryRow(statement: SummaryStatement, active = true)}
+    <li class="summary-statement" data-severity={active ? statement.severity : undefined}>
+      <span class="statement-line">
+        <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans)}</span>
+        {#if active && statement.severity === "sensitive"}
+          <span class="summary-sensitive-pill">Sensitive</span>
+        {/if}
+      </span>
+      {#if oneSecretShown && statement.key === NAMED_SECRET_DECRYPT_ROW}
+        <span class="statement-detail">{oneSecret!.decryptNote}</span>
+      {:else if statement.detail}
+        <span class="statement-detail">{statement.detail}</span>
+      {/if}
+    </li>
+  {/snippet}
+
   <section class="summary" aria-label="Requested access">
-    {#if identity && summaryStatements.length > 0}
+    {#if identity && effectiveStatements.length > 0}
       <p class="summary-lead">{appRequestingLine(identity.name)}</p>
     {/if}
     {#if allSecretsSummaryCard}
@@ -948,30 +982,28 @@
     {#if summaryStatements.length > 0}
       <ul class="summary-statements">
         {#each summaryStatements as statement (statement.key)}
-          <li
-            class="summary-statement"
-            data-severity={statement.severity}
-          >
-            <span class="statement-line">
-              <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans)}</span>
-              {#if statement.severity === "sensitive"}
-                <span class="summary-sensitive-pill">Sensitive</span>
-              {/if}
-            </span>
-            {#if oneSecretShown && statement.key === NAMED_SECRET_DECRYPT_ROW}
-              <span class="statement-detail">{oneSecret!.decryptNote}</span>
-            {:else if statement.detail}
-              <span class="statement-detail">{statement.detail}</span>
-            {/if}
-          </li>
+          {@render summaryRow(statement)}
         {/each}
       </ul>
-    {:else if !isMalformedRecap}
+    {:else if !isMalformedRecap && effectiveStatements.length === 0}
       <p class="summary-empty">
         {model.permissions.length > 0
           ? "No optional access selected."
           : "No capability payload — exact-byte signature only."}
       </p>
+    {/if}
+    {#if renewalOnlyStatements.length > 0}
+      <section aria-label={RENEWAL_ONLY_COPY.heading}>
+        <h3 class="all-secrets-heading">{RENEWAL_ONLY_COPY.heading}</h3>
+        {#if renewalOnlyLine}
+          <p class="summary-note">{renewalOnlyLine}</p>
+        {/if}
+        <ul class="summary-statements">
+          {#each renewalOnlyStatements as statement (statement.key)}
+            {@render summaryRow(statement, renewalOn)}
+          {/each}
+        </ul>
+      </section>
     {/if}
     {#if appKeyAccessLine}
       <p class="summary-note">{appKeyAccessLine}</p>
@@ -999,10 +1031,10 @@
         onceNote={signedOnceNote}
         lengthNote={signedLengthNote}
         {renewal}
-        sensitive={renewalNeedsSensitiveConfirm(selectedGrants)}
+        sensitive={renewalSensitive}
         {requestedBy}
         chooser={false}
-        permissionCount={summaryStatements.length}
+        permissionCount={effectiveStatements.length}
       />
     {:else if !onExpiryChange && signedAsWrittenMs !== null}
       <p class="summary-note" data-testid="approval-access-line">{accessLastsLine("app", signedAsWrittenMs)}</p>
@@ -1273,7 +1305,7 @@
               <ul class="grant-list">
                 {#each bucket.grants as grant}
                   {@const unselectedActions = grant.actions.filter(
-                    (action) => !isSelected(action),
+                    (action) => !isSelected(grant, action),
                   )}
                   <li class="grant">
                     <div class="grant-heading">
@@ -1316,16 +1348,16 @@
                       </label>
                     {/if}
                     <ul class="action-list">
-                      {#each editing ? grant.actions : grant.actions.filter(isSelected) as action}
+                      {#each editing ? grant.actions : grant.actions.filter((action) => isSelected(grant, action)) as action}
                         <li class="action">
                           {#if editing && action.editable && !appKeyActionIds.has(action.id)}
                             <label class="action-toggle">
                               <input
                                 type="checkbox"
-                                checked={isSelected(action)}
+                                checked={isSelected(grant, action)}
                                 onchange={() => toggle(action)}
                                 onkeydown={(e) => handleKeydown(e, action)}
-                                disabled={approveDisabled || isLockedByAppKeys(action)}
+                                disabled={approveDisabled || isLockedByAppKeys(action) || (grant.renewalOnly && !renewalOn)}
                               />
                               <span class="verb">{action.verb}</span>
                             </label>
