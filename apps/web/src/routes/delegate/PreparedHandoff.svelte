@@ -253,6 +253,9 @@
       leaveRefusedSigning();
       if (pendingTimeout !== undefined) clearTimeout(pendingTimeout);
       if (handoffTimeout !== undefined) clearTimeout(handoffTimeout);
+      handoff = null;
+      contextToken = '';
+      clearPreview();
     };
   });
 
@@ -587,9 +590,11 @@
         // A refusal or failure comes back with no signature. The server releases the handoff when the key failed to
         // sign, so the owner may approve again or cancel; if the key signed but the tokens could not be spent it stays
         // signing until it expires and a retry is refused. Only a 2xx reply that cannot be read may have been signed.
+        if (!approvalIsCurrent()) return;
         if (!(cause instanceof ServerReplyError)) submitted = false;
         throw cause;
       }
+      if (!approvalIsCurrent()) return;
       if (signed.protocolVersion !== 1 || typeof signed.signature !== 'string' || typeof signed.address !== 'string' ||
           !Array.isArray(signed.selectedActionKeys) || !signed.selectedActionKeys.every(value => typeof value === 'string') ||
           !Array.isArray(signed.permissions) ||
@@ -606,12 +611,16 @@
       if (activeHandoff.delivery.callback) {
         try {
           const response = await fetch(activeHandoff.delivery.callback, { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(envelope) });
+          if (!approvalIsCurrent()) return;
           const receipt: unknown = await response.json().catch(() => null);
+          if (!approvalIsCurrent()) return;
           if (!response.ok || !receipt || typeof receipt !== 'object' || !('accepted' in receipt) || receipt.accepted !== true) {
             throw new Error('CLI did not accept the response.');
           }
           delivered = true;
-        } catch { callbackFailed = true; }
+        } catch {
+          if (approvalIsCurrent()) callbackFailed = true;
+        }
       }
     } catch (cause) {
       if (!approvalIsCurrent()) return;
@@ -621,7 +630,7 @@
         // The refused challenge is spent: preview again before the next Approve.
         busy = false;
         await preview();
-        if (!stop) error = cause.message;
+        if (handoff === activeHandoff && !stop) error = cause.message;
       } else if (cause && typeof cause === 'object' && 'code' in cause && cause.code === 4001) {
         error = STOPS.S32.lines.walletDeclined;
       } else {

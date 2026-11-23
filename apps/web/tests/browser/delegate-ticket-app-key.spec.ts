@@ -162,42 +162,61 @@ test.describe('a command-line tool asks for one exact app key', () => {
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
   });
 
-  test('an expired handoff stops when an external wallet returns its account', async ({ page }) => {
-    await page.clock.install({ time: new Date(NOW) });
-    await page.addInitScript(({ owner }) => {
-      const wallet = { open: false, signCalls: 0, resolveAccount: () => {} };
-      Object.assign(window, {
-        testWallet: wallet,
-        ethereum: { request: async ({ method }: { method: string }) => {
-          if (method === 'eth_requestAccounts') {
-            return new Promise<string[]>((resolve) => {
-              wallet.open = true;
-              wallet.resolveAccount = () => resolve([owner]);
-            });
-          }
-          wallet.signCalls += 1;
-          return '0xwallet-signature';
-        } },
-      });
-    }, { owner: address });
-    const calls = await open(page, { external: true });
-    await page.getByRole('button', { name: 'Preview signing message' }).click();
-    await page.getByRole('button', { name: 'Approve', exact: true }).click();
-    await expect.poll(() => page.evaluate(() =>
-      (window as Window & { testWallet: { open: boolean } }).testWallet.open,
-    )).toBe(true);
+  for (const outcome of ['the handoff expires', 'the owner leaves the approval page']) {
+    test(`an external wallet cannot continue approval after ${outcome}`, async ({ page }) => {
+      await page.clock.install({ time: new Date(NOW) });
+      await page.addInitScript(({ owner }) => {
+        const wallet = { open: false, signCalls: 0, resolveAccount: () => {} };
+        Object.assign(window, {
+          testWallet: wallet,
+          ethereum: { request: async ({ method }: { method: string }) => {
+            if (method === 'eth_requestAccounts') {
+              return new Promise<string[]>((resolve) => {
+                wallet.open = true;
+                wallet.resolveAccount = () => resolve([owner]);
+              });
+            }
+            wallet.signCalls += 1;
+            return '0xwallet-signature';
+          } },
+        });
+      }, { owner: address });
+      const calls = await open(page, { external: true });
+      await page.getByRole('button', { name: 'Preview signing message' }).click();
+      await page.getByRole('button', { name: 'Approve', exact: true }).click();
+      await expect.poll(() => page.evaluate(() =>
+        (window as Window & { testWallet: { open: boolean } }).testWallet.open,
+      )).toBe(true);
 
-    await page.clock.fastForward(300_001);
-    await expect(page.getByRole('heading', { name: 'This request expired' })).toBeVisible();
-    const walletSigns = await page.evaluate(async () => {
-      const wallet = (window as Window & { testWallet: { resolveAccount: () => void; signCalls: number } }).testWallet;
-      wallet.resolveAccount();
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      return wallet.signCalls;
+      if (outcome === 'the handoff expires') {
+        await page.clock.fastForward(300_001);
+        await expect(page.getByRole('heading', { name: 'This request expired' })).toBeVisible();
+      } else {
+        await page.evaluate(() => {
+          const link = document.createElement('a');
+          link.href = '/auth/login';
+          link.id = 'leave-approval';
+          link.textContent = 'Leave approval';
+          document.body.append(link);
+        });
+        await page.locator('#leave-approval').click();
+        await expect(page).toHaveURL(/\/auth\/login(?:\?|$)/);
+        await expect(page.getByTestId('ticket-app-key-row')).toHaveCount(0);
+        // The pending wallet promise stays in this document across SvelteKit navigation.
+        await expect.poll(() => page.evaluate(() =>
+          (window as Window & { testWallet: { open: boolean } }).testWallet.open,
+        )).toBe(true);
+      }
+      const walletSigns = await page.evaluate(async () => {
+        const wallet = (window as Window & { testWallet: { resolveAccount: () => void; signCalls: number } }).testWallet;
+        wallet.resolveAccount();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        return wallet.signCalls;
+      });
+      expect(walletSigns).toBe(0);
+      expect(calls.sign).toBe(0);
     });
-    expect(walletSigns).toBe(0);
-    expect(calls.sign).toBe(0);
-  });
+  }
 
   test('an app key grant without appKey stops before the claim', async ({ page }) => {
     const calls = await open(page, { request: { appKey: undefined } });
