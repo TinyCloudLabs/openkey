@@ -45,11 +45,14 @@ export function accountHasNoPasskeys(result: { error?: unknown; data?: unknown }
 export interface AutofillDeps {
   /** Whether the browser can show passkeys in the input's autofill list. */
   supported: () => Promise<boolean>;
-  /** Runs the conditional ceremony and the server verification; resolves to the client result. */
-  signIn: () => Promise<{ error?: unknown } | null | undefined>;
+  /**
+   * Runs the conditional ceremony and the server verification; resolves to the client result. `onVerify` is
+   * called when the assertion is obtained and the server verification is about to be sent, not before.
+   */
+  signIn: (hooks: { onVerify: () => void }) => Promise<{ error?: unknown } | null | undefined>;
   /** Aborts the pending conditional ceremony. */
   cancel: () => void;
-  /** Called once when the autofill sign-in verified and the page is still waiting for it. */
+  /** Called once when the autofill sign-in verified and the page is still waiting for it, or a stop adopted it. */
   onSignedIn: () => void;
   /** How often `cancel` is repeated while a stopped request has not settled. */
   retryEveryMs?: number;
@@ -61,9 +64,13 @@ export interface Autofill {
   /**
    * Ends the request and resolves once it has settled (or the bound passed). Until then `cancel` is
    * repeated, because the ceremony starts only after the options request and would otherwise start late
-   * and abort whatever ceremony follows. Calling it again returns the same promise.
+   * and abort whatever ceremony follows. Calling it again returns the same promise. A stop that arrives
+   * while the server is verifying the assertion cancels nothing: it waits for the verification, and a
+   * verified sign-in is reported to `onSignedIn` once. The promise resolves `true` when it was, and
+   * `false` when the request ended with no sign-in (a stop before the verification starts, a failed
+   * verification, an aborted ceremony, or a verification that outlasted the bound).
    */
-  stop: () => Promise<void>;
+  stop: () => Promise<boolean>;
 }
 
 let latest: Autofill | null = null;
@@ -71,43 +78,75 @@ let latest: Autofill | null = null;
 /**
  * Ends the running conditional request, if any, and resolves when it has settled. A passkey action that
  * starts its own ceremony (the modal sign-in, passkey registration) awaits this first, because the
- * browser keeps one ceremony at a time and a late conditional ceremony would abort the newer one.
+ * browser keeps one ceremony at a time and a late conditional ceremony would abort the newer one. It
+ * resolves `true` when the request had a sign-in in flight and that sign-in verified: the page is signed
+ * in and the action must not start a ceremony of its own.
  */
-export function supersedePasskeyAutofill(): Promise<void> {
-  return latest ? latest.stop() : Promise.resolve();
+export function supersedePasskeyAutofill(): Promise<boolean> {
+  return latest ? latest.stop() : Promise.resolve(false);
+}
+
+/**
+ * Runs `ceremony` once the autofill request has been superseded, unless that request had a sign-in in
+ * flight that verified: that sign-in is the result and `ceremony` does not run.
+ */
+export async function ceremonyAfterAutofill<T>(ceremony: () => Promise<T>): Promise<{ adopted: true } | { adopted: false; result: T }> {
+  if (await supersedePasskeyAutofill()) return { adopted: true };
+  return { adopted: false, result: await ceremony() };
 }
 
 /**
  * Starts the conditional (autofill) passkey sign-in. Nothing it does is visible to the person: a
  * request that is unsupported, aborted, refused or fails produces no error and no step change; only a
- * verified sign-in calls `onSignedIn`, and never after `stop`. A request that replaces an older one
- * begins after the older one settled.
+ * verified sign-in calls `onSignedIn`. A stop that arrives before the server starts verifying the
+ * assertion ends the request with no sign-in. A stop that arrives while the server is verifying waits
+ * for it: a verified sign-in is reported once, a failed one is not, and nothing is cancelled meanwhile.
+ * A request that replaces an older one begins after the older one settled, and does not begin when the
+ * older one reported a sign-in.
  */
 export function startPasskeyAutofill(deps: AutofillDeps): Autofill {
   const previous = supersedePasskeyAutofill();
   let stopped = false;
-  let stopping: Promise<void> | undefined;
+  let stopping: Promise<boolean> | undefined;
   let settled = false;
+  // The assertion is obtained and the server is verifying it.
+  let verifying = false;
+  // A stop arrived while verifying, so a verified sign-in is reported; false once the bound passed.
+  let adopting = false;
+  let adopted = false;
+  let cancelTimer: ReturnType<typeof setInterval> | undefined;
   // `Promise.withResolvers` is missing from the Safari that the iOS sign-in sheet can run.
   let resolveSettled!: () => void;
   const settledPromise = new Promise<void>((resolve) => {
     resolveSettled = resolve;
   });
+  const stopCancelling = () => {
+    clearInterval(cancelTimer);
+    cancelTimer = undefined;
+  };
   const handle: Autofill = {
     stop() {
       // A request that already settled has no ceremony left, and cancelling would hit an unrelated one.
-      if (settled) return Promise.resolve();
+      if (settled) return Promise.resolve(false);
       if (stopping) return stopping;
       stopped = true;
-      deps.cancel();
-      const timer = setInterval(deps.cancel, deps.retryEveryMs ?? 100);
+      if (verifying) {
+        adopting = true;
+      } else {
+        deps.cancel();
+        cancelTimer = setInterval(deps.cancel, deps.retryEveryMs ?? 100);
+      }
       let boundTimer: ReturnType<typeof setTimeout> | undefined;
       const bound = new Promise<void>((resolve) => {
-        boundTimer = setTimeout(resolve, deps.boundMs ?? 10_000);
+        boundTimer = setTimeout(() => {
+          adopting = false;
+          resolve();
+        }, deps.boundMs ?? 10_000);
       });
       stopping = Promise.race([settledPromise, bound]).then(() => {
-        clearInterval(timer);
+        stopCancelling();
         clearTimeout(boundTimer);
+        return adopted;
       });
       return stopping;
     },
@@ -115,10 +154,17 @@ export function startPasskeyAutofill(deps: AutofillDeps): Autofill {
   latest = handle;
   void (async () => {
     try {
-      await previous;
+      if (await previous) return;
       if (stopped || !(await deps.supported()) || stopped) return;
-      const result = await deps.signIn();
-      if (stopped || result?.error) return;
+      const result = await deps.signIn({
+        onVerify: () => {
+          verifying = true;
+          // The assertion exists: cancelling a ceremony that has ended would only hit an unrelated one.
+          stopCancelling();
+        },
+      });
+      if (result?.error || (stopped && !adopting)) return;
+      adopted = stopped;
       deps.onSignedIn();
     } catch {
       // A rejected or aborted request is never shown.
