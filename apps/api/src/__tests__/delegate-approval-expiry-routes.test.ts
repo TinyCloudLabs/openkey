@@ -157,6 +157,9 @@ function originalSiwe() {
 
 const expiryLine = (siwe: string) => siwe.match(/^Expiration Time: (.+)$/m)?.[1];
 const withoutExpiry = (siwe: string) => siwe.replace(/^Expiration Time: .+$/m, '');
+const issuedLine = (siwe: string) => siwe.match(/^Issued At: (.+)$/m)![1]!;
+/** The signed length: Expiration Time minus Issued At (TC-3920). */
+const lengthMs = (siwe: string) => Date.parse(expiryLine(siwe)!) - Date.parse(issuedLine(siwe));
 const inDays = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
 
 async function prepare(extra: Record<string, unknown> = { expiryChangeable: true }) {
@@ -191,14 +194,15 @@ describe('the chosen approval expiry is what gets signed', () => {
       const changed = await preview(p, selected, chosen);
       expect(changed.status).toBe(200);
       const bytes = stringField(changed.body.signedMessage);
-      expect(expiryLine(bytes)).toBe(chosen);
+      expect(expiryLine(bytes)).toBe(new Date(Date.parse(issuedLine(p.siwe)) + 30 * 86_400_000).toISOString());
+      expect(lengthMs(bytes)).toBe(30 * 86_400_000);
       expect(withoutExpiry(bytes)).toBe(withoutExpiry(stringField(unchanged.body.signedMessage)));
       expect(expiryLine(stringField(unchanged.body.signedMessage))).toBe(expiryLine(p.siwe));
 
       const signed = await post('/authorize-sign', signBody(p, selected, stringField(changed.body.previewApprovalToken)));
       expect(signed.status).toBe(200);
       expect(signed.body.signedMessage).toBe(bytes);
-      expect(expiryLine(stringField(signed.body.signedMessage))).toBe(chosen);
+      expect(lengthMs(stringField(signed.body.signedMessage))).toBe(30 * 86_400_000);
       expect(signManagedMessage).toHaveBeenCalledWith(bytes);
       expect(verifyMessage(bytes, stringField(signed.body.signature)).toLowerCase()).toBe(account.address.toLowerCase());
     });
@@ -211,7 +215,11 @@ describe('the chosen approval expiry is what gets signed', () => {
     expect(result.status).toBe(200);
     const signed = await post('/authorize-sign', signBody(p, p.allowed, stringField(result.body.previewApprovalToken)));
     expect(signed.status).toBe(200);
-    expect(expiryLine(stringField(signed.body.signedMessage))).toBe(farAway);
+    // Issued At plus the chosen length, in whole seconds, within the latest SIWE time.
+    const signedLength = lengthMs(stringField(signed.body.signedMessage));
+    expect(signedLength % 1000).toBe(0);
+    expect(Date.parse(expiryLine(stringField(signed.body.signedMessage))!)).toBeLessThanOrEqual(Date.UTC(9999, 11, 31, 23, 59, 59));
+    expect(Date.parse(farAway) - Date.parse(issuedLine(p.siwe)) - signedLength).toBeLessThan(5_000);
   });
 
   test('an external signer signs the previewed bytes and /authorize-sign needs no expiry field', async () => {
@@ -220,7 +228,7 @@ describe('the chosen approval expiry is what gets signed', () => {
     const chosen = inDays(1);
     const result = await preview(p, p.allowed, chosen);
     const bytes = stringField(result.body.signedMessage);
-    expect(expiryLine(bytes)).toBe(chosen);
+    expect(lengthMs(bytes)).toBe(86_400_000);
     const signed = await post('/authorize-sign', {
       ...signBody(p, p.allowed, stringField(result.body.previewApprovalToken)),
       externalSignature: await account.signMessage({ message: bytes }),
@@ -247,6 +255,27 @@ describe('the chosen approval expiry is what gets signed', () => {
     // The first preview's token is bound to its own bytes and context, which the signature just used up.
     const stale = await post('/authorize-sign', signBody(p, p.allowed, stringField(first.body.previewApprovalToken)));
     expect(stale.status).toBe(400);
+  });
+});
+
+describe('a chosen length counted from Issued At (TC-3920)', () => {
+  test('a request prepared longer ago than the chosen length is refused and nothing is consumed', async () => {
+    const p = await prepare();
+    setSystemTime(new Date(Date.now() + 120_000));
+    const refused = await preview(p, p.allowed, new Date(Date.now() + 90_000).toISOString());
+    expect(refused.status).toBe(400);
+    expect(refused.body.code).toBe('invalid_expiration_time');
+    expect(signManagedMessage).not.toHaveBeenCalled();
+  });
+
+  test('a length picked a few seconds after prepare signs to the exact length on preview and signature', async () => {
+    const p = await prepare();
+    setSystemTime(new Date(Date.now() + 7_000));
+    const result = await preview(p, p.allowed, new Date(Date.now() + 3_600_000).toISOString());
+    expect(lengthMs(stringField(result.body.signedMessage))).toBe(3_600_000);
+    const signed = await post('/authorize-sign', signBody(p, p.allowed, stringField(result.body.previewApprovalToken)));
+    expect(signed.status).toBe(200);
+    expect(lengthMs(stringField(signed.body.signedMessage))).toBe(3_600_000);
   });
 });
 
