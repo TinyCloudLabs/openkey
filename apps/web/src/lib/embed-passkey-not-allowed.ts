@@ -1,4 +1,4 @@
-/** What the embedded sheet says when the passkey prompt ends with no passkey used: none matched, the browser refused it here, or the person dismissed it. */
+/** What the embedded sheet says when the passkey prompt ends with no passkey used: none matched, the browser refused it here or the person dismissed it. */
 export const PASSKEY_NOT_USABLE_TEXT = "That passkey couldn't be used here. Try another passkey or choose Continue with email.";
 /** The same words on the new-account step, where the way out is its "Use a different email" button and there is no "Continue with email" button. */
 export const PASSKEY_NOT_USABLE_NEW_ACCOUNT_TEXT = "That passkey couldn't be used here. Try another passkey or choose Use a different email.";

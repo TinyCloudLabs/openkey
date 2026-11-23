@@ -1,5 +1,5 @@
 // The embedded sheet's passkey sign-in says it in plain words when the passkey prompt ends with no passkey used: no
-// passkey matched, the browser refused the prompt here, or the person dismissed it. The browser raises all three as a
+// passkey matched, the browser refused the prompt here or the person dismissed it. The browser raises all three as a
 // `NotAllowedError`; `@simplewebauthn/browser` wraps it in a WebAuthnError (code ERROR_PASSTHROUGH_SEE_CAUSE_PROPERTY)
 // that keeps the DOMException as `cause` and copies its message. Every other error keeps its own message.
 //

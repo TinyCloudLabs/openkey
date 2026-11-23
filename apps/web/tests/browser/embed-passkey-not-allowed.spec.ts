@@ -1,5 +1,5 @@
 // The embedded connect frame, on another site's page, says in plain words when its passkey prompt ends with no
-// passkey used: no passkey matched, the browser refused the prompt there, or the person dismissed it. The browser
+// passkey used: no passkey matched, the browser refused the prompt there or the person dismissed it. The browser
 // raises all three as a NotAllowedError, here with its raw text. The words point at the frame's own other route,
 // "Continue with email", which sits on the same screen and works. Every API call is answered by page.route; no API
 // server runs, and the passkey prompt is replaced by a refusal.
