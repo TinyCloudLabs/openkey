@@ -313,7 +313,7 @@
             <div role="alertdialog" tabindex="-1" aria-labelledby="native-renewal-heading" aria-describedby="native-renewal-description"
               onkeydown={(event) => { if (event.key === 'Escape') closeRenewalConfirm(false); }}>
               <h2 id="native-renewal-heading" tabindex="-1" bind:this={renewalConfirm}>Renew sensitive access?</h2>
-              <p id="native-renewal-description" class="note">This lets {preview.client.name} keep the sensitive access listed here for up to {formatDuration(confirmingLeaseMs)}. You can stop renewal in Settings.</p>
+              <p id="native-renewal-description" class="note">This lets {preview.client.name} keep the sensitive access listed here for up to {formatDuration(confirmingLeaseMs)}. You can stop renewal under Renewing permissions in Settings.</p>
               <div class="renewal-actions">
                 <button type="button" class="nb-button" onclick={() => closeRenewalConfirm(false)}>Don't renew</button>
                 <button type="button" class="nb-button nb-primary" onclick={() => closeRenewalConfirm(true)}>Turn on renewal</button>
@@ -353,7 +353,7 @@
           <dt>App identity</dt><dd>{trustLabel[model.metadataTrust.status]}</dd>
           {#if model.expiry}<dt>Expires</dt><dd>{formatLocalAccessEnd(model.expiry)}</dd>{/if}
           {#if leased}
-            <dt>Access window</dt><dd>Each window lasts up to {duration(preview.ttlSeconds)}.</dd>
+            <dt>Each renewal lasts</dt><dd>Each renewal lasts up to {duration(preview.ttlSeconds)}.</dd>
           {:else}
             <dt>Renewals</dt><dd>Each renewal lasts {duration(preview.ttlSeconds)} from approval.</dd>
           {/if}

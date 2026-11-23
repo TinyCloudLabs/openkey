@@ -70,6 +70,10 @@ test('a standing ask prepares the lease and unticking after a setup failure appr
   const box = page.getByRole('checkbox', { name: 'Renew access automatically' });
   await expect(box).toBeChecked();
   await expect(page.getByText('Your TinyCloud node renews this access for up to 90 days.')).toBeVisible();
+  const details = page.locator('details.details');
+  await details.locator(':scope > summary').click();
+  await expect(details.getByText('Each renewal lasts', { exact: true })).toBeVisible();
+  await expect(details.getByText('Each renewal lasts up to 1 day.', { exact: true })).toBeVisible();
   expect(requests.prepares.map(body => body.renewal)).toEqual([undefined, leased]);
   const allow = page.getByRole('button', { name: 'Allow', exact: true });
   await allow.click();
@@ -90,6 +94,7 @@ test('sensitive renewal is explicit and increasing its duration requires confirm
   await box.click();
   const confirmation = page.getByRole('alertdialog', { name: 'Renew sensitive access?' });
   await expect(confirmation).toBeVisible();
+  await expect(confirmation.getByText('This lets TinyChat keep the sensitive access listed here for up to 90 days. You can stop renewal under Renewing permissions in Settings.', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Allow', exact: true })).toBeDisabled();
   expect(requests.prepares).toHaveLength(1);
   await page.getByRole('button', { name: 'Turn on renewal' }).click();
