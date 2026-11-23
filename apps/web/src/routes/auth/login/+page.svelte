@@ -342,6 +342,8 @@
   }
 
   async function sendOTP(): Promise<boolean> {
+    // A page that has signed in with a passkey sends no code: the person is leaving, and a code is for a sign-in.
+    if (passkeySignedIn) return false;
     if (appReviewEnabled && email.trim().toLowerCase() === 'appreview@tinycloud.xyz') {
       if (!native && $page.url.searchParams.get('redirect') === '/dashboard/settings/delete-account') {
         await goto('/auth/review/delete');
@@ -536,10 +538,12 @@
   }
 
   async function signInWithPasskey() {
-    // The modal ceremony replaces the autofill request, and starts only once that request has settled:
-    // the browser keeps one ceremony at a time, so a late autofill ceremony would abort this one. An autofill
-    // sign-in the server was already verifying when this click arrived is the sign-in: its onSignedIn runs
-    // once and no second ceremony starts.
+    // A passkey sign-in that completed is the sign-in: the page is leaving, and a click in that gap starts no
+    // second ceremony. Otherwise the modal ceremony replaces the autofill request, and starts only once that
+    // request has settled: the browser keeps one ceremony at a time, so a late autofill ceremony would abort this
+    // one. An autofill sign-in the server was already verifying when this click arrived is the sign-in: its
+    // onSignedIn runs once and no second ceremony starts.
+    if (passkeySignedIn) return;
     loading = true;
     error = '';
     try {
@@ -592,6 +596,7 @@
   });
 
   async function signInWithSocial(provider: SocialProviderId) {
+    if (passkeySignedIn) return;
     loading = true;
     loadingProvider = provider;
     error = '';
@@ -607,7 +612,7 @@
   }
 
   async function signInWithSocialTopLevel(provider: NativeSocialProvider) {
-    if (!native) return;
+    if (!native || passkeySignedIn) return;
     socialProvider = provider;
     step = 'social';
     loading = true;
