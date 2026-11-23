@@ -749,8 +749,12 @@ const HOSTING_PROBE_TTL_MS = 5 * 60 * 1000;
 const HOSTING_PROBE_ABILITIES: Record<string, Record<string, string[]>> = { kv: { '': [KV.LIST] } };
 let hostingProbeAbilities = HOSTING_PROBE_ABILITIES;
 
-/** Test seam: the abilities the hosting probe asks for, so the guard against `tinycloud.space/*` can be shown to refuse. */
+/**
+ * Test seam: the abilities the hosting probe asks for, so the guards can be shown to refuse. Locked: it throws unless
+ * `NODE_ENV` is `test`, so production code can never widen what the probe asks for.
+ */
 export function setHostingProbeAbilitiesForTests(abilities?: Record<string, Record<string, string[]>>): void {
+  if (process.env.NODE_ENV !== 'test') throw new Error('setHostingProbeAbilitiesForTests is for tests only');
   hostingProbeAbilities = abilities ?? HOSTING_PROBE_ABILITIES;
 }
 
@@ -800,11 +804,13 @@ export async function probeAccountSpaceHosted(input: {
       jwk: JSON.parse(jwkText) as Record<string, unknown>,
       abilities,
     });
+    // The session the owner signs has exactly one entry: `tinycloud.kv/list` on the account space's root. A positive
+    // check on the message itself, so nothing else (a space action, a second entry, another action) is ever signed.
     const signed = parseTinyCloudSiwe(prepared.siwe);
+    const only = signed?.entries.length === 1 ? signed.entries[0]! : null;
     if (
-      !signed
-      || signed.entries.some((entry) => entry.space !== accountStep.spaceId
-        || entry.actions.some((action) => isSpaceAction(entry.service, action)))
+      !only || only.service !== 'kv' || only.space !== accountStep.spaceId || only.path !== ''
+      || only.actions.length !== 1 || only.actions[0] !== KV.LIST
     ) {
       return false;
     }

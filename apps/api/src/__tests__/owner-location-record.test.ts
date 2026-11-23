@@ -237,18 +237,19 @@ describe('logging', () => {
   const settled = () => logged;
 
   test('the background publish logs one short code, never the record, signature, address or key', async () => {
-    const SIGNATURE = `0x${'ab'.repeat(65)}`;
+    let signature = '';
     publishOwnerLocationInBackground({
       address: lowercase,
       hostedHost: DEFAULT_NODE,
-      signMessage: async () => SIGNATURE,
+      signMessage: async (message) => (signature = await signMessage(message)),
       fetchImpl: stubFetch({ v2: notFound(), v1: notFound(), put: new Response('{}', { status: 409 }) }),
     });
     await settled();
 
     const logged = lines.join('');
     expect(JSON.parse(lines[0]!)).toMatchObject({ event: 'owner_location_record', level: 'info', outcome: 'failed_409' });
-    for (const secret of [SIGNATURE, privateKey, privateKey.slice(2), eip55, lowercase, 'multiaddrs', 'tinycloud.xyz']) {
+    expect(signature).toMatch(/^0x[0-9a-f]{130}$/);
+    for (const secret of [signature, privateKey, privateKey.slice(2), eip55, lowercase, 'multiaddrs', 'tinycloud.xyz']) {
       expect(logged).not.toContain(secret);
     }
   });
@@ -298,43 +299,41 @@ describe('the consent switch', () => {
     null,
     42,
   ];
+  // The origin and field checks come first: none of these requests reads the database.
+  const untouched = new Proxy({}, { get: () => { throw new Error('the database must not be read'); } });
+  const context = { db: untouched as never, subject: { userId: 'user_1', sessionId: 'session_1' }, keyId: 'key_1', address: eip55 };
 
   test('ships as required', () => {
     expect(OWNER_LOCATION_PUBLISH_CONSENT).toBe('required');
   });
 
-  test('required: a first-party origin publishes only with the boolean true', () => {
+  test('required: a first-party origin without the boolean true and a passkey assertion does not publish', async () => {
     for (const requestOrigin of FIRST_PARTY) {
-      expect(ownerLocationPublishAllowed({ requestOrigin, publishOwnerLocation: true }, 'required')).toBe(true);
-      expect(ownerLocationPublishAllowed({ requestOrigin }, 'required')).toBe(false);
+      expect(await ownerLocationPublishAllowed({ requestOrigin, publishOwnerLocation: true }, context, 'required')).toBe(false);
+      expect(await ownerLocationPublishAllowed({ requestOrigin }, context, 'required')).toBe(false);
       for (const value of [false, 'true', 1, null, {}, []]) {
-        expect(ownerLocationPublishAllowed({ requestOrigin, publishOwnerLocation: value }, 'required')).toBe(false);
+        expect(await ownerLocationPublishAllowed({ requestOrigin, publishOwnerLocation: value }, context, 'required')).toBe(false);
       }
     }
   });
 
-  test('silent: a first-party origin publishes without the field, and with it', () => {
+  test('silent: a first-party origin publishes without the field, and with it', async () => {
     for (const requestOrigin of FIRST_PARTY) {
-      expect(ownerLocationPublishAllowed({ requestOrigin }, 'silent')).toBe(true);
-      expect(ownerLocationPublishAllowed({ requestOrigin, publishOwnerLocation: false }, 'silent')).toBe(true);
-      expect(ownerLocationPublishAllowed({ requestOrigin, publishOwnerLocation: true }, 'silent')).toBe(true);
+      expect(await ownerLocationPublishAllowed({ requestOrigin }, context, 'silent')).toBe(true);
+      expect(await ownerLocationPublishAllowed({ requestOrigin, publishOwnerLocation: false }, context, 'silent')).toBe(true);
+      expect(await ownerLocationPublishAllowed({ requestOrigin, publishOwnerLocation: true }, context, 'silent')).toBe(true);
     }
   });
 
-  test('a third-party or unattributed origin never publishes, in either mode, with or without the field', () => {
+  test('a third-party or unattributed origin never publishes, in either mode, with or without the field', async () => {
     for (const requestOrigin of OTHERS) {
       for (const consent of ['required', 'silent'] as const) {
         for (const publishOwnerLocation of [true, undefined]) {
-          expect(ownerLocationPublishAllowed({ requestOrigin, publishOwnerLocation }, consent)).toBe(false);
+          expect(await ownerLocationPublishAllowed({ requestOrigin, publishOwnerLocation }, context, consent)).toBe(false);
         }
       }
     }
-    expect(ownerLocationPublishAllowed({})).toBe(false);
-    expect(ownerLocationPublishAllowed({ publishOwnerLocation: true })).toBe(false);
-  });
-
-  test('with no mode given it follows the shipped constant', () => {
-    expect(ownerLocationPublishAllowed({ requestOrigin: FIRST_PARTY[0] })).toBe(false);
-    expect(ownerLocationPublishAllowed({ requestOrigin: FIRST_PARTY[0], publishOwnerLocation: true })).toBe(true);
+    expect(await ownerLocationPublishAllowed({}, context)).toBe(false);
+    expect(await ownerLocationPublishAllowed({ publishOwnerLocation: true }, context)).toBe(false);
   });
 });

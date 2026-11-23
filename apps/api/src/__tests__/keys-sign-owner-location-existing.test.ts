@@ -11,6 +11,7 @@ import { verifyLocationRecord } from '@tinycloud/sdk-core';
 import { privateKeyToAccount } from 'viem/accounts';
 import { resetOwnerLocationMemoForTests } from '../services/owner-location-record';
 import { mockModules, replaceModules } from './mock-module';
+import { createRouteConsent } from './owner-location-route-consent';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const address = privateKeyToAccount(privateKey).address;
@@ -34,7 +35,9 @@ const ensureTinyCloudBootstrapForApprovedSign = mock(async (input: Hooks) => {
   return { status: 'complete' as const };
 });
 const keyRecord = { id: 'key_1', userId: user.id, address, keyType: 'MANAGED', sealedBlob: 'sealed-private-key', archivedAt: null };
+const consent = await createRouteConsent(user.id);
 const prisma = {
+  ...consent.db,
   ethereumKey: {
     findFirst: mock(async ({ where }: { where: Record<string, unknown> }) =>
       where.userId === user.id && where.id === keyRecord.id && where.archivedAt === null ? keyRecord : null),
@@ -132,12 +135,19 @@ afterEach(() => {
   process.stdout.write = originalWrite;
 });
 
+/**
+ * `required` consent: a request that says `publishOwnerLocation: true` also carries the passkey assertion the page
+ * would fetch from `/owner-location/passkey`, unless the test sets `ownerLocationPasskeyAssertion` itself.
+ */
 async function sign(body: Record<string, unknown>) {
   const { keysRouter } = await import('../routes/keys?keys-sign-owner-location-existing' as string);
+  const assertion = body.publishOwnerLocation === true && !('ownerLocationPasskeyAssertion' in body)
+    ? await consent.assertionFor(keysRouter, 'key_1', body.requestOrigin as string | undefined)
+    : {};
   return keysRouter.request('/key_1/sign', {
     method: 'POST',
     headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
-    body: JSON.stringify({ message: 'Sign in to Example', ...body }),
+    body: JSON.stringify({ message: 'Sign in to Example', ...assertion, ...body }),
   });
 }
 

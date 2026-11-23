@@ -9,15 +9,16 @@ import {
   registryOwnerKeyV2,
   registryOwnerSubjectV1,
   signLocationRecord,
+  verifyLocationRecord,
 } from '@tinycloud/sdk-core';
+import { approvalRequestDigest, verifyApprovalPasskey, type ApprovalBinding, type ApprovalSubject, type RelyingParty } from './approval-passkey';
 import { logOwnerLocationRecord } from '../log';
 
 /**
  * Whether a first-party sign needs the owner's explicit say-so before the API publishes the account's public v1
  * location record. The ONLY place that decides it: `ownerLocationPublishAllowed` reads this constant and nothing else.
  *
- * - `required`: the sign request must carry `publishOwnerLocation: true`.
- * - `silent`: a first-party sign publishes without the field.
+ * - `required`: the sign request must carry `publishOwnerLocation: true` and a passkey assertion bound to the publish.
  */
 export type OwnerLocationConsent = 'required' | 'silent';
 export const OWNER_LOCATION_PUBLISH_CONSENT: OwnerLocationConsent = 'required';
@@ -35,15 +36,60 @@ export interface OwnerLocationPublishRequest {
   requestOrigin?: unknown;
   /** The sign request's explicit consent field. Only the boolean `true` counts. */
   publishOwnerLocation?: unknown;
+  /** `{ challengeToken, response }` for the challenge from `/:keyId/owner-location/passkey`. */
+  ownerLocationPasskeyAssertion?: unknown;
 }
 
-/** First-party origins only (the registry-record sign set), and consent as `OWNER_LOCATION_PUBLISH_CONSENT` requires. */
-export function ownerLocationPublishAllowed(
+/** What `ownerLocationPublishAllowed` needs to check the owner's passkey assertion. */
+export interface OwnerLocationConsentContext {
+  db: Parameters<typeof verifyApprovalPasskey>[0];
+  /** The account and the session the assertion's challenge was issued to. */
+  subject: ApprovalSubject;
+  keyId: string;
+  /** The key's address, any case. */
+  address: string;
+  rp?: RelyingParty;
+}
+
+export const OWNER_LOCATION_PASSKEY_PURPOSE = 'owner_location_publish';
+
+/**
+ * What a passkey assertion for the publish confirms: this key, the v1 subject, the default node and the record's
+ * version and sequence. An assertion issued for anything else does not verify.
+ */
+export function ownerLocationPublishBinding(keyId: string, address: string): ApprovalBinding {
+  return {
+    purpose: OWNER_LOCATION_PASSKEY_PURPOSE,
+    requestDigest: approvalRequestDigest(
+      keyId, registryOwnerSubjectV1(address, DEFAULT_REGISTRY_OWNER_CHAIN_ID), OWNER_LOCATION_NODE_HOST, 'v1', '0',
+    ),
+  };
+}
+
+/**
+ * First-party origins only (the registry-record sign set), and consent as `OWNER_LOCATION_PUBLISH_CONSENT` requires.
+ * Under `required` the sign request must say so (`publishOwnerLocation: true`) AND carry a passkey assertion for
+ * `ownerLocationPublishBinding`. The assertion is always required here, whatever the account's passkey-approval
+ * setting: an account without a passkey that counts for step-up cannot produce one, so it is not published for. A
+ * refusal never fails the sign; it only means no publish. Call it before the key is unsealed.
+ */
+export async function ownerLocationPublishAllowed(
   request: OwnerLocationPublishRequest,
+  context: OwnerLocationConsentContext,
   consent: OwnerLocationConsent = OWNER_LOCATION_PUBLISH_CONSENT,
-): boolean {
+): Promise<boolean> {
   if (!registryRecordSignOriginAllowed(request.requestOrigin)) return false;
-  return consent === 'silent' || request.publishOwnerLocation === true;
+  if (consent === 'silent') return true;
+  if (request.publishOwnerLocation !== true) return false;
+  let verified = false;
+  if (request.ownerLocationPasskeyAssertion !== undefined && request.ownerLocationPasskeyAssertion !== null) {
+    verified = await verifyApprovalPasskey(
+      context.db, context.subject, ownerLocationPublishBinding(context.keyId, context.address),
+      request.ownerLocationPasskeyAssertion, context.rp,
+    ).then((result) => result === 'verified', () => false);
+  }
+  if (!verified) logOwnerLocationRecord('skipped_consent_not_verified');
+  return verified;
 }
 
 /**
@@ -133,6 +179,8 @@ export async function ensureOwnerLocationRecord(input: EnsureOwnerLocationRecord
       },
       { type: 'did:pkh', signMessage: input.signMessage },
     );
+    // The record is checked locally, by the SDK's own verifier, before it leaves the process: an invalid one is never sent.
+    if (!(await verifyLocationRecord(record).catch(() => false))) return 'skipped_record_invalid';
 
     const response = await fetchImpl(`${base}/v1/locations/${encodeURIComponent(subject)}`, {
       method: 'PUT',
