@@ -10,6 +10,7 @@ import type { Hex, TypedDataDefinition } from 'viem';
 import {
   ensureTinyCloudBootstrapForApprovedSign,
 } from '../services/tinycloud-bootstrap';
+import { ownerLocationPublishAllowed, publishOwnerLocationInBackground } from '../services/owner-location-record';
 import { awaitTinyCloudBootstrapWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
 import { parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
@@ -306,6 +307,11 @@ type SignBody = {
   elevatedAcknowledged?: boolean;
   /** TC-3442: `{ challengeToken, response }` for the challenge from `/sign/passkey`, when Approve needs the passkey. */
   passkeyAssertion?: unknown;
+  /**
+   * The owner agrees to publish the account's default-node location record. Read only from a first-party origin, and
+   * only while `OWNER_LOCATION_PUBLISH_CONSENT` is `required`; anything but the boolean `true` is no.
+   */
+  publishOwnerLocation?: boolean;
 };
 
 // Hardening: registry record signing. Refused for any origin but TinyCloud One / Home, before a passkey is offered or a key is unsealed.
@@ -481,7 +487,20 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const siwe = mayHostOwnSpace ? parseTinyCloudSiwe(body.message) : null;
   const waitsForOwnSpace = siwe !== null && requestedOwnSpaceForSiwe(siwe, key.address) !== null;
   const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
-    ensureTinyCloudBootstrapForApprovedSign({ prisma, userId: user.id, key, privateKey, message: body.message, format }),
+    ensureTinyCloudBootstrapForApprovedSign({
+      prisma, userId: user.id, key, privateKey, message: body.message, format,
+      // TC-4082: the hook exists only for a first-party sign that is allowed to publish; the bootstrap fires it, past the
+      // Auto-Sign check, when this run completes the account's setup. It runs in the background, after the sign.
+      ...(ownerLocationPublishAllowed(body)
+        ? {
+            onFreshlyComplete: ({ host }: { host: string }) => publishOwnerLocationInBackground({
+              address: key.address,
+              hostedHost: host,
+              signMessage: (message) => account.signMessage({ message }),
+            }),
+          }
+        : {}),
+    }),
     waitsForOwnSpace ? { budgetMs: OWN_TIMEOUT_BUDGET_MS, ownLogsBackground: true } : {},
   );
   if (bootstrap.status === 'failed') {

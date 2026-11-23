@@ -84,6 +84,12 @@ export interface EnsureTinyCloudBootstrapInput {
   privateKey: string | (() => Promise<string>);
   message: string;
   format: 'raw' | 'personal_sign';
+  /**
+   * Called once, after this run moved the row to `complete` (the probe and the bootstrap both succeeded): the one
+   * affirmative signal that the account is hosted on `host`. Not called for a row that was already `complete`. Must not
+   * throw; a throw is dropped.
+   */
+  onFreshlyComplete?: (event: { host: string; chainId: number }) => void;
 }
 
 export interface EnsureTinyCloudBootstrapInputCore {
@@ -97,6 +103,8 @@ export interface EnsureTinyCloudBootstrapInputCore {
   requestedSpaces?: TinyCloudBootstrapRequestedSpaces;
   /** Set by the background sweep: the lock is taken only if the row still matches what it observed. */
   sweepClaim?: TinyCloudBootstrapSweepClaim;
+  /** As on `EnsureTinyCloudBootstrapInput`. */
+  onFreshlyComplete?: (event: { host: string; chainId: number }) => void;
 }
 
 /** A sweep's claim on one row: the state it observed, and a hook fired only once the lock is won. */
@@ -460,6 +468,12 @@ export async function ensureTinyCloudBootstrap(
     });
     if (completed.count !== 1) {
       throw new Error('TinyCloud bootstrap lock was lost before completion');
+    }
+
+    try {
+      input.onFreshlyComplete?.({ host: tinycloudHost, chainId });
+    } catch {
+      // A hook that fails never turns a completed setup into a failed one.
     }
 
     return { status: 'complete' };

@@ -176,7 +176,7 @@ Users authenticate once with OpenKey, then your app receives:
 |----------|-------------|
 | `POST /api/keys/generate` | Create new Ethereum key |
 | `GET /api/keys` | List user's keys |
-| `POST /api/keys/:id/sign` | Sign a message. A SIWE (EIP-4361) message is signed only if `requestOrigin` (the verified origin of the asking site) equals its domain and URI origin; otherwise `403 siwe_origin_refused`. Non-SIWE messages are unchanged. |
+| `POST /api/keys/:id/sign` | Sign a message. A SIWE (EIP-4361) message is signed only if `requestOrigin` (the verified origin of the asking site) equals its domain and URI origin; otherwise `403 siwe_origin_refused`. Non-SIWE messages are unchanged. A request from a first-party origin (`home`, `secrets` or `share.tinycloud.xyz`, `tinycloud.one`) that sets `publishOwnerLocation: true` also lets the API create the owner's public v1 location record naming `https://node.tinycloud.xyz`, in the background, once Auto-Sign setup completes on that node and the registry holds no v2 or v1 record for the owner. The create is final: a non-2xx answer is not retried. |
 | `POST /api/keys/:id/sign-typed-data` | Sign EIP-712 typed data |
 | `GET /api/keys/:id/quote` | Get TEE attestation |
 
