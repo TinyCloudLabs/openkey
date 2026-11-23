@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { canonicalSiweFields, strictSessionDid } from './device-authorization';
 import { digestJwk } from './authorization-signing';
 import { appKeyRefusalCode, appKeyRefusalForSiwe, appKeyRefusalMessage, appKeyRefusalStatus } from './app-key-refusal';
-import { APP_KEY_HANDOFF_MESSAGES, appKeyHandoffRefusal, checkAppKeyHandoffSiwe, parseAppKeyHandoff, type AppKeyHandoffRequest } from './app-key-handoff';
+import { appKeyHandoffRefusal, checkAppKeyHandoffSiwe, parseAppKeyHandoff, type AppKeyHandoffReason, type AppKeyHandoffRequest } from './app-key-handoff';
 import { parseOwnerRevocationRequest, type OwnerRevocationRequest } from '@openkey/capability-review';
 
 export type PreparedHandoffRequest = {
@@ -52,7 +52,12 @@ export interface PreparedHandoffStore {
 }
 
 export class PreparedHandoffError extends Error {
-  constructor(public readonly code: string, message: string, public readonly status: 400 | 403 | 404 | 409 | 410 | 429) {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly status: 400 | 403 | 404 | 409 | 410 | 429,
+    public readonly reason?: AppKeyHandoffReason,
+  ) {
     super(message);
   }
 }
@@ -61,6 +66,11 @@ const digest = (value: string) => createHash('sha256').update(value).digest('hex
 const opaque = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value) && Buffer.from(value, 'base64url').length === 32 && Buffer.from(value, 'base64url').toString('base64url') === value;
 function fail(code: string, message: string, status: 400 | 403 | 404 | 409 | 410 | 429): never {
   throw new PreparedHandoffError(code, message, status);
+}
+
+function failAppKeyClaim(reason: AppKeyHandoffReason): never {
+  const { body, status } = appKeyHandoffRefusal(reason);
+  throw new PreparedHandoffError(body.code, body.error, status, reason);
 }
 
 function validateRequest(input: unknown, now: Date): { request: PreparedHandoffRequest; delivery: Delivery; issuedAt?: string; expirationTime: string; nonce: string } {
@@ -123,12 +133,12 @@ function validateRequest(input: unknown, now: Date): { request: PreparedHandoffR
     // fetched when the owner's page prepares the sign-in.
     const appKey = parseAppKeyHandoff(legacy.appKey);
     if (!appKey || legacy.presentation !== undefined) {
-      fail('app_key_request_invalid', APP_KEY_HANDOFF_MESSAGES.request_invalid, 400);
+      failAppKeyClaim('request_invalid');
     }
     const checked = checkAppKeyHandoffSiwe({ siwe: legacy.siwe, appKey, now: now.getTime() });
-    if (!checked.ok) fail('app_key_request_invalid', APP_KEY_HANDOFF_MESSAGES[checked.reason], appKeyHandoffRefusal(checked.reason).status);
+    if (!checked.ok) failAppKeyClaim(checked.reason);
     if (appKeyRefusalForSiwe(legacy.siwe, undefined, [checked.grant.admitted])) {
-      fail('app_key_request_invalid', APP_KEY_HANDOFF_MESSAGES.recap, 403);
+      failAppKeyClaim('recap');
     }
   } else {
     const appKeyRefusal = appKeyRefusalForSiwe(legacy.siwe);

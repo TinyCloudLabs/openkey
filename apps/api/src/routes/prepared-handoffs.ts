@@ -23,7 +23,7 @@ export function createPreparedHandoffRouter(service: PreparedHandoffService = pr
   const router = new Hono<Variables>();
 
   router.onError((error, c) => {
-    if (error instanceof PreparedHandoffError) return c.json({ code: error.code, error: error.message }, error.status);
+    if (error instanceof PreparedHandoffError) return c.json({ code: error.code, error: error.message, reason: error.reason }, error.status);
     throw error;
   });
 

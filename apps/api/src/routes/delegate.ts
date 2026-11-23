@@ -136,6 +136,7 @@ import {
   type AppKeyHandoffReason,
   type AppKeyHandoffRequest,
 } from '../services/app-key-handoff';
+import { AppKeyFetchLimit } from '../services/app-key-fetch-limit';
 import { signManagedKey, unsealManagedKey } from '../services/managed-key-signing';
 import {
   canonicalizeCoordinationosOrigin,
@@ -2822,6 +2823,8 @@ delegateRouter.post('/complete', async (c) => {
   }
 });
 
+const appKeyFetchLimit = new AppKeyFetchLimit();
+
 /**
  * POST /api/delegate/authorize-sign-prepare
  *
@@ -3316,7 +3319,9 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     if (originalEntries.length !== 1 || originalEntries[0]!.actions.length !== APP_KEY_ABILITIES.length) {
       return refuseAppKeyHandoff('recap');
     }
-    const listed = await verifyAppKeyHandoffFile(appKeyRequest);
+    const release = appKeyFetchLimit.acquire(user.id);
+    if (!release) return c.json({ error: 'Too many app key requests for this account', code: 'rate_limited' }, 429);
+    const listed = await verifyAppKeyHandoffFile(appKeyRequest).finally(release);
     if (!listed.ok) return refuseAppKeyHandoff(listed.reason);
     const notAdmitted = appKeyRefusalForSiwe(body.siwe, originalEntries, [checkedGrant.grant.admitted]);
     if (notAdmitted) return c.json(appKeyRefusalBody(notAdmitted, 'non_browser'), appKeyRefusalStatus(notAdmitted));

@@ -40,6 +40,7 @@ const check = (message: string, over: Record<string, unknown> = {}) =>
 const reasonOf = (result: ReturnType<typeof check>) => (result.ok ? 'ok' : result.reason);
 const file = (body: unknown) => new TextEncoder().encode(JSON.stringify(body));
 const listing = (over: Record<string, unknown> = {}) => ({
+  type: 'openkey-app-keys',
   app_id: APP_ID, keys: [{ path: `apps/${APP_ID}/${KEY}`, abilities: ['decrypt', 'key.create'] }], ...over,
 });
 
@@ -145,23 +146,23 @@ describe('checkAppKeysFile', () => {
     expect(checkAppKeysFile(file(listing()), appKey)).toEqual({ ok: true });
   });
 
-  test('extra abilities, other entries and other top-level fields do not matter', () => {
+  test('extra abilities and other entries do not matter', () => {
     const keys = [
       { path: `apps/${APP_ID}/zzz`, abilities: ['decrypt'] },
       { path: `apps/${APP_ID}/${KEY}`, abilities: ['key.block', 'key.create', 'decrypt'] },
       { prefix: `apps/${APP_ID}/`, abilities: ['decrypt'] },
     ];
-    expect(checkAppKeysFile(file(listing({ keys, name: 'Share' })), appKey)).toEqual({ ok: true });
+    expect(checkAppKeysFile(file(listing({ keys })), appKey)).toEqual({ ok: true });
   });
 
   test.each([
     ['not JSON', new TextEncoder().encode('<html>'), 'file_invalid'],
     ['invalid UTF-8', new Uint8Array([0xff, 0xfe]), 'file_invalid'],
     ['an array', file([]), 'file_invalid'],
-    ['no app_id', file({ keys: listing().keys }), 'file_invalid'],
+    ['no app_id', file({ type: 'openkey-app-keys', keys: listing().keys }), 'file_invalid'],
     ['a numeric app_id', file(listing({ app_id: 1 })), 'file_invalid'],
     ['another app_id', file(listing({ app_id: 'xyz.tinycloud.listen' })), 'file_app_mismatch'],
-    ['no keys', file({ app_id: APP_ID }), 'file_invalid'],
+    ['no keys', file({ type: 'openkey-app-keys', app_id: APP_ID }), 'file_invalid'],
     ['keys that are not a list', file(listing({ keys: {} })), 'file_invalid'],
     ['more than 32 entries', file(listing({ keys: Array.from({ length: 33 }, (_, i) => ({ path: `apps/${APP_ID}/k${i}`, abilities: ['decrypt', 'key.create'] })) })), 'file_invalid'],
     ['an unknown entry field', file(listing({ keys: [{ path: `apps/${APP_ID}/${KEY}`, abilities: ['decrypt', 'key.create'], note: 'x' }] })), 'file_invalid'],

@@ -6,7 +6,7 @@ import { mockModules } from './mock-module';
 
 type Call = { url: string; init: Record<string, unknown> };
 let calls: Call[] = [];
-let respond: () => Response = () => new Response('{}');
+let respond: () => Response = () => Response.json({});
 const undiciFetch = mock(async (url: string, init: Record<string, unknown>) => {
   calls.push({ url, init });
   return respond();
@@ -21,7 +21,7 @@ beforeAll(async () => {
 });
 beforeEach(() => {
   calls = [];
-  respond = () => new Response('{}');
+  respond = () => Response.json({});
 });
 
 // An address literal: resolving it needs no network.
@@ -29,10 +29,11 @@ const PUBLIC_HOST = '93.184.216.34';
 
 describe('fetchAppKeysFile', () => {
   test('asks for the app-keys path over https with no redirects and returns the bytes', async () => {
-    respond = () => new Response('{"app_id":"x"}');
+    const body = '{"type":"openkey-app-keys","app_id":"x","keys":[]}';
+    respond = () => new Response(body, { headers: { 'Content-Type': 'application/json; charset=UTF-8' } });
     const result = await fetchAppKeysFile(PUBLIC_HOST);
     expect(result.ok).toBe(true);
-    expect(result.ok && new TextDecoder().decode(result.bytes)).toBe('{"app_id":"x"}');
+    expect(result.ok && new TextDecoder().decode(result.bytes)).toBe(body);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe(`https://${PUBLIC_HOST}/.well-known/openkey-app-keys.json`);
     expect(calls[0]!.init.redirect).toBe('error');
@@ -44,7 +45,7 @@ describe('fetchAppKeysFile', () => {
   });
 
   test('a body over 64 KiB is unavailable', async () => {
-    respond = () => new Response('x'.repeat(64 * 1024 + 1));
+    respond = () => new Response('x'.repeat(64 * 1024 + 1), { headers: { 'Content-Type': 'application/json' } });
     await expect(fetchAppKeysFile(PUBLIC_HOST)).resolves.toMatchObject({ ok: false, kind: 'unavailable' });
   });
 

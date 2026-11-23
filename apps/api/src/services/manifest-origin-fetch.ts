@@ -36,6 +36,22 @@ const APP_KEYS_PATH = "/.well-known/openkey-app-keys.json";
 const REQUEST_TIMEOUT_MS = 5_000;
 const MAX_BYTES = 64 * 1024;
 
+const reservedIPv6 = new net.BlockList();
+for (const [address, prefix] of [
+  ["::", 96],             // IPv4-compatible, unspecified and loopback
+  ["::ffff:0:0", 96],     // IPv4-mapped
+  ["64:ff9b::", 32],      // Translation prefixes, including 64:ff9b:1::/48
+  ["100::", 64],          // Discard-only
+  ["2001::", 23],         // IETF protocol assignments
+  ["2002::", 16],         // 6to4
+  ["fc00::", 7],          // Unique local
+  ["fe80::", 10],         // Link local
+  ["fec0::", 10],         // Deprecated site local
+  ["ff00::", 8],          // Multicast
+] as const) {
+  reservedIPv6.addSubnet(address, prefix, "ipv6");
+}
+
 /**
  * Sol MAJOR-2: a single declared scoped-secret entry extracted from the
  * origin-bound manifest. The trust rule for surfacing a KV/secret grant
@@ -131,7 +147,8 @@ export async function fetchAndBindWellKnownManifest(input: {
   const { reportedOrigin, declaredDigest } = input;
 
   // 1-3. Structural URL validation, private-host rejection, DNS pin.
-  const origin = await resolveGuardedOrigin(reportedOrigin);
+  const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const origin = await resolveGuardedOrigin(reportedOrigin, signal);
   if (!origin.ok) return { ok: false, reason: origin.reason };
 
   // 4. Declared digest sanity: 64 lowercase hex chars.
@@ -141,7 +158,7 @@ export async function fetchAndBindWellKnownManifest(input: {
   }
 
   // 5. Fetch with timeout, size cap, no redirects.
-  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, MANIFEST_PATH);
+  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, MANIFEST_PATH, signal);
   if (!fetched.ok) return { ok: false, reason: fetched.reason };
 
   // Parse, canonicalize, digest, compare, and extract as one fail-closed
@@ -166,6 +183,7 @@ interface GuardedFailure {
   reason: string;
   /** The HTTP status, when the origin answered with a non-2xx one. */
   status?: number;
+  invalidContentType?: boolean;
 }
 type GuardedOrigin = GuardedOriginOk | GuardedFailure;
 type GuardedBytes = { ok: true; bytes: Uint8Array } | GuardedFailure;
@@ -175,7 +193,7 @@ type GuardedBytes = { ok: true; bytes: Uint8Array } | GuardedFailure;
  * path, its host is not literally private, and every address it resolves to
  * is public. One validated address is returned for the connection to pin.
  */
-async function resolveGuardedOrigin(reportedOrigin: string): Promise<GuardedOrigin> {
+async function resolveGuardedOrigin(reportedOrigin: string, signal: AbortSignal): Promise<GuardedOrigin> {
   // 1. Structural URL validation.
   let url: URL;
   try {
@@ -207,7 +225,7 @@ async function resolveGuardedOrigin(reportedOrigin: string): Promise<GuardedOrig
   //  refuses if the presented cert is not for the reported origin.
   let pinnedAddress: string | null = null;
   try {
-    const addresses = await dns.lookup(url.hostname, { all: true });
+    const addresses = await lookupBeforeDeadline(url.hostname, signal);
     if (!addresses.length) {
       return { ok: false, reason: "reportedOrigin failed DNS resolution" };
     }
@@ -228,139 +246,89 @@ async function resolveGuardedOrigin(reportedOrigin: string): Promise<GuardedOrig
   return { ok: true, url, pinnedAddress };
 }
 
+async function lookupBeforeDeadline(hostname: string, signal: AbortSignal) {
+  signal.throwIfAborted();
+  let onAbort: () => void;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([dns.lookup(hostname, { all: true }), deadline]);
+  } finally {
+    signal.removeEventListener("abort", onAbort!);
+  }
+}
+
 /**
- * Step 5 of every guarded fetch: GET `path` on the validated origin, pinned to
- * the validated address, no redirects, 5 seconds through the whole body, at
- * most 64 KiB.
+ * GET the well-known file at the validated IP within the remaining deadline.
  */
-async function fetchGuardedBytes(url: URL, pinnedAddress: string, path: string): Promise<GuardedBytes> {
-  // Sol MAJOR-4: pin the connection to the DNS address that already
-  // passed the private/reserved check (defeats DNS rebinding). We use
-  // undici with a per-request Agent whose `connect` forces `hostname`
-  // to the pinned IP. `servername` is left unset so TLS SNI + cert
-  // validation continue to run against `url.hostname` — the fetch
-  // refuses when the presented certificate does not name the reported
-  // origin, and cannot silently talk to a different host.
-  //
-  // Sol MAJOR-4: the 5-second abort deadline stays active THROUGH the
-  // complete body read. An attacker holding the TCP connection open by
-  // trickling bytes cannot stall this call past REQUEST_TIMEOUT_MS —
-  // the controller.abort() will surface as a body-read error.
-  const manifestUrl = `${url.origin}${path}`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  // A per-call Agent avoids leaking sockets and keeps the pin scoped
-  // to THIS request. We install a custom `connector` that hard-overrides
-  // the `hostname` field on the socket-connect callback with the
-  // already-validated `pinnedAddress` — but leaves `servername` (SNI)
-  // and the HTTP Host header intact so TLS certificate validation
-  // continues to check the reported origin. A DNS response that later
-  // flips to a private IP cannot influence this fetch; the socket
-  // connects to the pre-validated IP even if the OS resolver would
-  // have chosen something different.
+async function fetchGuardedBytes(url: URL, pinnedAddress: string, path: string, signal: AbortSignal): Promise<GuardedBytes> {
   const baseConnect = buildConnector();
   const pinnedConnector: buildConnector.connector = (options, callback) => {
-    baseConnect(
-      {
-        ...options,
-        // `hostname` is the field the socket layer resolves and dials.
-        hostname: pinnedAddress,
-      },
-      callback,
-    );
+    baseConnect({ ...options, hostname: pinnedAddress }, callback);
   };
   const dispatcher = new Agent({ connect: pinnedConnector });
-  let res: Awaited<ReturnType<typeof undiciFetch>>;
+  let cancelBody: (() => Promise<void>) | undefined;
   try {
-    res = await undiciFetch(manifestUrl, {
-      method: "GET",
-      redirect: "error",
-      signal: controller.signal,
-      dispatcher,
-      // Some Node fetches allow overriding — set Accept for hygiene only.
-      headers: { Accept: "application/json" },
-    });
-  } catch {
-    clearTimeout(timer);
+    let res: Awaited<ReturnType<typeof undiciFetch>>;
     try {
-      await dispatcher.close();
+      res = await undiciFetch(`${url.origin}${path}`, {
+        method: "GET",
+        redirect: "error",
+        signal,
+        dispatcher,
+        headers: { Accept: "application/json" },
+      });
     } catch {
-      // best-effort
+      return { ok: false, reason: "fetch threw" };
     }
-    return { ok: false, reason: "fetch threw" };
-  }
-  if (!res.ok) {
-    clearTimeout(timer);
-    try {
-      await dispatcher.close();
-    } catch {
-      // best-effort
+    cancelBody = () => res.body?.cancel() ?? Promise.resolve();
+    if (!res.ok) {
+      return { ok: false, reason: `fetch returned status ${res.status}`, status: res.status };
     }
-    return { ok: false, reason: `fetch returned status ${res.status}`, status: res.status };
-  }
-  // Enforce max size — read as bytes and abort if larger than MAX_BYTES.
-  // The abort timer remains armed throughout — a slow trickle attack
-  // trips it inside `reader.read()` and short-circuits with a bounded
-  // failure rather than hanging.
-  const reader = res.body?.getReader();
-  if (!reader) {
-    clearTimeout(timer);
-    try {
-      await dispatcher.close();
-    } catch {
-      // best-effort
-    }
-    return { ok: false, reason: "response body has no reader" };
-  }
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  let bodyOk = false;
-  try {
-    while (true) {
-      let done = false;
-      let value: Uint8Array | undefined;
-      try {
-        const chunk = await reader.read();
-        done = chunk.done;
-        value = chunk.value;
-      } catch {
-        return { ok: false, reason: "response body read threw" };
+    if (path === APP_KEYS_PATH) {
+      const contentType = res.headers.get("content-type");
+      if (!contentType || contentType.includes(",") ||
+        contentType.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+        return { ok: false, reason: "response Content-Type is not application/json", invalidContentType: true };
       }
-      if (done) break;
-      if (!value) continue;
-      total += value.byteLength;
-      if (total > MAX_BYTES) {
-        try {
-          await reader.cancel();
-        } catch {
-          // best-effort
-        }
-        return { ok: false, reason: "response exceeded 64KB" };
-      }
-      chunks.push(value);
     }
-    bodyOk = true;
+    const reader = res.body?.getReader();
+    if (!reader) return { ok: false, reason: "response body has no reader" };
+    cancelBody = () => reader.cancel();
+
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        total += value.byteLength;
+        if (total > MAX_BYTES) return { ok: false, reason: "response exceeded 64KB" };
+        chunks.push(value);
+      }
+    } catch {
+      return { ok: false, reason: "response body read threw" };
+    }
+    cancelBody = undefined;
+    return { ok: true, bytes: concatBytes(chunks, total) };
   } finally {
-    // Only clear the abort timer AFTER body consumption completes (or
-    // errors). Closing the dispatcher tears down the pinned socket.
-    clearTimeout(timer);
+    // Status, media type and size checks can stop consumption early.
+    // Destroying the dispatcher closes the socket without draining the body.
+    void cancelBody?.().catch(() => {});
     try {
-      await dispatcher.close();
+      await dispatcher.destroy();
     } catch {
-      // best-effort
+      // Bun supplies a compatibility dispatcher. Cancel the body above.
     }
   }
-  if (!bodyOk) {
-    // Defence in depth — the loop above returns on every error path.
-    return { ok: false, reason: "response body did not complete" };
-  }
-  return { ok: true, bytes: concatBytes(chunks, total) };
 }
 
 export type AppKeysFileFetch =
   | { ok: true; bytes: Uint8Array }
-  /** `missing`: the host answered 404 or 410. `unavailable`: anything else that stopped the fetch. */
-  | { ok: false; kind: "missing" | "unavailable"; reason: string };
+  | { ok: false; kind: "missing" | "invalid" | "unavailable"; reason: string };
 
 /**
  * Fetch `https://<host>/.well-known/openkey-app-keys.json` through the same
@@ -368,10 +336,12 @@ export type AppKeysFileFetch =
  * the caller reads the bytes it gets, once.
  */
 export async function fetchAppKeysFile(host: string): Promise<AppKeysFileFetch> {
-  const origin = await resolveGuardedOrigin(`https://${host}`);
+  const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const origin = await resolveGuardedOrigin(`https://${host}`, signal);
   if (!origin.ok) return { ok: false, kind: "unavailable", reason: origin.reason };
-  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, APP_KEYS_PATH);
+  const fetched = await fetchGuardedBytes(origin.url, origin.pinnedAddress, APP_KEYS_PATH, signal);
   if (fetched.ok) return fetched;
+  if (fetched.invalidContentType) return { ok: false, kind: "invalid", reason: fetched.reason };
   return {
     ok: false,
     kind: fetched.status === 404 || fetched.status === 410 ? "missing" : "unavailable",
@@ -720,7 +690,7 @@ function isLiterallyPrivateHostname(host: string): boolean {
 function isPrivateOrReservedAddress(address: string): boolean {
   const family = net.isIP(address);
   if (family === 4) return isPrivateIPv4(address);
-  if (family === 6) return isPrivateIPv6(address);
+  if (family === 6) return reservedIPv6.check(address, "ipv6");
   // Non-IP → treat as unresolvable, err on the side of blocking.
   return true;
 }
@@ -750,18 +720,5 @@ function isPrivateIPv4(address: string): boolean {
   if (a === 203 && b === 0 && c === 113) return true;
   if (a >= 224 && a <= 239) return true;
   if (a >= 240) return true;
-  return false;
-}
-
-function isPrivateIPv6(address: string): boolean {
-  const lower = address.toLowerCase();
-  if (lower === "::" || lower === "::1") return true;
-  // fe80::/10 link-local, fc00::/7 unique-local, ::ffff:/96 IPv4-mapped,
-  // 64:ff9b::/96 well-known translation prefix, ff00::/8 multicast.
-  if (lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) return true;
-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
-  if (lower.startsWith("::ffff:")) return true;
-  if (lower.startsWith("64:ff9b:")) return true;
-  if (lower.startsWith("ff")) return true;
   return false;
 }

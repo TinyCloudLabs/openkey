@@ -27,9 +27,10 @@ const DAY = 24 * 60 * 60 * 1000;
 
 const sessionJwk = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
 
-type FileResult = { ok: true; bytes: Uint8Array } | { ok: false; kind: 'missing' | 'unavailable'; reason: string };
+type FileResult = { ok: true; bytes: Uint8Array } | { ok: false; kind: 'missing' | 'invalid' | 'unavailable'; reason: string };
 const file = (body: unknown): FileResult => ({ ok: true, bytes: new TextEncoder().encode(typeof body === 'string' ? body : JSON.stringify(body)) });
 const listing = (over: Record<string, unknown> = {}) => ({
+  type: 'openkey-app-keys',
   app_id: APP_ID,
   keys: [{ path: `apps/${APP_ID}/${KEY}`, abilities: ['decrypt', 'key.create'] }],
   ...over,
@@ -96,6 +97,7 @@ await mockModules({
 });
 
 let router: typeof import('../routes/delegate')['delegateRouter'];
+let createPreparedHandoffRouter: typeof import('../routes/prepared-handoffs')['createPreparedHandoffRouter'];
 let setService: typeof import('../routes/delegate')['setPreparedHandoffServiceForTests'];
 let resetContexts: typeof import('../services/authorization-signing')['_resetAuthorizationContextStoreForTests'];
 let service: PreparedHandoffService;
@@ -103,6 +105,7 @@ let service: PreparedHandoffService;
 beforeAll(async () => {
   const delegate = await import('../routes/delegate?app-key-handoff-routes' as string);
   router = delegate.delegateRouter;
+  ({ createPreparedHandoffRouter } = await import('../routes/prepared-handoffs?app-key-claim-route' as string));
   setService = delegate.setPreparedHandoffServiceForTests;
   ({ _resetAuthorizationContextStoreForTests: resetContexts } = await import(
     '../services/authorization-signing?app-key-handoff-routes' as string
@@ -138,8 +141,7 @@ function post(path: string, body: unknown) {
   return router.request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 }
 
-/** Claim a handoff as the CLI's page would; returns the ticket and the request it claimed. */
-async function claim(siwe: string, appKey: unknown = { appId: APP_ID, key: KEY }, omitAppKey = false) {
+function claimPayload(siwe: string, appKey: unknown = { appId: APP_ID, key: KEY }, omitAppKey = false) {
   nonce += 1;
   const delivery = {
     handoffId: Buffer.alloc(32, nonce).toString('base64url'),
@@ -147,8 +149,14 @@ async function claim(siwe: string, appKey: unknown = { appId: APP_ID, key: KEY }
     cancelSecret: Buffer.alloc(32, nonce + 200).toString('base64url'),
   };
   const request = { protocolVersion: 1, siwe, jwk: sessionJwk, host: 'https://node.tinycloud.xyz', sessionDid: 'did:key:session-cli', ...(omitAppKey ? {} : { appKey }) };
-  await service.claim({ transportVersion: 2, request, delivery }, user.id);
-  return { ticket: delivery.handoffId, siwe };
+  return { transportVersion: 2, request, delivery };
+}
+
+/** Claim a handoff as the CLI's page would; returns the ticket and the request it claimed. */
+async function claim(siwe: string, appKey?: unknown, omitAppKey = false) {
+  const payload = claimPayload(siwe, appKey, omitAppKey);
+  await service.claim(payload, user.id);
+  return { ticket: payload.delivery.handoffId, siwe };
 }
 
 async function prepare(handoff: { ticket: string; siwe: string }, over: Record<string, unknown> = {}) {
@@ -300,10 +308,10 @@ describe('refusals at prepare', () => {
     ['no file', { ok: false, kind: 'missing', reason: 'fetch returned status 404' } as FileResult, 'app_keys_file_missing', 'file_missing'],
     ['a fetch that failed', { ok: false, kind: 'unavailable', reason: 'fetch threw' } as FileResult, 'app_keys_file_unavailable', 'file_unavailable'],
     ['text that is not JSON', file('<html>'), 'app_keys_file_invalid', 'file_invalid'],
-    ['a file with no keys', file({ app_id: APP_ID }), 'app_keys_file_invalid', 'file_invalid'],
+    ['a file with no keys', file({ type: 'openkey-app-keys', app_id: APP_ID }), 'app_keys_file_invalid', 'file_invalid'],
     ['an unreadable keys block', file(listing({ keys: [{ path: `apps/${APP_ID}/${KEY}`, abilities: ['decrypt', 'key.create'], extra: 1 }] })), 'app_keys_file_invalid', 'file_invalid'],
     ['another app id', file(listing({ app_id: 'xyz.tinycloud.listen' })), 'app_keys_file_invalid', 'file_app_mismatch'],
-    ['no app id', file({ keys: listing().keys }), 'app_keys_file_invalid', 'file_invalid'],
+    ['no app id', file({ type: 'openkey-app-keys', keys: listing().keys }), 'app_keys_file_invalid', 'file_invalid'],
     ['another key', file(listing({ keys: [{ path: `apps/${APP_ID}/other`, abilities: ['decrypt', 'key.create'] }] })), 'app_key_not_listed', 'key_not_listed'],
     ['a prefix that covers the key', file(listing({ keys: [{ prefix: `apps/${APP_ID}/`, abilities: ['decrypt', 'key.create'] }] })), 'app_key_not_listed', 'key_not_listed'],
     ['decrypt only', file(listing({ keys: [{ path: `apps/${APP_ID}/${KEY}`, abilities: ['decrypt'] }] })), 'app_key_not_listed', 'key_not_listed'],
@@ -324,5 +332,20 @@ describe('refusals at prepare', () => {
     fileResult = file(listing());
     expect((await prepare(handoff)).res.status).toBe(200);
     expect(fetchAppKeysFile).toHaveBeenCalledTimes(2);
+  });
+});
+
+test('claim returns the app-key refusal reason and owner message', async () => {
+  const app = createPreparedHandoffRouter(service);
+  const res = await app.request('/claim', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(claimPayload(siweFor({ [RESOURCE]: ['tinycloud.encryption/decrypt'] }))),
+  });
+  expect(res.status).toBe(403);
+  expect(await res.json()).toEqual({
+    code: 'app_key_request_invalid',
+    reason: 'recap',
+    error: 'This request asks for more than the one app key it names. Nothing was approved.',
   });
 });

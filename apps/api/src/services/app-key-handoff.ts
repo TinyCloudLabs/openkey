@@ -181,7 +181,7 @@ export function checkAppKeyHandoffSiwe(input: {
 }
 
 /**
- * Read the app-keys file bytes: a JSON object whose `app_id` is the requested
+ * Read the typed app-keys JSON object whose `app_id` is the requested
  * id and whose `keys` block (same rules as the manifest's) has a `path` entry
  * for exactly this key with `decrypt` and `key.create`. A `prefix` entry never
  * counts.
@@ -198,7 +198,8 @@ export function checkAppKeysFile(
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { ok: false, reason: 'file_invalid' };
   const file = parsed as Record<string, unknown>;
-  if (typeof file.app_id !== 'string') return { ok: false, reason: 'file_invalid' };
+  if (Object.keys(file).length !== 3 || file.type !== 'openkey-app-keys' ||
+      typeof file.app_id !== 'string' || !Object.hasOwn(file, 'keys')) return { ok: false, reason: 'file_invalid' };
   if (file.app_id !== appKey.appId) return { ok: false, reason: 'file_app_mismatch' };
   const keys = parseManifestKeys(appKey.appId, file.keys);
   if (keys.status !== 'valid') return { ok: false, reason: 'file_invalid' };
@@ -218,7 +219,10 @@ export async function verifyAppKeyHandoffFile(
   const host = appKeyHandoffHost(appKey.appId);
   if (host === null) return { ok: false, reason: 'app_id' };
   const fetched = await fetchFile(host);
-  if (!fetched.ok) return { ok: false, reason: fetched.kind === 'missing' ? 'file_missing' : 'file_unavailable' };
+  if (!fetched.ok) {
+    if (fetched.kind === 'missing') return { ok: false, reason: 'file_missing' };
+    return { ok: false, reason: fetched.kind === 'invalid' ? 'file_invalid' : 'file_unavailable' };
+  }
   const read = checkAppKeysFile(fetched.bytes, appKey);
   return read.ok ? { ok: true, host } : { ok: false, reason: read.reason };
 }
