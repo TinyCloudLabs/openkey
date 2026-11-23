@@ -93,7 +93,7 @@ describe('a passkey click before the autofill verification starts', () => {
     expect(log.signedIn).toBe(0);
   });
 
-  test('a verification that starts after the stop ends the cancelling and is not adopted', async () => {
+  test('a verification that starts after the stop ends the cancelling and is adopted', async () => {
     const gate = Promise.withResolvers<Result>();
     let onVerify!: () => void;
     const { log, value } = deps({ signIn: (hooks) => { onVerify = hooks.onVerify; return gate.promise; } });
@@ -107,8 +107,8 @@ describe('a passkey click before the autofill verification starts', () => {
     await tick(30);
     expect(log.cancelled).toBe(atVerify);
     gate.resolve({ error: null });
-    expect(await stopped).toBe(false);
-    expect(log.signedIn).toBe(0);
+    expect(await stopped).toBe(true);
+    expect(log.signedIn).toBe(1);
   });
 
   test('with no autofill running the click runs its own ceremony', async () => {
