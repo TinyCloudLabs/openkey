@@ -98,6 +98,17 @@ async function shot(page: Page, name: string) {
   if (process.env.TC4115_SCREEN_DIR) await page.screenshot({ path: `${process.env.TC4115_SCREEN_DIR}/${name}-390.png`, fullPage: true });
 }
 
+const OLD_REASON_NOTE = 'This reason comes from the caller and is not verified.';
+
+/** The requester's reason is shown with the one label, and nothing else on the page says it a second time. */
+async function expectReasonLabel(page: Page, reason: string) {
+  const box = page.getByRole('region', { name: 'Reason for request' });
+  await expect(box).toContainText(reason);
+  await expect(box).toContainText(REQUESTER_TEXT);
+  await expect(page.getByText(REQUESTER_TEXT)).toHaveCount(1);
+  await expect(page.getByText(OLD_REASON_NOTE)).toHaveCount(0);
+}
+
 test.use({ viewport: { width: 390, height: 844 } });
 
 test.describe('an approval request page', () => {
@@ -107,7 +118,7 @@ test.describe('an approval request page', () => {
     await expect(approveButton(page)).toBeEnabled();
 
     await expect(page.getByRole('note').filter({ hasText: MAY_CREATE })).toHaveText(MAY_CREATE);
-    await expect(page.getByRole('note').filter({ hasText: REQUESTER_TEXT })).toHaveText(REQUESTER_TEXT);
+    await expectReasonLabel(page, 'Read app data');
     // The unverified-link line stays as it is.
     await expect(page.getByRole('dialog')).toContainText(UNVERIFIED_LINK);
     // A signed request carries its own attribution: the page never sends a link delivery for it.
@@ -131,12 +142,12 @@ test.describe('a link', () => {
   test('a CLI link that returns to a loopback listener says it returns by callback', async ({ page }) => {
     const callback = 'http://127.0.0.1:8123/callback';
     const bodies = await mockApi(page, { space: 'default', plan: 'setup' });
-    await page.goto(linkPath(`&callback=${encodeURIComponent(callback)}`));
+    await page.goto(linkPath(`&callback=${encodeURIComponent(callback)}&reason=${encodeURIComponent('Sync notes from my laptop')}`));
     await expect(approveButton(page)).toBeEnabled();
 
     expect(bodies.at(-1)).toMatchObject({ linkDelivery: 'callback', linkCallback: callback });
     await expect(page.getByRole('note').filter({ hasText: CREATES })).toHaveText(CREATES);
-    await expect(page.getByRole('note').filter({ hasText: REQUESTER_TEXT })).toHaveText(REQUESTER_TEXT);
+    await expectReasonLabel(page, 'Sync notes from my laptop');
     await shot(page, 'link-callback');
   });
 
@@ -158,5 +169,34 @@ test.describe('a link', () => {
     await expect(page.getByText(MAY_CREATE)).toHaveCount(0);
     await expect(page.getByRole('note').filter({ hasText: "Approving this link won't set it up." })).toBeVisible();
     await shot(page, 'link-no-setup');
+  });
+});
+
+test.describe('a device request', () => {
+  const DEVICE_REASON = 'Sync my notes';
+
+  test('the code page and the review page label the reason the same way', async ({ page }) => {
+    await mockApi(page, null);
+    await page.route('**/api/device-authorizations/lookup?*', (route) => route.fulfill({ json: {
+      id: 'device-fixture', userCode: 'ABCDEFGH', sessionDid: AUDIENCE,
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) },
+      relayPublicJwk: { kty: 'EC', crv: 'P-256', x: 'A'.repeat(43), y: 'A'.repeat(43) },
+      permissions: [{ service: NOTES.service, space: NOTES.space, path: NOTES.path, actions: [KV_GET] }],
+      reason: DEVICE_REASON, nodeOrigin: 'https://node.tinycloud.xyz', shareOrigin: 'https://share.tinycloud.xyz',
+      delegationTtlSeconds: 30 * 86_400,
+      transactionExpiresAt: new Date(Date.now() + 600_000).toISOString(),
+      delegationExpiresAt: new Date(Date.now() + (30 * 86_400 + 600) * 1000).toISOString(),
+    } }));
+    await page.goto('/device?user_code=ABCD-EFGH');
+    await expect(page.getByText(DEVICE_REASON)).toBeVisible();
+    await expect(page.getByText(REQUESTER_TEXT)).toHaveCount(1);
+    await expect(page.getByText(OLD_REASON_NOTE)).toHaveCount(0);
+    await shot(page, 'device-code');
+
+    await page.getByRole('link', { name: 'Yes, it matches. Review the request' }).click();
+    await expect(approveButton(page)).toBeEnabled();
+    await expectReasonLabel(page, DEVICE_REASON);
+    await expect(page.getByRole('note').filter({ hasText: MAY_CREATE })).toHaveText(MAY_CREATE);
+    await shot(page, 'device-review');
   });
 });

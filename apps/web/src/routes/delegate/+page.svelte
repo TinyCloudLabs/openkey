@@ -2153,7 +2153,6 @@
             </button>
           </div>
         {/if}
-        <p role="note" class="text-sm text-surface-600">{OWN_PAGE_APPROVAL.requesterText}</p>
 
         {#if deviceTransactionId}
           <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={reviewedExpiryParam} />
