@@ -1,14 +1,15 @@
 <script lang="ts">
   import { API_BASE } from '$lib/auth-client';
   import { safeOAuthNavigationUrl } from '$lib/safe-oauth-url';
-  import { daysOverTwoDays, formatDuration, formatEndDay } from '$lib/approval-expiry';
+  import { daysOverTwoDays, defaultLeaseMs, formatDuration, formatEndDay, LEASE_PRESETS, leaseLimitNote } from '$lib/approval-expiry';
   import { formatLocalAccessEnd } from '$lib/access-end';
   import { isTermsRequired } from '$lib/terms';
   import { termsRefused } from '$lib/terms-gate';
+  import DurationChoice from '$lib/components/signing/duration-choice.svelte';
   import NativeShell from '$lib/components/auth/native-shell.svelte';
   import { nativeAccessSummary } from '$lib/native-access';
   import {
-    parseCapabilityReview, defaultSelection, buildRenderPlan, grantHeading, renderSiweLiteral,
+    parseCapabilityReview, defaultSelection, buildRenderPlan, grantHeading, parseSiweFields, renderSiweLiteral,
     type CapabilityAction, type CapabilityGrant, type CapabilityReviewModel,
   } from '@openkey/capability-review';
   import { reviewSelectionToActionKeys, preparedMatchesSelection, type ServerPermissionOption } from '$lib/delegate-review-selection';
@@ -21,12 +22,20 @@
     /** The session has resolved; the request is only prepared once it has. */
     ready: boolean;
   } = $props();
+  type LeasedChoice = { choice: 'leased'; leaseLifetimeSeconds: number; sensitiveConfirmed?: true };
+  type RenewalChoice = { choice: 'finite' } | LeasedChoice;
+  const finiteChoice: RenewalChoice = { choice: 'finite' };
   type Preview = {
     requestId: string; revision: number; digest: string; sessionSiwe: string;
     hostPlan: { host: string; spaceId: string; peerId: string; hostSiwe: string } | null;
     client: { name: string; icon?: string | null; organization?: string | null };
     address: string; keyId: string; redirectScheme: string; tinycloudHost: string;
     ttlSeconds: number; grantLifetimeSeconds: number; permissionOptions: ServerPermissionOption[]; selectedActionKeys: string[];
+    renewal?: RenewalChoice;
+    renewalAvailable?: boolean;
+    renewalMaxLeaseLifetimeSeconds?: number;
+    renewalPurpose?: 'standing' | 'task';
+    renewalSensitiveConfirmationRequired?: boolean;
     /** TC-3442: whether Approve needs the passkey, with the challenge for this revision. */
     passkey?: ApprovalPasskeyNeed;
     /** The request kind: SIGNIN, or STEPUP (with `stepUp`, `spaces` and `reactivation`). */
@@ -42,12 +51,17 @@
   let loading = $state(true);
   let submitting = $state(false);
   let approved = $state(false);
+  let confirmingLeaseMs = $state<number | null>(null);
+  let renewalCheckbox = $state<HTMLInputElement | null>(null);
+  let renewalConfirm = $state<HTMLHeadingElement | null>(null);
   let error = $state('');
   /** The API refused to prepare or approve a step-up because a space it needs is not hosted (`space_not_hosted`). */
   let unhosted = $state(false);
   /** The API sent a kind this page cannot show (none, an unknown one, or a STEPUP that names no app or spaces). */
   let refused = $state(false);
   let serial = 0;
+  const leased = $derived(preview?.renewal?.choice === 'leased' ? preview.renewal : null);
+  const leaseMaxMs = $derived((preview?.renewalMaxLeaseLifetimeSeconds ?? 0) * 1000);
   const stepUpPreview = $derived(preview && isStepUpPreview(preview) ? preview : null);
   // A step-up has no optional actions: every capability is requested and none can be switched off.
   const blocked = $derived(model && preview && !stepUpPreview && !preparedMatchesSelection(model, baselineOptions, selection, preview.selectedActionKeys)
@@ -74,14 +88,14 @@
     }
     return data;
   }
-  async function prepare(actionKeys?: string[]) {
+  async function prepare(actionKeys?: string[], renewal?: RenewalChoice, reapply?: LeasedChoice) {
     const turn = ++serial;
     loading = true;
     error = '';
     unhosted = false;
     refused = false;
     try {
-      const data = await route('prepare', actionKeys ? { actionKeys } : {}) as Preview | { status: 'APPROVED' };
+      const data = await route('prepare', { ...(actionKeys && { actionKeys }), ...(renewal && { renewal }) }) as Preview | { status: 'APPROVED' };
       if (turn !== serial) return;
       if ('status' in data) { approved = true; return; }
       // An explicit kind decides the screen, with no default: SIGNIN renders the sign-in screen, STEPUP the step-up
@@ -97,6 +111,7 @@
       }
       // A step-up is always read afresh from the text it will sign: its list is what that text says, never an older
       // prepare's. (A sign-in keeps its first parse, which holds the user's selection across re-prepares.)
+      const initialPreview = !model;
       if (!model || data.kind === 'STEPUP') {
         const parsed = parseCapabilityReview({
           message: data.sessionSiwe,
@@ -112,9 +127,17 @@
         baselineOptions = data.permissionOptions;
         selection = defaultSelection(parsed);
       } else {
-        model = { ...model, rawMessage: data.sessionSiwe };
+        const parsed = parseSiweFields(data.sessionSiwe);
+        model = { ...model, rawMessage: data.sessionSiwe, expiry: parsed.ok ? parsed.fields.expirationTime ?? null : null };
       }
       preview = data;
+      if (data.renewalAvailable && !data.renewalSensitiveConfirmationRequired && data.renewalMaxLeaseLifetimeSeconds) {
+        const leaseSeconds = reapply?.leaseLifetimeSeconds ??
+          (initialPreview && data.renewalPurpose === 'standing' ? defaultLeaseMs(data.renewalMaxLeaseLifetimeSeconds * 1000) / 1000 : null);
+        if (leaseSeconds !== null) await prepare(actionKeys, {
+          choice: 'leased', leaseLifetimeSeconds: Math.min(leaseSeconds, data.renewalMaxLeaseLifetimeSeconds),
+        });
+      }
     } catch (cause) {
       if (turn !== serial) return;
       error = cause instanceof Error ? cause.message : 'Preparation failed';
@@ -135,18 +158,53 @@
     if (!target) throw new Error('The application returned an unsafe redirect URI');
     window.location.href = target;
   }
+  function setRenewal(renewal: RenewalChoice) {
+    return prepare(preparedKeys(), renewal);
+  }
+  function useLease(leaseMs: number, sensitiveConfirmed?: true) {
+    return setRenewal({ choice: 'leased', leaseLifetimeSeconds: Math.round(leaseMs / 1000),
+      ...(sensitiveConfirmed && { sensitiveConfirmed }) });
+  }
+  function toggleRenewal(event: Event) {
+    const checkbox = event.currentTarget as HTMLInputElement;
+    const checked = checkbox.checked;
+    checkbox.checked = leased !== null;
+    if (!checked) { void setRenewal(finiteChoice); return; }
+    if (preview?.renewalSensitiveConfirmationRequired) {
+      confirmRenewal(defaultLeaseMs(leaseMaxMs));
+      return;
+    }
+    void useLease(defaultLeaseMs(leaseMaxMs));
+  }
+  function confirmRenewal(ms: number) {
+    confirmingLeaseMs = ms;
+    queueMicrotask(() => renewalConfirm?.focus());
+  }
+  function changeLeaseDuration(ms: number) {
+    if (preview?.renewalSensitiveConfirmationRequired && ms > (leased?.leaseLifetimeSeconds ?? 0) * 1000) {
+      confirmRenewal(ms);
+    } else {
+      void useLease(ms, leased?.sensitiveConfirmed);
+    }
+  }
+  function closeRenewalConfirm(confirmed: boolean) {
+    const ms = confirmingLeaseMs;
+    confirmingLeaseMs = null;
+    if (confirmed && ms !== null) void useLease(ms, true);
+    queueMicrotask(() => renewalCheckbox?.focus());
+  }
   async function approve() {
-    if ((!approved && (!preview || blocked)) || submitting) return;
+    if ((!approved && (!preview || blocked || loading || confirmingLeaseMs !== null)) || submitting) return;
     submitting = true; error = '';
+    const current = preview;
     try {
       if (!approved) {
-        const current = preview;
         if (!current) throw new Error('Preparation missing');
         // TC-3442: the passkey prompt comes first, while the tap still counts as the user's gesture.
         const passkeyAssertion = await answerApprovalPasskey(current.passkey);
         await route('approve', { revision: current.revision, digest: current.digest,
           sessionSiwe: current.sessionSiwe, ...(current.hostPlan ? { hostSiwe: current.hostPlan.hostSiwe } : {}),
-          ...(passkeyAssertion ? { passkeyAssertion } : {}) });
+          ...(current.renewal && { renewal: current.renewal }), ...(passkeyAssertion ? { passkeyAssertion } : {}) });
         approved = true;
       }
       await providerConsent(true);
@@ -154,11 +212,11 @@
       error = cause instanceof Error ? cause.message : 'Approval failed';
       // The API withdrew this approval because a space the app needs is not hosted: there is nothing left to Allow.
       if (failedWith(cause, 'space_not_hosted')) unhosted = true;
-      else if (error === 'preparation_superseded') await prepare(preparedKeys());
+      else if (error === 'preparation_superseded') await prepare(preparedKeys(), current?.renewal);
       // The refused challenge is spent: prepare again for a new one, and keep the API's words on screen.
-      else if (isPasskeyApprovalRefusal(cause)) {
+      else if (isPasskeyApprovalRefusal(cause) || (failedWith(cause, 'renewal_failed') && current?.passkey?.required)) {
         const refusal = error;
-        await prepare(preparedKeys());
+        await prepare(preparedKeys(), current?.renewal);
         error = refusal;
       }
       submitting = false;
@@ -178,7 +236,11 @@
   }
   function changeSelection(next: Set<string>) {
     selection = next;
-    if (model) prepare(reviewSelectionToActionKeys(model, baselineOptions, next));
+    confirmingLeaseMs = null;
+    if (!model) return;
+    const actionKeys = reviewSelectionToActionKeys(model, baselineOptions, next);
+    if (leased) void prepare(actionKeys, finiteChoice, leased.sensitiveConfirmed ? undefined : leased);
+    else void prepare(actionKeys, preview?.renewal);
   }
   const duration = (seconds: number) => formatDuration(seconds * 1000);
   // Over two days the day the longest grant ends too: "30 days, until 17 Dec,".
@@ -236,7 +298,43 @@
       {#each summary.warnings as warning}
         <p class="note warning" role="status">{warning}</p>
       {/each}
-      <p class="note">Access lasts up to {lifetime(preview.grantLifetimeSeconds)} and renews automatically while you use {preview.client.name}.</p>
+      {#if leased}
+        {#if leased.leaseLifetimeSeconds > preview.ttlSeconds}
+          <p class="note">Your TinyCloud node renews this access for up to {duration(leased.leaseLifetimeSeconds)}.</p>
+        {:else}
+          <p class="note">Access lasts {duration(preview.ttlSeconds)}.</p>
+        {/if}
+      {:else}
+        <p class="note">Access lasts up to {lifetime(preview.grantLifetimeSeconds)} and renews automatically while you use {preview.client.name}.</p>
+      {/if}
+      {#if preview.renewalAvailable}
+        <div class="renewal-options">
+          {#if confirmingLeaseMs !== null}
+            <div role="alertdialog" tabindex="-1" aria-labelledby="native-renewal-heading" aria-describedby="native-renewal-description"
+              onkeydown={(event) => { if (event.key === 'Escape') closeRenewalConfirm(false); }}>
+              <h2 id="native-renewal-heading" tabindex="-1" bind:this={renewalConfirm}>Renew sensitive access?</h2>
+              <p id="native-renewal-description" class="note">This lets {preview.client.name} keep the sensitive access listed here for up to {formatDuration(confirmingLeaseMs)}. You can stop renewal in Settings.</p>
+              <div class="renewal-actions">
+                <button type="button" class="nb-button" onclick={() => closeRenewalConfirm(false)}>Don't renew</button>
+                <button type="button" class="nb-button nb-primary" onclick={() => closeRenewalConfirm(true)}>Turn on renewal</button>
+              </div>
+            </div>
+          {:else}
+            <label class="action-toggle">
+              <input type="checkbox" checked={leased !== null} disabled={loading || submitting} bind:this={renewalCheckbox} onchange={toggleRenewal} />
+              <span>Renew access automatically</span>
+            </label>
+            {#if leased}
+              <details class="renewal-length">
+                <summary class="nb-details-summary">Renewal duration</summary>
+                <DurationChoice id="native-renewal-lease" legend="Renews for up to" presets={LEASE_PRESETS}
+                  valueMs={leased.leaseLifetimeSeconds * 1000} maxMs={leaseMaxMs} limitNote={leaseLimitNote}
+                  disabled={loading || submitting} onChoose={changeLeaseDuration} />
+              </details>
+            {/if}
+          {/if}
+        </div>
+      {/if}
       {#if preview.hostPlan}
         <p class="note">First sign-in: this also lets your TinyCloud node host your data.</p>
       {/if}
@@ -254,7 +352,11 @@
           <dt>Signing key</dt><dd>{model.signer.label} <code>{model.signer.address}</code></dd>
           <dt>App identity</dt><dd>{trustLabel[model.metadataTrust.status]}</dd>
           {#if model.expiry}<dt>Expires</dt><dd>{formatLocalAccessEnd(model.expiry)}</dd>{/if}
-          <dt>Renewals</dt><dd>Each renewal lasts {duration(preview.ttlSeconds)} from approval.</dd>
+          {#if leased}
+            <dt>Access window</dt><dd>Each window lasts up to {duration(preview.ttlSeconds)}.</dd>
+          {:else}
+            <dt>Renewals</dt><dd>Each renewal lasts {duration(preview.ttlSeconds)} from approval.</dd>
+          {/if}
         </dl>
         {#if model.metadataTrust.reason}
           <p class="note">{model.metadataTrust.reason}</p>
@@ -315,7 +417,7 @@
     {/if}
 
     <div class="nb-stack actions-row">
-      <button type="button" class="nb-button nb-primary" onclick={approve} disabled={submitting || loading || malformed || Boolean(blocked)}>
+      <button type="button" class="nb-button nb-primary" onclick={approve} disabled={submitting || loading || confirmingLeaseMs !== null || malformed || Boolean(blocked)}>
         {submitting ? 'Working…' : 'Allow'}
       </button>
       <button type="button" class="nb-button" onclick={deny} disabled={submitting}>Don't allow</button>
@@ -350,6 +452,25 @@
     font-size: 14px;
     line-height: 1.45;
     color: var(--nb-muted);
+  }
+
+  .renewal-options {
+    margin-top: 12px;
+  }
+
+  .renewal-options h2 {
+    margin-bottom: 0;
+  }
+
+  .renewal-length {
+    margin-top: 4px;
+  }
+
+  .renewal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
   }
 
   .warning {
