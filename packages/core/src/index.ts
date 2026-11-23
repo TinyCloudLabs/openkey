@@ -38,6 +38,8 @@ export type {
   NativeFetchResponse,
   NativeSessionJwk,
   NativeDelegationPermission,
+  NativeRenewalAsk,
+  NativeRenewalReceipt,
   TinyCloudDelegationRequest,
   TinyCloudDelegation,
   OpenKeyServerMetadata,
