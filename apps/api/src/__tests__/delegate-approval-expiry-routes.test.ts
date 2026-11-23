@@ -310,7 +310,7 @@ describe('the app opt-in is enforced by the server (TC-2274)', () => {
 
 describe('the sealed expiry is read only by the preview\'s own user and context (TC-2274)', () => {
   test('a foreign user or context gets nothing', () => {
-    const message = 'x\nExpiration Time: 2030-01-01T00:00:00.000Z\ny';
+    const message = 'example.com wants you to sign in with your Ethereum account:\n0x71C7656EC7ab88b098defB751B7401B5f6d8976F\n\nSign in.\n\nURI: https://example.com\nVersion: 1\nChain ID: 1\nNonce: abcdefgh1234\nIssued At: 2029-12-01T00:00:00.000Z\nExpiration Time: 2030-01-01T00:00:00.000Z';
     const issued = signing.issuePreviewApproval({
       authorizationContextToken: 'ctx-a', userId: 'user-a', keyAddress: account.address, selectedActionIds: new Set(['a']), signedMessage: message,
     });

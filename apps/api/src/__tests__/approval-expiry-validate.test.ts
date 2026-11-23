@@ -28,7 +28,7 @@ describe('validateExpirationOverride', () => {
 
 describe('withExpirationTime', () => {
   test('replaces the one line and nothing else; refuses zero or two', () => {
-    const message = 'a\nIssued At: x\nExpiration Time: 2026-01-01T00:00:00.000Z\nResources:\n- r';
+    const message = 'example.com wants you to sign in with your Ethereum account:\n0x71C7656EC7ab88b098defB751B7401B5f6d8976F\n\nSign in.\n\nURI: https://example.com\nVersion: 1\nChain ID: 1\nNonce: abcdefgh1234\nIssued At: 2025-12-01T00:00:00.000Z\nExpiration Time: 2026-01-01T00:00:00.000Z\nResources:\n- https://example.com/r';
     expect(withExpirationTime(message, '2030-01-01T00:00:00.000Z')).toBe(message.replace('2026-01-01T00:00:00.000Z', '2030-01-01T00:00:00.000Z'));
     expect(withExpirationTime('a\nb', '2030-01-01T00:00:00.000Z')).toBeNull();
     expect(withExpirationTime(`${message}\nExpiration Time: 2027-01-01T00:00:00.000Z`, '2030-01-01T00:00:00.000Z')).toBeNull();

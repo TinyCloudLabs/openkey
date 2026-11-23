@@ -125,7 +125,7 @@ describe('startPasskeyAutofill', () => {
     expect(rejected.log.signedIn).toBe(0);
   });
 
-  test('stop aborts the pending ceremony and a late success changes nothing', async () => {
+  test('stop before the verify posts aborts the pending ceremony and a late success changes nothing', async () => {
     const gate = Promise.withResolvers<{ error: null }>();
     const { log, value } = deps({ signIn: () => gate.promise });
     const autofill = startPasskeyAutofill(value);
@@ -135,6 +135,33 @@ describe('startPasskeyAutofill', () => {
     gate.resolve({ error: null });
     await stopped;
     expect(log.signedIn).toBe(0);
+  });
+
+  test('stop while the verify is in flight adopts that sign-in: onSignedIn fires once and nothing is cancelled', async () => {
+    const gate = Promise.withResolvers<{ error: null }>();
+    const { log, value } = deps({ signIn: ({ onVerify }) => { onVerify(); return gate.promise; } });
+    const autofill = startPasskeyAutofill(value);
+    await tick();
+    const stopped = autofill.stop();
+    await tick(40);
+    expect(log.cancelled).toBe(0);
+    expect(log.signedIn).toBe(0);
+    gate.resolve({ error: null });
+    expect(await stopped).toBe(true);
+    expect(log.signedIn).toBe(1);
+    expect(log.cancelled).toBe(0);
+  });
+
+  test('a verify that fails while in flight is not adopted, and the stop reports it', async () => {
+    const gate = Promise.withResolvers<{ error: { code: string } }>();
+    const { log, value } = deps({ signIn: ({ onVerify }) => { onVerify(); return gate.promise; } });
+    const autofill = startPasskeyAutofill(value);
+    await tick();
+    const stopped = autofill.stop();
+    gate.resolve({ error: { code: 'FAILED_TO_VERIFY_AUTHENTICATION' } });
+    expect(await stopped).toBe(false);
+    expect(log.signedIn).toBe(0);
+    expect(await supersedePasskeyAutofill()).toBe(false);
   });
 
   test('stop keeps cancelling until the request settles, then stops cancelling', async () => {

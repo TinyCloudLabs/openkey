@@ -207,7 +207,7 @@ describe('Approve with an extra permission in the request', () => {
     await click(approve(target));
     const found = cards(target);
     expect(found).toHaveLength(2);
-    expect(text(found[0]!.querySelector('h2'))).toContain('Unlock all your encrypted data');
+    expect(text(found[0]!.querySelector('h2'))).toContain('Let gk.gbafa.com open all your encrypted data?');
     expect(text(found[0]!.querySelector('h2'))).toContain('Sensitive');
     expect(text(found[1]!.querySelector('h2'))).toContain('Unlock encrypted items in a folder named share');
     for (const card of found) {
@@ -284,7 +284,7 @@ describe('Approve with an extra permission in the request', () => {
     await click(cardButton(cards(target)[0]!, 'Reject this permission'));
     await click(continueButton(target));
     const rows = [...target.querySelectorAll('[data-testid="elevated-not-approved"] li')].map((li) => text(li));
-    expect(rows).toEqual(['Not approved: Unlock all your encrypted data']);
+    expect(rows).toEqual(['Not approved: Let gk.gbafa.com open all your encrypted data']);
     expect(text(target.querySelector('.not-approved + [role="status"]'))).toBe('1 permission not approved.');
     cleanup();
   });
@@ -321,7 +321,7 @@ describe('Approve with an extra permission in the request', () => {
     flushSync();
     await click(approve(target));
     expect(cards(target)).toHaveLength(1);
-    expect(text(cards(target)[0]!.querySelector('h2'))).toContain('Unlock all your encrypted data');
+    expect(text(cards(target)[0]!.querySelector('h2'))).toContain('Let gk.gbafa.com open all your encrypted data?');
     expect(events.approved).toBe(2);
     cleanup();
   });
@@ -415,7 +415,7 @@ describe('accessibility', () => {
     await click(cardButton(cards(target)[0]!, 'Reject this permission'));
     const region = target.querySelector('.elevated [role="status"]')!;
     expect(region.getAttribute('aria-live')).toBe('polite');
-    expect(text(region)).toBe('Rejected: Unlock all your encrypted data. 1 left to decide.');
+    expect(text(region)).toBe('Rejected: Let gk.gbafa.com open all your encrypted data. 1 left to decide.');
     cleanup();
   });
 });
