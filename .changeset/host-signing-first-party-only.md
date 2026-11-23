@@ -2,6 +2,6 @@
 "@openkey/api": patch
 ---
 
-Sign a TinyCloud space host message only for TinyCloud's own apps. An app from another site cannot have the owner's key sign a message that creates a space on the node, and every other message is signed as before.
+OpenKey signs a message that creates a TinyCloud space on the node only for TinyCloud's own apps. An app from another site can't get the owner's key to sign one.
 
 Details: TC-4115
