@@ -11,7 +11,8 @@ import {
   ensureTinyCloudBootstrapForApprovedSign,
 } from '../services/tinycloud-bootstrap';
 import { awaitTinyCloudBootstrapWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
-import { asksToHostSpace, parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
+import { parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
+import { HOST_SIGNING_FIRST_PARTY_ONLY, HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE, refusesThirdPartySpaceHost } from '../services/space-host-signing';
 import { mayProvision, originProvisionAuthority, UNATTRIBUTED_PROVISION_AUTHORITY } from '../services/provision-authority';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
@@ -425,12 +426,6 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const authority = siweCheck.siwe && siweCheck.ok
     ? originProvisionAuthority(typeof body.requestOrigin === 'string' ? body.requestOrigin : undefined)
     : UNATTRIBUTED_PROVISION_AUTHORITY;
-  // A signature on a space host message is the ability to create that space on the node, whichever site holds the
-  // signed bytes. It is given only to the same authority that may have OpenKey set an account up (as POST /delegate/host
-  // is); every other message, including a sign-in that names a space, is signed as before. Checked before unseal.
-  if (asksToHostSpace(body.message) && !mayProvision(authority)) {
-    return c.json({ error: 'Only TinyCloud\'s own apps can have OpenKey sign a space host request.', code: 'host_signing_first_party_only' }, 403);
-  }
   const appKeyRefusal = appKeyRefusalForMessage(body.message);
   if (appKeyRefusal) {
     return c.json(appKeyRefusalBody(appKeyRefusal, 'non_browser'), appKeyRefusalStatus(appKeyRefusal));
@@ -465,6 +460,14 @@ keysRouter.post('/:keyId/sign', async (c) => {
 
   if (key.keyType === 'EXTERNAL') {
     return c.json({ error: 'External keys must be signed client-side' }, 400);
+  }
+
+  // A signature on a space host message is the ability to create that space on the node, whichever site holds the
+  // signed bytes. TinyCloud's own apps are signed for. Any other site is signed for only to host its own non-primary
+  // spaces for an owner whose primary space is already hosted (`refusesThirdPartySpaceHost`); every other message,
+  // including a sign-in that names a space, is signed as before. Checked before the passkey gate and before unseal.
+  if (!mayProvision(authority) && await refusesThirdPartySpaceHost({ prisma, message: body.message, key })) {
+    return c.json({ error: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE, code: HOST_SIGNING_FIRST_PARTY_ONLY }, 403);
   }
 
   // TC-3442: the account's passkey setting, before the key is unsealed. A passkey sign-in the web sign page was opened

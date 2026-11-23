@@ -64,26 +64,74 @@ export function parseTinyCloudSiwe(message: string): ParsedTinyCloudSiwe | null 
   };
 }
 
-/** The ability whose signature lets the signer's space be created (hosted) on the node. */
+/** The abilities in the `space` namespace: `host` creates a space on the node. */
+const SPACE_ABILITY_PREFIX = 'tinycloud.space/';
 export const SPACE_HOST_ABILITY = 'tinycloud.space/host';
 
+export interface SpaceHostTarget {
+  address: string;
+  chainId: number;
+  /** The space's name: the part of its id after the owner (`default`, `public`, an app's own name). */
+  name: string;
+}
+
+/** What signing a message lets a site do about spaces on the node. */
+export type SpaceHostRequest =
+  /** No space ability in it. */
+  | { kind: 'none' }
+  /** A space ability whose targets cannot be read, or any space ability other than `host` (a wildcard, say). */
+  | { kind: 'unreadable' }
+  /** `host` for exactly these spaces: every one is derived from the ReCap's own resources. */
+  | { kind: 'hosts'; targets: SpaceHostTarget[] };
+
+const SPACE_ID = /^tinycloud:pkh:eip155:(\d+):(0x[0-9a-fA-F]{40}):([^\s:/][^\s]*)$/;
+
+function recapResourcesMentionSpaceAbility(text: string): boolean {
+  for (const match of text.matchAll(/urn:recap:([A-Za-z0-9_-]+)/g)) {
+    if (Buffer.from(match[1]!, 'base64url').toString('utf8').includes(SPACE_ABILITY_PREFIX)) return true;
+  }
+  return false;
+}
+
 /**
- * Does signing this message give the ability to host (create) a space on the node? Read as written and, for `0x…` hex,
- * as the UTF-8 bytes a signature would cover. A ReCap that cannot be read names no ability here: the node cannot read
- * it either.
+ * Reads what a message would let a site do with spaces: as written and, for `0x…` hex, as the UTF-8 bytes a signature
+ * would cover. The targets come from the ReCap entries (owner address and name out of the space id), never from the
+ * text around them. A ReCap that mentions a space ability and cannot be read to the end is `unreadable`, as is a
+ * space-agnostic or wildcard ability or a target that is not a space id: the answer is then to refuse.
  */
-export function asksToHostSpace(message: string): boolean {
+export function spaceHostRequest(message: string): SpaceHostRequest {
   const decoded = decodeHexUtf8(message);
+  const targets: SpaceHostTarget[] = [];
   for (const text of decoded === null ? [message] : [message, decoded]) {
+    if (!recapResourcesMentionSpaceAbility(text)) continue;
     let entries: RecapEntry[];
     try {
       entries = parseRecapFromSiwe(text) as RecapEntry[];
     } catch {
-      continue;
+      return { kind: 'unreadable' };
     }
-    if (Array.isArray(entries) && entries.some((entry) => entry.actions.includes(SPACE_HOST_ABILITY))) return true;
+    if (!Array.isArray(entries)) return { kind: 'unreadable' };
+    let found = false;
+    for (const entry of entries) {
+      const spaceActions = entry.service === 'space'
+        ? entry.actions ?? []
+        : (entry.actions ?? []).filter((action) => action.startsWith(SPACE_ABILITY_PREFIX) || action === '*');
+      if (spaceActions.length === 0) continue;
+      if (spaceActions.some((action) => action !== SPACE_HOST_ABILITY)) return { kind: 'unreadable' };
+      const id = SPACE_ID.exec(entry.space ?? '');
+      if (!id) return { kind: 'unreadable' };
+      let address: string;
+      try {
+        address = ensureEip55(id[2]!);
+      } catch {
+        return { kind: 'unreadable' };
+      }
+      targets.push({ chainId: Number(id[1]), address, name: id[3]! });
+      found = true;
+    }
+    if (!found) return { kind: 'unreadable' };
   }
-  return false;
+  return targets.length === 0 ? { kind: 'none' } : { kind: 'hosts', targets };
 }
 
 /**

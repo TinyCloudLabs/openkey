@@ -290,43 +290,130 @@ describe('the signer\'s own space is set up only for a first-party app', () => {
 });
 
 // A signature on a space host message is the ability to create the space on the node, so a site that holds the signed
-// bytes could submit them itself. The same authority that may have OpenKey set an account up is the only one signed for.
-describe('a space host message is signed only for a first-party app', () => {
-  const hostSiwe = (domain: string) => generateHostSIWEMessage({
+// bytes could submit them itself. Hosting the owner's primary space is what creates the account: only TinyCloud's own
+// apps get that signature. Another site gets its own non-primary spaces hosted only once the owner's primary space is
+// known to be hosted: a stored bootstrap row that is complete. Every target is read from the ReCap.
+describe('a space host message from an app of another site', () => {
+  const PEER = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
+  const OTHER_OWNER = privateKeyToAccount('0x1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef').address;
+  const hostSiwe = (name: string, options: { domain?: string; owner?: string } = {}) => generateHostSIWEMessage({
     address: account.address,
     chainId: 1,
-    domain,
+    domain: options.domain ?? 'app.example.test',
     issuedAt: new Date().toISOString(),
-    spaceId: spaceId('default'),
-    peerId: 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
+    spaceId: spaceId(name, options.owner),
+    peerId: PEER,
   });
+  /** The same message with its ReCap (and the statement the recap parser checks against it) replaced by `att`. */
+  const withRecap = (message: string, att: Record<string, Record<string, unknown[]>>) => {
+    const lines = Object.entries(att).sort(([a], [b]) => a.localeCompare(b)).flatMap(([resource, abilities]) =>
+      Object.keys(abilities).sort().map((ability) => `'${ability.slice(0, ability.indexOf('/'))}': '${ability.slice(ability.indexOf('/') + 1)}' for '${resource}'`));
+    const statement = `I further authorize the stated URI to perform the following actions on my behalf: ${lines.map((line, i) => `(${i + 1}) ${line}.`).join(' ')}`;
+    const recap = `urn:recap:${Buffer.from(JSON.stringify({ att, prf: [] })).toString('base64url')}`;
+    return message.replace(/I further authorize[^\n]*/, statement).replace(/urn:recap:[A-Za-z0-9_-]+/, recap);
+  };
+  const HOST = 'tinycloud.space/host';
   const asHex = (text: string) => `0x${Buffer.from(text, 'utf8').toString('hex')}`;
+  const hostedPrimary = () => { state = { id: 'state_1', status: 'complete', attemptId: null, lockExpiresAt: null, checkedAt: new Date() }; };
+  const forms = (message: string) => [message, asHex(message)];
 
-  test('an app from another site gets no signature, whatever it spells the message as', async () => {
-    for (const message of [hostSiwe('app.example.test'), asHex(hostSiwe('app.example.test'))]) {
-      const signed = await sign(message);
-
+  async function expectRefused(message: string, extra: Record<string, unknown> = {}) {
+    for (const form of forms(message)) {
+      const signed = await sign(form, extra);
       expect(signed.status).toBe(403);
       expect(signed.body).toMatchObject({ code: 'host_signing_first_party_only' });
       expect(signed.body.signature).toBeUndefined();
     }
     expect(unseal).not.toHaveBeenCalled();
     expect(events).toEqual([]);
-    expectNothingSetUp();
+    expect(node.hostPosts).toEqual([]);
+  }
+
+  async function expectSigned(message: string) {
+    for (const form of forms(message)) {
+      const signed = await sign(form);
+      expect(signed.status).toBe(200);
+      expect(signed.body.signature).toMatch(/^0x[0-9a-f]+$/i);
+    }
+    expect(node.hostPosts).toEqual([]);
+  }
+
+  test('is refused for the primary space, with or without a hosted primary space', async () => {
+    await expectRefused(hostSiwe('default'));
+    hostedPrimary();
+    await expectRefused(hostSiwe('default'));
+    await expectRefused(hostSiwe('DEFAULT'));
+  });
+
+  test('is refused for a non-primary space while the primary space is not known to be hosted', async () => {
+    // No row.
+    await expectRefused(hostSiwe('public'));
+    // Rows that are not done.
+    for (const status of ['pending', 'in_progress', 'failed']) {
+      state = { id: 'state_1', status, attemptId: null, lockExpiresAt: null, checkedAt: new Date() };
+      await expectRefused(hostSiwe('public'));
+    }
+    // A lookup that errors is unknown, not hosted.
+    state = { id: 'state_1', status: 'complete', attemptId: null, lockExpiresAt: null, checkedAt: new Date() };
+    prisma.tinyCloudBootstrapState.findUnique.mockImplementationOnce(async () => { throw new Error('database unavailable'); });
+    expect((await sign(hostSiwe('public'))).status).toBe(403);
+    expect(unseal).not.toHaveBeenCalled();
+  });
+
+  test('is signed for a non-primary space once the primary space is hosted', async () => {
+    hostedPrimary();
+    await expectSigned(hostSiwe('public'));
+    await expectSigned(hostSiwe('some-registry-space'));
+  });
+
+  test('is refused when the targets mix the primary space with another', async () => {
+    hostedPrimary();
+    const message = withRecap(hostSiwe('public'), {
+      [`${spaceId('public')}/space`]: { [HOST]: [{}] },
+      [`${spaceId('default')}/space`]: { [HOST]: [{}] },
+    });
+    await expectRefused(message);
+  });
+
+  test('is refused for a wildcard or space-agnostic host ability, and for a ReCap it cannot read', async () => {
+    hostedPrimary();
+    await expectRefused(withRecap(hostSiwe('public'), { [`${spaceId('public')}/space`]: { 'tinycloud.space/*': [{}] } }));
+    await expectRefused(withRecap(hostSiwe('public'), { [`${spaceId('public')}/space`]: { [HOST]: [{}], 'tinycloud.space/other': [{}] } }));
+    await expectRefused(withRecap(hostSiwe('public'), { 'tinycloud:pkh:eip155:1:*:public/space': { [HOST]: [{}] } }));
+    await expectRefused(withRecap(hostSiwe('public'), { '*': { [HOST]: [{}] } }));
+    // Names a space ability, but is not a ReCap the parser reads.
+    const unreadable = hostSiwe('public').replace(/urn:recap:[A-Za-z0-9_-]+/, `urn:recap:${Buffer.from(`not json ${HOST}`).toString('base64url')}`);
+    for (const form of forms(unreadable)) {
+      // The message check that runs first may already refuse it as malformed; either way there is no signature.
+      const signed = await sign(form);
+      expect([400, 403]).toContain(signed.status);
+      expect(signed.body.signature).toBeUndefined();
+    }
+    expect(unseal).not.toHaveBeenCalled();
+  });
+
+  test('is refused for a space whose owner is not the key\'s owner', async () => {
+    hostedPrimary();
+    await expectRefused(hostSiwe('public', { owner: OTHER_OWNER }));
+  });
+
+  test('is signed for a first-party app whatever it names', async () => {
+    for (const name of ['default', 'public']) {
+      const signed = await sign(hostSiwe(name, { domain: 'home.tinycloud.xyz' }), { requestOrigin: FIRST_PARTY });
+      expect(signed.status).toBe(200);
+      expect(signed.body.signature).toMatch(/^0x[0-9a-f]+$/i);
+    }
   });
 
   test('a first-party origin named only in the body does not unlock it', async () => {
-    const signed = await sign(hostSiwe('app.example.test'), { requestOrigin: FIRST_PARTY });
+    const signed = await sign(hostSiwe('default'), { requestOrigin: FIRST_PARTY });
 
     expect(signed.status).toBe(403);
     expect(signed.body.signature).toBeUndefined();
     expect(unseal).not.toHaveBeenCalled();
   });
 
-  test('an app of TinyCloud is signed for', async () => {
-    const signed = await sign(hostSiwe('home.tinycloud.xyz'), { requestOrigin: FIRST_PARTY });
-
-    expect(signed.status).toBe(200);
-    expect(signed.body.signature).toMatch(/^0x[0-9a-f]+$/i);
+  test('a message with no space ability is signed as before', async () => {
+    expect((await sign(applicationsOnly())).status).toBe(200);
   });
 });

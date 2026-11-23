@@ -62,7 +62,7 @@ const BOOTSTRAP_DOMAIN = 'cli.tinycloud.xyz';
 const NETWORK_CREATE_ACTION = ENCRYPTION.NETWORK_CREATE;
 const NETWORK_ADMIN_TYPE = 'tinycloud.encryption.network-admin/v1';
 
-type PrismaLike = Pick<PrismaClient, 'user' | 'tinyCloudBootstrapState'>;
+export type PrismaLike = Pick<PrismaClient, 'user' | 'tinyCloudBootstrapState'>;
 
 interface BootstrapStateRecord {
   id: string;
