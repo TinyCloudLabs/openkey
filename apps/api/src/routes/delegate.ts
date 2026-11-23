@@ -33,6 +33,7 @@ import {
 } from './delegate-session';
 import { activateSessionWithinTimeout } from '../services/tinycloud-node-timeouts';
 import { isTinyCloudSiweForSigner, ownBootstrapSpaceName, parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
+import { HOST_SIGNING_FIRST_PARTY_ONLY, HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE, refusesThirdPartySpaceHost } from '../services/space-host-signing';
 import type { SpaceHostResult } from '@tinycloud/sdk-core';
 import { BOOTSTRAP_SPACE_NAMES, CAPABILITIES } from '@tinycloud/bootstrap';
 import {
@@ -1500,6 +1501,13 @@ delegateRouter.post('/sign', async (c) => {
 
   if (!autoSignDecision.allowed) {
     return c.json(openKeyApprovalRequired(autoSignDecision.reason, autoSignDecision.code));
+  }
+
+  // Auto-Sign has no approval to ask on, so a space host message is signed here by the same rule as POST
+  // /api/keys/:id/sign: TinyCloud's own apps (by the Origin the browser sets), and any other site only for its own
+  // non-primary spaces once the owner's primary space is hosted. The asker is the Origin header alone.
+  if (!mayProvision(originProvisionAuthority(c.req.header('origin'))) && await refusesThirdPartySpaceHost({ prisma, message: body.message, key })) {
+    return c.json({ approved: false, code: HOST_SIGNING_FIRST_PARTY_ONLY, reason: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE }, 403);
   }
 
   const signature = await signManagedKey(key, key.sealedBlob, body.message);
