@@ -28,6 +28,7 @@ export interface RenewalChoice {
   leaseMs: number | null;
   /** The longest lease the requester signed (never more than a year). */
   maxLeaseMs: number;
+  deviceSignIn?: true;
   /**
    * Reports the owner's lease (null: unticked). `windowMs`, when given, changes the expiry window in the
    * same step (null: back to what the app asked for), so the preview is prepared once with both.
