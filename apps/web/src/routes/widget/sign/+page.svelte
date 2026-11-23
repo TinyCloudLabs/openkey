@@ -28,7 +28,7 @@
   import { serverActionId } from '$lib/delegate-review-selection';
   import { expiryAt, renewalWindowExpiryAt } from '$lib/approval-expiry';
   import { MAX_LEASE_MS, defaultLeaseMs } from '$lib/approval-expiry';
-  import { renewalStartsTicked } from '$lib/renewal-default';
+  import { isOnceTier, renewalStartsTicked } from '$lib/renewal-default';
   import { PREVIEW_EXPIRED_MESSAGE, signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
   import {
     parseCapabilityReview,
@@ -175,6 +175,10 @@
   // metadata and exact-byte preview updates rebuild the display model but
   // must not silently reset a user's narrowed selection.
   let reviewSourceMessage = $state<string | null>(null);
+  // A request in the one-hour tier (a grant that reaches all secrets or all encrypted data) offers the lifetime
+  // control whatever the app sent: the server treats it as expiry-changeable and defaults the signature to one
+  // hour when the owner picks nothing.
+  const onceTierRequest = $derived(reviewModel !== null && isOnceTier(reviewModel.permissions));
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
   // Presentation envelope forwarded by the SDK. Display-only. The widget
@@ -1538,7 +1542,7 @@
           // (e.g. sendResponse) still see the up-to-date selection.
           reviewSelection = next;
         },
-        expiry: canUseAuthorizeSignFn() && expiryChangeable
+        expiry: canUseAuthorizeSignFn() && (expiryChangeable || onceTierRequest)
           ? {
               chosenMs: expiryChoiceMs,
               onceDefault: true,

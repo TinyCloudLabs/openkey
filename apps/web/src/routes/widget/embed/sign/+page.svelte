@@ -30,7 +30,7 @@
   import { serverActionId } from '$lib/delegate-review-selection';
   import { expiryAt, renewalWindowExpiryAt } from '$lib/approval-expiry';
   import { MAX_LEASE_MS, defaultLeaseMs } from '$lib/approval-expiry';
-  import { renewalStartsTicked } from '$lib/renewal-default';
+  import { isOnceTier, renewalStartsTicked } from '$lib/renewal-default';
   import { PREVIEW_EXPIRED_MESSAGE, signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
   import {
     parseCapabilityReview,
@@ -206,6 +206,11 @@
   // Sol MAJOR-3 (continuation): external-key review mode. See widget/sign.
   let externalSignMode = $state(false);
   let expiryChangeable = $state(false);
+
+  // A request in the one-hour tier (a grant that reaches all secrets or all encrypted data) offers the lifetime
+  // control whatever the app sent: the server treats it as expiry-changeable and defaults the signature to one
+  // hour when the owner picks nothing.
+  const onceTierRequest = $derived(reviewModel !== null && isOnceTier(reviewModel.permissions));
 
   const signedIn = $derived(inIframe ? embedAuthenticated : !!$session.data);
   // In the frame the request is read only once the account is known to have agreed to the Terms (a window's layout
@@ -1674,7 +1679,7 @@
           onSelectionEdited: (next) => {
             reviewSelection = next;
           },
-          expiry: canUseAuthorizeSignFn() && expiryChangeable
+          expiry: canUseAuthorizeSignFn() && (expiryChangeable || onceTierRequest)
             ? {
                 chosenMs: expiryChoiceMs,
                 onceDefault: true,

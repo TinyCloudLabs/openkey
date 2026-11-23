@@ -957,6 +957,8 @@ export function _resetAuthorizationContextStoreForTests(): void {
 const PREVIEW_APPROVAL_TTL_MS = 5 * 60 * 1000;
 
 interface StoredPreviewApproval {
+  /** The owner supplied an expiry for a sign-in request in the one-hour tier. */
+  broadOnceExpiryPick?: boolean;
   token: string;
   createdAt: number;
   expiresAt: number;
@@ -981,6 +983,8 @@ function prunePreviewApprovals(now: number) {
 }
 
 export interface PreviewApprovalIssueInput {
+  /** The owner supplied an expiry for a sign-in request in the one-hour tier. */
+  broadOnceExpiryPick?: boolean;
   authorizationContextToken: string;
   userId: string;
   keyAddress: string;
@@ -1015,6 +1019,7 @@ export function issuePreviewApproval(
     selectedActionIds: [...input.selectedActionIds].sort(),
     signedMessageDigest: digest,
     signedMessage: input.signedMessage,
+    broadOnceExpiryPick: input.broadOnceExpiryPick,
     elevatedAllowed: [...new Set(input.elevatedAllowed ?? [])].sort(),
     renewal: input.renewal,
   };
@@ -1065,6 +1070,8 @@ export interface PreviewApprovalCheckInput {
 }
 
 export interface PreviewApprovalCheckSuccess {
+  /** The owner supplied an expiry for a sign-in request in the one-hour tier. */
+  broadOnceExpiryPick?: boolean;
   ok: true;
   signedMessage: string;
   selectedActionIds: Set<string>;
@@ -1170,6 +1177,7 @@ export function checkPreviewApproval(
     keyAddress: stored.keyAddress,
     elevatedAllowed: new Set(stored.elevatedAllowed),
     renewal: stored.renewal,
+    ...(stored.broadOnceExpiryPick ? { broadOnceExpiryPick: true } : {}),
     claim: { token: input.token, record: stored },
   };
 }
