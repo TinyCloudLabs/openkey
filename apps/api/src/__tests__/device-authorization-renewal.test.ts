@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, beforeEach, expect, mock, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, expect, mock, spyOn, test } from 'bun:test';
 import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { verifyMessage } from 'ethers';
+import * as capabilityReview from '@openkey/capability-review';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { DeviceAuthorizationService, MemoryDeviceAuthorizationStore, sessionDidForPublicJwk, type DeviceRelayEnvelope } from '../services/device-authorization';
@@ -273,4 +274,39 @@ test('requires finite consent for wallets and after the feature is disabled', as
   });
   expect(signOwner).not.toHaveBeenCalled();
   expect(reserve).not.toHaveBeenCalled();
+});
+
+
+test.each([
+  { name: 'refuses a sensitive device grant without confirmation', expiry: '7d', confirmed: false, status: 400 },
+  { name: 'refuses a confirmed sensitive device grant with an eight-day window', expiry: '8d', confirmed: true, status: 400 },
+  { name: 'signs a confirmed sensitive device grant with a seven-day window', expiry: '7d', confirmed: true, status: 200 },
+])('$name', async ({ expiry, confirmed, status }) => {
+  // The current device allowlist excludes sensitive grants. Inject one sensitivity verdict while exercising D7
+  // against the actual prepared SIWE, with the real device scope checks, window calculation and managed signing.
+  const classify = capabilityReview.renewalEntryVerdict;
+  const sensitivity = spyOn(capabilityReview, 'renewalEntryVerdict').mockImplementation((entry) =>
+    entry.actions.includes('tinycloud.kv/get') ? 'confirm' : classify(entry));
+  try {
+    const { transactionId } = await start({ delegationTtlSeconds: 8 * 86_400 });
+    const preview = await post('/prepare', {
+      keyId: key.id, jwk, host, permissions, expiry, deviceTransactionId: transactionId,
+      renewal: { ...leased, ...(confirmed ? { sensitiveConfirmed: true } : {}) },
+    });
+    expect(preview.status).toBe(status);
+    if (status === 400) {
+      expect(preview.body.code).toBe('renewal_refused');
+      expect(preview.body).not.toHaveProperty('authorizationContext');
+      expect(signOwner).not.toHaveBeenCalled();
+      expect(reserve).not.toHaveBeenCalled();
+      return;
+    }
+
+    const result = await post('/', { ...approvalBody(transactionId, preview.body), expiry });
+    expect(result.status).toBe(200);
+    expect(result.body.renewal.receipt.originalCid).toBe(result.body.delegationCid);
+    expect(reserve).toHaveBeenCalledTimes(1);
+  } finally {
+    sensitivity.mockRestore();
+  }
 });
