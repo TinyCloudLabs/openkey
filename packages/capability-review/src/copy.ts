@@ -400,7 +400,7 @@ export const TICKET_APP_KEY_COPY = {
   keyLine: "Key: `{keyPath}`",
   warning:
     `This request comes from ${TICKET_APP_KEY_TOOL}, a command-line tool, not from {host}. Approve it only if you started it on your own device.`,
-  longerNote: "The tool keeps this access for the time you choose.",
+  longerNote: "TinyCloud CLI keeps this access for the time you choose.",
   refusals: {
     missing:
       "OpenKey can't approve this request: {host} doesn't list keys that command-line tools can ask for. Nothing was approved.",

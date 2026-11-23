@@ -279,12 +279,11 @@
   function selectedIds(): string[] {
     return requestedActionIds(model, selected);
   }
-  async function chooseKey(choice: KeyChoice) {
+  function chooseKey(choice: KeyChoice) {
     if (contextToken) return;
     key = choice.key;
     model = choice.review;
     selected = defaultSelection(choice.review);
-    if (handoff?.request.appKey) await prepareAppKey();
   }
 
   function reviewFor(candidate: EthereumKey, siwe: string, displayName: string, chainId: number): CapabilityReviewModel {
@@ -380,7 +379,10 @@
       const choices = candidates.map(candidate => ({ key: candidate, review: reviewFor(candidate, resolved.request.siwe, match[1]!, Number(chain[1])) }));
       keyChoices = choices;
       handoff = resolved;
-      if (choices.length === 1) await chooseKey(choices[0]!);
+      if (choices.length === 1) {
+        chooseKey(choices[0]!);
+        if (input.request.appKey) await prepareAppKey();
+      }
     } catch (cause) {
       if (pending !== input && stop?.id === 'S4') return;
       if (input.request.appKey && cause instanceof ApprovalReplyError && cause.code === 'app_key_request_invalid') {
@@ -467,7 +469,7 @@
     error = '';
     try {
       const request = handoff.request;
-      await prepareContext();
+      if (!contextToken) await prepareContext();
       if (!handoff || !contextToken) return;
       const actions = selectedIds();
       if (!actions.length) throw new Error('Select at least one ability.');
@@ -697,7 +699,9 @@
         expectedAddress={keyChoices[0].key.address.toLowerCase()}
         onselect={(selected) => {
           const choice = keyChoices.find((choice) => choice.key.id === selected.id);
-          if (choice) chooseKey(choice);
+          if (!choice) return;
+          chooseKey(choice);
+          if (handoff?.request.appKey) void prepareAppKey();
         }}
         listHeading="Choose which key signs this:"
         primaryHeading="Sign with your primary key:"

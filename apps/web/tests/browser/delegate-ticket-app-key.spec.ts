@@ -112,7 +112,7 @@ test.describe('a command-line tool asks for one exact app key', () => {
     await page.getByRole('button', { name: 'Change access length' }).click();
     await page.getByText('How long it lasts', { exact: true }).click();
     await page.getByRole('button', { name: '7 days', exact: true }).click();
-    await expect(page.getByTestId('approval-expiry-length-note')).toHaveText('The tool keeps this access for the time you choose.');
+    await expect(page.getByTestId('approval-expiry-length-note')).toHaveText('TinyCloud CLI keeps this access for the time you choose.');
     await page.getByRole('button', { name: 'Preview signing message' }).click();
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeVisible();
     expect(calls.preview[1]!.expirationTime).toBe(new Date(Date.parse(NOW) + 7 * 24 * HOUR).toISOString());

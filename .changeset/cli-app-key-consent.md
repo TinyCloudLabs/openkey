@@ -2,6 +2,6 @@
 "@openkey/capability-review": patch
 ---
 
-The owner approval screen for a command-line tool that asks for one exact app key shows an App key row naming the app host and the key, a warning that a command-line tool and not the app's website asks, the lifetime choice from 1 hour up to what the tool signed, and an owner-readable line when the app's list of keys for command-line tools is missing, unreadable or does not list the key.
+The approval screen for a command-line request for one app key names the app and the key and warns that a command-line tool is asking. The owner picks from 1 hour up to the time the tool asked for. When the app's list of keys refuses the request, the screen says why.
 
 Details: TC-4036
