@@ -53,7 +53,7 @@
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, CODE_AND_APPROVAL_EXPIRED_TEXT, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
-  import { MAX_LEASE_MS, MIN_EXPIRY_MS, accessLastsLine, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, remainingAccessMs, requestedExpiryMs } from '$lib/approval-expiry';
+  import { MAX_LEASE_MS, MIN_EXPIRY_MS, SENSITIVE_RENEWAL_WINDOW_MS, accessLastsLine, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, remainingAccessMs, requestedExpiryMs } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -68,7 +68,7 @@
     siweExpirationTime,
     type CapabilityReviewModel,
   } from '@openkey/capability-review';
-  import { renewalStartsTicked } from '$lib/renewal-default';
+  import { renewalNeedsSensitiveConfirm, renewalStartsTicked } from '$lib/renewal-default';
   import { ServerReplyError } from '$lib/server-reply';
   import { compareWallets, shortWallet, stopKeyName } from '$lib/approval-stop';
   import { isTermsRequired } from '$lib/terms';
@@ -136,6 +136,10 @@
     return '';
   }
 
+  function isDeviceRenewalSetupFailure(code: unknown) {
+    return Boolean(deviceTransactionId) && (code === 'renewal_failed' || code === 'renewal_disabled');
+  }
+
   function delegateErrorMessage(cause: unknown, retry?: () => void | Promise<void>, editingReview = false) {
     if (cause instanceof DeviceRelayDeliveryError) {
       if (cause.status === 409 || cause.status === 410 || cause.status === 401) {
@@ -147,6 +151,7 @@
     if (cause instanceof PasskeyPromptError) return cause.message;
     if (cause instanceof DelegateResponseError && isPasskeyApprovalRefusal(cause)) return cause.message;
     if (cause instanceof DelegateResponseError) {
+      if (isDeviceRenewalSetupFailure(cause.code) && cause.serverMessage) return cause.serverMessage;
       const refusedOwner = cause.requestedSpaceOwner ? shortWallet(cause.requestedSpaceOwner) : '';
       const options = {
         status: cause.status, code: cause.code, values: { ...stopValues, wanted: refusedOwner || wanted }, requester: expiredRequesterName,
@@ -174,7 +179,8 @@
     const passkeyMessage = isPasskeyApprovalRefusal(body) && typeof body?.error === 'string' ? body.error : undefined;
     return new DelegateResponseError(
       passkeyMessage ?? apiBusyOrEndedMessage(response.status) ?? `HTTP ${response.status}`,
-      body?.code, response.status, delegateServerMessage(body),
+      body?.code, response.status,
+      isDeviceRenewalSetupFailure(body?.code) && typeof body?.error === 'string' ? body.error : delegateServerMessage(body),
       typeof owner === 'string' && /^0x[0-9a-fA-F]{40}$/.test(owner) ? owner : undefined,
     );
   }
@@ -392,9 +398,14 @@
   // TC-2933: the renewal checkbox, offered only when the approval request signed a renewal request
   // (its longest lease). `renewalLeaseMs` is the owner's lease, null while the box is unticked.
   let renewalMaxLeaseMs = $state<number | null>(null);
+  let deviceRenewalMaxLeaseMs = $state<number | null>(null);
+  let deviceRenewalSuggestedMs = $state<number | null>(null);
   let renewalPurpose: unknown = undefined;
   let renewalDefaulted = false;
   let renewalLeaseMs = $state<number | null>(null);
+  // A renewed grant repeats this window. Use the device suggestion while the owner leaves the window at its default.
+  const deviceRenewalDefaultMs = $derived(renewalLeaseMs !== null && !expiryChosen ? deviceRenewalSuggestedMs : null);
+  const reviewedExpiryParam = $derived(deviceRenewalDefaultMs === null ? expiryParam : `${deviceRenewalDefaultMs / 1000}s`);
   // TC-3821: the owner confirmed "Renew sensitive access?" for the ticked lease; cleared when the box is unticked.
   let renewalConfirmed = $state(false);
   // Spec D12: standing access starts ticked; D7: never in the Once tier (secrets or decrypt); D11: no purpose is a task.
@@ -407,9 +418,9 @@
     }
   });
   // The owner's choice as /prepare binds it into the preview; null when the request did not ask for renewal.
-  function renewalChoiceBody() {
-    if (renewalMaxLeaseMs === null) return null;
-    if (renewalLeaseMs === null) return { choice: 'finite' };
+  function renewalChoiceBody(forceFinite = false) {
+    if (deviceRenewalMaxLeaseMs === null && renewalMaxLeaseMs === null) return null;
+    if (forceFinite || renewalLeaseMs === null) return { choice: 'finite' };
     return { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000), ...(renewalConfirmed ? { sensitiveConfirmed: true } : {}) };
   }
   const RENEWAL_NOT_SET_UP = "Renewal wasn't set up, so nothing was approved. Try again.";
@@ -638,6 +649,13 @@
     requestReason = normalizeReason(deviceRequestReason(record));
     expiryMaxMs = deviceRequestTtlSeconds(record) * 1000;
     expiryParam = `${deviceRequestDefaultSeconds(record)}s`;
+    if (record.renewal?.version === 1) {
+      deviceRenewalMaxLeaseMs = Math.min(record.renewal.leaseLifetimeSeconds * 1000, MAX_LEASE_MS);
+      const suggestedSeconds = record.suggestedTtlSeconds;
+      if (typeof suggestedSeconds === 'number' && Number.isSafeInteger(suggestedSeconds) && suggestedSeconds >= 60) {
+        deviceRenewalSuggestedMs = Math.min(suggestedSeconds * 1000, expiryMaxMs, SENSITIVE_RENEWAL_WINDOW_MS);
+      }
+    }
   }
   function startDeviceVerification() {
     deviceLinkPending = true;
@@ -899,6 +917,13 @@
 
     try {
       await deviceRequestVerified;
+      if (deviceTransactionId) {
+        renewalMaxLeaseMs = key.keyType === 'MANAGED' ? deviceRenewalMaxLeaseMs : null;
+        renewalPurpose = 'standing';
+        renewalDefaulted = false;
+        renewalLeaseMs = null;
+        renewalConfirmed = false;
+      }
       const data = await prepareDelegation(key);
       applyPreparedDelegation(data);
       editingPermissions = false;
@@ -911,7 +936,7 @@
     }
   }
 
-  async function prepareDelegation(key: EthereumKey, actionKeys?: string[]) {
+  async function prepareDelegation(key: EthereumKey, actionKeys?: string[], forceFinite = false) {
     // Every signing path starts here: never prepare the default abilities
     // for a request whose permissions could not be read.
     if (permissionsParamError) throw new OwnerMessageError(permissionsParamError);
@@ -938,8 +963,9 @@
     if (requestReason) {
       body.reason = requestReason;
     }
-    if (expiryParam) {
-      body.expiry = expiryParam;
+    const reviewedExpiry = forceFinite ? expiryParam : reviewedExpiryParam;
+    if (reviewedExpiry) {
+      body.expiry = reviewedExpiry;
       if (expiryChosen) {
         body.expiryChosen = true;
         body.linkExpiry = requestedExpiryParam ?? '';
@@ -947,7 +973,8 @@
       }
     }
     // TC-2933: the renewal choice is bound into this preview; approving reads it from there.
-    if (approvalRequestMode && renewalChoiceBody()) body.renewal = renewalChoiceBody();
+    const renewal = renewalChoiceBody(forceFinite);
+    if ((approvalRequestMode || deviceTransactionId) && renewal) body.renewal = renewal;
     // The API refuses a device delegation outside the transaction's lifetime.
     if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
 
@@ -1284,7 +1311,7 @@
     await updatePermissions(nextKeys);
   }
 
-  async function updatePermissions(nextKeys: string[]) {
+  async function updatePermissions(nextKeys: string[], forceFinite = false) {
     if (!selectedKey || !jwk) {
       error = 'Missing key or JWK parameter.';
       return;
@@ -1294,11 +1321,15 @@
     error = '';
 
     try {
-      const data = await prepareDelegation(selectedKey, nextKeys);
+      const data = await prepareDelegation(selectedKey, nextKeys, forceFinite);
+      if (forceFinite) {
+        renewalLeaseMs = null;
+        renewalConfirmed = false;
+      }
       applyPreparedDelegation(data);
       editingPermissions = true;
     } catch (e: any) {
-      error = delegateErrorMessage(e, () => updatePermissions(nextKeys), true);
+      error = delegateErrorMessage(e, () => updatePermissions(nextKeys, forceFinite), true);
     } finally {
       updatingPermissions = false;
     }
@@ -1404,8 +1435,8 @@
       if (requestReason) {
         body.reason = requestReason;
       }
-      if (expiryParam) {
-        body.expiry = expiryParam;
+      if (reviewedExpiryParam) {
+        body.expiry = reviewedExpiryParam;
         if (expiryChosen) {
           body.expiryChosen = true;
           body.linkExpiry = requestedExpiryParam ?? '';
@@ -2112,7 +2143,7 @@
         {/if}
 
         {#if deviceTransactionId}
-          <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} />
+          <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={reviewedExpiryParam} />
         {:else}
           <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} relayTo={requester?.displayName} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
         {/if}
@@ -2123,6 +2154,9 @@
               Sign once more to turn on renewal for up to {formatDuration(renewalSigningMs)}
             {:else}
               Your browser wallet will prompt you to sign a message to authorize this delegation.
+            {/if}
+            {#if deviceRenewalMaxLeaseMs !== null}
+              <p>Your wallet signs in for a set time, so this device's access ends at the time shown.</p>
             {/if}
           </div>
         {/if}
@@ -2175,10 +2209,17 @@
                     error = 'At least one permission is required.';
                     return;
                   }
-                  return updatePermissions(nextServerKeys);
+                  // Require a fresh confirmation if the owner changes which sensitive permissions renew.
+                  const selected = reviewModel?.permissions.flatMap((grant) => {
+                    const actions = grant.actions.filter((action) => next.has(action.id));
+                    return actions.length ? [{ ...grant, actions }] : [];
+                  });
+                  const forceFinite = Boolean(deviceTransactionId) && renewalLeaseMs !== null
+                    && selected !== undefined && renewalNeedsSensitiveConfirm(selected);
+                  return updatePermissions(nextServerKeys, forceFinite);
                 },
                 expiry: {
-                  chosenMs: expiryChoiceMs,
+                  chosenMs: expiryChoiceMs ?? deviceRenewalDefaultMs,
                   onceDefault: true,
                   // The requester signed its longest time (signed request, device), or the link asked for exactly
                   // this much: a link without `expiryChangeable=true` is shorter-only.
@@ -2199,6 +2240,7 @@
                   renewal: {
                     leaseMs: renewalLeaseMs,
                     maxLeaseMs: renewalMaxLeaseMs,
+                    ...(deviceTransactionId ? { deviceSignIn: true } : {}),
                     onChange: (ms: number | null, windowMs?: number | null, sensitiveConfirmed?: true) => { void changeRenewal(ms, windowMs, sensitiveConfirmed); },
                   },
                 } : {}),

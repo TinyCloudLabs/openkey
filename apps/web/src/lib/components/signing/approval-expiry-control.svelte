@@ -77,7 +77,7 @@
   let checkbox = $state<HTMLInputElement | null>(null);
 
   const shownMs = $derived(chosenMs ?? requestedMs);
-  const accessLine = $derived(shownMs === null ? "" : accessLastsLine(holder, shownMs));
+  const accessLine = $derived(shownMs === null ? "" : accessLastsLine(renewal?.deviceSignIn ? "device" : holder, shownMs));
   const leaseMaxMs = $derived(renewal ? Math.min(renewal.maxLeaseMs, MAX_LEASE_MS) : MAX_LEASE_MS);
   const proposedLeaseMs = $derived(renewal ? defaultLeaseMs(leaseMaxMs) : 0);
   const ticked = $derived(renewal !== null && renewal.leaseMs !== null);
@@ -109,7 +109,11 @@
     confirming = false;
     // D6 rule 3: renewing secrets or decrypt uses a 7-day window, within what the requester signed.
     // One change, so the preview is prepared once with both the lease and the window.
-    const window = maxMs == null ? SENSITIVE_RENEWAL_WINDOW_MS : Math.min(SENSITIVE_RENEWAL_WINDOW_MS, maxMs);
+    const window = Math.min(
+      SENSITIVE_RENEWAL_WINDOW_MS,
+      maxMs ?? Infinity,
+      renewal?.deviceSignIn ? shownMs ?? Infinity : Infinity,
+    );
     // TC-3821: the confirm travels with the choice; the server refuses a lease on secrets without it.
     renewal!.onChange(proposedLeaseMs, window === shownMs ? undefined : window === requestedMs ? null : window, true);
     queueMicrotask(() => checkbox?.focus());
@@ -138,7 +142,14 @@
     {#if confirming}
       <div class="renewal-confirm" role="alertdialog" aria-labelledby="renewal-confirm-heading" aria-describedby="renewal-confirm-body">
         <h3 class="renewal-confirm-heading" id="renewal-confirm-heading" tabindex="-1" bind:this={confirmHeading}>Renew sensitive access?</h3>
-        <p id="renewal-confirm-body">This lets {requestedBy} keep the Sensitive access listed here for up to {formatDuration(proposedLeaseMs)}, without asking you again. You can stop renewal any time under Renewing permissions in Settings.</p>
+        <p id="renewal-confirm-body">
+          {#if renewal?.deviceSignIn}
+            This device can keep the sensitive access listed here for up to {formatDuration(proposedLeaseMs)}.
+            Each renewal lasts up to 7 days. You can stop renewal under Renewing permissions in Settings.
+          {:else}
+            This lets {requestedBy} keep the Sensitive access listed here for up to {formatDuration(proposedLeaseMs)}, without asking you again. You can stop renewal any time under Renewing permissions in Settings.
+          {/if}
+        </p>
         <div class="renewal-confirm-actions">
           <button type="button" class="renewal-confirm-no" onclick={cancelRenewal}>Don't renew</button>
           <button type="button" class="renewal-confirm-yes" onclick={confirmRenewal}>Turn on renewal</button>
@@ -156,7 +167,7 @@
         />
         <span data-testid="approval-expiry-line">
           {#if renews}
-            {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}
+            {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}{renewal.deviceSignIn ? "." : ""}
           {:else}
             {accessLine}
           {/if}
