@@ -1,4 +1,4 @@
-import { parseSiweFields, serializeSiwe } from '@openkey/capability-review';
+import { grantIsBroadOnce, parseCapabilityReview, parseSiweChainId, parseSiweFields, serializeSiwe } from '@openkey/capability-review';
 
 // TC-2272: the user may change when an approval expires. The new time replaces
 // the `Expiration Time:` line of the SIWE the server is about to preview or
@@ -43,4 +43,26 @@ export function withExpirationTime(siwe: string, expirationTime: string): string
   const parsed = parseSiweFields(siwe);
   if (!parsed.ok || parsed.fields.expirationTime === undefined) return null;
   return serializeSiwe({ ...parsed.fields, expirationTime });
+}
+
+/**
+ * Is this request in the one-hour tier: a grant that reaches all secrets or all encrypted data
+ * (`grantIsBroadOnce`, the classifier the approval screen's `isOnceTier` runs)? Such a request is treated as
+ * expiry-changeable whatever the app sent, and an approval with no owner pick starts at one hour. Grants are
+ * classified with the signer's own address so an own `default/share/` folder stays out, as the screen reads it.
+ * False for a message that does not parse: the other refusals report it.
+ */
+export function siweBroadOnceTier(siwe: string, signerAddress: string): boolean {
+  const model = parseCapabilityReview({
+    message: siwe,
+    signer: { label: 'OpenKey', address: signerAddress, chainId: parseSiweChainId(siwe) ?? 1, provenance: 'managed' },
+    editable: false,
+    metadataTrust: { status: 'unsigned', reason: 'server classification' },
+    reason: { text: '', source: 'none' },
+    requester: {
+      displayName: '', verifiedOrigin: null, appId: null, manifestName: null, manifestNameProvenance: 'none',
+      manifestId: null, manifestIdProvenance: 'none', manifestDigest: null, domainWarning: false, originWarning: false,
+    },
+  });
+  return model.permissions.some(grantIsBroadOnce);
 }

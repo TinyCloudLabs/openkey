@@ -89,9 +89,9 @@ export function clampSecretExpiryMs(expiryMs: number, permissions: readonly Perm
   return permissions !== undefined && permissionsHeldToSecretCap(permissions) ? Math.min(expiryMs, SECRET_GRANT_MAX_MS) : expiryMs;
 }
 
-/** The latest Expiration Time this SIWE message may carry, as an ISO time, or null when it is not held to 7 days. */
-export function secretCapExpirationTime(siwe: string, now: number): string | null {
-  return siweSecretReach(siwe) !== null ? new Date(now + SECRET_GRANT_MAX_MS).toISOString() : null;
+/** The latest Expiration Time allowed by the secret lifetime cap or the cap on broad sign-in expiry picks. */
+export function secretCapExpirationTime(siwe: string, now: number, broadOnceExpiryPick = false): string | null {
+  return broadOnceExpiryPick || siweSecretReach(siwe) !== null ? new Date(now + SECRET_GRANT_MAX_MS).toISOString() : null;
 }
 
 /**

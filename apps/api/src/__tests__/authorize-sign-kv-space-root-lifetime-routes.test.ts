@@ -106,6 +106,14 @@ function post(path: string, body: unknown) {
 
 const expiryOf = (siwe: string) => Date.parse(/^Expiration Time: (.+)$/m.exec(siwe)?.[1] ?? '');
 
+const HOUR_MS = 3_600_000;
+
+function expectLifetime(bytes: string, before: number, lifetimeMs: number) {
+  const expiry = expiryOf(bytes);
+  expect(expiry).toBeGreaterThanOrEqual(before + lifetimeMs - 1000);
+  expect(expiry).toBeLessThanOrEqual(Date.now() + lifetimeMs);
+}
+
 /** Prepare, preview (optionally with the owner's expiry) and sign; returns the signed bytes. */
 async function approve(raw: Record<string, string[]>, lifetimeMs: number, opts: { expiryChangeable?: boolean; ownerPicks?: string } = {}) {
   const prepared = await post('/authorize-sign-prepare', {
@@ -152,14 +160,12 @@ describe('the frame leaves a KV grant on the whole space at the lifetime asked',
 
 describe('the frame holds a KV read of the secrets vault to 7 days', () => {
   test.each([
-    ['get on <space>/kv/vault/secrets/', { [`${SPACE}/kv/vault/secrets/`]: [`${KV}get`] }],
-    ['get on <space>/kv/secrets/x', { [`${SPACE}/kv/secrets/x`]: [`${KV}get`] }],
-    ['a whole-space read with a vault read beside it', { [`${SPACE}/kv`]: [`${KV}get`], [`${SPACE}/kv/vault/secrets/`]: [`${KV}get`] }],
-  ] as Array<[string, Record<string, string[]>]>)("%s: the app's 30 days are signed as 7", async (_name, raw) => {
+    ['get on <space>/kv/vault/secrets/', { [`${SPACE}/kv/vault/secrets/`]: [`${KV}get`] }, HOUR_MS],
+    ['get on <space>/kv/secrets/x', { [`${SPACE}/kv/secrets/x`]: [`${KV}get`] }, 7 * DAY_MS],
+    ['a whole-space read with a vault read beside it', { [`${SPACE}/kv`]: [`${KV}get`], [`${SPACE}/kv/vault/secrets/`]: [`${KV}get`] }, HOUR_MS],
+  ] as Array<[string, Record<string, string[]>, number]>)("%s: the app's 30 days are signed for the expected lifetime", async (_name, raw, lifetimeMs) => {
     const before = Date.now();
-    const expiry = expiryOf(await approve(raw, 30 * DAY_MS));
-    expect(expiry).toBeGreaterThanOrEqual(before + 7 * DAY_MS - 1000);
-    expect(expiry).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
+    expectLifetime(await approve(raw, 30 * DAY_MS), before, lifetimeMs);
   });
 });
 
@@ -191,12 +197,11 @@ describe('the frame previews the same request twice, as when the owner changes t
     expect(expiryOf(signedMessage)).toBeGreaterThan(before + 29 * DAY_MS);
   });
 
-  test('a vault-secrets read: both previews and the signed bytes carry 7 days', async () => {
+  test('a vault-secrets read: both previews and the signed bytes carry one hour', async () => {
     const before = Date.now();
     const { first, signedMessage } = await signAfterTwoPreviews({ [`${SPACE}/kv/vault/secrets/`]: [`${KV}get`] }, 30 * DAY_MS);
     for (const bytes of [first, signedMessage]) {
-      expect(expiryOf(bytes)).toBeGreaterThanOrEqual(before + 7 * DAY_MS - 1000);
-      expect(expiryOf(bytes)).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
+      expectLifetime(bytes, before, HOUR_MS);
     }
   });
 });
@@ -258,22 +263,21 @@ const SEQUENCES: Array<[string, Sequence]> = [
   ['two previews, the owner picks 30 days', { extraPreviews: 1, ownerPicks: new Date(Math.floor((Date.now() + 30 * DAY_MS) / 1000) * 1000).toISOString() }],
 ];
 
-const READS_OF_SECRETS: Array<[string, Record<string, string[]>]> = [
-  ['get on <space>/kv/vault/secrets/OPENAI_API_KEY', { [`${SPACE}/kv/vault/secrets/OPENAI_API_KEY`]: [`${KV}get`] }],
-  ['list on <space>/kv/vault/secrets/', { [`${SPACE}/kv/vault/secrets/`]: [`${KV}list`] }],
-  ['decrypt on default/secrets/openai_api_key', { [urn('/secrets/openai_api_key')]: [`${E}decrypt`] }],
-  ['key.create on default/secrets/openai_api_key', { [urn('/secrets/openai_api_key')]: [`${E}key.create`] }],
-  ['decrypt on default/secrets/', { [urn('/secrets/')]: [`${E}decrypt`] }],
+const READS_OF_SECRETS: Array<[string, Record<string, string[]>, number]> = [
+  ['get on <space>/kv/vault/secrets/OPENAI_API_KEY', { [`${SPACE}/kv/vault/secrets/OPENAI_API_KEY`]: [`${KV}get`] }, 7 * DAY_MS],
+  ['list on <space>/kv/vault/secrets/', { [`${SPACE}/kv/vault/secrets/`]: [`${KV}list`] }, 7 * DAY_MS],
+  ['decrypt on default/secrets/openai_api_key', { [urn('/secrets/openai_api_key')]: [`${E}decrypt`] }, 7 * DAY_MS],
+  ['key.create on default/secrets/openai_api_key', { [urn('/secrets/openai_api_key')]: [`${E}key.create`] }, 7 * DAY_MS],
+  ['decrypt on default/secrets/', { [urn('/secrets/')]: [`${E}decrypt`] }, HOUR_MS],
 ];
 
 describe('no sequence of previews signs a read of secrets for more than 7 days', () => {
-  for (const [read, raw] of READS_OF_SECRETS) {
+  for (const [read, raw, defaultLifetimeMs] of READS_OF_SECRETS) {
     test.each(SEQUENCES)(`${read}: %s`, async (_name, sequence) => {
       const before = Date.now();
       const { signedMessage, previews } = await signSequence(raw, 30 * DAY_MS, sequence);
       for (const bytes of [signedMessage, ...previews.map((preview) => preview.signedMessage)]) {
-        expect(expiryOf(bytes)).toBeGreaterThanOrEqual(before + 7 * DAY_MS - 1000);
-        expect(expiryOf(bytes)).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
+        expectLifetime(bytes, before, sequence.ownerPicks === undefined ? defaultLifetimeMs : 7 * DAY_MS);
       }
     });
   }
@@ -282,25 +286,27 @@ describe('no sequence of previews signs a read of secrets for more than 7 days',
 describe('a selection of a request that reads the vault and the whole space', () => {
   const both = { [`${SPACE}/kv`]: [`${KV}get`, `${KV}list`], [`${SPACE}/kv/vault/secrets/`]: [`${KV}get`] };
 
-  test('only the vault read: signed for 7 days', async () => {
+  test('only the vault read: signed for one hour', async () => {
     const before = Date.now();
     const { signedMessage } = await signSequence(both, 30 * DAY_MS, { extraPreviews: 1, only: 'vault/secrets' });
-    expect(expiryOf(signedMessage)).toBeGreaterThanOrEqual(before + 7 * DAY_MS - 1000);
-    expect(expiryOf(signedMessage)).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
+    expectLifetime(signedMessage, before, HOUR_MS);
   });
 
-  test('every action: signed for 7 days', async () => {
+  test('every action: signed for one hour', async () => {
     const before = Date.now();
     const { signedMessage } = await signSequence(both, 30 * DAY_MS, { extraPreviews: 1 });
-    expect(expiryOf(signedMessage)).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
-    expect(expiryOf(signedMessage)).toBeGreaterThanOrEqual(before + 7 * DAY_MS - 1000);
+    expectLifetime(signedMessage, before, HOUR_MS);
   });
 });
 
 describe('a whole network decrypt, with the network cap off (the default)', () => {
-  test.each(SEQUENCES)('%s: signed for the 30 days asked', async (_name, sequence) => {
+  test.each(SEQUENCES)('%s: signed for one hour without an owner pick, 7 days for a longer pick', async (_name, sequence) => {
     const before = Date.now();
     const { signedMessage } = await signSequence({ [urn('')]: [`${E}decrypt`] }, 30 * DAY_MS, sequence);
-    expect(expiryOf(signedMessage)).toBeGreaterThan(before + 29 * DAY_MS);
+    if (sequence.ownerPicks === undefined) {
+      expectLifetime(signedMessage, before, HOUR_MS);
+    } else {
+      expectLifetime(signedMessage, before, 7 * DAY_MS);
+    }
   });
 });

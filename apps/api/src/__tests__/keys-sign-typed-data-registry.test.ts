@@ -13,7 +13,7 @@ const address = privateKeyToAccount(privateKey).address;
 const user = { id: 'user_1', email: 'test@example.com' };
 const FOREIGN = 'https://thirdparty.example';
 const REFUSAL = {
-  error: "Only TinyCloud One can request a signature that sets the account's node location through OpenKey. Nothing was signed.",
+  error: "Only TinyCloud's own apps can request a signature that sets the account's node location through OpenKey. Nothing was signed.",
   code: 'registry_record_sign_refused',
 };
 const ALLOWED_ORIGINS = ['https://home.tinycloud.xyz', 'https://secrets.tinycloud.xyz', 'https://share.tinycloud.xyz', 'https://tinycloud.one'];

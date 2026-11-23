@@ -28,9 +28,12 @@ import { RECLAIM_FAILED_CODE } from '../services/tinycloud-bootstrap';
 import { prepareDelegationSession, actionKey } from './delegate-session';
 import { approvalPasskeyOfferInFlow, approvalRequestDigest, checkApprovalPasskeyInFlow, clearFlowPasskey, messageApprovalSensitivity, type ApprovalBinding, type ApprovalPasskeyMethod } from '../services/approval-passkey';
 
-import { log, logError } from '../log';
+import { log, logError, logSignInLeaseSigned } from '../log';
+import { assertLeaseableGrant, leaseReachesSecrets, parseRenewalChoice, RenewalLeaseError, renewalLeasesEnabled } from '../services/renewal-lease';
+import { signInRenewalFailure } from '../services/signin-renewal';
+import { nativeRenewalHostAllowed, NATIVE_LEASED_WINDOW_SECONDS, recordNativeRenewal, type NativeRenewalAsk } from '../services/native-delegation/standing-renewal';
 export class NativeConsentError extends Error {
-  constructor(readonly status: 401 | 403 | 404 | 409 | 500 | 503, readonly code: string, readonly description?: string) { super(code); }
+  constructor(readonly status: 400 | 401 | 403 | 404 | 409 | 500 | 503, readonly code: string, readonly description?: string) { super(code); }
 }
 function fail(status: NativeConsentError['status'], code: string): never { throw new NativeConsentError(status, code); }
 const active = (row: { status: string; expiresAt: Date }) => {
@@ -65,6 +68,8 @@ function permitted(value: unknown, ceiling: Parameters<typeof validatePermission
   catch (error) { if (error instanceof ParError) fail(409, 'preparation_superseded'); throw error; }
 }
 function prepareSiwe(row: { sessionJwk: unknown }, permissions: Array<{ service: string; space: string; path: string; actions: string[] }>, key: { address: string }, ceiling: { siweDomain?: string }, nonce: string, ttlSeconds: number, at: Date) {
+  // All native consent modes are selected here. When terminal declarations land, the owner lease
+  // still targets this exact CID and does not change the device's signed delegation mode.
   return prepareDelegationSession({
     address: ensureEip55(key.address), chainId: 1, prefix: 'applications', jwk: row.sessionJwk as { kty: string; crv: string; x: string },
     permissions, expiryMs: ttlSeconds * 1000, domain: ceiling.siweDomain ?? 'openkey.so', nonce, issuedAt: at,
@@ -107,6 +112,7 @@ export interface NativeConsentHostOps {
   activateSessionWithHost: typeof activateSessionWithHost;
   submitHostDelegation: typeof submitHostDelegation;
   revokeDelegation: (host: string, headers: Record<string, string>) => Promise<{ ok: boolean; status: number }>;
+  fetchRenewalIdentity?: typeof fetch;
 }
 async function fetchPeerId(host: string, spaceId: string): Promise<string> {
   const response = await fetch(`${host}/peer/generate/${encodeURIComponent(spaceId)}`, { signal: AbortSignal.timeout(5_000) });
@@ -160,20 +166,27 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     await next();
   });
   router.onError((error, c) => {
+    if (error instanceof RenewalLeaseError) {
+      const { status, body } = signInRenewalFailure(error);
+      return c.json({ error: body.code, error_description: body.error }, status, status === 503 ? { 'Retry-After': '2' } : undefined);
+    }
     if (error instanceof NativeConsentError) return c.json({ error: error.code, ...(error.description ? { error_description: error.description } : {}) }, error.status, error.status === 503 ? { 'Retry-After': '2' } : undefined);
     const lockResponse = nativeDelegationLockResponse(error);
     if (lockResponse) return lockResponse;
     throw error;
   });
   router.post('/:id/prepare', async (c) => {
-    const body = await c.req.json().catch(() => ({})) as { actionKeys?: unknown };
+    const body = await c.req.json().catch(() => ({})) as { actionKeys?: unknown; renewal?: unknown };
     const userId = c.get('user').id;
     // Peer lookup is network I/O. Decide whether it is needed before taking
     // the consent/generation/request locks, then recheck the host under lock.
     const pending = await db.tinyCloudNativeRequest.findUnique({ where: { id: c.req.param('id') } });
     if (!pending) fail(404, 'request_not_found');
     // A step-up is consented by its own gate; any other kind is refused.
-    if (pending.kind === 'STEPUP') return c.json(await prepareStepUp(userId, c.get('session')?.id ?? null, pending.id));
+    if (pending.kind === 'STEPUP') {
+      parseRenewalChoice(body.renewal, undefined, false, 'sign-in');
+      return c.json(await prepareStepUp(userId, c.get('session')?.id ?? null, pending.id));
+    }
     if (pending.kind !== 'SIGNIN') fail(409, 'unsupported_request_kind');
     const preReviewer = await nativeReviewerAuthority(db, userId, pending);
     if (pending.userId && pending.userId !== userId) fail(403, 'request_user_mismatch');
@@ -211,13 +224,21 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       if (!sameTinyCloudHost(ceiling.tinycloudHost, preCeiling.tinycloudHost) || key.id !== preKey.id) fail(409, 'preparation_superseded');
       const requested = permitted(row.requestedPermissions, ceiling);
       const preparedAt = new Date();
-      const ttlSeconds = Math.min(row.ttlSeconds, ceiling.maxDelegationTtlSeconds, ceiling.grantLifetimeSeconds, reviewer ? Math.floor((reviewer.deadline - preparedAt.getTime()) / 1000) : Infinity);
+      const ask = (row.renewalAsk ?? undefined) as NativeRenewalAsk | undefined;
+      const renewalAvailable = !!ask && !reviewer && renewalLeasesEnabled() && nativeRenewalHostAllowed(ceiling.tinycloudHost);
+      const renewalChoice = parseRenewalChoice(body.renewal === undefined && ask ? { choice: 'finite' } : body.renewal, ask, renewalAvailable, 'sign-in');
+      const maxWindow = Math.min(ceiling.maxDelegationTtlSeconds, ceiling.grantLifetimeSeconds);
+      const finiteTtlSeconds = Math.min(row.ttlSeconds, maxWindow, reviewer ? Math.floor((reviewer.deadline - preparedAt.getTime()) / 1000) : Infinity);
+      const leasedTtlSeconds = Math.min(NATIVE_LEASED_WINDOW_SECONDS, maxWindow);
+      const ttlSeconds = renewalChoice?.choice === 'leased' ? leasedTtlSeconds : finiteTtlSeconds;
       if (ttlSeconds < 1) fail(403, 'reviewer_session_ended');
       const nonce = row.siweNonce ?? randomBytes(12).toString('base64url').replaceAll('-', 'A').replaceAll('_', 'B');
       const address = ensureEip55(key.address);
       const base = prepareSiwe(row, requested, key, ceiling, nonce, ttlSeconds, preparedAt);
       const permissions = selectedPermissions(requested, body.actionKeys, base.spaceId);
       const prepared = prepareSiwe(row, permissions, key, ceiling, nonce, ttlSeconds, preparedAt);
+      const renewalSensitiveConfirmationRequired = renewalAvailable && leaseReachesSecrets(prepared.prepared.siwe);
+      if (renewalChoice?.choice === 'leased') assertLeaseableGrant(prepared.prepared.siwe, renewalChoice.sensitiveConfirmed === true);
       const existing = await tx.tinyCloudBootstrapState.findFirst({ where: { keyId: key.id, chainId: 1, tinycloudHost: ceiling.tinycloudHost, status: 'complete' } });
       if (reviewer && (!existing || prepared.spaceId !== reviewer.binding.spaceId || ceiling.tinycloudHost !== reviewer.binding.nodeHost)) fail(403, 'reviewer_host_required');
       let hostPlan: { host: string; spaceId: string; peerId: string; hostSiwe: string } | null = null;
@@ -227,11 +248,18 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
           hostSiwe: generateHostSIWEMessage({ address, chainId: 1, domain: ceiling.siweDomain ?? 'openkey.so', issuedAt: new Date().toISOString(), spaceId: prepared.spaceId, peerId }) };
       }
       const revision = row.currentRevision + 1;
-      const preview = { requestId: row.id, revision, userId, keyId: key.id, address, sessionSiwe: prepared.prepared.siwe, permissions, hostPlan };
+      const preview = {
+        requestId: row.id, revision, userId, keyId: key.id, address, sessionSiwe: prepared.prepared.siwe, permissions, hostPlan,
+        ...(renewalChoice && { renewal: renewalChoice, renewalAsk: ask, tinycloudHost: ceiling.tinycloudHost, sessionDid: row.sessionDid }),
+      };
       const digest = preparationDigest(preview);
-      await tx.tinyCloudNativePreparation.create({ data: { id: randomUUID(), requestId: row.id, revision, userId, keyId: key.id, address, tinycloudHost: ceiling.tinycloudHost, sessionSiwe: preview.sessionSiwe, permissions, hostPlan: hostPlan ?? undefined, digest } });
+      await tx.tinyCloudNativePreparation.create({ data: { id: randomUUID(), requestId: row.id, revision, userId, keyId: key.id, address, tinycloudHost: ceiling.tinycloudHost, sessionSiwe: preview.sessionSiwe, permissions, hostPlan: hostPlan ?? undefined, digest, ...(renewalChoice && { renewalChoice }) } });
       await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { userId, siweNonce: nonce, currentRevision: revision, ...(reviewer ? { reviewerEpoch: reviewer.binding.installEpoch, reviewerSessionId: reviewer.sessionId, reviewerDeadline: new Date(reviewer.deadline) } : {}) } });
-      return { ...preview, digest, kind: 'SIGNIN' as const, client: { clientId: client.clientId, name: client.name, icon: client.icon, organization: client.organization?.name }, redirectScheme: new URL(row.redirectUri).protocol.slice(0, -1), sessionDid: row.sessionDid, tinycloudHost: ceiling.tinycloudHost, ttlSeconds, grantLifetimeSeconds: reviewer ? reviewer.ttlSeconds : ceiling.grantLifetimeSeconds, permissionOptions: prepared.permissions, selectedActionKeys: prepared.selectedActionKeys };
+      const renewalOffer = renewalAvailable ? {
+        renewalMaxLeaseLifetimeSeconds: ask.leaseLifetimeSeconds, renewalPurpose: ask.purpose,
+        renewalSensitiveConfirmationRequired, finiteTtlSeconds, leasedTtlSeconds,
+      } : {};
+      return { ...preview, ...renewalOffer, renewalAvailable, digest, kind: 'SIGNIN' as const, client: { clientId: client.clientId, name: client.name, icon: client.icon, organization: client.organization?.name }, redirectScheme: new URL(row.redirectUri).protocol.slice(0, -1), sessionDid: row.sessionDid, tinycloudHost: ceiling.tinycloudHost, ttlSeconds, grantLifetimeSeconds: reviewer ? reviewer.ttlSeconds : ceiling.grantLifetimeSeconds, permissionOptions: prepared.permissions, selectedActionKeys: prepared.selectedActionKeys };
     }, { timeout: 15_000 });
     // TC-3442: whether Approve needs the passkey, with the challenge for this revision. TC-3596: none when the passkey
     // sign-in made for this request already covers it.
@@ -245,7 +273,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     return revokeOwnerDelegation(artifact, domain, (message) => createWalletFromPrivateKey(privateKey).signMessage({ message }), hostOps);
   }
   router.post('/:id/approve', async c => {
-    const body = await c.req.json().catch(() => null) as { revision?: number; digest?: string; sessionSiwe?: string; hostSiwe?: string; passkeyAssertion?: unknown } | null;
+    const body = await c.req.json().catch(() => null) as { revision?: number; digest?: string; sessionSiwe?: string; hostSiwe?: string; passkeyAssertion?: unknown; renewal?: unknown } | null;
     const userId = c.get('user').id;
     const pending = await db.tinyCloudNativeRequest.findUnique({ where: { id: c.req.param('id') } });
     if (!pending) fail(404, 'request_not_found');
@@ -259,6 +287,10 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     const preRevision = await db.tinyCloudNativePreparation.findUnique({ where: { requestId_revision: { requestId: pending.id, revision: body.revision } } });
     if (!preRevision || preRevision.digest !== body.digest || preRevision.sessionSiwe !== body.sessionSiwe ||
       ((preRevision.hostPlan as { hostSiwe?: string } | null)?.hostSiwe ?? undefined) !== body.hostSiwe) fail(409, 'preparation_mismatch');
+    const preAsk = (pending.renewalAsk ?? undefined) as NativeRenewalAsk | undefined;
+    const preChoice = parseRenewalChoice(body.renewal, preAsk, (pending.status === 'APPROVED' || renewalLeasesEnabled()) && !preReviewer && nativeRenewalHostAllowed(preRevision.tinycloudHost), 'sign-in');
+    if (preparationDigest(preRevision.renewalChoice ?? null) !== preparationDigest(preChoice)) fail(409, 'preparation_mismatch');
+    if (preChoice?.choice === 'leased') assertLeaseableGrant(preRevision.sessionSiwe, preChoice.sensitiveConfirmed === true);
     // TC-3442: the account's passkey setting, before the key is unsealed. A replay of an approved revision signs nothing.
     // TC-3596: a passkey sign-in made for this very request counts as the approval's passkey; the method is recorded.
     let passkeyMethod: ApprovalPasskeyMethod = 'NOT_REQUIRED';
@@ -292,6 +324,12 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     }
     const result = await db.$transaction(async tx => {
       const reviewerBinding = await lockNativeReviewer(tx, userId);
+      if (preChoice?.choice === 'leased') {
+        await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
+        const [owner] = await tx.$queryRaw<{ lockedAt: Date | null; reviewerHoldAt: Date | null }[]>`
+          SELECT "lockedAt", "reviewerHoldAt" FROM "user" WHERE id = ${userId} FOR UPDATE`;
+        if (!owner || owner.lockedAt || owner.reviewerHoldAt) fail(403, 'access_denied');
+      }
       const { row, generation } = await lockRequest(tx, c.req.param('id'), userId, true);
       if (row.userId !== userId) fail(403, 'request_user_mismatch');
       if (!body || body.revision !== row.currentRevision) fail(409, 'preparation_superseded');
@@ -313,8 +351,12 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       const ceiling = enabledNativeDelegation(client);
       if (!ceiling || revision.permissions == null) fail(409, 'preparation_superseded');
       if (!sameTinyCloudHost(revision.tinycloudHost, ceiling.tinycloudHost)) fail(409, 'preparation_superseded');
+      const ask = (row.renewalAsk ?? undefined) as NativeRenewalAsk | undefined;
+      const renewalChoice = parseRenewalChoice(body.renewal, ask, renewalLeasesEnabled() && !reviewer && nativeRenewalHostAllowed(ceiling.tinycloudHost), 'sign-in');
+      if (preparationDigest(revision.renewalChoice ?? null) !== preparationDigest(renewalChoice)) fail(409, 'preparation_mismatch');
       const permissions = permitted(revision.permissions, ceiling);
-      const ttl = Math.min(ceiling.maxDelegationTtlSeconds, ceiling.grantLifetimeSeconds);
+      const ttl = Math.min(renewalChoice?.choice === 'leased' ? NATIVE_LEASED_WINDOW_SECONDS : row.ttlSeconds,
+        ceiling.maxDelegationTtlSeconds, ceiling.grantLifetimeSeconds);
       const revisionTtl = siweTtlSeconds(revision.sessionSiwe);
       if (!Number.isInteger(revisionTtl) || revisionTtl > ttl) fail(409, 'preparation_superseded');
       if (!row.siweNonce) fail(409, 'preparation_mismatch');
@@ -324,7 +366,9 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       if (reviewer && (hostPlan || revision.tinycloudHost !== reviewer.binding.nodeHost)) fail(403, 'reviewer_host_required');
       const rebuilt = prepareSiwe(row, permissions, key, ceiling, row.siweNonce, signedTtl, signedAt);
       if (!sameApprovedSiwe(revision.sessionSiwe, rebuilt.prepared.siwe)) fail(409, 'preparation_mismatch');
-      const signature = await createWalletFromPrivateKey(privateKey!).signMessage({ message: rebuilt.prepared.siwe });
+      const wallet = createWalletFromPrivateKey(privateKey!);
+      if (renewalChoice?.choice === 'leased') assertLeaseableGrant(rebuilt.prepared.siwe, renewalChoice.sensitiveConfirmed === true);
+      const signature = await wallet.signMessage({ message: rebuilt.prepared.siwe });
       const delegation = completeSessionSetup({ ...rebuilt.prepared, signature });
       const artifact = { version: 1, address: revision.address, chainId: 1, ownerDid: `did:pkh:eip155:1:${revision.address}`,
         sessionDid: row.sessionDid, sessionJkt: row.sessionJkt, issuedAt: signedAt.toISOString(),
@@ -332,12 +376,30 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
         signature, delegationHeader: delegation.delegationHeader, delegationCid: delegation.delegationCid,
         spaceId: delegation.spaceId, verificationMethod: delegation.verificationMethod, permissions,
         ttlSeconds: signedTtl, tinycloudHost: ceiling.tinycloudHost };
+      let renewal;
+      if (renewalChoice?.choice === 'leased') {
+        try {
+          renewal = await recordNativeRenewal(tx, {
+            userId, requestId: row.id, host: artifact.tinycloudHost, delegation: artifact,
+            leaseLifetimeSeconds: renewalChoice.leaseLifetimeSeconds, sensitiveConfirmed: renewalChoice.sensitiveConfirmed === true,
+          }, message => wallet.signMessage({ message }), hostOps.fetchRenewalIdentity);
+        } catch (error) {
+          const { status, body } = signInRenewalFailure(error);
+          throw new NativeConsentError(status, body.code, body.error);
+        }
+      }
       if (reviewer) await recordReviewerWriter(tx, reviewer.binding, new Date(artifact.expiresAt));
-      await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { status: 'APPROVED', approvedRevision: revision.revision, consentGeneration: generation, signature, delegation: artifact, hosting: 'failed', approvalPasskeyMethod: passkeyMethod } });
-      return { alreadyApproved: false as const, rowId: row.id, revision: revision.revision, hostPlan, artifact, key, siweDomain: ceiling.siweDomain ?? 'openkey.so' };
+      await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: {
+        status: 'APPROVED', approvedRevision: revision.revision, consentGeneration: generation, signature, hosting: 'failed', approvalPasskeyMethod: passkeyMethod,
+        delegation: renewal ? { ...artifact, renewalNodeIdentity: { ...renewal.nodeIdentity } } : artifact,
+        ...(renewal && { renewalLeaseCid: renewal.leaseCid }),
+      } });
+      return { alreadyApproved: false as const, rowId: row.id, revision: revision.revision, hostPlan, artifact, key, siweDomain: ceiling.siweDomain ?? 'openkey.so',
+        renewal: renewalChoice?.choice === 'leased' && renewal ? { leaseCid: renewal.leaseCid, lifetime: renewalChoice.leaseLifetimeSeconds } : null };
     }, { timeout: 15_000 });
     await clearFlowPasskey(db, pending.id);
     if (result.alreadyApproved) return c.json({ status: 'APPROVED', revision: result.revision, hosting: result.hosting });
+    if (result.renewal) logSignInLeaseSigned(result.renewal.leaseCid, 'managed', result.renewal.lifetime);
     let hosting: 'existing' | 'created' | 'failed' = 'failed';
     let restart = false;
     try {
@@ -365,6 +427,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
         // reopen the request on a new revision, so a replay of this approval is superseded: the next prepare plans hosting and shows it. The row is no longer `complete`, so
         // that prepare always carries a plan and this branch cannot run for it again.
         restart = await db.$transaction(async tx => {
+          if (result.renewal) await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${userId} FOR UPDATE`;
           const stale = await tx.tinyCloudBootstrapState.updateMany({
             where: { keyId: result.key.id, chainId: 1, tinycloudHost: result.artifact.tinycloudHost, status: 'complete' },
             data: { status: 'failed', failureCode: RECLAIM_FAILED_CODE, failureReason: 'TinyCloud node does not host the applications space.', attemptId: null, lockExpiresAt: null },
@@ -372,9 +435,13 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
           if (stale.count === 0) return false;
           const reopened = await tx.tinyCloudNativeRequest.updateMany({
             where: { id: result.rowId, status: 'APPROVED', approvedRevision: result.revision, currentRevision: result.revision, hostSignedAt: null },
-            data: { status: 'RESOLVED', currentRevision: { increment: 1 }, approvedRevision: null, consentGeneration: null, signature: null, delegation: Prisma.DbNull, hosting: null },
+            data: { status: 'RESOLVED', currentRevision: { increment: 1 }, approvedRevision: null, consentGeneration: null, signature: null, delegation: Prisma.DbNull, hosting: null, ...(result.renewal && { renewalLeaseCid: null }) },
           });
           if (reopened.count !== 1) throw new Error('native request could not be reopened');
+          if (result.renewal) await tx.renewalLease.update({
+            where: { leaseCid: result.renewal.leaseCid },
+            data: { neverAdmittedAt: new Date(), leaseAuthorization: null, nativeRenewal: { update: { stopRequested: true } } },
+          });
           return true;
         });
         if (restart) await revokeStaleSessionDelegation(result.artifact, result.siweDomain, privateKey!);

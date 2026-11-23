@@ -1,5 +1,6 @@
 import { sameTinyCloudHost } from './tinycloud-host';
 import { recoverPersonalSignAddress } from './eth-signature';
+import { parseApprovalRenewal, type ApprovalRenewal } from '@tinycloud/share-envelope/links';
 /**
  * Native TinyCloud delegation flow (TC-774 task S1).
  *
@@ -131,6 +132,15 @@ export interface NativeDelegationPermission {
   actions: string[];
 }
 
+/** Optional PAR offer for renewal of the exact consent delegation at the TinyCloud node. */
+export interface NativeRenewalAsk {
+  version: 1;
+  leaseLifetimeSeconds: number;
+  purpose?: 'standing' | 'task';
+}
+
+export type NativeRenewalReceipt = ApprovalRenewal;
+
 /** The `tinycloud_delegation` authorization-details element (PAR and renew). */
 export interface TinyCloudDelegationRequest {
   type: 'tinycloud_delegation';
@@ -138,6 +148,7 @@ export interface TinyCloudDelegationRequest {
   permissions: NativeDelegationPermission[];
   ttl_seconds?: number;
   siwe_nonce?: string;
+  renewal?: NativeRenewalAsk;
 }
 
 /**
@@ -513,6 +524,7 @@ export function buildAuthorizationDetails(options: {
   permissions: NativeDelegationPermission[];
   ttlSeconds?: number;
   siweNonce?: string;
+  renewal?: NativeRenewalAsk;
 }): TinyCloudDelegationRequest[] {
   const detail: TinyCloudDelegationRequest = {
     type: 'tinycloud_delegation',
@@ -521,6 +533,7 @@ export function buildAuthorizationDetails(options: {
   };
   if (options.ttlSeconds !== undefined) detail.ttl_seconds = options.ttlSeconds;
   if (options.siweNonce !== undefined) detail.siwe_nonce = options.siweNonce;
+  if (options.renewal !== undefined) detail.renewal = options.renewal;
   return [detail];
 }
 
@@ -539,6 +552,7 @@ export interface BuildParRequestOptions {
   permissions: NativeDelegationPermission[];
   ttlSeconds?: number;
   siweNonce?: string;
+  renewal?: NativeRenewalAsk;
   loginHint?: string;
   /** Only `email` (or no method) may carry `loginHint`. */
   loginMethod?: NativeLoginMethod;
@@ -1113,7 +1127,7 @@ export interface ExchangeNativeCodeOptions {
   fetchFn?: NativeFetch;
   sha256Fn?: SHA256Fn;
   /** Persist the issued refresh token before delegation validation or returning it. */
-  onRefreshToken?: (refreshToken: string) => Promise<void>;
+  onRefreshToken?: (refreshToken: string, standingLeaseExpiresAt?: number) => Promise<void>;
 }
 
 export interface NativeTokenResult {
@@ -1127,6 +1141,12 @@ export interface NativeTokenResult {
   authorizationDetails?: unknown;
   /** Validated `tinycloud_delegation` payload. */
   delegation: TinyCloudDelegation;
+  /** A lease-selected grant keeps its CID even if receipt validation or node admission fails. */
+  renewalMode?: 'leased';
+  /** Parsed transport receipt. Verify it against the original and admit it at the node before persisting it. */
+  renewal?: NativeRenewalReceipt | null;
+  /** Monotonic time of receipt arrival in this process. Admission must start within one minute. */
+  renewalArrivedAt?: number;
 }
 
 /**
@@ -1177,8 +1197,18 @@ export async function exchangeDelegationCode(
   }
 
   const data = await readJson(response, 'Token exchange');
+  const renewalMode = data.renewal == null ? undefined : 'leased' as const;
+  const renewalArrivedAt = renewalMode ? performance.now() : undefined;
+  let renewal: NativeRenewalReceipt | null = null;
+  if (renewalMode) {
+    try { renewal = parseApprovalRenewal(data.renewal); }
+    catch { /* A malformed receipt leaves only the original signed window. */ }
+  }
   const issuedRefreshToken = typeof data.refresh_token === 'string' ? data.refresh_token : undefined;
-  if (issuedRefreshToken) await options.onRefreshToken?.(issuedRefreshToken);
+  if (issuedRefreshToken) {
+    if (renewal) await options.onRefreshToken?.(issuedRefreshToken, Date.parse(renewal.receipt.leaseExpiresAt));
+    else await options.onRefreshToken?.(issuedRefreshToken);
+  }
   if (
     typeof data.access_token !== 'string' ||
     typeof data.refresh_token !== 'string'
@@ -1233,6 +1263,8 @@ export async function exchangeDelegationCode(
       typeof data.expires_at === 'number' ? data.expires_at : undefined,
     authorizationDetails: data.authorization_details,
     delegation,
+    ...(renewalMode && { renewalMode, renewal, renewalArrivedAt }),
+    ...(data.renewal === null && { renewal: null }),
   };
 }
 
