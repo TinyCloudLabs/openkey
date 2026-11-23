@@ -2156,7 +2156,7 @@
               Your browser wallet will prompt you to sign a message to authorize this delegation.
             {/if}
             {#if deviceRenewalMaxLeaseMs !== null}
-              <p>Device sign-ins with this key end at the time shown.</p>
+              <p>Your wallet signs in for a set time, so this device's access ends at the time shown.</p>
             {/if}
           </div>
         {/if}

@@ -19,6 +19,10 @@ const renewal = {
     nodeIdentity: { nodeDid: 'node-did', renewerDid: 'renewer-did' },
   },
 };
+const renewalFailures = [
+  { status: 503, code: 'renewal_failed', error: "OpenKey couldn't set up renewal. This device is waiting for your approval. You can approve it without renewal." },
+  { status: 400, code: 'renewal_disabled', error: "Renewal isn't available for this sign-in. You can approve it without renewal." },
+] as const;
 type Choice = { choice: 'finite' | 'leased'; leaseLifetimeSeconds?: number; sensitiveConfirmed?: true };
 const approve = (page: Page) => page.getByRole('button', { name: 'Approve', exact: true });
 const renewalBox = (page: Page) => page.locator('input.renewal-box');
@@ -34,7 +38,7 @@ function relayPayload(relay: { ephemeralPublicJwk: JsonWebKey; nonce: string; ci
   return JSON.parse(Buffer.concat([decipher.update(ciphertext.subarray(0, -16)), decipher.final()]).toString());
 }
 
-async function openDevice(page: Page, options: { ask?: boolean; sensitive?: boolean; keyType?: 'EXTERNAL' | 'MANAGED'; setupFailure?: boolean; suggestedTtlSeconds?: number } = {}) {
+async function openDevice(page: Page, options: { ask?: boolean; sensitive?: boolean; keyType?: 'EXTERNAL' | 'MANAGED'; setupFailure?: typeof renewalFailures[number]; suggestedTtlSeconds?: number } = {}) {
   const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   const choices: Array<Choice | undefined> = [];
   const grantWindows: string[] = [];
@@ -87,7 +91,8 @@ async function openDevice(page: Page, options: { ask?: boolean; sensitive?: bool
       expect(request.postDataJSON()).toMatchObject({ authorizationContextToken: 'bound-preview', deviceTransactionId: id });
       expect(request.postDataJSON()).not.toHaveProperty('renewal');
       if (options.setupFailure && choices.at(-1)?.choice === 'leased') {
-        return route.fulfill({ status: 503, json: { code: 'renewal_failed', error: "OpenKey couldn't set up renewal. This device approval is pending. You can approve without renewal." } });
+        const { status, code, error } = options.setupFailure;
+        return route.fulfill({ status, json: { code, error } });
       }
       return route.fulfill({ json: { hostActivated: true, expiresAt, permissions, delegationCid: 'grant-cid',
         ...(choices.at(-1)?.choice === 'leased' ? { renewal } : { renewal: null, renewalReason: 'renewal_declined' }),
@@ -119,19 +124,21 @@ test('starts with renewal on and encrypts the signed receipt with the device gra
   expect(JSON.stringify(device.approval())).not.toContain('signed-lease');
 });
 
-test('keeps the owner on the review when setup fails and delivers finite approval after unticking', async ({ page }) => {
-  const device = await openDevice(page, { setupFailure: true });
-  await expect(renewalBox(page)).toBeChecked();
-  await approve(page).click();
-  await expect(page.getByText('This device approval is pending.', { exact: false })).toBeVisible();
-  expect(device.approval()).toBeUndefined();
-  await renewalBox(page).uncheck();
-  await expect(approve(page)).toBeEnabled();
-  await expect(page.getByTestId('approval-expiry-line')).toHaveText("This device's access to your data lasts 1 hour.");
-  expect(device.choices.at(-1)).toEqual({ choice: 'finite' });
-  await approve(page).click();
-  await expect.poll(device.payload).toMatchObject({ renewal: null, renewalReason: 'renewal_declined' });
-});
+for (const failure of renewalFailures) {
+  test(`shows ${failure.code} and delivers finite approval after unticking`, async ({ page }) => {
+    const device = await openDevice(page, { setupFailure: failure });
+    await expect(renewalBox(page)).toBeChecked();
+    await approve(page).click();
+    await expect(page.getByText(failure.error, { exact: true })).toBeVisible();
+    expect(device.approval()).toBeUndefined();
+    await renewalBox(page).uncheck();
+    await expect(approve(page)).toBeEnabled();
+    await expect(page.getByTestId('approval-expiry-line')).toHaveText("This device's access to your data lasts 1 hour.");
+    expect(device.choices.at(-1)).toEqual({ choice: 'finite' });
+    await approve(page).click();
+    await expect.poll(device.payload).toMatchObject({ renewal: null, renewalReason: 'renewal_declined' });
+  });
+}
 
 test('starts sensitive grants unticked and binds explicit confirmation with the shorter signed window', async ({ page }) => {
   const device = await openDevice(page, { sensitive: true });
@@ -148,7 +155,7 @@ test('starts sensitive grants unticked and binds explicit confirmation with the 
 test('shows the wallet note and binds finite approval for an external key', async ({ page }) => {
   const device = await openDevice(page, { keyType: 'EXTERNAL' });
   await expect(renewalBox(page)).toHaveCount(0);
-  await expect(page.getByText('Device sign-ins with this key end at the time shown.')).toBeVisible();
+  await expect(page.getByText("Your wallet signs in for a set time, so this device's access ends at the time shown.")).toBeVisible();
   expect(device.choices.at(-1)).toEqual({ choice: 'finite' });
 });
 

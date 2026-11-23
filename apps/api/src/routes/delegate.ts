@@ -462,7 +462,7 @@ delegateRouter.onError((error, c) => {
   throw error;
 });
 
-const DEVICE_RENEWAL_UNAVAILABLE = 'Renewal is unavailable for this sign-in. You can approve without renewal.';
+const DEVICE_RENEWAL_UNAVAILABLE = "Renewal isn't available for this sign-in. You can approve it without renewal.";
 
 function assertDevicePreviewTransaction(boundId: string | undefined, suppliedId: unknown) {
   if (boundId !== suppliedId) {
@@ -1901,7 +1901,7 @@ delegateRouter.post('/', async (c) => {
       } catch (error) {
         const failure = signInRenewalFailure(error);
         const message = failure.body.code === 'renewal_failed'
-          ? "OpenKey couldn't set up renewal. This device approval is pending. You can approve without renewal."
+          ? "OpenKey couldn't set up renewal. This device is waiting for your approval. You can approve it without renewal."
           : failure.body.code === 'renewal_disabled' ? DEVICE_RENEWAL_UNAVAILABLE : failure.body.error;
         return c.json({ error: message, code: failure.body.code }, failure.status);
       }
@@ -2222,7 +2222,7 @@ delegateRouter.post('/prepare', async (c) => {
       throw new ApprovalResultError(error.code, error.code === 'renewal_disabled' ? DEVICE_RENEWAL_UNAVAILABLE : error.message, error.status);
     }
     if (renewal?.choice === 'leased' && key.keyType !== 'MANAGED') {
-      throw new ApprovalResultError('request_binding', 'Device sign-ins with this key end at the time shown.', 400);
+      throw new ApprovalResultError('request_binding', "Your wallet signs in for a set time, so this device's access ends at the time shown.", 400);
     }
   } else {
     renewal = await bindApprovalRenewal(body);
@@ -2699,7 +2699,7 @@ delegateRouter.post('/complete', async (c) => {
   if (body.authorizationContextToken) {
     assertDevicePreviewTransaction(boundDeviceTransactionId, body.deviceTransactionId);
     if (boundDeviceTransactionId && boundRenewal?.choice === 'leased') {
-      throw new ApprovalResultError('request_binding', 'Device sign-ins with this key end at the time shown.', 400);
+      throw new ApprovalResultError('request_binding', "Your wallet signs in for a set time, so this device's access ends at the time shown.", 400);
     }
   }
   if (body.approvalRequestId !== undefined && !body.authorizationContextToken) {

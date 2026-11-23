@@ -237,7 +237,10 @@ test('keeps a failed setup pending and permits a newly prepared finite approval'
   const preview = await prepare(transactionId, leased);
   expect(preview.status).toBe(200);
   reserve.mockImplementation(async () => { throw new Error('reservation unavailable'); });
-  expect(await post('/', approvalBody(transactionId, preview.body))).toMatchObject({ status: 503, body: { code: 'renewal_failed' } });
+  expect(await post('/', approvalBody(transactionId, preview.body))).toMatchObject({
+    status: 503,
+    body: { code: 'renewal_failed', error: "OpenKey couldn't set up renewal. This device is waiting for your approval. You can approve it without renewal." },
+  });
   expect((await store.findById(transactionId))?.status).toBe('pending');
   expect(activateSessionWithHost).not.toHaveBeenCalled();
   const optOut = await prepare(transactionId, finite);
@@ -250,7 +253,10 @@ test('keeps a failed setup pending and permits a newly prepared finite approval'
 test('requires finite consent for wallets and after the feature is disabled', async () => {
   const { transactionId } = await start();
   key = wallet;
-  expect(await prepare(transactionId, leased)).toMatchObject({ status: 400, body: { code: 'request_binding' } });
+  expect(await prepare(transactionId, leased)).toMatchObject({
+    status: 400,
+    body: { code: 'request_binding', error: "Your wallet signs in for a set time, so this device's access ends at the time shown." },
+  });
   const prepared = await prepare(transactionId, finite);
   expect(prepared.status).toBe(200);
   const signature = await account.signMessage({ message: prepared.body.prepared.siwe });
@@ -261,7 +267,10 @@ test('requires finite consent for wallets and after the feature is disabled', as
   const preview = await prepare(transactionId, leased);
   expect(preview.status).toBe(200);
   delete process.env.OPENKEY_RENEWAL_LEASES;
-  expect(await post('/', approvalBody(transactionId, preview.body))).toMatchObject({ status: 400, body: { code: 'renewal_disabled' } });
+  expect(await post('/', approvalBody(transactionId, preview.body))).toMatchObject({
+    status: 400,
+    body: { code: 'renewal_disabled', error: "Renewal isn't available for this sign-in. You can approve it without renewal." },
+  });
   expect(signOwner).not.toHaveBeenCalled();
   expect(reserve).not.toHaveBeenCalled();
 });
