@@ -114,7 +114,7 @@ jobs:
           bun-version: 1.3.14
 
       - name: Restore Bun dependency cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -252,14 +252,6 @@ jobs:
           NODE
           rm -f /tmp/openkey-api.log
 
-      - name: Log in for immutable rollback-image resolution
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
-        with:
-          username: ${{ secrets.DOCKER_REGISTRY_USERNAME }}
-          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
-
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-
       - name: Capture body-free rollback runtime evidence
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
@@ -278,12 +270,8 @@ jobs:
           fs.writeFileSync('/tmp/current-api-image.txt', `${api.image}\n`);
           NODE
           image_ref=$(tr -d '\n' < /tmp/current-api-image.txt)
-          if [[ "$image_ref" == *@sha256:* ]]; then
-            image_digest=${image_ref##*@}
-          else
-            image_digest=$(docker buildx imagetools inspect "$image_ref" --format '{{json .Manifest.Digest}}' | jq -r .)
-          fi
-          [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "could not resolve old API image digest" >&2; exit 1; }
+          image_digest=${image_ref##*@}
+          [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Rollback digest unverified. The running API image must be pinned by digest." >&2; exit 1; }
           jq -n --arg imageRepository "${image_ref%%[@:]*}" --arg imageReference "$image_ref" --arg imageDigest "$image_digest" \
             '{schema:"openkey.tc492.runtime-before.v2",imageRepository:$imageRepository,imageReference:$imageReference,imageDigest:$imageDigest}' \
             > tc492-runtime-before.json
@@ -383,6 +371,21 @@ jobs:
           reviewed=$(git ls-remote https://github.com/TinyCloudLabs/openkey.git refs/pull/170/head | awk '{print $1}')
           [ "$CANDIDATE_SHA" = "$reviewed" ] || { echo "candidate_sha is not the current PR #170 head" >&2; exit 1; }
 
+      - name: Verify the preflight run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFLIGHT_RUN_ID: ${{ inputs.preflight_run_id }}
+        run: |
+          set -euo pipefail
+          workflow_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/tc-492-production-cutover.yml" --jq '.id')
+          [[ "$workflow_id" =~ ^[0-9]+$ ]]
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PREFLIGHT_RUN_ID}" |
+            jq -e --argjson workflow "$workflow_id" --arg repository "$GITHUB_REPOSITORY" '
+              .workflow_id == $workflow and .head_repository.full_name == $repository and
+              .event == "workflow_dispatch" and .head_branch == "main" and
+              .status == "completed" and .conclusion == "success"
+            ' >/dev/null || { echo "The preflight run must be a successful TC-492 dispatch from this repository's main branch." >&2; exit 1; }
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.candidate_sha }}
@@ -441,7 +444,7 @@ jobs:
           bun-version: 1.3.14
 
       - name: Restore Bun dependency cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
@@ -572,11 +575,8 @@ jobs:
           fs.writeFileSync('/tmp/current-api-image.txt', `${api.image}\n`);
           NODE
           old_image_ref=$(tr -d '\n' < /tmp/current-api-image.txt)
-          if [[ "$old_image_ref" == *@sha256:* ]]; then
-            old_image_digest=${old_image_ref##*@}
-          else
-            old_image_digest=$(docker buildx imagetools inspect "$old_image_ref" --format '{{json .Manifest.Digest}}' | jq -r .)
-          fi
+          old_image_digest=${old_image_ref##*@}
+          [[ "$old_image_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Rollback digest unverified. The running API image must be pinned by digest." >&2; exit 1; }
           expected_old_repository=$(jq -r '.runtimeBefore.imageRepository' preflight-evidence/tc492-preflight-manifest.json)
           expected_old_digest=$(jq -r '.runtimeBefore.imageDigest' preflight-evidence/tc492-preflight-manifest.json)
           [[ "${old_image_ref%%[@:]*}" == "$expected_old_repository" && "$old_image_digest" == "$expected_old_digest" ]] || { echo "running API image changed since preflight" >&2; exit 1; }

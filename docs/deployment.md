@@ -19,7 +19,6 @@ Set these in your repo's **Settings > Secrets and variables > Actions**:
 
 | Secret | Description |
 |--------|-------------|
-| `DOCKER_REGISTRY_USERNAME` / `DOCKER_REGISTRY_PASSWORD` | Docker Hub login for the TC-492 preflight to resolve a running Docker Hub image's digest |
 | `PHALA_CLOUD_API_KEY` | From [Phala Cloud Dashboard](https://cloud.phala.network/dashboard) > Avatar > API Tokens |
 | `DATABASE_URL` | Production PostgreSQL connection string used by the migration job |
 
@@ -632,10 +631,13 @@ The `production-api` concurrency group serializes runs; non-`main` refs are refu
 Run `gh workflow run deploy-api.yml --ref main -f preflight_only=true` first.
 This uses the same production environment and concurrency guard but performs
 only provider reads and a read-only database transaction. Its output records
-the complete app CVM inventory, immutable rollback image, changed environment
+the complete app CVM inventory, verified rollback image, changed environment
 key names, public audience expressions, and reviewed pending migrations. No
 encrypted environment values or user records are printed. The existing
 single-CVM deployment requires exactly one stable running app instance.
+Preflight requires the serving API image to match the digest in its measured
+compose. It stops with “Rollback digest unverified” when the serving compose
+identifies the image by tag alone.
 Resolve unexpected live configuration differences before the deploy; do not
 overwrite operator changes. Re-run this inspection after rollout to confirm
 the image and migration state and check `unclassified_passkeys`. A zero count
