@@ -100,7 +100,7 @@ export const FEED_NOTIFY_STATEMENT = "Get notified of changes in your TinyCloud 
 /**
  * Consent sentence of the `tinycloud.capabilities/read` grant: the requester
  * can inspect which permissions the signer has already granted. Title stays
- * "Permission check — <space>".
+ * "Permission check: <space>".
  */
 export const CAPABILITIES_READ_STATEMENT =
   "See which permissions are already granted";
@@ -304,6 +304,9 @@ export function appRequestingLine(name: string | null): string {
 
 export const APP_KEY_ACCESS_WITHOUT_EXPIRY = "This access lasts until it expires.";
 
+/** The Expires row of a sign-in message with no `Expiration Time` (TC-3826, wording row O2). */
+export const SIWE_WITHOUT_EXPIRY = "Doesn't expire. It doesn't end by itself.";
+
 /**
  * Standing-access line for app-key decrypt. `expiry` is the signed SIWE
  * `Expiration Time`. `formatExpiry` turns it into the text shown; without one
@@ -323,6 +326,14 @@ export const PROTOCOL_HEADLINE: Record<RequestProtocol, string> = {
   "tinycloud-siwe-recap": "Authorize capabilities",
   "malformed-recap": "Refusing to sign: malformed capability payload",
 };
+
+/**
+ * The heading of the review. A tinycloud sign-in names the app it is for; with no app name to say, it keeps the
+ * protocol's own heading.
+ */
+export function protocolHeadline(protocol: RequestProtocol, appName: string | null): string {
+  return protocol === "tinycloud-siwe-recap" && appName ? `Sign in to ${appName}` : PROTOCOL_HEADLINE[protocol];
+}
 
 export const PROTOCOL_HINT: Record<RequestProtocol, string> = {
   "legacy-message": "You will sign these exact bytes.",

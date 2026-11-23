@@ -116,6 +116,7 @@
       "version": "0.13.0-beta.1",
       "dependencies": {
         "@noble/curves": "^1.9.7",
+        "@tinycloud/share-envelope": "1.6.0-beta.1",
       },
       "devDependencies": {
         "jose": "^6.1.3",

@@ -60,8 +60,11 @@
     grantIsAppKeyDecrypt,
     sensitiveSummaryCount,
     grantHeading,
-    PROTOCOL_HEADLINE,
+    protocolHeadline,
     PROTOCOL_HINT,
+    SIWE_WITHOUT_EXPIRY,
+    NAMED_SECRET_DECRYPT_ROW,
+    oneNamedSecret,
     sensitiveRowsCallout,
     abbreviateDid,
     abbreviateSpaceId,
@@ -75,9 +78,16 @@
     elevatedRejectedCountAnnouncement,
     elevatedWhere,
     elevatedWhereText,
+    allSecretsAbility,
+    allSecretsCard,
+    allSecretsReach,
+    grantDecryptsOneSecret,
+    secretLifetimeCapApplies,
+    SECRET_GRANT_MAX_SECONDS,
     type ElevatedKind,
   } from "@openkey/capability-review";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
+  import { NETWORK_DECRYPT_CAP } from "$lib/network-decrypt-cap";
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import ApprovalExpiryControl from "$lib/components/signing/approval-expiry-control.svelte";
   import ElevatedWarning from "$lib/components/signing/elevated-warning.svelte";
@@ -85,7 +95,13 @@
   import type { ClaimedPresentationView } from "$lib/claimed-presentation";
   import type { RenewalChoice, ShortenOnlyExpiry } from "$lib/components/signing/signing-adapter-types";
   import type { ApproveVisibility } from "$lib/approve-visibility";
-  import { ONCE_DEFAULT_EXPIRY_MS, onceDefaultExpiryMs, requestedExpiryMs } from "$lib/approval-expiry";
+  import {
+    ONCE_DEFAULT_EXPIRY_MS,
+    accessLastsLine,
+    onceDefaultExpiryMs,
+    remainingAccessMs,
+    requestedExpiryMs,
+  } from "$lib/approval-expiry";
   import { isOnceTier, renewalNeedsSensitiveConfirm } from "$lib/renewal-default";
 
   interface Props {
@@ -148,8 +164,9 @@
     expiryMaxMs?: number | null;
     shortenOnlyExpiry?: ShortenOnlyExpiry | null;
     /**
-     * Set by the surfaces that write the choice into the signed message: a one-time approval (secrets or decrypt)
-     * that asks for longer than an hour starts at one hour, until the owner picks a time (TC-3111).
+     * Set by the surfaces that write the choice into the signed message: a one-time approval that can open all
+     * secrets or all encrypted data and asks for longer than an hour starts at one hour, until the owner picks a
+     * time.
      */
     onceExpiryDefault?: boolean;
     /** The renewal checkbox (TC-2933); set only where the requester signed a renewal request. */
@@ -165,6 +182,21 @@
     approveVisibility?: ApproveVisibility | null;
     /** The app's own words about a plain `signMessage()` request (name, who it is for, reason); shown under the requester line. */
     claimed?: ClaimedPresentationView | null;
+    /**
+     * The words for a request for one named secret, set only by the one-tap approval: its heading, the line
+     * under it, and the note under the decrypt row. Used while the selection is exactly that request.
+     */
+    oneSecret?: { headline: string; hint: string; decryptNote: string } | null;
+    /**
+     * Set only by a one-tap approval whose signer OpenKey can't name: the "Requested by" value, with a line under
+     * it, while the request names no requester.
+     */
+    unverifiedRequester?: { name: string; line: string } | null;
+    /**
+     * The app a sign-in is for, set by a surface that took the name from OpenKey's own list of requesters and never
+     * from the request (the CLI link page). A manifest name or origin host the request carries is read from the model.
+     */
+    signInApp?: string | null;
     onApprove: () => void;
     onCancel: () => void;
     onRetry?: () => void;
@@ -203,6 +235,9 @@
     elevated = null,
     approveVisibility = null,
     claimed = null,
+    oneSecret = null,
+    signInApp = null,
+    unverifiedRequester = null,
     onApprove,
     onCancel,
     onRetry,
@@ -216,6 +251,10 @@
   const renderPlan = $derived(buildRenderPlan(model.permissions));
   const requestedExpiry = $derived(
     requestedExpiryMs(model.immutable?.issuedAt, model.immutable?.expirationTime),
+  );
+  // Where the surface signs the message as written, the access lasts until its own Expiration Time.
+  const signedAsWrittenMs = $derived(
+    model.protocol === "tinycloud-siwe-recap" ? remainingAccessMs(model.expiry) : null,
   );
   const permissionSections = $derived.by(() => {
     const reviewGrants = renderPlan
@@ -253,8 +292,6 @@
     model.permissions.some((grant) => grant.actions.some((action) => action.editable)),
   );
   const isMalformedRecap = $derived(model.protocol === "malformed-recap");
-  const headline = $derived(PROTOCOL_HEADLINE[model.protocol]);
-  const hint = $derived(PROTOCOL_HINT[model.protocol]);
 
   // Summary copy and the sensitive count describe only actions the user is
   // currently approving. Advanced details deliberately retains the baseline
@@ -272,17 +309,33 @@
   // Sensitive below it (capability-review `buildSummaryStatements`).
   const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
   const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
+  const oneSecretShown = $derived(oneSecret !== null && oneNamedSecret(selectedGrants) !== null);
+  const hint = $derived(oneSecretShown ? oneSecret!.hint : PROTOCOL_HINT[model.protocol]);
 
-  // A signed request that includes secrets or decrypt starts as a whole at one hour or less.
+  // A signed request that can open all secrets or all encrypted data starts as a whole at one hour or less.
   const onceTier = $derived(isOnceTier(shortenOnlyExpiry ? model.permissions : selectedGrants));
   const onceDefaultMs = $derived(
     onceExpiryDefault && onExpiryChange && model.protocol === "tinycloud-siwe-recap"
       ? onceDefaultExpiryMs(onceTier, shortenOnlyExpiry?.startMs ?? requestedExpiry)
       : null,
   );
+  // A grant on secret keys made outside a signed approval request (popup, frame, pasted link) lasts 7 days at most,
+  // and so does a whole network's decrypt where the network cap is on: the server clamps a longer one, so
+  // the screen offers no more. A signed request has its own maximum.
+  const secretCapMs = $derived(
+    !shortenOnlyExpiry && secretLifetimeCapApplies(model.permissions, { networkDecrypt: NETWORK_DECRYPT_CAP })
+      ? SECRET_GRANT_MAX_SECONDS * 1000
+      : null,
+  );
+  const unsignedMaxMs = $derived.by(() => {
+    const bounded = expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null;
+    return secretCapMs === null ? bounded : Math.min(bounded ?? secretCapMs, secretCapMs);
+  });
+  // A signed request may be made longer than its start, up to the maximum its requester signed, unless it
+  // can open all secrets or all encrypted data: then the start (the requester's own suggestion) stays the most.
   const expiryFoldMaxMs = $derived(shortenOnlyExpiry
-    ? (onceDefaultMs ?? shortenOnlyExpiry.startMs)
-    : expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null,
+    ? (onceTier ? shortenOnlyExpiry.startMs : Math.max(expiryMaxMs ?? 0, shortenOnlyExpiry.startMs))
+    : unsignedMaxMs,
   );
   let ownerChoseExpiry = $state(false);
   let onceDefaultSent = $state(false);
@@ -303,6 +356,16 @@
       if (expiryMs === ONCE_DEFAULT_EXPIRY_MS) onExpiryChange(null);
     }
   });
+  // An app's longer time on secret keys starts at the 7 days the server allows (the one-hour start, where it applies,
+  // is shorter and goes first).
+  let secretCapSent = $state(false);
+  $effect(() => {
+    if (secretCapSent || approving || previewPending || !onExpiryChange || ownerChoseExpiry || onceDefaultMs !== null) return;
+    if (secretCapMs !== null && expiryMs === null && requestedExpiry !== null && requestedExpiry > secretCapMs) {
+      secretCapSent = true;
+      onExpiryChange(secretCapMs);
+    }
+  });
   function chooseExpiry(ms: number | null) {
     ownerChoseExpiry = true;
     onExpiryChange?.(ms);
@@ -312,6 +375,13 @@
     shortenOnlyExpiry && onceTier && renewal?.leaseMs == null &&
     (expiryMs ?? shortenOnlyExpiry.startMs) <= ONCE_DEFAULT_EXPIRY_MS
       ? shortenOnlyExpiry.onceNote
+      : null,
+  );
+  // A signed request for a secret's own key says where it starts and the most it can be.
+  const signedLengthNote = $derived(
+    shortenOnlyExpiry && !onceTier && renewal?.leaseMs == null && expiryFoldMaxMs !== null &&
+    model.permissions.some(grantDecryptsOneSecret)
+      ? shortenOnlyExpiry.lengthNote(shortenOnlyExpiry.startMs, expiryFoldMaxMs)
       : null,
   );
 
@@ -330,8 +400,22 @@
   // Names that come from a manifest are app-supplied text: they are shown only
   // after the display rules (`appDisplayName`), everywhere on this view.
   const requesterName = $derived(appDisplayName(model.requester.displayName) ?? originHost ?? "");
+  const requesterUnverified = $derived(!requesterName && unverifiedRequester !== null);
+  const requesterShown = $derived(requesterUnverified ? unverifiedRequester!.name : requesterName);
   const manifestNameShown = $derived(appDisplayName(model.requester.manifestName));
   const requestedBy = $derived(originHost ?? requesterName);
+  // The sign-in heading is set in the largest text, so it names only what the request cannot write: a manifest name
+  // OpenKey verified, else the verified origin host, else a name the surface took from OpenKey's own list. A recap
+  // that hosts a new space on a node sets up hosting for the owner, so it keeps the protocol heading.
+  const hostsSpace = $derived(readSpaceHostFacts(model) !== null);
+  const verifiedAppName = $derived(
+    model.requester.manifestNameProvenance === "verified" ? appDisplayName(model.requester.manifestName) : null,
+  );
+  const headingApp = $derived(hostsSpace ? null : (verifiedAppName ?? originHost ?? signInApp));
+  const headline = $derived(oneSecretShown ? oneSecret!.headline : protocolHeadline(model.protocol, headingApp));
+  // The id on a matched manifest comes from that manifest; an id the app sent beside a matched manifest that names
+  // none is the app's own word, which the manifest neither confirms nor contradicts.
+  const manifestMatched = $derived(model.metadataTrust.status === "origin-bound" || model.metadataTrust.status === "verified");
   // The note under the expiry line names who asked as the screen does: the verified origin, or "This request" where
   // nothing identifies the requester (a link, a device sign-in, an approval link).
   const onceNoteSite = $derived(originHost ?? "This request");
@@ -593,17 +677,29 @@
     block: boolean;
     unblock: boolean;
     where: string | null;
+    /** The all-secrets card: decrypt on a whole network, decrypt or key creation on `secrets/`. */
+    allSecrets: boolean;
   }
+  // What the request reaches across all secrets: the all-secrets card on the warning screen, or above the summary on
+  // a screen without one (a link, the command line).
+  const allSecrets = $derived(allSecretsReach(selectedGrants));
   // One group per selected grant that carries decrypt, key creation, or blocking or unblocking of keys on the
   // encryption network, or on keys outside the app's own `apps/` area. The same `elevatedKindOf` decides on the
-  // server, so both see the same permissions.
+  // server, so both see the same permissions. Every action that can open all secrets goes on one card of its own,
+  // first, whichever grant carries it.
   const elevatedGroups = $derived.by((): ElevatedGroup[] => {
     if (!elevated) return [];
-    return selectedGrants.flatMap((grant): ElevatedGroup[] => {
+    const allSecretsActionIds: string[] = [];
+    const groups = selectedGrants.flatMap((grant): ElevatedGroup[] => {
       const entry = { service: grant.service, space: grant.space, path: grant.path };
       const picked = grant.actions.flatMap((action) => {
         const kind = elevatedKindOf(entry, action.ability);
-        return kind === null ? [] : [{ action, kind }];
+        if (kind === null) return [];
+        if (allSecrets !== null && allSecretsAbility(entry, action.ability) !== null) {
+          allSecretsActionIds.push(action.id);
+          return [];
+        }
+        return [{ action, kind }];
       });
       if (picked.length === 0) return [];
       const has = (verb: string) => picked.some(({ action }) => elevatedAbilityVerb(action.ability) === verb);
@@ -617,9 +713,25 @@
           block: has("key.block"),
           unblock: has("key.unblock"),
           where: elevatedWhere(entry),
+          allSecrets: false,
         },
       ];
     });
+    if (allSecretsActionIds.length === 0) return groups;
+    return [
+      {
+        id: "all-secrets",
+        kind: "encryption-network",
+        actionIds: allSecretsActionIds,
+        decrypt: true,
+        create: false,
+        block: false,
+        unblock: false,
+        where: null,
+        allSecrets: true,
+      },
+      ...groups,
+    ];
   });
   let allowedElevated = $state<Set<string>>(new Set());
   let rejectedCards = $state<Array<{ heading: string; actionIds: string[] }>>([]);
@@ -632,16 +744,23 @@
   // never a name the app supplies; "This request" where nothing is verified.
   const elevatedSite = $derived(originHost ?? null);
   const elevatedCards = $derived(
-    pendingElevatedGroups.map((group) => ({
-      id: group.id,
-      ...elevatedCard(
-        group.kind,
-        { decrypt: group.decrypt, create: group.create, block: group.block, unblock: group.unblock },
-        elevatedSite,
-        elevatedWhereText(group.where),
-      ),
-    })),
+    pendingElevatedGroups.map((group) => {
+      if (group.allSecrets && allSecrets !== null) {
+        const card = allSecretsCard(allSecrets, elevatedSite);
+        return { id: group.id, heading: card.heading, body: card.cue === null ? card.body : `${card.body} ${card.cue}` };
+      }
+      return {
+        id: group.id,
+        ...elevatedCard(
+          group.kind,
+          { decrypt: group.decrypt, create: group.create, block: group.block, unblock: group.unblock },
+          elevatedSite,
+          elevatedWhereText(group.where),
+        ),
+      };
+    }),
   );
+  const allSecretsSummaryCard = $derived(!elevated && allSecrets !== null ? allSecretsCard(allSecrets, originHost ?? null) : null);
   const notApprovedRows = $derived(
     rejectedCards.filter((card) => card.actionIds.every((id) => !selection.has(id))).map((card) => elevatedNotApprovedRow(card.heading)),
   );
@@ -750,8 +869,11 @@
     {:else}
       <h2 id="signing-approval-headline" class="headline" tabindex="-1">{headline}</h2>
       <p class="requester-line">
-        Requested by <span class="requester-name">{requesterName}</span>
+        Requested by <span class="requester-name">{requesterShown}</span>
       </p>
+      {#if requesterUnverified}
+        <p class="requester-line">{unverifiedRequester!.line}</p>
+      {/if}
     {/if}
     <p id="signing-approval-hint" class="hint">{hint}</p>
   </header>
@@ -814,6 +936,15 @@
     {#if identity && summaryStatements.length > 0}
       <p class="summary-lead">{appRequestingLine(identity.name)}</p>
     {/if}
+    {#if allSecretsSummaryCard}
+      <div class="all-secrets" role="note" aria-labelledby="all-secrets-heading" data-testid="all-secrets-card">
+        <h3 class="all-secrets-heading" id="all-secrets-heading">{allSecretsSummaryCard.heading}</h3>
+        <p class="all-secrets-body">{allSecretsSummaryCard.body}</p>
+        {#if allSecretsSummaryCard.cue}
+          <p class="all-secrets-body">{allSecretsSummaryCard.cue}</p>
+        {/if}
+      </div>
+    {/if}
     {#if summaryStatements.length > 0}
       <ul class="summary-statements">
         {#each summaryStatements as statement (statement.key)}
@@ -827,6 +958,11 @@
                 <span class="summary-sensitive-pill">Sensitive</span>
               {/if}
             </span>
+            {#if oneSecretShown && statement.key === NAMED_SECRET_DECRYPT_ROW}
+              <span class="statement-detail">{oneSecret!.decryptNote}</span>
+            {:else if statement.detail}
+              <span class="statement-detail">{statement.detail}</span>
+            {/if}
           </li>
         {/each}
       </ul>
@@ -856,17 +992,20 @@
       <ApprovalExpiryControl
         requestedMs={requestedExpiry}
         chosenMs={expiryMs}
-        maxMs={expiryBounded ? (expiryMaxMs ?? requestedExpiry) : null}
+        maxMs={unsignedMaxMs}
         disabled={approving}
         onChange={chooseExpiry}
         onceSite={onceDefaultShown && !shortenOnlyExpiry ? onceNoteSite : null}
         onceNote={signedOnceNote}
+        lengthNote={signedLengthNote}
         {renewal}
         sensitive={renewalNeedsSensitiveConfirm(selectedGrants)}
         {requestedBy}
         chooser={false}
         permissionCount={summaryStatements.length}
       />
+    {:else if !onExpiryChange && signedAsWrittenMs !== null}
+      <p class="summary-note" data-testid="approval-access-line">{accessLastsLine("app", signedAsWrittenMs)}</p>
     {/if}
 
     {#if hostFacts}
@@ -939,7 +1078,7 @@
       <section class="identity" aria-label="Requester identity">
       <div class="row">
         <span class="label">Requester</span>
-        <span class="value">{requesterName}</span>
+        <span class="value">{requesterShown}</span>
       </div>
 
       {#if model.requester.verifiedOrigin}
@@ -1025,7 +1164,11 @@
             {:else if model.requester.manifestIdProvenance === "origin-bound"}
               from origin-bound manifest
             {:else if model.requester.manifestIdProvenance === "caller"}
-              caller-supplied, unverified
+              {#if manifestMatched}
+                from the app's request, unverified; the manifest doesn't name one
+              {:else}
+                caller-supplied, unverified
+              {/if}
             {/if}
           </span>
         </div>
@@ -1060,6 +1203,11 @@
           <div class="row">
             <span class="label">Expires</span>
             <span class="value">{model.expiry}</span>
+          </div>
+        {:else if model.protocol === "siwe-plain" || model.protocol === "tinycloud-siwe-recap"}
+          <div class="row" data-testid="siwe-no-expiry">
+            <span class="label">Expires</span>
+            <span class="value">{SIWE_WITHOUT_EXPIRY}</span>
           </div>
         {/if}
       </section>
@@ -1373,6 +1521,26 @@
     unicode-bidi: isolate;
     overflow-wrap: anywhere;
   }
+  /* The all-secrets card on a screen without the warning screen: the same colours as the Sensitive callout. */
+  .all-secrets {
+    background: #fff7ed;
+    border: 1px solid #fdba74;
+    border-radius: 12px;
+    padding: 10px 12px;
+    color: #9a3412;
+  }
+  .all-secrets-heading {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.4;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  .all-secrets-body {
+    margin: 4px 0 0;
+    font-size: 13px;
+    line-height: 1.45;
+  }
   .requester-line {
     font-size: 13px;
     line-height: 1.45;
@@ -1470,6 +1638,12 @@
     line-height: 1.45;
     font-weight: 600;
     color: #0f172a;
+  }
+  .statement-detail {
+    margin-top: 2px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #475569;
   }
   .statement-line {
     display: flex;

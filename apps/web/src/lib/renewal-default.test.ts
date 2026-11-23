@@ -1,9 +1,11 @@
-// TC-2933: whether the renewal box starts ticked follows spec #322: standing purpose (D11/D12), never the Once tier (D7).
+// The Once tier is narrow (broad secret or decryption access); the Sensitive
+// tier that drives renewal opt-in is broad (any grant reaching secret data or
+// decryption).
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
 import { parseCapabilityReview, type CapabilityReviewModel } from '../../../../packages/capability-review/src/index';
 import { FIXTURE_META, makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
-import { isOnceTier, renewalStartsTicked } from './renewal-default';
+import { isOnceTier, renewalNeedsSensitiveConfirm, renewalStartsTicked } from './renewal-default';
 
 const OWNER = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
 
@@ -25,11 +27,19 @@ function grants(att: Record<string, Record<string, unknown[]>>): CapabilityRevie
 }
 
 const ordinary = grants({ [`${FIXTURE_META.ownSpace}/kv/courier/`]: { 'tinycloud.kv/get': [{}], 'tinycloud.kv/put': [{}] } });
+// App-scoped encryption prefix (kind = "prefix"): sensitive but NOT broad-once.
 const decrypt = grants({
   [`${FIXTURE_META.ownSpace}/kv/courier/`]: { 'tinycloud.kv/get': [{}] },
   [`urn:tinycloud:encryption:${OWNER}:default/apps/xyz.tinycloud.courier/`]: { 'tinycloud.encryption/decrypt': [{}] },
 });
+// Named secret: sensitive but NOT broad-once.
 const secret = grants({ [`${FIXTURE_META.ownSpace}/kv/vault/secrets/DEPLOY_KEY`]: { 'tinycloud.kv/get': [{}] } });
+// Whole-network decrypt (kind = "network"): broad-once.
+const wholeNetworkDecrypt = grants({
+  [`urn:tinycloud:encryption:${OWNER}:default`]: { 'tinycloud.encryption/decrypt': [{}] },
+});
+// Whole-vault KV read (empty name tail): broad-once.
+const wholeVault = grants({ [`${FIXTURE_META.ownSpace}/kv/vault/secrets/`]: { 'tinycloud.kv/get': [{}] } });
 
 describe('the renewal box starts ticked', () => {
   test('only for a signed standing purpose', () => {
@@ -39,11 +49,45 @@ describe('the renewal box starts ticked', () => {
     expect(renewalStartsTicked('Standing', ordinary)).toBe(false);
   });
 
-  test('never in the Once tier (decrypt or reading a secret), whatever the purpose', () => {
-    expect(isOnceTier(ordinary)).toBe(false);
-    expect(isOnceTier(decrypt)).toBe(true);
-    expect(isOnceTier(secret)).toBe(true);
+  test('never for a Sensitive request (decrypt or reading a secret), whatever the purpose', () => {
     expect(renewalStartsTicked('standing', decrypt)).toBe(false);
     expect(renewalStartsTicked('standing', secret)).toBe(false);
+    expect(renewalStartsTicked('standing', wholeNetworkDecrypt)).toBe(false);
+    expect(renewalStartsTicked('standing', wholeVault)).toBe(false);
+  });
+});
+
+describe('isOnceTier (narrowed: broad-only; drives the 1h expiry start)', () => {
+  test('plain KV access is not broad-once', () => {
+    expect(isOnceTier(ordinary)).toBe(false);
+  });
+
+  test('a named secret follows the app ask, so it is NOT broad-once', () => {
+    expect(isOnceTier(secret)).toBe(false);
+  });
+
+  test('an app-scoped encryption prefix follows the app ask, so it is NOT broad-once', () => {
+    expect(isOnceTier(decrypt)).toBe(false);
+  });
+
+  test('whole-network decrypt (bare network URN) is broad-once', () => {
+    expect(isOnceTier(wholeNetworkDecrypt)).toBe(true);
+  });
+
+  test('whole-vault KV read (empty name tail) is broad-once', () => {
+    expect(isOnceTier(wholeVault)).toBe(true);
+  });
+});
+
+describe('renewalNeedsSensitiveConfirm (broad: drives renewal opt-in and the D7 confirm)', () => {
+  test('plain KV access asks for nothing', () => {
+    expect(renewalNeedsSensitiveConfirm(ordinary)).toBe(false);
+  });
+
+  test('every grant that reaches secret data or decryption asks', () => {
+    expect(renewalNeedsSensitiveConfirm(decrypt)).toBe(true);
+    expect(renewalNeedsSensitiveConfirm(secret)).toBe(true);
+    expect(renewalNeedsSensitiveConfirm(wholeNetworkDecrypt)).toBe(true);
+    expect(renewalNeedsSensitiveConfirm(wholeVault)).toBe(true);
   });
 });

@@ -1,7 +1,7 @@
 <script lang="ts">
   // How long the approval lasts, and whether it renews (TC-2272, TC-2933).
   // One line: a renewal checkbox where the requester can use a renewal lease,
-  // otherwise "This permission expires in <window>". The window and the lease
+  // otherwise "This app's access to your data lasts <window>." The window and the lease
   // are changed in approval-expiry-chooser.svelte: under a closed fold here, or
   // where the screen sets `chooser` false and shows the chooser itself. It only
   // reports the choices; the server writes the window into the signed message
@@ -11,9 +11,9 @@
     LONG_EXPIRY_WARNING,
     MAX_LEASE_MS,
     SENSITIVE_RENEWAL_WINDOW_MS,
+    accessLastsLine,
     defaultLeaseMs,
     formatDuration,
-    formatDurationWithEnd,
   } from "$lib/approval-expiry";
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
@@ -46,8 +46,12 @@
      */
     onceSite?: string | null;
     onceNote?: string | null;
+    /** On a signed request for a secret's own key: its start and the most it can be. Null shows no note. */
+    lengthNote?: string | null;
     /** Show the "How long it lasts" fold here. False where the screen shows ApprovalExpiryChooser elsewhere. */
     chooser?: boolean;
+    /** Who holds the access, as the line names them: an app, or the device of a device sign-in. */
+    holder?: "app" | "device";
   }
 
   let {
@@ -63,7 +67,9 @@
     permissionCount = 1,
     onceSite = null,
     onceNote = null,
+    lengthNote = null,
     chooser = true,
+    holder = "app",
   }: Props = $props();
 
   let confirming = $state(false);
@@ -71,6 +77,7 @@
   let checkbox = $state<HTMLInputElement | null>(null);
 
   const shownMs = $derived(chosenMs ?? requestedMs);
+  const accessLine = $derived(shownMs === null ? "" : accessLastsLine(renewal?.deviceSignIn ? "device" : holder, shownMs));
   const leaseMaxMs = $derived(renewal ? Math.min(renewal.maxLeaseMs, MAX_LEASE_MS) : MAX_LEASE_MS);
   const proposedLeaseMs = $derived(renewal ? defaultLeaseMs(leaseMaxMs) : 0);
   const ticked = $derived(renewal !== null && renewal.leaseMs !== null);
@@ -102,7 +109,11 @@
     confirming = false;
     // D6 rule 3: renewing secrets or decrypt uses a 7-day window, within what the requester signed.
     // One change, so the preview is prepared once with both the lease and the window.
-    const window = maxMs == null ? SENSITIVE_RENEWAL_WINDOW_MS : Math.min(SENSITIVE_RENEWAL_WINDOW_MS, maxMs);
+    const window = Math.min(
+      SENSITIVE_RENEWAL_WINDOW_MS,
+      maxMs ?? Infinity,
+      renewal?.deviceSignIn ? shownMs ?? Infinity : Infinity,
+    );
     // TC-3821: the confirm travels with the choice; the server refuses a lease on secrets without it.
     renewal!.onChange(proposedLeaseMs, window === shownMs ? undefined : window === requestedMs ? null : window, true);
     queueMicrotask(() => checkbox?.focus());
@@ -131,7 +142,14 @@
     {#if confirming}
       <div class="renewal-confirm" role="alertdialog" aria-labelledby="renewal-confirm-heading" aria-describedby="renewal-confirm-body">
         <h3 class="renewal-confirm-heading" id="renewal-confirm-heading" tabindex="-1" bind:this={confirmHeading}>Renew sensitive access?</h3>
-        <p id="renewal-confirm-body">This lets {requestedBy} keep the Sensitive access listed here for up to {formatDuration(proposedLeaseMs)}, without asking you again. You can stop renewal any time under Renewing permissions in Settings.</p>
+        <p id="renewal-confirm-body">
+          {#if renewal?.deviceSignIn}
+            This device can keep the sensitive access listed here for up to {formatDuration(proposedLeaseMs)}.
+            Each renewal lasts up to 7 days. You can stop renewal under Renewing permissions in Settings.
+          {:else}
+            This lets {requestedBy} keep the Sensitive access listed here for up to {formatDuration(proposedLeaseMs)}, without asking you again. You can stop renewal any time under Renewing permissions in Settings.
+          {/if}
+        </p>
         <div class="renewal-confirm-actions">
           <button type="button" class="renewal-confirm-no" onclick={cancelRenewal}>Don't renew</button>
           <button type="button" class="renewal-confirm-yes" onclick={confirmRenewal}>Turn on renewal</button>
@@ -149,21 +167,24 @@
         />
         <span data-testid="approval-expiry-line">
           {#if renews}
-            {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}
+            {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}{renewal.deviceSignIn ? "." : ""}
           {:else}
-            {permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDurationWithEnd(shownMs)}
+            {accessLine}
           {/if}
         </span>
       </label>
     {:else}
-      <p class="expiry-line" data-testid="approval-expiry-line">{permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDurationWithEnd(shownMs)}</p>
+      <p class="expiry-line" data-testid="approval-expiry-line">{accessLine}</p>
     {/if}
     {#if onceNote !== null}
       <p class="expiry-once-note" data-testid="approval-expiry-once-note">{onceNote}</p>
     {:else if onceSite !== null && requestedMs !== null}
       <p class="expiry-once-note" data-testid="approval-expiry-once-note">
-        {onceSite} asked for {formatDuration(requestedMs)}. Access to secrets or encrypted data starts at {formatDuration(shownMs)}. You can choose longer in Advanced details.
+        {onceSite} asked for {formatDuration(requestedMs)}. Access that can open all your secrets or all your encrypted data starts at {formatDuration(shownMs)}. You can choose longer under How long it lasts.
       </p>
+    {/if}
+    {#if lengthNote !== null}
+      <p class="expiry-once-note" data-testid="approval-expiry-length-note">{lengthNote}</p>
     {/if}
     {#if chooser}
       <details class="expiry-fold">

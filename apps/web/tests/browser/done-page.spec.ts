@@ -61,7 +61,7 @@ test('an approval link: the receipt says the approval went to the app that asked
   await page.goto(approvalLink);
   await approve(page);
   await expect(page.getByRole('heading', { name: 'Approved. Go back to your agent.' })).toBeVisible();
-  await expect(receipt(page, 'Sent to')).toHaveText('TinyCloud CLI');
+  await expect(receipt(page, 'Sent to')).toHaveCount(0);
   await expectNothingToCopy(page);
 });
 
@@ -71,7 +71,7 @@ test('an approval link declined: nothing was shared, and there is no receipt', a
   await page.goto(approvalLink);
   await page.getByTestId('signing-decline').click();
   await expect(page.getByRole('heading', { name: 'Declined. Nothing was shared.' })).toBeVisible();
-  await expect(page.getByText('TinyCloud CLI has been told no.', { exact: false })).toBeVisible();
+  await expect(page.getByText('Whoever sent this link has been told no.', { exact: false })).toBeVisible();
   await expect(page.locator('dl')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Close this tab' })).toBeVisible();
 });

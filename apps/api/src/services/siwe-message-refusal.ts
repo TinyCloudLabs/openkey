@@ -5,7 +5,7 @@
 // Other messages (plain text, raw bytes) are not SIWEs and keep their bytes.
 
 import { hasForbiddenSiweCharacter, parseSiweFields } from '@openkey/capability-review';
-import { decodeHexUtf8, isSiweShaped } from './siwe-origin';
+import { isSiweShaped } from './siwe-origin';
 
 export const INVALID_SIWE_MESSAGE_CODE = 'invalid_siwe_message';
 
@@ -23,15 +23,31 @@ export interface InvalidSiweMessageBody {
 export type SiweMessageRule = 'grammar' | 'characters';
 
 /**
- * The 400 body when `message`, as written or as the UTF-8 its `0x` hex
- * covers, is SIWE-shaped and fails `rule`; null otherwise.
+ * The text `0x` hex covers, a leading BOM kept. `utf8` is false when the bytes
+ * are not UTF-8; the text is then the lossy (U+FFFD) decode, read only to see
+ * whether the bytes hold a sign-in message. Null when `message` is not hex.
+ */
+function hexText(message: string): { text: string; utf8: boolean } | null {
+  if (!/^0x(?:[0-9a-fA-F]{2})+$/.test(message)) return null;
+  const bytes = Uint8Array.from(message.slice(2).match(/../g)!, (pair) => parseInt(pair, 16));
+  try {
+    return { text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes), utf8: true };
+  } catch {
+    return { text: new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes), utf8: false };
+  }
+}
+
+/**
+ * The 400 body when `message`, as written or as the text its `0x` hex covers,
+ * is SIWE-shaped and fails `rule` (a SIWE in hex that is not UTF-8 always
+ * fails); null otherwise. Hex that is not UTF-8 and holds no sign-in message is
+ * binary data and keeps its bytes.
  */
 export function invalidSiweMessage(message: string, rule: SiweMessageRule = 'grammar'): InvalidSiweMessageBody | null {
-  const decoded = decodeHexUtf8(message);
-  const refused = [message, decoded].some(
-    (text) => text !== null && isSiweShaped(text)
-      && (hasForbiddenSiweCharacter(text) || (rule === 'grammar' && !parseSiweFields(text).ok)),
-  );
+  const fails = (text: string) => hasForbiddenSiweCharacter(text) || (rule === 'grammar' && !parseSiweFields(text).ok);
+  const hex = hexText(message);
+  const refused = (isSiweShaped(message) && fails(message))
+    || (hex !== null && isSiweShaped(hex.text) && (!hex.utf8 || fails(hex.text)));
   return refused
     ? {
         error: 'OpenKey cannot read this sign-in message the way the TinyCloud node does (it is not in the standard sign-in format, or it contains a control character, U+2028 or U+2029), so it will not sign it.',
