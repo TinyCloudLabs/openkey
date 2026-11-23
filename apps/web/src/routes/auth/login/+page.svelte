@@ -41,6 +41,7 @@
   import {
     accountHasNoPasskeys,
     browserPasskeyAutofill,
+    ceremonyAfterAutofill,
     enrolmentDecision,
     isNoPasskeyError,
     startPasskeyAutofill,
@@ -536,12 +537,15 @@
 
   async function signInWithPasskey() {
     // The modal ceremony replaces the autofill request, and starts only once that request has settled:
-    // the browser keeps one ceremony at a time, so a late autofill ceremony would abort this one.
+    // the browser keeps one ceremony at a time, so a late autofill ceremony would abort this one. An autofill
+    // sign-in the server was already verifying when this click arrived is the sign-in: its onSignedIn runs
+    // once and no second ceremony starts.
     loading = true;
     error = '';
-    await supersedePasskeyAutofill();
     try {
-      const result = await authClient.signIn.passkey(passkeyFlow());
+      const outcome = await ceremonyAfterAutofill(() => authClient.signIn.passkey(passkeyFlow()));
+      if (outcome.adopted) return;
+      const { result } = outcome;
       if (!result.error) {
         passkeySignedIn = true;
         handlePostSignIn();
@@ -575,7 +579,10 @@
     void autofillRestart;
     const autofill = startPasskeyAutofill({
       ...browserPasskeyAutofill,
-      signIn: () => authClient.signIn.passkey({ autoFill: true, ...passkeyFlow() }),
+      signIn: ({ onVerify }) => {
+        const flow = passkeyFlow();
+        return authClient.signIn.passkey({ autoFill: true, fetchOptions: { ...flow?.fetchOptions, onRequest: onVerify } });
+      },
       onSignedIn: () => {
         passkeySignedIn = true;
         handlePostSignIn();
