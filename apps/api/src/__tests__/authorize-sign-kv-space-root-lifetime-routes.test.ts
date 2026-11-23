@@ -9,6 +9,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { verifyMessage } from 'ethers';
 import { mockModules, replaceModules } from './mock-module';
+import { siweBroadOnceTier } from '../services/approval-expiry';
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
 
@@ -106,6 +107,23 @@ function post(path: string, body: unknown) {
 
 const expiryOf = (siwe: string) => Date.parse(/^Expiration Time: (.+)$/m.exec(siwe)?.[1] ?? '');
 
+const HOUR_MS = 3_600_000;
+
+/**
+ * The signed expiry is one hour for a request in the one-hour tier (the classifier `siweBroadOnceTier` the
+ * preview and sign routes run on `raw`), else 7 days from the preview, within the test's own run.
+ */
+function expectTieredSecretLifetime(bytes: string, before: number, raw: Record<string, string[]>) {
+  const expiry = expiryOf(bytes);
+  if (siweBroadOnceTier(siweFor(raw, 30 * DAY_MS), address)) {
+    expect(expiry).toBeGreaterThan(before);
+    expect(expiry).toBeLessThanOrEqual(Date.now() + HOUR_MS);
+    return;
+  }
+  expect(expiry).toBeGreaterThanOrEqual(before + 7 * DAY_MS - 1000);
+  expect(expiry).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
+}
+
 /** Prepare, preview (optionally with the owner's expiry) and sign; returns the signed bytes. */
 async function approve(raw: Record<string, string[]>, lifetimeMs: number, opts: { expiryChangeable?: boolean; ownerPicks?: string } = {}) {
   const prepared = await post('/authorize-sign-prepare', {
@@ -155,11 +173,9 @@ describe('the frame holds a KV read of the secrets vault to 7 days', () => {
     ['get on <space>/kv/vault/secrets/', { [`${SPACE}/kv/vault/secrets/`]: [`${KV}get`] }],
     ['get on <space>/kv/secrets/x', { [`${SPACE}/kv/secrets/x`]: [`${KV}get`] }],
     ['a whole-space read with a vault read beside it', { [`${SPACE}/kv`]: [`${KV}get`], [`${SPACE}/kv/vault/secrets/`]: [`${KV}get`] }],
-  ] as Array<[string, Record<string, string[]>]>)("%s: the app's 30 days are signed as 7", async (_name, raw) => {
+  ] as Array<[string, Record<string, string[]>]>)("%s: the app's 30 days are signed as one hour in the one-hour tier, 7 days for one secret", async (_name, raw) => {
     const before = Date.now();
-    const expiry = expiryOf(await approve(raw, 30 * DAY_MS));
-    expect(expiry).toBeGreaterThanOrEqual(before + 7 * DAY_MS - 1000);
-    expect(expiry).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
+    expectTieredSecretLifetime(await approve(raw, 30 * DAY_MS), before, raw);
   });
 });
 
@@ -191,12 +207,12 @@ describe('the frame previews the same request twice, as when the owner changes t
     expect(expiryOf(signedMessage)).toBeGreaterThan(before + 29 * DAY_MS);
   });
 
-  test('a vault-secrets read: both previews and the signed bytes carry 7 days', async () => {
+  test('a vault-secrets read: both previews and the signed bytes carry one hour', async () => {
     const before = Date.now();
     const { first, signedMessage } = await signAfterTwoPreviews({ [`${SPACE}/kv/vault/secrets/`]: [`${KV}get`] }, 30 * DAY_MS);
     for (const bytes of [first, signedMessage]) {
-      expect(expiryOf(bytes)).toBeGreaterThanOrEqual(before + 7 * DAY_MS - 1000);
-      expect(expiryOf(bytes)).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
+      expect(expiryOf(bytes)).toBeGreaterThan(before);
+      expect(expiryOf(bytes)).toBeLessThanOrEqual(Date.now() + HOUR_MS);
     }
   });
 });
@@ -272,8 +288,13 @@ describe('no sequence of previews signs a read of secrets for more than 7 days',
       const before = Date.now();
       const { signedMessage, previews } = await signSequence(raw, 30 * DAY_MS, sequence);
       for (const bytes of [signedMessage, ...previews.map((preview) => preview.signedMessage)]) {
-        expect(expiryOf(bytes)).toBeGreaterThanOrEqual(before + 7 * DAY_MS - 1000);
-        expect(expiryOf(bytes)).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
+        if (sequence.ownerPicks === undefined && siweBroadOnceTier(siweFor(raw, 30 * DAY_MS), address)) {
+          expect(expiryOf(bytes)).toBeGreaterThan(before);
+          expect(expiryOf(bytes)).toBeLessThanOrEqual(Date.now() + HOUR_MS);
+        } else {
+          expect(expiryOf(bytes)).toBeGreaterThanOrEqual(before + 7 * DAY_MS - 1000);
+          expect(expiryOf(bytes)).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
+        }
       }
     });
   }
@@ -282,25 +303,30 @@ describe('no sequence of previews signs a read of secrets for more than 7 days',
 describe('a selection of a request that reads the vault and the whole space', () => {
   const both = { [`${SPACE}/kv`]: [`${KV}get`, `${KV}list`], [`${SPACE}/kv/vault/secrets/`]: [`${KV}get`] };
 
-  test('only the vault read: signed for 7 days', async () => {
+  test('only the vault read: signed for one hour', async () => {
     const before = Date.now();
     const { signedMessage } = await signSequence(both, 30 * DAY_MS, { extraPreviews: 1, only: 'vault/secrets' });
-    expect(expiryOf(signedMessage)).toBeGreaterThanOrEqual(before + 7 * DAY_MS - 1000);
-    expect(expiryOf(signedMessage)).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
+    expect(expiryOf(signedMessage)).toBeGreaterThan(before);
+    expect(expiryOf(signedMessage)).toBeLessThanOrEqual(Date.now() + HOUR_MS);
   });
 
-  test('every action: signed for 7 days', async () => {
+  test('every action: signed for one hour', async () => {
     const before = Date.now();
     const { signedMessage } = await signSequence(both, 30 * DAY_MS, { extraPreviews: 1 });
-    expect(expiryOf(signedMessage)).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
-    expect(expiryOf(signedMessage)).toBeGreaterThanOrEqual(before + 7 * DAY_MS - 1000);
+    expect(expiryOf(signedMessage)).toBeGreaterThan(before);
+    expect(expiryOf(signedMessage)).toBeLessThanOrEqual(Date.now() + HOUR_MS);
   });
 });
 
 describe('a whole network decrypt, with the network cap off (the default)', () => {
-  test.each(SEQUENCES)('%s: signed for the 30 days asked', async (_name, sequence) => {
+  test.each(SEQUENCES)('%s: signed for one hour without an owner pick, the pick otherwise', async (_name, sequence) => {
     const before = Date.now();
     const { signedMessage } = await signSequence({ [urn('')]: [`${E}decrypt`] }, 30 * DAY_MS, sequence);
-    expect(expiryOf(signedMessage)).toBeGreaterThan(before + 29 * DAY_MS);
+    if (sequence.ownerPicks === undefined) {
+      expect(expiryOf(signedMessage)).toBeGreaterThan(before);
+      expect(expiryOf(signedMessage)).toBeLessThanOrEqual(Date.now() + HOUR_MS);
+    } else {
+      expect(expiryOf(signedMessage)).toBeGreaterThan(before + 29 * DAY_MS);
+    }
   });
 });

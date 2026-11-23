@@ -9,6 +9,7 @@ import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { verifyMessage } from 'ethers';
+import { siweBroadOnceTier } from '../services/approval-expiry';
 import { mockModules, replaceModules } from './mock-module';
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
@@ -159,6 +160,21 @@ function expectSevenDays(bytes: string, before: number) {
   expect(expiry).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
 }
 
+/**
+ * The signed expiry is one hour for a request in the one-hour tier (the classifier `siweBroadOnceTier` the
+ * preview and sign routes run on `raw`), else 7 days from the preview, within the test's own run.
+ */
+function expectTieredSecretLifetime(bytes: string, before: number, raw: Record<string, string[]>) {
+  const expiry = expiryOf(bytes);
+  if (siweBroadOnceTier(siweFor(raw, 30 * DAY_MS), address)) {
+    expect(expiry).toBeGreaterThan(before);
+    expect(expiry).toBeLessThanOrEqual(Date.now() + 60 * 60 * 1000);
+    return;
+  }
+  expect(expiry).toBeGreaterThanOrEqual(before + 7 * DAY_MS - 1000);
+  expect(expiry).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
+}
+
 const SECRET_SHAPES: Array<[string, Record<string, string[]>]> = [
   ["decrypt on one secret's key", { [urn('/secrets/openai_api_key')]: [`${E}decrypt`] }],
   ['key.create on a scoped secret key', { [urn('/secrets/scoped/work/api_key')]: [`${E}key.create`] }],
@@ -166,9 +182,9 @@ const SECRET_SHAPES: Array<[string, Record<string, string[]>]> = [
 ];
 
 describe('the frame holds a grant on secret keys to 7 days', () => {
-  test.each(SECRET_SHAPES)("%s: the app's 30 days are signed as 7, for an app that did not opt in to a changed expiry", async (_name, raw) => {
+  test.each(SECRET_SHAPES)("%s: the app's 30 days are signed as one hour in the one-hour tier, 7 days for one secret, for an app that did not opt in to a changed expiry", async (_name, raw) => {
     const before = Date.now();
-    expectSevenDays(await approve(raw, 30 * DAY_MS), before);
+    expectTieredSecretLifetime(await approve(raw, 30 * DAY_MS), before, raw);
   });
 
   test.each(SECRET_SHAPES)("%s: the owner's 30 days are signed as 7", async (_name, raw) => {
@@ -189,25 +205,30 @@ describe('the frame holds a grant on secret keys to 7 days', () => {
     expect(expiryOf(bytes)).toBeLessThan(before + 4 * DAY_MS);
   });
 
-  test('a grant without secret keys keeps its 30 days', async () => {
+  test('a grant outside the secrets prefixes and in the one-hour tier is signed for one hour', async () => {
     const before = Date.now();
     const bytes = await approve({ [urn('/qa/')]: [`${E}decrypt`] }, 30 * DAY_MS);
-    expect(expiryOf(bytes)).toBeGreaterThan(before + 29 * DAY_MS);
+    expect(expiryOf(bytes)).toBeGreaterThan(before);
+    expect(expiryOf(bytes)).toBeLessThanOrEqual(Date.now() + 60 * 60 * 1000);
   });
 });
 
 describe('a whole network decrypt follows OPENKEY_NETWORK_DECRYPT_CAP', () => {
   const network = { [urn('')]: [`${E}decrypt`] };
 
-  test('off (the default): the 30 days are signed as asked', async () => {
+  test('off (the default): the 30 days are signed as one hour, the one-hour start of a grant on all encrypted data', async () => {
     const before = Date.now();
-    expect(expiryOf(await approve(network, 30 * DAY_MS))).toBeGreaterThan(before + 29 * DAY_MS);
+    const expiry = expiryOf(await approve(network, 30 * DAY_MS));
+    expect(expiry).toBeGreaterThan(before);
+    expect(expiry).toBeLessThanOrEqual(Date.now() + 60 * 60 * 1000);
   });
 
-  test('enabled: the 30 days are signed as 7', async () => {
+  test('enabled: the 30 days are signed as one hour, under the cap', async () => {
     process.env.OPENKEY_NETWORK_DECRYPT_CAP = 'enabled';
     const before = Date.now();
-    expectSevenDays(await approve(network, 30 * DAY_MS), before);
+    const expiry = expiryOf(await approve(network, 30 * DAY_MS));
+    expect(expiry).toBeGreaterThan(before);
+    expect(expiry).toBeLessThanOrEqual(Date.now() + 60 * 60 * 1000);
   });
 });
 
@@ -220,8 +241,8 @@ const NETWORK_REFUSED = {
   code: 'secret_lifetime_exceeded',
 };
 
-describe('/authorize-sign refuses a preview that outlives the cap', () => {
-  test('a whole network decrypt previewed for 30 days, then the network cap turned on: refused, nothing signed', async () => {
+describe('/authorize-sign signs the preview the cap allows', () => {
+  test('a whole network decrypt previewed for one hour, then the network cap turned on: signed for that hour', async () => {
     const prepared = await post('/authorize-sign-prepare', {
       keyId: keyRecord.id, siwe: siweFor({ [urn('')]: [`${E}decrypt`] }, 30 * DAY_MS), jwk, host: HOST, requestOrigin: ORIGIN, reportedOrigin: ORIGIN,
     });
@@ -231,12 +252,16 @@ describe('/authorize-sign refuses a preview that outlives the cap', () => {
       authorizationContextToken, selectedActionIds: allowedActionIds, elevatedDecision: { allowed: elevatedIds(allowedActionIds) },
     });
     expect(preview.status).toBe(200);
-    const { previewApprovalToken } = await preview.json() as { previewApprovalToken: string };
+    const { previewApprovalToken, signedMessage: previewed } = await preview.json() as { previewApprovalToken: string; signedMessage: string };
+    const previewExpiry = expiryOf(previewed);
+    expect(previewExpiry).toBeGreaterThan(Date.now());
+    expect(previewExpiry).toBeLessThanOrEqual(Date.now() + 60 * 60 * 1000);
     process.env.OPENKEY_NETWORK_DECRYPT_CAP = 'enabled';
     const res = await post('/authorize-sign', { authorizationContextToken, previewApprovalToken, selectedActionIds: allowedActionIds, protocolVersion: 1 });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual(NETWORK_REFUSED);
-    expect(signed).toEqual([]);
+    expect(res.status, await res.clone().text()).toBe(200);
+    const result = await res.json() as { signedMessage: string; signature: string };
+    expect(result.signedMessage).toBe(previewed);
+    expect(verifyMessage(result.signedMessage, result.signature)).toBe(address);
   });
 });
 
@@ -291,9 +316,9 @@ describe('every shape of a grant on all secrets', () => {
     expect(elevatedIds(allowedActionIds)).toEqual([expect.stringContaining(Object.keys(raw)[0]!)]);
   });
 
-  test.each(ALL_SECRETS_SHAPES)("%s: the frame signs the app's 30 days as 7", async (_name, raw) => {
+  test.each(ALL_SECRETS_SHAPES)("%s: the frame signs the app's 30 days as one hour in the one-hour tier, 7 days for one secret", async (_name, raw) => {
     const before = Date.now();
-    expectSevenDays(await approve(raw, 30 * DAY_MS), before);
+    expectTieredSecretLifetime(await approve(raw, 30 * DAY_MS), before, raw);
   });
 
   test.each(ALL_SECRETS_SHAPES)('%s: POST /sign refuses 30 days, nothing signed', async (_name, raw) => {
@@ -314,9 +339,9 @@ const KV_VAULT_SHAPES: Array<[string, Record<string, string[]>]> = [
 ];
 
 describe('every KV read of the secrets vault', () => {
-  test.each(KV_VAULT_SHAPES)("%s: the frame signs the app's 30 days as 7", async (_name, raw) => {
+  test.each(KV_VAULT_SHAPES)("%s: the frame signs the app's 30 days as one hour in the one-hour tier, 7 days for one secret", async (_name, raw) => {
     const before = Date.now();
-    expectSevenDays(await approve(raw, 30 * DAY_MS), before);
+    expectTieredSecretLifetime(await approve(raw, 30 * DAY_MS), before, raw);
   });
 
   test.each(KV_VAULT_SHAPES)("%s: the frame signs the owner's 30 days as 7", async (_name, raw) => {
@@ -347,9 +372,9 @@ const SECRETS_SERVICE_SHAPES: Array<[string, Record<string, string[]>]> = [
 ];
 
 describe('every action of the secrets service', () => {
-  test.each(SECRETS_SERVICE_SHAPES)("%s: the frame signs the app's 30 days as 7", async (_name, raw) => {
+  test.each(SECRETS_SERVICE_SHAPES)("%s: the frame signs the app's 30 days as one hour in the one-hour tier, 7 days for one secret", async (_name, raw) => {
     const before = Date.now();
-    expectSevenDays(await approve(raw, 30 * DAY_MS), before);
+    expectTieredSecretLifetime(await approve(raw, 30 * DAY_MS), before, raw);
   });
 
   test.each(SECRETS_SERVICE_SHAPES)('%s: POST /sign refuses 30 days, nothing signed', async (_name, raw) => {

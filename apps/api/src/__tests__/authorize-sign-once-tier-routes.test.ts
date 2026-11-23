@@ -4,7 +4,7 @@
 // Grants outside the tier keep the app's own time and the `expiry_not_changeable` refusal.
 
 import './tc1777-test-env';
-import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
@@ -12,6 +12,7 @@ import { verifyMessage } from 'ethers';
 import { mockModules, replaceModules } from './mock-module';
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
+import { SiweMessage } from 'siwe';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const address = privateKeyToAccount(privateKey).address;
@@ -23,11 +24,16 @@ const SPACE = `tinycloud:pkh:eip155:1:${address}:default`;
 const HOST = 'https://node.tinycloud.xyz';
 const urn = (rest: string) => `urn:tinycloud:encryption:${OWNER}:default${rest}`;
 const E = 'tinycloud.encryption/';
+
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
+const NODE = 'http://127.0.0.1:8125';
+const NODE_DID = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
+const RENEWER_DID = 'did:key:z6MkiTBz1ymuepAQ4HEHYSF1H8quG5GLVVQR3djdX3mDooWp';
+const RENEWER_PUBLIC_KEY = 'O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik';
 
-let signed: string[] = [];
 const unsealMock = mock(async () => privateKey);
+let signed: string[] = [];
 const keyRecord = { id: 'key_1', userId: user.id, address, keyType: 'MANAGED', archivedAt: null, sealedBlob: 'sealed-blob', sealingContext: null };
 const prisma = {
   ethereumKey: {
@@ -42,6 +48,8 @@ const prisma = {
   },
   user: { findUnique: mock(async () => ({ autoSignEnabled: true })) },
   tinyCloudBootstrapState: {},
+  get renewalLease(): never { throw new Error('a sign-in touched the renewal lease table'); },
+  $transaction: () => { throw new Error('a sign-in opened a database transaction'); },
 };
 
 replaceModules({
@@ -74,6 +82,10 @@ await mockModules({
   '@tinycloud/sdk-core': () => ({ activateSessionWithHost: mock(async () => ({ success: true })) }),
   '../services/manifest-origin-fetch': () => ({ fetchAndBindWellKnownManifest: mock(async () => ({ ok: false, reason: 'not configured' })) }),
 });
+const reserveRenewalLease = mock(async (): Promise<void> => undefined);
+await mockModules({
+  '../services/renewal-lease-revocation': () => ({ reserveRenewalLease }),
+});
 
 let router: typeof delegateRouter;
 let resetContexts: typeof _resetAuthorizationContextStoreForTests;
@@ -95,14 +107,33 @@ beforeAll(async () => {
   ));
 });
 
+const realFetch = globalThis.fetch;
+const savedLeasesFlag = process.env.OPENKEY_RENEWAL_LEASES;
+afterAll(() => {
+  globalThis.fetch = realFetch;
+  if (savedLeasesFlag === undefined) delete process.env.OPENKEY_RENEWAL_LEASES;
+  else process.env.OPENKEY_RENEWAL_LEASES = savedLeasesFlag;
+});
+
 beforeEach(() => {
   signed = [];
   unsealMock.mockClear();
+  reserveRenewalLease.mockClear();
   resetContexts?.();
+  process.env.OPENKEY_RENEWAL_LEASES = 'enabled';
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.origin !== NODE) return realFetch(input, init);
+    if (url.pathname === '/info') return Response.json({ nodeId: NODE_DID });
+    if (url.pathname === '/.well-known/tinycloud/node-keys') {
+      return Response.json({ nodeDid: NODE_DID, renewerDid: RENEWER_DID, renewerPublicKey: RENEWER_PUBLIC_KEY, renewerEpoch: 0 });
+    }
+    throw new Error(`unexpected node call ${init?.method ?? 'GET'} ${url.href}`);
+  }) as typeof fetch;
 });
 
-function siweFor(rawAbilities: Record<string, string[]>, lifetimeMs: number): string {
-  const now = new Date();
+function siweFor(rawAbilities: Record<string, string[]>, lifetimeMs: number, issuedAt?: Date): string {
+  const now = issuedAt ?? new Date();
   return prepareSession({
     address,
     chainId: 1,
@@ -124,21 +155,26 @@ const expiryOf = (siwe: string) => Date.parse(/^Expiration Time: (.+)$/m.exec(si
 const elevatedIds = (allowed: string[]) =>
   allowed.filter((id) => id.includes('urn:tinycloud:encryption:') && /\0(tinycloud\.)?encryption\/(decrypt|key\.create)$/.test(id));
 
-async function prepare(raw: Record<string, string[]>, lifetimeMs: number, opts: { expiryChangeable?: boolean } = {}) {
+type Prepared = { authorizationContextToken: string; allowedActionIds: string[]; siwe: string };
+
+async function prepare(raw: Record<string, string[]>, lifetimeMs: number, opts: { expiryChangeable?: boolean; host?: string; renewal?: unknown; issuedAt?: Date } = {}) {
+  const siwe = siweFor(raw, lifetimeMs, opts.issuedAt);
   const prepared = await post('/authorize-sign-prepare', {
-    keyId: keyRecord.id, siwe: siweFor(raw, lifetimeMs), jwk, host: HOST, requestOrigin: ORIGIN, reportedOrigin: ORIGIN,
+    keyId: keyRecord.id, siwe, jwk, host: opts.host ?? HOST, requestOrigin: ORIGIN, reportedOrigin: ORIGIN,
     ...(opts.expiryChangeable ? { expiryChangeable: true } : {}),
+    ...(opts.renewal === undefined ? {} : { renewal: opts.renewal }),
   });
   expect(prepared.status, await prepared.clone().text()).toBe(200);
-  return await prepared.json() as { authorizationContextToken: string; allowedActionIds: string[] };
+  return { ...(await prepared.json()) as { authorizationContextToken: string; allowedActionIds: string[] }, siwe };
 }
 
-async function preview(prepared: { authorizationContextToken: string; allowedActionIds: string[] }, ownerPicks?: string, selectedActionIds?: string[]) {
+async function preview(prepared: Prepared, ownerPicks?: string, selectedActionIds?: string[], renewal?: unknown) {
   const res = await post('/authorize-sign-preview', {
     authorizationContextToken: prepared.authorizationContextToken,
     selectedActionIds: selectedActionIds ?? prepared.allowedActionIds,
     elevatedDecision: { allowed: elevatedIds(prepared.allowedActionIds) },
     ...(ownerPicks === undefined ? {} : { expirationTime: ownerPicks }),
+    ...(renewal === undefined ? {} : { renewal }),
   });
   return { status: res.status, body: (await res.json()) as Record<string, any> };
 }
@@ -249,5 +285,48 @@ describe('grants outside the tier are unchanged', () => {
     const shown = await preview(prepared);
     expect(shown.status).toBe(200);
     expect(expiryOf(shown.body.signedMessage)).toBeGreaterThan(Date.now() + 6 * DAY_MS);
+  });
+});
+
+const CONFIRMED_LEASE = { choice: 'leased', leaseLifetimeSeconds: 90 * 86_400, sensitiveConfirmed: true };
+
+describe('a chosen renewal keeps the app\'s own time', () => {
+  // Standing access is an owner choice: with a lease chosen and no expiry picked the preview gets the app's
+  // own window, so `assertLeaseableGrant` holds it to 7 days and a longer ask is refused rather than signed short.
+  async function leasePrepare(raw: Record<string, string[]>, lifetimeMs: number) {
+    // Issued one minute ago so a capped window (now + 7 days, measured from issued-at) is over 7 days at
+    // every millisecond the preview could run.
+    const prepared = await prepare(raw, lifetimeMs, {
+      expiryChangeable: true, host: NODE, issuedAt: new Date(Date.now() - 60_000),
+      renewal: { version: 1, leaseLifetimeSeconds: 90 * 86_400 },
+    });
+    return prepared;
+  }
+
+  test.each([
+    ['decrypt on the secrets/ prefix', PREFIX_DECRYPT],
+    ['decrypt on the whole network', NETWORK_DECRYPT],
+  ])('%s: a confirmed lease on a 30-day request is refused, not signed for an hour', async (_name, raw) => {
+    const prepared = await leasePrepare(raw, 30 * DAY_MS);
+    const shown = await preview(prepared, undefined, undefined, CONFIRMED_LEASE);
+    expect(shown).toMatchObject({ status: 400, body: { code: 'renewal_refused' } });
+    expect(signed).toEqual([]);
+  });
+
+  test('a confirmed lease with a window of 7 days signs that window', async () => {
+    const prepared = await leasePrepare(PREFIX_DECRYPT, 30 * DAY_MS);
+    const issuedAt = Date.parse(new SiweMessage(prepared.siwe).issuedAt!);
+    const window = new Date(issuedAt + 7 * DAY_MS).toISOString();
+    const shown = await preview(prepared, window, undefined, CONFIRMED_LEASE);
+    expect(shown.status, JSON.stringify(shown.body)).toBe(200);
+    expect(expiryOf(shown.body.signedMessage)).toBe(Date.parse(window));
+    const res = await post('/authorize-sign', {
+      authorizationContextToken: prepared.authorizationContextToken,
+      previewApprovalToken: shown.body.previewApprovalToken,
+      selectedActionIds: prepared.allowedActionIds,
+      protocolVersion: 1,
+      renewal: CONFIRMED_LEASE,
+    });
+    expect(res.status, await res.clone().text()).toBe(200);
   });
 });

@@ -4153,8 +4153,9 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
 
   // A selection in the one-hour tier starts at one hour when the owner picked nothing (what the approval
   // screen's `onceDefaultExpiryMs` sends): the app asked for its own time but the tier defaults shorter.
-  // A pick stands, and an app that asked for an hour or less keeps it.
-  if (!ownerPickedExpiry && siweBroadOnceTier(preparedSignedMessage, bound.keyAddress)) {
+  // A pick stands, an app that asked for an hour or less keeps it, and a chosen renewal keeps the app's time:
+  // standing access is an owner choice and `assertLeaseableGrant` holds its window to 7 days.
+  if (!ownerPickedExpiry && renewalChoice?.choice !== 'leased' && siweBroadOnceTier(preparedSignedMessage, bound.keyAddress)) {
     const onceStartMs = Date.now() + 60 * 60 * 1000;
     if (Date.parse(immutable.expirationTime) > onceStartMs) {
       expirationOverride = new Date(onceStartMs).toISOString();

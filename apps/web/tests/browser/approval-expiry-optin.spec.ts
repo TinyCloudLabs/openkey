@@ -60,16 +60,24 @@ async function open(page: Page, request: Record<string, unknown>, message: strin
   return { frame, previews };
 }
 
-test('without the opt-in there is no expiry control and the preview asks for no expiry', async ({ page }) => {
+test('a request on all secrets or all encrypted data shows the control and asks for one hour even without the opt-in', async ({ page }) => {
+  const before = Date.now();
   const { frame, previews } = await open(page, {});
-  await expect(frame.locator('.expiry')).toHaveCount(0);
-  await expect.poll(() => previews.length).toBe(1);
-  expect(previews[0]).not.toHaveProperty('expirationTime');
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
+  await expect.poll(() => previews.length).toBeGreaterThan(0);
+  const asked = Date.parse(String(previews.at(-1)!.expirationTime));
+  expect(asked).toBeGreaterThanOrEqual(before + 60 * 60_000 - 1000);
+  expect(asked).toBeLessThanOrEqual(Date.now() + 60 * 60_000 + 1000);
 });
 
-test('an opt-in of anything but true shows no control', async ({ page }) => {
-  const { frame } = await open(page, { expiryChangeable: 'true' });
-  await expect(frame.locator('.expiry')).toHaveCount(0);
+test('an opt-in of anything but true still shows the control on that request', async ({ page }) => {
+  const before = Date.now();
+  const { frame, previews } = await open(page, { expiryChangeable: 'true' });
+  await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
+  await expect.poll(() => previews.length).toBeGreaterThan(0);
+  const asked = Date.parse(String(previews.at(-1)!.expirationTime));
+  expect(asked).toBeGreaterThanOrEqual(before + 60 * 60_000 - 1000);
+  expect(asked).toBeLessThanOrEqual(Date.now() + 60 * 60_000 + 1000);
 });
 
 test('with the opt-in the control shows, and a changed expiry is what the preview asks the server to sign', async ({ page }) => {
