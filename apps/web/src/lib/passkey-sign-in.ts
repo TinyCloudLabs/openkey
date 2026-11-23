@@ -158,7 +158,11 @@ export function startPasskeyAutofill(deps: AutofillDeps): Autofill {
   latest = handle;
   void (async () => {
     try {
-      if (await previous) return;
+      if (await previous) {
+        // The older request's sign-in is this page's sign-in; a stop of this request reports it.
+        adopted = stopped;
+        return;
+      }
       if (stopped || !(await deps.supported()) || stopped) return;
       const result = await deps.signIn({
         onVerify: () => {
