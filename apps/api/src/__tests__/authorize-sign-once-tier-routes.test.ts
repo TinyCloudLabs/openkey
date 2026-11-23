@@ -152,6 +152,8 @@ function post(path: string, body: unknown) {
 }
 
 const expiryOf = (siwe: string) => Date.parse(/^Expiration Time: (.+)$/m.exec(siwe)?.[1] ?? '');
+/** The signed length: Expiration Time minus Issued At (TC-3920). */
+const lengthOf = (siwe: string) => expiryOf(siwe) - Date.parse(/^Issued At: (.+)$/m.exec(siwe)?.[1] ?? '');
 const elevatedIds = (allowed: string[]) =>
   allowed.filter((id) => id.includes('urn:tinycloud:encryption:') && /\0(tinycloud\.)?encryption\/(decrypt|key\.create)$/.test(id));
 
@@ -222,7 +224,7 @@ describe('the one-hour tier defaults to one hour without an app opt-in', () => {
     ['decrypt on the whole network', NETWORK_DECRYPT],
   ])('%s: the owner chooses up to the 7-day cap without an app opt-in', async (_name, raw) => {
     const picked = new Date(Math.floor((Date.now() + 7 * DAY_MS) / 1000) * 1000).toISOString();
-    expect(expiryOf(await approve(raw, 7 * DAY_MS, { ownerPicks: picked }))).toBe(Date.parse(picked));
+    expect(lengthOf(await approve(raw, 7 * DAY_MS, { ownerPicks: picked }))).toBe(7 * DAY_MS);
   });
 
   test('an owner pick past the 7-day cap is signed as 7 days', async () => {
@@ -253,7 +255,7 @@ describe('the one-hour tier defaults to one hour without an app opt-in', () => {
 describe('the tier reads the app opt-in the same way', () => {
   test('expiryChangeable: true with a pick of 7 days signs 7 days', async () => {
     const picked = new Date(Math.floor((Date.now() + 7 * DAY_MS) / 1000) * 1000).toISOString();
-    expect(expiryOf(await approve(PREFIX_DECRYPT, 7 * DAY_MS, { expiryChangeable: true, ownerPicks: picked }))).toBe(Date.parse(picked));
+    expect(lengthOf(await approve(PREFIX_DECRYPT, 7 * DAY_MS, { expiryChangeable: true, ownerPicks: picked }))).toBe(7 * DAY_MS);
   });
 
   test('a pick of 30 days with the opt-in is signed as 7 days', async () => {

@@ -12,6 +12,7 @@
     MAX_LEASE_MS,
     SENSITIVE_RENEWAL_WINDOW_MS,
     accessLastsLine,
+    windowStartMs,
     defaultLeaseMs,
     formatDuration,
   } from "$lib/approval-expiry";
@@ -52,6 +53,8 @@
     chooser?: boolean;
     /** Who holds the access, as the line names them: an app, or the device of a device sign-in. */
     holder?: "app" | "device";
+    /** The request's Issued At: the access line counts its end day from here, as the signed Expiration Time is. */
+    issuedAt?: string | null;
   }
 
   let {
@@ -70,6 +73,7 @@
     lengthNote = null,
     chooser = true,
     holder = "app",
+    issuedAt = null,
   }: Props = $props();
 
   let confirming = $state(false);
@@ -77,7 +81,7 @@
   let checkbox = $state<HTMLInputElement | null>(null);
 
   const shownMs = $derived(chosenMs ?? requestedMs);
-  const accessLine = $derived(shownMs === null ? "" : accessLastsLine(renewal?.deviceSignIn ? "device" : holder, shownMs));
+  const accessLine = $derived(shownMs === null ? "" : accessLastsLine(renewal?.deviceSignIn ? "device" : holder, shownMs, windowStartMs(issuedAt)));
   const leaseMaxMs = $derived(renewal ? Math.min(renewal.maxLeaseMs, MAX_LEASE_MS) : MAX_LEASE_MS);
   const proposedLeaseMs = $derived(renewal ? defaultLeaseMs(leaseMaxMs) : 0);
   const ticked = $derived(renewal !== null && renewal.leaseMs !== null);

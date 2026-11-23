@@ -991,6 +991,7 @@
     {#if onExpiryChange && model.protocol === "tinycloud-siwe-recap" && !onceDefaultPending}
       <ApprovalExpiryControl
         requestedMs={requestedExpiry}
+        issuedAt={model.immutable?.issuedAt}
         chosenMs={expiryMs}
         maxMs={unsignedMaxMs}
         disabled={approving}
@@ -1005,7 +1006,7 @@
         permissionCount={summaryStatements.length}
       />
     {:else if !onExpiryChange && signedAsWrittenMs !== null}
-      <p class="summary-note" data-testid="approval-access-line">{accessLastsLine("app", signedAsWrittenMs)}</p>
+      <p class="summary-note" data-testid="approval-access-line">{accessLastsLine("app", signedAsWrittenMs, Date.parse(model.expiry ?? "") - signedAsWrittenMs)}</p>
     {/if}
 
     {#if hostFacts}

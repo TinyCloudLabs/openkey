@@ -2289,7 +2289,7 @@
           {#if siweMessage}
             <div class="flex flex-col gap-3">
               {#if fallbackAccessMs !== null}
-                <p class="text-sm text-surface-700" data-testid="approval-access-line">{accessLastsLine('app', fallbackAccessMs)}</p>
+                <p class="text-sm text-surface-700" data-testid="approval-access-line">{accessLastsLine('app', fallbackAccessMs, Date.parse(delegationExpiresAt) - fallbackAccessMs)}</p>
               {/if}
               <SiweMessage message={siweMessage} theme="light" hidePermissions={permissionOptions.length > 0} />
             </div>

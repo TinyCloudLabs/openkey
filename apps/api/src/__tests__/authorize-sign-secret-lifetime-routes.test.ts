@@ -125,6 +125,8 @@ function post(path: string, body: unknown) {
 }
 
 const expiryOf = (siwe: string) => Date.parse(/^Expiration Time: (.+)$/m.exec(siwe)?.[1] ?? '');
+/** The signed length: Expiration Time minus Issued At (TC-3920). */
+const lengthOf = (siwe: string) => expiryOf(siwe) - Date.parse(/^Issued At: (.+)$/m.exec(siwe)?.[1] ?? '');
 const elevatedIds = (allowed: string[]) =>
   allowed.filter((id) => id.includes('urn:tinycloud:encryption:') && /\0(tinycloud\.)?encryption\/(decrypt|key\.create)$/.test(id));
 
@@ -186,7 +188,7 @@ describe('the frame holds a grant on secret keys to 7 days', () => {
   test("the owner's 2 days stay 2 days", async () => {
     const ownerPicks = new Date(Math.floor((Date.now() + 2 * DAY_MS) / 1000) * 1000).toISOString();
     const bytes = await approve(SECRET_SHAPES[0]![1], 30 * DAY_MS, { expiryChangeable: true, ownerPicks });
-    expect(expiryOf(bytes)).toBe(Date.parse(ownerPicks));
+    expect(lengthOf(bytes)).toBe(2 * DAY_MS);
   });
 
   test("the app's 3 days stay 3 days", async () => {
