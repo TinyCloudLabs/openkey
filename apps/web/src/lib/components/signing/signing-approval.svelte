@@ -100,11 +100,13 @@
   import {
     ONCE_DEFAULT_EXPIRY_MS,
     accessLastsLine,
+    onceCautionLine,
     onceDefaultExpiryMs,
+    onceLongerChoice,
     remainingAccessMs,
     requestedExpiryMs,
   } from "$lib/approval-expiry";
-  import { isOnceTier, renewalNeedsSensitiveConfirm } from "$lib/renewal-default";
+  import { isOnceTier, onceReachOf, renewalNeedsSensitiveConfirm } from "$lib/renewal-default";
 
   interface Props {
     model: CapabilityReviewModel;
@@ -171,6 +173,11 @@
      * time.
      */
     onceExpiryDefault?: boolean;
+    /**
+     * Set by the popup and frame pages: the server limits an owner's pick on a one-time approval to 7 days, whatever
+     * the web cap flags say, so the one-time choice offers no more.
+     */
+    oncePickCapped?: boolean;
     /** The renewal checkbox (TC-2933); set only where the requester signed a renewal request. */
     renewal?: RenewalChoice | null;
     /**
@@ -233,6 +240,7 @@
     expiryMaxMs = null,
     shortenOnlyExpiry = null,
     onceExpiryDefault = false,
+    oncePickCapped = false,
     renewal = null,
     elevated = null,
     approveVisibility = null,
@@ -327,7 +335,8 @@
   const hint = $derived(oneSecretShown ? oneSecret!.hint : PROTOCOL_HINT[model.protocol]);
 
   // A signed request that can open all secrets or all encrypted data starts as a whole at one hour or less.
-  const onceTier = $derived(isOnceTier(shortenOnlyExpiry ? model.permissions : selectedGrants));
+  const onceGrants = $derived(shortenOnlyExpiry ? model.permissions : selectedGrants);
+  const onceTier = $derived(isOnceTier(onceGrants));
   const onceDefaultMs = $derived(
     onceExpiryDefault && onExpiryChange && model.protocol === "tinycloud-siwe-recap"
       ? onceDefaultExpiryMs(onceTier, shortenOnlyExpiry?.startMs ?? requestedExpiry)
@@ -358,16 +367,23 @@
   const onceDefaultPending = $derived(
     onceDefaultMs !== null && !ownerChoseExpiry && expiryMs === null && (shortenOnlyExpiry !== null || !onceDefaultSent),
   );
+  // The default starts once the tier holds and the owner has picked nothing. Leaving the tier (the broad access is
+  // removed) ends the owner's pick for it, so adding the access back starts at one hour again; a pick made after
+  // that is kept.
   $effect(() => {
-    if (approving || previewPending || !onExpiryChange || ownerChoseExpiry) return;
-    if (onceDefaultMs !== null) {
-      if (expiryMs === null && !onceDefaultSent) {
-        onceDefaultSent = true;
-        onExpiryChange(onceDefaultMs);
-      }
-    } else if (onceDefaultSent) {
+    if (approving || previewPending || !onExpiryChange) return;
+    if (onceDefaultMs === null) {
+      if (!onceDefaultSent) return;
       onceDefaultSent = false;
-      if (expiryMs === ONCE_DEFAULT_EXPIRY_MS) onExpiryChange(null);
+      const picked = ownerChoseExpiry;
+      ownerChoseExpiry = false;
+      if (picked ? expiryMs !== null : expiryMs === ONCE_DEFAULT_EXPIRY_MS) onExpiryChange(null);
+      return;
+    }
+    if (ownerChoseExpiry) return;
+    if (expiryMs === null && !onceDefaultSent) {
+      onceDefaultSent = true;
+      onExpiryChange(onceDefaultMs);
     }
   });
   // An app's longer time on secret keys starts at the 7 days the server allows (the one-hour start, where it applies,
@@ -384,13 +400,20 @@
     ownerChoseExpiry = true;
     onExpiryChange?.(ms);
   }
-  const onceDefaultShown = $derived(onceDefaultMs !== null && !ownerChoseExpiry && expiryMs === onceDefaultMs);
-  const signedOnceNote = $derived(
-    shortenOnlyExpiry && onceTier && renewal?.leaseMs == null &&
-    (expiryMs ?? shortenOnlyExpiry.startMs) <= ONCE_DEFAULT_EXPIRY_MS
-      ? shortenOnlyExpiry.onceNote
-      : null,
-  );
+  // The one-time choice: 1 hour, or what the app asked for. The longer option goes no higher than what the server
+  // allows this surface: a popup or frame limits every one-time pick to 7 days, a link or device follows the secret
+  // cap, and a signed request follows the start it was capped to (its `askedMs` is the app's own ask).
+  const onceCapMs = $derived(secretCapMs ?? (oncePickCapped ? SECRET_GRANT_MAX_SECONDS * 1000 : null));
+  const onceChoice = $derived.by(() => {
+    if (!onceExpiryDefault || !onExpiryChange || model.protocol !== "tinycloud-siwe-recap" || !onceTier) return null;
+    const reach = onceReachOf(onceGrants);
+    if (reach === null) return null;
+    const asked = shortenOnlyExpiry ? shortenOnlyExpiry.askedMs : requestedExpiry;
+    const cap = shortenOnlyExpiry
+      ? (shortenOnlyExpiry.startMs < shortenOnlyExpiry.askedMs ? shortenOnlyExpiry.startMs : null)
+      : onceCapMs;
+    return { longer: onceLongerChoice(asked, cap), caution: onceCautionLine(reach) };
+  });
   // A signed request for a secret's own key says where it starts and the most it can be.
   const signedLengthNote = $derived(
     shortenOnlyExpiry && !onceTier && renewal?.leaseMs == null && expiryFoldMaxMs !== null &&
@@ -436,9 +459,6 @@
   // The id on a matched manifest comes from that manifest; an id the app sent beside a matched manifest that names
   // none is the app's own word, which the manifest neither confirms nor contradicts.
   const manifestMatched = $derived(model.metadataTrust.status === "origin-bound" || model.metadataTrust.status === "verified");
-  // The note under the expiry line names who asked as the screen does: the verified origin, or "This request" where
-  // nothing identifies the requester (a link, a device sign-in, an approval link).
-  const onceNoteSite = $derived(originHost ?? "This request");
   // Beside the renewal box a fixed end date is wrong (ticked) or repeats the box (unticked), so it is not shown there.
   const appKeyAccessLine = $derived(
     !renewal && selectedGrants.some(grantIsAppKeyDecrypt) ? appKeyAccessStatement(model.expiry, formatLocalAccessEnd) : null,
@@ -1051,8 +1071,7 @@
         maxMs={unsignedMaxMs}
         disabled={approving}
         onChange={chooseExpiry}
-        onceSite={onceDefaultShown && !shortenOnlyExpiry ? onceNoteSite : null}
-        onceNote={signedOnceNote}
+        {onceChoice}
         lengthNote={signedLengthNote}
         {renewal}
         sensitive={renewalSensitive}
@@ -1278,6 +1297,7 @@
           maxMs={expiryFoldMaxMs}
           limitNote={shortenOnlyExpiry?.limitNote}
           disabled={approving}
+          explicitAsked={onceDefaultMs !== null}
           onChange={chooseExpiry}
           {renewal}
         />

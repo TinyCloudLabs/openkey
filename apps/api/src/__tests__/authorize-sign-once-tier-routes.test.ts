@@ -265,6 +265,34 @@ describe('the tier reads the app opt-in the same way', () => {
   });
 });
 
+// The one-time length choice on the approval screen (TC-4156) sends an explicit length for every option. These are the
+// lengths it sends, and the length each one is signed with; a request with no length at all is signed as one hour.
+describe('the one-time choice signs exactly the length it sends', () => {
+  const savedNetworkCap = process.env.OPENKEY_NETWORK_DECRYPT_CAP;
+  afterEach(() => {
+    if (savedNetworkCap === undefined) delete process.env.OPENKEY_NETWORK_DECRYPT_CAP;
+    else process.env.OPENKEY_NETWORK_DECRYPT_CAP = savedNetworkCap;
+  });
+
+  test.each([
+    ['the 1 hour option', NETWORK_DECRYPT, 7, HOUR_MS / DAY_MS],
+    ['the asked length, 3 days, within the cap', NETWORK_DECRYPT, 3, 3],
+    ['the asked length, exactly the 7-day cap', NETWORK_DECRYPT, 7, 7],
+    ['the longest allowed when the app asked for 30 days', NETWORK_DECRYPT, 30, 7],
+    ['the longest allowed on the secrets/ prefix', PREFIX_DECRYPT, 30, 7],
+  ] as const)('%s', async (_name, raw, askedDays, pickDays) => {
+    delete process.env.OPENKEY_NETWORK_DECRYPT_CAP;
+    const picked = new Date(Math.floor((Date.now() + pickDays * DAY_MS) / 1000) * 1000).toISOString();
+    const signedBytes = await approve(raw, askedDays * DAY_MS, { ownerPicks: picked });
+    expect(expiryOf(signedBytes)).toBe(Date.parse(picked));
+  });
+
+  test('a preview with no length is signed as one hour, not as the 3 days the app asked for', async () => {
+    const before = Date.now();
+    expectAboutOneHour(await approve(NETWORK_DECRYPT, 3 * DAY_MS), before);
+  });
+});
+
 describe('an owner pick on the broad tier is limited to seven days', () => {
   const outsideAppPrefix = { [urn('/qa/')]: [`${E}decrypt`] };
 

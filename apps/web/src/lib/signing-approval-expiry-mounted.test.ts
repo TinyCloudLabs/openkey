@@ -427,13 +427,19 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
     flushSync();
     return { target, calls, state, cleanup: () => { unmount(app); target.remove(); } };
   }
-  const note = (t: HTMLElement) => t.querySelector('[data-testid="approval-expiry-once-note"]');
+  const choice = (t: HTMLElement) => t.querySelector('[data-testid="approval-expiry-once-choice"]');
+  const caution = (t: HTMLElement) => t.querySelector('[data-testid="approval-expiry-once-caution"]');
+  const radios = (t: HTMLElement) => [...t.querySelectorAll<HTMLInputElement>('[data-testid="approval-expiry-once-choice"] input[type="radio"]')];
+  const radioLabels = (t: HTMLElement) => radios(t).map((radio) => radio.closest('label')?.textContent?.replace(/\s+/g, ' ').trim());
+  const checkedLabel = (t: HTMLElement) => radioLabels(t)[radios(t).findIndex((radio) => radio.checked)];
+  const cautionText = (t: HTMLElement) => caution(t)?.textContent?.replace(/\s+/g, ' ').trim() ?? null;
 
   test('a secret or decrypt request that asks for 7 days starts at one hour, and the line says so', () => {
     const { target, calls, cleanup } = mounted(modelOf([decrypt]));
     expect(calls).toEqual([H]);
     expect(line(target)).toContain('1 hour');
-    expect(note(target)).not.toBeNull();
+    expect(choice(target)).not.toBeNull();
+    expect(checkedLabel(target)).toBe('1 hour');
     cleanup();
   });
 
@@ -442,7 +448,8 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
       const { target, calls, cleanup } = mounted(modelOf([narrow]));
       expect(calls).toEqual([]);
       expect(line(target)).toContain('7 days');
-      expect(note(target)).toBeNull();
+      expect(choice(target)).toBeNull();
+      expect(caution(target)).toBeNull();
       cleanup();
     }
   });
@@ -451,7 +458,8 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
     const { target, calls, cleanup } = mounted(modelOf([decrypt], SOON));
     expect(calls).toEqual([]);
     expect(line(target)).toContain('30 minutes');
-    expect(note(target)).toBeNull();
+    expect(choice(target)).toBeNull();
+    expect(cautionText(target)).toBe('This access can open all your encrypted data.');
     cleanup();
   });
 
@@ -459,7 +467,8 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
     const { target, calls, cleanup } = mounted(modelOf([kvGet]));
     expect(calls).toEqual([]);
     expect(line(target)).toContain('7 days');
-    expect(note(target)).toBeNull();
+    expect(choice(target)).toBeNull();
+    expect(caution(target)).toBeNull();
     cleanup();
   });
 
@@ -477,7 +486,8 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
     flushSync();
     expect(calls).toEqual([H, 24 * H]);
     expect(line(target)).toContain('1 day');
-    expect(note(target)).toBeNull();
+    expect(choice(target)).toBeNull();
+    expect(cautionText(target)).toBe('This access can open all your encrypted data.');
     cleanup();
   });
 
@@ -486,9 +496,9 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
     open(target);
     preset(target, '7 days').click();
     flushSync();
-    expect(calls).toEqual([H, null]);
+    expect(calls).toEqual([H, 7 * D]);
     expect(line(target)).toContain('7 days');
-    expect(note(target)).toBeNull();
+    expect(checkedLabel(target)).toBe('7 days (what the app asked)');
     cleanup();
   });
 
@@ -513,21 +523,17 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
     previewing.cleanup();
   });
 
-  const noteText = (t: HTMLElement) => note(t)?.textContent?.replace(/\s+/g, ' ').trim() ?? null;
   const approveButton = (t: HTMLElement) => t.querySelector<HTMLButtonElement>('button.approve');
 
-  test('the note names the verified site, what it asked for and the hour, and where the fold is', () => {
+  test('the choice reads How long, offers 1 hour and what the app asked for, and the caution describes it', () => {
     const { target, cleanup } = mounted(modelOf([decrypt]));
-    expect(noteText(target)).toBe(
-      'listen.tinycloud.xyz asked for 7 days. Access that can open all your secrets or all your encrypted data starts at 1 hour. You can choose longer under How long it lasts.',
-    );
-    cleanup();
-  });
-
-  test('on a link, where nothing verifies who asked, the note says "This request"', () => {
-    const model = modelOf([decrypt]);
-    const { target, cleanup } = mounted({ ...model, requester: { ...model.requester, verifiedOrigin: null } });
-    expect(noteText(target)?.startsWith('This request asked for 7 days.')).toBe(true);
+    const group = choice(target)!;
+    expect(group.tagName).toBe('FIELDSET');
+    expect(group.querySelector('legend')?.textContent).toBe('How long');
+    expect(radioLabels(target)).toEqual(['1 hour', '7 days (what the app asked)']);
+    expect(new Set(radios(target).map((radio) => radio.name)).size).toBe(1);
+    expect(group.getAttribute('aria-describedby')).toBe(caution(target)!.id);
+    expect(cautionText(target)).toBe('This access can open all your encrypted data.');
     cleanup();
   });
 
@@ -545,6 +551,142 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
   test('a request that is not one-time shows its line at once', () => {
     const { target, cleanup } = mounted(modelOf([kvGet]), { previewPending: true });
     expect(target.querySelector('.expiry')).not.toBeNull();
+    cleanup();
+  });
+
+  // TC-4156: the choice sends an explicit length, never null (null on a popup or frame is "no pick", which the server
+  // starts at one hour). Each click is what the page puts into the preview's expirationTime.
+  const ASKED_30_DAYS = '2026-08-30T00:00:00.000Z';
+  const ONE_HOUR = '2026-07-31T01:00:00.000Z';
+
+  test('picking what the app asked for sends that length, and picking 1 hour again sends 1 hour, keeping the choice', () => {
+    const { target, calls, cleanup } = mounted(modelOf([decrypt]));
+    radios(target)[1]!.click();
+    flushSync();
+    expect(calls).toEqual([H, 7 * D]);
+    expect(line(target)).toContain('7 days');
+    expect(checkedLabel(target)).toBe('7 days (what the app asked)');
+    radios(target)[0]!.click();
+    flushSync();
+    expect(calls).toEqual([H, 7 * D, H]);
+    expect(checkedLabel(target)).toBe('1 hour');
+    expect(cautionText(target)).toBe('This access can open all your encrypted data.');
+    cleanup();
+  });
+
+  test('the longer length is not checked or sent until the owner picks it', () => {
+    const { target, calls, cleanup } = mounted(modelOf([decrypt]));
+    expect(radios(target).map((radio) => radio.checked)).toEqual([true, false]);
+    expect(calls).toEqual([H]);
+    cleanup();
+  });
+
+  test('on a popup or frame an ask over 7 days reads "7 days (the longest allowed)" and sends 7 days', () => {
+    const { target, calls, cleanup } = mounted(modelOf([decrypt], ASKED_30_DAYS), { oncePickCapped: true });
+    expect(radioLabels(target)).toEqual(['1 hour', '7 days (the longest allowed)']);
+    radios(target)[1]!.click();
+    flushSync();
+    expect(calls).toEqual([H, 7 * D]);
+    cleanup();
+  });
+
+  test('an ask of exactly 7 days on a popup or frame reads as what the app asked', () => {
+    const { target, cleanup } = mounted(modelOf([decrypt]), { oncePickCapped: true });
+    expect(radioLabels(target)).toEqual(['1 hour', '7 days (what the app asked)']);
+    cleanup();
+  });
+
+  test('where no cap applies an ask over 7 days is offered as asked, never as the longest allowed', () => {
+    const { target, calls, cleanup } = mounted(modelOf([decrypt], ASKED_30_DAYS));
+    expect(radioLabels(target)).toEqual(['1 hour', '30 days (what the app asked)']);
+    radios(target)[1]!.click();
+    flushSync();
+    expect(calls).toEqual([H, 30 * D]);
+    cleanup();
+  });
+
+  test('an ask of exactly 1 hour shows the caution only and sends nothing', () => {
+    const { target, calls, cleanup } = mounted(modelOf([decrypt], ONE_HOUR));
+    expect(choice(target)).toBeNull();
+    expect(calls).toEqual([]);
+    expect(cautionText(target)).toBe('This access can open all your encrypted data.');
+    cleanup();
+  });
+
+  test('a fold pick that equals no option hides the choice and keeps the caution; one that equals an option checks it', () => {
+    const { target, cleanup } = mounted(modelOf([decrypt]));
+    open(target);
+    preset(target, '24 hours').click();
+    flushSync();
+    expect(choice(target)).toBeNull();
+    expect(cautionText(target)).toBe('This access can open all your encrypted data.');
+    preset(target, '1 hour').click();
+    flushSync();
+    expect(checkedLabel(target)).toBe('1 hour');
+    cleanup();
+  });
+
+  test('the radios are disabled while approving', () => {
+    const { target, cleanup } = mounted(modelOf([decrypt]), { approving: true });
+    expect(radios(target).every((radio) => radio.disabled)).toBe(true);
+    cleanup();
+  });
+
+  test('ticking renewal hides the choice and keeps the caution', () => {
+    const renewal = { leaseMs: 90 * D, maxLeaseMs: 365 * D, onChange() {} };
+    const { target, cleanup } = mounted(modelOf([decrypt]), { renewal });
+    expect(choice(target)).toBeNull();
+    expect(cautionText(target)).toBe('This access can open all your encrypted data.');
+    cleanup();
+  });
+
+  test('removing the broad access and adding it back starts at 1 hour again, and a pick made after that is kept', () => {
+    const m = modelOf([decrypt, kvGet]);
+    const { target, calls, state, cleanup } = mounted(m);
+    radios(target)[1]!.click();
+    flushSync();
+    expect(calls).toEqual([H, 7 * D]);
+    const kvIds = new Set(m.permissions.filter((grant) => grant.service === 'tinycloud.kv').flatMap((grant) => grant.actions.map((action) => action.id)));
+    const everyId = state.get('selection') as Set<string>;
+    state.set('selection', kvIds);
+    flushSync();
+    expect(calls).toEqual([H, 7 * D, null]);
+    expect(choice(target)).toBeNull();
+    state.set('selection', everyId);
+    flushSync();
+    expect(calls).toEqual([H, 7 * D, null, H]);
+    expect(checkedLabel(target)).toBe('1 hour');
+    radios(target)[1]!.click();
+    flushSync();
+    expect(calls).toEqual([H, 7 * D, null, H, 7 * D]);
+    expect(checkedLabel(target)).toBe('7 days (what the app asked)');
+    cleanup();
+  });
+
+  // A signed approval request (/a/<id>): the start is the ask cut to the 7-day limit, and the label says "the longest
+  // allowed" only where the limit cut it.
+  const signed = (startMs: number, askedMs: number) => ({
+    shortenOnlyExpiry: {
+      startMs,
+      askedMs,
+      limitNote: () => '',
+      lengthNote: () => '',
+    },
+  });
+
+  test('a signed request the limit cut to 7 days reads "7 days (the longest allowed)" and sends 7 days', () => {
+    const { target, calls, cleanup } = mounted(modelOf([decrypt]), signed(7 * D, 30 * D));
+    expect(radioLabels(target)).toEqual(['1 hour', '7 days (the longest allowed)']);
+    radios(target)[1]!.click();
+    flushSync();
+    expect(calls).toEqual([H, 7 * D]);
+    cleanup();
+  });
+
+  test('a signed request the limit did not cut reads what the app asked', () => {
+    const { target, calls, cleanup } = mounted(modelOf([decrypt]), signed(3 * D, 3 * D));
+    expect(radioLabels(target)).toEqual(['1 hour', '3 days (what the app asked)']);
+    expect(calls).toEqual([H]);
     cleanup();
   });
 });

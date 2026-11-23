@@ -2,7 +2,7 @@
 // parsing and showing a duration, turning the chosen one into the instant the
 // server writes into the signed message, and the renewal lease choices.
 
-import { parseSiweFields } from '@openkey/capability-review';
+import { parseSiweFields, type OnceReach } from '@openkey/capability-review';
 
 const S = 1000;
 const M = 60 * S;
@@ -67,6 +67,32 @@ export const ONCE_DEFAULT_EXPIRY_MS = H;
  */
 export function onceDefaultExpiryMs(onceTier: boolean, requestedMs: number | null): number | null {
   return onceTier && requestedMs !== null && requestedMs > ONCE_DEFAULT_EXPIRY_MS ? ONCE_DEFAULT_EXPIRY_MS : null;
+}
+
+/** The longer length the one-time choice offers next to 1 hour, and how its label says where the length comes from. */
+export interface OnceLongerChoice {
+  ms: number;
+  label: string;
+}
+
+/**
+ * The second option of the one-time choice (the first is always 1 hour): what the app asked for, or the longest the
+ * surface allows when that is shorter ("7 days (the longest allowed)"). `capMs` is the limit the surface's server
+ * puts on this pick, null where it puts none. Null when the app asked for an hour or less or for nothing.
+ */
+export function onceLongerChoice(askedMs: number | null, capMs: number | null): OnceLongerChoice | null {
+  if (askedMs === null || askedMs <= ONCE_DEFAULT_EXPIRY_MS) return null;
+  const ms = capMs !== null && askedMs > capMs ? capMs : askedMs;
+  const clamped = ms !== askedMs;
+  if (ms <= ONCE_DEFAULT_EXPIRY_MS) return null;
+  return { ms, label: `${formatDuration(ms)} (${clamped ? 'the longest allowed' : 'what the app asked'})` };
+}
+
+/** The one line under the one-time choice: what this access can open. */
+export function onceCautionLine(reach: OnceReach): string {
+  if (reach === 'network') return 'This access can open all your encrypted data.';
+  if (reach === 'secrets') return 'This access can open all your secrets.';
+  return 'This access can open a wide range of your data.';
 }
 
 /** The lease shown when the box is first ticked: the default, or less when the requester asked for less. */

@@ -43,7 +43,11 @@ export interface RenewalChoice {
 /** Starting lifetime and copy for a signed approval request. */
 export interface ShortenOnlyExpiry {
   startMs: number;
-  onceNote: string;
+  /**
+   * What the app asked for before the 7-day limit on secrets and decrypt (`startMs` is that ask, cut to the limit).
+   * The one-time choice reads "(the longest allowed)" only where this is more than `startMs`.
+   */
+  askedMs: number;
   limitNote: (ms: number) => string;
   /** Under the access line of a request for a secret's own key: its start and the most it can be. */
   lengthNote: (startMs: number, maxMs: number) => string;
@@ -187,6 +191,8 @@ export interface WidgetSigningTransport {
     chosenMs: number | null;
     /** A one-time approval (secrets or decrypt) starts at one hour here (TC-3111); set by the real signing pages, not harnesses. */
     onceDefault?: boolean;
+    /** The server limits an owner's pick on a one-time approval to 7 days here (the popup and frame preview), so the one-time choice offers no more. */
+    oncePickCapped?: boolean;
     onChange: (ms: number | null) => void;
   };
   /**

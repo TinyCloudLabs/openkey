@@ -395,6 +395,8 @@
   // The longest the requester signed (a signed approval request or a device request); null on a plain link.
   let expiryMaxMs = $state<number | null>(null);
   let approvalRequestStartMs = $state<number | null>(null);
+  // What the request asked for before the 7-day limit on secrets and decrypt cut it.
+  let approvalRequestAskedMs = $state<number | null>(null);
   // TC-2933: the renewal checkbox, offered only when the approval request signed a renewal request
   // (its longest lease). `renewalLeaseMs` is the owner's lease, null while the box is unticked.
   let renewalMaxLeaseMs = $state<number | null>(null);
@@ -766,6 +768,7 @@
       expiryMaxMs = maxSeconds * 1000;
       const startSeconds = approvalRequestStartSeconds(maxSeconds, request.suggestedLifetimeSeconds);
       approvalRequestStartMs = Math.max(MIN_EXPIRY_MS, startSeconds * 1000);
+      approvalRequestAskedMs = Math.max(MIN_EXPIRY_MS, approvalRequestStartSeconds(request.grantLifetimeSeconds, request.suggestedLifetimeSeconds) * 1000);
       expiryParam = `${startSeconds}s`;
       // The box only shows where this OpenKey has leases on (`renewalAvailable`); otherwise the plain line, and finite.
       if (request.renewal && result.renewalAvailable === true) {
@@ -2226,9 +2229,9 @@
                   bounded: approvalRequestMode || Boolean(deviceTransactionId) || !linkExpiryChangeable,
                   // The most the requester signed; the default shown can be shorter (its suggestion).
                   maxMs: expiryMaxMs,
-                  shortenOnly: approvalRequestStartMs === null ? null : {
+                  shortenOnly: approvalRequestStartMs === null || approvalRequestAskedMs === null ? null : {
                     startMs: approvalRequestStartMs,
-                    onceNote: APPROVAL_EXPIRY.onceStart,
+                    askedMs: approvalRequestAskedMs,
                     limitNote: (ms) => fill(APPROVAL_EXPIRY.shortenLimit, { duration: formatDuration(ms) }),
                     lengthNote: (startMs, maxMs) => startMs < maxMs
                       ? fill(APPROVAL_EXPIRY.lengthen, { start: formatDuration(startMs), max: formatDuration(maxMs) })

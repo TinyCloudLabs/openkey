@@ -34,7 +34,6 @@ export const LOADER = {
 
 /** The starting window and its upper limit on a signed approval request. */
 export const APPROVAL_EXPIRY = {
-  onceStart: 'Requests that can open all your secrets or all your encrypted data start at 1 hour. You can choose longer, up to what the app asked for.',
   shortenLimit: 'This approval can last up to {duration}.',
   /** A signed request for a secret's own key whose start is shorter than its maximum. */
   lengthen: 'This request starts at {start}, as the app asked. You can choose up to {max}.',

@@ -189,7 +189,8 @@ function signedAsWritten(m: CapabilityReviewModel) {
 const text = (el: Element | null | undefined) => el?.textContent?.replace(/\s+/g, ' ').trim() ?? null;
 const line = (t: HTMLElement) => text(t.querySelector('[data-testid="approval-expiry-line"]'));
 const staticLine = (t: HTMLElement) => text(t.querySelector('[data-testid="approval-access-line"]'));
-const note = (t: HTMLElement) => t.querySelector('[data-testid="approval-expiry-once-note"]');
+const choice = (t: HTMLElement) => t.querySelector('[data-testid="approval-expiry-once-choice"]');
+const caution = (t: HTMLElement) => t.querySelector('[data-testid="approval-expiry-once-caution"]');
 // Over two days the line also names the owner's day it ends.
 const SEVEN_DAYS = /^This app's access to your data lasts 7 days, until [A-Z][a-z]{2} \d{1,2}(, \d{4})?\.$/;
 
@@ -198,7 +199,8 @@ describe('one named secret starts at what the app asked for', () => {
     const { target, calls, cleanup } = mounted(modelOf(kvGet('vault/secrets/DEPLOY_KEY')));
     expect(calls).toEqual([]);
     expect(line(target)).toMatch(SEVEN_DAYS);
-    expect(note(target)).toBeNull();
+    expect(choice(target)).toBeNull();
+    expect(caution(target)).toBeNull();
     cleanup();
   });
 
@@ -220,18 +222,20 @@ describe('one named secret starts at what the app asked for', () => {
 
 describe('access to all secrets or all encrypted data starts at one hour', () => {
   test.each([
-    ['the whole network', decrypt('')],
-    ['every app\'s keys (apps/)', decrypt('/apps/')],
-    ['a one-segment prefix (shared/)', decrypt('/shared/')],
-    ['a deeper prefix outside apps/ (shared/team/)', decrypt('/shared/team/')],
-    ['every secret (vault/secrets/)', kvGet('vault/secrets/')],
-  ])('%s', (_name: string, att: Attenuations) => {
+    ['the whole network', decrypt(''), 'This access can open all your encrypted data.'],
+    ['every app\'s keys (apps/)', decrypt('/apps/'), 'This access can open a wide range of your data.'],
+    ['a one-segment prefix (shared/)', decrypt('/shared/'), 'This access can open a wide range of your data.'],
+    ['a deeper prefix outside apps/ (shared/team/)', decrypt('/shared/team/'), 'This access can open a wide range of your data.'],
+    ['every secret (vault/secrets/)', kvGet('vault/secrets/'), 'This access can open all your secrets.'],
+  ])('%s', (_name: string, att: Attenuations, cautionLine: string) => {
     const { target, calls, cleanup } = mounted(modelOf(att));
     expect(calls).toEqual([H]);
     expect(line(target)).toBe("This app's access to your data lasts 1 hour.");
-    expect(text(note(target))).toBe(
-      'listen.tinycloud.xyz asked for 7 days. Access that can open all your secrets or all your encrypted data starts at 1 hour. You can choose longer under How long it lasts.',
-    );
+    expect(text(choice(target)?.querySelector('legend'))).toBe('How long');
+    const options = [...choice(target)!.querySelectorAll<HTMLInputElement>('input[type="radio"]')];
+    expect(options.map((option) => text(option.closest('label')))).toEqual(['1 hour', '7 days (what the app asked)']);
+    expect(options.map((option) => option.checked)).toEqual([true, false]);
+    expect(text(caution(target))).toBe(cautionLine);
     cleanup();
   });
 
@@ -244,7 +248,8 @@ describe('access to all secrets or all encrypted data starts at one hour', () =>
     const { target, calls, cleanup } = mounted(modelOf(att));
     expect(calls).toEqual([]);
     expect(line(target)).toMatch(SEVEN_DAYS);
-    expect(note(target)).toBeNull();
+    expect(choice(target)).toBeNull();
+    expect(caution(target)).toBeNull();
     cleanup();
   });
 });
