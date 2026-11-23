@@ -425,3 +425,75 @@ describe('OAuth manage-key signer with an apps/ recap on an earlier line', () =>
     expect(manageKeySigningDecisions).toHaveLength(0);
   });
 });
+
+// A secret key's recap on an earlier line, in a message that lasts 30 days.
+const SECRET_URN = `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default/secrets/openai_api_key`;
+const THIRTY_DAYS_MS = 30 * 86_400_000;
+
+function thirtyDayBody(secretRecap: boolean, lifetimeMs = THIRTY_DAYS_MS) {
+  const body = signingBody({ expirationTime: new Date(Date.now() + lifetimeMs).toISOString() });
+  if (!secretRecap) return body;
+  const recapLine = /^- urn:recap:[A-Za-z0-9_-]+$/m.exec(body.message)?.[0];
+  if (!recapLine) throw new Error('fixture does not contain a ReCap resource');
+  const secretRecapLine = Buffer.from(
+    JSON.stringify({ att: { [SECRET_URN]: { 'tinycloud.encryption/decrypt': [{}] } }, prf: [] }),
+    'utf8',
+  ).toString('base64url');
+  return { ...body, message: body.message.replace(recapLine, `- urn:recap:${secretRecapLine}\n${recapLine}`) };
+}
+
+describe('CoordinationOS signer with a 30-day secret key recap on an earlier line', () => {
+  test('when the policy lets the message through, it is denied and recorded; without the secret key it signs', async () => {
+    policyAllows = true;
+    const refused = await sign(thirtyDayBody(true));
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ approved: false, code: 'wrong_capability' });
+    expect(signerCalls).toBe(0);
+    expect(decisions.map((decision) => [decision.decision, decision.reasonCode])).toEqual([['DENY', 'wrong_capability']]);
+
+    const control = await sign(thirtyDayBody(false));
+    expect(control.status).toBe(200);
+    expect(signerCalls).toBe(1);
+  });
+});
+
+describe('OAuth manage-key signer with a 30-day secret key recap on an earlier line', () => {
+  beforeEach(() => {
+    token.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+    client.scopes = ['openid', 'keys', 'tinycloud:manage-key'];
+  });
+
+  // This path's own one-hour session ceiling already refuses 30 days before the 7-day check is reached.
+  test('refuses 30 days on a secret key before anything is signed; the same key for 30 minutes signs', async () => {
+    const refused = await sign(thirtyDayBody(true));
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ approved: false, code: 'message_rejected' });
+    expect(signerCalls).toBe(0);
+    expect(manageKeySigningDecisions).toHaveLength(0);
+
+    const control = await sign(thirtyDayBody(true, 30 * 60_000));
+    expect(control.status).toBe(200);
+    expect(signerCalls).toBe(1);
+  });
+});
+
+// A KV read of the secrets vault on an earlier line is held to 7 days like a secret key.
+const VAULT_RESOURCE = `tinycloud:pkh:eip155:1:${address}:default/kv/vault/secrets/`;
+
+describe('CoordinationOS signer with a 30-day KV read of the secrets vault on an earlier line', () => {
+  test('when the policy lets the message through, it is denied and recorded', async () => {
+    policyAllows = true;
+    const body = thirtyDayBody(false);
+    const recapLine = /^- urn:recap:[A-Za-z0-9_-]+$/m.exec(body.message)?.[0];
+    if (!recapLine) throw new Error('fixture does not contain a ReCap resource');
+    const vaultRecapLine = Buffer.from(
+      JSON.stringify({ att: { [VAULT_RESOURCE]: { 'tinycloud.kv/get': [{}] } }, prf: [] }),
+      'utf8',
+    ).toString('base64url');
+    const refused = await sign({ ...body, message: body.message.replace(recapLine, `- urn:recap:${vaultRecapLine}\n${recapLine}`) });
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ approved: false, code: 'wrong_capability' });
+    expect(signerCalls).toBe(0);
+    expect(decisions.map((decision) => [decision.decision, decision.reasonCode])).toEqual([['DENY', 'wrong_capability']]);
+  });
+});

@@ -31,8 +31,10 @@ export interface RenewalChoice {
   /**
    * Reports the owner's lease (null: unticked). `windowMs`, when given, changes the expiry window in the
    * same step (null: back to what the app asked for), so the preview is prepared once with both.
+   * `sensitiveConfirmed` is true only from the "Renew sensitive access?" confirm (TC-3821); the server refuses a lease
+   * on a grant reaching secrets without it. Unticking clears it; a later lease change keeps it.
    */
-  onChange: (leaseMs: number | null, windowMs?: number | null) => void;
+  onChange: (leaseMs: number | null, windowMs?: number | null, sensitiveConfirmed?: true) => void;
 }
 
 /** Starting lifetime and copy for a signed approval request. */
@@ -40,6 +42,8 @@ export interface ShortenOnlyExpiry {
   startMs: number;
   onceNote: string;
   limitNote: (ms: number) => string;
+  /** Under the access line of a request for a secret's own key: its start and the most it can be. */
+  lengthNote: (startMs: number, maxMs: number) => string;
 }
 
 /** Transport injected by the CLI (`/delegate`) route. */

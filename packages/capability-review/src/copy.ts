@@ -304,6 +304,9 @@ export function appRequestingLine(name: string | null): string {
 
 export const APP_KEY_ACCESS_WITHOUT_EXPIRY = "This access lasts until it expires.";
 
+/** The Expires row of a sign-in message with no `Expiration Time` (TC-3826, wording row O2). */
+export const SIWE_WITHOUT_EXPIRY = "Doesn't expire. It doesn't end by itself.";
+
 /**
  * Standing-access line for app-key decrypt. `expiry` is the signed SIWE
  * `Expiration Time`. `formatExpiry` turns it into the text shown; without one

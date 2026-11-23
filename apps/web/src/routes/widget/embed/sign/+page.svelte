@@ -28,7 +28,7 @@
   import { originAuthority, requesterDisplayName } from '$lib/requester-display';
   import { requestedActionIds, selectionFromPreview } from '$lib/widget-selection';
   import { serverActionId } from '$lib/delegate-review-selection';
-  import { expiryAt, siweExpiration } from '$lib/approval-expiry';
+  import { expiryAt, renewalWindowExpiryAt } from '$lib/approval-expiry';
   import { MAX_LEASE_MS, defaultLeaseMs } from '$lib/approval-expiry';
   import { renewalStartsTicked } from '$lib/renewal-default';
   import { PREVIEW_EXPIRED_MESSAGE, signingPreviewDeadline, type SigningPreview } from '$lib/signing-preview';
@@ -40,9 +40,13 @@
     type CapabilityReviewModel,
     type DeclaredAppScope,
     checkSiweOrigin,
+    REGISTRY_RECORD_SIGN_REFUSED,
+    registryRecordSignRefusal,
     isSiweShaped,
+    siweExpirationTime,
   } from '@openkey/capability-review';
   import SiweOriginRefusal from '$lib/components/signing/siwe-origin-refusal.svelte';
+  import RegistryRecordRefusal from '$lib/components/signing/registry-record-refusal.svelte';
   import ServerReplyRefusal from '$lib/components/signing/server-reply-refusal.svelte';
   import { hasSignResult, hasText, readReply, ServerRefusalError, ServerReplyError, SERVER_REPLY_ERROR, terminalRefusal } from '$lib/server-reply';
   import { createFrameSettleGate, type FrameSettleGate } from '$lib/frame-settle-gate';
@@ -162,11 +166,14 @@
   let renewalAsk: WidgetRenewalAsk | null = null;
   let renewalMaxLeaseMs = $state<number | null>(null);
   let renewalLeaseMs = $state<number | null>(null);
+  // TC-3821: the owner confirmed "Renew sensitive access?" for the ticked lease; cleared when the box is unticked.
+  let renewalConfirmed = $state(false);
   let renewalDefaulted = false;
   // The owner's choice as the preview seals it; null when the box is not offered.
   function renewalChoiceBody() {
     if (renewalMaxLeaseMs === null) return null;
-    return renewalLeaseMs === null ? { choice: 'finite' } : { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000) };
+    if (renewalLeaseMs === null) return { choice: 'finite' };
+    return { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000), ...(renewalConfirmed ? { sensitiveConfirmed: true } : {}) };
   }
   // Adopt the prepare answer's offer. The first offer sets the default tick (spec D11/D12, never the Once tier).
   function adoptRenewalOffer(offer: unknown) {
@@ -186,8 +193,9 @@
     if (reviewModel && renewalStartsTicked(renewalAsk?.purpose, reviewModel.permissions)) renewalLeaseMs = defaultLeaseMs(maxLeaseMs);
   }
   // A changed lease (and, from the sensitive-access step, the window) is a new preview carrying both.
-  function changeRenewal(leaseMs: number | null, windowMs?: number | null) {
+  function changeRenewal(leaseMs: number | null, windowMs?: number | null, sensitiveConfirmed?: true) {
     renewalLeaseMs = leaseMs;
+    renewalConfirmed = leaseMs !== null && (sensitiveConfirmed === true || renewalConfirmed);
     if (windowMs !== undefined) expiryChoiceMs = windowMs;
     invalidatePreviewForSelectionEdit();
   }
@@ -437,6 +445,7 @@
     renewalAsk = data.renewal && typeof data.renewal === 'object' ? (data.renewal as WidgetRenewalAsk) : null;
     renewalMaxLeaseMs = null;
     renewalLeaseMs = null;
+    renewalConfirmed = false;
     renewalDefaulted = false;
     // Envelope (display-only). Widget transport already validated + size-
     // bounded the object. Trust decision is deferred to /authorize-sign-
@@ -908,7 +917,7 @@
       );
       // Before the preview the access lines show the chosen time (from now); after it, the sealed bytes' own.
       reviewModel = previewSignedMessage
-        ? { ...nextReviewModel, rawMessage: previewSignedMessage, expiry: siweExpiration(previewSignedMessage) ?? nextReviewModel.expiry }
+        ? { ...nextReviewModel, rawMessage: previewSignedMessage, expiry: siweExpirationTime(previewSignedMessage) ?? nextReviewModel.expiry }
         : expiryChoiceMs !== null
           ? { ...nextReviewModel, expiry: expiryAt(expiryChoiceMs) }
           : nextReviewModel;
@@ -1029,7 +1038,10 @@
     if (signing || previewStopped) return;
     const isCurrent = () => !previewStopped && revision === previewRevision && input === previewInput;
     const selectedIds = currentSelectedActionIds();
-    const requestedExpiry = expiryChoiceMs === null ? null : expiryAt(expiryChoiceMs);
+    // TC-3821: a confirmed sensitive renewal counts the window from the message's own start, as the node renews it.
+    const requestedExpiry = expiryChoiceMs === null
+      ? null
+      : renewalConfirmed && renewalLeaseMs !== null ? renewalWindowExpiryAt(expiryChoiceMs, message) : expiryAt(expiryChoiceMs);
     previewing = true;
     if (keepPasskeyRefusal) keepPasskeyRefusal = false;
     else error = '';
@@ -1408,11 +1420,14 @@
 
   // TC-1486: a SIWE-shaped message that does not name the verified requesting
   // origin (or arrives unattributed) is never signed and has no override.
+  // Hardening: registry record signing is refused the same way, unless the requester is TinyCloud One / Home.
   // Every signing path re-checks this; the server enforces it too.
   const siweRefusal = $derived.by(() => {
     if (!message) return null;
+    const registry = registryRecordSignRefusal(message, origin);
+    if (registry) return { registry: true as const, code: REGISTRY_RECORD_SIGN_REFUSED.code, message: registry.message };
     const check = checkSiweOrigin(message, origin);
-    return check.siwe && !check.ok ? check : null;
+    return check.siwe && !check.ok ? { registry: false as const, code: check.code, message: check.message } : null;
   });
   let refusalReported = false;
   $effect(() => {
@@ -1421,7 +1436,10 @@
     sendResponse({
       type: 'openkey:sign:response',
       success: false,
-      error: { code: 'UNKNOWN', message: `SIWE_ORIGIN_REFUSED: ${siweRefusal.code}` },
+      error: {
+        code: 'UNKNOWN',
+        message: siweRefusal.registry ? 'REGISTRY_RECORD_SIGN_REFUSED' : `SIWE_ORIGIN_REFUSED: ${siweRefusal.code}`,
+      },
     });
   });
 
@@ -1574,7 +1592,11 @@
   <!-- Card body -->
   <div class="bg-white border border-surface-200 rounded-2xl shadow-sm p-5">
     {#if siweRefusal}
-      <SiweOriginRefusal reason={siweRefusal.message} code={siweRefusal.code} onclose={closeRefused} />
+      {#if siweRefusal.registry}
+        <RegistryRecordRefusal variant="embed" onclose={closeRefused} />
+      {:else}
+        <SiweOriginRefusal reason={siweRefusal.message} code={siweRefusal.code} onclose={closeRefused} />
+      {/if}
     {:else if replyFailureStatus !== null}
       <ServerReplyRefusal status={replyFailureStatus} onclose={closeRefused} />
     {:else if !signedIn}

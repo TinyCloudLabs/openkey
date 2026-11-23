@@ -111,7 +111,7 @@ test('the "This access lasts until" line follows the pick before anything is app
 // TC-3111: a one-time approval (secrets or decrypt) that asks for longer than an hour starts at one hour.
 test('a secret or decrypt request that asks for 7 days is prepared with one hour, and says so', async ({ page }) => {
   const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
-  const att = { [`urn:tinycloud:encryption:${owner}:default/apps/xyz.tinycloud.listen/`]: { 'tinycloud.encryption/decrypt': [{}] } };
+  const att = { [`urn:tinycloud:encryption:${owner}:default`]: { 'tinycloud.encryption/decrypt': [{}] } };
   const decrypt = siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
   const before = Date.now();
   const { frame, previews } = await open(page, { expiryChangeable: true }, decrypt);
@@ -134,7 +134,7 @@ test('ordinary data keeps what the app asked for, with no note', async ({ page }
 
 test('the owner can choose longer than the hour, and the choice is what is prepared', async ({ page }) => {
   const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
-  const att = { [`urn:tinycloud:encryption:${owner}:default/apps/xyz.tinycloud.listen/`]: { 'tinycloud.encryption/decrypt': [{}] } };
+  const att = { [`urn:tinycloud:encryption:${owner}:default`]: { 'tinycloud.encryption/decrypt': [{}] } };
   const decrypt = siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
   const { frame, previews } = await open(page, { expiryChangeable: true }, decrypt);
   await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
@@ -151,7 +151,7 @@ test('the owner can choose longer than the hour, and the choice is what is prepa
 // TC-3154: the chooser is in Advanced details. Picking the app's own time there after the one-hour start keeps it.
 test('picking what the app asked for in Advanced details after the one-hour start does not bring the hour back', async ({ page }) => {
   const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
-  const att = { [`urn:tinycloud:encryption:${owner}:default/apps/xyz.tinycloud.listen/`]: { 'tinycloud.encryption/decrypt': [{}] } };
+  const att = { [`urn:tinycloud:encryption:${owner}:default`]: { 'tinycloud.encryption/decrypt': [{}] } };
   const decrypt = siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
   const { frame, previews } = await open(page, { expiryChangeable: true }, decrypt);
   await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
@@ -169,7 +169,7 @@ test('picking what the app asked for in Advanced details after the one-hour star
 
 test('picking the hour itself in Advanced details counts as the owner\'s choice, so the one-hour note goes', async ({ page }) => {
   const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
-  const att = { [`urn:tinycloud:encryption:${owner}:default/apps/xyz.tinycloud.listen/`]: { 'tinycloud.encryption/decrypt': [{}] } };
+  const att = { [`urn:tinycloud:encryption:${owner}:default`]: { 'tinycloud.encryption/decrypt': [{}] } };
   const decrypt = siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
   const { frame } = await open(page, { expiryChangeable: true }, decrypt);
   await expect(frame.getByTestId('approval-expiry-once-note')).toBeVisible();
