@@ -8,9 +8,20 @@ const network = `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default`;
 const key = `${network}/secrets/api_key`;
 const listWarning = '[widget-transport] dropping malformed renewal-only resources';
 
+type MessageListener = (event: { origin: string; source: unknown; data: unknown }) => void;
+
 function deliver(fields: Record<string, unknown>) {
   const opener = { postMessage() {} };
-  const browser = Object.assign(new EventTarget(), { opener });
+  const listeners = new Set<MessageListener>();
+  const browser = {
+    opener,
+    addEventListener(type: string, listener: MessageListener) {
+      if (type === 'message') listeners.add(listener);
+    },
+    removeEventListener(type: string, listener: MessageListener) {
+      if (type === 'message') listeners.delete(listener);
+    },
+  };
   const globals = globalThis as unknown as { window: unknown };
   const savedWindow = globals.window;
   const warning = spyOn(console, 'warn').mockImplementation(() => {});
@@ -20,7 +31,7 @@ function deliver(fields: Record<string, unknown>) {
     const transport = createWidgetTransport({
       container: 'popup', origin, onRequest: (request) => received.push(request), onClose() {},
     });
-    browser.dispatchEvent(Object.assign(new Event('message'), {
+    const message = {
       origin, source: opener,
       data: {
         type: 'openkey:sign:request', requestId: 'renewal-only', protocolVersion: 1, message: 'siwe',
@@ -28,7 +39,8 @@ function deliver(fields: Record<string, unknown>) {
         renewalOnlyResources: [key],
         ...fields,
       },
-    }));
+    };
+    for (const listener of listeners) listener(message);
     transport.destroy();
     expect(received).toHaveLength(1);
     expect(received[0]?.data.message).toBe('siwe');
