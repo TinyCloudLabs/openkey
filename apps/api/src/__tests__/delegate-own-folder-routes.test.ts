@@ -33,6 +33,13 @@ const sdk = JSON.parse(readFileSync(new URL('./generic-app-manifest-vectors.json
   }>;
 };
 
+// The same file, byte for byte, as js-sdk `packages/sdk-core/src/generic-app-id.vectors.json`;
+// `sha256sum` of the two must match.
+const sharedAppIds = JSON.parse(readFileSync(new URL('./generic-app-id.vectors.json', import.meta.url), 'utf8')) as Array<{
+  host: string | null;
+  appId: string;
+}>;
+
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 const account = privateKeyToAccount(privateKey);
 const chainId = 1;
@@ -185,6 +192,14 @@ describe('the own folder equals the SDK generic manifest', () => {
     for (const vector of sdk.vectors) expect(genericAppId(vector.host)).toBe(vector.appId);
   });
 
+  test('genericAppId matches every row of the app id file shared with the js-sdk', () => {
+    for (const vector of sharedAppIds) expect(genericAppId(vector.host)).toBe(vector.appId);
+  });
+
+  test('the shared app id file pins the same hosts and app ids as the manifest fixture', () => {
+    expect(sharedAppIds).toEqual(sdk.vectors.map(({ host, appId }) => ({ host, appId })));
+  });
+
   test('ownFolderPermissions is byte-for-byte the SDK resource set, with no public space and 7 days', () => {
     for (const vector of sdk.vectors) {
       expect(vector.space).toBe('applications');
@@ -207,9 +222,12 @@ describe('a request that names no permissions', () => {
     expect(prepared.spaceId).toBe(makeSpaceId(account.address, chainId, 'applications'));
   });
 
-  test('/prepare with a port in the origin names the same folder', async () => {
+  test('/prepare with a port in the origin names the folder with the port', async () => {
     const prepared = await prepare({ requesterOrigin: 'http://localhost:5173' });
-    expect(sorted(parsePreparedRecap(prepared.prepared.siwe))).toEqual(sorted(sdkEntries('localhost')));
+    const folder = 'localhost_5173/';
+    expect(sorted(parsePreparedRecap(prepared.prepared.siwe))).toEqual(sorted(sdkEntries('com.example.notes').map((entry) => (
+      entry.path ? { ...entry, path: folder } : entry
+    ))));
     expect(prepared.ownFolderShared).toBe(false);
   });
 
@@ -225,13 +243,13 @@ describe('a request that names no permissions', () => {
     expect(prepared.ownFolderShared).toBe(true);
   });
 
-  test('/prepare for an origin whose host is not a plain name uses the shared node.app folder', async () => {
+  test('/prepare for an origin whose host is not a DNS name gets its own o_ folder', async () => {
     const prepared = await prepare({ requesterOrigin: 'http://[::1]:5173' });
-    const folder = 'node.app/';
+    const folder = 'o_fd7fe9743eb5dc81/';
     expect(sorted(parsePreparedRecap(prepared.prepared.siwe))).toEqual(sorted(sdkEntries('com.example.notes').map((entry) => (
       entry.path ? { ...entry, path: folder } : entry
     ))));
-    expect(prepared.ownFolderShared).toBe(true);
+    expect(prepared.ownFolderShared).toBe(false);
   });
 
   test('approving it signs the prepared own-folder bytes', async () => {

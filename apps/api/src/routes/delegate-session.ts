@@ -7,6 +7,7 @@
 // prevents `mock.module(...)` calls in one test suite from leaking into
 // unrelated integration suites.
 
+import { createHash } from 'node:crypto';
 import {
   prepareSession,
   makeSpaceId,
@@ -95,25 +96,40 @@ export interface DelegationPermissionEntry {
 // Default requester for CLI links that do not supply an explicit origin.
 export const SIWE_DOMAIN = 'cli.tinycloud.xyz';
 
-/** App id of the own folder when the request has no usable host name. Same as the SDK. */
+/** App id of the own folder when the request has no host. Same as the SDK. */
 export const GENERIC_APP_ID_WITHOUT_HOST = 'node.app';
 
+// DNS labels only: no `_`, so no host name can spell a `_<port>` or `o_<hash>` id.
 const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+// `s`: `.` spans line breaks too, so every host matches (one with a newline is not a DNS name and is hashed).
+const HOST_AND_PORT = /^(.*?)(?::(\d{1,5}))?$/s;
+const DEFAULT_PORTS = new Set([80, 443]);
 
 /**
  * The app id for a request from `host`: the host name reversed
- * (`notes.example.com` → `com.example.notes`), port dropped.
- * {@link GENERIC_APP_ID_WITHOUT_HOST} when there is no usable host name.
+ * (`notes.example.com` → `com.example.notes`), with a non-default port after
+ * `_` (`notes.example.com:8443` → `com.example.notes_8443`; 80 and 443 are
+ * dropped). A host that is not a DNS name (an IPv6 literal, a label with `_`,
+ * a line break) gets `o_` and the first 16 hex of the SHA-256 of the lowercased host and
+ * port. {@link GENERIC_APP_ID_WITHOUT_HOST} when there is no host.
  *
  * This copies `genericAppId` in js-sdk `packages/sdk-core/src/owner-access.ts`.
  * The API pins an sdk-core that does not export it yet. Change both together.
  */
 export function genericAppId(host: string | null | undefined): string {
-  const name = host?.trim().toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '');
+  const value = host?.trim().toLowerCase();
+  if (!value) return GENERIC_APP_ID_WITHOUT_HOST;
+  const [, rawName = '', rawPort] = HOST_AND_PORT.exec(value)!;
+  const name = rawName.replace(/\.$/, '');
   if (!name) return GENERIC_APP_ID_WITHOUT_HOST;
+  const port = rawPort === undefined || DEFAULT_PORTS.has(Number(rawPort)) ? undefined : String(Number(rawPort));
   const labels = name.split('.');
-  if (!labels.every((label) => HOST_LABEL.test(label))) return GENERIC_APP_ID_WITHOUT_HOST;
-  return labels.reverse().join('.');
+  if (!labels.every((label) => HOST_LABEL.test(label))) {
+    const origin = port === undefined ? name : `${name}:${port}`;
+    return `o_${createHash('sha256').update(origin, 'utf8').digest('hex').slice(0, 16)}`;
+  }
+  const appId = labels.reverse().join('.');
+  return port === undefined ? appId : `${appId}_${port}`;
 }
 
 /**
@@ -696,7 +712,7 @@ export interface PrepareDelegationSessionResult {
   ownFolderOnly: boolean;
   /**
    * True when that folder is one many requests share: the request had no
-   * requester origin (the default domain's folder) or its host can't be read
+   * requester origin (the default domain's folder) or no host
    * ({@link GENERIC_APP_ID_WITHOUT_HOST}).
    */
   ownFolderShared: boolean;
