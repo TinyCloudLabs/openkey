@@ -287,6 +287,14 @@ describe('the request is bound to the claimed handoff', () => {
   });
 });
 
+const WORDS: Record<string, string> = {
+  file_missing: "OpenKey can't approve this request: share.tinycloud.xyz doesn't list keys that command-line tools can ask for. Nothing was approved.",
+  file_unavailable: "OpenKey couldn't check share.tinycloud.xyz's list of keys for command-line tools. Nothing was approved. Try again.",
+  file_invalid: "OpenKey can't approve this request: share.tinycloud.xyz's list of keys for command-line tools can't be read. Nothing was approved.",
+  file_app_mismatch: "OpenKey can't approve this request: share.tinycloud.xyz's list of keys for command-line tools can't be read. Nothing was approved.",
+  key_not_listed: "OpenKey can't approve this request: share.tinycloud.xyz doesn't let command-line tools ask for the key seal-v1. Nothing was approved.",
+};
+
 describe('refusals at prepare', () => {
   test.each([
     ['no file', { ok: false, kind: 'missing', reason: 'fetch returned status 404' } as FileResult, 'app_keys_file_missing', 'file_missing'],
@@ -305,7 +313,7 @@ describe('refusals at prepare', () => {
     const { res, body } = await prepare(handoff);
     expect(res.status).toBe(403);
     expect(body).toMatchObject({ code, reason });
-    expect(typeof body.error).toBe('string');
+    expect(body.error).toBe(WORDS[reason]!);
     expect(body.authorizationContextToken).toBeUndefined();
   });
 

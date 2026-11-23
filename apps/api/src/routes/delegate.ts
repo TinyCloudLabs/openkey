@@ -2935,7 +2935,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   const ticket = handoffTicket(body);
   // A ticket may ask for one exact app key; a request without a ticket never gets this mode.
   const refuseAppKeyHandoff = (reason: AppKeyHandoffReason) => {
-    const refusal = appKeyHandoffRefusal(reason);
+    const refusal = appKeyHandoffRefusal(reason, appKeyRequest);
     return c.json(refusal.body, refusal.status);
   };
   let appKeyRequest: AppKeyHandoffRequest | undefined;

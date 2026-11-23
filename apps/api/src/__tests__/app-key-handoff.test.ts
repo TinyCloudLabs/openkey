@@ -200,11 +200,20 @@ describe('verifyAppKeyHandoffFile', () => {
 
 describe('appKeyHandoffRefusal', () => {
   test('answers each reason with a code the screen can match on', () => {
-    expect(appKeyHandoffRefusal('file_missing')).toMatchObject({ status: 403, body: { code: 'app_keys_file_missing', reason: 'file_missing' } });
-    expect(appKeyHandoffRefusal('file_app_mismatch').body.code).toBe('app_keys_file_invalid');
-    expect(appKeyHandoffRefusal('file_unavailable').body.code).toBe('app_keys_file_unavailable');
-    expect(appKeyHandoffRefusal('key_not_listed').body.code).toBe('app_key_not_listed');
+    expect(appKeyHandoffRefusal('file_missing', appKey)).toMatchObject({ status: 403, body: { code: 'app_keys_file_missing', reason: 'file_missing' } });
+    expect(appKeyHandoffRefusal('file_app_mismatch', appKey).body.code).toBe('app_keys_file_invalid');
+    expect(appKeyHandoffRefusal('file_unavailable', appKey).body.code).toBe('app_keys_file_unavailable');
+    expect(appKeyHandoffRefusal('key_not_listed', appKey).body.code).toBe('app_key_not_listed');
     expect(appKeyHandoffRefusal('expiry')).toMatchObject({ status: 400, body: { code: 'app_key_request_invalid' } });
+  });
+
+  test('the owner-visible lines are the owner screen words with the host and key name filled in', () => {
+    const line = (reason: Parameters<typeof appKeyHandoffRefusal>[0]) => appKeyHandoffRefusal(reason, appKey).body.error;
+    expect(line('file_missing')).toBe("OpenKey can't approve this request: share.tinycloud.xyz doesn't list keys that command-line tools can ask for. Nothing was approved.");
+    expect(line('file_invalid')).toBe("OpenKey can't approve this request: share.tinycloud.xyz's list of keys for command-line tools can't be read. Nothing was approved.");
+    expect(line('file_app_mismatch')).toBe(line('file_invalid'));
+    expect(line('key_not_listed')).toBe("OpenKey can't approve this request: share.tinycloud.xyz doesn't let command-line tools ask for the key seal-v1. Nothing was approved.");
+    expect(line('file_unavailable')).toBe("OpenKey couldn't check share.tinycloud.xyz's list of keys for command-line tools. Nothing was approved. Try again.");
   });
 });
 

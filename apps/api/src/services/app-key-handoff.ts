@@ -69,7 +69,8 @@ const STATUSES: Record<AppKeyHandoffReason, 400 | 403> = {
   key_not_listed: 403,
 };
 
-// Placeholder wording until the product copy arrives; clients key on `code`.
+// Owner-visible lines. The file and key lines are the owner screen's words; `{host}` and `{keyName}` (the last
+// segment of the key) are filled by `appKeyHandoffRefusal`. The other lines are placeholders. Clients key on `code`.
 export const APP_KEY_HANDOFF_MESSAGES: Record<AppKeyHandoffReason, string> = {
   request_invalid: "This request names an app key that OpenKey can't read, so it didn't approve it.",
   ticket_required: "App keys can only be requested through a prepared command-line sign-in, so OpenKey didn't approve this request.",
@@ -77,11 +78,11 @@ export const APP_KEY_HANDOFF_MESSAGES: Record<AppKeyHandoffReason, string> = {
   recap: "This request asks for more than the one app key it names, so OpenKey didn't approve it.",
   account: "This request doesn't match your account, so OpenKey didn't approve it.",
   expiry: "This request doesn't end within 7 days, so OpenKey didn't approve it.",
-  file_unavailable: "OpenKey couldn't check this website's list of command-line keys. Try again.",
-  file_missing: "This website doesn't list keys that command-line tools can ask for, so OpenKey didn't approve this request.",
-  file_invalid: "This website's list of command-line keys can't be read, so OpenKey didn't approve this request.",
-  file_app_mismatch: "This website's list of command-line keys can't be read, so OpenKey didn't approve this request.",
-  key_not_listed: "This website doesn't let command-line tools ask for this key, so OpenKey didn't approve this request.",
+  file_unavailable: "OpenKey couldn't check {host}'s list of keys for command-line tools. Nothing was approved. Try again.",
+  file_missing: "OpenKey can't approve this request: {host} doesn't list keys that command-line tools can ask for. Nothing was approved.",
+  file_invalid: "OpenKey can't approve this request: {host}'s list of keys for command-line tools can't be read. Nothing was approved.",
+  file_app_mismatch: "OpenKey can't approve this request: {host}'s list of keys for command-line tools can't be read. Nothing was approved.",
+  key_not_listed: "OpenKey can't approve this request: {host} doesn't let command-line tools ask for the key {keyName}. Nothing was approved.",
 };
 
 export interface AppKeyHandoffRefusal {
@@ -89,8 +90,12 @@ export interface AppKeyHandoffRefusal {
   body: { error: string; code: AppKeyHandoffCode; reason: AppKeyHandoffReason };
 }
 
-export function appKeyHandoffRefusal(reason: AppKeyHandoffReason): AppKeyHandoffRefusal {
-  return { status: STATUSES[reason], body: { error: APP_KEY_HANDOFF_MESSAGES[reason], code: CODES[reason], reason } };
+/** `appKey` names the host and key the owner-visible lines speak of; without it they say "this website". */
+export function appKeyHandoffRefusal(reason: AppKeyHandoffReason, appKey?: AppKeyHandoffRequest): AppKeyHandoffRefusal {
+  const host = appKey ? appKeyHandoffHost(appKey.appId) ?? appKey.appId : 'this website';
+  const keyName = appKey ? appKey.key.slice(appKey.key.lastIndexOf('/') + 1) : 'this key';
+  const error = APP_KEY_HANDOFF_MESSAGES[reason].replaceAll('{host}', host).replaceAll('{keyName}', keyName);
+  return { status: STATUSES[reason], body: { error, code: CODES[reason], reason } };
 }
 
 /** The longest a command-line app key grant lasts. */
