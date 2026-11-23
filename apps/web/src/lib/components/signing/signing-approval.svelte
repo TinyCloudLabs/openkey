@@ -60,7 +60,7 @@
     grantIsAppKeyDecrypt,
     sensitiveSummaryCount,
     grantHeading,
-    PROTOCOL_HEADLINE,
+    protocolHeadline,
     PROTOCOL_HINT,
     SIWE_WITHOUT_EXPIRY,
     NAMED_SECRET_DECRYPT_ROW,
@@ -304,7 +304,6 @@
   const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
   const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
   const oneSecretShown = $derived(oneSecret !== null && oneNamedSecret(selectedGrants) !== null);
-  const headline = $derived(oneSecretShown ? oneSecret!.headline : PROTOCOL_HEADLINE[model.protocol]);
   const hint = $derived(oneSecretShown ? oneSecret!.hint : PROTOCOL_HINT[model.protocol]);
 
   // A signed request that can open all secrets or all encrypted data starts as a whole at one hour or less.
@@ -399,6 +398,15 @@
   const requesterShown = $derived(requesterUnverified ? unverifiedRequester!.name : requesterName);
   const manifestNameShown = $derived(appDisplayName(model.requester.manifestName));
   const requestedBy = $derived(originHost ?? requesterName);
+  // The sign-in heading names an app or an origin. The "not verified" requester of a link is no name to put in it, and
+  // a recap that hosts a new space on a node sets up hosting for the owner, so it keeps the protocol heading.
+  const hostsSpace = $derived(readSpaceHostFacts(model) !== null);
+  const headline = $derived(
+    oneSecretShown ? oneSecret!.headline : protocolHeadline(model.protocol, hostsSpace ? null : requesterName || null),
+  );
+  // The id on a matched manifest comes from that manifest; an id the app sent beside a matched manifest that names
+  // none is the app's own word, which the manifest neither confirms nor contradicts.
+  const manifestMatched = $derived(model.metadataTrust.status === "origin-bound" || model.metadataTrust.status === "verified");
   // The note under the expiry line names who asked as the screen does: the verified origin, or "This request" where
   // nothing identifies the requester (a link, a device sign-in, an approval link).
   const onceNoteSite = $derived(originHost ?? "This request");
@@ -1147,7 +1155,11 @@
             {:else if model.requester.manifestIdProvenance === "origin-bound"}
               from origin-bound manifest
             {:else if model.requester.manifestIdProvenance === "caller"}
-              caller-supplied, unverified
+              {#if manifestMatched}
+                from the app's request; the manifest doesn't name one
+              {:else}
+                caller-supplied, unverified
+              {/if}
             {/if}
           </span>
         </div>

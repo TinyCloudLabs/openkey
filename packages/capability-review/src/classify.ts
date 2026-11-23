@@ -267,14 +267,14 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       return {
         family: "secret-namespace-list",
         displayLabel: isSecretValueRead(entry.actions)
-          ? "Secret data — (all secrets)"
-          : "Secret names and metadata — (all secrets)",
+          ? "Secret data: all secrets"
+          : "Secret names and metadata: all secrets",
       };
     }
     if (BOOTSTRAP_SQL_SERVICES.has(service)) {
       return {
         family: isMutation ? "secret-mutation" : "secret-read",
-        displayLabel: `${isMutation ? "Secret catalog (manage)" : "Secret catalog (view)"} — ${describeName(path)}`,
+        displayLabel: `${isMutation ? "Secret catalog (manage)" : "Secret catalog (view)"}: ${describeName(path)}`,
       };
     }
     return {
@@ -285,7 +285,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
           : metadataOnly
             ? "Secret names and metadata"
             : "Secret values (read)"
-      } — ${describeName(path)}`,
+      }: ${describeName(path)}`,
     };
   }
 
@@ -308,7 +308,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       );
       const secretName =
         path.replace(/^vault\/secrets\/?/, "").replace(/^secrets\/?/, "") ||
-        "(all secrets)";
+        "all secrets";
       const isWholeNamespace =
         path === "vault/secrets" || path === "secrets";
       return {
@@ -318,12 +318,12 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
             ? "secret-namespace-list"
             : "secret-read",
         displayLabel: isMutation
-          ? `Named secret (mutate) — ${secretName}`
+          ? `Named secret (mutate): ${secretName}`
           : isWholeNamespace
             ? isSecretValueRead(entry.actions)
-              ? "Secret data — (all secrets)"
-              : "Secret names and metadata — (all secrets)"
-            : `Named secret (read) — ${secretName}`,
+              ? "Secret data: all secrets"
+              : "Secret names and metadata: all secrets"
+            : `Named secret (read): ${secretName}`,
       };
     }
     // Ability-derived and resource-derived services disagree. Outside the
@@ -443,7 +443,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
             labels.length > 1
               ? plainSentence(entry.actions, entry.space, isOtherUser ? "another user's " : "your ")
               : isOtherUser
-                ? `${labels[0]} — another user`
+                ? `Another user's ${labels[0]}`
                 : labels[0]!,
         };
       }
@@ -492,7 +492,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     }
     return {
       family: "bootstrap-capabilities",
-      displayLabel: `Permission check${spaceName ? ` — ${spaceName}` : ""}`,
+      displayLabel: `Permission check${spaceName ? `: ${spaceName}` : ""}`,
     };
   }
   if (DELEGATION_SERVICES.has(service)) {
@@ -552,22 +552,22 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     if (isMutation || hasUnknownVerb) {
       return {
         family: "secret-mutation",
-        displayLabel: `Named secret (mutate) — ${describeName(path)}`,
+        displayLabel: `Named secret (mutate): ${describeName(path)}`,
       };
     }
     if (path === "" && isNamespaceListing(entry.actions)) {
       return {
         family: "secret-namespace-list",
         displayLabel: isSecretValueRead(entry.actions)
-          ? "Secret data — (all secrets)"
-          : "Secret names and metadata — (all secrets)",
+          ? "Secret data: all secrets"
+          : "Secret names and metadata: all secrets",
       };
     }
     return {
       family: "secret-read",
       displayLabel: `${
         metadataOnly ? "Secret names and metadata" : "Named secret (read)"
-      } — ${describeName(path)}`,
+      }: ${describeName(path)}`,
     };
   }
   if (ENCRYPTION_SERVICES.has(service)) {
@@ -678,14 +678,14 @@ function classifyCoreOperation(
     // Never lower an administrative grant to the attention-level
     // cross-user family.
     return family === "database-admin"
-      ? { family, displayLabel: composed ?? `${label} — another user` }
+      ? { family, displayLabel: composed ?? `Another user's ${label}` }
       : { family: "cross-app-data", displayLabel: "Another user's data" };
   }
   return { family, displayLabel: label };
 }
 
 function describeName(path: string): string {
-  if (!path) return "(all secrets)";
+  if (!path) return "all secrets";
   return path;
 }
 

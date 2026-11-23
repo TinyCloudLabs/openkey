@@ -2126,6 +2126,16 @@ function secretKeyRows(
 
 const KV_GET_ABILITIES = new Set(["tinycloud.kv/get", "kv/get"]);
 
+/** The row a read of secrets the review cannot place reads as. */
+const READ_SECRETS_ROW = "Read secrets";
+
+/** The secret's name when this grant is exactly a read (`get`) of one secret's KV path in a secrets space; otherwise null. */
+function exactSecretRead(grant: CapabilityGrant): string | null {
+  if (!KV_SERVICES.has(grant.service) || grant.serviceMismatch === true || !isSecretsSpace(grant.space)) return null;
+  if (grant.actions.length !== 1 || !KV_GET_ABILITIES.has(grant.actions[0]!.ability)) return null;
+  return secretOfKvPath(grant.path)?.name ?? null;
+}
+
 /**
  * The rows of the approval summary for the grants currently selected. Repeated
  * sentences collapse into one row at the strongest severity; unmapped rows
@@ -2142,19 +2152,27 @@ export function buildSummaryStatements(grants: readonly CapabilityGrant[]): Summ
     if (kv !== null) names.set(kv.keyPath, kv.name);
     if (grantDecryptsOneSecret(grant)) decryptKeys.add(ownSecretKeyPath(grant)!);
   }
+  const rows = grants.map((grant) => ({ grant, statements: secretKeyRows(grant, names, decryptKeys) ?? buildStatements(grant) }));
+  // The plural row names its secret when every grant behind it reads the same one secret.
+  const readSecretsNames = new Set<string | null>(
+    rows.filter((row) => row.statements.some((statement) => statement.primaryText === READ_SECRETS_ROW))
+      .map((row) => exactSecretRead(row.grant)),
+  );
+  const namedRead = readSecretsNames.size === 1 ? ([...readSecretsNames][0] ?? null) : null;
   const grouped = new Map<string, SummaryStatement>();
-  for (const grant of grants) {
-    for (const statement of secretKeyRows(grant, names, decryptKeys) ?? buildStatements(grant)) {
-      const existing = grouped.get(statement.primaryText);
+  for (const { grant, statements } of rows) {
+    for (const statement of statements) {
+      const primaryText = statement.primaryText === READ_SECRETS_ROW && namedRead !== null ? secretReadText(namedRead) : statement.primaryText;
+      const existing = grouped.get(primaryText);
       const rowSeverity = statement.severity ?? grant.severity;
       if (existing) {
         if (SUMMARY_SEVERITY_RANK[rowSeverity] > SUMMARY_SEVERITY_RANK[existing.severity]) {
           existing.severity = rowSeverity;
         }
       } else {
-        grouped.set(statement.primaryText, {
-          key: statement.primaryText,
-          primaryText: statement.primaryText,
+        grouped.set(primaryText, {
+          key: primaryText,
+          primaryText,
           severity: rowSeverity,
           unmapped: statement.literalEscaped === true,
           codeSpans: statement.codeSpans === true,
