@@ -26,6 +26,7 @@ import { courierEntry } from "./courier.js";
 import type { CapabilityFamily, PermissionSeverity } from "./model.js";
 import { isSecretsSpace } from "./app-scope.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
+import { inboxMessagesStatement } from "./inbox-messages.js";
 import {
   DELEGATION_LIST_LABEL,
   DELEGATION_REVOKE_LABEL,
@@ -51,6 +52,7 @@ interface RecapEntryLike {
   actions: string[];
   signerAddress?: string | null;
   signerChainId?: number;
+  resourceService?: string | null;
   /** Ability-derived and resource-derived services disagree on the wire. */
   serviceMismatch?: boolean;
 }
@@ -400,7 +402,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     } else {
       return {
         family: "unknown",
-        displayLabel: "Unrecognized key-value data",
+        displayLabel: inboxMessagesStatement(entry, isOwnSpace) ?? "Unrecognized key-value data",
       };
     }
 
@@ -460,7 +462,10 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         displayLabel: "Unrecognized public data permission",
       };
     } else {
-      return { family: "unknown", displayLabel: "Unrecognized SQL data" };
+      return {
+        family: "unknown",
+        displayLabel: inboxMessagesStatement(entry, isOwnSpace) ?? "Unrecognized SQL data",
+      };
     }
 
     return isOtherUser

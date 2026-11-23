@@ -44,6 +44,7 @@ import { ENCRYPTION_URN_PREFIX, parseEncryptionResource } from "./encryption-res
 import { isAppsKeyResource, parseKeyResource } from "./key-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import { feedGrantStatement } from "./feed-grant.js";
+import { inboxMessagesStatement } from "./inbox-messages.js";
 import { coversManySecrets, exactSecretKeyPath, secretKeyDisplayName, secretOfKvPath } from "./secret-keys.js";
 import { KV_VERBS, SECRETS_KNOWN_VERBS, SQL_DATABASE_VERBS } from "./known-verbs.js";
 import {
@@ -1407,6 +1408,11 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
     return { primaryText: FILES_FOR_YOU_STATEMENT, service, resource };
   }
 
+  const inboxText = inboxMessagesStatement(
+    { ...grant, actions: abilityStrings },
+    grant.ownedBySelf === true,
+  );
+  if (inboxText !== null) return { primaryText: inboxText, service, resource };
 
   // Classification is the authority for whether a structural shape is
   // understood. Ownership or a familiar-looking path must never upgrade an
