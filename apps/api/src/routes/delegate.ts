@@ -130,6 +130,7 @@ import {
   APP_KEY_ABILITIES,
   APP_KEY_HANDOFF_DEFAULT_MS,
   APP_KEY_HANDOFF_MAX_MS,
+  appKeyHandoffDomainMatches,
   appKeyHandoffRefusal,
   checkAppKeyHandoffSiwe,
   parseAppKeyHandoff,
@@ -2949,9 +2950,9 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     if (!appKeyRequest) return refuseAppKeyHandoff('request_invalid');
   }
   // TC-1486: refuse a SIWE that names a different site than the verified
-  // requester, or that arrives unattributed. Prepared-handoff tickets are
-  // exempt: their request was bound at claim time and the requester is a
-  // local CLI, not a browser origin.
+  // requester, or that arrives unattributed. A prepared handoff is bound at
+  // claim time. An app-key handoff also binds the SIWE domain to the exact
+  // listing host below, after the authenticated ticket has been checked.
   let siweOriginChecked = false;
   if (!ticket && typeof body.siwe === 'string') {
     const siweCheck = checkSiweOrigin(body.siwe, body.requestOrigin);
@@ -3309,6 +3310,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   // Nothing else admits it. The file is fetched now, every time.
   let appKeyInfo: Record<string, unknown> | undefined;
   let appKeyDefaultExpiresAt: string | undefined;
+  let appKeyHost: string | undefined;
   if (appKeyRequest) {
     const checkedGrant = checkAppKeyHandoffSiwe({
       siwe: body.siwe,
@@ -3329,6 +3331,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     const notAdmitted = appKeyRefusalForSiwe(body.siwe, originalEntries, [checkedGrant.grant.admitted]);
     if (notAdmitted) return c.json(appKeyRefusalBody(notAdmitted, 'non_browser'), appKeyRefusalStatus(notAdmitted));
     admittedAppKeys = [checkedGrant.grant.admitted];
+    appKeyHost = listed.host;
     const requestedMs = Date.parse(checkedGrant.grant.expirationTime);
     const preparedAt = Date.now();
     appKeyDefaultExpiresAt = new Date(Math.min(requestedMs, preparedAt + APP_KEY_HANDOFF_DEFAULT_MS)).toISOString();
@@ -3377,6 +3380,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       appOrigin: normalizeAppOrigin(body.reportedOrigin) ?? undefined,
       admittedAppKeys,
       appKeyDefaultExpiresAt,
+      appKeyHost,
       expiryChangeable: body.expiryChangeable === true,
       signInRenewal,
     });
@@ -3797,6 +3801,15 @@ delegateRouter.post('/authorize-sign', async (c) => {
       );
     }
     signedMessage = withExpiry;
+  }
+
+  // Sign the app-key request only for the listing host admitted at prepare.
+  if (ticket && bound.admittedAppKeys?.length) {
+    const parsed = parseSiweFields(signedMessage);
+    if (!bound.appKeyHost || !parsed.ok || !appKeyHandoffDomainMatches(parsed.fields, bound.appKeyHost)) {
+      const refusal = appKeyHandoffRefusal('request_invalid');
+      return c.json(refusal.body, refusal.status);
+    }
   }
 
   // The pre-sign rule on the exact bytes about to be signed:

@@ -9,11 +9,11 @@
 // on the signer's own `default` network, with `decrypt` and `key.create` and
 // nothing else, ending within 7 days.
 
-import { SiweMessage } from 'siwe';
 import { parseManifestKeys, appIdForOrigin } from './app-key-gate';
-import { recapResources, type AdmittedAppKey } from './app-key-refusal';
+import type { AdmittedAppKey } from './app-key-refusal';
 import { appIdValid, isKeyPath, parseKeyResource } from './key-resource';
 import { fetchAppKeysFile, type AppKeysFileFetch } from './manifest-origin-fetch';
+import { parseStrictSiwe, recapStatement } from './signed-subset';
 
 export interface AppKeyHandoffRequest {
   appId: string;
@@ -115,6 +115,7 @@ const CLOCK_SKEW_MS = 60_000;
 
 export const APP_KEY_ABILITIES = ['tinycloud.encryption/decrypt', 'tinycloud.encryption/key.create'] as const;
 const FILE_ABILITIES = ['decrypt', 'key.create'] as const;
+const CLI_APP_KEY_STATEMENT = 'TinyCloud CLI is requesting an app key.';
 
 /** `{ appId, key }` and nothing else, with a valid app id and a valid relative key under it. `null` otherwise. */
 export function parseAppKeyHandoff(value: unknown): AppKeyHandoffRequest | null {
@@ -139,6 +140,11 @@ export function appKeyHandoffHost(appId: string): string | null {
   return appIdForOrigin(`https://${host}`) === appId ? host : null;
 }
 
+/** The SIWE names the canonical listing host as a bare, byte-exact domain. */
+export function appKeyHandoffDomainMatches(message: { scheme?: string; domain: string }, host: string): boolean {
+  return message.scheme === undefined && message.domain === host;
+}
+
 export interface AppKeyHandoffGrant {
   /** The one admitted key resource, as it must be written in the SIWE. */
   admitted: AdmittedAppKey;
@@ -157,20 +163,16 @@ export function checkAppKeyHandoffSiwe(input: {
   now: number;
 }): { ok: true; grant: AppKeyHandoffGrant } | { ok: false; reason: AppKeyHandoffReason } {
   const fail = (reason: AppKeyHandoffReason) => ({ ok: false as const, reason });
-  if (appKeyHandoffHost(input.appKey.appId) === null) return fail('app_id');
-  let message: SiweMessage;
-  try {
-    message = new SiweMessage(input.siwe);
-  } catch {
-    return fail('recap');
-  }
+  const host = appKeyHandoffHost(input.appKey.appId);
+  if (host === null) return fail('app_id');
+  const parsedMessage = parseStrictSiwe(input.siwe);
+  if (!parsedMessage.ok) return fail('recap');
+  const message = parsedMessage.siwe;
+  if (!appKeyHandoffDomainMatches(message, host)) return fail('request_invalid');
   // One resource in the whole message, and it is the one ReCap.
-  if (!message.resources || message.resources.length !== 1 || !message.resources[0]!.startsWith('urn:recap:')) {
-    return fail('recap');
-  }
-  const resources = recapResources(input.siwe);
-  if (resources === null || resources.length !== 1) return fail('recap');
-  const [resource, abilities] = resources[0]!;
+  if (message.resources?.length !== 1 || message.recap?.att.size !== 1) return fail('recap');
+  const [resource, actions] = message.recap.att.entries().next().value!;
+  const abilities = [...actions.keys()];
   const ownerDid = input.ownerDid ?? `did:pkh:eip155:${message.chainId}:${message.address}`;
   const parsed = parseKeyResource(resource);
   if (!parsed || parsed.isPrefix || parsed.keyPath !== `apps/${input.appKey.appId}/${input.appKey.key}`) return fail('recap');
@@ -180,6 +182,9 @@ export function checkAppKeyHandoffSiwe(input: {
     !APP_KEY_ABILITIES.every((ability) => abilities.includes(ability))
   ) {
     return fail('recap');
+  }
+  if (message.statement !== `${CLI_APP_KEY_STATEMENT} ${recapStatement(message.recap.att)}`) {
+    return fail('request_invalid');
   }
   const end = Date.parse(message.expirationTime ?? '');
   if (!Number.isFinite(end) || end <= input.now || end > input.now + APP_KEY_HANDOFF_MAX_MS + CLOCK_SKEW_MS) {

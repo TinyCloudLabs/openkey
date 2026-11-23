@@ -20,6 +20,7 @@ const urn = (rest: string) => `urn:tinycloud:encryption:${OWNER}:default${rest}`
 
 const APP_ID = 'xyz.tinycloud.share';
 const HOST = 'share.tinycloud.xyz';
+const CLI_PREFIX = 'TinyCloud CLI is requesting an app key. ';
 const KEY = 'xyz.tinycloud.tinyapps.contacts/seal-v1';
 const RESOURCE = urn(`/apps/${APP_ID}/${KEY}`);
 const ABILITIES = ['tinycloud.encryption/decrypt', 'tinycloud.encryption/key.create'];
@@ -122,19 +123,19 @@ beforeEach(() => {
   setService(service);
 });
 
-function siweFor(raw: Record<string, string[]> = { [RESOURCE]: ABILITIES }, lifetimeMs = 7 * DAY - 60_000): string {
+function siweFor(raw: Record<string, string[]> = { [RESOURCE]: ABILITIES }, lifetimeMs = 7 * DAY - 60_000, domain = HOST): string {
   const now = new Date();
   return prepareSession({
     address,
     chainId: 1,
-    domain: 'cli.tinycloud.xyz',
+    domain,
     issuedAt: now.toISOString(),
     expirationTime: new Date(now.getTime() + lifetimeMs).toISOString(),
     spaceId: SPACE,
     jwk: sessionJwk,
     abilities: {} as never,
     rawAbilities: raw,
-  } as never).siwe;
+  } as never).siwe.replace('\n\nI further authorize', `\n\n${CLI_PREFIX}I further authorize`);
 }
 
 function post(path: string, body: unknown) {
@@ -203,6 +204,7 @@ describe('an admitted command-line app key', () => {
     expect(expirationOf(previewBody.signedMessage) - Date.now()).toBeGreaterThan(3_590_000);
     expect(recapResources(previewBody.signedMessage)).toEqual([RESOURCE]);
 
+    fileResult = { ok: false, kind: 'unavailable', reason: 'listing became unavailable after prepare' };
     const sign = await post('/authorize-sign', {
       authorizationContextToken: body.authorizationContextToken, previewApprovalToken: previewBody.previewApprovalToken,
       selectedActionIds: selected, protocolVersion: 1, ticket: handoff.ticket,
@@ -210,6 +212,9 @@ describe('an admitted command-line app key', () => {
     expect(sign.status).toBe(200);
     const signBody = await sign.json() as { signedMessage: string };
     expect(signBody.signedMessage).toBe(previewBody.signedMessage);
+    expect(signBody.signedMessage).toStartWith(`${HOST} wants you to sign in with your Ethereum account:\n`);
+    expect(signBody.signedMessage).toContain(`\n\n${CLI_PREFIX}I further authorize`);
+    expect(fetchAppKeysFile).toHaveBeenCalledTimes(1);
     expect(signed).toEqual([previewBody.signedMessage]);
   });
 
@@ -328,6 +333,22 @@ describe('the request is bound to the claimed handoff', () => {
     expect(body.code).toBe('binding_mismatch');
   });
 
+  test('a mismatched domain on an existing ticket is refused before any fetch', async () => {
+    const handoff = await claim(siweFor());
+    const siwe = handoff.siwe.replace(`${HOST} wants`, 'foreign.example wants');
+    const { res, body } = await prepare({ ...handoff, siwe });
+    expect(res.status).toBe(403);
+    expect(body.code).toBe('binding_mismatch');
+    expect(fetchAppKeysFile).not.toHaveBeenCalled();
+  });
+
+  test('an unclaimed ticket cannot enter the app-key path', async () => {
+    const { res, body } = await prepare({ ticket: Buffer.alloc(32, 253).toString('base64url'), siwe: siweFor() });
+    expect(res.status).toBe(404);
+    expect(body.code).toBe('handoff_not_found');
+    expect(fetchAppKeysFile).not.toHaveBeenCalled();
+  });
+
   test('without a ticket an appKey never gets this mode', async () => {
     const res = await post('/authorize-sign-prepare', {
       keyId: keyRecord.id, siwe: siweFor(), jwk: sessionJwk, host: 'https://node.tinycloud.xyz', appKey: { appId: APP_ID, key: KEY },
@@ -338,9 +359,20 @@ describe('the request is bound to the claimed handoff', () => {
     expect(fetchAppKeysFile).not.toHaveBeenCalled();
   });
 
-  test('a browser sign-in for the same key without appKey keeps its own rules', async () => {
+  test('a non-ticket request from a foreign origin still fails the browser SIWE guard', async () => {
+    const origin = 'https://foreign.example';
     const res = await post('/authorize-sign-prepare', {
       keyId: keyRecord.id, siwe: siweFor(), jwk: sessionJwk, host: 'https://node.tinycloud.xyz',
+      requestOrigin: origin, reportedOrigin: origin,
+    });
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({ code: 'siwe_origin_refused', reason: 'domain-mismatch' });
+    expect(fetchAppKeysFile).not.toHaveBeenCalled();
+  });
+
+  test('a browser sign-in for the same key without appKey keeps its own rules', async () => {
+    const res = await post('/authorize-sign-prepare', {
+      keyId: keyRecord.id, siwe: siweFor(undefined, undefined, 'cli.tinycloud.xyz'), jwk: sessionJwk, host: 'https://node.tinycloud.xyz',
       requestOrigin: 'https://cli.tinycloud.xyz', reportedOrigin: 'https://cli.tinycloud.xyz',
     });
     expect(res.status).not.toBe(200);
@@ -412,4 +444,21 @@ test('prepare answers 429 with the process capacity reason and owner message', a
     reason: 'process_capacity',
     error: "OpenKey is busy and couldn't check share.tinycloud.xyz's list of keys for command-line tools. Nothing was approved. Try again in a minute.",
   });
+});
+
+test.each([
+  ['a foreign domain', () => siweFor(undefined, undefined, 'foreign.example'), 400, 'request_invalid'],
+  ['a second resource in the ReCap', () => siweFor({ [RESOURCE]: ABILITIES, [urn('/secrets/other')]: ABILITIES }), 403, 'recap'],
+  ['another SIWE resource', () => `${siweFor()}\n- https://foreign.example/resource`, 403, 'recap'],
+  ['a different requester statement', () => siweFor().replace(CLI_PREFIX, 'Another CLI is requesting an app key. '), 400, 'request_invalid'],
+] as const)('claim refuses %s before any fetch', async (_name, buildSiwe, status, reason) => {
+  const app = createPreparedHandoffRouter(service);
+  const res = await app.request('/claim', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(claimPayload(buildSiwe())),
+  });
+  expect(res.status).toBe(status);
+  await expect(res.json()).resolves.toMatchObject({ code: 'app_key_request_invalid', reason });
+  expect(fetchAppKeysFile).not.toHaveBeenCalled();
 });

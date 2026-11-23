@@ -21,6 +21,8 @@ const OWNER = `did:pkh:eip155:1:${address}`;
 const SPACE = `tinycloud:pkh:eip155:1:${address}:default`;
 const urn = (rest: string, owner = OWNER, network = 'default') => `urn:tinycloud:encryption:${owner}:${network}${rest}`;
 const APP_ID = 'xyz.tinycloud.share';
+const HOST = 'share.tinycloud.xyz';
+const CLI_PREFIX = 'TinyCloud CLI is requesting an app key. ';
 const KEY = 'xyz.tinycloud.tinyapps.contacts/seal-v1';
 const appKey = { appId: APP_ID, key: KEY };
 const BOTH = ['tinycloud.encryption/decrypt', 'tinycloud.encryption/key.create'];
@@ -30,10 +32,10 @@ const NOW = Date.parse('2026-11-23T12:00:00.000Z');
 
 function siwe(raw: Record<string, string[]>, lifetimeMs = 3_600_000, extra: Record<string, unknown> = {}) {
   return prepareSession({
-    address, chainId: 1, domain: 'cli.tinycloud.xyz',
+    address, chainId: 1, domain: HOST,
     issuedAt: new Date(NOW).toISOString(), expirationTime: new Date(NOW + lifetimeMs).toISOString(),
     spaceId: SPACE, jwk, abilities: {} as never, rawAbilities: raw, ...extra,
-  } as never).siwe;
+  } as never).siwe.replace('\n\nI further authorize', `\n\n${CLI_PREFIX}I further authorize`);
 }
 const check = (message: string, over: Record<string, unknown> = {}) =>
   checkAppKeyHandoffSiwe({ siwe: message, appKey, ownerDid: OWNER, now: NOW, ...over });
@@ -73,6 +75,7 @@ describe('appKeyHandoffHost', () => {
   test('is the app id with its labels reversed', () => {
     expect(appKeyHandoffHost('xyz.tinycloud.share')).toBe('share.tinycloud.xyz');
     expect(appKeyHandoffHost('com.example')).toBe('example.com');
+    expect(appKeyHandoffHost('example.xn--bcher-kva')).toBe('xn--bcher-kva.example');
   });
 
   test.each(['xyz', 'a_b.example.com', 'localhost.tinycloud', '1.2.3.4', 'xyz.-bad.share', ''])('an id that is no host has none (%s)', (id) => {
@@ -90,6 +93,22 @@ describe('checkAppKeyHandoffSiwe', () => {
       expect(result.grant.admitted).toEqual({ resource, abilities: BOTH });
       expect(result.grant.expirationTime).toBe(new Date(NOW + 3_600_000).toISOString());
     }
+  });
+
+  test.each(['other.example', HOST.toUpperCase(), `${HOST}.`, `${HOST}:443`, `https://${HOST}`])(
+    'refuses a SIWE domain that differs from the canonical host (%s)',
+    (domain) => {
+      const message = siwe({ [resource]: BOTH }).replace(`${HOST} wants`, `${domain} wants`);
+      expect(reasonOf(check(message))).toBe('request_invalid');
+    },
+  );
+
+  test('requires the exact CLI statement followed by the canonical ReCap sentence', () => {
+    const message = siwe({ [resource]: BOTH });
+    for (const alternate of ['', 'Another CLI is requesting an app key. ', `${CLI_PREFIX} `, `${CLI_PREFIX}Another requester. `]) {
+      expect(reasonOf(check(message.replace(CLI_PREFIX, alternate)))).toBe('request_invalid');
+    }
+    expect(reasonOf(check(message.replace('I further authorize', 'I also authorize')))).toBe('request_invalid');
   });
 
   test('without an owner it reads the owner from the SIWE (the claim)', () => {

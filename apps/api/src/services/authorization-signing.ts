@@ -123,6 +123,8 @@ export interface AuthorizationContextIssueInput {
   admittedAppKeys?: AdmittedAppKey[];
   /** Exact default end shown at prepare for a command-line app-key ticket. */
   appKeyDefaultExpiresAt?: string;
+  /** Host of the exact app-key listing that admitted this ticket at prepare. */
+  appKeyHost?: string;
   /** The app's `expiryChangeable: true` opt-in, bound at prepare time (TC-2272). */
   expiryChangeable?: boolean;
   /**
@@ -162,6 +164,7 @@ interface StoredContext {
   appOrigin?: string;
   admittedAppKeys?: AdmittedAppKey[];
   appKeyDefaultExpiresAt?: string;
+  appKeyHost?: string;
   expiryChangeable?: boolean;
   renewal?: BoundRenewalChoice;
   signInRenewal?: SignInRenewalRequest;
@@ -417,6 +420,7 @@ export function issueAuthorizationContext(
     appOrigin: input.appOrigin,
     admittedAppKeys: input.admittedAppKeys,
     appKeyDefaultExpiresAt: input.appKeyDefaultExpiresAt,
+    appKeyHost: input.appKeyHost,
     expiryChangeable: input.expiryChangeable,
     renewal: input.renewal,
     signInRenewal: input.signInRenewal,
@@ -876,6 +880,7 @@ export interface PeekSuccess {
     appOrigin?: string;
     admittedAppKeys?: AdmittedAppKey[];
     appKeyDefaultExpiresAt?: string;
+    appKeyHost?: string;
     /** The app opted in (`expiryChangeable: true`) to a signed expiry that differs from the one it sent. */
     expiryChangeable?: boolean;
     /** The renewal choice bound with the preview (TC-2933). */
@@ -932,6 +937,7 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       appOrigin: stored.appOrigin,
       admittedAppKeys: stored.admittedAppKeys,
       appKeyDefaultExpiresAt: stored.appKeyDefaultExpiresAt,
+      appKeyHost: stored.appKeyHost,
       expiryChangeable: stored.expiryChangeable,
       renewal: stored.renewal,
       signInRenewal: stored.signInRenewal,
