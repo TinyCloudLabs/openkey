@@ -10,6 +10,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
 import { DeviceAuthorizationError, DeviceAuthorizationService, MemoryDeviceAuthorizationStore, sessionDidForPublicJwk } from '../services/device-authorization';
+import { OWN_PAGE_APPROVAL_ENABLED } from '../services/provision-authority';
 import { startFakeTinyCloudNode, type FakeTinyCloudNode } from './fake-tinycloud-node';
 import { mockModules, replaceModules } from './mock-module';
 
@@ -384,4 +385,51 @@ describe('a device request', () => {
     expect(approved.body.delegationHeader).toBeUndefined();
     expectNoAccountSetUp();
   });
+
+  test('the notice before approving follows the same switch the approval does', async () => {
+    await expectNoticeFollowsSwitch('device-approval', { deviceTransactionId: transactionId, expiry: '60s' }, devicePermissions);
+  });
 });
+
+/**
+ * What /prepare tells the owner must be what approving then does. Turning one case off in `OWN_PAGE_APPROVAL_ENABLED`
+ * must stop the notice promising a setup, not only stop the setup.
+ */
+async function expectNoticeFollowsSwitch(approval: keyof typeof OWN_PAGE_APPROVAL_ENABLED, prepareExtra: Record<string, unknown>, permissions: unknown) {
+  const prepare = () => post('/prepare', { keyId: keyRecord.id, jwk, host: node.url, prefix: 'default', permissions, ...prepareExtra });
+  const on = await prepare();
+  expect(on.status).toBe(200);
+  expect(on.body.spaceSetup).toEqual({ space: 'default', plan: 'setup' });
+  expect(on.body.setsUpAccount).toBe(true);
+
+  const enabled = OWN_PAGE_APPROVAL_ENABLED as Record<string, boolean>;
+  enabled[approval] = false;
+  try {
+    const off = await prepare();
+    expect(off.status).toBe(200);
+    expect(off.body.spaceSetup).toEqual({ space: 'default', plan: 'no-setup' });
+    expect(off.body.setsUpAccount).toBe(false);
+    const approved = await approve({ prepareExtra, permissions });
+    expect(approved.status).toBe(200);
+    expectNoAccountSetUp();
+  } finally {
+    enabled[approval] = true;
+  }
+}
+
+describe('the notice before approving', () => {
+  test('for a paste link follows the same switch the approval does', async () => {
+    await expectNoticeFollowsSwitch('delegate-link-local', { linkDelivery: 'paste' }, wholeSpace('default'));
+  });
+
+  test('for an approval request follows the same switch the approval does', async () => {
+    await expectNoticeFollowsSwitch('approval-request', { approvalRequestId: 'request_owner' }, wholeSpace('default'));
+  });
+
+  test('for a link that returns anywhere else says approving does not set the account up', async () => {
+    const prepared = await post('/prepare', { keyId: keyRecord.id, jwk, host: node.url, prefix: 'default', permissions: wholeSpace('default'), linkDelivery: 'callback', linkCallback: 'https://evil.example/cb' });
+    expect(prepared.body.spaceSetup).toEqual({ space: 'default', plan: 'no-setup' });
+    expect(prepared.body.setsUpAccount).toBe(false);
+  });
+});
+

@@ -25,7 +25,7 @@ type SpaceSetup = { space: string; plan: 'setup' | 'auto-sign-off' | 'no-setup' 
 const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 
 /** What /prepare returns for one `notes/` read, with the notice the server chose for this account (or none). */
-function prepareResponse(spaceSetup: SpaceSetup | null) {
+function prepareResponse(spaceSetup: SpaceSetup | null, setsUpAccount?: boolean) {
   const now = Date.now();
   const recap = makeRecapResource({ [NOTES.resource]: { [KV_GET]: [{}] } });
   const siwe = [
@@ -46,11 +46,12 @@ function prepareResponse(spaceSetup: SpaceSetup | null) {
     selectedActionKeys: permissions.flatMap((permission) => permission.actions.map((action) => action.key)),
     authorizationContext: { token: 'preview', expiresAt: now + 600_000, baselineAbilitiesDigest: 'digest' },
     ...(spaceSetup ? { spaceSetup } : {}),
+    ...(setsUpAccount === undefined ? {} : { setsUpAccount }),
   };
 }
 
 /** Answers every API call; returns the bodies the page sent to /prepare. */
-async function mockApi(page: Page, spaceSetup: SpaceSetup | null) {
+async function mockApi(page: Page, spaceSetup: SpaceSetup | null, setsUpAccount?: boolean) {
   const prepareBodies: Array<Record<string, unknown>> = [];
   await page.route('**/*', async (route) => {
     const url = new URL(route.request().url());
@@ -82,7 +83,7 @@ async function mockApi(page: Page, spaceSetup: SpaceSetup | null) {
     }
     if (url.pathname === '/api/delegate/prepare') {
       prepareBodies.push(route.request().postDataJSON() as Record<string, unknown>);
-      return json(route, prepareResponse(spaceSetup));
+      return json(route, prepareResponse(spaceSetup, setsUpAccount));
     }
     return json(route, { error: `Unmocked ${url.pathname}` }, 404);
   });
@@ -135,6 +136,15 @@ test.describe('an approval request page', () => {
     await expect(page.getByRole('note').filter({ hasText: CREATES })).toHaveText(CREATES);
     await expect(page.getByText(MAY_CREATE)).toHaveCount(0);
     await shot(page, 'approval-request-creates');
+  });
+
+  test('does not say approving may create the space when the server says it will not set the account up', async ({ page }) => {
+    await mockApi(page, null, false);
+    await page.goto(requestPath);
+    await expect(approveButton(page)).toBeEnabled();
+
+    await expect(page.getByText(MAY_CREATE)).toHaveCount(0);
+    await expect(page.getByText(CREATES)).toHaveCount(0);
   });
 });
 

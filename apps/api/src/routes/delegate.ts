@@ -399,6 +399,16 @@ async function boundProvisionAuthority(input: {
   }
 }
 
+/**
+ * Will approving this request set the account up? The decision `boundProvisionAuthority` ends in, asked at /prepare
+ * for a request that has just been validated: an expired, denied or changed approval request or device request was
+ * refused before this point, so what is left to decide is which case this is and whether that case is on.
+ */
+function approvalSetsUpAccount(input: { approvalRequest: boolean; device: boolean; linkDelivery: boolean }): boolean {
+  const approval = input.approvalRequest ? 'approval-request' : input.device ? 'device-approval' : input.linkDelivery ? 'delegate-link-local' : null;
+  return approval !== null && mayProvision(ownPageProvisionAuthority(approval));
+}
+
 async function finishManagedSpaceOnboarding(input: {
   userId: string;
   key: {
@@ -2398,6 +2408,13 @@ delegateRouter.post('/prepare', async (c) => {
     );
   }
 
+  // Approving sets the account up only for an approval request, a device request or a loopback or paste link, and only
+  // while that case is on. Every other link says it does not, rather than promise a setup.
+  const setsUpAccount = approvalSetsUpAccount({
+    approvalRequest: body.approvalRequestId !== undefined,
+    device: device.record !== null,
+    linkDelivery: linkDelivery !== undefined,
+  });
   let spaceSetup: { space: string; plan: SpaceSetupPlan | 'no-setup' } | null = null;
   try {
     // A reviewer's spaces are hosted when the account is provisioned, so the notice would only mislead.
@@ -2409,10 +2426,8 @@ delegateRouter.post('/prepare', async (c) => {
       chainId,
       spaceId: preparedResult.spaceId,
     });
-    // Approving sets the account up only for an approval request, a device request or a loopback or paste link
-    // (`boundProvisionAuthority`). For any other link the notice says it does not, rather than promise a setup.
-    const settingUp = device.record !== null || body.approvalRequestId !== undefined || linkDelivery !== undefined;
-    const disclosed = setup && { space: setup.space, plan: setup.plan === 'setup' && !settingUp ? 'no-setup' as const : setup.plan };
+    // The notice must not promise a setup the approval will skip (`approvalSetsUpAccount`).
+    const disclosed = setup && { space: setup.space, plan: setup.plan === 'setup' && !setsUpAccount ? 'no-setup' as const : setup.plan };
     if (setup?.plan !== 'setup') {
       spaceSetup = disclosed;
     } else if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN !== 'off') {
@@ -2441,6 +2456,7 @@ delegateRouter.post('/prepare', async (c) => {
     spaceId: preparedResult.spaceId,
     requestedSpaces: preparedResult.requestedSpaces.map(space => ({ ...space, spaceReady: null })),
     spaceSetup,
+    setsUpAccount,
     ownerDid,
     address,
     chainId,
