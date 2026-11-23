@@ -107,8 +107,8 @@ test('ongoing access starts ticked, and its preview carries the 90-day lease', a
   expect(approvals(calls)[0]!.body).not.toHaveProperty('renewal');
 });
 
-// Over two days the line also names the day it ends ("…30 days, on Dec 18").
-const EXPIRES_IN_30_DAYS = /^This permission expires in 30 days, on [A-Z][a-z]{2} \d{1,2}(, \d{4})?$/;
+// Over two days the line also names the day it ends ("…30 days, until Dec 18").
+const EXPIRES_IN_30_DAYS = /^This app's access to your data lasts 30 days, until [A-Z][a-z]{2} \d{1,2}(, \d{4})?\.$/;
 
 test('unticked, it says when it expires, and its preview is finite', async ({ page }) => {
   const calls = await open(page, { purpose: 'standing' });

@@ -660,6 +660,7 @@
         disabled={!expiryEditable}
         onChange={(ms) => { if (expiryEditable) expiryChoiceMs = ms; }}
         endsAt={foldEndsAt}
+        holder="device"
       />
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each model.permissions as grant}

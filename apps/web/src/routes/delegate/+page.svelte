@@ -11,7 +11,7 @@
   import SignInCard from '$lib/components/approval/sign-in-card.svelte';
   import Slip from '$lib/components/approval/slip.svelte';
   import StopPage from '$lib/components/approval/stop-page.svelte';
-  import { APPROVAL_EXPIRY, CODE, DONE, STOPS, STOP_PARTS, approvalStop, codeDestinationWord, fill, safeCode, stopForReply, supportLine, type StopView } from '@openkey/sdk/approval-copy';
+  import { APPROVAL_EXPIRY, CODE, DONE, ONE_SECRET, STOPS, STOP_PARTS, UNVERIFIED_REQUESTER, approvalStop, codeDestinationWord, fill, safeCode, stopForReply, supportLine, type StopView } from '@openkey/sdk/approval-copy';
   import { formatLocalAccessEnd } from '$lib/access-end';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
   import {
@@ -37,11 +37,14 @@
     KNOWN_NODE_ORIGINS,
     REGISTERED_CALLBACK_ENDPOINTS,
     checkDelegateCallback,
+    approvalRequester,
     delegateRequester,
     checkDelegateHost,
     isCanonicalHttpsEndpoint,
     isCanonicalHttpsOrigin,
     isLoopbackHostname,
+    isEd25519DidKey,
+    TINYCLOUD_ONE_REQUESTER_DIDS,
     withConfiguredEntries,
   } from '$lib/delegate-link-policy';
   import { preparedMatchesSelection, reviewSelectionToActionKeys, selectedServerActionIds } from '$lib/delegate-review-selection';
@@ -50,7 +53,7 @@
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, CODE_AND_APPROVAL_EXPIRED_TEXT, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
-  import { MAX_LEASE_MS, MIN_EXPIRY_MS, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, requestedExpiryMs } from '$lib/approval-expiry';
+  import { MAX_LEASE_MS, MIN_EXPIRY_MS, accessLastsLine, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, remainingAccessMs, requestedExpiryMs } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -59,6 +62,7 @@
   } from '$lib/delegate-space-setup';
   import { ownFolderOnlyLine } from '$lib/delegate-own-folder';
   import {
+    approvalLifetimeCapSeconds,
     parseCapabilityReview,
     defaultSelection,
     siweExpirationTime,
@@ -391,6 +395,8 @@
   let renewalPurpose: unknown = undefined;
   let renewalDefaulted = false;
   let renewalLeaseMs = $state<number | null>(null);
+  // TC-3821: the owner confirmed "Renew sensitive access?" for the ticked lease; cleared when the box is unticked.
+  let renewalConfirmed = $state(false);
   // Spec D12: standing access starts ticked; D7: never in the Once tier (secrets or decrypt); D11: no purpose is a task.
   // Ticking it re-prepares, so the preview the owner approves is the one that carries the lease.
   $effect(() => {
@@ -403,19 +409,21 @@
   // The owner's choice as /prepare binds it into the preview; null when the request did not ask for renewal.
   function renewalChoiceBody() {
     if (renewalMaxLeaseMs === null) return null;
-    return renewalLeaseMs === null ? { choice: 'finite' } : { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000) };
+    if (renewalLeaseMs === null) return { choice: 'finite' };
+    return { choice: 'leased', leaseLifetimeSeconds: Math.round(renewalLeaseMs / 1000), ...(renewalConfirmed ? { sensitiveConfirmed: true } : {}) };
   }
   const RENEWAL_NOT_SET_UP = "Renewal wasn't set up, so nothing was approved. Try again.";
   // While an external wallet signs the lease: how long renewal lasts, shown in the prompt.
   let renewalSigningMs = $state<number | null>(null);
   // A changed lease (and, from the sensitive-access step, the window) is a new preview: prepare once with both.
-  async function changeRenewal(leaseMs: number | null, windowMs?: number | null) {
+  async function changeRenewal(leaseMs: number | null, windowMs?: number | null, sensitiveConfirmed?: true) {
     if (!selectedKey || !jwk) {
       error = 'Missing key or JWK parameter.';
       return;
     }
-    const previous = { lease: renewalLeaseMs, choice: expiryChoiceMs, chosen: expiryChosen, param: expiryParam, requested: requestedExpiryParam };
+    const previous = { lease: renewalLeaseMs, confirmed: renewalConfirmed, choice: expiryChoiceMs, chosen: expiryChosen, param: expiryParam, requested: requestedExpiryParam };
     renewalLeaseMs = leaseMs;
+    renewalConfirmed = leaseMs !== null && (sensitiveConfirmed === true || renewalConfirmed);
     if (windowMs !== undefined) {
       requestedExpiryParam ??= expiryParam;
       expiryChoiceMs = windowMs;
@@ -429,11 +437,12 @@
       applyPreparedDelegation(data);
     } catch (e: any) {
       renewalLeaseMs = previous.lease;
+      renewalConfirmed = previous.confirmed;
       expiryChoiceMs = previous.choice;
       expiryChosen = previous.chosen;
       expiryParam = previous.param;
       requestedExpiryParam = previous.requested;
-      error = delegateErrorMessage(e, () => changeRenewal(leaseMs, windowMs), true);
+      error = delegateErrorMessage(e, () => changeRenewal(leaseMs, windowMs, sensitiveConfirmed), true);
     } finally {
       updatingPermissions = false;
     }
@@ -553,6 +562,8 @@
   }
   let requestedPermissions = $state<RequestedPermission[]>([]);
   let requestReason = $state(normalizeReason(reasonParam));
+  // The signer of a one-tap request, as the API checked it at /load; it alone can name the requester.
+  let approvalIssuer = $state('');
   // Set when a `permissions` parameter is present (even empty) but
   // unreadable: the request is refused rather than falling back to the
   // default abilities, which apply only when the parameter is absent.
@@ -586,13 +597,25 @@
     ? callbackCheck.reason
     : hostCheck?.ok === false ? hostCheck.reason : '');
   const approvedCallback = $derived(callbackCheck?.ok ? callbackCheck.callback : null);
-  const requester = $derived(delegateRequester(approvedCallback));
+  const requester = $derived(approvalRequestMode
+    ? approvalRequester(approvalIssuer, withConfiguredEntries(TINYCLOUD_ONE_REQUESTER_DIDS, import.meta.env.VITE_TINYCLOUD_ONE_REQUESTER_DIDS, isEd25519DidKey))
+    : delegateRequester(approvedCallback));
+  // A one-tap request for one named secret names TinyCloud One in its heading only when One's key signed it.
+  const oneSecretWords = $derived(approvalRequestMode
+    ? {
+        headline: requester ? fill(ONE_SECRET.heading, { requester: requester.displayName }) : ONE_SECRET.headingUnnamed,
+        hint: ONE_SECRET.hint,
+        decryptNote: ONE_SECRET.decryptNote,
+      }
+    : null);
   const showLoopbackHint = $derived(
     shouldShowLoopbackHint({ delegating, approvedCallback, deviceTransactionId, callbackInFlight, pasteCode }),
   );
   const hostNeedsAcknowledgment = $derived(hostCheck?.ok === true && !hostCheck.recognized);
   let hostAcknowledged = $state(false);
   const delegationExpiresAt = $derived(siweExpirationTime(siweMessage) ?? '');
+  // The raw-SIWE fallback signs the message as written, so the access lasts until its own Expiration Time.
+  const fallbackAccessMs = $derived(remainingAccessMs(delegationExpiresAt));
 
   // Device approvals never trust the link: the reason and every binding it
   // carries must come from (or equal) the server's pending request. Key
@@ -718,9 +741,12 @@
       jwk = request.targetPublicJwk;
       host = request.nodeOrigin;
       requestedPermissions = request.permissions;
+      approvalIssuer = typeof request.issuer === 'string' ? request.issuer : '';
       requestReason = normalizeReason(request.reason);
-      expiryMaxMs = request.grantLifetimeSeconds * 1000;
-      const startSeconds = approvalRequestStartSeconds(request.grantLifetimeSeconds, request.suggestedLifetimeSeconds);
+      // A request that decrypts secrets lasts 7 days at most, whatever it signed; the server refuses more.
+      const maxSeconds = approvalLifetimeCapSeconds(request.permissions, request.grantLifetimeSeconds);
+      expiryMaxMs = maxSeconds * 1000;
+      const startSeconds = approvalRequestStartSeconds(maxSeconds, request.suggestedLifetimeSeconds);
       approvalRequestStartMs = Math.max(MIN_EXPIRY_MS, startSeconds * 1000);
       expiryParam = `${startSeconds}s`;
       // The box only shows where this OpenKey has leases on (`renewalAvailable`); otherwise the plain line, and finite.
@@ -980,7 +1006,7 @@
           metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
           reason: { text: requestReason, source: requestReason ? 'caller' : 'none' },
           requester: {
-            displayName: requester.displayName,
+            displayName: requester?.displayName ?? '',
             verifiedOrigin: null,
             appId: null,
             manifestName: null,
@@ -1775,7 +1801,7 @@
   }
 
   // The end pages. `requesterName` is the app or command the review named.
-  const requesterName = $derived(expiredRequesterName || requester.displayName);
+  const requesterName = $derived(expiredRequesterName || requester?.displayName || '');
   // The full code was opened in place of the short one; its countdown no longer ends the page.
   let fullCodeOpen = $state(false);
   const codeExpired = $derived(!!shortCode && !!codeCountdown?.expired && !fullCodeOpen);
@@ -1801,7 +1827,7 @@
     if (selectedKey && keys.length > 1) {
       rows.push({ label: words.signedWith, value: `${selectedKey.label ?? `Key ${selectedKey.keyIndex}`} ${formatAddress(selectedKey.address)}` });
     }
-    const sentTo = approvalRequestMode ? fill(words.sentToValues.requester, { requester: requesterName })
+    const sentTo = approvalRequestMode ? (requesterName ? fill(words.sentToValues.requester, { requester: requesterName }) : '')
       : deviceTransactionId ? words.sentToValues.terminalThatShowedCode
       : approvedCallback ? (isLoopbackHostname(new URL(approvedCallback).hostname)
         ? words.sentToValues.terminalThisDevice
@@ -1915,7 +1941,7 @@
   </Slip>
 {:else if declined}
   <Slip at={3} last="agent" center>
-    <DonePage outcome="declined" requester={requesterName} />
+    <DonePage outcome="declined" requester={requesterName} line={requester ? '' : UNVERIFIED_REQUESTER.declinedLine} />
   </Slip>
 {:else if preparedMode}
   {#if ownerRevocationMode || ownerRevocationSelected}
@@ -1943,7 +1969,7 @@
           spaceNote={spaceReadiness}
         />
       {:else if step === 'done'}
-        <DonePage outcome="approved" requester={requesterName} returnTo={requester.returnTo} rows={receiptRows} spaceNote={spaceReadiness} />
+        <DonePage outcome="approved" requester={requesterName} returnTo={requester?.returnTo} line={requester ? '' : UNVERIFIED_REQUESTER.approvedLine} rows={receiptRows} spaceNote={spaceReadiness} />
 
       {:else if showLoader}
         <Loader phases={loaderPhases} lit={loaderLit} />
@@ -2088,7 +2114,7 @@
         {#if deviceTransactionId}
           <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} />
         {:else}
-          <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
+          <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} relayTo={requester?.displayName} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
         {/if}
 
         {#if selectedKey.keyType === 'EXTERNAL'}
@@ -2131,6 +2157,8 @@
               context={cliContext}
               onEditingStateChange={(editing) => { reviewEditing = editing; }}
               showSigner={keys.length > 1}
+              oneSecret={oneSecretWords}
+              unverifiedRequester={approvalRequestMode && !requester ? UNVERIFIED_REQUESTER : null}
               transport={{
                 approving: delegating || updatingPermissions,
                 error,
@@ -2160,6 +2188,9 @@
                     startMs: approvalRequestStartMs,
                     onceNote: APPROVAL_EXPIRY.onceStart,
                     limitNote: (ms) => fill(APPROVAL_EXPIRY.shortenLimit, { duration: formatDuration(ms) }),
+                    lengthNote: (startMs, maxMs) => startMs < maxMs
+                      ? fill(APPROVAL_EXPIRY.lengthen, { start: formatDuration(startMs), max: formatDuration(maxMs) })
+                      : fill(APPROVAL_EXPIRY.lengthFixed, { max: formatDuration(maxMs) }),
                   },
                   onChange: changeApprovalExpiry,
                 },
@@ -2167,7 +2198,7 @@
                   renewal: {
                     leaseMs: renewalLeaseMs,
                     maxLeaseMs: renewalMaxLeaseMs,
-                    onChange: (ms: number | null, windowMs?: number | null) => { void changeRenewal(ms, windowMs); },
+                    onChange: (ms: number | null, windowMs?: number | null, sensitiveConfirmed?: true) => { void changeRenewal(ms, windowMs, sensitiveConfirmed); },
                   },
                 } : {}),
               }}
@@ -2214,6 +2245,9 @@
 
           {#if siweMessage}
             <div class="flex flex-col gap-3">
+              {#if fallbackAccessMs !== null}
+                <p class="text-sm text-surface-700" data-testid="approval-access-line">{accessLastsLine('app', fallbackAccessMs)}</p>
+              {/if}
               <SiweMessage message={siweMessage} theme="light" hidePermissions={permissionOptions.length > 0} />
             </div>
 

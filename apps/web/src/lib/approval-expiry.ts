@@ -2,6 +2,8 @@
 // parsing and showing a duration, turning the chosen one into the instant the
 // server writes into the signed message, and the renewal lease choices.
 
+import { parseSiweFields } from '@openkey/capability-review';
+
 const S = 1000;
 const M = 60 * S;
 const H = 60 * M;
@@ -44,7 +46,19 @@ export const MAX_LEASE_MS = 365 * D;
 /** Spec D6 rule 3: renewing access to secrets or decrypt uses a 7-day window. */
 export const SENSITIVE_RENEWAL_WINDOW_MS = 7 * D;
 
-/** One-time approvals (the Once tier: secrets or decrypt) start at one hour (spec D6). */
+/**
+ * The Expiration Time for a window chosen with a confirmed sensitive renewal (TC-3821): `ms` from the message's own
+ * Not Before, else its Issued At, read the way the node reads them (`parseSiweFields`). The node renews each window
+ * from that start, and the server refuses a sensitive lease whose window is over 7 days, so counting from now (seconds
+ * after the app signed) would land just over. Counts from now when the message does not parse.
+ */
+export function renewalWindowExpiryAt(ms: number, message: string, now: number = Date.now()): string {
+  const parsed = parseSiweFields(message);
+  const start = parsed.ok ? Date.parse(parsed.fields.notBefore ?? parsed.fields.issuedAt) : NaN;
+  return new Date((Number.isFinite(start) ? Math.min(start, now) : now) + ms).toISOString();
+}
+
+/** One-time approvals (the Once tier: access to all secrets or all encrypted data) start at one hour (spec D6). */
 export const ONCE_DEFAULT_EXPIRY_MS = H;
 
 /**
@@ -137,9 +151,9 @@ export function formatDuration(ms: number): string {
   return count(Math.round(ms / S), 'second');
 }
 
-/** The window as an expiry line says it: over two days the day it ends too ("29 days, on Dec 17"); otherwise just the length ("45 minutes"). */
+/** The window as the access line says it: over two days the day it ends too ("29 days, until Dec 17"); otherwise just the length ("45 minutes"). */
 export function formatDurationWithEnd(ms: number, now: number = Date.now(), timeZone?: string): string {
-  return daysOverTwoDays(ms) === null ? formatDuration(ms) : `${formatDuration(ms)}, on ${formatEndDay(ms, now, timeZone)}`;
+  return daysOverTwoDays(ms) === null ? formatDuration(ms) : `${formatDuration(ms)}, until ${formatEndDay(ms, now, timeZone)}`;
 }
 
 /**
@@ -158,6 +172,21 @@ export function requestedExpiryMs(issuedAt: string | undefined, expirationTime: 
     if (whole > 0 && Math.abs(span - whole) <= 5 * S) return whole;
   }
   return span;
+}
+
+/**
+ * How long access signed as written lasts from `now`: up to the message's own Expiration Time. A few seconds either
+ * way snap to the whole day, hour or minute; otherwise it rounds up to the minute, so the line never shows less than
+ * what is granted. Null when there is no end or it has passed.
+ */
+export function remainingAccessMs(expirationTime: string | null | undefined, now: number = Date.now()): number | null {
+  const span = requestedExpiryMs(new Date(now).toISOString(), expirationTime ?? undefined);
+  return span === null ? null : Math.ceil(span / M) * M;
+}
+
+/** The line every approval screen shows for how long the access lasts. */
+export function accessLastsLine(holder: 'app' | 'device', ms: number, now: number = Date.now()): string {
+  return `This ${holder}'s access to your data lasts ${formatDurationWithEnd(ms, now)}.`;
 }
 
 /** The ISO time `ms` from `now`: what the signed message's Expiration Time becomes. */

@@ -113,6 +113,14 @@ import {
   type AdmittedAppKey,
   UNREADABLE_RECAP_MESSAGE,
 } from '../services/app-key-refusal';
+import {
+  SECRET_LIFETIME_CODE,
+  clampSecretExpiryMs,
+  exceedsSecretLifetime,
+  secretCapExpirationTime,
+  secretLifetimeBody,
+  secretLifetimeMessage,
+} from '../services/secret-lifetime';
 import { allowedElevatedIds, elevatedDecided, elevatedNotDecidedBody } from '../services/elevated-decision';
 import { elevatedActionsOf } from '@openkey/capability-review';
 import { admitAppKeys, appIdForOrigin, appKeyAdmissionRefusal, type ManifestKeys } from '../services/app-key-gate';
@@ -142,11 +150,11 @@ import { PreparedHandoffError } from '../services/prepared-handoff';
 import { preparedHandoffService } from './prepared-handoffs';
 import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
-import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, confirmBoundRenewal, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
+import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, checkApprovalLeaseGrant, confirmBoundRenewal, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
 import { bindSignInRenewalRequest, recordedSignInLease, setUpSignInLease, signInRenewalFailure, takePendingSignInLease, type SignInLease } from '../services/signin-renewal';
 import type { SignInRenewalRequest } from '../services/authorization-signing';
-import { parseRenewalChoice, renewalLeasesEnabled, renewalUnavailableMessage, signLease } from '../services/renewal-lease';
+import { assertLeaseableGrant, parseRenewalChoice, renewalLeasesEnabled, renewalUnavailableMessage, signLease } from '../services/renewal-lease';
 import {
   approvalPasskeyOffer,
   approvalPasskeyOfferInFlow,
@@ -1111,6 +1119,8 @@ delegateRouter.post('/sign', async (c) => {
         if (!policy.allowed) throw new Error(`message_rejected:${policy.reason}`);
         const appKeyRefusal = appKeyRefusalForSiwe(candidate.message as string);
         if (appKeyRefusal) throw new Error(`message_rejected:${appKeyRefusalMessage(appKeyRefusal, 'non_browser')}`);
+        const lifetimeReach = exceedsSecretLifetime(candidate.message as string, Date.now());
+        if (lifetimeReach) throw new Error(`message_rejected:${secretLifetimeMessage(lifetimeReach)}`);
         const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
         return { signature, identity };
       });
@@ -1205,9 +1215,10 @@ delegateRouter.post('/sign', async (c) => {
       },
     });
     if (!policy.allowed) return auditDenial(policy.code, policy.evidence);
-    // A message that names an app key or key.delete is outside the approved
-    // storage records: it is denied and recorded like every other denial.
-    if (typeof candidate.message === 'string' && appKeyRefusalForSiwe(candidate.message)) {
+    // A message that names an app key or key.delete, or asks for more than 7 days on secret keys, is outside
+    // the approved storage records: it is denied and recorded like every other denial.
+    if (typeof candidate.message === 'string' &&
+      (appKeyRefusalForSiwe(candidate.message) || exceedsSecretLifetime(candidate.message, Date.now()))) {
       return auditDenial('wrong_capability', policy.evidence);
     }
     if (!key || !key.sealedBlob || !policy.evidence.nonceDigest) {
@@ -1316,6 +1327,11 @@ delegateRouter.post('/sign', async (c) => {
       code: appKeyRefusalCode(signAppKeyRefusal),
       reason: appKeyRefusalMessage(signAppKeyRefusal, 'non_browser'),
     }, appKeyRefusalStatus(signAppKeyRefusal));
+  }
+  // Signed bytes cannot be shortened, so more than 7 days on secret keys is refused.
+  const signLifetimeReach = exceedsSecretLifetime(body.message, Date.now());
+  if (signLifetimeReach) {
+    return c.json({ approved: false, code: SECRET_LIFETIME_CODE, reason: secretLifetimeMessage(signLifetimeReach) }, 400);
   }
 
   let address: string;
@@ -1584,7 +1600,8 @@ delegateRouter.post('/', async (c) => {
   }
   let expiryMs: number;
   try {
-    expiryMs = resolveRequestExpiryMs(body);
+    // A grant on secret keys lasts 7 days at most.
+    expiryMs = clampSecretExpiryMs(resolveRequestExpiryMs(body), permissions);
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
@@ -1810,6 +1827,8 @@ delegateRouter.post('/', async (c) => {
     await checkApprovalDelegation(body, { signedSiwe: bound.originalSiwe });
     const tokenAppKeyRefusal = appKeyRefusalForSiwe(bound.originalSiwe, preparedEntries);
     if (tokenAppKeyRefusal) return c.json(appKeyRefusalBody(tokenAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(tokenAppKeyRefusal));
+    const tokenLifetimeReach = exceedsSecretLifetime(bound.originalSiwe, Date.now());
+    if (tokenLifetimeReach) return c.json(secretLifetimeBody(tokenLifetimeReach), 400);
     // TC-3442: the account's passkey setting, before the context is spent or the key unsealed.
     const passkeyRefusal = await checkApprovalPasskey(
       prisma,
@@ -2140,7 +2159,8 @@ delegateRouter.post('/prepare', async (c) => {
   }
   let expiryMs: number;
   try {
-    expiryMs = resolveRequestExpiryMs(body);
+    // A grant on secret keys lasts 7 days at most.
+    expiryMs = clampSecretExpiryMs(resolveRequestExpiryMs(body), permissions);
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
@@ -2172,6 +2192,8 @@ delegateRouter.post('/prepare', async (c) => {
   // Device approvals: the bytes handed to the wallet are a subset of what the device requested.
   const deviceSubset = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
   if (deviceSubset) return c.json(deviceSubset.body, deviceSubset.status);
+  // TC-3821: a leased choice on a grant reaching secrets needs the owner's confirm and a window of at most 7 days.
+  checkApprovalLeaseGrant(preparedResult.prepared.siwe, renewal);
 
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
@@ -2485,6 +2507,9 @@ delegateRouter.post('/complete', async (c) => {
   if (!expirationTime) {
     return c.json({ error: 'The signed SIWE must include a valid Expiration Time', code: 'missing_expiration_time' }, 400);
   }
+  // Signed bytes cannot be shortened, so more than 7 days on secret keys is refused.
+  const completeLifetimeReach = exceedsSecretLifetime(body.prepared.siwe, Date.now());
+  if (completeLifetimeReach) return c.json(secretLifetimeBody(completeLifetimeReach), 400);
 
   let contextClaim: AuthorizationContextClaim | undefined;
   let signInAppOrigin: string | undefined;
@@ -3650,6 +3675,9 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (!signSubset.ok) {
     return c.json({ error: signSubset.message, code: signSubset.code, reason: signSubset.reason }, 400);
   }
+  // The preview brought a grant on secret keys back to 7 days; bytes that still ask for more are refused.
+  const signedLifetimeReach = exceedsSecretLifetime(signedMessage, Date.now());
+  if (signedLifetimeReach) return c.json(secretLifetimeBody(signedLifetimeReach), 400);
 
   // Validate the single-use preview approval without consuming it. The
   // final selection and bytes must match exactly what the user previewed.
@@ -3814,6 +3842,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
         signedMessage,
         signature,
         leaseLifetimeSeconds: sealedRenewal.leaseLifetimeSeconds,
+        sensitiveConfirmed: sealedRenewal.sensitiveConfirmed === true,
         signOwner: isExternal ? undefined : (message) => signManagedKey(key, key.sealedBlob!, message),
       });
     } catch (error) {
@@ -4008,6 +4037,13 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     }
     expirationOverride = checked.value;
   }
+  // A grant on secret keys lasts 7 days at most, whatever the app asked or the owner picked. A later time is
+  // brought back to 7 days from now, also for an app that did not opt in to a changed expiry: a shorter grant is
+  // within what it asked for.
+  const secretCap = secretCapExpirationTime(bound.originalSiwe, Date.now());
+  if (secretCap !== null && !(Date.parse(expirationOverride ?? immutable.expirationTime) <= Date.parse(secretCap))) {
+    expirationOverride = secretCap;
+  }
   if (appKeyGroupPartial(
     admittedAppKeyActionIds(originalEntries, bound.admittedAppKeys, computeActionKey),
     groupRuleActionIds(originalEntries, ticket),
@@ -4131,6 +4167,16 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   });
   if (!previewSubset.ok) {
     return c.json({ error: previewSubset.message, code: previewSubset.code, reason: previewSubset.reason }, 400);
+  }
+  // TC-3821: the lease these exact bytes would carry is refused here, before the owner sees the preview, when the
+  // grant reaches secrets without the owner's confirm or with a window over 7 days.
+  if (renewalChoice?.choice === 'leased') {
+    try {
+      assertLeaseableGrant(preparedSignedMessage, renewalChoice.sensitiveConfirmed === true);
+    } catch (error) {
+      const refused = signInRenewalFailure(error);
+      return c.json(refused.body, refused.status);
+    }
   }
 
   // Preview grants + selection. `service` is canonicalized to the

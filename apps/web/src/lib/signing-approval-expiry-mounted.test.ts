@@ -381,7 +381,9 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
   const ASKED = '2026-08-07T00:00:00.000Z';
   const SOON = '2026-07-31T00:30:00.000Z';
   const kvGet = { [FIXTURE_META.ownSpace]: { 'tinycloud.kv/get': [{}] } };
-  const decrypt = { [urn('/apps/xyz.tinycloud.listen/')]: { [`${E}decrypt`]: [{}] } };
+  const decrypt = { [urn('')]: { [`${E}decrypt`]: [{}] } };
+  const namedSecret = { [`${FIXTURE_META.ownSpace}/kv/vault/secrets/DEPLOY_KEY`]: { 'tinycloud.kv/get': [{}] } };
+  const appKeys = { [urn('/apps/xyz.tinycloud.listen/')]: { [`${E}decrypt`]: [{}] } };
 
   function modelOf(resources: Array<Record<string, Record<string, unknown[]>>>, expirationTime = ASKED): CapabilityReviewModel {
     return parseCapabilityReview({
@@ -433,6 +435,16 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
     expect(line(target)).toContain('1 hour');
     expect(note(target)).not.toBeNull();
     cleanup();
+  });
+
+  test('a named secret or one app\'s own keys keep what the app asked for, with no one-hour start', () => {
+    for (const narrow of [namedSecret, appKeys]) {
+      const { target, calls, cleanup } = mounted(modelOf([narrow]));
+      expect(calls).toEqual([]);
+      expect(line(target)).toContain('7 days');
+      expect(note(target)).toBeNull();
+      cleanup();
+    }
   });
 
   test('a request that asks for an hour or less keeps what it asked for', () => {
@@ -507,7 +519,7 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
   test('the note names the verified site, what it asked for and the hour, and where the fold is', () => {
     const { target, cleanup } = mounted(modelOf([decrypt]));
     expect(noteText(target)).toBe(
-      'listen.tinycloud.xyz asked for 7 days. Access to secrets or encrypted data starts at 1 hour. You can choose longer in Advanced details.',
+      'listen.tinycloud.xyz asked for 7 days. Access that can open all your secrets or all your encrypted data starts at 1 hour. You can choose longer under How long it lasts.',
     );
     cleanup();
   });
