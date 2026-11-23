@@ -46,7 +46,7 @@ test('timed-out DNS lookups keep their slots until the native lookup settles', a
   const releases: Array<(addresses: LookupAddress[]) => void> = [];
   lookup.mockImplementation(() => new Promise(resolve => releases.push(resolve)));
   const pending = Array.from({ length: 32 }, () => fetchAppKeysFile('example.test'));
-  const full = { ok: false, kind: 'busy', reason: 'DNS lookup capacity reached' };
+  const full = { ok: false, kind: 'busy', reason: 'DNS lookup capacity reached' } as const;
 
   try {
     await expect(fetchAppKeysFile('example.test')).resolves.toEqual(full);
