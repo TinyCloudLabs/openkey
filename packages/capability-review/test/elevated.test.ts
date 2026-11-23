@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  allSecretsCard,
   elevatedActionsOf,
   elevatedCard,
   elevatedDecidedAnnouncement,
@@ -108,11 +109,11 @@ describe("the warning copy", () => {
     expect(elevatedWholeNote("gk.gbafa.com")).toBe("gk.gbafa.com sent this as one request, so you can approve all of it or none of it.");
   });
 
-  test("Card A: decrypt on the whole network says what it reaches and for how long", () => {
+  test("Card A: decrypt on the whole network asks to use the master key", () => {
     const card = elevatedCard("encryption-network", { decrypt: true, create: false }, "gk.gbafa.com", elevatedWhereText(null));
-    expect(card.heading).toBe("Unlock all your encrypted data");
+    expect(card.heading).toBe("Use your master key to decrypt?");
     expect(card.body).toBe(
-      "gk.gbafa.com could unlock everything encrypted to your account, including your secrets and data other apps saved, for as long as this approval lasts.",
+      "gk.gbafa.com is asking to use your master key. Some apps do this because they don't have app-specific keys.",
     );
   });
 
@@ -161,15 +162,33 @@ describe("the warning copy", () => {
     for (const kind of ["encryption-network", "encryption-keys"] as const) {
       for (const abilities of [{ decrypt: true, create: false }, { decrypt: false, create: true }, { decrypt: true, create: true }]) {
         const { body } = elevatedCard(kind, abilities, "x.test", elevatedWhereText("qa"));
-        expect(body).toContain("for as long as this approval lasts");
+        if (!(kind === "encryption-network" && abilities.decrypt)) expect(body).toContain("for as long as this approval lasts");
         expect(body).not.toMatch(/\buntil\b/);
       }
     }
   });
 
+  test("whole-network decrypt: the master-key question, the site in the body, and the cue only for an unverified site", () => {
+    const body = "is asking to use your master key. Some apps do this because they don't have app-specific keys.";
+    const verified = elevatedCard("encryption-network", { decrypt: true, create: false }, "gk.gbafa.com", elevatedWhereText(null));
+    expect(verified).toEqual({ heading: "Use your master key to decrypt?", body: `gk.gbafa.com ${body}` });
+    const unverified = elevatedCard("encryption-network", { decrypt: true, create: false }, null, elevatedWhereText(null));
+    expect(unverified).toEqual({ heading: "Use your master key to decrypt?", body: `This app ${body} OpenKey can't confirm the site.` });
+  });
+
+  test("whole-network decrypt with key creation adds one line, and the all-secrets card says the same words", () => {
+    const body = "is asking to use your master key. Some apps do this because they don't have app-specific keys.";
+    const combo = elevatedCard("encryption-network", { decrypt: true, create: true }, "gk.gbafa.com", elevatedWhereText(null));
+    expect(combo).toEqual({ heading: "Use your master key to decrypt?", body: `gk.gbafa.com ${body} It can also create encryption keys.` });
+    const card = allSecretsCard({ kind: "whole-account", alsoWholeAccount: false }, "gk.gbafa.com");
+    expect(card).toEqual({ heading: "Use your master key to decrypt?", body: `gk.gbafa.com ${body}`, cue: null });
+    const unverified = allSecretsCard({ kind: "whole-account", alsoWholeAccount: false }, null);
+    expect(unverified).toEqual({ heading: "Use your master key to decrypt?", body: `This app ${body}`, cue: "OpenKey can't confirm the site." });
+  });
+
   test("announcements and the review row", () => {
-    expect(elevatedDecidedAnnouncement("Unlock all your encrypted data", false, 1)).toBe("Rejected: Unlock all your encrypted data. 1 left to decide.");
-    expect(elevatedDecidedAnnouncement("Unlock all your encrypted data", true, 0)).toBe("Allowed: Unlock all your encrypted data. All decided.");
-    expect(elevatedNotApprovedRow("Unlock all your encrypted data")).toBe("Not approved: Unlock all your encrypted data");
+    expect(elevatedDecidedAnnouncement("Use your master key to decrypt?", false, 1)).toBe("Rejected: Use your master key to decrypt. 1 left to decide.");
+    expect(elevatedDecidedAnnouncement("Use your master key to decrypt?", true, 0)).toBe("Allowed: Use your master key to decrypt. All decided.");
+    expect(elevatedNotApprovedRow("Use your master key to decrypt?")).toBe("Not approved: Use your master key to decrypt");
   });
 });

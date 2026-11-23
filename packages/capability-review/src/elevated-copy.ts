@@ -78,10 +78,8 @@ export function elevatedCard(
   if (abilities.block || abilities.unblock) return elevatedControlCard(kind, abilities, who, where);
   if (kind === "encryption-network") {
     if (abilities.decrypt) {
-      return {
-        heading: "Unlock all your encrypted data",
-        body: `${who} could unlock everything encrypted to your account, including your secrets and data other apps saved, ${LAST_FOR_AS_LONG}.`,
-      };
+      const card = masterKeyDecryptCard(site, abilities.create);
+      return { heading: card.heading, body: card.cue === null ? card.body : `${card.body} ${card.cue}` };
     }
     return {
       heading: "Create encryption keys anywhere in your account",
@@ -109,31 +107,55 @@ export function elevatedCard(
 /** Said on the all-secrets card when no site is verified. */
 export const ALL_SECRETS_UNVERIFIED_CUE = "OpenKey can't confirm which site asked.";
 
+/** Said on every card that names the master key when no site is verified. The read cards without it keep the cue above. */
+export const MASTER_KEY_UNVERIFIED_CUE = "OpenKey can't confirm the site.";
+
+export const MASTER_KEY_TITLE = "Use your master key to decrypt?";
+const MASTER_KEY_CREATE_LINE = "It can also create encryption keys.";
+
+/**
+ * The card for an app that asks to decrypt with the whole default network, that is, with the owner's master key. One
+ * builder for both faces that ask it: `elevatedCard`'s whole-network decrypt and the all-secrets card's whole-account
+ * kind. `site` is the verified site; with none the body says "This app" and `cue` says OpenKey can't confirm the site.
+ * `withCreate` adds the key-creation line for a request that also creates keys on the whole network.
+ */
+function masterKeyDecryptCard(site: string | null, withCreate: boolean): { heading: string; body: string; cue: string | null } {
+  const verified = site !== null && site.length > 0;
+  const ask = `${verified ? site : "This app"} is asking to use your master key. Some apps do this because they don't have app-specific keys.`;
+  return {
+    heading: MASTER_KEY_TITLE,
+    body: withCreate ? `${ask} ${MASTER_KEY_CREATE_LINE}` : ask,
+    cue: verified ? null : MASTER_KEY_UNVERIFIED_CUE,
+  };
+}
+
 /**
  * The all-secrets card: a request that can open every secret, by decrypt on the
  * `secrets/` prefix or on a whole encryption network. `site` is the verified site; with none the card names "this
- * app" and says so in `cue`. The "older encrypted data" sentence is said only when a whole-network decrypt is in the
- * same request: the `secrets/` prefix alone does not open data encrypted to the account key.
+ * app" and says so in `cue`. A whole-network decrypt alone is the master-key card. Beside a `secrets/` read, the read
+ * card names the master key in its title and body: the `secrets/` prefix alone does not open data encrypted to the
+ * account key.
  */
 export function allSecretsCard(
   reach: AllSecretsReach,
   site: string | null,
 ): { heading: string; body: string; cue: string | null } {
+  if (reach.kind === "whole-account") return masterKeyDecryptCard(site, false);
   const verified = site !== null && site.length > 0;
   const who = verified ? site : "this app";
-  const cue = verified ? null : ALL_SECRETS_UNVERIFIED_CUE;
-  if (reach.kind === "whole-account") {
+  const read = reach.kind === "read-and-add" ? "read and add all your secrets" : "read all your secrets";
+  const trust = "Allow this only for your own tools on a device you trust.";
+  if (reach.alsoWholeAccount) {
     return {
-      heading: `Let ${who} open all your encrypted data?`,
-      body: "That covers every secret and everything else you've encrypted in TinyCloud. Allow this only for an app you trust.",
-      cue,
+      heading: `Let ${who} ${read} and use your master key?`,
+      body: `Your master key opens all your encrypted data. ${trust}`,
+      cue: verified ? null : MASTER_KEY_UNVERIFIED_CUE,
     };
   }
-  const trust = "Allow this only for your own tools on a device you trust.";
   return {
-    heading: reach.kind === "read-and-add" ? `Let ${who} read and add all your secrets?` : `Let ${who} read all your secrets?`,
-    body: reach.alsoWholeAccount ? `It can also open older encrypted data on your account. ${trust}` : trust,
-    cue,
+    heading: `Let ${who} ${read}?`,
+    body: trust,
+    cue: verified ? null : ALL_SECRETS_UNVERIFIED_CUE,
   };
 }
 
