@@ -11,7 +11,13 @@
 // The web screen and the API guard both call `elevatedKindOf`, so the screen can never decide on a different set of
 // permissions than the server later checks. This file has no imports beyond the key-resource helpers.
 
-import { isAppsKeyResource, keyPathOfAnyResource, keyPathOfResource, KEY_RESOURCE_PREFIX } from "./key-resource.js";
+import {
+  isAppsKeyResource,
+  keyPathOfAnyResource,
+  keyPathOfResource,
+  KEY_RESOURCE_PREFIX,
+  parseKeyResource,
+} from "./key-resource.js";
 
 /** A whole encryption network, or keys and prefixes outside `apps/`. */
 export type ElevatedKind = "encryption-network" | "encryption-keys";
@@ -64,6 +70,19 @@ export function elevatedWhere(entry: ElevatedEntryLike): string | null {
   if (path === null) return null;
   const segments = path.split("/").filter((segment) => segment.length > 0);
   return segments[segments.length - 1] ?? null;
+}
+
+/**
+ * The name of the one key an entry grants, or null when it does not provably grant exactly one key. A key URN has no
+ * trailing `/` and a prefix has exactly one, so `parseKeyResource` (which also checks the path grammar) tells them
+ * apart: only `kind: "key"` counts. A prefix, a whole network, a path the grammar refuses and a URN written in another
+ * letter case all give null. The name is the key's last segment, the same text `elevatedWhere` gives.
+ */
+export function elevatedExactKey(entry: ElevatedEntryLike): string | null {
+  const resource = encryptionResourceOfEntry(entry);
+  const parsed = resource === null ? null : parseKeyResource(resource);
+  if (parsed === null || parsed.kind !== "key") return null;
+  return parsed.keyPath.split("/").pop() ?? null;
 }
 
 /** An exact share key: `share/<id>`, one segment under `share/`. */
