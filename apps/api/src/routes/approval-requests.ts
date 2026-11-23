@@ -137,10 +137,46 @@ approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
 });
 
 const leaseStatusRate = new FixedWindowCounter(60_000);
-const leaseStatusProofs = new Map<string, number>();
+const leaseStatusProofs = new Map<string, Map<string, number>>();
 const LEASE_STATUS_PER_MINUTE = 60;
-const MAX_LEASE_STATUS_PROOFS = 10_000;
-let nextLeaseStatusProofSweep = 0;
+const MAX_LEASE_STATUS_PROOFS_PER_KEY = 128;
+const MAX_LEASE_STATUS_KEYS = 10_000;
+let nextLeaseStatusKeySweep = 0;
+
+function rememberLeaseStatusProof(keyId: string, jti: string, iat: number): number {
+  const now = Date.now();
+  let proofs = leaseStatusProofs.get(keyId);
+  if ((proofs?.get(jti) ?? 0) > now) {
+    throw new ApprovalResultError('invalid_proof', 'Requester proof is invalid', 401);
+  }
+
+  if (!proofs) {
+    // The process tracks up to 10,000 distinct keys. When every slot holds a live proof,
+    // only new keys wait. Expired keys free slots without reopening live proofs.
+    if (leaseStatusProofs.size >= MAX_LEASE_STATUS_KEYS && now >= nextLeaseStatusKeySweep) {
+      keys: for (const [key, remembered] of leaseStatusProofs) {
+        for (const expiresAt of remembered.values()) if (expiresAt > now) continue keys;
+        leaseStatusProofs.delete(key);
+      }
+      nextLeaseStatusKeySweep = now + 1000;
+    }
+    if (leaseStatusProofs.size >= MAX_LEASE_STATUS_KEYS) return 1;
+    proofs = new Map();
+    leaseStatusProofs.set(keyId, proofs);
+  }
+
+  let earliestExpiry = Infinity;
+  for (const [nonce, expiresAt] of proofs) {
+    if (expiresAt <= now) proofs.delete(nonce);
+    else earliestExpiry = Math.min(earliestExpiry, expiresAt);
+  }
+  if (proofs.size >= MAX_LEASE_STATUS_PROOFS_PER_KEY) return Math.ceil((earliestExpiry - now) / 1000);
+  if (!leaseStatusRate.hit(keyId, now, LEASE_STATUS_PER_MINUTE)) {
+    return leaseStatusRate.retryAfterSeconds(keyId, now);
+  }
+  proofs.set(jti, (iat + 2 * SESSION_PROOF_MAX_SKEW_SECONDS) * 1000);
+  return 0;
+}
 
 approvalRequestRouter.post('/approval-requests/:id/lease-status', async (c) => {
   const id = c.req.param('id');
@@ -150,31 +186,20 @@ approvalRequestRouter.post('/approval-requests/:id/lease-status', async (c) => {
     throw new ApprovalResultError('invalid_request', 'Approval reference is invalid', 400);
   }
   const { record, keyId, jti, iat } = await approvalResultService().authenticateLeaseStatus(id, body, c.req.header('OpenKey-Session-Proof'));
-  const now = Date.now();
-  const proofKey = JSON.stringify([keyId, jti]);
-  if ((leaseStatusProofs.get(proofKey) ?? 0) > now) {
-    throw new ApprovalResultError('invalid_proof', 'Requester proof is invalid', 401);
-  }
-  if (now >= nextLeaseStatusProofSweep) {
-    for (const [key, expiresAt] of leaseStatusProofs) if (expiresAt <= now) leaseStatusProofs.delete(key);
-    nextLeaseStatusProofSweep = now + 1000;
-  }
-  if (!leaseStatusRate.hit(keyId, now, LEASE_STATUS_PER_MINUTE) || leaseStatusProofs.size >= MAX_LEASE_STATUS_PROOFS) {
-    return c.json({ error: 'Too many requests', code: 'rate_limited' }, 429,
-      { 'Retry-After': String(leaseStatusRate.retryAfterSeconds(keyId, now)) });
-  }
-  leaseStatusProofs.set(proofKey, (iat + 2 * SESSION_PROOF_MAX_SKEW_SECONDS) * 1000);
+  const retryAfter = rememberLeaseStatusProof(keyId, jti, iat);
+  if (retryAfter) return c.json({ error: 'Too many requests', code: 'rate_limited' }, 429,
+    { 'Retry-After': String(retryAfter) });
 
   if (!record.resultRef) return c.json({ leaseState: 'none', originalCid: null });
   const lease = await prisma.renewalLease.findUnique({
     where: { approvalRequestId: id },
-    select: { admittedAt: true, originalCid: true, revokedAt: true, neverAdmittedAt: true, leaseExpiresAt: true },
+    select: { admittedAt: true, originalCid: true, revokedAt: true, leaseExpiresAt: true },
   });
   if (!lease?.admittedAt) return c.json({ leaseState: 'none', originalCid: null });
   if (lease.originalCid !== body.originalCid) {
     throw new ApprovalResultError('request_binding', 'Original grant CID does not match the approved lease', 409);
   }
-  const stoppedAt = lease.revokedAt ?? lease.neverAdmittedAt;
+  const stoppedAt = lease.revokedAt;
   const leaseState = stoppedAt ? 'stopped' : lease.leaseExpiresAt.getTime() <= Date.now() ? 'expired' : 'active';
   return c.json({
     leaseState,

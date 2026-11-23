@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, beforeAll, expect, setSystemTime, test } from 'bun:test';
 import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
@@ -104,12 +104,12 @@ async function fixture(id: string, state: 'leased' | 'expired' | 'finite' | 'pen
 
   const statusPath = `/api/approval-requests/${id}/lease-status`;
   const resultPath = `/api/approval-requests/${id}/result`;
-  function proof(action = 'lease-status', path = statusPath, cid = originalCid) {
+  function proof(action = 'lease-status', path = statusPath, cid = originalCid, iat = Math.floor(Date.now() / 1000)) {
     const header = Buffer.from(JSON.stringify({ alg: 'EdDSA', kid: keyId, typ: 'openkey-session-proof+jwt' })).toString('base64url');
     const payload = Buffer.from(JSON.stringify({
       client_id: 'openkey-approval-result-v1',
       cred_hash: hash(JSON.stringify([action, id, bodyCid, action === 'discover' ? '' : cid ?? '', ''])),
-      htm: 'POST', htu: API_ORIGIN + path, iat: Math.floor(Date.now() / 1000), jti: randomUUID(),
+      htm: 'POST', htu: API_ORIGIN + path, iat, jti: randomUUID(),
     })).toString('base64url');
     const signed = `${header}.${payload}`;
     return `${signed}.${sign(null, Buffer.from(signed), pair.privateKey).toString('base64url')}`;
@@ -248,4 +248,59 @@ test('the authenticated requester receives 429 after spending its minute budget'
   expect(limited.status).toBe(429);
   expect(Number(limited.headers.get('Retry-After'))).toBeGreaterThan(0);
   expect(await limited.json()).toEqual({ error: 'Too many requests', code: 'rate_limited' });
+});
+
+test('many authenticated requesters can poll without blocking a new requester', async () => {
+  const now = new Date();
+  setSystemTime(now);
+  try {
+    const existing = await fixture('p'.repeat(26), 'pending');
+    const usedProof = existing.proof();
+    expect((await post(existing.statusPath, existing.body, usedProof)).status).toBe(200);
+    for (let requester = 0; requester < 170; requester++) {
+      const prefix = String.fromCharCode(97 + Math.floor(requester / 26), 97 + requester % 26);
+      const f = await fixture(prefix + 'z'.repeat(24), 'pending');
+      for (let attempt = 0; attempt < 60; attempt++) {
+        expect((await post(f.statusPath, f.body, f.proof())).status).toBe(200);
+      }
+    }
+    const newcomer = await fixture('q'.repeat(26), 'pending');
+    expect((await post(newcomer.statusPath, newcomer.body, newcomer.proof())).status).toBe(200);
+    expect((await post(existing.statusPath, existing.body, existing.proof())).status).toBe(200);
+    expect((await post(existing.statusPath, existing.body, usedProof)).status).toBe(401);
+  } finally {
+    setSystemTime();
+  }
+}, 120_000);
+
+test('the replay limit applies only to its requester key and preserves earlier proofs', async () => {
+  const start = Math.floor(Date.now() / 1000) * 1000;
+  setSystemTime(new Date(start));
+  try {
+    const f = await fixture('r'.repeat(26), 'pending');
+    const freshProof = () => f.proof('lease-status', f.statusPath, null, Math.floor(Date.now() / 1000) + 59);
+    expect((await post(f.statusPath, f.body, freshProof())).status).toBe(200);
+    let recentProof = '';
+    for (const [offset, count] of [[0, 59], [60_000, 60], [120_000, 8]] as const) {
+      setSystemTime(new Date(start + offset));
+      for (let attempt = 0; attempt < count; attempt++) {
+        recentProof = freshProof();
+        expect((await post(f.statusPath, f.body, recentProof)).status).toBe(200);
+      }
+    }
+
+    const limited = await post(f.statusPath, f.body, freshProof());
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('Retry-After')).toBe('59');
+
+    const other = await fixture('s'.repeat(26), 'pending');
+    expect((await post(other.statusPath, other.body, other.proof())).status).toBe(200);
+
+    expect((await post(f.statusPath, f.body, recentProof)).status).toBe(401);
+
+    setSystemTime(new Date(start + 180_000));
+    expect((await post(f.statusPath, f.body, freshProof())).status).toBe(200);
+  } finally {
+    setSystemTime();
+  }
 });
