@@ -68,6 +68,17 @@ export const UNVERIFIED_REQUESTER = {
   declinedLine: 'Whoever sent this link has been told no. If that was a mistake, ask for a new link.',
 } as const;
 
+/**
+ * The owner approves in OpenKey's own page and OpenKey sets up their TinyCloud space as part of it (a signed approval
+ * request or a device request). `creates` is for an account known to have no space yet; `mayCreate` for one that
+ * can't be told. `requesterText` labels what the requester wrote (its name and reason).
+ */
+export const OWN_PAGE_APPROVAL = {
+  creates: 'Approving also creates your TinyCloud space, where your data from this request is kept.',
+  mayCreate: "If you don't have a TinyCloud space, approving creates one.",
+  requesterText: "Written by whoever sent this request. OpenKey can't confirm it.",
+} as const;
+
 export const CLOSE_TAB = 'Close this tab';
 export const TAB_KEPT_OPEN = 'Your browser kept this tab open. Close it from your browser.';
 

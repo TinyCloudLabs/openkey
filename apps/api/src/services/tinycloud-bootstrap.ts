@@ -33,7 +33,7 @@ import { tinyCloudBootstrapNodeCallTimeoutMs, tinyCloudBootstrapNodeInvokeTimeou
 import { kvSpaceRegistryStore, registerMissingBootstrapSpaces } from './tinycloud-space-registry';
 import { hostRequestedSpaceWithinBudget, SWEEP_RETRYABLE_CODES } from './tinycloud-bootstrap-budget';
 import { isTinyCloudSiweForSigner, parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from './tinycloud-siwe';
-import { mayProvision, type ProvisionAuthority } from './provision-authority';
+import { mayProvision, retryableStoredAuthorities, storedProvisionAuthority, type ProvisionAuthority, type StoredProvisionAuthority } from './provision-authority';
 
 // The SIWE reading lives in tinycloud-siwe.ts (the signing route reads it without loading this module).
 export { isTinyCloudSiweForSigner, parseTinyCloudSiwe };
@@ -430,6 +430,7 @@ export async function ensureTinyCloudBootstrap(
     chainId,
     tinycloudHost,
     sweep: input.sweepClaim?.observed,
+    authority: storedProvisionAuthority(input.authority),
   });
 
   if (!locked) {
@@ -527,6 +528,8 @@ async function acquireBootstrapLock(
     chainId: number;
     tinycloudHost: string;
     sweep?: TinyCloudBootstrapSweepClaim['observed'];
+    /** Stored on the row; null on the sweep's claim, which keeps the row's own. */
+    authority: StoredProvisionAuthority | null;
   },
 ): Promise<boolean> {
   const now = new Date();
@@ -548,6 +551,8 @@ async function acquireBootstrapLock(
         checkedAt: observed.checkedAt,
         attemptId: observed.attemptId,
         failureCode: { in: [...SWEEP_RETRYABLE_CODES] },
+        // Only a row a first-party approval made: a row with no stored authority is never retried.
+        authority: { in: retryableStoredAuthorities() },
         ...(observed.status === 'in_progress' ? { lockExpiresAt: { lt: now } } : {}),
         user: { is: { autoSignEnabled: true } },
         key: { is: { keyType: 'MANAGED', archivedAt: null, sealedBlob: { not: null } } },
@@ -574,6 +579,7 @@ async function acquireBootstrapLock(
           attemptId: input.attemptId,
           lockExpiresAt,
           checkedAt: now,
+          authority: input.authority,
         },
       });
       return true;
@@ -608,6 +614,8 @@ async function acquireBootstrapLock(
       checkedAt: now,
       // Approval claims start a fresh sweep budget.
       sweepAttempts: 0,
+      // The approval that took the row over is the one now on record, so a retry stays inside what it was allowed.
+      authority: input.authority,
     },
   });
 

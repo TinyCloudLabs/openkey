@@ -149,9 +149,11 @@ import {
   mayProvision,
   oauthClientProvisionAuthority,
   originProvisionAuthority,
+  ownPageProvisionAuthority,
   UNATTRIBUTED_PROVISION_AUTHORITY,
   type ProvisionAuthority,
 } from '../services/provision-authority';
+import { classifyDelegateLinkDelivery, type DelegateLinkDelivery } from '../services/delegate-link-delivery';
 import { checkDeviceDelegationWindow, deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
 import { PreparedHandoffError } from '../services/prepared-handoff';
@@ -352,6 +354,49 @@ function setupFailureMessage(failure: { errorCode: string; errorMessage: string 
   return failure.errorCode === 'tinycloud_bootstrap_crashed'
     ? `TinyCloud account setup failed: ${failure.errorMessage}.`
     : `TinyCloud account setup failed (${failure.errorCode}): ${failure.errorMessage}.`;
+}
+
+/**
+ * Who asked, for an approval whose context this session's user spent just before this call. The sealed
+ * `requestOrigin` counts when it is first-party. Otherwise the three approvals the owner makes on OpenKey's own page
+ * count, and only from state the server holds: the context is bound to the same user as the session, and the
+ * approval request, the device request or the sealed link delivery is read again here, not trusted from the body.
+ * Any failure to confirm one is the same as not being first-party.
+ */
+async function boundProvisionAuthority(input: {
+  bound: {
+    userId: string;
+    originalSiwe: string;
+    requestOrigin?: string;
+    approvalRequestId?: string;
+    deviceTransactionId?: string;
+    linkDelivery?: DelegateLinkDelivery;
+  };
+  sessionUserId: string;
+  body: { approvalRequestId?: unknown; deviceTransactionId?: unknown; jwk: unknown; host: unknown; permissions?: unknown };
+  host: string;
+}): Promise<ProvisionAuthority> {
+  const { bound, body } = input;
+  const byOrigin = originProvisionAuthority(bound.requestOrigin);
+  if (mayProvision(byOrigin)) return byOrigin;
+  if (bound.userId !== input.sessionUserId) return UNATTRIBUTED_PROVISION_AUTHORITY;
+  try {
+    if (bound.approvalRequestId !== undefined) {
+      if (body.approvalRequestId !== bound.approvalRequestId) return UNATTRIBUTED_PROVISION_AUTHORITY;
+      // Still pending, unexpired and bound to this session key, node and permissions.
+      await checkApprovalDelegation(body, { signedSiwe: bound.originalSiwe });
+      return ownPageProvisionAuthority('approval-request');
+    }
+    if (bound.deviceTransactionId !== undefined) {
+      if (body.deviceTransactionId !== bound.deviceTransactionId) return UNATTRIBUTED_PROVISION_AUTHORITY;
+      const refusal = await deviceDelegationWindowError(body, { host: input.host, signedSiwe: bound.originalSiwe });
+      return refusal ? UNATTRIBUTED_PROVISION_AUTHORITY : ownPageProvisionAuthority('device-approval');
+    }
+    return bound.linkDelivery ? ownPageProvisionAuthority('delegate-link-local') : UNATTRIBUTED_PROVISION_AUTHORITY;
+  } catch (error) {
+    logError('warn', 'delegate_own_page_authority_unconfirmed', error);
+    return UNATTRIBUTED_PROVISION_AUTHORITY;
+  }
 }
 
 async function finishManagedSpaceOnboarding(input: {
@@ -1465,12 +1510,6 @@ delegateRouter.post('/sign', async (c) => {
  */
 delegateRouter.post('/host', async (c) => {
   const user = c.get('user');
-  // This signature is the ability to create a space on the node, for any peer and prefix the caller names. The route
-  // takes only the OpenKey account origin, which says nothing about which app is asking, so no first-party authority
-  // can be bound to it: it signs nothing until a caller that can be attributed is added.
-  if (!mayProvision(UNATTRIBUTED_PROVISION_AUTHORITY)) {
-    return c.json({ error: 'Only TinyCloud\'s own apps can have OpenKey sign a space host request.', code: 'host_signing_first_party_only' }, 403);
-  }
   const body = await c.req.json<{
     keyId: string;
     peerId: string;
@@ -1479,6 +1518,12 @@ delegateRouter.post('/host', async (c) => {
   }>();
   const deviceUnsupported = deviceTransactionUnsupportedError(body);
   if (deviceUnsupported) return c.json(deviceUnsupported, 400);
+  // This signature is the ability to create a space on the node, for any peer and prefix the caller names. The route
+  // takes only the OpenKey account origin, which says nothing about which app is asking, so no first-party authority
+  // can be bound to it: it signs nothing until a caller that can be attributed is added.
+  if (!mayProvision(UNATTRIBUTED_PROVISION_AUTHORITY)) {
+    return c.json({ error: 'Only TinyCloud\'s own apps can have OpenKey sign a space host request.', code: 'host_signing_first_party_only' }, 403);
+  }
 
   if (!body.keyId || !body.peerId) {
     return c.json({ error: 'keyId and peerId are required' }, 400);
@@ -1952,7 +1997,7 @@ delegateRouter.post('/', async (c) => {
           requestedSpaces,
           entries: preparedEntries,
           activation: activationResult,
-          authority: originProvisionAuthority(bound.requestOrigin),
+          authority: await boundProvisionAuthority({ bound, sessionUserId: user.id, body, host }),
         });
       }
       if (!hostActivated) {
@@ -2173,6 +2218,9 @@ delegateRouter.post('/prepare', async (c) => {
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
     renewal?: unknown;
+    /** What a plain legacy link says about how it returns the delegation (`paste` or `callback`) and its callback URL. */
+    linkDelivery?: unknown;
+    linkCallback?: unknown;
   }>(c);
   const privateMembers = hasPrivateJwkMember(body.jwk);
   logSessionJwk('/api/delegate/prepare', privateMembers);
@@ -2292,6 +2340,12 @@ delegateRouter.post('/prepare', async (c) => {
   const prepareAppKeyRefusal = appKeyRefusalForSiwe(preparedResult.prepared.siwe);
   if (prepareAppKeyRefusal) return c.json(appKeyRefusalBody(prepareAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(prepareAppKeyRefusal));
 
+  // A plain legacy link says how it returns its delegation. The server classifies that here, from what the page sent at
+  // prepare time, and seals the result: the approval never supplies it (see `delegate-link-delivery.ts`).
+  const linkDelivery = body.deviceTransactionId === undefined && body.approvalRequestId === undefined && body.requesterOrigin === undefined
+    ? classifyDelegateLinkDelivery(body.linkDelivery, body.linkCallback)
+    : undefined;
+
   // Issue an opaque single-use authorization context so /complete cannot
   // be replayed with a broader SIWE, a different key, or a different host.
   // The context digests are the sole authority for /complete — the `edited`
@@ -2328,6 +2382,7 @@ delegateRouter.post('/prepare', async (c) => {
       originalSiwe: preparedResult.prepared.siwe,
       approvalRequestId: body.approvalRequestId,
       deviceTransactionId: device.record?.id,
+      linkDelivery,
       renewal,
     });
   } catch (issueErr) {
@@ -2343,7 +2398,7 @@ delegateRouter.post('/prepare', async (c) => {
     );
   }
 
-  let spaceSetup: { space: string; plan: SpaceSetupPlan } | null = null;
+  let spaceSetup: { space: string; plan: SpaceSetupPlan | 'no-setup' } | null = null;
   try {
     // A reviewer's spaces are hosted when the account is provisioned, so the notice would only mislead.
     const setup = await reviewerForUser(prisma, user.id) ? null : await managedSpaceSetupPlan({
@@ -2354,7 +2409,10 @@ delegateRouter.post('/prepare', async (c) => {
       chainId,
       spaceId: preparedResult.spaceId,
     });
-    const disclosed = setup && { space: setup.space, plan: setup.plan };
+    // Approving sets the account up only for an approval request, a device request or a loopback or paste link
+    // (`boundProvisionAuthority`). For any other link the notice says it does not, rather than promise a setup.
+    const settingUp = device.record !== null || body.approvalRequestId !== undefined || linkDelivery !== undefined;
+    const disclosed = setup && { space: setup.space, plan: setup.plan === 'setup' && !settingUp ? 'no-setup' as const : setup.plan };
     if (setup?.plan !== 'setup') {
       spaceSetup = disclosed;
     } else if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN !== 'off') {

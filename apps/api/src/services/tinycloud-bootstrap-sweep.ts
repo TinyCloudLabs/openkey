@@ -7,7 +7,7 @@ import {
   type TinyCloudBootstrapOutcome,
 } from './tinycloud-bootstrap';
 import { SWEEP_RETRYABLE_CODES } from './tinycloud-bootstrap-budget';
-import { SWEEP_PROVISION_AUTHORITY } from './provision-authority';
+import { SWEEP_PROVISION_AUTHORITY, retryableStoredAuthorities } from './provision-authority';
 import { logError, logTinyCloudBootstrapSweep, withScheduledLogContext } from '../log';
 
 const SWEEP_TICK_MS = 60_000;
@@ -125,6 +125,8 @@ export async function sweepTinyCloudBootstrapOnce(opts: SweepOptions = {}): Prom
       tinycloudHost: trustedTinyCloudBootstrapHost(),
       chainId: 1,
       failureCode: { in: [...SWEEP_RETRYABLE_CODES] },
+      // A row with no stored authority (every row made before the column) is not first-party and is not retried.
+      authority: { in: retryableStoredAuthorities() },
       sweepAttempts: { lt: delays.length },
       checkedAt: { gte: new Date(now.getTime() - SWEEP_MAX_AGE_MS) },
       AND: [
@@ -168,7 +170,7 @@ export async function sweepTinyCloudBootstrapOnce(opts: SweepOptions = {}): Prom
     try {
       outcome = await ensureTinyCloudBootstrap({
         prisma,
-        // A row does not record who asked, so the retry of a row OpenKey already created is not attributed (see ProvisionAuthority).
+        // The row query above reads only rows a first-party approval made (their stored authority); a row with none is not retried.
         authority: SWEEP_PROVISION_AUTHORITY,
         userId: row.userId,
         key: { id: row.key.id, address: row.key.address, keyType: row.key.keyType },

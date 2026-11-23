@@ -21,20 +21,40 @@ export const FIRST_PARTY_PROVISION_NATIVE_CLIENTS: readonly { clientId: string; 
 ];
 
 /**
+ * The three cases where the owner approves on OpenKey's own page and OpenKey sets their space up with it. One line
+ * each: set a case to `false` to turn it off.
+ * - `approval-request`: a signed approval request approved at openkey.so/a/<id>.
+ * - `device-approval`: a device authorization approved on OpenKey's page.
+ * - `delegate-link-local`: the legacy /delegate link, only when it returns to a loopback address or by paste.
+ *   COMPATIBILITY allowance for the CLI and Courier, not a security boundary: any app can send a link that names a
+ *   loopback callback, so the page tells the owner what approving does and that the requester's words are unchecked.
+ */
+export const OWN_PAGE_APPROVAL_ENABLED = {
+  'approval-request': true,
+  'device-approval': true,
+  'delegate-link-local': true,
+} as const satisfies Record<string, boolean>;
+
+export type OwnPageApproval = keyof typeof OWN_PAGE_APPROVAL_ENABLED;
+
+/**
  * Who asked, as the server bound it to the approved request. Never the `Origin` header, a `reportedOrigin` or the
  * SIWE domain.
  * - `origin`: the sender-checked origin sealed into the authorization context at prepare time, or the origin the
  *   sign route checked the SIWE against.
  * - `oauth-client`: the OAuth client id of the authenticated principal.
  * - `native-client`: the client id and the validated redirect URI of a native consent request.
- * - `sweep`: the background retry of a row OpenKey already created. A row does not store who asked yet, so this
- *   retry is not attributed.
- * - `unattributed`: link, device and CLI flows, and any path that binds no origin. Treated as third-party.
+ * - `own-page`: an approval the session's user made on OpenKey's own page, taken from a completed, single-use,
+ *   unexpired record and never from a request field (see `OwnPageApproval`).
+ * - `sweep`: the background retry of a row OpenKey already created. The sweep reads only rows whose stored
+ *   authority is first-party (`retryableStoredAuthorities`), so this value allows the run the row query selected.
+ * - `unattributed`: any path that binds no authority. Treated as third-party.
  */
 export type ProvisionAuthority =
   | { kind: 'origin'; origin: string | null | undefined }
   | { kind: 'oauth-client'; clientId: string | null | undefined }
   | { kind: 'native-client'; clientId: string | null | undefined; redirectUri: string | null | undefined }
+  | { kind: 'own-page'; approval: OwnPageApproval }
   | { kind: 'sweep' }
   | { kind: 'unattributed' };
 
@@ -54,6 +74,10 @@ export function nativeClientProvisionAuthority(clientId: string | null | undefin
   return { kind: 'native-client', clientId, redirectUri };
 }
 
+export function ownPageProvisionAuthority(approval: OwnPageApproval): ProvisionAuthority {
+  return { kind: 'own-page', approval };
+}
+
 /** May OpenKey provision on the node for this authority? Fails closed: anything not first-party is refused. */
 export function mayProvision(authority: ProvisionAuthority): boolean {
   switch (authority.kind) {
@@ -65,10 +89,64 @@ export function mayProvision(authority: ProvisionAuthority): boolean {
       return FIRST_PARTY_PROVISION_NATIVE_CLIENTS.some(
         (client) => client.clientId === authority.clientId && client.redirectUri === authority.redirectUri,
       );
+    case 'own-page':
+      return OWN_PAGE_APPROVAL_ENABLED[authority.approval] === true;
     case 'sweep':
       return true;
     case 'unattributed':
     default:
       return false;
   }
+}
+
+/**
+ * What a bootstrap row stores (`tinycloud_bootstrap_state.authority`): a small closed set. A row with no stored
+ * authority (every row made before this column) is NOT first-party: the sweep does not retry it and nothing may read
+ * it as evidence that a first-party approval made it.
+ */
+export const STORED_PROVISION_AUTHORITIES = [
+  'first-party-origin',
+  'first-party-client',
+  'first-party-native-client',
+  'approval-request',
+  'device-approval',
+  'delegate-link-local',
+] as const;
+
+export type StoredProvisionAuthority = (typeof STORED_PROVISION_AUTHORITIES)[number];
+
+/** The value to store for an authority that may provision; null for one that may not and for the sweep (it keeps the row's own). */
+export function storedProvisionAuthority(authority: ProvisionAuthority): StoredProvisionAuthority | null {
+  if (!mayProvision(authority)) return null;
+  switch (authority.kind) {
+    case 'origin':
+      return 'first-party-origin';
+    case 'oauth-client':
+      return 'first-party-client';
+    case 'native-client':
+      return 'first-party-native-client';
+    case 'own-page':
+      return authority.approval;
+    case 'sweep':
+    case 'unattributed':
+    default:
+      return null;
+  }
+}
+
+/** The stored authorities the sweep may retry: those that are first-party now (a turned-off case is not retried). */
+export function retryableStoredAuthorities(): StoredProvisionAuthority[] {
+  const own = (approval: OwnPageApproval): boolean => OWN_PAGE_APPROVAL_ENABLED[approval] === true;
+  return STORED_PROVISION_AUTHORITIES.filter((stored) => {
+    switch (stored) {
+      case 'first-party-origin':
+        return FIRST_PARTY_PROVISION_ORIGINS.length > 0;
+      case 'first-party-client':
+        return FIRST_PARTY_PROVISION_OAUTH_CLIENT_IDS.length > 0;
+      case 'first-party-native-client':
+        return FIRST_PARTY_PROVISION_NATIVE_CLIENTS.length > 0;
+      default:
+        return own(stored);
+    }
+  });
 }

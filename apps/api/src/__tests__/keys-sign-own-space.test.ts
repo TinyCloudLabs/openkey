@@ -28,7 +28,7 @@ const keyRecord = {
 };
 const spaceId = (name: string, owner: string = account.address) => `tinycloud:pkh:eip155:1:${owner}:${name}`;
 const SPACES = ['default', 'applications', 'account', 'secrets', 'public', 'agents'];
-const ORIGIN = 'https://app.example.test';
+const ORIGIN = 'https://home.tinycloud.xyz';
 
 interface StateRow {
   id: string;
@@ -180,7 +180,7 @@ function siweFor(options: {
   return prepareSession({
     address: options.address ?? account.address,
     chainId: 1,
-    domain: options.domain ?? 'app.example.test',
+    domain: options.domain ?? 'home.tinycloud.xyz',
     issuedAt: new Date().toISOString(),
     expirationTime: new Date(Date.now() + (options.expiresInMs ?? 3_600_000)).toISOString(),
     spaceId: options.space,
