@@ -733,8 +733,6 @@ export function prepareDelegationSession({
   issuedAt,
   delegationMode,
 }: PrepareDelegationSessionInput): PrepareDelegationSessionResult {
-  const effectiveDelegationMode: DelegationMode | undefined =
-    delegationMode ?? (deviceTransaction ? 'terminal' : undefined);
   const ownFolderOnly = permissions === undefined;
   const siweDomain = domain ?? SIWE_DOMAIN;
   const appId = genericAppId(siweDomain);
@@ -763,8 +761,8 @@ export function prepareDelegationSession({
     ...baseConfig,
     ...sessionAbilitiesConfig(baselineAbilities),
   });
-  const baselinePrepared = effectiveDelegationMode !== undefined
-    ? { ...rawBaselinePrepared, siwe: withRecapDelegationMode(rawBaselinePrepared.siwe, effectiveDelegationMode) }
+  const baselinePrepared = delegationMode !== undefined
+    ? { ...rawBaselinePrepared, siwe: withRecapDelegationMode(rawBaselinePrepared.siwe, delegationMode) }
     : rawBaselinePrepared;
   const baselineEntries = parsePreparedRecap(baselinePrepared.siwe);
 

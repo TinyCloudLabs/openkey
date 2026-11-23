@@ -288,7 +288,7 @@ describe('device-window /complete route checks delegationMode against the device
     return started.transactionId;
   }
 
-  test('refuses /complete with delegation_mode when a signed device SIWE drops or flips the device terminal mode', async () => {
+  test('refuses /complete with delegation_mode when a signed device SIWE adds a mode the device request omitted', async () => {
     const transactionId = await startDeviceTransaction();
     const prepared = await post('/prepare', {
       keyId: managed.id,
@@ -301,26 +301,24 @@ describe('device-window /complete route checks delegationMode against the device
     expect(prepared.status).toBe(200);
 
     const preparedPayload = prepared.body.prepared as Record<string, unknown> & { siwe: string };
-    for (const tamperedMode of [undefined, 'attenuable'] as const) {
-      const tamperedSiwe = rewriteRecapMode(preparedPayload.siwe, tamperedMode);
-      const signature = await account.signMessage({ message: tamperedSiwe });
+    const tamperedSiwe = rewriteRecapMode(preparedPayload.siwe, 'terminal');
+    const signature = await account.signMessage({ message: tamperedSiwe });
 
-      const refused = await post('/complete', {
-        prepared: { ...preparedPayload, siwe: tamperedSiwe },
-        signature,
-        host,
-        jwk,
-        deviceTransactionId: transactionId,
-      });
-      expect(refused.status).toBe(400);
-      expect(refused.body).toMatchObject({
-        code: SIGNED_SUBSET_REFUSAL_CODE,
-        reason: 'delegation_mode',
-      });
-    }
+    const refused = await post('/complete', {
+      prepared: { ...preparedPayload, siwe: tamperedSiwe },
+      signature,
+      host,
+      jwk,
+      deviceTransactionId: transactionId,
+    });
+    expect(refused.status).toBe(400);
+    expect(refused.body).toMatchObject({
+      code: SIGNED_SUBSET_REFUSAL_CODE,
+      reason: 'delegation_mode',
+    });
     expect(activateSessionWithHost).not.toHaveBeenCalled();
 
-    // Unmodified device SIWE (terminal) still completes normally.
+    // Unmodified device SIWE (no mode) still completes normally.
     const validSignature = await account.signMessage({ message: preparedPayload.siwe });
     const accepted = await post('/complete', {
       prepared: preparedPayload,

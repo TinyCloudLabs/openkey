@@ -200,24 +200,13 @@ function delegatePasskeyBinding(authorizationContextToken: string, keyAddress: s
 
 /**
  * TC-3810 (step 4): resolve the delegation mode for `/api/delegate/prepare`
- * and `/api/delegate`. Third-party approval requests (`/a/`) and device flows
- * always mint `"terminal"`; plain `/delegate` requests honor an explicit
- * declaration (unknown non-undefined values normalize to `"terminal"`) and
- * leave undeclared requests unchanged (`undefined`, legacy attenuable).
+ * and `/api/delegate`. All flows (`/a/`, device, and plain `/delegate`) honor
+ * an explicit declaration (unknown non-undefined values normalize to
+ * `"terminal"`) and leave undeclared requests unchanged (`undefined`, legacy
+ * attenuable). No endpoint-level default before step 5.
  */
-function resolveDelegateRouteMode(body: {
-  approvalRequestId?: unknown;
-  deviceTransactionId?: unknown;
-  delegationMode?: unknown;
-}): { ok: true; mode: DelegationMode | undefined } | { ok: false; error: string } {
-  const declared = normalizeDeclaredDelegationMode(body.delegationMode);
-  if (body.approvalRequestId !== undefined || body.deviceTransactionId !== undefined) {
-    if (declared !== undefined && declared !== 'terminal') {
-      return { ok: false, error: 'This delegation flow requires terminal delegation mode' };
-    }
-    return { ok: true, mode: 'terminal' };
-  }
-  return { ok: true, mode: declared };
+function resolveDelegateRouteMode(body: { delegationMode?: unknown }): DelegationMode | undefined {
+  return normalizeDeclaredDelegationMode(body.delegationMode);
 }
 
 let activePreparedHandoffService: PreparedHandoffService = preparedHandoffService;
@@ -1991,9 +1980,6 @@ delegateRouter.post('/', async (c) => {
   // callers that predate the versioned protocol land here and continue to
   // work as before.
   const legacyMode = resolveDelegateRouteMode(body);
-  if (!legacyMode.ok) {
-    return c.json({ error: legacyMode.error, code: SIGNED_SUBSET_REFUSAL_CODE, reason: 'delegation_mode' }, 400);
-  }
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -2005,7 +1991,7 @@ delegateRouter.post('/', async (c) => {
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
       permissions,
       deviceTransaction: body.deviceTransactionId !== undefined,
-      delegationMode: legacyMode.mode,
+      delegationMode: legacyMode,
       expiryMs,
     });
   } catch (e) {
@@ -2018,7 +2004,11 @@ delegateRouter.post('/', async (c) => {
   if (!expirationTime) {
     return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
   }
-  const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
+  const deviceWindow = await deviceDelegationWindowError(body, {
+    host,
+    signedSiwe: preparedResult.prepared.siwe,
+    delegationMode: legacyMode,
+  });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
   const legacyAppKeyRefusal = appKeyRefusalForSiwe(preparedResult.prepared.siwe);
@@ -2215,9 +2205,6 @@ delegateRouter.post('/prepare', async (c) => {
   // TC-2933: the owner's renewal choice is bound with this preview; approving reads it from here, not the body.
   const renewal = await bindApprovalRenewal(body);
   const prepareMode = resolveDelegateRouteMode(body);
-  if (!prepareMode.ok) {
-    return c.json({ error: prepareMode.error, code: SIGNED_SUBSET_REFUSAL_CODE, reason: 'delegation_mode' }, 400);
-  }
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -2229,7 +2216,7 @@ delegateRouter.post('/prepare', async (c) => {
       permissionKeys: normalizeStringArray(body.permissionKeys, 'permissionKeys'),
       permissions,
       deviceTransaction: body.deviceTransactionId !== undefined,
-      delegationMode: prepareMode.mode,
+      delegationMode: prepareMode,
       expiryMs,
       domain: requesterDomain,
     });
@@ -2237,7 +2224,11 @@ delegateRouter.post('/prepare', async (c) => {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
   // Device approvals: the bytes handed to the wallet are a subset of what the device requested.
-  const deviceSubset = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
+  const deviceSubset = await deviceDelegationWindowError(body, {
+    host,
+    signedSiwe: preparedResult.prepared.siwe,
+    delegationMode: prepareMode,
+  });
   if (deviceSubset) return c.json(deviceSubset.body, deviceSubset.status);
   // TC-3821: a leased choice on a grant reaching secrets needs the owner's confirm and a window of at most 7 days.
   checkApprovalLeaseGrant(preparedResult.prepared.siwe, renewal);
@@ -2290,7 +2281,7 @@ delegateRouter.post('/prepare', async (c) => {
       // issuedAt/expirationTime bytes on every attempt).
       originalSiwe: preparedResult.prepared.siwe,
       approvalRequestId: body.approvalRequestId,
-      delegationMode: prepareMode.mode,
+      delegationMode: prepareMode,
       renewal,
     });
   } catch (issueErr) {
@@ -2341,7 +2332,7 @@ delegateRouter.post('/prepare', async (c) => {
     )
     : { required: false as const };
 
-  if (prepareMode.mode === undefined && typeof body.requesterOrigin === 'string') {
+  if (prepareMode === undefined && typeof body.requesterOrigin === 'string') {
     logUndeclaredDelegationModeSignIn(normalizeAppOrigin(body.requesterOrigin));
   }
 
@@ -2566,6 +2557,7 @@ delegateRouter.post('/complete', async (c) => {
   let contextClaim: AuthorizationContextClaim | undefined;
   let signInAppOrigin: string | undefined;
   let boundRenewal: BoundRenewalChoice | undefined;
+  let boundDelegationMode: DelegationMode | undefined;
   // Versioned callers: the `completeSessionSetup` input, built only from the
   // signed SIWE and the bound context (see below).
   let versionedSessionInput: Record<string, unknown> | undefined;
@@ -2578,6 +2570,7 @@ delegateRouter.post('/complete', async (c) => {
     if (peekedContext.ok) {
       signInAppOrigin = peekedContext.value.appOrigin;
       boundRenewal = peekedContext.value.renewal;
+      boundDelegationMode = peekedContext.value.delegationMode;
     }
     if (peekedContext.ok && peekedContext.value.approvalRequestId !== body.approvalRequestId) {
       return c.json({ error: 'Approval request does not match the consent preview' }, 400);
@@ -2706,23 +2699,11 @@ delegateRouter.post('/complete', async (c) => {
   const deviceWindow = await deviceDelegationWindowError(body, {
     host: body.host,
     signedSiwe: String(body.prepared?.siwe ?? ''),
+    delegationMode: boundDelegationMode,
   });
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
   if (body.approvalRequestId !== undefined && !body.authorizationContextToken) {
     return c.json({ error: 'Approval requests require the consent preview context' }, 400);
-  }
-  if (body.approvalRequestId !== undefined) {
-    const approvalModeParse = parseStrictSiwe(body.prepared.siwe);
-    if (!approvalModeParse.ok || approvalModeParse.siwe.recap?.delegationMode !== 'terminal') {
-      return c.json(
-        {
-          error: 'Approval request delegations must carry terminal delegation mode',
-          code: SIGNED_SUBSET_REFUSAL_CODE,
-          reason: 'delegation_mode',
-        },
-        400,
-      );
-    }
   }
   await checkApprovalDelegation(body, { signedSiwe: body.prepared.siwe });
 

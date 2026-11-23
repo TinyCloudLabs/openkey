@@ -1,5 +1,10 @@
 import { DeviceAuthorizationError, type DeviceAuthorizationRecord } from '../services/device-authorization';
-import { checkSignedSubset, parseStrictSiwe, SIGNED_SUBSET_REFUSAL_CODE } from '../services/signed-subset';
+import {
+  checkSignedSubset,
+  parseStrictSiwe,
+  SIGNED_SUBSET_REFUSAL_CODE,
+  type DelegationMode,
+} from '../services/signed-subset';
 import { actionKey, parsePreparedRecap, prepareDelegationSession, type DelegationJwk } from './delegate-session';
 import { deviceAuthorizationService } from './device-authorization';
 
@@ -19,7 +24,7 @@ type DelegationWindowRefusal = { body: { error: string; code: string; reason?: s
  */
 export async function deviceDelegationWindowError(
   body: object,
-  input: { host: unknown } & ({ signedSiwe: string } | { expirationTime: string }),
+  input: { host: unknown; delegationMode?: DelegationMode } & ({ signedSiwe: string } | { expirationTime: string }),
 ): Promise<DelegationWindowRefusal | null> {
   const { deviceTransactionId, jwk } = body as { deviceTransactionId?: unknown; jwk?: unknown };
   if (deviceTransactionId === undefined) return null;
@@ -34,7 +39,7 @@ export async function deviceDelegationWindowError(
     if (!(error instanceof DeviceAuthorizationError)) throw error;
     return { body: { error: error.message, code: error.code }, status: error.status === 410 ? 410 : 400 };
   }
-  return 'signedSiwe' in input ? deviceSignedSubsetRefusal(record, input.signedSiwe) : null;
+  return 'signedSiwe' in input ? deviceSignedSubsetRefusal(record, input.signedSiwe, input.delegationMode) : null;
 }
 
 /**
@@ -49,7 +54,11 @@ export async function deviceDelegationWindowError(
  * header field the server would not write are refused. The lifetime is the
  * window check's (above).
  */
-function deviceSignedSubsetRefusal(record: DeviceAuthorizationRecord, signedSiwe: string): DelegationWindowRefusal | null {
+function deviceSignedSubsetRefusal(
+  record: DeviceAuthorizationRecord,
+  signedSiwe: string,
+  delegationMode?: DelegationMode,
+): DelegationWindowRefusal | null {
   const refuse = (reason: string, error: string): DelegationWindowRefusal =>
     ({ body: { error, code: SIGNED_SUBSET_REFUSAL_CODE, reason }, status: 400 });
   const parsed = parseStrictSiwe(signedSiwe);
@@ -69,7 +78,7 @@ function deviceSignedSubsetRefusal(record: DeviceAuthorizationRecord, signedSiwe
       jwk: record.publicJwk as unknown as DelegationJwk,
       permissions: record.permissions,
       deviceTransaction: true,
-      delegationMode: 'terminal',
+      delegationMode,
       expiryMs: Date.parse(signed.expirationTime ?? '') - Date.parse(signed.issuedAt),
       nonce: signed.nonce,
       issuedAt: new Date(signed.issuedAt),

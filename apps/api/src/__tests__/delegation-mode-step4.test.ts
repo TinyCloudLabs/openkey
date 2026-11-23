@@ -429,10 +429,24 @@ describe('TC-3810 step 4: third-party flows mint terminal; plain /delegate honor
     return id;
   }
 
-  test('/a/ approval request mints terminal, refuses attenuable, and refuses dropped/flipped mode on /complete', async () => {
+  test('/a/ approval request honors terminal and attenuable, keeps undeclared omitted, and refuses mode tampering on /complete', async () => {
     const approvalRequestId = await registerApprovalRequest();
 
-    const refusedAttenuable = await post('/prepare', {
+    // Undeclared /a/ (e.g. legacy CLI auth login / tc auth grant before step 5) stays omitted.
+    const undeclared = await post('/prepare', {
+      keyId: managed.id,
+      jwk,
+      host,
+      expiry: '60s',
+      permissions: perms,
+      approvalRequestId,
+    });
+    expect(undeclared.status).toBe(200);
+    const parsedUndec = parseStrictSiwe((undeclared.body.prepared as { siwe: string }).siwe);
+    expect(parsedUndec.ok && parsedUndec.siwe.recap?.delegationMode).toBeUndefined();
+
+    // Declared attenuable /a/ (e.g. step-2 CLI auth login / auth grant) is honored, never refused.
+    const attenuablePrep = await post('/prepare', {
       keyId: managed.id,
       jwk,
       host,
@@ -441,9 +455,11 @@ describe('TC-3810 step 4: third-party flows mint terminal; plain /delegate honor
       approvalRequestId,
       delegationMode: 'attenuable',
     });
-    expect(refusedAttenuable.status).toBe(400);
-    expect(refusedAttenuable.body).toMatchObject({ code: SIGNED_SUBSET_REFUSAL_CODE, reason: 'delegation_mode' });
+    expect(attenuablePrep.status).toBe(200);
+    const parsedAtt = parseStrictSiwe((attenuablePrep.body.prepared as { siwe: string }).siwe);
+    expect(parsedAtt.ok && parsedAtt.siwe.recap?.delegationMode).toBe('attenuable');
 
+    // Declared terminal /a/ (e.g. step-2 tc auth request --grant) mints terminal.
     const prepared = await post('/prepare', {
       keyId: managed.id,
       jwk,
@@ -451,6 +467,7 @@ describe('TC-3810 step 4: third-party flows mint terminal; plain /delegate honor
       expiry: '60s',
       permissions: perms,
       approvalRequestId,
+      delegationMode: 'terminal',
     });
     expect(prepared.status).toBe(200);
     const prepPayload = prepared.body.prepared as Record<string, unknown> & { siwe: string };
@@ -459,7 +476,7 @@ describe('TC-3810 step 4: third-party flows mint terminal; plain /delegate honor
     if (!parsedPrep.ok) return;
     expect(parsedPrep.siwe.recap?.delegationMode).toBe('terminal');
 
-    // Dropping or flipping the mode on /complete is refused before activation.
+    // Dropping or flipping the bound mode on /complete is refused before activation.
     for (const tampered of [
       rewriteRecapMode(prepPayload.siwe, undefined),
       rewriteRecapMode(prepPayload.siwe, 'attenuable'),
@@ -481,7 +498,7 @@ describe('TC-3810 step 4: third-party flows mint terminal; plain /delegate honor
     }
     expect(activateSessionWithHost).not.toHaveBeenCalled();
 
-    // Approving via managed / signs the terminal SIWE.
+    // Approving via managed / signs the declared terminal SIWE.
     const approved = await post('/', {
       keyId: managed.id,
       jwk,
@@ -499,7 +516,7 @@ describe('TC-3810 step 4: third-party flows mint terminal; plain /delegate honor
     expect(parsedSigned.ok && parsedSigned.siwe.recap?.delegationMode).toBe('terminal');
   });
 
-  test('device flow mints terminal, refuses attenuable, and refuses dropped/flipped mode on /complete', async () => {
+  test('device flow honors terminal and attenuable, keeps undeclared omitted, and refuses mode tampering on /complete', async () => {
     const digest = (value: string) => createHash('sha256').update(value).digest('base64url');
     const started = await deviceService.start(
       {
@@ -519,7 +536,21 @@ describe('TC-3810 step 4: third-party flows mint terminal; plain /delegate honor
     );
     const deviceTransactionId = started.transactionId;
 
-    const refusedAttenuable = await post('/prepare', {
+    // Undeclared device login (tc auth login --device before step 5) stays omitted.
+    const undeclared = await post('/prepare', {
+      keyId: managed.id,
+      jwk,
+      host,
+      expiry: '60s',
+      permissions: perms,
+      deviceTransactionId,
+    });
+    expect(undeclared.status).toBe(200);
+    const parsedUndec = parseStrictSiwe((undeclared.body.prepared as { siwe: string }).siwe);
+    expect(parsedUndec.ok && parsedUndec.siwe.recap?.delegationMode).toBeUndefined();
+
+    // Declared attenuable device login is honored.
+    const attenuablePrep = await post('/prepare', {
       keyId: managed.id,
       jwk,
       host,
@@ -528,9 +559,11 @@ describe('TC-3810 step 4: third-party flows mint terminal; plain /delegate honor
       deviceTransactionId,
       delegationMode: 'attenuable',
     });
-    expect(refusedAttenuable.status).toBe(400);
-    expect(refusedAttenuable.body).toMatchObject({ code: SIGNED_SUBSET_REFUSAL_CODE, reason: 'delegation_mode' });
+    expect(attenuablePrep.status).toBe(200);
+    const parsedAtt = parseStrictSiwe((attenuablePrep.body.prepared as { siwe: string }).siwe);
+    expect(parsedAtt.ok && parsedAtt.siwe.recap?.delegationMode).toBe('attenuable');
 
+    // Declared terminal device flow mints terminal and enforces it on /complete.
     const prepared = await post('/prepare', {
       keyId: managed.id,
       jwk,
@@ -538,6 +571,7 @@ describe('TC-3810 step 4: third-party flows mint terminal; plain /delegate honor
       expiry: '60s',
       permissions: perms,
       deviceTransactionId,
+      delegationMode: 'terminal',
     });
     expect(prepared.status).toBe(200);
     const prepPayload = prepared.body.prepared as Record<string, unknown> & { siwe: string };
@@ -556,6 +590,9 @@ describe('TC-3810 step 4: third-party flows mint terminal; plain /delegate honor
         jwk,
         permissions: perms,
         deviceTransactionId,
+        authorizationContextToken: (prepared.body.authorizationContext as { token: string }).token,
+        selectedActionIds: prepared.body.selectedActionKeys,
+        protocolVersion: 1,
       });
       expect(refused.status).toBe(400);
       expect(refused.body).toMatchObject({ code: SIGNED_SUBSET_REFUSAL_CODE, reason: 'delegation_mode' });
@@ -570,6 +607,9 @@ describe('TC-3810 step 4: third-party flows mint terminal; plain /delegate honor
       jwk,
       permissions: perms,
       deviceTransactionId,
+      authorizationContextToken: (prepared.body.authorizationContext as { token: string }).token,
+      selectedActionIds: prepared.body.selectedActionKeys,
+      protocolVersion: 1,
     });
     expect(completed.status).toBe(200);
     expect(activateSessionWithHost).toHaveBeenCalledTimes(1);

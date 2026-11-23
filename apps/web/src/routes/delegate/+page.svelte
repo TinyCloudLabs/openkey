@@ -562,9 +562,7 @@
   }
   let requestedPermissions = $state<RequestedPermission[]>([]);
   let requestReason = $state(normalizeReason(reasonParam));
-  const rawDelegationModeParam = approvalRequestMode || deviceTransactionId
-    ? null
-    : $page.url.searchParams.get('delegationMode');
+  const rawDelegationModeParam = $page.url.searchParams.get('delegationMode');
   const initialDelegationMode: 'terminal' | 'attenuable' | undefined =
     rawDelegationModeParam === null
       ? undefined
@@ -587,7 +585,7 @@
       if (payloadReason) {
         requestReason = payloadReason;
       }
-      if (!deviceTransactionId && initialDelegationMode === undefined && payload.delegationMode !== undefined) {
+      if (initialDelegationMode === undefined && payload.delegationMode !== undefined) {
         requestDelegationMode = payload.delegationMode === 'attenuable' ? 'attenuable' : 'terminal';
       }
     }
@@ -963,7 +961,7 @@
     if (approvalRequestMode && renewalChoiceBody()) body.renewal = renewalChoiceBody();
     // The API refuses a device delegation outside the transaction's lifetime.
     if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
-    if (!approvalRequestMode && !deviceTransactionId && requestDelegationMode !== undefined) {
+    if (requestDelegationMode !== undefined) {
       body.delegationMode = requestDelegationMode;
     }
 
@@ -1429,7 +1427,7 @@
         }
       }
       if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
-      if (!approvalRequestMode && !deviceTransactionId && requestDelegationMode !== undefined) {
+      if (requestDelegationMode !== undefined) {
         body.delegationMode = requestDelegationMode;
       }
 
