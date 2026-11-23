@@ -14,6 +14,7 @@ const SPACE_PREFIX = `tinycloud:pkh:eip155:${chainId}:${address}`;
 const MESSAGES = `${SPACE_PREFIX}:messages`;
 const APPLICATIONS = `${SPACE_PREFIX}:applications`;
 const OTHER_MESSAGES = `tinycloud:pkh:eip155:${chainId}:0x2222222222222222222222222222222222222222:messages`;
+const OTHER_CHAIN_MESSAGES = `tinycloud:pkh:eip155:${chainId + 1}:${address}:messages`;
 const ORIGIN = "https://inbox.tinycloud.xyz";
 const MEDIA = "xyz.tinycloud.inbox/media/";
 const DB = "xyz.tinycloud.inbox/db/";
@@ -29,11 +30,11 @@ const inboxGrants = [
   { target: `sql/${TRIAGE}`, abilities: [READ], text: "Read how Inbox sorted your messages" },
 ];
 
-function review(grants: Record<string, string[]>) {
+function review(grants: Record<string, string[]>, caveats: unknown[] = [{}]) {
   const att = Object.fromEntries(
     Object.entries(grants).map(([resource, abilities]) => [
       resource,
-      Object.fromEntries(abilities.map((ability) => [ability, [{}]])),
+      Object.fromEntries(abilities.map((ability) => [ability, caveats])),
     ]),
   );
   return parseCapabilityReview({
@@ -84,6 +85,7 @@ describe("Inbox approval rows", () => {
     ["a child of media", MESSAGES, `kv/${MEDIA}images/`, [GET], KV_FALLBACK, "attention"],
     ["the whole KV space", MESSAGES, "kv", [GET], KV_FALLBACK, "attention"],
     ["another user's media", OTHER_MESSAGES, `kv/${MEDIA}`, [GET], KV_FALLBACK, "attention"],
+    ["media on another chain", OTHER_CHAIN_MESSAGES, `kv/${MEDIA}`, [GET], KV_FALLBACK, "attention"],
     ["a different space name", `${SPACE_PREFIX}:Messages`, `kv/${MEDIA}`, [GET], KV_FALLBACK, "attention"],
     ["a missing KV resource service", MESSAGES, `/${MEDIA}`, [GET], KV_FALLBACK, "attention"],
     ["SQL read plus write", MESSAGES, `sql/${DB}`, [READ, "tinycloud.sql/write"], SQL_FALLBACK, "sensitive"],
@@ -94,10 +96,27 @@ describe("Inbox approval rows", () => {
     ["another SQL path", MESSAGES, "sql/xyz.tinycloud.inbox/other/", [READ], SQL_FALLBACK, "attention"],
     ["another user's db", OTHER_MESSAGES, `sql/${DB}`, [READ], SQL_FALLBACK, "attention"],
     ["another user's triage", OTHER_MESSAGES, `sql/${TRIAGE}`, [READ], SQL_FALLBACK, "attention"],
+    ["db on another chain", OTHER_CHAIN_MESSAGES, `sql/${DB}`, [READ], SQL_FALLBACK, "attention"],
+    ["triage on another chain", OTHER_CHAIN_MESSAGES, `sql/${TRIAGE}`, [READ], SQL_FALLBACK, "attention"],
   ] as const)("keeps %s unrecognized", (_name, space, target, abilities, fallback, severity) => {
     const { permissions: [grant] } = review({ [`${space}/${target}`]: [...abilities] });
     expect(grant).toMatchObject({ family: "unknown", displayLabel: fallback, severity });
     expect(buildStatements(grant!).map(({ literalEscaped }) => literalEscaped)).toEqual([true]);
+  });
+
+  it.each(inboxGrants)("keeps caveated $target unrecognized", ({ target, abilities }) => {
+    const displayLabel = target.startsWith("kv/") ? KV_FALLBACK : SQL_FALLBACK;
+    for (const caveats of [[{ limit: 1 }], [{ ownerFullAccess: true }]]) {
+      const { permissions: [grant] } = review({ [`${MESSAGES}/${target}`]: abilities }, caveats);
+      expect(grant).toMatchObject({ family: "unknown", displayLabel, severity: "attention" });
+      expect(buildStatements(grant!).map(({ literalEscaped }) => literalEscaped)).toEqual([true]);
+    }
+  });
+
+  it.each(inboxGrants)("accepts an empty caveat list for $target", ({ target, abilities, text }) => {
+    const { permissions: [grant] } = review({ [`${MESSAGES}/${target}`]: abilities }, []);
+    expect(grant?.displayLabel).toBe(text);
+    expect(buildStatements(grant!).map(({ primaryText }) => primaryText)).toEqual([text]);
   });
 
   it.each(inboxGrants)("requires proof of ownership for $target", ({ target, abilities }) => {
@@ -105,11 +124,16 @@ describe("Inbox approval rows", () => {
     const service = `tinycloud.${target.slice(0, slash)}`;
     const path = target.slice(slash + 1);
     const displayLabel = service === "tinycloud.kv" ? KV_FALLBACK : SQL_FALLBACK;
-    expect(classifyRecapEntry({ service, space: MESSAGES, path, actions: abilities })).toEqual({
+    const entry = { service, path, actions: abilities, caveatsByAbility: { [abilities[0]!]: [{}] } };
+    expect(classifyRecapEntry({ ...entry, space: MESSAGES, signerChainId: chainId })).toEqual({
       family: "unknown",
       displayLabel,
     });
-    expect(classifyRecapEntry({ service, space: "messages", path, actions: abilities, signerAddress: address })).toEqual({
+    expect(classifyRecapEntry({ ...entry, space: MESSAGES, signerAddress: address })).toEqual({
+      family: "unknown",
+      displayLabel,
+    });
+    expect(classifyRecapEntry({ ...entry, space: "messages", signerAddress: address, signerChainId: chainId })).toEqual({
       family: "unknown",
       displayLabel,
     });

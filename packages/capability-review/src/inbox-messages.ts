@@ -9,6 +9,14 @@ const MEDIA_PATH = "xyz.tinycloud.inbox/media/";
 const MAIL_PATH = "xyz.tinycloud.inbox/db/";
 const TRIAGE_PATH = "xyz.tinycloud.inbox/triage";
 
+function hasNoCaveats(caveats: readonly unknown[] | undefined): boolean {
+  if (!caveats) return false;
+  if (caveats.length === 0) return true;
+  const [caveat] = caveats;
+  return caveats.length === 1 && caveat !== null && typeof caveat === "object" &&
+    !Array.isArray(caveat) && Object.keys(caveat).length === 0;
+}
+
 /** Name the Inbox data reached by a read of one exact resource. */
 export function inboxMessagesStatement(
   entry: {
@@ -19,9 +27,10 @@ export function inboxMessagesStatement(
     resourceService?: string | null;
   },
   isOwnSpace: boolean,
+  caveats: readonly unknown[] | undefined,
 ): string | null {
   const { service, space, path, actions, resourceService } = entry;
-  if (!isOwnSpace || !MESSAGES_SPACE.test(space) || actions.length !== 1) {
+  if (!isOwnSpace || !MESSAGES_SPACE.test(space) || actions.length !== 1 || !hasNoCaveats(caveats)) {
     return null;
   }
   if (

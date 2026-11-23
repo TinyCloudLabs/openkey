@@ -1411,8 +1411,12 @@ export function buildStatement(input: CapabilityGrant): StatementEntry {
   const inboxText = inboxMessagesStatement(
     { ...grant, actions: abilityStrings },
     grant.ownedBySelf === true,
+    grant.actions[0]?.caveats,
   );
-  if (inboxText !== null) return { primaryText: inboxText, service, resource };
+  // Classification proved the chain and the original wire caveat shape.
+  if (inboxText !== null && grant.displayLabel === inboxText) {
+    return { primaryText: inboxText, service, resource };
+  }
 
   // Classification is the authority for whether a structural shape is
   // understood. Ownership or a familiar-looking path must never upgrade an

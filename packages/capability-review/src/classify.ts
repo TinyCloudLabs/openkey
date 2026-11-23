@@ -53,6 +53,7 @@ interface RecapEntryLike {
   signerAddress?: string | null;
   signerChainId?: number;
   resourceService?: string | null;
+  caveatsByAbility?: Readonly<Record<string, readonly unknown[]>>;
   /** Ability-derived and resource-derived services disagree on the wire. */
   serviceMismatch?: boolean;
 }
@@ -237,10 +238,17 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     signerAddress !== null &&
     spaceOwner === signerAddress;
 
+  const isOnSignerChain = space.startsWith(`tinycloud:pkh:eip155:${entry.signerChainId}:`);
   const courier = courierEntry(entry);
-  if (courier && isOwnSpace && space.startsWith(`tinycloud:pkh:eip155:${entry.signerChainId}:`)) {
+  if (courier && isOwnSpace && isOnSignerChain) {
     return { family: "courier", displayLabel: new Set(entry.actions).size === courier.verbs.length ? ("exactText" in courier ? courier.exactText ?? courier.text : courier.text) : FAMILY_LABEL.courier };
   }
+
+  const inboxText = inboxMessagesStatement(
+    entry,
+    isOwnSpace && isOnSignerChain,
+    entry.caveatsByAbility?.[entry.actions[0]!],
+  );
 
   if (spaceName === "agents" && (BOOTSTRAP_KV_SERVICES.has(service) || service === "tinycloud.hooks") && !path.startsWith("vault/secrets/") && !path.startsWith("secrets/")) {
     return unknownActionLabel(service);
@@ -402,7 +410,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     } else {
       return {
         family: "unknown",
-        displayLabel: inboxMessagesStatement(entry, isOwnSpace) ?? "Unrecognized key-value data",
+        displayLabel: inboxText ?? "Unrecognized key-value data",
       };
     }
 
@@ -464,7 +472,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     } else {
       return {
         family: "unknown",
-        displayLabel: inboxMessagesStatement(entry, isOwnSpace) ?? "Unrecognized SQL data",
+        displayLabel: inboxText ?? "Unrecognized SQL data",
       };
     }
 

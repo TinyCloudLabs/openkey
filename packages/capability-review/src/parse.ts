@@ -115,10 +115,9 @@ interface ParsedRecapEntry {
   actions: string[];
   /**
    * Per-ability caveats keyed by the fully-qualified ability string. Empty
-   * arrays mean "no caveats" and are indistinguishable from an absent key
-   * — callers should not rely on absence to encode "no caveats". Preserved
-   * end-to-end so subset validation can compare candidate vs baseline
-   * caveats structurally.
+   * arrays mean "no caveats"; absent entries carry no proof of that shape.
+   * Preserved end-to-end so subset validation can compare candidate vs
+   * baseline caveats structurally.
    */
   caveatsByAbility: Record<string, unknown[]>;
   /**
@@ -498,12 +497,12 @@ function decodeRecapUri(
         entry.actions.push(ability);
       }
       // Preserve caveats verbatim. ReCap requires the value be an array —
-      // treat non-arrays as empty and warn so the operator sees the input
-      // was malformed rather than silently accepted.
+      // keep malformed values absent for classification. The action model
+      // still uses an empty array and the operator sees the parse warning.
       if (Array.isArray(rawCaveats)) {
         entry.caveatsByAbility[ability] = rawCaveats as unknown[];
       } else {
-        entry.caveatsByAbility[ability] = [];
+        delete entry.caveatsByAbility[ability];
         if (rawCaveats !== undefined) {
           warnings.push({
             code: "malformed-space",
