@@ -1,4 +1,4 @@
-// TC-3903: account deletion tells billing before any row goes, and keeps a hashed audit row after the
+// TC-3903: account deletion tells billing before any row goes, and keeps a no-identifier audit row after the
 // account is gone. The billing service is a loopback stand-in answering POST /api/account-delete/<address>
 // the way the contract fixes it; nothing else on the network is touched. Runs on PGlite, in a spawned
 // child so DATABASE_URL can point at it before the API modules open it.
@@ -19,7 +19,7 @@ const ORIGIN = 'https://openkey.test';
 const BILLING_SECRET = 'billing-test-secret';
 
 if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
-  test('account deletion settles billing first and keeps a hashed audit row', async () => {
+  test('account deletion settles billing first and keeps a no-identifier audit row', async () => {
     const child = Bun.spawn([process.execPath, 'test', import.meta.path], {
       cwd: root,
       env: {
@@ -257,6 +257,30 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
     }
   });
 
+  test('in production a non-https billing URL refuses the deletion like missing config: 503, nothing deleted, no call sent', async () => {
+    const saved = process.env.TEE_MODE;
+    const address = `0x${randomBytes(20).toString('hex')}`;
+    const owner = await account([address]);
+    billing.calls.length = 0;
+    billing.authorization = null;
+    // The loopback stand-in is plain http, which production must not use for the bearer secret.
+    expect(billing.origin.startsWith('http://')).toBe(true);
+    process.env.TEE_MODE = 'production';
+    try {
+      const refused = await owner.delete();
+      expect(refused.status).toBe(503);
+      expect(await refused.json()).toEqual({ error: 'billing_unavailable' });
+    } finally {
+      if (saved === undefined) delete process.env.TEE_MODE;
+      else process.env.TEE_MODE = saved;
+    }
+    expect(billing.calls).toEqual([]);
+    expect(billing.authorization).toBeNull();
+    expect(await prisma.user.count({ where: { id: owner.userId } })).toBe(1);
+    expect(await prisma.ethereumKey.count({ where: { userId: owner.userId } })).toBe(1);
+    expect(await auditRows()).toEqual([]);
+  });
+
   test('a key enrolled between the billing calls and the delete transaction aborts retryably; the retry bills it', async () => {
     const first = `0x${randomBytes(20).toString('hex')}`;
     const owner = await account([first]);
@@ -315,5 +339,15 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
     expect(billingAccountDeletePlan({ NODE_ENV: 'test', ACCOUNT_DELETE_SERVICE_SECRET: 's' })).toEqual({ kind: 'unavailable' });
     expect(billingAccountDeletePlan({ BILLING_API_URL: 'https://billing.test/', ACCOUNT_DELETE_SERVICE_SECRET: 's' }))
       .toEqual({ kind: 'call', baseUrl: 'https://billing.test', secret: 's' });
+    // Production calls billing only over https; any other scheme is unavailable, in either production flag.
+    expect(billingAccountDeletePlan({ NODE_ENV: 'production', BILLING_API_URL: 'http://billing.test', ACCOUNT_DELETE_SERVICE_SECRET: 's' }))
+      .toEqual({ kind: 'unavailable' });
+    expect(billingAccountDeletePlan({ TEE_MODE: 'production', BILLING_API_URL: 'billing.test', ACCOUNT_DELETE_SERVICE_SECRET: 's' }))
+      .toEqual({ kind: 'unavailable' });
+    expect(billingAccountDeletePlan({ NODE_ENV: 'production', BILLING_API_URL: 'https://billing.test', ACCOUNT_DELETE_SERVICE_SECRET: 's' }))
+      .toEqual({ kind: 'call', baseUrl: 'https://billing.test', secret: 's' });
+    // Outside production the loopback http stand-in stays usable.
+    expect(billingAccountDeletePlan({ NODE_ENV: 'test', BILLING_API_URL: 'http://127.0.0.1:1', ACCOUNT_DELETE_SERVICE_SECRET: 's' }))
+      .toEqual({ kind: 'call', baseUrl: 'http://127.0.0.1:1', secret: 's' });
   });
 }

@@ -16,7 +16,9 @@
 // (email-otp-delivery.ts): production (NODE_ENV or TEE_MODE `production`) fails closed with the 503 so a
 // deploy that forgot billing can never silently keep subscriptions; development and test skip the calls
 // entirely (there is no billing to cancel locally). One variable set without the other is a
-// misconfiguration, not "unset", and fails closed everywhere.
+// misconfiguration, not "unset", and fails closed everywhere. In production BILLING_API_URL must also be
+// an `https://` origin: the bearer secret never travels in clear, and any other scheme is treated as
+// missing configuration (503, nothing deleted, no call sent).
 import { logAccountDeleteBilling } from '../log';
 
 export const BILLING_ACCOUNT_DELETE_TIMEOUT_MS = 10_000;
@@ -42,9 +44,12 @@ export type BillingAccountDeletePlan =
 export function billingAccountDeletePlan(env: NodeJS.ProcessEnv = process.env): BillingAccountDeletePlan {
   const baseUrl = env.BILLING_API_URL?.trim();
   const secret = env.ACCOUNT_DELETE_SERVICE_SECRET?.trim();
-  if (baseUrl && secret) return { kind: 'call', baseUrl: baseUrl.replace(/\/+$/, ''), secret };
   // The isDev formula used across the API: anything but NODE_ENV/TEE_MODE production.
   const production = env.NODE_ENV === 'production' || env.TEE_MODE === 'production';
+  if (baseUrl && secret) {
+    if (production && !/^https:\/\//i.test(baseUrl)) return { kind: 'unavailable' };
+    return { kind: 'call', baseUrl: baseUrl.replace(/\/+$/, ''), secret };
+  }
   if (!baseUrl && !secret && !production) return { kind: 'skip' };
   return { kind: 'unavailable' };
 }
