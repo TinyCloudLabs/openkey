@@ -162,7 +162,7 @@ async function renewStepUps(tx: any, input: {
     try {
       const prepared = prepareDelegationSession({ address: ensureEip55(input.key.address), chainId: 1, prefix: 'applications',
         jwk: input.grant.sessionJwk as { kty: string; crv: string; x: string }, permissions, expiryMs: input.ttlSeconds * 1000,
-        domain: input.ceiling.siweDomain ?? 'openkey.so', nonce: randomBytes(12).toString('hex'), issuedAt: input.now });
+        domain: input.ceiling.siweDomain ?? 'openkey.so', nonce: randomBytes(12).toString('hex'), issuedAt: input.now, delegationMode: 'terminal' });
       const signature = await createWalletFromPrivateKey(input.privateKey!).signMessage({ message: prepared.prepared.siwe });
       const delegation = completeSessionSetup({ ...prepared.prepared, signature });
       artifact = stepUpDelegationResponse({
@@ -389,7 +389,7 @@ export async function handleNativeRenewOrRevoke(request: Request, db: PrismaClie
           const siweNonce = nonce ?? randomBytes(12).toString('hex');
           const prepared = prepareDelegationSession({ address: ensureEip55(key.address), chainId: 1, prefix: 'applications',
             jwk: grant.sessionJwk as { kty: string; crv: string; x: string }, permissions, expiryMs: ttlSeconds * 1000,
-            domain: ceiling.siweDomain ?? 'openkey.so', nonce: siweNonce, issuedAt: now });
+            domain: ceiling.siweDomain ?? 'openkey.so', nonce: siweNonce, issuedAt: now, delegationMode: 'terminal' });
           if (prepared.spaceId !== grant.spaceId || prepared.prepared.verificationMethod !== grant.sessionDid) return deny('consent_required', 'session_changed');
           const signature = await createWalletFromPrivateKey(privateKey).signMessage({ message: prepared.prepared.siwe });
           const delegation = completeSessionSetup({ ...prepared.prepared, signature });

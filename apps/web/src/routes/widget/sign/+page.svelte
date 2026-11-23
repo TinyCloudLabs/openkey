@@ -128,6 +128,7 @@
   // externalSignature.
   let externalSignMode = $state(false);
   let expiryChangeable = $state(false);
+  let requestDelegationMode = $state<'terminal' | 'attenuable' | undefined>(undefined);
   // TC-2933: the app's renewal ask (only ever with expiryChangeable), sent at prepare. The box shows only where the
   // prepare answer offers it (`renewalMaxLeaseMs`); `renewalLeaseMs` is the owner's lease, null while unticked.
   let renewalAsk: WidgetRenewalAsk | null = null;
@@ -341,6 +342,11 @@
     // TC-2272: only an SDK that accepts a different signed expiry sends this; without it the
     // approval shows no expiry control and the app's own expiry is signed.
     expiryChangeable = data.expiryChangeable === true;
+    requestDelegationMode = data.delegationMode === undefined
+      ? undefined
+      : data.delegationMode === 'attenuable'
+        ? 'attenuable'
+        : 'terminal';
     renewalAsk = data.renewal && typeof data.renewal === 'object' ? (data.renewal as WidgetRenewalAsk) : null;
     renewalMaxLeaseMs = null;
     renewalLeaseMs = null;
@@ -698,6 +704,7 @@
     try {
       const model = parseCapabilityReview({
         message,
+        ...(requestDelegationMode !== undefined ? { delegationMode: requestDelegationMode } : {}),
         signer: {
           label: 'Selected key',
           address: key.address,
@@ -909,6 +916,7 @@
               ...(expiryChangeable ? { expiryChangeable: true } : {}),
               // TC-2933: the app's renewal ask; the answer says whether the box is offered.
               ...(renewalAsk ? { renewal: { version: 1, leaseLifetimeSeconds: renewalAsk.leaseLifetimeSeconds } } : {}),
+              ...(requestDelegationMode !== undefined ? { delegationMode: requestDelegationMode } : {}),
             }),
           },
         );

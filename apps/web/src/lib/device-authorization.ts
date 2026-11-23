@@ -227,9 +227,17 @@ export function decodeBase64UrlJson(value: string): unknown {
  * request whose permissions cannot be read must be refused, never treated as
  * a request that names none (the own folder). A raw encryption network carries no space.
  */
-export function decodeDelegatePermissionsParam(value: string): { permissions: DevicePermission[]; reason?: unknown } {
+export function decodeDelegatePermissionsParam(value: string): {
+  permissions: DevicePermission[];
+  reason?: unknown;
+  delegationMode?: unknown;
+} {
   const payload = decodeBase64UrlJson(value);
-  const { permissions, reason } = (payload && typeof payload === 'object' ? payload : {}) as { permissions?: unknown; reason?: unknown };
+  const { permissions, reason, delegationMode } = (payload && typeof payload === 'object' ? payload : {}) as {
+    permissions?: unknown;
+    reason?: unknown;
+    delegationMode?: unknown;
+  };
   if (!Array.isArray(permissions) || permissions.length === 0) {
     throw new Error('The requested permissions are missing or malformed.');
   }
@@ -246,7 +254,11 @@ export function decodeDelegatePermissionsParam(value: string): { permissions: De
       throw new Error('The requested permissions are missing or malformed.');
     }
   }
-  return { permissions: permissions as DevicePermission[], reason };
+  return {
+    permissions: permissions as DevicePermission[],
+    reason,
+    ...(delegationMode !== undefined ? { delegationMode } : {}),
+  };
 }
 
 /**
@@ -255,7 +267,11 @@ export function decodeDelegatePermissionsParam(value: string): { permissions: De
  * `?permissions=` or a bare `?permissions`, must decode to a non-empty list
  * or the request is refused.
  */
-export function readDelegatePermissionsParam(params: URLSearchParams): { permissions: DevicePermission[]; reason?: unknown } | null {
+export function readDelegatePermissionsParam(params: URLSearchParams): {
+  permissions: DevicePermission[];
+  reason?: unknown;
+  delegationMode?: unknown;
+} | null {
   const value = params.get('permissions');
   return value === null ? null : decodeDelegatePermissionsParam(value);
 }

@@ -19,11 +19,11 @@
 // Both messages go through a strict EIP-4361 / EIP-5573 parser first. Anything
 // it cannot read losslessly is refused.
 
-import { parseSiweFields, SIWE_URI_PATTERN, type SiweFields } from '@openkey/capability-review';
+import { parseSiweFields, serializeSiwe, SIWE_URI_PATTERN, type SiweFields } from '@openkey/capability-review';
 import { actionKey, isRawRecapEntry, parsePreparedRecap, type RecapEntry } from '../routes/delegate-session';
 import { LATEST_SIWE_TIME_MS } from './approval-expiry';
 
-export { serializeSiwe } from '@openkey/capability-review';
+export { serializeSiwe };
 
 // ---------------------------------------------------------------------------
 // Strict JSON (duplicate keys refused)
@@ -138,6 +138,50 @@ function canonicalJson(value: JsonValue): string {
 const RECAP_PREFIX = 'urn:recap:';
 export const DELEGATION_MODE_KEY = 'xyz.tinycloud.policy/delegationMode';
 export type DelegationMode = 'terminal' | 'attenuable';
+
+/**
+ * Normalize a request-level `delegationMode` declaration:
+ * - `undefined` stays `undefined` (undeclared; step 4 keeps legacy attenuable).
+ * - exact `"attenuable"` -> `"attenuable"`.
+ * - `"terminal"` or any unknown non-undefined value -> `"terminal"` (unknown
+ *   request declarations never select attenuable).
+ */
+export function normalizeDeclaredDelegationMode(value: unknown): DelegationMode | undefined {
+  if (value === undefined) return undefined;
+  return value === 'attenuable' ? 'attenuable' : 'terminal';
+}
+
+/**
+ * Stamp `xyz.tinycloud.policy/delegationMode` onto a strict ReCap SIWE in
+ * canonical top-level key order (`att`, `prf`, `xyz.tinycloud.policy/delegationMode`),
+ * unpadded base64url. Returns `siwe` unchanged when it already carries `mode`.
+ */
+export function withRecapDelegationMode(siwe: string, mode: DelegationMode): string {
+  const parsed = parseStrictSiwe(siwe);
+  if (!parsed.ok || !parsed.siwe.recap || !parsed.siwe.resources) {
+    throw new Error(parsed.ok ? 'SIWE carries no ReCap resource' : parsed.message);
+  }
+  if (parsed.siwe.recap.delegationMode === mode) return siwe;
+  const recapIdx = parsed.siwe.resources.findIndex((r) => r.startsWith(RECAP_PREFIX));
+  if (recapIdx < 0) throw new Error('SIWE carries no ReCap resource');
+  const encoded = parsed.siwe.resources[recapIdx]!.slice(RECAP_PREFIX.length);
+  const raw = parseStrictJson(
+    new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.from(encoded, 'base64url')),
+  ) as JsonObject;
+  const rebuiltJson = JSON.stringify({
+    att: raw.att,
+    prf: raw.prf,
+    [DELEGATION_MODE_KEY]: mode,
+  });
+  const nextResources = [...parsed.siwe.resources];
+  nextResources[recapIdx] = `${RECAP_PREFIX}${Buffer.from(rebuiltJson, 'utf8').toString('base64url')}`;
+  const rebuilt = serializeSiwe({ ...parsed.siwe, resources: nextResources });
+  const verified = parseStrictSiwe(rebuilt);
+  if (!verified.ok || verified.siwe.recap?.delegationMode !== mode) {
+    throw new Error('Failed to verify stamped ReCap delegation mode');
+  }
+  return rebuilt;
+}
 const ABILITY_PATTERN = /^[^/\s]+\/\S+$/;
 const PROOF_PATTERN = /^\S+$/;
 const RECAP_STATEMENT_PREFIX =

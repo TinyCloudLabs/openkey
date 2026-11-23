@@ -29,6 +29,7 @@
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { AdmittedAppKey } from "./app-key-refusal";
+import type { DelegationMode } from "./signed-subset";
 import { siweExpirationTime } from "@openkey/capability-review";
 
 const CONTEXT_TTL_MS = 5 * 60 * 1000;
@@ -129,6 +130,8 @@ export interface AuthorizationContextIssueInput {
   renewal?: BoundRenewalChoice;
   /** The renewal the requesting app asked for at this sign-in; the owner's choice is sealed with the preview. */
   signInRenewal?: SignInRenewalRequest;
+  /** Bound ReCap delegation mode (`"terminal"` | `"attenuable"`), omitted when undeclared (TC-3810). */
+  delegationMode?: DelegationMode;
 }
 
 interface StoredContext {
@@ -160,6 +163,7 @@ interface StoredContext {
   expiryChangeable?: boolean;
   renewal?: BoundRenewalChoice;
   signInRenewal?: SignInRenewalRequest;
+  delegationMode?: DelegationMode;
 }
 
 const store = new Map<string, StoredContext>();
@@ -413,6 +417,7 @@ export function issueAuthorizationContext(
     expiryChangeable: input.expiryChangeable,
     renewal: input.renewal,
     signInRenewal: input.signInRenewal,
+    delegationMode: input.delegationMode,
   };
   store.set(token, stored);
 
@@ -873,6 +878,8 @@ export interface PeekSuccess {
     renewal?: BoundRenewalChoice;
     /** The renewal the requesting app asked for at this sign-in. */
     signInRenewal?: SignInRenewalRequest;
+    /** Bound ReCap delegation mode (`"terminal"` | `"attenuable"`), omitted when undeclared. */
+    delegationMode?: DelegationMode;
   };
 }
 
@@ -924,6 +931,7 @@ export function peekAuthorizationContext(token: string): PeekSuccess | PeekFailu
       expiryChangeable: stored.expiryChangeable,
       renewal: stored.renewal,
       signInRenewal: stored.signInRenewal,
+      delegationMode: stored.delegationMode,
     },
   };
 }

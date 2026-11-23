@@ -53,6 +53,7 @@
     appKeyAccessStatement,
     appKeyIdentity,
     appRequestingLine,
+    attenuableDelegationLine,
     FAMILY_LABEL,
     appKeyNotGrantableStatements,
     buildRenderPlan,
@@ -398,6 +399,7 @@
   const requesterShown = $derived(requesterUnverified ? unverifiedRequester!.name : requesterName);
   const manifestNameShown = $derived(appDisplayName(model.requester.manifestName));
   const requestedBy = $derived(originHost ?? requesterName);
+  const delegationModeApp = $derived(identity?.name || requestedBy || requesterShown || null);
   // The note under the expiry line names who asked as the screen does: the verified origin, or "This request" where
   // nothing identifies the requester (a link, a device sign-in, an approval link).
   const onceNoteSite = $derived(originHost ?? "This request");
@@ -968,6 +970,12 @@
           </li>
         {/each}
       </ul>
+    {/if}
+
+    {#if model.delegationMode === "attenuable"}
+      <p class="summary-note" data-testid="attenuable-delegation-note">
+        {attenuableDelegationLine(delegationModeApp)}
+      </p>
     {/if}
 
     {#if onExpiryChange && model.protocol === "tinycloud-siwe-recap" && !onceDefaultPending}

@@ -302,6 +302,12 @@ export function appRequestingLine(name: string | null): string {
   return `${name ?? "This app"} is requesting:`;
 }
 
+/** Shown on the consent sheet when a request explicitly declares `"attenuable"` delegation mode (TC-3810). */
+export function attenuableDelegationLine(app: string | null): string {
+  const name = app && app.trim().length > 0 ? app.trim() : "This app";
+  return `${name} can share this access with other apps or agents it works with.`;
+}
+
 export const APP_KEY_ACCESS_WITHOUT_EXPIRY = "This access lasts until it expires.";
 
 /**
