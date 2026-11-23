@@ -29,7 +29,7 @@ import { prepareDelegationSession, actionKey } from './delegate-session';
 import { approvalPasskeyOfferInFlow, approvalRequestDigest, checkApprovalPasskeyInFlow, clearFlowPasskey, messageApprovalSensitivity, type ApprovalBinding, type ApprovalPasskeyMethod } from '../services/approval-passkey';
 
 import { log, logError, logSignInLeaseSigned } from '../log';
-import { assertLeaseableGrant, leaseReachesSecrets, parseRenewalChoice, RenewalLeaseError, renewalLeasesEnabled } from '../services/renewal-lease';
+import { assertLeaseableGrant, parseRenewalChoice, renewalGrantSensitivity, RenewalLeaseError, renewalLeasesEnabled } from '../services/renewal-lease';
 import { signInRenewalFailure } from '../services/signin-renewal';
 import { nativeRenewalHostAllowed, NATIVE_LEASED_WINDOW_SECONDS, recordNativeRenewal, type NativeRenewalAsk } from '../services/native-delegation/standing-renewal';
 export class NativeConsentError extends Error {
@@ -225,8 +225,8 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       const requested = permitted(row.requestedPermissions, ceiling);
       const preparedAt = new Date();
       const ask = (row.renewalAsk ?? undefined) as NativeRenewalAsk | undefined;
-      const renewalAvailable = !!ask && !reviewer && renewalLeasesEnabled() && nativeRenewalHostAllowed(ceiling.tinycloudHost);
-      const renewalChoice = parseRenewalChoice(body.renewal === undefined && ask ? { choice: 'finite' } : body.renewal, ask, renewalAvailable, 'sign-in');
+      const renewalEligible = !!ask && !reviewer && renewalLeasesEnabled() && nativeRenewalHostAllowed(ceiling.tinycloudHost);
+      const renewalChoice = parseRenewalChoice(body.renewal === undefined && ask ? { choice: 'finite' } : body.renewal, ask, renewalEligible, 'sign-in');
       const maxWindow = Math.min(ceiling.maxDelegationTtlSeconds, ceiling.grantLifetimeSeconds);
       const finiteTtlSeconds = Math.min(row.ttlSeconds, maxWindow, reviewer ? Math.floor((reviewer.deadline - preparedAt.getTime()) / 1000) : Infinity);
       const leasedTtlSeconds = Math.min(NATIVE_LEASED_WINDOW_SECONDS, maxWindow);
@@ -237,8 +237,10 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       const base = prepareSiwe(row, requested, key, ceiling, nonce, ttlSeconds, preparedAt);
       const permissions = selectedPermissions(requested, body.actionKeys, base.spaceId);
       const prepared = prepareSiwe(row, permissions, key, ceiling, nonce, ttlSeconds, preparedAt);
-      const renewalSensitiveConfirmationRequired = renewalAvailable && leaseReachesSecrets(prepared.prepared.siwe);
       if (renewalChoice?.choice === 'leased') assertLeaseableGrant(prepared.prepared.siwe, renewalChoice.sensitiveConfirmed === true);
+      const renewalSensitivity = renewalEligible ? renewalGrantSensitivity(prepared.prepared.siwe) : null;
+      const renewalAvailable = renewalSensitivity !== null;
+      const renewalSensitiveConfirmationRequired = renewalSensitivity === true;
       const existing = await tx.tinyCloudBootstrapState.findFirst({ where: { keyId: key.id, chainId: 1, tinycloudHost: ceiling.tinycloudHost, status: 'complete' } });
       if (reviewer && (!existing || prepared.spaceId !== reviewer.binding.spaceId || ceiling.tinycloudHost !== reviewer.binding.nodeHost)) fail(403, 'reviewer_host_required');
       let hostPlan: { host: string; spaceId: string; peerId: string; hostSiwe: string } | null = null;
@@ -255,7 +257,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       const digest = preparationDigest(preview);
       await tx.tinyCloudNativePreparation.create({ data: { id: randomUUID(), requestId: row.id, revision, userId, keyId: key.id, address, tinycloudHost: ceiling.tinycloudHost, sessionSiwe: preview.sessionSiwe, permissions, hostPlan: hostPlan ?? undefined, digest, ...(renewalChoice && { renewalChoice }) } });
       await tx.tinyCloudNativeRequest.update({ where: { id: row.id }, data: { userId, siweNonce: nonce, currentRevision: revision, ...(reviewer ? { reviewerEpoch: reviewer.binding.installEpoch, reviewerSessionId: reviewer.sessionId, reviewerDeadline: new Date(reviewer.deadline) } : {}) } });
-      const renewalOffer = renewalAvailable ? {
+      const renewalOffer = renewalAvailable && ask ? {
         renewalMaxLeaseLifetimeSeconds: ask.leaseLifetimeSeconds, renewalPurpose: ask.purpose,
         renewalSensitiveConfirmationRequired, finiteTtlSeconds, leasedTtlSeconds,
       } : {};
