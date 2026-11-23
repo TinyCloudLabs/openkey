@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Database } from 'bun:sqlite';
+import { CID } from 'multiformats/cid';
 import { privateKeyToAccount } from 'viem/accounts';
 import { completeSessionSetup, prepareSession } from '@tinycloud/node-sdk-wasm';
 import { prepareRenewalStage, signLease, admitLease } from '../services/renewal-lease';
@@ -89,13 +90,23 @@ if (!nodeBinary) {
       stdio: ['ignore', log, log],
     });
     closeSync(log);
+    let ready = false;
     for (let attempt = 0; attempt < 120; attempt++) {
+      if (node.exitCode !== null) break;
       try {
-        if ((await fetch(`${host}/.well-known/tinycloud/node-keys`)).ok) break;
+        if ((await fetch(`${host}/.well-known/tinycloud/node-keys`)).ok) {
+          ready = true;
+          break;
+        }
       } catch {
         /* wait for startup */
       }
       await delay(250);
+    }
+    if (!ready) {
+      throw new Error(
+        `real tinycloud-node failed to become ready at ${host}/.well-known/tinycloud/node-keys within 30s (exit=${node.exitCode})`,
+      );
     }
   }, 60_000);
 
@@ -106,19 +117,38 @@ if (!nodeBinary) {
     if (nodeDir) rmSync(nodeDir, { recursive: true, force: true });
   });
 
-  function stampCount(ownerAddress: string): number {
-    const db = new Database(join(nodeDir, 'data', 'caps.db'), { readonly: true });
-    try {
-      const row = db
-        .prepare(
-          `SELECT count(*) AS n FROM renewal_stamp s JOIN renewal_lease l ON l.lease_cid = s.lease_cid
-           WHERE lower(l.grantor) LIKE '%' || lower(?)`,
-        )
-        .get(ownerAddress) as { n: number };
-      return row.n;
-    } finally {
-      db.close();
+  // `tinycloud-core` stores `original_canonical` as the 34-byte multihash (`Hash` BLOB).
+  async function stampCount(originalCid: string): Promise<number> {
+    const canonical = CID.parse(originalCid).multihash.bytes;
+    const dbPath = join(nodeDir, 'data', 'caps.db');
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const db = new Database(dbPath, { readonly: true });
+      try {
+        db.exec('PRAGMA busy_timeout = 5000');
+        const row = db
+          .prepare(
+            `SELECT count(*) AS n
+             FROM renewal_stamp s
+             JOIN renewal_lease l
+               ON l.lease_cid = s.lease_cid
+              AND l.original_canonical = s.original_canonical
+             WHERE s.original_canonical = ?`,
+          )
+          .get(canonical) as { n: number };
+        return row.n;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (!/SQLITE_BUSY|database is locked/i.test(message) || attempt === 4) {
+          throw err;
+        }
+        lastError = err;
+        await delay(100 * (attempt + 1));
+      } finally {
+        db.close();
+      }
     }
+    throw lastError;
   }
 
   test(
@@ -174,13 +204,13 @@ if (!nodeBinary) {
 
       // Wait until the real node's renewal scheduler stamps at least one renewal for this terminal original.
       const deadline = Date.now() + ORIGINAL_MS - 30_000;
-      while (stampCount(account.address) === 0) {
+      while ((await stampCount(original.delegationCid)) === 0) {
         if (Date.now() > deadline) {
           throw new Error('real tinycloud-node did not renew the lease on the terminal original delegation in time');
         }
         await delay(10_000);
       }
-      expect(stampCount(account.address)).toBeGreaterThanOrEqual(1);
+      expect(await stampCount(original.delegationCid)).toBeGreaterThanOrEqual(1);
     },
     25 * 60_000,
   );
