@@ -2,6 +2,7 @@
 import { TinyCloudNode, type Manifest } from '@tinycloud/node-sdk';
 import { SECRETS_SPACE } from '@tinycloud/bootstrap';
 import { Wallet } from 'ethers';
+import { isReservedSecretKey } from './reserved-secret-scopes';
 
 const TINYCLOUD_URL = process.env.TINYCLOUD_URL || 'https://node.tinycloud.xyz';
 export const OPENKEY_LEGACY_SPACE = 'openkey';
@@ -126,6 +127,10 @@ export class TinyCloudService {
       throw new Error('TinyCloud not enabled for user');
     }
 
+    if (isReservedSecretKey(`secrets/${name}`)) {
+      throw new Error("This key belongs to TinyChat and can't be saved here.");
+    }
+
     const createdAt = new Date().toISOString();
     const result = await session.secretsTc.vault.put(`secrets/${name}`, { value, createdAt });
     if (!result.ok) {
@@ -147,7 +152,9 @@ export class TinyCloudService {
 
     // The node lists key names only, and the creation time sits inside the sealed value. Reading it takes the
     // network decrypt grant, which this session does not hold, so the list carries no time.
-    return listResult.data.map((key) => ({ name: key.startsWith('secrets/') ? key.slice('secrets/'.length) : key, createdAt: '' }));
+    return listResult.data
+      .filter((key) => !isReservedSecretKey(key))
+      .map((key) => ({ name: key.startsWith('secrets/') ? key.slice('secrets/'.length) : key, createdAt: '' }));
   }
 
   async deleteSecret(userId: string, name: string): Promise<void> {
@@ -156,7 +163,12 @@ export class TinyCloudService {
       throw new Error('TinyCloud not enabled for user');
     }
 
-    const result = await session.secretsTc.vault.delete(`secrets/${name}`);
+    const key = `secrets/${name}`;
+    if (isReservedSecretKey(key)) {
+      throw new Error("This key belongs to TinyChat and can't be deleted here.");
+    }
+
+    const result = await session.secretsTc.vault.delete(key);
     if (!result.ok) {
       throw new Error(`Failed to delete secret: ${(result as any).error?.message}`);
     }
