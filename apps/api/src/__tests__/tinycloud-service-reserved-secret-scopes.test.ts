@@ -55,13 +55,13 @@ describe('the reserved bot-history scope', () => {
 
   test('cannot be written, in any spelling', async () => {
     vaultCalls.length = 0;
-    for (const name of spellings) await expect(tinyCloudService.putSecret(userId, name, 'x')).rejects.toThrow('reserved');
+    for (const name of spellings) await expect(tinyCloudService.putSecret(userId, name, 'x')).rejects.toThrow("This key belongs to TinyChat and can't be saved here.");
     expect(vaultCalls).toEqual([]);
   });
 
   test('cannot be deleted, in any spelling', async () => {
     vaultCalls.length = 0;
-    for (const name of spellings) await expect(tinyCloudService.deleteSecret(userId, name)).rejects.toThrow('reserved');
+    for (const name of spellings) await expect(tinyCloudService.deleteSecret(userId, name)).rejects.toThrow("This key belongs to TinyChat and can't be deleted here.");
     expect(vaultCalls).toEqual([]);
   });
 

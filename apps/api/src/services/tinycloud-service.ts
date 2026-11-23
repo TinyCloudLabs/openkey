@@ -128,7 +128,7 @@ export class TinyCloudService {
     }
 
     if (isReservedSecretKey(`secrets/${name}`)) {
-      throw new Error('This key is reserved and cannot be written');
+      throw new Error("This key belongs to TinyChat and can't be saved here.");
     }
 
     const createdAt = new Date().toISOString();
@@ -165,7 +165,7 @@ export class TinyCloudService {
 
     const key = `secrets/${name}`;
     if (isReservedSecretKey(key)) {
-      throw new Error('This key is reserved and cannot be deleted');
+      throw new Error("This key belongs to TinyChat and can't be deleted here.");
     }
 
     const result = await session.secretsTc.vault.delete(key);
