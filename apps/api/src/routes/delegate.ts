@@ -92,7 +92,7 @@ import {
   type AuthorizationContextClaim,
   type BoundRenewalChoice,
 } from '../services/authorization-signing';
-import { MIN_DELEGATION_EXPIRY_MS, MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
+import { MIN_DELEGATION_EXPIRY_MS, MIN_EXPIRATION_LEAD_MS, siweBroadOnceTier, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSignedSubset, parseStrictSiwe, SIGNED_SUBSET_REFUSAL_CODE } from '../services/signed-subset';
 import { checkSiweOrigin } from '../services/siwe-origin';
@@ -3670,7 +3670,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
     signed: signedMessage,
     selectedActionIds,
     ownerPickedExpiration: sealedExpiry !== immutable.expirationTime ? sealedExpiry : undefined,
-    longerExpiryAllowed: bound.expiryChangeable === true && !bound.handoffTicketHash,
+    longerExpiryAllowed: (bound.expiryChangeable === true || siweBroadOnceTier(bound.originalSiwe, bound.keyAddress)) && !bound.handoffTicketHash,
   });
   if (!signSubset.ok) {
     return c.json({ error: signSubset.message, code: signSubset.code, reason: signSubset.reason }, 400);
@@ -4011,11 +4011,15 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     chainId,
     spaceId: bound.spaceId,
   });
+  // A request in the one-hour tier (a grant that reaches all secrets or all encrypted data) is
+  // expiry-changeable whatever the app sent; the tier is read from the request's own grants.
+  const boundOnceTier = siweBroadOnceTier(bound.originalSiwe, bound.keyAddress);
+  let ownerPickedExpiry = false;
   let expirationOverride: string | undefined;
   if (body.expirationTime !== undefined) {
-    // An app that did not opt in (`expiryChangeable: true` at prepare) gets the expiry it asked for. A
-    // prepared handoff has no app opt-in: its ceiling is the time the CLI asked for.
-    if (!ticket && !bound.expiryChangeable) {
+    // An app that did not opt in (`expiryChangeable: true` at prepare) gets the expiry it asked for, unless the
+    // request is in the one-hour tier. A prepared handoff has no app opt-in: its ceiling is the time the CLI asked for.
+    if (!ticket && !bound.expiryChangeable && !boundOnceTier) {
       return c.json(
         { error: 'The requesting app did not opt in to a changed expiry', code: 'expiry_not_changeable' },
         400,
@@ -4036,6 +4040,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
       );
     }
     expirationOverride = checked.value;
+    ownerPickedExpiry = true;
   }
   // A grant on secret keys lasts 7 days at most, whatever the app asked or the owner picked. A later time is
   // brought back to 7 days from now, also for an app that did not opt in to a changed expiry: a shorter grant is
@@ -4146,6 +4151,16 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     preparedSignedMessage = previewNarrowed.siwe;
   }
 
+  // A selection in the one-hour tier starts at one hour when the owner picked nothing (what the approval
+  // screen's `onceDefaultExpiryMs` sends): the app asked for its own time but the tier defaults shorter.
+  // A pick stands, and an app that asked for an hour or less keeps it.
+  if (!ownerPickedExpiry && siweBroadOnceTier(preparedSignedMessage, bound.keyAddress)) {
+    const onceStartMs = Date.now() + 60 * 60 * 1000;
+    if (Date.parse(immutable.expirationTime) > onceStartMs) {
+      expirationOverride = new Date(onceStartMs).toISOString();
+    }
+  }
+
   // TC-2272: the user's chosen approval expiry replaces the Expiration Time
   // line of the bytes to sign; the preview approval seals the result.
   if (expirationOverride !== undefined) {
@@ -4163,7 +4178,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     signed: preparedSignedMessage,
     selectedActionIds,
     ownerPickedExpiration: expirationOverride,
-    longerExpiryAllowed: bound.expiryChangeable === true && !bound.handoffTicketHash,
+    longerExpiryAllowed: (bound.expiryChangeable === true || boundOnceTier) && !bound.handoffTicketHash,
   });
   if (!previewSubset.ok) {
     return c.json({ error: previewSubset.message, code: previewSubset.code, reason: previewSubset.reason }, 400);
