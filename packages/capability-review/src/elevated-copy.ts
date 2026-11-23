@@ -121,7 +121,7 @@ const MASTER_KEY_CREATE_LINE = "It can also create encryption keys.";
  */
 function masterKeyDecryptCard(site: string | null, withCreate: boolean): { heading: string; body: string; cue: string | null } {
   const verified = site !== null && site.length > 0;
-  const ask = `${verified ? site : "This app"} is asking to use your master key. Some apps do this because they don't have app-specific keys.`;
+  const ask = `${verified ? site : "This app"} is asking to use your master key, which opens all your encrypted data. Allow this only for an app you trust.`;
   return {
     heading: MASTER_KEY_TITLE,
     body: withCreate ? `${ask} ${MASTER_KEY_CREATE_LINE}` : ask,

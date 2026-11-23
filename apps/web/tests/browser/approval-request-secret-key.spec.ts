@@ -183,7 +183,7 @@ test('decrypt on the whole network starts at one hour and shows the all-secrets 
   await expect(lengthNote(page)).toHaveCount(0);
   const card = page.getByTestId('all-secrets-card');
   await expect(card.getByRole('heading')).toHaveText('Use your master key to decrypt?');
-  await expect(card).toContainText("This app is asking to use your master key. Some apps do this because they don't have app-specific keys.");
+  await expect(card).toContainText("This app is asking to use your master key, which opens all your encrypted data. Allow this only for an app you trust.");
   await expect(card).toContainText("OpenKey can't confirm the site.");
   await expect(page.getByRole('dialog')).not.toContainText('Read the secret OPENAI_API_KEY');
   expect(expiries.at(-1)).toBe(`${HOUR}s`);

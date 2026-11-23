@@ -166,12 +166,12 @@ describe("the all-secrets card", () => {
     });
     expect(allSecretsCard({ kind: "whole-account", alsoWholeAccount: false }, null)).toEqual({
       heading: "Use your master key to decrypt?",
-      body: "This app is asking to use your master key. Some apps do this because they don't have app-specific keys.",
+      body: "This app is asking to use your master key, which opens all your encrypted data. Allow this only for an app you trust.",
       cue: "OpenKey can't confirm the site.",
     });
     expect(allSecretsCard({ kind: "whole-account", alsoWholeAccount: false }, "gk.gbafa.com")).toEqual({
       heading: "Use your master key to decrypt?",
-      body: "gk.gbafa.com is asking to use your master key. Some apps do this because they don't have app-specific keys.",
+      body: "gk.gbafa.com is asking to use your master key, which opens all your encrypted data. Allow this only for an app you trust.",
       cue: null,
     });
   });
