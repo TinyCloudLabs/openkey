@@ -3,6 +3,6 @@
 "@openkey/web": patch
 ---
 
-A signed grant lasts exactly the length the owner chose. The signed Expiration Time is the request's Issued At plus that length, to the second, in the approval preview and in the signature that follows it. The end day on the approval screen is counted from Issued At. A length that ends before the present moment, counted from Issued At, is refused and the request starts again.
+A signed grant lasts exactly the length the owner chose, counted from when the request was made, to the second. The approval screen's end day is counted the same way. If that length has run out by the time the owner approves, OpenKey refuses the request and asks for a new one.
 
 Details: TC-3920
