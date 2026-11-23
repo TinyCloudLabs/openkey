@@ -1,5 +1,4 @@
 ---
-"@openkey/capability-review": patch
 "@openkey/web": patch
 ---
 
