@@ -109,10 +109,15 @@ test('without the opt-in the owner can still choose longer', async ({ page }) =>
   expect(asked).toBeGreaterThanOrEqual(Date.now() + 2 * 86_400_000 - 5000);
 });
 
-test('decrypt on one named secret without the opt-in shows no control and keeps the app\'s time', async ({ page }) => {
-  const decrypt = siweWithResources([makeRecapResource(ONE_SECRET)], { domain: HOST, uri: ORIGIN });
-  const { frame, previews } = await open(page, {}, decrypt);
-  await expect(frame.locator('.expiry')).toHaveCount(0);
-  await expect.poll(() => previews.length).toBe(1);
-  expect(previews[0]).not.toHaveProperty('expirationTime');
-});
+for (const [description, request] of [
+  ['without the opt-in', {}],
+  ['with a string opt-in', { expiryChangeable: 'true' }],
+] as const) {
+  test(`decrypt on one named secret ${description} shows no expiry control and sends no expiry`, async ({ page }) => {
+    const decrypt = siweWithResources([makeRecapResource(ONE_SECRET)], { domain: HOST, uri: ORIGIN });
+    const { frame, previews } = await open(page, request, decrypt);
+    await expect(frame.locator('.expiry')).toHaveCount(0);
+    await expect.poll(() => previews.length).toBe(1);
+    expect(previews[0]).not.toHaveProperty('expirationTime');
+  });
+}

@@ -265,6 +265,35 @@ describe('the tier reads the app opt-in the same way', () => {
   });
 });
 
+describe('an owner pick on the broad tier is limited to seven days', () => {
+  const outsideAppPrefix = { [urn('/qa/')]: [`${E}decrypt`] };
+
+  const savedNetworkCap = process.env.OPENKEY_NETWORK_DECRYPT_CAP;
+  afterEach(() => {
+    if (savedNetworkCap === undefined) delete process.env.OPENKEY_NETWORK_DECRYPT_CAP;
+    else process.env.OPENKEY_NETWORK_DECRYPT_CAP = savedNetworkCap;
+  });
+
+  test.each([
+    ['network decrypt, no opt-in, 365 days', NETWORK_DECRYPT, false, 365],
+    ['network decrypt, opted in, 30 days', NETWORK_DECRYPT, true, 30],
+    ['non-app prefix, no opt-in, 365 days', outsideAppPrefix, false, 365],
+    ['non-app prefix, opted in, 365 days', outsideAppPrefix, true, 365],
+  ] as const)('%s: previews and signs seven days', async (_name, raw, expiryChangeable, days) => {
+    delete process.env.OPENKEY_NETWORK_DECRYPT_CAP;
+    const before = Date.now();
+    const picked = new Date(before + days * DAY_MS).toISOString();
+    const expiry = expiryOf(await approve(raw, 7 * DAY_MS, { expiryChangeable, ownerPicks: picked }));
+    expect(expiry).toBeGreaterThanOrEqual(before + 7 * DAY_MS - 1000);
+    expect(expiry).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
+  });
+
+  test('an owner pick of three days previews and signs exactly three days', async () => {
+    const picked = new Date(Date.now() + 3 * DAY_MS).toISOString();
+    expect(expiryOf(await approve(NETWORK_DECRYPT, 7 * DAY_MS, { ownerPicks: picked }))).toBe(Date.parse(picked));
+  });
+});
+
 describe('grants outside the tier are unchanged', () => {
   test('decrypt on one named secret signs the app\'s time, and an owner pick without the opt-in is refused', async () => {
     const before = Date.now();

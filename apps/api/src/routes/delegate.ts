@@ -114,6 +114,7 @@ import {
   UNREADABLE_RECAP_MESSAGE,
 } from '../services/app-key-refusal';
 import {
+  SECRET_GRANT_MAX_MS,
   SECRET_LIFETIME_CODE,
   clampSecretExpiryMs,
   exceedsSecretLifetime,
@@ -3692,6 +3693,9 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (!previewCheck.ok) {
     return c.json({ error: previewCheck.message, code: previewCheck.error }, 400);
   }
+  if (previewCheck.broadOnceExpiryPick && !(Date.parse(sealedExpiry ?? '') <= Date.now() + SECRET_GRANT_MAX_MS)) {
+    return c.json(secretLifetimeBody('network'), 400);
+  }
   // The renewal choice sealed with the preview: the body may repeat it, never change it. A leased choice needs
   // leases on, checked before anything is signed.
   const sealedRenewal = previewCheck.renewal;
@@ -4042,10 +4046,9 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     expirationOverride = checked.value;
     ownerPickedExpiry = true;
   }
-  // A grant on secret keys lasts 7 days at most, whatever the app asked or the owner picked. A later time is
-  // brought back to 7 days from now, also for an app that did not opt in to a changed expiry: a shorter grant is
-  // within what it asked for.
-  const secretCap = secretCapExpirationTime(bound.originalSiwe, Date.now());
+  // Secret grants and owner-picked expiries in the one-hour tier last up to 7 days from this preview.
+  const broadOnceExpiryPick = boundOnceTier && ownerPickedExpiry;
+  const secretCap = secretCapExpirationTime(bound.originalSiwe, Date.now(), broadOnceExpiryPick);
   if (secretCap !== null && !(Date.parse(expirationOverride ?? immutable.expirationTime) <= Date.parse(secretCap))) {
     expirationOverride = secretCap;
   }
@@ -4237,6 +4240,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     keyAddress: ensureEip55(bound.keyAddress),
     selectedActionIds,
     signedMessage: preparedSignedMessage,
+    broadOnceExpiryPick,
     elevatedAllowed,
     renewal: renewalChoice,
   });
