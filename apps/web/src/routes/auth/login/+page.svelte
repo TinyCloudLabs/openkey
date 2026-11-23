@@ -342,6 +342,8 @@
   }
 
   async function sendOTP(): Promise<boolean> {
+    // A page that has signed in with a passkey sends no code: the person is leaving, and a code is for a sign-in.
+    if (passkeySignedIn) return false;
     if (appReviewEnabled && email.trim().toLowerCase() === 'appreview@tinycloud.xyz') {
       if (!native && $page.url.searchParams.get('redirect') === '/dashboard/settings/delete-account') {
         await goto('/auth/review/delete');
@@ -594,6 +596,7 @@
   });
 
   async function signInWithSocial(provider: SocialProviderId) {
+    if (passkeySignedIn) return;
     loading = true;
     loadingProvider = provider;
     error = '';
@@ -609,7 +612,7 @@
   }
 
   async function signInWithSocialTopLevel(provider: NativeSocialProvider) {
-    if (!native) return;
+    if (!native || passkeySignedIn) return;
     socialProvider = provider;
     step = 'social';
     loading = true;

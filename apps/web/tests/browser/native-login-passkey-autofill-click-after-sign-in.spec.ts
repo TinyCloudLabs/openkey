@@ -1,9 +1,9 @@
-// A passkey click after the email field's passkey sign-in has completed, while the page is still on /auth/login. The
-// Chromium virtual authenticator answers the conditional request at once, as a fast authenticator does, and the
-// server accepts it; the page then asks whether the terms are accepted before it leaves, and that answer is held for
-// 1.5 s, so the sign-in form stays on screen with its passkey button enabled. A click in that gap starts no second
-// ceremony and no second verify request: one verify request, one WebAuthn ceremony, one trip to the authorize
-// endpoint. Every API call is answered by page.route; no API server runs.
+// A click on the sign-in page after the email field's passkey sign-in has completed, while the page is still on
+// /auth/login. The Chromium virtual authenticator answers the conditional request at once, as a fast authenticator
+// does, and the server accepts it; the page then asks whether the terms are accepted before it leaves, and that
+// answer is held for 1.5 s, so the sign-in form stays on screen with its buttons enabled. A click on the passkey
+// button in that gap starts no second ceremony and no second verify request, a click on Continue sends no code, and
+// a click on a social button starts no provider flow. Every API call is answered by page.route; no API server runs.
 
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { test, expect, type Page, type Route } from '@playwright/test';
@@ -34,11 +34,11 @@ const session = {
   user: { id: 'u', email: 'sam@example.test', name: 'Sam' },
 };
 
-async function mockApi(page: Page, signedIn: () => boolean, termsDelayMs: number) {
+async function mockApi(page: Page, signedIn: () => boolean, termsDelayMs: number, providers: string[]) {
   await page.route('**/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/api/auth/get-session') return json(route, null);
-    if (path === '/api/auth/providers') return json(route, { providers: [] });
+    if (path === '/api/auth/providers') return json(route, { providers });
     if (path === '/api/oauth/tinycloud/clients/exo-native/branding') {
       return json(route, { clientId: 'exo-native', name: 'Exo', icon: null, organization: 'TinyCloud Labs' });
     }
@@ -96,41 +96,92 @@ async function watchCredentials(page: Page) {
   return gets;
 }
 
-test.describe('a passkey click after the autofill sign-in completed', () => {
+interface SignedIn {
+  gets: Get[];
+  verifies: string[];
+  requests: string[];
+  popups: string[];
+}
+
+/**
+ * Opens the sign-in page and lets the email field's passkey sign-in complete. The terms answer that follows is held,
+ * so the page is on /auth/login, signed in, with its sign-in form on screen. `requests` lists every request the page
+ * makes after that point.
+ */
+async function signedInByAutofill(page: Page, options: { native: boolean; providers: string[] }): Promise<SignedIn> {
+  await virtualAuthenticator(page);
+  const gets = await watchCredentials(page);
+  const verifies: string[] = [];
+  await mockApi(page, () => verifies.length > 0, 1500, options.providers);
+  await page.route(VERIFY, (route) => {
+    verifies.push(route.request().url());
+    return json(route, { session: session.session, user: session.user });
+  });
+  const requests: string[] = [];
+  page.on('request', (request) => {
+    if (verifies.length > 0) requests.push(`${request.method()} ${new URL(request.url()).pathname}`);
+  });
+  const popups: string[] = [];
+  page.context().on('page', (popup) => popups.push(popup.url()));
+  await page.goto(options.native ? `/auth/login?${signedQuery()}` : '/auth/login');
+  await expect.poll(() => verifies.length).toBe(1);
+  expect(new URL(page.url()).pathname).toBe('/auth/login');
+  return { gets, verifies, requests, popups };
+}
+
+test.describe('a click on the sign-in page after the autofill sign-in completed', () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test('starts no second ceremony: one verify request, one ceremony, one authorize request', async ({ page }) => {
-    await virtualAuthenticator(page);
-    const gets = await watchCredentials(page);
-    const verifies: string[] = [];
-    await mockApi(page, () => verifies.length > 0, 1500);
-    await page.route(VERIFY, (route) => {
-      verifies.push(route.request().url());
-      return json(route, { session: session.session, user: session.user });
-    });
-    const authorizes: string[] = [];
-    page.on('request', (request) => {
-      if (new URL(request.url()).pathname === '/api/auth/oauth2/authorize') authorizes.push(request.url());
-    });
-    await page.goto(`/auth/login?${signedQuery()}`);
-    // The sign-in has completed and the page waits for the terms answer before it leaves.
-    await expect.poll(() => verifies.length).toBe(1);
-    expect(authorizes).toHaveLength(0);
-    expect(new URL(page.url()).pathname).toBe('/auth/login');
+  test('the passkey button starts no second ceremony: one verify request, one ceremony, one authorize request', async ({ page }) => {
+    const { gets, verifies, requests } = await signedInByAutofill(page, { native: true, providers: [] });
+    const authorizes = () => requests.filter((request) => request === 'GET /api/auth/oauth2/authorize');
+    expect(authorizes()).toHaveLength(0);
 
     // The sign-in form is on screen with its passkey button enabled: this is what a person can click in the gap.
     const passkey = page.getByRole('button', { name: 'Use a passkey' });
     await expect(passkey).toBeEnabled();
     await passkey.click();
     await page.waitForTimeout(600);
-    expect(authorizes).toHaveLength(0);
+    expect(authorizes()).toHaveLength(0);
     expect(gets).toEqual([{ conditional: true }]);
     expect(verifies).toHaveLength(1);
 
-    await expect.poll(() => authorizes.length).toBe(1);
+    await expect.poll(() => authorizes().length).toBe(1);
     await page.waitForLoadState('networkidle');
-    expect(authorizes).toHaveLength(1);
+    expect(authorizes()).toHaveLength(1);
     expect(verifies).toHaveLength(1);
     expect(gets).toEqual([{ conditional: true }]);
+  });
+
+  test('the email form sends no code', async ({ page }) => {
+    const { requests } = await signedInByAutofill(page, { native: true, providers: [] });
+
+    await page.getByLabel('Email address').fill('sam@example.test');
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await page.waitForTimeout(600);
+
+    expect(requests.filter((request) => request.includes('/api/auth/email-otp/'))).toEqual([]);
+    expect(new URL(page.url()).pathname).toBe('/auth/login');
+  });
+
+  test('the native social button starts no provider flow', async ({ page }) => {
+    const { requests } = await signedInByAutofill(page, { native: true, providers: ['google'] });
+
+    await page.getByRole('button', { name: 'Continue with Google' }).click();
+    await page.waitForTimeout(600);
+
+    expect(requests.filter((request) => request.includes('/api/auth/sign-in/social'))).toEqual([]);
+    expect(new URL(page.url()).pathname).toBe('/auth/login');
+  });
+
+  test('the social button of the plain sign-in page opens no provider window', async ({ page }) => {
+    const { requests, popups } = await signedInByAutofill(page, { native: false, providers: ['google'] });
+
+    await page.getByRole('button', { name: 'Continue with Google' }).click();
+    await page.waitForTimeout(600);
+
+    expect(popups).toEqual([]);
+    expect(requests.filter((request) => request.includes('/api/auth/sign-in/social'))).toEqual([]);
+    expect(new URL(page.url()).pathname).toBe('/auth/login');
   });
 });
