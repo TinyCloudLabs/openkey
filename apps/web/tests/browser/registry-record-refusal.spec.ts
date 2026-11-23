@@ -21,8 +21,8 @@ const hex = (text: string) => `0x${Buffer.from(text, 'utf8').toString('hex')}`;
 
 const TITLE = "This app's request can't be signed";
 const BODY = {
-  popup: "It would set which TinyCloud node holds your data. Only TinyCloud One can ask for that, so this app can't. Nothing was signed. You can close this window.",
-  embed: "It would set which TinyCloud node holds your data. Only TinyCloud One can ask for that, so this app can't. Nothing was signed. You can go back to the app.",
+  popup: "It would set which TinyCloud node holds your data. Only TinyCloud's own apps can ask for that, so this app can't. Nothing was signed. You can close this window.",
+  embed: "It would set which TinyCloud node holds your data. Only TinyCloud's own apps can ask for that, so this app can't. Nothing was signed. You can go back to the app.",
 };
 
 type Received = Array<{ type: string; success?: boolean; error?: { code: string; message: string } }>;
