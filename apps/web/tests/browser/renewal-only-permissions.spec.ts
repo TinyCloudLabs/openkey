@@ -208,7 +208,7 @@ test('unavailable renewal excludes exact keys from the signed request', async ({
 test('exact-byte signing cannot approve renewal-only keys', async ({ page }) => {
   const h = await open(page, { iframe: true, exactBytes: true });
   await expect(h.view.getByText(
-    `OpenKey can't show what this sign-in allows, so it can't be approved. Ask ${HOST} to try again.`,
+    `OpenKey can't show what this sign-in allows, so it can't be approved. ${HOST} needs an update before it can ask for this.`,
     { exact: true },
   )).toBeVisible();
   await expect(h.approve).toBeDisabled();

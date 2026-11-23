@@ -310,7 +310,7 @@ export const RENEWAL_ONLY_COPY = {
   previewRequired: (app: string) => [
     "OpenKey can't show what this sign-in allows,",
     "so it can't be approved.",
-    `Ask ${app} to try again.`,
+    `${app} needs an update before it can ask for this.`,
   ].join(" "),
 };
 
