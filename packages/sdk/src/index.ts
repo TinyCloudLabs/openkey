@@ -237,7 +237,7 @@ export interface TinyCloudAuthorizationRequestV1 {
    */
   renewal?: TinyCloudRenewalRequestV1;
   /**
-   * Exact encryption-key URNs from the SIWE's ReCap that are granted only while the owner enables renewal.
+   * Exact encryption-key URNs from the SIWE's ReCap that are granted only when the owner enables renewal.
    * Requires `renewal` and `expiryChangeable: true`.
    */
   renewalOnlyResources?: string[];
