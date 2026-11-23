@@ -42,6 +42,8 @@ export interface ShortenOnlyExpiry {
   startMs: number;
   onceNote: string;
   limitNote: (ms: number) => string;
+  /** Under the access line of a request for a secret's own key: its start and the most it can be. */
+  lengthNote: (startMs: number, maxMs: number) => string;
 }
 
 /** Transport injected by the CLI (`/delegate`) route. */

@@ -41,9 +41,13 @@
     showSigner?: boolean;
     /** Reports whether editable permission checkboxes are visible. */
     onEditingStateChange?: (editing: boolean) => void;
+    /** Words for a request for one named secret; see `SigningApproval`'s `oneSecret`. */
+    oneSecret?: { headline: string; hint: string; decryptNote: string } | null;
+    /** A one-tap request whose signer OpenKey can't name; see `SigningApproval`'s `unverifiedRequester`. */
+    unverifiedRequester?: { name: string; line: string } | null;
   }
 
-  let { model, initialSelection, transport, context, showSigner = false, onEditingStateChange }: Props = $props();
+  let { model, initialSelection, transport, context, showSigner = false, onEditingStateChange, oneSecret = null, unverifiedRequester = null }: Props = $props();
 
   // Internal review state. The adapter owns this because it is per-surface
   // presentational state — the route no longer touches it. We intentionally
@@ -103,6 +107,8 @@
   shortenOnlyExpiry={transport.expiry?.shortenOnly ?? null}
   renewal={transport.renewal ?? null}
   {showSigner}
+  {oneSecret}
+  {unverifiedRequester}
   {onApprove}
   {onCancel}
   cancelText={transport.decline ? "Back" : undefined}
