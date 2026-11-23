@@ -644,23 +644,42 @@ describe('one-time approvals start at one hour (TC-3111)', () => {
   test('removing the broad access and adding it back starts at 1 hour again, and a pick made after that is kept', () => {
     const m = modelOf([decrypt, kvGet]);
     const { target, calls, state, cleanup } = mounted(m);
-    radios(target)[1]!.click();
-    flushSync();
-    expect(calls).toEqual([H, 7 * D]);
+    expect(calls).toEqual([H]);
     const kvIds = new Set(m.permissions.filter((grant) => grant.service === 'tinycloud.kv').flatMap((grant) => grant.actions.map((action) => action.id)));
     const everyId = state.get('selection') as Set<string>;
     state.set('selection', kvIds);
     flushSync();
-    expect(calls).toEqual([H, 7 * D, null]);
+    expect(calls).toEqual([H, null]);
     expect(choice(target)).toBeNull();
     state.set('selection', everyId);
     flushSync();
-    expect(calls).toEqual([H, 7 * D, null, H]);
+    expect(calls).toEqual([H, null, H]);
     expect(checkedLabel(target)).toBe('1 hour');
     radios(target)[1]!.click();
     flushSync();
-    expect(calls).toEqual([H, 7 * D, null, H, 7 * D]);
+    expect(calls).toEqual([H, null, H, 7 * D]);
     expect(checkedLabel(target)).toBe('7 days (what the app asked)');
+    cleanup();
+  });
+
+  test('removing the broad access keeps the length the owner picked and drops only the 1 hour default', () => {
+    const m = modelOf([decrypt, kvGet]);
+    const { target, calls, state, cleanup } = mounted(m);
+    open(target);
+    preset(target, '24 hours').click();
+    flushSync();
+    expect(calls).toEqual([H, 24 * H]);
+    const kvIds = new Set(m.permissions.filter((grant) => grant.service === 'tinycloud.kv').flatMap((grant) => grant.actions.map((action) => action.id)));
+    const everyId = state.get('selection') as Set<string>;
+    state.set('selection', kvIds);
+    flushSync();
+    expect(calls).toEqual([H, 24 * H]);
+    expect(line(target)).toContain('1 day');
+    expect(choice(target)).toBeNull();
+    state.set('selection', everyId);
+    flushSync();
+    expect(calls).toEqual([H, 24 * H]);
+    expect(line(target)).toContain('1 day');
     cleanup();
   });
 

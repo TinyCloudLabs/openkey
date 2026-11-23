@@ -368,16 +368,19 @@
     onceDefaultMs !== null && !ownerChoseExpiry && expiryMs === null && (shortenOnlyExpiry !== null || !onceDefaultSent),
   );
   // The default starts once the tier holds and the owner has picked nothing. Leaving the tier (the broad access is
-  // removed) ends the owner's pick for it, so adding the access back starts at one hour again; a pick made after
-  // that is kept.
+  // removed) drops only the one-hour default, so the app's ask applies again; the owner's own pick is kept, and
+  // adding the access back starts at one hour again only when the owner had picked nothing. A pick of "what the app
+  // asked" is the app's ask itself and ends with the tier.
   $effect(() => {
     if (approving || previewPending || !onExpiryChange) return;
     if (onceDefaultMs === null) {
       if (!onceDefaultSent) return;
       onceDefaultSent = false;
-      const picked = ownerChoseExpiry;
-      ownerChoseExpiry = false;
-      if (picked ? expiryMs !== null : expiryMs === ONCE_DEFAULT_EXPIRY_MS) onExpiryChange(null);
+      if (ownerChoseExpiry) {
+        if (expiryMs === null) ownerChoseExpiry = false;
+        return;
+      }
+      if (expiryMs === ONCE_DEFAULT_EXPIRY_MS) onExpiryChange(null);
       return;
     }
     if (ownerChoseExpiry) return;

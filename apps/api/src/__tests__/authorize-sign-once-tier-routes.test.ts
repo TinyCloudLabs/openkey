@@ -291,6 +291,18 @@ describe('the one-time choice signs exactly the length it sends', () => {
     const before = Date.now();
     expectAboutOneHour(await approve(NETWORK_DECRYPT, 3 * DAY_MS), before);
   });
+
+  test.each([
+    ['all encrypted data', NETWORK_DECRYPT],
+    ['the secrets/ prefix', PREFIX_DECRYPT],
+  ] as const)('a 30-day pick on %s is signed as the 7-day limit, not as 30 days', async (_name, raw) => {
+    delete process.env.OPENKEY_NETWORK_DECRYPT_CAP;
+    const before = Date.now();
+    const picked = new Date(before + 30 * DAY_MS).toISOString();
+    const expiry = expiryOf(await approve(raw, 30 * DAY_MS, { ownerPicks: picked }));
+    expect(expiry).toBeGreaterThanOrEqual(before + 7 * DAY_MS - 1000);
+    expect(expiry).toBeLessThanOrEqual(Date.now() + 7 * DAY_MS);
+  });
 });
 
 describe('an owner pick on the broad tier is limited to seven days', () => {
