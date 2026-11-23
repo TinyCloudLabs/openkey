@@ -725,7 +725,7 @@ accountRouter.post('/delete', async (c) => {
   // Stripe already cancelled — accepted: the user asked to delete and the retry completes it.
   const billing = await cancelBillingForAccountDelete(addresses);
   if (!billing.ok) {
-    return c.json({ error: 'billing_unavailable' }, 503);
+    return c.json({ error: 'billing_unavailable', code: 'billing_unavailable' }, 503);
   }
 
   // Delete all user data in transaction

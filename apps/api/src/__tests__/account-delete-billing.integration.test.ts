@@ -195,7 +195,7 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
     try {
       const refused = await owner.delete();
       expect(refused.status).toBe(503);
-      expect(await refused.json()).toEqual({ error: 'billing_unavailable' });
+      expect(await refused.json()).toEqual({ error: 'billing_unavailable', code: 'billing_unavailable' });
     } finally {
       billing.mode = 'ok';
     }
@@ -218,7 +218,7 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
     try {
       const refused = await owner.delete();
       expect(refused.status).toBe(503);
-      expect(await refused.json()).toEqual({ error: 'billing_unavailable' });
+      expect(await refused.json()).toEqual({ error: 'billing_unavailable', code: 'billing_unavailable' });
     } finally {
       billing.mode = 'ok';
     }
@@ -269,7 +269,7 @@ if (process.env.OPENKEY_DELETE_BILLING_CI_CHILD !== '1') {
     try {
       const refused = await owner.delete();
       expect(refused.status).toBe(503);
-      expect(await refused.json()).toEqual({ error: 'billing_unavailable' });
+      expect(await refused.json()).toEqual({ error: 'billing_unavailable', code: 'billing_unavailable' });
     } finally {
       if (saved === undefined) delete process.env.TEE_MODE;
       else process.env.TEE_MODE = saved;
