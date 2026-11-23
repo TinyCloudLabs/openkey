@@ -57,11 +57,13 @@
 
   // A session that does not answer within the bound is a failed check (Try again), never the page. Try again asks the
   // layout to read the session again and restarts the bound; a late answer ends the failed state by itself.
+  // A store update can leave the session pending. Restart the timer only when the pending flag changes or Try again is clicked.
+  const pending = $derived(sessionPending);
   let sessionWaitedOut = $state(false);
   let sessionAttempt = $state(0);
   $effect(() => {
     void sessionAttempt;
-    if (!termsCheckedFirst() || !sessionPending || released) {
+    if (!termsCheckedFirst() || !pending || released) {
       sessionWaitedOut = false;
       return;
     }
