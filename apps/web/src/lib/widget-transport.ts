@@ -20,7 +20,7 @@
 // The transport is DUMB: it does not interpret request payloads beyond
 // the envelope. It surfaces valid requests to a caller-supplied handler.
 
-import { parseEncryptionResource } from "@openkey/capability-review";
+import { coversManySecrets, parseEncryptionResource } from "@openkey/capability-review";
 
 export interface WidgetTransportOptions {
   /**
@@ -438,9 +438,11 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
           Array.isArray(resources) &&
           resources.length <= 64 &&
           new Set(resources).size === resources.length &&
-          [...resources].every((resource) =>
-            typeof resource === "string" && resource.length <= 512 && parseEncryptionResource(resource)?.kind === "key"
-          )
+          [...resources].every((resource) => {
+            if (typeof resource !== "string" || resource.length > 512) return false;
+            const parsed = parseEncryptionResource(resource);
+            return parsed?.kind === "key" && !coversManySecrets(parsed);
+          })
         ) {
           payload.renewalOnlyResources = resources;
         } else {
