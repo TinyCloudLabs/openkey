@@ -736,7 +736,7 @@
     />
   {:else}
     <div class="space-y-5">
-    <header><h1 class="text-xl font-semibold text-surface-900">Prepared CLI sign-in</h1></header>
+    <header><h1 class="text-xl font-semibold text-surface-900">{appKeyReview ? ticketAppKeyText(TICKET_APP_KEY_COPY.heading, appKeyReview) : 'Prepared CLI sign-in'}</h1></header>
     {#if error}<p role="alert" class="rounded-lg bg-red-50 p-3 text-red-800">{error}</p>{/if}
     {#if error && !handoff && !pending}
       <p>Start a new CLI sign-in to review a new request.</p>

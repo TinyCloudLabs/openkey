@@ -94,6 +94,13 @@ function noCaveats(value: unknown): boolean {
     (value.length === 1 && record(value[0]) && Object.keys(value[0]).length === 0));
 }
 
+function hasTicketAppKeyIdentity(fields: SiweFields, host: string, resource: string): boolean {
+  // The ticket carries a single encryption resource and two abilities, so the
+  // canonical ReCap statement has exactly one item, in byte order.
+  const statement = `${TICKET_APP_KEY_COPY.toolName} is requesting an app key. I further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.encryption': 'decrypt', 'key.create' for '${resource}'.`;
+  return fields.scheme === undefined && fields.domain === host && fields.statement === statement;
+}
+
 /** Check the as-written SIWE before the web claims a command-line handoff. */
 export function validTicketAppKeyRequest(fields: SiweFields, appKey: TicketAppKey | undefined, now: number): boolean {
   if (!appKey) {
@@ -101,10 +108,11 @@ export function validTicketAppKeyRequest(fields: SiweFields, appKey: TicketAppKe
       Object.keys(attenuation(resource) ?? {}).some(isAppsKeyResource),
     );
   }
-  if (fields.resources?.length !== 1) return false;
+  const host = appHostForAppId(appKey.appId);
+  const resource = ticketAppKeyResource(fields, appKey);
+  if (host === null || !hasTicketAppKeyIdentity(fields, host, resource) || fields.resources?.length !== 1) return false;
   const att = attenuation(fields.resources[0]!, true);
   if (!att || Object.keys(att).length !== 1) return false;
-  const resource = ticketAppKeyResource(fields, appKey);
   const abilities = att[resource];
   if (!record(abilities) || Object.keys(abilities).length !== 2 ||
       !noCaveats(abilities[DECRYPT]) || !noCaveats(abilities[CREATE])) return false;
@@ -121,9 +129,12 @@ export function admittedTicketAppKeyDefault(
   reply: unknown, appKey: TicketAppKey, original: string, now: number, defaultWindowMs: number,
 ): string | null {
   const parsed = parseSiweFields(original);
-  if (!parsed.ok || !parsed.fields.expirationTime || !record(reply) ||
-      reply.appId !== appKey.appId || reply.host !== appHostForAppId(appKey.appId) || reply.key !== appKey.key ||
-      reply.resource !== ticketAppKeyResource(parsed.fields, appKey) ||
+  const host = appHostForAppId(appKey.appId);
+  if (!parsed.ok || !parsed.fields.expirationTime || host === null || !record(reply)) return null;
+  const resource = ticketAppKeyResource(parsed.fields, appKey);
+  if (!hasTicketAppKeyIdentity(parsed.fields, host, resource) ||
+      reply.appId !== appKey.appId || reply.host !== host || reply.key !== appKey.key ||
+      reply.resource !== resource ||
       !Array.isArray(reply.abilities) || reply.abilities.length !== 2 ||
       !reply.abilities.includes("decrypt") || !reply.abilities.includes("key.create") ||
       typeof reply.requestedExpiresAt !== "string" || typeof reply.maxExpiresAt !== "string" ||

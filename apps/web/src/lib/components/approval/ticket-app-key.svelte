@@ -18,7 +18,6 @@
 
 <div data-testid="ticket-app-key" class="space-y-3">
   <p data-testid="ticket-app-key-warning" role="note" class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">{ticketAppKeyText(TICKET_APP_KEY_COPY.warning, review)}</p>
-  <p class="text-sm font-semibold">{TICKET_APP_KEY_COPY.requestingLine}</p>
   <div data-testid="ticket-app-key-row" class="rounded-lg border p-3 text-sm break-all">
     <p class="text-xs font-semibold tracking-wide text-surface-600 uppercase">{FAMILY_LABEL['app-keys']}</p>
     <p class="font-semibold">{ticketAppKeyText(TICKET_APP_KEY_COPY.rowHeading, review)}</p>

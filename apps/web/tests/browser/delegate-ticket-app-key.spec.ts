@@ -9,6 +9,7 @@ import { TERMS_ACCEPTED } from './terms-fixtures';
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
 const owner = `did:pkh:eip155:1:${address}`;
 const host = 'https://node.tinycloud.xyz';
+const appHost = 'share.tinycloud.xyz';
 const jwk = { kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' };
 const handoffId = 'B'.repeat(43);
 const state = 'A'.repeat(43);
@@ -22,18 +23,19 @@ const HOUR = 3_600_000;
 const DEFAULT_END = '2026-10-16T18:00:00.000Z';
 const MAX_END = '2026-10-23T17:00:00.000Z';
 const E = 'tinycloud.encryption/';
+const resource = `urn:tinycloud:encryption:${owner}:default/${keyPath}`;
+const statement = `TinyCloud CLI is requesting an app key. I further authorize the stated URI to perform the following actions on my behalf: (1) 'tinycloud.encryption': 'decrypt', 'key.create' for '${resource}'.`;
 
 function siweFor(resources: Record<string, string[]>, expires = MAX_END) {
   const attenuations = Object.fromEntries(Object.entries(resources).map(([resource, abilities]) => [resource, Object.fromEntries(abilities.map((a) => [a, [{}]]))]));
   return [
-    'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
-    'I further authorize these capabilities.', '',
+    `${appHost} wants you to sign in with your Ethereum account:`, address, '',
+    statement, '',
     'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
     'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', `Issued At: ${NOW}`, `Expiration Time: ${expires}`,
     'Resources:', `- ${makeRecapResource(attenuations)}`,
   ].join('\n');
 }
-const resource = `urn:tinycloud:encryption:${owner}:default/${keyPath}`;
 const siwe = siweFor({ [resource]: [`${E}decrypt`, `${E}key.create`] });
 const decryptId = `tinycloud.encryption\0encryption\0${resource}\0${E}decrypt`;
 const createId = `tinycloud.encryption\0encryption\0${resource}\0${E}key.create`;
@@ -100,7 +102,7 @@ test.describe('a command-line tool asks for one exact app key', () => {
     await open(page);
     const row = page.getByTestId('ticket-app-key-row');
     await expect(page.getByTestId('ticket-app-key-warning')).toHaveText(warning);
-    await expect(page.getByText('TinyCloud CLI is requesting:')).toBeVisible();
+    await expect(page.getByRole('heading', { name: `TinyCloud CLI, for ${appHost}` })).toBeVisible();
     await expect(row).toContainText('App keys');
     await expect(row.getByText('share.tinycloud.xyz', { exact: true })).toBeVisible();
     await expect(row).toContainText('Create the encryption key seal-v1 for share.tinycloud.xyz');
@@ -217,6 +219,18 @@ test.describe('a command-line tool asks for one exact app key', () => {
       expect(calls.sign).toBe(0);
     });
   }
+
+  test('a SIWE domain that differs from the app host stops before claim', async ({ page }) => {
+    const calls = await open(page, { message: siwe.replace(appHost, 'cli.tinycloud.xyz') });
+    await expect(page.getByRole('heading', { name: 'OpenKey can’t read what this request asks for' })).toBeVisible();
+    expect(calls.claim).toBe(0);
+  });
+
+  test('an extra SIWE resource stops the app key request before claim', async ({ page }) => {
+    const calls = await open(page, { message: `${siwe}\n- https://example.test` });
+    await expect(page.getByRole('heading', { name: 'OpenKey can’t read what this request asks for' })).toBeVisible();
+    expect(calls.claim).toBe(0);
+  });
 
   test('an app key grant without appKey stops before the claim', async ({ page }) => {
     const calls = await open(page, { request: { appKey: undefined } });

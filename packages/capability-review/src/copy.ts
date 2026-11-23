@@ -388,7 +388,7 @@ const TICKET_APP_KEY_TOOL = "TinyCloud CLI";
 
 export const TICKET_APP_KEY_ROW_COPY = {
   toolName: TICKET_APP_KEY_TOOL,
-  requestingLine: `${TICKET_APP_KEY_TOOL} is requesting:`,
+  heading: `${TICKET_APP_KEY_TOOL}, for {host}`,
   rowHeading: "{host}",
   createLine: "Create the encryption key `{keyName}` for {host}",
   decryptLine: "Decrypt data locked with {host}'s key `{keyName}`",
