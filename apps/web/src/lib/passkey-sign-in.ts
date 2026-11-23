@@ -64,11 +64,12 @@ export interface Autofill {
   /**
    * Ends the request and resolves once it has settled (or the bound passed). Until then `cancel` is
    * repeated, because the ceremony starts only after the options request and would otherwise start late
-   * and abort whatever ceremony follows. Calling it again returns the same promise. A stop that arrives
-   * while the server is verifying the assertion cancels nothing: it waits for the verification, and a
-   * verified sign-in is reported to `onSignedIn` once. The promise resolves `true` when it was, and
-   * `false` when the request ended with no sign-in (a stop before the verification starts, a failed
-   * verification, an aborted ceremony, or a verification that outlasted the bound).
+   * and abort whatever ceremony follows. Calling it again returns the same promise. The cancelling ends
+   * when the server starts verifying the assertion, whether that is before or after the stop, because the
+   * ceremony has ended: the request waits for the verification, and a verified sign-in is reported to
+   * `onSignedIn` once. The promise resolves `true` when it was, and `false` when the request ended with
+   * no sign-in (a cancel that aborted the ceremony, a failed verification, or a verification that
+   * started or finished after the bound).
    */
   stop: () => Promise<boolean>;
 }
@@ -98,11 +99,12 @@ export async function ceremonyAfterAutofill<T>(ceremony: () => Promise<T>): Prom
 /**
  * Starts the conditional (autofill) passkey sign-in. Nothing it does is visible to the person: a
  * request that is unsupported, aborted, refused or fails produces no error and no step change; only a
- * verified sign-in calls `onSignedIn`. A stop that arrives before the server starts verifying the
- * assertion ends the request with no sign-in. A stop that arrives while the server is verifying waits
- * for it: a verified sign-in is reported once, a failed one is not, and nothing is cancelled meanwhile.
- * A request that replaces an older one begins after the older one settled, and does not begin when the
- * older one reported a sign-in.
+ * verified sign-in calls `onSignedIn`. A stop ends the request: the ceremony is cancelled until the
+ * request settles. When the server starts verifying the assertion, whether before or after the stop, the
+ * ceremony has ended and the verification is the sign-in: the cancelling stops, the request waits for the
+ * verification, and a verified sign-in is reported once while a failed one is not. A stop whose cancel
+ * aborts the ceremony ends the request with no sign-in. A request that replaces an older one begins after
+ * the older one settled, and does not begin when the older one reported a sign-in.
  */
 export function startPasskeyAutofill(deps: AutofillDeps): Autofill {
   const previous = supersedePasskeyAutofill();
@@ -111,8 +113,9 @@ export function startPasskeyAutofill(deps: AutofillDeps): Autofill {
   let settled = false;
   // The assertion is obtained and the server is verifying it.
   let verifying = false;
-  // A stop arrived while verifying, so a verified sign-in is reported; false once the bound passed.
+  // A stop arrived and the server is verifying, so a verified sign-in is reported; false once the bound passed.
   let adopting = false;
+  let boundPassed = false;
   let adopted = false;
   let cancelTimer: ReturnType<typeof setInterval> | undefined;
   // `Promise.withResolvers` is missing from the Safari that the iOS sign-in sheet can run.
@@ -139,6 +142,7 @@ export function startPasskeyAutofill(deps: AutofillDeps): Autofill {
       let boundTimer: ReturnType<typeof setTimeout> | undefined;
       const bound = new Promise<void>((resolve) => {
         boundTimer = setTimeout(() => {
+          boundPassed = true;
           adopting = false;
           resolve();
         }, deps.boundMs ?? 10_000);
@@ -161,6 +165,7 @@ export function startPasskeyAutofill(deps: AutofillDeps): Autofill {
           verifying = true;
           // The assertion exists: cancelling a ceremony that has ended would only hit an unrelated one.
           stopCancelling();
+          if (stopped && !boundPassed) adopting = true;
         },
       });
       if (result?.error || (stopped && !adopting)) return;
