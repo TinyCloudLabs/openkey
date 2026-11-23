@@ -5,19 +5,28 @@ import { join } from 'node:path';
 import { createServer, type ViteDevServer } from 'vite';
 // Forces the Terms release on in the dev server, so the result does not depend on terms-release.json.
 // The dev server only reads the shipped Terms release when this says so; the test does not depend on the release file; the first test fails when the server renders the shell.
+const previousRelease = process.env.VITE_OPENKEY_TERMS_RELEASE;
 process.env.VITE_OPENKEY_TERMS_RELEASE = 'on';
+
+// SvelteKit reads svelte.config.js from the working directory; CI runs bun from the repo root.
+const previousCwd = process.cwd();
+const webRoot = join(import.meta.dir, '../..');
 
 let server: ViteDevServer;
 let base: string;
 
 beforeAll(async () => {
-  server = await createServer({ root: join(import.meta.dir, '../..'), logLevel: 'silent', server: { port: 0, host: '127.0.0.1' } });
+  process.chdir(webRoot);
+  server = await createServer({ root: webRoot, logLevel: 'silent', server: { port: 0, host: '127.0.0.1' } });
   await server.listen();
   base = `http://127.0.0.1:${server.httpServer.address().port}`;
 }, 120_000);
 
 afterAll(async () => {
   await server?.close();
+  process.chdir(previousCwd);
+  if (previousRelease === undefined) delete process.env.VITE_OPENKEY_TERMS_RELEASE;
+  else process.env.VITE_OPENKEY_TERMS_RELEASE = previousRelease;
 });
 
 describe('server-rendered /dashboard', () => {
