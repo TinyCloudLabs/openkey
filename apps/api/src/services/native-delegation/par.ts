@@ -4,12 +4,14 @@ import { sessionDidForPublicJwk } from '../device-authorization';
 import { enabledNativeDelegation, type NativeDelegationConfig } from './policy';
 import { TINYCLOUD_DELEGATION_SCOPE } from '../../oauth-config';
 import { TINYCLOUD_DELEGATED_PATH, TINYCLOUD_DELEGATED_PATH_MAX_LENGTH, hasDotSegment } from '../tinycloud-path-policy';
+import { bindNativeRenewalAsk } from './standing-renewal';
+import { RenewalLeaseError } from '../renewal-lease';
 import { log, logError, withScheduledLogContext } from '../../log';
 
 export const REQUEST_URI_PREFIX = 'urn:ietf:params:oauth:request_uri:';
 const REQUIRED_FORM_KEYS = new Set(['client_id', 'response_type', 'redirect_uri', 'state', 'code_challenge', 'code_challenge_method', 'scope', 'authorization_details']);
 const OPTIONAL_FORM_KEYS = new Set(['login_hint', 'login_method']);
-const DETAIL_KEYS = new Set(['type', 'session_key', 'permissions', 'ttl_seconds', 'siwe_nonce']);
+const DETAIL_KEYS = new Set(['type', 'session_key', 'permissions', 'ttl_seconds', 'siwe_nonce', 'renewal']);
 const JWK_KEYS = new Set(['kty', 'crv', 'x', 'kid']);
 const PERMISSION_KEYS = new Set(['service', 'space', 'path', 'actions']);
 const OPTIONAL_SCOPES = new Set(['openid', 'email', 'keys']);
@@ -187,6 +189,7 @@ export async function handlePar(request: Request, db: PrismaClient): Promise<Res
     const ttl = detail.ttl_seconds === undefined ? ceiling.maxDelegationTtlSeconds : detail.ttl_seconds;
     if (!Number.isInteger(ttl) || (ttl as number) < 300 || (ttl as number) > ceiling.maxDelegationTtlSeconds) invalid('invalid_authorization_details', 'invalid ttl_seconds');
     if (detail.siwe_nonce !== undefined && (typeof detail.siwe_nonce !== 'string' || !/^[A-Za-z0-9]{8,64}$/.test(detail.siwe_nonce))) invalid('invalid_authorization_details', 'invalid siwe_nonce');
+    const renewalAsk = bindNativeRenewalAsk(detail.renewal, ceiling.tinycloudHost);
     reportParVolume();
     await startNativeRequestSweep(db);
     const id = randomBytes(24).toString('base64url');
@@ -195,11 +198,15 @@ export async function handlePar(request: Request, db: PrismaClient): Promise<Res
     await db.tinyCloudNativeRequest.create({ data: {
       id, clientId, redirectUri: params.get('redirect_uri')!, state: params.get('state')!, codeChallenge: params.get('code_challenge')!, scopes,
       sessionDid: did, sessionJwk: JSON.parse(JSON.stringify(jwk)), sessionJkt: jkt, requestedPermissions: permissions, ttlSeconds: ttl as number,
-      siweNonce: detail.siwe_nonce as string | undefined, loginHint, loginMethod,
+      siweNonce: detail.siwe_nonce as string | undefined, loginHint, loginMethod, ...(renewalAsk ? { renewalAsk: { ...renewalAsk } } : {}),
       requestUriExpiresAt: new Date(now + 90_000), expiresAt: new Date(now + 600_000),
     } });
     return Response.json({ request_uri: REQUEST_URI_PREFIX + id, expires_in: 90 }, { status: 201, headers: { 'Cache-Control': 'no-store' } });
-  } catch (error) { if (error instanceof ParError) return fail(error); throw error; }
+  } catch (error) {
+    if (error instanceof ParError) return fail(error);
+    if (error instanceof RenewalLeaseError && error.status === 400) return fail(new ParError(400, error.code, error.message));
+    throw error;
+  }
 }
 export async function resolveRequestUri(db: PrismaClient, requestUri: string, clientId: string): Promise<Record<string, string> | null> {
   if (!requestUri.startsWith(REQUEST_URI_PREFIX)) return null;

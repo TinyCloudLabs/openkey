@@ -494,7 +494,7 @@ const port = parseInt(process.env.API_PORT || '3001');
 
 // Retries failed TinyCloud account setup in the background. Off under tests; kill switch is read per tick.
 if (process.env.NODE_ENV !== 'test') startTinyCloudBootstrapSweep();
-// With OPENKEY_RENEWAL_LEASES=stop, revokes every live renewal lease (TC-3088). Does nothing for any other value.
+// Retries native lease withdrawal. OPENKEY_RENEWAL_LEASES=stop also revokes every live lease (TC-3088).
 if (process.env.NODE_ENV !== 'test') startRenewalLeaseStopSweep(authPrisma);
 // Retries the node revocation of step-up delegations OpenKey withdrew after the node had registered them (TC-3569).
 // Not behind the step-up switch: a record already written must still be revoked with the switch off.
