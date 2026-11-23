@@ -34,7 +34,7 @@ function relayPayload(relay: { ephemeralPublicJwk: JsonWebKey; nonce: string; ci
   return JSON.parse(Buffer.concat([decipher.update(ciphertext.subarray(0, -16)), decipher.final()]).toString());
 }
 
-async function openDevice(page: Page, options: { ask?: boolean; sensitive?: boolean; keyType?: 'EXTERNAL' | 'MANAGED'; setupFailure?: boolean } = {}) {
+async function openDevice(page: Page, options: { ask?: boolean; sensitive?: boolean; keyType?: 'EXTERNAL' | 'MANAGED'; setupFailure?: boolean; suggestedTtlSeconds?: number } = {}) {
   const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   const choices: Array<Choice | undefined> = [];
   const grantWindows: string[] = [];
@@ -53,9 +53,10 @@ async function openDevice(page: Page, options: { ask?: boolean; sensitive?: bool
     }] } });
     if (pathname === '/api/device-authorizations/lookup') return route.fulfill({ json: {
       id, userCode: 'ABCDEFGH', sessionDid: did, publicJwk: jwk, relayPublicJwk: publicKey.export({ format: 'jwk' }),
-      permissions, nodeOrigin: host, shareOrigin: 'https://share.tinycloud.xyz', delegationTtlSeconds: 604_800,
+      permissions, nodeOrigin: host, shareOrigin: 'https://share.tinycloud.xyz', delegationTtlSeconds: 30 * 86_400,
+      suggestedTtlSeconds: options.suggestedTtlSeconds,
       transactionExpiresAt: new Date(Date.now() + 600_000).toISOString(),
-      delegationExpiresAt: new Date(Date.now() + 605_400_000).toISOString(),
+      delegationExpiresAt: new Date(Date.now() + (30 * 86_400 + 600) * 1000).toISOString(),
       ...(options.ask === false ? {} : { renewal: { version: 1, leaseLifetimeSeconds: 30 * 86_400 } }),
     } });
     if (pathname === '/api/delegate/prepare') {
@@ -110,6 +111,7 @@ test('starts with renewal on and encrypts the signed receipt with the device gra
   await expect(renewalBox(page)).toBeChecked();
   await expect(page.getByTestId('approval-expiry-line')).toHaveText('This permission renews automatically for up to 30 days.');
   expect(device.choices.at(-1)).toEqual({ choice: 'leased', leaseLifetimeSeconds: 30 * 86_400 });
+  expect(device.grantWindows.at(-1)).toBe('3600s');
   await approve(page).click();
   await expect.poll(device.payload).toMatchObject({ renewal, delegationCid: 'grant-cid' });
   expect(device.approval()).toMatchObject({ binding: { transactionId: id, sessionDid: did, nodeOrigin: host, permissions } });
@@ -154,4 +156,37 @@ test('has no renewal choice for an older transaction', async ({ page }) => {
   const device = await openDevice(page, { ask: false });
   await expect(renewalBox(page)).toHaveCount(0);
   expect(device.choices.at(-1)).toBeUndefined();
+});
+
+for (const [suggestedDays, windowDays] of [[2, 2], [7, 7], [14, 7]] as const) {
+  test(`uses a ${windowDays}-day renewable window for a ${suggestedDays}-day suggestion and restores the finite default`, async ({ page }) => {
+    const device = await openDevice(page, { suggestedTtlSeconds: suggestedDays * 86_400 });
+    await expect(renewalBox(page)).toBeChecked();
+    expect(device.grantWindows.at(-1)).toBe(`${windowDays * 86_400}s`);
+    await expect(page.getByRole('region', { name: 'Device request' })).toContainText(`${windowDays} days`);
+
+    await renewalBox(page).uncheck();
+    await expect(approve(page)).toBeEnabled();
+    expect(device.choices.at(-1)).toEqual({ choice: 'finite' });
+    expect(device.grantWindows.at(-1)).toBe('3600s');
+    await expect(page.getByTestId('approval-expiry-line')).toHaveText("This device's access to your data lasts 1 hour.");
+  });
+}
+
+test('keeps an explicit one-hour window when the owner toggles renewal', async ({ page }) => {
+  const device = await openDevice(page, { suggestedTtlSeconds: 7 * 86_400 });
+  expect(device.grantWindows.at(-1)).toBe('604800s');
+  await page.getByText('Advanced details', { exact: true }).click();
+  await page.getByText('How long it lasts', { exact: true }).click();
+  await page.getByRole('button', { name: '1 hour', exact: true }).click();
+  await expect(approve(page)).toBeEnabled();
+  expect(device.grantWindows.at(-1)).toBe('3600s');
+
+  await renewalBox(page).uncheck();
+  await expect(approve(page)).toBeEnabled();
+  expect(device.grantWindows.at(-1)).toBe('3600s');
+  await renewalBox(page).check();
+  await expect(approve(page)).toBeEnabled();
+  expect(device.choices.at(-1)?.choice).toBe('leased');
+  expect(device.grantWindows.at(-1)).toBe('3600s');
 });

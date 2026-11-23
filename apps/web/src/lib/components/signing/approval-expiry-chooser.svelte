@@ -31,7 +31,8 @@
   const leaseMaxMs = $derived(renewal ? Math.min(renewal.maxLeaseMs, MAX_LEASE_MS) : MAX_LEASE_MS);
 
   function chooseWindow(ms: number) {
-    onChange(ms === requestedMs ? null : ms);
+    // On device sign-in, the default window changes with the renewal checkbox.
+    onChange(ms === requestedMs && !renewal?.deviceSignIn ? null : ms);
   }
 </script>
 

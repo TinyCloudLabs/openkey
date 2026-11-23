@@ -53,7 +53,7 @@
   import DelegateSigningHint from '$lib/components/signing/delegate-signing-hint.svelte';
   import { shouldShowLoopbackHint } from '$lib/delegate-signing-hint';
   import { startCodeCountdown, remainingFromServerClock, CODE_AND_APPROVAL_EXPIRED_TEXT, type CodeCountdownSnapshot } from '$lib/delegate-code-countdown';
-  import { MAX_LEASE_MS, MIN_EXPIRY_MS, accessLastsLine, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, remainingAccessMs, requestedExpiryMs } from '$lib/approval-expiry';
+  import { MAX_LEASE_MS, MIN_EXPIRY_MS, SENSITIVE_RENEWAL_WINDOW_MS, accessLastsLine, approvalRequestStartSeconds, defaultLeaseMs, formatDuration, remainingAccessMs, requestedExpiryMs } from '$lib/approval-expiry';
   import {
     parseSpaceSetup,
     spaceReadinessResult,
@@ -399,9 +399,13 @@
   // (its longest lease). `renewalLeaseMs` is the owner's lease, null while the box is unticked.
   let renewalMaxLeaseMs = $state<number | null>(null);
   let deviceRenewalMaxLeaseMs = $state<number | null>(null);
+  let deviceRenewalSuggestedMs = $state<number | null>(null);
   let renewalPurpose: unknown = undefined;
   let renewalDefaulted = false;
   let renewalLeaseMs = $state<number | null>(null);
+  // A renewed grant repeats this window. Use the device suggestion while the owner leaves the window at its default.
+  const deviceRenewalDefaultMs = $derived(renewalLeaseMs !== null && !expiryChosen ? deviceRenewalSuggestedMs : null);
+  const reviewedExpiryParam = $derived(deviceRenewalDefaultMs === null ? expiryParam : `${deviceRenewalDefaultMs / 1000}s`);
   // TC-3821: the owner confirmed "Renew sensitive access?" for the ticked lease; cleared when the box is unticked.
   let renewalConfirmed = $state(false);
   // Spec D12: standing access starts ticked; D7: never in the Once tier (secrets or decrypt); D11: no purpose is a task.
@@ -647,6 +651,10 @@
     expiryParam = `${deviceRequestDefaultSeconds(record)}s`;
     if (record.renewal?.version === 1) {
       deviceRenewalMaxLeaseMs = Math.min(record.renewal.leaseLifetimeSeconds * 1000, MAX_LEASE_MS);
+      const suggestedSeconds = record.suggestedTtlSeconds;
+      if (typeof suggestedSeconds === 'number' && Number.isSafeInteger(suggestedSeconds) && suggestedSeconds >= 60) {
+        deviceRenewalSuggestedMs = Math.min(suggestedSeconds * 1000, expiryMaxMs, SENSITIVE_RENEWAL_WINDOW_MS);
+      }
     }
   }
   function startDeviceVerification() {
@@ -955,8 +963,9 @@
     if (requestReason) {
       body.reason = requestReason;
     }
-    if (expiryParam) {
-      body.expiry = expiryParam;
+    const reviewedExpiry = forceFinite ? expiryParam : reviewedExpiryParam;
+    if (reviewedExpiry) {
+      body.expiry = reviewedExpiry;
       if (expiryChosen) {
         body.expiryChosen = true;
         body.linkExpiry = requestedExpiryParam ?? '';
@@ -1426,8 +1435,8 @@
       if (requestReason) {
         body.reason = requestReason;
       }
-      if (expiryParam) {
-        body.expiry = expiryParam;
+      if (reviewedExpiryParam) {
+        body.expiry = reviewedExpiryParam;
         if (expiryChosen) {
           body.expiryChosen = true;
           body.linkExpiry = requestedExpiryParam ?? '';
@@ -2134,7 +2143,7 @@
         {/if}
 
         {#if deviceTransactionId}
-          <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={expiryParam} />
+          <DeviceRequestNotice nodeOrigin={host} shareOrigin={deviceShareOrigin} expiry={reviewedExpiryParam} />
         {:else}
           <DelegateLinkNotice {host} hostRecognized={!hostNeedsAcknowledgment} callback={approvedCallback} requesterRelay={approvalRequestMode} relayTo={requester?.displayName} expiresAt={delegationExpiresAt} showExpires={!(reviewModel?.immutable && reviewModel.protocol === 'tinycloud-siwe-recap')} bind:acknowledged={hostAcknowledged} />
         {/if}
@@ -2210,7 +2219,7 @@
                   return updatePermissions(nextServerKeys, forceFinite);
                 },
                 expiry: {
-                  chosenMs: expiryChoiceMs,
+                  chosenMs: expiryChoiceMs ?? deviceRenewalDefaultMs,
                   onceDefault: true,
                   // The requester signed its longest time (signed request, device), or the link asked for exactly
                   // this much: a link without `expiryChangeable=true` is shorter-only.
