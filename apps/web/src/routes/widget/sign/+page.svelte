@@ -1537,7 +1537,9 @@
         passkeyPending: exactByteGate.action === 'wait',
         host: messageHost,
         error: error || offerFailure,
-        approveBlockedReason: refusalMessage ?? (renewalOnlyNeedsPreview ? RENEWAL_ONLY_COPY.previewRequired : null),
+        approveBlockedReason: refusalMessage ?? (renewalOnlyNeedsPreview
+          ? RENEWAL_ONLY_COPY.previewRequired(originAuthority(origin) ?? RENEWAL_ONLY_COPY.appFallback)
+          : null),
         refused,
         canUseAuthorizeSign: canUseAuthorizeSignFn(),
         previewReady: currentPreview() !== null,

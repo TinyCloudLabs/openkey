@@ -307,7 +307,11 @@ export const RENEWAL_ONLY_COPY = {
   unavailable: (app: string) => renewalOnlyBlocked("Renewal isn't available for this sign-in", app),
   turnedOff: (app: string) => renewalOnlyBlocked("Renewal is off", app),
   appFallback: "This app",
-  previewRequired: "This sign-in needs a permission preview.",
+  previewRequired: (app: string) => [
+    "OpenKey can't show what this sign-in allows,",
+    "so it can't be approved.",
+    `Ask ${app} to try again.`,
+  ].join(" "),
 };
 
 /** The line above the rows of a request with app keys. */

@@ -18,7 +18,7 @@ type Message = { type: string; success?: boolean; signedMessage?: string; height
 type HostWindow = Window & { widget: Window; received: Message[] };
 type Preview = { selectedActionIds: string[]; signedMessage: string; renewal?: { choice: string; sensitiveConfirmed?: boolean } };
 
-async function open(page: Page, options: { iframe?: boolean; prefix?: boolean; unavailable?: boolean } = {}) {
+async function open(page: Page, options: { iframe?: boolean; prefix?: boolean; unavailable?: boolean; exactBytes?: boolean } = {}) {
   const previews: Preview[] = [];
   const signs: Array<{ previewApprovalToken: string; selectedActionIds: string[] }> = [];
   const now = Date.now();
@@ -108,7 +108,7 @@ async function open(page: Page, options: { iframe?: boolean; prefix?: boolean; u
   await expect.poll(async () => (await messages()).some((message) => message.type === 'openkey:ready')).toBe(true);
   await page.evaluate((request) => (window as unknown as HostWindow).widget.postMessage(request, location.origin), {
     type: 'openkey:sign:request', requestId: 'renewal-only', protocolVersion: options.iframe ? 2 : 1,
-    authorizationProtocolVersion: 1, keyId: 'selected-key', jwk: { kty: 'EC' },
+    authorizationProtocolVersion: options.exactBytes ? undefined : 1, keyId: 'selected-key', jwk: { kty: 'EC' },
     message: recap(keyResources), expiryChangeable: true,
     renewal: { version: 1, leaseLifetimeSeconds, purpose: 'standing' }, renewalOnlyResources: keyResources,
   });
@@ -117,7 +117,7 @@ async function open(page: Page, options: { iframe?: boolean; prefix?: boolean; u
   const approve = view.getByRole('button', { name: 'Approve', exact: true });
   const box = view.locator('input.renewal-box');
   const renewalRows = view.getByRole('region', { name: 'Only with renewal' });
-  await expect(approve).toBeEnabled();
+  if (!options.exactBytes) await expect(approve).toBeEnabled();
   async function turnOn() {
     await box.click();
     await expect(view.getByRole('alertdialog', { name: 'Renew sensitive access?' })).toBeVisible();
@@ -203,4 +203,15 @@ test('unavailable renewal excludes exact keys from the signed request', async ({
   expect(h.previews[0]).toMatchObject({ selectedActionIds: [ordinary], signedMessage: h.ordinaryMessage });
   expect(h.previews[0]!.renewal).toBeUndefined();
   expect(await h.signedMessage()).toBe(h.ordinaryMessage);
+});
+
+test('exact-byte signing cannot approve renewal-only keys', async ({ page }) => {
+  const h = await open(page, { iframe: true, exactBytes: true });
+  await expect(h.view.getByText(
+    `OpenKey can't show what this sign-in allows, so it can't be approved. Ask ${HOST} to try again.`,
+    { exact: true },
+  )).toBeVisible();
+  await expect(h.approve).toBeDisabled();
+  await expect(h.view.getByRole('button', { name: 'Cancel', exact: true })).toBeEnabled();
+  expect(h.previews).toHaveLength(0);
 });
