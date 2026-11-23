@@ -236,6 +236,11 @@ export interface TinyCloudAuthorizationRequestV1 {
    * and `renewal` from the result.
    */
   renewal?: TinyCloudRenewalRequestV1;
+  /**
+   * Exact encryption-key URNs from the SIWE's ReCap that are granted only while the owner enables renewal.
+   * Requires `renewal` and `expiryChangeable: true`.
+   */
+  renewalOnlyResources?: string[];
 }
 
 export interface TinyCloudRenewalRequestV1 {
@@ -295,22 +300,62 @@ export interface TinyCloudAuthorizationResultV1 {
 }
 
 const MAX_RENEWAL_LEASE_SECONDS = 365 * 86_400;
+const ENCRYPTION_KEY_SEGMENT = '[a-z0-9][a-z0-9._-]{0,63}';
+const EXACT_ENCRYPTION_KEY_URN = new RegExp(
+  `^urn:tinycloud:encryption:did:[a-z0-9]+:[A-Za-z0-9._:-]+:([a-z0-9][a-z0-9-]*)/(${ENCRYPTION_KEY_SEGMENT}(?:/${ENCRYPTION_KEY_SEGMENT}){0,7})$`,
+);
+
+type RenewalRequestFields = Pick<TinyCloudAuthorizationRequestV1, 'renewal' | 'renewalOnlyResources'> & {
+  expiryChangeable?: true;
+};
 
 /**
- * The widget's copy of `request.renewal`, checked here so a malformed ask fails in the app, not in the window.
- * Renewing sensitive access shortens the window, so renewal needs `expiryChangeable: true`.
+ * The widget's copy of the renewal request, validated before key lookup and popup reservation.
  */
-function renewalRequestField(request: Pick<TinyCloudAuthorizationRequestV1, 'renewal' | 'expiryChangeable'>): { renewal?: TinyCloudRenewalRequestV1 } {
+function renewalRequestFields(request: Pick<TinyCloudAuthorizationRequestV1, keyof RenewalRequestFields>): RenewalRequestFields {
   const value = request.renewal;
-  if (value === undefined) return {};
-  if (request.expiryChangeable !== true) throw new Error('authorizeTinyCloud: renewal needs expiryChangeable: true');
+  const resources = request.renewalOnlyResources;
+  const expiry = request.expiryChangeable === true ? { expiryChangeable: true as const } : {};
+  if (resources !== undefined && (value === undefined || !expiry.expiryChangeable)) {
+    throw new TypeError('authorizeTinyCloud: renewalOnlyResources requires renewal and expiryChangeable: true');
+  }
+  if (value === undefined) return expiry;
+  if (!expiry.expiryChangeable) throw new Error('authorizeTinyCloud: renewal needs expiryChangeable: true');
   const seconds = value?.leaseLifetimeSeconds;
   const purpose = value?.purpose;
   if (value?.version !== 1 || typeof seconds !== 'number' || !Number.isSafeInteger(seconds) || seconds <= 0 ||
     seconds > MAX_RENEWAL_LEASE_SECONDS || (purpose !== undefined && purpose !== 'standing' && purpose !== 'task')) {
-    throw new Error('authorizeTinyCloud: renewal must be { version: 1, leaseLifetimeSeconds (up to one year), purpose? }');
+    const InvalidRenewal = resources === undefined ? Error : TypeError;
+    throw new InvalidRenewal('authorizeTinyCloud: renewal must be { version: 1, leaseLifetimeSeconds (up to one year), purpose? }');
   }
-  return { renewal: { version: 1, leaseLifetimeSeconds: seconds, ...(purpose ? { purpose } : {}) } };
+  return {
+    ...expiry,
+    renewal: { version: 1, leaseLifetimeSeconds: seconds, ...(purpose ? { purpose } : {}) },
+    ...(resources === undefined ? {} : { renewalOnlyResources: validateRenewalOnlyResources(resources) }),
+  };
+}
+
+function validateRenewalOnlyResources(resources: unknown): string[] {
+  if (!Array.isArray(resources) || resources.length > 64) {
+    throw new TypeError('authorizeTinyCloud: renewalOnlyResources must be an array of at most 64 entries');
+  }
+  const unique = new Set<string>();
+  for (const resource of resources as unknown[]) {
+    if (typeof resource !== 'string' || resource.length === 0 || resource.length > 512) {
+      throw new TypeError('authorizeTinyCloud: renewalOnlyResources entries must be non-empty strings of at most 512 characters');
+    }
+    const match = EXACT_ENCRYPTION_KEY_URN.exec(resource);
+    const keyPath = match?.[2];
+    // The default network's bare secrets path is displayed as access to the whole vault.
+    if (!keyPath || keyPath.length > 255 || (match?.[1] === 'default' && keyPath === 'secrets')) {
+      throw new TypeError('authorizeTinyCloud: renewalOnlyResources entries must be exact encryption-key URNs');
+    }
+    if (unique.has(resource)) {
+      throw new TypeError('authorizeTinyCloud: renewalOnlyResources entries must be unique');
+    }
+    unique.add(resource);
+  }
+  return [...unique];
 }
 
 /** The renewal part of an authorization result. A leased choice without its lease is a protocol error. */
@@ -364,7 +409,7 @@ type MessageType =
   | { type: 'openkey:auth:request'; appName: string; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: true; address: string; keyId: string; keyType?: 'MANAGED' | 'EXTERNAL'; requestId?: string; protocolVersion?: number }
   | { type: 'openkey:auth:response'; success: false; error: OpenKeyError; requestId?: string; protocolVersion?: number }
-  | { type: 'openkey:sign:request'; message: string; keyId?: string; presentation?: SignMessagePresentationV1; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1; expiryChangeable?: true; renewal?: TinyCloudRenewalRequestV1 }
+  | ({ type: 'openkey:sign:request'; message: string; keyId?: string; presentation?: SignMessagePresentationV1; requestId?: string; protocolVersion?: number; authorizationProtocolVersion?: 1 } & RenewalRequestFields)
   | { type: 'openkey:sign:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
   | {
       type: 'openkey:sign:response';
@@ -1236,17 +1281,24 @@ export class OpenKey {
     request: TinyCloudAuthorizationRequestV1,
     opts?: { mode?: OpenKeyMode },
   ): Promise<TinyCloudAuthorizationResultV1> {
+    if (request.protocolVersion !== 1) {
+      throw new Error(
+        `authorizeTinyCloud only supports protocolVersion 1; got ${request.protocolVersion}`,
+      );
+    }
+    if (typeof request.siwe !== 'string' || !request.siwe) {
+      throw new Error('authorizeTinyCloud requires a non-empty SIWE');
+    }
+    const renewalFields = renewalRequestFields(request);
     // A popup opens only inside the gesture that asked for it, and the awaits
-    // below (the key list, the routing) can outlast it. In popup mode the window
-    // is opened here, in the caller's own tick, and navigated to the widget once
-    // the route is known. A request that fails the checks below opens nothing.
+    // for key lookup and routing can outlast it. Reserve the popup in the
+    // caller's own tick and navigate to the widget once the route is known.
     const reserved =
-      request?.protocolVersion === 1 && typeof request.siwe === 'string' && request.siwe !== '' &&
       this.resolveMode(opts?.mode) === 'popup'
         ? this.reservePopup('sign')
         : null;
     try {
-      return await this.authorizeTinyCloudFlow(request, opts, reserved);
+      return await this.authorizeTinyCloudFlow(request, opts, reserved, renewalFields);
     } finally {
       // Closed unless the flow took the window over (the widget closes its own).
       if (reserved && !reserved.used) {
@@ -1259,15 +1311,8 @@ export class OpenKey {
     request: TinyCloudAuthorizationRequestV1,
     opts: { mode?: OpenKeyMode } | undefined,
     reserved: ReservedPopup | null,
+    renewalFields: RenewalRequestFields,
   ): Promise<TinyCloudAuthorizationResultV1> {
-    if (request.protocolVersion !== 1) {
-      throw new Error(
-        `authorizeTinyCloud only supports protocolVersion 1; got ${request.protocolVersion}`,
-      );
-    }
-    if (typeof request.siwe !== 'string' || !request.siwe) {
-      throw new Error('authorizeTinyCloud requires a non-empty SIWE');
-    }
     // Sol MAJOR-3 (continuation) + Sol MAJOR-4 (final): route to the
     // external-wallet preview→sign→finalize flow whenever the ACTIVE
     // authentication session is against an EXTERNAL key. External keys
@@ -1322,7 +1367,7 @@ export class OpenKey {
         : new Error('authorizeTinyCloud: failed to resolve target key type');
     }
     if (routing.route === 'external') {
-      return this.authorizeTinyCloudExternal(request, opts);
+      return this.authorizeTinyCloudExternal(request, opts, renewalFields);
     }
     // Sol CRITICAL-1: Send a DISTINCT versioned sign request so the widget
     // knows to route through the server-authoritative /authorize-sign
@@ -1366,9 +1411,7 @@ export class OpenKey {
         // validates and size-bounds it before use and NEVER treats it as
         // verified unless the server actually origin-binds a manifest.
         presentation: request.presentation,
-        // TC-2272: only an SDK that accepts a different signed expiry opts in; OpenKey then lets the user change it.
-        ...(request.expiryChangeable === true ? { expiryChangeable: true as const } : {}),
-        ...renewalRequestField(request),
+        ...renewalFields,
       },
       opts?.mode,
       reserved,
@@ -1426,7 +1469,8 @@ export class OpenKey {
    */
   private async authorizeTinyCloudExternal(
     request: TinyCloudAuthorizationRequestV1,
-    opts?: { mode?: OpenKeyMode },
+    opts: { mode?: OpenKeyMode } | undefined,
+    renewalFields: RenewalRequestFields,
   ): Promise<TinyCloudAuthorizationResultV1> {
     const keyId = request.keyId ?? this.lastAuth?.keyId;
     if (!keyId) {
@@ -1464,8 +1508,7 @@ export class OpenKey {
         // bounded at the transport, never treated as verified without
         // server-side origin-binding.
         presentation: request.presentation,
-        ...(request.expiryChangeable === true ? { expiryChangeable: true as const } : {}),
-        ...renewalRequestField(request),
+        ...renewalFields,
         // Sol MAJOR-3 (continuation): tell the widget to hand us back
         // the previewApproval instead of asking OpenKey to sign
         // server-side with a managed key. The widget will still render

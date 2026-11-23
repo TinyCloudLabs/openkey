@@ -103,6 +103,17 @@ const { signature, address } = await openkey.signMessage({
 });
 ```
 
+### `openkey.authorizeTinyCloud(request, opts?)`
+
+The optional `renewal` request offers the owner automatic renewal for up to
+`leaseLifetimeSeconds` and requires `expiryChangeable: true`.
+
+`renewalOnlyResources` lists up to 64 distinct exact encryption-key URNs from
+the SIWE's ReCap, each at most 512 characters. It requires both `renewal` and
+`expiryChangeable: true`. OpenKey grants a matching permission only when the
+owner enables renewal and leaves that permission selected. The returned
+`signedMessage` contains the granted permissions.
+
 ### `openkey.signTypedData(request, opts?)`
 
 Sign EIP-712 typed data.
