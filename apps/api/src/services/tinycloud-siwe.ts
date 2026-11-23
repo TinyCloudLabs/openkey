@@ -14,6 +14,7 @@ import {
 } from '@tinycloud/bootstrap';
 import { siweExpirationTime } from '@openkey/capability-review';
 import { ensureEip55, parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
+import { decodeHexUtf8 } from './siwe-origin';
 
 const NETWORK_CREATE_ACTION = ENCRYPTION.NETWORK_CREATE;
 
@@ -61,6 +62,28 @@ export function parseTinyCloudSiwe(message: string): ParsedTinyCloudSiwe | null 
     expirationTime: expirationTime !== null ? new Date(expirationTime) : undefined,
     entries,
   };
+}
+
+/** The ability whose signature lets the signer's space be created (hosted) on the node. */
+export const SPACE_HOST_ABILITY = 'tinycloud.space/host';
+
+/**
+ * Does signing this message give the ability to host (create) a space on the node? Read as written and, for `0x…` hex,
+ * as the UTF-8 bytes a signature would cover. A ReCap that cannot be read names no ability here: the node cannot read
+ * it either.
+ */
+export function asksToHostSpace(message: string): boolean {
+  const decoded = decodeHexUtf8(message);
+  for (const text of decoded === null ? [message] : [message, decoded]) {
+    let entries: RecapEntry[];
+    try {
+      entries = parseRecapFromSiwe(text) as RecapEntry[];
+    } catch {
+      continue;
+    }
+    if (Array.isArray(entries) && entries.some((entry) => entry.actions.includes(SPACE_HOST_ABILITY))) return true;
+  }
+  return false;
 }
 
 /**

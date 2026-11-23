@@ -11,8 +11,8 @@ import {
   ensureTinyCloudBootstrapForApprovedSign,
 } from '../services/tinycloud-bootstrap';
 import { awaitTinyCloudBootstrapWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
-import { parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
-import { originProvisionAuthority, UNATTRIBUTED_PROVISION_AUTHORITY } from '../services/provision-authority';
+import { asksToHostSpace, parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
+import { mayProvision, originProvisionAuthority, UNATTRIBUTED_PROVISION_AUTHORITY } from '../services/provision-authority';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
@@ -420,6 +420,17 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (siweCheck.siwe && !siweCheck.ok) {
     return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
   }
+  // The asker is the widget's sender-checked `requestOrigin`, and only when the SIWE named exactly that origin. The raw
+  // body field on its own, the Origin header (always OpenKey's own here) and the SIWE domain are not the authority.
+  const authority = siweCheck.siwe && siweCheck.ok
+    ? originProvisionAuthority(typeof body.requestOrigin === 'string' ? body.requestOrigin : undefined)
+    : UNATTRIBUTED_PROVISION_AUTHORITY;
+  // A signature on a space host message is the ability to create that space on the node, whichever site holds the
+  // signed bytes. It is given only to the same authority that may have OpenKey set an account up (as POST /delegate/host
+  // is); every other message, including a sign-in that names a space, is signed as before. Checked before unseal.
+  if (asksToHostSpace(body.message) && !mayProvision(authority)) {
+    return c.json({ error: 'Only TinyCloud\'s own apps can have OpenKey sign a space host request.', code: 'host_signing_first_party_only' }, 403);
+  }
   const appKeyRefusal = appKeyRefusalForMessage(body.message);
   if (appKeyRefusal) {
     return c.json(appKeyRefusalBody(appKeyRefusal, 'non_browser'), appKeyRefusalStatus(appKeyRefusal));
@@ -481,12 +492,6 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const mayHostOwnSpace = format !== 'raw' && process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN !== 'off';
   const siwe = mayHostOwnSpace ? parseTinyCloudSiwe(body.message) : null;
   const waitsForOwnSpace = siwe !== null && requestedOwnSpaceForSiwe(siwe, key.address) !== null;
-  // The asker is the widget's sender-checked `requestOrigin`, and only when the SIWE named exactly that origin
-  // (checked above). The raw body field on its own, the Origin header (always OpenKey's own here) and the SIWE domain
-  // are not the authority.
-  const authority = siweCheck.siwe && siweCheck.ok
-    ? originProvisionAuthority(typeof body.requestOrigin === 'string' ? body.requestOrigin : undefined)
-    : UNATTRIBUTED_PROVISION_AUTHORITY;
   const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
     ensureTinyCloudBootstrapForApprovedSign({ prisma, userId: user.id, key, privateKey, message: body.message, format, authority }),
     waitsForOwnSpace ? { budgetMs: OWN_TIMEOUT_BUDGET_MS, ownLogsBackground: true } : {},

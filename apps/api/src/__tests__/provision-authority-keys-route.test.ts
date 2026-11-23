@@ -4,7 +4,7 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
-import { prepareSession } from '@tinycloud/node-sdk-wasm';
+import { generateHostSIWEMessage, prepareSession } from '@tinycloud/node-sdk-wasm';
 import { privateKeyToAccount } from 'viem/accounts';
 import { startFakeTinyCloudNode, type FakeTinyCloudNode } from './fake-tinycloud-node';
 import { mockModules, replaceModules } from './mock-module';
@@ -286,5 +286,47 @@ describe('the signer\'s own space is set up only for a first-party app', () => {
       expect(signed.body.tinycloudBootstrap?.status).not.toBe('hosted');
     }
     expectNothingSetUp();
+  });
+});
+
+// A signature on a space host message is the ability to create the space on the node, so a site that holds the signed
+// bytes could submit them itself. The same authority that may have OpenKey set an account up is the only one signed for.
+describe('a space host message is signed only for a first-party app', () => {
+  const hostSiwe = (domain: string) => generateHostSIWEMessage({
+    address: account.address,
+    chainId: 1,
+    domain,
+    issuedAt: new Date().toISOString(),
+    spaceId: spaceId('default'),
+    peerId: 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
+  });
+  const asHex = (text: string) => `0x${Buffer.from(text, 'utf8').toString('hex')}`;
+
+  test('an app from another site gets no signature, whatever it spells the message as', async () => {
+    for (const message of [hostSiwe('app.example.test'), asHex(hostSiwe('app.example.test'))]) {
+      const signed = await sign(message);
+
+      expect(signed.status).toBe(403);
+      expect(signed.body).toMatchObject({ code: 'host_signing_first_party_only' });
+      expect(signed.body.signature).toBeUndefined();
+    }
+    expect(unseal).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expectNothingSetUp();
+  });
+
+  test('a first-party origin named only in the body does not unlock it', async () => {
+    const signed = await sign(hostSiwe('app.example.test'), { requestOrigin: FIRST_PARTY });
+
+    expect(signed.status).toBe(403);
+    expect(signed.body.signature).toBeUndefined();
+    expect(unseal).not.toHaveBeenCalled();
+  });
+
+  test('an app of TinyCloud is signed for', async () => {
+    const signed = await sign(hostSiwe('home.tinycloud.xyz'), { requestOrigin: FIRST_PARTY });
+
+    expect(signed.status).toBe(200);
+    expect(signed.body.signature).toMatch(/^0x[0-9a-f]+$/i);
   });
 });
