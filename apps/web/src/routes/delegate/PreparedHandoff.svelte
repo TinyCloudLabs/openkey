@@ -4,7 +4,13 @@
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
-  import { TICKET_APP_KEY_COPY, buildStatements, parseEncryptionResource, readTicketAppKey, reviewTicketAppKey, ticketAppKeyRefusal, ticketAppKeyRefusalText, ticketAppKeyText, type TicketAppKey, type TicketAppKeyRefusal, parseCapabilityReview, parseSiweFields, defaultSelection, renderLiteral, renderSiweLiteral, siweExpirationTime, splitStatementCode, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
+  import {
+    TICKET_APP_KEY_COPY, TICKET_APP_KEY_MAX_MS, buildStatements, defaultSelection, matchesTicketAppKeyPreview,
+    parseCapabilityReview, parseEncryptionResource, parseSiweFields, readTicketAppKey, renderLiteral, renderSiweLiteral,
+    reviewTicketAppKey, siweExpirationTime, splitStatementCode, ticketAppKeyRefusal, ticketAppKeyRefusalText,
+    ticketAppKeyText, validTicketAppKeyRequest, type CapabilityGrant, type CapabilityReviewModel,
+    type TicketAppKey, type TicketAppKeyRefusal,
+  } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
   import { requestedActionIds } from '$lib/widget-selection';
   import { timeUntilExpiry } from '$lib/siwe-parser';
@@ -88,8 +94,9 @@
   // from now, else what the CLI asked for.
   const foldEndsAt = $derived.by(() => {
     if (phase === 'preview') return siweExpirationTime(previewMessage);
+    if (appKeyReview) return appKeyAcceptedEnd;
     if (expiryChoiceMs !== null) return expiryAtCapped(expiryChoiceMs, siweExpirationTime(handoff?.request.siwe ?? ''));
-    return appKeyDefault?.expiresAt ?? siweExpirationTime(handoff?.request.siwe ?? '');
+    return siweExpirationTime(handoff?.request.siwe ?? '');
   });
   let key = $state<EthereumKey | null>(null);
   let keyChoices = $state<KeyChoice[]>([]);
@@ -106,7 +113,10 @@
   const appKeyReview = $derived(handoff?.request.appKey ? reviewTicketAppKey((model ?? keyChoices[0]?.review)!, handoff.request.appKey) : null);
   let appKeyRefusal = $state<TicketAppKeyRefusal | null>(null);
   let appKeyDefault = $state<{ expiresAt: string; durationMs: number | null } | null>(null);
-  const appKeyMaxMs = $derived(expiryRequestedMs === null ? null : Math.min(expiryRequestedMs, 7 * 24 * 60 * 60 * 1000));
+  let appKeyChosenEnd = $state<string | null>(null);
+  let appKeyPreviewDuration = $state<number | null>(null);
+  const appKeyAcceptedEnd = $derived(appKeyChosenEnd ?? appKeyDefault?.expiresAt ?? null);
+  const appKeyMaxMs = $derived(expiryRequestedMs === null ? null : Math.min(expiryRequestedMs, TICKET_APP_KEY_MAX_MS));
   const appKeyLonger = $derived(appKeyReview !== null && (expiryChoiceMs ?? appKeyDefault?.durationMs ?? 0) > ONCE_DEFAULT_EXPIRY_MS);
   let contextToken = $state('');
   let previewToken = $state('');
@@ -327,6 +337,14 @@
         }
       }
       if (pending !== input) return;
+      const fields = parseSiweFields(input.request.siwe);
+      if (!fields.ok || (input.request.appKey && input.request.presentation) ||
+          !validTicketAppKeyRequest(fields.fields, input.request.appKey, replyTime(availableDate))) {
+        pending = null;
+        clearPending();
+        stop = approvalStop('S11');
+        return;
+      }
       const match = /(?:^|\n)([^\n]+) wants you to sign in with your Ethereum account:\n(0x[0-9a-fA-F]{40})(?:\n|$)/.exec(input.request.siwe);
       const chain = /^Chain ID: ([1-9][0-9]*)$/m.exec(input.request.siwe);
       if (!match || !chain) {
@@ -440,11 +458,10 @@
         throw new ServerReplyError(200);
       }
       const defaultMs = Date.parse(admitted.defaultExpiresAt);
-      const replyMs = Date.parse(serverDate ?? '');
-      const serverNow = Number.isFinite(replyMs) ? replyMs : Date.now();
+      const serverNow = replyTime();
       if (!Number.isFinite(defaultMs) || defaultMs <= serverNow || defaultMs > signedCeiling) throw new ServerReplyError(200);
       appKeyDefault = {
-        expiresAt: admitted.defaultExpiresAt,
+        expiresAt: new Date(defaultMs).toISOString(),
         durationMs: requestedExpiryMs(new Date(serverNow).toISOString(), admitted.defaultExpiresAt),
       };
     }
@@ -463,24 +480,60 @@
     } finally { busy = false; }
   }
 
+  function replyTime(date = serverDate): number {
+    const replyMs = Date.parse(date ?? '');
+    return Number.isFinite(replyMs) ? replyMs : Date.now();
+  }
+
+  function changeExpiry(ms: number | null) {
+    if (!expiryEditable) return;
+    expiryChoiceMs = ms;
+    if (handoff?.request.appKey) {
+      appKeyChosenEnd = ms === null ? null : expiryAtCapped(ms, siweExpirationTime(handoff.request.siwe));
+    }
+  }
+
+  function clearPreview() {
+    phase = 'review';
+    previewToken = '';
+    previewMessage = '';
+    previewActions = [];
+    passkeyNeed = null;
+    appKeyPreviewDuration = null;
+  }
+
   async function preview() {
     if (!handoff || !key || !model || busy || submitted || (handoff.request.appKey && !contextToken)) return;
+    const activeHandoff = handoff;
+    const request = handoff.request;
+    if (request.appKey) clearPreview();
     busy = true;
     error = '';
+    appKeyRefusal = null;
     try {
-      const request = handoff.request;
       if (!contextToken) await prepareContext();
       if (!handoff || !contextToken) return;
       const actions = selectedIds();
       if (!actions.length) throw new Error('Select at least one ability.');
       const signedCeiling = siweExpirationTime(request.siwe);
-      const expirationTime = expiryChoiceMs === null ? null : expiryAtCapped(expiryChoiceMs, signedCeiling);
+      const expirationTime = request.appKey
+        ? appKeyAcceptedEnd
+        : expiryChoiceMs === null ? null : expiryAtCapped(expiryChoiceMs, signedCeiling);
+      if (request.appKey && !expirationTime) throw new ServerReplyError(200);
       const candidate = await post('authorize-sign-preview', {
         ticket, authorizationContextToken: contextToken, selectedActionIds: actions,
         ...(expirationTime ? { expirationTime } : {}),
       }, ['signedMessage', 'previewApprovalToken']);
+      if (handoff !== activeHandoff) return;
       if (typeof candidate.previewApprovalToken !== 'string' || typeof candidate.signedMessage !== 'string') throw new Error('Missing sealed signing preview.');
       validatePreviewSelection(candidate, actions);
+      if (request.appKey) {
+        const serverNow = replyTime();
+        if (!expirationTime || !matchesTicketAppKeyPreview(request.siwe, candidate.signedMessage, expirationTime, serverNow)) {
+          throw new ServerReplyError(200);
+        }
+        appKeyPreviewDuration = requestedExpiryMs(new Date(serverNow).toISOString(), expirationTime);
+      }
       previewToken = candidate.previewApprovalToken;
       previewMessage = candidate.signedMessage;
       previewActions = actions;
@@ -745,10 +798,10 @@
       {/if}
       <ApprovalExpiryControl
         requestedMs={appKeyReview ? appKeyDefault?.durationMs ?? null : expiryRequestedMs}
-        chosenMs={expiryChoiceMs}
+        chosenMs={appKeyReview && phase === 'preview' ? appKeyPreviewDuration : expiryChoiceMs}
         maxMs={appKeyReview ? appKeyMaxMs : expiryRequestedMs}
         disabled={!expiryEditable}
-        onChange={(ms) => { if (expiryEditable) expiryChoiceMs = ms; }}
+        onChange={changeExpiry}
         endsAt={foldEndsAt}
         holder="device"
         lengthNote={appKeyLonger ? TICKET_APP_KEY_COPY.longerNote : null}
@@ -769,16 +822,18 @@
       <details><summary>Original SIWE message</summary>
         <pre class="whitespace-pre overflow-x-auto max-w-full min-w-0 rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(handoff.request.siwe)}</pre>
       </details>
-      {#if phase === 'preview'}
+      {#if phase === 'preview' && previewToken}
         <details>
           <summary class="font-semibold">Exact candidate signedMessage</summary>
           <pre class="whitespace-pre overflow-x-auto max-w-full min-w-0 rounded-lg bg-surface-50 p-3 text-xs">{renderSiweLiteral(previewMessage)}</pre>
         </details>
-        <button onclick={() => { phase = 'review'; previewToken = ''; }}>{appKeyReview ? 'Change access length' : 'Change abilities'}</button>
+        <button disabled={busy || submitted} onclick={clearPreview}>{appKeyReview ? 'Change access length' : 'Change abilities'}</button>
         <button disabled={busy || submitted} onclick={approve}>Approve</button>
       {:else if appKeyReview && appKeyRefusal}
         <p role="alert" data-testid="ticket-app-key-refusal" class="rounded-lg bg-red-50 p-3 text-red-800">{#each splitStatementCode(ticketAppKeyRefusalText(appKeyRefusal, appKeyReview)) as part}{#if part.code}<code class="font-mono">{part.text}</code>{:else}{part.text}{/if}{/each}</p>
-        {#if appKeyRefusal === 'unavailable'}<button disabled={busy || submitted} onclick={prepareAppKey}>Try again</button>{/if}
+        {#if appKeyRefusal === 'unavailable' || appKeyRefusal === 'fetchBusy'}
+          <button disabled={busy || submitted} onclick={contextToken ? preview : prepareAppKey}>Try again</button>
+        {/if}
       {:else if !appKeyReview || contextToken}
         <button disabled={busy || submitted || selectedIds().length === 0} onclick={preview}>Preview signing message</button>
       {/if}

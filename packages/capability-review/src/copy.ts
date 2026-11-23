@@ -410,6 +410,8 @@ export const TICKET_APP_KEY_COPY = {
       "OpenKey can't approve this request: {host} doesn't let command-line tools ask for the key `{keyName}`. Nothing was approved.",
     unavailable:
       "OpenKey couldn't check {host}'s list of keys for command-line tools. Nothing was approved. Try again.",
+    fetchBusy:
+      "OpenKey is busy and couldn't check {host}'s list of keys for command-line tools. Nothing was approved. Try again in a minute.",
     request_invalid: "OpenKey can't read the app key in this request. Nothing was approved.",
     ticket_required: "App keys can be requested only through a command-line sign-in link. Nothing was approved.",
     app_id: "This app id isn't a website address written in reverse, such as xyz.tinycloud.share. Nothing was approved.",

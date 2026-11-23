@@ -5,8 +5,10 @@
 // The app host is the app id reversed label by label, and only an id that IS a reversed host names a host.
 
 import { TICKET_APP_KEY_COPY } from "./copy.js";
-import { APPS_SEGMENT, appIdValid, isKeyPath, parseKeyResource } from "./key-resource.js";
+import { APPS_SEGMENT, KEY_RESOURCE_PREFIX, appIdValid, isAppsKeyResource, isKeyPath, parseKeyResource } from "./key-resource.js";
 import type { CapabilityReviewModel } from "./model.js";
+import { decodeBase64Url } from "./parse.js";
+import { parseSiweFields, serializeSiwe, type SiweFields } from "./siwe-fields.js";
 
 /** What the tool asks for. */
 export interface TicketAppKey {
@@ -27,8 +29,60 @@ export interface TicketAppKeyReview {
 
 const DOMAIN_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const IPV4 = /^\d+\.\d+\.\d+\.\d+$/;
-const CREATE = ["tinycloud.encryption/key.create", "encryption/key.create"];
-const DECRYPT = ["tinycloud.encryption/decrypt", "encryption/decrypt"];
+const CREATE = "tinycloud.encryption/key.create";
+const DECRYPT = "tinycloud.encryption/decrypt";
+const RECAP_PREFIX = "urn:recap:";
+export const TICKET_APP_KEY_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function attenuation(resource: string): Record<string, unknown> | null {
+  if (!resource.startsWith(RECAP_PREFIX)) return null;
+  const json = decodeBase64Url(resource.slice(RECAP_PREFIX.length));
+  if (json === null) return null;
+  try {
+    const recap: unknown = JSON.parse(json);
+    return record(recap) && record(recap.att) ? recap.att : null;
+  } catch {
+    return null;
+  }
+}
+
+function noCaveats(value: unknown): boolean {
+  return Array.isArray(value) && (value.length === 0 ||
+    (value.length === 1 && record(value[0]) && Object.keys(value[0]).length === 0));
+}
+
+/** Check the as-written SIWE before the web claims a command-line handoff. */
+export function validTicketAppKeyRequest(fields: SiweFields, appKey: TicketAppKey | undefined, now: number): boolean {
+  if (!appKey) {
+    return !(fields.resources ?? []).some((resource) =>
+      Object.keys(attenuation(resource) ?? {}).some(isAppsKeyResource),
+    );
+  }
+  if (fields.resources?.length !== 1) return false;
+  const att = attenuation(fields.resources[0]!);
+  if (!att || Object.keys(att).length !== 1) return false;
+  const resource = `${KEY_RESOURCE_PREFIX}did:pkh:eip155:${fields.chainId}:${fields.address}:default/${ticketAppKeyPath(appKey)}`;
+  const abilities = att[resource];
+  if (!record(abilities) || Object.keys(abilities).length !== 2 ||
+      !noCaveats(abilities[DECRYPT]) || !noCaveats(abilities[CREATE])) return false;
+  const end = Date.parse(fields.expirationTime ?? "");
+  return end > now && end <= now + TICKET_APP_KEY_MAX_MS;
+}
+
+/** The sealed candidate may differ from the reviewed message only at the accepted expiry field. */
+export function matchesTicketAppKeyPreview(original: string, candidate: string, acceptedEnd: string, now: number): boolean {
+  const parsed = parseSiweFields(original);
+  if (!parsed.ok || !parsed.fields.expirationTime) return false;
+  const acceptedMs = Date.parse(acceptedEnd);
+  return acceptedMs > now &&
+    acceptedMs <= now + TICKET_APP_KEY_MAX_MS &&
+    acceptedMs <= Date.parse(parsed.fields.expirationTime) &&
+    candidate === serializeSiwe({ ...parsed.fields, expirationTime: acceptedEnd });
+}
 
 /** The host an app id names, or `null` when the id is not a reversed host of two or more labels. */
 export function appHostForAppId(appId: string): string | null {
@@ -70,11 +124,8 @@ export function reviewTicketAppKey(model: CapabilityReviewModel, appKey: TicketA
   const keyPath = ticketAppKeyPath(appKey);
   if (!parsed || parsed.isPrefix || parsed.network !== "default" || parsed.keyPath !== keyPath) return null;
   const abilities = grant.actions.map((action) => action.ability);
-  const exact =
-    abilities.length === 2 &&
-    abilities.some((ability) => CREATE.includes(ability)) &&
-    abilities.some((ability) => DECRYPT.includes(ability));
-  if (!exact) return null;
+  if (abilities.length !== 2 || !abilities.includes(CREATE) || !abilities.includes(DECRYPT) ||
+      !grant.actions.every((action) => noCaveats(action.caveats))) return null;
   return { appId: appKey.appId, host, keyPath, keyName: keyPath.slice(keyPath.lastIndexOf("/") + 1) };
 }
 
@@ -90,6 +141,7 @@ const REFUSALS: Readonly<Record<string, TicketAppKeyRefusal | Readonly<Record<st
   app_keys_file_invalid: "invalid",
   app_key_not_listed: "notListed",
   app_keys_file_unavailable: "unavailable",
+  app_key_fetch_busy: "fetchBusy",
   app_key_request_invalid: {
     request_invalid: "request_invalid",
     ticket_required: "ticket_required",

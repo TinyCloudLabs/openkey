@@ -48,7 +48,12 @@ const permissions = [{ service: 'tinycloud.encryption', space: 'encryption', pat
 type Calls = { claim: number; prepare: Record<string, unknown>[]; preview: Record<string, unknown>[] };
 
 /** Opens the prepared page for a tool that asks for `request.appKey`; `prepareReply` answers authorize-sign-prepare. */
-async function open(page: Page, options: { request?: Record<string, unknown>; prepareReply?: () => { status: number; body: unknown }; message?: string } = {}) {
+async function open(page: Page, options: {
+  request?: Record<string, unknown>;
+  prepareReply?: () => { status: number; body: unknown };
+  previewMessage?: (candidate: string, attempt: number) => string;
+  message?: string;
+} = {}) {
   const calls: Calls = { claim: 0, prepare: [], preview: [] };
   await page.clock.setFixedTime(new Date(NOW));
   const message = options.message ?? siwe;
@@ -68,7 +73,10 @@ async function open(page: Page, options: { request?: Record<string, unknown>; pr
       const body = route.request().postDataJSON();
       calls.preview.push(body);
       const signedMessage = message.replace(/^Expiration Time: .*$/m, `Expiration Time: ${body.expirationTime ?? DEFAULT_END}`);
-      return json(route, 200, { signedMessage, previewApprovalToken: 'approved-preview', selectedActionKeys: body.selectedActionIds, permissions });
+      return json(route, 200, {
+        signedMessage: options.previewMessage?.(signedMessage, calls.preview.length) ?? signedMessage,
+        previewApprovalToken: 'approved-preview', selectedActionKeys: body.selectedActionIds, permissions,
+      });
     }
     return json(route, 404, { error: `unexpected ${path}` });
   });
@@ -107,7 +115,7 @@ test.describe('a command-line tool asks for one exact app key', () => {
     await page.getByRole('button', { name: 'Preview signing message' }).click();
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeVisible();
     expect(calls.prepare[0]).toMatchObject({ ticket: handoffId, appKey });
-    expect(calls.preview[0]).not.toHaveProperty('expirationTime');
+    expect(calls.preview[0]).toMatchObject({ expirationTime: DEFAULT_END });
 
     await page.getByRole('button', { name: 'Change access length' }).click();
     await page.getByText('How long it lasts', { exact: true }).click();
@@ -117,6 +125,51 @@ test.describe('a command-line tool asks for one exact app key', () => {
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeVisible();
     expect(calls.preview[1]!.expirationTime).toBe(new Date(Date.parse(NOW) + 7 * 24 * HOUR).toISOString());
     expect(calls.preview[1]!.selectedActionIds).toEqual(expect.arrayContaining([createId, decryptId]));
+  });
+
+  test('an untouched choice keeps the prepared end after the owner waits', async ({ page }) => {
+    const calls = await open(page);
+    await expect(page.getByTestId('approval-expiry-line')).toBeVisible();
+    await page.clock.setFixedTime(new Date(Date.parse(NOW) + 2 * 60_000));
+    await page.getByRole('button', { name: 'Preview signing message' }).click();
+    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeVisible();
+    expect(calls.preview[0]).toMatchObject({ expirationTime: DEFAULT_END });
+  });
+
+  test('a replacement preview with a different end clears the first approval', async ({ page }) => {
+    const calls = await open(page, {
+      previewMessage: (candidate, attempt) => attempt === 1 ? candidate : candidate.replace(/^Expiration Time: .*$/m, `Expiration Time: ${DEFAULT_END}`),
+    });
+    await page.getByRole('button', { name: 'Preview signing message' }).click();
+    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Change access length' }).click();
+    await expect(page.getByText('Exact candidate signedMessage')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+    await page.getByText('How long it lasts', { exact: true }).click();
+    await page.getByRole('button', { name: '7 days', exact: true }).click();
+    await page.getByRole('button', { name: 'Preview signing message' }).click();
+    await expect(page.locator('[data-support-line]')).toHaveText('HTTP 200 · reply_unreadable');
+    expect(calls.preview[1]).toMatchObject({ expirationTime: MAX_END });
+    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+  });
+
+  test('a preview that changes the signed request is refused', async ({ page }) => {
+    await open(page, { previewMessage: (candidate) => candidate.replace('Nonce: abcdef123456', 'Nonce: abcdef123457') });
+    await page.getByRole('button', { name: 'Preview signing message' }).click();
+    await expect(page.locator('[data-support-line]')).toHaveText('HTTP 200 · reply_unreadable');
+    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+  });
+
+  test('an app key grant without appKey stops before the claim', async ({ page }) => {
+    const calls = await open(page, { request: { appKey: undefined } });
+    await expect(page.getByRole('heading', { name: 'OpenKey can’t read what this request asks for' })).toBeVisible();
+    expect(calls.claim).toBe(0);
+  });
+
+  test('an app key request with a presentation stops before the claim', async ({ page }) => {
+    const calls = await open(page, { request: { presentation: {} } });
+    await expect(page.getByRole('heading', { name: 'OpenKey can’t read what this request asks for' })).toBeVisible();
+    expect(calls.claim).toBe(0);
   });
 
   test('the access length reflects the server default', async ({ page }) => {
@@ -148,19 +201,24 @@ test.describe('a command-line tool asks for one exact app key', () => {
     });
   }
 
-  test('a failed check of the file may be tried again', async ({ page }) => {
-    let attempts = 0;
-    const calls = await open(page, {
-      prepareReply: () => (++attempts === 1
-        ? { status: 403, body: { error: 'x', code: 'app_keys_file_unavailable' } }
-        : { status: 200, body: { authorizationContextToken: 'bound-context', allowedActionIds: [createId, decryptId], initialSelectionActionIds: [createId, decryptId], address, appKey: admitted } }),
+  for (const [status, code, line] of [
+    [403, 'app_keys_file_unavailable', "OpenKey couldn't check share.tinycloud.xyz's list of keys for command-line tools. Nothing was approved. Try again."],
+    [429, 'app_key_fetch_busy', "OpenKey is busy and couldn't check share.tinycloud.xyz's list of keys for command-line tools. Nothing was approved. Try again in a minute."],
+  ] as const) {
+    test(`${code}: the owner can retry the file check`, async ({ page }) => {
+      let attempts = 0;
+      const calls = await open(page, {
+        prepareReply: () => (++attempts === 1
+          ? { status, body: { error: 'x', code } }
+          : { status: 200, body: { authorizationContextToken: 'bound-context', allowedActionIds: [createId, decryptId], initialSelectionActionIds: [createId, decryptId], address, appKey: admitted } }),
+      });
+      await expect(page.getByTestId('ticket-app-key-refusal')).toHaveText(line);
+      await page.getByRole('button', { name: 'Try again' }).click();
+      await page.getByRole('button', { name: 'Preview signing message' }).click();
+      await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeVisible();
+      expect(calls.prepare).toHaveLength(2);
     });
-    await expect(page.getByTestId('ticket-app-key-refusal')).toHaveText("OpenKey couldn't check share.tinycloud.xyz's list of keys for command-line tools. Nothing was approved. Try again.");
-    await page.getByRole('button', { name: 'Try again' }).click();
-    await page.getByRole('button', { name: 'Preview signing message' }).click();
-    await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeVisible();
-    expect(calls.prepare).toHaveLength(2);
-  });
+  }
 
   test('a request whose signed message names another key is stopped before anything is claimed', async ({ page }) => {
     const other = `urn:tinycloud:encryption:${owner}:default/apps/${appId}/other/key`;
@@ -179,7 +237,7 @@ test.describe('a command-line tool asks for one exact app key', () => {
 
   test('an admitted key that differs from the one shown is not approved', async ({ page }) => {
     const calls = await open(page, { prepareReply: () => ({ status: 200, body: { authorizationContextToken: 'c', address, appKey: { ...admitted, key: 'other/key' } } }) });
-    await expect(page.locator('[data-support-line]')).toHaveText('HTTP 200');
+    await expect(page.locator('[data-support-line]')).toHaveText('HTTP 200 · reply_unreadable');
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
     expect(calls.preview).toHaveLength(0);
   });

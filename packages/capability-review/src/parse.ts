@@ -198,7 +198,7 @@ const BASE64_DECODE_TABLE: Int8Array = (() => {
  * bring their own atob/Buffer/TextDecoder, but this package's tsconfig
  * targets ES2022 without DOM or node lib, so we can't reference any of them.
  */
-function decodeBase64Url(input: string): string | null {
+export function decodeBase64Url(input: string): string | null {
   try {
     let b64 = input.replace(/-/g, "+").replace(/_/g, "/");
     const padding = b64.length % 4;
