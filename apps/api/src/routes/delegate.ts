@@ -145,6 +145,13 @@ import {
 import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
 import { canonicalTrustedTinyCloudHost, LOCAL_HOSTNAMES } from '../services/tinycloud-hosts';
 import { awaitTinyCloudBootstrapWithinBudget, hostRequestedSpaceWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
+import {
+  mayProvision,
+  oauthClientProvisionAuthority,
+  originProvisionAuthority,
+  UNATTRIBUTED_PROVISION_AUTHORITY,
+  type ProvisionAuthority,
+} from '../services/provision-authority';
 import { checkDeviceDelegationWindow, deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
 import { PreparedHandoffError } from '../services/prepared-handoff';
@@ -277,6 +284,8 @@ async function bootstrapApprovedManagedSignIn(input: {
   userId: string;
   key: { id: string; userId: string | null; address: string; keyType: string; sealedBlob: string | null; sealingContext?: string | null };
   message: string;
+  /** Who asked, as the server bound it to the approved request. */
+  authority: ProvisionAuthority;
 }): Promise<void> {
   try {
     if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN === 'off' || !input.key.sealedBlob) return;
@@ -296,6 +305,7 @@ async function bootstrapApprovedManagedSignIn(input: {
         privateKey: () => unsealManagedKey(input.key, sealedBlob),
         message: input.message,
         format: 'personal_sign',
+        authority: input.authority,
       }),
       waitsForOwnSpace ? { budgetMs: OWN_TIMEOUT_BUDGET_MS, ownLogsBackground: true } : {},
     );
@@ -361,11 +371,15 @@ async function finishManagedSpaceOnboarding(input: {
   requestedSpaces: RequestedDelegationSpace[];
   entries: RecapEntry[];
   activation: SpaceActivation;
+  /** Who asked, as the server bound it to the approved request. */
+  authority: ProvisionAuthority;
 }): Promise<DelegationReadiness> {
   const initial = activationReadiness(input.requestedSpaces, input.entries, input.activation);
   const granted = new Set(delegationSpaces(input.entries).map(space => space.spaceId));
   const awaiting = initial.requestedSpaces.filter(space => granted.has(space.spaceId) && space.spaceReady !== true);
   if (awaiting.length === 0) return initial;
+  // Only TinyCloud's own apps make OpenKey set up the account on the node here; the node is not asked for anyone else.
+  if (!mayProvision(input.authority)) return initial;
   const setupSpaces = new Set<string>();
   let readiness: SpaceReadiness;
 
@@ -401,6 +415,7 @@ async function finishManagedSpaceOnboarding(input: {
         chainId: input.chainId,
         // Confirm every unresolved requested space before replying. Seeding and other spaces follow.
         requestedSpaces: { spaces: setups.map(setup => setup.space), alreadyHosted, nodeReportedUnhosted: true, report },
+        authority: input.authority,
       });
     });
     switch (result.status) {
@@ -1283,7 +1298,11 @@ delegateRouter.post('/sign', async (c) => {
         privateKey,
         message: coordinationosBootstrapTrigger(key.address),
         format: 'personal_sign',
+        authority: oauthClientProvisionAuthority(principal.clientId),
+        // A client that is not first-party signs for an account that is already set up and sets none up.
+        acceptCompleteRow: true,
       });
+      // A skipped bootstrap (the account is not set up and the client is not first-party) refuses the signature.
       if (bootstrap.status !== 'complete') {
         throw new Error('TinyCloud bootstrap did not complete');
       }
@@ -1442,10 +1461,16 @@ delegateRouter.post('/sign', async (c) => {
  *
  * Signs a TinyCloud space/host SIWE for a managed key. This is the root-key
  * half of bootstrap space hosting; the caller submits the signed SIWE to the
- * node's /delegate endpoint.
+ * node's /delegate endpoint. Refused for every caller: nothing first-party can be attributed here.
  */
 delegateRouter.post('/host', async (c) => {
   const user = c.get('user');
+  // This signature is the ability to create a space on the node, for any peer and prefix the caller names. The route
+  // takes only the OpenKey account origin, which says nothing about which app is asking, so no first-party authority
+  // can be bound to it: it signs nothing until a caller that can be attributed is added.
+  if (!mayProvision(UNATTRIBUTED_PROVISION_AUTHORITY)) {
+    return c.json({ error: 'Only TinyCloud\'s own apps can have OpenKey sign a space host request.', code: 'host_signing_first_party_only' }, 403);
+  }
   const body = await c.req.json<{
     keyId: string;
     peerId: string;
@@ -1927,6 +1952,7 @@ delegateRouter.post('/', async (c) => {
           requestedSpaces,
           entries: preparedEntries,
           activation: activationResult,
+          authority: originProvisionAuthority(bound.requestOrigin),
         });
       }
       if (!hostActivated) {
@@ -2058,6 +2084,8 @@ delegateRouter.post('/', async (c) => {
         requestedSpaces: preparedResult.requestedSpaces,
         entries: signedEntries,
         activation: activationResult,
+        // No origin is bound to this token-less request, so it never provisions.
+        authority: UNATTRIBUTED_PROVISION_AUTHORITY,
       });
     }
     if (!hostActivated) {
@@ -3309,6 +3337,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       // The widget-reported sender origin of the requesting app. Used only for
       // the per-sign-in count record; never for trust or authority.
       appOrigin: normalizeAppOrigin(body.reportedOrigin) ?? undefined,
+      // The origin the SIWE was checked against above; decides whether OpenKey may set up the account on the node.
+      requestOrigin: siweOriginChecked && typeof body.requestOrigin === 'string' ? body.requestOrigin : undefined,
       admittedAppKeys,
       expiryChangeable: body.expiryChangeable === true,
       signInRenewal,
@@ -3926,7 +3956,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // POST /api/keys/:id/sign does. Only here, once a signature exists and the lease (if any) is recorded: a
   // refused or failed sign hosts nothing. An external wallet's account is the wallet's to host.
   if (!isExternal) {
-    await bootstrapApprovedManagedSignIn({ userId: user.id, key, message: signedMessage });
+    await bootstrapApprovedManagedSignIn({ userId: user.id, key, message: signedMessage, authority: originProvisionAuthority(bound.requestOrigin) });
   }
 
   const handoffDelivery = ticket

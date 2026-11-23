@@ -7,6 +7,7 @@ import {
   type TinyCloudBootstrapOutcome,
 } from './tinycloud-bootstrap';
 import { SWEEP_RETRYABLE_CODES } from './tinycloud-bootstrap-budget';
+import { SWEEP_PROVISION_AUTHORITY } from './provision-authority';
 import { logError, logTinyCloudBootstrapSweep, withScheduledLogContext } from '../log';
 
 const SWEEP_TICK_MS = 60_000;
@@ -167,6 +168,8 @@ export async function sweepTinyCloudBootstrapOnce(opts: SweepOptions = {}): Prom
     try {
       outcome = await ensureTinyCloudBootstrap({
         prisma,
+        // A row does not record who asked, so the retry of a row OpenKey already created is not attributed (see ProvisionAuthority).
+        authority: SWEEP_PROVISION_AUTHORITY,
         userId: row.userId,
         key: { id: row.key.id, address: row.key.address, keyType: row.key.keyType },
         privateKey: () => resolveKey(row.key),

@@ -21,6 +21,7 @@ import { nativeDelegationLockResponse } from '../services/native-delegation/erro
 import { enabledNativeDelegation } from '../services/native-delegation/policy';
 import { nativeUserRetryAfter, type NativeUserAction } from '../services/native-delegation/user-rate-limit';
 import { hasAcceptedTerms, termsRequired } from '../services/terms';
+import { mayProvision, nativeClientProvisionAuthority } from '../services/provision-authority';
 import { ParError, validatePermissions, type NativePermission } from '../services/native-delegation/par';
 import { GRANT_CUTOFF_MS, StepUpEntryError, validateStepUpPermissions, type StepUpPermission } from '../services/native-delegation/step-up';
 import { revokeDelegationOnNode, revokeOwnerDelegation, revokePendingRecord } from '../services/native-delegation/revoke-pending';
@@ -132,6 +133,11 @@ async function withinTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 const defaultHostOps: NativeConsentHostOps = { fetchPeerId, activateSessionWithHost, submitHostDelegation, revokeDelegation: revokeDelegationOnNode };
 export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: NativeConsentHostOps = defaultHostOps) {
   const router = new Hono<SessionContext>();
+  // Only a first-party native client (its exact client id and its exact validated redirect URI) has OpenKey host a
+  // space on the node for it. For every other native client no plan is built, shown, signed, submitted or reopened
+  // for; the session delegation is still registered with the node.
+  const nativeMayProvision = (request: { clientId: string; redirectUri: string }) =>
+    mayProvision(nativeClientProvisionAuthority(request.clientId, request.redirectUri));
   router.use('*', async (c, next) => {
     const origin = c.req.header('origin');
     if (!origin || !resolveOriginPolicy('http://localhost:5173').includes(origin)) return c.json({ error: 'invalid_origin' }, 403);
@@ -204,7 +210,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     if (preReviewer && (!preExisting || preKey.id !== preReviewer.binding.keyId || preSpace !== preReviewer.binding.spaceId
       || preCeiling.tinycloudHost !== preReviewer.binding.nodeHost)) fail(403, 'reviewer_host_required');
     let peerId: string | null = null;
-    if (!preExisting) {
+    if (!preExisting && nativeMayProvision(pending)) {
       try { peerId = await withinTimeout(hostOps.fetchPeerId(preCeiling.tinycloudHost, preSpace), 5_000); }
       catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
@@ -242,7 +248,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
       const existing = await tx.tinyCloudBootstrapState.findFirst({ where: { keyId: key.id, chainId: 1, tinycloudHost: ceiling.tinycloudHost, status: 'complete' } });
       if (reviewer && (!existing || prepared.spaceId !== reviewer.binding.spaceId || ceiling.tinycloudHost !== reviewer.binding.nodeHost)) fail(403, 'reviewer_host_required');
       let hostPlan: { host: string; spaceId: string; peerId: string; hostSiwe: string } | null = null;
-      if (!existing) {
+      if (!existing && nativeMayProvision(row)) {
         if (!peerId || prepared.spaceId !== preSpace) fail(409, 'preparation_superseded');
         hostPlan = { host: ceiling.tinycloudHost, spaceId: prepared.spaceId, peerId,
           hostSiwe: generateHostSIWEMessage({ address, chainId: 1, domain: ceiling.siweDomain ?? 'openkey.so', issuedAt: new Date().toISOString(), spaceId: prepared.spaceId, peerId }) };
@@ -405,7 +411,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
     try {
       const activated = await hostOps.activateSessionWithHost(result.artifact.tinycloudHost, result.artifact.delegationHeader);
       if (activated.success && activated.activated?.includes(result.artifact.spaceId)) hosting = 'existing';
-      else if (result.hostPlan && activated.skipped?.includes(result.artifact.spaceId)) {
+      else if (nativeMayProvision(pending) && result.hostPlan && activated.skipped?.includes(result.artifact.spaceId)) {
         const marked = await db.tinyCloudNativeRequest.updateMany({ where: { id: result.rowId, hostSignedAt: null }, data: { hostSignedAt: new Date() } });
         if (marked.count === 1) {
           const signature = await signManagedKey(result.key, result.key.sealedBlob, result.hostPlan.hostSiwe);
@@ -422,7 +428,7 @@ export function createNativeDelegationConsentRouter(db: PrismaClient, hostOps: N
           else log('warn', 'native_consent_host_delegation_rejected');
         }
       }
-      else if (!result.hostPlan && activated.skipped?.includes(result.artifact.spaceId)) {
+      else if (nativeMayProvision(pending) && !result.hostPlan && activated.skipped?.includes(result.artifact.spaceId)) {
         // The cached `complete` row was stale, so no hosting plan was shown or signed. Drop the cached bit and
         // reopen the request on a new revision, so a replay of this approval is superseded: the next prepare plans hosting and shows it. The row is no longer `complete`, so
         // that prepare always carries a plan and this branch cannot run for it again.

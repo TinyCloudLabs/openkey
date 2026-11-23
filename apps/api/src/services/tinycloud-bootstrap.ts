@@ -33,6 +33,7 @@ import { tinyCloudBootstrapNodeCallTimeoutMs, tinyCloudBootstrapNodeInvokeTimeou
 import { kvSpaceRegistryStore, registerMissingBootstrapSpaces } from './tinycloud-space-registry';
 import { hostRequestedSpaceWithinBudget, SWEEP_RETRYABLE_CODES } from './tinycloud-bootstrap-budget';
 import { isTinyCloudSiweForSigner, parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from './tinycloud-siwe';
+import { mayProvision, type ProvisionAuthority } from './provision-authority';
 
 // The SIWE reading lives in tinycloud-siwe.ts (the signing route reads it without loading this module).
 export { isTinyCloudSiweForSigner, parseTinyCloudSiwe };
@@ -84,9 +85,18 @@ export interface EnsureTinyCloudBootstrapInput {
   privateKey: string | (() => Promise<string>);
   message: string;
   format: 'raw' | 'personal_sign';
+  /** Who asked, as the server bound it to the approved request. Required: no run starts without one. */
+  authority: ProvisionAuthority;
+  /**
+   * For a caller that needs the account to exist and sets nothing up: a request that is not first-party is answered
+   * `complete` when the account's setup is already recorded complete, and `skipped` otherwise. Reads the database only.
+   */
+  acceptCompleteRow?: true;
 }
 
 export interface EnsureTinyCloudBootstrapInputCore {
+  /** Who asked, as the server bound it to the approved request. Required: no run starts without one. */
+  authority: ProvisionAuthority;
   prisma: PrismaLike;
   userId: string;
   key: TinyCloudBootstrapKey;
@@ -221,9 +231,26 @@ function isSupportedTinyCloudChainId(chainId: number): boolean {
   return SUPPORTED_TINYCLOUD_CHAIN_IDS.has(chainId);
 }
 
+async function hasCompleteDefaultHostRow(input: EnsureTinyCloudBootstrapInput): Promise<boolean> {
+  try {
+    return await isTinyCloudBootstrapComplete(input.prisma, { keyId: input.key.id, chainId: 1, host: trustedTinyCloudBootstrapHost() });
+  } catch {
+    return false;
+  }
+}
+
 export async function ensureTinyCloudBootstrapForApprovedSign(
   input: EnsureTinyCloudBootstrapInput,
 ): Promise<TinyCloudBootstrapOutcome | { status: 'pending' }> {
+  // Only TinyCloud's own apps make OpenKey set up an account on the node as a side effect of a signature. This is
+  // the single entry for both the own-space and the full-bootstrap paths, so it comes before anything reads the
+  // node. A caller whose signature needs an account that is already set up (and sets none up) may accept a complete
+  // row; it is never set up here.
+  if (!mayProvision(input.authority)) {
+    if (input.acceptCompleteRow && await hasCompleteDefaultHostRow(input)) return { status: 'complete' };
+    return { status: 'skipped' };
+  }
+
   // Kill-switch: clients on the SDK auto-sign strategy bootstrap through
   // POST /api/delegate/sign instead; this hook only compensates for older
   // clients. Disable once /delegate/sign traffic replaces widget signs.
@@ -353,6 +380,9 @@ export async function isTinyCloudBootstrapComplete(
 export async function ensureTinyCloudBootstrap(
   input: EnsureTinyCloudBootstrapInputCore & { chainId?: number },
 ): Promise<TinyCloudBootstrapOutcome> {
+  // The one place every run reaches the node from: approvals, the own-space wait, the managed continuation and the
+  // sweep all come through here, so a request that is not first-party never provisions, whichever path it took.
+  if (!mayProvision(input.authority)) return { status: 'skipped' };
   if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN === 'off') return { status: 'skipped' };
   const chainId = input.chainId ?? 1;
   if (!isSupportedTinyCloudChainId(chainId)) return { status: 'skipped' };
