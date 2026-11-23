@@ -239,6 +239,47 @@ describe('an admitted command-line app key', () => {
     expect(expirationOf((await preview.json() as { signedMessage: string }).signedMessage)).toBe(Date.parse(shownEnd));
   });
 
+  test('a short-lived ticket accepts only its prepared default inside the expiry lead time', async () => {
+    const handoff = await claim(siweFor(undefined, 20_000));
+    const { res, body } = await prepare(handoff);
+    expect(res.status).toBe(200);
+    const preparedDefault = body.appKey.defaultExpiresAt as string;
+    expect(Date.parse(preparedDefault)).toBe(expirationOf(handoff.siwe));
+    const preview = (expirationTime: string) => post('/authorize-sign-preview', {
+      authorizationContextToken: body.authorizationContextToken, selectedActionIds: body.allowedActionIds,
+      ticket: handoff.ticket, expirationTime,
+    });
+
+    const accepted = await preview(preparedDefault);
+    expect(accepted.status).toBe(200);
+    expect(expirationOf((await accepted.json() as { signedMessage: string }).signedMessage)).toBe(Date.parse(preparedDefault));
+
+    const past = await preview(new Date(Date.now() - 1_000).toISOString());
+    expect(past.status).toBe(400);
+    await expect(past.json()).resolves.toMatchObject({ code: 'invalid_expiration_time' });
+
+    const different = await preview(new Date(Date.parse(preparedDefault) - 1_000).toISOString());
+    expect(different.status).toBe(400);
+    await expect(different.json()).resolves.toMatchObject({ code: 'invalid_expiration_time' });
+
+    const later = await preview(new Date(Date.parse(preparedDefault) + 60_000).toISOString());
+    expect(later.status).toBe(400);
+    await expect(later.json()).resolves.toMatchObject({ code: 'expiry_exceeds_handoff' });
+  });
+
+  test('preview caps an explicit app-key expiry at seven days even inside the request clock skew', async () => {
+    const handoff = await claim(siweFor(undefined, 7 * DAY + 30_000));
+    const { res, body } = await prepare(handoff);
+    expect(res.status).toBe(200);
+    expect(Date.parse(body.appKey.maxExpiresAt)).toBeLessThan(expirationOf(handoff.siwe));
+    const preview = await post('/authorize-sign-preview', {
+      authorizationContextToken: body.authorizationContextToken, selectedActionIds: body.allowedActionIds,
+      ticket: handoff.ticket, expirationTime: new Date(expirationOf(handoff.siwe)).toISOString(),
+    });
+    expect(preview.status).toBe(400);
+    await expect(preview.json()).resolves.toMatchObject({ code: 'app_key_request_invalid', reason: 'expiry' });
+  });
+
   test('a request for less than an hour keeps its time', async () => {
     const handoff = await claim(siweFor(undefined, 20 * 60_000));
     const { body } = await prepare(handoff);

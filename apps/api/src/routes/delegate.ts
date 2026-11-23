@@ -129,6 +129,7 @@ import { fetchAndBindWellKnownManifest } from '../services/manifest-origin-fetch
 import {
   APP_KEY_ABILITIES,
   APP_KEY_HANDOFF_DEFAULT_MS,
+  APP_KEY_HANDOFF_MAX_MS,
   appKeyHandoffRefusal,
   checkAppKeyHandoffSiwe,
   parseAppKeyHandoff,
@@ -3307,6 +3308,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   // A command-line request for one exact app key: the SIWE is exactly that key, and the app's own file lists it.
   // Nothing else admits it. The file is fetched now, every time.
   let appKeyInfo: Record<string, unknown> | undefined;
+  let appKeyDefaultExpiresAt: string | undefined;
   if (appKeyRequest) {
     const checkedGrant = checkAppKeyHandoffSiwe({
       siwe: body.siwe,
@@ -3328,6 +3330,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     if (notAdmitted) return c.json(appKeyRefusalBody(notAdmitted, 'non_browser'), appKeyRefusalStatus(notAdmitted));
     admittedAppKeys = [checkedGrant.grant.admitted];
     const requestedMs = Date.parse(checkedGrant.grant.expirationTime);
+    const preparedAt = Date.now();
+    appKeyDefaultExpiresAt = new Date(Math.min(requestedMs, preparedAt + APP_KEY_HANDOFF_DEFAULT_MS)).toISOString();
     appKeyInfo = {
       appId: appKeyRequest.appId,
       host: listed.host,
@@ -3335,8 +3339,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       resource: checkedGrant.grant.admitted.resource,
       abilities: ['decrypt', 'key.create'],
       requestedExpiresAt: checkedGrant.grant.expirationTime,
-      defaultExpiresAt: new Date(Math.min(requestedMs, Date.now() + APP_KEY_HANDOFF_DEFAULT_MS)).toISOString(),
-      maxExpiresAt: checkedGrant.grant.expirationTime,
+      defaultExpiresAt: appKeyDefaultExpiresAt,
+      maxExpiresAt: new Date(Math.min(requestedMs, preparedAt + APP_KEY_HANDOFF_MAX_MS)).toISOString(),
     };
   }
 
@@ -3372,6 +3376,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       // the per-sign-in count record; never for trust or authority.
       appOrigin: normalizeAppOrigin(body.reportedOrigin) ?? undefined,
       admittedAppKeys,
+      appKeyDefaultExpiresAt,
       expiryChangeable: body.expiryChangeable === true,
       signInRenewal,
     });
@@ -4159,7 +4164,11 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
         400,
       );
     }
-    const checked = validateExpirationOverride(body.expirationTime, immutable, MIN_EXPIRATION_LEAD_MS);
+    const now = Date.now();
+    const boundAppKeyTicket = ticket && bound.appKeyDefaultExpiresAt !== undefined;
+    const matchesPreparedDefault = boundAppKeyTicket && body.expirationTime === bound.appKeyDefaultExpiresAt;
+    // The displayed default may already be less than 50 seconds away on a short-lived app-key ticket.
+    const checked = validateExpirationOverride(body.expirationTime, immutable, matchesPreparedDefault ? 0 : MIN_EXPIRATION_LEAD_MS, now);
     if (!checked.ok) {
       return c.json(
         { error: 'expirationTime must be a future ISO-8601 UTC time after the request was issued', code: 'invalid_expiration_time' },
@@ -4172,6 +4181,10 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
         { error: 'expirationTime is later than the time the CLI asked for', code: 'expiry_exceeds_handoff' },
         400,
       );
+    }
+    if (boundAppKeyTicket && Date.parse(checked.value) > now + APP_KEY_HANDOFF_MAX_MS) {
+      const refusal = appKeyHandoffRefusal('expiry');
+      return c.json(refusal.body, refusal.status);
     }
     expirationOverride = checked.value;
     ownerPickedExpiry = true;
