@@ -213,6 +213,12 @@ describe('appKeyHandoffRefusal', () => {
     expect(line('file_invalid')).toBe("OpenKey can't approve this request: share.tinycloud.xyz's list of keys for command-line tools can't be read. Nothing was approved.");
     expect(line('file_app_mismatch')).toBe(line('file_invalid'));
     expect(line('key_not_listed')).toBe("OpenKey can't approve this request: share.tinycloud.xyz doesn't let command-line tools ask for the key seal-v1. Nothing was approved.");
+    expect(line('request_invalid')).toBe("OpenKey can't read the app key in this request. Nothing was approved.");
+    expect(line('ticket_required')).toBe("App keys can be requested only through a command-line sign-in link. Nothing was approved.");
+    expect(line('app_id')).toBe("This app id isn't a website address written in reverse, such as xyz.tinycloud.share. Nothing was approved.");
+    expect(line('recap')).toBe("This request asks for more than the one app key it names. Nothing was approved.");
+    expect(line('account')).toBe("This request was made for a different account. Nothing was approved.");
+    expect(line('expiry')).toBe("This request lasts longer than 7 days. Nothing was approved.");
     expect(line('file_unavailable')).toBe("OpenKey couldn't check share.tinycloud.xyz's list of keys for command-line tools. Nothing was approved. Try again.");
   });
 });

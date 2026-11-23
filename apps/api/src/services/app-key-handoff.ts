@@ -70,14 +70,14 @@ const STATUSES: Record<AppKeyHandoffReason, 400 | 403> = {
 };
 
 // Owner-visible lines. The file and key lines are the owner screen's words; `{host}` and `{keyName}` (the last
-// segment of the key) are filled by `appKeyHandoffRefusal`. The other lines are placeholders. Clients key on `code`.
+// segment of the key) are filled by `appKeyHandoffRefusal`. Clients key on `code`.
 export const APP_KEY_HANDOFF_MESSAGES: Record<AppKeyHandoffReason, string> = {
-  request_invalid: "This request names an app key that OpenKey can't read, so it didn't approve it.",
-  ticket_required: "App keys can only be requested through a prepared command-line sign-in, so OpenKey didn't approve this request.",
-  app_id: "This app id doesn't match a website address, so OpenKey didn't approve this request.",
-  recap: "This request asks for more than the one app key it names, so OpenKey didn't approve it.",
-  account: "This request doesn't match your account, so OpenKey didn't approve it.",
-  expiry: "This request doesn't end within 7 days, so OpenKey didn't approve it.",
+  request_invalid: "OpenKey can't read the app key in this request. Nothing was approved.",
+  ticket_required: "App keys can be requested only through a command-line sign-in link. Nothing was approved.",
+  app_id: "This app id isn't a website address written in reverse, such as xyz.tinycloud.share. Nothing was approved.",
+  recap: "This request asks for more than the one app key it names. Nothing was approved.",
+  account: "This request was made for a different account. Nothing was approved.",
+  expiry: "This request lasts longer than 7 days. Nothing was approved.",
   file_unavailable: "OpenKey couldn't check {host}'s list of keys for command-line tools. Nothing was approved. Try again.",
   file_missing: "OpenKey can't approve this request: {host} doesn't list keys that command-line tools can ask for. Nothing was approved.",
   file_invalid: "OpenKey can't approve this request: {host}'s list of keys for command-line tools can't be read. Nothing was approved.",
