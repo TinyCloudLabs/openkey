@@ -5,8 +5,9 @@ import { LATEST_SIWE_TIME_MS, MIN_DELEGATION_EXPIRY_MS } from '../services/appro
 import { ApprovalResultError, ApprovalResultService, linkRequiredError, type ApprovalRequestRecord } from '../services/approval-results';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
+import { FixedWindowCounter } from '../middleware/fixed-window-counter';
 import { createPrismaApprovalRequestStore } from '../services/approval-request-store';
-import { verifySessionProofClaims } from '../services/native-delegation/session-proof';
+import { SESSION_PROOF_MAX_SKEW_SECONDS, verifySessionProofClaims } from '../services/native-delegation/session-proof';
 import { createHash } from 'node:crypto';
 import { createPrismaDelegationCodeStore, type ApprovalCode } from './delegation-codes';
 import { verifyMessage } from 'ethers';
@@ -133,6 +134,55 @@ approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
   }
   const result = await service.discover(id, body, proof, c.req.header('OpenKey-Delegation-Claim'));
   return c.json(result, result.status === 'pending' ? 202 : 200);
+});
+
+const leaseStatusRate = new FixedWindowCounter(60_000);
+const leaseStatusProofs = new Map<string, number>();
+const LEASE_STATUS_PER_MINUTE = 60;
+const MAX_LEASE_STATUS_PROOFS = 10_000;
+let nextLeaseStatusProofSweep = 0;
+
+approvalRequestRouter.post('/approval-requests/:id/lease-status', async (c) => {
+  const id = c.req.param('id');
+  const body = await c.req.json().catch(() => null);
+  if (!/^[a-z2-7]{26}$/.test(id) || typeof body?.bodyCid !== 'string' || !body.bodyCid ||
+    (body.originalCid !== null && (typeof body.originalCid !== 'string' || !body.originalCid))) {
+    throw new ApprovalResultError('invalid_request', 'Approval reference is invalid', 400);
+  }
+  const { record, keyId, jti, iat } = await approvalResultService().authenticateLeaseStatus(id, body, c.req.header('OpenKey-Session-Proof'));
+  const now = Date.now();
+  const proofKey = JSON.stringify([keyId, jti]);
+  if ((leaseStatusProofs.get(proofKey) ?? 0) > now) {
+    throw new ApprovalResultError('invalid_proof', 'Requester proof is invalid', 401);
+  }
+  if (now >= nextLeaseStatusProofSweep) {
+    for (const [key, expiresAt] of leaseStatusProofs) if (expiresAt <= now) leaseStatusProofs.delete(key);
+    nextLeaseStatusProofSweep = now + 1000;
+  }
+  if (!leaseStatusRate.hit(keyId, now, LEASE_STATUS_PER_MINUTE) || leaseStatusProofs.size >= MAX_LEASE_STATUS_PROOFS) {
+    return c.json({ error: 'Too many requests', code: 'rate_limited' }, 429,
+      { 'Retry-After': String(leaseStatusRate.retryAfterSeconds(keyId, now)) });
+  }
+  leaseStatusProofs.set(proofKey, (iat + 2 * SESSION_PROOF_MAX_SKEW_SECONDS) * 1000);
+
+  if (!record.resultRef) return c.json({ leaseState: 'none', originalCid: null });
+  const lease = await prisma.renewalLease.findUnique({
+    where: { approvalRequestId: id },
+    select: { admittedAt: true, originalCid: true, revokedAt: true, neverAdmittedAt: true, leaseExpiresAt: true },
+  });
+  if (!lease?.admittedAt) return c.json({ leaseState: 'none', originalCid: null });
+  if (lease.originalCid !== body.originalCid) {
+    throw new ApprovalResultError('request_binding', 'Original grant CID does not match the approved lease', 409);
+  }
+  const stoppedAt = lease.revokedAt ?? lease.neverAdmittedAt;
+  const leaseState = stoppedAt ? 'stopped' : lease.leaseExpiresAt.getTime() <= Date.now() ? 'expired' : 'active';
+  return c.json({
+    leaseState,
+    originalCid: lease.originalCid,
+    windowEnd: record.delegationExpiresAt?.toISOString(),
+    stoppedAt: stoppedAt?.toISOString(),
+    leaseExpiresAt: lease.leaseExpiresAt.toISOString(),
+  });
 });
 
 approvalRequestRouter.post('/approval-results/:ref/fetch', async (c) => c.json(await approvalResultService().fetch(c.req.param('ref'), await c.req.json(), c.req.header('OpenKey-Session-Proof'))));
