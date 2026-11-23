@@ -4,7 +4,7 @@
 // trusts that claim for what it shows: it shows the key the signed message names, and only when the two agree.
 // The app host is the app id reversed label by label, and only an id that IS a reversed host names a host.
 
-import { TICKET_APP_KEY_COPY } from "./copy.js";
+import { TICKET_APP_KEY_COPY } from "./ticket-app-key-copy.js";
 import { APPS_SEGMENT, KEY_RESOURCE_PREFIX, appIdValid, isAppsKeyResource, isKeyPath, parseKeyResource } from "./key-resource.js";
 import type { CapabilityReviewModel } from "./model.js";
 import { decodeBase64Url } from "./parse.js";

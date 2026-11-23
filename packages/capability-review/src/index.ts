@@ -30,3 +30,4 @@ export * from "./siwe-fields.js";
 export * from "./registry-record.js";
 export * from "./renewal-sensitive.js";
 export * from "./ticket-app-key.js";
+export * from "./ticket-app-key-copy.js";
