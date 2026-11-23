@@ -3,12 +3,13 @@ import { REGISTRY_RECORD_SIGN_ORIGINS } from '@openkey/capability-review';
 import {
   FIRST_PARTY_PROVISION_NATIVE_CLIENTS,
   FIRST_PARTY_PROVISION_ORIGINS,
-  SWEEP_PROVISION_AUTHORITY,
+  sweepProvisionAuthority,
   UNATTRIBUTED_PROVISION_AUTHORITY,
   mayProvision,
   nativeClientProvisionAuthority,
   oauthClientProvisionAuthority,
   originProvisionAuthority,
+  type ProvisionAuthority,
 } from '../services/provision-authority';
 
 const nativeClient = { clientId: 'ok_e1d13d0b220379f37a553aa0391d28a4', redirectUri: 'xyz.tinycloud.exo://openkey/callback' };
@@ -88,7 +89,12 @@ describe('who may have OpenKey set up an account on the node', () => {
     expect(mayProvision(nativeClientProvisionAuthority(undefined, nativeClient.redirectUri))).toBe(false);
   });
 
-  test('the background retry of a row OpenKey already made is not blocked by the guard', () => {
-    expect(mayProvision(SWEEP_PROVISION_AUTHORITY)).toBe(true);
+  test('the background retry is allowed only while it holds its claim on a row', () => {
+    const claim = { observed: { status: 'failed' as const, sweepAttempts: 0, checkedAt: new Date(), attemptId: null }, onClaimed: () => {} };
+    expect(mayProvision(sweepProvisionAuthority(claim))).toBe(true);
+    // A sweep authority with no claim, or one that is not a claim, is refused.
+    expect(mayProvision({ kind: 'sweep' } as ProvisionAuthority)).toBe(false);
+    expect(mayProvision({ kind: 'sweep', claim: undefined } as unknown as ProvisionAuthority)).toBe(false);
+    expect(mayProvision({ kind: 'sweep', claim: {} } as unknown as ProvisionAuthority)).toBe(false);
   });
 });

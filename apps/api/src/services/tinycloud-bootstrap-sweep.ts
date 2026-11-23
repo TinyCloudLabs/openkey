@@ -5,9 +5,10 @@ import {
   TINYCLOUD_BOOTSTRAP_VERSION,
   trustedTinyCloudBootstrapHost,
   type TinyCloudBootstrapOutcome,
+  type TinyCloudBootstrapSweepClaim,
 } from './tinycloud-bootstrap';
 import { SWEEP_RETRYABLE_CODES } from './tinycloud-bootstrap-budget';
-import { SWEEP_PROVISION_AUTHORITY, retryableStoredAuthorities } from './provision-authority';
+import { retryableStoredAuthorities, sweepProvisionAuthority } from './provision-authority';
 import { logError, logTinyCloudBootstrapSweep, withScheduledLogContext } from '../log';
 
 const SWEEP_TICK_MS = 60_000;
@@ -168,22 +169,24 @@ export async function sweepTinyCloudBootstrapOnce(opts: SweepOptions = {}): Prom
     const claim = { won: false };
     let outcome: TinyCloudBootstrapOutcome;
     try {
+      const sweepClaim: TinyCloudBootstrapSweepClaim = {
+        observed: { status, sweepAttempts: row.sweepAttempts, checkedAt: row.checkedAt, attemptId: row.attemptId },
+        onClaimed: () => {
+          claim.won = true;
+          summary.claimed++;
+        },
+      };
       outcome = await ensureTinyCloudBootstrap({
         prisma,
         // The row query above reads only rows a first-party approval made (their stored authority); a row with none is not retried.
-        authority: SWEEP_PROVISION_AUTHORITY,
+        // The authority carries this claim: a sweep run is allowed only as a claim on a row that query read.
+        authority: sweepProvisionAuthority(sweepClaim),
         userId: row.userId,
         key: { id: row.key.id, address: row.key.address, keyType: row.key.keyType },
         privateKey: () => resolveKey(row.key),
         host: row.tinycloudHost,
         chainId: row.chainId,
-        sweepClaim: {
-          observed: { status, sweepAttempts: row.sweepAttempts, checkedAt: row.checkedAt, attemptId: row.attemptId },
-          onClaimed: () => {
-            claim.won = true;
-            summary.claimed++;
-          },
-        },
+        sweepClaim,
       });
     } catch (error) {
       withScheduledLogContext(() => logError('error', 'tinycloud_bootstrap_sweep_failed', error));

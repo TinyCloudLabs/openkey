@@ -383,6 +383,8 @@ export async function ensureTinyCloudBootstrap(
   // The one place every run reaches the node from: approvals, the own-space wait, the managed continuation and the
   // sweep all come through here, so a request that is not first-party never provisions, whichever path it took.
   if (!mayProvision(input.authority)) return { status: 'skipped' };
+  // A sweep authority is the claim the sweep holds, and this run must be the one that claim is for.
+  if (input.authority.kind === 'sweep' && input.authority.claim !== input.sweepClaim) return { status: 'skipped' };
   if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN === 'off') return { status: 'skipped' };
   const chainId = input.chainId ?? 1;
   if (!isSupportedTinyCloudChainId(chainId)) return { status: 'skipped' };

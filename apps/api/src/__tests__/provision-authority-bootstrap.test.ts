@@ -7,7 +7,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { createFakeBootstrapStore, type FakeBootstrapStore } from './fake-bootstrap-state';
 import { startFakeTinyCloudNode, type FakeTinyCloudNode } from './fake-tinycloud-node';
 import {
-  SWEEP_PROVISION_AUTHORITY,
+  sweepProvisionAuthority,
   UNATTRIBUTED_PROVISION_AUTHORITY,
   nativeClientProvisionAuthority,
   oauthClientProvisionAuthority,
@@ -167,12 +167,15 @@ describe('a first-party authority keeps setting the account up', () => {
     expect(executor).toHaveBeenCalledTimes(1);
   });
 
-  test('the background retry of a row OpenKey already made still runs', async () => {
-    const outcome = await service.ensureTinyCloudBootstrap({
-      prisma: store.prisma, userId, key, privateKey, host: node.url, chainId: 1, authority: SWEEP_PROVISION_AUTHORITY,
-    });
-    expect(outcome).toEqual({ status: 'complete' });
-    expect(executor).toHaveBeenCalledTimes(1);
+  // A sweep run that holds its claim is covered by tinycloud-bootstrap-sweep.test.ts, which runs the real sweep.
+  test('a sweep authority without the claim it names is refused: no node call, no state', async () => {
+    const claim = { observed: { status: 'failed' as const, sweepAttempts: 0, checkedAt: new Date(), attemptId: null }, onClaimed: () => {} };
+    const base = { prisma: store.prisma, userId, key, privateKey, host: node.url, chainId: 1 };
+    expect(await service.ensureTinyCloudBootstrap({ ...base, authority: sweepProvisionAuthority(claim) })).toEqual({ status: 'skipped' });
+    expect(await service.ensureTinyCloudBootstrap({ ...base, authority: sweepProvisionAuthority(claim), sweepClaim: { ...claim } })).toEqual({ status: 'skipped' });
+    expect(await service.ensureTinyCloudBootstrap({ ...base, authority: { kind: 'sweep' } as ProvisionAuthority, sweepClaim: claim })).toEqual({ status: 'skipped' });
+    expect(executor).not.toHaveBeenCalled();
+    expect(store.rows).toEqual([]);
   });
 });
 

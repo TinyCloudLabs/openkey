@@ -1,4 +1,5 @@
 import { REGISTRY_RECORD_SIGN_ORIGINS } from '@openkey/capability-review';
+import type { TinyCloudBootstrapSweepClaim } from './tinycloud-bootstrap';
 
 /**
  * What lets OpenKey set up an account on the node (host a space, run the account bootstrap) as a side effect of a
@@ -46,8 +47,9 @@ export type OwnPageApproval = keyof typeof OWN_PAGE_APPROVAL_ENABLED;
  * - `native-client`: the client id and the validated redirect URI of a native consent request.
  * - `own-page`: an approval the session's user made on OpenKey's own page, taken from a completed, single-use,
  *   unexpired record and never from a request field (see `OwnPageApproval`).
- * - `sweep`: the background retry of a row OpenKey already created. The sweep reads only rows whose stored
- *   authority is first-party (`retryableStoredAuthorities`), so this value allows the run the row query selected.
+ * - `sweep`: the background retry of a row OpenKey already created, carrying the claim it holds on that row. The sweep
+ *   reads only rows whose stored authority is first-party (`retryableStoredAuthorities`); without the claim there is
+ *   no sweep run to allow, so a sweep authority with no claim is refused.
  * - `unattributed`: any path that binds no authority. Treated as third-party.
  */
 export type ProvisionAuthority =
@@ -55,12 +57,14 @@ export type ProvisionAuthority =
   | { kind: 'oauth-client'; clientId: string | null | undefined }
   | { kind: 'native-client'; clientId: string | null | undefined; redirectUri: string | null | undefined }
   | { kind: 'own-page'; approval: OwnPageApproval }
-  | { kind: 'sweep' }
+  | { kind: 'sweep'; claim: TinyCloudBootstrapSweepClaim }
   | { kind: 'unattributed' };
 
 export const UNATTRIBUTED_PROVISION_AUTHORITY: ProvisionAuthority = { kind: 'unattributed' };
 
-export const SWEEP_PROVISION_AUTHORITY: ProvisionAuthority = { kind: 'sweep' };
+export function sweepProvisionAuthority(claim: TinyCloudBootstrapSweepClaim): ProvisionAuthority {
+  return { kind: 'sweep', claim };
+}
 
 export function originProvisionAuthority(origin: string | null | undefined): ProvisionAuthority {
   return { kind: 'origin', origin };
@@ -92,7 +96,8 @@ export function mayProvision(authority: ProvisionAuthority): boolean {
     case 'own-page':
       return OWN_PAGE_APPROVAL_ENABLED[authority.approval] === true;
     case 'sweep':
-      return true;
+      // The retry is allowed only as a claim on a row the sweep's query read: a sweep authority with no claim is refused.
+      return typeof authority.claim?.onClaimed === 'function' && authority.claim.observed != null;
     case 'unattributed':
     default:
       return false;
