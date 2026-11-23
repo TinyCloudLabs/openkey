@@ -239,6 +239,29 @@ describe('the heading of a sign-in review', () => {
   });
 });
 
+describe('the heading of the CLI link page', () => {
+  const headingFor = (who: Requester, extra: Record<string, unknown>) => {
+    const { target, cleanup } = render(reviewOf({ verifiedOrigin: null, trust: 'unsigned', ...who }), extra);
+    const result = target.querySelector('#signing-approval-headline')?.textContent?.trim() ?? null;
+    cleanup();
+    return result;
+  };
+
+  test('keeps the name from OpenKey\'s own list when the request carries a name of its own', () => {
+    for (const manifestNameProvenance of ['origin-bound', 'caller', 'none'] as const) {
+      for (const name of ['OpenKey', 'Some Other App']) {
+        expect(headingFor({ displayName: name, manifestName: name, manifestNameProvenance }, { signInApp: 'TinyCloud CLI' })).toBe('Sign in to TinyCloud CLI');
+      }
+    }
+  });
+
+  test('keeps the protocol heading for a request-supplied name where the list names no requester', () => {
+    for (const manifestNameProvenance of ['origin-bound', 'caller', 'none'] as const) {
+      expect(headingFor({ displayName: 'OpenKey', manifestName: 'OpenKey', manifestNameProvenance }, { signInApp: null })).toBe('Authorize capabilities');
+    }
+  });
+});
+
 describe('the tag on the Manifest ID row', () => {
   const ID = 'xyz.tinycloud.tinyapps.food';
 
