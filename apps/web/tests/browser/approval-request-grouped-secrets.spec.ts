@@ -91,13 +91,14 @@ test('25 exact keys occupy one row and disclose each name', async ({ page }) => 
   const summary = requestedAccess(page);
   await expect(summary.locator('.summary-statement')).toHaveCount(1);
   await expect(summary.getByText('Read 25 secrets', { exact: true })).toBeVisible();
-  await expect(summary.getByText('Read the secret test_key_01', { exact: true })).toBeHidden();
+  await expect(summary.getByText(names[0]!, { exact: true })).toBeHidden();
 
   await summary.getByText('Show the secrets', { exact: true }).click();
-  await expect(summary.getByRole('listitem').filter({ hasText: /^Read the secret / })).toHaveText(secretRows(names));
+  await expect(summary.locator('.secret-statements > li')).toHaveText(names);
+  await expect(summary.locator('.secret-statements code.mono')).toHaveText(names);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   await summary.getByText('Hide the secrets', { exact: true }).click();
-  await expect(summary.getByText('Read the secret test_key_01', { exact: true })).toBeHidden();
+  await expect(summary.getByText(names[0]!, { exact: true })).toBeHidden();
 
   await page.getByRole('checkbox').click();
   const confirm = page.getByRole('alertdialog', { name: 'Renew sensitive access?' });
@@ -126,7 +127,7 @@ test('a mixed request keeps its other permission and can narrow one exact key', 
   await expect(summary.getByText('Read 24 secrets', { exact: true })).toBeVisible();
   await expect(page.getByText('24 permissions are marked Sensitive', { exact: true })).toBeVisible();
   await summary.getByText('Show the secrets', { exact: true }).click();
-  await expect(summary.getByRole('listitem').filter({ hasText: /^Read the secret / })).toHaveText(secretRows(names.slice(1)));
+  await expect(summary.locator('.secret-statements > li')).toHaveText(names.slice(1));
 });
 
 test('three exact keys retain their individual summary rows', async ({ page }) => {

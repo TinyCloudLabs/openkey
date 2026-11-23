@@ -308,7 +308,7 @@
   // header, come from one function so the header always counts the rows marked
   // Sensitive below it (capability-review `buildSummaryStatements`).
   const summaryStatements = $derived(buildSummaryStatements(selectedGrants));
-  const secretStatements = $derived(summaryStatements.filter((statement) => statement.secretKeyPath !== undefined));
+  const secretStatements = $derived(summaryStatements.filter((statement) => statement.secret !== undefined));
   const groupSecrets = $derived(secretStatements.length >= 4);
   const sensitiveCount = $derived(sensitiveSummaryCount(summaryStatements));
   const oneSecretShown = $derived(oneSecret !== null && oneNamedSecret(selectedGrants) !== null);
@@ -950,7 +950,7 @@
     {#if summaryStatements.length > 0}
       <ul class="summary-statements">
         {#each summaryStatements as statement (statement.key)}
-          {#if groupSecrets && statement.secretKeyPath !== undefined}
+          {#if groupSecrets && statement.secret !== undefined}
             {#if statement === secretStatements[0]}
               <li class="summary-statement" data-severity="sensitive">
                 <details class="secret-summary">
@@ -963,8 +963,8 @@
                     <span class="link hide-secrets">Hide the secrets</span>
                   </summary>
                   <ul class="secret-statements">
-                    {#each secretStatements as secret (secret.key)}
-                      <li class="statement-primary">{secret.primaryText}</li>
+                    {#each secretStatements as row (row.key)}
+                      <li><code class="mono">{row.secret!.name}</code></li>
                     {/each}
                   </ul>
                 </details>
