@@ -577,8 +577,9 @@ jobs:
           else
             old_image_digest=$(docker buildx imagetools inspect "$old_image_ref" --format '{{json .Manifest.Digest}}' | jq -r .)
           fi
+          expected_old_repository=$(jq -r '.runtimeBefore.imageRepository' preflight-evidence/tc492-preflight-manifest.json)
           expected_old_digest=$(jq -r '.runtimeBefore.imageDigest' preflight-evidence/tc492-preflight-manifest.json)
-          [ "$old_image_digest" = "$expected_old_digest" ] || { echo "running API image changed since preflight" >&2; exit 1; }
+          [[ "${old_image_ref%%[@:]*}" == "$expected_old_repository" && "$old_image_digest" == "$expected_old_digest" ]] || { echo "running API image changed since preflight" >&2; exit 1; }
           rm -f /tmp/containers-before-freeze.json /tmp/current-api-image.txt
 
           printf 'freeze-requested\n' > tc492-phase.txt

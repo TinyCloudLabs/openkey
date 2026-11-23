@@ -60,7 +60,7 @@ jobs:
           commit=$(jq -r '.commit | strings' "$RUNNER_TEMP/record/record.json")
           image=$(jq -r '.image | strings' "$RUNNER_TEMP/record/record.json")
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the deploy record's commit is not a full SHA" >&2; exit 1; }
-          [[ "$image" =~ ^ghcr\.io/tinycloudlabs/openkey-api@sha256:[0-9a-f]{64}$ ]] || { echo "::error::the deploy record's image is not ghcr.io/tinycloudlabs/openkey-api pinned by digest" >&2; exit 1; }
+          [[ "$image" =~ ^(ghcr\.io/tinycloudlabs/openkey-api|skgbafa/openkey-api)@sha256:[0-9a-f]{64}$ ]] || { echo "::error::the deploy record must pin the OpenKey API image from GHCR or Docker Hub by digest" >&2; exit 1; }
           case "$RUN_WORKFLOW_PATH" in
             .github/workflows/deploy-api.yml)
               [ "$commit" = "$RUN_HEAD_SHA" ] || { echo "::error::the deploy record names ${commit}, not the run's commit ${RUN_HEAD_SHA}" >&2; exit 1; } ;;
@@ -123,7 +123,7 @@ jobs:
           Each \`app-compose.<compose_hash>.json\` asset is the exact app-compose the CVM measured for one deploy of this commit:
           - \`sha256sum app-compose.<compose_hash>.json\` equals the \`compose_hash\` in the CVM's attestation (the \`compose-hash\` event in RTMR3);
           - every \`image:\` in its \`docker_compose_file\` is pinned by \`@sha256:\` digest;
-          - \`gh attestation verify oci://<repository>@<digest> --repo ${GITHUB_REPOSITORY}\` (the API image is \`ghcr.io/tinycloudlabs/openkey-api\`) shows which workflow run built the API image. Its source commit is the commit that workflow ran from: for a Deploy API run, the commit above; for a TC-492 cutover, \`main\` at dispatch, while the image was built from the candidate commit above.
+          - Verify the API image's provenance with \`gh attestation verify oci://<image>@<digest> --repo ${GITHUB_REPOSITORY}\`. Use the repository and digest from the measured compose and prefix the repository with \`docker.io/\` for Docker Hub images. The source commit is the workflow run's commit: the commit above for Deploy API runs, or \`main\` at dispatch for TC-492 cutovers, which build the image from the candidate commit above.
           EOF
             )
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$COMMIT" --latest=false \

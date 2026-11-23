@@ -19,8 +19,7 @@ Set these in your repo's **Settings > Secrets and variables > Actions**:
 
 | Secret | Description |
 |--------|-------------|
-| `GITHUB_TOKEN` | Provided by Actions. The deploy job's `packages: write` pushes the API image to the public GHCR package `ghcr.io/tinycloudlabs/openkey-api`; no registry secret is needed |
-| `DOCKER_REGISTRY_USERNAME` / `DOCKER_REGISTRY_PASSWORD` | Docker Hub login the TC-492 preflight uses to resolve a running Docker Hub image's digest; the deploy doesn't use them |
+| `DOCKER_REGISTRY_USERNAME` / `DOCKER_REGISTRY_PASSWORD` | Docker Hub login for the TC-492 preflight to resolve a running Docker Hub image's digest |
 | `PHALA_CLOUD_API_KEY` | From [Phala Cloud Dashboard](https://cloud.phala.network/dashboard) > Avatar > API Tokens |
 | `DATABASE_URL` | Production PostgreSQL connection string used by the migration job |
 
@@ -655,7 +654,8 @@ and web changes into separate merges.
 
 #### Image digest, provenance and the published compose (TC-3837)
 
-The deploy pushes the API image to the GHCR package `ghcr.io/tinycloudlabs/openkey-api` and writes it into
+The deploy pushes the API image to `ghcr.io/tinycloudlabs/openkey-api` using
+the built-in `GITHUB_TOKEN` with `packages: write` and writes it into
 `docker-compose.prod.yml` by the digest the push returned
 (`ghcr.io/tinycloudlabs/openkey-api@sha256:…`), never by tag, and
 `scripts/compose-image-digests.ts` stops the deploy, before migrations, if any
@@ -663,8 +663,9 @@ service image is a tag or a variable. The measured `compose_hash` therefore
 names the exact image that was scanned. The CVM pulls without credentials, so
 the package must be public: the deploy fetches the pushed digest as an
 anonymous client before the migrations and stops if it can't. A new package
-starts private; an organization owner makes it public once (package settings,
-Change visibility). Images deployed before the move stay on Docker Hub as
+starts private. Before the first deploy from GHCR, seed the package if needed,
+make it public and ensure `TinyCloudLabs/openkey` has Write under **Manage
+Actions access** in the package settings. Images deployed before the move stay on Docker Hub as
 `skgbafa/openkey-api@sha256:…`, and the preflight accepts either repository as
 the rollback image. The push carries a GitHub build provenance attestation:
 
@@ -745,7 +746,8 @@ serving.
 
 ### Manual Deploy
 
-1. Build the Docker image:
+1. Sign in to GHCR with a GitHub personal access token (classic) with
+   `write:packages` and write access to the package. Build and push the image.
    ```bash
    docker build -t ghcr.io/tinycloudlabs/openkey-api:v1.0.x .
    docker push ghcr.io/tinycloudlabs/openkey-api:v1.0.x
