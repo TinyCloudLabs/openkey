@@ -235,17 +235,19 @@
       if (enabled && native?.method === 'email' && native.hint === 'appreview@tinycloud.xyz') step = 'reviewer';
     }).catch((): SocialProviderId[] => []);
     providersLoaded.then((loaded) => { providers = loaded; });
-    if (native) {
-      // Coming back from the provider via the browser's back button restores
-      // this page mid-redirect; clear the busy state.
-      window.addEventListener('pageshow', (event) => {
-        if (!event.persisted) return;
-        loading = false;
-        loadingProvider = null;
-        if (step === 'social') step = 'email';
-      });
-      startNative(native, providersLoaded);
-    }
+    // A page restored from the back-forward cache (Back from the authorize URL, or from the provider
+    // mid-redirect) is a fresh sign-in: clear the busy state and the finished passkey sign-in, which
+    // would otherwise leave every guarded button inert.
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      loading = false;
+      loadingProvider = null;
+      passkeySignedIn = false;
+      if (native && step === 'social') step = 'email';
+    };
+    window.addEventListener('pageshow', onPageShow);
+    if (native) startNative(native, providersLoaded);
+    return () => window.removeEventListener('pageshow', onPageShow);
   });
 
   // Automatic first action for the requested login method. It runs once per
