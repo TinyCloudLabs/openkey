@@ -127,7 +127,7 @@
       }
       onauthenticated();
     } catch (cause: any) {
-      error = embedPasskeySignInErrorText(cause);
+      error = embedPasskeySignInErrorText(cause, step);
     } finally {
       busy = null;
     }

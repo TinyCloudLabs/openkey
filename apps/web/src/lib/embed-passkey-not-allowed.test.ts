@@ -8,7 +8,7 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { embedSignInPasskey } from './embed-passkey';
-import { embedPasskeySignInErrorText, isPasskeyNotAllowed, PASSKEY_NOT_USABLE_TEXT } from './embed-passkey-not-allowed';
+import { embedPasskeySignInErrorText, isPasskeyNotAllowed, PASSKEY_NOT_USABLE_NEW_ACCOUNT_TEXT, PASSKEY_NOT_USABLE_TEXT } from './embed-passkey-not-allowed';
 
 const RAW = 'The operation either timed out or was not allowed. See: https://www.w3.org/TR/webauthn-2/#sctn-privacy-considerations-client.';
 
@@ -50,17 +50,25 @@ describe('the embedded passkey sign-in when the passkey prompt ends with no pass
   });
 
   test('the sheet says the passkey could not be used, not the browser text', async () => {
-    const text = embedPasskeySignInErrorText(await thrownBy(new DOMException(RAW, 'NotAllowedError')));
+    const text = embedPasskeySignInErrorText(await thrownBy(new DOMException(RAW, 'NotAllowedError')), 'choices');
     expect(text).toBe(PASSKEY_NOT_USABLE_TEXT);
     expect(text).not.toContain('timed out');
   });
 
   test('a person dismissing the prompt gets the same words', async () => {
-    expect(embedPasskeySignInErrorText(await thrownBy(new DOMException('The user aborted a request.', 'NotAllowedError')))).toBe(PASSKEY_NOT_USABLE_TEXT);
+    expect(embedPasskeySignInErrorText(await thrownBy(new DOMException('The user aborted a request.', 'NotAllowedError')), 'choices')).toBe(PASSKEY_NOT_USABLE_TEXT);
   });
 
   test('a plain DOMException named NotAllowedError, not wrapped, gets the same words', () => {
-    expect(embedPasskeySignInErrorText(new DOMException(RAW, 'NotAllowedError'))).toBe(PASSKEY_NOT_USABLE_TEXT);
+    expect(embedPasskeySignInErrorText(new DOMException(RAW, 'NotAllowedError'), 'choices')).toBe(PASSKEY_NOT_USABLE_TEXT);
+  });
+
+  test('the new-account step names its own way out, for the wrapped and the plain error alike', async () => {
+    const wrapped = embedPasskeySignInErrorText(await thrownBy(new DOMException(RAW, 'NotAllowedError')), 'new-account');
+    expect(wrapped).toBe(PASSKEY_NOT_USABLE_NEW_ACCOUNT_TEXT);
+    expect(wrapped).toContain('Use a different email');
+    expect(wrapped).not.toContain('Continue with email');
+    expect(embedPasskeySignInErrorText(new DOMException(RAW, 'NotAllowedError'), 'new-account')).toBe(PASSKEY_NOT_USABLE_NEW_ACCOUNT_TEXT);
   });
 });
 
@@ -68,17 +76,18 @@ describe('every other error keeps its own words', () => {
   test("a different browser error keeps the library's message", async () => {
     const thrown = await thrownBy(new DOMException('The operation was aborted.', 'AbortError'));
     expect(isPasskeyNotAllowed(thrown)).toBe(false);
-    expect(embedPasskeySignInErrorText(thrown)).not.toBe(PASSKEY_NOT_USABLE_TEXT);
-    expect(embedPasskeySignInErrorText(thrown)).toBe((thrown as Error).message);
+    expect(embedPasskeySignInErrorText(thrown, 'choices')).not.toBe(PASSKEY_NOT_USABLE_TEXT);
+    expect(embedPasskeySignInErrorText(thrown, 'choices')).toBe((thrown as Error).message);
+    expect(embedPasskeySignInErrorText(thrown, 'new-account')).toBe((thrown as Error).message);
   });
 
   test("the API's refusal keeps its words", () => {
-    expect(embedPasskeySignInErrorText(new Error('OpenKey doesn\'t know this passkey. Choose another way to sign in.'))).toBe("OpenKey doesn't know this passkey. Choose another way to sign in.");
+    expect(embedPasskeySignInErrorText(new Error('OpenKey doesn\'t know this passkey. Choose another way to sign in.'), 'new-account')).toBe("OpenKey doesn't know this passkey. Choose another way to sign in.");
   });
 
   test('an error with no message says the passkey sign-in failed', () => {
-    expect(embedPasskeySignInErrorText(new Error(''))).toBe('Passkey sign-in failed');
-    expect(embedPasskeySignInErrorText(undefined)).toBe('Passkey sign-in failed');
+    expect(embedPasskeySignInErrorText(new Error(''), 'choices')).toBe('Passkey sign-in failed');
+    expect(embedPasskeySignInErrorText(undefined, 'new-account')).toBe('Passkey sign-in failed');
   });
 
   test('a message that merely mentions NotAllowedError is not the error', () => {

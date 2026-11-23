@@ -13,6 +13,7 @@ const json = (route: Route, body: unknown, status = 200) =>
 
 const RAW = 'The operation either timed out or was not allowed. See: https://www.w3.org/TR/webauthn-2/#sctn-privacy-considerations-client.';
 const PLAIN = "That passkey couldn't be used here. Try another passkey or choose Continue with email.";
+const PLAIN_NEW_ACCOUNT = "That passkey couldn't be used here. Try another passkey or choose Use a different email.";
 
 async function mockApi(page: Page): Promise<string[]> {
   const verifies: string[] = [];
@@ -63,5 +64,40 @@ test('a passkey prompt that ends with no passkey used says so in plain words, be
   // The route the words name is on the screen and usable.
   await expect(frame.getByRole('button', { name: 'Passkey' })).toBeEnabled();
   await frame.getByRole('button', { name: 'Continue with email' }).click();
+  await expect(frame.locator('#embed-email')).toBeVisible();
+});
+
+// The new-account step, reached by an email code for an address OpenKey does not know, has its own passkey button and
+// no "Continue with email" button, so its words name the step's own way out: "Use a different email".
+test('on the new-account step the same refusal names Use a different email', async ({ page }) => {
+  const verifies = await mockApi(page);
+  await page.context().route(`${ORIGIN}/api/auth/**`, (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/email-otp/send-verification-otp') return json(route, { success: true });
+    if (path === '/api/auth/sign-in/email-otp') {
+      return json(route, { code: 'NEW_ACCOUNT_CONFIRMATION_REQUIRED', message: 'No OpenKey account exists for this email.', signupToken: 'signup-1' }, 403);
+    }
+    return route.fallback();
+  });
+  await page.context().addInitScript((raw) => {
+    navigator.credentials.get = async () => { throw new DOMException(raw, 'NotAllowedError'); };
+  }, RAW);
+  const frame = await embed(page);
+  await frame.getByRole('button', { name: 'Continue with email' }).click();
+  await frame.locator('#embed-email').fill('newcomer@example.test');
+  await frame.getByRole('button', { name: 'Send code' }).click();
+  await frame.locator('#embed-otp').fill('123456');
+  await frame.getByRole('button', { name: 'Verify and continue' }).click();
+  const confirmation = frame.getByTestId('new-account-confirmation');
+
+  await confirmation.getByRole('button', { name: 'Sign in with a passkey' }).click();
+
+  await expect(frame.getByRole('alert')).toHaveText(PLAIN_NEW_ACCOUNT);
+  await expect(frame.getByText('timed out')).toHaveCount(0);
+  expect(verifies).toEqual([]);
+  // The route the words name is on the screen and usable; "Continue with email" is not on this step.
+  await expect(frame.getByRole('button', { name: 'Continue with email' })).toHaveCount(0);
+  await expect(confirmation.getByRole('button', { name: 'Sign in with a passkey' })).toBeEnabled();
+  await confirmation.getByRole('button', { name: 'Use a different email' }).click();
   await expect(frame.locator('#embed-email')).toBeVisible();
 });
