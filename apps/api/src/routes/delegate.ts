@@ -32,7 +32,7 @@ import {
   permissionKey as computePermissionKey,
 } from './delegate-session';
 import { activateSessionWithinTimeout } from '../services/tinycloud-node-timeouts';
-import { isTinyCloudSiweForSigner, ownBootstrapSpaceName, parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
+import { isTinyCloudSiweForSigner, ownBootstrapSpaceName, parseTinyCloudSiwe, requestedOwnSpaceForSiwe, spaceHostRequest } from '../services/tinycloud-siwe';
 import { HOST_SIGNING_FIRST_PARTY_ONLY, HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE, refusesThirdPartySpaceHost } from '../services/space-host-signing';
 import type { SpaceHostResult } from '@tinycloud/sdk-core';
 import { BOOTSTRAP_SPACE_NAMES, CAPABILITIES } from '@tinycloud/bootstrap';
@@ -401,13 +401,34 @@ async function boundProvisionAuthority(input: {
 }
 
 /**
- * Will approving this request set the account up? The decision `boundProvisionAuthority` ends in, asked at /prepare
- * for a request that has just been validated: an expired, denied or changed approval request or device request was
- * refused before this point, so what is left to decide is which case this is and whether that case is on.
+ * The authority of an approval, asked at /prepare for a request that has just been validated: an expired, denied or
+ * changed approval request or device request was refused before this point, so what is left to decide is which case
+ * this is. Every other link is unattributed. `boundProvisionAuthority` ends in the same decision at approval.
  */
-function approvalSetsUpAccount(input: { approvalRequest: boolean; device: boolean; linkDelivery: boolean }): boolean {
+function approvalProvisionAuthority(input: { approvalRequest: boolean; device: boolean; linkDelivery: boolean }): ProvisionAuthority {
   const approval = input.approvalRequest ? 'approval-request' : input.device ? 'device-approval' : input.linkDelivery ? 'delegate-link-local' : null;
-  return approval !== null && mayProvision(ownPageProvisionAuthority(approval));
+  return approval === null ? UNATTRIBUTED_PROVISION_AUTHORITY : ownPageProvisionAuthority(approval);
+}
+
+/** Will approving this request set the account up? Only for the approvals that are on (`approvalProvisionAuthority`). */
+function approvalSetsUpAccount(input: { approvalRequest: boolean; device: boolean; linkDelivery: boolean }): boolean {
+  return mayProvision(approvalProvisionAuthority(input));
+}
+
+const HOST_SIGNING_REFUSAL_BODY = { error: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE, code: HOST_SIGNING_FIRST_PARTY_ONLY } as const;
+
+/**
+ * The rule of POST /api/keys/:id/sign for a message this route has OpenKey's managed key sign (`refusesThirdPartySpaceHost`).
+ * An external wallet signs its own message, so there is nothing for OpenKey to refuse. The authority is read only for a
+ * message that hosts a space: every other approval reads nothing more than it did before.
+ */
+async function refusesSpaceHost(input: {
+  message: string;
+  key: { id: string; address: string; keyType: string };
+  authority: () => ProvisionAuthority | Promise<ProvisionAuthority>;
+}): Promise<boolean> {
+  if (input.key.keyType !== 'MANAGED' || spaceHostRequest(input.message).kind === 'none') return false;
+  return refusesThirdPartySpaceHost({ prisma, message: input.message, key: input.key, authorities: [await input.authority()] });
 }
 
 async function finishManagedSpaceOnboarding(input: {
@@ -1518,10 +1539,11 @@ delegateRouter.post('/sign', async (c) => {
   }
 
   // This is the cookie-session branch: the signer middleware admits it only from OpenKey's own browser origin
-  // (`rejectNonOpenKeySignRequest`), and that origin is not in FIRST_PARTY_PROVISION_ORIGINS, so no one is first-party
-  // here. A space host message is signed only by the third-party rule of POST /api/keys/:id/sign: non-primary spaces
-  // of the key's owner once the owner's primary space is hosted. Nothing in the web app or the SDK sends one here.
-  if (await refusesThirdPartySpaceHost({ prisma, message: body.message, key, authorities: [originProvisionAuthority(c.req.header('origin'))] })) {
+  // (`rejectNonOpenKeySignRequest`), which is not first-party for provisioning, and the Origin header is the caller's
+  // word, not evidence. So no one is first-party here, by construction: a space host message is signed only by the
+  // third-party rule of POST /api/keys/:id/sign (non-primary spaces of the key's owner once the owner's primary space
+  // is hosted). Nothing in the web app or the SDK sends one here.
+  if (await refusesThirdPartySpaceHost({ prisma, message: body.message, key, authorities: [UNATTRIBUTED_PROVISION_AUTHORITY] })) {
     return c.json({ approved: false, code: HOST_SIGNING_FIRST_PARTY_ONLY, reason: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE }, 403);
   }
 
@@ -1945,6 +1967,15 @@ delegateRouter.post('/', async (c) => {
     if (tokenAppKeyRefusal) return c.json(appKeyRefusalBody(tokenAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(tokenAppKeyRefusal));
     const tokenLifetimeReach = exceedsSecretLifetime(bound.originalSiwe, Date.now());
     if (tokenLifetimeReach) return c.json(secretLifetimeBody(tokenLifetimeReach), 400);
+    // The stored SIWE was built from the permissions and may host a space: the rule of POST /api/keys/:id/sign applies,
+    // from the authority the context was bound with (a checked origin, a still-valid approval or device request, or a
+    // loopback or paste link), before the context is spent. Any other link is another site.
+    if (await refusesSpaceHost({
+      message: bound.originalSiwe, key,
+      authority: () => boundProvisionAuthority({ bound, sessionUserId: user.id, body, host }),
+    })) {
+      return c.json(HOST_SIGNING_REFUSAL_BODY, 403);
+    }
     // TC-3442: the account's passkey setting, before the context is spent or the key unsealed.
     const passkeyRefusal = await checkApprovalPasskey(
       prisma,
@@ -2127,6 +2158,12 @@ delegateRouter.post('/', async (c) => {
 
   const legacyAppKeyRefusal = appKeyRefusalForSiwe(preparedResult.prepared.siwe);
   if (legacyAppKeyRefusal) return c.json(appKeyRefusalBody(legacyAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(legacyAppKeyRefusal));
+  // The SIWE was built from the permissions and may host a space. No origin is bound to this token-less request, so it
+  // is another site: the rule of POST /api/keys/:id/sign signs only non-primary spaces of the owner once the owner's
+  // primary space is hosted.
+  if (await refusesSpaceHost({ message: preparedResult.prepared.siwe, key, authority: () => UNATTRIBUTED_PROVISION_AUTHORITY })) {
+    return c.json(HOST_SIGNING_REFUSAL_BODY, 403);
+  }
   // TC-3442: these bytes are made here, so no passkey challenge could have been bound to them. An approval the
   // account's setting says needs the passkey is refused on this path; the versioned path above can carry it.
   const legacyPasskeyRefusal = await checkApprovalPasskey(
@@ -2378,6 +2415,17 @@ delegateRouter.post('/prepare', async (c) => {
   const linkDelivery = body.deviceTransactionId === undefined && body.approvalRequestId === undefined && body.requesterOrigin === undefined
     ? classifyDelegateLinkDelivery(body.linkDelivery, body.linkCallback)
     : undefined;
+
+  // The server built this SIWE from the permissions, and `tinycloud.space/host` is among the abilities they may name. A
+  // message that hosts a space is the ability to create it: the rule of POST /api/keys/:id/sign applies. The asker is
+  // known only from what this prepare has just validated: an approval request, a device request or a loopback or
+  // paste link (`approvalProvisionAuthority`); any other link is another site. Refused before a context is issued.
+  if (await refusesSpaceHost({
+    message: preparedResult.prepared.siwe, key,
+    authority: () => approvalProvisionAuthority({ approvalRequest: body.approvalRequestId !== undefined, device: device.record !== null, linkDelivery: linkDelivery !== undefined }),
+  })) {
+    return c.json(HOST_SIGNING_REFUSAL_BODY, 403);
+  }
 
   // Issue an opaque single-use authorization context so /complete cannot
   // be replayed with a broader SIWE, a different key, or a different host.
@@ -3173,6 +3221,15 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       400,
     );
   }
+  // A message that hosts a space is the ability to create it: the rule of POST /api/keys/:id/sign applies, from the
+  // origin the SIWE was just checked against (`siweOriginChecked`). No checked origin is another site. Refused here, so
+  // no context and no review screen is issued for it; /authorize-sign applies it again to the bytes it signs.
+  if (await refusesSpaceHost({
+    message: body.siwe, key,
+    authority: () => originProvisionAuthority(siweOriginChecked && typeof body.requestOrigin === 'string' ? body.requestOrigin : undefined),
+  })) {
+    return c.json(HOST_SIGNING_REFUSAL_BODY, 403);
+  }
   const immutable = extractImmutableSiweFields(body.siwe, {
     chainId,
     spaceId,
@@ -3965,6 +4022,12 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // did not decide on.
   if (!ticket && !elevatedDecided(effectiveEntries, previewCheck.elevatedAllowed)) {
     return c.json(elevatedNotDecidedBody(), 403);
+  }
+  // A message that hosts a space is the ability to create it, so the same rule as POST /api/keys/:id/sign applies, from
+  // the origin the context was bound to at /authorize-sign-prepare (the SIWE was checked against it there). A request
+  // with no checked origin, a handoff ticket included, is another site.
+  if (await refusesSpaceHost({ message: signedMessage, key, authority: () => originProvisionAuthority(bound.requestOrigin) })) {
+    return c.json(HOST_SIGNING_REFUSAL_BODY, 403);
   }
   // TC-3442: the account's passkey setting, checked before any token is spent or key unsealed. An external wallet's
   // own signature is its confirmation. A passkey sign-in this web sign flow was opened with covers the check for
