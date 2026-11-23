@@ -1,6 +1,11 @@
 // Key management routes
 import { Hono } from 'hono';
-import { REGISTRY_RECORD_SIGN_REFUSED, registryRecordSignRefusal, registryTypedDataSignRefusal } from '@openkey/capability-review';
+import {
+  REGISTRY_RECORD_SIGN_REFUSED,
+  registryRecordSignOriginAllowed,
+  registryRecordSignRefusal,
+  registryTypedDataSignRefusal,
+} from '@openkey/capability-review';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey, type TeeQuote } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
@@ -9,7 +14,14 @@ import { hashTypedData, validateTypedData, verifyMessage } from 'viem';
 import type { Hex, TypedDataDefinition } from 'viem';
 import {
   ensureTinyCloudBootstrapForApprovedSign,
+  probeAccountSpaceHosted,
 } from '../services/tinycloud-bootstrap';
+import {
+  OWNER_LOCATION_PUBLISH_CONSENT,
+  ownerLocationPublishAllowed,
+  ownerLocationPublishBinding,
+  publishOwnerLocationInBackground,
+} from '../services/owner-location-record';
 import { awaitTinyCloudBootstrapWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
 import { parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
@@ -32,6 +44,7 @@ import {
   approvalPasskeyOfferInFlow,
   approvalRequestDigest,
   checkApprovalPasskey,
+  createApprovalPasskeyChallenge,
   checkApprovalPasskeySpendingFlow,
   clearFlowPasskey,
   FLOW_PASSKEY_HEADER,
@@ -306,6 +319,13 @@ type SignBody = {
   elevatedAcknowledged?: boolean;
   /** TC-3442: `{ challengeToken, response }` for the challenge from `/sign/passkey`, when Approve needs the passkey. */
   passkeyAssertion?: unknown;
+  /**
+   * The owner agrees to publish the account's default-node location record. Read only from a first-party origin, and
+   * only while `OWNER_LOCATION_PUBLISH_CONSENT` is `required`; anything but the boolean `true` is no.
+   */
+  publishOwnerLocation?: boolean;
+  /** TC-4082: `{ challengeToken, response }` for the challenge from `/:keyId/owner-location/passkey`; `required` consent needs it. */
+  ownerLocationPasskeyAssertion?: unknown;
 };
 
 // Hardening: registry record signing. Refused for any origin but TinyCloud One / Home, before a passkey is offered or a key is unsealed.
@@ -367,6 +387,26 @@ keysRouter.post('/:keyId/sign/passkey', async (c) => {
     prisma, { userId: user.id, sessionId: c.get('session')?.id ?? null }, signPasskeyBinding(keyId, body),
     messageApprovalSensitivity(body.message, key.address), webFlowIdFromHeader(c.req.header(FLOW_PASSKEY_HEADER)),
   ));
+});
+
+// TC-4082: the challenge for the owner's passkey consent to publish the owner-location record. `/sign` reads the
+// answer as `ownerLocationPasskeyAssertion`. Always a passkey, whatever the account's passkey-approval setting: no
+// passkey that counts for step-up, or no first-party origin, means `available: false` and no publish.
+keysRouter.post('/:keyId/owner-location/passkey', async (c) => {
+  const originRefusal = rejectNonOpenKeySignRequest(c);
+  if (originRefusal) return originRefusal;
+  const user = c.get('user');
+  const keyId = c.req.param('keyId');
+  const body = await c.req.json<{ requestOrigin?: unknown }>().catch(() => ({} as { requestOrigin?: unknown }));
+  if (OWNER_LOCATION_PUBLISH_CONSENT === 'silent') return c.json({ required: false });
+  if (!registryRecordSignOriginAllowed(body?.requestOrigin)) return c.json({ available: false });
+  const key = await prisma.ethereumKey.findFirst({ where: { id: keyId, userId: user.id, archivedAt: null }, select: { keyType: true, address: true } });
+  if (!key) return c.json({ error: 'Key not found' }, 404);
+  if (key.keyType === 'EXTERNAL') return c.json({ available: false });
+  const offer = await createApprovalPasskeyChallenge(
+    prisma, { userId: user.id, sessionId: c.get('session')?.id ?? null }, ownerLocationPublishBinding(keyId, key.address),
+  );
+  return c.json(offer ? { required: true, ...offer } : { available: false });
 });
 
 keysRouter.post('/:keyId/sign-typed-data/passkey', async (c) => {
@@ -465,6 +505,12 @@ keysRouter.post('/:keyId/sign', async (c) => {
   if (gate.refusal) return c.json(gate.refusal, 403);
   await clearFlowPasskey(prisma, webFlow);
 
+  // TC-4082: the owner's consent to publish the owner-location record, with its own passkey assertion (not the
+  // account's passkey-approval setting). Checked before the key is unsealed; a refusal only means no publish.
+  const publishOwnerLocation = await ownerLocationPublishAllowed(body, {
+    db: prisma, subject: { userId: user.id, sessionId: c.get('session')?.id ?? null }, keyId, address: key.address,
+  });
+
   const sealingKey = await deriveKeyForRecord(tee, key);
   const privateKey = await unseal(key.sealedBlob!, sealingKey) as Hex;
 
@@ -481,7 +527,36 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const siwe = mayHostOwnSpace ? parseTinyCloudSiwe(body.message) : null;
   const waitsForOwnSpace = siwe !== null && requestedOwnSpaceForSiwe(siwe, key.address) !== null;
   const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
-    ensureTinyCloudBootstrapForApprovedSign({ prisma, userId: user.id, key, privateKey, message: body.message, format }),
+    ensureTinyCloudBootstrapForApprovedSign({
+      prisma, userId: user.id, key, privateKey, message: body.message, format,
+      // TC-4082: the hooks exist only for a first-party sign that is allowed to publish, and the bootstrap fires them
+      // only past the Auto-Sign check. A run that just completed the setup is itself the hosted signal. A `complete` row
+      // that was already there is not: the publish asks the node (a fresh 2xx on the account space) before it signs.
+      // Both run in the background, after the sign.
+      ...(publishOwnerLocation
+        ? {
+            onFreshlyComplete: ({ host }: { host: string }) => publishOwnerLocationInBackground({
+              address: key.address,
+              hostedHost: host,
+              signMessage: (message) => account.signMessage({ message }),
+            }),
+            onAlreadyComplete: ({ host, chainId }: { host: string; chainId: number }) => publishOwnerLocationInBackground({
+              address: key.address,
+              hostedHost: host,
+              hosted: {
+                kind: 'complete_row',
+                probe: () => probeAccountSpaceHosted({
+                  address: key.address,
+                  chainId,
+                  tinycloudHost: host,
+                  signMessage: (message) => account.signMessage({ message }),
+                }),
+              },
+              signMessage: (message) => account.signMessage({ message }),
+            }),
+          }
+        : {}),
+    }),
     waitsForOwnSpace ? { budgetMs: OWN_TIMEOUT_BUDGET_MS, ownLogsBackground: true } : {},
   );
   if (bootstrap.status === 'failed') {

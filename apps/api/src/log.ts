@@ -84,7 +84,7 @@ const EVENTS = {
   third_party_console: true, uncaught_exception: true, unhandled_rejection: true, config_invalid: true,
   account_origin_refused: true,
   legacy_reseal_done: true, legacy_reseal_failed: true, legacy_reseal_progress: true, legacy_reseal_quarantined: true,
-  sign_origin_refused: true,
+  sign_origin_refused: true, owner_location_record: true,
   approval_passkey_verified: true, approval_passkey_refused: true, approval_passkey_flow_covered: true, approval_passkey_flow_record_failed: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;
@@ -146,6 +146,12 @@ function emit(level: LogLevel, event: EventName, fields: Record<string, string |
 export function log(level: LogLevel, event: EventName, errorCode?: string): void {
   const safeCode = typeof errorCode === 'string' && Object.hasOwn(ERROR_CODES, errorCode) ? errorCode : undefined;
   emit(level, event, { error_code: safeCode });
+}
+
+/** The owner-location publish outcome: only a code of the fixed shape, never an address, record, signature or key. */
+const OWNER_LOCATION_OUTCOME = /^(?:published|skipped_[a-z0-9_]{1,48}|failed_(?:[0-9]{3}|error))$/;
+export function logOwnerLocationRecord(outcome: string): void {
+  emit('info', 'owner_location_record', { outcome: OWNER_LOCATION_OUTCOME.test(outcome) ? outcome : 'failed_error' });
 }
 
 /** TC-3554: the one-time re-seal at boot. Counts only; never ids, addresses, paths or keys. */
