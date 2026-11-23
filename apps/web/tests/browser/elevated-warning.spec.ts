@@ -102,7 +102,7 @@ test('Approve opens the warning screen first; nothing is chosen for the owner an
   await expect(approve(frame)).toBeEnabled();
   await approve(frame).click();
   await expect(frame.locator('#elevated-title')).toContainText('is asking for more access');
-  await expect(frame.getByRole('heading', { level: 2, name: /Unlock all your encrypted data/ })).toBeVisible();
+  await expect(frame.getByRole('heading', { level: 2, name: /open all your encrypted data\?/ })).toBeVisible();
   await expect(frame.getByRole('button', { name: 'Reject this permission' })).toBeVisible();
   await expect(frame.getByRole('button', { name: 'Allow this permission' })).toBeVisible();
   await expect(frame.getByRole('button', { name: 'Continue' })).toBeDisabled();

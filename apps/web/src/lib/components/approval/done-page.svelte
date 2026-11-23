@@ -27,9 +27,11 @@
     spaceNote?: SpaceReadiness | null;
     /** Where the person goes back to. When set, the closing line names it in place of the outcome's line. */
     returnTo?: string;
+    /** The closing line, when the page words it itself; it wins over `returnTo` and the outcome's line. */
+    line?: string;
   }
 
-  let { outcome, requester = '', rows = [], spaceNote = null, returnTo = '' }: Props = $props();
+  let { outcome, requester = '', rows = [], spaceNote = null, returnTo = '', line = '' }: Props = $props();
 
   const words = $derived(DONE[outcome]);
   const said = $derived(outcome === 'approved' || outcome === 'signedIn' || outcome === 'signed');
@@ -43,7 +45,7 @@
     <Icon name={said ? 'check' : 'x'} class="h-[26px] w-[26px] [stroke-width:2.2]" />
   </div>
   <h1 use:focusHeading class="m-0 mb-2.5 text-[25px] leading-[1.17] font-bold tracking-[-0.012em] text-balance text-surface-950">{words.heading}</h1>
-  <p class="m-0 mb-3.5 text-pretty">{returnTo ? fill(DONE.returnTo, { returnTo }) : fill(words.line as string, { requester })}</p>
+  <p class="m-0 mb-3.5 text-pretty">{line || (returnTo ? fill(DONE.returnTo, { returnTo }) : fill(words.line as string, { requester }))}</p>
 
   {#if spaceNote}
     <div class="mb-3 w-full"><SpaceNote note={spaceNote} /></div>

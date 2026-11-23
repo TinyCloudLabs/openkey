@@ -29,7 +29,7 @@
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { AdmittedAppKey } from "./app-key-refusal";
-import { expirationTimeOf } from "./approval-expiry";
+import { siweExpirationTime } from "@openkey/capability-review";
 
 const CONTEXT_TTL_MS = 5 * 60 * 1000;
 
@@ -56,8 +56,11 @@ export interface VerifiedManifestFields {
   };
 }
 
-/** The renewal choice bound into an approval-request context: finite, or leased for this many seconds. */
-export type BoundRenewalChoice = { choice: 'finite' } | { choice: 'leased'; leaseLifetimeSeconds: number };
+/**
+ * The renewal choice bound into an approval-request context: finite, or leased for this many seconds. `sensitiveConfirmed`
+ * records that the owner confirmed renewing sensitive access (TC-3821); it is sealed here, so approving cannot add it.
+ */
+export type BoundRenewalChoice = { choice: 'finite' } | { choice: 'leased'; leaseLifetimeSeconds: number; sensitiveConfirmed?: true };
 
 /** The renewal an app asked for at a widget sign-in: its longest lease. Bound only while leases are on. */
 export interface SignInRenewalRequest {
@@ -1039,7 +1042,7 @@ export function peekPreviewApprovalExpiry(
   if (!stored || stored.userId !== owner.userId || stored.authorizationContextToken !== owner.authorizationContextToken) {
     return undefined;
   }
-  return expirationTimeOf(stored.signedMessage);
+  return siweExpirationTime(stored.signedMessage) ?? undefined;
 }
 
 export type PreviewApprovalCheckError =

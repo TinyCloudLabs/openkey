@@ -112,6 +112,7 @@ function siwe(uri: string, ability: string, expiry?: string): string {
     'app.example wants you to sign in with your Ethereum account:',
     OWNER,
     '',
+    '',
     `URI: ${uri}`,
     'Version: 1',
     'Chain ID: 1',
