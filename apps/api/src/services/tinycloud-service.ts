@@ -16,9 +16,10 @@ export const SESSION_EXPIRATION_MS = 30 * 24 * 60 * 60 * 1000;
  * - `openkey`: the variables below, all under `variables` (the node matches whole path segments, and listing
  *   invokes `variables` itself).
  * - `secrets`: node-sdk 2.11's vault is network-encrypted. `put` writes `vault/secrets/<name>` (sealed to the
- *   owner's default network, which needs no permission); `list`, `get` and `delete` read and remove it; `get`
- *   decrypts through that network. `unlock` touches no storage, and nothing is written under `keys/` or to the
- *   public space. The SDK adds `network.create` for the owner's own network, as it did without a manifest.
+ *   owner's default network, which needs no permission); `list` and `delete` list and remove it. The session
+ *   holds no `decrypt` grant, so it cannot open a value, and OpenKey's API never reads one. It holds
+ *   `network.create` on the owner's default network, which `getSession` uses to make that network. `unlock`
+ *   touches no storage, and nothing is written under `keys/` or to the public space.
  * The SDK adds capabilities read on each space.
  */
 export function sessionManifest(prefix: string, address: string): Manifest {
@@ -39,7 +40,7 @@ export function sessionManifest(prefix: string, address: string): Manifest {
         {
           service: 'tinycloud.encryption',
           path: `urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default`,
-          actions: ['decrypt'],
+          actions: ['network.create'],
         },
       ],
     };
@@ -95,6 +96,9 @@ async function getSession(userId: string, privateKey: string): Promise<TinyCloud
   // Secrets space for vault
   const secretsTc = createSessionNode(privateKey, SECRETS_SPACE);
   await secretsTc.signIn();
+  // Signing in creates the default encryption network only for a session that asks to decrypt on it, and this one
+  // does not, so the network is made here (a no-op when it exists) before the first `put` seals to it.
+  await secretsTc.ensureEncryptionNetwork();
   await secretsTc.vault.unlock(wallet);
 
   const session: TinyCloudSession = { tc, secretsTc, wallet };
@@ -141,19 +145,9 @@ export class TinyCloudService {
       throw new Error(`Failed to list secrets: ${(listResult as any).error?.message}`);
     }
 
-    const secrets: Array<{ name: string; createdAt: string }> = [];
-    for (const key of listResult.data) {
-      const name = key.replace('secrets/', '');
-      let createdAt = '';
-      // Read the stored payload to get createdAt
-      const getResult = await session.secretsTc.vault.get<{ value: string; createdAt: string }>(key);
-      if (getResult.ok && getResult.data?.value.createdAt) {
-        createdAt = getResult.data.value.createdAt;
-      }
-      secrets.push({ name, createdAt });
-    }
-
-    return secrets;
+    // The node lists key names only, and the creation time sits inside the sealed value. Reading it takes the
+    // network decrypt grant, which this session does not hold, so the list carries no time.
+    return listResult.data.map((key) => ({ name: key.startsWith('secrets/') ? key.slice('secrets/'.length) : key, createdAt: '' }));
   }
 
   async deleteSecret(userId: string, name: string): Promise<void> {
