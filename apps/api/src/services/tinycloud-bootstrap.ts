@@ -29,6 +29,7 @@ import {
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { PrismaClient } from '@openkey/db';
 import { DEFAULT_TINYCLOUD_BOOTSTRAP_HOST, TRUSTED_TINYCLOUD_BOOTSTRAP_HOSTS } from './tinycloud-hosts';
+import { DEFAULT_TINYCLOUD_FALLBACK_HOST } from '@tinycloud/sdk-core';
 import { tinyCloudBootstrapNodeCallTimeoutMs, tinyCloudBootstrapNodeInvokeTimeoutMs } from './tinycloud-node-timeouts';
 import { kvSpaceRegistryStore, registerMissingBootstrapSpaces } from './tinycloud-space-registry';
 import { hostRequestedSpaceWithinBudget, SWEEP_RETRYABLE_CODES } from './tinycloud-bootstrap-budget';
@@ -90,6 +91,11 @@ export interface EnsureTinyCloudBootstrapInput {
    * throw; a throw is dropped.
    */
   onFreshlyComplete?: (event: { host: string; chainId: number }) => void;
+  /**
+   * Called when the row was already `complete` and this run found nothing to do. A stale row is only a hint, so a
+   * caller that needs proof asks the node itself. Must not throw; a throw is dropped.
+   */
+  onAlreadyComplete?: (event: { host: string; chainId: number }) => void;
 }
 
 export interface EnsureTinyCloudBootstrapInputCore {
@@ -105,6 +111,8 @@ export interface EnsureTinyCloudBootstrapInputCore {
   sweepClaim?: TinyCloudBootstrapSweepClaim;
   /** As on `EnsureTinyCloudBootstrapInput`. */
   onFreshlyComplete?: (event: { host: string; chainId: number }) => void;
+  /** As on `EnsureTinyCloudBootstrapInput`. */
+  onAlreadyComplete?: (event: { host: string; chainId: number }) => void;
 }
 
 /** A sweep's claim on one row: the state it observed, and a hook fired only once the lock is won. */
@@ -391,7 +399,13 @@ export async function ensureTinyCloudBootstrap(
     where: { keyId_chainId_tinycloudHost_bootstrapVersion: cacheKey },
   });
   // An approval for which the node just listed the space as skipped is fresher than a cached `complete`.
+  // A complete row is only a hint that the node hosts the space: the hook lets a caller ask the node itself.
   if (state?.status === 'complete' && !input.requestedSpaces?.nodeReportedUnhosted) {
+    try {
+      input.onAlreadyComplete?.({ host: tinycloudHost, chainId });
+    } catch {
+      // A hook that fails never changes the outcome.
+    }
     return { status: 'complete' };
   }
 
@@ -729,6 +743,88 @@ async function probeTinyCloudBootstrap(input: TinyCloudBootstrapRunInput): Promi
   }
 
   await invokeRaw(input.tinycloudHost, session, 'capabilities', '', CAPABILITIES.READ);
+}
+
+const HOSTING_PROBE_TTL_MS = 5 * 60 * 1000;
+const HOSTING_PROBE_ABILITIES: Record<string, Record<string, string[]>> = { kv: { '': [KV.LIST] } };
+let hostingProbeAbilities = HOSTING_PROBE_ABILITIES;
+
+/** Test seam: the abilities the hosting probe asks for, so the guard against `tinycloud.space/*` can be shown to refuse. */
+export function setHostingProbeAbilitiesForTests(abilities?: Record<string, Record<string, string[]>>): void {
+  hostingProbeAbilities = abilities ?? HOSTING_PROBE_ABILITIES;
+}
+
+const isSpaceAction = (service: string, action: string) => service === 'space' || action.startsWith('tinycloud.space/');
+
+/**
+ * Is the account space affirmatively hosted on the default node (TC-4082)? The one place a session is signed and sent
+ * for that question, and it asks for the least that answers it:
+ * - exactly one `POST /delegate`, on exactly the SDK default host, for a session of at most five minutes whose only
+ *   ability is `tinycloud.kv/list` on the account space (no `tinycloud.space/*` action: no host, no create, no info);
+ *   the abilities are checked before the owner's key is asked to sign, and the signed message again after;
+ * - then one `POST /invoke` of `tinycloud.kv/list` on the account space's root with `x-tinycloud-limit: 1`.
+ * True only for a 2xx answer to that list. A `/delegate` that lists the space under `skipped` or says nothing about
+ * it, and any 401, 403, 404, 5xx, timeout or network error, is false. No peer lookup, no host delegation, no write
+ * but the session delegation. `signMessage` is the owner's EIP-191 signer; the key itself never reaches this module.
+ */
+export async function probeAccountSpaceHosted(input: {
+  address: string;
+  chainId: number;
+  tinycloudHost: string;
+  signMessage: (message: string) => Promise<string>;
+}): Promise<boolean> {
+  try {
+    if (input.tinycloudHost !== DEFAULT_TINYCLOUD_FALLBACK_HOST) return false;
+    const accountStep = bootstrapSteps(input.address, input.chainId)
+      .find((step): step is BootstrapSpaceStep => step.kind === 'session' && step.space === ACCOUNT_REGISTRY_SPACE);
+    if (!accountStep) return false;
+
+    const abilities = hostingProbeAbilities;
+    for (const [service, paths] of Object.entries(abilities)) {
+      for (const actions of Object.values(paths)) {
+        if (actions.some((action) => isSpaceAction(service, action))) return false;
+      }
+    }
+    const manager = new TCWSessionManager();
+    const sessionKeyId = manager.createSessionKey('owner-location-probe');
+    const jwkText = manager.jwk(sessionKeyId);
+    if (!jwkText) return false;
+    const issuedAt = new Date();
+    const prepared = prepareSession({
+      address: input.address,
+      chainId: input.chainId,
+      domain: BOOTSTRAP_DOMAIN,
+      issuedAt: issuedAt.toISOString(),
+      expirationTime: new Date(issuedAt.getTime() + HOSTING_PROBE_TTL_MS).toISOString(),
+      spaceId: accountStep.spaceId,
+      jwk: JSON.parse(jwkText) as Record<string, unknown>,
+      abilities,
+    });
+    const signed = parseTinyCloudSiwe(prepared.siwe);
+    if (
+      !signed
+      || signed.entries.some((entry) => entry.space !== accountStep.spaceId
+        || entry.actions.some((action) => isSpaceAction(entry.service, action)))
+    ) {
+      return false;
+    }
+
+    const signature = await input.signMessage(prepared.siwe);
+    const session: BootstrapSession = {
+      space: ACCOUNT_REGISTRY_SPACE,
+      spaceId: accountStep.spaceId,
+      session: completeSessionSetup({ ...prepared, signature }),
+    };
+    const activation = await nodeActivateSession(input.tinycloudHost, session.session.delegationHeader);
+    // An unreadable answer (`skipped` absent) is unconfirmed, not hosted.
+    if (!activation.success || activation.skipped === undefined || activation.skipped.includes(session.spaceId)) return false;
+
+    const response = await invokeResponse(input.tinycloudHost, session, 'kv', '', KV.LIST, undefined, { 'x-tinycloud-limit': '1' });
+    await response.body?.cancel().catch(() => undefined);
+    return response.status >= 200 && response.status < 300;
+  } catch {
+    return false;
+  }
 }
 
 async function runTinyCloudBootstrap(input: TinyCloudBootstrapRunInput): Promise<void> {

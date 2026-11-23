@@ -46,15 +46,50 @@ export function ownerLocationPublishAllowed(
   return consent === 'silent' || request.publishOwnerLocation === true;
 }
 
+/**
+ * What tells the caller the account is hosted on the default node.
+ * - `completed_now`: the bootstrap run that just finished moved the row to `complete` after its own probe and setup.
+ * - `complete_row`: a `complete` row was already there, which is only a hint. `probe` asks the node itself (a fresh
+ *   2xx on the account space) and runs after the registry reads, before the record is signed.
+ */
+export type OwnerLocationHostedSignal =
+  | { kind: 'completed_now' }
+  | { kind: 'complete_row'; probe: () => Promise<boolean> };
+
 export interface EnsureOwnerLocationRecordInput {
   /** The owner's address, any case. */
   address: string;
-  /** The host the bootstrap run that just completed hosted the account space on. */
+  /** The host the account's bootstrap row is on. */
   hostedHost: string;
-  /** Signs the canonical record text (EIP-191). The only use of the owner's key; the key itself never reaches this module. */
+  /** Default `completed_now`. */
+  hosted?: OwnerLocationHostedSignal;
+  /**
+   * Signs EIP-191 text: the hosting probe's session and the canonical record. The only uses of the owner's key; the key
+   * itself never reaches this module, and the closure is dropped when the publish ends.
+   */
   signMessage: (message: string) => Promise<string>;
   fetchImpl?: typeof fetch;
   now?: () => Date;
+}
+
+/** A busy account signs often: an owner already looked at is not looked at again for this long. */
+export const OWNER_LOCATION_MEMO_MS = 5 * 60 * 1000;
+const OWNER_LOCATION_MEMO_MAX = 1_000;
+const checkedOwners = new Map<string, number>();
+
+/** Test seam: forget which owners were looked at. */
+export function resetOwnerLocationMemoForTests(): void {
+  checkedOwners.clear();
+}
+
+function checkedRecently(owner: string, nowMs: number): boolean {
+  if ((checkedOwners.get(owner) ?? 0) > nowMs) return true;
+  if (checkedOwners.size >= OWNER_LOCATION_MEMO_MAX) {
+    for (const [key, until] of checkedOwners) if (until <= nowMs) checkedOwners.delete(key);
+    if (checkedOwners.size >= OWNER_LOCATION_MEMO_MAX) checkedOwners.clear();
+  }
+  checkedOwners.set(owner, nowMs + OWNER_LOCATION_MEMO_MS);
+  return false;
 }
 
 /** `published`, `skipped_<reason>` or `failed_<status>`. Nothing else is logged. */
@@ -73,12 +108,20 @@ export async function ensureOwnerLocationRecord(input: EnsureOwnerLocationRecord
     const fetchImpl = input.fetchImpl ?? globalThis.fetch;
     const subject = registryOwnerSubjectV1(input.address, DEFAULT_REGISTRY_OWNER_CHAIN_ID);
     const base = DEFAULT_TINYCLOUD_LOCATION_REGISTRY_URL.replace(/\/+$/, '');
+    const now = input.now?.() ?? new Date();
+    const hosted = input.hosted ?? { kind: 'completed_now' };
+    if (hosted.kind === 'complete_row' && checkedRecently(registryOwnerKeyV2(subject), now.getTime())) {
+      return 'skipped_checked_recently';
+    }
 
     // Registry reads first, without the key: v2 by owner key, then v1 by subject. Only a canonical 404 on both is absence.
     const v2 = await readRegistry(fetchImpl, `${base}/v2/locations/${encodeURIComponent(registryOwnerKeyV2(subject))}`);
     if (v2 !== 'absent') return `skipped_registry_${v2}`;
     const v1 = await readRegistry(fetchImpl, `${base}/v1/locations/${encodeURIComponent(subject)}`);
     if (v1 !== 'absent') return `skipped_registry_${v1}`;
+
+    // A stale `complete` row proves nothing: only a fresh affirmative answer from the node does.
+    if (hosted.kind === 'complete_row' && !(await hosted.probe().catch(() => false))) return 'skipped_not_hosted';
 
     const record = await signLocationRecord(
       {

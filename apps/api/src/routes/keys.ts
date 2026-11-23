@@ -9,6 +9,7 @@ import { hashTypedData, validateTypedData, verifyMessage } from 'viem';
 import type { Hex, TypedDataDefinition } from 'viem';
 import {
   ensureTinyCloudBootstrapForApprovedSign,
+  probeAccountSpaceHosted,
 } from '../services/tinycloud-bootstrap';
 import { ownerLocationPublishAllowed, publishOwnerLocationInBackground } from '../services/owner-location-record';
 import { awaitTinyCloudBootstrapWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
@@ -489,13 +490,29 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const bootstrap = await awaitTinyCloudBootstrapWithinBudget(
     ensureTinyCloudBootstrapForApprovedSign({
       prisma, userId: user.id, key, privateKey, message: body.message, format,
-      // TC-4082: the hook exists only for a first-party sign that is allowed to publish; the bootstrap fires it, past the
-      // Auto-Sign check, when this run completes the account's setup. It runs in the background, after the sign.
+      // TC-4082: the hooks exist only for a first-party sign that is allowed to publish, and the bootstrap fires them
+      // only past the Auto-Sign check. A run that just completed the setup is itself the hosted signal. A `complete` row
+      // that was already there is not: the publish asks the node (a fresh 2xx on the account space) before it signs.
+      // Both run in the background, after the sign.
       ...(ownerLocationPublishAllowed(body)
         ? {
             onFreshlyComplete: ({ host }: { host: string }) => publishOwnerLocationInBackground({
               address: key.address,
               hostedHost: host,
+              signMessage: (message) => account.signMessage({ message }),
+            }),
+            onAlreadyComplete: ({ host, chainId }: { host: string; chainId: number }) => publishOwnerLocationInBackground({
+              address: key.address,
+              hostedHost: host,
+              hosted: {
+                kind: 'complete_row',
+                probe: () => probeAccountSpaceHosted({
+                  address: key.address,
+                  chainId,
+                  tinycloudHost: host,
+                  signMessage: (message) => account.signMessage({ message }),
+                }),
+              },
               signMessage: (message) => account.signMessage({ message }),
             }),
           }
