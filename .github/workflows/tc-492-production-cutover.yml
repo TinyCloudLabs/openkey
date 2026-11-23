@@ -379,12 +379,21 @@ jobs:
           set -euo pipefail
           workflow_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/tc-492-production-cutover.yml" --jq '.id')
           [[ "$workflow_id" =~ ^[0-9]+$ ]]
-          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PREFLIGHT_RUN_ID}" |
+          run_json=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PREFLIGHT_RUN_ID}")
+          printf '%s' "$run_json" |
             jq -e --argjson workflow "$workflow_id" --arg repository "$GITHUB_REPOSITORY" '
               .workflow_id == $workflow and .head_repository.full_name == $repository and
               .event == "workflow_dispatch" and .head_branch == "main" and
               .status == "completed" and .conclusion == "success"
             ' >/dev/null || { echo "The preflight run must be a successful TC-492 dispatch from this repository's main branch." >&2; exit 1; }
+          # A run dispatched on a tag named "main" also reports head_branch=main; require the commit to be on main.
+          head_sha=$(printf '%s' "$run_json" | jq -r '.head_sha // empty')
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "The preflight run has no valid head_sha." >&2; exit 1; }
+          compare_status=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${head_sha}...main" --jq '.status') || compare_status=""
+          case "$compare_status" in
+            identical|ahead) ;;
+            *) echo "The preflight run's head_sha is not on this repository's main branch (compare status: ${compare_status:-unknown})." >&2; exit 1 ;;
+          esac
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
