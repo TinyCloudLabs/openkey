@@ -21,6 +21,9 @@
   import Button from '$lib/components/ui/button.svelte';
   import Input from '$lib/components/ui/input.svelte';
 
+  /** How long the choices wait for the provider list before they render without the Google and Apple rows. */
+  const PROVIDERS_WAIT_MS = 1000;
+
   interface Props {
     prompt: string;
     /** Shown above the prompt: why the frame asks for a sign-in again. */
@@ -57,9 +60,26 @@
   let error = $state('');
   let busy = $state<BusyAction | null>(null);
   let providers = $state<SocialProviderId[]>([]);
+  // The choices render once the provider list is known, so a late reply never inserts rows above Passkey.
+  let providersSettled = $state(false);
 
-  onMount(async () => {
-    providers = await loadConfiguredSocialProviders().catch(() => []);
+  onMount(() => {
+    let live = true;
+    const settle = (found: SocialProviderId[]) => {
+      if (!live || providersSettled) return;
+      providers = found;
+      providersSettled = true;
+    };
+    // A reply after the bound is ignored: the choices are already on screen without the rows.
+    const bound = setTimeout(() => settle([]), PROVIDERS_WAIT_MS);
+    loadConfiguredSocialProviders().catch(() => []).then((found) => {
+      clearTimeout(bound);
+      settle(found);
+    });
+    return () => {
+      live = false;
+      clearTimeout(bound);
+    };
   });
 
   async function sendOtp() {
@@ -168,7 +188,23 @@
     </div>
   {/if}
 
-  {#if step === 'choices'}
+  {#if step === 'choices' && !providersSettled}
+    <!-- The rows take the height the settled choices have with Google and Apple configured, so the frame does not move when they appear. -->
+    <div class="flex w-full flex-col" aria-busy="true" data-testid="sign-in-choices-pending">
+      <div class="h-10 w-full rounded-xl bg-surface-100"></div>
+      <div class="mt-3 flex w-full flex-col gap-3">
+        <div class="h-10 w-full rounded-xl bg-surface-100"></div>
+        <div class="h-10 w-full rounded-xl bg-surface-100"></div>
+      </div>
+      {#if passkeysSupported}
+        <div class="my-4 h-4 w-full"></div>
+        <div class="h-10 w-full rounded-xl bg-surface-100"></div>
+      {/if}
+      {#if hasEoa && onuseexternalwallet}
+        <div class="mt-3 h-4 w-full"></div>
+      {/if}
+    </div>
+  {:else if step === 'choices'}
     <Button onclick={() => { step = 'email'; error = ''; }} disabled={busy !== null} class="w-full rounded-xl">
       Continue with email
     </Button>
