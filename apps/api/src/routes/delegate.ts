@@ -142,7 +142,7 @@ import {
   sparseCoordinationosEvidence,
   type CoordinationosDenialCode,
 } from '../services/coordinationos-signing-audit';
-import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
+import { MAX_ISSUED_AT_SKEW_MS, validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
 import { canonicalTrustedTinyCloudHost, LOCAL_HOSTNAMES } from '../services/tinycloud-hosts';
 import { awaitTinyCloudBootstrapWithinBudget, hostRequestedSpaceWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
 import { checkDeviceDelegationWindow, deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
@@ -3056,6 +3056,17 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     return c.json(
       {
         error: 'SIWE is missing required header fields (issuedAt, expirationTime, or nonce)',
+        code: 'invalid_siwe_header',
+      },
+      400,
+    );
+  }
+  // The grant is signed to the Expiration Time and the length rules read Expiration Time minus Issued At, so an
+  // Issued At ahead of the clock would shorten the length the rules see. Issued At is refused past the clock skew.
+  if (Date.parse(immutable.issuedAt) > Date.now() + MAX_ISSUED_AT_SKEW_MS) {
+    return c.json(
+      {
+        error: 'The SIWE Issued At is in the future. Set Issued At to the current time and ask again.',
         code: 'invalid_siwe_header',
       },
       400,
