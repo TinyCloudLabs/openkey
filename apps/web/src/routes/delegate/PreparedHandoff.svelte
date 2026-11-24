@@ -4,7 +4,7 @@
   import { authClient, authErrorMessage } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
-  import { buildStatements, parseEncryptionResource, parseCapabilityReview, defaultSelection, renderLiteral, renderSiweLiteral, splitStatementCode, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
+  import { buildStatements, parseEncryptionResource, parseCapabilityReview, parseSiweFields, defaultSelection, renderLiteral, renderSiweLiteral, siweExpirationTime, splitStatementCode, type CapabilityGrant, type CapabilityReviewModel } from '@openkey/capability-review';
   import { validatePreviewSelection } from '$lib/preview-review';
   import { requestedActionIds } from '$lib/widget-selection';
   import { timeUntilExpiry } from '$lib/siwe-parser';
@@ -14,7 +14,7 @@
   import { ApprovalReplyError, compareWallets, readHandoffReply, releasedSigningCancellation, shortWallet, stopForApprovalError, stopKeyName } from '$lib/approval-stop';
   import { OwnerMessageError } from '$lib/delegate-failure-text';
   import StopPage from '$lib/components/approval/stop-page.svelte';
-  import { expiryAtCapped, requestedExpiryMs, siweExpiration } from '$lib/approval-expiry';
+  import { expiryAtCapped, requestedExpiryMs } from '$lib/approval-expiry';
   import ApprovalExpiryControl from '$lib/components/signing/approval-expiry-control.svelte';
   import { formatLocalAccessEnd } from '$lib/access-end';
   import CodeBox from '$lib/components/approval/code-box.svelte';
@@ -77,7 +77,7 @@
     }
   });
   const signedExpiry = $derived.by(() => {
-    const value = (phase === 'preview' ? siweExpiration(previewMessage) : null) ?? siweExpiration(handoff?.request.siwe ?? '');
+    const value = (phase === 'preview' ? siweExpirationTime(previewMessage) : null) ?? siweExpirationTime(handoff?.request.siwe ?? '');
     if (!value) return null;
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? null : { local: date.toLocaleString(), relative: timeUntilExpiry(value).text };
@@ -85,9 +85,9 @@
   // The exact end the open fold shows after the choice: what the preview signs, else what a pick would give
   // from now, else what the CLI asked for.
   const foldEndsAt = $derived.by(() => {
-    if (phase === 'preview') return siweExpiration(previewMessage) ?? null;
+    if (phase === 'preview') return siweExpirationTime(previewMessage);
     if (expiryChoiceMs !== null) return new Date(Date.now() + expiryChoiceMs).toISOString();
-    return siweExpiration(handoff?.request.siwe ?? '') ?? null;
+    return siweExpirationTime(handoff?.request.siwe ?? '');
   });
   let key = $state<EthereumKey | null>(null);
   let keyChoices = $state<KeyChoice[]>([]);
@@ -204,8 +204,14 @@
       }
       if (!isClaim(value)) throw new Error('Invalid prepared sign-in request. Restart the CLI command.');
       // Freshness is decided on the server's clock once the first reply arrives (see `load`), never the device clock.
-      const issuedAt = /^Issued At:[ \t]*(.+)$/m.exec(value.request.siwe)?.[1]?.trim();
-      preparedExpiryMs = Date.parse(issuedAt ?? '') + 300_000;
+      // TC-3826: a request the node could not read (a control character, U+2028 or U+2029) is a mistake in the request, not an expiry.
+      const request = parseSiweFields(value.request.siwe);
+      if (!request.ok) {
+        clearPending();
+        stop = approvalStop('S19', { status: 400, code: 'invalid_siwe_message' });
+        return;
+      }
+      preparedExpiryMs = Date.parse(request.fields.issuedAt) + 300_000;
       if (!Number.isFinite(preparedExpiryMs)) {
         clearPending();
         stop = expiredStop();
@@ -401,7 +407,7 @@
       }
       const actions = selectedIds();
       if (!actions.length) throw new Error('Select at least one ability.');
-      const candidate = await post('authorize-sign-preview', { ticket, authorizationContextToken: contextToken, selectedActionIds: actions, ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAtCapped(expiryChoiceMs, siweExpiration(handoff.request.siwe)) }) }, ['signedMessage', 'previewApprovalToken']);
+      const candidate = await post('authorize-sign-preview', { ticket, authorizationContextToken: contextToken, selectedActionIds: actions, ...(expiryChoiceMs === null ? {} : { expirationTime: expiryAtCapped(expiryChoiceMs, siweExpirationTime(handoff.request.siwe)) }) }, ['signedMessage', 'previewApprovalToken']);
       if (typeof candidate.previewApprovalToken !== 'string' || typeof candidate.signedMessage !== 'string') throw new Error('Missing sealed signing preview.');
       validatePreviewSelection(candidate, actions);
       previewToken = candidate.previewApprovalToken;
@@ -542,7 +548,7 @@
   const requester = $derived(model?.requester.displayName ?? '');
   const receiptRows = $derived.by(() => {
     const rows: ReceiptRow[] = [];
-    const ends = siweExpiration(previewMessage);
+    const ends = siweExpirationTime(previewMessage);
     if (ends) rows.push({ label: DONE.receipt.ends, value: formatLocalAccessEnd(ends) });
     if (key && accountKeyCount > 1) {
       rows.push({ label: DONE.receipt.signedWith, value: `${key.label ?? `Key ${key.keyIndex}`} ${key.address.slice(0, 6)}...${key.address.slice(-4)}` });
@@ -654,6 +660,7 @@
         disabled={!expiryEditable}
         onChange={(ms) => { if (expiryEditable) expiryChoiceMs = ms; }}
         endsAt={foldEndsAt}
+        holder="device"
       />
       <h2 class="font-semibold">Requested abilities and spaces</h2>
       {#each model.permissions as grant}

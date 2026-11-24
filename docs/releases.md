@@ -32,6 +32,10 @@ node scripts/release/backfill-github-releases.mjs             # create them
 
 `deploy-api.yml` is manual (`gh workflow run deploy-api.yml --ref main`); its `production` environment makes GitHub record a Deployment per run.
 
+Every deploy and npm publish first requires the pre-release security check to be green on the
+exact commit, and the web build audits its own output (`bun run audit:web`); see
+[security/required-checks.md](security/required-checks.md).
+
 Cloudflare Pages production auto-deploy is off: a merge alone does not publish
 `openkey.so`. The release coordinator manually retries the skipped production
 deployment. Pages reports a check run, not a Deployment.

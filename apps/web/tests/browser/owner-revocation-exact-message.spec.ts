@@ -6,6 +6,7 @@
 // at 390 px. Every API call is answered by `page.route`; no API server runs.
 
 import { test, expect, type Page, type Route } from '@playwright/test';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0x1111111111111111111111111111111111111111';
 const cid = 'bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgzz7nazxe';
@@ -36,6 +37,7 @@ async function exactMessage(page: Page, siwe: string): Promise<Shown> {
     if (path === '/api/delegate/owner-revocation/prepare') return json(route, { authorizationContextToken: 'token', siwe });
     return json(route, { error: `unmocked ${path}` }, 404);
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   const request = { kind: 'owner-revocation', ownerDid: `did:pkh:eip155:1:${address}`, cid, nonce, expiresAt: new Date(Date.now() + 590_000).toISOString() };
   await page.goto(`/delegate#tv2=${Buffer.from(JSON.stringify({ transportVersion: 2, request, delivery })).toString('base64url')}`);
   await expect(page.getByText('Exact message to sign')).toBeVisible();

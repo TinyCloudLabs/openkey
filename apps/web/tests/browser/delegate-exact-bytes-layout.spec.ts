@@ -7,6 +7,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0x1111111111111111111111111111111111111111';
 const space = `tinycloud:pkh:eip155:1:${address}:secrets`;
@@ -17,6 +18,7 @@ const request = [{ service: 'tinycloud.kv', space, path: 'vault/secrets/TC_FWD_T
 const siwe = [
   'cli.tinycloud.xyz wants you to sign in with your Ethereum account:',
   address,
+  '',
   '',
   'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
   'Version: 1',
@@ -69,6 +71,7 @@ async function openDelegate(page: Page) {
     if (path === '/api/delegate/prepare') return json(route, 200, preparedResponse);
     return json(route, 404, { error: `unmocked ${path}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   const jwk = encodeBase64UrlJson({ kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}&permissions=${encodeBase64UrlJson({ permissions: request })}`);
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();

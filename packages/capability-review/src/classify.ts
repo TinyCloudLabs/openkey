@@ -35,6 +35,7 @@ import {
 } from "./copy.js";
 import { APPS_SEGMENT, parseKeyResource } from "./key-resource.js";
 import { plainSentence } from "./plain-words.js";
+import { KV_VERBS, MUTATION_VERBS, SECRETS_KNOWN_VERBS, SQL_DATABASE_VERBS } from "./known-verbs.js";
 import {
   SPACE_SERVICES,
   SQL_ADMIN_OPERATIONS,
@@ -69,19 +70,6 @@ const SECRETS_SERVICES = new Set(["tinycloud.secrets", "secrets"]);
 
 const ENCRYPTION_SERVICES = new Set(["tinycloud.encryption", "encryption"]);
 
-const MUTATION_VERBS = new Set([
-  "put",
-  "post",
-  "write",
-  "delete",
-  "del",
-  "admin",
-  "grant",
-  "revoke",
-  "update",
-  "create",
-]);
-
 const DECRYPT_VERBS = new Set(["decrypt"]);
 
 // The single read-shaped verb the capabilities service is expected to
@@ -91,18 +79,6 @@ const DECRYPT_VERBS = new Set(["decrypt"]);
 // into the fail-closed `unknown` family (see BOOTSTRAP_CAPABILITIES_SERVICES
 // branch below), which elevates severity via `classifySeverityFromActions`.
 const CAPABILITY_READ_VERBS = new Set(["read"]);
-// `delete` is the registry's deprecated alias of `del`. `sync` (change feed)
-// and `retain` (offline retention attestation) are registered KV abilities.
-const KV_VERBS = new Set([
-  "get",
-  "list",
-  "metadata",
-  "put",
-  "del",
-  "delete",
-  "sync",
-  "retain",
-]);
 /** Display labels of the account space's two registries (installed apps, spaces). */
 export const ACCOUNT_APP_REGISTRY_LABEL = "Connected app registry";
 export const ACCOUNT_SPACE_REGISTRY_LABEL = "Storage space registry";
@@ -110,7 +86,6 @@ const ACCOUNT_REGISTRY_KV_VERBS = new Set(["get", "list", "put"]);
 const ACCOUNT_SETUP_KV_VERBS = new Set(["get", "put"]);
 // `select` is the registry's deprecated alias of `read`.
 const SQL_DATA_VERBS = new Set(["read", "select", "write"]);
-const SQL_DATABASE_VERBS = new Set(["read", "select", "write", "schema"]);
 const SQL_ADMIN_VERBS = new Set(Object.keys(SQL_ADMIN_OPERATIONS));
 const SQL_NAMED_DATABASE_VERBS = new Set([
   ...SQL_DATABASE_VERBS,
@@ -128,19 +103,6 @@ const ENCRYPTION_VERBS = new Set([
   ...ENCRYPTION_NETWORK_VERBS,
   ...DECRYPT_VERBS,
   ...ENCRYPTION_KEY_VERBS,
-]);
-
-// The verbs the secrets service is expected to carry. Any grant on
-// `tinycloud.secrets` (or `secrets`) with a verb outside this union is
-// classified as `secret-mutation` so unknown verbs stay inside the
-// secret-access count and are surfaced as sensitive rather than inheriting
-// friendly read copy.
-const SECRETS_KNOWN_READ_VERBS = new Set(["read", "get"]);
-const SECRETS_KNOWN_VERBS = new Set([
-  ...SECRETS_KNOWN_READ_VERBS,
-  ...MUTATION_VERBS,
-  "list",
-  "metadata",
 ]);
 
 const SQL_KNOWN_VERBS = new Set([
@@ -308,14 +270,14 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       return {
         family: "secret-namespace-list",
         displayLabel: isSecretValueRead(entry.actions)
-          ? "Secret data — (all secrets)"
-          : "Secret names and metadata — (all secrets)",
+          ? "Secret data: all secrets"
+          : "Secret names and metadata: all secrets",
       };
     }
     if (BOOTSTRAP_SQL_SERVICES.has(service)) {
       return {
         family: isMutation ? "secret-mutation" : "secret-read",
-        displayLabel: `${isMutation ? "Secret catalog (manage)" : "Secret catalog (view)"} — ${describeName(path)}`,
+        displayLabel: `${isMutation ? "Secret catalog (manage)" : "Secret catalog (view)"}: ${describeName(path)}`,
       };
     }
     return {
@@ -326,7 +288,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
           : metadataOnly
             ? "Secret names and metadata"
             : "Secret values (read)"
-      } — ${describeName(path)}`,
+      }: ${describeName(path)}`,
     };
   }
 
@@ -349,7 +311,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
       );
       const secretName =
         path.replace(/^vault\/secrets\/?/, "").replace(/^secrets\/?/, "") ||
-        "(all secrets)";
+        "all secrets";
       const isWholeNamespace =
         path === "vault/secrets" || path === "secrets";
       return {
@@ -359,12 +321,12 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
             ? "secret-namespace-list"
             : "secret-read",
         displayLabel: isMutation
-          ? `Named secret (mutate) — ${secretName}`
+          ? `Named secret (mutate): ${secretName}`
           : isWholeNamespace
             ? isSecretValueRead(entry.actions)
-              ? "Secret data — (all secrets)"
-              : "Secret names and metadata — (all secrets)"
-            : `Named secret (read) — ${secretName}`,
+              ? "Secret data: all secrets"
+              : "Secret names and metadata: all secrets"
+            : `Named secret (read): ${secretName}`,
       };
     }
     // Ability-derived and resource-derived services disagree. Outside the
@@ -484,7 +446,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
             labels.length > 1
               ? plainSentence(entry.actions, entry.space, isOtherUser ? "another user's " : "your ")
               : isOtherUser
-                ? `${labels[0]} — another user`
+                ? `Another user's ${labels[0]}`
                 : labels[0]!,
         };
       }
@@ -533,7 +495,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     }
     return {
       family: "bootstrap-capabilities",
-      displayLabel: `Permission check${spaceName ? ` — ${spaceName}` : ""}`,
+      displayLabel: `Permission check${spaceName ? `: ${spaceName}` : ""}`,
     };
   }
   if (DELEGATION_SERVICES.has(service)) {
@@ -593,22 +555,22 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
     if (isMutation || hasUnknownVerb) {
       return {
         family: "secret-mutation",
-        displayLabel: `Named secret (mutate) — ${describeName(path)}`,
+        displayLabel: `Named secret (mutate): ${describeName(path)}`,
       };
     }
     if (path === "" && isNamespaceListing(entry.actions)) {
       return {
         family: "secret-namespace-list",
         displayLabel: isSecretValueRead(entry.actions)
-          ? "Secret data — (all secrets)"
-          : "Secret names and metadata — (all secrets)",
+          ? "Secret data: all secrets"
+          : "Secret names and metadata: all secrets",
       };
     }
     return {
       family: "secret-read",
       displayLabel: `${
         metadataOnly ? "Secret names and metadata" : "Named secret (read)"
-      } — ${describeName(path)}`,
+      }: ${describeName(path)}`,
     };
   }
   if (ENCRYPTION_SERVICES.has(service)) {
@@ -719,14 +681,14 @@ function classifyCoreOperation(
     // Never lower an administrative grant to the attention-level
     // cross-user family.
     return family === "database-admin"
-      ? { family, displayLabel: composed ?? `${label} — another user` }
+      ? { family, displayLabel: composed ?? `Another user's ${label}` }
       : { family: "cross-app-data", displayLabel: "Another user's data" };
   }
   return { family, displayLabel: label };
 }
 
 function describeName(path: string): string {
-  if (!path) return "(all secrets)";
+  if (!path) return "all secrets";
   return path;
 }
 

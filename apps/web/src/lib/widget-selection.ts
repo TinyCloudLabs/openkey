@@ -7,8 +7,17 @@ import { validatePreviewSelection } from './preview-review';
 // the spelling of a request and the reading of its preview stay in one place.
 
 /** The ids to send to `/authorize-sign-preview` and `/authorize-sign` for the selected actions. */
-export function requestedActionIds(model: CapabilityReviewModel | null, selection: ReadonlySet<string>): string[] {
-  return model ? selectedServerActionIds(model, selection) : [];
+export function requestedActionIds(
+  model: CapabilityReviewModel | null,
+  selection: ReadonlySet<string>,
+  includeRenewalOnly = true,
+): string[] {
+  if (!model) return [];
+  const review = includeRenewalOnly ? model : {
+    ...model,
+    permissions: model.permissions.filter((grant) => !grant.renewalOnly),
+  };
+  return selectedServerActionIds(review, selection);
 }
 
 /** The review selection a preview describes, after the preview has been checked against the request. */

@@ -1,7 +1,7 @@
 <script lang="ts">
   // How long the approval lasts, and whether it renews (TC-2272, TC-2933).
   // One line: a renewal checkbox where the requester can use a renewal lease,
-  // otherwise "This permission expires in <window>". The window and the lease
+  // otherwise "This app's access to your data lasts <window>." The window and the lease
   // are changed in approval-expiry-chooser.svelte: under a closed fold here, or
   // where the screen sets `chooser` false and shows the chooser itself. It only
   // reports the choices; the server writes the window into the signed message
@@ -10,10 +10,12 @@
     LONG_EXPIRY_MS,
     LONG_EXPIRY_WARNING,
     MAX_LEASE_MS,
+    ONCE_DEFAULT_EXPIRY_MS,
     SENSITIVE_RENEWAL_WINDOW_MS,
+    accessLastsLine,
     defaultLeaseMs,
     formatDuration,
-    formatDurationWithEnd,
+    type OnceLongerChoice,
   } from "$lib/approval-expiry";
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
@@ -41,13 +43,17 @@
     /** How many permission rows the line sits under: more than one reads in the plural. */
     permissionCount?: number;
     /**
-     * Set while a one-hour start is in effect and the owner has not picked a time (TC-3111): who asked, as the
-     * screen names them ("This request" on a link). Null shows no note.
+     * Set on a one-time approval (secrets or decrypt, TC-4156). `caution` says what the access can open and shows
+     * under the length; `longer` is the second option next to 1 hour, null where the app asked for an hour or less.
+     * Null shows neither.
      */
-    onceSite?: string | null;
-    onceNote?: string | null;
+    onceChoice?: { longer: OnceLongerChoice | null; caution: string } | null;
+    /** On a signed request for a secret's own key: its start and the most it can be. Null shows no note. */
+    lengthNote?: string | null;
     /** Show the "How long it lasts" fold here. False where the screen shows ApprovalExpiryChooser elsewhere. */
     chooser?: boolean;
+    /** Who holds the access, as the line names them: an app, or the device of a device sign-in. */
+    holder?: "app" | "device";
   }
 
   let {
@@ -61,16 +67,23 @@
     requestedBy = "",
     endsAt = null,
     permissionCount = 1,
-    onceSite = null,
-    onceNote = null,
+    onceChoice = null,
+    lengthNote = null,
     chooser = true,
+    holder = "app",
   }: Props = $props();
+  // Names the radio group and the caution that describes it.
+  const uid = $props.id();
 
   let confirming = $state(false);
   let confirmHeading = $state<HTMLHeadingElement | null>(null);
   let checkbox = $state<HTMLInputElement | null>(null);
+  let onceGroup = $state<HTMLFieldSetElement | null>(null);
+  // Counts the owner's picks, so the radios are checked against what will be signed after every pick.
+  let oncePicks = $state(0);
 
   const shownMs = $derived(chosenMs ?? requestedMs);
+  const accessLine = $derived(shownMs === null ? "" : accessLastsLine(renewal?.deviceSignIn ? "device" : holder, shownMs));
   const leaseMaxMs = $derived(renewal ? Math.min(renewal.maxLeaseMs, MAX_LEASE_MS) : MAX_LEASE_MS);
   const proposedLeaseMs = $derived(renewal ? defaultLeaseMs(leaseMaxMs) : 0);
   const ticked = $derived(renewal !== null && renewal.leaseMs !== null);
@@ -102,8 +115,13 @@
     confirming = false;
     // D6 rule 3: renewing secrets or decrypt uses a 7-day window, within what the requester signed.
     // One change, so the preview is prepared once with both the lease and the window.
-    const window = maxMs == null ? SENSITIVE_RENEWAL_WINDOW_MS : Math.min(SENSITIVE_RENEWAL_WINDOW_MS, maxMs);
-    renewal!.onChange(proposedLeaseMs, window === shownMs ? undefined : window === requestedMs ? null : window);
+    const window = Math.min(
+      SENSITIVE_RENEWAL_WINDOW_MS,
+      maxMs ?? Infinity,
+      renewal?.deviceSignIn ? shownMs ?? Infinity : Infinity,
+    );
+    // TC-3821: the confirm travels with the choice; the server refuses a lease on secrets without it.
+    renewal!.onChange(proposedLeaseMs, window === shownMs ? undefined : window === requestedMs ? null : window, true);
     queueMicrotask(() => checkbox?.focus());
   }
 
@@ -116,6 +134,24 @@
   $effect(() => {
     if (disabled) confirming = false;
   });
+
+  // A radio the owner clicked stays checked in the page even when the new length was not prepared (a failed
+  // re-prepare leaves the old length as the one that will be signed). Once the preview ends, the radios show
+  // the length that will be signed.
+  $effect(() => {
+    void oncePicks;
+    if (disabled || onceGroup === null) return;
+    const signedMs = shownMs;
+    const lengths = [ONCE_DEFAULT_EXPIRY_MS, onceChoice?.longer?.ms];
+    onceGroup.querySelectorAll<HTMLInputElement>('input[type="radio"]').forEach((radio, index) => {
+      radio.checked = lengths[index] === signedMs;
+    });
+  });
+
+  function pickOnce(ms: number) {
+    oncePicks += 1;
+    onChange(ms);
+  }
 
   function onKeydown(event: KeyboardEvent) {
     if (event.key === "Escape" && confirming) {
@@ -130,7 +166,14 @@
     {#if confirming}
       <div class="renewal-confirm" role="alertdialog" aria-labelledby="renewal-confirm-heading" aria-describedby="renewal-confirm-body">
         <h3 class="renewal-confirm-heading" id="renewal-confirm-heading" tabindex="-1" bind:this={confirmHeading}>Renew sensitive access?</h3>
-        <p id="renewal-confirm-body">This lets {requestedBy} keep the Sensitive access listed here for up to {formatDuration(proposedLeaseMs)}, without asking you again. You can stop renewal any time under Renewing permissions in Settings.</p>
+        <p id="renewal-confirm-body">
+          {#if renewal?.deviceSignIn}
+            This device can keep the sensitive access listed here for up to {formatDuration(proposedLeaseMs)}.
+            Each renewal lasts up to 7 days. You can stop renewal under Renewing permissions in Settings.
+          {:else}
+            This lets {requestedBy} keep the Sensitive access listed here for up to {formatDuration(proposedLeaseMs)}, without asking you again. You can stop renewal any time under Renewing permissions in Settings.
+          {/if}
+        </p>
         <div class="renewal-confirm-actions">
           <button type="button" class="renewal-confirm-no" onclick={cancelRenewal}>Don't renew</button>
           <button type="button" class="renewal-confirm-yes" onclick={confirmRenewal}>Turn on renewal</button>
@@ -148,21 +191,45 @@
         />
         <span data-testid="approval-expiry-line">
           {#if renews}
-            {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}
+            {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}{renewal.deviceSignIn ? "." : ""}
           {:else}
-            {permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDurationWithEnd(shownMs)}
+            {accessLine}
           {/if}
         </span>
       </label>
     {:else}
-      <p class="expiry-line" data-testid="approval-expiry-line">{permissionCount > 1 ? "These permissions expire" : "This permission expires"} in {formatDurationWithEnd(shownMs)}</p>
+      <p class="expiry-line" data-testid="approval-expiry-line">{accessLine}</p>
     {/if}
-    {#if onceNote !== null}
-      <p class="expiry-once-note" data-testid="approval-expiry-once-note">{onceNote}</p>
-    {:else if onceSite !== null && requestedMs !== null}
-      <p class="expiry-once-note" data-testid="approval-expiry-once-note">
-        {onceSite} asked for {formatDuration(requestedMs)}. Access to secrets or encrypted data starts at {formatDuration(shownMs)}. You can choose longer in Advanced details.
-      </p>
+    {#if onceChoice !== null}
+      {#if onceChoice.longer !== null && renewal?.leaseMs == null && (shownMs === ONCE_DEFAULT_EXPIRY_MS || shownMs === onceChoice.longer.ms)}
+        <fieldset class="once-choice" bind:this={onceGroup} data-testid="approval-expiry-once-choice" aria-describedby="{uid}-once-caution">
+          <legend>How long</legend>
+          <label class="once-option">
+            <input
+              type="radio"
+              name="{uid}-once-length"
+              checked={shownMs === ONCE_DEFAULT_EXPIRY_MS}
+              {disabled}
+              onchange={() => pickOnce(ONCE_DEFAULT_EXPIRY_MS)}
+            />
+            <span>{formatDuration(ONCE_DEFAULT_EXPIRY_MS)}</span>
+          </label>
+          <label class="once-option">
+            <input
+              type="radio"
+              name="{uid}-once-length"
+              checked={shownMs === onceChoice.longer.ms}
+              {disabled}
+              onchange={() => pickOnce(onceChoice.longer!.ms)}
+            />
+            <span>{onceChoice.longer.label}</span>
+          </label>
+        </fieldset>
+      {/if}
+      <p class="expiry-once-note" id="{uid}-once-caution" data-testid="approval-expiry-once-caution">{onceChoice.caution}</p>
+    {/if}
+    {#if lengthNote !== null}
+      <p class="expiry-once-note" data-testid="approval-expiry-length-note">{lengthNote}</p>
     {/if}
     {#if chooser}
       <details class="expiry-fold">
@@ -194,6 +261,38 @@
   /* Spaced under the line like the other paragraphs on the screen (measured at 390px: 10px, as above the line). */
   .expiry-once-note {
     margin-top: 4px;
+  }
+  .once-choice {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  .once-choice > legend {
+    padding: 0;
+    margin-bottom: 2px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #475569;
+  }
+  .once-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 40px;
+    color: #0f172a;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+  }
+  .once-option > input {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    margin: 0;
+    accent-color: #1d4ed8;
   }
   .renewal-line {
     display: flex;

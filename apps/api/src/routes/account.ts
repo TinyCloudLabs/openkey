@@ -708,7 +708,7 @@ accountRouter.post('/delete', async (c) => {
   // Stop every renewal lease before the keys go (TC-2946): once they are deleted nobody can revoke a lease
   // OpenKey signed, and the node would keep renewing its grant. A lease counts as stopped only when its node
   // confirmed; any other outcome deletes nothing, and a retry sends the ones still open again.
-  const leases = await revokeRenewalLeases(prisma, user.id, { kind: 'all' });
+  const leases = await revokeRenewalLeases(prisma, user.id, { kind: 'all', includeNativeStops: true });
   if (leases.notStopped.length > 0) return renewalLeasesNotStopped(c, leases.notStopped);
 
   // Count and delete every user key. TC-488 removed tenant-managed keys.
@@ -721,7 +721,7 @@ accountRouter.post('/delete', async (c) => {
   try { appleTokens = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${user.id} FOR UPDATE`;
     // A lease approved since the revocations above would outlive the keys; a retry stops it first.
-    if (await tx.renewalLease.count({ where: liveLeaseWhere(user.id, { kind: 'all' }, new Date()) }) > 0) return 'LEASES';
+    if (await tx.renewalLease.count({ where: liveLeaseWhere(user.id, { kind: 'all', includeNativeStops: true }, new Date()) }) > 0) return 'LEASES';
     if (!passkeyStepUp) {
       // A passkey that counts, enrolled since the check, needs the passkey
       // step-up instead; the deletion code is spent only by a deletion that commits.

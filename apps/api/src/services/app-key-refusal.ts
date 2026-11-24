@@ -172,7 +172,7 @@ function refusalForResources(
 }
 
 /** Every resource of every `urn:recap:` resource of a SIWE message with its ability names, or `null` when a ReCap cannot be read exactly. */
-function recapResources(siwe: string): Array<[string, string[]]> | null {
+export function recapResources(siwe: string): Array<[string, string[]]> | null {
   const resources: Array<[string, string[]]> = [];
   if (!isSiweShaped(siwe)) return resources;
   for (const match of siwe.matchAll(RECAP_RESOURCE)) {

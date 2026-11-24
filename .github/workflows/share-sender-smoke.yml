@@ -99,6 +99,8 @@ jobs:
         env:
           SHARE_REF: ${{ inputs.share_ref || 'main' }}
           SHARE_SMOKE_ARTIFACT: ${{ runner.temp }}/share-sender-smoke.json
+          QA_MAIL_ADDRESS_SECRET: ${{ secrets.QA_MAIL_ADDRESS_SECRET }}
+          QA_MAIL_READ_TOKEN: ${{ secrets.QA_MAIL_READ_TOKEN }}
         run: scripts/share-sender-smoke.sh
       - name: Keep the scrubbed report
         if: always()

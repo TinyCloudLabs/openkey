@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const id = 'abcdefghijklmnopqrstuvwxyz';
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
@@ -73,7 +74,7 @@ async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scena
         (att[resource] ??= {})[ability] = [{}];
       }
       const lifetimeSeconds = typeof body.expiry === 'string' ? Number.parseFloat(body.expiry) : 3600;
-      let siwe = ['cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '', `URI: ${target}#${target}`,
+      let siwe = ['cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '', '', `URI: ${target}#${target}`,
         'Version: 1', 'Chain ID: 1', `Nonce: qa12345${prepares}`, `Issued At: ${new Date().toISOString()}`,
         `Expiration Time: ${new Date(Date.now() + lifetimeSeconds * 1000).toISOString()}`, 'Resources:', `- ${makeRecapResource(att)}`].join('\n');
       if (prepares >= 3 && scenario === 'empty-siwe') siwe = '';
@@ -105,6 +106,7 @@ async function open(page: Page, keyType: 'MANAGED' | 'EXTERNAL', scenario: Scena
     }
     return reply(404, { error: `Unexpected QA request ${pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto(path);
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
   await page.locator('summary').filter({ hasText: 'Advanced details' }).click();
@@ -120,7 +122,7 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
   for (const code of ['context-expired', 'context-not-found']) {
     test(`${keyType} ${code} refresh keeps the selection and completes approval`, async ({ page }) => {
       const flow = await open(page, keyType, 'success', code);
-      await expect(page.locator('.expiry-line')).toHaveText(/These permissions expire in 7 days/);
+      await expect(page.locator('.expiry-line')).toHaveText(/This app's access to your data lasts 7 days/);
       await page.getByRole('button', { name: 'Approve', exact: true }).click();
       await expect(page.getByRole('heading', { name: /Authenticated|Approved/ })).toBeVisible();
       expect(flow.counts()).toEqual({ prepares: 3, approvals: 2 });
@@ -192,7 +194,7 @@ for (const keyType of ['MANAGED', 'EXTERNAL'] as const) {
 }
 test('an unsuggested one-hour request displays and signs its requested lifetime', async ({ page }) => {
   const flow = await open(page, 'MANAGED', 'success', 'context-expired', { grantLifetimeSeconds: 3600 });
-  await expect(page.locator('.expiry-line')).toHaveText(/These permissions expire in 1 hour/);
+  await expect(page.locator('.expiry-line')).toHaveText(/This app's access to your data lasts 1 hour/);
   await page.getByRole('button', { name: 'Approve', exact: true }).click();
   await expect(page.getByRole('heading', { name: /Authenticated|Approved/ })).toBeVisible();
   const prepares = flow.calls.filter(call => call.path === '/api/delegate/prepare');

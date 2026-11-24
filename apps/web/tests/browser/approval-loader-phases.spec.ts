@@ -9,37 +9,50 @@ const phases = (page: Page) => page.locator('[role="status"] li');
 const cardHeight = async (page: Page) => (await page.getByRole('main').boundingBox())!.height;
 const allPhases = ['Checking the link', 'Checking your OpenKey account', 'Loading your keys', 'Preparing the request'];
 
-test('an approval link lights "Checking the link" first, then each phase in turn, and the card keeps its height', async ({ page }) => {
-  await page.setViewportSize({ width: 1280, height: 900 });
-  const load = deferred();
-  const session = deferred();
-  const keys = deferred();
-  const prepare = deferred();
-  await mockApi(page, { signedIn: true, loadHeld: load.promise, sessionHeld: session.promise, keysHeld: keys.promise, prepareHeld: prepare.promise });
-  await page.goto(approvalLink);
+// With a Terms release ('on', the suite's build) the root layout's Terms gate holds the approval page, with its spinner,
+// while the session is read, so the link and session phases are not drawn; with no release ('off') the page's loader
+// runs from first paint.
+for (const release of ['on', 'off'] as const) {
+  test(`with ${release === 'on' ? 'a' : 'no'} Terms release an approval link lights "Checking the link" first, then each phase in turn, and the card keeps its height`, async ({ page }) => {
+    await page.addInitScript((mode) => sessionStorage.setItem('openkey_dev_terms_release', mode), release);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const load = deferred();
+    const session = deferred();
+    const keys = deferred();
+    const prepare = deferred();
+    await mockApi(page, { signedIn: true, loadHeld: load.promise, sessionHeld: session.promise, keysHeld: keys.promise, prepareHeld: prepare.promise });
+    await page.goto(approvalLink);
 
-  await expect(page.getByRole('heading', { level: 1, name: 'Opening your request' })).toBeVisible();
-  await expect(phases(page)).toHaveText(allPhases);
-  await expect(lit(page)).toHaveText('Checking the link');
-  const heights = [await cardHeight(page)];
+    const heights: number[] = [];
+    if (release === 'on') {
+      await expect(page.getByTestId('terms-checking')).toBeVisible();
+      load.resolve();
+      session.resolve();
+    } else {
+      await expect(page.getByRole('heading', { level: 1, name: 'Opening your request' })).toBeVisible();
+      await expect(phases(page)).toHaveText(allPhases);
+      await expect(lit(page)).toHaveText('Checking the link');
+      heights.push(await cardHeight(page));
 
-  load.resolve();
-  await expect(lit(page)).toHaveText('Checking your OpenKey account');
-  await expect(phases(page)).toHaveText(allPhases);
-  heights.push(await cardHeight(page));
+      load.resolve();
+      await expect(lit(page)).toHaveText('Checking your OpenKey account');
+      await expect(phases(page)).toHaveText(allPhases);
+      heights.push(await cardHeight(page));
 
-  session.resolve();
-  await expect(lit(page)).toHaveText('Loading your keys');
-  heights.push(await cardHeight(page));
+      session.resolve();
+    }
+    await expect(lit(page)).toHaveText('Loading your keys');
+    heights.push(await cardHeight(page));
 
-  keys.resolve();
-  await expect(lit(page)).toHaveText('Preparing the request');
-  heights.push(await cardHeight(page));
+    keys.resolve();
+    await expect(lit(page)).toHaveText('Preparing the request');
+    heights.push(await cardHeight(page));
 
-  expect(new Set(heights).size).toBe(1);
-  prepare.resolve();
-  await expect(page.getByRole('heading', { name: 'Opening your request' })).toHaveCount(0);
-});
+    expect(new Set(heights).size).toBe(1);
+    prepare.resolve();
+    await expect(page.getByRole('heading', { name: 'Opening your request' })).toHaveCount(0);
+  });
+}
 
 test('a device link lights "Checking the link" while the device request is looked up', async ({ page }) => {
   const lookup = deferred();

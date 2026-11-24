@@ -1,5 +1,6 @@
 import { test, expect, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
 const space = `tinycloud:pkh:eip155:1:${address}:applications`;
@@ -8,6 +9,7 @@ const kvGet = 'tinycloud.kv/get';
 const kvPut = 'tinycloud.kv/put';
 const siwe = (withPut: boolean) => [
   'openkey.so wants you to sign in with your Ethereum account:', address, '',
+  '',
   'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
   'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-07T04:00:00.000Z',
   'Expiration Time: 2026-10-07T05:00:00.000Z', 'Resources:',
@@ -50,6 +52,7 @@ test.describe('compact native consent', () => {
       if (path === '/api/auth/oauth2/consent') { calls.push({ path, body: route.request().postDataJSON() }); return json(route, { url: 'https://example.test/callback?code=code' }); }
       return json(route, { error: `unmocked ${path}` }, 404);
     });
+    await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
     await page.route('https://tinycloud.chat/**', route => route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>' }));
     await page.route('https://example.test/**', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<p>app</p>' }));
     await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
@@ -112,6 +115,7 @@ test.describe('compact native consent', () => {
       }
       return json(route, { error: `unmocked ${path}` }, 404);
     });
+    await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
     await page.route('https://tinycloud.chat/**', route => route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>' }));
     await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
 
@@ -130,6 +134,7 @@ test.describe('compact native consent', () => {
       if (path.endsWith('/prepare')) return json(route, { ...base, hostPlan: null, revision: 1, digest: 'digest-1', sessionSiwe: siwe(true), selectedActionKeys: selected });
       return json(route, { error: `unmocked ${path}` }, 404);
     });
+    await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
     await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
     await expect(page.locator('[data-native-shell]')).toHaveAttribute('data-branding', 'unavailable');
     await expect(page.locator('[data-native-shell]')).toHaveCSS('background-color', 'rgb(9, 9, 11)');
@@ -139,8 +144,10 @@ test.describe('compact native consent', () => {
   });
 
   test('parser warnings stay reachable inside Details', async ({ page }) => {
-    const [recap] = siwe(true).split('\n').filter(line => line.startsWith('- urn:recap:'));
-    const duplicated = `${siwe(true)}\n${recap}`;
+    // A second, different recap that grants the same action again: the SIWE reader refuses a resource line that is
+    // repeated byte for byte (it would be unreadable, not a warning).
+    const again = `- ${makeRecapResource({ [`${space}/kv/xyz.tinycloud.tinychat/threads/`]: { [kvGet]: [{ note: 'again' }] } })}`;
+    const duplicated = `${siwe(true)}\n${again}`;
     await page.route('**/api/**', route => {
       const path = new URL(route.request().url()).pathname;
       if (path === '/api/auth/get-session') return json(route, sessionBody);
@@ -148,6 +155,7 @@ test.describe('compact native consent', () => {
       if (path.endsWith('/prepare')) return json(route, { ...base, revision: 1, digest: 'digest-1', sessionSiwe: duplicated, selectedActionKeys: selected });
       return json(route, { error: `unmocked ${path}` }, 404);
     });
+    await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
     await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
     const details = page.locator('details.details');
     await expect(details).toBeVisible();
@@ -165,6 +173,7 @@ test.describe('compact native consent', () => {
       if (path === '/api/auth/providers') return json(route, { providers: [] });
       return json(route, { error: `unmocked ${path}` }, 404);
     });
+    await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
     await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
     await page.waitForURL(/\/auth\/login\?redirect=/);
     await expect(page.getByText('Loading...')).toHaveCount(0);
@@ -178,6 +187,7 @@ test.describe('compact native consent', () => {
       if (path === '/api/auth/providers') return json(route, { providers: [] });
       return json(route, { error: `unmocked ${path}` }, 404);
     });
+    await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
     const rootState = () => page.evaluate(() => {
       const root = document.documentElement;
       return {
@@ -218,6 +228,7 @@ test('retry after provider consent failure does not approve or sign again', asyn
     }
     return json(route, { error: `unmocked ${path}` }, 404);
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
   await page.getByRole('button', { name: 'Allow', exact: true }).click();
   await expect(page.getByText('temporarily_unavailable')).toBeVisible();
@@ -236,6 +247,7 @@ test('denial still reaches provider when request denial route fails', async ({ p
     if (path === '/api/auth/oauth2/consent') { providerDenied = route.request().postDataJSON().accept === false; return json(route, { url: 'https://example.test/callback?error=access_denied' }); }
     return json(route, { error: `unmocked ${path}` }, 404);
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
   await page.getByRole('button', { name: "Don't allow", exact: true }).click();
   await expect.poll(() => providerDenied).toBe(true);
@@ -252,6 +264,7 @@ test('reloaded approved request can finish provider consent', async ({ page }) =
     if (path === '/api/auth/oauth2/consent') { providerPosts++; return json(route, { url: 'https://example.test/callback?code=code' }); }
     return json(route, { error: `unmocked ${path}` }, 404);
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
   await expect(page.getByText('Your delegation was approved.')).toBeVisible();
   await page.getByRole('button', { name: 'Continue to app' }).click();

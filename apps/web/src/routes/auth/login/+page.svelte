@@ -41,6 +41,7 @@
   import {
     accountHasNoPasskeys,
     browserPasskeyAutofill,
+    ceremonyAfterAutofill,
     enrolmentDecision,
     isNoPasskeyError,
     startPasskeyAutofill,
@@ -49,8 +50,10 @@
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
+  import TermsCheckFailed from '$lib/components/auth/terms-check-failed.svelte';
   import TermsStep from '$lib/components/auth/terms-step.svelte';
-  import { oauthClientName, pendingTerms, type TermsStatus } from '$lib/terms';
+  import { checkTerms, oauthClientName, type TermsStatus } from '$lib/terms';
+  import { termsCheckedFirst } from '$lib/terms-release';
 
   // 'passkey' is the enrolment offer; 'passkeySignIn' and 'social' are native-mode landing steps.
   // 'social' is the frame shown while opening a provider or checking its return.
@@ -123,18 +126,37 @@
   let socialConfirmation = $state<SocialContinuation | null>(null);
   const socialName = $derived(socialProvider ? socialProviderName(socialProvider) : null);
   // TC-3232: an account that has not accepted the current Terms sees them right after signing in,
-  // before the passkey offer or anything else; `afterTerms` is where sign-in was headed.
+  // before the passkey offer or anything else; `afterTerms` is where sign-in was headed. When the
+  // status can't be read, Try again; sign-in never continues past an unread status.
   let terms = $state<{ status: TermsStatus; email: string; appName: string | null } | null>(null);
+  let termsCheckFailed = $state(false);
   let afterTerms: (() => void | Promise<void>) | null = null;
+  // This sign-in's account is known to have agreed: later steps don't read the status again.
+  let termsSettled = false;
 
   async function askTermsFirst(next: () => void | Promise<void>): Promise<boolean> {
-    const status = await pendingTerms();
-    if (!status) return false;
+    if (termsSettled || !termsCheckedFirst()) return false;
+    const result = await checkTerms();
+    if (result.state === 'accepted') {
+      termsSettled = true;
+      return false;
+    }
+    afterTerms = next;
+    if (result.state !== 'required') {
+      termsCheckFailed = true;
+      return true;
+    }
     const session = await authClient.getSession().catch(() => null);
     const clientId = getOAuthQuery() ? new URLSearchParams(getOAuthQuery()).get('client_id') : null;
-    terms = { status, email: session?.data?.user.email ?? email, appName: clientId ? await oauthClientName(clientId) : null };
-    afterTerms = next;
+    terms = { status: result.status, email: session?.data?.user.email ?? email, appName: clientId ? await oauthClientName(clientId) : null };
     return true;
+  }
+
+  async function retryTermsCheck() {
+    const next = afterTerms;
+    termsCheckFailed = false;
+    afterTerms = null;
+    if (next && !await askTermsFirst(next)) await next();
   }
 
   async function termsAccepted() {
@@ -144,12 +166,15 @@
     oauthRedirectUrl = undefined;
     terms = null;
     afterTerms = null;
+    termsSettled = true;
     await next?.();
   }
 
   function signInAgain() {
     terms = null;
+    termsCheckFailed = false;
     afterTerms = null;
+    termsSettled = false;
     otp = '';
     error = '';
     step = 'email';
@@ -317,6 +342,8 @@
   }
 
   async function sendOTP(): Promise<boolean> {
+    // A page that has signed in with a passkey sends no code: the person is leaving, and a code is for a sign-in.
+    if (passkeySignedIn) return false;
     if (appReviewEnabled && email.trim().toLowerCase() === 'appreview@tinycloud.xyz') {
       if (!native && $page.url.searchParams.get('redirect') === '/dashboard/settings/delete-account') {
         await goto('/auth/review/delete');
@@ -511,13 +538,18 @@
   }
 
   async function signInWithPasskey() {
-    // The modal ceremony replaces the autofill request, and starts only once that request has settled:
-    // the browser keeps one ceremony at a time, so a late autofill ceremony would abort this one.
+    // A passkey sign-in that completed is the sign-in: the page is leaving, and a click in that gap starts no
+    // second ceremony. Otherwise the modal ceremony replaces the autofill request, and starts only once that
+    // request has settled: the browser keeps one ceremony at a time, so a late autofill ceremony would abort this
+    // one. An autofill sign-in the server was already verifying when this click arrived is the sign-in: its
+    // onSignedIn runs once and no second ceremony starts.
+    if (passkeySignedIn) return;
     loading = true;
     error = '';
-    await supersedePasskeyAutofill();
     try {
-      const result = await authClient.signIn.passkey(passkeyFlow());
+      const outcome = await ceremonyAfterAutofill(() => authClient.signIn.passkey(passkeyFlow()));
+      if (outcome.adopted) return;
+      const { result } = outcome;
       if (!result.error) {
         passkeySignedIn = true;
         handlePostSignIn();
@@ -551,7 +583,10 @@
     void autofillRestart;
     const autofill = startPasskeyAutofill({
       ...browserPasskeyAutofill,
-      signIn: () => authClient.signIn.passkey({ autoFill: true, ...passkeyFlow() }),
+      signIn: ({ onVerify }) => {
+        const flow = passkeyFlow();
+        return authClient.signIn.passkey({ autoFill: true, fetchOptions: { ...flow?.fetchOptions, onRequest: onVerify } });
+      },
       onSignedIn: () => {
         passkeySignedIn = true;
         handlePostSignIn();
@@ -561,6 +596,7 @@
   });
 
   async function signInWithSocial(provider: SocialProviderId) {
+    if (passkeySignedIn) return;
     loading = true;
     loadingProvider = provider;
     error = '';
@@ -576,7 +612,7 @@
   }
 
   async function signInWithSocialTopLevel(provider: NativeSocialProvider) {
-    if (!native) return;
+    if (!native || passkeySignedIn) return;
     socialProvider = provider;
     step = 'social';
     loading = true;
@@ -656,6 +692,8 @@
     onaccepted={termsAccepted}
     onsignin={signInAgain}
   />
+{:else if termsCheckFailed}
+  <TermsCheckFailed onretry={retryTermsCheck} />
 {:else if native}
   <NativeShell clientId={native.clientId} heading={(name) => `Sign in to ${name}`}>
     {#if error}
