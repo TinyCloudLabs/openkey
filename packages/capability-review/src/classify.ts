@@ -79,6 +79,9 @@ const DECRYPT_VERBS = new Set(["decrypt"]);
 // into the fail-closed `unknown` family (see BOOTSTRAP_CAPABILITIES_SERVICES
 // branch below), which elevates severity via `classifySeverityFromActions`.
 const CAPABILITY_READ_VERBS = new Set(["read"]);
+/** Display labels of the account space's two registries (installed apps, spaces). */
+export const ACCOUNT_APP_REGISTRY_LABEL = "Connected app registry";
+export const ACCOUNT_SPACE_REGISTRY_LABEL = "Storage space registry";
 const ACCOUNT_REGISTRY_KV_VERBS = new Set(["get", "list", "put"]);
 const ACCOUNT_SETUP_KV_VERBS = new Set(["get", "put"]);
 // `select` is the registry's deprecated alias of `read`.
@@ -340,7 +343,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         }
         knownTarget = {
           family: "bootstrap-kv",
-          displayLabel: "Connected app registry",
+          displayLabel: ACCOUNT_APP_REGISTRY_LABEL,
         };
       } else if (isAccountSpacesPath(path)) {
         if (!allVerbsIn(entry.actions, ACCOUNT_REGISTRY_KV_VERBS)) {
@@ -348,7 +351,7 @@ export function classifyRecapEntry(entry: RecapEntryLike): {
         }
         knownTarget = {
           family: "bootstrap-kv",
-          displayLabel: "Storage space registry",
+          displayLabel: ACCOUNT_SPACE_REGISTRY_LABEL,
         };
       } else if (path === "system/bootstrap/complete") {
         if (!allVerbsIn(entry.actions, ACCOUNT_SETUP_KV_VERBS)) {

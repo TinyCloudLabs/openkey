@@ -48,6 +48,7 @@
   } from "@openkey/capability-review";
   import { formatLocalAccessEnd } from "$lib/access-end";
   import {
+    accountListsReadOnlyDetails,
     APP_KEY_GROUP_NOTE,
     appDisplayName,
     appKeyAccessStatement,
@@ -324,6 +325,8 @@
   const summaryStatements = $derived(
     buildSummaryStatements(selectedGrants.filter((grant) => !grant.renewalOnly)),
   );
+  // Advanced details says what the account lists line means when the request only reads the app and space lists.
+  const accountListsNote = $derived(accountListsReadOnlyDetails(selectedGrants));
   const secretStatements = $derived(summaryStatements.filter((statement) => statement.secret !== undefined));
   const groupSecrets = $derived(secretStatements.length >= 4);
   const effectiveStatements = $derived(
@@ -1336,6 +1339,9 @@
 
         {#if editing && appKeyGrants.length > 0}
           <p class="app-key-note">{APP_KEY_GROUP_NOTE}</p>
+        {/if}
+        {#if accountListsNote}
+          <p class="app-key-note" data-testid="account-lists-read-only-note">{accountListsNote}</p>
         {/if}
         {#each permissionSections as bucket (bucket.key)}
           <details

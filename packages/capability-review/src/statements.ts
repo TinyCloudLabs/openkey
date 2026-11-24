@@ -39,6 +39,8 @@ import {
   type AppKeyAbility,
   type NamedKeyVerb,
 } from "./copy.js";
+import { ACCOUNT_LISTS_READ_ONLY_DETAILS, ACCOUNT_LISTS_READ_ONLY_ROW } from "./account-lists-copy.js";
+import { ACCOUNT_APP_REGISTRY_LABEL, ACCOUNT_SPACE_REGISTRY_LABEL } from "./classify.js";
 import type { EncryptionResource } from "./encryption-resource.js";
 import { ENCRYPTION_URN_PREFIX, parseEncryptionResource } from "./encryption-resource.js";
 import { isAppsKeyResource, parseKeyResource } from "./key-resource.js";
@@ -2072,6 +2074,42 @@ export interface SummaryStatement {
 
 const SUMMARY_SEVERITY_RANK: Record<PermissionSeverity, number> = { standard: 0, attention: 1, sensitive: 2 };
 
+/** An account-space grant on the app registry or the space registry. */
+function isAccountRegistryGrant(grant: CapabilityGrant): boolean {
+  return (
+    spaceNameOf(grant.space) === "account" &&
+    grant.family === "bootstrap-kv" &&
+    KV_SERVICES.has(grant.service) &&
+    (grant.displayLabel === ACCOUNT_APP_REGISTRY_LABEL || grant.displayLabel === ACCOUNT_SPACE_REGISTRY_LABEL)
+  );
+}
+
+/**
+ * True when the account space is touched only to read the app list and the space list: at least one registry grant,
+ * every one on a space the signer owns with only `get` or `list`. The only other account-space grant allowed beside
+ * them is the capabilities read, which has its own row. Any other account grant (a write verb, account SQL, the
+ * setup status, delegations) or an unknown owner shows "Manage your TinyCloud account".
+ */
+export function accountListsReadOnly(grants: readonly CapabilityGrant[]): boolean {
+  const accountGrants = grants.filter((grant) => spaceNameOf(grant.space) === "account" && grant.family !== "bootstrap-capabilities");
+  return (
+    accountGrants.length > 0 &&
+    accountGrants.every(
+      (grant) =>
+        isAccountRegistryGrant(grant) &&
+        grant.ownedBySelf === true &&
+        grant.serviceMismatch !== true &&
+        grant.actions.length > 0 &&
+        grant.actions.every((action) => ["get", "list"].includes(verbOf(action.ability))),
+    )
+  );
+}
+
+/** The Advanced details line when the grants only read the account lists, else null. */
+export function accountListsReadOnlyDetails(grants: readonly CapabilityGrant[]): string | null {
+  return accountListsReadOnly(grants) ? ACCOUNT_LISTS_READ_ONLY_DETAILS : null;
+}
+
 /**
  * The secret's name when the grants are exactly a read of one named secret
  * (`tinycloud.kv/get` on `vault/secrets/NAME`, or its scoped path, in the
@@ -2212,9 +2250,12 @@ export function buildSummaryStatements(grants: readonly CapabilityGrant[]): Summ
     .map((row) => exactSecretRead(row.grant));
   const [firstRead] = reads;
   const namedRead = firstRead && reads.every((read) => read !== null && read.key === firstRead.key) ? firstRead.name : null;
+  const listsReadOnly = accountListsReadOnly(grants);
   const grouped = new Map<string, SummaryStatement>();
   for (const { grant, statements } of rows) {
-    for (const statement of statements) {
+    const asLists = listsReadOnly && isAccountRegistryGrant(grant);
+    for (const entry of statements) {
+      const statement = asLists ? { ...entry, primaryText: ACCOUNT_LISTS_READ_ONLY_ROW } : entry;
       const primaryText = statement.primaryText === READ_SECRETS_ROW && namedRead !== null ? secretReadText(namedRead) : statement.primaryText;
       const existing = grouped.get(primaryText);
       const rowSeverity = statement.severity ?? grant.severity;
