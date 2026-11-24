@@ -19,6 +19,13 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GH_TOKEN }}
 
+      # Pre-release security check: neither publish to npm nor open a version PR unless every
+      # check in .github/required-checks.json passed on this exact SHA (waits up to 40 min).
+      - name: Require green checks on the released commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/require-green.mjs "$GITHUB_SHA"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:

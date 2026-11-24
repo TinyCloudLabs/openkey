@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 import { HOST, LOOPBACK_ORIGIN, ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0x1111111111111111111111111111111111111111';
 const key = {
@@ -66,6 +67,7 @@ test(`SDK v2 Sign confirms layout with ${scheduling} frame scheduling`, async ({
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({
     json: { session: { id: 'fixture-session' }, user: { id: 'fixture-user' } },
   }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto('/__parity_harness');
   await page.evaluate((widgetOrigin) => {
     (window as any).widgetEvents = [];
@@ -118,6 +120,7 @@ test('legacy host Sign stays actionable without a v2 layout exchange', async ({ 
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({
     json: { session: { id: 'fixture-session' }, user: { id: 'fixture-user' } },
   }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto('/__parity_harness');
   await page.evaluate(() => {
     const frame = document.createElement('iframe');

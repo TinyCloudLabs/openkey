@@ -2,7 +2,7 @@
 // no, then signs out. Telling the requester no never stands in the way of leaving.
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { declineTerms, deleteAccountHref, disconnectHref, optionsHref, originOfTermsPage, termsOrigin, termsPageFor, termsPageFrom, waysOutPageFrom, type TermsOrigin } from './terms-leave';
+import { declineEffect, declineTerms, deleteAccountHref, disconnectHref, optionsHref, originOfTermsPage, termsOrigin, termsPageFor, termsPageFrom, waysOutPageFrom, type TermsOrigin } from './terms-leave';
 import { isPreTermsPage } from './terms';
 
 const API = 'https://api.openkey.test';
@@ -86,6 +86,22 @@ describe('Other options and Disconnect apps', () => {
     'they go back only to the Terms (%s goes to the plain Terms)',
     (returnTo: string | null) => expect(termsPageFrom(returnTo)).toBe('/auth/terms'),
   );
+});
+
+describe('declineEffect', () => {
+  // The approved notes, word for word: signing out leaves the permissions you set to renew on, says where to stop them, and says what a phone app does.
+  const WEB = 'We’ll sign you out. You can’t use OpenKey or sign in to apps with it until you agree. Nothing is deleted. Signing out doesn’t stop permissions you set to renew. To stop them, choose Disconnect apps or stop renewals, or delete your account. A phone app signs you out the next time it renews, unless you agree to the Terms first.';
+  const NATIVE = 'We’ll sign you out. You can’t use OpenKey or sign in to apps with it until you agree. Nothing is deleted. Signing out doesn’t stop permissions you set to renew. To stop them, open OpenKey on the web and choose Disconnect apps or stop renewals, or delete your account. Other phone apps sign you out the next time they renew, unless you agree to the Terms first.';
+
+  test('the web Other options note and the native sheet each say what signing out leaves on', () => {
+    expect(declineEffect({ kind: 'none' }, null)).toBe(WEB);
+    expect(declineEffect({ kind: 'none' }, null, 'native')).toBe(NATIVE);
+  });
+
+  test('with a request, the note adds that it is turned down', () => {
+    expect(declineEffect({ kind: 'approval', requestId: APPROVAL_ID }, null, 'native')).toBe(`${NATIVE} We’ll also turn down the request that brought you here.`);
+    expect(declineEffect({ kind: 'oauth', oauthQuery: SIGNED, nativeRequestId: null }, 'Test App')).toBe(`${WEB} We’ll also tell Test App you said no.`);
+  });
 });
 
 describe('Delete account from the ways out', () => {

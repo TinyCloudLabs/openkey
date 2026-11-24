@@ -3,6 +3,7 @@
 import { test, expect, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0x1111111111111111111111111111111111111111';
 const spaceId = (name: string) => `tinycloud:pkh:eip155:1:${address}:${name}`;
@@ -31,6 +32,7 @@ function message(keys: string[]) {
   });
   return [
     'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
+    '',
     'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
     'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456',
     `Issued At: ${issuedAt.toISOString()}`, `Expiration Time: ${expirationTime.toISOString()}`,
@@ -68,6 +70,7 @@ test('one consent retains account discovery and Home/feed space identity through
     }
     return json(route, { error: `Unmocked API: ${path}` }, 404);
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   const jwk = encodeBase64UrlJson({ kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
   await page.goto(`/delegate?did=did:key:z6Mk&jwk=${jwk}&permissions=${encodeBase64UrlJson({ permissions: request })}`);
   const approve = page.getByRole('button', { name: 'Approve', exact: true });
@@ -115,7 +118,8 @@ test('one consent retains account discovery and Home/feed space identity through
   expect(await page.evaluate(() => ({ width: innerWidth, overflow: document.documentElement.scrollWidth > innerWidth }))).toEqual({ width: 390, overflow: false });
   if (process.env.TC2490_SCREEN_DIR) await page.screenshot({ path: `${process.env.TC2490_SCREEN_DIR}/consent-edited-390.png`, fullPage: true });
   await approve.click();
-  await expect(page.getByText('Couldn\'t approve this request. Try again. (Error 503)')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'The approval didn’t go through' })).toBeVisible();
+  await expect(page.locator('[data-support-line]')).toHaveText('HTTP 503');
   expect(approvals).toHaveLength(1);
   expect(approvals[0]).toMatchObject({ selectedActionIds: prepares.at(-1)!.actionKeys, actionKeys: prepares.at(-1)!.actionKeys, permissions: request, prepared: { siwe: message(restored), spaceId: spaceId('applications') }, authorizationContextToken: `context-${prepares.length}` });
   expect(errors).toEqual([]);

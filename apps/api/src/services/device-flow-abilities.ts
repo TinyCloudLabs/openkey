@@ -25,3 +25,6 @@ export const DEVICE_FLOW_ABILITIES: Readonly<Record<string, readonly string[]>> 
   'tinycloud.kv': ['tinycloud.kv/get', 'tinycloud.kv/list', 'tinycloud.kv/metadata', 'tinycloud.kv/put', 'tinycloud.kv/del'],
   'tinycloud.capabilities': ['tinycloud.capabilities/read'],
 });
+
+/** The refusal for a device request that asks to decrypt. */
+export const DEVICE_SECRETS_REFUSAL = "--device can't read secrets yet. Use tinycloud auth login --paste instead.";

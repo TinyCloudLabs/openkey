@@ -86,7 +86,9 @@ beforeEach(() => {
   bootstrapSettled = new Promise<void>(resolve => { settleBootstrap = resolve; });
   process.env.TINYCLOUD_BOOTSTRAP_HOST = node.url;
   process.env.TINYCLOUD_BOOTSTRAP_RETRY_DELAYS_MS = 'off';
-  process.env.TINYCLOUD_BOOTSTRAP_REQUESTED_SPACE_TIMEOUT_MS = '100';
+  // Generous: a CI runner under load took longer than 100 ms for one approval and the test failed with
+  // tinycloud_requested_space_timeout. Only the test that holds a space on purpose uses a short budget.
+  process.env.TINYCLOUD_BOOTSTRAP_REQUESTED_SPACE_TIMEOUT_MS = '5000';
 });
 afterEach(async () => {
   // Drain the real bootstrap's background seeding before closing its loopback node.
@@ -129,6 +131,7 @@ test('a fresh managed approval confirms both spaces on the loopback node before 
 });
 
 test('a secondary space still hosting cannot be hidden by a ready primary space', async () => {
+  process.env.TINYCLOUD_BOOTSTRAP_REQUESTED_SPACE_TIMEOUT_MS = '100'; // this test waits the whole budget out on purpose
   node.hosted.add(spaces[1]!.spaceId);
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });

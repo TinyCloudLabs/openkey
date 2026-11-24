@@ -117,16 +117,16 @@ describe('startCodeCountdown', () => {
   test('starts at the remaining time and ticks down by whole seconds', () => {
     const fake = fakeClock();
     const { last, stop } = run(300_000, fake);
-    expect(last().text).toBe('Code valid for 5:00');
+    expect(last().text).toBe('Valid for 5:00');
     fake.advance(1_000);
-    expect(last().text).toBe('Code valid for 4:59');
+    expect(last().text).toBe('Valid for 4:59');
     stop();
   });
 
   test('shows 0:59 at one minute minus a second', () => {
     const fake = fakeClock();
     const { last, stop } = run(59_000, fake);
-    expect(last().text).toBe('Code valid for 0:59');
+    expect(last().text).toBe('Valid for 0:59');
     stop();
   });
 

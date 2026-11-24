@@ -1,11 +1,13 @@
-// TC-2927: the extra warning screen for decrypt or key creation on the encryption network, or on keys outside the app's
-// own area, on the real embedded sign-in route (synthetic API). Approve opens the screen first; the owner rejects or
-// allows each permission, neither chosen for them; a rejection narrows the request and the rest is still approved; an
-// allow travels to the server with the preview. Set TC2927_SHOTS_DIR to save 390px screenshots.
+// TC-2927: the extra warning screen for decrypt, key creation, or blocking and unblocking keys on the encryption
+// network, or on keys outside the app's own area, on the real embedded sign-in route (synthetic API). Approve opens the
+// screen first; the owner rejects or allows each permission, neither chosen for them; a rejection narrows the request
+// and the rest is still approved; an allow travels to the server with the preview. Set TC2927_SHOTS_DIR to save 390px
+// screenshots.
 
 import { test, expect, type FrameLocator, type Page } from '@playwright/test';
 import { HOST, ORIGIN } from './e2e-port';
 import { FIXTURE_META, makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559CCd9EB87c530A9a349262669386dE93cf412';
 const SHOTS = process.env.TC2927_SHOTS_DIR;
@@ -33,6 +35,7 @@ async function open(page: Page, resources: Array<Record<string, Record<string, u
     await route.fulfill({ json: { signature: '0x' + '11'.repeat(65), address } });
   });
   await page.route('**/api/auth/get-session**', (route) => route.fulfill({ json: { session: { id: 'test-session' }, user: { id: 'test-user' } } }));
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.route('**/api/delegate/authorize-sign-prepare', (route) => route.fulfill({
     headers: { Date: new Date().toUTCString() },
     json: { authorizationContextToken: 'context-token', expiresAt: new Date(Date.now() + 300_000).toISOString() },
@@ -89,7 +92,7 @@ const sized = (page: Page) => page.evaluate(() => {
 const shot = async (page: Page, name: string) => {
   if (SHOTS) await page.locator('#sign').screenshot({ path: `${SHOTS}/${name}.png` });
 };
-const isElevated = (id: string) => /encryption\/(decrypt|key\.create)$/.test(id) && !id.includes('/apps/');
+const isElevated = (id: string) => /encryption\/(decrypt|key\.create|key\.block|key\.unblock)$/.test(id) && !id.includes('/apps/');
 
 test.use({ viewport: { width: 390, height: 1100 } });
 
@@ -99,7 +102,7 @@ test('Approve opens the warning screen first; nothing is chosen for the owner an
   await expect(approve(frame)).toBeEnabled();
   await approve(frame).click();
   await expect(frame.locator('#elevated-title')).toContainText('is asking for more access');
-  await expect(frame.getByRole('heading', { level: 2, name: /Unlock all your encrypted data/ })).toBeVisible();
+  await expect(frame.getByRole('heading', { level: 2, name: /Use your master key to decrypt\?/ })).toBeVisible();
   await expect(frame.getByRole('button', { name: 'Reject this permission' })).toBeVisible();
   await expect(frame.getByRole('button', { name: 'Allow this permission' })).toBeVisible();
   await expect(frame.getByRole('button', { name: 'Continue' })).toBeDisabled();
@@ -200,4 +203,85 @@ test('no sideways scroll at 390px and the buttons are big enough to tap', async 
     const box = await frame.getByRole('button', { name }).first().boundingBox();
     expect(box!.height).toBeGreaterThanOrEqual(44);
   }
+});
+
+// Sam's words for blocking and unblocking keys: its own card, never joined to decrypt or key creation.
+const blockFolder = { [urn('/Shared/')]: { [`${E}key.block`]: [{}] } };
+const unblockAccount = { [urn('')]: { [`${E}key.unblock`]: [{}] } };
+const decryptAndBlockFolder = { [urn('/Shared/')]: { [`${E}decrypt`]: [{}], [`${E}key.block`]: [{}] } };
+
+test('blocking keys in a folder gets its own card with the words Sam approved, and nothing is sent yet', async ({ page }) => {
+  const { frame, authorizes } = await open(page, [blockFolder, kvGet]);
+  await sized(page);
+  await approve(frame).click();
+  await expect(frame.getByRole('heading', { level: 2, name: 'Control access to encryption keys in a folder named Shared' })).toBeVisible();
+  await expect(frame.getByText(
+    /could block encryption keys in a folder named Shared, for as long as this approval lasts\. Until the key is unblocked, requests to unlock the items it protects are refused, including your own\./,
+  )).toBeVisible();
+  await expect(frame.getByRole('button', { name: 'Continue' })).toBeDisabled();
+  expect(authorizes).toHaveLength(0);
+  expect(await responses(page)).toHaveLength(0);
+  await shot(page, '390-card-block-folder');
+});
+
+test('unblocking keys in the whole account says so, and carries no sentence about refused requests', async ({ page }) => {
+  const { frame } = await open(page, [unblockAccount, kvGet]);
+  await approve(frame).click();
+  await expect(frame.getByRole('heading', { level: 2, name: 'Control access to encryption keys anywhere in your account' })).toBeVisible();
+  await expect(frame.getByText(/could unblock encryption keys anywhere in your account, for as long as this approval lasts\./)).toBeVisible();
+  await expect(frame.getByText(/Until the key is unblocked/)).toHaveCount(0);
+  await shot(page, '390-card-unblock-account');
+});
+
+test('Allow on a block card: the next preview carries the allow for exactly that permission', async ({ page }) => {
+  const { frame, previews, authorizes } = await open(page, [blockFolder, kvGet]);
+  await approve(frame).click();
+  await frame.getByRole('button', { name: 'Allow this permission' }).click();
+  await frame.getByRole('button', { name: 'Continue' }).click();
+  await expect.poll(async () => (await responses(page)).length).toBe(1);
+  const last = previews.at(-1)!;
+  const allowed = (last.elevatedDecision as { allowed: string[] }).allowed;
+  expect(allowed).toHaveLength(1);
+  expect(allowed[0]).toMatch(/key\.block$/);
+  expect(authorizes).toHaveLength(1);
+});
+
+test('Reject on a block card: the block leaves the request, no allow is sent, and the rest is still approved', async ({ page }) => {
+  const { frame, previews } = await open(page, [blockFolder, kvGet]);
+  await approve(frame).click();
+  await frame.getByRole('button', { name: 'Reject this permission' }).click();
+  await frame.getByRole('button', { name: 'Continue' }).click();
+  await expect.poll(async () => (await responses(page)).length).toBe(1);
+  const last = previews.at(-1)!;
+  expect((last.selectedActionIds as string[]).filter(isElevated)).toEqual([]);
+  expect(last).not.toHaveProperty('elevatedDecision');
+  expect((last.selectedActionIds as string[]).some((id) => id.includes('tinycloud.kv'))).toBe(true);
+});
+
+test('decrypt and block on the same folder are one card that names both: allowing it allows both', async ({ page }) => {
+  const { frame, previews } = await open(page, [decryptAndBlockFolder, kvGet]);
+  await sized(page);
+  await approve(frame).click();
+  await expect(frame.getByRole('heading', { level: 2 })).toHaveCount(1);
+  await expect(frame.getByRole('heading', { level: 2, name: 'Control access to encryption keys in a folder named Shared' })).toBeVisible();
+  await expect(frame.getByText(/could unlock encrypted items and block encryption keys in a folder named Shared, for as long as this approval lasts\./)).toBeVisible();
+  await shot(page, '390-decrypt-and-block');
+  await frame.getByRole('button', { name: 'Allow this permission' }).click();
+  await frame.getByRole('button', { name: 'Continue' }).click();
+  await expect.poll(async () => (await responses(page)).length).toBe(1);
+  const last = previews.at(-1)!;
+  const elevated = (last.selectedActionIds as string[]).filter(isElevated);
+  expect(elevated.map((id) => id.split('\0').pop()).sort()).toEqual([`${E}decrypt`, `${E}key.block`]);
+  expect((last.elevatedDecision as { allowed: string[] }).allowed.sort()).toEqual([...elevated].sort());
+});
+
+test('decrypt and block on the same folder: rejecting the card sends neither', async ({ page }) => {
+  const { frame, previews } = await open(page, [decryptAndBlockFolder, kvGet]);
+  await approve(frame).click();
+  await frame.getByRole('button', { name: 'Reject this permission' }).click();
+  await frame.getByRole('button', { name: 'Continue' }).click();
+  await expect.poll(async () => (await responses(page)).length).toBe(1);
+  const last = previews.at(-1)!;
+  expect((last.selectedActionIds as string[]).filter(isElevated)).toEqual([]);
+  expect(last).not.toHaveProperty('elevatedDecision');
 });

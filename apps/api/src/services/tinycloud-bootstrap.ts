@@ -80,7 +80,8 @@ export interface EnsureTinyCloudBootstrapInput {
   prisma: PrismaLike;
   userId: string;
   key: TinyCloudBootstrapKey;
-  privateKey: string;
+  /** Resolved inside the lock, so a sign-in for an account that is already complete never unseals the key. */
+  privateKey: string | (() => Promise<string>);
   message: string;
   format: 'raw' | 'personal_sign';
 }

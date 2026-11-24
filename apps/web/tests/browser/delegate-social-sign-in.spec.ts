@@ -45,14 +45,14 @@ test('the signed-out card shows Google and Apple next to email and passkey when 
   await page.goto(delegatePath);
   await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Continue with Apple' })).toBeEnabled();
-  await expect(page.getByRole('button', { name: 'Continue with email' })).toBeEnabled();
+  await expect(page.getByRole('link', { name: 'Continue with email' })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Use a passkey instead' })).toBeEnabled();
 });
 
 test('the signed-out card shows no social buttons when none are configured', async ({ page }) => {
   await mock(page, []);
   await page.goto(delegatePath);
-  await expect(page.getByRole('button', { name: 'Continue with email' })).toBeEnabled();
+  await expect(page.getByRole('link', { name: 'Continue with email' })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Use a passkey instead' })).toBeEnabled();
   await expect(page.getByRole('button', { name: /Continue with (Google|Apple)/ })).toHaveCount(0);
 });
@@ -82,6 +82,6 @@ test('a popup that sends the person back to email shows its line and keeps the c
   await page.goto(delegatePath);
   await page.getByRole('button', { name: 'Continue with Google' }).click();
   await expect(page.getByRole('alert')).toHaveText('Continue with your email instead.');
-  await expect(page.getByRole('button', { name: 'Continue with email' })).toBeEnabled();
+  await expect(page.getByRole('link', { name: 'Continue with email' })).toBeEnabled();
   expect(new URL(page.url()).pathname).toBe('/delegate');
 });

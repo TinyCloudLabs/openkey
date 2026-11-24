@@ -4,6 +4,7 @@
 // screenshots of each state at 390 and 1280 wide.
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const id = 'abcdefghijklmnopqrstuvwxyz';
 const fragment = `#v=4&k=${'A'.repeat(43)}&c=bafkreia${'a'.repeat(52)}`;
@@ -31,6 +32,7 @@ function prepared(sensitive: boolean) {
   if (sensitive) att[decryptResource] = { [DECRYPT]: [{}] };
   const siwe = [
     'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
+    '',
     'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
     'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-11-13T00:00:00.000Z', 'Expiration Time: 2026-12-13T00:00:00.000Z',
     'Resources:', `- ${makeRecapResource(att)}`,
@@ -76,6 +78,7 @@ async function serve(page: Page, options: Options = {}) {
     if (url.pathname === `/api/approval-requests/${id}/renewal-signature`) return json(route, 200, RESULT);
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return calls;
 }
 
@@ -104,8 +107,8 @@ test('ongoing access starts ticked, and its preview carries the 90-day lease', a
   expect(approvals(calls)[0]!.body).not.toHaveProperty('renewal');
 });
 
-// Over two days the line also names the day it ends ("…30 days, on Dec 18").
-const EXPIRES_IN_30_DAYS = /^This permission expires in 30 days, on [A-Z][a-z]{2} \d{1,2}(, \d{4})?$/;
+// Over two days the line also names the day it ends ("…30 days, until Dec 18").
+const EXPIRES_IN_30_DAYS = /^This app's access to your data lasts 30 days, until [A-Z][a-z]{2} \d{1,2}(, \d{4})?\.$/;
 
 test('unticked, it says when it expires, and its preview is finite', async ({ page }) => {
   const calls = await open(page, { purpose: 'standing' });

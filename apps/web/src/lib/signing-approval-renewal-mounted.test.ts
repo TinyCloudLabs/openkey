@@ -182,8 +182,8 @@ function typeLease(t: HTMLElement, value: string) {
   flushSync();
 }
 
-// Over two days the line also names the day it ends ("…30 days, on Dec 18").
-const EXPIRES_IN_30_DAYS = /^This permission expires in 30 days, on [A-Z][a-z]{2} \d{1,2}(, \d{4})?$/;
+// Over two days the line also names the day it ends ("…30 days, until Dec 18").
+const EXPIRES_IN_30_DAYS = /^This app's access to your data lasts 30 days, until [A-Z][a-z]{2} \d{1,2}(, \d{4})?\.$/;
 
 describe('where the requester cannot use renewal', () => {
   test('there is no box, only how long it lasts', () => {

@@ -6,7 +6,7 @@ import { reviewerCleanupNode } from './services/reviewer-cleanup-node';
 import { Hono, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { cors } from 'hono/cors';
-import { apiErrorHandler, log, logConfigInvalid, logError, requestLogger, type ApiEnv } from './log';
+import { apiErrorHandler, log, logConfigInvalid, logError, logLegacyResealFailed, requestLogger, type ApiEnv } from './log';
 import {
   oauthProviderAuthServerMetadata,
   oauthProviderOpenIdConfigMetadata,
@@ -22,7 +22,7 @@ import { nostrKeysRouter } from './routes/nostr-keys';
 import { accountRouter } from './routes/account';
 import { createAccountTermsRouter } from './routes/account-terms';
 import { termsRelease } from './services/terms';
-import { allowBeforeTerms, allowBeforeTermsWhen, createTermsSessionGuard, createTermsSubjectGuard } from './middleware/terms';
+import { allowBeforeTerms, allowBeforeTermsWhen, allowBrowserBeforeTerms, createTermsSessionGuard, createTermsSubjectGuard } from './middleware/terms';
 import { oauthAdminRouter } from './routes/oauth-admin';
 import { createResourceIntrospectRouter } from './routes/oauth-resource-introspect';
 import { MCP_AUDIENCES, oauthValidAudiences } from './oauth-config';
@@ -42,6 +42,7 @@ import { approvalRequestRouter } from './routes/approval-requests';
 import { createDelegationCodeRouter, createPrismaDelegationCodeStore } from './routes/delegation-codes';
 import { requireSession } from './middleware/session';
 import { requireAccountOriginForSensitiveAuth } from './middleware/bearer-origin';
+import { mountEmailOtpRateLimit } from './middleware/email-otp-rate-limit';
 import { trackAuthorization, trackTokenExchange, trackUniqueUser } from './analytics';
 import { configuredSocialProviderIds } from './social-providers';
 import { API_EXPOSED_HEADERS, corsOriginPolicy } from './origin-policy';
@@ -57,12 +58,16 @@ import { providerTokenOptions } from './services/native-delegation/provider-toke
 import { handlePar } from './services/native-delegation/par';
 import { createNativeDelegationConsentRouter } from './routes/native-delegation-consent';
 import { handleNativeRenewOrRevoke } from './services/native-delegation/renew-revoke';
-import { resolveTeeMode } from '@openkey/tee';
+import { handleNativeStepUpRequest } from './services/native-delegation/step-up';
+import { createTeeClient, resolveTeeMode } from '@openkey/tee';
+import { resealLegacyAtBoot } from './services/legacy-reseal-boot';
 import {
   protocolAwareCors,
   withNativeDelegationMetadata,
 } from './services/native-delegation/public-protocol';
 import { startTinyCloudBootstrapSweep } from './services/tinycloud-bootstrap-sweep';
+import { startRenewalLeaseStopSweep } from './services/renewal-lease-sweep';
+import { startRevokePendingSweep } from './services/native-delegation/revoke-pending';
 
 
 const betterAuthUrl = process.env.BETTER_AUTH_URL;
@@ -92,6 +97,8 @@ app.use('/api/auth/reviewer/*', bodyLimit({ maxSize: 4096 }));
 app.use('/api/review-account/*', createReviewerAuthAudit(authPrisma));
 app.use('/api/auth/sign-in/reviewer', bodyLimit({ maxSize: 16384 }));
 app.use('/api/auth/sign-in/email-otp', bodyLimit({ maxSize: 16384 }));
+// Email-code sends and checks are limited per target email (and by a shared ceiling) before any other auth work.
+mountEmailOtpRateLimit(app, process.env.NODE_ENV);
 app.use('/api/auth/*', createReviewerAuthAudit(authPrisma));
 app.use('/api/*', createReviewerRouteGuard(authPrisma, async (headers) => {
   if (!headers.has('cookie') && !headers.has('authorization')) return [];
@@ -247,6 +254,7 @@ app.get('/api/auth/providers', (c) =>
 app.post('/api/auth/oauth2/par', (c) => handlePar(c.req.raw, authPrisma));
 app.post('/api/auth/oauth2/tinycloud/renew', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'renew'));
 app.post('/api/auth/oauth2/tinycloud/revoke', (c) => handleNativeRenewOrRevoke(c.req.raw, authPrisma, oauthIssuer, 'revoke'));
+app.post('/api/auth/oauth2/tinycloud/stepup', (c) => handleNativeStepUpRequest(c.req.raw, authPrisma, oauthIssuer));
 
 // The key set /api/auth/jwks serves, read through the auth handler.
 const readSigningKeys = async () => {
@@ -303,6 +311,19 @@ app.use('/api/auth/*', createProviderInterceptors({
   },
 }));
 
+// The session read answers without the session token. A bearer is the signed token, which OpenKey's
+// pages get from `set-auth-token` or /api/auth/session-token. Server-side `auth.api.getSession` is unaffected.
+app.get('/api/auth/get-session', async (c, next) => {
+  await next();
+  if (!c.res.headers.get('content-type')?.includes('application/json')) return;
+  const body = await c.res.clone().json().catch(() => null) as { session?: Record<string, unknown> } | null;
+  if (!body?.session || !('token' in body.session)) return;
+  delete body.session.token;
+  const headers = new Headers(c.res.headers);
+  headers.delete('content-length');
+  c.res = new Response(JSON.stringify(body), { status: c.res.status, headers });
+});
+
 // better-auth routes - mount at /api/auth
 // Avoid async/await wrapper to preserve AsyncLocalStorage context in Bun
 app.on(['POST', 'GET'], '/api/auth/*', (c) => {
@@ -331,6 +352,12 @@ const WAYS_OUT: Array<['GET' | 'POST' | 'DELETE', string, MiddlewareHandler?]> =
   ['GET', '/api/account'],
   ['GET', '/api/account/tinycloud-apps'],
   ['GET', '/api/account/renewal-leases'],
+  // Reading what you hold before deleting the account (secret names, variable names and values): the browser
+  // session only (a request with an Authorization header stays gated), reads only (every write stays gated).
+  // `/status` is here because it restores the TinyCloud session that listing needs after a restart.
+  ['GET', '/api/secrets/status', allowBrowserBeforeTerms],
+  ['GET', '/api/secrets', allowBrowserBeforeTerms],
+  ['GET', '/api/variables', allowBrowserBeforeTerms],
   ['POST', '/api/account/step-up/email-otp/send', deleteAccountStepUp],
   ['POST', '/api/account/step-up/email-otp/verify', deleteAccountStepUp],
   ['POST', '/api/account/step-up/passkey/options'], // a passkey step-up proves what a passkey sign-in does
@@ -433,6 +460,18 @@ const ALL_SCOPES = ['openid', 'email', 'keys', 'offline_access'];
 // Reviewer authority is settled before Bun can serve this module. A failure leaves every
 // reviewer refused and does not stop the API for ordinary users.
 log('info', 'api_starting');
+// TC-3554: one-time re-seal of keys sealed under the pre-move root. Off unless the compose enables it. Any
+// failure ends the process here, before Bun can serve this module: the API never listens on a half-migrated
+// database. Finished rows stay finished, so the restart policy resumes where this stopped. The process holds
+// two minutes before it exits, so a failure that will not go away retries about once per two minutes, not in
+// a tight loop against the KMS.
+try {
+  await resealLegacyAtBoot(authPrisma, createTeeClient());
+} catch (error) {
+  logLegacyResealFailed(error);
+  await new Promise((resolve) => setTimeout(resolve, 120_000));
+  throw error;
+}
 await initializeReviewersAtBoot(authPrisma);
 
 // Persisted cleanup runs outside account transactions and survives restarts.
@@ -455,6 +494,11 @@ const port = parseInt(process.env.API_PORT || '3001');
 
 // Retries failed TinyCloud account setup in the background. Off under tests; kill switch is read per tick.
 if (process.env.NODE_ENV !== 'test') startTinyCloudBootstrapSweep();
+// Retries native lease withdrawal. OPENKEY_RENEWAL_LEASES=stop also revokes every live lease (TC-3088).
+if (process.env.NODE_ENV !== 'test') startRenewalLeaseStopSweep(authPrisma);
+// Retries the node revocation of step-up delegations OpenKey withdrew after the node had registered them (TC-3569).
+// Not behind the step-up switch: a record already written must still be revoked with the switch off.
+if (process.env.NODE_ENV !== 'test') startRevokePendingSweep(authPrisma);
 
 export default {
   port,

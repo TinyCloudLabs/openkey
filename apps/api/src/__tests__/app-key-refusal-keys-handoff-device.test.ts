@@ -10,6 +10,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
 import { mockModules, replaceModules } from './mock-module';
 import { MemoryPreparedHandoffStore, PreparedHandoffService } from '../services/prepared-handoff';
+import { DEVICE_SECRETS_REFUSAL } from '../services/device-flow-abilities';
 import { deviceRequestPermissions } from '../services/device-authorization';
 
 const privateKey = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -218,7 +219,7 @@ describe('device sign-in request', () => {
     ['key.delete on the default network', entry({ actions: ['tinycloud.encryption/key.delete'] })],
     ['block and decrypt together', entry({ actions: ['tinycloud.encryption/key.block', 'tinycloud.encryption/decrypt'] })],
   ])('refuses %s', (_name, permission) => {
-    expect(() => deviceRequestPermissions([permission])).toThrow("device sign-in can't grant tinycloud.encryption");
+    expect(() => deviceRequestPermissions([permission])).toThrow(DEVICE_SECRETS_REFUSAL);
   });
 
   test('an apps/ path on a kv entry is an ordinary path', () => {

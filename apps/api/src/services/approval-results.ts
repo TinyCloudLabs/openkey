@@ -4,10 +4,11 @@ import { verifyMessage } from 'ethers';
 import { parseApprovalRenewal, type OpenKeyApprovalRequestV1 } from '@tinycloud/share-envelope/links';
 import { strictSessionDid, type DeviceRelayEnvelope } from './device-authorization';
 import { hasPrivateJwkMember } from './authorization-signing';
-import { verifySessionProofClaims } from './native-delegation/session-proof';
+import { sessionProofKeyId, verifySessionProofClaims } from './native-delegation/session-proof';
 import { allocateDelegationCode, delegationClaimHash, type ApprovalCode, type ApprovalCodeDelivery, type ApprovalCodeStore } from '../routes/delegation-codes';
 import { logApprovalCodeAllocationFailure, logApprovalCodeCleanupFailure } from '../log';
 import type { ApprovalResultRenewal, RenewalStage } from './renewal-lease';
+import { approvalLifetimeCapSeconds } from '@openkey/capability-review';
 
 export interface ApprovalRequestRecord {
   id: string;
@@ -134,8 +135,10 @@ export class ApprovalResultService {
       input.host !== request.nodeOrigin || !sameJson(input.permissions, request.permissions)) {
       throw new ApprovalResultError('request_binding', 'Delegation binding does not match the immutable approval request', 400);
     }
-    // The requester signed the longest lifetime it will accept; the owner may pick a shorter one.
-    if (input.expiryMs !== undefined && input.expiryMs > request.grantLifetimeSeconds * 1000) {
+    // The requester signed the longest lifetime it will accept; the owner may pick a shorter one. A request that
+    // decrypts secrets lasts 7 days at most, whatever it signed.
+    const lifetimeSeconds = approvalLifetimeCapSeconds(request.permissions, request.grantLifetimeSeconds);
+    if (input.expiryMs !== undefined && input.expiryMs > lifetimeSeconds * 1000) {
       throw new ApprovalResultError('request_binding', 'Grant lifetime exceeds the immutable approval request', 400);
     }
     if (input.signedSiwe !== undefined) {
@@ -143,7 +146,7 @@ export class ApprovalResultService {
       try { siwe = new SiweMessage(input.signedSiwe); } catch { throw new ApprovalResultError('invalid_delegation', 'Approval requires a canonical SIWE', 400); }
       const expiry = Date.parse(siwe.expirationTime ?? '');
       if (siwe.prepareMessage() !== input.signedSiwe || siwe.uri !== strictSessionDid(request.targetPublicJwk) || !Number.isFinite(expiry) || expiry <= now.getTime() ||
-        expiry > now.getTime() + request.grantLifetimeSeconds * 1000 + 5000) {
+        expiry > now.getTime() + lifetimeSeconds * 1000 + 5000) {
         throw new ApprovalResultError('request_binding', 'Signed target or expiry does not match the approval request', 400);
       }
     }
@@ -264,13 +267,26 @@ export class ApprovalResultService {
     }
   }
 
-  private authenticate(record: ApprovalRequestRecord, action: 'discover' | 'fetch' | 'ack', proof: string | undefined, ref = '', ackId = '', codeBinding?: [string, string]): void {
+  private authenticate(record: ApprovalRequestRecord, action: 'discover' | 'fetch' | 'ack' | 'lease-status', proof: string | undefined, ref = '', ackId = '', codeBinding?: [string, string], proofKeyId?: string) {
     const jwk = record.request.targetPublicJwk;
     const jkt = createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x: jwk.x })).digest('base64url');
-    const path = action === 'discover' ? `/api/approval-requests/${record.id}/result` : `/api/approval-results/${ref}/${action}`;
-    if (!verifySessionProofClaims(proof, { sessionJwk: jwk, sessionJkt: jkt, htu: this.options.apiOrigin + path, clientId: 'openkey-approval-result-v1', credential: JSON.stringify([action, record.id, record.bodyCid, ref, ackId, ...(codeBinding ?? [])]) }, (this.options.now?.() ?? new Date()).getTime())) {
-      throw new ApprovalResultError('invalid_proof', 'Requester proof is invalid', 401);
-    }
+    if (action === 'lease-status' && jkt !== proofKeyId) throw new ApprovalResultError('not_found', 'Saved approval request not found', 404);
+    const path = action === 'discover' || action === 'lease-status'
+      ? `/api/approval-requests/${record.id}/${action === 'discover' ? 'result' : action}`
+      : `/api/approval-results/${ref}/${action}`;
+    const claims = verifySessionProofClaims(proof, { sessionJwk: jwk, sessionJkt: jkt, htu: this.options.apiOrigin + path, clientId: 'openkey-approval-result-v1', credential: JSON.stringify([action, record.id, record.bodyCid, ref, ackId, ...(codeBinding ?? [])]) }, (this.options.now?.() ?? new Date()).getTime());
+    if (!claims) throw new ApprovalResultError('invalid_proof', 'Requester proof is invalid', 401);
+    return claims;
+  }
+
+  async authenticateLeaseStatus(id: string, body: { bodyCid: string; originalCid: string | null }, proof: string | undefined) {
+    const keyId = sessionProofKeyId(proof);
+    if (proof === undefined) throw new ApprovalResultError('invalid_proof', 'Requester proof is invalid', 401);
+    if (!keyId) throw new ApprovalResultError('invalid_request', 'Requester proof format is invalid', 400);
+    const record = await this.store.findById(id);
+    if (!record || record.bodyCid !== body.bodyCid) throw new ApprovalResultError('not_found', 'Saved approval request not found', 404);
+    const claims = this.authenticate(record, 'lease-status', proof, body.originalCid ?? '', '', undefined, keyId);
+    return { record, keyId, ...claims };
   }
 
   async discover(id: string, body: { bodyCid: string; approvalCode?: unknown }, proof: string | undefined, claim?: string): Promise<{ status: 'pending' } | { status: 'approved'; resultRef: string; expiresAt: string }> {

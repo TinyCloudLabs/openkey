@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { authClient, authErrorMessage } from '$lib/auth-client';
+  import { sendCodeErrorMessage } from '$lib/send-code-error';
   import {
     embedCreateAccount,
     embedSendEmailOtp,
@@ -8,6 +9,8 @@
     embedVerifyEmailOtp,
     isEmbedContext,
   } from '$lib/embed-passkey';
+  import { embedPasskeySignInErrorText } from '$lib/embed-passkey-not-allowed';
+  import { webSignFlowHeaders } from '$lib/web-sign-flow';
   import {
     loadConfiguredSocialProviders,
     signInWithSocialPopup,
@@ -20,6 +23,8 @@
 
   interface Props {
     prompt: string;
+    /** Shown above the prompt: why the frame asks for a sign-in again. */
+    note?: string | null;
     onauthenticated: () => void;
     hasEoa?: boolean;
     onuseexternalwallet?: () => void;
@@ -27,15 +32,19 @@
     passkeysSupported?: boolean;
     /** Opens account recovery; offered when an email has no account. */
     onrecover?: () => void;
+    /** The sign page's own flow id: a passkey sign-in made here covers that request's Approve. */
+    flowId?: string;
   }
 
   let {
     prompt,
+    note = null,
     onauthenticated,
     hasEoa = false,
     onuseexternalwallet,
     passkeysSupported = true,
     onrecover,
+    flowId,
   }: Props = $props();
 
   type BusyAction = 'send-email' | 'verify-email' | 'create-account' | 'passkey' | SocialProviderId;
@@ -60,7 +69,7 @@
       await embedSendEmailOtp(email);
       step = 'otp';
     } catch (cause: any) {
-      error = cause.message || 'Failed to send code';
+      error = sendCodeErrorMessage(cause, { email, passkey: passkeysSupported, fallback: 'Failed to send code' });
     } finally {
       busy = null;
     }
@@ -108,9 +117,9 @@
     error = '';
     try {
       if (isEmbedContext()) {
-        await embedSignInPasskey();
+        await embedSignInPasskey(flowId ? webSignFlowHeaders(flowId) : undefined);
       } else {
-        const result = await authClient.signIn.passkey();
+        const result = await authClient.signIn.passkey(flowId ? { fetchOptions: { headers: webSignFlowHeaders(flowId) } } : undefined);
         if (result.error) {
           error = authErrorMessage(result.error, 'Passkey sign-in failed');
           return;
@@ -118,7 +127,7 @@
       }
       onauthenticated();
     } catch (cause: any) {
-      error = cause.message || 'Passkey sign-in failed';
+      error = embedPasskeySignInErrorText(cause, step);
     } finally {
       busy = null;
     }
@@ -146,6 +155,9 @@
 </script>
 
 <div class="flex flex-col items-center justify-center py-2 text-center">
+  {#if note && step !== 'new-account'}
+    <p class="mb-3 w-full rounded-xl border border-surface-200 bg-surface-50 px-3 py-2 text-sm text-surface-700" data-testid="sign-in-note">{note}</p>
+  {/if}
   {#if step !== 'new-account'}
     <p class="mb-4 text-sm text-surface-500">{prompt}</p>
   {/if}

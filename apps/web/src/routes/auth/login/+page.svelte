@@ -3,6 +3,7 @@
   import { page } from '$app/stores';
   import { onMount, onDestroy, tick } from 'svelte';
   import { authClient, API_BASE, authErrorMessage, confirmEmailSignUp } from '$lib/auth-client';
+  import { sendCodeErrorMessage } from '$lib/send-code-error';
   import { consoleOrigin } from '$lib/console-host';
   import { holdOAuthRedirect, normalizeAuthReturnTo, safeOAuthAuthorizeQuery } from '$lib/auth-flow';
   import {
@@ -18,6 +19,7 @@
     nativeSocialReturnUrls,
     type NativeSocialProvider,
   } from '$lib/native-mode';
+  import { popupSignFlowForLogin, webSignFlowHeaders } from '$lib/web-sign-flow';
   import {
     accountExistsMessage,
     confirmSocialContinuation,
@@ -35,11 +37,23 @@
   import NewAccountConfirmation from '$lib/components/auth/new-account-confirmation.svelte';
   import PasskeyStepUpDialog from '$lib/components/auth/passkey-step-up-dialog.svelte';
   import { passkeyStepUpMethods, type PasskeyStepUpMethod } from '$lib/passkey-step-up';
+  import { PASSKEY_FALLBACK_COPY } from '$lib/passkey-fallback-copy';
+  import {
+    accountHasNoPasskeys,
+    browserPasskeyAutofill,
+    ceremonyAfterAutofill,
+    enrolmentDecision,
+    isNoPasskeyError,
+    startPasskeyAutofill,
+    supersedePasskeyAutofill,
+  } from '$lib/passkey-sign-in';
   import Button from '$lib/components/ui/button.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import Input from '$lib/components/ui/input.svelte';
+  import TermsCheckFailed from '$lib/components/auth/terms-check-failed.svelte';
   import TermsStep from '$lib/components/auth/terms-step.svelte';
-  import { oauthClientName, pendingTerms, type TermsStatus } from '$lib/terms';
+  import { checkTerms, oauthClientName, type TermsStatus } from '$lib/terms';
+  import { termsCheckedFirst } from '$lib/terms-release';
 
   // 'passkey' is the enrolment offer; 'passkeySignIn' and 'social' are native-mode landing steps.
   // 'social' is the frame shown while opening a provider or checking its return.
@@ -75,6 +89,14 @@
   let otp = $state('');
   let reviewCode = $state('');
   let step = $state<Step>(initialStep());
+  // The native passkey step ended with no passkey used; it offers an email code instead.
+  let passkeyFallback = $state(false);
+  // The email step was reached from that fallback, so the passkey offer follows the email-code sign-in.
+  let afterNoPasskey = false;
+  // A passkey sign-in completed; the autofill request must not start again while the page leaves.
+  let passkeySignedIn = $state(false);
+  // Bumped when a modal passkey attempt ends without signing in, so the autofill request starts again.
+  let autofillRestart = $state(0);
   let codeSent = $state(false);
   // A code was requested by an earlier load of this page; delivery is unconfirmed.
   let codeRequested = $state(false);
@@ -104,18 +126,37 @@
   let socialConfirmation = $state<SocialContinuation | null>(null);
   const socialName = $derived(socialProvider ? socialProviderName(socialProvider) : null);
   // TC-3232: an account that has not accepted the current Terms sees them right after signing in,
-  // before the passkey offer or anything else; `afterTerms` is where sign-in was headed.
+  // before the passkey offer or anything else; `afterTerms` is where sign-in was headed. When the
+  // status can't be read, Try again; sign-in never continues past an unread status.
   let terms = $state<{ status: TermsStatus; email: string; appName: string | null } | null>(null);
+  let termsCheckFailed = $state(false);
   let afterTerms: (() => void | Promise<void>) | null = null;
+  // This sign-in's account is known to have agreed: later steps don't read the status again.
+  let termsSettled = false;
 
   async function askTermsFirst(next: () => void | Promise<void>): Promise<boolean> {
-    const status = await pendingTerms();
-    if (!status) return false;
+    if (termsSettled || !termsCheckedFirst()) return false;
+    const result = await checkTerms();
+    if (result.state === 'accepted') {
+      termsSettled = true;
+      return false;
+    }
+    afterTerms = next;
+    if (result.state !== 'required') {
+      termsCheckFailed = true;
+      return true;
+    }
     const session = await authClient.getSession().catch(() => null);
     const clientId = getOAuthQuery() ? new URLSearchParams(getOAuthQuery()).get('client_id') : null;
-    terms = { status, email: session?.data?.user.email ?? email, appName: clientId ? await oauthClientName(clientId) : null };
-    afterTerms = next;
+    terms = { status: result.status, email: session?.data?.user.email ?? email, appName: clientId ? await oauthClientName(clientId) : null };
     return true;
+  }
+
+  async function retryTermsCheck() {
+    const next = afterTerms;
+    termsCheckFailed = false;
+    afterTerms = null;
+    if (next && !await askTermsFirst(next)) await next();
   }
 
   async function termsAccepted() {
@@ -125,15 +166,19 @@
     oauthRedirectUrl = undefined;
     terms = null;
     afterTerms = null;
+    termsSettled = true;
     await next?.();
   }
 
   function signInAgain() {
     terms = null;
+    termsCheckFailed = false;
     afterTerms = null;
+    termsSettled = false;
     otp = '';
     error = '';
     step = 'email';
+    passkeySignedIn = false;
   }
 
   function getOAuthQuery(): string | undefined {
@@ -255,7 +300,7 @@
       if ((await providersLoaded).includes(request.method)) {
         await signInWithSocialTopLevel(request.method);
       } else {
-        error = `${socialProviderName(request.method)} sign-in isn't available right now. Continue with your email instead.`;
+        error = `${socialProviderName(request.method)} sign-in isn't available. Choose another way to sign in below.`;
         step = 'email';
       }
     } else if (request.method === 'email' && request.hint && step === 'otp') {
@@ -297,6 +342,8 @@
   }
 
   async function sendOTP(): Promise<boolean> {
+    // A page that has signed in with a passkey sends no code: the person is leaving, and a code is for a sign-in.
+    if (passkeySignedIn) return false;
     if (appReviewEnabled && email.trim().toLowerCase() === 'appreview@tinycloud.xyz') {
       if (!native && $page.url.searchParams.get('redirect') === '/dashboard/settings/delete-account') {
         await goto('/auth/review/delete');
@@ -318,7 +365,7 @@
     try {
       const result = await authClient.emailOtp.sendVerificationOtp({ email, type: 'sign-in' });
       if (result.error) {
-        error = authErrorMessage(result.error, 'Failed to send code');
+        error = sendCodeErrorMessage(result.error, { email, passkey: passkeysSupported, fallback: 'Failed to send code' });
         return false;
       }
       codeSent = true;
@@ -460,11 +507,16 @@
     // any failure (network, API unavailable) falls through to handlePostSignIn()
     // so that OTP sign-in works independently of passkey availability.
     // Clients without WebAuthn skip the prompt entirely.
-    // Native mode never offers enrolment: the sheet's job is to return to the app.
-    if (passkeysSupported && !native) {
+    // Native mode skips it unless the sheet reached the email step because the passkey step found
+    // no passkey: that path always offers one, whatever other passkeys the account has.
+    const enrolment = enrolmentDecision({ passkeysSupported, native: Boolean(native), afterNoPasskey });
+    if (enrolment === 'offer') {
+      step = 'passkey';
+      return;
+    }
+    if (enrolment === 'check') {
       try {
-        const passkeys = await authClient.passkey.listUserPasskeys();
-        if (!passkeys.error && Array.isArray(passkeys.data) && passkeys.data.length === 0) {
+        if (accountHasNoPasskeys(await authClient.passkey.listUserPasskeys())) {
           step = 'passkey';
           return;
         }
@@ -475,24 +527,76 @@
     handlePostSignIn();
   }
 
+  // One passkey per interaction: a passkey sign-in opened from a native request names it, so Approve for that
+  // request asks for nothing more (TC-3596). The API accepts it only for a resolved request and a verified passkey.
+  // A sign-in that returns the user to the web sign pop-up names that pop-up's own flow instead, so its Approve
+  // asks for nothing more. The API accepts it only for a verified passkey that counts for step-up.
+  function passkeyFlow() {
+    if (native) return { fetchOptions: { headers: { 'x-openkey-passkey-flow': native.requestId } } };
+    const webFlow = popupSignFlowForLogin($page.url.searchParams.get('redirect'), $page.url.origin);
+    return webFlow ? { fetchOptions: { headers: webSignFlowHeaders(webFlow) } } : undefined;
+  }
+
   async function signInWithPasskey() {
+    // A passkey sign-in that completed is the sign-in: the page is leaving, and a click in that gap starts no
+    // second ceremony. Otherwise the modal ceremony replaces the autofill request, and starts only once that
+    // request has settled: the browser keeps one ceremony at a time, so a late autofill ceremony would abort this
+    // one. An autofill sign-in the server was already verifying when this click arrived is the sign-in: its
+    // onSignedIn runs once and no second ceremony starts.
+    if (passkeySignedIn) return;
     loading = true;
     error = '';
     try {
-      const result = await authClient.signIn.passkey();
-      if (result.error) {
-        error = authErrorMessage(result.error, 'Passkey sign-in failed');
-      } else {
+      const outcome = await ceremonyAfterAutofill(() => authClient.signIn.passkey(passkeyFlow()));
+      if (outcome.adopted) return;
+      const { result } = outcome;
+      if (!result.error) {
+        passkeySignedIn = true;
         handlePostSignIn();
+      } else if (step === 'passkeySignIn' && isNoPasskeyError(result.error)) {
+        passkeyFallback = true;
+      } else {
+        error = authErrorMessage(result.error, 'Passkey sign-in failed');
       }
     } catch (e: any) {
-      error = e.message || 'Passkey sign-in failed';
+      if (step === 'passkeySignIn' && isNoPasskeyError(e)) passkeyFallback = true;
+      else error = e.message || 'Passkey sign-in failed';
     } finally {
       loading = false;
+      if (!passkeySignedIn) autofillRestart++;
     }
   }
 
+  function useEmailCode() {
+    passkeyFallback = false;
+    afterNoPasskey = true;
+    error = '';
+    step = 'email';
+  }
+
+  // Passkey autofill on the email step: the browser lists the device's passkeys in the email field's
+  // suggestions. Only the email step runs it, never the review-code step, and it ends when that step
+  // goes away, when the modal passkey button takes over, and when the page is destroyed.
+  const autofillWanted = $derived(passkeysSupported && step === 'email' && !terms && !passkeySignedIn);
+  $effect(() => {
+    if (!autofillWanted) return;
+    void autofillRestart;
+    const autofill = startPasskeyAutofill({
+      ...browserPasskeyAutofill,
+      signIn: ({ onVerify }) => {
+        const flow = passkeyFlow();
+        return authClient.signIn.passkey({ autoFill: true, fetchOptions: { ...flow?.fetchOptions, onRequest: onVerify } });
+      },
+      onSignedIn: () => {
+        passkeySignedIn = true;
+        handlePostSignIn();
+      },
+    });
+    return () => autofill.stop();
+  });
+
   async function signInWithSocial(provider: SocialProviderId) {
+    if (passkeySignedIn) return;
     loading = true;
     loadingProvider = provider;
     error = '';
@@ -508,7 +612,7 @@
   }
 
   async function signInWithSocialTopLevel(provider: NativeSocialProvider) {
-    if (!native) return;
+    if (!native || passkeySignedIn) return;
     socialProvider = provider;
     step = 'social';
     loading = true;
@@ -531,6 +635,7 @@
   async function registerPasskey() {
     loading = true;
     error = '';
+    await supersedePasskeyAutofill();
     try {
       const result = await authClient.passkey.addPasskey();
       const methods = passkeyStepUpMethods(result?.error);
@@ -587,6 +692,8 @@
     onaccepted={termsAccepted}
     onsignin={signInAgain}
   />
+{:else if termsCheckFailed}
+  <TermsCheckFailed onretry={retryTermsCheck} />
 {:else if native}
   <NativeShell clientId={native.clientId} heading={(name) => `Sign in to ${name}`}>
     {#if error}
@@ -702,14 +809,33 @@
         <button type="button" class="nb-link" onclick={useDifferentEmail} disabled={loading}>Use a different email</button>
       </div>
     {:else if step === 'passkeySignIn'}
-      <p class="nb-lede">Use the passkey saved on this device to sign in.</p>
+      {#if passkeyFallback}
+        <p class="nb-lede" role="status" data-testid="passkey-fallback">{PASSKEY_FALLBACK_COPY.message}</p>
+      {:else}
+        <p class="nb-lede">Use the passkey saved on this device to sign in.</p>
+      {/if}
       <div class="nb-stack">
-        <button type="button" class="nb-button nb-primary" onclick={signInWithPasskey} disabled={loading}>
+        {#if passkeyFallback}
+          <button type="button" class="nb-button nb-primary" onclick={useEmailCode} disabled={loading}>{PASSKEY_FALLBACK_COPY.emailButton}</button>
+        {/if}
+        <button type="button" class="nb-button" class:nb-primary={!passkeyFallback} onclick={signInWithPasskey} disabled={loading}>
           {loading ? 'Waiting for passkey…' : 'Continue with passkey'}
         </button>
       </div>
+      {#if !passkeyFallback}
+        <div class="nb-center">
+          <button type="button" class="nb-link" onclick={() => { step = 'email'; error = ''; }} disabled={loading}>Use email instead</button>
+        </div>
+      {/if}
+    {:else if step === 'passkey'}
+      <p class="nb-lede">Create a passkey for faster, phishing-resistant sign-in. You can skip this and keep using email codes.</p>
+      <div class="nb-stack">
+        <button type="button" class="nb-button nb-primary" onclick={registerPasskey} disabled={loading}>
+          {loading ? 'Creating passkey…' : 'Create a passkey'}
+        </button>
+      </div>
       <div class="nb-center">
-        <button type="button" class="nb-link" onclick={() => { step = 'email'; error = ''; }} disabled={loading}>Use email instead</button>
+        <button type="button" class="nb-link" onclick={handlePostSignIn} disabled={loading}>Skip for now</button>
       </div>
     {:else if step === 'social'}
       <p class="nb-lede" role="status">
@@ -729,7 +855,7 @@
           type="email"
           bind:value={email}
           placeholder="you@example.com"
-          autocomplete="email"
+          autocomplete={passkeysSupported ? 'username webauthn' : 'email'}
           autocapitalize="none"
           spellcheck={false}
           required
@@ -805,7 +931,7 @@
               type="email"
               bind:value={email}
               placeholder="you@example.com"
-              autocomplete="email"
+              autocomplete={passkeysSupported ? 'username webauthn' : 'email'}
               autocapitalize="none"
               spellcheck={false}
               required

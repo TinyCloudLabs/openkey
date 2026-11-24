@@ -104,6 +104,8 @@ export interface CapabilityAction {
 export interface CapabilityGrant {
   /** Stable, exact-match ID. `ids.permissionId(service, space, path)`. */
   id: PermissionId;
+  /** This exact resource is selected only while the owner chooses renewal. */
+  renewalOnly?: true;
   /** Structural family used by both classification and UI grouping. */
   family: CapabilityFamily;
   /** Structural severity, with only the proven app-scoped-secret exception. */

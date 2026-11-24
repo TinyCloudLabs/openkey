@@ -122,6 +122,10 @@ export interface OriginBindResult {
 export async function fetchAndBindWellKnownManifest(input: {
   reportedOrigin: string;
   declaredDigest: string;
+  /** The signer's own identifier, derived by OpenKey. Resolves `{owner}`. */
+  owner?: string;
+  /** The identifier the caller reported. Only compared with `owner`, never used as a value. */
+  ownerHint?: string;
 }): Promise<OriginBindResult> {
   const { reportedOrigin, declaredDigest } = input;
 
@@ -309,7 +313,12 @@ export async function fetchAndBindWellKnownManifest(input: {
   // operation. The SDK computes the same canonical JSON digest from its
   // in-memory manifest, so harmless whitespace or object-key ordering in the
   // published file cannot break origin binding.
-  return bindWellKnownManifestBytes(bytes, normalizedDeclared);
+  return bindWellKnownManifestBytes(
+    bytes,
+    normalizedDeclared,
+    input.owner,
+    input.ownerHint,
+  );
 }
 
 type JsonValue =
@@ -355,33 +364,141 @@ export function canonicalManifestSha256Hex(value: unknown): string {
     .digest("hex");
 }
 
+const OWNER_PLACEHOLDER = "{owner}";
+const BRACE_TOKEN = /\{[^{}]*\}/g;
+
+export type OwnerPlaceholderResult =
+  | { ok: true; manifest: Record<string, unknown> }
+  | { ok: false; reason: string };
+
+/**
+ * Resolve the literal `{owner}` token in a published manifest with the owner
+ * identifier OpenKey derived for the signer.
+ *
+ * The token is exactly `{owner}` (case-sensitive) and is accepted only inside
+ * the string value of `permissions[].path`, where every occurrence is
+ * replaced. It is refused anywhere else (any other value, any object key at
+ * any depth), as is any other `{...}` token inside a permission path. A
+ * manifest with a placeholder needs a non-empty `owner`, and a non-empty
+ * `ownerHint` that differs from `owner` is refused. The manifest can narrow
+ * key admission, so the substituted value never comes from the caller.
+ *
+ * A manifest without a placeholder is returned as the same object.
+ */
+export function resolveOwnerPlaceholders(
+  manifest: Record<string, unknown>,
+  owner: string | undefined,
+  ownerHint?: string,
+): OwnerPlaceholderResult {
+  const refuse = (where: string): OwnerPlaceholderResult => ({
+    ok: false,
+    reason: `{owner} placeholder is not allowed in ${where}`,
+  });
+
+  // `{owner}` anywhere outside permissions[].path (values and keys).
+  const containsOwner = (value: unknown): boolean => {
+    if (typeof value === "string") return value.includes(OWNER_PLACEHOLDER);
+    if (Array.isArray(value)) return value.some(containsOwner);
+    if (value && typeof value === "object") {
+      return Object.entries(value as Record<string, unknown>).some(
+        ([key, inner]) => key.includes(OWNER_PLACEHOLDER) || containsOwner(inner),
+      );
+    }
+    return false;
+  };
+
+  for (const [key, value] of Object.entries(manifest)) {
+    if (key.includes(OWNER_PLACEHOLDER)) return refuse("an object key");
+    if (key === "permissions" && Array.isArray(value)) continue;
+    if (containsOwner(value)) return refuse(key);
+  }
+
+  const permissions = manifest.permissions;
+  if (!Array.isArray(permissions)) return { ok: true, manifest };
+
+  let sawOwner = false;
+  const resolvedPermissions: unknown[] = [];
+  for (const entry of permissions) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      if (containsOwner(entry)) return refuse("permissions[]");
+      resolvedPermissions.push(entry);
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    for (const [key, value] of Object.entries(record)) {
+      if (key.includes(OWNER_PLACEHOLDER)) return refuse("an object key");
+      if (key === "path" && typeof value === "string") continue;
+      if (containsOwner(value)) return refuse(`permissions[].${key}`);
+    }
+    const path = record.path;
+    if (typeof path !== "string") {
+      resolvedPermissions.push(entry);
+      continue;
+    }
+    const tokens = path.match(BRACE_TOKEN) ?? [];
+    if (tokens.some((token) => token !== OWNER_PLACEHOLDER)) {
+      return {
+        ok: false,
+        reason: "unsupported placeholder in permissions[].path",
+      };
+    }
+    if (tokens.length === 0) {
+      resolvedPermissions.push(entry);
+      continue;
+    }
+    sawOwner = true;
+    if (!owner) {
+      return {
+        ok: false,
+        reason: "permissions[].path uses {owner} but no owner was derived",
+      };
+    }
+    resolvedPermissions.push({
+      ...record,
+      path: path.split(OWNER_PLACEHOLDER).join(owner),
+    });
+  }
+
+  if (!sawOwner) return { ok: true, manifest };
+  if (typeof ownerHint === "string" && ownerHint.length > 0 && ownerHint !== owner) {
+    return {
+      ok: false,
+      reason: "permissions[].path uses {owner} and the reported owner differs",
+    };
+  }
+  return { ok: true, manifest: { ...manifest, permissions: resolvedPermissions } };
+}
+
 /**
  * Testable, network-independent half of origin binding. Invalid UTF-8,
  * invalid/non-object JSON, a malformed digest, or any digest mismatch fails
- * closed. Extraction happens only after the canonical digest has matched.
+ * closed. Extraction happens only after the canonical digest has matched, and
+ * reads the manifest with `{owner}` resolved to `owner`.
  */
 export function bindWellKnownManifestBytes(
   bytes: Uint8Array,
   declaredDigest: string,
+  owner?: string,
+  ownerHint?: string,
 ): OriginBindResult {
   const normalizedDeclared = declaredDigest.trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(normalizedDeclared)) {
     return { ok: false, reason: "declaredDigest is not a 64-char hex sha256" };
   }
 
-  let parsed: Record<string, unknown>;
+  let fetched: Record<string, unknown>;
   try {
     const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     const value = JSON.parse(decoded) as unknown;
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       return { ok: false, reason: "fetched manifest is not a JSON object" };
     }
-    parsed = value as Record<string, unknown>;
+    fetched = value as Record<string, unknown>;
   } catch {
     return { ok: false, reason: "fetched manifest is not valid UTF-8 JSON" };
   }
 
-  const fetchedDigest = canonicalManifestSha256Hex(parsed);
+  const fetchedDigest = canonicalManifestSha256Hex(fetched);
   const actual = Buffer.from(fetchedDigest, "hex");
   const expected = Buffer.from(normalizedDeclared, "hex");
   if (
@@ -393,6 +510,15 @@ export function bindWellKnownManifestBytes(
       reason: "fetched manifest digest does not match declared digest",
     };
   }
+
+  // The digest above covers the manifest exactly as published, with the
+  // owner placeholder still in it. Everything extracted below comes from the
+  // resolved copy, so the owner value is always the one OpenKey derived.
+  const resolution = resolveOwnerPlaceholders(fetched, owner, ownerHint);
+  if (!resolution.ok) {
+    return { ok: false, reason: resolution.reason };
+  }
+  const parsed = resolution.manifest;
 
   const manifest: NonNullable<OriginBindResult["manifest"]> = {
     name: typeof parsed.name === "string" ? parsed.name : undefined,

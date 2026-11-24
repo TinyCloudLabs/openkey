@@ -1,8 +1,9 @@
 // The server half of the per-permission warning screen (TC-2927).
 //
-// An app may ask to `decrypt` or `key.create` on the encryption network, or on keys outside its own `apps/` area,
-// but the owner decides on each such permission on an extra screen ("Reject this permission" / "Allow this
-// permission"; the rest of the request is approved either way). The screen sends the action ids the owner allowed;
+// An app may ask to `decrypt`, `key.create`, `key.block` or `key.unblock` on the encryption network, or on keys
+// outside its own `apps/` area, but the owner decides on each such permission on an extra screen ("Reject this
+// permission" / "Allow this permission"; the rest of the request is approved either way). The screen sends the
+// action ids the owner allowed;
 // the server recomputes which extra permissions the bytes to sign still carry (`elevatedActionsOf`, the same
 // function the screen uses) and refuses to preview or sign unless every one was explicitly allowed. A permission the
 // owner rejected is not in the narrowed bytes, so it needs nothing.

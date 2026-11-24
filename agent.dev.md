@@ -134,3 +134,7 @@ bun dev:portless
   frozen: never edit or revert them, even when reverting the feature that added a column
   to it. Back a feature out in code and leave the column unused. `codeDigest` in
   `20261111_0001_reviewer_accounts` is such a column (TC-2775).
+- Share sender smoke follows the completed production Pages check, not a merge.
+  Its publication gate uses the newest completed non-cancelled attempt for the
+  exact SHA; unpublished web skips smoke, real deployment/smoke failures stay red.
+  The successful API-deploy and manual smoke paths remain available (TC-3683).

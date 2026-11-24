@@ -6,20 +6,22 @@
     hostRecognized: boolean;
     /** Validated callback URL, or null when the page shows a paste code. */
     callback: string | null;
-    /** The API encrypts delivery for the immutable request's CLI key. */
+    /** The API encrypts delivery for the immutable request's key. */
     requesterRelay?: boolean;
+    /** Who the relayed result is for: a TinyCloud One key. Empty for any other requester, and the row is left out. */
+    relayTo?: string;
     /** SIWE Expiration Time of the delegation being reviewed. */
     expiresAt: string;
-    /** False where the approval screen's own expiry line ("This permission expires in …") already shows it. */
+    /** False where the approval screen's own expiry line ("This app's access to your data lasts …") already shows it. */
     showExpires?: boolean;
     /** The owner confirmed they trust an unrecognized node; required to approve. */
     acknowledged?: boolean;
   }
 
-  let { host, hostRecognized, callback, requesterRelay = false, expiresAt, showExpires = true, acknowledged = $bindable(false) }: Props = $props();
+  let { host, hostRecognized, callback, requesterRelay = false, relayTo = '', expiresAt, showExpires = true, acknowledged = $bindable(false) }: Props = $props();
 
   const returnsTo = $derived.by(() => {
-    if (requesterRelay) return 'Requesting CLI';
+    if (requesterRelay) return relayTo;
     if (!callback) return '';
     const url = new URL(callback);
     return `${url.origin}${url.pathname}`;
@@ -52,7 +54,7 @@
       <dt class="shrink-0 text-surface-400">Node</dt>
       <dd class="break-all text-right font-mono font-medium text-surface-900">{host}</dd>
     </div>
-    {#if callback || requesterRelay}
+    {#if returnsTo}
       <div class="flex justify-between gap-3">
         <dt class="shrink-0 text-surface-400">Returned to</dt>
         <dd class="break-all text-right font-mono text-surface-900">{returnsTo}</dd>

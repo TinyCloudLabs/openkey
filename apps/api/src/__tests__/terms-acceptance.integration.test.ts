@@ -16,6 +16,7 @@ import type * as Terms from '../services/terms';
 import { mockModules } from './mock-module';
 import { NATIVE_DELEGATION_ENDPOINT_PATHS, OPENKEY_SESSION_PROOF_HEADER } from '../services/native-delegation/public-protocol';
 import { credentialHash } from '../services/native-delegation/session-proof';
+import { stepUpCodeDigest } from '../services/email-code-storage';
 
 const root = resolve(import.meta.dir, '../../../..');
 if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
@@ -130,7 +131,8 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
     await prisma.ethereumKey.create({ data: { userId, address: `0x${n.toString(16).padStart(40, '0')}`, publicKey: '0x1', keyType: 'EXTERNAL' } });
     await prisma.session.create({ data: { id: `terms-session-${n}`, userId, token, expiresAt: new Date(Date.now() + 86_400_000) } });
     const cookie = (await serializeSignedCookie(cookieName, token, secret)).split(';')[0]!;
-    return { userId, token, cookie };
+    // A bearer is the signed session token, as `set-auth-token` hands it out.
+    return { userId, token, cookie, bearer: cookie.slice(cookie.indexOf('=') + 1) };
   }
 
   async function expectTermsRequired(response: Response) {
@@ -219,9 +221,17 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
   describe('the release file', () => {
     const valid = { version: VERSION, requiredVersion: null, textSha256: SHA, whatChanged: null, privacyChanged: false };
 
-    test('the checked-in file parses, and turns no gate on', async () => {
+    test('the checked-in file is a valid release: a date version and a 64-hex text hash', async () => {
       const shipped = JSON.parse(await readFile(join(root, 'apps/api/src/terms-release.json'), 'utf8'));
-      expect(termsRelease(shipped)).toBeNull();
+      // test-ruling TC-3766 openkey #684 apps/api/src/__tests__/terms-acceptance.integration.test.ts:222 (2026-11-22): yes, exactly as you wrote it. When the checked-in version is null, expect termsRelease(shipped) to be null and return; otherwise the date and hash assertions run unchanged. Nothing else changes.
+      if (shipped.version === null) {
+        expect(termsRelease(shipped)).toBeNull();
+        return;
+      }
+      const parsed = termsRelease(shipped);
+      expect(parsed).not.toBeNull();
+      expect(parsed!.version).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(parsed!.textSha256).toMatch(/^[0-9a-f]{64}$/);
     });
 
     test('a release defaults its required version to itself; an editorial one may require less', () => {
@@ -271,8 +281,8 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
 
     test('a bearer session token (CLI, widget) gets the same refusal with the URL to open', async () => {
       release(VERSION);
-      const { token } = await signedIn();
-      const response = await request(`${api}/api/keys`, { headers: { authorization: `Bearer ${token}`, origin: web } });
+      const { bearer } = await signedIn();
+      const response = await request(`${api}/api/keys`, { headers: { authorization: `Bearer ${bearer}`, origin: web } });
       expect(response.status).toBe(403);
       expect(await response.json()).toEqual({
         error: 'terms_required', error_description: `Open ${TERMS_URL} to accept the Terms of Service.`, terms_url: TERMS_URL,
@@ -320,7 +330,8 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
       expect(await sent.text()).not.toContain('terms_required');
       await prisma.verification.deleteMany({ where: { identifier: stepUpIdentifier(sessionId, email, 'delete_account') } });
       await prisma.verification.create({ data: {
-        id: randomUUID(), identifier: stepUpIdentifier(sessionId, email, 'delete_account'), value: '123456:0',
+        id: randomUUID(), identifier: stepUpIdentifier(sessionId, email, 'delete_account'),
+        value: `${stepUpCodeDigest(stepUpIdentifier(sessionId, email, 'delete_account'), '123456')}:0`,
         expiresAt: new Date(Date.now() + 300_000),
       } });
       const verified = await send(cookie, 'POST', '/api/account/step-up/email-otp/verify', { purpose: 'delete_account', code: '123456' });
@@ -505,14 +516,16 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
       expect((await prisma.session.findUniqueOrThrow({ where: { id: session.id } })).expiresAt).toEqual(expiresAt);
     });
 
-    test('an acceptance is recorded only from the browser, never with a session token', async () => {
+    test('a session token records an acceptance only after a sign-in in the last 10 minutes', async () => {
       release(VERSION);
-      const { token, userId } = await signedIn();
+      const { bearer, userId } = await signedIn();
+      await prisma.session.updateMany({ where: { userId }, data: { createdAt: new Date(Date.now() - 11 * 60_000) } });
       const response = await request(`${api}/api/account/terms/accept`, {
-        method: 'POST', headers: { authorization: `Bearer ${token}`, origin: web, 'content-type': 'application/json' },
+        method: 'POST', headers: { authorization: `Bearer ${bearer}`, origin: web, 'content-type': 'application/json' },
         body: JSON.stringify({ version: VERSION }),
       });
       expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: 'terms_step_up' });
       expect(await rows(userId)).toEqual([]);
     });
 

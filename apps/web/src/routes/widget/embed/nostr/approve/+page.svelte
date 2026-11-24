@@ -17,9 +17,19 @@
   //  - Response payloads to the parent only ever carry public identity data
   //    (keyId/pubkey/npub) or a signed event - never a sessionToken, and
   //    never secret/nsec material (which never leaves the API/TEE).
+  import { untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type NostrKey, type SignedNostrEvent, type UnsignedNostrEvent } from '$lib/api';
-  import { getSessionToken, isEmbedContext } from '$lib/embed-passkey';
+  import {
+    answerApprovalPasskey,
+    approvalPasskeyGate,
+    isPasskeyApprovalRefusal,
+    passkeyApprovalCopy,
+    type ApprovalPasskeyAssertion,
+    type ApprovalPasskeyNeed,
+    type PasskeyOfferFetch,
+  } from '$lib/approval-passkey';
+  import { clearSessionToken, getSessionToken, isEmbedContext } from '$lib/embed-passkey';
   import { parseCanonicalOrigin, parseNostrRelayUrl, extractRelayTag } from '$lib/nostr-origin';
   import {
     createVersionedIframeTransport,
@@ -27,12 +37,17 @@
     type VersionedWidgetTransport,
   } from '$lib/widget-transport';
   import EmbeddedSignIn from '$lib/components/auth/embedded-sign-in.svelte';
+  import TermsGate from '$lib/components/auth/terms-gate.svelte';
+  import { termsGate } from '$lib/terms-gate';
+  import { SIGN_IN_AGAIN_TO_AGREE, isTermsRequired } from '$lib/terms';
   import { passkeysSupportedFromParams } from '$lib/passkey-support';
   import Button from '$lib/components/ui/button.svelte';
 
   type NostrErrorCode = 'USER_CANCELLED' | 'TIMEOUT' | 'INTERACTION_REQUIRED' | 'UNAUTHORIZED' | 'UNKNOWN';
   type Mode = 'connect' | 'sign' | null;
-  type Step = 'idle' | 'sign-in' | 'consent' | 'working' | 'error';
+  // 'terms': the request waits for the Terms check. The frame stays hidden while the check runs and is shown only when
+  // the Terms are owed or the check failed; an account that has agreed continues silently.
+  type Step = 'idle' | 'sign-in' | 'terms' | 'consent' | 'working' | 'error';
 
   const session = authClient.useSession();
   const inIframe = typeof window !== 'undefined' && isEmbedContext();
@@ -45,8 +60,22 @@
   const passkeysSupported = typeof window === 'undefined'
     || passkeysSupportedFromParams(new URL(window.location.href).searchParams);
 
+  // A stored token is a credential, not yet a signed-in account: the Terms check reads it first (and drops it if it
+  // no longer signs anyone in).
   let embedAuthenticated = $state(typeof window !== 'undefined' && !!getSessionToken());
-  const isAuthenticated = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  let signInNote = $state<string | null>(null);
+  const signedIn = $derived(inIframe ? embedAuthenticated : !!$session.data);
+  // A window's layout holds this page until its account has agreed; in the frame this page checks itself.
+  const termsOpen = $derived(!inIframe || $termsGate.phase === 'open');
+  $effect(() => {
+    if (inIframe) termsGate.follow(embedAuthenticated ? getSessionToken() : null, () => termsSignedOut(false));
+  });
+  $effect(() => {
+    if (step !== 'terms') return;
+    const phase = $termsGate.phase;
+    if (termsOpen) untrack(resume);
+    else if (phase === 'required' || phase === 'failed') untrack(reveal);
+  });
 
   let mode = $state<Mode>(null);
   let step = $state<Step>(targetOrigin ? 'idle' : 'error');
@@ -64,6 +93,19 @@
   // signEvent() request state
   let pendingKeyId = $state<string | null>(null);
   let pendingEvent = $state<UnsignedNostrEvent | null>(null);
+
+  // TC-3442: Approve creates a signing grant, which the account's passkey setting may ask the passkey for. The offer
+  // for this grant is held while the consent card is up; null until it arrives, or when the fetch failed.
+  let passkeyOffer = $state<{ input: string; need: ApprovalPasskeyNeed } | null>(null);
+  let passkeyOfferFetch = $state<PasskeyOfferFetch>('idle');
+  const grantInput = $derived.by(() => {
+    const grant = pendingGrant();
+    return grant ? JSON.stringify(grant) : null;
+  });
+  const offerGate = $derived(approvalPasskeyGate({ input: grantInput, held: passkeyOffer, fetch: passkeyOfferFetch }));
+  const offerFailure = $derived(passkeyOfferFetch === 'failed' ? passkeyApprovalCopy.offerFailed : '');
+  let passkeyOfferRequest = 0;
+  let approvalError = $state('');
 
   $effect(() => {
     if (typeof window === 'undefined' || initialized) return;
@@ -141,9 +183,13 @@
   // ===== connect() =====
 
   async function startConnect() {
-    if (!isAuthenticated) {
+    if (!signedIn) {
       step = 'sign-in';
       reveal();
+      return;
+    }
+    if (!termsOpen) {
+      step = 'terms';
       return;
     }
     await runConnect();
@@ -156,25 +202,97 @@
       const { key } = await api.nostr.getOrCreateKey();
       nostrKey = key;
       step = 'consent';
+      loadGrantPasskey();
     } catch (e: any) {
+      if (inIframe && isTermsRequired(403, { error: e?.message })) {
+        step = 'terms';
+        return;
+      }
       failConnect('UNKNOWN', e?.message || 'Failed to load your Nostr identity');
+    }
+  }
+
+  /** The grant Approve creates: the relay grant on connect (none without a relay), the event's kind on sign. */
+  function pendingGrant() {
+    if (!targetOrigin) return null;
+    if (mode === 'connect') {
+      return nostrKey && pendingRelayUrl
+        ? { keyId: nostrKey.id, input: { clientOrigin: targetOrigin, kinds: [22242], relayUrl: pendingRelayUrl } }
+        : null;
+    }
+    if (mode === 'sign' && pendingKeyId && pendingEvent) {
+      const relayUrl = pendingEvent.kind === 22242 ? extractRelayTag(pendingEvent) : null;
+      return {
+        keyId: pendingKeyId,
+        input: { clientOrigin: targetOrigin, kinds: [pendingEvent.kind], ...(relayUrl ? { relayUrl } : {}) },
+      };
+    }
+    return null;
+  }
+
+  // Approve sends nothing until the offer for the current grant has landed; a failed fetch shows `offerFailure` and the
+  // next tap fetches again.
+  function loadGrantPasskey() {
+    const grant = pendingGrant();
+    const request = ++passkeyOfferRequest;
+    passkeyOffer = null;
+    if (!grant) {
+      passkeyOfferFetch = 'idle';
+      return;
+    }
+    const input = JSON.stringify(grant);
+    passkeyOfferFetch = 'pending';
+    api.nostr.createGrantPasskey(grant.keyId, grant.input).then(
+      (need) => {
+        if (request !== passkeyOfferRequest) return;
+        passkeyOffer = { input, need };
+        passkeyOfferFetch = 'idle';
+      },
+      () => { if (request === passkeyOfferRequest) passkeyOfferFetch = 'failed'; },
+    );
+  }
+
+  /**
+   * Creates the pending grant with the passkey answer its offer needs. False when it wasn't created: a dismissed
+   * prompt or a passkey refusal keeps the consent card up with the message, anything else goes to `onFailure`.
+   */
+  async function approveGrant(onFailure: (message: string | undefined) => void): Promise<boolean> {
+    // Without the offer for this grant nothing is sent: Approve waits for the fetch in flight, or fetches again.
+    const gate = offerGate;
+    if (gate.action === 'retry') loadGrantPasskey();
+    if (gate.action !== 'send') return false;
+    let passkeyAssertion: ApprovalPasskeyAssertion | undefined;
+    try {
+      // First, before any other await: the passkey prompt needs the tap's user gesture.
+      passkeyAssertion = await answerApprovalPasskey(gate.need);
+    } catch (e) {
+      approvalError = (e as Error).message;
+      return false;
+    }
+    const grant = pendingGrant();
+    approvalError = '';
+    step = 'working';
+    if (!grant) return true;
+    try {
+      await api.nostr.createGrant(grant.keyId, grant.input, passkeyAssertion);
+      return true;
+    } catch (e: any) {
+      if (isPasskeyApprovalRefusal(e)) {
+        // The challenge is spent: show the API's words and hold a fresh offer for the next tap.
+        approvalError = e.message;
+        step = 'consent';
+        loadGrantPasskey();
+      } else {
+        onFailure(e?.message);
+      }
+      return false;
     }
   }
 
   async function approveConnect() {
     if (!nostrKey || !targetOrigin) return;
-    step = 'working';
-    try {
-      if (pendingRelayUrl) {
-        await api.nostr.createGrant(nostrKey.id, {
-          clientOrigin: targetOrigin,
-          kinds: [22242],
-          relayUrl: pendingRelayUrl,
-        });
-      }
+    if (await approveGrant((message) => failConnect('UNKNOWN', message || 'Failed to authorize this app'))) {
       respondConnect(true);
-    } catch (e: any) {
-      failConnect('UNKNOWN', e?.message || 'Failed to authorize this app');
     }
   }
 
@@ -203,9 +321,13 @@
   // ===== signEvent() =====
 
   async function startSign() {
-    if (!isAuthenticated) {
+    if (!signedIn) {
       step = 'sign-in';
       reveal();
+      return;
+    }
+    if (!termsOpen) {
+      step = 'terms';
       return;
     }
     await attemptSign(false);
@@ -218,8 +340,13 @@
       const { event: signed } = await api.nostr.signEvent(pendingKeyId, pendingEvent, targetOrigin);
       respondSign(true, undefined, signed);
     } catch (e: any) {
+      if (inIframe && isTermsRequired(403, { error: e?.message })) {
+        step = 'terms';
+        return;
+      }
       if (!afterGrant && e?.status === 403 && e?.message === 'interaction_required') {
         step = 'consent';
+        loadGrantPasskey();
         reveal();
         return;
       }
@@ -230,20 +357,11 @@
 
   async function approveSign() {
     if (!pendingKeyId || !pendingEvent || !targetOrigin) return;
-    step = 'working';
-    try {
-      const relayUrl = pendingEvent.kind === 22242 ? extractRelayTag(pendingEvent) : null;
-      await api.nostr.createGrant(pendingKeyId, {
-        clientOrigin: targetOrigin,
-        kinds: [pendingEvent.kind],
-        ...(relayUrl ? { relayUrl } : {}),
-      });
-      // Signing retry: exactly one retry immediately after the grant is
-      // created, so approval leads straight to a signed event instead of a
-      // second consent round-trip.
+    // Signing retry: exactly one retry immediately after the grant is
+    // created, so approval leads straight to a signed event instead of a
+    // second consent round-trip.
+    if (await approveGrant((message) => failSign('UNKNOWN', message || 'Failed to authorize signing'))) {
       await attemptSign(true);
-    } catch (e: any) {
-      failSign('UNKNOWN', e?.message || 'Failed to authorize signing');
     }
   }
 
@@ -276,9 +394,26 @@
   }
 
   function onAuthenticated() {
+    signInNote = null;
     embedAuthenticated = true;
+    // The new session's Terms check decides when the request continues.
+    if (inIframe) step = 'terms';
+    else resume();
+  }
+
+  function resume() {
     if (mode === 'connect') void runConnect();
     else if (mode === 'sign') void attemptSign(false);
+  }
+
+  function termsSignedOut(again: boolean) {
+    clearSessionToken();
+    embedAuthenticated = false;
+    signInNote = again ? SIGN_IN_AGAIN_TO_AGREE : null;
+    if (mode) {
+      step = 'sign-in';
+      reveal();
+    }
   }
 
   function eventSummary(evt: UnsignedNostrEvent | null): { title: string; detail: string } {
@@ -314,9 +449,12 @@
     {:else if step === 'sign-in'}
       <EmbeddedSignIn
         prompt={mode === 'sign' ? 'Sign in to approve this signing request' : "Sign in to connect. We'll ask before creating a new account."}
+        note={signInNote}
         onauthenticated={onAuthenticated}
         {passkeysSupported}
       />
+    {:else if step === 'terms'}
+      <TermsGate surface="embed" onsignedout={termsSignedOut} />
     {:else if step === 'consent' && mode === 'connect'}
       <div class="flex flex-col gap-3">
         <p class="text-surface-500 text-sm">Connect your OpenKey Nostr identity to this app.</p>
@@ -332,9 +470,12 @@
             <code class="font-mono text-xs text-surface-900 break-all">{pendingRelayUrl}</code>
           </div>
         {/if}
+        {#if approvalError || offerFailure}
+          <p class="text-sm text-red-600" role="alert">{approvalError || offerFailure}</p>
+        {/if}
         <div class="flex gap-2 mt-1">
           <Button variant="secondary" size="sm" class="flex-1 rounded-xl" onclick={cancelConnect}>Cancel</Button>
-          <Button size="sm" class="flex-1 rounded-xl" onclick={approveConnect}>Connect</Button>
+          <Button size="sm" class="flex-1 rounded-xl" onclick={approveConnect} disabled={offerGate.action === 'wait'}>Connect</Button>
         </div>
       </div>
     {:else if step === 'consent' && mode === 'sign'}
@@ -345,9 +486,12 @@
           <span class="block text-surface-400 text-xs uppercase tracking-wide mb-1">{summary.title}</span>
           <span class="text-sm text-surface-900 break-all">{summary.detail}</span>
         </div>
+        {#if approvalError || offerFailure}
+          <p class="text-sm text-red-600" role="alert">{approvalError || offerFailure}</p>
+        {/if}
         <div class="flex gap-2 mt-1">
           <Button variant="secondary" size="sm" class="flex-1 rounded-xl" onclick={cancelSign}>Cancel</Button>
-          <Button size="sm" class="flex-1 rounded-xl" onclick={approveSign}>Approve</Button>
+          <Button size="sm" class="flex-1 rounded-xl" onclick={approveSign} disabled={offerGate.action === 'wait'}>Approve</Button>
         </div>
       </div>
     {:else}

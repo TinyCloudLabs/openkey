@@ -9,6 +9,10 @@ on:
         description: Inspect serving instances, rollback image, and migration state without changes
         type: boolean
         default: false
+      override_reason:
+        description: Skips the Share sender smoke before the deploy. Needs a written reason, which the run summary records
+        type: string
+        default: ''
 
 concurrency:
   group: production-api
@@ -17,8 +21,8 @@ concurrency:
 env:
   DOCKER_IMAGE: skgbafa/openkey-api
   # Production dstack OS the openkey-api CVM must run (the Phala KMS only releases app keys to this image).
-  PHALA_OS_IMAGE: dstack-0.5.12
-  PHALA_OS_IMAGE_HASH: 8db40cb23008d6213668b5816702d100b37b859a8a5bfd18d938ae3a1b3715bd
+  PHALA_OS_IMAGE: dstack-0.5.15
+  PHALA_OS_IMAGE_HASH: 4597735f1a38ad8ec9f781356b88737fc052062deb7c9aaa4be89bf1b35643ca
 
 jobs:
   preflight:
@@ -50,18 +54,86 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: bun scripts/inspect-api-production.ts
 
-  deploy:
-    if: github.ref == 'refs/heads/main' && !inputs.preflight_only
+  # The latest Share sender smoke on main that ran (not skipped) must be green, must have started after the
+  # serving API commit's deploy job finished, and must have run on that commit or a later one. Otherwise the
+  # deploy stops. `override_reason` skips the check and is recorded in the run summary.
+  smoke-gate:
+    if: github.ref == 'refs/heads/main' && !inputs.preflight_only && inputs.override_reason == ''
     runs-on: ubuntu-latest
-    environment: production
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a green smoke on the serving API
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          serving=$(curl -fsS -m 15 https://api.openkey.so/health | jq -er '.commit | select(test("^[0-9a-f]{40}$"))')
+          deploys="$RUNNER_TEMP/deploy-runs.ndjson"
+          : > "$deploys"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-api.yml/runs?branch=main&status=success&head_sha=${serving}&per_page=20" \
+            --jq '.workflow_runs[].id' | while read -r id; do
+              gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/jobs" \
+                | jq -c '{jobs: [.jobs[] | {name, conclusion, completed_at}]}' >> "$deploys"
+            done
+          smokes="$RUNNER_TEMP/smoke-runs.ndjson"
+          : > "$smokes"
+          for conclusion in success failure cancelled timed_out; do
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/share-sender-smoke.yml/runs?branch=main&status=${conclusion}&per_page=1" \
+              --jq '.workflow_runs[0] // empty | {id, status, conclusion, head_sha, run_started_at, html_url}' >> "$smokes"
+          done
+          jq -n --arg serving "$serving" --slurpfile d "$deploys" --slurpfile s "$smokes" \
+            '{serving: $serving, deployRuns: $d, smokeRuns: $s}' \
+            | node .github/scripts/share-smoke-gate.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: smoke-gate
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && !inputs.preflight_only && (
+        needs.smoke-gate.result == 'success' ||
+        (needs.smoke-gate.result == 'skipped' && inputs.override_reason != '')
+      )
+    runs-on: ubuntu-latest
+    environment: production
+    # Listed because the provenance attestation needs id-token and attestations; the rest is what
+    # the default read-only token gave this job (checkout, and check runs for require-green).
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record the smoke override
+        if: inputs.override_reason != ''
+        env:
+          OVERRIDE_REASON: ${{ inputs.override_reason }}
+        run: |
+          {
+            echo "### Share sender smoke skipped"
+            echo
+            echo "Run by ${GITHUB_ACTOR} with override_reason: ${OVERRIDE_REASON}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Pre-release security check: refuse to ship a commit unless every check in
+      # .github/required-checks.json passed on this exact SHA (waits up to 40 min for running ones).
+      # Unlike smoke-gate, override_reason does not skip it.
+      - name: Require green checks on the shipped commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/require-green.mjs "$GITHUB_SHA"
 
       - name: Install Phala CLI
         run: npm install -g phala@1.1.22
 
       # Fail closed before any production change if the CVM is not on the pinned production OS.
-      # To fix it, set the OS by hand: `phala api -X PATCH /cvms/<id>/os-image -F os_image_name=dstack-0.5.12`.
+      # To fix it, set the OS by hand: `phala api -X PATCH /cvms/<id>/os-image -F os_image_name=dstack-0.5.15`.
       - name: Require production OS image on the CVM
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
@@ -83,11 +155,14 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      - name: Build and Push Docker image
+      # Build, scan the exact image, then push it: an image with a new fixable CRITICAL/HIGH
+      # finding (one not in .trivyignore.yaml) never reaches the registry or the CVM.
+      - name: Build Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: true
+          load: true
+          push: false
           build-args: |
             GIT_SHA=${{ github.sha }}
           cache-from: type=gha,scope=openkey-api-image
@@ -96,9 +171,51 @@ jobs:
             ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
             ${{ env.DOCKER_IMAGE }}:latest
 
-      - name: Update compose with image tag
+      - name: Scan the Docker image
+        run: scripts/security/scan-image.sh "${DOCKER_IMAGE}:${GITHUB_SHA}"
+
+      # TC-3837: the compose names the image by the digest this push returned, never by tag, so the
+      # measured compose pins the exact image that was scanned. The registry must resolve the tag to
+      # the same digest, or something else pushed in between.
+      - name: Push Docker image
+        id: push
         run: |
-          sed -i "s|\${DOCKER_IMAGE}|${{ env.DOCKER_IMAGE }}:${{ github.sha }}|g" docker-compose.prod.yml
+          set -euo pipefail
+          docker push "${DOCKER_IMAGE}:${GITHUB_SHA}" | tee "$RUNNER_TEMP/push.log"
+          digest=$(sed -n -E "s/^${GITHUB_SHA}: digest: (sha256:[0-9a-f]{64}) size: [0-9]+$/\1/p" "$RUNNER_TEMP/push.log")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::docker push reported no digest for ${DOCKER_IMAGE}:${GITHUB_SHA}" >&2; exit 1; }
+          registry=$(docker buildx imagetools inspect "${DOCKER_IMAGE}:${GITHUB_SHA}" --format '{{json .Manifest.Digest}}' | jq -r .)
+          [ "$registry" = "$digest" ] || { echo "::error::the registry resolves ${DOCKER_IMAGE}:${GITHUB_SHA} to ${registry}, not the pushed ${digest}" >&2; exit 1; }
+          docker push "${DOCKER_IMAGE}:latest"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "image=${DOCKER_IMAGE}@${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: docker.io/${{ env.DOCKER_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+
+      - name: Pin the compose to the pushed digest
+        env:
+          IMAGE: ${{ steps.push.outputs.image }}
+        run: sed -i "s|\${DOCKER_IMAGE}|${IMAGE}|g" docker-compose.prod.yml
+
+      # The guest runs docker compose v2.26.0 (dstack 0.5.15 base image). Its schema refuses long-form
+      # `devices` ("services.key-recovery.devices.0 must be a string"), which stopped the witness boot.
+      # Validate the exact bytes sent to Phala with that version, before the migrations and the CVM.
+      # `config -q` needs no Docker daemon; unset variables are only warnings.
+      - name: Validate the compose with the guest's docker compose version
+        env:
+          COMPOSE_VERSION: v2.26.0
+          COMPOSE_SHA256: 59c6b262bedc4a02f46c8400e830e660935684899c770c3f5e804a2b7079fc16
+        run: |
+          bin="$RUNNER_TEMP/docker-compose"
+          curl -fsSL -o "$bin" "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64"
+          echo "${COMPOSE_SHA256}  ${bin}" | sha256sum -c -
+          chmod +x "$bin"
+          "$bin" version | grep -q "${COMPOSE_VERSION}"
+          "$bin" -f docker-compose.prod.yml config -q
 
       # Apply the tracked migrations before shipping the code. Raw migration SQL
       # installs custody and tenant-boundary guards that `prisma db push` omits.
@@ -113,6 +230,11 @@ jobs:
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+
+      # Every production deploy: no image in the compose sent to Phala may be a tag or a variable.
+      - name: Require every compose image pinned by digest
+        run: bun scripts/compose-image-digests.ts docker-compose.prod.yml
+
       - name: Deploy and verify production migrations
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -125,8 +247,10 @@ jobs:
           bun run db:migrate:deploy:production
 
       - name: Deploy to Phala Cloud
+        id: phala-deploy
         env:
           PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          IMAGE: ${{ steps.push.outputs.image }}
         run: |
           phala deploy \
             --api-token "$PHALA_CLOUD_API_KEY" \
@@ -137,6 +261,20 @@ jobs:
             --image "$PHALA_OS_IMAGE" \
             --compose docker-compose.prod.yml \
             --wait
+          mkdir -p "$RUNNER_TEMP/api-deploy-record"
+          jq -n --arg commit "$GITHUB_SHA" --arg image "$IMAGE" '{commit: $commit, image: $image}' \
+            > "$RUNNER_TEMP/api-deploy-record/record.json"
+
+      # TC-3837: publish-api-compose.yml reads this record when this run completes and publishes the
+      # app-compose the CVM measured. It runs as its own workflow so its result never decides this
+      # run's conclusion, which the Share sender smoke and the next deploy's smoke gate key on.
+      - name: Record the deployed image for the compose publication
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: api-deploy-record
+          path: ${{ runner.temp }}/api-deploy-record/record.json
+          if-no-files-found: error
+          retention-days: 90
 
       # Fail closed if the deploy left the CVM on a different OS image.
       - name: Verify production OS image after deploy
@@ -157,31 +295,54 @@ jobs:
             echo "### Production API deployed"
             echo ""
             echo "Commit: [\`${GITHUB_SHA::7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})"
-            echo "Image: \`${{ env.DOCKER_IMAGE }}:${GITHUB_SHA}\`"
+            echo "Image: \`${{ steps.push.outputs.image }}\`"
             echo "Deployments: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/deployments/production"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify ingress health and app port not public (TC-1012)
         env:
           INGRESS_URL: https://api.openkey.so
-          # openkey-api CVM app_id (Phala workspace openkey-secondary) and prod5 gateway domain.
-          RAW_APP_URL: https://b7d6e87778f73904a8f5fd26e4d0f1d1310234be-3001.dstack-pha-prod5.phala.network
+          PHALA_CLOUD_API_KEY: ${{ secrets.PHALA_CLOUD_API_KEY }}
+          # The openkey-api CVM's app_id. Changing it is a deliberate act.
+          EXPECTED_APP_ID: b7d6e87778f73904a8f5fd26e4d0f1d1310234be
         run: |
-          for i in $(seq 1 30); do
+          # TC-3554: the first boot after the root move re-seals every key before the API listens.
+          for i in $(seq 1 90); do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$INGRESS_URL/health" || true)
             [ "$code" = "200" ] && break
-            echo "Waiting for $INGRESS_URL/health (got $code), attempt $i/30"
+            echo "Waiting for $INGRESS_URL/health (got $code), attempt $i/90"
             sleep 10
           done
           if [ "$code" != "200" ]; then
             echo "::error::$INGRESS_URL/health returned $code, expected 200" >&2
             exit 1
           fi
+          # The gateway is whatever the CVM reports. Phala can move a CVM to another gateway, and a closed port
+          # looks the same on any gateway, so a hard-coded domain would pass without probing the real one. No answer,
+          # or an answer that is not an app id and a domain, fails the step: an unprobed port is not a closed one.
+          if ! cvm=$(phala cvms get openkey-api --api-token "$PHALA_CLOUD_API_KEY" --json); then
+            echo "::error::TC-1012: could not read the openkey-api CVM, so the gateway to probe is unknown" >&2
+            exit 1
+          fi
+          APP_ID=$(jq -r '.app_id // empty' <<<"$cvm" 2>/dev/null || true)
+          GATEWAY_BASE_DOMAIN=$(jq -r '.gateway.base_domain // empty' <<<"$cvm" 2>/dev/null || true)
+          if ! [[ "$APP_ID" =~ ^[0-9a-f]{40}$ ]] || ! [[ "$GATEWAY_BASE_DOMAIN" =~ ^[a-z0-9-]+(\.[a-z0-9-]+)+$ ]]; then
+            echo "::error::TC-1012: the openkey-api CVM did not report a usable app_id and gateway.base_domain; cannot tell which gateway to probe" >&2
+            exit 1
+          fi
+          # The name `openkey-api` must still be our CVM: a rename, a duplicate or another workspace's CVM
+          # under that name would be probed instead of ours, and its closed port would prove nothing.
+          if [ "$APP_ID" != "$EXPECTED_APP_ID" ]; then
+            echo "::error::TC-1012: the openkey-api CVM reports app $APP_ID, not the expected $EXPECTED_APP_ID; refusing to probe another app's port" >&2
+            exit 1
+          fi
+          RAW_APP_URL="https://${APP_ID}-3001.${GATEWAY_BASE_DOMAIN}"
           # TC-1012: the Phala gateway must not serve the app port; only the ingress may.
           # A closed port makes the gateway accept TLS and then close the stream (curl
           # exit 52/56, no HTTP status). Any HTTP status means the port is published.
           # Other curl errors (DNS, connect, TLS, timeout) prove nothing: retry.
           raw_url="$RAW_APP_URL/health"
+          echo "TC-1012: probing the gateway $GATEWAY_BASE_DOMAIN that the CVM reports (app $APP_ID)"
           closed=0
           for _ in $(seq 1 10); do
             rc=0

@@ -265,26 +265,39 @@ describe('session JWK adoption log line', () => {
     ['/complete', '/api/delegate/complete'],
     ['/authorize-sign-prepare', '/api/delegate/authorize-sign-prepare'],
   ] as const;
-  test.each(routes.flatMap(([path, route]) => [[path, route, true], [path, route, false]] as const))(
-    '%s logs route %s and private_members=%s, and nothing about the key, user or request',
-    async (path, route, withPrivate) => {
+  const cases = routes.flatMap(([path, route]) => [
+    { path, route, withPrivate: true, device: false },
+    { path, route, withPrivate: false, device: false },
+    ...(path === '/authorize-sign-prepare' ? [] : [{ path, route, withPrivate: true, device: true }]),
+  ]);
+
+  test.each(cases)(
+    '$path counts private members without request context (private=$withPrivate, device=$device)',
+    async ({ path, route, withPrivate, device }) => {
       const written: string[] = [];
       const write = process.stdout.write;
       process.stdout.write = ((chunk: string | Uint8Array) => {
         written.push(String(chunk));
         return true;
       }) as typeof process.stdout.write;
-      await post(path, {
-        keyId: keyRecord.id, siwe: widgetSiwe(), jwk: withPrivate ? sentJwk : publicMembers, host, requestOrigin: ORIGIN,
+      // The telemetry runs before required-field validation. Omit the key ID
+      // on device cases so the route exercises the guard without a device lookup.
+      const result = await post(path, {
+        siwe: widgetSiwe(), jwk: withPrivate ? sentJwk : publicMembers, host, requestOrigin: ORIGIN,
+        ...(device ? { deviceTransactionId: 'device-transaction-fixture' } : { keyId: keyRecord.id }),
       }).finally(() => {
         process.stdout.write = write;
       });
+      if (device) expect(result.status).toBe(400);
       const output = written.join('');
       const lines = output.split('\n').filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
       expect(lines.filter((line) => line.event === 'delegate_session_jwk')).toEqual([{
         ts: expect.any(String), level: 'info', event: 'delegate_session_jwk', request_id: expect.any(String),
         route, private_members: withPrivate,
       }]);
+      expect(lines.filter((line) => line.event === 'delegate_private_session_jwk')).toEqual(withPrivate && !device ? [{
+        ts: expect.any(String), level: 'info', event: 'delegate_private_session_jwk', route, count: 1,
+      }] : []);
       for (const value of [exported.d, exported.x, user.id, user.email, keyRecord.id, address, host]) {
         expect(output).not.toContain(value);
       }

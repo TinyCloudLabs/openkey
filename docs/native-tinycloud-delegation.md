@@ -194,6 +194,258 @@ To replace an existing client's ceiling, run `register-oauth-client.yml` with
 `client_id` and `tinycloud_native_delegation`; the run log prints the ceiling
 before and after.
 
+### Step-up ceilings (TC-3569)
+
+A client's ceiling may carry an optional `stepUps` section: for each framed
+app of a host application (TinyCloud One), what the owner may add on top of
+the sign-in grant, by space. It is admin-set, like the rest of the ceiling, and
+enforced by `validateNativeDelegationConfig`. The step-up endpoint that reads
+it is not built yet; until it ships the section is stored and ignored.
+
+```json
+"stepUps": {
+  "explorer": {
+    "public": { "kv": { "paths": [""], "actions": ["get", "list", "metadata"] } },
+    "applications": { "sql": { "databases": ["default"], "actions": ["read", "schema"] } }
+  },
+  "account": { "account": { "kv": { "paths": ["applications/", "spaces/"], "actions": ["get", "list"] } } },
+  "courier": { "agents": { "kv": { "paths": ["xyz.tinycloud.courier/"], "actions": ["get", "list"] } } }
+}
+```
+
+| Rule | |
+|---|---|
+| App key | 1 to 16 apps; the same grammar as `appId`; never a secrets root. |
+| Spaces | `public`, `account`, `agents`, `applications`. The secrets space and `tinycloud.encryption` are refused until a separate ruling enables them. |
+| `kv.actions` | A subset of `get`, `list`, `metadata`. No write action, ever. |
+| `sql.actions` | A subset of `read`, `schema`. |
+| `kv.paths` | Relative paths, no dot segments. `""` (the whole space) is admitted only in `public`. The roots `secrets`, `vault` and `variables` are refused. |
+| `sql.databases` | Exact names: one segment, or `<folder>/<name>`. No prefix and no pattern. |
+
+The `tinycloud_native_stepup` table holds one row per (grant, app). Two
+database triggers keep a step-up inside its grant. When a grant becomes
+`REVOKED`, by sign-out, consent withdrawal or direct SQL, every step-up of it
+becomes `REVOKED` (`grant_revoked`) in the same transaction. In the other
+direction, a guard refuses (`TC773`) an `ACTIVE` step-up on a grant that is not
+`ACTIVE`, and a step-up that was revoked with its grant can never become
+`ACTIVE` again. The guard locks the grant row `FOR SHARE`, so an approval racing
+a revocation either commits first and is then revoked, or waits and is
+refused. A step-up revoked on its own may be approved again while the grant is
+`ACTIVE`.
+
+A grant that expires keeps the status `ACTIVE`, so the database does not
+enforce expiry: issuing a step-up and renewing one must sit behind the same live
+and expiry check as grant renewal.
+
+Rollback: an API build that predates this section refuses a ceiling that
+contains `stepUps` as having an unknown field, and a malformed ceiling disables
+delegation for the client. Apply a ceiling with `stepUps` only once this
+version is deployed, and do not roll the API back past it while one is set.
+
+### Request kind
+
+`tinycloud_native_request` has a `kind`: `SIGNIN` (every request today; `grantId`
+and `appId` are null) or `STEPUP` (a request to add an app's step-up to an
+existing grant; `grantId` and `appId` are set). A check constraint enforces the
+pairing, `grantId` references the grant with `ON DELETE CASCADE`, and the schema
+guard checks the three columns, the constraint and the cascade. Nothing writes a
+`STEPUP` row until the step-up endpoint (below) is enabled; the migration only
+adds the columns. A step-up request takes its session key from the grant, never
+from the caller. The sign-in consent path refuses any other non-`SIGNIN` kind
+(`409 unsupported_request_kind` from prepare and approve), `STEPUP` requests
+are handled by their own branch (below), and the code exchange sends a `STEPUP`
+request to its own branch, which can never create a grant, so a `STEPUP` row can
+never be completed as a sign-in.
+
+### Step-up request endpoint (TC-3569)
+
+`POST /api/auth/oauth2/tinycloud/stepup` records a step-up request for an app
+inside the Home grant. It is behind `OPENKEY_NATIVE_STEPUP_ENABLED` (`1` or
+`true`; default off). While off the path answers `404 not_found`, writes
+nothing, and discovery omits `tinycloud_delegation_stepup_endpoint`.
+
+It signs nothing, issues no token, creates no grant and does not rotate the
+refresh token. It returns `201 {"request_uri", "expires_in": 90}`; the app then
+opens `/authorize` with that `request_uri` as for sign-in. The consent step is
+described under "Step-up consent" below, and its code exchange under "Step-up
+code exchange".
+
+Credentials are the Home grant's current refresh token plus an
+`OpenKey-Session-Proof` signed by the grant's key for this endpoint
+(`htu` = issuer + `/oauth2/tinycloud/stepup`). Only the grant's current
+refresh-token hash matches; the proof's `jti` is committed before any other
+work, so a replay is refused. The delegate (`sessionDid`, JWK, JKT) is copied
+from the grant; a request body carrying a `session_key`, `session_did` or
+`authorization_details` member is `invalid_request`.
+
+Form body (urlencoded, no other keys): `client_id`, `refresh_token`, `app_id`,
+`permissions` (a JSON array of `{service, space, path, actions}`), `redirect_uri`
+(registered on the client), `state`, `code_challenge`,
+`code_challenge_method=S256`.
+
+Accepted when, in one transaction under the native lock order (reviewer, user,
+consent, generation, grant `FOR NO KEY UPDATE`, token row; the request is
+inserted last): the grant is `ACTIVE` and its consent scope and generation
+match; now is before `absoluteExpiresAt` less 300 s (the renewal rule); the
+account is not locked, on reviewer hold or a reviewer, and has not taken key
+control exclusively or switched the app off (as renewal); the grant's key is
+still the account's canonical key; the refresh-token row is live; the client's
+ceiling has `stepUps` and the same host as the grant; and every entry is covered
+by `stepUps[app_id][space]` (exact app id, case-sensitive; exact path or a
+`/`-terminated prefix for KV, `""` being the root and overlapping every other
+path in its space; exact database for SQL; read-only vocabulary
+`kv: get|list|metadata`, `sql: read|schema`). At most 8 live step-up requests
+exist per grant (a request URI that expired unopened, or an expired request,
+frees its slot; the grant lock serialises concurrent requests so the cap
+holds). The request stores the grant's consent generation and expires no later
+than the grant's cutoff (`absoluteExpiresAt` less 300 s).
+
+| HTTP | `error` |
+|---|---|
+| 404 | `not_found` (flag off) |
+| 401 | `invalid_session_proof` (bad proof, replay, unknown or previous token) |
+| 400 | `invalid_request` (body, redirect URI, PKCE) |
+| 400 | `invalid_grant` (revoked grant, dead refresh token) |
+| 400 | `consent_required` (consent changed, grant near its end, client disabled) |
+| 400 | `access_denied` (account locked, key control exclusive to the user, app switched off, no step-up ceiling, entry beyond the ceiling) |
+| 400 | `invalid_authorization_details` (malformed `permissions`, including any write action) |
+| 429 | `slow_down` (`Retry-After: 10`) |
+
+### Step-up consent (TC-3569)
+
+The consent page's `prepare` and `approve` calls accept a `STEPUP` request.
+Both re-check, under the native lock order (reviewer, then the user row `FOR SHARE`,
+so a concurrent switch to user-controlled keys cannot land after the gate) and in one transaction, everything
+`/stepup` checked: the grant is `ACTIVE`, the same user, client, consent
+generation, session key and DID, and before its cutoff; the grant's refresh
+token is still live; the account is usable (not locked, no reviewer hold, not
+a reviewer) and has neither taken key control exclusively nor switched the
+app off; the canonical key is the grant's key and address; the client's
+ceiling is enabled for the grant's host and still covers every entry; and the
+request's consent generation still matches. A reviewer is refused with `403
+reviewer_stepup_refused`.
+
+Consent is all-or-nothing: there is no narrowing of the entries and no host
+plan. The step-up never hosts a space. `prepare` refuses with `409
+space_not_hosted` ("Spaces not hosted on this node: ...") unless the key's
+TinyCloud bootstrap is `complete` for the grant's host. It builds one
+multi-space SIWE for the grant's session key, with a lifetime no longer than
+the client ceiling allows or the grant has left, and returns the preview
+(`kind: "STEPUP"`, `spaces`, `stepUp: {grantId, appId}`, `grantLifetimeSeconds`,
+`reactivation`: a revoked step-up exists for this app). `approve` signs with
+the grant's key and activates the delegation on the node. The node's receipt
+must list every requested space as activated: a space it skipped refuses the
+whole step-up with `409 space_not_hosted` naming it (`prepare` already refuses
+this way, naming the spaces, whenever the key's bootstrap is not complete, so
+the consent screen does not offer Allow for a step-up that cannot succeed). The
+node call is bounded to 10 s. A
+node failure is `503 temporarily_unavailable`. In both cases the approval is
+withdrawn at once (`DENIED`, signature cleared) and the delegation is revoked
+on the node. The response carries only `error` and `error_description`: no
+signature, delegation, CID or header. If the revoke fails, the request keeps
+`{revokePending, delegationCid, tinycloudHost, address, grantId, appId,
+expiresAt, siweDomain}` (an identifier, not authority). The revoke sweeper
+retries it (see [Revoking one app's step-up](#revoking-one-apps-step-up-tc-3569)).
+A node refusal is logged as `native_consent_stale_session_revoke_failed` on this
+path and `native_stepup_revoke_pending_refused` from the sweeper.
+
+Accepted residual risk: a node that keeps a delegation for the spaces it did
+activate after we deny the request holds a delegation that is user-approved,
+read-only, bounded by its TTL (no longer than the grant's remaining life),
+delegated to the user's own session key, and whose CID is never returned.
+
+Consent creates no grant and no token, writes no step-up row, and changes
+nothing in the user's consent or its generation. The step-up row is written
+only by the code exchange of an approved request.
+
+**The flag stays off until the step-up screen is live.** The consent page chooses
+its screen from an explicit `kind`, with no default: `STEPUP` renders the
+step-up screen, `SIGNIN` renders the sign-in screen, and anything else shows a
+screen with no Allow, including no `kind` at all (a preview that carries `stepUp`
+or `spaces` without one is never shown as a sign-in). That screen says the request
+needs a newer version of the app and that nothing was allowed, and its "Back to the
+app" button denies the current request and returns to the app, the way the
+"space not set up" screen does; if that fails the screen stays, with the error. The
+API sends a `kind` on every preview, so the web must not be deployed before the
+API that sends it.
+Order of rollout: API with `kind` live, then the web with the step-up screen, then
+the refusal screen with its way back, then the ceiling diff (see "Parity with
+TinyCloud One"), then the flag. `OPENKEY_NATIVE_STEPUP_ENABLED` must not be turned
+on in any environment before the step-up screen, the refusal screen and the revoke
+sweeper are deployed and the Home client's `stepUps` has been diffed against the
+reference.
+
+### Step-up code exchange (TC-3569)
+
+After consent the app finishes `/authorize` (the provider's consent accept), then
+redeems the code at `POST /api/auth/oauth2/token` with the PKCE verifier and an
+`OpenKey-Session-Proof` as for sign-in, except that the proof is verified against
+the **Home grant's** session key (`request.grantId`), never a key the caller
+supplies. A step-up code can never mint a grant: the exchange for a `STEPUP`
+request has its own branch that creates no grant and no refresh token and never
+touches `oauth_consent` or its generation.
+
+Under the locks (reviewer, user `FOR SHARE`, consent, generation, request,
+grant, refresh-token row) the exchange redeems the request only when it is
+`APPROVED` with `hosting = 'existing'` and its `delegation` has the shape of an
+approval (a `DENIED` request reuses the column for its revoke record). It then
+re-runs the gate: grant ACTIVE for this user and client, same session key and
+DID, generation unchanged, before the renewal cutoff, refresh token live, account
+not locked or on reviewer hold, key control not `USER_CONTROLLED_EXCLUSIVE`, app
+not switched off, same canonical key, ceiling still enabled for the grant's host,
+and the approved entries still inside the current `stepUps` ceiling. The
+delegation's `expiresAt` must still be in the future and no later than the grant's
+`absoluteExpiresAt`. Any failure leaves the request unredeemed; the provider has
+already spent the code (as for sign-in), so the app starts a new request.
+
+The step-up row is created for a new `(grantId, appId)`, replaced in place
+(same row, new entries) when it is `ACTIVE`, and re-activated when it was revoked
+by the app (`app_revoked`): this approved, full browser consent is the user's
+approval to bring it back, and `grantId` is never changed. A row revoked with
+its grant (`grant_revoked`) can never be re-activated.
+
+The response carries the signed delegation under `tinycloud_stepup`:
+`{version, appId, grantId, address, chainId, ownerDid, spaces: [{space,
+spaceId}], verificationMethod, siwe, signature, delegationHeader,
+delegationCid, issuedAt, expiresAt, renewableUntil, permissions, tinycloudHost,
+hosting: "existing"}`. `renewableUntil` is the grant's renewal cutoff
+(`absoluteExpiresAt` minus 300 s). The response is `Cache-Control: no-store`.
+
+**Consent is not changed.** The provider's consent accept rewrites the user's
+`oauth_consent` scopes to the accepted request's scopes. A step-up request carries
+only `tinycloud:delegation`, which would shrink the Home sign-in's `openid
+offline_access tinycloud:delegation`. The provider interceptor for
+`/oauth2/consent` therefore puts the row's `scopes` and `updatedAt` back for a
+`STEPUP` request, whatever the provider answered. The restore is one conditional
+`UPDATE`: it applies only if the row still holds exactly what the provider wrote
+for a step-up (`['tinycloud:delegation']`) and the user's consent generation is
+still the one read before the provider ran. A consent withdrawal (row deleted) or
+an update-consent that removes the delegation scope (generation moves) after the
+provider's write is therefore never undone, and nothing withdrawn is recreated. A
+snapshot without the delegation scope is never restored.
+
+The provider's write and the restore are two statements, not one transaction: the
+provider writes through its own connection. A crash between them leaves the
+narrower scopes. That costs nothing for the Home grant: renewal reads only the
+`tinycloud:delegation` scope (and the consent generation, which a scope change
+that keeps the delegation scope does not move), and the provider's refresh never
+reads consent. A test renews Home twice with the consent narrowed to
+`tinycloud:delegation`. The narrower scopes heal at the next sign-in's consent.
+An update-consent to exactly `['tinycloud:delegation']` in the same instant is
+indistinguishable from the provider's write and is restored (the delegation scope
+stays either way).
+
+**The access token.** The step-up request's scope is `tinycloud:delegation` only
+(no `openid`, no `offline_access`), so the provider writes one access token of
+300 s with that scope alone, no refresh token (`refreshId` null) and no ID token.
+The token opens nothing: the delegate signer, userinfo and the OpenKey account
+APIs, `/stepup`, renew and revoke all refuse it (they need a session or a refresh
+token plus a session proof, or other scopes). Withdrawing consent deletes it
+(`tinycloud_native_withdraw_consent()`, migration `20261121_0003`: access tokens of
+that user and client with no refresh token and the delegation scope, which the
+grant's own refresh-token-based delete never reached); otherwise it expires on its
+own within 300 s. It holds no capability either way.
+
 ## Permissions and the signed session SIWE
 
 Requests and responses list permissions as manifest entries with
@@ -580,6 +832,88 @@ Deny sets a `RESOLVED` request to `DENIED` and returns `{"status":"DENIED"}`.
 The page then posts provider consent `{accept: false, oauth_query}`, which
 redirects with `error=access_denied&state=…&iss=…`.
 
+### One passkey per interaction (TC-3596)
+
+When the account's passkey setting asks for a passkey on Approve, `prepare` returns a challenge and `approve`
+verifies an assertion bound to that revision's digest (`passkey_approval_required` otherwise). A user who has
+just signed in with a passkey would see two prompts back to back, so a passkey sign-in made **for this request**
+counts as that request's approval passkey:
+
+- The login page sends `x-openkey-passkey-flow: <tinycloud_request id>` with its passkey sign-in. After the
+  sign-in verifies, OpenKey records a cover only when **all** of these hold: the request id has the exact PAR id
+  shape (`^[A-Za-z0-9_-]{32}$`); the request exists, is `RESOLVED` (the state `/authorize` leaves it in when it
+  sends the user to sign in), and is unowned or the signer's; it was created
+  before the assertion; the assertion carries the user-verified flag; and the passkey is one that counts for
+  step-up, the same bar as an approval passkey. Otherwise nothing is recorded and the sign-in still succeeds.
+- The cover is one `verification` row, `openkey-flow-passkey:<session id>:<request id>`, valid for five minutes
+  and for that session and that request only. It is not shared with another session of the account or another
+  request, and a request that has no cover gets the usual challenge.
+- While it exists, `prepare` returns `passkey: {required: false}` and `approve` needs no assertion, for sign-in
+  and step-up requests alike. A re-prepare of the same request (a changed selection) is covered too. Approve or
+  deny ends every session's cover for that request; an expired one gets the existing `passkey_approval_required`
+  refusal and a new challenge.
+- `tinycloud_native_request.approvalPasskeyMethod` records which gate let the approval through:
+  `NOT_REQUIRED`, `FLOW_PASSKEY` or `REQUEST_PASSKEY`.
+- Only these two routes read the cover. Lowering the approval setting, TinyCloud manage-key mode, enabling an
+  app, account deletion, passkey enrolment and removal, and key export or recovery keep asking for their own
+  passkey. Email-code and social sign-ins make no cover and are asked once, at Approve.
+
+### One passkey per web sign interaction
+
+The web sign pop-up (`/widget/sign`) and the sign iframe (`/widget/embed/sign`) follow the same rule: a passkey
+sign-in made **for this sign request** counts as that request's approval passkey.
+
+- Each sign page draws its own flow id, `w.` and 24 random bytes in base64url (`^w\.[A-Za-z0-9_-]{32}$`), when it
+  loads. The id is never read from the app's request or its `postMessage`. The `w.` prefix keeps the web ids apart
+  from native request ids, which are checked against a resolved request row; a web id has no server row.
+- The page names the id in `x-openkey-passkey-flow` on its passkey sign-in: the iframe's own
+  `/api/passkey/verify-authentication` call, the cookie sign-in inside the page and the pop-up's login page. The
+  pop-up leaves for `/auth/login` and comes back as a new page, so it keeps its id in the tab's `sessionStorage`
+  (`openkey_sign_flow`) when the user selects Sign In. The login page sends it only when the redirect target is
+  `/widget/sign` and the stored value has the web shape; the pop-up removes it when it loads, so one visit to the
+  login page serves one sign page.
+- OpenKey records the same cover as for a native request (`openkey-flow-passkey:<session id>:<flow id>`, five
+  minutes, that session and that flow only) when the assertion carries the user-verified flag, the passkey counts
+  for step-up and the sign-in issued the session. A web id is recorded only in the `w.` shape; a native-shaped id
+  sent by a web page records nothing, and an id sent in a body, a query string or `postMessage` is never read.
+- The sign pages send the id on the calls that offer or check the approval passkey:
+  `POST /api/delegate/authorize-sign-preview` (offer), `POST /api/delegate/authorize-sign` (check),
+  `POST /api/keys/:id/sign/passkey` (offer) and `POST /api/keys/:id/sign` (check). `authorize-sign-prepare` offers
+  no passkey. The user's approval-passkey setting still decides whether Approve asks for a passkey; the cover only
+  replaces the second prompt.
+- The check that lets an approval through on the cover spends it with one delete that reports whether it removed
+  the row, so it covers one approval: of parallel approvals for one flow exactly one passes on the cover and the
+  others need their own passkey. The offers only read the cover. The native consent routes keep their cover until
+  the request is approved or denied, so an approve that fails after the gate can be retried. A request that ends
+  without approval (cancel, refusal, reconnect) calls `POST /api/delegate/authorize-sign-release` with the id, which
+  deletes that session's cover for that id; otherwise it expires after five minutes.
+- The digest, token and selection checks of the approval are unchanged. Account-level actions (lowering the
+  approval setting, TinyCloud manage-key mode, enabling an app, account deletion, passkey enrolment and removal,
+  key export or recovery) never read the cover.
+- An offer that the cover waives carries `flowCover: true` (never on a native offer, nor on an offer the setting
+  waives). A sign page inside a frame (its window's top is another window, or cannot be read) uses that cover only
+  while Approve is in plain view: it watches the button with an intersection observer v2 (`trackVisibility`,
+  `delay: 100`, threshold 1.0, `lib/approve-visibility.ts`) and honours the cover after the observer has reported
+  the button fully in view, not covered and not faded for 500 ms without a break, and only while the latest
+  report still says so. The 500 ms restarts whenever Approve becomes actionable again. The button is watched only
+  while the offer on screen is a `flowCover` offer; an offer that is not one is never observed and its tap goes
+  straight through.
+- When a tap arrives on a `flowCover` offer without that, the page asks for the passkey on that tap: it stops naming
+  the flow, fetches the offer again without the flow header and runs the passkey prompt for the same tap (in the
+  iframe once the host has applied the review's layout). The tap goes on only when the fresh offer is for exactly
+  the request shown at the tap: the same key, message and selection, chosen expiry, allowed extra permissions,
+  sealed bytes and renewal lease. A different request is left on screen and waits for a new tap, which then asks for
+  the passkey. If the fetch fails, the page shows the offer failure and the next tap tries again. A browser without
+  observer v2 (Safari, Firefox) never names the flow in a frame, so it asks for the passkey at once. A page that is
+  not framed, such as the pop-up window, is not gated.
+- The observer samples at most every 100 ms, so an element placed over Approve between two samples is not seen
+  until the next one, so that 100 ms is a gap the check cannot see. Observer v2 is available in Chrome only.
+- The web server answers `/auth/login` with `Content-Security-Policy: frame-ancestors 'none'`
+  (`apps/web/src/hooks.server.ts`, `lib/frame-policy.ts`), so no page can frame the login page. `/widget/sign`,
+  `/widget/embed/sign` and every other page keep their headers.
+- Not covered: typed-data signing, Nostr approval, the connect page and the delegate handoff pages. Their Approve
+  keeps asking for its own passkey.
+
 ### Consent errors
 
 | HTTP | `error` | Cause |
@@ -954,6 +1288,42 @@ previous grant hash.
 Renewal never accepts a new session key, a broader permission set or a longer
 TTL. Any of those requires a new browser authorization.
 
+### Renewal of step-ups (TC-3569)
+
+While `OPENKEY_NATIVE_STEPUP_ENABLED` is on, a renewal also re-signs each `ACTIVE`
+step-up of the grant, in the same transaction and under the same locks (grant,
+then its step-up rows, then the token rows). Each is a fresh delegation for the
+grant's own session key, with the same TTL cap as Home's. It is signed only if the
+step-up's stored entries still pass the client's **current** `stepUps` ceiling;
+renewal never widens a step-up and never re-reads what the app asked for. The
+response gains:
+
+- `tinycloud_stepups`: an array of objects in the same shape as the code-exchange
+  `tinycloud_stepup`, one per renewed app (`[]` if none could be renewed);
+- `tinycloud_stepups_dropped`: the app ids the ceiling no longer covers. Their
+  rows stay `ACTIVE` and as approved (the ceiling may return), but nothing is
+  signed for them;
+- `tinycloud_stepups_failed`: the app ids whose delegation could not be prepared
+  or signed this time. One failing step-up never fails Home's own renewal; it is
+  skipped (logged as `native_stepup_renew_failed`, with no SIWE, signature or
+  header) and the next renewal tries again.
+
+None of these fields is present when the grant has no `ACTIVE` step-up, or when
+the switch is off, so the response is then exactly the sign-in renewal's. A
+step-up row's `lastRenewedAt` is set when it is re-signed. Revoked and
+`app_revoked` rows are not renewed, and a reviewer's grant never renews a
+step-up (every step-up path refuses a reviewer). Home's delegation in the same
+response is unchanged and does not carry the step-up's entries.
+
+An app that is no longer in the ceiling's `stepUps` at all ends its step-up at
+the renewal that notices: the row becomes `REVOKED` with `revokedReason`
+`ceiling_removed`, its delegations are marked for the revoke sweep, and the
+response lists the app id in `tinycloud_stepups_removed`. Bringing it back takes a
+full browser consent and an approved request, as after `app_revoked`; a renewal
+never reactivates it. Removal is only noticed at a renewal: an admin who removes
+and re-adds an app id between two renewals leaves the row `ACTIVE`, as approved
+(a ceiling only ever narrows what was approved, so nothing widens).
+
 ## Native revocation
 
 ```text
@@ -978,6 +1348,85 @@ client_id=exo-native&refresh_token=<current or previous refresh token>
 SDK `signOut()` calls this endpoint and then wipes the stored session key and
 tokens. Already-issued delegations stay valid until `expiresAt`
 ([Remaining limits](#remaining-limits)).
+
+### Revoking one app's step-up (TC-3569)
+
+While `OPENKEY_NATIVE_STEPUP_ENABLED` is on, the same endpoint takes one more
+field, `app_id=<reverse-DNS app id>`. With it the request ends that app's
+step-up only:
+
+- the grant, its refresh tokens and every other app's step-up are untouched,
+  and the response is `200 {}`;
+- the app's `ACTIVE` row becomes `REVOKED` with `revokedReason` `app_revoked`
+  and is no longer renewed. An app with no step-up gets the same `200 {}`;
+- the app's open step-up requests (`PENDING`, `RESOLVED`, `APPROVED`) become
+  `DENIED`. An `APPROVED` one has already put its delegation on the node, so it
+  keeps a `revokePending` record: an identifier and where to send the
+  revocation, never the signature or the delegation header.
+
+`app_id` is refused with `400 invalid_request` on a renew, when it is not a
+well-formed app id, and while the switch is off. Without `app_id` the request is
+the sign-out above.
+
+#### Delegations already on the node
+
+Every delegation a step-up signs, at the exchange and at each renewal, is kept
+in `tinycloud_native_stepup_delegation` (delegation CID, host, owner address,
+SIWE domain, `expiresAt`; no signature, no header) until it expires. Rows that
+have expired are dropped at the next exchange or renewal and by the sweep.
+
+When a step-up becomes `REVOKED`, by any path (the app's revoke, the ceiling
+removing the app, or its grant being revoked by sign-out, an Apple revoke or a
+consent withdrawal), a database trigger marks its unexpired delegations
+(`revokeRequestedAt`) in the same transaction. The revoke sweep, an in-process
+timer in the API (not behind the switch), asks the node to revoke each marked
+delegation with the owner's signature and the `revokePending` records above. An
+entry is cleared only when the node answers OK or the delegation has expired by
+itself. It runs every 60 s and logs `native_stepup_revoke_pending` with the
+number still waiting. The sweep signs unattended with the account's key, so it
+signs exactly one thing, the owner revocation of that one delegation CID, and
+only when all of these hold; otherwise the entry is left until it expires:
+
+- the recorded host is a node OpenKey may talk to (`isKnownTinyCloudActivationHost`);
+- the account is not `USER_CONTROLLED_EXCLUSIVE` (the user took the key back: the
+  server does not sign for it);
+- the recorded owner address is the account's current primary key, never
+  another key.
+
+Until the sweep reaches the node, a revoked step-up's delegations are still
+valid there, for at most their TTL. The sweep keeps going when entries cannot
+be revoked: an entry with no owner, or a request record that is not one, is
+dropped; one that is gated (host, exclusive mode, key) or that the node refuses
+stays and moves to the back of the queue (`tinycloud_native_stepup_delegation.lastAttemptAt`,
+and `updatedAt` on a request record), so a stuck entry never starves the rest.
+It logs a node refusal as `native_stepup_revoke_pending_refused`.
+
+An approved step-up request that is never redeemed has already put its delegation
+on the node. Whatever ends it (sign-out, an Apple revoke, a consent withdrawal,
+direct SQL) is caught by the sweep itself: it selects approved step-up requests
+that are `WITHDRAWN`, or `APPROVED` on a `REVOKED` grant, and in one conditional
+update drops the signature, sets `hosting` to `failed`, and leaves only the
+`revokePending` record (`DENIED`, or still `WITHDRAWN`). A request redeemed in
+the meantime no longer matches and is left alone.
+
+Ceiling narrowing is not a revoke: delegations already signed with wider
+entries stay live on the node until their TTL (an admin action, bounded by the
+TTL). An app removed from the ceiling entirely is a revoke (`ceiling_removed`).
+
+Three paths drop the rows without a revoke: deleting the account (its keys are
+deleted first, so nothing could sign), deleting an OAuth client (its grants
+cascade, Home's own delegations included; `DELETE /api/admin/oauth/clients/:clientId`
+and the organization-admin delete in `tenant-console.ts`), and the
+reviewer-account cleanup (a reviewer's grant never carries a step-up). In each
+the delegations expire by themselves within their TTL.
+
+Runbook: before deleting a client that has a `stepUps` ceiling, disable it and
+let the sweep drain (no `tinycloud_native_stepup_delegation` row with
+`revokeRequestedAt` set, no request with a `revokePending` record for that
+client), or wait out the longest TTL. The tenant-console route has no way to set a
+`stepUps` ceiling today (it does not write `tinycloudNativeDelegation`); if a
+tenant client ever gets one, the delete route must first refuse with `409` while
+unexpired delegation rows or `revokePending` records exist for it.
 
 ## TTL rules
 
@@ -1075,6 +1524,7 @@ transaction starts with `SET LOCAL lock_timeout = '5s'`.
 |---|---|
 | Prepare / approve | consent `FOR SHARE` (may be missing) → generation (`INSERT … ON CONFLICT DO NOTHING`, then `FOR SHARE`) → request `FOR UPDATE` |
 | Code exchange | consent `FOR SHARE` → generation `FOR SHARE` → request (atomic `UPDATE`) → grant insert. The provider writes the refresh-token row afterwards, outside this transaction, and `generateRefreshToken` links it to the grant. |
+| Step-up code exchange | reviewer → user `FOR SHARE` → consent `FOR SHARE` → generation `FOR SHARE` → request (atomic `UPDATE`) → grant `FOR SHARE` → refresh-token row `FOR SHARE` → step-up row. |
 | Renew / native revoke | consent `FOR SHARE` → generation `FOR SHARE` → grant `FOR UPDATE` → token rows |
 | Withdrawal trigger | consent (held by the `DELETE`/`UPDATE`) → generation `UPDATE` → requests → grants → token rows |
 
@@ -1327,6 +1777,78 @@ sees only the callback, or a sheet closed without one (`USER_CANCELLED`).
 "Terminal" from renew means a local sign-out. From native revoke, it means the
 server-side grant is already unusable, so `signOut` still wipes the local key
 and tokens and resolves.
+
+### Step-up in the SDK (TC-3569)
+
+`@openkey/core` has `requestStepUp`, `exchangeStepUpCode`, `validateTinyCloudStepUp`
+and `revokeStepUp`; `@openkey/sdk-capacitor` wraps them as
+`OpenKeyNative.requestStepUp({ appId, capabilities })` and `revokeStepUp(appId)`.
+Step-ups are held in `NativeSession.stepUps` (by app id), inside the existing
+session record, and merged on each renewal from `tinycloud_stepups`
+(`renewed` replaces, `removed` deletes; `dropped`, `failed` and a response that
+does not validate stay until their own expiry).
+
+Before storing anything the SDK checks the response against Home's stored grant,
+which must hold its grant id, address, chain id and renewable-until (a Home
+delegation that lacks one fails with `SERVER` before the user is asked, and in a
+renewal puts the step-ups in `rejected`). The signer recovered from the EIP-191
+signature is the Home grant's address; the signed SIWE text has exactly one `URI:`
+line equal to the session key's did, exactly one `Chain ID:` line equal to Home's,
+and one `Expiration Time:` within a second of `expiresAt`; the grant id, owner DID,
+session key, node host and spaces are the expected ones; the step-up does not
+outlive the Home grant; and the body holds no refresh token and no Home
+delegation. The recap in the SIWE is not decoded: the entries are checked as the
+response lists them. A mismatch is `SERVER` and leaves the Home session as it was.
+
+| Server outcome | SDK code |
+|---|---|
+| Discovery lacks `tinycloud_delegation_stepup_endpoint`, or `not_found` (flag off) | `UNAVAILABLE`, nothing opened or stored |
+| `invalid_request`, `invalid_authorization_details` | `INVALID_REQUEST` |
+| `slow_down` | `TEMPORARILY_UNAVAILABLE` with `retryAfterSeconds` |
+| `access_denied` | `ACCESS_DENIED` |
+| `consent_required`, `invalid_session_proof` | `CONSENT_REQUIRED` / `INVALID_GRANT`, as for the Home grant |
+
+The step-up redirect defaults to the sign-in `redirectUri` (`stepUpRedirectUri`
+overrides it; a different value must be registered on the Home client and
+handled by the app; the Android plugin accepts only `/callback`). If the code was
+redeemed but the response then fails validation, the verifier or the store, the
+SDK makes a best-effort `revokeStepUp(appId)`, keeps no local copy, and returns
+the original error; if that revoke is skipped or fails, the app can call
+`revokeStepUp`, and the sweeper revokes an approved request that is never redeemed.
+
+The step-up screen on the consent page is chosen from an explicit `kind` (see
+[Step-up consent](#step-up-consent-tc-3569)).
+
+#### Parity with TinyCloud One
+
+`scripts/step-up-ceilings/phase1.json` is the reference for the ceilings an admin
+applies to the Home client (the API does not read this file). The framed apps' own
+table is `frontend/src/apps/native-step-up-ceilings.json` in `tinychat`, in the same shape
+(the `stepUps` section, keyed by full app id). `bun scripts/step-up-ceiling-parity.ts`
+validates both with the API's own ceiling validation, flattens each to one line per
+(app, space, service, path or database, action) and requires the same set both
+ways. App ids, paths and database names are compared case-sensitively; a prefix
+is a different entry; the order and grouping in the file do not matter. An entry
+only One lists is something the app asks for that the server would refuse; one
+only OpenKey lists is access no app asked for.
+
+One's file is read at the commit pinned in `scripts/step-up-ceilings/one.pin.json`
+(`ref` is a 40-character sha, never a branch). tinychat is a public repository, so
+the `api-tests` workflow reads the file from `raw.githubusercontent.com` with no
+token, and runs with `--require-pin`: a `null` pin fails it (without the flag the
+script prints that it did not run and passes). When One's branch is squash-merged,
+re-pin to the sha on its main: a squashed branch commit becomes unreachable. Move
+the pin with any change to either side.
+
+What the check does not see: it compares two files in the repositories. The API
+enforces the `stepUps` that an admin set on the Home client's ceiling (the
+database), which no CI job reads. `scripts/step-up-ceilings/phase1.json` is the
+reference an admin applies, not something the API reads. So the flag has one more
+step before it: diff the production Home client's `tinycloudNativeDelegation.stepUps`
+against `phase1.json` (entry for entry, as above), or have the admin write path
+refuse anything else. The full rollout order is the API with `kind` live, then
+the web step-up screen, then the refusal-screen follow-up, then that ceiling
+diff, then the flag.
 
 ## TinyCloud node responsibility
 

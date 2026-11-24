@@ -3,6 +3,7 @@
 // is answered by page.route; no API server runs.
 
 import { test, expect, type Page, type Route } from '@playwright/test';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const json = (route: Route, body: unknown, status = 200) =>
   route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -42,6 +43,7 @@ async function mockApi(page: Page) {
     }
     return json(route, { error: `unmocked ${path}` }, 404);
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.route('https://app.test/**', (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<p>app</p>' }));
   return { calls, count: (path: string) => calls.filter((call) => call.path === path).length };
 }
