@@ -1693,6 +1693,7 @@
             ? {
                 chosenMs: expiryChoiceMs,
                 onceDefault: true,
+                oncePickCapped: true,
                 onChange: (ms) => {
                   expiryChoiceMs = ms;
                   invalidatePreviewForSelectionEdit();

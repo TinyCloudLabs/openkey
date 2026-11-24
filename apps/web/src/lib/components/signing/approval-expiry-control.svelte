@@ -10,10 +10,12 @@
     LONG_EXPIRY_MS,
     LONG_EXPIRY_WARNING,
     MAX_LEASE_MS,
+    ONCE_DEFAULT_EXPIRY_MS,
     SENSITIVE_RENEWAL_WINDOW_MS,
     accessLastsLine,
     defaultLeaseMs,
     formatDuration,
+    type OnceLongerChoice,
   } from "$lib/approval-expiry";
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
@@ -41,11 +43,11 @@
     /** How many permission rows the line sits under: more than one reads in the plural. */
     permissionCount?: number;
     /**
-     * Set while a one-hour start is in effect and the owner has not picked a time (TC-3111): who asked, as the
-     * screen names them ("This request" on a link). Null shows no note.
+     * Set on a one-time approval (secrets or decrypt, TC-4156). `caution` says what the access can open and shows
+     * under the length; `longer` is the second option next to 1 hour, null where the app asked for an hour or less.
+     * Null shows neither.
      */
-    onceSite?: string | null;
-    onceNote?: string | null;
+    onceChoice?: { longer: OnceLongerChoice | null; caution: string } | null;
     /** On a signed request for a secret's own key: its start and the most it can be. Null shows no note. */
     lengthNote?: string | null;
     /** Show the "How long it lasts" fold here. False where the screen shows ApprovalExpiryChooser elsewhere. */
@@ -65,16 +67,20 @@
     requestedBy = "",
     endsAt = null,
     permissionCount = 1,
-    onceSite = null,
-    onceNote = null,
+    onceChoice = null,
     lengthNote = null,
     chooser = true,
     holder = "app",
   }: Props = $props();
+  // Names the radio group and the caution that describes it.
+  const uid = $props.id();
 
   let confirming = $state(false);
   let confirmHeading = $state<HTMLHeadingElement | null>(null);
   let checkbox = $state<HTMLInputElement | null>(null);
+  let onceGroup = $state<HTMLFieldSetElement | null>(null);
+  // Counts the owner's picks, so the radios are checked against what will be signed after every pick.
+  let oncePicks = $state(0);
 
   const shownMs = $derived(chosenMs ?? requestedMs);
   const accessLine = $derived(shownMs === null ? "" : accessLastsLine(renewal?.deviceSignIn ? "device" : holder, shownMs));
@@ -129,6 +135,24 @@
     if (disabled) confirming = false;
   });
 
+  // A radio the owner clicked stays checked in the page even when the new length was not prepared (a failed
+  // re-prepare leaves the old length as the one that will be signed). Once the preview ends, the radios show
+  // the length that will be signed.
+  $effect(() => {
+    void oncePicks;
+    if (disabled || onceGroup === null) return;
+    const signedMs = shownMs;
+    const lengths = [ONCE_DEFAULT_EXPIRY_MS, onceChoice?.longer?.ms];
+    onceGroup.querySelectorAll<HTMLInputElement>('input[type="radio"]').forEach((radio, index) => {
+      radio.checked = lengths[index] === signedMs;
+    });
+  });
+
+  function pickOnce(ms: number) {
+    oncePicks += 1;
+    onChange(ms);
+  }
+
   function onKeydown(event: KeyboardEvent) {
     if (event.key === "Escape" && confirming) {
       event.stopPropagation();
@@ -176,12 +200,33 @@
     {:else}
       <p class="expiry-line" data-testid="approval-expiry-line">{accessLine}</p>
     {/if}
-    {#if onceNote !== null}
-      <p class="expiry-once-note" data-testid="approval-expiry-once-note">{onceNote}</p>
-    {:else if onceSite !== null && requestedMs !== null}
-      <p class="expiry-once-note" data-testid="approval-expiry-once-note">
-        {onceSite} asked for {formatDuration(requestedMs)}. Access that can open all your secrets or all your encrypted data starts at {formatDuration(shownMs)}. You can choose longer under How long it lasts.
-      </p>
+    {#if onceChoice !== null}
+      {#if onceChoice.longer !== null && renewal?.leaseMs == null && (shownMs === ONCE_DEFAULT_EXPIRY_MS || shownMs === onceChoice.longer.ms)}
+        <fieldset class="once-choice" bind:this={onceGroup} data-testid="approval-expiry-once-choice" aria-describedby="{uid}-once-caution">
+          <legend>How long</legend>
+          <label class="once-option">
+            <input
+              type="radio"
+              name="{uid}-once-length"
+              checked={shownMs === ONCE_DEFAULT_EXPIRY_MS}
+              {disabled}
+              onchange={() => pickOnce(ONCE_DEFAULT_EXPIRY_MS)}
+            />
+            <span>{formatDuration(ONCE_DEFAULT_EXPIRY_MS)}</span>
+          </label>
+          <label class="once-option">
+            <input
+              type="radio"
+              name="{uid}-once-length"
+              checked={shownMs === onceChoice.longer.ms}
+              {disabled}
+              onchange={() => pickOnce(onceChoice.longer!.ms)}
+            />
+            <span>{onceChoice.longer.label}</span>
+          </label>
+        </fieldset>
+      {/if}
+      <p class="expiry-once-note" id="{uid}-once-caution" data-testid="approval-expiry-once-caution">{onceChoice.caution}</p>
     {/if}
     {#if lengthNote !== null}
       <p class="expiry-once-note" data-testid="approval-expiry-length-note">{lengthNote}</p>
@@ -216,6 +261,38 @@
   /* Spaced under the line like the other paragraphs on the screen (measured at 390px: 10px, as above the line). */
   .expiry-once-note {
     margin-top: 4px;
+  }
+  .once-choice {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+  .once-choice > legend {
+    padding: 0;
+    margin-bottom: 2px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #475569;
+  }
+  .once-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 40px;
+    color: #0f172a;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+  }
+  .once-option > input {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    margin: 0;
+    accent-color: #1d4ed8;
   }
   .renewal-line {
     display: flex;

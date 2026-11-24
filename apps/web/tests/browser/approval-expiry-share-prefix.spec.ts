@@ -109,7 +109,7 @@ test.describe('the signed message alone (no authorization protocol)', () => {
     await expect(dialog.locator('.summary-statement').filter({ hasText: 'Read and change files shared with you' }).locator('.summary-sensitive-pill')).toHaveText('Sensitive');
     await expect(dialog).toContainText('See which permissions are already granted');
     await expect(frame.getByTestId('approval-access-line')).toContainText('lasts 30 days');
-    await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+    await expect(frame.getByTestId('approval-expiry-once-choice')).toHaveCount(0);
     await expect(frame.locator('.renewal-box')).toHaveCount(0);
     expect(previews).toHaveLength(0);
   });
@@ -120,7 +120,7 @@ test.describe('the versioned sign-in with an expiry control', () => {
     test(`a share/ folder request that signs ${days} days starts at ${days} days, with no one-hour note`, async ({ page }) => {
       const { frame, previews } = await open(page, { expiryChangeable: true }, shareRequest(ownerDid, days), { versioned: true });
       await expect(frame.getByTestId('approval-expiry-line')).toContainText(`${days} days`);
-      await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+      await expect(frame.getByTestId('approval-expiry-once-choice')).toHaveCount(0);
       await expect.poll(() => previews.length).toBe(1);
       expect(previews[0]).not.toHaveProperty('expirationTime');
     });
@@ -142,7 +142,8 @@ test.describe('the versioned sign-in with an expiry control', () => {
   test('the same folder under another owner keeps the one-hour start', async ({ page }) => {
     const { frame } = await open(page, { expiryChangeable: true }, shareRequest(otherOwnerDid, 30), { versioned: true });
     await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
-    await expect(frame.getByTestId('approval-expiry-once-note')).toContainText('asked for 30 days');
+    await expect(frame.getByRole('radio', { name: '7 days (the longest allowed)' })).not.toBeChecked();
+    await expect(frame.getByTestId('approval-expiry-once-caution')).toHaveText('This access can open a wide range of your data.');
   });
 });
 

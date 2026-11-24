@@ -121,7 +121,8 @@ test('one secret\'s key starts at the suggested hour and may be lengthened up to
   await expect(approve(page)).toBeEnabled();
   await expect(line(page)).toHaveText("This app's access to your data lasts 1 hour.");
   await expect(lengthNote(page)).toHaveText('This request starts at 1 hour, as the app asked. You can choose up to 7 days.');
-  await expect(page.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+  await expect(page.getByTestId('approval-expiry-once-choice')).toHaveCount(0);
+  await expect(page.getByTestId('approval-expiry-once-caution')).toHaveCount(0);
   await expect(page.getByTestId('all-secrets-card')).toHaveCount(0);
   await expect(page.getByRole('dialog').locator('.summary-statement .statement-primary')).toHaveText(['Read the secret OPENAI_API_KEY']);
   await expect(page.getByRole('dialog')).toContainText('Lets it open only this secret.');

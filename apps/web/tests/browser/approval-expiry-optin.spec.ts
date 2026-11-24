@@ -124,7 +124,10 @@ test('a secret or decrypt request that asks for 7 days is prepared with one hour
   const before = Date.now();
   const { frame, previews } = await open(page, { expiryChangeable: true }, decrypt);
   await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
-  await expect(frame.getByTestId('approval-expiry-once-note')).toContainText('asked for 7 days');
+  const choice = frame.getByRole('group', { name: 'How long', exact: true });
+  await expect(choice.getByRole('radio', { name: '1 hour' })).toBeChecked();
+  await expect(choice.getByRole('radio', { name: '7 days (what the app asked)' })).not.toBeChecked();
+  await expect(frame.getByTestId('approval-expiry-once-caution')).toHaveText('This access can open all your encrypted data.');
   const latest = previews.at(-1)!;
   const asked = Date.parse(String(latest.expirationTime));
   expect(asked).toBeGreaterThanOrEqual(before + 60 * 60_000 - 1000);
@@ -135,7 +138,8 @@ test('ordinary data keeps what the app asked for, with no note', async ({ page }
   const kv = siweWithResources([makeRecapResource({ [FIXTURE_META.ownSpace]: { 'tinycloud.kv/get': [{}] } })], { domain: HOST, uri: ORIGIN });
   const { frame, previews } = await open(page, { expiryChangeable: true }, kv);
   await expect(frame.getByTestId('approval-expiry-line')).toContainText('7 days');
-  await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+  await expect(frame.getByTestId('approval-expiry-once-choice')).toHaveCount(0);
+  await expect(frame.getByTestId('approval-expiry-once-caution')).toHaveCount(0);
   await expect.poll(() => previews.length).toBe(1);
   expect(previews[0]).not.toHaveProperty('expirationTime');
 });
@@ -151,7 +155,8 @@ test('the owner can choose longer than the hour, and the choice is what is prepa
   await frame.getByLabel('Or type a time').fill('2d');
   await frame.getByLabel('Or type a time').press('Enter');
   await expect(frame.getByTestId('approval-expiry-line')).toContainText('2 days');
-  await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+  await expect(frame.getByTestId('approval-expiry-once-choice')).toHaveCount(0);
+  await expect(frame.getByTestId('approval-expiry-once-caution')).toBeVisible();
   const asked = Date.parse(String(previews.at(-1)!.expirationTime));
   expect(asked).toBeGreaterThanOrEqual(Date.now() + 2 * 86_400_000 - 5000);
 });
@@ -168,22 +173,25 @@ test('picking what the app asked for in Advanced details after the one-hour star
   await frame.getByText('How long it lasts', { exact: true }).click();
   await frame.getByRole('button', { name: '7 days', exact: true }).click();
   await expect(frame.getByTestId('approval-expiry-line')).toContainText('7 days');
-  await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+  await expect(frame.getByRole('radio', { name: '7 days (what the app asked)' })).toBeChecked();
   // Give a wrongly re-sent default time to arrive; the face and the last preview must both still be the app's own time.
   await page.waitForTimeout(1000);
   await expect(frame.getByTestId('approval-expiry-line')).toContainText('7 days');
-  expect(previews.at(-1)).not.toHaveProperty('expirationTime');
+  // The asked length is sent as a length: with no expirationTime the server would sign one hour.
+  const asked = Date.parse(String(previews.at(-1)!.expirationTime));
+  expect(asked).toBeGreaterThanOrEqual(Date.now() + 7 * 86_400_000 - 5000);
+  expect(asked).toBeLessThanOrEqual(Date.now() + 7 * 86_400_000 + 5000);
 });
 
-test('picking the hour itself in Advanced details counts as the owner\'s choice, so the one-hour note goes', async ({ page }) => {
+test('picking the hour itself in Advanced details keeps the choice, with 1 hour checked', async ({ page }) => {
   const owner = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
   const att = { [`urn:tinycloud:encryption:${owner}:default`]: { 'tinycloud.encryption/decrypt': [{}] } };
   const decrypt = siweWithResources([makeRecapResource(att)], { domain: HOST, uri: ORIGIN });
   const { frame } = await open(page, { expiryChangeable: true }, decrypt);
-  await expect(frame.getByTestId('approval-expiry-once-note')).toBeVisible();
+  await expect(frame.getByTestId('approval-expiry-once-choice')).toBeVisible();
   await frame.getByText('Advanced details', { exact: true }).click();
   await frame.getByText('How long it lasts', { exact: true }).click();
   await frame.getByRole('button', { name: '1 hour', exact: true }).click();
   await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
-  await expect(frame.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+  await expect(frame.getByRole('radio', { name: '1 hour' })).toBeChecked();
 });
