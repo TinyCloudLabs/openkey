@@ -258,7 +258,8 @@ model PreparedHandoff {
 model Session {
   id            String    @id
   userId        String
-  // SHA-256 digest of the session token (packages/db/src/session-token.ts), never the token itself.
+  // SHA-256 digest of the session token (packages/db/src/session-token.ts), never the token itself. The migration
+  // 20261124_0003_session_token_digest enforces 64 lowercase hex characters with the CHECK session_token_digest_check.
   token         String    @unique
   expiresAt     DateTime
   createdAt     DateTime  @default(now())

@@ -211,6 +211,36 @@ if (!process.env.TC_SESSION_DIGEST_CHILD) {
     }
   }, 120_000);
 
+  test('the migrated database rejects a session token that is not a lowercase 64-character hex digest', async () => {
+    const database = new PGlite(join(directory, 'constraint'));
+    try {
+      for (const name of await migrationNames()) await database.exec(await readFile(join(migrationsDirectory, name, 'migration.sql'), 'utf8'));
+      await database.exec(`INSERT INTO "user" (id, email, "emailVerified", name, "createdAt", "updatedAt") VALUES ('u1', 'u1@example.test', true, 'U', now(), now())`);
+      const insert = (id: string, token: string) => database.query(
+        `INSERT INTO session (id, "userId", token, "expiresAt", "createdAt", "updatedAt") VALUES ($1, 'u1', $2, now() + interval '1 day', now(), now())`, [id, token]);
+      const rejected: [string, string][] = [
+        ['plaintext', randomBytes(24).toString('base64url')],
+        ['empty', ''],
+        ['short', 'a'.repeat(63)],
+        ['long', 'a'.repeat(65)],
+        ['uppercase', 'A'.repeat(64)],
+        ['not hex', 'g'.repeat(64)],
+        ['trailing newline', `${'a'.repeat(64)}\n`],
+      ];
+      for (const [id, token] of rejected) {
+        const failure = await insert(id, token).then(() => null, (error: { code?: string }) => error);
+        expect(failure?.code, id).toBe('23514');
+      }
+      await insert('digest', digestOf('a token'));
+      const counts = await database.query<{ count: number }>('SELECT count(*)::int AS count FROM session');
+      expect(counts.rows[0]!.count).toBe(1);
+      const constraint = await database.query<{ convalidated: boolean }>(`SELECT convalidated FROM pg_constraint WHERE conname = 'session_token_digest_check'`);
+      expect(constraint.rows).toEqual([{ convalidated: true }]);
+    } finally {
+      await database.close();
+    }
+  }, 120_000);
+
   test('a filter the digest cannot cover fails closed instead of matching or deleting every row', async () => {
     const { prisma, fresh, signIn, storedFor } = await setup;
     const userId = await fresh();
