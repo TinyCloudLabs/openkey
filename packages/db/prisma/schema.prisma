@@ -207,11 +207,28 @@ model RenewalLease {
   // The signed lease, encrypted at rest, kept only while admission is unconfirmed (to replay it and revoke).
   leaseAuthorization   String?
 
+  nativeRenewal NativeRenewalLease?
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([sessionId])
   @@map("renewal_lease")
+}
+
+// The native lifecycle binding survives its short-lived request and OAuth token rows.
+model NativeRenewalLease {
+  leaseCid          String    @id
+  requestId         String
+  grantId           String?   @unique
+  deliveredAt       DateTime?
+  revokeUntil       DateTime
+  stopRequested     Boolean   @default(false)
+  originalRevokedAt DateTime?
+
+  lease RenewalLease @relation(fields: [leaseCid], references: [leaseCid], onDelete: Cascade)
+
+  @@index([requestId])
+  @@map("native_renewal_lease")
 }
 
 // Short-lived, ticket-only prepared SIWE handoff. No signed result is persisted.
@@ -725,6 +742,8 @@ model TinyCloudNativeRequest {
   sessionJwk              Json
   sessionJkt              String
   requestedPermissions    Json
+  renewalAsk              Json?
+  renewalLeaseCid         String?
   ttlSeconds              Int
   // PAR siwe_nonce, or the server nonce written by the first prepare. Fixed
   // once set (trigger), and reused by every revision and the approval.
@@ -780,6 +799,7 @@ model TinyCloudNativePreparation {
   sessionSiwe  String
   hostPlan     Json?
   permissions  Json
+  renewalChoice Json?
   digest       String
   createdAt    DateTime @default(now())
 
@@ -808,6 +828,7 @@ model TinyCloudNativeGrant {
   approvedPermissions      Json
   ttlSeconds               Int
   tinycloudHost            String
+  renewalLeaseCid          String?
   refreshTokenHash         String?  @unique
   previousRefreshTokenHash String?
   rotatedAt                DateTime?

@@ -25,7 +25,7 @@ import {
   makeSpaceId,
   siweToDelegationHeaders,
 } from '@tinycloud/node-sdk-wasm';
-import { buildOwnerRevocationSiwe } from '@openkey/capability-review';
+import { buildOwnerRevocationSiwe, parseSiweFields, siweExpirationTime } from '@openkey/capability-review';
 import {
   canonicalizeServiceName,
   entriesForSelectedActions,
@@ -39,7 +39,6 @@ import {
   DelegateRequestError,
   delegateErrorResponse,
   normalizeDelegateReason,
-  signedSiweExpirationTime,
 } from './delegate-validation';
 import {
   ownFolderSessionAbilities,
@@ -93,10 +92,11 @@ import {
   type AuthorizationContextClaim,
   type BoundRenewalChoice,
 } from '../services/authorization-signing';
-import { MIN_DELEGATION_EXPIRY_MS, MIN_EXPIRATION_LEAD_MS, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
+import { MIN_DELEGATION_EXPIRY_MS, MIN_EXPIRATION_LEAD_MS, siweBroadOnceTier, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSignedSubset, parseStrictSiwe, SIGNED_SUBSET_REFUSAL_CODE } from '../services/signed-subset';
 import { checkSiweOrigin } from '../services/siwe-origin';
+import { invalidSiweMessage } from '../services/siwe-message-refusal';
 import {
   APP_KEY_GROUP_PARTIAL_CODE,
   APP_KEY_GROUP_PARTIAL_MESSAGE,
@@ -113,6 +113,15 @@ import {
   type AdmittedAppKey,
   UNREADABLE_RECAP_MESSAGE,
 } from '../services/app-key-refusal';
+import {
+  SECRET_GRANT_MAX_MS,
+  SECRET_LIFETIME_CODE,
+  clampSecretExpiryMs,
+  exceedsSecretLifetime,
+  secretCapExpirationTime,
+  secretLifetimeBody,
+  secretLifetimeMessage,
+} from '../services/secret-lifetime';
 import { allowedElevatedIds, elevatedDecided, elevatedNotDecidedBody } from '../services/elevated-decision';
 import { elevatedActionsOf } from '@openkey/capability-review';
 import { admitAppKeys, appIdForOrigin, appKeyAdmissionRefusal, type ManifestKeys } from '../services/app-key-gate';
@@ -136,17 +145,17 @@ import {
 import { validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
 import { canonicalTrustedTinyCloudHost, LOCAL_HOSTNAMES } from '../services/tinycloud-hosts';
 import { awaitTinyCloudBootstrapWithinBudget, hostRequestedSpaceWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
-import { deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
+import { checkDeviceDelegationWindow, deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
 import { PreparedHandoffError } from '../services/prepared-handoff';
 import { preparedHandoffService } from './prepared-handoffs';
 import { normalizeAppOrigin, recordAppSignIn } from '../services/app-sign-in';
 import type { PreparedHandoffService } from '../services/prepared-handoff';
-import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, confirmBoundRenewal, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
+import { admitApprovalDelegation, bindApprovalRenewal, checkApprovalDelegation, checkApprovalLeaseGrant, confirmBoundRenewal, releaseApprovalDelegation, saveApprovalDelegation } from './approval-requests';
 import { ApprovalResultError } from '../services/approval-results';
 import { bindSignInRenewalRequest, recordedSignInLease, setUpSignInLease, signInRenewalFailure, takePendingSignInLease, type SignInLease } from '../services/signin-renewal';
 import type { SignInRenewalRequest } from '../services/authorization-signing';
-import { parseRenewalChoice, renewalLeasesEnabled, renewalUnavailableMessage, signLease } from '../services/renewal-lease';
+import { assertLeaseableGrant, parseRenewalChoice, RenewalLeaseError, renewalLeasesEnabled, renewalUnavailableMessage, signLease } from '../services/renewal-lease';
 import {
   approvalPasskeyOffer,
   approvalPasskeyOfferInFlow,
@@ -454,6 +463,14 @@ delegateRouter.onError((error, c) => {
   throw error;
 });
 
+const DEVICE_RENEWAL_UNAVAILABLE = "Renewal isn't available for this sign-in. You can approve it without renewal.";
+
+function assertDevicePreviewTransaction(boundId: string | undefined, suppliedId: unknown) {
+  if (boundId !== suppliedId) {
+    throw new ApprovalResultError('request_binding', 'The device request must match the consent preview.', 400);
+  }
+}
+
 function handoffTicket(body: { ticket?: unknown; transportVersion?: unknown; callback?: unknown; delivery?: unknown; state?: unknown }): string | null {
   if (body.transportVersion !== undefined && body.transportVersion !== 2) {
     throw new PreparedHandoffError('invalid_transport_version', 'Unsupported handoff transport version', 400);
@@ -715,7 +732,6 @@ function resolveRequestExpiryMs(body: {
 function extractImmutableSiweFields(
   siwe: string,
   fallback: {
-    address: string;
     chainId: number;
     spaceId: string;
   },
@@ -734,65 +750,25 @@ function extractImmutableSiweFields(
   statement: string;
   nonRecapResources: string;
 } {
-  const domainMatch = siwe.match(/^(.+?) wants you to sign in with your Ethereum account:$/m);
-  const nonceMatch = siwe.match(/^Nonce:\s*(.+)$/m);
-  const issuedMatch = siwe.match(/^Issued At:\s*(.+)$/m);
-  const expireMatch = siwe.match(/^Expiration Time:\s*(.+)$/m);
-  const uriMatch = siwe.match(/^URI:\s*(.+)$/m);
-  const versionMatch = siwe.match(/^Version:\s*(.+)$/m);
-  const notBeforeMatch = siwe.match(/^Not Before:\s*(.+)$/m);
-  const requestIdMatch = siwe.match(/^Request ID:\s*(.+)$/m);
-  const chainIdMatch = siwe.match(/^Chain ID:\s*(\d+)\s*$/m);
-  // Address is the second line of the SIWE (immediately after the header).
-  const addressMatch = siwe.match(/^0x[a-fA-F0-9]{40}$/m);
-
-  // Statement extraction: SIWE places the statement between the blank line
-  // after the address and the blank line before "URI:". A missing statement
-  // is legal — treat it as the empty string.
-  const lines = siwe.split(/\r?\n/);
-  let statement = '';
-  const uriLineIdx = lines.findIndex((l) => /^URI:/.test(l));
-  if (uriLineIdx > 3) {
-    // Header (line 0) + address (line 1) + blank (line 2) + statement (line 3+) + blank + URI
-    // Take everything from line 3 up to the blank line preceding URI.
-    let end = uriLineIdx - 1;
-    while (end > 3 && lines[end] === '') end -= 1;
-    if (end >= 3) {
-      statement = lines.slice(3, end + 1).join('\n');
-    }
-  }
-
-  // Non-ReCap resources: every "- ..." line that is NOT `- urn:recap:...`
-  // These are the caller's original resources that MUST be preserved
-  // regardless of narrowing.
-  const nonRecapResources = lines
-    .filter((l) => /^- /.test(l) && !/^- urn:recap:/.test(l))
-    .join('\n');
-
-  // Sol MAJOR-2: use ACTUAL SIWE values when present, not substituted
-  // server fallbacks. A silent substitute would let the caller supply
-  // a SIWE with a different chainId or address than the fallback and
-  // pass the equality check because both sides compute against the same
-  // fallback. Only when the SIWE genuinely omits a field do we fall
-  // back — and in that case the caller/consumer sees an empty value on
-  // both sides, so any drift is still surfaced.
-  const parsedChainId = chainIdMatch?.[1] ? Number(chainIdMatch[1]) : Number.NaN;
-  const chainId = Number.isFinite(parsedChainId) ? parsedChainId : fallback.chainId;
-
+  // TC-3826: the fields as the node reads them (`parseSiweFields`). A message
+  // that does not parse yields empty fields and no address, so it binds to
+  // nothing a real message has and every check against it refuses.
+  const parsed = parseSiweFields(siwe);
+  const fields = parsed.ok ? parsed.fields : undefined;
   return {
-    address: addressMatch ? addressMatch[0] : fallback.address,
-    chainId,
-    domain: domainMatch?.[1]?.trim() ?? '',
-    issuedAt: issuedMatch?.[1]?.trim() ?? '',
-    expirationTime: expireMatch?.[1]?.trim() ?? '',
+    address: fields?.address ?? '',
+    chainId: fields ? Number(fields.chainId) : fallback.chainId,
+    domain: fields ? `${fields.scheme !== undefined ? `${fields.scheme}://` : ''}${fields.domain}` : '',
+    issuedAt: fields?.issuedAt ?? '',
+    expirationTime: fields?.expirationTime ?? '',
     spaceId: fallback.spaceId,
-    nonce: nonceMatch?.[1]?.trim() ?? '',
-    uri: uriMatch?.[1]?.trim() ?? '',
-    version: versionMatch?.[1]?.trim() ?? '',
-    notBefore: notBeforeMatch?.[1]?.trim() ?? '',
-    requestId: requestIdMatch?.[1]?.trim() ?? '',
-    statement,
-    nonRecapResources,
+    nonce: fields?.nonce ?? '',
+    uri: fields?.uri ?? '',
+    version: fields?.version ?? '',
+    notBefore: fields?.notBefore ?? '',
+    requestId: fields?.requestId ?? '',
+    statement: fields?.statement ?? '',
+    nonRecapResources: (fields?.resources ?? []).filter((r) => !r.startsWith('urn:recap:')).join('\n'),
   };
 }
 
@@ -1152,6 +1128,8 @@ delegateRouter.post('/sign', async (c) => {
         if (!policy.allowed) throw new Error(`message_rejected:${policy.reason}`);
         const appKeyRefusal = appKeyRefusalForSiwe(candidate.message as string);
         if (appKeyRefusal) throw new Error(`message_rejected:${appKeyRefusalMessage(appKeyRefusal, 'non_browser')}`);
+        const lifetimeReach = exceedsSecretLifetime(candidate.message as string, Date.now());
+        if (lifetimeReach) throw new Error(`message_rejected:${secretLifetimeMessage(lifetimeReach)}`);
         const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
         return { signature, identity };
       });
@@ -1246,9 +1224,10 @@ delegateRouter.post('/sign', async (c) => {
       },
     });
     if (!policy.allowed) return auditDenial(policy.code, policy.evidence);
-    // A message that names an app key or key.delete is outside the approved
-    // storage records: it is denied and recorded like every other denial.
-    if (typeof candidate.message === 'string' && appKeyRefusalForSiwe(candidate.message)) {
+    // A message that names an app key or key.delete, or asks for more than 7 days on secret keys, is outside
+    // the approved storage records: it is denied and recorded like every other denial.
+    if (typeof candidate.message === 'string' &&
+      (appKeyRefusalForSiwe(candidate.message) || exceedsSecretLifetime(candidate.message, Date.now()))) {
       return auditDenial('wrong_capability', policy.evidence);
     }
     if (!key || !key.sealedBlob || !policy.evidence.nonceDigest) {
@@ -1347,6 +1326,8 @@ delegateRouter.post('/sign', async (c) => {
       reason: 'address, chainId, message, and type are required',
     }, 400);
   }
+  const invalidSignSiwe = invalidSiweMessage(body.message);
+  if (invalidSignSiwe) return c.json({ approved: false, code: invalidSignSiwe.code, reason: invalidSignSiwe.error }, 400);
 
   const signAppKeyRefusal = appKeyRefusalForSiwe(body.message);
   if (signAppKeyRefusal) {
@@ -1355,6 +1336,11 @@ delegateRouter.post('/sign', async (c) => {
       code: appKeyRefusalCode(signAppKeyRefusal),
       reason: appKeyRefusalMessage(signAppKeyRefusal, 'non_browser'),
     }, appKeyRefusalStatus(signAppKeyRefusal));
+  }
+  // Signed bytes cannot be shortened, so more than 7 days on secret keys is refused.
+  const signLifetimeReach = exceedsSecretLifetime(body.message, Date.now());
+  if (signLifetimeReach) {
+    return c.json({ approved: false, code: SECRET_LIFETIME_CODE, reason: secretLifetimeMessage(signLifetimeReach) }, 400);
   }
 
   let address: string;
@@ -1584,6 +1570,10 @@ delegateRouter.post('/', async (c) => {
   if (!body.keyId || !body.jwk || !body.host) {
     return c.json({ error: 'keyId, jwk, and host are required' }, 400);
   }
+  if (typeof body.prepared?.siwe === 'string') {
+    const invalidEchoedSiwe = invalidSiweMessage(body.prepared.siwe, 'characters');
+    if (invalidEchoedSiwe) return c.json(invalidEchoedSiwe, 400);
+  }
   if (body.approvalRequestId !== undefined && (body.protocolVersion !== 1 || !body.authorizationContextToken)) {
     return c.json({ error: 'Approval requests require the consent preview context' }, 400);
   }
@@ -1619,7 +1609,8 @@ delegateRouter.post('/', async (c) => {
   }
   let expiryMs: number;
   try {
-    expiryMs = resolveRequestExpiryMs(body);
+    // A grant on secret keys lasts 7 days at most.
+    expiryMs = clampSecretExpiryMs(resolveRequestExpiryMs(body), permissions);
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
@@ -1742,7 +1733,7 @@ delegateRouter.post('/', async (c) => {
     try {
       baseline = permissions
         ? sessionAbilitiesFromPermissions(permissions, { address, chainId }, { deviceTransaction: body.deviceTransactionId !== undefined })
-        : ownFolderSessionAbilities(extractImmutableSiweFields(bound.originalSiwe, { address, chainId, spaceId: bound.spaceId }).domain, { address, chainId });
+        : ownFolderSessionAbilities(extractImmutableSiweFields(bound.originalSiwe, { chainId, spaceId: bound.spaceId }).domain, { address, chainId });
       assertBaselineSubset(preparedEntries, baseline);
       assertRequiredActions(preparedEntries, baseline);
     } catch (e) {
@@ -1794,7 +1785,6 @@ delegateRouter.post('/', async (c) => {
     // they are equal above). The digest bound at /prepare was computed
     // over the same bytes, so this MUST match.
     const immutable = extractImmutableSiweFields(bound.originalSiwe, {
-      address,
       chainId,
       spaceId: bound.spaceId,
     });
@@ -1837,15 +1827,21 @@ delegateRouter.post('/', async (c) => {
       return c.json({ error: check.message, code: check.error }, 400);
     }
 
-    const expirationTime = signedSiweExpirationTime(bound.originalSiwe);
+    const expirationTime = siweExpirationTime(bound.originalSiwe);
     if (!expirationTime) {
       return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
     }
     const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: bound.originalSiwe });
     if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
+    assertDevicePreviewTransaction(bound.deviceTransactionId, body.deviceTransactionId);
+    if (bound.deviceTransactionId && bound.renewal?.choice === 'leased' && !renewalLeasesEnabled()) {
+      throw new ApprovalResultError('renewal_disabled', DEVICE_RENEWAL_UNAVAILABLE, 400);
+    }
     await checkApprovalDelegation(body, { signedSiwe: bound.originalSiwe });
     const tokenAppKeyRefusal = appKeyRefusalForSiwe(bound.originalSiwe, preparedEntries);
     if (tokenAppKeyRefusal) return c.json(appKeyRefusalBody(tokenAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(tokenAppKeyRefusal));
+    const tokenLifetimeReach = exceedsSecretLifetime(bound.originalSiwe, Date.now());
+    if (tokenLifetimeReach) return c.json(secretLifetimeBody(tokenLifetimeReach), 400);
     // TC-3442: the account's passkey setting, before the context is spent or the key unsealed.
     const passkeyRefusal = await checkApprovalPasskey(
       prisma,
@@ -1887,6 +1883,33 @@ delegateRouter.post('/', async (c) => {
       signature,
     });
 
+    const ownerSealedBlob = key.sealedBlob;
+    let deviceRenewal;
+    if (bound.deviceTransactionId && bound.renewal?.choice === 'leased') {
+      try {
+        deviceRenewal = await setUpSignInLease(prisma, {
+          userId: user.id,
+          sessionId: null,
+          host,
+          jwk: bound.jwk,
+          spaceId: bound.spaceId,
+          signedMessage: bound.originalSiwe,
+          signature,
+          leaseLifetimeSeconds: bound.renewal.leaseLifetimeSeconds,
+          sensitiveConfirmed: bound.renewal.sensitiveConfirmed === true,
+          signOwner: (message) => signManagedKey(key, ownerSealedBlob, message),
+        });
+      } catch (error) {
+        const failure = signInRenewalFailure(error);
+        const message = failure.body.code === 'renewal_failed'
+          ? "OpenKey couldn't set up renewal. This device is waiting for your approval. You can approve it without renewal."
+          : failure.body.code === 'renewal_disabled' ? DEVICE_RENEWAL_UNAVAILABLE : failure.body.error;
+        return c.json({ error: message, code: failure.body.code }, failure.status);
+      }
+    } else if (bound.deviceTransactionId && bound.renewal?.choice === 'finite') {
+      deviceRenewal = { renewal: null, renewalReason: 'renewal_declined' };
+    }
+
     let hostActivated = false;
     let activationMayStillApply = false;
     const requestedSpaces = delegationSpaces(preparedEntries, baseline);
@@ -1924,7 +1947,6 @@ delegateRouter.post('/', async (c) => {
     }));
 
     recordAppSignIn(prisma, user.id, bound.appOrigin);
-    const ownerSealedBlob = key.sealedBlob;
     const delegation = {
       delegationHeader: session.delegationHeader,
       delegationCid: session.delegationCid,
@@ -1953,6 +1975,7 @@ delegateRouter.post('/', async (c) => {
       signature,
       signedMessage: bound.originalSiwe,
       permissions: effectiveGrants,
+      ...deviceRenewal,
     };
     try {
       return c.json(await saveApprovalDelegation(body, user.id, delegation, { renewal: bound.renewal, host, sessionId: c.get('session')?.id ?? null, signOwner: (message) => signManagedKey(key, ownerSealedBlob, message) }));
@@ -1988,12 +2011,14 @@ delegateRouter.post('/', async (c) => {
   } catch (e) {
     return c.json(delegateErrorResponse(e, 'Failed to prepare delegation', 'delegation_prepare_failed'), 400);
   }
+  const invalidPreparedSiwe = invalidSiweMessage(preparedResult.prepared.siwe, 'characters');
+  if (invalidPreparedSiwe) return c.json(invalidPreparedSiwe, 400);
 
-  const expirationTime = signedSiweExpirationTime(preparedResult.prepared.siwe);
+  const expirationTime = siweExpirationTime(preparedResult.prepared.siwe);
   if (!expirationTime) {
     return c.json({ error: 'prepared session must include a valid expirationTime or SIWE Expiration Time' }, 400);
   }
-  const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
+  const deviceWindow = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe }, true);
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
 
   const legacyAppKeyRefusal = appKeyRefusalForSiwe(preparedResult.prepared.siwe);
@@ -2119,6 +2144,7 @@ delegateRouter.post('/prepare', async (c) => {
     requesterOrigin?: unknown;
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
+    renewal?: unknown;
   }>(c);
   const privateMembers = hasPrivateJwkMember(body.jwk);
   logSessionJwk('/api/delegate/prepare', privateMembers);
@@ -2174,18 +2200,34 @@ delegateRouter.post('/prepare', async (c) => {
   }
   let expiryMs: number;
   try {
-    expiryMs = resolveRequestExpiryMs(body);
+    // A grant on secret keys lasts 7 days at most.
+    expiryMs = clampSecretExpiryMs(resolveRequestExpiryMs(body), permissions);
   } catch (err) {
     return c.json(delegateErrorResponse(err, 'Invalid expiry', 'invalid_expiry'), 400);
   }
-  const deviceWindow = await deviceDelegationWindowError(body, {
+  const device = await checkDeviceDelegationWindow(body, {
     expirationTime: new Date(Date.now() + expiryMs).toISOString(),
     host,
   });
-  if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
+  if (device.error) return c.json(device.error.body, device.error.status);
+  if (device.record && body.approvalRequestId !== undefined) {
+    throw new ApprovalResultError('request_binding', 'Choose one approval request for this preview.', 400);
+  }
   await checkApprovalDelegation(body, { expiryMs });
-  // TC-2933: the owner's renewal choice is bound with this preview; approving reads it from here, not the body.
-  const renewal = await bindApprovalRenewal(body);
+  let renewal: BoundRenewalChoice | undefined;
+  if (device.record) {
+    try {
+      renewal = parseRenewalChoice(body.renewal, device.record.renewal, renewalLeasesEnabled(), 'sign-in') ?? undefined;
+    } catch (error) {
+      if (!(error instanceof RenewalLeaseError)) throw error;
+      throw new ApprovalResultError(error.code, error.code === 'renewal_disabled' ? DEVICE_RENEWAL_UNAVAILABLE : error.message, error.status);
+    }
+    if (renewal?.choice === 'leased' && key.keyType !== 'MANAGED') {
+      throw new ApprovalResultError('request_binding', "Your wallet signs in for a set time, so this device's access ends at the time shown.", 400);
+    }
+  } else {
+    renewal = await bindApprovalRenewal(body);
+  }
   let preparedResult: ReturnType<typeof prepareDelegationSession>;
   try {
     preparedResult = prepareDelegationSession({
@@ -2206,6 +2248,8 @@ delegateRouter.post('/prepare', async (c) => {
   // Device approvals: the bytes handed to the wallet are a subset of what the device requested.
   const deviceSubset = await deviceDelegationWindowError(body, { host, signedSiwe: preparedResult.prepared.siwe });
   if (deviceSubset) return c.json(deviceSubset.body, deviceSubset.status);
+  // TC-3821: a leased choice on a grant reaching secrets needs the owner's confirm and a window of at most 7 days.
+  checkApprovalLeaseGrant(preparedResult.prepared.siwe, renewal);
 
   const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
 
@@ -2231,7 +2275,7 @@ delegateRouter.post('/prepare', async (c) => {
     const initialSelectionActionIds = new Set(preparedResult.selectedActionKeys);
     const immutableFields = extractImmutableSiweFields(
       preparedResult.prepared.siwe,
-      { address, chainId, spaceId: preparedResult.spaceId },
+      { chainId, spaceId: preparedResult.spaceId },
     );
     // Bound here and enforced at /complete and the managed approval: the
     // `permissions` a caller forwards at completion must grant what this
@@ -2255,6 +2299,7 @@ delegateRouter.post('/prepare', async (c) => {
       // issuedAt/expirationTime bytes on every attempt).
       originalSiwe: preparedResult.prepared.siwe,
       approvalRequestId: body.approvalRequestId,
+      deviceTransactionId: device.record?.id,
       renewal,
     });
   } catch (issueErr) {
@@ -2436,13 +2481,14 @@ delegateRouter.post('/complete', async (c) => {
   if (typeof body.prepared.siwe !== 'string') {
     return c.json({ error: 'prepared.siwe must be a string' }, 400);
   }
+  const invalidCompleteSiwe = invalidSiweMessage(body.prepared.siwe, 'characters');
+  if (invalidCompleteSiwe) return c.json(invalidCompleteSiwe, 400);
   // TC-547: the signer is the address in the signed SIWE. The prepared
   // object `/prepare` returns (and the web echoes back) carries no
   // `address`, so reading it from there bound versioned approvals to an
   // empty key address. A caller-supplied `address` must agree with the SIWE.
   const preparedSpaceId = String(body.prepared.spaceId || '');
   const signedFields = extractImmutableSiweFields(body.prepared.siwe, {
-    address: '',
     chainId: Number(body.prepared.chainId) || 1,
     spaceId: preparedSpaceId,
   });
@@ -2514,14 +2560,18 @@ delegateRouter.post('/complete', async (c) => {
   const primary = signerKey ? isPrimaryKey(signerKey) : false;
 
   // Report the lifetime the wallet signed, never caller-supplied metadata.
-  const expirationTime = signedSiweExpirationTime(body.prepared.siwe);
+  const expirationTime = siweExpirationTime(body.prepared.siwe);
   if (!expirationTime) {
     return c.json({ error: 'The signed SIWE must include a valid Expiration Time', code: 'missing_expiration_time' }, 400);
   }
+  // Signed bytes cannot be shortened, so more than 7 days on secret keys is refused.
+  const completeLifetimeReach = exceedsSecretLifetime(body.prepared.siwe, Date.now());
+  if (completeLifetimeReach) return c.json(secretLifetimeBody(completeLifetimeReach), 400);
 
   let contextClaim: AuthorizationContextClaim | undefined;
   let signInAppOrigin: string | undefined;
   let boundRenewal: BoundRenewalChoice | undefined;
+  let boundDeviceTransactionId: string | undefined;
   // Versioned callers: the `completeSessionSetup` input, built only from the
   // signed SIWE and the bound context (see below).
   let versionedSessionInput: Record<string, unknown> | undefined;
@@ -2534,11 +2584,12 @@ delegateRouter.post('/complete', async (c) => {
     if (peekedContext.ok) {
       signInAppOrigin = peekedContext.value.appOrigin;
       boundRenewal = peekedContext.value.renewal;
+      boundDeviceTransactionId = peekedContext.value.deviceTransactionId;
     }
     if (peekedContext.ok && peekedContext.value.approvalRequestId !== body.approvalRequestId) {
       return c.json({ error: 'Approval request does not match the consent preview' }, 400);
     }
-    if (peekedContext.ok) confirmBoundRenewal(body.renewal, peekedContext.value.renewal);
+    if (peekedContext.ok) confirmBoundRenewal(body.renewal, boundRenewal);
     if (!Array.isArray(body.selectedActionIds) || body.selectedActionIds.some((id) => typeof id !== 'string')) {
       return c.json({ error: 'selectedActionIds must be a string[] when authorizationContextToken is provided' }, 400);
     }
@@ -2644,8 +2695,14 @@ delegateRouter.post('/complete', async (c) => {
   const deviceWindow = await deviceDelegationWindowError(body, {
     host: body.host,
     signedSiwe: String(body.prepared?.siwe ?? ''),
-  });
+  }, !body.authorizationContextToken);
   if (deviceWindow) return c.json(deviceWindow.body, deviceWindow.status);
+  if (body.authorizationContextToken) {
+    assertDevicePreviewTransaction(boundDeviceTransactionId, body.deviceTransactionId);
+    if (boundDeviceTransactionId && boundRenewal?.choice === 'leased') {
+      throw new ApprovalResultError('request_binding', "Your wallet signs in for a set time, so this device's access ends at the time shown.", 400);
+    }
+  }
   if (body.approvalRequestId !== undefined && !body.authorizationContextToken) {
     return c.json({ error: 'Approval requests require the consent preview context' }, 400);
   }
@@ -2743,6 +2800,9 @@ delegateRouter.post('/complete', async (c) => {
     //   `permissions` is the effective grant set after any narrowing.
     signedMessage: body.prepared.siwe,
     permissions: effectiveGrants,
+    ...(body.deviceTransactionId && boundRenewal?.choice === 'finite'
+      ? { renewal: null, renewalReason: 'renewal_wallet_unsupported' }
+      : {}),
   };
   // External-wallet approvals: OpenKey holds neither the wallet key nor the session key, so this path doesn't revoke. The grant's lifetime is whatever the owner chose, with no 24 h bound or 30-day cap (TC-2795).
   return c.json(await saveApprovalDelegation(body, user.id, delegation, { renewal: boundRenewal, host: body.host, sessionId: c.get('session')?.id ?? null }));
@@ -2858,6 +2918,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   if (typeof body.siwe !== 'string') {
     return c.json({ error: 'siwe must be a string', code: 'invalid_siwe' }, 400);
   }
+  const invalidRequestSiwe = invalidSiweMessage(body.siwe, 'characters');
+  if (invalidRequestSiwe) return c.json(invalidRequestSiwe, 400);
   const ticket = handoffTicket(body);
   // TC-1486: refuse a SIWE that names a different site than the verified
   // requester, or that arrives unattributed. Prepared-handoff tickets are
@@ -2977,8 +3039,16 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   }
   const spaceId = primaryRoutingSpace(delegationSpaces(originalEntries).map(space => space.spaceId), makeSpaceId(keyAddress, chainId, 'default'));
 
+  // A request the pre-sign rule cannot read can never be signed; refuse it
+  // before issuing a context and a review screen for it.
+  const readable = parseStrictSiwe(body.siwe);
+  if (!readable.ok) {
+    return c.json(
+      { error: `The requested SIWE is not well formed: ${readable.message}`, code: SIGNED_SUBSET_REFUSAL_CODE, reason: 'request_unparsable' },
+      400,
+    );
+  }
   const immutable = extractImmutableSiweFields(body.siwe, {
-    address: keyAddress,
     chainId,
     spaceId,
   });
@@ -3206,16 +3276,6 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
     const notAdmitted = appKeyRefusalForSiwe(body.siwe, originalEntries, admission.admitted);
     if (notAdmitted) return c.json(appKeyRefusalBody(notAdmitted, 'browser'), appKeyRefusalStatus(notAdmitted));
     admittedAppKeys = admission.admitted;
-  }
-
-  // A request the pre-sign rule cannot read can never be signed; refuse it
-  // before issuing a context and a review screen for it.
-  const readable = parseStrictSiwe(body.siwe);
-  if (!readable.ok) {
-    return c.json(
-      { error: `The requested SIWE is not well formed: ${readable.message}`, code: SIGNED_SUBSET_REFUSAL_CODE, reason: 'request_unparsable' },
-      400,
-    );
   }
 
   let signInRenewal: SignInRenewalRequest | undefined;
@@ -3484,7 +3544,6 @@ delegateRouter.post('/authorize-sign', async (c) => {
   const chainIdMatch = bound.originalSiwe.match(/^Chain ID:\s*(\d+)\s*$/m);
   const chainId = chainIdMatch?.[1] ? Number(chainIdMatch[1]) : 1;
   const immutable = extractImmutableSiweFields(bound.originalSiwe, {
-    address: boundAddress,
     chainId,
     spaceId: bound.spaceId,
   });
@@ -3618,7 +3677,6 @@ delegateRouter.post('/authorize-sign', async (c) => {
     // ID, domain, address, spaceId, non-ReCap resources — must match
     // byte-for-byte.
     const candidateImmutable = extractImmutableSiweFields(narrowed.siwe, {
-      address: boundAddress,
       chainId,
       spaceId: bound.spaceId,
     });
@@ -3680,11 +3738,14 @@ delegateRouter.post('/authorize-sign', async (c) => {
     signed: signedMessage,
     selectedActionIds,
     ownerPickedExpiration: sealedExpiry !== immutable.expirationTime ? sealedExpiry : undefined,
-    longerExpiryAllowed: bound.expiryChangeable === true && !bound.handoffTicketHash,
+    longerExpiryAllowed: (bound.expiryChangeable === true || siweBroadOnceTier(bound.originalSiwe, bound.keyAddress)) && !bound.handoffTicketHash,
   });
   if (!signSubset.ok) {
     return c.json({ error: signSubset.message, code: signSubset.code, reason: signSubset.reason }, 400);
   }
+  // The preview brought a grant on secret keys back to 7 days; bytes that still ask for more are refused.
+  const signedLifetimeReach = exceedsSecretLifetime(signedMessage, Date.now());
+  if (signedLifetimeReach) return c.json(secretLifetimeBody(signedLifetimeReach), 400);
 
   // Validate the single-use preview approval without consuming it. The
   // final selection and bytes must match exactly what the user previewed.
@@ -3698,6 +3759,9 @@ delegateRouter.post('/authorize-sign', async (c) => {
   });
   if (!previewCheck.ok) {
     return c.json({ error: previewCheck.message, code: previewCheck.error }, 400);
+  }
+  if (previewCheck.broadOnceExpiryPick && !(Date.parse(sealedExpiry ?? '') <= Date.now() + SECRET_GRANT_MAX_MS)) {
+    return c.json(secretLifetimeBody('network'), 400);
   }
   // The renewal choice sealed with the preview: the body may repeat it, never change it. A leased choice needs
   // leases on, checked before anything is signed.
@@ -3767,6 +3831,8 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (signEncryptionRefusal) {
     return c.json(appKeyRefusalBody(signEncryptionRefusal, 'browser'), appKeyRefusalStatus(signEncryptionRefusal));
   }
+  const invalidSignedSiwe = invalidSiweMessage(signedMessage, 'characters');
+  if (invalidSignedSiwe) return c.json(invalidSignedSiwe, 400);
   // The preview sealed which extra permissions the owner explicitly allowed (TC-2927). The bytes are the previewed
   // ones, so this holds already; it is checked again here so no signature covers an elevated permission the owner
   // did not decide on.
@@ -3847,6 +3913,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
         signedMessage,
         signature,
         leaseLifetimeSeconds: sealedRenewal.leaseLifetimeSeconds,
+        sensitiveConfirmed: sealedRenewal.sensitiveConfirmed === true,
         signOwner: isExternal ? undefined : (message) => signManagedKey(key, key.sealedBlob!, message),
       });
     } catch (error) {
@@ -4012,15 +4079,18 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   const chainIdMatch = bound.originalSiwe.match(/^Chain ID:\s*(\d+)\s*$/m);
   const chainId = chainIdMatch?.[1] ? Number(chainIdMatch[1]) : 1;
   const immutable = extractImmutableSiweFields(bound.originalSiwe, {
-    address: ensureEip55(bound.keyAddress),
     chainId,
     spaceId: bound.spaceId,
   });
+  // A request in the one-hour tier (a grant that reaches all secrets or all encrypted data) is
+  // expiry-changeable whatever the app sent; the tier is read from the request's own grants.
+  const boundOnceTier = siweBroadOnceTier(bound.originalSiwe, bound.keyAddress);
+  let ownerPickedExpiry = false;
   let expirationOverride: string | undefined;
   if (body.expirationTime !== undefined) {
-    // An app that did not opt in (`expiryChangeable: true` at prepare) gets the expiry it asked for. A
-    // prepared handoff has no app opt-in: its ceiling is the time the CLI asked for.
-    if (!ticket && !bound.expiryChangeable) {
+    // An app that did not opt in (`expiryChangeable: true` at prepare) gets the expiry it asked for, unless the
+    // request is in the one-hour tier. A prepared handoff has no app opt-in: its ceiling is the time the CLI asked for.
+    if (!ticket && !bound.expiryChangeable && !boundOnceTier) {
       return c.json(
         { error: 'The requesting app did not opt in to a changed expiry', code: 'expiry_not_changeable' },
         400,
@@ -4041,6 +4111,13 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
       );
     }
     expirationOverride = checked.value;
+    ownerPickedExpiry = true;
+  }
+  // Secret grants and owner-picked expiries in the one-hour tier last up to 7 days from this preview.
+  const broadOnceExpiryPick = boundOnceTier && ownerPickedExpiry;
+  const secretCap = secretCapExpirationTime(bound.originalSiwe, Date.now(), broadOnceExpiryPick);
+  if (secretCap !== null && !(Date.parse(expirationOverride ?? immutable.expirationTime) <= Date.parse(secretCap))) {
+    expirationOverride = secretCap;
   }
   if (appKeyGroupPartial(
     admittedAppKeyActionIds(originalEntries, bound.admittedAppKeys, computeActionKey),
@@ -4111,7 +4188,6 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     // is EXCLUDED from the comparison because it is a text encoding of the
     // ReCap contents and legitimately changes with narrowing.
     const candidateImmutable = extractImmutableSiweFields(previewNarrowed.siwe, {
-      address: ensureEip55(bound.keyAddress),
       chainId,
       spaceId: bound.spaceId,
     });
@@ -4145,6 +4221,20 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     preparedSignedMessage = previewNarrowed.siwe;
   }
 
+  const selectedOnceTier = selectionUnchanged ? boundOnceTier : siweBroadOnceTier(preparedSignedMessage, bound.keyAddress);
+  const appRenewalWindow = !ownerPickedExpiry && renewalChoice?.choice === 'leased' && selectedOnceTier
+    ? preparedSignedMessage
+    : undefined;
+
+  // A selection in the one-hour tier starts at one hour when the owner picked nothing.
+  // An app that asked for an hour or less keeps its time. A chosen renewal uses the app's window.
+  if (!ownerPickedExpiry && renewalChoice?.choice !== 'leased' && selectedOnceTier) {
+    const onceStartMs = Date.now() + 60 * 60 * 1000;
+    if (Date.parse(immutable.expirationTime) > onceStartMs) {
+      expirationOverride = new Date(onceStartMs).toISOString();
+    }
+  }
+
   // TC-2272: the user's chosen approval expiry replaces the Expiration Time
   // line of the bytes to sign; the preview approval seals the result.
   if (expirationOverride !== undefined) {
@@ -4162,10 +4252,21 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     signed: preparedSignedMessage,
     selectedActionIds,
     ownerPickedExpiration: expirationOverride,
-    longerExpiryAllowed: bound.expiryChangeable === true && !bound.handoffTicketHash,
+    longerExpiryAllowed: (bound.expiryChangeable === true || boundOnceTier) && !bound.handoffTicketHash,
   });
   if (!previewSubset.ok) {
     return c.json({ error: previewSubset.message, code: previewSubset.code, reason: previewSubset.reason }, 400);
+  }
+  // TC-3821: the lease these exact bytes would carry is refused here, before the owner sees the preview, when the
+  // grant reaches secrets without the owner's confirm or with a window over 7 days.
+  if (renewalChoice?.choice === 'leased') {
+    try {
+      // Check the app's requested renewal window before a finite secret cap can shorten it.
+      assertLeaseableGrant(appRenewalWindow ?? preparedSignedMessage, renewalChoice.sensitiveConfirmed === true);
+    } catch (error) {
+      const refused = signInRenewalFailure(error);
+      return c.json(refused.body, refused.status);
+    }
   }
 
   // Preview grants + selection. `service` is canonicalized to the
@@ -4206,6 +4307,7 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
     keyAddress: ensureEip55(bound.keyAddress),
     selectedActionIds,
     signedMessage: preparedSignedMessage,
+    broadOnceExpiryPick,
     elevatedAllowed,
     renewal: renewalChoice,
   });

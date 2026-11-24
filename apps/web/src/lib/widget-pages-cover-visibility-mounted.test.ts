@@ -62,10 +62,10 @@ const { mount, unmount, flushSync } = (await import(SVELTE_CLIENT)) as SvelteCli
 
 // ---- the clock, the frame and the intersection observer ---------------------
 
-let skew = 0;
+let clock = 0;
 const realNow = performance.now.bind(performance);
-Object.defineProperty(performance, 'now', { configurable: true, writable: true, value: () => realNow() + skew });
-const advance = (ms: number) => { skew += ms; };
+Object.defineProperty(performance, 'now', { configurable: true, writable: true, value: () => clock });
+const advance = (ms: number) => { clock += ms; };
 afterAll(() => { Object.defineProperty(performance, 'now', { configurable: true, writable: true, value: realNow }); });
 
 const setTop = (value: object | null) => {

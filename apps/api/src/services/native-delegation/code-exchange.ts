@@ -13,6 +13,8 @@ import { verifySessionProof } from './session-proof';
 import type { NativePermission } from './par';
 import { StepUpEntryError, pruneExpiredStepUpDelegations, recordStepUpDelegation, stepUpDelegationResponse, validateStepUpPermissions, type StepUpPermission } from './step-up';
 import { primaryKeyWhere } from '../primary-key';
+import { deliverNativeRenewal } from './standing-renewal';
+import { RenewalLeaseError, type ApprovalResultRenewal } from '../renewal-lease';
 import { sameTinyCloudHost } from '../tinycloud-hosts';
 
 /**
@@ -60,6 +62,7 @@ interface ApprovedDelegation {
   permissions: NativePermission[];
   ttlSeconds: number;
   tinycloudHost: string;
+  renewalNodeIdentity?: ApprovalResultRenewal['receipt']['nodeIdentity'];
 }
 
 /** The artifact a step-up approve stores: the sign-in artifact plus the grant and app it is bound to. */
@@ -180,6 +183,11 @@ export async function exchangeNativeCode(
     redeemed = await db.$transaction(async (tx) => {
       await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
       const reviewerBinding = await lockNativeReviewer(tx, userId);
+      if (request.renewalLeaseCid) {
+        const [owner] = await tx.$queryRaw<{ lockedAt: Date | null; reviewerHoldAt: Date | null }[]>`
+          SELECT "lockedAt", "reviewerHoldAt" FROM "user" WHERE id = ${userId} FOR UPDATE`;
+        if (!owner || owner.lockedAt || owner.reviewerHoldAt) invalidGrant('the account cannot release the renewal');
+      }
       const consents = await tx.$queryRaw<{ id: string; scopes: string[] | null }[]>`
         SELECT id, scopes FROM oauth_consent
         WHERE "userId" = ${userId} AND "clientId" = ${request.clientId} FOR SHARE`;
@@ -237,12 +245,27 @@ export async function exchangeNativeCode(
         ttlSeconds: delegation.ttlSeconds,
         tinycloudHost: delegation.tinycloudHost,
         absoluteExpiresAt,
+        ...(row.renewalLeaseCid && { renewalLeaseCid: row.renewalLeaseCid }),
         ...(reviewer ? { reviewerEpoch: reviewer.binding.installEpoch } : {}),
       } });
 
+      let renewal: ApprovalResultRenewal | null = null;
+      if (row.renewalLeaseCid) {
+        if (!delegation.renewalNodeIdentity) invalidGrant('the renewal identity is missing');
+        try {
+          renewal = await deliverNativeRenewal(tx, {
+            userId, requestId: row.id, grantId, originalCid: delegation.delegationCid,
+            leaseCid: row.renewalLeaseCid, nodeIdentity: delegation.renewalNodeIdentity,
+          });
+        } catch (error) {
+          if (error instanceof RenewalLeaseError) invalidGrant(error.message);
+          throw error;
+        }
+      }
       return {
         grantId,
         fields: {
+          ...(row.renewalAsk && { renewal }),
           authorization_details: [{
             type: 'tinycloud_delegation',
             session_key: row.sessionJwk,

@@ -35,6 +35,7 @@ export interface DeviceRequestRecord {
   delegationTtlSeconds?: number;
   /** The lifetime the requester suggests as the default; absent means `delegationTtlSeconds`. */
   suggestedTtlSeconds?: number;
+  renewal?: { version: 1; leaseLifetimeSeconds: number };
 }
 
 /** Values a `/delegate` device link carries that must equal the server's request. */

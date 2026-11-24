@@ -12,6 +12,7 @@ import {
   SQL,
   type BootstrapSpaceName,
 } from '@tinycloud/bootstrap';
+import { siweExpirationTime } from '@openkey/capability-review';
 import { ensureEip55, parseRecapFromSiwe } from '@tinycloud/node-sdk-wasm';
 
 const NETWORK_CREATE_ACTION = ENCRYPTION.NETWORK_CREATE;
@@ -52,15 +53,12 @@ export function parseTinyCloudSiwe(message: string): ParsedTinyCloudSiwe | null 
     return null;
   }
 
-  const expirationMatch = message.match(/^Expiration Time:\s*(.+)\s*$/m);
-  const expirationTime = expirationMatch?.[1] ? new Date(expirationMatch[1]) : undefined;
+  const expirationTime = siweExpirationTime(message);
 
   return {
     address: ensureEip55(header[1]),
     chainId: Number(chainIdMatch[1]),
-    expirationTime: expirationTime && !Number.isNaN(expirationTime.getTime())
-      ? expirationTime
-      : undefined,
+    expirationTime: expirationTime !== null ? new Date(expirationTime) : undefined,
     entries,
   };
 }

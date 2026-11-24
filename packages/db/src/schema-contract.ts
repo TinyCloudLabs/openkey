@@ -73,6 +73,7 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   // nonce invariant and the per-owner rate limit. Dated after the terms-acceptance
   // migration so lexical order matches apply order.
   ['20261122_0002_tinycloud_setup_tables', 'a70e40ec6d8c438f61dbe7784fdba3f17b69af069ee1d717af571803fb6f36cc'],
+  ['20261123_0001_native_standing_renewal', 'd393544e72a00e8644c9cb044f165fc18be56f5e84fd5b21f189d87a7ed0fbbf'],
 ]);
 
 export type SchemaContractDatabase = {
