@@ -18,7 +18,7 @@ describe('provider token normalization', () => {
     // The package's exports map omits package.json; resolve it beside dist/.
     const entry = Bun.resolveSync('@better-auth/oauth-provider', import.meta.dir);
     const manifest = JSON.parse(readFileSync(join(dirname(entry), '..', 'package.json'), 'utf8')) as { version: string };
-    expect(manifest.version).toBe('1.6.10');
+    expect(manifest.version).toBe('1.6.35');
   });
 
   test('defaults to the provider\'s hashed storage: unpadded base64url SHA-256', async () => {

@@ -19,9 +19,11 @@ const OAUTH_AUTHORIZE_KEYS = new Set([
   'tinycloud_request',
   // @better-auth/oauth-provider signs the complete pre-login query and
   // rejects oauth_query on sign-in if any of this envelope is missing.
+  // `ba_param` repeats, once per signed parameter name.
   'exp',
   'ba_iat',
   'ba_pl',
+  'ba_param',
   'sig',
 ]);
 
@@ -94,9 +96,12 @@ export function safeOAuthAuthorizeQuery(searchParams: URLSearchParams): string |
   const source = nestedQuery ? new URLSearchParams(nestedQuery) : searchParams;
   if (!source.get('client_id')) return undefined;
 
+  // A query signed by @better-auth/oauth-provider >= 1.6.18 lists its signed names in `ba_param`; anything it
+  // doesn't name is unsigned and stays behind.
+  const signedNames = source.has('ba_param') ? new Set([...source.getAll('ba_param'), 'sig']) : undefined;
   const safe = new URLSearchParams();
   for (const [key, value] of source) {
-    if (OAUTH_AUTHORIZE_KEYS.has(key)) safe.append(key, value);
+    if (OAUTH_AUTHORIZE_KEYS.has(key) && (!signedNames || signedNames.has(key))) safe.append(key, value);
   }
   return safe.get('client_id') ? safe.toString() : undefined;
 }

@@ -65,7 +65,7 @@ import { withReviewerDatabase } from './services/reviewer-database';
 import { reviewerAuth } from './services/reviewer-auth';
 import { REVIEWER_MAX_SECONDS, capturedReviewer, reviewerActive, reviewerForUser } from './services/reviewer-accounts';
 import { hasAcceptedTerms, termsRequired } from './services/terms';
-import { capSessionRefresh } from './services/session-cap';
+import { capSessionRefresh, sessionCookieCapPlugin } from './services/session-cap';
 import { SESSION_EXPIRES_IN_SECONDS, SESSION_UPDATE_AGE_SECONDS } from './services/session-lifetime';
 import { signInLeaseSignOutPlugin } from './services/signin-lease-sign-out';
 
@@ -388,6 +388,7 @@ export const auth = betterAuth({
     },
   },
 
+  // No magicLink plugin, which keeps CVE-2026-114607 unreachable. Adding magicLink before better-auth 1.7.7 makes it account takeover; revisit with the 1.7 migration.
   plugins: [
     {
       id: 'revoke-other-sessions',
@@ -405,6 +406,7 @@ export const auth = betterAuth({
     },
     // An app signing out of its OpenKey session stops that sign-in's own renewal lease, and nothing else.
     signInLeaseSignOutPlugin(prisma),
+    sessionCookieCapPlugin(),
     passkeyFreshnessPlugin,
     // TC-1198: passkey enrolment and removal need a fresh step-up.
     passkeyEnrolmentPlugin(prisma, (headers): Promise<ResolvedSession | null> => auth.api.getSession({ headers })),

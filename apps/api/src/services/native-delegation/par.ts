@@ -7,6 +7,7 @@ import { TINYCLOUD_DELEGATED_PATH, TINYCLOUD_DELEGATED_PATH_MAX_LENGTH, hasDotSe
 import { bindNativeRenewalAsk } from './standing-renewal';
 import { RenewalLeaseError } from '../renewal-lease';
 import { log, logError, withScheduledLogContext } from '../../log';
+import { noRepeatsOutsideSignedNames } from '../oauth-signed-query';
 
 export const REQUEST_URI_PREFIX = 'urn:ietf:params:oauth:request_uri:';
 const REQUIRED_FORM_KEYS = new Set(['client_id', 'response_type', 'redirect_uri', 'state', 'code_challenge', 'code_challenge_method', 'scope', 'authorization_details']);
@@ -134,9 +135,10 @@ export function authoritativeQuery(row: { clientId: string; redirectUri: string;
   return query;
 }
 export function matchesAuthoritativeQuery(incoming: URLSearchParams, expected: URLSearchParams): boolean {
-  const envelope = new Set(['exp', 'ba_iat', 'ba_pl', 'sig']);
-  const keys = [...incoming.keys()];
-  if (new Set(keys).size !== keys.length) return false;
+  // The provider's signed envelope; `ba_param` repeats, once per signed name (services/oauth-signed-query.ts).
+  const envelope = new Set(['exp', 'ba_iat', 'ba_pl', 'ba_param', 'sig']);
+  if (!noRepeatsOutsideSignedNames(incoming)) return false;
+  const keys = [...incoming.keys()].filter(k => k !== 'ba_param');
   if (keys.some(k => !expected.has(k) && !envelope.has(k))) return false;
   for (const [k, v] of expected) if (incoming.getAll(k).length !== 1 || incoming.get(k) !== v) return false;
   return true;

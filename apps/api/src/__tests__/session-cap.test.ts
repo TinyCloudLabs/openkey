@@ -1,6 +1,9 @@
 import './tc1777-test-env';
 import { describe, expect, test } from 'bun:test';
-import { WEB_SESSION_ABSOLUTE_CAP_SECONDS, capSessionRefresh } from '../services/session-cap';
+import { betterAuth } from 'better-auth';
+import { memoryAdapter } from 'better-auth/adapters/memory';
+import { serializeSignedCookie } from 'better-call';
+import { WEB_SESSION_ABSOLUTE_CAP_SECONDS, capSessionRefresh, sessionCookieCapPlugin } from '../services/session-cap';
 
 const DAY = 86_400_000;
 const NOW = Date.UTC(2026, 9, 26, 12, 0, 0);
@@ -72,5 +75,46 @@ describe('the absolute cap on web sessions', () => {
     await endsNow(() => capSessionRefresh({ expiresAt: 'soon' }, during(2)));
     await endsNow(() => capSessionRefresh({ expiresAt: null }, during(2)));
     await endsNow(() => capSessionRefresh({ expiresAt: new Date(Number.NaN) }, during(2)));
+  });
+});
+
+describe('the session cookie of a refresh made by any auth endpoint', () => {
+  /** A minimal Better Auth with the cap, and a 29-day-old session due for a refresh, used on `path`. */
+  async function refreshThrough(path: string, plugins = [sessionCookieCapPlugin()]) {
+    const createdAt = new Date(Date.now() - 29 * DAY);
+    const db = {
+      user: [{ id: 'u1', email: 'u1@example.test', name: 'U', emailVerified: true, createdAt, updatedAt: createdAt }],
+      session: [{ id: 's1', userId: 'u1', token: 'token-1', createdAt, updatedAt: createdAt, expiresAt: new Date(Date.now() + 3 * DAY) }],
+      account: [], verification: [],
+    };
+    const auth = betterAuth({
+      baseURL: 'https://api.test/api/auth',
+      secret: 'session-cap-unit-test-secret-0123456789abcdef',
+      database: memoryAdapter(db),
+      logger: { disabled: true },
+      session: { expiresIn: 7 * 24 * 60 * 60, updateAge: 24 * 60 * 60 },
+      databaseHooks: { session: { update: { before: capSessionRefresh } } },
+      plugins,
+    });
+    const context = await auth.$context;
+    const cookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, 'token-1', context.secret)).split(';')[0]!;
+    const response = await auth.handler(new Request(`https://api.test/api/auth${path}`, { headers: { cookie } }));
+    expect(response.status).toBe(200);
+    return { maxAge: /Max-Age=(\d+)/.exec(response.headers.get('set-cookie') ?? '')?.[1], expiresAt: db.session[0]!.expiresAt.getTime() };
+  }
+
+  test('ends with the capped session, on /get-session and on /list-accounts', async () => {
+    for (const path of ['/get-session', '/list-accounts']) {
+      const { maxAge, expiresAt } = await refreshThrough(path);
+      // The session's remaining seconds, read a moment after the hook did.
+      const remaining = Math.floor((expiresAt - Date.now()) / 1000);
+      expect(Number(maxAge), path).toBeGreaterThanOrEqual(remaining);
+      expect(Number(maxAge), path).toBeLessThanOrEqual(remaining + 1);
+      expect(remaining, path).toBeLessThanOrEqual(24 * 60 * 60);
+    }
+  });
+
+  test('without the cap, Better Auth gives it the full 7 days', async () => {
+    expect((await refreshThrough('/list-accounts', [])).maxAge).toBe(String(7 * 24 * 60 * 60));
   });
 });

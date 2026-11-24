@@ -42,6 +42,8 @@ RUN bun run build --filter @openkey/api
 FROM base AS runner
 ENV NODE_ENV=production
 ENV TEE_MODE=production
+# OpenSSL fixes (CVE-2026-31789 and others) from Alpine 3.20 main, ahead of the floating base image.
+RUN apk upgrade --no-cache libssl3 libcrypto3
 
 # Copy source files - no bundling to preserve AsyncLocalStorage
 COPY --from=builder /app/node_modules ./node_modules

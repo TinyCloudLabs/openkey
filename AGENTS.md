@@ -76,7 +76,7 @@ it detects drift. `db:push` remains a local-development command only.
 
 ## Auth Architecture (better-auth)
 
-- **Version**: `^1.5.5` (across monorepo, except `@better-auth/cli` which is at `1.5.0-beta.13`)
+- **Version**: `~1.6.35` across the monorepo; `@better-auth/oauth-provider` is pinned exactly (see `auth.ts`). 1.7 is a separate migration. No `@better-auth/cli` dependency.
 - **Plugins**: passkey, emailOTP, jwt, oauthProvider
 - **Important**: API runs TypeScript directly with Bun (no bundling) to preserve AsyncLocalStorage context. Bundling breaks better-auth's request state tracking.
 
