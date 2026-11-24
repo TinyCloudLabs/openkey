@@ -86,7 +86,7 @@ if (process.env.OPENKEY_SESSION_CAP_TEST_CHILD !== '1') {
     await prisma.session.create({ data: { id, userId: 'u1', token, createdAt, updatedAt: createdAt, expiresAt: new Date(NOW.getTime() + expiresInDays * DAY) } });
     const context = await authModule.auth.$context;
     const cookie = (await serializeSignedCookie(context.authCookies.sessionToken.name, token, context.secret)).split(';')[0]!;
-    return { id, cookie, createdAt };
+    return { id, cookie, token, createdAt };
   }
 
   async function use(cookie: string) {
@@ -193,10 +193,9 @@ if (process.env.OPENKEY_SESSION_CAP_TEST_CHILD !== '1') {
 
   describe('when the cap cannot be applied', () => {
     test('the session is ended and nothing fails: an update outside a request has no session to read the creation time from', async () => {
-      const { id, cookie } = await session('unapplied', 2, 4);
+      const { id, cookie, token } = await session('unapplied', 2, 4);
       setSystemTime(NOW);
       const context = await authModule.auth.$context;
-      const token = (await prisma.session.findUnique({ where: { id } }))!.token;
       const updated = await context.internalAdapter.updateSession(token, { expiresAt: new Date(NOW.getTime() + 7 * DAY), updatedAt: NOW });
       expect(updated).not.toBeNull();
       expect(await expiry(id)).toBe(NOW.getTime());
