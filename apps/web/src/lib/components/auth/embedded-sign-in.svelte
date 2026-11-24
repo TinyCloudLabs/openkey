@@ -9,6 +9,7 @@
     embedVerifyEmailOtp,
     isEmbedContext,
   } from '$lib/embed-passkey';
+  import { embedPasskeySignInErrorText } from '$lib/embed-passkey-not-allowed';
   import { webSignFlowHeaders } from '$lib/web-sign-flow';
   import {
     loadConfiguredSocialProviders,
@@ -126,7 +127,7 @@
       }
       onauthenticated();
     } catch (cause: any) {
-      error = cause.message || 'Passkey sign-in failed';
+      error = embedPasskeySignInErrorText(cause, step);
     } finally {
       busy = null;
     }

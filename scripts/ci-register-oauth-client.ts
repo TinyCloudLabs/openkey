@@ -13,10 +13,11 @@
  *   CLIENT_NAME           Display name (required on create; optional on update)
  *   CLIENT_REDIRECT_URIS  Comma-separated redirect URIs (required on create)
  *   CLIENT_TYPE           "native" | "spa" (default "native")
- *   CLIENT_URI            Application website URL (optional)
- *   CLIENT_ID             Existing enabled client to update branding only. In
+ *   CLIENT_URI            Application website URL (optional; on update, empty leaves it
+ *                         unchanged and `none` clears it)
+ *   CLIENT_ID             Existing enabled client to update branding and website only. In
  *                         update mode, empty branding values are unchanged;
- *                         use `none` to clear icon or theme colours.
+ *                         use `none` to clear icon, theme colours or website.
  *   CLIENT_ICON           HTTPS icon URL (optional; `none` clears it on update)
  *   CLIENT_THEME_BACKGROUND_COLOR  #rrggbb (optional; `none` clears it on update)
  *   CLIENT_THEME_ACCENT_COLOR      #rrggbb (optional; `none` clears it on update)
@@ -36,7 +37,7 @@ import {
   validateNativeDelegationConfig,
   type NativeDelegationConfig,
 } from '../apps/api/src/services/native-delegation/policy';
-import { createBranding, updateBranding } from './oauth-client-branding';
+import { createBranding, updateBranding, updateWebsite } from './oauth-client-branding';
 
 const prisma = createPrismaClient();
 
@@ -87,11 +88,10 @@ async function main() {
   if (clientIdToUpdate) {
     const incompatible = [
       ['CLIENT_REDIRECT_URIS', process.env.CLIENT_REDIRECT_URIS],
-      ['CLIENT_URI', process.env.CLIENT_URI],
       ['CLIENT_TYPE', process.env.CLIENT_TYPE],
     ].filter(([, value]) => value?.trim());
     if (incompatible.length > 0) {
-      throw new Error(`client_id updates branding and an existing delegation ceiling only; remove ${incompatible.map(([key]) => key).join(', ')}`);
+      throw new Error(`client_id updates branding, the website and an existing delegation ceiling only; remove ${incompatible.map(([key]) => key).join(', ')}`);
     }
   }
   const redirectUris = clientIdToUpdate ? [] : required('CLIENT_REDIRECT_URIS')
@@ -101,7 +101,7 @@ async function main() {
 
   if (clientIdToUpdate) {
     // Only the branding inputs that are set: an empty icon or theme colour keeps the stored value (TC-3268).
-    const branding = updateBranding(process.env);
+    const branding = { ...updateBranding(process.env), ...updateWebsite(process.env) };
     const existingClient = await prisma.oauthClient.findUnique({ where: { clientId: clientIdToUpdate } });
     if (!existingClient || existingClient.disabled) throw new Error(`Enabled OAuth client not found: ${clientIdToUpdate}`);
     // A ceiling change replaces the ceiling of a client that already has delegation
@@ -118,6 +118,11 @@ async function main() {
       // The ceiling is public client policy, never a secret: the run log is the before/after record.
       console.log(`Delegation ceiling before: ${JSON.stringify(existingClient.tinycloudNativeDelegation)}`);
       console.log(`Delegation ceiling after: ${JSON.stringify(ceiling)}`);
+    }
+    // The website is public client metadata, never a secret: the run log is the before/after record.
+    if ('uri' in branding) {
+      console.log(`Website before: ${existingClient.uri ?? 'none'}`);
+      console.log(`Website after: ${branding.uri ?? 'none'}`);
     }
     await prisma.oauthClient.update({
       where: { clientId: clientIdToUpdate },

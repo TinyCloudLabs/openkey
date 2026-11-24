@@ -34,8 +34,39 @@ export const LOADER = {
 
 /** The starting window and its upper limit on a signed approval request. */
 export const APPROVAL_EXPIRY = {
-  onceStart: '1 hour is the most for a request that includes secrets or decryption.',
+  /** @deprecated The approval page offers a choice of 1 hour or the length the app asked for, so this line is not shown. */
+  onceStart: 'Requests that can open all your secrets or all your encrypted data start at 1 hour. You can choose longer, up to what the app asked for.',
   shortenLimit: 'This approval can last up to {duration}.',
+  /** A signed request for a secret's own key whose start is shorter than its maximum. */
+  lengthen: 'This request starts at {start}, as the app asked. You can choose up to {max}.',
+  /** The same request when it starts at its maximum. Shorter lengths are still offered. */
+  lengthFixed: "This request lasts {max}, as the app asked. That's the most it can be.",
+} as const;
+
+/**
+ * A signed approval request for one named secret and decrypt. `{requester}` is named only when OpenKey knows it
+ * from the request's signature; any other request gets `headingUnnamed`.
+ */
+export const ONE_SECRET = {
+  heading: '{requester} wants to use one secret',
+  headingUnnamed: 'A request to use one secret',
+  hint: 'Review it, choose how long, then approve.',
+  /** Under the "Read the secret {NAME}" row, shown only when the request's one decrypt is that secret's own key. */
+  decryptNote: 'Lets it open only this secret.',
+} as const;
+
+/**
+ * A one-tap approval request whose signer OpenKey can't name: the page says so and names no requester.
+ * The "Returned to" row and the receipt's "Sent to" row are left out.
+ */
+export const UNVERIFIED_REQUESTER = {
+  /** The "Requested by" value, with `line` under it. */
+  name: 'Not verified',
+  line: 'OpenKey can’t confirm who made this link.',
+  /** In place of `DONE.approved.line`. */
+  approvedLine: 'You can close this window.',
+  /** In place of `DONE.declined.line`. */
+  declinedLine: 'Whoever sent this link has been told no. If that was a mistake, ask for a new link.',
 } as const;
 
 export const CLOSE_TAB = 'Close this tab';

@@ -36,8 +36,41 @@ function siwe(resources: string[], overrides: Partial<{
     `Issued At: ${i}`,
     `Expiration Time: ${e}`,
     "Resources:",
-    ...resources.map((r) => `- ${r}`),
+    ...recapResources(resources).map((r) => `- ${r}`),
   ].join("\n");
+}
+
+/**
+ * The node accepts only URI resources, so a `<service>/<verb>:<space>[/<path>]`
+ * grant is carried as the equivalent canonical `urn:recap:` entry: att key
+ * `<space>` (no path) or `<space>/<short-service>/<path>`, caveats `[{}]`.
+ * Grants keep their order; URI resources pass through unchanged.
+ */
+function recapResources(resources: string[]): string[] {
+  const att: Record<string, Record<string, unknown[]>> = {};
+  const out: string[] = [];
+  let recapIndex = -1;
+  for (const resource of resources) {
+    const colon = resource.indexOf(":");
+    const ability = resource.slice(0, colon);
+    const slash = ability.indexOf("/");
+    if (colon < 0 || slash < 0) {
+      out.push(resource);
+      continue;
+    }
+    const target = resource.slice(colon + 1);
+    const pathStart = target.indexOf("/");
+    const service = ability.slice(0, slash);
+    const short = service.startsWith("tinycloud.") ? service.slice("tinycloud.".length) : service;
+    const key = pathStart < 0 ? target : `${target.slice(0, pathStart)}/${short}/${target.slice(pathStart + 1)}`;
+    (att[key] ??= {})[ability] = [{}];
+    if (recapIndex < 0) {
+      recapIndex = out.length;
+      out.push("");
+    }
+  }
+  if (recapIndex >= 0) out[recapIndex] = makeRecapResource(att);
+  return out;
 }
 
 export const BOOTSTRAP_KV_SQL_CAPABILITIES = siwe([

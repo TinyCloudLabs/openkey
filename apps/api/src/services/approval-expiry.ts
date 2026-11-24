@@ -1,3 +1,5 @@
+import { grantIsBroadOnce, parseCapabilityReview, parseSiweChainId, parseSiweFields, serializeSiwe } from '@openkey/capability-review';
+
 // TC-2272: the user may change when an approval expires. The new time replaces
 // the `Expiration Time:` line of the SIWE the server is about to preview or
 // sign; no other byte changes. The app's own time is only the default.
@@ -36,14 +38,31 @@ export function validateExpirationOverride(
   return { ok: true, value };
 }
 
-const EXPIRATION_LINE = /^Expiration Time: .+$/gm;
-
-/** The SIWE with its one `Expiration Time:` line replaced; null when it does not have exactly one. */
+/** The SIWE with its `Expiration Time` field replaced; null when it does not parse (`parseSiweFields`) or has no expiry. */
 export function withExpirationTime(siwe: string, expirationTime: string): string | null {
-  if ((siwe.match(EXPIRATION_LINE) ?? []).length !== 1) return null;
-  return siwe.replace(/^Expiration Time: .+$/m, `Expiration Time: ${expirationTime}`);
+  const parsed = parseSiweFields(siwe);
+  if (!parsed.ok || parsed.fields.expirationTime === undefined) return null;
+  return serializeSiwe({ ...parsed.fields, expirationTime });
 }
 
-export function expirationTimeOf(siwe: string): string | undefined {
-  return siwe.match(/^Expiration Time: (.+)$/m)?.[1]?.trim();
+/**
+ * Is this request in the one-hour tier: a grant that reaches all secrets or all encrypted data
+ * (`grantIsBroadOnce`, the classifier the approval screen's `isOnceTier` runs)? Such a request is treated as
+ * expiry-changeable whatever the app sent, and an approval with no owner pick starts at one hour. Grants are
+ * classified with the signer's own address so an own `default/share/` folder stays out, as the screen reads it.
+ * False for a message that does not parse: the other refusals report it.
+ */
+export function siweBroadOnceTier(siwe: string, signerAddress: string): boolean {
+  const model = parseCapabilityReview({
+    message: siwe,
+    signer: { label: 'OpenKey', address: signerAddress, chainId: parseSiweChainId(siwe) ?? 1, provenance: 'managed' },
+    editable: false,
+    metadataTrust: { status: 'unsigned', reason: 'server classification' },
+    reason: { text: '', source: 'none' },
+    requester: {
+      displayName: '', verifiedOrigin: null, appId: null, manifestName: null, manifestNameProvenance: 'none',
+      manifestId: null, manifestIdProvenance: 'none', manifestDigest: null, domainWarning: false, originWarning: false,
+    },
+  });
+  return model.permissions.some(grantIsBroadOnce);
 }

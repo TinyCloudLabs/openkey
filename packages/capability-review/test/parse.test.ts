@@ -283,7 +283,7 @@ describe("parseCapabilityReview", () => {
     expect(namespaceGrant).toBeDefined();
     expect(namespaceGrant?.severity).toBe("sensitive");
     expect(namespaceGrant?.displayLabel).toBe(
-      "Secret names and metadata — (all secrets)",
+      "Secret names and metadata: all secrets",
     );
     expect(buildStatement(namespaceGrant!).primaryText).toBe(
       "View your secret names and details",
@@ -337,7 +337,7 @@ describe("parseCapabilityReview", () => {
     expect(read.permissions[0]?.family).toBe("secret-namespace-list");
     expect(read.permissions[0]?.severity).toBe("sensitive");
     expect(read.permissions[0]?.displayLabel).toBe(
-      "Secret data — (all secrets)",
+      "Secret data: all secrets",
     );
     expect(buildStatement(read.permissions[0]!).primaryText).toBe(
       "View your entire secret catalog",
@@ -373,7 +373,7 @@ describe("parseCapabilityReview", () => {
     expect(crossOwner.permissions[0]?.severity).toBe("sensitive");
     expect(crossOwner.permissions[0]?.ownedBySelf).toBe(false);
     expect(crossOwner.permissions[0]?.displayLabel).toBe(
-      "Secret data — (all secrets)",
+      "Secret data: all secrets",
     );
     expect(buildStatement(crossOwner.permissions[0]!).primaryText).toBe(
       "View another user's entire secret catalog",
@@ -394,7 +394,7 @@ describe("parseCapabilityReview", () => {
     // is absent.
     expect(unverified.permissions[0]?.ownedBySelf).toBe(true);
     expect(unverified.permissions[0]?.displayLabel).toBe(
-      "Secret data — (all secrets)",
+      "Secret data: all secrets",
     );
   });
 
@@ -686,8 +686,8 @@ describe("subset validation", () => {
   });
 
   it("rejects an altered immutable field", () => {
-    const base = parseCapabilityReview(ctx());
-    const cand = parseCapabilityReview(ctx());
+    const base = parseCapabilityReview(ctx({ message: REAL_RECAP_BOOTSTRAP }));
+    const cand = parseCapabilityReview(ctx({ message: REAL_RECAP_BOOTSTRAP }));
     cand.immutable!.nonce = "tampered";
     const check = assertBaselineSubset(base, cand);
     expect(check.ok).toBe(false);

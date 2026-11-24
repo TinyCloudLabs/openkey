@@ -178,7 +178,10 @@ passkeyProxyRouter.post('/verify-registration', async (c) => {
 });
 
 // POST /generate-authenticate-options
-// Proxies to GET /api/auth/passkey/generate-authenticate-options
+// Proxies to GET /api/auth/passkey/generate-authenticate-options. Every ceremony issued here is verified under the
+// `x-openkey-passkey-ceremony` marker, which refuses an assertion made without user verification, and Better Auth
+// asks for `preferred`. The options carry `required` so the browser refuses an authenticator that cannot verify the
+// person before any verify request is made.
 passkeyProxyRouter.post('/generate-authenticate-options', async (c) => {
   cleanExpiredChallenges();
   if (challengeStore.size >= MAX_CHALLENGES) {
@@ -213,7 +216,7 @@ passkeyProxyRouter.post('/generate-authenticate-options', async (c) => {
   });
 
   const responseBody = await response.json();
-  return c.json({ ...responseBody, challengeToken });
+  return c.json({ ...responseBody, userVerification: 'required', challengeToken });
 });
 
 // POST /verify-authentication

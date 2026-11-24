@@ -20,6 +20,8 @@
 // The transport is DUMB: it does not interpret request payloads beyond
 // the envelope. It surfaces valid requests to a caller-supplied handler.
 
+import { coversManySecrets, parseEncryptionResource } from "@openkey/capability-review";
+
 export interface WidgetTransportOptions {
   /**
    * The origin the widget is opened FROM. Every incoming and outgoing
@@ -427,6 +429,26 @@ export function createWidgetTransport(opts: WidgetTransportOptions): WidgetTrans
         console.warn("[widget-transport] dropping malformed renewal ask");
       }
       payload.renewal = renewal ?? undefined;
+    }
+    if (payload.renewalOnlyResources !== undefined) {
+      const resources = payload.renewalOnlyResources;
+      payload.renewalOnlyResources = undefined;
+      if (payload.renewal) {
+        if (
+          Array.isArray(resources) &&
+          resources.length <= 64 &&
+          new Set(resources).size === resources.length &&
+          [...resources].every((resource) => {
+            if (typeof resource !== "string" || resource.length > 512) return false;
+            const parsed = parseEncryptionResource(resource);
+            return parsed?.kind === "key" && !coversManySecrets(parsed);
+          })
+        ) {
+          payload.renewalOnlyResources = resources;
+        } else {
+          console.warn("[widget-transport] dropping malformed renewal-only resources");
+        }
+      }
     }
     // Reported origin is optional. Widget flows use their configured
     // origin for the actual channel; `reportedOrigin` is a defence-in-

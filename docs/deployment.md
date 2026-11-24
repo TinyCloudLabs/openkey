@@ -243,6 +243,7 @@ env alongside it for rollback. Details: TC-1480
 | `SCOREBOARD_EXCLUDE_ADDRESSES` | Comma-separated EVM wallet addresses of team members (compared lowercase; invalid entries are ignored). Each is mapped through `ethereum_keys.address` to its account, so every key of that person is excluded: the `team_by_wallet` bucket of `/api/internal/metrics` `users`, checked first. Addresses are never returned or logged. |
 | `SCOREBOARD_DISPOSABLE_DOMAINS` | Comma-separated extra disposable-mail domains (a leading `@` or `*.` is accepted; subdomains match; entries that are not domains, major webmail domains, our own team domains and country suffixes such as `co.uk` are ignored, so a bad list can never mark them disposable). An entry from this variable or from the Worker's POST list only takes effect once it matches at least 5 accounts (the built-in list has no such floor), so a token holder cannot probe how many accounts sit at a domain, added to the built-in list (mailinator, guerrillamail family, sharklasers, mail.tm/mail.gw and our mail.tm domains fldubai.com and maxxspace.com, maildrop, 10minutemail, yopmail, temp-mail/tempmail, trashmail, getnada, Mailpit/MailHog/MailCatcher). Feeds the `disposable_mail_domain` bucket, together with the built-in list and the `disposableDomains` the internal Worker sends in a `POST` to `/api/internal/metrics`. Mail.tm rotates domains: add the new one here, no code deploy needed; applies after the API container is recreated with the new environment. |
 | `OPENKEY_NATIVE_RENEW_DISABLED` | `true` or `1` refuses native delegation renewals with HTTP 400 `consent_required`; unset, empty, or any other value leaves renewals enabled. Changes apply after the API container is recreated with the new environment. |
+| `OPENKEY_NETWORK_DECRYPT_CAP` | Off unless exactly `enabled`. When on, a whole network's `decrypt` outside a signed approval request (`/a/`) lasts 7 days at most, like a grant on secret keys: `/prepare`, the managed `POST /api/delegate` and `/authorize-sign-preview` bring a longer expiry back to 7 days, and signed bytes that ask for more (`/complete`, `/authorize-sign`, raw `/api/keys/:id/sign`, `/api/delegate/sign`) are refused with 400 `secret_lifetime_exceeded`. Passed through `docker-compose.prod.yml`. Set the web's `VITE_OPENKEY_NETWORK_DECRYPT_CAP` the same. |
 | `OPENKEY_RENEWAL_LEASES` | Hardcoded `enabled` in `docker-compose.prod.yml`, not sealed, so turning leases on or off never touches the sealed environment. To turn them off, a one-line PR sets `OPENKEY_RENEWAL_LEASES=` (empty) and `deploy-api.yml` redeploys the compose (no env file); to turn them on again, the same with `enabled`. Leases are off unless this is exactly `enabled`. While off, a request that asked for renewal is approved finite and a leased choice is refused with 400 `renewal_disabled`; leases already granted keep renewing on the node and can still be stopped in Settings. Setting it to `stop` also revokes the live leases OpenKey signed. The API checks about 30 seconds after boot and every five minutes thereafter. Each pass logs how many live leases require an external wallet's signature. Enable only after the web that shows the renewal choice is live. |
 | `OPENKEY_RENEWAL_NODE_DID` / `OPENKEY_RENEWAL_RENEWER_DID` | Hardcoded in `docker-compose.prod.yml` (public values, not sealed): the production TinyCloud node's DID and its renewer DID, exactly as the node advertises them at `https://node.tinycloud.xyz/.well-known/tinycloud/node-keys` (`nodeDid`, `renewerDid`). Re-read them after a node upgrade; if the node's values change, update the compose before the next API deploy. Without both, or if they don't match the node, no production lease is made. |
 | `TINYCLOUD_BOOTSTRAP_HOST` | Trusted TinyCloud node used for canonical user-key bootstrap |
@@ -652,6 +653,29 @@ dispatch `deploy-api.yml` after the merge: its migration step runs
 To require API-before-web with this main-only workflow, split the API/database
 and web changes into separate merges.
 
+#### Image digest, provenance and the published compose (TC-3837)
+
+The deploy writes the API image into `docker-compose.prod.yml` by the digest
+the push returned (`skgbafa/openkey-api@sha256:…`), never by tag, and
+`scripts/compose-image-digests.ts` stops the deploy, before migrations, if any
+service image is a tag or a variable. The measured `compose_hash` therefore
+names the exact image that was scanned. The push carries a GitHub build
+provenance attestation:
+
+```bash
+gh attestation verify oci://docker.io/skgbafa/openkey-api@sha256:<digest> --repo TinyCloudLabs/openkey
+```
+
+When a deploy run that reached the CVM completes, its own workflow,
+`publish-api-compose.yml`, takes the image from the run's `api-deploy-record`
+artifact and reads the CVM's attestation from Phala. It requires that the
+`compose-hash` event, Phala's `compose_hash` and sha256 of the measured
+app-compose agree and that the api service runs that image, then uploads that
+app-compose as `app-compose.<compose_hash>.json` to the release
+`openkey-api-<commit>`. `sha256sum` of the asset equals the `compose_hash` in
+the attestation. A failure fails the publish run, not the deploy run, so the
+Share sender smoke and the next deploy's smoke gate are unaffected.
+
 #### Release order when web and API ship together
 
 When one release changes both the web and the API, release them as a pair, in
@@ -728,7 +752,9 @@ serving.
    bun run db:migrate:prod
    ```
 
-3. Update `docker-compose.prod.yml` with the image tag
+3. Update `docker-compose.prod.yml` with the image digest the push printed
+   (`skgbafa/openkey-api@sha256:…`), not the tag, and check it with
+   `bun scripts/compose-image-digests.ts docker-compose.prod.yml`
 
 4. Deploy via Phala CLI:
    ```bash
@@ -785,6 +811,17 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
      client registered for it (`docs/resource-server-token-status.md`); none of
      these establishes an assistant's acceptance. See
      `docs/share-device-authorization.md` ("Ordinary `/delegate` links").
+   - Optional: `VITE_TINYCLOUD_ONE_REQUESTER_DIDS` (comma-separated Ed25519
+     `did:key:z6Mk…` keys). A one-tap approval request (`/a/…`) signed by one
+     of these keys is shown as requested by TinyCloud One, with "return to
+     TinyCloud One" on its last page; any other signer is shown as not
+     verified, with no requester name. Each deployment (production, preview,
+     dev) lists the key its TinyCloud One gateway signs with; the built-in list
+     (`TINYCLOUD_ONE_REQUESTER_DIDS`) is empty until production's key is set.
+   - Optional: `VITE_OPENKEY_NETWORK_DECRYPT_CAP=enabled`, set together with
+     the API's `OPENKEY_NETWORK_DECRYPT_CAP`. The popup, frame and command-line
+     approval screens then stop a whole network's decrypt at 7 days, as the API
+     does. The API's flag is the one that holds the grant.
 
 4. Deploy
 
