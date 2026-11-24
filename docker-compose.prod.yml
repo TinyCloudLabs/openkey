@@ -56,6 +56,11 @@ services:
       - OPENKEY_RENEWAL_LEASES=enabled
       - OPENKEY_RENEWAL_NODE_DID=did:key:z6MkjHi79SMX4doJyo2w7jDTM6Fa7iX6EVZWXNbJ6RzBm3Wi
       - OPENKEY_RENEWAL_RENEWER_DID=did:key:z6MkgWpiYdQV8pAr3dtHLdQsoZR3wF5wsS7fpkzAuX6q1PZj
+      # Billing service account-deletion calls (TC-3903): the API cancels every subscription and billing
+      # record for an account before its rows go, and refuses the deletion while these are unset.
+      # The origin is fixed here because it pins where the bearer secret is sent.
+      - BILLING_API_URL=https://api.account.tinycloud.xyz
+      - ACCOUNT_DELETE_SERVICE_SECRET=${ACCOUNT_DELETE_SERVICE_SECRET}
     restart: unless-stopped
     healthcheck:
       # Keep this aligned with the API's configurable listener. `$$` defers

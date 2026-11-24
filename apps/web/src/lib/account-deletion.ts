@@ -103,6 +103,10 @@ async function failure(response: Response, fallback: string): Promise<DeletionEr
       ? 'Some renewing permissions need your wallet to stop. Stop them under Renewing permissions in Settings, then delete your account. Nothing was deleted.'
       : "OpenKey couldn't stop renewal for every permission. Nothing was deleted. Try again.", code, response.status);
   }
+  // TC-3903: billing could not cancel the plan; the API deleted nothing.
+  if (code === 'billing_unavailable') {
+    return new DeletionError("OpenKey couldn't reach billing to cancel your plan, so nothing was deleted. Try again in a few minutes.", code, response.status);
+  }
   if (response.status === 503) return new DeletionError('OpenKey is busy right now. Try again in a moment.', null, 503);
   if (response.status === 401) return new DeletionError('Your session ended. Sign in again to delete your account.', null, 401);
   return new DeletionError(fallback, null, response.status);

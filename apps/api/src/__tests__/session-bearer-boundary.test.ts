@@ -18,13 +18,14 @@ let sessionLookups: unknown[] = [];
 
 const tx = {
   $queryRaw: async () => [],
-  ethereumKey: { deleteMany: async () => ({ count: 1 }) },
+  ethereumKey: { deleteMany: async () => ({ count: 1 }), findMany: async () => [] },
   passkey: { deleteMany: async () => ({ count: 1 }) },
   session: { deleteMany: async () => ({ count: 1 }) },
   account: { deleteMany: async () => ({ count: 1 }), findMany: async () => [] },
   verification: { deleteMany: async () => ({ count: 0 }) },
   user: { delete: async ({ where }: { where: { id: string } }) => { deletedUsers.push(where.id); return {}; } },
   renewalLease: { findMany: async () => [], count: async () => 0 },
+  accountDeletionAudit: { create: async () => ({}) },
 };
 
 const prisma = {

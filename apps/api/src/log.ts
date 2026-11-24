@@ -86,6 +86,7 @@ const EVENTS = {
   legacy_reseal_done: true, legacy_reseal_failed: true, legacy_reseal_progress: true, legacy_reseal_quarantined: true,
   sign_origin_refused: true,
   approval_passkey_verified: true, approval_passkey_refused: true, approval_passkey_flow_covered: true, approval_passkey_flow_record_failed: true,
+  account_delete_billing: true,
   unlisted_event: true,
 } as const satisfies Record<string, true>;
 type EventName = keyof typeof EVENTS;
@@ -392,6 +393,14 @@ export function logOtpDeliveryFailed(error: unknown): void {
       ? statusCode
       : undefined,
   });
+}
+
+/**
+ * Account deletion's billing step (TC-3903): how it ended, and row counts only — never addresses, DIDs or
+ * billing's error text.
+ */
+export function logAccountDeleteBilling(result: 'settled' | 'skipped_unconfigured' | 'unavailable', counts: { addresses: number; failed?: number }): void {
+  emit(result === 'unavailable' ? 'warn' : 'info', 'account_delete_billing', { result, ...counts });
 }
 
 export function logError(level: 'warn' | 'error', event: EventName, error: unknown): void {

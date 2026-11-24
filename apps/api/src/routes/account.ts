@@ -47,6 +47,7 @@ import { revokeAppleToken } from '../services/social-confirmation';
 import { revokeStoredAppleTokens } from '../services/apple-revocation';
 import { appleRelayEmailUndeliverable } from '../services/apple-notifications';
 import { liveLeaseWhere, revokeRenewalLeases, type LeaseRevocationReport } from '../services/renewal-lease-revocation';
+import { cancelBillingForAccountDelete } from '../services/billing-account-delete';
 import { createRenewalLeaseRouter } from './renewal-leases';
 
 const prisma = createPrismaClient();
@@ -711,17 +712,34 @@ accountRouter.post('/delete', async (c) => {
   const leases = await revokeRenewalLeases(prisma, user.id, { kind: 'all', includeNativeStops: true });
   if (leases.notStopped.length > 0) return renewalLeasesNotStopped(c, leases.notStopped);
 
-  // Count and delete every user key. TC-488 removed tenant-managed keys.
-  const keyCount = await prisma.ethereumKey.count({
-    where: { userId: user.id },
-  });
+  // Every ethereum address the account holds: billing cancels per address. TC-488 removed
+  // tenant-managed keys.
+  const addresses = (await prisma.ethereumKey.findMany({
+    where: { userId: user.id }, select: { address: true },
+  })).map((key) => key.address.toLowerCase());
+
+  // Billing before the database goes (TC-3903): it owns the Stripe subscription and billing records, and
+  // its call is idempotent, so a retry after a crash between these calls and the commit settles the rest.
+  // Refusing deletes nothing, so the user can retry; deleting first would keep the subscription billing.
+  // A later abort below (KEYS/LEASES, or a step-up consumed elsewhere) leaves the account alive with
+  // Stripe already cancelled — accepted: the user asked to delete and the retry completes it.
+  const billing = await cancelBillingForAccountDelete(addresses);
+  if (!billing.ok) {
+    return c.json({ error: 'billing_unavailable', code: 'billing_unavailable' }, 503);
+  }
 
   // Delete all user data in transaction
-  let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | 'PASSKEY' | 'EMAIL' | 'LEASES';
+  let appleTokens: { refreshToken: string | null; appleClientId: string | null }[] | 'PASSKEY' | 'EMAIL' | 'LEASES' | 'KEYS';
   try { appleTokens = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "user" WHERE id = ${user.id} FOR UPDATE`;
     // A lease approved since the revocations above would outlive the keys; a retry stops it first.
     if (await tx.renewalLease.count({ where: liveLeaseWhere(user.id, { kind: 'all', includeNativeStops: true }, new Date()) }) > 0) return 'LEASES';
+    // A key enrolled since the snapshot above was never sent to billing and would be deleted with no
+    // cancellation and no audit row; the retry calls billing for the new set, idempotently (TC-3903).
+    const locked = new Set((await tx.ethereumKey.findMany({
+      where: { userId: user.id }, select: { address: true },
+    })).map((key) => key.address.toLowerCase()));
+    if (locked.size !== addresses.length || addresses.some((address) => !locked.has(address))) return 'KEYS';
     if (!passkeyStepUp) {
       // A passkey that counts, enrolled since the check, needs the passkey
       // step-up instead; the deletion code is spent only by a deletion that commits.
@@ -733,6 +751,14 @@ accountRouter.post('/delete', async (c) => {
     const stored = await tx.account.findMany({
       where: { userId: user.id, providerId: 'apple', refreshToken: { not: null } },
       select: { refreshToken: true, appleClientId: true },
+    });
+
+    // One audit row per deletion, surviving the account: when it happened, whether billing was settled
+    // and whether a subscription was cancelled. No identifier of any kind — an unkeyed hash of a public
+    // address is still identifying — so nothing here can point back at anyone (TC-3903). Written inside
+    // the transaction so a row exists exactly when the delete commits; a blocked delete writes none.
+    await tx.accountDeletionAudit.create({
+      data: { hadSubscription: billing.hadSubscription, billingOk: billing.billingOk },
     });
 
     // Delete all ethereum keys (sealed blobs will be unrecoverable)
@@ -760,14 +786,15 @@ accountRouter.post('/delete', async (c) => {
   }
   if (appleTokens === 'PASSKEY') return c.json(ACCOUNT_PASSKEY_STEP_UP_REQUIRED, 403);
   if (appleTokens === 'EMAIL') return c.json(EMAIL_STEP_UP_REQUIRED, 403);
-  if (appleTokens === 'LEASES') return c.json({ error: 'A permission started renewing meanwhile. Nothing was deleted. Try again.', code: 'renewal_leases_not_stopped' }, 409);
+  if (appleTokens === 'LEASES') return c.json({ error: 'A permission started renewing after you confirmed, so nothing was deleted. Try again.', code: 'renewal_leases_not_stopped' }, 409);
+  if (appleTokens === 'KEYS') return c.json({ error: 'Your keys changed after you confirmed, so nothing was deleted. Try again.', code: 'ethereum_keys_changed' }, 409);
 
   await revokeStoredAppleTokens(appleTokens);
 
   return c.json({
     success: true,
     message: 'Account permanently deleted',
-    keysDeleted: keyCount,
+    keysDeleted: addresses.length,
   });
 });
 
