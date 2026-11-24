@@ -3066,7 +3066,18 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   if (Date.parse(immutable.issuedAt) > Date.now() + MAX_ISSUED_AT_SKEW_MS) {
     return c.json(
       {
-        error: 'The SIWE Issued At is in the future. Set Issued At to the current time and ask again.',
+        error: 'The SIWE Issued At is in the future. Set Issued At to the current time and send the request.',
+        code: 'invalid_siwe_header',
+      },
+      400,
+    );
+  }
+  // The renewal lease counts its window from Not Before when the message has one, so a Not Before ahead of the
+  // clock would move the lease past the end the approval screen showed. Not Before is refused past the same skew.
+  if (immutable.notBefore && Date.parse(immutable.notBefore) > Date.now() + MAX_ISSUED_AT_SKEW_MS) {
+    return c.json(
+      {
+        error: 'The SIWE Not Before is in the future. Set Not Before to the current time or remove it and send the request.',
         code: 'invalid_siwe_header',
       },
       400,

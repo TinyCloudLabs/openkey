@@ -5,6 +5,7 @@ import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
 import { privateKeyToAccount } from 'viem/accounts';
 import { prepareSession } from '@tinycloud/node-sdk-wasm';
+import { parseSiweFields, serializeSiwe } from '@openkey/capability-review';
 import * as signing from '../services/authorization-signing';
 import type { delegateRouter, setDelegateSignerAuthMiddlewareForTests } from '../routes/delegate';
 import { mockModules, replaceModules } from './mock-module';
@@ -145,5 +146,54 @@ describe('POST /authorize-sign-prepare reads Issued At', () => {
 
     expect(result.status).toBe(200);
     expect(typeof result.body.authorizationContextToken).toBe('string');
+  });
+});
+
+// The renewal lease counts its window from Not Before when the message has one, so a Not Before ahead of the clock
+// moves the lease past the end the approval screen shows. It is refused at prepare, before any renewal choice is read.
+function withNotBefore(siwe: string, notBeforeOffsetMs: number) {
+  const parsed = parseSiweFields(siwe);
+  if (!parsed.ok) throw new Error('the test SIWE must parse');
+  return serializeSiwe({ ...parsed.fields, notBefore: new Date(Date.now() + notBeforeOffsetMs).toISOString() });
+}
+
+describe('POST /authorize-sign-prepare reads Not Before', () => {
+  test('refuses a Not Before 335 days ahead with an Expiration Time 365 days ahead', async () => {
+    const result = await prepare(withNotBefore(siweWith(0, 365 * DAY_MS), 335 * DAY_MS));
+
+    expect(result.status).toBe(400);
+    expect(result.body.code).toBe('invalid_siwe_header');
+    expect(result.body.error).toBe('The SIWE Not Before is in the future. Set Not Before to the current time or remove it and send the request.');
+    nothingIssued(result.body);
+  });
+
+  test('refuses a Not Before 6 minutes ahead and issues no context', async () => {
+    const result = await prepare(withNotBefore(siweWith(0, 3_600_000), 6 * MINUTE_MS));
+
+    expect(result.status).toBe(400);
+    expect(result.body.code).toBe('invalid_siwe_header');
+    nothingIssued(result.body);
+  });
+
+  test('accepts a Not Before 4 minutes ahead', async () => {
+    const result = await prepare(withNotBefore(siweWith(0, 3_600_000), 4 * MINUTE_MS));
+
+    expect(result.status).toBe(200);
+    expect(typeof result.body.authorizationContextToken).toBe('string');
+  });
+
+  test('accepts a Not Before at the current time', async () => {
+    const result = await prepare(withNotBefore(siweWith(0, 3_600_000), 0));
+
+    expect(result.status).toBe(200);
+    expect(typeof result.body.authorizationContextToken).toBe('string');
+  });
+});
+
+describe('POST /authorize-sign-prepare words the Issued At refusal', () => {
+  test('names Issued At and asks to send the request', async () => {
+    const result = await prepare(siweWith(6 * MINUTE_MS, 6 * MINUTE_MS + 3_600_000));
+
+    expect(result.body.error).toBe('The SIWE Issued At is in the future. Set Issued At to the current time and send the request.');
   });
 });
