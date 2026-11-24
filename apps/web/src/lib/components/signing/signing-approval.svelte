@@ -102,6 +102,7 @@
   import {
     ONCE_DEFAULT_EXPIRY_MS,
     accessLastsLine,
+    cappedAskMs,
     formatDurationWithEnd,
     onceCautionLine,
     onceDefaultExpiryMs,
@@ -397,9 +398,9 @@
   let secretCapSent = $state(false);
   $effect(() => {
     if (secretCapSent || approving || previewPending || !onExpiryChange || ownerChoseExpiry || onceDefaultMs !== null) return;
-    if (secretCapMs !== null && expiryMs === null && requestedExpiry !== null && requestedExpiry > secretCapMs) {
+    if (secretCapMs !== null && expiryMs === null && requestedExpiry !== null && cappedAskMs(requestedExpiry, secretCapMs) !== requestedExpiry) {
       secretCapSent = true;
-      onExpiryChange(secretCapMs);
+      onExpiryChange(cappedAskMs(requestedExpiry, secretCapMs));
     }
   });
   function chooseExpiry(ms: number | null) {
@@ -806,23 +807,30 @@
       };
     }),
   );
-  // Rejecting the master-key card changes the length when that card is what holds the approval to one hour: the app
-  // asked for longer, and the request without the card is outside the one-hour tier. The card's hint then says what the
-  // approval lasts, from the same length and day the access line shows.
+  // The master-key card's hint names the length the approval is signed for after the owner rejects it, or it does not
+  // show. It shows only when the page can prove that length: a request this screen sends the app's own time for (no
+  // owner pick, no renewal, only the one-hour start or nothing chosen), counted from now to the Expiration Time that is
+  // signed, held to the cap the server takes from the original request (`secretCapMs` reads every grant, ticked or not).
+  // It stays out where the length depends on more than the card: the app asked for an hour or less, the request without
+  // the card is still in the one-hour tier, nothing else is left to approve, or several cards stand for the master key.
   const masterKeyLasts = $derived.by((): string | null => {
-    const asked = shortenOnlyExpiry ? shortenOnlyExpiry.askedMs : requestedExpiry;
-    if (asked === null || asked <= ONCE_DEFAULT_EXPIRY_MS) return null;
+    if (shortenOnlyExpiry !== null || ownerChoseExpiry || renewal?.leaseMs != null) return null;
+    if (expiryMs !== null && expiryMs !== ONCE_DEFAULT_EXPIRY_MS) return null;
+    const asked = signedAsWrittenMs;
+    if (asked === null || asked <= ONCE_DEFAULT_EXPIRY_MS || !isOnceTier(selectedGrants)) return null;
     const headings = new Map(elevatedCards.map((card) => [card.id, card.heading]));
-    const masterIds = new Set(
-      pendingElevatedGroups.filter((group) => headings.get(group.id) === MASTER_KEY_TITLE).flatMap((group) => group.actionIds),
-    );
-    if (masterIds.size === 0 || !isOnceTier(selectedGrants)) return null;
-    const without = selectedGrants
-      .map((grant) => ({ ...grant, actions: grant.actions.filter((action) => !masterIds.has(action.id)) }))
-      .filter((grant) => grant.actions.length > 0);
+    const masterGroups = pendingElevatedGroups.filter((group) => headings.get(group.id) === MASTER_KEY_TITLE);
+    if (masterGroups.length !== 1) return null;
+    const masterIds = new Set(masterGroups[0]!.actionIds);
+    const elevatedIds = new Set(pendingElevatedGroups.flatMap((group) => group.actionIds));
+    const left = (drop: Set<string>) =>
+      selectedGrants
+        .map((grant) => ({ ...grant, actions: grant.actions.filter((action) => !drop.has(action.id)) }))
+        .filter((grant) => grant.actions.length > 0);
+    if (left(elevatedIds).length === 0) return null;
+    const without = left(masterIds);
     if (isOnceTier(without)) return null;
-    const cap = secretLifetimeCapApplies(without, { networkDecrypt: NETWORK_DECRYPT_CAP }) ? SECRET_GRANT_MAX_SECONDS * 1000 : null;
-    const ms = cap === null ? asked : Math.min(asked, cap);
+    const ms = cappedAskMs(asked, secretCapMs);
     return ms <= ONCE_DEFAULT_EXPIRY_MS ? null : formatDurationWithEnd(ms);
   });
   const elevatedCardsShown = $derived(

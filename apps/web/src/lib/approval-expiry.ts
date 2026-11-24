@@ -215,6 +215,15 @@ export function accessLastsLine(holder: 'app' | 'device', ms: number, now: numbe
   return `This ${holder}'s access to your data lasts ${formatDurationWithEnd(ms, now)}.`;
 }
 
+/**
+ * How long an approval lasts when the owner has picked no length and no one-hour start applies: what the app asked,
+ * held to `capMs` (the 7 days the server allows on secret keys) where a cap applies. The screen sends this length for
+ * a request held to the cap and shows it on the master-key card, so both read the one rule.
+ */
+export function cappedAskMs(askedMs: number, capMs: number | null): number {
+  return capMs !== null && askedMs > capMs ? capMs : askedMs;
+}
+
 /** The ISO time `ms` from `now`: what the signed message's Expiration Time becomes. */
 export function expiryAt(ms: number, now: number = Date.now()): string {
   return new Date(now + ms).toISOString();

@@ -1,7 +1,8 @@
-// The hint on the master-key card of the per-permission face, mounted on the production approval
-// component in happy-dom. A request that can open all encrypted data is held to one hour; rejecting the master-key
-// card leaves the length the app asked for. The card says so when the app asked for longer than an hour and the
-// request outside that card is not held to the hour. The end day comes from the same clock as the access line.
+// The hint on the master-key card of the per-permission face, mounted on the production approval component in
+// happy-dom. The hint names the length the approval is signed for after the owner rejects the card, or it does not show.
+// Every case that shows it drives Reject and Continue to the Approve the screen sends itself and compares the hint with
+// the expiry that Approve signs, worked out the way the server does: the page's pick or the message's Expiration Time,
+// held to the cap the server reads from the original request (`secretCapExpirationTime`).
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { afterAll, beforeAll, describe, expect, setSystemTime, test } from 'bun:test';
 import { tick } from 'svelte';
@@ -13,6 +14,10 @@ import { Window } from 'happy-dom';
 import { compile } from 'svelte/compiler';
 import { parseCapabilityReview } from '../../../../packages/capability-review/src/index';
 import type { CapabilityReviewModel } from '../../../../packages/capability-review/src/index';
+import { formatDurationWithEnd, formatEndDay } from './approval-expiry';
+import { masterKeyRejectNote } from '../../../../packages/capability-review/src/index';
+import { siweBroadOnceTier } from '../../../api/src/services/approval-expiry';
+import { secretCapExpirationTime } from '../../../api/src/services/secret-lifetime';
 import {
   FIXTURE_META,
   REAL_RECAP_WITH_PATH,
@@ -82,8 +87,15 @@ const { SvelteMap } = (await import(
 
 // Compile a $lib svelte file, pointing its imports at on-disk sources.
 const compiled = new Map<string, string>();
-async function compileSvelte(libRel: string): Promise<string> {
-  const cached = compiled.get(libRel);
+// `networkCap` points the page's network-decrypt-cap import at a module with the flag on.
+function flagOnModule(): string {
+  const out = join(OUT_DIR, 'network_decrypt_cap_on.mjs');
+  writeFileSync(out, 'export const NETWORK_DECRYPT_CAP = true;\n');
+  return pathToFileURL(out).href;
+}
+async function compileSvelte(libRel: string, networkCap = false): Promise<string> {
+  const cacheKey = `${libRel}|${networkCap}`;
+  const cached = compiled.get(cacheKey);
   if (cached) return cached;
   const result = compile(readFileSync(join(WEB_ROOT, 'src/lib', libRel), 'utf8'), {
     generate: 'client',
@@ -103,8 +115,10 @@ async function compileSvelte(libRel: string): Promise<string> {
     } else if (spec.startsWith('$lib/')) {
       const rel = spec.slice('$lib/'.length);
       target = rel.endsWith('.svelte')
-        ? await compileSvelte(rel)
-        : pathToFileURL(join(WEB_ROOT, 'src/lib', rel)).href;
+        ? await compileSvelte(rel, networkCap)
+        : networkCap && rel === 'network-decrypt-cap'
+          ? flagOnModule()
+          : pathToFileURL(join(WEB_ROOT, 'src/lib', rel)).href;
     } else if (spec.startsWith('.')) {
       target = pathToFileURL(join(dirname(join(WEB_ROOT, 'src/lib', libRel)), spec)).href;
     }
@@ -112,162 +126,309 @@ async function compileSvelte(libRel: string): Promise<string> {
     cursor = match.index + match[0].length;
   }
   code += result.js.code.slice(cursor);
-  const out = join(OUT_DIR, `${libRel.replace(/[^A-Za-z0-9]/g, '_')}.mjs`);
+  const out = join(OUT_DIR, `${libRel.replace(/[^A-Za-z0-9]/g, '_')}${networkCap ? '_cap' : ''}.mjs`);
   writeFileSync(out, code);
   const url = pathToFileURL(out).href;
-  compiled.set(libRel, url);
+  compiled.set(cacheKey, url);
   return url;
 }
 
 const Approval = (await import(await compileSvelte('components/signing/signing-approval.svelte'))).default;
+const ApprovalNetworkCap = (await import(await compileSvelte('components/signing/signing-approval.svelte', true))).default;
 
 const OWNER = `did:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}`;
 const urn = (rest: string) => `urn:tinycloud:encryption:${OWNER}:default${rest}`;
 const E = 'tinycloud.encryption/';
+const SITE = 'gk.gbafa.com';
 
-const NOW = '2026-11-24T12:00:00.000Z';
+const NOW = Date.parse('2026-11-24T12:00:00.000Z');
 const HOUR = 60 * 60 * 1000;
-const iso = (offsetMs: number) => new Date(Date.parse(NOW) + offsetMs).toISOString();
-const HINT_7_DAYS = 'If you reject it, the rest of the request is approved for 7 days, until Dec 1. gk.gbafa.com may not work fully.';
-const HINT_SHARED = 'If you reject it, the rest of the request is still approved. gk.gbafa.com may not work fully.';
+const DAY = 24 * HOUR;
+const iso = (at: number) => new Date(at).toISOString();
 
 beforeAll(() => setSystemTime(new Date(NOW)));
 afterAll(() => setSystemTime());
 
-function modelOf(resources: Array<Record<string, Record<string, unknown[]>>>, askedMs: number): CapabilityReviewModel {
-  return parseCapabilityReview({
-    message: siweWithResources(resources.map(makeRecapResource), {
-      domain: 'gk.gbafa.com',
-      uri: 'https://gk.gbafa.com',
-      issuedAt: NOW,
-      expirationTime: iso(askedMs),
-    }),
+const network = { [urn('')]: { [`${E}decrypt`]: [{}] } };
+const sharePrefix = { [urn('/share/')]: { [`${E}decrypt`]: [{}] } };
+const allSecrets = { [urn('/secrets/')]: { [`${E}decrypt`]: [{}] } };
+// An ordinary read the card does not touch: a KV path outside the secrets vault.
+const kvGet = { [`${FIXTURE_META.ownSpace}/kv/notes/`]: { 'tinycloud.kv/get': [{}] } };
+const kvSecretsVault = { [`${FIXTURE_META.ownSpace.replace(/:default$/, ':secrets')}/kv`]: { 'tinycloud.kv/get': [{}] } };
+const secretKey = (name: string) => ({ [urn(`/secrets/${name}`)]: { [`${E}decrypt`]: [{}], [`${E}key.create`]: [{}] } });
+const secretKeys = [secretKey('fireflies_api_key'), secretKey('granola_api_key')];
+
+interface Ask {
+  askedMs: number;
+  /** Issued At as an offset from the frozen clock; the app signs it at its own time. */
+  issuedOffsetMs?: number;
+}
+
+function request(resources: Array<Record<string, Record<string, unknown[]>>>, ask: Ask) {
+  const issuedAt = NOW + (ask.issuedOffsetMs ?? 0);
+  const message = siweWithResources(resources.map(makeRecapResource), {
+    domain: SITE,
+    uri: `https://${SITE}`,
+    issuedAt: iso(issuedAt),
+    expirationTime: iso(issuedAt + ask.askedMs),
+  });
+  const model = parseCapabilityReview({
+    message,
     signer: { label: 'Key', address: FIXTURE_META.address, chainId: FIXTURE_META.chainId, provenance: 'managed' },
     editable: true,
     metadataTrust: { status: 'unsigned', reason: 'no manifest' },
     reason: { text: '', source: 'none' },
     requester: {
-      displayName: 'gk.gbafa.com', verifiedOrigin: 'https://gk.gbafa.com', appId: null,
+      displayName: SITE, verifiedOrigin: `https://${SITE}`, appId: null,
       manifestName: null, manifestNameProvenance: 'none', manifestId: null, manifestIdProvenance: 'none',
       manifestDigest: null, domainWarning: false, originWarning: false,
     },
     requesterAddress: null,
     requesterVerified: false,
   });
+  return { message, model };
 }
-const network = { [urn('')]: { [`${E}decrypt`]: [{}] } };
-const sharePrefix = { [urn('/share/')]: { [`${E}decrypt`]: [{}] } };
-const secretKeys = ['fireflies_api_key', 'granola_api_key'].map((name) => ({ [urn(`/secrets/${name}`)]: { [`${E}decrypt`]: [{}], [`${E}key.create`]: [{}] } }));
-const allSecrets = { [urn('/secrets/')]: { [`${E}decrypt`]: [{}] } };
+type Request = ReturnType<typeof request>;
 
-const allIds = (m: CapabilityReviewModel) =>
-  new Set(m.permissions.flatMap((grant) => grant.actions.filter((action) => action.selected).map((action) => action.id)));
 
-function mounted(m: CapabilityReviewModel) {
+interface Options {
+  networkCap?: boolean;
+  renewal?: boolean;
+  /** Secret-key grants that start unticked: still in the original request the server reads. */
+  untickSecrets?: boolean;
+}
+
+// The page around the component, as the signing route runs it: the owner's pick lives with the page, a change to the
+// selection or the pick makes the preview pending until it is prepared again, and Approve signs the pick or the
+// message's own Expiration Time, which the server holds to the cap it reads from the original request.
+function mounted({ message, model }: Request, options: Options = {}) {
   const state = new SvelteMap<string, unknown>();
-  state.set('selection', allIds(m));
+  const selected = new Set(
+    model.permissions.flatMap((grant) =>
+      grant.actions.filter((action) => action.selected && !(options.untickSecrets && action.id.includes('/secrets/'))).map((action) => action.id)),
+  );
+  state.set('selection', selected);
+  state.set('previewPending', false);
+  state.set('expiryMs', null);
+  const events = { approved: 0, signedAt: [] as number[] };
   const target = document.createElement('div');
   document.body.appendChild(target);
-  const app = mount(Approval, {
+  function signedExpiry(): number {
+    const picked = state.get('expiryMs') as number | null;
+    const requested = picked !== null ? NOW + picked : Date.parse(siweExpiration(message));
+    const cap = secretCapExpirationTime(message, NOW, siweBroadOnceTier(message, FIXTURE_META.address) && picked !== null);
+    return cap !== null && !(requested <= Date.parse(cap)) ? Date.parse(cap) : requested;
+  }
+  const Component = options.networkCap ? ApprovalNetworkCap : Approval;
+  const app = mount(Component, {
     target,
     props: {
-      model: m,
+      model,
       get selection() { return state.get('selection') as Set<string>; },
-      previewPending: false,
+      get previewPending() { return state.get('previewPending') as boolean; },
+      get expiryMs() { return state.get('expiryMs') as number | null; },
+      onExpiryChange(ms: number | null) { state.set('expiryMs', ms); state.set('previewPending', true); },
+      onceExpiryDefault: true,
+      renewal: options.renewal ? { leaseMs: 90 * DAY, maxLeaseMs: 365 * DAY, onChange() {} } : null,
       editing: false,
-      onApprove() {},
+      onApprove() { events.approved += 1; events.signedAt.push(signedExpiry()); },
       onCancel() {},
-      onSelectionChange(next: Set<string>) { state.set('selection', next); },
+      onSelectionChange(next: Set<string>) { state.set('selection', next); state.set('previewPending', true); },
       onEditingChange() {},
-      elevated: { splittable: true, onDecide() {} },
+      elevated: { splittable: true, onDecide() { state.set('previewPending', true); } },
     },
   });
   flushSync();
-  return { target, cleanup: () => { unmount(app); target.remove(); } };
+  return { target, events, state, cleanup: () => { unmount(app); target.remove(); } };
+}
+function siweExpiration(message: string): string {
+  return /^Expiration Time: (.+)$/m.exec(message)![1]!;
 }
 
 const text = (el: Element | null | undefined) => el?.textContent?.replace(/\s+/g, ' ').trim() ?? null;
 const cards = (t: HTMLElement) => [...t.querySelectorAll<HTMLElement>('.elevated .card')];
+const note = (card: HTMLElement) => text(card.querySelector('.note'));
 const cardButton = (card: HTMLElement, name: string) => [...card.querySelectorAll<HTMLButtonElement>('button')].find((b) => text(b) === name)!;
 const approve = (t: HTMLElement) => t.querySelector<HTMLButtonElement>('button.approve')!;
+const continueButton = (t: HTMLElement) => t.querySelector<HTMLButtonElement>('.elevated button.continue')!;
 async function click(el: HTMLElement) {
   el.click();
-  flushSync();
-  await tick();
-  flushSync();
+  await settle();
 }
-async function openFace(m: CapabilityReviewModel) {
-  const view = mounted(m);
+async function settle() {
+  for (let i = 0; i < 4; i += 1) {
+    flushSync();
+    await tick();
+  }
+}
+// The route prepares the preview again after every change; here it is ready once the screen has settled.
+async function prepared(view: ReturnType<typeof mounted>) {
+  for (let i = 0; i < 6; i += 1) {
+    await settle();
+    if (view.state.get('previewPending') === true) view.state.set('previewPending', false);
+  }
+  await settle();
+}
+async function openFace(request: Request, options: Options = {}) {
+  const view = mounted(request, options);
+  await prepared(view);
   await click(approve(view.target));
   return view;
 }
 
-const note = (card: HTMLElement) => text(card.querySelector('.note'));
+const HINT_SHARED = `If you reject it, the rest of the request is still approved. ${SITE} may not work fully.`;
+const hintFor = (ms: number) => masterKeyRejectNote(SITE, formatDurationWithEnd(ms, NOW));
 
-describe('The master-key card says how long a rejection leaves the approval', () => {
-  test('a 7-day request names 7 days and the computed end day in the master-key hint', async () => {
-    const { target, cleanup } = await openFace(modelOf([network, sharePrefix], 7 * 24 * HOUR));
-    const [master] = cards(target);
-    expect(text(master!.querySelector('h2'))).toContain('Use your master key to decrypt?');
-    expect(note(master!)).toBe(HINT_7_DAYS);
-    cleanup();
+// Rejects the master-key card, decides every other card as `others`, continues, and returns the expiry Approve signed.
+async function signAfterRejecting(view: ReturnType<typeof mounted>, others: 'allow' | 'reject' = 'allow') {
+  const [master, ...rest] = cards(view.target);
+  await click(cardButton(master!, 'Reject this permission'));
+  for (const card of rest) await click(cardButton(cards(view.target).find((c) => c.querySelector('h2')?.textContent === card.querySelector('h2')?.textContent)!, others === 'allow' ? 'Allow this permission' : 'Reject this permission'));
+  await click(continueButton(view.target));
+  await prepared(view);
+  expect(view.events.approved).toBe(1);
+  return view.events.signedAt[0]!;
+}
+
+describe('The master-key hint matches the length the approval signs', () => {
+  test('a 7-day ask with secret keys in the request: the hint is the day Approve signs', async () => {
+    const view = await openFace(request([network, sharePrefix, kvGet, ...secretKeys], { askedMs: 7 * DAY }));
+    const hint = note(cards(view.target)[0]!);
+    const signed = await signAfterRejecting(view);
+    expect(signed).toBe(NOW + 7 * DAY);
+    expect(hint).toBe(hintFor(signed - NOW));
+    expect(hint).toContain(`7 days, until ${formatEndDay(7 * DAY, NOW)}`);
+    view.cleanup();
   });
 
-  test('the length and the end day follow what the app asked', async () => {
-    const { target, cleanup } = await openFace(modelOf([network, sharePrefix], 30 * 24 * HOUR));
-    expect(note(cards(target)[0]!)).toBe(
-      'If you reject it, the rest of the request is approved for 30 days, until Dec 24. gk.gbafa.com may not work fully.',
-    );
-    cleanup();
+  test('a 30-day ask held to the 7-day cap by secret keys names 7 days', async () => {
+    const view = await openFace(request([network, sharePrefix, kvGet, ...secretKeys], { askedMs: 30 * DAY }));
+    const hint = note(cards(view.target)[0]!);
+    const signed = await signAfterRejecting(view);
+    expect(signed).toBe(NOW + 7 * DAY);
+    expect(hint).toBe(hintFor(signed - NOW));
+    expect(hint).toContain('approved for 7 days');
+    view.cleanup();
   });
 
-  test('a request of 1 hour or shorter keeps the shared hint', async () => {
-    for (const asked of [HOUR, 30 * 60 * 1000]) {
-      const { target, cleanup } = await openFace(modelOf([network, sharePrefix], asked));
-      expect(note(cards(target)[0]!)).toBe(HINT_SHARED);
-      cleanup();
+  test('a 30-day ask with no cap names 30 days and the end day', async () => {
+    const view = await openFace(request([network, sharePrefix, kvGet], { askedMs: 30 * DAY }));
+    const hint = note(cards(view.target)[0]!);
+    const signed = await signAfterRejecting(view);
+    expect(signed).toBe(NOW + 30 * DAY);
+    expect(hint).toBe(hintFor(signed - NOW));
+    expect(hint).toContain(`30 days, until ${formatEndDay(30 * DAY, NOW)}`);
+    view.cleanup();
+  });
+
+  test('a 30-day ask with the network cap on names 7 days', async () => {
+    process.env.OPENKEY_NETWORK_DECRYPT_CAP = 'enabled';
+    try {
+      const view = await openFace(request([network, sharePrefix, kvGet], { askedMs: 30 * DAY }), { networkCap: true });
+      const hint = note(cards(view.target)[0]!);
+      const signed = await signAfterRejecting(view);
+      expect(signed).toBe(NOW + 7 * DAY);
+      expect(hint).toBe(hintFor(signed - NOW));
+      view.cleanup();
+    } finally {
+      delete process.env.OPENKEY_NETWORK_DECRYPT_CAP;
     }
   });
 
-  test('a request that also unlocks named secret keys names the length for the master-key card only', async () => {
-    const { target, cleanup } = await openFace(modelOf([network, ...secretKeys], 7 * 24 * HOUR));
-    const found = cards(target);
-    expect(found).toHaveLength(3);
-    expect(note(found[0]!)).toBe(HINT_7_DAYS);
-    expect(text(found[1]!.querySelector('h2'))).toContain('fireflies_api_key');
-    expect(note(found[1]!)).toBe(HINT_SHARED);
-    expect(note(found[2]!)).toBe(HINT_SHARED);
-    cleanup();
+  test('an unticked secrets grant in the original request still holds the ask to 7 days', async () => {
+    const view = await openFace(request([network, sharePrefix, kvGet, ...secretKeys], { askedMs: 30 * DAY }), { untickSecrets: true });
+    expect(cards(view.target)).toHaveLength(2);
+    const hint = note(cards(view.target)[0]!);
+    const signed = await signAfterRejecting(view);
+    expect(signed).toBe(NOW + 7 * DAY);
+    expect(hint).toBe(hintFor(signed - NOW));
+    view.cleanup();
+  });
+
+  test('an Issued At in the future counts the ask from now to its Expiration Time', async () => {
+    const view = await openFace(request([network, sharePrefix, kvGet], { askedMs: 30 * DAY, issuedOffsetMs: 365 * DAY }));
+    const hint = note(cards(view.target)[0]!);
+    const signed = await signAfterRejecting(view);
+    expect(signed).toBe(NOW + 395 * DAY);
+    expect(hint).toBe(hintFor(signed - NOW));
+    expect(hint).toContain(`395 days, until ${formatEndDay(395 * DAY, NOW)}`);
+    view.cleanup();
+  });
+
+  test('another card rejected as well: the hint still equals the signed expiry', async () => {
+    const view = await openFace(request([network, sharePrefix, kvGet], { askedMs: 7 * DAY }));
+    const hint = note(cards(view.target)[0]!);
+    const signed = await signAfterRejecting(view, 'reject');
+    expect(signed).toBe(NOW + 7 * DAY);
+    expect(hint).toBe(hintFor(signed - NOW));
+    view.cleanup();
+  });
+
+  test('the owner picked a length: the shared hint shows', async () => {
+    const view = mounted(request([network, sharePrefix, kvGet], { askedMs: 7 * DAY }));
+    await prepared(view);
+    const radios = [...view.target.querySelectorAll<HTMLInputElement>('[data-testid="approval-expiry-once-choice"] input[type="radio"]')];
+    expect(radios).toHaveLength(2);
+    radios[1]!.click();
+    await prepared(view);
+    expect(view.state.get('expiryMs')).toBe(7 * DAY);
+    await click(approve(view.target));
+    expect(note(cards(view.target)[0]!)).toBe(HINT_SHARED);
+    view.cleanup();
+  });
+
+  test('renewal ticked: the shared hint shows', async () => {
+    const view = await openFace(request([network, sharePrefix, kvGet], { askedMs: 7 * DAY }), { renewal: true });
+    expect(note(cards(view.target)[0]!)).toBe(HINT_SHARED);
+    view.cleanup();
+  });
+
+  test('only the master key requested: the shared hint shows', async () => {
+    const view = await openFace(request([network], { askedMs: 7 * DAY }));
+    expect(cards(view.target)).toHaveLength(1);
+    expect(note(cards(view.target)[0]!)).toBe(HINT_SHARED);
+    view.cleanup();
+  });
+
+  test('a request that stays in the one-hour tier without the card shows the shared hint, and signs one hour', async () => {
+    const view = await openFace(request([network, sharePrefix, kvGet, kvSecretsVault], { askedMs: 7 * DAY }));
+    expect(text(cards(view.target)[0]!.querySelector('h2'))).toContain('Use your master key to decrypt?');
+    expect(note(cards(view.target)[0]!)).toBe(HINT_SHARED);
+    const signed = await signAfterRejecting(view);
+    expect(signed).toBe(NOW + HOUR);
+    view.cleanup();
+  });
+
+  test('the combined all-secrets card keeps the shared hint', async () => {
+    const view = await openFace(request([network, allSecrets, kvGet], { askedMs: 7 * DAY }));
+    for (const card of cards(view.target)) expect(note(card)).toBe(HINT_SHARED);
+    view.cleanup();
+  });
+
+  test('an ask of 1 hour or shorter keeps the shared hint', async () => {
+    for (const asked of [HOUR, 30 * 60 * 1000]) {
+      const view = await openFace(request([network, sharePrefix, kvGet], { askedMs: asked }));
+      expect(note(cards(view.target)[0]!)).toBe(HINT_SHARED);
+      view.cleanup();
+    }
   });
 
   test('a folder card keeps the shared hint', async () => {
-    const { target, cleanup } = await openFace(modelOf([network, sharePrefix], 7 * 24 * HOUR));
-    const [, folder] = cards(target);
+    const view = await openFace(request([network, sharePrefix, kvGet], { askedMs: 7 * DAY }));
+    const [, folder] = cards(view.target);
     expect(text(folder!.querySelector('h2'))).toContain('Unlock encrypted items in a folder named share');
     expect(note(folder!)).toBe(HINT_SHARED);
-    cleanup();
-  });
-
-  test('a request with a folder card and no master-key card keeps the shared hint', async () => {
-    const { target, cleanup } = await openFace(modelOf([sharePrefix], 7 * 24 * HOUR));
-    expect(note(cards(target)[0]!)).toBe(HINT_SHARED);
-    cleanup();
-  });
-
-  test('a request that stays at 1 hour without the master-key card keeps the shared hint', async () => {
-    const { target, cleanup } = await openFace(modelOf([network, allSecrets], 7 * 24 * HOUR));
-    for (const card of cards(target)) expect(note(card)).toBe(HINT_SHARED);
-    cleanup();
+    view.cleanup();
   });
 
   test('Reject replaces the hint with the status and Change shows the master-key hint', async () => {
-    const { target, cleanup } = await openFace(modelOf([network, sharePrefix], 7 * 24 * HOUR));
-    await click(cardButton(cards(target)[0]!, 'Reject this permission'));
-    expect(text(cards(target)[0]!.querySelector('.status'))).toContain('You rejected this permission.');
-    expect(note(cards(target)[0]!)).toBeNull();
-    expect(note(cards(target)[1]!)).toBe(HINT_SHARED);
-    await click(cardButton(cards(target)[0]!, 'Change'));
-    expect(note(cards(target)[0]!)).toBe(HINT_7_DAYS);
-    cleanup();
+    const view = await openFace(request([network, sharePrefix, kvGet], { askedMs: 7 * DAY }));
+    const before = note(cards(view.target)[0]!);
+    await click(cardButton(cards(view.target)[0]!, 'Reject this permission'));
+    expect(text(cards(view.target)[0]!.querySelector('.status'))).toContain('You rejected this permission.');
+    expect(note(cards(view.target)[0]!)).toBeNull();
+    await click(cardButton(cards(view.target)[0]!, 'Change'));
+    expect(note(cards(view.target)[0]!)).toBe(before);
+    view.cleanup();
   });
 });
