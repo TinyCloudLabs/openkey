@@ -465,6 +465,29 @@ const CAPABILITY_SERVICES = new Set(["tinycloud.capabilities", "capabilities"]);
 const DELEGATION_SERVICES = new Set(["tinycloud.delegation", "delegation"]);
 const SECRETS_SERVICES = new Set(["tinycloud.secrets", "secrets"]);
 const ENCRYPTION_SERVICES = new Set(["tinycloud.encryption", "encryption"]);
+
+/** What a one-hour tier grant reaches, for the caution under the length choice. */
+export type OnceReach = "network" | "secrets" | "wide";
+
+/**
+ * Where a one-hour tier grant (`grantIsBroadOnce`) reaches: `network` for decrypt on a whole encryption network (all
+ * encrypted data), `secrets` for a key or prefix that covers every secret, or the whole vault in KV or the secrets
+ * service, and `wide` for the rest of the tier (`apps/`, `shared/`, deeper prefixes outside `apps/<appId>/`, the whole
+ * KV space, and any shape this cannot place). Null for a grant outside the tier.
+ */
+export function grantOnceReach(grant: CapabilityGrant): OnceReach | null {
+  if (!grantIsBroadOnce(grant)) return null;
+  if (grant.serviceMismatch === true) return "wide";
+  if (ENCRYPTION_SERVICES.has(grant.service)) {
+    const view = canonicalEncryptionUrn(grant);
+    if (view.kind !== "urn") return "wide";
+    if (view.parsed.kind === "network") return "network";
+    return coversManySecrets(view.parsed) ? "secrets" : "wide";
+  }
+  const holdsVault = KV_SERVICES.has(grant.service) || SECRETS_SERVICES.has(grant.service);
+  return holdsVault && grant.path !== "" && WHOLE_VAULT_PATHS.has(grant.path) ? "secrets" : "wide";
+}
+
 const RECOGNIZED_DELEGATION_ACTIONS = new Set([
   "tinycloud.delegation/list",
   "delegation/list",

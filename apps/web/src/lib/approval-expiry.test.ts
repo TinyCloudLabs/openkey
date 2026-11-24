@@ -9,7 +9,9 @@ import {
   formatDuration,
   formatDurationWithEnd,
   formatExpiry,
+  onceCautionLine,
   onceDefaultExpiryMs,
+  onceLongerChoice,
   parseExpiry,
   requestedExpiryMs,
   approvalRequestStartSeconds,
@@ -260,5 +262,35 @@ describe('formatDurationWithEnd', () => {
   test('two days or less has no date', () => {
     expect(formatDurationWithEnd(36 * H, now, 'UTC')).toBe('36 hours');
     expect(formatDurationWithEnd(H, now, 'UTC')).toBe('1 hour');
+  });
+});
+
+describe('onceLongerChoice', () => {
+  test('offers nothing when the app asked for an hour or less, or for nothing', () => {
+    expect(onceLongerChoice(null, null)).toBeNull();
+    expect(onceLongerChoice(30 * M, null)).toBeNull();
+    expect(onceLongerChoice(H, 7 * D)).toBeNull();
+  });
+
+  test('offers the asked length when it is over an hour and within the cap, or where no cap applies', () => {
+    expect(onceLongerChoice(3 * D, 7 * D)).toEqual({ ms: 3 * D, label: '3 days (what the app asked)' });
+    expect(onceLongerChoice(30 * D, null)).toEqual({ ms: 30 * D, label: '30 days (what the app asked)' });
+  });
+
+  test('reads "what the app asked" for exactly the cap', () => {
+    expect(onceLongerChoice(7 * D, 7 * D)).toEqual({ ms: 7 * D, label: '7 days (what the app asked)' });
+  });
+
+  test('offers the cap, labelled the longest allowed, when the app asked for more', () => {
+    expect(onceLongerChoice(30 * D, 7 * D)).toEqual({ ms: 7 * D, label: '7 days (the longest allowed)' });
+    expect(onceLongerChoice(7 * D + S, 7 * D)).toEqual({ ms: 7 * D, label: '7 days (the longest allowed)' });
+  });
+});
+
+describe('onceCautionLine', () => {
+  test('names what each reach can open', () => {
+    expect(onceCautionLine('network')).toBe('This access can open all your encrypted data.');
+    expect(onceCautionLine('secrets')).toBe('This access can open all your secrets.');
+    expect(onceCautionLine('wide')).toBe('This access can open a wide range of your data.');
   });
 });

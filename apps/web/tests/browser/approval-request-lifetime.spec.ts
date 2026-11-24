@@ -10,7 +10,6 @@ const OWNER = `did:pkh:eip155:1:${ADDRESS}`;
 const SPACE = `tinycloud:pkh:eip155:1:${ADDRESS}:default`;
 const AUDIENCE = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
 const KV_GET = 'tinycloud.kv/get';
-const ONCE_NOTE = 'Requests that can open all your secrets or all your encrypted data start at 1 hour. You can choose longer, up to what the app asked for.';
 
 const notes = { service: 'tinycloud.kv', space: SPACE, path: 'notes/', ability: KV_GET, resource: `${SPACE}/kv/notes/` };
 const secret = { service: 'tinycloud.kv', space: SPACE, path: 'vault/secrets/', ability: KV_GET, resource: `${SPACE}/kv/vault/secrets/` };
@@ -32,9 +31,10 @@ async function openReview(page: Page, options: {
   grantLifetimeSeconds?: number;
   suggestedLifetimeSeconds?: number;
   rejectOncePreview?: boolean;
+  rejectExpiry?: string;
 } = {}) {
   const {
-    grants = [notes], grantLifetimeSeconds = 30 * DAY, suggestedLifetimeSeconds, rejectOncePreview = false,
+    grants = [notes], grantLifetimeSeconds = 30 * DAY, suggestedLifetimeSeconds, rejectOncePreview = false, rejectExpiry,
   } = options;
   const expiries: string[] = [];
   await page.route('**/*', async (route) => {
@@ -70,6 +70,8 @@ async function openReview(page: Page, options: {
       const { expiry } = route.request().postDataJSON() as { expiry: string };
       expiries.push(expiry);
       if (rejectOncePreview && expiry === '3600s') return respond(route, { error: 'Preview unavailable' }, 500);
+      // Only a re-prepare fails: the first preview of the request must still open the review.
+      if (rejectExpiry === expiry && expiries.length > 1) return respond(route, { error: 'Preview unavailable' }, 500);
 
       const recap = makeRecapResource(Object.fromEntries(grants.map(({ resource, ability }) => [resource, { [ability]: [{}] }])));
       const expiration = new Date(now + Number(expiry.slice(0, -1)) * 1000);
@@ -116,7 +118,7 @@ test('the approval face shows the requested 30 days', async ({ page }, testInfo)
   await expect(approve(page)).toBeEnabled();
   await expect(line(page)).toHaveText(/^This app's access to your data lasts 30 days, until /);
   await expect(page.getByText('How long it lasts', { exact: true })).toBeHidden();
-  await expect(page.getByTestId('approval-expiry-once-note')).toHaveCount(0);
+  await expect(page.getByTestId('approval-expiry-once-choice')).toHaveCount(0);
   expect(expiries.at(-1)).toBe(`${30 * DAY}s`);
   await testInfo.attach('30-day approval face', { body: await line(page).innerText(), contentType: 'text/plain' });
   await testInfo.attach('30-day approval face', { body: await page.screenshot(), contentType: 'image/png' });
@@ -125,14 +127,17 @@ test('the approval face shows the requested 30 days', async ({ page }, testInfo)
 for (const [name, grants] of [['secrets', [notes, secret]], ['decrypt', [notes, decrypt]]] as const) {
   test(`one ${name} grant starts the entire 30-day request at one hour and explains why`, async ({ page }, testInfo) => {
     const expiries = await openReview(page, { grants: [...grants] });
-    const note = page.getByTestId('approval-expiry-once-note');
+    const choice = page.getByRole('group', { name: 'How long', exact: true });
+    const caution = page.getByTestId('approval-expiry-once-caution');
     await expect(approve(page)).toBeEnabled();
     await expect(line(page)).toHaveText("This app's access to your data lasts 1 hour.");
-    await expect(note).toBeVisible();
-    await expect(note).toHaveText(ONCE_NOTE);
+    await expect(choice).toBeVisible();
+    await expect(choice.getByRole('radio', { name: '1 hour' })).toBeChecked();
+    await expect(choice.getByRole('radio', { name: '7 days (the longest allowed)' })).not.toBeChecked();
+    await expect(caution).toHaveText(name === 'secrets' ? 'This access can open all your secrets.' : 'This access can open all your encrypted data.');
     expect(expiries.at(-1)).toBe('3600s');
     await testInfo.attach(`${name} approval face`, {
-      body: `${await line(page).innerText()}\n${await note.innerText()}`, contentType: 'text/plain',
+      body: `${await line(page).innerText()}\n${await choice.innerText()}\n${await caution.innerText()}`, contentType: 'text/plain',
     });
 
     if (name === 'secrets') {
@@ -163,6 +168,26 @@ for (const [name, grants] of [['secrets', [notes, secret]], ['decrypt', [notes, 
   });
 }
 
+test('the one-time choice on an approval request sends the length it shows, and 1 hour again sends 1 hour', async ({ page }) => {
+  const expiries = await openReview(page, { grants: [notes, decrypt] });
+  const choice = page.getByRole('group', { name: 'How long', exact: true });
+  await expect(choice.getByRole('radio', { name: '1 hour' })).toBeChecked();
+  await choice.getByRole('radio', { name: '7 days (the longest allowed)' }).check();
+  await expect(choice.getByRole('radio', { name: '7 days (the longest allowed)' })).toBeChecked();
+  await expect(line(page)).toContainText('7 days');
+  expect(expiries.at(-1)).toBe(`${7 * DAY}s`);
+  await choice.getByRole('radio', { name: '1 hour' }).check();
+  await expect(choice.getByRole('radio', { name: '1 hour' })).toBeChecked();
+  await expect(line(page)).toHaveText("This app's access to your data lasts 1 hour.");
+  expect(expiries.at(-1)).toBe('3600s');
+  await expect(page.getByTestId('approval-expiry-once-caution')).toBeVisible();
+});
+
+test('an approval request that asked for exactly 7 days reads what the app asked', async ({ page }) => {
+  await openReview(page, { grants: [notes, decrypt], grantLifetimeSeconds: 7 * DAY });
+  await expect(page.getByRole('group', { name: 'How long', exact: true }).getByRole('radio', { name: '7 days (what the app asked)' })).not.toBeChecked();
+});
+
 test('the fold can lengthen a suggestion up to the signed maximum', async ({ page }) => {
   const expiries = await openReview(page, { grantLifetimeSeconds: 60 * DAY, suggestedLifetimeSeconds: 30 * DAY });
   await expect(approve(page)).toBeEnabled();
@@ -186,4 +211,18 @@ test('a failed one-hour preview leaves the longer secrets approval unavailable',
   await expect(page.getByRole('alert')).toContainText('(Error 500)');
   await expect(approve(page)).toBeDisabled();
   await expect(line(page)).toHaveCount(0);
+});
+
+// TC-4156: a length the owner picked but that could not be prepared is not what will be signed; the radios show
+// the length that was prepared last.
+test('a failed re-prepare leaves the one-time choice on the length that will be signed', async ({ page }) => {
+  const expiries = await openReview(page, { grants: [notes, decrypt], rejectExpiry: `${7 * DAY}s` });
+  const choice = page.getByRole('group', { name: 'How long', exact: true });
+  await expect(choice.getByRole('radio', { name: '1 hour' })).toBeChecked();
+  await choice.getByRole('radio', { name: '7 days (the longest allowed)' }).click();
+  await expect.poll(() => expiries.at(-1)).toBe(`${7 * DAY}s`);
+  await expect(page.getByRole('alert')).toContainText('(Error 500)');
+  await expect(choice.getByRole('radio', { name: '1 hour' })).toBeChecked();
+  await expect(choice.getByRole('radio', { name: '7 days (the longest allowed)' })).not.toBeChecked();
+  await expect(line(page)).toHaveText("This app's access to your data lasts 1 hour.");
 });
