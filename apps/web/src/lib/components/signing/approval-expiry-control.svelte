@@ -213,9 +213,9 @@
 {#if shownMs !== null}
   <div class="expiry" role="group" aria-label="How long this permission lasts" onkeydown={onKeydown}>
     {#if compactOn}
-      <p class="expiry-once-note" id="{uid}-compact-caution" data-testid="approval-expiry-compact-caution">{#if cautionParts}{cautionParts.before}<span class="secret-name">{cautionParts.name}</span>{cautionParts.after}{:else}{compact!.caution}{/if}</p>
+      <p class="expiry-once-note" id="{uid}-compact-caution" data-testid="approval-expiry-compact-caution">{#if cautionParts}{cautionParts.before}<span class="secret-name">{cautionParts.run}</span>{cautionParts.after}{:else}{compact!.caution}{/if}</p>
       {#if compactToggle !== null}
-        <fieldset class="length-toggle" bind:this={onceGroup} data-testid="approval-expiry-toggle" aria-describedby="{uid}-compact-caution">
+        <fieldset class="length-toggle" bind:this={onceGroup} data-testid="approval-expiry-toggle" aria-describedby="{uid}-compact-caution {uid}-compact-end">
           <legend class="sr-only">{SECRET_BLOCK_COPY.groupName}</legend>
           <span class="length-segments">
           {#each compactChoices as choice (choice.ms)}
@@ -233,7 +233,7 @@
             </label>
           {/each}
           </span>
-          <span class="length-end" data-testid="approval-expiry-end" aria-hidden="true">{SECRET_BLOCK_COPY.until(endText)}</span>
+          <span class="length-end" id="{uid}-compact-end" data-testid="approval-expiry-end" aria-hidden="true">{SECRET_BLOCK_COPY.until(endText)}</span>
         </fieldset>
       {/if}
     {/if}

@@ -103,3 +103,22 @@ describe("a scoped secret", () => {
     expect(scoped({ [`${NETWORK}/secrets/bot_history`]: [DECRYPT] })).toEqual([false]);
   });
 });
+
+describe("a KV space belongs to the signer only with the signer's address and chain", () => {
+  const SPACE_ON = (chain: number) => `tinycloud:pkh:eip155:${chain}:${FIXTURE_META.address}:secrets`;
+  it("is owned on the signer's chain and not owned on another chain", () => {
+    expect(grantsFor({ [`${SPACE_ON(FIXTURE_META.chainId)}/kv/vault/secrets/`]: [KV_GET] })[0]?.ownedBySelf).toBe(true);
+    expect(grantsFor({ [`${SPACE_ON(137)}/kv/vault/secrets/`]: [KV_GET] })[0]?.ownedBySelf).toBe(false);
+  });
+
+  it("a read of one secret on another chain is not named as the signer's secret", () => {
+    expect(rowsOf({ [`${SPACE_ON(137)}/kv/vault/secrets/BOT_HISTORY`]: [KV_GET] })).not.toContain("Read the secret BOT_HISTORY");
+  });
+
+  it("neither part of the read of every secret is one when it is on another chain or in the default space", () => {
+    const [onOtherChain] = grantsFor({ [`${SPACE_ON(137)}/kv/vault/secrets/`]: [KV_GET] });
+    const [inDefault] = grantsFor({ [`${FIXTURE_META.ownSpace}/kv/vault/secrets/`]: [KV_GET] });
+    const [decryptOnOtherChain] = grantsFor({ [`urn:tinycloud:encryption:did:pkh:eip155:137:${FIXTURE_META.address}:default/secrets/`]: [DECRYPT] });
+    expect([onOtherChain, inDefault, decryptOnOtherChain].map((grant) => allSecretsReadPart(grant!))).toEqual([null, null, null]);
+  });
+});

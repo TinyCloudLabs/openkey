@@ -96,15 +96,21 @@ export function onceCautionLine(reach: OnceReach): string {
 }
 
 /**
+ * A line of copy split around a secret's name, so the name can be set on one line; null when the name is not in it.
+ * `run` is the name and the punctuation that follows it, which stays on the line of the name.
+ */
+export function splitAroundName(text: string, name: string | null): { before: string; run: string; after: string } | null {
+  const at = name === null || name === '' ? -1 : text.lastIndexOf(name);
+  if (name === null || at < 0) return null;
+  const end = at + name.length;
+  const punctuation = /^[.,;:!?]*/.exec(text.slice(end))![0];
+  return { before: text.slice(0, at), run: name + punctuation, after: text.slice(end + punctuation.length) };
+}
+
+/**
  * Every word of the compact secret block on the sign face: the row, the caution under it and the length toggle
  * (one place to change them). The row for one named secret is the review's own "Read the secret <name>".
  */
-/** A line of copy split around a secret's name, so the name can be set on one line; null when the name is not in it. */
-export function splitAroundName(text: string, name: string | null): { before: string; name: string; after: string } | null {
-  const at = name === null || name === '' ? -1 : text.lastIndexOf(name);
-  return name === null || at < 0 ? null : { before: text.slice(0, at), name, after: text.slice(at + name.length) };
-}
-
 export const SECRET_BLOCK_COPY = {
   /** The row when several named secrets are read, and when all of them are. */
   rowSeveral: 'Read secret values',

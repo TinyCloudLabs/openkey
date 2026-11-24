@@ -372,6 +372,12 @@
       return null;
     }
     if (rows.some((row) => row.severity === "sensitive" && !covered.has(row.key))) return null;
+    // A decrypt that only renewal adds reaches the same secrets once renewal is on: "No other secret" is untrue of a
+    // key for another secret, so the request keeps its own rows.
+    const namedKeys = new Set(named.map((entry) => entry.secret!.keyPath));
+    const stray = renewalOnlyStatements.some((entry) =>
+      entry.secret ? !all && !namedKeys.has(entry.secret.keyPath) : entry.severity === "sensitive" && !covered.has(entry.key));
+    if (stray) return null;
     // The secrets the row covers, from the same rows that make the count in the caution: none for the whole vault.
     const secrets = all ? [] : named.flatMap((entry) => (entry.secret ? [entry.secret] : []));
     return { covered, caution, one, row, secrets, name: one ? (oneName ?? named[0]!.secret!.name) : null };
@@ -1034,7 +1040,7 @@
   {#snippet statementText(text: string, codeSpans: boolean, name: string | null = null)}
     {@const parts = splitAroundName(text, name)}
     {#if parts}
-      {parts.before}<span class="secret-name">{parts.name}</span>{parts.after}
+      {parts.before}<span class="secret-name">{parts.run}</span>{parts.after}
     {:else if codeSpans}
       {#each splitStatementCode(text) as part}{#if part.code}<code class="mono">{part.text}</code>{:else}{part.text}{/if}{/each}
     {:else}
@@ -1424,7 +1430,7 @@
                   {@const rowParts = splitAroundName(SECRET_BLOCK_COPY.groupRow(secret.name), secret.name)}
                   <li class="grant">
                     <div class="grant-heading">
-                      <span class="grant-title">{#if rowParts}{rowParts.before}<span class="secret-name">{rowParts.name}</span>{rowParts.after}{:else}{SECRET_BLOCK_COPY.groupRow(secret.name)}{/if}</span>
+                      <span class="grant-title">{#if rowParts}{rowParts.before}<span class="secret-name">{rowParts.run}</span>{rowParts.after}{:else}{SECRET_BLOCK_COPY.groupRow(secret.name)}{/if}</span>
                       <span class="grant-severity" data-severity="sensitive">Sensitive</span>
                     </div>
                     <code class="grant-path mono"><span class="grant-target" title={secret.kvPath ?? secret.keyPath}>{secret.kvPath ?? secret.keyPath}</span></code>

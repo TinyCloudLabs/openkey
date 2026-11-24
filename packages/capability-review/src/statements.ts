@@ -490,16 +490,16 @@ export function grantOnceReach(grant: CapabilityGrant): OnceReach | null {
 
 /**
  * The part a grant plays in the request that reads every secret, or null for any other grant: `value` is a KV `get`
- * on `vault/secrets` or `vault/secrets/`, `key` is a decrypt on the `secrets/` prefix of the `default` network. Each
+ * on `vault/secrets` or `vault/secrets/` in the signer's secrets space, `key` is a decrypt on the `secrets/` prefix of the `default` network. Each
  * has exactly that one action: a grant with a write, a wildcard or any other ability is not a read of every secret.
  * The whole vault (`vault/`), a bare `secrets/` KV path and the scoped prefix are wider or narrower than that and are
- * not either part.
+ * not either part. Both parts are in the signer's own space or network: another account's secrets are not "your" secrets.
  */
 export function allSecretsReadPart(grant: CapabilityGrant): "value" | "key" | null {
-  if (grant.serviceMismatch === true || grant.actions.length !== 1) return null;
+  if (grant.ownedBySelf !== true || grant.serviceMismatch === true || grant.actions.length !== 1) return null;
   const ability = grant.actions[0]!.ability;
   if (KV_SERVICES.has(grant.service)) {
-    const reads = KV_GET_ABILITIES.has(ability) && grant.appScopeNearMiss !== true;
+    const reads = KV_GET_ABILITIES.has(ability) && grant.appScopeNearMiss !== true && isSecretsSpace(grant.space);
     return reads && (grant.path === "vault/secrets" || grant.path === "vault/secrets/") ? "value" : null;
   }
   if (ENCRYPTION_SERVICES.has(grant.service) && ability === "tinycloud.encryption/decrypt") {

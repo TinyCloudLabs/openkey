@@ -138,7 +138,7 @@ const TWO_SECRETS: Attenuations = {
 const ALL_SECRETS: Attenuations = { ...readSecret(''), [urn('/secrets/')]: { [`${E}decrypt`]: [{}] } };
 
 /** A request issued at the time of the call that asks for `askMs`. */
-function modelOf(att: Attenuations, askMs = 7 * D, now = Date.now()): CapabilityReviewModel {
+function modelOf(att: Attenuations, askMs = 7 * D, now = Date.now(), renewalOnlyResources: string[] = []): CapabilityReviewModel {
   return parseCapabilityReview({
     message: siweWithResources([makeRecapResource(att)], {
       issuedAt: new Date(now).toISOString(),
@@ -146,6 +146,7 @@ function modelOf(att: Attenuations, askMs = 7 * D, now = Date.now()): Capability
     }),
     signer: { label: 'Key', address: FIXTURE_META.address, chainId: FIXTURE_META.chainId, provenance: 'managed' },
     editable: true,
+    renewalOnlyResources,
     metadataTrust: { status: 'unsigned', reason: 'no manifest' },
     reason: { text: '', source: 'none' },
     requester: {
@@ -273,7 +274,19 @@ describe('one named secret is one row, one caution line and a length toggle', ()
   test('the name is set on one line in the row and in the caution', () => {
     const { target, cleanup } = mounted(modelOf(keyOf('bot-history', ['decrypt'])));
     expect(text(target.querySelector('.statement-primary .secret-name'))).toBe('bot-history');
-    expect(text(target.querySelector('[data-testid="approval-expiry-compact-caution"] .secret-name'))).toBe('bot-history');
+    expect(text(target.querySelector('[data-testid="approval-expiry-compact-caution"] .secret-name'))).toBe('bot-history.');
+    cleanup();
+  });
+
+  test('the period after the name is inside the no-break run, so no line holds only ". No other secret."', () => {
+    const name = 'BOT_HISTORY_PRODUCTION_DEPLOY_KEY_2026_X';
+    const { target, cleanup } = mounted(modelOf(readSecret(name)));
+    const caution = target.querySelector('[data-testid="approval-expiry-compact-caution"]')!;
+    const run = caution.querySelector('.secret-name')!;
+    expect(text(run)).toBe(`${name}.`);
+    expect(run.previousSibling?.textContent).toBe('Only ');
+    expect(run.nextSibling?.textContent).toBe(' No other secret.');
+    expect(cautionOf(target)).toBe(`Only ${name}. No other secret.`);
     cleanup();
   });
 });
@@ -387,6 +400,27 @@ describe('"Read all your secret values" is the secrets directory read, the decry
     }
   });
 
+  const ELSE = FIXTURE_META.crossAppOwner;
+  const elseDecrypt = { [`urn:tinycloud:encryption:did:pkh:eip155:${FIXTURE_META.chainId}:${ELSE}:default/secrets/`]: { [`${E}decrypt`]: [{}] } };
+  const elseKv = kvAt('vault/secrets/', [GET], `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${ELSE}:secrets`);
+  test.each([
+    ["a decrypt on another account's default/secrets/", elseDecrypt, ["Decrypt another user's data Sensitive"]],
+    ["a read of vault/secrets/ in another account's space", elseKv, ["Read another user's secret values Sensitive"]],
+    ["the read of vault/secrets/ beside a decrypt on another account's default/secrets/", { ...kvAt('vault/secrets/', [GET]), ...elseDecrypt },
+      ['Read secret values Sensitive', "Decrypt another user's data Sensitive"]],
+    ["the decrypt on default/secrets/ beside a read of vault/secrets/ in another account's space", { ...DECRYPT_PREFIX, ...elseKv },
+      ['Decrypt data locked with your keys in secrets/ Sensitive', "Read another user's secret values Sensitive"]],
+    ['the decrypt on default/secrets/ of the own address on chain 137', { [`urn:tinycloud:encryption:did:pkh:eip155:137:${FIXTURE_META.address}:default/secrets/`]: { [`${E}decrypt`]: [{}] } } as Attenuations, ["Decrypt another user's data Sensitive"]],
+    ['a read of vault/secrets/ in the secrets space of the own address on chain 137', kvAt('vault/secrets/', [GET], `tinycloud:pkh:eip155:137:${FIXTURE_META.address}:secrets`), ["Read another user's secret values Sensitive"]],
+    ['a read of vault/secrets/ in the default space beside the decrypt on default/secrets/', { ...kvAt('vault/secrets/', [GET], FIXTURE_META.ownSpace), ...DECRYPT_PREFIX } as Attenuations, ['Decrypt data locked with your keys in secrets/ Sensitive', 'View secrets stored in your vault Sensitive']],
+  ])('%s keeps its own rows and never reads as "your" secrets', (_name: string, att: Attenuations, expected: string[]) => {
+    const { target, cleanup } = mounted(modelOf(att));
+    expect(rows(target)).toEqual(expected);
+    expect(face(target)).not.toContain('Covers every secret in your vault');
+    expect(target.querySelector('[data-testid="approval-expiry-compact-caution"]')).toBeNull();
+    cleanup();
+  });
+
   const OTHER: Array<[string, Attenuations, string[]]> = [
     ['a decrypt on the scoped prefix alone', { [urn('/secrets/scoped/')]: { [`${E}decrypt`]: [{}] } }, ['Decrypt data locked with your keys in secrets/scoped/ Sensitive']],
     ['the secrets directory read with a decrypt on the scoped prefix', { ...readSecret(''), [urn('/secrets/scoped/')]: { [`${E}decrypt`]: [{}] } },
@@ -486,6 +520,15 @@ describe('the end beside the toggle is the Expiration Time of the message that i
     const m = modelOf(ONE_SECRET);
     const { target, cleanup } = mounted(m);
     expect(endOf(target)).toBe(`until ${formatEndAt(Date.parse(m.expiry!), 7 * D)}`);
+    cleanup();
+  });
+
+  test('the toggle is described by the caution and by the visible end, and the announcement holds the same end', () => {
+    const { target, cleanup } = mounted(modelOf(ONE_SECRET));
+    const ids = toggleOf(target)!.getAttribute('aria-describedby')!.split(' ');
+    expect(ids.map((id) => text(target.ownerDocument.getElementById(id)))).toEqual([cautionOf(target), endOf(target)]);
+    pick(target, 0);
+    expect(announcement(target)).toBe(`Access lasts 1 hour, ${endOf(target)}.`);
     cleanup();
   });
 
@@ -609,6 +652,27 @@ describe('where the renewal offer is made, the toggle states the length and the 
     expect(toggleOf(target)).toBeNull();
     expect(text(target.querySelector('[data-testid="approval-expiry-length-line"]'))).toBe('Access lasts 1 hour.');
     expect(target.querySelector('.renewal-box')).not.toBeNull();
+    cleanup();
+  });
+});
+
+describe('a decrypt that only renewal adds does not leave "Only NAME. No other secret." standing', () => {
+  const renewal = (leaseMs: number | null) => ({ leaseMs, maxLeaseMs: 365 * D, onChange() {} });
+  const withOther = () => modelOf({ ...ONE_SECRET, ...keyOf('DEPLOY_KEY', ['decrypt']) }, 7 * D, Date.now(), [urn('/secrets/deploy_key')]);
+  test.each([null, 90 * D])('a key for another secret that only renewal adds ends the compact face (renewal lease %p)', (lease) => {
+    const { target, cleanup } = mounted(withOther(), { renewal: renewal(lease) });
+    expect(cautionOf(target)).toBeNull();
+    expect(toggleOf(target)).toBeNull();
+    expect(face(target)).not.toContain('No other secret');
+    expect(rows(target)[1]).toContain('Read the secret deploy_key');
+    cleanup();
+  });
+
+  test('a key for the same secret that only renewal adds keeps the compact face', () => {
+    const m = modelOf(ONE_SECRET, 7 * D, Date.now(), [urn('/secrets/bot_history')]);
+    const { target, cleanup } = mounted(m, { renewal: renewal(90 * D) });
+    expect(cautionOf(target)).toBe('Only BOT_HISTORY. No other secret.');
+    expect(toggleOf(target)).not.toBeNull();
     cleanup();
   });
 });
