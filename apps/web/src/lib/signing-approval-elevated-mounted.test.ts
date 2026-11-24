@@ -211,7 +211,7 @@ describe('Approve with an extra permission in the request', () => {
     const found = cards(target);
     expect(found).toHaveLength(2);
     expect(text(found[0]!.querySelector('h2'))).toContain('Use your master key to decrypt?');
-    expect(text(found[0])).toContain("gk.gbafa.com is asking to use your master key, which opens all your encrypted data. Allow this only for an app you trust.");
+    expect(text(found[0])).toContain("gk.gbafa.com is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.");
     expect(text(found[0]!.querySelector('h2'))).toContain('Sensitive');
     expect(text(found[1]!.querySelector('h2'))).toContain('Unlock encrypted items in a folder named share');
     for (const card of found) {
@@ -223,7 +223,7 @@ describe('Approve with an extra permission in the request', () => {
   });
 
   test('the whole-network card is a master-key question, with the site in the body or the cue when no site is verified', async () => {
-    const asked = "is asking to use your master key, which opens all your encrypted data. Allow this only for an app you trust.";
+    const asked = "is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.";
     const verified = mounted(modelOf([network]));
     await click(approve(verified.target));
     expect(text(cards(verified.target)[0])).toContain(`gk.gbafa.com ${asked}`);

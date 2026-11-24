@@ -146,12 +146,12 @@ describe("the all-secrets card", () => {
     const trust = "Allow this only for your own tools on a device you trust.";
     expect(allSecretsCard({ kind: "read-and-add", alsoWholeAccount: true }, "secrets.tinycloud.xyz")).toEqual({
       heading: "Let secrets.tinycloud.xyz read and add all your secrets and use your master key?",
-      body: `Your master key opens all your encrypted data. ${trust}`,
+      body: `Your master key can open all your encrypted data. ${trust}`,
       cue: null,
     });
     expect(allSecretsCard({ kind: "read", alsoWholeAccount: true }, null)).toEqual({
       heading: "Let this app read all your secrets and use your master key?",
-      body: `Your master key opens all your encrypted data. ${trust}`,
+      body: `Your master key can open all your encrypted data. ${trust}`,
       cue: "OpenKey can't confirm the site.",
     });
     expect(allSecretsCard({ kind: "read", alsoWholeAccount: false }, "secrets.tinycloud.xyz")).toEqual({
@@ -166,12 +166,12 @@ describe("the all-secrets card", () => {
     });
     expect(allSecretsCard({ kind: "whole-account", alsoWholeAccount: false }, null)).toEqual({
       heading: "Use your master key to decrypt?",
-      body: "This app is asking to use your master key, which opens all your encrypted data. Allow this only for an app you trust.",
+      body: "This app is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.",
       cue: "OpenKey can't confirm the site.",
     });
     expect(allSecretsCard({ kind: "whole-account", alsoWholeAccount: false }, "gk.gbafa.com")).toEqual({
       heading: "Use your master key to decrypt?",
-      body: "gk.gbafa.com is asking to use your master key, which opens all your encrypted data. Allow this only for an app you trust.",
+      body: "gk.gbafa.com is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.",
       cue: null,
     });
   });

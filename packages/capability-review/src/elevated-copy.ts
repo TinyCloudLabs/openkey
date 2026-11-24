@@ -121,7 +121,7 @@ const MASTER_KEY_CREATE_LINE = "It can also create encryption keys.";
  */
 function masterKeyDecryptCard(site: string | null, withCreate: boolean): { heading: string; body: string; cue: string | null } {
   const verified = site !== null && site.length > 0;
-  const ask = `${verified ? site : "This app"} is asking to use your master key, which opens all your encrypted data. Allow this only for an app you trust.`;
+  const ask = `${verified ? site : "This app"} is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.`;
   return {
     heading: MASTER_KEY_TITLE,
     body: withCreate ? `${ask} ${MASTER_KEY_CREATE_LINE}` : ask,
@@ -148,7 +148,7 @@ export function allSecretsCard(
   if (reach.alsoWholeAccount) {
     return {
       heading: `Let ${who} ${read} and use your master key?`,
-      body: `Your master key opens all your encrypted data. ${trust}`,
+      body: `Your master key can open all your encrypted data. ${trust}`,
       cue: verified ? null : MASTER_KEY_UNVERIFIED_CUE,
     };
   }

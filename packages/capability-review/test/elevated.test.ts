@@ -113,7 +113,7 @@ describe("the warning copy", () => {
     const card = elevatedCard("encryption-network", { decrypt: true, create: false }, "gk.gbafa.com", elevatedWhereText(null));
     expect(card.heading).toBe("Use your master key to decrypt?");
     expect(card.body).toBe(
-      "gk.gbafa.com is asking to use your master key, which opens all your encrypted data. Allow this only for an app you trust.",
+      "gk.gbafa.com is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.",
     );
   });
 
@@ -169,7 +169,7 @@ describe("the warning copy", () => {
   });
 
   test("whole-network decrypt: the master-key question, the site in the body, and the cue only for an unverified site", () => {
-    const body = "is asking to use your master key, which opens all your encrypted data. Allow this only for an app you trust.";
+    const body = "is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.";
     const verified = elevatedCard("encryption-network", { decrypt: true, create: false }, "gk.gbafa.com", elevatedWhereText(null));
     expect(verified).toEqual({ heading: "Use your master key to decrypt?", body: `gk.gbafa.com ${body}` });
     const unverified = elevatedCard("encryption-network", { decrypt: true, create: false }, null, elevatedWhereText(null));
@@ -177,7 +177,7 @@ describe("the warning copy", () => {
   });
 
   test("whole-network decrypt with key creation adds one line, and the all-secrets card says the same words", () => {
-    const body = "is asking to use your master key, which opens all your encrypted data. Allow this only for an app you trust.";
+    const body = "is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.";
     const combo = elevatedCard("encryption-network", { decrypt: true, create: true }, "gk.gbafa.com", elevatedWhereText(null));
     expect(combo).toEqual({ heading: "Use your master key to decrypt?", body: `gk.gbafa.com ${body} It can also create encryption keys.` });
     const card = allSecretsCard({ kind: "whole-account", alsoWholeAccount: false }, "gk.gbafa.com");
