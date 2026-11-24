@@ -1,7 +1,9 @@
 process.env.TINYCLOUD_DEFAULT_NODE_DID ??= 'did:key:z6MkpzW1jXKtQeTNxyZtZFwVPbpyG3Yr1YtKZHcdcxMvZabc';
 // Side-effect module imported first by `tinycloud-setup-routes.test.ts` so the env is set
 // before hoisted imports load modules that read env at construction. This file does NO I/O
-// and sets no secrets; only shapes needed for tree import succeed.
+// and sets no secrets; only shapes needed for tree import succeed. DATABASE_URL points at an
+// in-memory database so importing the route tree never creates ~/.local/share/openkey/dev.pglite.
+process.env.DATABASE_URL ??= 'pglite:memory://';
 process.env.TEE_MODE ??= 'development';
 process.env.WEBAUTHN_RP_ID ??= 'localhost';
 process.env.WEBAUTHN_ORIGIN ??= 'http://localhost:5173';
