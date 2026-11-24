@@ -37,8 +37,8 @@ async function seed() {
   now = new Date();
   await prisma.user.create({ data: { id: 'u', email: 'u@example.test' } });
   await prisma.user.create({ data: { id: 'other-user', email: 'o@example.test' } });
-  await prisma.session.create({ data: { id: 's', userId: 'u', token: 'st', createdAt: new Date(now.getTime() - 6 * DAY), expiresAt: new Date(now.getTime() + DAY) } });
-  await prisma.session.create({ data: { id: 's2', userId: 'u', token: 'st2', createdAt: new Date(now.getTime() - DAY), expiresAt: new Date(now.getTime() + 6 * DAY) } });
+  await prisma.session.create({ data: { id: 's', userId: 'u', token: 'a'.repeat(64), createdAt: new Date(now.getTime() - 6 * DAY), expiresAt: new Date(now.getTime() + DAY) } });
+  await prisma.session.create({ data: { id: 's2', userId: 'u', token: 'b'.repeat(64), createdAt: new Date(now.getTime() - DAY), expiresAt: new Date(now.getTime() + 6 * DAY) } });
   await prisma.oauthClient.create({ data: { id: 'row-app', clientId: 'app', name: 'App', redirectUris: [], scopes: [], public: true } });
   await prisma.oauthClient.create({ data: { id: 'row-other-app', clientId: 'other-app', name: 'Other', redirectUris: [], scopes: [] } });
   await prisma.oauthConsent.create({ data: { id: 'c', userId: 'u', clientId: 'app', scopes: ['openid', 'tinycloud:mcp'] } });

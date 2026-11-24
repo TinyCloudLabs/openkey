@@ -63,7 +63,7 @@ if (!process.env.TC_SESSION_TOKEN_CHILD) {
     expect(signIn.status, await signIn.clone().text()).toBe(200);
     const issued = signIn.headers.get('set-auth-token')!;
     expect(issued).toContain('.');
-    const rawToken = (await prisma.session.findFirstOrThrow({ where: { userId } })).token;
+    const rawToken = decodeURIComponent(issued).split('.')[0]!;
     const cookie = (await serializeSignedCookie(authContext.authCookies.sessionToken.name, rawToken, authContext.secret)).split(';')[0]!;
 
     async function sessionUser(headers: Record<string, string>) {

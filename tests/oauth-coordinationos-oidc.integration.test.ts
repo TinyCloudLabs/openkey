@@ -43,7 +43,7 @@ await pglite.exec(`
   INSERT INTO "user" ("id", "email", "emailVerified", "name", "updatedAt")
     VALUES ('${userId}', 'alice@example.test', true, 'Alice', CURRENT_TIMESTAMP);
   INSERT INTO "session" ("id", "userId", "token", "expiresAt", "createdAt", "updatedAt")
-    VALUES ('coordinationos-session', '${userId}', '${sessionToken}', '2099-01-01T00:00:00.000Z', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+    VALUES ('coordinationos-session', '${userId}', '${createHash('sha256').update(`openkey-session-token\0${sessionToken}`).digest('hex')}', '2099-01-01T00:00:00.000Z', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
   INSERT INTO "ethereum_keys" ("id", "userId", "address", "publicKey", "sealedBlob", "keyType", "sealingContext", "isCanonicalTinyCloud")
     VALUES ('personal-key', '${userId}', '0x31d40B62C395B9418C4198363619B11c65cD406F', '0x1', 'sealed', 'MANAGED', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', true);
   INSERT INTO "ethereum_keys" ("id", "userId", "address", "publicKey", "keyType")

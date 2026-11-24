@@ -60,7 +60,7 @@ async function seedRows(db: PGlite, rows: Seed[] = SESSIONS) {
   await db.exec(`INSERT INTO "user" (id, email, "updatedAt") VALUES ('u1', 'u1@example.test', '2026-10-26 00:00:00') ON CONFLICT DO NOTHING`);
   for (const row of rows) {
     await db.query(
-      `INSERT INTO "session" (id, "userId", token, "expiresAt", "createdAt", "updatedAt") VALUES ($1, 'u1', $2, $3, $4, $4)`,
+      `INSERT INTO "session" (id, "userId", token, "expiresAt", "createdAt", "updatedAt") VALUES ($1, 'u1', md5($2) || md5($2), $3, $4, $4)`,
       [row.id, `token-${row.id}`, timestamp(row.age, row.expiresAfter), timestamp(row.age)],
     );
   }
@@ -397,6 +397,7 @@ describe('the script, through Prisma', () => {
     for (const output of [applied.stdout, again.stdout, rolled.stdout, applied.stderr, again.stderr, rolled.stderr]) {
       expect(output).not.toContain('old-');
       expect(output).not.toContain('token-');
+      expect(output).not.toMatch(/[0-9a-f]{64}/);
       expect(output).not.toContain('pglite');
     }
   }, 180_000);
