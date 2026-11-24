@@ -144,7 +144,7 @@ test('one secret\'s key starts at the suggested hour and may be lengthened up to
 test('a request that starts at its 7-day maximum says so, and still offers shorter', async ({ page }) => {
   const expiries = await openReview(page, { grants: [secret, keyDecrypt], grantLifetimeSeconds: 7 * DAY, suggestedLifetimeSeconds: 7 * DAY });
   await expect(approve(page)).toBeEnabled();
-  await expect(page.getByRole('radio', { name: /^7 days, until .*, as the app asked$/ })).toBeChecked();
+  await expect(page.getByRole('radio', { name: '7 days, as the app asked', exact: true })).toBeChecked();
   await expect(lengthNote(page)).toHaveCount(0);
   expect(expiries.at(-1)).toBe(`${7 * DAY}s`);
 
@@ -158,7 +158,7 @@ test('a request that starts at its 7-day maximum says so, and still offers short
 test('an app that signs 30 days for a secret gets 7 days at most', async ({ page }) => {
   const expiries = await openReview(page, { grants: [secret, keyDecrypt], grantLifetimeSeconds: 30 * DAY });
   await expect(approve(page)).toBeEnabled();
-  await expect(page.getByRole('radio', { name: /^7 days, until / })).toBeChecked();
+  await expect(page.getByRole('radio', { name: '7 days', exact: true })).toBeChecked();
   await expect(lengthNote(page)).toHaveCount(0);
   expect(expiries.at(-1)).toBe(`${7 * DAY}s`);
 

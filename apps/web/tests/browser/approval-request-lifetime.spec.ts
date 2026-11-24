@@ -135,8 +135,8 @@ for (const [name, grants] of [['secrets', [notes, secret]], ['decrypt', [notes, 
     if (secrets) await expect(lengthText).toHaveText(/^Access lasts 1 hour, until /);
     else await expect(lengthText).toHaveText("This app's access to your data lasts 1 hour.");
     await expect(choice).toBeVisible();
-    await expect(choice.getByRole('radio', { name: secrets ? /^1 hour, until / : '1 hour' })).toBeChecked();
-    await expect(choice.getByRole('radio', { name: secrets ? /^7 days, until / : '7 days (the longest allowed)' })).not.toBeChecked();
+    await expect(choice.getByRole('radio', { name: '1 hour' })).toBeChecked();
+    await expect(choice.getByRole('radio', { name: secrets ? '7 days' : '7 days (the longest allowed)', exact: true })).not.toBeChecked();
     await expect(caution).toHaveText(secrets ? 'Covers every secret in your vault.' : 'This access can open all your encrypted data.');
     expect(expiries.at(-1)).toBe('3600s');
     await testInfo.attach(`${name} approval face`, {

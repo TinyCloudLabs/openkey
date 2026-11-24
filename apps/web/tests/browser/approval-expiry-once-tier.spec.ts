@@ -82,8 +82,8 @@ test('decrypt on the secrets/ prefix without the opt-in starts at one hour, and 
   const { frame, previews } = await open(page, {}, decrypt);
   await expect(frame.getByTestId('approval-expiry-announcement')).toHaveText(/^Access lasts 1 hour, until /);
   const choice = frame.getByRole('group', { name: 'How long access lasts', exact: true });
-  await expect(choice.getByRole('radio', { name: /^1 hour, until / })).toBeChecked();
-  await expect(choice.getByRole('radio', { name: /^7 days, until .*, as the app asked$/ })).not.toBeChecked();
+  await expect(choice.getByRole('radio', { name: '1 hour', exact: true })).toBeChecked();
+  await expect(choice.getByRole('radio', { name: '7 days, as the app asked', exact: true })).not.toBeChecked();
   await expect(frame.getByTestId('approval-expiry-compact-caution')).toHaveText('Covers every secret in your vault.');
   const latest = previews.at(-1)!;
   aboutAnHour(latest.expirationTime, before);
