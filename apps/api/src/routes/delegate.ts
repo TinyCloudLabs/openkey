@@ -21,7 +21,6 @@ import {
   prepareSession,
   completeSessionSetup,
   ensureEip55,
-  generateHostSIWEMessage,
   makeSpaceId,
   siweToDelegationHeaders,
 } from '@tinycloud/node-sdk-wasm';
@@ -1434,79 +1433,6 @@ delegateRouter.post('/sign', async (c) => {
   return c.json({
     approved: true,
     signature,
-  });
-});
-
-/**
- * POST /api/delegate/host
- *
- * Signs a TinyCloud space/host SIWE for a managed key. This is the root-key
- * half of bootstrap space hosting; the caller submits the signed SIWE to the
- * node's /delegate endpoint.
- */
-delegateRouter.post('/host', async (c) => {
-  const user = c.get('user');
-  const body = await c.req.json<{
-    keyId: string;
-    peerId: string;
-    space?: string;
-    prefix?: string;
-  }>();
-  const deviceUnsupported = deviceTransactionUnsupportedError(body);
-  if (deviceUnsupported) return c.json(deviceUnsupported, 400);
-
-  if (!body.keyId || !body.peerId) {
-    return c.json({ error: 'keyId and peerId are required' }, 400);
-  }
-
-  const spacePrefix = body.space || body.prefix;
-  if (!spacePrefix) {
-    return c.json({ error: 'space is required' }, 400);
-  }
-
-  const key = await prisma.ethereumKey.findFirst({
-    where: { id: body.keyId, userId: user.id, archivedAt: null },
-  });
-
-  if (!key) {
-    return c.json({ error: 'Key not found' }, 404);
-  }
-
-  if (key.keyType !== 'MANAGED') {
-    return c.json({ error: 'Only managed keys can be used with this endpoint.' }, 400);
-  }
-
-  if (!key.sealedBlob) {
-    return c.json({ error: 'Key has no sealed data' }, 400);
-  }
-
-  const address = ensureEip55(key.address);
-  const chainId = 1;
-  const normalizedSpace = spacePrefix.startsWith('tinycloud:')
-    ? spacePrefix.slice(spacePrefix.lastIndexOf(':') + 1)
-    : spacePrefix;
-  const spaceId = makeSpaceId(address, chainId, normalizedSpace);
-  const issuedAt = new Date().toISOString();
-  const siwe = generateHostSIWEMessage({
-    address,
-    chainId,
-    domain: SIWE_DOMAIN,
-    issuedAt,
-    spaceId,
-    peerId: body.peerId,
-  });
-
-  const signature = await signManagedKey(key, key.sealedBlob, siwe);
-  const ownerDid = `did:pkh:eip155:${chainId}:${address}`;
-
-  return c.json({
-    siwe,
-    signature,
-    spaceId,
-    ownerDid,
-    address,
-    chainId,
-    peerId: body.peerId,
   });
 });
 

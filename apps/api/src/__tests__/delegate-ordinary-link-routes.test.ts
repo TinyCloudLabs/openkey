@@ -351,7 +351,7 @@ describe('ordinary delegation lifetime', () => {
 });
 
 describe('signing routes without device enforcement', () => {
-  test('/sign and /host refuse deviceTransactionId before signing', async () => {
+  test('/sign refuses deviceTransactionId before signing', async () => {
     const sign = await post('/sign', {
       address: wallet.address,
       chainId: 1,
@@ -362,14 +362,16 @@ describe('signing routes without device enforcement', () => {
     expect(sign.status).toBe(400);
     expect(sign.body).toMatchObject({ approved: false, code: 'device_transaction_unsupported' });
 
-    const hostSign = await post('/host', {
-      keyId: externalKey.id,
-      peerId: 'peer',
-      space: 'default',
-      deviceTransactionId: 'unknown-transaction',
+    expect(unseal).not.toHaveBeenCalled();
+  });
+
+  test('POST /host is gone: a normal session gets 404 and nothing is unsealed', async () => {
+    const res = await router.request('/host', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'http://localhost:5173' },
+      body: JSON.stringify({ keyId: externalKey.id, peerId: 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK', space: 'default' }),
     });
-    expect(hostSign.status).toBe(400);
-    expect(hostSign.body.code).toBe('device_transaction_unsupported');
+    expect(res.status).toBe(404);
     expect(unseal).not.toHaveBeenCalled();
   });
 });

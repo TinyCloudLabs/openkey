@@ -64,7 +64,7 @@ name no device transaction follow ordinary `/delegate` behaviour (see
 "Ordinary `/delegate` links" below).
 `/api/delegate/authorize-sign-prepare`, `/api/delegate/authorize-sign`,
 `/api/delegate/authorize-sign-preview`, `/api/delegate/sign` (session and
-manage-key OAuth callers), `/api/delegate/host`, and `/api/keys/:keyId/sign`
+manage-key OAuth callers), and `/api/keys/:keyId/sign`
 do not support device transactions: any request to them that carries
 `deviceTransactionId` (whatever its value) is refused with 400
 `device_transaction_unsupported`, and requests without it behave as before.
