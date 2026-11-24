@@ -13,10 +13,12 @@
     ONCE_DEFAULT_EXPIRY_MS,
     RENEWAL_CHECKING_LINE,
     SECRET_BLOCK_COPY,
+    splitAroundName,
     SENSITIVE_RENEWAL_WINDOW_MS,
     accessLastsLine,
     defaultLeaseMs,
     formatDuration,
+    formatEndAt,
     formatLengthWithEnd,
     type OnceLongerChoice,
     type SecretLongerChoice,
@@ -60,7 +62,7 @@
      * is true where the app's own length is reported as that length, not as null (a one-time approval). It replaces the
      * access line and the one-time choice; the renewal checkbox and its "Checking renewal…" line keep the screen.
      */
-    compact?: { longer: SecretLongerChoice | null; caution: string; explicit: boolean } | null;
+    compact?: { longer: SecretLongerChoice | null; caution: string; name: string | null; explicit: boolean; endsAt: string | null } | null;
     /** On a signed request for a secret's own key: its start and the most it can be. Null shows no note. */
     lengthNote?: string | null;
     /** Show the "How long it lasts" fold here. False where the screen shows ApprovalExpiryChooser elsewhere. */
@@ -98,9 +100,11 @@
   let oncePicks = $state(0);
 
   const shownMs = $derived(chosenMs ?? requestedMs);
-  // The ends the toggle names are counted from when the screen opened, as the server counts the signed window.
+  // The end shown is the Expiration Time of the message that will be signed (`compact.endsAt`); only a screen that has
+  // none counts it from when the screen opened.
   const openedAt = Date.now();
   const compactOn = $derived(compact !== null && shownMs !== null);
+  const cautionParts = $derived(compact ? splitAroundName(compact.caution, compact.name) : null);
   // Only when the length shown is one of the two the toggle offers: a length picked under "How long it lasts" shows as the line.
   const compactToggle = $derived(
     compactOn && compact!.longer !== null && (shownMs === ONCE_DEFAULT_EXPIRY_MS || shownMs === compact!.longer.ms) ? compact!.longer : null,
@@ -112,10 +116,15 @@
           { ms: ONCE_DEFAULT_EXPIRY_MS, label: formatDuration(ONCE_DEFAULT_EXPIRY_MS), asked: false },
           compactToggle,
         ].map((choice) => {
-          const name = formatLengthWithEnd(choice.ms, openedAt) + (choice.asked ? SECRET_BLOCK_COPY.askedSuffix : "");
+          const name = formatDuration(choice.ms) + (choice.asked ? SECRET_BLOCK_COPY.askedSuffix : "");
           return { ...choice, name };
         }),
   );
+  const endMs = $derived.by(() => {
+    const signed = Date.parse(compact?.endsAt ?? "");
+    return Number.isFinite(signed) ? signed : openedAt + (shownMs ?? 0);
+  });
+  const endText = $derived(shownMs === null ? "" : formatEndAt(endMs, shownMs));
   // The app's own hour has nothing to choose between and no end named; any other length shown as a line was picked by the owner.
   const askedHourLine = $derived(shownMs !== null && shownMs <= ONCE_DEFAULT_EXPIRY_MS && (chosenMs === null || shownMs === ONCE_DEFAULT_EXPIRY_MS));
   const accessLine = $derived(shownMs === null ? "" : accessLastsLine(renewal?.deviceSignIn ? "device" : holder, shownMs));
@@ -204,10 +213,11 @@
 {#if shownMs !== null}
   <div class="expiry" role="group" aria-label="How long this permission lasts" onkeydown={onKeydown}>
     {#if compactOn}
-      <p class="expiry-once-note" id="{uid}-compact-caution" data-testid="approval-expiry-compact-caution">{compact!.caution}</p>
+      <p class="expiry-once-note" id="{uid}-compact-caution" data-testid="approval-expiry-compact-caution">{#if cautionParts}{cautionParts.before}<span class="secret-name">{cautionParts.name}</span>{cautionParts.after}{:else}{compact!.caution}{/if}</p>
       {#if compactToggle !== null}
         <fieldset class="length-toggle" bind:this={onceGroup} data-testid="approval-expiry-toggle" aria-describedby="{uid}-compact-caution">
           <legend class="sr-only">{SECRET_BLOCK_COPY.groupName}</legend>
+          <span class="length-segments">
           {#each compactChoices as choice (choice.ms)}
             <label class="length-option" title={choice.name}>
               <input
@@ -222,6 +232,8 @@
               <span>{choice.label}</span>
             </label>
           {/each}
+          </span>
+          <span class="length-end" data-testid="approval-expiry-end" aria-hidden="true">{SECRET_BLOCK_COPY.until(endText)}</span>
         </fieldset>
       {/if}
     {/if}
@@ -245,9 +257,9 @@
       <!-- One live region holds whichever line is showing, so a screen reader hears the line that settles. -->
       <div class="expiry-live" aria-live="polite">
         {#if compactToggle !== null}
-          <p class="sr-only" data-testid="approval-expiry-announcement">{SECRET_BLOCK_COPY.lasts(formatLengthWithEnd(shownMs!, openedAt))}</p>
+          <p class="sr-only" data-testid="approval-expiry-announcement">{SECRET_BLOCK_COPY.lasts(formatLengthWithEnd(shownMs!, endMs))}</p>
         {:else if compactOn}
-          <p class="expiry-line" data-testid="approval-expiry-length-line">{SECRET_BLOCK_COPY.lasts(askedHourLine ? formatDuration(shownMs!) : formatLengthWithEnd(shownMs!, openedAt))}</p>
+          <p class="expiry-line" data-testid="approval-expiry-length-line">{SECRET_BLOCK_COPY.lasts(askedHourLine ? formatDuration(shownMs!) : formatLengthWithEnd(shownMs!, endMs))}</p>
         {/if}
         {#if renewalPending && !renewal}
           <p class="expiry-line" data-testid="approval-expiry-line">{RENEWAL_CHECKING_LINE}</p>
@@ -349,14 +361,30 @@
     white-space: nowrap;
     border: 0;
   }
+  /* A secret's name stays on one line; only a name wider than the card breaks, at any point. */
+  .secret-name {
+    display: inline-block;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
   /* Two segments on one line; each is at least the 40px tap height used by the other choices on this screen. */
   .length-toggle {
     display: flex;
-    gap: 0;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
     min-width: 0;
     margin: 4px 0 8px;
     padding: 0;
     border: 0;
+  }
+  .length-segments {
+    display: flex;
+    min-width: 0;
+  }
+  .length-end {
+    color: #475569;
+    font-size: 0.9375rem;
   }
   .length-option {
     position: relative;

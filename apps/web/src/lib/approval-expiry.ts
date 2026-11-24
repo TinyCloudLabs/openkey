@@ -99,6 +99,12 @@ export function onceCautionLine(reach: OnceReach): string {
  * Every word of the compact secret block on the sign face: the row, the caution under it and the length toggle
  * (one place to change them). The row for one named secret is the review's own "Read the secret <name>".
  */
+/** A line of copy split around a secret's name, so the name can be set on one line; null when the name is not in it. */
+export function splitAroundName(text: string, name: string | null): { before: string; name: string; after: string } | null {
+  const at = name === null || name === '' ? -1 : text.lastIndexOf(name);
+  return name === null || at < 0 ? null : { before: text.slice(0, at), name, after: text.slice(at + name.length) };
+}
+
 export const SECRET_BLOCK_COPY = {
   /** The row when several named secrets are read, and when all of them are. */
   rowSeveral: 'Read secret values',
@@ -118,6 +124,8 @@ export const SECRET_BLOCK_COPY = {
   /** Added to the screen-reader name and the tooltip of the segment the app asked for. */
   askedSuffix: ', as the app asked',
   /** The line where there is nothing to choose between (the app asked for an hour or less), and the announcement after a pick. */
+  /** The end beside the toggle: "until Dec 1", "until 1:06 PM". */
+  until: (end: string) => `until ${end}`,
   lasts: (end: string) => `Access lasts ${end}.`,
   /** The renewal checkbox's words while it is unticked (ticked, it says how long it renews). */
   renewLabel: (lease: string) => `Renew automatically for up to ${lease}`,
@@ -138,17 +146,20 @@ export function secretLongerChoice(askedMs: number | null, capMs: number | null)
   return { ms: longer.ms, asked, label: `${formatDuration(longer.ms)} (${asked ? SECRET_BLOCK_COPY.askedTag : SECRET_BLOCK_COPY.longestTag})` };
 }
 
-/** The time of day, in the owner's time zone: "1:06 PM". */
-function formatEndTime(ms: number, now: number, timeZone?: string): string {
-  return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone }).format(now + ms).replace(/\s/g, ' ');
+/**
+ * Where a window of `lengthMs` ends, as the toggle and the announcement say it: a day or more ends on a day ("Dec 1"),
+ * a shorter one at a time of day ("1:06 PM"), in the owner's time zone. `endMs` is the end itself: the signed
+ * Expiration Time, not a time counted from when the screen opened.
+ */
+export function formatEndAt(endMs: number, lengthMs: number, timeZone?: string): string {
+  const now = Date.now();
+  if (lengthMs >= D) return formatEndDay(endMs - now, now, timeZone);
+  return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone }).format(endMs).replace(/\s/g, ' ');
 }
 
-/**
- * A length with where it ends, for the toggle's names, the announcement and a length picked under "How long it lasts":
- * a day or more ends on a day ("7 days, until Dec 1"), a shorter one at a time of day ("1 hour, until 1:06 PM").
- */
-export function formatLengthWithEnd(ms: number, now: number = Date.now(), timeZone?: string): string {
-  return ms >= D ? `${formatDuration(ms)}, until ${formatEndDay(ms, now, timeZone)}` : `${formatDuration(ms)}, until ${formatEndTime(ms, now, timeZone)}`;
+/** A length with where it ends, for the announcement and a length picked under "How long it lasts": "7 days, until Dec 1". */
+export function formatLengthWithEnd(ms: number, endMs: number, timeZone?: string): string {
+  return `${formatDuration(ms)}, until ${formatEndAt(endMs, ms, timeZone)}`;
 }
 
 /** The lease shown when the box is first ticked: the default, or less when the requester asked for less. */

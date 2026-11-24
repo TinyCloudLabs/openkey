@@ -1,14 +1,14 @@
 // Mounts the production approval view: the sensitive-secret block is one row, one caution line and an inline length toggle.
 // The toggle drives the length the surface signs.
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
-import { afterAll, describe, expect, test } from 'bun:test';
+import { afterAll, describe, expect, setSystemTime, test } from 'bun:test';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { Window } from 'happy-dom';
 import { compile } from 'svelte/compiler';
-import { formatLengthWithEnd } from './approval-expiry';
+import { formatEndAt, formatLengthWithEnd } from './approval-expiry';
 import { parseCapabilityReview } from '../../../../packages/capability-review/src/index';
 import type { CapabilityReviewModel } from '../../../../packages/capability-review/src/index';
 import { FIXTURE_META, makeRecapResource, siweWithResources } from '../../../../packages/capability-review/test/fixtures/index';
@@ -164,13 +164,14 @@ const allIds = (m: CapabilityReviewModel) =>
 function mounted(m: CapabilityReviewModel, props: Record<string, unknown> = {}) {
   const state = new SvelteMap<string, unknown>();
   state.set('expiry', null);
+  state.set('model', m);
   const calls: Array<number | null> = [];
   const target = document.createElement('div');
   document.body.appendChild(target);
   const app = mount(Approval, {
     target,
     props: {
-      model: m,
+      get model() { return state.get('model') as CapabilityReviewModel; },
       selection: allIds(m),
       get expiryMs() { return state.get('expiry') as number | null; },
       editing: false, onApprove() {}, onCancel() {}, onSelectionChange() {}, onEditingChange() {},
@@ -180,7 +181,8 @@ function mounted(m: CapabilityReviewModel, props: Record<string, unknown> = {}) 
     },
   });
   flushSync();
-  return { target, calls, cleanup: () => { unmount(app); target.remove(); } };
+  const setModel = (next: CapabilityReviewModel) => { state.set('model', next); flushSync(); };
+  return { target, calls, setModel, cleanup: () => { unmount(app); target.remove(); } };
 }
 
 const text = (el: Element | null | undefined) => el?.textContent?.replace(/\s+/g, ' ').trim() ?? null;
@@ -218,16 +220,16 @@ describe('one named secret is one row, one caution line and a length toggle', ()
     cleanup();
   });
 
-  test('the toggle starts at the length the app asked for, tagged (asked), and names each end', () => {
+  test('the toggle starts at the length the app asked for, tagged (asked), and the end sits beside it', () => {
     const { target, calls, cleanup } = mounted(modelOf(ONE_SECRET));
     expect(calls).toEqual([]);
     expect(text(toggleOf(target)?.querySelector('legend'))).toBe('How long access lasts');
     const options = segments(target);
     expect(options.map((option) => text(option.closest('label')))).toEqual(['1 hour', '7 days (asked)']);
     expect(options.map((option) => option.checked)).toEqual([false, true]);
-    expect(options[0]!.getAttribute('aria-label')).toMatch(/^1 hour, until \d{1,2}:\d{2} [AP]M$/);
-    expect(options[1]!.getAttribute('aria-label')).toMatch(new RegExp(`^7 days, until ${END_DAY}, as the app asked$`));
+    expect(options.map((option) => option.getAttribute('aria-label'))).toEqual(['1 hour', '7 days, as the app asked']);
     expect(options.map((option) => option.closest('label')!.getAttribute('title'))).toEqual(options.map((option) => option.getAttribute('aria-label')));
+    expect(text(toggleOf(target)?.querySelector('[data-testid="approval-expiry-end"]'))).toMatch(new RegExp(`^until ${END_DAY}$`));
     expect(announcement(target)).toMatch(new RegExp(`^Access lasts 7 days, until ${END_DAY}\\.$`));
     cleanup();
   });
@@ -258,10 +260,46 @@ describe('one named secret is one row, one caution line and a length toggle', ()
     cleanup();
   });
 
-  test('a read of a secret with no key request keeps the plain line, not the compact block', () => {
+  test('a read of one secret with no key request is the same compact row as with a key request', () => {
     const { target, cleanup } = mounted(modelOf(readSecret('BOT_HISTORY')));
-    expect(toggleOf(target)).toBeNull();
+    expect(rows(target)).toEqual(['Read the secret BOT_HISTORY Sensitive']);
+    expect(cautionOf(target)).toBe('Only BOT_HISTORY. No other secret.');
+    expect(segments(target).map((option) => text(option.closest('label')))).toEqual(['1 hour', '7 days (asked)']);
+    expect(face(target)).not.toContain('marked Sensitive');
+    expect(face(target)).not.toContain("This app's access to your data");
+    cleanup();
+  });
+
+  test('the name is set on one line in the row and in the caution', () => {
+    const { target, cleanup } = mounted(modelOf(keyOf('bot-history', ['decrypt'])));
+    expect(text(target.querySelector('.statement-primary .secret-name'))).toBe('bot-history');
+    expect(text(target.querySelector('[data-testid="approval-expiry-compact-caution"] .secret-name'))).toBe('bot-history');
+    cleanup();
+  });
+});
+
+describe('a read with no key request names only secrets that nothing else in the request opens', () => {
+  test('a read of one secret with a decrypt on the whole vault prefix keeps its ordinary rows, never "Only NAME"', () => {
+    const { target, cleanup } = mounted(modelOf({ ...readSecret('BOT_HISTORY'), [urn('/secrets/')]: { [`${E}decrypt`]: [{}] } }));
+    expect(rows(target)).toEqual(['Decrypt data locked with your keys in secrets/ Sensitive', 'Read secret values Sensitive']);
+    expect(face(target)).not.toContain('Only BOT_HISTORY');
+    expect(face(target)).not.toContain('Read the secret BOT_HISTORY');
     expect(cautionOf(target)).toBeNull();
+    cleanup();
+  });
+
+  test('two reads with no key requests are one "Read secret values" row for 2 secrets', () => {
+    const { target, cleanup } = mounted(modelOf({ ...readSecret('BOT_HISTORY'), ...readSecret('DEPLOY_KEY') }));
+    expect(rows(target)).toEqual(['Read secret values Sensitive']);
+    expect(cautionOf(target)).toBe('Only these 2 secrets. Names are in Advanced details.');
+    cleanup();
+  });
+
+  test('Advanced details lists each secret read with no key request by name and its exact value path', () => {
+    const { target, cleanup } = mounted(modelOf({ ...readSecret('BOT_HISTORY'), ...readSecret('DEPLOY_KEY') }));
+    const entries = [...target.querySelectorAll('[data-testid="secrets-group"] li.grant')];
+    expect(entries.map((entry) => text(entry.querySelector('.grant-title')))).toEqual(['Secret: BOT_HISTORY', 'Secret: DEPLOY_KEY']);
+    expect(entries.map((entry) => text(entry.querySelector('.grant-path')))).toEqual(['vault/secrets/BOT_HISTORY', 'vault/secrets/DEPLOY_KEY']);
     cleanup();
   });
 });
@@ -304,12 +342,179 @@ describe('the secrets the row covers are listed by name under Advanced details',
   });
 });
 
+const DECRYPT_PREFIX: Attenuations = { [urn('/secrets/')]: { [`${E}decrypt`]: [{}] } };
+const kvAt = (path: string, abilities: string[], space = SECRETS_SPACE): Attenuations => ({
+  [`${space}/kv/${path}`]: Object.fromEntries(abilities.map((ability) => [ability, [{}]])),
+});
+const GET = 'tinycloud.kv/get';
+
+describe('only a read keeps the compact block: a request with any other action on the secrets keeps its own rows', () => {
+  const OLD_FACE: Array<[string, Attenuations, string[]]> = [
+    ['put and delete beside the read of the secrets directory', { ...kvAt('vault/secrets/', [GET, 'tinycloud.kv/put', 'tinycloud.kv/del']), ...DECRYPT_PREFIX },
+      ['Decrypt data locked with your keys in secrets/ Sensitive', 'Read, update and delete secret values Sensitive']],
+    ['put alone on the secrets directory', { ...kvAt('vault/secrets/', ['tinycloud.kv/put']), ...DECRYPT_PREFIX },
+      ['Decrypt data locked with your keys in secrets/ Sensitive', 'Update secret values Sensitive']],
+    ['the kv wildcard', { ...kvAt('vault/secrets/', ['tinycloud.kv/*']), ...DECRYPT_PREFIX },
+      ['Decrypt data locked with your keys in secrets/ Sensitive', 'Unknown action: tinycloud.kv/* Sensitive']],
+    ['kv admin', { ...kvAt('vault/secrets/', ['tinycloud.kv/admin']), ...DECRYPT_PREFIX },
+      ['Decrypt data locked with your keys in secrets/ Sensitive', 'Unknown action: tinycloud.kv/admin Sensitive']],
+    ['the secrets service writes', { [`${SECRETS_SPACE}/secrets/vault/secrets/`]: { 'tinycloud.secrets/put': [{}], 'tinycloud.secrets/delete': [{}] }, ...DECRYPT_PREFIX },
+      ['Decrypt data locked with your keys in secrets/ Sensitive', 'Unknown actions: tinycloud.secrets/delete, tinycloud.secrets/put Sensitive']],
+  ];
+  test.each(OLD_FACE)('%s', (_label, att, expected) => {
+    const { target, cleanup } = mounted(modelOf(att));
+    expect(rows(target)).toEqual(expected);
+    expect(face(target)).not.toContain('Read all your secret values');
+    expect(toggleOf(target)).toBeNull();
+    expect(cautionOf(target)).toBeNull();
+    cleanup();
+  });
+});
+
+describe('"Read all your secret values" is the secrets directory read, the decrypt on the secrets prefix, or both, and nothing else', () => {
+  test('the secrets directory with no trailing slash reads as all as well', () => {
+    const { target, cleanup } = mounted(modelOf({ ...kvAt('vault/secrets', [GET]), ...DECRYPT_PREFIX }));
+    expect(rows(target)).toEqual(['Read all your secret values Sensitive']);
+    cleanup();
+  });
+
+  test('the read alone and the decrypt alone each read as all', () => {
+    for (const att of [kvAt('vault/secrets/', [GET]), DECRYPT_PREFIX]) {
+      const { target, cleanup } = mounted(modelOf(att));
+      expect(rows(target)).toEqual(['Read all your secret values Sensitive']);
+      expect(cautionOf(target)).toBe('Covers every secret in your vault.');
+      cleanup();
+    }
+  });
+
+  const OTHER: Array<[string, Attenuations, string[]]> = [
+    ['a decrypt on the scoped prefix alone', { [urn('/secrets/scoped/')]: { [`${E}decrypt`]: [{}] } }, ['Decrypt data locked with your keys in secrets/scoped/ Sensitive']],
+    ['the secrets directory read with a decrypt on the scoped prefix', { ...readSecret(''), [urn('/secrets/scoped/')]: { [`${E}decrypt`]: [{}] } },
+      ['Decrypt data locked with your keys in secrets/scoped/ Sensitive', 'Read secret values Sensitive']],
+    ['a read of vault/ alone', kvAt('vault/', [GET]), ['Read secret values Sensitive']],
+    ['a read of vault/ with a decrypt on the secrets prefix', { ...kvAt('vault/', [GET]), ...DECRYPT_PREFIX },
+      ['Decrypt data locked with your keys in secrets/ Sensitive', 'Read secret values Sensitive']],
+    ['a read of vault with a decrypt on the secrets prefix', { ...kvAt('vault', [GET]), ...DECRYPT_PREFIX },
+      ['Decrypt data locked with your keys in secrets/ Sensitive', 'Read secret values Sensitive']],
+    ['a read of secrets/ with a decrypt on the secrets prefix', { ...kvAt('secrets/', [GET]), ...DECRYPT_PREFIX },
+      ['Decrypt data locked with your keys in secrets/ Sensitive', 'Read secret values Sensitive']],
+  ];
+  test.each(OTHER)('%s keeps its own rows', (_label, att, expected) => {
+    const { target, cleanup } = mounted(modelOf(att));
+    expect(rows(target)).toEqual(expected);
+    expect(face(target)).not.toContain('Read all your secret values');
+    expect(cautionOf(target)).toBeNull();
+    cleanup();
+  });
+});
+
+describe('a secret is named only where the name is the whole story', () => {
+  test('a scoped key is not shown as its bare name', () => {
+    const { target, cleanup } = mounted(modelOf(keyOf('scoped/evil/bot_history', ['decrypt'])));
+    expect(face(target)).not.toContain('Only bot_history');
+    expect(cautionOf(target)).toBeNull();
+    expect(toggleOf(target)).toBeNull();
+    cleanup();
+  });
+
+  test('a scoped KV path keeps its own rows', () => {
+    const { target, cleanup } = mounted(modelOf(readSecret('scoped/evil/BOT_HISTORY')));
+    expect(cautionOf(target)).toBeNull();
+    expect(toggleOf(target)).toBeNull();
+    cleanup();
+  });
+
+  test('a scoped secret beside a named one keeps the rows of the whole request', () => {
+    const { target, cleanup } = mounted(modelOf({ ...readSecret('BOT_HISTORY'), ...readSecret('scoped/evil/DEPLOY_KEY') }));
+    expect(cautionOf(target)).toBeNull();
+    cleanup();
+  });
+
+  test('NAME-2 is not NAME: a read of a path that is not a secret name is not named by its prefix', () => {
+    const { target, cleanup } = mounted(modelOf(readSecret('NAME-2')));
+    expect(rows(target)).toEqual(['Read secret values Sensitive']);
+    expect(cautionOf(target)).toBeNull();
+    cleanup();
+  });
+
+  test('NAME beside NAME-2 does not read as "Only NAME"', () => {
+    const { target, cleanup } = mounted(modelOf({ ...readSecret('NAME'), ...readSecret('NAME-2') }));
+    expect(face(target)).not.toContain('Only NAME');
+    expect(cautionOf(target)).toBeNull();
+    cleanup();
+  });
+
+  test.each([
+    ['a trailing slash', kvAt('vault/secrets/NAME/', [GET])],
+    ['a get with a put', kvAt('vault/secrets/NAME', [GET, 'tinycloud.kv/put'])],
+    ["another service's path", { [`${SECRETS_SPACE}/sql/vault/secrets/NAME`]: { 'tinycloud.sql/read': [{}] } } as Attenuations],
+    ['the default space', kvAt('vault/secrets/NAME', [GET], SECRETS_SPACE.replace(':secrets', ':default'))],
+  ] as Array<[string, Attenuations]>)('%s keeps its own rows', (_label, att) => {
+    const { target, cleanup } = mounted(modelOf(att));
+    expect(face(target)).not.toContain('Read the secret NAME');
+    expect(cautionOf(target)).toBeNull();
+    cleanup();
+  });
+
+  test('exactly one get on the exact path is the one-secret row', () => {
+    const { target, cleanup } = mounted(modelOf(kvAt('vault/secrets/NAME', [GET])));
+    expect(rows(target)).toEqual(['Read the secret NAME Sensitive']);
+    expect(cautionOf(target)).toBe('Only NAME. No other secret.');
+    cleanup();
+  });
+});
+
 describe('a length shown as a line names where it ends', () => {
-  const start = Date.UTC(2025, 10, 29, 12, 6);
+  const start = Date.UTC(2026, 10, 29, 12, 6);
   test('a day or more ends on a day, a shorter length at a time of day', () => {
-    expect(formatLengthWithEnd(2 * 24 * 3_600_000, start, 'UTC')).toBe('2 days, until Dec 1');
-    expect(formatLengthWithEnd(3_600_000, start, 'UTC')).toBe('1 hour, until 1:06 PM');
-    expect(formatLengthWithEnd(7 * 24 * 3_600_000, start, 'UTC')).toBe('7 days, until Dec 6');
+    setSystemTime(new Date(start));
+    try {
+      expect(formatLengthWithEnd(2 * D, start + 2 * D, 'UTC')).toBe('2 days, until Dec 1');
+      expect(formatLengthWithEnd(H, start + H, 'UTC')).toBe('1 hour, until 1:06 PM');
+      expect(formatLengthWithEnd(7 * D, start + 7 * D, 'UTC')).toBe('7 days, until Dec 6');
+      expect(formatLengthWithEnd(30 * D, start + 30 * D, 'UTC')).toBe('30 days, until Dec 29');
+      expect(formatLengthWithEnd(60 * D, start + 60 * D, 'UTC')).toBe('60 days, until Jan 28, 2027');
+    } finally {
+      setSystemTime();
+    }
+  });
+});
+
+describe('the end beside the toggle is the Expiration Time of the message that is signed', () => {
+  const endOf = (t: HTMLElement) => text(t.querySelector('[data-testid="approval-expiry-end"]'));
+  test('the asked length ends where the signed message ends', () => {
+    const m = modelOf(ONE_SECRET);
+    const { target, cleanup } = mounted(m);
+    expect(endOf(target)).toBe(`until ${formatEndAt(Date.parse(m.expiry!), 7 * D)}`);
+    cleanup();
+  });
+
+  test('a pick made long after the screen opened is named by the new Expiration Time, not by the time the screen opened', () => {
+    const opened = Date.now();
+    const { target, setModel, cleanup } = mounted(modelOf(ONE_SECRET));
+    // 40 minutes pass; the page then signs an hour from this moment and its review model carries that time.
+    setSystemTime(new Date(opened + 40 * M));
+    try {
+      pick(target, 0);
+      const signedEnd = opened + 40 * M + H;
+      setModel({ ...modelOf(ONE_SECRET), expiry: new Date(signedEnd).toISOString() });
+      const hour = formatEndAt(signedEnd, H);
+      expect(endOf(target)).toBe(`until ${hour}`);
+      expect(announcement(target)).toBe(`Access lasts 1 hour, until ${hour}.`);
+      expect(hour).not.toBe(formatEndAt(opened + H, H));
+    } finally {
+      setSystemTime();
+      cleanup();
+    }
+  });
+
+  test('a length picked under Advanced is the visible line with the signed end', () => {
+    const { target, setModel, cleanup } = mounted(modelOf(ONE_SECRET), { expiryMs: 2 * D });
+    const signedEnd = Date.now() + 2 * D;
+    setModel({ ...modelOf(ONE_SECRET), expiry: new Date(signedEnd).toISOString() });
+    expect(toggleOf(target)).toBeNull();
+    expect(text(target.querySelector('[data-testid="approval-expiry-length-line"]'))).toBe(`Access lasts 2 days, until ${formatEndAt(signedEnd, 2 * D)}.`);
+    cleanup();
   });
 });
 

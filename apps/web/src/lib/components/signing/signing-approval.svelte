@@ -85,6 +85,8 @@
     allSecretsReach,
     grantDecryptsOneSecret,
     grantOnceReach,
+    allSecretsReadPart,
+    isScopedSecretGrant,
     secretLifetimeCapApplies,
     SECRET_GRANT_MAX_SECONDS,
     type ElevatedKind,
@@ -101,6 +103,7 @@
   import {
     ONCE_DEFAULT_EXPIRY_MS,
     SECRET_BLOCK_COPY,
+    splitAroundName,
     accessLastsLine,
     onceCautionLine,
     onceDefaultExpiryMs,
@@ -335,6 +338,8 @@
   // and the length toggle under it. The names of several secrets stay under Advanced details.
   const secretBlock = $derived.by(() => {
     if (!onExpiryChange || model.protocol !== "tinycloud-siwe-recap") return null;
+    // A scoped secret's row would show its bare name without the scope, so a request that has one keeps its own rows.
+    if (selectedGrants.some(isScopedSecretGrant)) return null;
     const rows = plainSummaryStatements;
     const oneName = oneNamedSecret(selectedGrants);
     const named = rows.filter((row) => row.secret !== undefined);
@@ -344,6 +349,10 @@
     let all = false;
     let row: string = SECRET_BLOCK_COPY.rowSeveral;
     if (onceTier && onceReachOf(onceGrants) === "secrets") {
+      // Only the read of every secret reads as one row: a KV read of the secrets directory, a decrypt on the secrets
+      // prefix, or both, each with that one action. A write, a wildcard, a wider path or the scoped prefix keeps the
+      // rows of its own.
+      if (onceGrants.some((grant) => grantOnceReach(grant) !== null && allSecretsReadPart(grant) === null)) return null;
       // Everything that opens the secrets as a whole reads as the one row, whichever way the request words it.
       covered = new Set(
         onceGrants.filter((grant) => grantOnceReach(grant) === "secrets").flatMap((grant) => buildSummaryStatements([grant]).map((row) => row.key)),
@@ -365,7 +374,7 @@
     if (rows.some((row) => row.severity === "sensitive" && !covered.has(row.key))) return null;
     // The secrets the row covers, from the same rows that make the count in the caution: none for the whole vault.
     const secrets = all ? [] : named.flatMap((entry) => (entry.secret ? [entry.secret] : []));
-    return { covered, caution, one, row, secrets };
+    return { covered, caution, one, row, secrets, name: one ? (oneName ?? named[0]!.secret!.name) : null };
   });
   const summaryStatements = $derived.by(() => {
     if (secretBlock === null || secretBlock.one) return plainSummaryStatements;
@@ -476,7 +485,7 @@
     const cap = shortenOnlyExpiry
       ? (onceTier ? (shortenOnlyExpiry.startMs < shortenOnlyExpiry.askedMs ? shortenOnlyExpiry.startMs : null) : expiryFoldMaxMs)
       : onceTier ? onceCapMs : unsignedMaxMs;
-    return { longer: secretLongerChoice(asked, cap), caution: secretBlock.caution, explicit: onceTier || shortenOnlyExpiry !== null };
+    return { longer: secretLongerChoice(asked, cap), caution: secretBlock.caution, name: secretBlock.name, endsAt: model.expiry ?? null, explicit: onceTier || shortenOnlyExpiry !== null };
   });
   // A signed request for a secret's own key says where it starts and the most it can be.
   const signedLengthNote = $derived(
@@ -1022,8 +1031,11 @@
     </p>
   {/if}
 
-  {#snippet statementText(text: string, codeSpans: boolean)}
-    {#if codeSpans}
+  {#snippet statementText(text: string, codeSpans: boolean, name: string | null = null)}
+    {@const parts = splitAroundName(text, name)}
+    {#if parts}
+      {parts.before}<span class="secret-name">{parts.name}</span>{parts.after}
+    {:else if codeSpans}
       {#each splitStatementCode(text) as part}{#if part.code}<code class="mono">{part.text}</code>{:else}{part.text}{/if}{/each}
     {:else}
       {text}
@@ -1039,7 +1051,7 @@
   {#snippet summaryRow(statement: SummaryStatement, active = true)}
     <li class="summary-statement" data-severity={active ? statement.severity : undefined}>
       <span class="statement-line">
-        <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans)}</span>
+        <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans, statement.secret?.name ?? (statement.key === NAMED_SECRET_DECRYPT_ROW ? oneNamedSecret(selectedGrants) : null))}</span>
         {#if active && statement.severity === "sensitive"}
           <span class="summary-sensitive-pill">Sensitive</span>
         {/if}
@@ -1409,12 +1421,13 @@
             <div class="bucket-content">
               <ul class="grant-list">
                 {#each secretBlock.secrets as secret (secret.keyPath)}
+                  {@const rowParts = splitAroundName(SECRET_BLOCK_COPY.groupRow(secret.name), secret.name)}
                   <li class="grant">
                     <div class="grant-heading">
-                      <span class="grant-title">{SECRET_BLOCK_COPY.groupRow(secret.name)}</span>
+                      <span class="grant-title">{#if rowParts}{rowParts.before}<span class="secret-name">{rowParts.name}</span>{rowParts.after}{:else}{SECRET_BLOCK_COPY.groupRow(secret.name)}{/if}</span>
                       <span class="grant-severity" data-severity="sensitive">Sensitive</span>
                     </div>
-                    <code class="grant-path mono"><span class="grant-target" title={secret.keyPath}>{secret.keyPath}</span></code>
+                    <code class="grant-path mono"><span class="grant-target" title={secret.kvPath ?? secret.keyPath}>{secret.kvPath ?? secret.keyPath}</span></code>
                   </li>
                 {/each}
               </ul>
@@ -1792,6 +1805,12 @@
   }
   .summary-statement[data-severity="attention"] {
     color: #7c4a03;
+  }
+  /* A secret's name stays on one line; only a name wider than the card breaks, at any point. */
+  .secret-name {
+    display: inline-block;
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
   .statement-primary {
     /* A long unbroken id (a 32-hex share key) wraps inside the row instead of pushing the Sensitive pill off the card. */
