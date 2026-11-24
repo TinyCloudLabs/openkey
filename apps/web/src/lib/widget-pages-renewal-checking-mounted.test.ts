@@ -1,4 +1,4 @@
-// Mounts the production embed page (widget/embed/sign) with its real signing adapter and drives a sign-in whose app
+// Mounts the production embed page (widget/embed/sign) and popup page (widget/sign), each with its real signing adapter, and drives a sign-in whose app
 // asked for renewal, holding the prepare answer. While the answer is out the access line reads "Checking renewal…"
 // (no length, no date, no box) inside a polite live region. When it lands the line settles: the renewal line and box
 // where the answer offers renewal, the length where it does not or where the prepare fails. An app that did not ask
@@ -80,9 +80,22 @@ function compileSource(source: string, name: string): string {
   return pathToFileURL(file).href;
 }
 
-const PAGE_URL = 'https://openkey.test/widget/embed/sign?origin=https%3A%2F%2Fcli.tinycloud.xyz';
-const stubs: Record<string, string> = {
-  '$app/stores': `export const page = { subscribe(run) { run({ url: new URL(${JSON.stringify(PAGE_URL)}) }); return () => {}; } };`,
+const PAGES = {
+  embed: {
+    file: join(WEB_ROOT, 'src/routes/widget/embed/sign/+page.svelte'),
+    url: 'https://openkey.test/widget/embed/sign?origin=https%3A%2F%2Fcli.tinycloud.xyz',
+    adapter: '$lib/components/signing/iframe-signing-adapter.svelte',
+  },
+  popup: {
+    file: join(WEB_ROOT, 'src/routes/widget/sign/+page.svelte'),
+    url: 'https://openkey.test/widget/sign?origin=https%3A%2F%2Fcli.tinycloud.xyz',
+    adapter: '$lib/components/signing/popup-signing-adapter.svelte',
+  },
+} as const;
+type PageName = keyof typeof PAGES;
+
+const baseStubs = (pageUrl: string): Record<string, string> => ({
+  '$app/stores': `export const page = { subscribe(run) { run({ url: new URL(${JSON.stringify(pageUrl)}) }); return () => {}; } };`,
   '$lib/auth-client': `export const authErrorMessage = (e, fallback) => fallback;
     export const authClient = { useSession: () => ({ subscribe(run) { run({ data: { user: { id: 'user_1' } }, isPending: false }); return () => {}; } }) };`,
   '$lib/api': `export const api = { getKey: async () => ({ key: ${JSON.stringify(KEY)} }), listKeys: async () => ({ keys: [${JSON.stringify(KEY)}] }) };`,
@@ -93,11 +106,11 @@ const stubs: Record<string, string> = {
       return { emitReady() {}, emitResize() {}, emitLayoutSignal() {}, destroy() {}, respond() {} };
     };
     export const createIframeLayoutGate = () => ({ measure() {}, changed() {}, applied() {}, isCurrent: () => false, canApprove: () => true, destroy() {} });`,
-};
+});
 
 const compiledFiles = new Map<string, string>();
-function compileComponent(file: string, stubFiles: Record<string, string>): string {
-  const cached = compiledFiles.get(file);
+function compileComponent(file: string, name: string, stubFiles: Record<string, string>): string {
+  const cached = compiledFiles.get(`${name}:${file}`);
   if (cached) return cached;
   const compiled = compile(readFileSync(file, 'utf8'), { generate: 'client', dev: false, name: 'Subject', filename: file });
   let code = '';
@@ -107,36 +120,38 @@ function compileComponent(file: string, stubFiles: Record<string, string>): stri
     const spec = match[1]!;
     let target = spec;
     if (spec in stubFiles) {
-      const stubFile = join(OUT_DIR, `stub-${spec.replace(/[^A-Za-z0-9]/g, '_')}.mjs`);
+      const stubFile = join(OUT_DIR, `${name}-stub-${spec.replace(/[^A-Za-z0-9]/g, '_')}.mjs`);
       writeFileSync(stubFile, stubFiles[spec]!);
       target = pathToFileURL(stubFile).href;
     } else if (spec === 'svelte') target = SVELTE_CLIENT;
     else if (spec === '@openkey/capability-review') {
       target = pathToFileURL(join(WEB_ROOT, '..', '..', 'packages', 'capability-review', 'src', 'index.ts')).href;
     } else if (spec.startsWith('$lib/') && spec.endsWith('.svelte')) {
-      target = compileComponent(join(WEB_ROOT, 'src/lib', spec.slice(5)), stubFiles);
+      target = compileComponent(join(WEB_ROOT, 'src/lib', spec.slice(5)), name, stubFiles);
     } else if (spec.startsWith('$lib/')) target = pathToFileURL(join(WEB_ROOT, 'src/lib', spec.slice(5))).href;
     code += `from '${target}'`;
     cursor = match.index! + match[0].length;
   }
   code += compiled.js.code.slice(cursor);
-  const out = join(OUT_DIR, `${file.replace(/[^A-Za-z0-9]/g, '_')}.mjs`);
+  const out = join(OUT_DIR, `${name}-${file.replace(/[^A-Za-z0-9]/g, '_')}.mjs`);
   writeFileSync(out, code);
   const url = pathToFileURL(out).href;
-  compiledFiles.set(file, url);
+  compiledFiles.set(`${name}:${file}`, url);
   return url;
 }
 
 const emptyUrl = compileSource(EMPTY_SOURCE, 'empty');
-const ADAPTER = '$lib/components/signing/iframe-signing-adapter.svelte';
-const pageStubs: Record<string, string> = {
-  ...stubs,
-  '$lib/components/auth/embedded-sign-in.svelte': `export { default } from '${emptyUrl}';`,
-  ...termsAcceptedStubs(emptyUrl),
-};
-const realAdapterUrl = compileComponent(join(WEB_ROOT, 'src/lib/components/signing/iframe-signing-adapter.svelte'), pageStubs);
-pageStubs[ADAPTER] = `export { default } from '${compileSource(wrapperSource(realAdapterUrl), 'wrapper')}';`;
-const Page = (await import(compileComponent(join(WEB_ROOT, 'src/routes/widget/embed/sign/+page.svelte'), pageStubs))).default;
+const Pages: Record<string, unknown> = {};
+for (const [name, page] of Object.entries(PAGES)) {
+  const pageStubs: Record<string, string> = {
+    ...baseStubs(page.url),
+    '$lib/components/auth/embedded-sign-in.svelte': `export { default } from '${emptyUrl}';`,
+    ...termsAcceptedStubs(emptyUrl),
+  };
+  const realAdapterUrl = compileComponent(join(WEB_ROOT, 'src/lib', page.adapter.slice(5)), name, pageStubs);
+  pageStubs[page.adapter] = `export { default } from '${compileSource(wrapperSource(realAdapterUrl), `${name}-wrapper`)}';`;
+  Pages[name] = (await import(compileComponent(page.file, name, pageStubs))).default;
+}
 
 // ---- the request ------------------------------------------------------------
 
@@ -191,7 +206,7 @@ interface Screen {
 
 const squash = (text: string | null | undefined) => (text ?? '').replace(/\s+/g, ' ').trim();
 
-async function withPage(ask: Record<string, unknown> | undefined, body: (screen: Screen) => Promise<void>) {
+async function withPage(pageName: PageName, ask: Record<string, unknown> | undefined, body: (screen: Screen) => Promise<void>) {
   store.__renewalChecking = { options: null };
   let release: ((answer: Answer) => void) | null = null;
   let asked = false;
@@ -233,7 +248,7 @@ async function withPage(ask: Record<string, unknown> | undefined, body: (screen:
   }) as unknown as typeof fetch;
   const target = document.createElement('div');
   document.body.appendChild(target);
-  const app = mount(Page, { target, props: {} });
+  const app = mount(Pages[pageName], { target, props: {} });
   try {
     await until(() => shared().options !== null, 'the transport');
     shared().options!.onRequest({
@@ -273,9 +288,9 @@ const CHECKING = 'Checking renewal…';
 const ONE_HOUR = /^This app's access to your data lasts 1 hour\.$/;
 const LASTS = /access to your data lasts/;
 
-describe('the embed page while the renewal offer is out', () => {
+for (const pageName of Object.keys(PAGES) as PageName[]) describe(`the ${pageName} page while the renewal offer is out`, () => {
   test('an app that asked shows "Checking renewal…" with no length, no date and no box, and Approve waits', async () => {
-    await withPage(ASK, async ({ line, box, approve, bodyText, lineElement }) => {
+    await withPage(pageName, ASK, async ({ line, box, approve, bodyText, lineElement }) => {
       await until(() => line() !== null, 'the line');
       expect(line()).toBe(CHECKING);
       expect(bodyText()).not.toMatch(LASTS);
@@ -287,7 +302,7 @@ describe('the embed page while the renewal offer is out', () => {
   });
 
   test('an offer settles the line to the ticked renewal box and the placeholder is gone', async () => {
-    await withPage(ASK, async ({ line, box, answer, bodyText, lineElement }) => {
+    await withPage(pageName, ASK, async ({ line, box, answer, bodyText, lineElement }) => {
       await until(() => line() === CHECKING, 'the placeholder');
       const live = lineElement()!.closest('[aria-live="polite"]')!;
       await answer({ offer: { leaseLifetimeSeconds: 7_776_000 } });
@@ -300,7 +315,7 @@ describe('the embed page while the renewal offer is out', () => {
   });
 
   test('an answer without an offer settles the line to the length and the placeholder is gone', async () => {
-    await withPage(ASK, async ({ line, box, answer, bodyText, lineElement }) => {
+    await withPage(pageName, ASK, async ({ line, box, answer, bodyText, lineElement }) => {
       await until(() => line() === CHECKING, 'the placeholder');
       const live = lineElement()!.closest('[aria-live="polite"]')!;
       await answer({ offer: null });
@@ -312,7 +327,7 @@ describe('the embed page while the renewal offer is out', () => {
   });
 
   test('a failed prepare settles the line to the length and shows the error; the placeholder is gone', async () => {
-    await withPage(ASK, async ({ line, box, answer, bodyText }) => {
+    await withPage(pageName, ASK, async ({ line, box, answer, bodyText }) => {
       await until(() => line() === CHECKING, 'the placeholder');
       await answer({ fail: 'prepare unreachable' });
       expect(line()).toMatch(ONE_HOUR);
@@ -323,7 +338,7 @@ describe('the embed page while the renewal offer is out', () => {
   });
 
   test('an app that did not ask shows the length from the first render, with no placeholder', async () => {
-    await withPage(undefined, async ({ line, box, bodyText, prepareAsked }) => {
+    await withPage(pageName, undefined, async ({ line, box, bodyText, prepareAsked }) => {
       await until(() => line() !== null, 'the line');
       expect(prepareAsked()).toBe(true);
       expect(line()).toMatch(ONE_HOUR);
