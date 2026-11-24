@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const id = 'abcdefghijklmnopqrstuvwxyz';
 const path = `/a/${id}`;
@@ -18,6 +19,7 @@ const session = {
 function prepared() {
   const siwe = [
     'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
+    '',
     `URI: ${target}#${target}`, 'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456',
     'Issued At: 2026-10-03T00:00:00.000Z', 'Expiration Time: 2026-11-03T01:00:00.000Z',
     'Resources:', `- ${makeRecapResource({ [`${space}/capabilities`]: { [capabilities]: [{}] }, [`${space}/kv/notes/`]: { [read]: [{}] } })}`,
@@ -69,6 +71,7 @@ async function mockApprovalAndGoogleSignup(page: Page) {
     if (pathname === '/api/delegate/prepare') return json(prepared());
     return json({ error: `Unmocked ${pathname}` }, 404);
   });
+  await page.context().route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.context().route('https://accounts.google.com/**', async route => {
     const start = calls.findLast(call => call.path === '/api/auth/sign-in/social');
     const callback = String(start?.body?.callbackURL);

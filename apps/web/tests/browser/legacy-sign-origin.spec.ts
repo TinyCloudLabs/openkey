@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { test, expect, type Page } from '@playwright/test';
 import { ORIGIN, LOOPBACK_ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 const address = '0x1111111111111111111111111111111111111111';
 const key = { id: 'selected-key', address, publicKey: '0x02', keyIndex: 0,
   label: 'Selected', keyType: 'MANAGED', createdAt: '2026-01-01T00:00:00Z' };
@@ -13,6 +14,7 @@ async function fixture(page: Page) {
     route.request().url().endsWith('/sign') ? { signature: '0x00', address } :
     route.request().url().includes('selected-key') ? { key } : { keys: [key] },
   }));
+  await page.context().route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto('/__parity_harness');
   // Observe actual targetOrigin arguments, including targets a receiver would silently drop.
   await page.evaluate(() => {

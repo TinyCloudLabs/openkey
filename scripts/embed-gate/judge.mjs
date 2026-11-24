@@ -1,6 +1,6 @@
 // The embed gate's expected-screen judge for an OpenKey sign review, and the artifact scrubber.
 // A review is approved only when its face matches one entry of expected-screens.json exactly:
-//   - the title lines and "Requested by <host page's hostname>";
+//   - the title lines (a line given as an array accepts any one of its strings) and "Requested by <host page's hostname>";
 //   - the permission lines between the review's intro and its first note/"Advanced details", as a
 //     multiset equal to the entry's `permissions` (no extra line, no missing line);
 //   - every other line in that region matches one of the entry's `notes` patterns (the expiry line);
@@ -20,7 +20,20 @@ export function scrub(text) {
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1<token>");
 }
 
+const titleMatches = (line, expected) => (Array.isArray(expected) ? expected.includes(line) : line === expected);
+
 const lineList = (text) => String(text).split("\n").map((line) => line.trim()).filter(Boolean);
+
+/** The embedded frame's Terms card text, whitespace-collapsed, without the links' screen-reader "(opens in a new tab)". */
+export const termsCardText = (text) => String(text).replace(/\(opens in a new tab\)/g, " ").replace(/\s+/g, " ").trim();
+
+/** Judges the embedded frame's Terms card against expected-screens.json `terms.embedCard`: exact text and links. */
+export function judgeTermsCard(text, hrefs, expected) {
+  const actual = termsCardText(text);
+  const textMatches = actual === expected.text;
+  const hrefsMatch = JSON.stringify(hrefs) === JSON.stringify(expected.hrefs);
+  return { ok: textMatches && hrefsMatch, textMatches, hrefsMatch, text: actual };
+}
 
 /**
  * Judges the visible text of a sign review frame against the expected faces.
@@ -33,8 +46,8 @@ export function judgeSignFace(text, faces, { hostOrigin }) {
   for (const face of faces) {
     const forbidden = (face.forbidden ?? []).filter((needle) => String(text).includes(needle));
     if (forbidden.length) { results.push({ face: face.name, reason: "forbidden_text", forbidden }); continue; }
-    const titleAt = lines.indexOf(face.title[0]);
-    if (titleAt < 0 || face.title.some((title, i) => lines[titleAt + i] !== title)) { results.push({ face: face.name, reason: "title" }); continue; }
+    const titleAt = lines.findIndex((line) => titleMatches(line, face.title[0]));
+    if (titleAt < 0 || face.title.some((title, i) => !titleMatches(lines[titleAt + i], title))) { results.push({ face: face.name, reason: "title" }); continue; }
     const requested = `Requested by ${hostname}`;
     if (!lines.includes(requested)) { results.push({ face: face.name, reason: "requester", expected: requested }); continue; }
     const start = lines.indexOf(face.intro);

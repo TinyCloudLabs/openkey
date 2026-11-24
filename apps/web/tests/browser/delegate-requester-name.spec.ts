@@ -5,6 +5,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
 const space = `tinycloud:pkh:eip155:1:${address}:default`;
@@ -14,6 +15,7 @@ const json = (route: Route, status: number, body: unknown) => route.fulfill({ st
 
 const siwe = [
   'mcp.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
+  '',
   'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
   'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-03T00:00:00.000Z', 'Expiration Time: 2026-11-03T01:00:00.000Z',
   'Resources:',
@@ -41,6 +43,7 @@ async function mock(page: Page) {
     if (url.pathname === '/api/delegate') return json(route, 200, { delegationHeader: { Authorization: 'Bearer x' }, delegationCid: 'bafy', spaceId: space, hostActivated: true, permissions: [] });
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 }
 /** The callback endpoint answers the page's POST (and its CORS preflight). */
 async function mockCallback(page: Page, endpoint: string) {

@@ -10,8 +10,9 @@
 //   embed-new     host page -> Sign in -> OpenKey connect frame -> email code -> Create a new account
 //                 -> every sign review approved -> host signed in. Records the Terms state.
 //   terms-owing   the embed-new run when the new account OWED the Terms (GET /api/account/terms says
-//                 requiresAcceptance): the frame must stay on /widget/embed/* and show the framed notice.
-//                 Terms not owed (Terms off) = UNVERIFIED, never PASS.
+//                 requiresAcceptance): the frame stays on /widget/embed/connect and shows the Terms card
+//                 (expected-screens.json terms.embedCard, exact), one "Agree and continue" there, the accept
+//                 answers 2xx. Terms not owed (Terms off) = UNVERIFIED, never PASS.
 //   own-window    https://openkey.so/auth/login in its own window: email code -> passkey created by a
 //                 virtual authenticator made in this run (no stored key) -> dashboard.
 //   embed-passkey a new browser profile: host page -> Sign in -> Passkey -> sign reviews -> signed in, as
@@ -31,11 +32,12 @@
 // screenshots mask every input and the run's QA mail address (this repository's artifacts are public).
 import { chromium } from "@playwright/test";
 import { createServer } from "node:http";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInbox, deleteInboxes, deleteInboxesOnStop, openKeyCode, reopenInbox, waitForMail } from "./qa-mail.mjs";
-import { judgeSignFace, scrub } from "./judge.mjs";
+import { judgeSignFace, judgeTermsCard, scrub } from "./judge.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OPENKEY = "https://openkey.so";
@@ -49,6 +51,11 @@ const DRY = process.env.EMBED_GATE_DRY === "1"; // stops at the connect frame: n
 // Cleanup only: deletes the account an earlier run with this 12-hex run id left behind, then reads back that the
 // address has no account. No new account is made.
 const CLEANUP_RUN_ID = process.env.EMBED_GATE_CLEANUP_RUN_ID ?? "";
+// The run's passkey (credential id and private key of a throwaway test key), written the moment it registers so
+// the job's always() cleanup step can still delete a passkey account after this process dies (Bobbie, 10:50Z).
+// Runner tmp only, mode 0600, outside the uploaded report folder; never logged, uploaded or cached.
+const PASSKEY_FILE = process.env.EMBED_GATE_PASSKEY_FILE ?? "";
+if (PASSKEY_FILE && !relative(resolve(OUT), resolve(PASSKEY_FILE)).startsWith("..")) throw new Error("EMBED_GATE_PASSKEY_FILE must lie outside EMBED_GATE_OUT, which is uploaded");
 const EXPECTED = JSON.parse(readFileSync(process.env.EMBED_GATE_EXPECTED ?? join(HERE, "expected-screens.json"), "utf8"));
 const SDK_BUNDLE = process.env.EMBED_GATE_SDK ?? join(HERE, "../../packages/sdk/dist/index.mjs");
 const MAX_APPROVALS = 4;
@@ -78,8 +85,8 @@ const runIdOf = (address) => /^tcqa\+[a-z0-9-]+-([0-9a-f]{12})-[0-9a-f]{8}@/.exe
 // The cleanup ledger (artifact cleanup-ledger.json, uploaded even when the job fails or is cancelled): this
 // run's QA account by label and run id, written before sign-up. Neither it nor the log holds the address, a hash
 // of it or a code: QA_MAIL_ADDRESS_SECRET rebuilds the address from the run id (dispatch cleanup_run_id).
-const writeLedger = (state) => {
-  const entry = { label: LABEL, runId: runIdOf(inbox.address), state,
+const writeLedger = (state, outcome = {}) => {
+  const entry = { label: LABEL, runId: runIdOf(inbox.address), state, ...outcome,
     githubRunId: process.env.GITHUB_RUN_ID ?? null, sha: process.env.EMBED_GATE_SHA ?? null, at: new Date().toISOString() };
   writeFileSync(join(OUT, "cleanup-ledger.json"), JSON.stringify(entry, null, 2));
   process.stderr.write(`embed-gate ledger: ${state} label ${entry.label} run id ${entry.runId}\n`);
@@ -144,6 +151,7 @@ function watchNetwork(context, label) {
     if (!FIRST_PARTY.test(url.hostname)) return;
     const status = response.status();
     if (url.hostname === "api.openkey.so" && url.pathname === "/api/auth/passkey/verify-registration" && status === 200) report.passkey.verifiedRegistration = true;
+    if (url.hostname === "api.openkey.so" && url.pathname === "/api/account/terms/accept") report.terms.accept = { label, atMs: since(), status };
     if (url.hostname === "api.openkey.so" && url.pathname === "/api/account/terms" && status === 200) {
       const body = await response.json().catch(() => null);
       if (body && typeof body === "object") report.terms.observed.push({ label, atMs: since(), version: body.version ?? null, requiresAcceptance: body.requiresAcceptance ?? null });
@@ -205,15 +213,29 @@ let credentials = []; // in memory only: the passkey this run registered
 let highestSignCount = 0;
 const nextSignCount = () => Math.max(highestSignCount + 1, Math.floor(Date.now() / 1000));
 
-/** A CDP virtual authenticator on a page or an out-of-process frame, holding this run's passkey. */
+/**
+ * A CDP virtual authenticator holding this run's passkey, on a page or an out-of-process frame. A frame that
+ * renders in its page's process (PR run 45013152670) shares the page's target: the page's authenticator serves it.
+ */
+const pageAuthenticators = new WeakMap();
 async function authenticator(context, target, label) {
-  const client = await context.newCDPSession(target);
+  let client;
+  try {
+    client = await context.newCDPSession(target);
+  } catch (error) {
+    if (typeof target.page !== "function" || !/does not have a separate CDP session/.test(String(error?.message))) throw error;
+    const page = target.page();
+    const existing = pageAuthenticators.get(page);
+    if (existing) return existing;
+    return authenticator(context, page, label);
+  }
   await client.send("WebAuthn.enable", { enableUI: false });
   const { authenticatorId } = await client.send("WebAuthn.addVirtualAuthenticator", { options: {
     protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true,
   } });
   for (const credential of credentials) await client.send("WebAuthn.addCredential", { authenticatorId, credential: { ...credential, signCount: nextSignCount() } });
   const state = { client, authenticatorId, asserted: 0 };
+  if (typeof target.page !== "function") pageAuthenticators.set(target, state);
   client.on("WebAuthn.credentialAsserted", (event) => {
     state.asserted += 1;
     report.passkey.asserted += 1;
@@ -345,12 +367,30 @@ const stepUpCodeIn = (text) => {
 };
 const stepUpCode = (subject) => waitForMail(inbox, { subject, extract: stepUpCodeIn, used: usedMail, timeout: 150_000, failure: "no OpenKey step-up code arrived in the test inbox" });
 
+// Email codes are paced. Naomi, 10:46Z, until the OpenKey rate-limit read lands: at most one OpenKey email-code
+// send per 30 s, and a 429 stops the run with no retry. Better Auth's sign-in code routes also allow 3 calls per
+// 60 s per client, and the count resets only after 60 s with none
+// (node_modules/better-auth/dist/plugins/email-otp/index.mjs:75-103; PR run 45012700587 met that 429). So any
+// code send waits 30 s after the last send, and a sign-in code send waits 61 s after the last sign-in send.
+const pace = { anySend: 0, signInSend: 0 };
+async function paceEmailCode(label, { signIn }) {
+  const wait = Math.max(pace.anySend + 30_000, signIn ? pace.signInSend + 61_000 : 0) - Date.now();
+  if (wait > 0) {
+    report.emailCodePacing = [...(report.emailCodePacing ?? []), { label, waitedMs: wait }];
+    await sleep(wait);
+  }
+  check();
+  pace.anySend = Date.now();
+  if (signIn) pace.signInSend = pace.anySend;
+}
+
 /** Email sign-in on https://openkey.so/auth/login in its own window; returns the screen it lands on. */
 async function ownWindowEmailSignIn(page, redirect) {
   await page.goto(`${OPENKEY}/auth/login${redirect ? `?redirect=${encodeURIComponent(redirect)}` : ""}`, { waitUntil: "domcontentloaded", timeout: 60_000 });
   const email = page.locator('input[type="email"]').first();
   await until("own-window-email-field", () => email.isVisible(), 30_000);
   await email.fill(inbox.address);
+  await paceEmailCode("own-window", { signIn: true });
   await page.getByRole("button", { name: "Continue with email", exact: true }).click({ timeout: 10_000 });
   await screen(page, "own-window-check-email", [["otp", page.locator("input#otp")]], 30_000);
   await page.locator("input#otp").fill(await code());
@@ -367,6 +407,7 @@ async function ownWindowEmailSignIn(page, redirect) {
 /** The step-up dialog an add-passkey meets with a session alone: an email code, then the retry. */
 async function stepUpByEmail(page) {
   const dialog = page.getByRole("dialog");
+  await paceEmailCode("passkey-step-up", { signIn: false });
   await dialog.getByRole("button", { name: "Email me a code", exact: true }).click({ timeout: 10_000 });
   await dialog.locator("#passkey-step-up-code").fill(await stepUpCode(/add a passkey to your OpenKey account/));
   await dialog.getByRole("button", { name: "Verify code", exact: true }).click({ timeout: 10_000 });
@@ -381,6 +422,8 @@ async function registerPasskey(page, context) {
     ["dashboard", page.getByRole("heading", { name: "Your Keys", exact: true })],
   ], 30_000);
   if (landed === "terms") {
+    // Once the account agreed in the frame, its own window must not ask again.
+    if (report.terms.agreedIn === "embed-frame") { await snap(page, "own-window-terms-again"); fail("terms_prompt_after_agreement", { agreedIn: "embed-frame" }); }
     report.terms.agreedIn = "own-window";
     await page.getByRole("button", { name: "Agree and continue", exact: true }).click({ timeout: 10_000 });
     landed = await screen(page, "own-window-after-terms", [
@@ -411,6 +454,10 @@ async function registerPasskey(page, context) {
   if (made.length !== 1) fail("virtual_authenticator_holds_unexpected_credentials", { count: made.length });
   credentials = made.map(({ credentialId, isResidentCredential, rpId, privateKey, userHandle }) => ({ credentialId, isResidentCredential, rpId, privateKey, userHandle }));
   highestSignCount = Math.max(highestSignCount, made[0].signCount ?? 0);
+  if (PASSKEY_FILE) {
+    writeFileSync(PASSKEY_FILE, JSON.stringify({ runId: runIdOf(inbox.address), credentials, highestSignCount }), { mode: 0o600 });
+    chmodSync(PASSKEY_FILE, 0o600);
+  }
   if (credentials[0].rpId !== "openkey.so") fail("passkey_rp_id_unexpected", { rpId: credentials[0].rpId });
   report.passkey.registered = 1;
   report.passkey.registeredAfterMs = since() - before;
@@ -428,6 +475,34 @@ async function deleteAccount(browser) {
       ["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })],
       ["login", page.locator('input[type="email"]')],
     ], 45_000);
+    if (landed === "login" && credentials.length) {
+      // With the run's passkey present the login page may sign in by itself (passkey in the email field, PR run
+      // 45013152670); otherwise "Use a passkey instead". No email code is spent.
+      try {
+        const passkey = page.getByRole("button", { name: /^(Use a passkey instead|Sign in with a passkey)$/ });
+        const next = await screen(page, "cleanup-passkey-login", [
+          ["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })],
+          ["dashboard", page.getByRole("heading", { name: "Your Keys", exact: true })],
+          ["passkey-button", passkey],
+        ], 30_000);
+        // The page may sign in by itself between the check and the click; the screen below decides.
+        if (next === "passkey-button") await passkey.first().click({ timeout: 10_000 }).catch(() => {});
+        const signed = await screen(page, "cleanup-signed-in", [
+          ["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })],
+          ["dashboard", page.getByRole("heading", { name: "Your Keys", exact: true })],
+        ], 45_000);
+        if (signed === "dashboard") await page.goto(`${OPENKEY}/dashboard/settings/delete-account`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+        await screen(page, "cleanup-explain", [["explain", page.getByRole("heading", { name: "Delete your OpenKey account", exact: true })]], 45_000);
+        landed = "explain";
+      } catch (error) {
+        // A passkey whose account is already gone signs in nowhere; the email sign-in below then lands on
+        // "Create a new account" (no_account). A first-party refusal still stops cleanup.
+        const verdict = error instanceof GateFailure ? error.verdict : "error";
+        if (verdict.startsWith("first_party_")) throw error;
+        report.cleanupPasskeyFallback = verdict;
+        stopped = null;
+      }
+    }
     if (landed === "login") {
       landed = await ownWindowEmailSignIn(page, "/dashboard/settings/delete-account");
       if (landed === "new-account") return { deleted: false, reason: "no_account" };
@@ -442,9 +517,13 @@ async function deleteAccount(browser) {
       ["passkey", page.getByRole("button", { name: "Verify with passkey and delete", exact: true })],
       ["email", page.getByRole("button", { name: "Send code", exact: true })],
     ], 30_000);
+    // An account whose step-up passkey left with its run deletes only by that passkey: a passkey added by email
+    // proof never counts for step-up (apps/api/src/services/passkey-enrolment.ts:32-34, passkey-freshness.ts:188).
+    if (method === "passkey" && credentials.length === 0) fail("cleanup_needs_lost_passkey");
     if (method === "passkey") {
       await page.getByRole("button", { name: "Verify with passkey and delete", exact: true }).click({ timeout: 10_000 });
     } else {
+      await paceEmailCode("delete-step-up", { signIn: false });
       await page.getByRole("button", { name: "Send code", exact: true }).click({ timeout: 10_000 });
       await page.locator("#delete-code").fill(await stepUpCode(/delete your OpenKey account/));
       await page.getByRole("button", { name: "Verify and delete account", exact: true }).click({ timeout: 10_000 });
@@ -517,6 +596,14 @@ let accountMayExist = false;
 try {
   if (CLEANUP_RUN_ID) {
     inbox = reopenInbox(LABEL, CLEANUP_RUN_ID);
+    // The always() cleanup step of the run's own job: the passkey that run registered, if it got that far.
+    if (PASSKEY_FILE && existsSync(PASSKEY_FILE)) {
+      const saved = JSON.parse(readFileSync(PASSKEY_FILE, "utf8"));
+      if (saved.runId !== CLEANUP_RUN_ID) throw new Error("the passkey file belongs to another run id");
+      credentials = saved.credentials;
+      highestSignCount = saved.highestSignCount ?? 0;
+      report.cleanupPasskey = "loaded";
+    }
     accountMayExist = true;
     report.mode = "cleanup-only";
     throw new GateFailure("cleanup_only");
@@ -541,6 +628,7 @@ try {
     await button(connect, "Continue with email").first().click({ timeout: 10_000 });
     await until("connect-email-field", () => connect.locator('input[type="email"]').isVisible(), 30_000);
     await connect.locator('input[type="email"]').fill(inbox.address);
+    await paceEmailCode("embed-new", { signIn: true });
     await button(connect, "Send code").first().click({ timeout: 10_000 });
     const codeField = connect.locator('input[autocomplete="one-time-code"], input[inputmode="numeric"], input[type="text"]').first();
     await until("connect-code-field", () => codeField.isVisible(), 30_000);
@@ -554,22 +642,33 @@ try {
     await connect.getByRole("button", { name: "Create a new account", exact: true }).click({ timeout: 10_000 });
     accountMayExist = true;
     report.account.created = true;
-    // A new account that owes the Terms meets the framed notice (#685) and agrees in a window of its own.
+    // A new account that owes the Terms meets the Terms card inside the connect frame and agrees there.
     const next = await screen(page, "connect-after-create", [
-      ["terms-notice", connect.getByRole("heading", { name: EXPECTED.terms.framedNoticeHeading, exact: true })],
+      ["terms-card", connect.getByTestId("terms-accept")],
       ["sign", () => Boolean(frameAt(page, "/widget/embed/sign"))],
     ], 60_000, connect);
-    if (next === "terms-notice") {
-      report.terms.framedNotice = true;
-      await snap(page, "embed-new-terms-notice");
-      const opened = context.waitForEvent("page", { timeout: 30_000 });
-      await connect.getByRole("button", { name: EXPECTED.terms.openButton, exact: true }).click({ timeout: 10_000 });
-      const terms = await opened;
-      await terms.waitForLoadState("domcontentloaded");
-      const termsScreen = await screen(terms, "terms-window", [["agree", terms.getByRole("button", { name: "Agree and continue", exact: true })]], 45_000);
-      report.terms.window = { path: pathOf(terms.url()), screen: termsScreen };
-      await terms.getByRole("button", { name: "Agree and continue", exact: true }).click({ timeout: 10_000 });
-      report.terms.agreedIn = "terms-window";
+    if (next === "terms-card") {
+      const shownAtMs = since();
+      const cardLocator = connect.getByTestId("terms-accept");
+      const text = await cardLocator.innerText({ timeout: 10_000 });
+      const hrefs = await cardLocator.locator("a[href]").evaluateAll((links) => links.map((link) => link.getAttribute("href")));
+      const judged = judgeTermsCard(text, hrefs, EXPECTED.terms.embedCard);
+      // textSha256 is the sha256 of the card text as judged (whitespace-collapsed). The release's textSha256 is the
+      // published Terms document's, which the card links to and does not show; both are recorded, not compared.
+      const release = JSON.parse(readFileSync(join(HERE, "../../apps/api/src/terms-release.json"), "utf8"));
+      report.terms.card = {
+        shownAtMs, path: pathOf(connect.url()), textMatches: judged.textMatches, hrefsMatch: judged.hrefsMatch, hrefs,
+        textSha256: createHash("sha256").update(judged.text).digest("hex"), releaseVersion: release.version, releaseTextSha256: release.textSha256,
+      };
+      artifact("terms-card.txt", judged.text);
+      await snap(page, "embed-new-terms-card");
+      if (!judged.ok) fail("terms_card_unexpected", { textMatches: judged.textMatches, hrefsMatch: judged.hrefsMatch });
+      const agree = connect.getByTestId("terms-agree");
+      await until("terms-agree-armed", () => agree.isEnabled(), 15_000);
+      await agree.click({ timeout: 10_000 });
+      report.terms.agreedIn = "embed-frame";
+      await until("terms-accept-answered", () => Boolean(report.terms.accept), 30_000);
+      if (report.terms.accept.status < 200 || report.terms.accept.status >= 300) fail("terms_accept_refused", { status: report.terms.accept.status });
     }
     const approvals = await approveUntilSignedIn(page, context, "embed-new");
     await snap(page, "embed-new-signed-in");
@@ -604,10 +703,11 @@ try {
   {
     const embedRead = report.terms.observed.find((entry) => entry.label === "embed-new");
     const ownRead = report.terms.observed.find((entry) => entry.label === "own-window-read");
-    const owed = report.terms.framedNotice === true || report.terms.refusedForTerms === true || embedRead?.requiresAcceptance === true;
+    const owed = report.terms.card !== undefined || report.terms.refusedForTerms === true || embedRead?.requiresAcceptance === true;
     report.terms.owed = owed;
     report.terms.source = embedRead ? "embed GET /api/account/terms" : ownRead ? "own-window GET /api/account/terms" : "not observed";
-    if (owed) leg("terms-owing", "PASS", { notice: report.terms.framedNotice === true, agreedIn: report.terms.agreedIn ?? null });
+    if (owed && report.terms.card === undefined) fail("terms_owed_without_terms_card", { agreedIn: report.terms.agreedIn ?? null });
+    if (owed) leg("terms-owing", "PASS", { card: true, agreedIn: report.terms.agreedIn ?? null, accept: report.terms.accept?.status ?? null });
     else leg("terms-owing", "UNVERIFIED", { reason: ownRead?.version === null || embedRead?.version === null ? "terms off (Terms version null)" : "the new account did not owe the Terms", requiresAcceptance: embedRead?.requiresAcceptance ?? ownRead?.requiresAcceptance ?? null });
   }
 
@@ -710,7 +810,7 @@ try {
 } finally {
   // cleanup -----------------------------------------------------------------------------------------
   if (accountMayExist) {
-    stopped = null; // cleanup runs after a stop; its own watcher records any refusal
+    stopped = null; // cleanup runs after a stop; its own watcher records any refusal. A 429 here ends LEAKED (Naomi, 10:46Z).
     try {
       const result = await deleteAccount(browser);
       // "no_account": the run stopped before OpenKey created the account; nothing to delete, nothing leaked.
@@ -726,7 +826,9 @@ try {
       report.result = "failed";
       report.account.leakedRunId = inbox ? runIdOf(inbox.address) : "unknown";
     }
-    if (inbox) writeLedger(report.account.deleted === true ? "deleted" : "LEAKED");
+    // The job's always() cleanup step reads these: it never retries an account that met a 429 (Naomi, 10:46Z).
+    if (inbox) writeLedger(report.account.deleted === true ? "deleted" : "LEAKED", report.account.deleted === true ? {} : {
+      cleanupVerdict: report.legs.cleanup?.verdict ?? null, metRateLimit: report.network.some((entry) => entry.status === 429) });
     if (report.account.deleted === true && report.mode === "cleanup-only") {
       // Read back: the address must now sign in as a stranger ("Create a new account"), which is never pressed.
       try {

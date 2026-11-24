@@ -69,10 +69,18 @@ model TermsAcceptance {
   // SHA-256 (hex) of the published text of this version.
   textSha256  String
   acceptedAt  DateTime @default(now())
-  // 'web', or 'native:<clientId>' when accepted in a native app's sign-in sheet.
+  // 'web'; 'native:<clientId>' when accepted in a native app's sign-in sheet; 'embed' when accepted in the
+  // embedded OpenKey frame (set by the server from the frame's session token, never from the request body).
   surface     String
   // The API build that recorded the acceptance.
   appVersion  String
+  // 'embed' only: the session that agreed, the proof a person was present ('session_created': a sign-in within
+  // 10 minutes) with its time, the request's Origin, and the embedding page's origin as the frame claimed it.
+  sessionId          String?
+  proof              String?
+  proofAt            DateTime?
+  requestOrigin      String?
+  embedOriginClaimed String?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -199,11 +207,28 @@ model RenewalLease {
   // The signed lease, encrypted at rest, kept only while admission is unconfirmed (to replay it and revoke).
   leaseAuthorization   String?
 
+  nativeRenewal NativeRenewalLease?
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([sessionId])
   @@map("renewal_lease")
+}
+
+// The native lifecycle binding survives its short-lived request and OAuth token rows.
+model NativeRenewalLease {
+  leaseCid          String    @id
+  requestId         String
+  grantId           String?   @unique
+  deliveredAt       DateTime?
+  revokeUntil       DateTime
+  stopRequested     Boolean   @default(false)
+  originalRevokedAt DateTime?
+
+  lease RenewalLease @relation(fields: [leaseCid], references: [leaseCid], onDelete: Cascade)
+
+  @@index([requestId])
+  @@map("native_renewal_lease")
 }
 
 // Short-lived, ticket-only prepared SIWE handoff. No signed result is persisted.
@@ -717,6 +742,8 @@ model TinyCloudNativeRequest {
   sessionJwk              Json
   sessionJkt              String
   requestedPermissions    Json
+  renewalAsk              Json?
+  renewalLeaseCid         String?
   ttlSeconds              Int
   // PAR siwe_nonce, or the server nonce written by the first prepare. Fixed
   // once set (trigger), and reused by every revision and the approval.
@@ -772,6 +799,7 @@ model TinyCloudNativePreparation {
   sessionSiwe  String
   hostPlan     Json?
   permissions  Json
+  renewalChoice Json?
   digest       String
   createdAt    DateTime @default(now())
 
@@ -800,6 +828,7 @@ model TinyCloudNativeGrant {
   approvedPermissions      Json
   ttlSeconds               Int
   tinycloudHost            String
+  renewalLeaseCid          String?
   refreshTokenHash         String?  @unique
   previousRefreshTokenHash String?
   rotatedAt                DateTime?

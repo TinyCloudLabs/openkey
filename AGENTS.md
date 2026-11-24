@@ -62,7 +62,8 @@ it detects drift. `db:push` remains a local-development command only.
 ### API (Phala Cloud / dstack TEE)
 - Docker image: `skgbafa/openkey-api`
 - CI: `.github/workflows/deploy-api.yml` triggers on push to `main` only when the API image or deploy can change (paths: `apps/api/**`, `packages/{db,tee,types}/**`, `Dockerfile`, `.dockerignore`, root `package.json`/`bun.lock`/`bunfig.toml`/`turbo.json`/`tsconfig.json`/`prisma.config.ts`, the production migration scripts, `docker-compose.prod.yml`, and the workflow itself); run it by hand with `workflow_dispatch`. Keep the list in sync with the `Dockerfile`.
-- Image tagged with git SHA and `latest`
+- Image tagged with git SHA and `latest`, but the compose sent to Phala names it only by digest (`skgbafa/openkey-api@sha256:…`); `scripts/compose-image-digests.ts` fails a deploy whose compose has any tag-only or `${VAR}` image, and the push carries a GitHub build provenance attestation (TC-3837)
+- After each deploy, `.github/workflows/publish-api-compose.yml` publishes the app-compose the CVM measured as `app-compose.<compose_hash>.json` on the release `openkey-api-<commit>` (TC-3837)
 - Deployed to Phala Cloud CVM named `openkey-api`
 - Manual deploy: `bun run phala:env` (uses `.env.prod`)
 
@@ -75,6 +76,7 @@ it detects drift. `db:push` remains a local-development command only.
 
 ### Pre-release: embed gate
 - `.github/workflows/embed-gate.yml` runs `scripts/embed-gate/run.mjs` on pull requests that touch the web, the SDK or capability-review, on dispatch, and as a `workflow_call`. The web built from the commit is served inside the runner as `https://openkey.so` (production API) and framed by the real `https://tinycloud.one`; a fresh qa-mail account signs up in the frame, adds a passkey made by a virtual authenticator in the runner, signs in again in the frame, in a pop-up and in OpenKey's own window, and is then deleted. It fails when an OpenKey frame leaves `/widget/embed/` or is refused (TC-3766), when a sign review differs from `scripts/embed-gate/expected-screens.json`, or on a production 5xx, 429 or unexpected 403. When TinyCloud One's requested permissions or OpenKey's review copy change on purpose, update `expected-screens.json` in the same change. The Terms-owing leg reports UNVERIFIED while production asks no account to agree to the Terms.
+- The gate's account is deleted in the UI. If the gate process cannot do it, an `always()` step in the same job retries once with the run's passkey, which is kept in runner tmp only and never uploaded. Delete needs a step-up passkey, and a passkey added by email never counts for step-up. An account whose run met a 429, or whose runner was lost, stays in the artifact's `cleanup-ledger.json` as LEAKED. Remove it with the dispatch input `cleanup_run_id` if it has no passkey, otherwise through the operator removal. The gate sends at most one email code per 30 s; runs queue in one concurrency group.
 
 ## Auth Architecture (better-auth)
 

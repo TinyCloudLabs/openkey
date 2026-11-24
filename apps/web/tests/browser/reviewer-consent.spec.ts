@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { ORIGIN } from './e2e-port';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 test('the hosted consent page loads bound public metadata with a real reviewer cookie', async ({ page, context }) => {
   test.setTimeout(90_000);
@@ -40,6 +41,7 @@ test('the hosted consent page loads bound public metadata with a real reviewer c
       const response = await route.fetch({ url: fixture.api + url.pathname + url.search, headers });
       await route.fulfill({ response });
     });
+    await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
     await page.goto('/oauth/consent?' + fixture.consentQuery);
     await expect(page.getByRole('heading', { name: 'Reviewer consent fixture' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Allow', exact: true })).toBeEnabled();

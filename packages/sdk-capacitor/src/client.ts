@@ -20,6 +20,8 @@ import {
   sendParRequest,
   sessionKeypairFromJwk,
   type NativeDelegationPermission,
+  type NativeRenewalAsk,
+  type NativeRenewalReceipt,
   type NativeStepUpPermission,
   type NativeStepUpRenewal,
   type NativeFetch,
@@ -61,6 +63,15 @@ export interface OpenKeyNativeOptions {
   verifyDelegation?: (delegation: TinyCloudDelegation) => Promise<void>;
 }
 
+export interface NativeSignInOptions {
+  capabilities: NativeDelegationPermission[];
+  ttlSeconds?: number;
+  siweNonce?: string;
+  loginHint?: string;
+  loginMethod?: NativeLoginMethod;
+  renewal?: NativeRenewalAsk;
+}
+
 export interface NativeTokens {
   accessToken: string;
   refreshToken: string;
@@ -72,6 +83,12 @@ export interface NativeSession {
   tokens: NativeTokens;
   delegation: TinyCloudDelegation;
   sessionKey: NativeSessionKeypair;
+  /** Use the node's effective expiry for this CID; OpenKey does not remint the grant. */
+  renewalMode?: 'leased';
+  /** New exchange only. Save the receipt separately only after successful node admission. */
+  renewal?: NativeRenewalReceipt | null;
+  /** Monotonic receipt arrival for the admission deadline. New exchange only. */
+  renewalArrivedAt?: number;
   /** Step-ups held for this grant, by app id; absent when there are none. */
   stepUps?: Record<string, TinyCloudStepUp>;
 }
@@ -84,6 +101,8 @@ interface StoredSession {
   permissions: NativeDelegationPermission[];
   /** Milliseconds when the current refresh token was issued or rotated. */
   refreshIssuedAt?: number;
+  /** The device can use its bound token only to stop the standing lease after OAuth expiry. */
+  standingRevokeUntil?: number;
   /** Step-ups held for this grant, by app id. Absent in sessions stored before TC-3569. */
   stepUps?: Record<string, TinyCloudStepUp>;
 }
@@ -93,6 +112,7 @@ interface PendingRevokeGrant {
   refreshToken: string;
   attempts: number;
   expiresAt: number;
+  standing?: true;
 }
 
 interface PendingRevokeRecord {
@@ -107,6 +127,7 @@ interface ExchangeIntent {
   privateJwk: NativeSessionJwk & { d: string };
   refreshToken?: string;
   expiresAt: number;
+  standing?: true;
 }
 
 function asNativeError(error: unknown): OpenKeyNativeError {
@@ -156,6 +177,7 @@ function sanitizeStepUps(value: unknown): Record<string, TinyCloudStepUp> | unde
 }
 
 const TERMINAL_RENEW_CODES = new Set(['INVALID_GRANT', 'CONSENT_REQUIRED', 'ACCESS_DENIED', 'SPACE_UNAVAILABLE']);
+const MAX_STANDING_LEASE_MS = 365 * 24 * 60 * 60_000;
 const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_REVOKE_ATTEMPTS = 20;
 
@@ -179,8 +201,9 @@ function refreshExpiry(record: StoredSession): number {
 }
 
 function pendingGrant(record: StoredSession): PendingRevokeGrant {
-  return { privateJwk: record.privateJwk, refreshToken: record.tokens.refreshToken,
-    attempts: 1, expiresAt: refreshExpiry(record) };
+  return { privateJwk: record.privateJwk, refreshToken: record.tokens.refreshToken, attempts: 1,
+    expiresAt: record.standingRevokeUntil ?? refreshExpiry(record),
+    ...(record.standingRevokeUntil !== undefined && { standing: true }) };
 }
 
 type SessionMatch = { key: string; token?: string } | null;
@@ -327,7 +350,8 @@ export class OpenKeyNative {
     if (value == null) return null;
     try {
       const stored = JSON.parse(value) as StoredSession;
-      if (stored.version !== 1 || !stored.tokens?.refreshToken || !stored.delegation || !stored.privateJwk) throw new Error();
+      if (stored.version !== 1 || !stored.tokens?.refreshToken || !stored.delegation || !stored.privateJwk ||
+          (stored.standingRevokeUntil !== undefined && !Number.isFinite(stored.standingRevokeUntil))) throw new Error();
       sessionKeypairFromJwk(stored.privateJwk);
       stored.stepUps = sanitizeStepUps(stored.stepUps);
       return stored;
@@ -383,11 +407,15 @@ export class OpenKeyNative {
       catch { throw new OpenKeyNativeError('STORAGE', 'Exchange intent could not be saved'); }
     });
   }
-  private markExchangeToken(attemptId: string, token: string): Promise<void> {
+  private markExchangeToken(attemptId: string, token: string, standingLeaseExpiresAt?: number): Promise<void> {
     return this.withStorage(async () => {
       const intent = await this.readExchangeIntent();
       if (!intent || intent.attemptId !== attemptId) throw new OpenKeyNativeError('STORAGE', 'Exchange intent was lost before its token could be saved');
       intent.refreshToken = token;
+      if (standingLeaseExpiresAt !== undefined && Number.isFinite(standingLeaseExpiresAt)) {
+        intent.standing = true;
+        intent.expiresAt = Math.max(intent.expiresAt, Math.min(standingLeaseExpiresAt, Date.now() + MAX_STANDING_LEASE_MS));
+      }
       try { await this.plugin.secureStoreSet({ key: this.exchangeIntentKey, value: JSON.stringify(intent) }); }
       catch { throw new OpenKeyNativeError('STORAGE', 'Exchanged refresh token could not be saved'); }
     });
@@ -421,7 +449,7 @@ export class OpenKeyNative {
       const error = asNativeError(caught);
       if (transientRevoke(error)) {
         await this.appendPendingRevoke({ privateJwk: intent.privateJwk, refreshToken: intent.refreshToken,
-          attempts: 1, expiresAt: intent.expiresAt });
+          attempts: 1, expiresAt: intent.expiresAt, ...(intent.standing && { standing: true }) });
         await this.clearExchangeIntent(intent.attemptId);
         throw error;
       }
@@ -430,7 +458,7 @@ export class OpenKeyNative {
   }
   private appendPendingRevoke(grant: PendingRevokeGrant): Promise<void> {
     return this.withStorage(async () => {
-      if (Date.now() >= grant.expiresAt || grant.attempts >= MAX_REVOKE_ATTEMPTS) return;
+      if (Date.now() >= grant.expiresAt || (!grant.standing && grant.attempts >= MAX_REVOKE_ATTEMPTS)) return;
       const record = await this.readPending();
       if (record.grants.some((item) => item.refreshToken === grant.refreshToken)) return;
       record.grants.push(grant);
@@ -460,7 +488,7 @@ export class OpenKeyNative {
     const attempted = new Map<string, number>();
     let transient: OpenKeyNativeError | undefined;
     for (const grant of record.grants) {
-      if (Date.now() >= grant.expiresAt || grant.attempts >= MAX_REVOKE_ATTEMPTS) {
+      if (Date.now() >= grant.expiresAt || (!grant.standing && grant.attempts >= MAX_REVOKE_ATTEMPTS)) {
         settled.add(grant.refreshToken);
         continue;
       }
@@ -474,7 +502,7 @@ export class OpenKeyNative {
         if (!transientRevoke(error)) settled.add(grant.refreshToken);
         else {
           const attempts = grant.attempts + 1;
-          if (attempts >= MAX_REVOKE_ATTEMPTS) settled.add(grant.refreshToken);
+          if (!grant.standing && attempts >= MAX_REVOKE_ATTEMPTS) settled.add(grant.refreshToken);
           else attempted.set(grant.refreshToken, attempts);
           transient ??= error;
         }
@@ -570,10 +598,11 @@ export class OpenKeyNative {
     const sessionKey = sessionKeypairFromJwk(record.privateJwk);
     this.coordinator.sessionEpochs.set(record.privateJwk.x, this.coordinator.epoch);
     const stepUps = liveStepUps(record.stepUps);
-    return { tokens: record.tokens, delegation: record.delegation, sessionKey, ...(stepUps ? { stepUps } : {}) };
+    return { tokens: record.tokens, delegation: record.delegation, sessionKey,
+      ...(record.standingRevokeUntil !== undefined && { renewalMode: 'leased' as const }), ...(stepUps ? { stepUps } : {}) };
   }
 
-  signIn(options: { capabilities: NativeDelegationPermission[]; ttlSeconds?: number; siweNonce?: string; loginHint?: string; loginMethod?: NativeLoginMethod }): Promise<NativeSession> {
+  signIn(options: NativeSignInOptions): Promise<NativeSession> {
     if (this.coordinator.signInFlight) return Promise.reject(new OpenKeyNativeError('UNAVAILABLE', 'A sign-in is already in progress'));
     const attempt = ++this.coordinator.signInAttempt;
     const pending = this.signInOnce(options, attempt);
@@ -582,7 +611,7 @@ export class OpenKeyNative {
     return pending;
   }
 
-  private async signInOnce(options: { capabilities: NativeDelegationPermission[]; ttlSeconds?: number; siweNonce?: string; loginHint?: string; loginMethod?: NativeLoginMethod }, attempt: number): Promise<NativeSession> {
+  private async signInOnce(options: NativeSignInOptions, attempt: number): Promise<NativeSession> {
     // Keep the existing session active until the replacement is ready to commit.
     await this.coordinator.signOutFlight?.catch(() => {});
     this.assertAttempt(attempt);
@@ -602,7 +631,7 @@ export class OpenKeyNative {
     const { requestUri } = await sendParRequest(metadata, {
       clientId: this.options.clientId, redirectUri: this.options.redirectUri, state,
       codeChallenge: challenge, sessionKey, permissions: options.capabilities,
-      ttlSeconds: options.ttlSeconds, siweNonce: options.siweNonce,
+      ttlSeconds: options.ttlSeconds, siweNonce: options.siweNonce, renewal: options.renewal,
       loginHint: options.loginHint, loginMethod: options.loginMethod,
     }, this.fetchFn);
     const url = buildNativeAuthorizeUrl({ authorizationEndpoint: metadata.authorizationEndpoint, clientId: this.options.clientId, requestUri });
@@ -618,8 +647,8 @@ export class OpenKeyNative {
       result = await exchangeDelegationCode({ metadata, code, redirectUri: this.options.redirectUri,
         clientId: this.options.clientId, codeVerifier: verifier, sessionKey,
         requestedPermissions: options.capabilities, expectedTinycloudHost: this.expectedHost(), fetchFn: this.fetchFn,
-        onRefreshToken: async (token) => {
-          try { await this.markExchangeToken(state, token); }
+        onRefreshToken: async (token, standingLeaseExpiresAt) => {
+          try { await this.markExchangeToken(state, token, standingLeaseExpiresAt); }
           catch (caught) {
             const error = asNativeError(caught);
             error.rotatedRefreshToken = token;
@@ -627,12 +656,18 @@ export class OpenKeyNative {
           }
         } });
       await this.verifier(result.delegation);
+      const refreshIssuedAt = Date.now();
+      const standingLeaseExpiry = result.renewal ? Date.parse(result.renewal.receipt.leaseExpiresAt) : 0;
+      const standingRevokeUntil = result.renewalMode === 'leased'
+        ? Math.max(refreshIssuedAt + REFRESH_TTL_MS, Math.min(standingLeaseExpiry, refreshIssuedAt + MAX_STANDING_LEASE_MS))
+        : undefined;
       const record: StoredSession = {
         version: 1,
         tokens: { accessToken: result.accessToken, refreshToken: result.refreshToken, expiresIn: result.expiresIn, accessTokenExpiresAt: result.accessTokenExpiresAt },
         delegation: result.delegation, privateJwk: sessionKey.privateJwk,
         permissions: normalizeDelegationPermissions(options.capabilities),
-        refreshIssuedAt: Date.now(),
+        refreshIssuedAt,
+        ...(standingRevokeUntil !== undefined && { standingRevokeUntil }),
       };
       await this.coordinator.renewTail;
       this.assertAttempt(attempt);
@@ -647,8 +682,10 @@ export class OpenKeyNative {
       const error = asNativeError(caught);
       const token = result?.refreshToken ?? error.rotatedRefreshToken;
       if (token) {
-        const settled = await this.abandonGrant({ privateJwk: sessionKey.privateJwk, refreshToken: token,
-          attempts: 1, expiresAt: grantExpiry(Date.now(), result?.delegation) }, metadata, true);
+        const intent = await this.withStorage(() => this.readExchangeIntent()).catch(() => null);
+        const settled = await this.abandonGrant({ privateJwk: sessionKey.privateJwk, refreshToken: token, attempts: 1,
+          expiresAt: intent?.standing ? intent.expiresAt : grantExpiry(Date.now(), result?.delegation),
+          ...(intent?.standing && { standing: true }) }, metadata, true);
         error.rotatedRefreshToken = undefined;
         if (settled) await this.clearExchangeIntent(state).catch(() => {});
         // A transient revoke keeps the token in pending revoke. The intent
@@ -668,7 +705,7 @@ export class OpenKeyNative {
     }
     if (!result) throw new OpenKeyNativeError('SERVER', 'Code exchange returned no result');
     if (epoch === undefined) throw new OpenKeyNativeError('SERVER', 'Sign-in session was not stored');
-    if (delegationNeedsRenewalNow(result.delegation)) {
+    if (result.renewalMode !== 'leased' && delegationNeedsRenewalNow(result.delegation)) {
       try {
         const renewed = await this.renewOnce({}, epoch);
         this.coordinator.signedOut = false;
@@ -689,7 +726,8 @@ export class OpenKeyNative {
     this.assertEpoch(epoch);
     if (!stored) throw new OpenKeyNativeError('SERVER', 'Sign-in session was not stored');
     this.coordinator.signedOut = false;
-    return this.present(stored);
+    return { ...this.present(stored),
+      ...(result.renewalMode === 'leased' && { renewal: result.renewal, renewalArrivedAt: result.renewalArrivedAt }) };
   }
 
   async current(): Promise<NativeSession | null> {
@@ -727,6 +765,7 @@ export class OpenKeyNative {
     this.assertEpoch(epoch);
     let record = await this.readQueued();
     if (!record) throw new OpenKeyNativeError('NOT_SIGNED_IN', 'No OpenKey session is stored');
+    if (record.standingRevokeUntil !== undefined) throw new OpenKeyNativeError('CONSENT_REQUIRED', 'This delegation uses node renewal.');
     const metadata = await this.metadata();
     let conflictRetried = false;
     for (;;) {
@@ -1049,8 +1088,7 @@ export class OpenKeyNative {
           const error = asNativeError(caught);
           if (transientRevoke(error)) {
             revokeError ??= error;
-            try { await this.appendPendingRevoke({ privateJwk: record.privateJwk, refreshToken: record.tokens.refreshToken,
-              attempts: 1, expiresAt: refreshExpiry(record) }); }
+            try { await this.appendPendingRevoke(pendingGrant(record)); }
             catch {
               this.coordinator.signedOut = false;
               throw storageFailure('Pending revoke could not be saved; session remains stored', revokeError);

@@ -1,5 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { SiweMessage } from 'siwe';
+import { bindSignInRenewalRequest } from './signin-renewal';
+import { RenewalLeaseError, renewalLeasesEnabled, type SignedRenewalRequest } from './renewal-lease';
 import { appKeyRefusalMessage } from './app-key-refusal';
 import { DEVICE_FLOW_ABILITIES, DEVICE_SECRETS_REFUSAL } from './device-flow-abilities';
 import {
@@ -71,6 +73,7 @@ export interface DeviceAuthorizationRecord {
   delegationTtlSeconds: number;
   /** Lifetime the requester suggests as the default; absent means `delegationTtlSeconds`. */
   suggestedTtlSeconds?: number;
+  renewal?: SignedRenewalRequest;
   transactionExpiresAt: Date;
   requestedAt: Date;
   requestIpHash: string;
@@ -185,6 +188,7 @@ export type DeviceAuthorizationStart = {
   delegationTtlSeconds?: number;
   /** Optional default lifetime to show: 60 seconds up to `delegationTtlSeconds`; absent means the maximum. */
   suggestedTtlSeconds?: number;
+  renewal?: unknown;
   reason?: string;
 };
 
@@ -694,6 +698,15 @@ export class DeviceAuthorizationService {
     const suggestedTtlSeconds = requestedSuggestedTtlSeconds(input.suggestedTtlSeconds, delegationTtlSeconds);
     const nodeOrigin = canonicalOrigin(input.nodeOrigin, 'nodeOrigin');
     const shareOrigin = canonicalOrigin(input.shareOrigin, 'shareOrigin');
+    let renewal: SignedRenewalRequest | undefined;
+    try {
+      if (!isShareDevicePermissionSet(permissions)) {
+        renewal = bindSignInRenewalRequest(input.renewal, { host: nodeOrigin, handoff: false, expiryChangeable: true });
+      }
+    } catch (error) {
+      if (error instanceof RenewalLeaseError) throw new DeviceAuthorizationError(error.code, error.message, error.status);
+      throw error;
+    }
     const requestIpHash = sha256(`device-auth-ip\0${this.options.encryptionSecret}\0${requestIp}`);
     const recent = await this.store.countRecentByIpHash(requestIpHash, new Date(now.getTime() - DEVICE_AUTH_START_WINDOW_MS));
     if (recent >= DEVICE_AUTH_START_LIMIT) {
@@ -723,6 +736,7 @@ export class DeviceAuthorizationService {
       delegationExpiresAt: new Date(transactionExpiresAt.getTime() + delegationTtlSeconds * 1000),
       delegationTtlSeconds,
       ...(suggestedTtlSeconds !== undefined ? { suggestedTtlSeconds } : {}),
+      ...(renewal ? { renewal } : {}),
       transactionExpiresAt,
       requestedAt: now,
       requestIpHash,
@@ -797,8 +811,12 @@ export class DeviceAuthorizationService {
   }) | null> {
     const record = await this.store.findByUserCode(normalizeUserCode(userCode));
     if (!record || record.transactionExpiresAt <= this.now() || record.status !== 'pending') return null;
-    const { deviceSecretHash: _secret, codeChallenge: _challenge, requestIpHash: _ip, encryptedResult: _result, ...safe } = record;
-    return { ...safe, shareOnly: isShareDevicePermissionSet(record.permissions) };
+    const { deviceSecretHash: _secret, codeChallenge: _challenge, requestIpHash: _ip, encryptedResult: _result, renewal, ...safe } = record;
+    return {
+      ...safe,
+      shareOnly: isShareDevicePermissionSet(record.permissions),
+      ...(renewal && renewalLeasesEnabled() ? { renewal } : {}),
+    };
   }
 
   async approve(transactionId: string, userId: string, value: unknown): Promise<void> {
@@ -839,6 +857,8 @@ export class DeviceAuthorizationService {
     | { status: 'pending'; interval: number }
     | {
         status: 'approved';
+        /** API time to bound client admission after an opaque approved relay has been replayed. */
+        serverTime?: string;
         relay: DeviceRelayEnvelope;
         binding: {
           transactionId: string;
@@ -871,6 +891,7 @@ export class DeviceAuthorizationService {
     // Polling does not spend the result: it stays until the client acknowledges it or retention ends.
     return {
       status: 'approved',
+      ...(record.renewal ? { serverTime: now.toISOString() } : {}),
       relay: (() => {
         try {
           return JSON.parse(record.encryptedResult ?? '') as DeviceRelayEnvelope;

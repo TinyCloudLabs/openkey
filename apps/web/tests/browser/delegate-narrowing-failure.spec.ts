@@ -7,6 +7,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0x1111111111111111111111111111111111111111';
 const space = `tinycloud:pkh:eip155:1:${address}:secrets`;
@@ -24,6 +25,7 @@ const request = [
 const siwe = [
   'cli.tinycloud.xyz wants you to sign in with your Ethereum account:',
   address,
+  '',
   '',
   'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
   'Version: 1',
@@ -101,6 +103,7 @@ async function mockApi(page: Page, calls: { prepares: unknown[]; approvals: unkn
     }
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 }
 
 async function openDelegate(page: Page, permissions: unknown[]) {

@@ -516,14 +516,16 @@ if (process.env.OPENKEY_TERMS_TEST_CHILD !== '1') {
       expect((await prisma.session.findUniqueOrThrow({ where: { id: session.id } })).expiresAt).toEqual(expiresAt);
     });
 
-    test('an acceptance is recorded only from the browser, never with a session token', async () => {
+    test('a session token records an acceptance only after a sign-in in the last 10 minutes', async () => {
       release(VERSION);
       const { bearer, userId } = await signedIn();
+      await prisma.session.updateMany({ where: { userId }, data: { createdAt: new Date(Date.now() - 11 * 60_000) } });
       const response = await request(`${api}/api/account/terms/accept`, {
         method: 'POST', headers: { authorization: `Bearer ${bearer}`, origin: web, 'content-type': 'application/json' },
         body: JSON.stringify({ version: VERSION }),
       });
       expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: 'terms_step_up' });
       expect(await rows(userId)).toEqual([]);
     });
 

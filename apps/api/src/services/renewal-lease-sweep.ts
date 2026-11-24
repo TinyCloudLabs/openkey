@@ -6,7 +6,7 @@
 // and keeps retrying the ones the node did not confirm until none remain.
 import type { PrismaClient } from '@openkey/db';
 import { logError, logMetric, withScheduledLogContext } from '../log';
-import { revokeRenewalLeases, type LeaseRevocationDeps } from './renewal-lease-revocation';
+import { nativeStopsPendingWhere, revokeRenewalLeases, type LeaseRevocationDeps } from './renewal-lease-revocation';
 
 export const SWEEP_INTERVAL_MS = 5 * 60_000;
 /** Lets the database and the node connections settle after boot before the first pass. */
@@ -33,11 +33,14 @@ export async function stopAllRenewalLeasesOnce(
   db: RenewalLeaseSweepDatabase,
   deps?: LeaseRevocationDeps,
   now: () => Date = () => new Date(),
+  nativeOnly = false,
 ): Promise<RenewalLeaseSweepReport> {
   const report: RenewalLeaseSweepReport = { users: 0, stopped: 0, walletRequired: 0, notStopped: 0 };
   // The same set the owner's list shows: not stopped, not refused by the node, not past its end.
   const holders = await db.renewalLease.findMany({
-    where: { revokedAt: null, neverAdmittedAt: null, leaseExpiresAt: { gt: now() } },
+    where: nativeOnly ? { nativeRenewal: { is: nativeStopsPendingWhere(now()) } } : {
+      OR: [{ revokedAt: null, neverAdmittedAt: null, leaseExpiresAt: { gt: now() } }, { nativeRenewal: { is: nativeStopsPendingWhere(now()) } }],
+    },
     select: { userId: true },
     distinct: ['userId'],
   });
@@ -45,7 +48,7 @@ export async function stopAllRenewalLeasesOnce(
   for (const { userId } of holders) {
     try {
       // Another stop already holds this account: its leases are counted on the next pass.
-      const result = await revokeRenewalLeases(db, userId, { kind: 'all' }, deps, { waitForLock: false });
+      const result = await revokeRenewalLeases(db, userId, nativeOnly ? { kind: 'native-stop' } : { kind: 'all', includeNativeStops: true }, deps, { waitForLock: false });
       report.stopped += result.stopped.length;
       for (const left of result.notStopped) {
         if (left.reason === 'wallet_required') report.walletRequired += 1;
@@ -62,17 +65,19 @@ let timer: ReturnType<typeof setInterval> | undefined;
 let first: ReturnType<typeof setTimeout> | undefined;
 
 /**
- * Starts the in-process sweep. The value is read on every pass, so it does nothing unless it is exactly `stop`.
+ * Retries queued native stops. The global stop value also settles every live lease.
  * Idempotent: a second call returns the same stop function.
  */
 export function startRenewalLeaseStopSweep(db: RenewalLeaseSweepDatabase, deps?: LeaseRevocationDeps): () => void {
   if (!timer) {
     let running = false;
     const pass = () => {
-      if (running || !renewalLeaseStopSweepEnabled()) return;
+      if (running) return;
       running = true;
-      void stopAllRenewalLeasesOnce(db, deps)
+      const nativeOnly = !renewalLeaseStopSweepEnabled();
+      void stopAllRenewalLeasesOnce(db, deps, undefined, nativeOnly)
         .then((report) => withScheduledLogContext(() => {
+          if (nativeOnly && report.users === 0) return;
           logMetric('info', 'renewal_lease_sweep_stopped', { count: report.stopped });
           logMetric(report.walletRequired > 0 ? 'warn' : 'info', 'renewal_lease_sweep_wallet_required', { count: report.walletRequired });
           logMetric(report.notStopped > 0 ? 'warn' : 'info', 'renewal_lease_sweep_not_stopped', { count: report.notStopped });

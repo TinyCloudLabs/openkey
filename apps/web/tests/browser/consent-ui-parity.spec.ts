@@ -8,6 +8,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { PUBLIC_DELEGATION_FIELDS } from '@openkey/delegation-code-fields';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fullCodeFromBox, recordClipboard } from './approval-code-fixtures';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
 const space = `tinycloud:pkh:eip155:1:${address}:default`;
@@ -18,6 +19,7 @@ const request = [
 ];
 const siwe = [
   'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
+  '',
   'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
   'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-03T00:00:00.000Z', 'Expiration Time: 2026-11-03T01:00:00.000Z',
   'Resources:',
@@ -49,6 +51,7 @@ async function mock(page: Page, keys: unknown[] = oneKey, lookupOk = true) {
     if (url.pathname === '/api/device-authorizations/lookup') return lookupOk ? json(route, 200, { id: 'tx_1', userCode: 'ABCDEFGH', sessionDid: 'did:key:z6Mk', publicJwk: {}, relayPublicJwk: {}, permissions: request, nodeOrigin: 'https://node.tinycloud.xyz', shareOrigin: 'https://share.tinycloud.xyz', delegationExpiresAt: new Date(Date.now() + 86_400_000 * 30).toISOString(), transactionExpiresAt: new Date(Date.now() + 600_000).toISOString(), reason: 'Publish notes from my laptop', delegationTtlSeconds: 2_592_000 }) : json(route, 404, { error: 'not found' });
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 }
 const jwk = encodeBase64UrlJson({ kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
 
@@ -71,7 +74,7 @@ test.describe('TC-659 CLI /delegate consent parity', () => {
     await expect(page.getByLabel('Signing key')).toHaveCount(0);
     // Header, requester and CLI context come from the shared component.
     const dialog = page.getByRole('dialog');
-    await expect(dialog.getByRole('heading', { name: 'Authorize capabilities' })).toBeVisible();
+    await expect(dialog.getByRole('heading', { name: 'Sign in to TinyCloud CLI' })).toBeVisible();
     await expect(dialog).toContainText('Requested by TinyCloud CLI');
     await expect(dialog.getByRole('region', { name: 'Delegation destination' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Authorize CLI Access' })).toHaveCount(0);
@@ -231,6 +234,7 @@ async function openDeviceRelayReview(
     }
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 
   const params = new URLSearchParams({
     did: 'did:key:z6Mk',
@@ -391,6 +395,7 @@ async function openDeviceLinkDelegate(page: Page, options: { linkExpiry: string;
     }
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   const params = new URLSearchParams({
     did: 'did:key:z6Mk',
     jwk: encodeBase64UrlJson(deviceJwk),

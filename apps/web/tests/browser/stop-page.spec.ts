@@ -1,6 +1,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const email = 'owner@example.test';
 const wanted = '0xd559ccd9eb87c530a9a349262669386de93cf412';
@@ -19,6 +20,7 @@ const action = `${option}\0${ability}`;
 function siwe(issuedAt: Date) {
   return [
     'requester.example.test wants you to sign in with your Ethereum account:', address, '',
+    '',
     'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
     'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', `Issued At: ${issuedAt.toISOString()}`,
     `Expiration Time: ${new Date(issuedAt.getTime() + 3_600_000).toISOString()}`, 'Resources:',
@@ -56,6 +58,7 @@ async function mock(page: Page, respond?: (path: string, route: Route) => Promis
     if (path === '/api/keys') return json(route, 200, { keys: [key] });
     return respond?.(path, route) ?? json(route, 404, {});
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return calls;
 }
 
