@@ -60,21 +60,17 @@
   let error = $state('');
   let busy = $state<BusyAction | null>(null);
   let providers = $state<SocialProviderId[]>([]);
-  // The choices render once the provider list is known, so a late reply never inserts rows above Passkey.
+  // The first paint of the choices waits for the provider list, bounded; a list that arrives later adds its rows.
   let providersSettled = $state(false);
 
   onMount(() => {
     let live = true;
-    const settle = (found: SocialProviderId[]) => {
-      if (!live || providersSettled) return;
+    const bound = setTimeout(() => { providersSettled = true; }, PROVIDERS_WAIT_MS);
+    loadConfiguredSocialProviders().catch(() => []).then((found) => {
+      if (!live) return;
+      clearTimeout(bound);
       providers = found;
       providersSettled = true;
-    };
-    // A reply after the bound is ignored: the choices are already on screen without the rows.
-    const bound = setTimeout(() => settle([]), PROVIDERS_WAIT_MS);
-    loadConfiguredSocialProviders().catch(() => []).then((found) => {
-      clearTimeout(bound);
-      settle(found);
     });
     return () => {
       live = false;

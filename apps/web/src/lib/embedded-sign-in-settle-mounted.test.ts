@@ -1,8 +1,9 @@
 // Mounts the real embedded sign-in (the signed-out face of the iframe pages) with a controllable provider request.
 // The face lives in a frame whose host animates the height, so a row inserted late moves Passkey under a tap that was
-// aimed at it. The choices render once the provider list is known, bounded at one second; until then the face shows
-// reserved rows that hold the layout of the settled choices, so what the reply adds is the content of rows already
-// there. happy-dom has no layout engine: the proof here is the row structure; the pixel trace is a browser run.
+// aimed at it. The first paint of the choices waits for the provider list, bounded at one second; until then the face
+// shows reserved rows that hold the layout of the settled choices, so what the reply adds is the content of rows already
+// there. A list that arrives after the bound adds its rows then. happy-dom has no layout engine: the proof here is the
+// row structure; the pixel trace is a browser run.
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { afterAll, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -183,7 +184,7 @@ describe('the embedded sign-in choices', () => {
     });
   });
 
-  test('a request that never replies renders email and Passkey after the bound, and a late reply adds no row', async () => {
+  test('a request that has not replied after the bound renders email and Passkey, and a late reply adds its rows', async () => {
     let reply!: (providers: Provider[]) => void;
     await withFace(() => new Promise<Provider[]>((resolve) => { reply = resolve; }), async (target) => {
       await sleep(900);
@@ -194,9 +195,17 @@ describe('the embedded sign-in choices', () => {
       expect(rows(target).buttons).toEqual(['Continue with email', 'Passkey']);
       expect(rows(target).reserved).toBe(0);
       reply(['google', 'apple']);
-      await sleep(20);
+      await until(() => rows(target).buttons.length === FULL.length, 'the late rows');
+      expect(rows(target).buttons).toEqual(FULL);
+    });
+  });
+
+  test('a reply that arrives before the bound keeps its rows when the bound passes', async () => {
+    await withFace(async () => ['google'], async (target) => {
+      await until(() => rows(target).buttons.length > 0, 'the choices');
+      await sleep(1100);
       flushSync();
-      expect(rows(target).buttons).toEqual(['Continue with email', 'Passkey']);
+      expect(rows(target).buttons).toEqual(['Continue with email', 'Continue with Google', 'Passkey']);
     });
   });
 
