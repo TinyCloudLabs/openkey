@@ -12,7 +12,8 @@ const AUDIENCE = 'did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK';
 const KV_GET = 'tinycloud.kv/get';
 
 const notes = { service: 'tinycloud.kv', space: SPACE, path: 'notes/', ability: KV_GET, resource: `${SPACE}/kv/notes/` };
-const secret = { service: 'tinycloud.kv', space: SPACE, path: 'vault/secrets/', ability: KV_GET, resource: `${SPACE}/kv/vault/secrets/` };
+const SECRETS_SPACE = `tinycloud:pkh:eip155:1:${ADDRESS}:secrets`;
+const secret = { service: 'tinycloud.kv', space: SECRETS_SPACE, path: 'vault/secrets/', ability: KV_GET, resource: `${SECRETS_SPACE}/kv/vault/secrets/` };
 const network = `urn:tinycloud:encryption:${OWNER}:default`;
 const decrypt = {
   service: 'tinycloud.encryption',

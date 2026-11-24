@@ -239,7 +239,7 @@ describe('access to all secrets or all encrypted data starts at one hour', () =>
   });
 
   test('every secret (vault/secrets/) is one row with a 1 hour | 7 days (asked) toggle and one caution line', () => {
-    const { target, calls, cleanup } = mounted(modelOf(kvGet('vault/secrets/')));
+    const { target, calls, cleanup } = mounted(modelOf({ [`${FIXTURE_META.ownSpace.replace(/:default$/, ':secrets')}/kv/vault/secrets/`]: { 'tinycloud.kv/get': [{}] } }));
     expect(calls).toEqual([H]);
     expect(text(target.querySelector('.statement-primary'))).toBe('Read all your secret values');
     expect(target.querySelector('[data-testid="approval-expiry-line"]')).toBeNull();
