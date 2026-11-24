@@ -80,6 +80,8 @@
     elevatedRejectedCountAnnouncement,
     elevatedWhere,
     elevatedWhereText,
+    masterKeyRejectNote,
+    MASTER_KEY_TITLE,
     allSecretsAbility,
     allSecretsCard,
     allSecretsReach,
@@ -100,6 +102,7 @@
   import {
     ONCE_DEFAULT_EXPIRY_MS,
     accessLastsLine,
+    formatDurationWithEnd,
     onceCautionLine,
     onceDefaultExpiryMs,
     onceLongerChoice,
@@ -803,6 +806,31 @@
       };
     }),
   );
+  // Rejecting the master-key card changes the length when that card is what holds the approval to one hour: the app
+  // asked for longer, and the request without the card is outside the one-hour tier. The card's hint then says what the
+  // approval lasts, from the same length and day the access line shows.
+  const masterKeyLasts = $derived.by((): string | null => {
+    const asked = shortenOnlyExpiry ? shortenOnlyExpiry.askedMs : requestedExpiry;
+    if (asked === null || asked <= ONCE_DEFAULT_EXPIRY_MS) return null;
+    const headings = new Map(elevatedCards.map((card) => [card.id, card.heading]));
+    const masterIds = new Set(
+      pendingElevatedGroups.filter((group) => headings.get(group.id) === MASTER_KEY_TITLE).flatMap((group) => group.actionIds),
+    );
+    if (masterIds.size === 0 || !isOnceTier(selectedGrants)) return null;
+    const without = selectedGrants
+      .map((grant) => ({ ...grant, actions: grant.actions.filter((action) => !masterIds.has(action.id)) }))
+      .filter((grant) => grant.actions.length > 0);
+    if (isOnceTier(without)) return null;
+    const cap = secretLifetimeCapApplies(without, { networkDecrypt: NETWORK_DECRYPT_CAP }) ? SECRET_GRANT_MAX_SECONDS * 1000 : null;
+    const ms = cap === null ? asked : Math.min(asked, cap);
+    return ms <= ONCE_DEFAULT_EXPIRY_MS ? null : formatDurationWithEnd(ms);
+  });
+  const elevatedCardsShown = $derived(
+    elevatedCards.map((card) => ({
+      ...card,
+      rejectNote: card.heading === MASTER_KEY_TITLE && masterKeyLasts !== null ? masterKeyRejectNote(elevatedSite, masterKeyLasts) : null,
+    })),
+  );
   const allSecretsSummaryCard = $derived(!elevated && allSecrets !== null ? allSecretsCard(allSecrets, originHost ?? null) : null);
   const notApprovedRows = $derived(
     rejectedCards.filter((card) => card.actionIds.every((id) => !selection.has(id))).map((card) => elevatedNotApprovedRow(card.heading)),
@@ -880,7 +908,7 @@
 
 {#if warningOpen && elevated}
   <ElevatedWarning
-    cards={elevatedCards}
+    cards={elevatedCardsShown}
     site={elevatedSite}
     splittable={elevated.splittable}
     onResolve={resolveElevated}
