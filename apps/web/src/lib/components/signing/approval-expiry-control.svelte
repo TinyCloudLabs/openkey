@@ -11,6 +11,7 @@
     LONG_EXPIRY_WARNING,
     MAX_LEASE_MS,
     ONCE_DEFAULT_EXPIRY_MS,
+    RENEWAL_CHECKING_LINE,
     SENSITIVE_RENEWAL_WINDOW_MS,
     accessLastsLine,
     defaultLeaseMs,
@@ -34,6 +35,8 @@
     onChange: (ms: number | null) => void;
     /** Set only when the requester signed a renewal request and can use a lease. */
     renewal?: RenewalChoice | null;
+    /** The app asked for renewal and the server has not answered yet: the line reads "Checking renewal…" until it does. */
+    renewalPending?: boolean;
     /** The approval includes secrets or decrypt: turning renewal on asks first (spec D7). */
     sensitive?: boolean;
     /** Who is asking, as the screen names them, for the D7 warning. */
@@ -63,6 +66,7 @@
     disabled = false,
     onChange,
     renewal = null,
+    renewalPending = false,
     sensitive = false,
     requestedBy = "",
     endsAt = null,
@@ -179,26 +183,33 @@
           <button type="button" class="renewal-confirm-yes" onclick={confirmRenewal}>Turn on renewal</button>
         </div>
       </div>
-    {:else if renewal}
-      <label class="renewal-line">
-        <input
-          type="checkbox"
-          class="renewal-box"
-          bind:this={checkbox}
-          checked={ticked}
-          {disabled}
-          onchange={toggle}
-        />
-        <span data-testid="approval-expiry-line">
-          {#if renews}
-            {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}{renewal.deviceSignIn ? "." : ""}
-          {:else}
-            {accessLine}
-          {/if}
-        </span>
-      </label>
     {:else}
-      <p class="expiry-line" data-testid="approval-expiry-line">{accessLine}</p>
+      <!-- One live region holds whichever line is showing, so a screen reader hears the line that settles. -->
+      <div class="expiry-live" aria-live="polite">
+        {#if renewalPending && !renewal}
+          <p class="expiry-line" data-testid="approval-expiry-line">{RENEWAL_CHECKING_LINE}</p>
+        {:else if renewal}
+          <label class="renewal-line">
+            <input
+              type="checkbox"
+              class="renewal-box"
+              bind:this={checkbox}
+              checked={ticked}
+              {disabled}
+              onchange={toggle}
+            />
+            <span data-testid="approval-expiry-line">
+              {#if renews}
+                {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}{renewal.deviceSignIn ? "." : ""}
+              {:else}
+                {accessLine}
+              {/if}
+            </span>
+          </label>
+        {:else}
+          <p class="expiry-line" data-testid="approval-expiry-line">{accessLine}</p>
+        {/if}
+      </div>
     {/if}
     {#if onceChoice !== null}
       {#if onceChoice.longer !== null && renewal?.leaseMs == null && (shownMs === ONCE_DEFAULT_EXPIRY_MS || shownMs === onceChoice.longer.ms)}

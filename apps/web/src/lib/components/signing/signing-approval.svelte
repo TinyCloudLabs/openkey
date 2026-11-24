@@ -180,6 +180,8 @@
     oncePickCapped?: boolean;
     /** The renewal checkbox (TC-2933); set only where the requester signed a renewal request. */
     renewal?: RenewalChoice | null;
+    /** The app asked for renewal and the server has not answered yet; the access line reads "Checking renewal…". */
+    renewalPending?: boolean;
     /**
      * The warning screen for extra permissions (TC-2927): decrypt, key creation, or blocking and unblocking keys on the
      * encryption network, or on keys outside the app's own area. Set only by the signing pages that carry the owner's decision to the server.
@@ -242,6 +244,7 @@
     onceExpiryDefault = false,
     oncePickCapped = false,
     renewal = null,
+    renewalPending = false,
     elevated = null,
     approveVisibility = null,
     claimed = null,
@@ -1077,6 +1080,7 @@
         {onceChoice}
         lengthNote={signedLengthNote}
         {renewal}
+        {renewalPending}
         sensitive={renewalSensitive}
         {requestedBy}
         chooser={false}

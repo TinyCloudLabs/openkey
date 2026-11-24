@@ -104,6 +104,9 @@ export function defaultLeaseMs(maxLeaseMs: number): number {
 export const LONG_EXPIRY_MS = 365 * D;
 export const LONG_EXPIRY_WARNING = "That's a long time. OpenKey can't cancel it early once you approve.";
 
+/** Shown in place of the access line while the app has asked for renewal and the server has not yet said whether it offers it. */
+export const RENEWAL_CHECKING_LINE = 'Checking renewal…';
+
 export type ParsedExpiry = { ok: true; ms: number } | { ok: false; message: string };
 
 /**
