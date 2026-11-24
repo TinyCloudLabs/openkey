@@ -355,6 +355,25 @@ describe('The master-key hint matches the length the approval signs', () => {
     view.cleanup();
   });
 
+  test('an Issued At in the past under the cap: the hint is the expiry the screen sends, not the ask minus Issued At', async () => {
+    const view = await openFace(request([network, sharePrefix, kvGet, ...secretKeys], { askedMs: 9 * DAY, issuedOffsetMs: -4 * DAY }));
+    const hint = note(cards(view.target)[0]!);
+    const signed = await signAfterRejecting(view);
+    expect(signed).toBe(NOW + 7 * DAY);
+    expect(hint).toBe(hintFor(signed - NOW));
+    expect(hint).toContain(`7 days, until ${formatEndDay(7 * DAY, NOW)}`);
+    view.cleanup();
+  });
+
+  test('an Issued At in the past with no cap: the hint is the time left to the Expiration Time', async () => {
+    const view = await openFace(request([network, sharePrefix, kvGet], { askedMs: 9 * DAY, issuedOffsetMs: -4 * DAY }));
+    const hint = note(cards(view.target)[0]!);
+    const signed = await signAfterRejecting(view);
+    expect(signed).toBe(NOW + 5 * DAY);
+    expect(hint).toBe(hintFor(signed - NOW));
+    view.cleanup();
+  });
+
   test('another card rejected as well: the hint still equals the signed expiry', async () => {
     const view = await openFace(request([network, sharePrefix, kvGet], { askedMs: 7 * DAY }));
     const hint = note(cards(view.target)[0]!);
@@ -374,6 +393,21 @@ describe('The master-key hint matches the length the approval signs', () => {
     expect(view.state.get('expiryMs')).toBe(7 * DAY);
     await click(approve(view.target));
     expect(note(cards(view.target)[0]!)).toBe(HINT_SHARED);
+    view.cleanup();
+  });
+
+  test('the owner picked 1 hour after another length: the shared hint shows and Approve signs 1 hour', async () => {
+    const view = mounted(request([network, sharePrefix, kvGet], { askedMs: 7 * DAY }));
+    await prepared(view);
+    const radios = () => [...view.target.querySelectorAll<HTMLInputElement>('[data-testid="approval-expiry-once-choice"] input[type="radio"]')];
+    radios()[1]!.click();
+    await prepared(view);
+    radios()[0]!.click();
+    await prepared(view);
+    expect(view.state.get('expiryMs')).toBe(HOUR);
+    await click(approve(view.target));
+    expect(note(cards(view.target)[0]!)).toBe(HINT_SHARED);
+    expect(await signAfterRejecting(view)).toBe(NOW + HOUR);
     view.cleanup();
   });
 
