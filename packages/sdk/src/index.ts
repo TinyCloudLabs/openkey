@@ -696,9 +696,10 @@ class IframeModal {
       :host{all:initial}
       .ok-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.42);z-index:999999;display:flex;align-items:${isMobile ? 'flex-end' : 'center'};justify-content:center;animation:ok-fade-in 150ms ease-out}
       .ok-card{position:relative;background:#fafafa;width:${isMobile ? '100%' : '400px'};border-radius:${isMobile ? '16px 16px 0 0' : '16px'};box-shadow:0 25px 50px -12px rgba(0,0,0,0.25);overflow:hidden;overflow-y:auto;animation:${isMobile ? 'ok-slide-up 250ms ease-out' : 'ok-scale-in 200ms ease-out'};max-height:90vh}
-      .ok-close{position:absolute;top:8px;right:8px;width:24px;height:24px;border:none;background:transparent;color:#6b7280;font-size:18px;cursor:pointer;z-index:1;display:flex;align-items:center;justify-content:center;border-radius:4px}
+      .ok-strip{position:relative;display:flex;align-items:flex-start;justify-content:flex-end;box-sizing:border-box;height:32px;padding:8px 8px 0}
+      .ok-close{width:24px;height:24px;border:none;background:transparent;color:#6b7280;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;border-radius:4px}
       .ok-close:hover{color:#111827}
-      .ok-handle{width:40px;height:4px;background:#d4d4d4;border-radius:2px;margin:8px auto 0}
+      .ok-handle{position:absolute;top:8px;left:50%;width:40px;height:4px;margin-left:-20px;background:#d4d4d4;border-radius:2px}
       iframe{border:none;width:100%;height:400px;display:block;transition:height 200ms ease}
       .ok-backdrop.ok-exit{animation:ok-fade-out 150ms ease-in}
       .ok-backdrop.ok-exit .ok-card{animation:${isMobile ? 'ok-slide-down 200ms ease-in' : 'ok-scale-out 150ms ease-in'}}
@@ -727,17 +728,23 @@ class IframeModal {
       this.card.style.animation = 'none';
     }
 
+    // The handle and the close button sit in a strip above the frame, never over it: Chromium reports a
+    // cross-origin frame that any element of the embedding page overlaps as occluded (intersection observer v2),
+    // which keeps the sign page from honouring a covered offer.
+    const strip = document.createElement('div');
+    strip.className = 'ok-strip';
     if (isMobile) {
       const handle = document.createElement('div');
       handle.className = 'ok-handle';
-      this.card.appendChild(handle);
+      strip.appendChild(handle);
     }
 
     const closeBtn = document.createElement('button');
     closeBtn.className = 'ok-close';
     closeBtn.textContent = '\u00d7';
     closeBtn.addEventListener('click', () => this.close());
-    this.card.appendChild(closeBtn);
+    strip.appendChild(closeBtn);
+    this.card.appendChild(strip);
 
     this.iframe = document.createElement('iframe');
     this.iframe.src = opts.url;
