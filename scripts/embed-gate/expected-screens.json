@@ -38,7 +38,8 @@
         "Read, change or delete any row in the xyz.tinycloud.sample.recipes database",
         "Read, change or delete any row in the xyz.tinycloud.tinychat database",
         "Set up and use all cards and answers in your Feed",
-        "Set up and use the agent list in your Feed"
+        "Set up and use the agent list in your Feed",
+        "Read your data"
       ],
       "forbidden": ["Unlock all your encrypted data", "This approval needs your passkey"]
     }

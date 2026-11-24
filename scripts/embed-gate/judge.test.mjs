@@ -38,6 +38,24 @@ test("a review requested by another site, or with a forbidden warning, is refuse
   assert.equal(judgeSignFace(`${face(expected)}\nUnlock all your encrypted data`, signFaces, host).reason, "forbidden_text");
 });
 
+// The review text of the 2026-11-24 candidate run, down to the verified origin.
+const liveFace = (extra = []) => [
+  "Sign Message", "Sign in to tinycloud.one", "", "Requested by tinycloud.one", "", "Review the access this app is asking for.", "",
+  "See which permissions are already granted", "Get notified of changes in your TinyCloud One Feed", "Get notified when data in this space changes",
+  "Read, change and delete your data", "Read and update application data", "Delete data associated with xyz.tinycloud.tinychat", "Read application data",
+  "See this space's storage usage and plan", "Read, change or delete any row in the xyz.tinycloud.sample.healthlog database", "Edit and delete this app's tables",
+  "Read, change or delete any row in the xyz.tinycloud.sample.recipes database", "Read, change or delete any row in the xyz.tinycloud.tinychat database",
+  "Set up and use all cards and answers in your Feed", "Set up and use the agent list in your Feed", "Read your data", ...extra,
+  "These permissions renew automatically for up to 90 days", "Advanced details", "Requester and signing details", "Requester", "tinycloud.one",
+  "Verified browser origin", "https://tinycloud.one", "Manifest name", "TinyCloud One", "caller-supplied, unverified", "Manifest trust", "No signed manifest",
+].join("\n");
+
+test("the review of the sign-in's transcript grants is approved, and one more line is refused", () => {
+  assert.deepEqual(judgeSignFace(liveFace(), signFaces, host), { ok: true, face: "tinycloud-one-sign-in" });
+  const extra = judgeSignFace(liveFace(["Delete everything"]), signFaces, host);
+  assert.deepEqual([extra.ok, extra.reason, extra.extra], [false, "permissions", ["Delete everything"]]);
+});
+
 test("two expiry notes, or an unrelated screen, are refused", () => {
   assert.equal(judgeSignFace(face(expected, "These permissions renew automatically for up to 90 days\nThese permissions expire in 30 days, on Dec 19"), signFaces, host).reason, "note_count");
   assert.equal(judgeSignFace("Sign in to OpenKey\nContinue with email", signFaces, host).ok, false);
