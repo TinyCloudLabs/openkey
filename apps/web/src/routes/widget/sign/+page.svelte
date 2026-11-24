@@ -16,7 +16,7 @@
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
   import {
-    carryPopupSignFlow, newWebSignFlowId, releaseWebSignFlow, takePopupSignFlow, webSignFlowHeaders,
+    carryPopupSignFlow, forgetPopupSignFlow, popupSignFlowId, releaseWebSignFlow, webSignFlowHeaders,
   } from '$lib/web-sign-flow';
   import {
     coverNotHonoured, createApproveVisibility, offersCover, reviewSnapshot, sameReview, type ReviewSnapshot,
@@ -221,8 +221,9 @@
   // a real origin — '*' is refused for editing/rewriting flows.
   const origin = $page.url.searchParams.get('origin') || '*';
   // This page's own flow id for one sign request, drawn here and never taken from the app's request. The pop-up
-  // returns from the login page as a new page load, so the id the user left with is the one carried in this tab.
-  const webFlowId = takePopupSignFlow() ?? newWebSignFlowId();
+  // returns from the login page by a client-side navigation and can create this page more than once in the same
+  // document, so the id the user left with, carried in this tab, is read once and kept for the document.
+  const webFlowId = popupSignFlowId();
   // The flow id is named on offers and approvals only while the cover can be honoured here: not in a frame without
   // observer v2, and not after a tap reached a covered offer before it counted.
   const approveVisibility = createApproveVisibility();
@@ -301,6 +302,7 @@
   $effect(() => {
     return () => {
       previewStopped = true;
+      window.removeEventListener('message', handleMessage);
       transport?.destroy();
       transport = null;
     };
@@ -1438,6 +1440,7 @@
   }
 
   function sendClose() {
+    forgetPopupSignFlow();
     previewStopped = true;
     heldPreview = null;
     // Sol MAJOR-4 (continuation): correlate close messages to the active
