@@ -43,6 +43,21 @@ function decodeObject(segment: string, keys: string[]): Record<string, unknown> 
   return value as Record<string, unknown>;
 }
 
+export function sessionProofKeyId(proof: string | undefined): string | null {
+  if (!proof || proof.length > 4096) return null;
+  const parts = proof.split('.');
+  if (parts.length !== 3 || parts.some((part) => !SEGMENT.test(part))) return null;
+  const [headerSegment, payloadSegment, signature] = parts as [string, string, string];
+  const header = decodeObject(headerSegment, HEADER_KEYS);
+  const payload = decodeObject(payloadSegment, PAYLOAD_KEYS);
+  if (!header || header.alg !== 'EdDSA' || header.typ !== SESSION_PROOF_TYP || typeof header.kid !== 'string' ||
+    !payload || typeof payload.client_id !== 'string' || typeof payload.cred_hash !== 'string' ||
+    typeof payload.htm !== 'string' || typeof payload.htu !== 'string' || !Number.isInteger(payload.iat) ||
+    typeof payload.jti !== 'string' || payload.jti.length < 16 || payload.jti.length > 128 ||
+    signature.length !== 86) return null;
+  return header.kid;
+}
+
 export type VerifiedSessionProof = { jti: string; iat: number };
 
 /** Proof claims are returned only after every check, including signature. */

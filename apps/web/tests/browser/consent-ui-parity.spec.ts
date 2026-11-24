@@ -19,6 +19,7 @@ const request = [
 ];
 const siwe = [
   'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
+  '',
   'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
   'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-03T00:00:00.000Z', 'Expiration Time: 2026-11-03T01:00:00.000Z',
   'Resources:',
@@ -73,7 +74,7 @@ test.describe('TC-659 CLI /delegate consent parity', () => {
     await expect(page.getByLabel('Signing key')).toHaveCount(0);
     // Header, requester and CLI context come from the shared component.
     const dialog = page.getByRole('dialog');
-    await expect(dialog.getByRole('heading', { name: 'Authorize capabilities' })).toBeVisible();
+    await expect(dialog.getByRole('heading', { name: 'Sign in to TinyCloud CLI' })).toBeVisible();
     await expect(dialog).toContainText('Requested by TinyCloud CLI');
     await expect(dialog.getByRole('region', { name: 'Delegation destination' })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Authorize CLI Access' })).toHaveCount(0);

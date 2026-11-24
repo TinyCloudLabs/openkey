@@ -36,7 +36,7 @@ describe('TinyCloud session manifests', () => {
     expect(plan.rawAbilities).toBeUndefined();
   });
 
-  test('the secrets session can only use the vault secrets and decrypt on its own network', () => {
+  test('the secrets session can only use the vault secrets and signs for no decrypt', () => {
     const plan = signInPlan(SECRETS_SPACE);
     expect(plan.spaceId).toBe(space(SECRETS_SPACE));
     expect(plan.spaceAbilities).toEqual({
@@ -47,7 +47,6 @@ describe('TinyCloud session manifests', () => {
     });
     expect(plan.rawAbilities).toEqual({
       [`urn:tinycloud:encryption:did:pkh:eip155:1:${address}:default`]: [
-        'tinycloud.encryption/decrypt',
         'tinycloud.encryption/network.create',
       ],
     });

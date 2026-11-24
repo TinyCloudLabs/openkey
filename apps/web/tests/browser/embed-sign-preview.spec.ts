@@ -22,6 +22,9 @@ async function openSigning(page: Page, surface: 'popup' | 'iframe', options: {
   const previews: Preview[] = [];
   const signs: Body[] = [];
   let prepares = 0;
+  let previewSequence = 0;
+  let oneHourPreviewIndex: number | undefined;
+  let oneHourReleased = false;
   const message = options.onlyRequired ? requiredSiwe : siwe;
   await page.context().addInitScript(() => sessionStorage.setItem('openkey_session_token', 'test-session'));
   await page.context().route('**/api/keys/**', route => route.fulfill({ json: { key: {
@@ -45,8 +48,21 @@ async function openSigning(page: Page, surface: 'popup' | 'iframe', options: {
   await page.context().route('**/api/delegate/authorize-sign-preview', route => {
     const body = route.request().postDataJSON();
     expect(Array.isArray(body.selectedActionIds)).toBe(true);
-    previews.push({ route, ids: body.selectedActionIds, context: body.authorizationContextToken,
-      token: `preview-${previews.length + 1}`, bytes: `${message}\nPreview marker: ${previews.length + 1}` });
+    const sequence = ++previewSequence;
+    const bytes = typeof body.expirationTime === 'string'
+      ? message.replace(/^Expiration Time: .+$/m, `Expiration Time: ${body.expirationTime}`)
+      : message;
+    const preview = { route, ids: body.selectedActionIds, context: body.authorizationContextToken,
+      token: `preview-${sequence}`, bytes: `${bytes}\nPreview marker: ${sequence}` };
+    if (oneHourPreviewIndex !== undefined) {
+      const original = previews[oneHourPreviewIndex]!;
+      expect(preview.ids).toEqual(original.ids);
+      expect(preview.context).toBe(original.context);
+      previews[oneHourPreviewIndex] = preview;
+      oneHourPreviewIndex = undefined;
+    } else {
+      previews.push(preview);
+    }
   });
   await page.context().route('**/api/delegate/authorize-sign', async route => {
     const body = route.request().postDataJSON();
@@ -105,7 +121,24 @@ async function openSigning(page: Page, surface: 'popup' | 'iframe', options: {
       await preview.route.fulfill({ status: 503, json: { error: 'Temporary preview failure' } });
       return;
     }
+    // The Explorer grant starts at one hour on its first current preview. Keep
+    // the follow-up in the same slot so only selection and token refreshes are held.
+    const startsAtOneHour = !options.onlyRequired && !oneHourReleased && index === previews.length - 1;
     const time = await now();
+    if (startsAtOneHour) oneHourPreviewIndex = index;
+    await fulfillPreview(preview, time);
+    if (startsAtOneHour) {
+      await expect.poll(() => oneHourPreviewIndex).toBeUndefined();
+      const followUp = previews[index]!;
+      const expiry = Date.parse(followUp.route.request().postDataJSON().expirationTime);
+      const current = await now();
+      expect(expiry).toBeGreaterThanOrEqual(time + 3_600_000 - 1000);
+      expect(expiry).toBeLessThanOrEqual(current + 3_600_000 + 1000);
+      oneHourReleased = true;
+      await fulfillPreview(followUp, current);
+    }
+  }
+  async function fulfillPreview(preview: Preview, time: number) {
     await preview.route.fulfill({ headers: { Date: new Date(time).toUTCString() }, json: {
       authorizationContextToken: preview.context, previewApprovalToken: preview.token,
       previewApprovalExpiresAt: new Date(time + (options.previewTtl ?? 60_000)).toISOString(),

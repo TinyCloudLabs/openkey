@@ -1,6 +1,6 @@
 // Key management routes
 import { Hono } from 'hono';
-import { REGISTRY_RECORD_SIGN_REFUSED, registryRecordSignRefusal } from '@openkey/capability-review';
+import { REGISTRY_RECORD_SIGN_REFUSED, registryRecordSignRefusal, registryTypedDataSignRefusal } from '@openkey/capability-review';
 import { createPrismaClient } from '@openkey/db';
 import { createTeeClient, seal, unseal, generatePrivateKey, getAddressFromPrivateKey, type TeeQuote } from '@openkey/tee';
 import { requireSession, type SessionContext } from '../middleware/session';
@@ -16,6 +16,7 @@ import { createSealingContext, deriveKeyForRecord } from '../services/key-sealin
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, PrimaryKeyConflictError, setPrimaryKey } from '../services/primary-key';
 import { checkSignableMessage } from '../services/siwe-origin';
+import { invalidSiweMessage } from '../services/siwe-message-refusal';
 import {
   appKeyRefusalBody,
   appKeyRefusalForMessage,
@@ -23,6 +24,7 @@ import {
   exactShareKeyRefusalForMessage,
   messageHasElevatedPermissions,
 } from '../services/app-key-refusal';
+import { messageExceedsSecretLifetime, secretLifetimeBody } from '../services/secret-lifetime';
 import { ELEVATED_NOT_DECIDED_CODE, elevatedNotDecidedBody } from '../services/elevated-decision';
 import { rejectNonBrowserControlRequest, rejectNonOpenKeySignRequest } from '../middleware/browser-control';
 import {
@@ -312,6 +314,12 @@ function registryRecordRefusalResponse(body: SignBody) {
   return { error: REGISTRY_RECORD_SIGN_REFUSED.apiMessage, code: REGISTRY_RECORD_SIGN_REFUSED.code };
 }
 
+// Hardening: typed-data signing. The registry's node-location struct gets the same refusal as a registry record.
+function registryTypedDataRefusalResponse(body: { domain?: unknown; types?: unknown; primaryType?: unknown; requestOrigin?: unknown }) {
+  if (!registryTypedDataSignRefusal(body, body.requestOrigin)) return null;
+  return { error: REGISTRY_RECORD_SIGN_REFUSED.apiMessage, code: REGISTRY_RECORD_SIGN_REFUSED.code };
+}
+
 /** TC-3442: a passkey on a message signature confirms this key, format, message and requesting site. */
 function signPasskeyBinding(keyId: string, body: SignBody): ApprovalBinding {
   return {
@@ -366,7 +374,11 @@ keysRouter.post('/:keyId/sign-typed-data/passkey', async (c) => {
   if (originRefusal) return originRefusal;
   const user = c.get('user');
   const keyId = c.req.param('keyId');
-  const checked = checkedTypedData(await c.req.json());
+  const typedBody = await c.req.json<{ domain?: unknown; types?: unknown; primaryType?: unknown; message?: unknown; requestOrigin?: unknown }>();
+  if (typedBody === null || typeof typedBody !== 'object') return c.json({ error: 'Invalid typed data: body must be an object' }, 400);
+  const registryRefusal = registryTypedDataRefusalResponse(typedBody);
+  if (registryRefusal) return c.json(registryRefusal, 403);
+  const checked = checkedTypedData(typedBody);
   if (!checked.ok) return c.json({ error: checked.error }, 400);
   const key = await prisma.ethereumKey.findFirst({ where: { id: keyId, userId: user.id, archivedAt: null }, select: { keyType: true } });
   if (!key) return c.json({ error: 'Key not found' }, 404);
@@ -401,6 +413,8 @@ keysRouter.post('/:keyId/sign', async (c) => {
   }
   const registryRefusal = registryRecordRefusalResponse(body);
   if (registryRefusal) return c.json(registryRefusal, 403);
+  const invalidSiwe = invalidSiweMessage(body.message);
+  if (invalidSiwe) return c.json(invalidSiwe, 400);
   const siweCheck = checkSignableMessage(body.message, body.requestOrigin);
   if (siweCheck.siwe && !siweCheck.ok) {
     return c.json({ error: siweCheck.message, code: 'siwe_origin_refused', reason: siweCheck.code }, 403);
@@ -414,6 +428,12 @@ keysRouter.post('/:keyId/sign', async (c) => {
   const shareRefusal = exactShareKeyRefusalForMessage(body.message);
   if (shareRefusal) {
     return c.json(appKeyRefusalBody(shareRefusal, 'browser'), appKeyRefusalStatus(shareRefusal));
+  }
+  // These bytes cannot be shortened, so more than 7 days of `decrypt` or `key.create` on secret keys (or, with
+  // `OPENKEY_NETWORK_DECRYPT_CAP=enabled`, of a whole network's `decrypt`) is refused. Checked before unseal.
+  const lifetimeReach = messageExceedsSecretLifetime(body.message, Date.now());
+  if (lifetimeReach) {
+    return c.json(secretLifetimeBody(lifetimeReach), 400);
   }
   // TC-2927: `decrypt`, `key.create`, `key.block` or `key.unblock` on the encryption network, or on keys outside the
   // site's own `apps/`, is signed only after the owner decided on it on the warning screen. These exact bytes cannot be
@@ -495,7 +515,12 @@ keysRouter.post('/:keyId/sign-typed-data', async (c) => {
     message: any;
     /** TC-3442: `{ challengeToken, response }` for the challenge from `/sign-typed-data/passkey`. */
     passkeyAssertion?: unknown;
+    /** Verified origin of the requesting site, as for `/sign`. */
+    requestOrigin?: string;
   }>();
+  if (body === null || typeof body !== 'object') return c.json({ error: 'Invalid typed data: body must be an object' }, 400);
+  const registryRefusal = registryTypedDataRefusalResponse(body);
+  if (registryRefusal) return c.json(registryRefusal, 403);
 
   const key = await prisma.ethereumKey.findFirst({
     where: { id: keyId, userId: user.id, archivedAt: null },

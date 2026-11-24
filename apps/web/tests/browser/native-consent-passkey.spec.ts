@@ -11,6 +11,7 @@ const space = `tinycloud:pkh:eip155:1:${address}:applications`;
 const caps = 'tinycloud.capabilities/read';
 const siwe = [
   'openkey.so wants you to sign in with your Ethereum account:', address, '',
+  '',
   'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
   'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-07T04:00:00.000Z',
   'Expiration Time: 2026-10-07T05:00:00.000Z', 'Resources:',

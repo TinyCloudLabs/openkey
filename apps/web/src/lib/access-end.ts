@@ -13,7 +13,7 @@ export function formatAccessEnd(iso: string): string {
 
 /**
  * The same end in the viewer's own time zone, with its abbreviation, e.g. `Oct 7, 2026, 1:00 AM EDT`. For the
- * consent screens, whose other dates ("expires in 30 days, on Dec 17") are the owner's own day. `timeZone` is for tests.
+ * consent screens, whose other dates ("lasts 30 days, until Dec 17") are the owner's own day. `timeZone` is for tests.
  */
 export function formatLocalAccessEnd(iso: string, timeZone?: string): string {
   const date = new Date(iso);
