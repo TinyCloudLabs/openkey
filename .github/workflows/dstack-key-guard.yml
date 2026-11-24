@@ -56,6 +56,11 @@ jobs:
       - name: Quote binding contract test
         run: bun test packages/tee/tests/dstack-quote.test.ts
 
+      # The public attestation route returns the agent's app_id and compose_hash; a malformed
+      # answer must throw (TC-3842).
+      - name: App info contract test
+        run: bun test packages/tee/tests/dstack-app-info.test.ts
+
   tee-mode:
     name: TEE mode fails closed
     runs-on: ubuntu-latest

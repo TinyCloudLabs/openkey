@@ -9,7 +9,16 @@ export interface TeeClient {
    * quote carries the 32-byte digest followed by 32 zero bytes.
    */
   getQuote(binding: string): Promise<TeeQuote>;
+  /** The dstack app ID and compose hash this instance runs as. Throws outside a TEE. */
+  appInfo(): Promise<TeeAppInfo>;
   isInTee(): boolean;
+}
+
+export interface TeeAppInfo {
+  /** dstack app ID, hex, as the guest agent reports it. */
+  appId: string;
+  /** Hex SHA-256 of the app-compose this instance measured (RTMR3 `compose-hash`). */
+  composeHash: string;
 }
 
 export interface TeeQuote {
@@ -153,6 +162,18 @@ function createProductionClient(): TeeClient {
       return { quote, eventLog: result.event_log, reportDataSha256: digest.toString('hex') };
     },
 
+    async appInfo(): Promise<TeeAppInfo> {
+      const client = await getDstackClient();
+      const info = await client.info();
+      const appId = info.app_id?.replace(/^0x/, '').toLowerCase();
+      // dstack 0.5 reports it at the top level and in tcb_info; older agents only in tcb_info.
+      const composeHash = (info.compose_hash || info.tcb_info?.compose_hash)?.replace(/^0x/, '').toLowerCase();
+      if (!appId || !/^[0-9a-f]+$/.test(appId) || !composeHash || !/^[0-9a-f]{64}$/.test(composeHash)) {
+        throw new Error('dstack info has no well-formed app_id and compose_hash');
+      }
+      return { appId, composeHash };
+    },
+
     isInTee: () => true,
   };
 }
@@ -180,6 +201,10 @@ function createMockClient(): TeeClient {
         eventLog: '[]',
         reportDataSha256: createHash('sha256').update(binding, 'utf8').digest('hex'),
       };
+    },
+
+    async appInfo(): Promise<TeeAppInfo> {
+      throw new Error('the development TEE mock has no dstack app identity');
     },
 
     isInTee: () => false,

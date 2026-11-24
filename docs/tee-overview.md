@@ -312,6 +312,70 @@ To verify a response:
    `version === 1`, your nonce and the expected `address`.
 8. Reject `inTee: false` and the development mock quote.
 
+### Public attestation (TC-3842)
+
+`GET /attestation?nonce=<nonce>` needs no session. It is modelled on
+tinycloud-node's `/attestation` (`tinycloud-node-server/src/routes/attestation.rs`)
+so one verifier handles both services
+(`apps/api/src/routes/attestation.ts`).
+
+- `nonce` is required: 1-64 characters of `A-Z a-z 0-9 - _`. Anything else,
+  including a missing nonce, gets 400.
+- The binding preimage is
+  `so.openkey/tee-key/v1\0:<identity>:<nonce>`. `\0` is the two characters
+  backslash and zero, not a NUL byte, as in the node's preimage.
+- `identity` is `<issuer>#<thumbprints>`: the OIDC issuer
+  (`https://api.openkey.so/api/auth` in production), then the RFC 7638 SHA-256
+  JWK thumbprints (base64url) of the keys this measured code holds and signs
+  with, sorted and joined with `,`. A key `<issuer>/jwks` serves counts only
+  when OpenKey can open its private key (the `jwks` row, decrypted with the
+  auth secret, as Better Auth's signer does) and that private key signs a fresh
+  challenge the served public key verifies. Any other served key, such as a
+  public key written into the table without its private key, is left out of
+  `identity` and counted in `excluded_keys` (informational, not bound by the
+  quote). If none passes, the answer is 503.
+- The quote's REPORTDATA is SHA-256 of the UTF-8 `key_binding`, followed by
+  32 zero bytes. As for the key quote, OpenKey checks this before answering 200.
+
+```json
+{
+  "mode": "dstack",
+  "quote": "<hex TDX quote>",
+  "event_log": "<dstack event log JSON>",
+  "compose_hash": "<hex, from the guest agent's Info>",
+  "app_id": "<hex, from the guest agent's Info>",
+  "identity": "https://api.openkey.so/api/auth#<thumbprint>,...",
+  "excluded_keys": 0,
+  "key_binding": "so.openkey/tee-key/v1\\0:<identity>:<nonce>",
+  "key_binding_sha256": "<hex>",
+  "timestamp": "<RFC 3339, host time, not attested>"
+}
+```
+
+Outside a TEE it answers `{"mode":"classic","message":"This instance is not
+running in a TEE"}`. A failure to read the signing keys or their rows, the app
+info or a bound quote is 503 `{"error":"quote_unavailable"}`. The whole process is capped
+at 60 quotes a minute (429), because no client address is trustworthy behind
+the proxy.
+
+To verify a response, follow steps 1-5 and 8 above. Then:
+- check that REPORTDATA is SHA-256 of `key_binding` followed by 32 zero bytes;
+- check that `key_binding` has your nonce and the identity;
+- fetch `<issuer>/jwks` and recompute the thumbprints. Refuse if the JWKS
+  serves any key missing from `identity`: OpenKey could not show it holds that
+  key, and anyone who trusts the JWKS would accept tokens signed with it. A
+  verifier may offer an explicit opt-in that downgrades this to a warning, for
+  diagnosis during a key rotation. `excluded_keys` is informational only: it is
+  not in `key_binding`, so anyone between you and OpenKey can change it without
+  breaking the quote. Count the missing keys yourself;
+- take `compose_hash` and `app_id` from the replayed event log, not from the
+  JSON.
+
+These are keys this measured code holds and signs with; the keys are stored in
+the database. They are not derived in the TEE, so anyone with database read
+plus `BETTER_AUTH_SECRET` can sign with them too: the binding proves possession,
+not exclusivity.
+
 ### Environment Configuration
 
 | Variable | Value | Description |
