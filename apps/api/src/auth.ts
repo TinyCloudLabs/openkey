@@ -398,7 +398,7 @@ export const auth = betterAuth({
           use: [sensitiveSessionMiddleware],
         }, async (ctx) => {
           const session = ctx.context.session;
-          await prisma.session.deleteMany({ where: { userId: session.user.id, token: { not: session.session.token } } });
+          await prisma.session.deleteMany({ where: { userId: session.user.id, id: { not: session.session.id } } });
           return ctx.json({ status: true });
         }),
       },

@@ -258,6 +258,7 @@ model PreparedHandoff {
 model Session {
   id            String    @id
   userId        String
+  // SHA-256 digest of the session token (packages/db/src/session-token.ts), never the token itself.
   token         String    @unique
   expiresAt     DateTime
   createdAt     DateTime  @default(now())

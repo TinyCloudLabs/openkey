@@ -3,6 +3,7 @@ import { PrismaClient } from './generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PGlite } from '@electric-sql/pglite';
 import { PrismaPGlite } from 'pglite-prisma-adapter';
+import { withSessionTokenDigests } from './session-token';
 import { DEFAULT_PGLITE_DATABASE_URL, isPgliteConnectionString, resolvePgliteDataDir } from './pglite-url';
 
 const pgliteClients = new Map<string, { client: PGlite; refs: number }>();
@@ -67,7 +68,7 @@ export function createPrismaClient(opts?: { connectionString?: string; schema?: 
         }
       }
     };
-    return prisma;
+    return withSessionTokenDigests(prisma);
   }
 
   const schema = opts?.schema ?? process.env.OPENKEY_DATABASE_SCHEMA;
@@ -75,7 +76,7 @@ export function createPrismaClient(opts?: { connectionString?: string; schema?: 
     connectionString: connStr,
     options: schema ? `-c search_path=${schema}` : undefined,
   }, schema ? { schema } : undefined);
-  return new PrismaClient({ adapter, log: opts?.log });
+  return withSessionTokenDigests(new PrismaClient({ adapter, log: opts?.log }));
 }
 
 // Lazy singleton - only connects when first accessed
@@ -90,3 +91,4 @@ export function getPrisma() {
 export { PrismaClient };
 export * from './generated/prisma/client';
 export * from './schema-contract';
+export { sessionTokenDigest } from './session-token';
