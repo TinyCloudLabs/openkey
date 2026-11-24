@@ -82,7 +82,6 @@ async function openReview(page: Page, grants: typeof secretGrants) {
   return { actionKeys, selections };
 }
 
-const secretRows = (names: readonly string[]) => names.map((name) => `Read the secret ${name}`);
 const requestedAccess = (page: Page) => page.getByRole('region', { name: 'Requested access' });
 
 test('25 exact keys occupy one row and disclose each name', async ({ page }) => {
@@ -90,15 +89,15 @@ test('25 exact keys occupy one row and disclose each name', async ({ page }) => 
   await openReview(page, secretGrants);
   const summary = requestedAccess(page);
   await expect(summary.locator('.summary-statement')).toHaveCount(1);
-  await expect(summary.getByText('Read 25 secrets', { exact: true })).toBeVisible();
+  await expect(summary.getByText('Read secret values', { exact: true })).toBeVisible();
+  await expect(summary.getByText('Only these 25 secrets. Names are in Advanced details.', { exact: true })).toBeVisible();
   await expect(summary.getByText(names[0]!, { exact: true })).toBeHidden();
-
-  await summary.getByText('Show the secrets', { exact: true }).click();
-  await expect(summary.locator('.secret-statements > li')).toHaveText(names);
-  await expect(summary.locator('.secret-statements code.mono')).toHaveText(names);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-  await summary.getByText('Hide the secrets', { exact: true }).click();
-  await expect(summary.getByText(names[0]!, { exact: true })).toBeHidden();
+
+  await page.getByText('Advanced details', { exact: true }).click();
+  const secrets = page.getByTestId('secrets-group');
+  await expect(secrets.locator('.grant-title')).toHaveText(names.map((name) => `Secret: ${name}`));
+  await expect(secrets.locator('.grant-path')).toHaveText(names.map((name) => `secrets/${name}`));
 
   await page.getByRole('checkbox').click();
   const confirm = page.getByRole('alertdialog', { name: 'Renew sensitive access?' });
@@ -113,7 +112,8 @@ test('a mixed request keeps its other permission and can narrow one exact key', 
   const summary = requestedAccess(page);
   await expect(summary.locator('.summary-statement')).toHaveCount(2);
   await expect(summary.getByText('Read application data', { exact: true })).toBeVisible();
-  await expect(page.getByText('25 permissions are marked Sensitive', { exact: true })).toBeVisible();
+  await expect(summary.getByText('Read secret values', { exact: true })).toBeVisible();
+  await expect(page.getByText('25 permissions are marked Sensitive', { exact: true })).toHaveCount(0);
 
   await page.getByText('Advanced details', { exact: true }).click();
   const exactGrants = page.getByRole('region', { name: 'Exact grants' });
@@ -124,15 +124,16 @@ test('a mixed request keeps its other permission and can narrow one exact key', 
   await firstGrant.getByRole('checkbox').uncheck();
   await expect.poll(() => selections.at(-1)).toEqual(actionKeys.slice(1));
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
-  await expect(summary.getByText('Read 24 secrets', { exact: true })).toBeVisible();
-  await expect(page.getByText('24 permissions are marked Sensitive', { exact: true })).toBeVisible();
-  await summary.getByText('Show the secrets', { exact: true }).click();
-  await expect(summary.locator('.secret-statements > li')).toHaveText(names.slice(1));
+  await expect(summary.getByText('Read secret values', { exact: true })).toBeVisible();
+  await expect(summary.getByText('Only these 24 secrets. Names are in Advanced details.', { exact: true })).toBeVisible();
+  await expect(page.getByText('24 permissions are marked Sensitive', { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('secrets-group').locator('.grant-title')).toHaveText(names.slice(1).map((name) => `Secret: ${name}`));
 });
 
-test('three exact keys retain their individual summary rows', async ({ page }) => {
+test('three exact keys read as one row', async ({ page }) => {
   await openReview(page, secretGrants.slice(0, 3));
   const summary = requestedAccess(page);
-  await expect(summary.locator('.summary-statement .statement-primary')).toHaveText(secretRows(names.slice(0, 3)));
+  await expect(summary.locator('.summary-statement .statement-primary')).toHaveText(['Read secret values']);
+  await expect(summary.getByText('Only these 3 secrets. Names are in Advanced details.', { exact: true })).toBeVisible();
   await expect(summary.getByText('Show the secrets', { exact: true })).toHaveCount(0);
 });

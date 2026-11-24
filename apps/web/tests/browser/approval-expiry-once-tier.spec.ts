@@ -80,11 +80,11 @@ test('decrypt on the secrets/ prefix without the opt-in starts at one hour, and 
   const decrypt = siweWithResources([makeRecapResource(PREFIX_DECRYPT)], { domain: HOST, uri: ORIGIN });
   const before = Date.now();
   const { frame, previews } = await open(page, {}, decrypt);
-  await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
-  const choice = frame.getByRole('group', { name: 'How long', exact: true });
-  await expect(choice.getByRole('radio', { name: '1 hour' })).toBeChecked();
-  await expect(choice.getByRole('radio', { name: '7 days (what the app asked)' })).not.toBeChecked();
-  await expect(frame.getByTestId('approval-expiry-once-caution')).toHaveText('This access can open all your secrets.');
+  await expect(frame.getByTestId('approval-expiry-announcement')).toHaveText(/^Access lasts 1 hour, until /);
+  const choice = frame.getByRole('group', { name: 'How long access lasts', exact: true });
+  await expect(choice.getByRole('radio', { name: /^1 hour, until / })).toBeChecked();
+  await expect(choice.getByRole('radio', { name: /^7 days, until .*, as the app asked$/ })).not.toBeChecked();
+  await expect(frame.getByTestId('approval-expiry-compact-caution')).toHaveText('Covers every secret in your vault.');
   const latest = previews.at(-1)!;
   aboutAnHour(latest.expirationTime, before);
 });
@@ -101,12 +101,12 @@ test('decrypt on the whole network without the opt-in starts at one hour', async
 test('without the opt-in the owner can still choose longer', async ({ page }) => {
   const decrypt = siweWithResources([makeRecapResource(PREFIX_DECRYPT)], { domain: HOST, uri: ORIGIN });
   const { frame, previews } = await open(page, {}, decrypt);
-  await expect(frame.getByTestId('approval-expiry-line')).toContainText('1 hour');
+  await expect(frame.getByTestId('approval-expiry-announcement')).toHaveText(/^Access lasts 1 hour, until /);
   await frame.getByText('Advanced details', { exact: true }).click();
   await frame.getByText('How long it lasts', { exact: true }).click();
   await frame.getByLabel('Or type a time').fill('2d');
   await frame.getByLabel('Or type a time').press('Enter');
-  await expect(frame.getByTestId('approval-expiry-line')).toContainText('2 days');
+  await expect(frame.getByTestId('approval-expiry-length-line')).toHaveText(/^Access lasts 2 days, until /);
   await expect.poll(() => previews.at(-1)?.expirationTime).toBeTruthy();
   const asked = Date.parse(String(previews.at(-1)!.expirationTime));
   expect(asked).toBeGreaterThanOrEqual(Date.now() + 2 * 86_400_000 - 5000);
