@@ -308,6 +308,40 @@ export type TinyCloudSetupResultV1 =
   | { status: 'declined' }
   | { status: 'unavailable'; reason: 'signature-refused' | 'registry-error' | 'node-unreachable' | 'rate-limited' };
 
+/**
+ * TC-3893: narrow request shape for `OpenKey.requestRegistryChange`.
+ * Apps request target nodes/spaces/encryptionNode by canonical URL; OpenKey builds,
+ * canonicalises, previews, passkey-verifies, signs, and publishes the v2 registry record.
+ */
+export interface RegistryChangeNodeInput {
+  url: string;
+  did?: string;
+}
+
+export interface RegistryChangeSpaceNodeInput {
+  url: string;
+  mode?: 'read-write' | 'read-only';
+}
+
+export interface RegistryChangeSpaceInput {
+  space: string;
+  nodes: RegistryChangeSpaceNodeInput[];
+}
+
+export interface RegistryChangeRequest {
+  nodes: RegistryChangeNodeInput[];
+  spaces?: RegistryChangeSpaceInput[];
+  encryptionNode?: string | null;
+}
+
+export interface RegistryUndoRequest {
+  historyId: string;
+}
+
+export type RegistryChangeResult =
+  | { status: 'published'; sequence: number; recordHash: string }
+  | { status: 'cancelled' };
+
 const MAX_RENEWAL_LEASE_SECONDS = 365 * 86_400;
 
 /**
@@ -385,6 +419,11 @@ type MessageType =
   | { type: 'openkey:tinycloud-setup:request'; requestingApp?: { name?: string; manifest?: unknown }; requestId: string }
   | { type: 'openkey:tinycloud-setup:response'; success: true; result: TinyCloudSetupResultV1; requestId: string }
   | { type: 'openkey:tinycloud-setup:response'; success: false; error: OpenKeyError; requestId: string }
+  | { type: 'openkey:registry-change:request'; request: RegistryChangeRequest; requestId: string; protocolVersion: 1 }
+  | { type: 'openkey:registry-undo:request'; historyId: string; requestId: string; protocolVersion: 1 }
+  | { type: 'openkey:registry-change:response'; success: true; status: 'published'; sequence: number; recordHash: string; requestId: string; protocolVersion: 1 }
+  | { type: 'openkey:registry-change:response'; success: true; status: 'cancelled'; requestId: string; protocolVersion: 1 }
+  | { type: 'openkey:registry-change:response'; success: false; error: OpenKeyError; requestId: string; protocolVersion: 1 }
   | { type: 'openkey:sign:response'; success: true; signature: string; address: string; requestId?: string; protocolVersion?: number }
   | {
       type: 'openkey:sign:response';
@@ -1317,6 +1356,86 @@ export class OpenKey {
     }
   }
 
+  /**
+   * TC-3893: request a change to the owner's TinyCloud location registry record.
+   *
+   * Always opens OpenKey's dedicated popup consent screen (`/widget/registry-change`).
+   * Any `mode: 'iframe'` option (or instance-level iframe mode) is ignored because
+   * registry-change approval requires cookie-only same-site OpenKey auth and passkey
+   * verification in a top-level popup. OpenKey reads the current record, sets
+   * sequence = current + 1, displays the before/after diff and any identity warnings,
+   * requires a passkey assertion bound to the exact record hash, stores the previous
+   * record for undo, signs and publishes the new record, and sends a notice email.
+   */
+  async requestRegistryChange(
+    request: RegistryChangeRequest,
+    _opts?: { mode?: OpenKeyMode },
+  ): Promise<RegistryChangeResult> {
+    // N1: registry changes always use the top-level popup; mode:'iframe' is ignored.
+    const mode: OpenKeyMode = 'popup';
+    const reserved = this.reservePopup('registry-change');
+    try {
+      return await this.openFlow<RegistryChangeResult>(
+        'registry-change',
+        {
+          type: 'openkey:registry-change:request',
+          request,
+          requestId: crypto.randomUUID(),
+          protocolVersion: 1,
+        },
+        mode,
+        reserved,
+      );
+    } catch (error) {
+      if ((error as OpenKeyError | null)?.code === 'USER_CANCELLED') {
+        return { status: 'cancelled' };
+      }
+      throw error;
+    } finally {
+      if (reserved && !reserved.used) {
+        try { reserved.window.close(); } catch { /* window is already gone */ }
+      }
+    }
+  }
+
+  /**
+   * TC-3893: request restoring the owner's TinyCloud location registry record to the
+   * stored previous version of a history entry (server-built exact REPLACE at sequence + 1).
+   *
+   * Always opens OpenKey's dedicated popup consent screen (`/widget/registry-change`);
+   * any `mode: 'iframe'` option (or instance-level iframe mode) is ignored.
+   */
+  async requestRegistryUndo(
+    request: RegistryUndoRequest,
+    _opts?: { mode?: OpenKeyMode },
+  ): Promise<RegistryChangeResult> {
+    // N1: registry undo/restore always uses the top-level popup; mode:'iframe' is ignored.
+    const mode: OpenKeyMode = 'popup';
+    const reserved = this.reservePopup('registry-change');
+    try {
+      return await this.openFlow<RegistryChangeResult>(
+        'registry-change',
+        {
+          type: 'openkey:registry-undo:request',
+          historyId: request.historyId,
+          requestId: crypto.randomUUID(),
+          protocolVersion: 1,
+        },
+        mode,
+        reserved,
+      );
+    } catch (error) {
+      if ((error as OpenKeyError | null)?.code === 'USER_CANCELLED') {
+        return { status: 'cancelled' };
+      }
+      throw error;
+    } finally {
+      if (reserved && !reserved.used) {
+        try { reserved.window.close(); } catch { /* window is already gone */ }
+      }
+    }
+  }
+
   private async authorizeTinyCloudFlow(
     request: TinyCloudAuthorizationRequestV1,
     opts: { mode?: OpenKeyMode } | undefined,
@@ -2242,6 +2361,7 @@ export class OpenKey {
     if (action === 'sign-typed-data') return type === 'openkey:signTypedData:response';
     if (action === 'link-wallet') return type === 'openkey:link-wallet:response';
     if (action === 'sign-out') return type === 'openkey:sign-out:response';
+    if (action === 'registry-change') return type === 'openkey:registry-change:response';
     return false;
   }
 
@@ -2490,6 +2610,12 @@ export class OpenKey {
             resolve({ address: data.address, keyId: data.keyId } as T);
           } else if (data.type === 'openkey:sign-out:response') {
             resolve({ requestId: data.requestId, revoked: data.revoked === true } as T);
+          } else if (data.type === 'openkey:registry-change:response') {
+            if (data.status === 'published') {
+              resolve({ status: 'published', sequence: data.sequence, recordHash: data.recordHash } as T);
+            } else {
+              resolve({ status: 'cancelled' } as T);
+            }
           } else if (data.type === 'openkey:externalSign:approve') {
             // Sol MAJOR-3 (continuation): hand the preview payload back
             // to authorizeTinyCloudExternal so it can invoke the wallet.

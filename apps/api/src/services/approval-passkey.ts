@@ -280,6 +280,41 @@ export async function approvalPasskeyOffer(
   return offer ? { required: true, ...offer } : { required: false };
 }
 
+/**
+ * Mandatory passkey offer for routes where `NEVER` mode does not apply (e.g. TC-3893 registry changes).
+ * Always creates a challenge bound to `binding`; returns `null` when the account has no step-up passkey
+ * or no session, so the route fails closed instead of downgrading to `{ required: false }`.
+ */
+export async function requiredApprovalPasskeyOffer(
+  db: ApprovalDatabase, subject: ApprovalSubject, binding: ApprovalBinding,
+  rp = relyingParty(), now = new Date(),
+): Promise<({ required: true } & ApprovalPasskeyOffer) | null> {
+  const offer = await createApprovalPasskeyChallenge(db, subject, binding, rp, now);
+  return offer ? { required: true, ...offer } : null;
+}
+
+/**
+ * Mandatory passkey verification for routes where `NEVER` mode does not apply (e.g. TC-3893 registry changes).
+ * Never skips verification regardless of `passkeyApprovalMode` or enrolled passkey count.
+ */
+export async function checkRequiredApprovalPasskey(
+  db: ApprovalDatabase, subject: ApprovalSubject, binding: ApprovalBinding,
+  assertion: unknown, rp = relyingParty(), now = new Date(),
+): Promise<ApprovalPasskeyRefusal | null> {
+  if (assertion === undefined || assertion === null) {
+    log('info', 'approval_passkey_refused', PASSKEY_APPROVAL_REQUIRED.code);
+    return PASSKEY_APPROVAL_REQUIRED;
+  }
+  const result = await verifyApprovalPasskey(db, subject, binding, assertion, rp, now);
+  if (result === 'verified') {
+    log('info', 'approval_passkey_verified');
+    return null;
+  }
+  const refusal = result === 'not_step_up' ? PASSKEY_APPROVAL_NOT_STEP_UP : PASSKEY_APPROVAL_INVALID;
+  log('info', 'approval_passkey_refused', refusal.code);
+  return refusal;
+}
+
 /** How long a passkey sign-in made for one request covers that request's Approve. */
 export const FLOW_PASSKEY_MAX_AGE_MS = 5 * 60 * 1000;
 const FLOW_PREFIX = 'openkey-flow-passkey';

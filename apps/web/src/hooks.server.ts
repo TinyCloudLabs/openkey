@@ -43,6 +43,7 @@ function reservedConsoleHostPage(accountOrigin: string) {
 }
 
 import { isTinyCloudSetupWidgetRoute } from './routes/widget/tinycloud-setup/route-match';
+import { isRegistryChangePopupWidgetRoute } from './routes/widget/registry-change/route-match';
 
 export const handle: Handle = async ({ event, resolve: resolveRequest }) => {
   const route = routeConsoleHost({
@@ -81,7 +82,8 @@ export const handle: Handle = async ({ event, resolve: resolveRequest }) => {
     // rather than the raw pathname closes the percent-encoded-ASCII bypass: a URL like
     // `/widget/tinycloud%2Dsetup` decodes to the same route template and still gets the
     // headers. The client-side guard in `+layout.ts` is a belt-and-braces check.
-    if (isTinyCloudSetupWidgetRoute(request.route?.id ?? '')) {
+    const routeId = request.route?.id ?? '';
+    if (isTinyCloudSetupWidgetRoute(routeId) || isRegistryChangePopupWidgetRoute(routeId)) {
       response.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
       response.headers.set('X-Frame-Options', 'DENY');
       response.headers.set('Referrer-Policy', 'no-referrer');
