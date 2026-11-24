@@ -2150,7 +2150,10 @@ function secretKeyRows(
     const verbs = grant.actions.map((action) => namedKeyVerbOf(action.ability));
     if (verbs.length === 0 || verbs.some((verb) => verb !== "decrypt" && verb !== "create")) return null;
     const resource = resourceOf(grant);
-    return verbs.map((verb) => verb === "decrypt"
+    // A grant that also decrypts shows only the read: its key creation is listed under the exact grants, and the
+    // sentence that it can't read secrets would be untrue of it.
+    const decrypts = verbs.includes("decrypt");
+    return verbs.filter((verb) => verb === "decrypt" || !decrypts).map((verb) => verb === "decrypt"
       ? { primaryText: secretReadText(name), service: grant.service, resource, severity: "sensitive" as const, secret: { name, keyPath } }
       : {
           primaryText: `Create a key for the new secret ${name}.`,

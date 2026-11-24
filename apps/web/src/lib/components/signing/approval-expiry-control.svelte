@@ -12,11 +12,14 @@
     MAX_LEASE_MS,
     ONCE_DEFAULT_EXPIRY_MS,
     RENEWAL_CHECKING_LINE,
+    SECRET_BLOCK_COPY,
     SENSITIVE_RENEWAL_WINDOW_MS,
     accessLastsLine,
     defaultLeaseMs,
     formatDuration,
+    formatLengthWithEnd,
     type OnceLongerChoice,
+    type SecretLongerChoice,
   } from "$lib/approval-expiry";
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
   import type { RenewalChoice } from "$lib/components/signing/signing-adapter-types";
@@ -51,6 +54,13 @@
      * Null shows neither.
      */
     onceChoice?: { longer: OnceLongerChoice | null; caution: string } | null;
+    /**
+     * Set where the sensitive block of the sign face is the compact secret block: `caution` is its one line under the
+     * row, `longer` the second length next to 1 hour (null where the app asked for an hour or less), and `explicit`
+     * is true where the app's own length is reported as that length, not as null (a one-time approval). It replaces the
+     * access line and the one-time choice; the renewal checkbox and its "Checking renewal…" line keep the screen.
+     */
+    compact?: { longer: SecretLongerChoice | null; caution: string; explicit: boolean } | null;
     /** On a signed request for a secret's own key: its start and the most it can be. Null shows no note. */
     lengthNote?: string | null;
     /** Show the "How long it lasts" fold here. False where the screen shows ApprovalExpiryChooser elsewhere. */
@@ -72,6 +82,7 @@
     endsAt = null,
     permissionCount = 1,
     onceChoice = null,
+    compact = null,
     lengthNote = null,
     chooser = true,
     holder = "app",
@@ -87,6 +98,26 @@
   let oncePicks = $state(0);
 
   const shownMs = $derived(chosenMs ?? requestedMs);
+  // The ends the toggle names are counted from when the screen opened, as the server counts the signed window.
+  const openedAt = Date.now();
+  const compactOn = $derived(compact !== null && shownMs !== null);
+  // Only when the length shown is one of the two the toggle offers: a length picked under "How long it lasts" shows as the line.
+  const compactToggle = $derived(
+    compactOn && compact!.longer !== null && (shownMs === ONCE_DEFAULT_EXPIRY_MS || shownMs === compact!.longer.ms) ? compact!.longer : null,
+  );
+  const compactChoices = $derived(
+    compactToggle === null
+      ? []
+      : [
+          { ms: ONCE_DEFAULT_EXPIRY_MS, label: formatDuration(ONCE_DEFAULT_EXPIRY_MS), asked: false },
+          compactToggle,
+        ].map((choice) => {
+          const name = formatLengthWithEnd(choice.ms, openedAt) + (choice.asked ? SECRET_BLOCK_COPY.askedSuffix : "");
+          return { ...choice, name };
+        }),
+  );
+  // The app's own hour has nothing to choose between and no end named; any other length shown as a line was picked by the owner.
+  const askedHourLine = $derived(shownMs !== null && shownMs <= ONCE_DEFAULT_EXPIRY_MS && (chosenMs === null || shownMs === ONCE_DEFAULT_EXPIRY_MS));
   const accessLine = $derived(shownMs === null ? "" : accessLastsLine(renewal?.deviceSignIn ? "device" : holder, shownMs));
   const leaseMaxMs = $derived(renewal ? Math.min(renewal.maxLeaseMs, MAX_LEASE_MS) : MAX_LEASE_MS);
   const proposedLeaseMs = $derived(renewal ? defaultLeaseMs(leaseMaxMs) : 0);
@@ -146,7 +177,7 @@
     void oncePicks;
     if (disabled || onceGroup === null) return;
     const signedMs = shownMs;
-    const lengths = [ONCE_DEFAULT_EXPIRY_MS, onceChoice?.longer?.ms];
+    const lengths = [ONCE_DEFAULT_EXPIRY_MS, compactOn ? compact?.longer?.ms : onceChoice?.longer?.ms];
     onceGroup.querySelectorAll<HTMLInputElement>('input[type="radio"]').forEach((radio, index) => {
       radio.checked = lengths[index] === signedMs;
     });
@@ -155,6 +186,11 @@
   function pickOnce(ms: number) {
     oncePicks += 1;
     onChange(ms);
+  }
+
+  function pickCompact(ms: number) {
+    oncePicks += 1;
+    onChange(compact!.explicit || ms !== requestedMs ? ms : null);
   }
 
   function onKeydown(event: KeyboardEvent) {
@@ -167,6 +203,28 @@
 
 {#if shownMs !== null}
   <div class="expiry" role="group" aria-label="How long this permission lasts" onkeydown={onKeydown}>
+    {#if compactOn}
+      <p class="expiry-once-note" id="{uid}-compact-caution" data-testid="approval-expiry-compact-caution">{compact!.caution}</p>
+      {#if compactToggle !== null}
+        <fieldset class="length-toggle" bind:this={onceGroup} data-testid="approval-expiry-toggle" aria-describedby="{uid}-compact-caution">
+          <legend class="sr-only">{SECRET_BLOCK_COPY.groupName}</legend>
+          {#each compactChoices as choice (choice.ms)}
+            <label class="length-option" title={choice.name}>
+              <input
+                type="radio"
+                class="length-radio"
+                name="{uid}-compact-length"
+                aria-label={choice.name}
+                checked={shownMs === choice.ms}
+                {disabled}
+                onchange={() => pickCompact(choice.ms)}
+              />
+              <span>{choice.label}</span>
+            </label>
+          {/each}
+        </fieldset>
+      {/if}
+    {/if}
     {#if confirming}
       <div class="renewal-confirm" role="alertdialog" aria-labelledby="renewal-confirm-heading" aria-describedby="renewal-confirm-body">
         <h3 class="renewal-confirm-heading" id="renewal-confirm-heading" tabindex="-1" bind:this={confirmHeading}>Renew sensitive access?</h3>
@@ -186,6 +244,11 @@
     {:else}
       <!-- One live region holds whichever line is showing, so a screen reader hears the line that settles. -->
       <div class="expiry-live" aria-live="polite">
+        {#if compactToggle !== null}
+          <p class="sr-only" data-testid="approval-expiry-announcement">{SECRET_BLOCK_COPY.lasts(formatLengthWithEnd(shownMs!, openedAt))}</p>
+        {:else if compactOn}
+          <p class="expiry-line" data-testid="approval-expiry-length-line">{SECRET_BLOCK_COPY.lasts(askedHourLine ? formatDuration(shownMs!) : formatLengthWithEnd(shownMs!, openedAt))}</p>
+        {/if}
         {#if renewalPending && !renewal}
           <p class="expiry-line" data-testid="approval-expiry-line">{RENEWAL_CHECKING_LINE}</p>
         {:else if renewal}
@@ -201,17 +264,19 @@
             <span data-testid="approval-expiry-line">
               {#if renews}
                 {permissionCount > 1 ? "These permissions renew" : "This permission renews"} automatically for up to {formatDuration(renewal.leaseMs!)}{renewal.deviceSignIn ? "." : ""}
+              {:else if compactOn}
+                {SECRET_BLOCK_COPY.renewLabel(formatDuration(proposedLeaseMs))}
               {:else}
                 {accessLine}
               {/if}
             </span>
           </label>
-        {:else}
+        {:else if !compactOn}
           <p class="expiry-line" data-testid="approval-expiry-line">{accessLine}</p>
         {/if}
       </div>
     {/if}
-    {#if onceChoice !== null}
+    {#if !compactOn && onceChoice !== null}
       {#if onceChoice.longer !== null && renewal?.leaseMs == null && (shownMs === ONCE_DEFAULT_EXPIRY_MS || shownMs === onceChoice.longer.ms)}
         <fieldset class="once-choice" bind:this={onceGroup} data-testid="approval-expiry-once-choice" aria-describedby="{uid}-once-caution">
           <legend>How long</legend>
@@ -239,7 +304,7 @@
       {/if}
       <p class="expiry-once-note" id="{uid}-once-caution" data-testid="approval-expiry-once-caution">{onceChoice.caution}</p>
     {/if}
-    {#if lengthNote !== null}
+    {#if lengthNote !== null && !compactOn}
       <p class="expiry-once-note" data-testid="approval-expiry-length-note">{lengthNote}</p>
     {/if}
     {#if chooser}
@@ -272,6 +337,75 @@
   /* Spaced under the line like the other paragraphs on the screen (measured at 390px: 10px, as above the line). */
   .expiry-once-note {
     margin-top: 4px;
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  /* Two segments on one line; each is at least the 40px tap height used by the other choices on this screen. */
+  .length-toggle {
+    display: flex;
+    gap: 0;
+    min-width: 0;
+    margin: 4px 0 8px;
+    padding: 0;
+    border: 0;
+  }
+  .length-option {
+    position: relative;
+    display: flex;
+    flex: 0 1 auto;
+    min-width: 0;
+    cursor: pointer;
+  }
+  .length-option > span {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 40px;
+    padding: 0 14px;
+    font-weight: 600;
+    color: #0f172a;
+    text-align: center;
+    background: #fff;
+    border: 1px solid #cbd5e1;
+  }
+  .length-option:first-of-type > span {
+    border-radius: 10px 0 0 10px;
+  }
+  .length-option:last-of-type > span {
+    margin-left: -1px;
+    border-radius: 0 10px 10px 0;
+  }
+  .length-radio {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+  .length-radio:checked + span {
+    color: #fff;
+    background: #1d4ed8;
+    border-color: #1d4ed8;
+    z-index: 1;
+  }
+  .length-radio:focus-visible + span {
+    outline: 2px solid #1d4ed8;
+    outline-offset: 2px;
+    z-index: 2;
+  }
+  .length-radio:disabled + span {
+    opacity: 0.6;
   }
   .once-choice {
     display: flex;

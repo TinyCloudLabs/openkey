@@ -84,6 +84,7 @@
     allSecretsCard,
     allSecretsReach,
     grantDecryptsOneSecret,
+    grantOnceReach,
     secretLifetimeCapApplies,
     SECRET_GRANT_MAX_SECONDS,
     type ElevatedKind,
@@ -99,12 +100,14 @@
   import type { ApproveVisibility } from "$lib/approve-visibility";
   import {
     ONCE_DEFAULT_EXPIRY_MS,
+    SECRET_BLOCK_COPY,
     accessLastsLine,
     onceCautionLine,
     onceDefaultExpiryMs,
     onceLongerChoice,
     remainingAccessMs,
     requestedExpiryMs,
+    secretLongerChoice,
   } from "$lib/approval-expiry";
   import { isOnceTier, onceReachOf, renewalNeedsSensitiveConfirm } from "$lib/renewal-default";
 
@@ -324,9 +327,53 @@
   const renewalOnlyStatements = $derived(
     buildSummaryStatements(selectedWithRenewal.filter((grant) => grant.renewalOnly)),
   );
-  const summaryStatements = $derived(
+  const plainSummaryStatements = $derived(
     buildSummaryStatements(selectedGrants.filter((grant) => !grant.renewalOnly)),
   );
+  // The compact secret block: when every Sensitive row of a request that carries a length choice reads secrets, the
+  // reading is one row (the name for one secret, "Read secret values" for several or all) with one caution line
+  // and the length toggle under it. The names of several secrets stay under Advanced details.
+  const secretBlock = $derived.by(() => {
+    if (!onExpiryChange || model.protocol !== "tinycloud-siwe-recap") return null;
+    const rows = plainSummaryStatements;
+    const oneName = oneNamedSecret(selectedGrants);
+    const named = rows.filter((row) => row.secret !== undefined);
+    let covered: Set<string>;
+    let caution: string;
+    let one = false;
+    let all = false;
+    let row: string = SECRET_BLOCK_COPY.rowSeveral;
+    if (onceTier && onceReachOf(onceGrants) === "secrets") {
+      // Everything that opens the secrets as a whole reads as the one row, whichever way the request words it.
+      covered = new Set(
+        onceGrants.filter((grant) => grantOnceReach(grant) === "secrets").flatMap((grant) => buildSummaryStatements([grant]).map((row) => row.key)),
+      );
+      caution = SECRET_BLOCK_COPY.cautionAll;
+      row = SECRET_BLOCK_COPY.rowAll;
+      all = true;
+    } else if (oneName !== null) {
+      covered = new Set([NAMED_SECRET_DECRYPT_ROW]);
+      caution = SECRET_BLOCK_COPY.cautionOne(oneName);
+      one = true;
+    } else if (named.length > 0) {
+      covered = new Set(named.map((row) => row.key));
+      one = named.length === 1;
+      caution = one ? SECRET_BLOCK_COPY.cautionOne(named[0]!.secret!.name) : SECRET_BLOCK_COPY.cautionSeveral(named.length);
+    } else {
+      return null;
+    }
+    if (rows.some((row) => row.severity === "sensitive" && !covered.has(row.key))) return null;
+    // The secrets the row covers, from the same rows that make the count in the caution: none for the whole vault.
+    const secrets = all ? [] : named.flatMap((entry) => (entry.secret ? [entry.secret] : []));
+    return { covered, caution, one, row, secrets };
+  });
+  const summaryStatements = $derived.by(() => {
+    if (secretBlock === null || secretBlock.one) return plainSummaryStatements;
+    const first = plainSummaryStatements.findIndex((row) => secretBlock.covered.has(row.key));
+    if (first < 0) return plainSummaryStatements;
+    const row: SummaryStatement = { key: "secret-values", primaryText: secretBlock.row, severity: "sensitive", unmapped: false, codeSpans: false };
+    return plainSummaryStatements.flatMap((other, index) => (index === first ? [row] : secretBlock.covered.has(other.key) ? [] : [other]));
+  });
   const secretStatements = $derived(summaryStatements.filter((statement) => statement.secret !== undefined));
   const groupSecrets = $derived(secretStatements.length >= 4);
   const effectiveStatements = $derived(
@@ -419,6 +466,17 @@
       ? (shortenOnlyExpiry.startMs < shortenOnlyExpiry.askedMs ? shortenOnlyExpiry.startMs : null)
       : onceCapMs;
     return { longer: onceLongerChoice(asked, cap), caution: onceCautionLine(reach) };
+  });
+  // The length toggle of the compact secret block: 1 hour, or the app's ask (the longest allowed when that is less).
+  const compactChoice = $derived.by(() => {
+    if (secretBlock === null) return null;
+    const asked = shortenOnlyExpiry ? shortenOnlyExpiry.askedMs : requestedExpiry;
+    // Where the one-time rules apply a signed request goes no higher than its start; otherwise it may be lengthened up to
+    // the most the fold allows.
+    const cap = shortenOnlyExpiry
+      ? (onceTier ? (shortenOnlyExpiry.startMs < shortenOnlyExpiry.askedMs ? shortenOnlyExpiry.startMs : null) : expiryFoldMaxMs)
+      : onceTier ? onceCapMs : unsignedMaxMs;
+    return { longer: secretLongerChoice(asked, cap), caution: secretBlock.caution, explicit: onceTier || shortenOnlyExpiry !== null };
   });
   // A signed request for a secret's own key says where it starts and the most it can be.
   const signedLengthNote = $derived(
@@ -958,7 +1016,7 @@
     Count the badged rows only when mixed with unbadged rows. Not-granted
     informational rows are also unbadged; the individual badges always remain.
   -->
-  {#if sensitiveCount > 0 && sensitiveCount < effectiveStatements.length + notGrantableStatements.length}
+  {#if sensitiveCount > 0 && sensitiveCount < effectiveStatements.length + notGrantableStatements.length && !(secretBlock !== null && sensitiveCount === 1)}
     <p class="sensitive-callout" role="status" aria-live="polite">
       {sensitiveRowsCallout(sensitiveCount)}
     </p>
@@ -1078,6 +1136,7 @@
         disabled={approving}
         onChange={chooseExpiry}
         {onceChoice}
+        compact={compactChoice}
         lengthNote={signedLengthNote}
         {renewal}
         {renewalPending}
@@ -1340,6 +1399,27 @@
 
         {#if editing && appKeyGrants.length > 0}
           <p class="app-key-note">{APP_KEY_GROUP_NOTE}</p>
+        {/if}
+        {#if secretBlock !== null && secretBlock.secrets.length > 0}
+          <details class="severity-bucket" data-severity="sensitive" aria-label={SECRET_BLOCK_COPY.groupHeading} data-testid="secrets-group" open>
+            <summary class="bucket-summary">
+              <span class="bucket-heading">{SECRET_BLOCK_COPY.groupHeading}</span>
+              <span class="bucket-hint">{SECRET_BLOCK_COPY.groupHint}</span>
+            </summary>
+            <div class="bucket-content">
+              <ul class="grant-list">
+                {#each secretBlock.secrets as secret (secret.keyPath)}
+                  <li class="grant">
+                    <div class="grant-heading">
+                      <span class="grant-title">{SECRET_BLOCK_COPY.groupRow(secret.name)}</span>
+                      <span class="grant-severity" data-severity="sensitive">Sensitive</span>
+                    </div>
+                    <code class="grant-path mono"><span class="grant-target" title={secret.keyPath}>{secret.keyPath}</span></code>
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          </details>
         {/if}
         {#each permissionSections as bucket (bucket.key)}
           <details

@@ -95,6 +95,62 @@ export function onceCautionLine(reach: OnceReach): string {
   return 'This access can open a wide range of your data.';
 }
 
+/**
+ * Every word of the compact secret block on the sign face: the row, the caution under it and the length toggle
+ * (one place to change them). The row for one named secret is the review's own "Read the secret <name>".
+ */
+export const SECRET_BLOCK_COPY = {
+  /** The row when several named secrets are read, and when all of them are. */
+  rowSeveral: 'Read secret values',
+  rowAll: 'Read all your secret values',
+  cautionOne: (name: string) => `Only ${name}. No other secret.`,
+  cautionSeveral: (count: number) => `Only these ${count} secrets. Names are in Advanced details.`,
+  cautionAll: 'Covers every secret in your vault.',
+  /** The group under Advanced details that lists the secrets by name, each with its exact path. */
+  groupHeading: 'Secrets',
+  groupHint: 'The secrets this request reads.',
+  groupRow: (name: string) => `Secret: ${name}`,
+  /** The toggle's name for a screen reader (visually hidden). */
+  groupName: 'How long access lasts',
+  /** The tag after the length the app asked for, and after the longest length when that is less than the ask. */
+  askedTag: 'asked',
+  longestTag: 'longest allowed',
+  /** Added to the screen-reader name and the tooltip of the segment the app asked for. */
+  askedSuffix: ', as the app asked',
+  /** The line where there is nothing to choose between (the app asked for an hour or less), and the announcement after a pick. */
+  lasts: (end: string) => `Access lasts ${end}.`,
+  /** The renewal checkbox's words while it is unticked (ticked, it says how long it renews). */
+  renewLabel: (lease: string) => `Renew automatically for up to ${lease}`,
+} as const;
+
+/** The longer length of the compact toggle, next to 1 hour: the app's ask, or the longest allowed when that is less. */
+export interface SecretLongerChoice {
+  ms: number;
+  label: string;
+  asked: boolean;
+}
+
+/** Like `onceLongerChoice`, with the compact toggle's words. Null where the app asked for an hour or less or for nothing. */
+export function secretLongerChoice(askedMs: number | null, capMs: number | null): SecretLongerChoice | null {
+  const longer = onceLongerChoice(askedMs, capMs);
+  if (longer === null) return null;
+  const asked = longer.ms === askedMs;
+  return { ms: longer.ms, asked, label: `${formatDuration(longer.ms)} (${asked ? SECRET_BLOCK_COPY.askedTag : SECRET_BLOCK_COPY.longestTag})` };
+}
+
+/** The time of day, in the owner's time zone: "1:06 PM". */
+function formatEndTime(ms: number, now: number, timeZone?: string): string {
+  return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', timeZone }).format(now + ms).replace(/\s/g, ' ');
+}
+
+/**
+ * A length with where it ends, for the toggle's names, the announcement and a length picked under "How long it lasts":
+ * a day or more ends on a day ("7 days, until Dec 1"), a shorter one at a time of day ("1 hour, until 1:06 PM").
+ */
+export function formatLengthWithEnd(ms: number, now: number = Date.now(), timeZone?: string): string {
+  return ms >= D ? `${formatDuration(ms)}, until ${formatEndDay(ms, now, timeZone)}` : `${formatDuration(ms)}, until ${formatEndTime(ms, now, timeZone)}`;
+}
+
 /** The lease shown when the box is first ticked: the default, or less when the requester asked for less. */
 export function defaultLeaseMs(maxLeaseMs: number): number {
   return Math.min(DEFAULT_LEASE_MS, maxLeaseMs);
