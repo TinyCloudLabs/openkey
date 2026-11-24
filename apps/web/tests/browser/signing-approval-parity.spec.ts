@@ -339,7 +339,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(summary).toContainText("Edit and delete this app's tables");
       // Exact rows: a known action that fell through to the generic fallback would change one.
       await expect(summary.locator('.summary-statement .statement-primary')).toHaveText([
-        'Read application data',
+        'Read records in all your apps',
         "Edit and delete this app's tables",
       ]);
     });
@@ -362,7 +362,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
       await expect(dialog).toContainText(/\brows?\b/);
       await expect(dialog).toContainText('See which permissions are already granted');
       const summary = page.locator('[data-parity-harness] .summary');
-      await expect(summary.locator('.summary-statement')).toHaveCount(12);
+      await expect(summary.locator('.summary-statement')).toHaveCount(13);
       await expect(summary).toContainText('See who has access to your data');
       await expect(summary).toContainText("Edit and delete tables in your TinyCloud account");
       await expect(summary).toContainText("Edit and delete this app's tables");
@@ -384,6 +384,7 @@ test.describe('signing-approval browser parity — production adapters', () => {
         'See which permissions are already granted',
         'See who has access to your data',
         'Manage your TinyCloud account',
+        'Read, change and delete data in all your apps',
         'Read, change and delete your data',
         'Read your public data',
         'View your secret names and details',
