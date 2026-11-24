@@ -183,9 +183,9 @@ test('decrypt on the whole network starts at one hour and shows the all-secrets 
   await expect(line(page)).toHaveText("This app's access to your data lasts 1 hour.");
   await expect(lengthNote(page)).toHaveCount(0);
   const card = page.getByTestId('all-secrets-card');
-  await expect(card.getByRole('heading')).toHaveText('Let this app open all your encrypted data?');
-  await expect(card).toContainText("That covers every secret and everything else you've encrypted in TinyCloud. Allow this only for an app you trust.");
-  await expect(card).toContainText("OpenKey can't confirm which site asked.");
+  await expect(card.getByRole('heading')).toHaveText('Use your master key to decrypt?');
+  await expect(card).toContainText("This app is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.");
+  await expect(card).toContainText("OpenKey can't confirm the site.");
   await expect(page.getByRole('dialog')).not.toContainText('Read the secret OPENAI_API_KEY');
   expect(expiries.at(-1)).toBe(`${HOUR}s`);
   await testInfo.attach('whole network, all-secrets card', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
