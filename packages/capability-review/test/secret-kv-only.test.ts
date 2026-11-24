@@ -111,6 +111,10 @@ describe("a KV space belongs to the signer only with the signer's address and ch
     expect(grantsFor({ [`${SPACE_ON(137)}/kv/vault/secrets/`]: [KV_GET] })[0]?.ownedBySelf).toBe(false);
   });
 
+  it("the chain is compared as written: chain 01 is not chain 1", () => {
+    expect(grantsFor({ [`tinycloud:pkh:eip155:0${FIXTURE_META.chainId}:${FIXTURE_META.address}:secrets/kv/vault/secrets/`]: [KV_GET] })[0]?.ownedBySelf).toBe(false);
+  });
+
   it("a read of one secret on another chain is not named as the signer's secret", () => {
     expect(rowsOf({ [`${SPACE_ON(137)}/kv/vault/secrets/BOT_HISTORY`]: [KV_GET] })).not.toContain("Read the secret BOT_HISTORY");
   });
@@ -119,6 +123,9 @@ describe("a KV space belongs to the signer only with the signer's address and ch
     const [onOtherChain] = grantsFor({ [`${SPACE_ON(137)}/kv/vault/secrets/`]: [KV_GET] });
     const [inDefault] = grantsFor({ [`${FIXTURE_META.ownSpace}/kv/vault/secrets/`]: [KV_GET] });
     const [decryptOnOtherChain] = grantsFor({ [`urn:tinycloud:encryption:did:pkh:eip155:137:${FIXTURE_META.address}:default/secrets/`]: [DECRYPT] });
+    const [nested] = grantsFor({ [`${SPACE_ON(FIXTURE_META.chainId)}:x/kv/vault/secrets/`]: [KV_GET] });
+    const [aliased] = grantsFor({ [`tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}:foo:secrets/kv/vault/secrets/`]: [KV_GET] });
+    expect([nested, aliased].map((grant) => allSecretsReadPart(grant!))).toEqual([null, null]);
     expect([onOtherChain, inDefault, decryptOnOtherChain].map((grant) => allSecretsReadPart(grant!))).toEqual([null, null, null]);
   });
 });

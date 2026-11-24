@@ -488,6 +488,9 @@ export function grantOnceReach(grant: CapabilityGrant): OnceReach | null {
   return holdsVault && grant.path !== "" && WHOLE_VAULT_PATHS.has(grant.path) ? "secrets" : "wide";
 }
 
+/** The canonical secrets space of an account, exactly: `tinycloud:pkh:eip155:<chain>:<address>:secrets`. */
+const SIGNER_SECRETS_SPACE = /^tinycloud:pkh:eip155:\d+:0x[a-fA-F0-9]{40}:secrets$/;
+
 /**
  * The part a grant plays in the request that reads every secret, or null for any other grant: `value` is a KV `get`
  * on `vault/secrets` or `vault/secrets/` in the signer's secrets space, `key` is a decrypt on the `secrets/` prefix of the `default` network. Each
@@ -499,7 +502,7 @@ export function allSecretsReadPart(grant: CapabilityGrant): "value" | "key" | nu
   if (grant.ownedBySelf !== true || grant.serviceMismatch === true || grant.actions.length !== 1) return null;
   const ability = grant.actions[0]!.ability;
   if (KV_SERVICES.has(grant.service)) {
-    const reads = KV_GET_ABILITIES.has(ability) && grant.appScopeNearMiss !== true && isSecretsSpace(grant.space);
+    const reads = KV_GET_ABILITIES.has(ability) && grant.appScopeNearMiss !== true && SIGNER_SECRETS_SPACE.test(grant.space);
     return reads && (grant.path === "vault/secrets" || grant.path === "vault/secrets/") ? "value" : null;
   }
   if (ENCRYPTION_SERVICES.has(grant.service) && ability === "tinycloud.encryption/decrypt") {

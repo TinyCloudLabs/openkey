@@ -421,6 +421,17 @@ describe('"Read all your secret values" is the secrets directory read, the decry
     cleanup();
   });
 
+  test.each([
+    ['a space under the secrets space (…:secrets:x)', `${SECRETS_SPACE}:x`],
+    ['a space named foo:secrets', `tinycloud:pkh:eip155:${FIXTURE_META.chainId}:${FIXTURE_META.address}:foo:secrets`],
+  ])('a read of vault/secrets/ in %s beside the decrypt on default/secrets/ keeps its own rows', (_name: string, space: string) => {
+    const { target, cleanup } = mounted(modelOf({ ...kvAt('vault/secrets/', [GET], space), ...DECRYPT_PREFIX }));
+    expect(rows(target)).toEqual(['Decrypt data locked with your keys in secrets/ Sensitive', 'Read secret values Sensitive']);
+    expect(face(target)).not.toContain('Read all your secret values');
+    expect(face(target)).not.toContain('Covers every secret in your vault');
+    cleanup();
+  });
+
   const OTHER: Array<[string, Attenuations, string[]]> = [
     ['a decrypt on the scoped prefix alone', { [urn('/secrets/scoped/')]: { [`${E}decrypt`]: [{}] } }, ['Decrypt data locked with your keys in secrets/scoped/ Sensitive']],
     ['the secrets directory read with a decrypt on the scoped prefix', { ...readSecret(''), [urn('/secrets/scoped/')]: { [`${E}decrypt`]: [{}] } },

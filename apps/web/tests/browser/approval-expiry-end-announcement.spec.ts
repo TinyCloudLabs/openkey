@@ -72,15 +72,11 @@ test('the announcement after a pick names the same end as the visible end, and t
   const end = frame.getByTestId('approval-expiry-end');
   await expect(end).toHaveText(/^until \d{1,2}:\d{2}\s?[AP]M$/);
   await expect(frame.getByTestId('approval-expiry-announcement')).toHaveText(/^Access lasts 1 hour, until \d{1,2}:\d{2}\s?[AP]M\.$/);
-  const describedBy = await toggle.getAttribute('aria-describedby');
-  const ids = describedBy!.split(' ');
-  expect(ids).toHaveLength(2);
-  await expect(frame.locator(`[id="${ids[0]}"]`)).toHaveText('Covers every secret in your vault.');
-  await expect(frame.locator(`[id="${ids[1]}"]`)).toHaveText(await end.innerText());
+  await expect(toggle).toHaveAccessibleDescription(`Covers every secret in your vault. ${await end.innerText()}`);
 
   await frame.getByRole('radio', { name: '7 days, as the app asked', exact: true }).check();
   await expect(end).toHaveText(/^until [A-Z][a-z]{2} \d{1,2}$/);
   const shown = (await end.innerText()).replace(/^until /, '');
   await expect(frame.getByTestId('approval-expiry-announcement')).toHaveText(`Access lasts 7 days, until ${shown}.`);
-  await expect(frame.locator(`[id="${ids[1]}"]`)).toHaveText(`until ${shown}`);
+  await expect(toggle).toHaveAccessibleDescription(`Covers every secret in your vault. until ${shown}`);
 });
