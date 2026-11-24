@@ -67,14 +67,16 @@ concurrency:
 jobs:
   embed-gate:
     name: Embed gate (${{ inputs.target || 'candidate' }})
+    # Fork and Dependabot pull requests get no QA mail secrets, so the gate skips them.
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
     # Pinned for Playwright's Chromium install, as web-browser-tests.yml (TC-3071).
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       TARGET: ${{ inputs.target || 'candidate' }}
-      SHA: ${{ inputs.sha || github.event.pull_request.head.sha || github.sha }}
+      SHA: ${{ inputs.sha || github.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.SHA }}
           persist-credentials: false

@@ -17,6 +17,13 @@ test("the TinyCloud One sign-in face is approved, with either expiry note", () =
   assert.equal(judgeSignFace(face([...expected].reverse(), "These permissions expire in 30 days, on Dec 19"), signFaces, host).ok, true);
 });
 
+test("the sign-in review headed with the host's name is approved; another name or another headline is refused", () => {
+  const named = (headline) => face(expected).replace("Authorize capabilities", headline);
+  assert.deepEqual(judgeSignFace(named("Sign in to tinycloud.one"), signFaces, host), { ok: true, face: "tinycloud-one-sign-in" });
+  assert.equal(judgeSignFace(named("Sign in to evil.example"), signFaces, host).reason, "title");
+  assert.equal(judgeSignFace(named("Sign in with Ethereum"), signFaces, host).reason, "title");
+});
+
 test("an extra or a missing permission fails closed and names the line", () => {
   const extra = judgeSignFace(face([...expected, "Read, change or delete any row in every database"]), signFaces, host);
   assert.equal(extra.ok, false);
