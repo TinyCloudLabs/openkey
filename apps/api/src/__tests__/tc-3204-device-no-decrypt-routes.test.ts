@@ -1,4 +1,4 @@
-// TC-3204: a device request can't carry decrypt, so its record never holds an encryption entry. An approval body that
+// A device request can't carry decrypt, so its record never holds an encryption entry. An approval body that
 // adds one (the whole network, the `share/` prefix, one shared file, or another spelling of the encryption service) is
 // refused on every /api/delegate path, and nothing is signed or activated.
 
@@ -15,6 +15,7 @@ import {
 import type { delegateRouter } from '../routes/delegate';
 import type { _resetAuthorizationContextStoreForTests } from '../services/authorization-signing';
 import { mockModules, replaceModules } from './mock-module';
+import { DEVICE_SECRETS_REFUSAL } from '../services/device-flow-abilities';
 
 // Tests never touch a real home or tool home.
 const testHome = mkdtempSync('/var/tmp/tc3204.');
@@ -142,7 +143,7 @@ const added: Array<[string, Record<string, unknown>]> = [
   ['one shared file under an upper-case service', { ...leaf, service: 'TINYCLOUD.ENCRYPTION' }],
 ];
 
-describe('a device request approved with an added decrypt (TC-3204)', () => {
+describe('a device request approved with an added decrypt', () => {
   for (const [name, entry] of added) {
     test(`${name} is refused at /prepare, legacy POST / and /complete, and nothing is signed or activated`, async () => {
       const permissions = [...requested, entry];
@@ -164,7 +165,7 @@ describe('a device request approved with an added decrypt (TC-3204)', () => {
       const completed = await post('/complete', { prepared: unnamed.body.prepared, signature, host, jwk, permissions, deviceTransactionId: transactionId });
       expect(completed.status).toBe(400);
       // /complete reports the refusal without a code field.
-      expect(completed.body.error).toBe("permissions[2] asks to decrypt, and a device approval can't grant tinycloud.encryption. Start a new sign-in.");
+      expect(completed.body.error).toBe(DEVICE_SECRETS_REFUSAL);
       expect(completed.body.delegationHeader).toBeUndefined();
       expect(activateSessionWithHost).not.toHaveBeenCalled();
     });
@@ -178,8 +179,8 @@ describe('a device request approved with an added decrypt (TC-3204)', () => {
   });
 });
 
-describe('a pending device request recorded with decrypt before TC-3204 (TC-3204)', () => {
-  // The base device flow stored this entry; records started before the deploy may still hold it.
+describe('a pending device request recorded with decrypt', () => {
+  // A stored device record may still hold this entry.
   const recordedDecrypt = { service: 'tinycloud.encryption', space: 'default', path: '', actions: [DECRYPT] };
 
   beforeEach(async () => {

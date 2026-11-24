@@ -1,7 +1,7 @@
-// A signed approval request starts the owner's choice at one hour, however long its signed maximum is, or at
-// what it asked for when that is shorter. Every API call is answered by `page.route`; no API server runs.
+// A signed approval request starts at the requester's suggestion or signed maximum. Every API call is answered by `page.route`; no API server runs.
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const id = 'abcdefghijklmnopqrstuvwxyz';
 const fragment = `#v=4&k=${'A'.repeat(43)}&c=bafkreia${'a'.repeat(52)}`;
@@ -15,6 +15,7 @@ const json = (route: Route, status: number, body: unknown) => route.fulfill({ st
 function prepared() {
   const siwe = [
     'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
+    '',
     'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
     'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-03T00:00:00.000Z', 'Expiration Time: 2026-11-03T01:00:00.000Z',
     'Resources:',
@@ -58,16 +59,17 @@ async function openReview(page: Page, lifetime: { grantLifetimeSeconds: number; 
     }
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto(path + fragment);
   await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
   return expiries;
 }
 
-test.describe('a signed approval request starts at one hour at most', () => {
-  test('a request that asks for 7 days and suggests nothing is prepared for one hour', async ({ page }) => {
+test.describe('a signed approval request starts at the requested lifetime', () => {
+  test('a request that asks for 7 days and suggests nothing is prepared for 7 days', async ({ page }) => {
     const expiries = await openReview(page, { grantLifetimeSeconds: 7 * 86_400 });
     expect(expiries.length).toBeGreaterThan(0);
-    expect(expiries.every((expiry) => expiry === '3600s')).toBe(true);
+    expect(expiries.every((expiry) => expiry === '604800s')).toBe(true);
   });
 
   test('a request that asks for 30 minutes keeps its 30 minutes', async ({ page }) => {
@@ -76,9 +78,9 @@ test.describe('a signed approval request starts at one hour at most', () => {
     expect(expiries.every((expiry) => expiry === '1800s')).toBe(true);
   });
 
-  test('a suggestion above an hour is not the start either', async ({ page }) => {
+  test('a request that suggests 7 days is prepared for 7 days', async ({ page }) => {
     const expiries = await openReview(page, { grantLifetimeSeconds: 30 * 86_400, suggestedLifetimeSeconds: 7 * 86_400 });
     expect(expiries.length).toBeGreaterThan(0);
-    expect(expiries.every((expiry) => expiry === '3600s')).toBe(true);
+    expect(expiries.every((expiry) => expiry === '604800s')).toBe(true);
   });
 });

@@ -6,6 +6,7 @@
 
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0xd559ccd9eb87c530a9a349262669386de93cf412';
 const space = `tinycloud:pkh:eip155:1:${address}:applications`;
@@ -25,7 +26,7 @@ const option = (service: string, short: string, path: string, abilities: string[
 };
 const permissionOptions = [option('tinycloud.capabilities', 'capabilities', '', [caps]), option('tinycloud.kv', 'kv', 'xyz.tinycloud.tinychat/threads/', [kvGet])];
 const selected = permissionOptions.flatMap((permission) => permission.actions.map((action) => action.key));
-const base = { requestId: 'native-1', userId: 'u', keyId: 'key-1', address, client: { clientId: 'exo-native', name: 'Exo', icon: null, organization: 'TinyCloud Labs' },
+const base = { requestId: 'native-1', kind: 'SIGNIN', userId: 'u', keyId: 'key-1', address, client: { clientId: 'exo-native', name: 'Exo', icon: null, organization: 'TinyCloud Labs' },
   redirectScheme: 'xyz.tinycloud.exo', sessionDid: 'did:key:z6Mk', tinycloudHost: 'https://tee.node.tinycloud.xyz', ttlSeconds: 3600,
   grantLifetimeSeconds: 2592000, hostPlan: null, permissionOptions, selectedActionKeys: selected, revision: 1, digest: 'digest-1' };
 const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -43,6 +44,7 @@ async function exactMessage(page: Page, sessionSiwe: string): Promise<Shown> {
     if (path.endsWith('/prepare')) return json(route, { ...base, sessionSiwe });
     return json(route, { error: `unmocked ${path}` }, 404);
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   await page.goto('/oauth/consent?client_id=exo-native&tinycloud_request=native-1&sig=test');
   await expect(page.getByRole('heading', { name: 'Exo wants access' })).toBeVisible();
   await page.locator('details.details > summary').click();

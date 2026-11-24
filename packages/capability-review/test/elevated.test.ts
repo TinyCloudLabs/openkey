@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  allSecretsCard,
   elevatedActionsOf,
   elevatedCard,
   elevatedDecidedAnnouncement,
@@ -30,6 +31,9 @@ describe("elevatedKindOf", () => {
     ["decrypt on an exact key outside apps/", urn("/secrets/k"), `${E}decrypt`, "encryption-keys"],
     ["the short service and ability names", urn("/qa/"), "encryption/decrypt", "encryption-keys"],
     ["an upper-case verb", urn("/qa/"), `${E}Decrypt`, "encryption-keys"],
+    ["key.block on the whole network", urn(""), `${E}key.block`, "encryption-network"],
+    ["key.unblock on a folder", urn("/qa/"), `${E}key.unblock`, "encryption-keys"],
+    ["key.block on an exact key outside apps/", urn("/share/abc"), `${E}key.block`, "encryption-keys"],
   ])("%s", (_name, resource, ability, kind) => {
     expect(elevatedKindOf(parserForm(resource), ability)).toBe(kind as never);
     expect(elevatedKindOf(reportedForm(resource), ability)).toBe(kind as never);
@@ -38,10 +42,10 @@ describe("elevatedKindOf", () => {
   test.each([
     ["network.create alone", urn(""), `${E}network.create`],
     ["network.revoke", urn(""), `${E}network.revoke`],
-    ["key.block outside apps/", urn("/qa/"), `${E}key.block`],
     ["key.delete (refused elsewhere)", urn("/qa/"), `${E}key.delete`],
     ["an app's own keys", urn("/apps/xyz.tinycloud.listen/"), `${E}decrypt`],
     ["an app's own key", urn("/apps/xyz.tinycloud.listen/k"), `${E}key.create`],
+    ["an app's own key being blocked", urn("/apps/xyz.tinycloud.listen/k"), `${E}key.block`],
     ["an app's own keys in any case", urn("/Apps/xyz.tinycloud.listen/"), `${E}decrypt`],
   ])("%s needs no extra warning", (_name, resource, ability) => {
     expect(elevatedKindOf(parserForm(resource), ability)).toBeNull();
@@ -105,11 +109,11 @@ describe("the warning copy", () => {
     expect(elevatedWholeNote("gk.gbafa.com")).toBe("gk.gbafa.com sent this as one request, so you can approve all of it or none of it.");
   });
 
-  test("Card A: decrypt on the whole network says what it reaches and for how long", () => {
+  test("Card A: decrypt on the whole network asks to use the master key", () => {
     const card = elevatedCard("encryption-network", { decrypt: true, create: false }, "gk.gbafa.com", elevatedWhereText(null));
-    expect(card.heading).toBe("Unlock all your encrypted data");
+    expect(card.heading).toBe("Use your master key to decrypt?");
     expect(card.body).toBe(
-      "gk.gbafa.com could unlock everything encrypted to your account, including your secrets and data other apps saved, for as long as this approval lasts.",
+      "gk.gbafa.com is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.",
     );
   });
 
@@ -131,19 +135,60 @@ describe("the warning copy", () => {
     expect(elevatedCard("encryption-keys", { decrypt: true, create: true }, "x.test", where).heading).toBe("Unlock and create encrypted items in a folder named share");
   });
 
+  test("the control card: Sam's example, word for word", () => {
+    const card = elevatedCard("encryption-keys", { decrypt: false, create: false, block: true }, "example.com", elevatedWhereText("Shared"));
+    expect(card.heading).toBe("Control access to encryption keys in a folder named Shared");
+    expect(card.body).toBe(
+      "example.com could block encryption keys in a folder named Shared, for as long as this approval lasts. Until the key is unblocked, requests to unlock the items it protects are refused, including your own.",
+    );
+  });
+
+  test("the control card: the whole account heading, every action the grant carries in order, and the refusal sentence only when blocking is included", () => {
+    const network = elevatedCard("encryption-network", { decrypt: true, create: false, block: true, unblock: true }, "example.com", elevatedWhereText(null));
+    expect(network.heading).toBe("Control access to encryption keys anywhere in your account");
+    expect(network.body.startsWith("example.com could unlock encrypted items and block and unblock encryption keys anywhere in your account, for as long as this approval lasts.")).toBe(true);
+    expect(network.body.endsWith("including your own.")).toBe(true);
+    const unblock = elevatedCard("encryption-keys", { decrypt: false, create: false, unblock: true }, null, elevatedWhereText("Shared"));
+    expect(unblock.body).toBe("This request could unblock encryption keys in a folder named Shared, for as long as this approval lasts.");
+    const pair = elevatedCard("encryption-keys", { decrypt: false, create: true, unblock: true }, "x.test", elevatedWhereText("Shared"));
+    expect(pair.body).toBe("x.test could create and unblock encryption keys in a folder named Shared, for as long as this approval lasts.");
+    const all = elevatedCard("encryption-network", { decrypt: true, create: true, block: true, unblock: true }, null, elevatedWhereText(null));
+    expect(all.body.startsWith("This request could unlock encrypted items and create, block and unblock encryption keys anywhere in your account, for as long as this approval lasts.")).toBe(true);
+    const both = elevatedCard("encryption-network", { decrypt: false, create: false, block: true, unblock: true }, "example.com", elevatedWhereText(null));
+    expect(both.body.startsWith("example.com could block and unblock encryption keys anywhere in your account, for as long as this approval lasts.")).toBe(true);
+  });
+
   test("no card ever says 'until {date}' (the approval can renew)", () => {
     for (const kind of ["encryption-network", "encryption-keys"] as const) {
       for (const abilities of [{ decrypt: true, create: false }, { decrypt: false, create: true }, { decrypt: true, create: true }]) {
         const { body } = elevatedCard(kind, abilities, "x.test", elevatedWhereText("qa"));
-        expect(body).toContain("for as long as this approval lasts");
+        if (!(kind === "encryption-network" && abilities.decrypt)) expect(body).toContain("for as long as this approval lasts");
         expect(body).not.toMatch(/\buntil\b/);
       }
     }
   });
 
+  test("whole-network decrypt: the master-key question, the site in the body, and the cue only for an unverified site", () => {
+    const body = "is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.";
+    const verified = elevatedCard("encryption-network", { decrypt: true, create: false }, "gk.gbafa.com", elevatedWhereText(null));
+    expect(verified).toEqual({ heading: "Use your master key to decrypt?", body: `gk.gbafa.com ${body}` });
+    const unverified = elevatedCard("encryption-network", { decrypt: true, create: false }, null, elevatedWhereText(null));
+    expect(unverified).toEqual({ heading: "Use your master key to decrypt?", body: `This app ${body} OpenKey can't confirm the site.` });
+  });
+
+  test("whole-network decrypt with key creation adds one line, and the all-secrets card says the same words", () => {
+    const body = "is asking to use your master key, which can open all your encrypted data. Some apps do this because they don't have app-specific keys.";
+    const combo = elevatedCard("encryption-network", { decrypt: true, create: true }, "gk.gbafa.com", elevatedWhereText(null));
+    expect(combo).toEqual({ heading: "Use your master key to decrypt?", body: `gk.gbafa.com ${body} It can also create encryption keys.` });
+    const card = allSecretsCard({ kind: "whole-account", alsoWholeAccount: false }, "gk.gbafa.com");
+    expect(card).toEqual({ heading: "Use your master key to decrypt?", body: `gk.gbafa.com ${body}`, cue: null });
+    const unverified = allSecretsCard({ kind: "whole-account", alsoWholeAccount: false }, null);
+    expect(unverified).toEqual({ heading: "Use your master key to decrypt?", body: `This app ${body}`, cue: "OpenKey can't confirm the site." });
+  });
+
   test("announcements and the review row", () => {
-    expect(elevatedDecidedAnnouncement("Unlock all your encrypted data", false, 1)).toBe("Rejected: Unlock all your encrypted data. 1 left to decide.");
-    expect(elevatedDecidedAnnouncement("Unlock all your encrypted data", true, 0)).toBe("Allowed: Unlock all your encrypted data. All decided.");
-    expect(elevatedNotApprovedRow("Unlock all your encrypted data")).toBe("Not approved: Unlock all your encrypted data");
+    expect(elevatedDecidedAnnouncement("Use your master key to decrypt?", false, 1)).toBe("Rejected: Use your master key to decrypt. 1 left to decide.");
+    expect(elevatedDecidedAnnouncement("Use your master key to decrypt?", true, 0)).toBe("Allowed: Use your master key to decrypt. All decided.");
+    expect(elevatedNotApprovedRow("Use your master key to decrypt?")).toBe("Not approved: Use your master key to decrypt");
   });
 });

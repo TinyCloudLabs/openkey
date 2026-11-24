@@ -2,7 +2,7 @@
 import { describe, expect, test } from 'bun:test';
 import { approvedDevicePermissions, type DevicePermission } from './device-authorization';
 
-// TC-3204: device sign-in grants no encryption ability. The /delegate page refuses to relay a signed delegation that
+// Device sign-in grants no encryption ability. The /delegate page refuses to relay a signed delegation that
 // carries any encryption grant, even one the device request listed.
 
 const address = '0x00000000000000000000000000000000000000Aa';
@@ -28,7 +28,7 @@ const cases: Array<[string, DevicePermission, Record<string, unknown>]> = [
     { service: 'TINYCLOUD.ENCRYPTION', space, path: 'share/', actions: [DECRYPT] }],
 ];
 
-describe('approvedDevicePermissions refuses every encryption grant (TC-3204)', () => {
+describe('approvedDevicePermissions refuses every encryption grant', () => {
   test.each(cases)('refuses decrypt on %s', (_name: string, requested: DevicePermission, grant: Record<string, unknown>) => {
     expect(() => approvedDevicePermissions([kv, requested], [kvGrant, grant])).toThrow('The approved delegation exceeds the device request.');
   });

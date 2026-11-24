@@ -35,6 +35,7 @@ export interface DeviceRequestRecord {
   delegationTtlSeconds?: number;
   /** The lifetime the requester suggests as the default; absent means `delegationTtlSeconds`. */
   suggestedTtlSeconds?: number;
+  renewal?: { version: 1; leaseLifetimeSeconds: number };
 }
 
 /** Values a `/delegate` device link carries that must equal the server's request. */
@@ -63,6 +64,17 @@ export function cleanConsentText(value: string): string {
     .trim();
 }
 
+/** A device code's eight letters and numbers, upper case, whatever else was typed or pasted around them. */
+export function normalizeDeviceUserCode(value: string): string {
+  return value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+}
+
+/** A device code as the terminal shows it, `ABCD-EFGH`; a partial code gets the dash once it passes four. */
+export function formatDeviceUserCode(value: string): string {
+  const normalized = normalizeDeviceUserCode(value);
+  return normalized.length > 4 ? `${normalized.slice(0, 4)}-${normalized.slice(4)}` : normalized;
+}
+
 export async function lookupDeviceRequest(apiBase: string, userCode: string): Promise<DeviceRequestRecord | null> {
   const response = await fetch(`${apiBase}/api/device-authorizations/lookup?user_code=${encodeURIComponent(userCode)}`, {
     credentials: 'omit',
@@ -79,13 +91,19 @@ export async function lookupDeviceRequest(apiBase: string, userCode: string): Pr
  * its `expiry` (`<seconds>s`) is within the requested lifetime, so a crafted
  * link cannot swap keys, origins, scope, reason, or lifetime.
  */
+export class DeviceLinkError extends Error {
+  constructor(readonly stopId: 'S4' | 'S28', message: string) {
+    super(message);
+  }
+}
+
 export async function loadVerifiedDeviceRequest(
   apiBase: string,
   userCode: string,
   link: DeviceDelegateLink,
 ): Promise<DeviceRequestRecord> {
   const record = userCode ? await lookupDeviceRequest(apiBase, userCode) : null;
-  if (!record) throw new Error('This device request is invalid or expired. Restart the CLI command and enter its code at /device.');
+  if (!record) throw new DeviceLinkError('S4', 'This device request is invalid or expired. Restart the CLI command and enter its code at /device.');
   const canonical = (value: unknown) => JSON.stringify(value, (_key, entry: unknown) =>
     entry && typeof entry === 'object' && !Array.isArray(entry)
       ? Object.fromEntries(Object.entries(entry).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)))
@@ -100,7 +118,7 @@ export async function loadVerifiedDeviceRequest(
     canonical(record.permissions) !== canonical(link.permissions) ||
     !(Number(/^(\d+)s$/.exec(link.expiry)?.[1]) <= deviceRequestTtlSeconds(record))
   ) {
-    throw new Error('This approval link does not match the device request. Enter the code from your terminal at /device.');
+    throw new DeviceLinkError('S28', 'This approval link does not match the device request. Enter the code from your terminal at /device.');
   }
   return record;
 }
@@ -207,8 +225,8 @@ export function decodeBase64UrlJson(value: string): unknown {
  * The `/delegate` `permissions` parameter (`{ permissions, reason? }`). Throws
  * unless it decodes to a non-empty list of permission entries (string
  * `service` and `path`, a string `space` when present, string `actions`): a
- * request whose permissions cannot be read must be refused, never widened to
- * the default abilities. A raw encryption network carries no space.
+ * request whose permissions cannot be read must be refused, never treated as
+ * a request that names none (the own folder). A raw encryption network carries no space.
  */
 export function decodeDelegatePermissionsParam(value: string): { permissions: DevicePermission[]; reason?: unknown } {
   const payload = decodeBase64UrlJson(value);
@@ -234,7 +252,7 @@ export function decodeDelegatePermissionsParam(value: string): { permissions: De
 
 /**
  * Read `/delegate`'s `permissions` parameter by presence: null only when it is
- * absent (the ordinary default abilities apply). A present parameter, even
+ * absent (the request then gets only its own folder). A present parameter, even
  * `?permissions=` or a bare `?permissions`, must decode to a non-empty list
  * or the request is refused.
  */
@@ -249,7 +267,7 @@ export function readDelegatePermissionsParam(params: URLSearchParams): { permiss
  * requested manifest permissions, keeping the request's spelling. Throws
  * when the delegation carries anything the device request did not ask for
  * or grants nothing. Device sign-in grants no encryption ability, so any
- * encryption grant is refused (TC-3204).
+ * encryption grant is refused.
  */
 export function approvedDevicePermissions(
   requested: DevicePermission[],

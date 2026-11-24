@@ -1,12 +1,19 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { untrack } from 'svelte';
   import { authClient } from '$lib/auth-client';
   import { api, type EthereumKey } from '$lib/api';
+  import {
+    answerApprovalPasskey, approvalPasskeyGate, isPasskeyApprovalRefusal, passkeyApprovalCopy,
+    type ApprovalPasskeyAssertion, type ApprovalPasskeyNeed, type PasskeyOfferFetch,
+  } from '$lib/approval-passkey';
   import { activeKeys, ARCHIVED_KEY_MESSAGE } from '$lib/delegate-key-selection';
   import Button from '$lib/components/ui/button.svelte';
   import KeyPicker from '$lib/components/keys/KeyPicker.svelte';
   import SigningKeyRefusal from '$lib/components/signing/signing-key-refusal.svelte';
   import { originAuthority } from '$lib/requester-display';
+  import { registryTypedDataSignRefusal } from '@openkey/capability-review';
+  import RegistryRecordRefusal from '$lib/components/signing/registry-record-refusal.svelte';
   import Card from '$lib/components/ui/card.svelte';
   import { passkeysSupportedFromParams, withPasskeysFlag } from '$lib/passkey-support';
   import { isFromWidgetCounterparty, resolveWidgetOrigin } from '$lib/widget-transport';
@@ -103,6 +110,55 @@
     return () => { active = false; };
   });
 
+  // Hardening: typed-data signing. The registry's node-location struct is refused unless the requester is TinyCloud One;
+  // the host is told once, and nothing is offered or sent to the API.
+  const registryRefusal = $derived(typedData ? registryTypedDataSignRefusal(typedData, origin) : null);
+  let registryRefusalReported = false;
+  $effect(() => {
+    if (!registryRefusal || registryRefusalReported) return;
+    registryRefusalReported = true;
+    sendResponse({
+      type: 'openkey:signTypedData:response',
+      success: false,
+      error: { code: 'UNKNOWN', message: 'REGISTRY_RECORD_SIGN_REFUSED' },
+    });
+  });
+
+  // TC-3442: whether Sign needs the passkey, with the challenge for exactly this key and data. Fetched once the request
+  // and its key are on screen; a passkey refusal spends the challenge, so the revision fetches a new one. Sign sends
+  // nothing until the offer for the current request has landed: it waits while the fetch is in flight and fetches
+  // again after a failure.
+  const passkeyOfferInput = $derived(
+    key && key.keyType === 'MANAGED' && key.archivedAt == null && !archivedKey && typedData && !registryRefusal ? `${requestVersion}:${key.id}` : null,
+  );
+  let passkeyOffer = $state<{ input: string; need: ApprovalPasskeyNeed } | null>(null);
+  let passkeyOfferRevision = $state(0);
+  let passkeyOfferFetch = $state<PasskeyOfferFetch>('idle');
+  const passkeyOfferGate = $derived(approvalPasskeyGate({
+    input: passkeyOfferInput, held: passkeyOffer, fetch: passkeyOfferFetch,
+  }));
+  $effect(() => {
+    const input = passkeyOfferInput;
+    void passkeyOfferRevision;
+    const [offerKey, data] = untrack(() => [key, typedData]);
+    if (input === null || !offerKey || !data) {
+      passkeyOfferFetch = 'idle';
+      return;
+    }
+    let current = true;
+    passkeyOfferFetch = 'pending';
+    api.signTypedDataPasskey(offerKey.id, data, origin ?? undefined).then(
+      (need) => {
+        if (!current) return;
+        passkeyOffer = { input, need };
+        passkeyOfferFetch = 'idle';
+      },
+      () => { if (current) passkeyOfferFetch = 'failed'; },
+    );
+    return () => { current = false; };
+  });
+  const offerFailure = $derived(passkeyOfferFetch === 'failed' ? passkeyApprovalCopy.offerFailed : '');
+
   function handleMessage(event: MessageEvent) {
     if (!isFromWidgetCounterparty(event, origin, counterparty)) return;
     if (event.data?.type === 'openkey:signTypedData:request') {
@@ -119,15 +175,33 @@
   }
 
   async function signTypedData() {
-    if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing) return;
+    if (!key || key.keyType !== 'MANAGED' || key.archivedAt != null || archivedKey || !typedData || signing || registryRefusal) return;
 
     const version = requestVersion;
+    // Without the offer for this data nothing is sent: Sign waits for the fetch in flight, or fetches again.
+    const gate = passkeyOfferGate;
+    if (gate.action === 'retry') passkeyOfferRevision++;
+    if (gate.action !== 'send') return;
+    const passkeyNeed = gate.need;
 
     signing = true;
     error = '';
 
+    // TC-3442: the passkey prompt comes first, straight from the tap. A dismissed prompt reached nothing: the same offer
+    // stays for the next tap.
+    let passkeyAssertion: ApprovalPasskeyAssertion | undefined;
     try {
-      const result = await api.signTypedData(key.id, typedData);
+      passkeyAssertion = await answerApprovalPasskey(passkeyNeed);
+    } catch (e: unknown) {
+      if (version === requestVersion) {
+        error = (e as Error).message;
+        signing = false;
+      }
+      return;
+    }
+
+    try {
+      const result = await api.signTypedData(key.id, typedData, passkeyAssertion, origin ?? undefined);
       if (version !== requestVersion) return;
       sendResponse({
         type: 'openkey:signTypedData:response',
@@ -138,6 +212,11 @@
       sendClose();
     } catch (e: any) {
       if (version === requestVersion) error = e.message || 'Signing failed';
+      // TC-3442: the API refused over the passkey; its text is shown and the spent challenge is replaced.
+      if (version === requestVersion && isPasskeyApprovalRefusal(e)) {
+        passkeyOffer = null;
+        passkeyOfferRevision++;
+      }
     } finally {
       if (version === requestVersion) signing = false;
     }
@@ -188,7 +267,9 @@
     </button>
   </header>
 
-  {#if !$session.data}
+  {#if registryRefusal}
+    <RegistryRecordRefusal variant="popup" onclose={sendClose} />
+  {:else if !$session.data}
     <div class="flex-1 flex flex-col items-center justify-center text-center text-surface-400">
       <p class="mb-4">Sign in to sign data</p>
       <Button href={withPasskeysFlag(`/auth/login?redirect=/widget/sign-typed-data?origin=${encodeURIComponent(origin ?? '')}`, passkeysSupported)}>Sign In</Button>
@@ -234,15 +315,15 @@
         <pre class="m-0 whitespace-pre-wrap break-all font-mono text-xs max-h-[120px] overflow-y-auto">{JSON.stringify(typedData.message, null, 2)}</pre>
       </Card>
 
-      {#if error}
+      {#if error || offerFailure}
         <Card class="bg-red-500/10 border-red-500 text-red-500 p-4">
-          {error}
+          {error || offerFailure}
         </Card>
       {/if}
 
       <div class="flex gap-3 mt-auto">
         <Button variant="secondary" class="flex-1" onclick={cancel}>Cancel</Button>
-        <Button class="flex-1" onclick={signTypedData} disabled={signing}>
+        <Button class="flex-1" onclick={signTypedData} disabled={signing || passkeyOfferGate.action === 'wait'}>
           {signing ? 'Signing...' : 'Sign Data'}
         </Button>
       </div>

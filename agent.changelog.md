@@ -3,6 +3,24 @@
 Track changes to agent-facing development guidance for OpenKey. Add a concise entry when
 `agent.dev.md` or related agent workflow expectations change.
 
+## 2026-11-22
+
+- API deploys (deploy-api.yml, tc-492-production-cutover.yml) write the image into the compose only
+  by digest, fail on any tag-only or `${VAR}` image, attest build provenance, and publish the
+  measured app-compose on the release `openkey-api-<commit>` (TC-3837).
+
+## 2026-11-21
+
+- Share sender smoke now follows production Pages check completion instead of
+  polling on every push. Unpublished web does not fail smoke; the newest completed
+  non-cancelled attempt decides after retries. API-deploy smoke is unchanged (TC-3683).
+
+## 2026-11-20
+
+- CI: the Dependabot Changeset workflow cancels superseded runs for the same PR.
+  Web browser tests isolate non-PR runs by run ID so pending main runs cannot
+  replace one another.
+
 ## 2026-11-16
 
 - Hosted app-review accounts (TC-2775): the native-grant column guard, both migration

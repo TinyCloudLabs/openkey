@@ -1,6 +1,7 @@
 import { test, expect, type BrowserContext, type Page } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource, siweWithResources, FIXTURE_META } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const id = 'abcdefghijklmnopqrstuvwxyz';
 const reference = `/a/${id}#v=4&k=${'A'.repeat(43)}&c=bafkreia${'a'.repeat(52)}`;
@@ -37,6 +38,7 @@ async function serve(context: BrowserContext) {
     writes.push(path);
     return route.fulfill({ status: 404, json: { error: 'Unexpected local test request' } });
   });
+  await context.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return writes;
 }
 
@@ -57,6 +59,7 @@ for (const [name, url] of [['short-approval', reference], ['delegate', `/delegat
       await expect(page.getByRole('link', { name: 'Dashboard', exact: true })).toHaveCount(0);
       await expect(page.locator('footer').filter({ hasText: 'OpenKey Account' })).toHaveCount(0);
     }
+    await page.locator('[data-account-menu] button').first().click();
     await expect(page.getByRole('button', { name: 'Sign out', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Sign out', exact: true }).click();
     await expect.poll(() => calls.includes('/api/auth/sign-out')).toBe(true);

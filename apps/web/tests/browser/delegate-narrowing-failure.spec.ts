@@ -7,6 +7,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const address = '0x1111111111111111111111111111111111111111';
 const space = `tinycloud:pkh:eip155:1:${address}:secrets`;
@@ -24,6 +25,7 @@ const request = [
 const siwe = [
   'cli.tinycloud.xyz wants you to sign in with your Ethereum account:',
   address,
+  '',
   '',
   'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
   'Version: 1',
@@ -101,6 +103,7 @@ async function mockApi(page: Page, calls: { prepares: unknown[]; approvals: unkn
     }
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
 }
 
 async function openDelegate(page: Page, permissions: unknown[]) {
@@ -144,7 +147,7 @@ test('a malformed encryption entry shows the invalid-request error instead of cr
   const { path: _omitted, ...withoutPath } = request[1]!;
   await openDelegate(page, [request[0], withoutPath, request[2]]);
 
-  await expect(page.getByText('Could not decode the requested permissions').first()).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'OpenKey can’t read what this request asks for' })).toBeVisible();
   expect(pageErrors).toEqual([]);
   expect(calls.prepares).toEqual([]);
 });
@@ -155,8 +158,7 @@ test('a raw network owned by another account is refused before preparing', async
   const foreign = `urn:tinycloud:encryption:did:pkh:eip155:10:${address}:default`;
   await openDelegate(page, [request[0], { ...request[1], path: foreign }, request[2]]);
 
-  await expect(page.getByText('This request names more than one account').first()).toBeVisible();
-  await page.getByRole('button', { name: /Main/ }).first().click();
-  await expect(page.getByText('This request names more than one account').first()).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'This request names more than one wallet' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Main/ })).toHaveCount(0);
   expect(calls.prepares).toEqual([]);
 });

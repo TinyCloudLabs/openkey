@@ -9,9 +9,22 @@ import { EXPLORER_PERMISSION_POPUP_REQUEST } from '../../../../packages/capabili
 
 const SHOTS = process.env.TC2272_SHOTS_DIR;
 
+// The popup request without its read of the secrets vault in KV, which caps the choice at 7 days: this spec checks the
+// uncapped chooser. The vault path is renamed in the statement and the ReCap alike.
+const VAULT_READ = 'kv/vault/secrets';
+const PLAIN_READ = 'kv/vault-notes';
+function withoutVaultRead(message: string): string {
+  return message
+    .replace(/urn:recap:([A-Za-z0-9_-]+)/, (_all, encoded: string) => {
+      const json = Buffer.from(encoded, 'base64url').toString().replaceAll(VAULT_READ, PLAIN_READ);
+      return `urn:recap:${Buffer.from(json).toString('base64url')}`;
+    })
+    .replaceAll(VAULT_READ, PLAIN_READ);
+}
+
 function model() {
   return parseCapabilityReview({
-    message: EXPLORER_PERMISSION_POPUP_REQUEST,
+    message: withoutVaultRead(EXPLORER_PERMISSION_POPUP_REQUEST),
     editable: true,
     metadataTrust: { status: 'unsigned', reason: 'no manifest supplied' },
     reason: { text: '', source: 'none' },

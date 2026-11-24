@@ -2,8 +2,10 @@ import { DeviceAuthorizationError, type DeviceAuthorizationRecord } from '../ser
 import { checkSignedSubset, parseStrictSiwe, SIGNED_SUBSET_REFUSAL_CODE } from '../services/signed-subset';
 import { actionKey, parsePreparedRecap, prepareDelegationSession, type DelegationJwk } from './delegate-session';
 import { deviceAuthorizationService } from './device-authorization';
+import { renewalLeasesEnabled } from '../services/renewal-lease';
 
 type DelegationWindowRefusal = { body: { error: string; code: string; reason?: string }; status: 400 | 410 };
+type DelegationWindowInput = { host: unknown } & ({ signedSiwe: string } | { expirationTime: string });
 
 /**
  * TC-539: a `/api/delegate` prepare, sign, or complete request that names a
@@ -19,10 +21,22 @@ type DelegationWindowRefusal = { body: { error: string; code: string; reason?: s
  */
 export async function deviceDelegationWindowError(
   body: object,
-  input: { host: unknown } & ({ signedSiwe: string } | { expirationTime: string }),
+  input: DelegationWindowInput,
+  missingRenewalPreview = false,
 ): Promise<DelegationWindowRefusal | null> {
+  const checked = await checkDeviceDelegationWindow(body, input);
+  if (checked.error) return checked.error;
+  if (missingRenewalPreview && checked.record?.renewal && renewalLeasesEnabled()) {
+    return { body: { error: 'Device renewal requires the consent preview.', code: 'request_binding' }, status: 400 };
+  }
+  return null;
+}
+
+export async function checkDeviceDelegationWindow(
+  body: object, input: DelegationWindowInput,
+): Promise<{ record: DeviceAuthorizationRecord | null; error: DelegationWindowRefusal | null }> {
   const { deviceTransactionId, jwk } = body as { deviceTransactionId?: unknown; jwk?: unknown };
-  if (deviceTransactionId === undefined) return null;
+  if (deviceTransactionId === undefined) return { record: null, error: null };
   let record: DeviceAuthorizationRecord;
   try {
     record = await deviceAuthorizationService.assertDelegationWindow(deviceTransactionId, {
@@ -32,9 +46,9 @@ export async function deviceDelegationWindowError(
     });
   } catch (error) {
     if (!(error instanceof DeviceAuthorizationError)) throw error;
-    return { body: { error: error.message, code: error.code }, status: error.status === 410 ? 410 : 400 };
+    return { record: null, error: { body: { error: error.message, code: error.code }, status: error.status === 410 ? 410 : 400 } };
   }
-  return 'signedSiwe' in input ? deviceSignedSubsetRefusal(record, input.signedSiwe) : null;
+  return { record, error: 'signedSiwe' in input ? deviceSignedSubsetRefusal(record, input.signedSiwe) : null };
 }
 
 /**

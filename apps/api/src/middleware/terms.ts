@@ -19,6 +19,16 @@ export const allowBeforeTerms = createMiddleware<SessionContext>(async (c, next)
 });
 
 /**
+ * Marks a way out that only the person's own browser session may use: a request that carries an Authorization
+ * header (a session token held by a widget, a CLI or another app) is not marked and stays gated. For reading
+ * your own data before leaving.
+ */
+export const allowBrowserBeforeTerms = createMiddleware<SessionContext>(async (c, next) => {
+  if (!c.req.header('authorization')) c.set('leaving', true);
+  await next();
+});
+
+/**
  * Marks a way out only when its JSON body says it is one: for a route that also serves account management.
  * Reads a copy of at most `maxBytes`; a larger or unparseable body is not marked and stays gated.
  */

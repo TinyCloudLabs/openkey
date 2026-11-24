@@ -5,6 +5,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { encodeBase64UrlJson } from '../../src/lib/device-authorization';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
+import { TERMS_ACCEPTED } from './terms-fixtures';
 
 const CAPS_READ = 'tinycloud.capabilities/read';
 const json = (route: Route, status: number, body: unknown) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
@@ -20,6 +21,7 @@ function prepared() {
   const space = `tinycloud:pkh:eip155:1:${address}:default`;
   const siwe = [
     'cli.tinycloud.xyz wants you to sign in with your Ethereum account:', address, '',
+    '',
     'URI: did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK',
     'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456', 'Issued At: 2026-10-03T00:00:00.000Z', 'Expiration Time: 2026-11-03T01:00:00.000Z',
     'Resources:',
@@ -51,6 +53,7 @@ async function mock(page: Page, session: typeof signedInSession | null) {
     if (url.pathname === '/api/delegate/prepare') return json(route, 200, prepared());
     return json(route, 404, { error: `unmocked ${url.pathname}` });
   });
+  await page.route('**/api/account/terms', (route) => route.fulfill({ json: TERMS_ACCEPTED }));
   return release;
 }
 
@@ -60,7 +63,7 @@ async function watchForSignInPrompt(page: Page) {
     const flag = { seen: false };
     Object.defineProperty(window, '__signInPromptSeen', { get: () => flag.seen });
     const look = () => {
-      if (document.body?.innerText.includes('Sign in to review the requested access')) flag.seen = true;
+      if (document.body?.innerText.includes('Sign in to review this request')) flag.seen = true;
     };
     new MutationObserver(look).observe(document, { childList: true, subtree: true, characterData: true });
   });
@@ -69,24 +72,34 @@ const promptSeen = (page: Page) => page.evaluate(() => (window as unknown as { _
 
 const jwk = encodeBase64UrlJson({ kty: 'OKP', crv: 'Ed25519', x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
 const link = `/delegate?did=did:key:z6Mk&jwk=${jwk}`;
-const signInPrompt = (page: Page) => page.getByText('Sign in to review the requested access');
+const signInPrompt = (page: Page) => page.getByRole('heading', { name: 'Sign in to review this request' });
 
-test.describe('the session check on /delegate', () => {
+// With a Terms release (the suite's build) the root layout's Terms gate holds the page, with its spinner, while the
+// session is read; with no release the page shows its own checking state.
+for (const release of ['on', 'off'] as const) test.describe(`the session check on /delegate with ${release === 'on' ? 'a' : 'no'} Terms release`, () => {
+  test.beforeEach(({ page }) => page.addInitScript((mode) => sessionStorage.setItem('openkey_dev_terms_release', mode), release));
+  const checkingState = (page: Page) => release === 'on'
+    ? page.getByTestId('terms-checking')
+    : page.locator('[role="status"] [aria-current="step"]');
+  const expectChecking = (page: Page) => release === 'on'
+    ? expect(checkingState(page)).toBeVisible()
+    : expect(checkingState(page)).toHaveText('Checking your OpenKey account');
+
   test('a signed-in owner sees a checking state, never the sign-in prompt', async ({ page }) => {
     await watchForSignInPrompt(page);
     const releaseSession = await mock(page, signedInSession);
     await page.goto(link);
 
-    await expect(page.getByText('Checking your OpenKey account…')).toBeVisible();
+    await expectChecking(page);
     await expect(signInPrompt(page)).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Continue with email' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Continue with email' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Use a passkey instead' })).toHaveCount(0);
-    await expect(page.getByRole('link', { name: 'Register' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Create an account' })).toHaveCount(0);
     await expect(page.getByRole('link', { name: 'Recover account' })).toHaveCount(0);
 
     releaseSession();
     await expect(page.getByRole('button', { name: 'Approve', exact: true })).toBeEnabled();
-    await expect(page.getByText('Checking your OpenKey account…')).toHaveCount(0);
+    await expect(page.getByText('Checking your OpenKey account', { exact: true })).toHaveCount(0);
     expect(await promptSeen(page)).toBe(false);
   });
 
@@ -94,13 +107,13 @@ test.describe('the session check on /delegate', () => {
     const releaseSession = await mock(page, null);
     await page.goto(link);
 
-    await expect(page.getByText('Checking your OpenKey account…')).toBeVisible();
+    await expectChecking(page);
     await expect(signInPrompt(page)).toHaveCount(0);
 
     releaseSession();
     await expect(signInPrompt(page)).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Continue with email' })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Register' })).toBeVisible();
-    await expect(page.getByText('Checking your OpenKey account…')).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Continue with email' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Create an account' })).toBeVisible();
+    await expect(page.getByText('Checking your OpenKey account', { exact: true })).toHaveCount(0);
   });
 });

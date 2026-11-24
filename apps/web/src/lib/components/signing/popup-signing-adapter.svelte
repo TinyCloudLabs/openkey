@@ -97,13 +97,16 @@
   error={transport.error}
   approveBlockedReason={transport.approveBlockedReason ?? null}
   refused={transport.refused ?? false}
-  previewPending={transport.canUseAuthorizeSign && !transport.previewReady}
+  previewPending={(transport.canUseAuthorizeSign && !transport.previewReady) || (transport.passkeyPending ?? false)}
   {peerRecognition}
   expiryMs={transport.expiry?.chosenMs ?? null}
   onExpiryChange={transport.expiry?.onChange}
   renewal={transport.renewal ?? null}
   onceExpiryDefault={transport.expiry?.onceDefault ?? false}
+  oncePickCapped={transport.expiry?.oncePickCapped ?? false}
   elevated={transport.elevated ?? null}
+  approveVisibility={transport.approveVisibility ?? null}
+  claimed={transport.claimedPresentation ?? null}
   {onApprove}
   {onCancel}
   onRetry={transport.retryPreview}

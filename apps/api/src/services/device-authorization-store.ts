@@ -18,9 +18,10 @@ type StoredDeviceScope = {
   reason?: string;
   ttlSeconds?: number;
   suggestedTtlSeconds?: number;
+  renewal?: DeviceAuthorizationRecord['renewal'];
 };
 
-type DeviceScope = Pick<DeviceAuthorizationRecord, 'permissions' | 'approvedPermissions' | 'reason' | 'delegationTtlSeconds' | 'suggestedTtlSeconds'>;
+type DeviceScope = Pick<DeviceAuthorizationRecord, 'permissions' | 'approvedPermissions' | 'reason' | 'delegationTtlSeconds' | 'suggestedTtlSeconds' | 'renewal'>;
 
 export function encodeScope(scope: DeviceScope): StoredDeviceScope {
   return {
@@ -30,6 +31,7 @@ export function encodeScope(scope: DeviceScope): StoredDeviceScope {
     ...(scope.reason ? { reason: scope.reason } : {}),
     ttlSeconds: scope.delegationTtlSeconds,
     ...(scope.suggestedTtlSeconds !== undefined ? { suggestedTtlSeconds: scope.suggestedTtlSeconds } : {}),
+    ...(scope.renewal ? { renewal: scope.renewal } : {}),
   };
 }
 
@@ -51,6 +53,7 @@ export function decodeScope(value: { permissions: unknown; delegationExpiresAt: 
     ...(scope.reason ? { reason: scope.reason } : {}),
     delegationTtlSeconds: scope.ttlSeconds ?? derivedTtlSeconds,
     ...(scope.suggestedTtlSeconds !== undefined ? { suggestedTtlSeconds: scope.suggestedTtlSeconds } : {}),
+    ...(scope.renewal ? { renewal: scope.renewal } : {}),
   };
 }
 
@@ -82,12 +85,12 @@ function fromDatabase(value: any): DeviceAuthorizationRecord {
 export function createPrismaDeviceAuthorizationStore(database: any): DeviceAuthorizationStore {
   return {
     async create(record) {
-      const { permissions, approvedPermissions, reason, delegationTtlSeconds, suggestedTtlSeconds, ...columns } = record;
+      const { permissions, approvedPermissions, reason, delegationTtlSeconds, suggestedTtlSeconds, renewal, ...columns } = record;
       await database.deviceAuthorization.create({
         data: {
           ...columns,
           status: record.status.toUpperCase(),
-          permissions: encodeScope({ permissions, approvedPermissions, reason, delegationTtlSeconds, suggestedTtlSeconds }),
+          permissions: encodeScope({ permissions, approvedPermissions, reason, delegationTtlSeconds, suggestedTtlSeconds, renewal }),
         },
       });
     },

@@ -9,7 +9,7 @@ import {
 } from '../services/device-authorization';
 import { sessionAbilitiesFromPermissions, type DelegationPermissionEntry } from '../routes/delegate-session';
 
-// TC-3204: /api/delegate signs a device transaction only for device-flow services and actions, the same allowlist
+// /api/delegate signs a device transaction only for device-flow services and actions, the same allowlist
 // device start applies.
 
 const DECRYPT = 'tinycloud.encryption/decrypt';
@@ -17,7 +17,7 @@ const signer = { address: '0xA8763f2b67aa9C807d2277a698cb071e3D86204A', chainId:
 const kv = { service: 'tinycloud.kv', space: 'default', path: 'notes/', actions: ['tinycloud.kv/get'] };
 const capabilities = { service: 'tinycloud.capabilities', space: 'default', path: '', actions: ['tinycloud.capabilities/read'] };
 
-describe('/api/delegate signing for a device transaction admits only device-flow services and actions (TC-3204)', () => {
+describe('/api/delegate signing for a device transaction admits only device-flow services and actions', () => {
   const services: Array<[string, string]> = [
     ['a doubled prefix', 'tinycloud.tinycloud.encryption'],
     ['an empty segment', 'tinycloud..encryption'],
@@ -52,7 +52,7 @@ describe('/api/delegate signing for a device transaction admits only device-flow
   });
 });
 
-describe('outside a device transaction, a default-space decrypt entry is never promoted to the raw network (TC-3204)', () => {
+describe('outside a device transaction, a default-space decrypt entry is never promoted to the raw network', () => {
   test('{tinycloud.encryption, default, ""} signs no raw encryption resource', () => {
     const decrypt = { service: 'tinycloud.encryption', space: 'default', path: '', actions: [DECRYPT] };
     const abilities = sessionAbilitiesFromPermissions([capabilities, decrypt], signer);
@@ -60,7 +60,7 @@ describe('outside a device transaction, a default-space decrypt entry is never p
   });
 });
 
-describe('a device request with no explicit lifetime is bounded by the standard device lifetime (TC-3204)', () => {
+describe('a device request with no explicit lifetime is bounded by the standard device lifetime', () => {
   test('accepts DEFAULT_TTL + clock skew and refuses 1 ms more', async () => {
     const nowMs = Date.UTC(2026, 7, 14, 12, 0, 0);
     const service = new DeviceAuthorizationService(new MemoryDeviceAuthorizationStore(), {

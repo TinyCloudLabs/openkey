@@ -44,9 +44,14 @@ export function termsOrigin(pageSearch: string, returnTo: string | null): TermsO
   return transactionId ? { kind: 'device', transactionId } : NONE;
 }
 
-/** What declining does; with a request, that it is turned down too. */
-export function declineEffect(origin: TermsOrigin, appName: string | null): string {
-  const effect = 'You can’t use OpenKey or sign in to apps with it until you agree. Nothing is deleted. Apps keep the access you’ve already approved until it runs out, but they won’t renew it.';
+/**
+ * What declining does; with a request, that it is turned down too. The native sheet has no Other options
+ * page, so its note says where the ways to stop renewals are.
+ */
+export function declineEffect(origin: TermsOrigin, appName: string | null, surface: 'web' | 'native' = 'web'): string {
+  const effect = surface === 'native'
+    ? 'We’ll sign you out. You can’t use OpenKey or sign in to apps with it until you agree. Nothing is deleted. Signing out doesn’t stop permissions you set to renew. To stop them, open OpenKey on the web and choose Disconnect apps or stop renewals, or delete your account. Other phone apps sign you out the next time they renew, unless you agree to the Terms first.'
+    : 'We’ll sign you out. You can’t use OpenKey or sign in to apps with it until you agree. Nothing is deleted. Signing out doesn’t stop permissions you set to renew. To stop them, choose Disconnect apps or stop renewals, or delete your account. A phone app signs you out the next time it renews, unless you agree to the Terms first.';
   if (origin.kind === 'none') return effect;
   return `${effect} ${appName ? `We’ll also tell ${appName} you said no.` : 'We’ll also turn down the request that brought you here.'}`;
 }

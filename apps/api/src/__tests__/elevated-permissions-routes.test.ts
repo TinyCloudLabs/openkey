@@ -167,6 +167,9 @@ const ELEVATED: Array<[string, Record<string, string[]>]> = [
   ['decrypt on an exact key outside apps/ and outside share/', { [urn('/secrets/x')]: [`${E}decrypt`] }],
   ['decrypt on the whole network (no path)', { [urn('')]: [`${E}decrypt`] }],
   ['decrypt and network.create on the whole network', { [urn('')]: [`${E}decrypt`, `${E}network.create`] }],
+  ['key.block on a folder', { [urn('/qa/')]: [`${E}key.block`] }],
+  ['key.unblock on the whole network', { [urn('')]: [`${E}key.unblock`] }],
+  ['key.block and key.unblock on an exact key outside apps/', { [urn('/secrets/x')]: [`${E}key.block`, `${E}key.unblock`] }],
   ['key.create on the whole network', { [urn('')]: [`${E}key.create`] }],
   ['the decrypt ability under a short service name', { [urn('/qa/')]: ['encryption/decrypt'] }],
 ];
@@ -198,7 +201,7 @@ async function preview(token: string, selected: string[], elevatedDecision?: unk
 }
 
 const elevatedIds = (allowed: string[]) =>
-  allowed.filter((id) => id.includes('urn:tinycloud:encryption:') && /\0(tinycloud\.)?encryption\/(decrypt|key\.create)$/.test(id) && !id.includes('/apps/'));
+  allowed.filter((id) => id.includes('urn:tinycloud:encryption:') && /\0(tinycloud\.)?encryption\/(decrypt|key\.create|key\.block|key\.unblock)$/.test(id) && !id.includes('/apps/'));
 
 describe('POST /authorize-sign-prepare without a ticket', () => {
   test.each(ELEVATED)('issues a context for %s (no refusal; the owner decides on the warning screen)', async (_name, raw) => {
@@ -413,5 +416,18 @@ describe('a prepared-handoff ticket (CLI --keys <folder>) is unchanged', () => {
     const result = await res.json() as { signedMessage: string; signature: string };
     expect(verifyMessage(result.signedMessage, result.signature)).toBe(address);
     expect(signed.length).toBe(1);
+  });
+
+  test.each([
+    ['key.block on a folder', { [folder]: [`${E}key.block`] }],
+    ['key.unblock on the whole network', { [bare]: [`${E}key.unblock`] }],
+  ])('refuses %s from a ticket request: it carries no owner decision', async (_name, raw) => {
+    const siwe = siweWith(raw, 'cli.tinycloud.xyz');
+    const ticket = await claim(siwe, 30);
+    const prepared = await post('/authorize-sign-prepare', { ticket, keyId: keyRecord.id, siwe, jwk, host: HOST });
+    expect(prepared.status).toBe(403);
+    expect(await fieldOf(prepared, 'code')).toBe('app_key_grant_refused');
+    expect(unsealMock).not.toHaveBeenCalled();
+    expect(signed).toEqual([]);
   });
 });

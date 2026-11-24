@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { deviceRequestPermissions } from '../services/device-authorization';
+import { DEVICE_SECRETS_REFUSAL } from '../services/device-flow-abilities';
 import { sessionAbilitiesFromPermissions, type DelegationPermissionEntry } from '../routes/delegate-session';
 
-// TC-3204: device sign-in can't ask to decrypt. Every tinycloud.encryption entry, under its full or short name in any
+// Device sign-in can't ask to decrypt. Every tinycloud.encryption entry, under its full or short name in any
 // case and in any shape, is refused at device start (invalid_scope) and again when /api/delegate signs for a device
 // transaction (invalid_permissions). Other spellings fail the device-flow allowlist (tc-3204-device-allowlist.test.ts).
 
@@ -26,7 +27,7 @@ const encryptionEntries: Array<[string, DelegationPermissionEntry & { space: str
   ['key.create', { ...decrypt, actions: ['tinycloud.encryption/key.create'] }],
 ];
 
-describe('device start refuses every encryption entry (TC-3204)', () => {
+describe('device start refuses every encryption entry', () => {
   // A key URN path keeps the app-key wording (app-key-refusal-keys-handoff-device.test.ts).
   test.each(encryptionEntries.filter(([name]) => name !== 'the network URN'))('refuses %s alone and beside kv + capabilities/read', (_name, entry) => {
     for (const permissions of [[entry], [kv, capabilities, entry], [entry, kv, capabilities]]) {
@@ -37,7 +38,7 @@ describe('device start refuses every encryption entry (TC-3204)', () => {
         refused = error;
       }
       expect(refused).toMatchObject({ code: 'invalid_scope', status: 400 });
-      expect((refused as Error).message).toMatch(/asks to decrypt, and device sign-in can't grant tinycloud\.encryption\. Sign in from a browser instead\.$/);
+      expect((refused as Error).message).toBe(DEVICE_SECRETS_REFUSAL);
     }
   });
 
@@ -46,10 +47,10 @@ describe('device start refuses every encryption entry (TC-3204)', () => {
   });
 });
 
-describe('/api/delegate signing for a device transaction refuses every encryption entry (TC-3204)', () => {
+describe('/api/delegate signing for a device transaction refuses every encryption entry', () => {
   test.each(encryptionEntries)('refuses %s', (_name, entry) => {
     expect(() => sessionAbilitiesFromPermissions([capabilities, entry], signer, { deviceTransaction: true }))
-      .toThrow("permissions[1] asks to decrypt, and a device approval can't grant tinycloud.encryption. Start a new sign-in.");
+      .toThrow(DEVICE_SECRETS_REFUSAL);
   });
 
   test('signs kv + capabilities/read and no encryption resource', () => {

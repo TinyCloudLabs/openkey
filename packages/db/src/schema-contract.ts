@@ -61,6 +61,13 @@ export const requiredRuntimeMigrationChecksums = new Map<string, string>([
   ['20261118_0001_terms_acceptance', 'a2535be69867c0a4c138233c22b2bfae7eda5d950c7d5c22138e25ba6efc3e7c'],
   ['20261119_0001_terms_acceptance_no_delete', 'ea98e5b306af38dfb0145ba915ea38ab6bf8e53a52744fc3039d17964ab807c4'],
   ['20261119_0002_passkey_approval_mode', 'a6e0a4dd2351b7bdddf94013b3340db1ba118f6f2fa0e3b82f58b528e371ba78'],
+  ['20261121_0001_native_stepup', 'e83cdd1c6296344b0d3df1559c40dbb9381faaff8e167f98486f27d0551bde3b'],
+  ['20261121_0002_native_request_kind', '22823dfea36b42f7ffcfc5da0d333340ed025316e68a95c39f63821181022c23'],
+  ['20261121_0003_native_withdraw_stepup_tokens', '0058b9b249016025ce123121ee48ffad03241060d6c708100f9958dd8179cf48'],
+  ['20261121_0004_native_stepup_delegation', '71c7f4491f6e63320acb9ef34c76ff54ec0bce2e880764e725b3500fa9c0e6bb'],
+  ['20261121_0005_native_approval_passkey_method', '450234c3f53249bd91b0f9d92823d24cd377458e1db114a503c08fe588ccf76e'],
+  ['20261122_0001_terms_acceptance_embed_audit', 'b57be1d1b87aca2d43ae5b0447d9a2f6bf7bd840b48a2cd8fc0e0b638897dea1'],
+  ['20261123_0001_native_standing_renewal', 'd393544e72a00e8644c9cb044f165fc18be56f5e84fd5b21f189d87a7ed0fbbf'],
 ]);
 
 export type SchemaContractDatabase = {

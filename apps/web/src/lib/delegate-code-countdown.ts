@@ -5,8 +5,12 @@
 // measured on the monotonic clock (performance.now()), so the displayed time
 // does not move with wall-clock changes after receipt.
 
-export const CODE_EXPIRED_TEXT = 'Code expired: start again in the CLI.';
-export const CODE_ONE_MINUTE_ANNOUNCEMENT = '1 minute left to use this code.';
+import { CODE, fill } from '@openkey/sdk/approval-copy';
+
+export const CODE_EXPIRED_TEXT: string = CODE.expired.lineNewCode;
+// When the approval has ended too, no new code can be minted.
+export const CODE_AND_APPROVAL_EXPIRED_TEXT: string = CODE.expired.lineApprovalEnded;
+export const CODE_ONE_MINUTE_ANNOUNCEMENT: string = CODE.oneMinuteLeft;
 
 const ONE_MINUTE_MS = 60_000;
 const TICK_MS = 250;
@@ -88,7 +92,7 @@ export function startCodeCountdown(options: {
     options.onUpdate({
       remainingMs,
       expired,
-      text: expired ? CODE_EXPIRED_TEXT : `Code valid for ${formatCodeCountdown(remainingMs)}`,
+      text: expired ? CODE_EXPIRED_TEXT : fill(CODE.timer, { time: formatCodeCountdown(remainingMs) }),
       announcement,
     });
     if (expired) stop();

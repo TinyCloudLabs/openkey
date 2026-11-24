@@ -11,7 +11,6 @@ const RATE_LIMITED_MESSAGE = 'Too many attempts. Wait five minutes, then try aga
 const REQUEST_NOT_APPROVABLE_MESSAGE = "OpenKey can't approve this kind of access. The app or command needs to ask for something different.";
 // A 409 reads as "being approved" unless its code names a conflict that waiting cannot clear.
 const CONFLICTS_THAT_WAITING_DOES_NOT_CLEAR: Record<string, true> = { request_binding: true, renewal_already_signed: true };
-const SHORT_CODE_FAILURE = "Couldn't create a short code. Use the full delegation code instead.";
 const APPROVAL_BUSY_MESSAGE = apiBusyOrEndedMessage(409) ?? 'This request is already being approved. Wait a moment.';
 const APPROVAL_FAILURE_MESSAGE = "Couldn't approve this request. Try again.";
 
@@ -23,8 +22,10 @@ export interface DelegateFailureTextOptions {
 
 const SERVER_MESSAGE_MAX = 300;
 
+/** The server's words for a failed reply: its `message`, or for a renewal refusal (TC-3821) its `error`, the owner's copy. */
 export function delegateServerMessage(body: unknown): string | undefined {
-  const message = (body as { message?: unknown } | null)?.message;
+  const reply = body as { message?: unknown; error?: unknown; code?: unknown } | null;
+  const message = reply?.code === 'renewal_refused' ? reply.error : reply?.message;
   return typeof message === 'string' && message.trim() ? message.slice(0, SERVER_MESSAGE_MAX) : undefined;
 }
 
@@ -189,14 +190,6 @@ export function deviceRelayFailureText(status: number | null, code?: unknown): s
   if (status === null) return prefix;
   const codeText = safeCode(code);
   return codeText ? `${prefix} (Error ${status} · ${codeText})` : `${prefix} (Error ${status})`;
-}
-
-export function shortCodeFailureText(status?: number, code?: unknown): string {
-  if (status === undefined) return SHORT_CODE_FAILURE;
-  const codeText = safeCode(code);
-  return codeText
-    ? `${SHORT_CODE_FAILURE} (Error ${status} · ${codeText})`
-    : `${SHORT_CODE_FAILURE} (Error ${status})`;
 }
 
 // Refusals that name the request or the account, not the key: choosing any other key repeats them.

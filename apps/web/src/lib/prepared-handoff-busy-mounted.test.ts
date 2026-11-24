@@ -171,8 +171,7 @@ const SIGNED: Reply = {
   text: JSON.stringify({ protocolVersion: 1, signature: `0x${'11'.repeat(65)}`, address: ADDR, signedMessage: 'signed', deliveryState: 'state', selectedKeyId: KEY.id, selectedActionKeys: ['key-1'], permissions: [] }),
 };
 
-const BUSY = 'This request is already being approved. Wait a moment.';
-const ENDED = 'This request has already been answered or has ended.';
+const BUSY = 'This request is already being approved. Another tab or a second click got there first. Wait a moment, then press Approve again.';
 
 /**
  * Open the handoff page, drive it to the scenario's call, and answer that call
@@ -223,10 +222,12 @@ async function run(scenario: Scenario) {
         button('Approve')!.click();
       }
     }
-    await until(() => target.querySelector('[role="alert"]') !== null || button('Preview signing message')?.disabled === false, 'the answer');
+    await until(() => target.querySelector('[role="alert"], [data-testid="stop-page"]') !== null || button('Preview signing message')?.disabled === false, 'the answer');
   } finally {
     const result = {
       called,
+      heading: target.querySelector('[data-testid="stop-page"] h1')?.textContent?.trim(),
+      support: target.querySelector('[data-support-line]')?.textContent?.trim(),
       alert: target.querySelector('[role="alert"]:not([data-testid])')?.textContent?.trim() ?? null,
       text: target.textContent?.replace(/\s+/g, ' ').trim() ?? '',
     };
@@ -260,13 +261,15 @@ describe('the prepared CLI handoff page when the request is already moving', () 
 
   test('a 410 during signing is told in the owner\'s words, not the server text', async () => {
     const result = await run({ call: 'sign', reply: replies.gone });
-    expect(result.alert).toBe(ENDED);
+    expect(result.heading).toBe('This request expired');
+    expect(result.text).toContain('This sign-in was open for 5 minutes and ran out. Run the command again.');
     expect(result.text).not.toContain('Approval request is no longer pending');
   });
 
   test('a 410 on cancel uses the same owner wording', async () => {
     const result = await run({ call: 'cancel', reply: { status: 410, text: '{"error":"Handoff expired"}' } });
-    expect(result.alert).toBe(ENDED);
+    expect(result.heading).toBe('This request was already answered');
+    expect(result.text).toContain('Nothing new was approved');
     expect(result.text).not.toContain('Handoff expired');
   });
 
@@ -275,10 +278,14 @@ describe('the prepared CLI handoff page when the request is already moving', () 
     expect(result.alert).toBe(BUSY);
   });
 
-  test('other statuses keep the server text', async () => {
+  test('other statuses show the status in the Stop page', async () => {
     const forbidden = await run({ call: 'prepare', reply: { status: 403, text: '{"error":"This website doesn\'t list the key this app asked for, so OpenKey didn\'t approve it."}' } });
-    expect(forbidden.alert).toBe("This website doesn't list the key this app asked for, so OpenKey didn't approve it.");
+    expect(forbidden.heading).toBe('The approval didn’t go through');
+    expect(forbidden.support).toBe('HTTP 403');
+    expect(forbidden.text).not.toContain('This website');
     const failed = await run({ call: 'sign', reply: { status: 500, text: '{"error":"signing service unavailable"}' } });
-    expect(failed.alert).toBe('signing service unavailable');
+    expect(failed.heading).toBe('The approval didn’t go through');
+    expect(failed.support).toBe('HTTP 500');
+    expect(failed.text).not.toContain('signing service unavailable');
   });
 });

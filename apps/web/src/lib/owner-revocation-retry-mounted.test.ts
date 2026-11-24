@@ -33,7 +33,7 @@ afterAll(() => {
 });
 const win = new Window({ url: 'http://localhost:5173/delegate?transportVersion=2' });
 Object.assign(globalThis, {
-  window: win, document: win.document, HTMLElement: win.HTMLElement, Element: win.Element,
+  window: win, document: win.document, HTMLElement: win.HTMLElement, HTMLMediaElement: win.HTMLMediaElement, Element: win.Element,
   Node: win.Node, Text: win.Text, Comment: win.Comment, navigator: win.navigator,
   CustomEvent: win.CustomEvent, Event: win.Event, MouseEvent: win.MouseEvent,
   getComputedStyle: win.getComputedStyle.bind(win), requestAnimationFrame: win.requestAnimationFrame.bind(win),
@@ -59,29 +59,34 @@ const stubs: Record<string, string> = {
 };
 for (const [name, source] of Object.entries(stubs)) writeFileSync(join(out, `${name.replace(/[^A-Za-z0-9]/g, '_')}.mjs`), source);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const component = join(root, 'src/routes/delegate/OwnerRevocationHandoff.svelte');
-const compiled = compile(readFileSync(component, 'utf8'), { generate: 'client', dev: false, filename: component });
-let source = '';
-let cursor = 0;
-for (const match of compiled.js.code.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
-  source += compiled.js.code.slice(cursor, match.index);
-  const specifier = match[1]!;
-  const target = specifier in stubs ? pathToFileURL(join(out, `${specifier.replace(/[^A-Za-z0-9]/g, '_')}.mjs`)).href
-    : specifier === 'svelte' ? svelteClient
-    : specifier.startsWith('svelte/') ? pathToFileURL(require.resolve(specifier)).href
-    : specifier === '@openkey/capability-review' ? pathToFileURL(join(root, '..', '..', 'packages/capability-review/src/index.ts')).href
-    : specifier.startsWith('$lib/') ? pathToFileURL(join(root, 'src/lib', specifier.slice(5))).href : specifier;
-  source += `from '${target}'`;
-  cursor = match.index! + match[0].length;
+// Compiles a component and, the same way, the `$lib` components it mounts; returns the compiled module's URL.
+function compileTo(component: string, name: string): string {
+  const compiled = compile(readFileSync(component, 'utf8'), { generate: 'client', dev: false, filename: component });
+  let source = '';
+  let cursor = 0;
+  for (const match of compiled.js.code.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
+    source += compiled.js.code.slice(cursor, match.index);
+    const specifier = match[1]!;
+    const target = specifier in stubs ? pathToFileURL(join(out, `${specifier.replace(/[^A-Za-z0-9]/g, '_')}.mjs`)).href
+      : specifier === 'svelte' ? svelteClient
+      : specifier.startsWith('svelte/') ? pathToFileURL(require.resolve(specifier)).href
+      : specifier === '@openkey/capability-review' ? pathToFileURL(join(root, '..', '..', 'packages/capability-review/src/index.ts')).href
+      : specifier === '@openkey/sdk/approval-copy' ? pathToFileURL(join(root, '..', '..', 'packages/sdk/src/approval-copy/index.ts')).href
+      : specifier.startsWith('$lib/') && specifier.endsWith('.svelte') ? compileTo(join(root, 'src/lib', specifier.slice(5)), `${specifier.replace(/[^A-Za-z0-9]/g, '_')}.mjs`)
+      : specifier.startsWith('$lib/') ? pathToFileURL(join(root, 'src/lib', specifier.slice(5))).href : specifier;
+    source += `from '${target}'`;
+    cursor = match.index! + match[0].length;
+  }
+  source += compiled.js.code.slice(cursor);
+  source = source.replace(
+    "import 'svelte/internal/disclose-version';",
+    `import '${pathToFileURL(require.resolve('svelte/internal/disclose-version')).href}';`,
+  );
+  const output = join(out, name);
+  writeFileSync(output, source);
+  return pathToFileURL(output).href;
 }
-source += compiled.js.code.slice(cursor);
-source = source.replace(
-  "import 'svelte/internal/disclose-version';",
-  `import '${pathToFileURL(require.resolve('svelte/internal/disclose-version')).href}';`,
-);
-const output = join(out, 'owner-review.mjs');
-writeFileSync(output, source);
-const Subject = (await import(pathToFileURL(output).href)).default;
+const Subject = (await import(compileTo(join(root, 'src/routes/delegate/OwnerRevocationHandoff.svelte'), 'owner-review.mjs'))).default;
 const cid = 'bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5kpqcsgzz7nazxe';
 const opaque = (seed: number) => Buffer.alloc(32, seed).toString('base64url');
 const delivery = { handoffId: opaque(1), state: opaque(2), cancelSecret: opaque(3) };
@@ -102,7 +107,7 @@ const SIWE = `localhost:5173 wants you to sign in with your Ethereum account:\n$
 
 const SIGNATURE = await owner.signMessage({ message: SIWE });
 
-test('a refused signing shows the error, gives Revoke and Cancel back, and the next Revoke signs', async () => {
+test('a refused revocation offers Close this tab and a retry that signs', async () => {
   const signReplies: Response[] = [
     Response.json({ error: 'Signing failed', code: 'sign_failed' }, { status: 500 }),
     Response.json({ siwe: SIWE, signature: SIGNATURE, deliveryState: delivery.state, selectedKeyId: key.id, protocolVersion: 1 }),
@@ -126,12 +131,13 @@ test('a refused signing shows the error, gives Revoke and Cancel back, and the n
   try {
     await until(() => !!button('Revoke') && !button('Revoke')!.disabled, 'the Revoke button');
     button('Revoke')!.click();
-    await until(() => !!target.querySelector('[role="alert"]'), 'the refusal');
-    expect(target.querySelector('[role="alert"]')?.textContent).toContain('Signing failed');
-    expect(button('Revoke')!.disabled).toBe(false);
-    expect(button('Cancel')!.disabled).toBe(false);
-    button('Revoke')!.click();
-    await until(() => target.textContent!.includes('Paste this response into the CLI'), 'the signed result');
+    const stop = () => target.querySelector('[data-testid="stop-page"]');
+    await until(() => !!stop(), 'the refusal');
+    expect(stop()?.querySelector('h1')?.textContent).toBe('The approval didn’t go through');
+    expect(button('Try again')?.disabled).toBe(false);
+    expect(button('Close this tab')?.disabled).toBe(false);
+    button('Try again')!.click();
+    await until(() => target.textContent!.includes('Paste this into your terminal'), 'the signed result');
     expect(calls.filter(path => path.endsWith('/owner-revocation/sign'))).toHaveLength(2);
   } finally {
     unmount(app);
@@ -140,7 +146,7 @@ test('a refused signing shows the error, gives Revoke and Cancel back, and the n
   }
 });
 
-test('after a refused signing the owner can cancel', async () => {
+test('after a refused signing Close this tab cancels the revocation', async () => {
   const calls: string[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -160,8 +166,8 @@ test('after a refused signing the owner can cancel', async () => {
   try {
     await until(() => !!button('Revoke') && !button('Revoke')!.disabled, 'the Revoke button');
     button('Revoke')!.click();
-    await until(() => !!target.querySelector('[role="alert"]'), 'the refusal');
-    button('Cancel')!.click();
+    await until(() => !!target.querySelector('[data-testid="stop-page"]'), 'the refusal');
+    button('Close this tab')!.click();
     await until(() => calls.some(path => path.endsWith('/cancel-claimed')), 'the cancel request');
   } finally {
     unmount(app);
