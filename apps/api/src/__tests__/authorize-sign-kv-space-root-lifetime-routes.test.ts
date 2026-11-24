@@ -105,6 +105,8 @@ function post(path: string, body: unknown) {
 }
 
 const expiryOf = (siwe: string) => Date.parse(/^Expiration Time: (.+)$/m.exec(siwe)?.[1] ?? '');
+/** The signed length: Expiration Time minus Issued At (TC-3920). */
+const lengthOf = (siwe: string) => expiryOf(siwe) - Date.parse(/^Issued At: (.+)$/m.exec(siwe)?.[1] ?? '');
 
 const HOUR_MS = 3_600_000;
 
@@ -153,7 +155,7 @@ describe('the frame leaves a KV grant on the whole space at the lifetime asked',
     const before = Date.now();
     const ownerPicks = new Date(Math.floor((Date.now() + 30 * DAY_MS) / 1000) * 1000).toISOString();
     const bytes = await approve(raw, DAY_MS, { expiryChangeable: true, ownerPicks });
-    expect(expiryOf(bytes)).toBe(Date.parse(ownerPicks));
+    expect(lengthOf(bytes)).toBe(30 * DAY_MS);
     expect(expiryOf(bytes)).toBeGreaterThan(before + 29 * DAY_MS);
   });
 });

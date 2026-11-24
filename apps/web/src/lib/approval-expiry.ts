@@ -210,12 +210,22 @@ export function remainingAccessMs(expirationTime: string | null | undefined, now
   return span === null ? null : Math.ceil(span / M) * M;
 }
 
-/** The line every approval screen shows for how long the access lasts. */
-export function accessLastsLine(holder: 'app' | 'device', ms: number, now: number = Date.now()): string {
-  return `This ${holder}'s access to your data lasts ${formatDurationWithEnd(ms, now)}.`;
+/**
+ * When a window of access starts: the message's Issued At (the signed length is counted from it), else `now`. The end
+ * day and end time on the face are `windowStart + length`, which is what the signed Expiration Time will be.
+ */
+export function windowStartMs(issuedAt: string | null | undefined, now: number = Date.now()): number {
+  const start = Date.parse(issuedAt ?? '');
+  // The server counts from the earlier of Issued At and now, so a later Issued At never lengthens the grant.
+  return Number.isFinite(start) ? Math.min(start, now) : now;
 }
 
-/** The ISO time `ms` from `now`: what the signed message's Expiration Time becomes. */
+/** The line every approval screen shows for how long the access lasts; `start` is when the window starts (`windowStartMs`). */
+export function accessLastsLine(holder: 'app' | 'device', ms: number, start: number = Date.now()): string {
+  return `This ${holder}'s access to your data lasts ${formatDurationWithEnd(ms, start)}.`;
+}
+
+/** The ISO time `ms` from `now` (or from the window start): what the signed message's Expiration Time becomes. */
 export function expiryAt(ms: number, now: number = Date.now()): string {
   return new Date(now + ms).toISOString();
 }

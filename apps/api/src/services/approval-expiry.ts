@@ -38,6 +38,34 @@ export function validateExpirationOverride(
   return { ok: true, value };
 }
 
+/**
+ * The length the owner chose: `chosen` minus `now`, to the second, a few seconds either way snapped to the whole
+ * day, hour or minute (the rule the approval screen applies to the length it shows).
+ */
+export function chosenExpiryLengthMs(chosen: string, now: number): number {
+  const span = Math.round((Date.parse(chosen) - now) / 1000) * 1000;
+  for (const unit of [86_400_000, 3_600_000, 60_000]) {
+    const whole = Math.round(span / unit) * unit;
+    if (whole > 0 && Math.abs(span - whole) <= 5_000) return whole;
+  }
+  return span;
+}
+
+/**
+ * The expiry to sign for a chosen time: Issued At plus the chosen length, so the signed length equals the length the
+ * owner chose. A length that would pass the latest SIWE time loses whole seconds. Null when the result has already
+ * passed (the request was prepared too long ago for a length this short).
+ */
+export function anchorExpirationToIssuedAt(chosen: string, issuedAt: string, now: number): string | null {
+  const issued = Date.parse(issuedAt);
+  if (!Number.isFinite(issued)) return null;
+  // The app chooses Issued At: a later one than now never moves the end past now plus the length.
+  const start = Math.min(issued, now);
+  let anchored = start + chosenExpiryLengthMs(chosen, now);
+  if (anchored > LATEST_SIWE_TIME_MS) anchored -= Math.ceil((anchored - LATEST_SIWE_TIME_MS) / 1000) * 1000;
+  return anchored > now ? new Date(anchored).toISOString() : null;
+}
+
 /** The SIWE with its `Expiration Time` field replaced; null when it does not parse (`parseSiweFields`) or has no expiry. */
 export function withExpirationTime(siwe: string, expirationTime: string): string | null {
   const parsed = parseSiweFields(siwe);

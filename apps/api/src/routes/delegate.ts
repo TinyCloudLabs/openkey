@@ -92,7 +92,7 @@ import {
   type AuthorizationContextClaim,
   type BoundRenewalChoice,
 } from '../services/authorization-signing';
-import { MIN_DELEGATION_EXPIRY_MS, MIN_EXPIRATION_LEAD_MS, siweBroadOnceTier, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
+import { MIN_DELEGATION_EXPIRY_MS, MIN_EXPIRATION_LEAD_MS, anchorExpirationToIssuedAt, siweBroadOnceTier, validateExpirationOverride, withExpirationTime } from '../services/approval-expiry';
 import { narrowSiwePreservingImmutable } from '../services/siwe-narrow';
 import { checkSignedSubset, parseStrictSiwe, SIGNED_SUBSET_REFUSAL_CODE } from '../services/signed-subset';
 import { checkSiweOrigin } from '../services/siwe-origin';
@@ -4238,6 +4238,18 @@ delegateRouter.post('/authorize-sign-preview', async (c) => {
   // TC-2272: the user's chosen approval expiry replaces the Expiration Time
   // line of the bytes to sign; the preview approval seals the result.
   if (expirationOverride !== undefined) {
+    // TC-3920: the signed length is the chosen length, counted from the Issued At the request already carries.
+    // A chosen renewal window is already counted from its own start; a prepared handoff keeps the exact end it was given.
+    if (!ticket && expirationOverride !== immutable.expirationTime && renewalChoice?.choice !== 'leased') {
+      const anchored = anchorExpirationToIssuedAt(expirationOverride, immutable.issuedAt, Date.now());
+      if (anchored === null) {
+        return c.json(
+          { error: 'The chosen length ends before now, counted from when the request was issued — start the request again', code: 'invalid_expiration_time' },
+          400,
+        );
+      }
+      expirationOverride = anchored;
+    }
     const withExpiry = withExpirationTime(preparedSignedMessage, expirationOverride);
     if (!withExpiry) {
       return c.json({ error: 'Bound SIWE has no single Expiration Time line', code: 'bound_siwe_parse_failed' }, 400);
