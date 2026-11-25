@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { createPrismaClient } from '@openkey/db';
 import { parseLink, resolveLink, parseApprovalRequest, validateLinkHeader, verifyHeader, linkIssuerPublicKey } from '@tinycloud/share-envelope/links';
 import { LATEST_SIWE_TIME_MS, MIN_DELEGATION_EXPIRY_MS } from '../services/approval-expiry';
+import { MAX_ISSUED_AT_SKEW_MS } from '../services/tinycloud-manage-key-policy';
 import { ApprovalResultError, ApprovalResultService, linkRequiredError, type ApprovalRequestRecord } from '../services/approval-results';
 import { requireAccountOriginForBearer } from '../middleware/bearer-origin';
 import { requireSession } from '../middleware/session';
@@ -121,6 +122,11 @@ approvalRequestRouter.post('/approval-requests/:id/result', async (c) => {
     const bytes = linkIssuerPublicKey(header.issuer);
     if (!bytes || !verifyHeader(header, body.signature) || header.type !== 'openkey-approval-request' || header.bodyCid !== body.bodyCid || Date.parse(header.expiresAt) - Date.parse(header.issuedAt) > 86400_000) {
       throw new ApprovalResultError('invalid_request', 'Signed approval request header is invalid', 400);
+    }
+    // The length cap above reads Expires At minus Issued At, so an Issued At ahead of the clock would stretch the
+    // real life past it. The signed header's Issued At is refused past the clock skew.
+    if (Date.parse(header.issuedAt) > Date.now() + MAX_ISSUED_AT_SKEW_MS) {
+      throw new ApprovalResultError('invalid_request', 'The signed approval request header Issued At is in the future. Set Issued At to the current time and send the request.', 400);
     }
     const x = Buffer.from(bytes).toString('base64url');
     const jkt = createHash('sha256').update(JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x })).digest('base64url');

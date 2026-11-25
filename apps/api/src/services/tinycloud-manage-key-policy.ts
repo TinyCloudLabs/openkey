@@ -13,7 +13,7 @@ export type TinyCloudManageKeyDecision =
   | { allowed: false; reason: string };
 
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
-const MAX_ISSUED_AT_SKEW_MS = 5 * 60 * 1000;
+export const MAX_ISSUED_AT_SKEW_MS = 5 * 60 * 1000;
 
 /**
  * This is intentionally a structural gate, not an application permission
