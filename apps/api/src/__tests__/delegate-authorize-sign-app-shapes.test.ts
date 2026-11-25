@@ -60,7 +60,7 @@ let router: typeof import('../routes/delegate')['delegateRouter'];
 const savedOnSign = process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN;
 beforeAll(async () => {
   process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN = 'off';
-  ({ delegateRouter: router } = await import('../routes/delegate?authorize-sign-owner-default-host' as string));
+  ({ delegateRouter: router } = await import('../routes/delegate?authorize-sign-app-shapes' as string));
 });
 afterAll(() => {
   if (savedOnSign === undefined) delete process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN;
