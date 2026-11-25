@@ -67,7 +67,7 @@ const WINDOW_PASSED = {
   error: 'The record OpenKey built has run out of time. Start setup over.',
   code: 'account_setup_record_window_passed',
 } as const;
-const TOO_MANY_ATTEMPTS = { error: 'Too many requests. Please try again later.', code: 'account_setup_rate_limited' } as const;
+const TOO_MANY_ATTEMPTS = { error: 'Too many attempts in the last hour. Wait an hour, then try once more.', code: 'account_setup_rate_limited' } as const;
 
 let prisma: PrismaClient | undefined;
 const db = () => prisma ??= createPrismaClient();
@@ -257,7 +257,9 @@ accountSetupRouter.post('/:id/email-code', async (c) => {
   if (!await emailVerified(user.id, user.email)) return c.json(NO_STEP_UP, 403);
   // Codes mailed are limited per user across all requests and sessions; a call that mails nothing costs nothing.
   if (!await spendAccountSetupBudget(db(), user.id, 'send')) return c.json(TOO_MANY_ATTEMPTS, 429);
-  const sent = await sendAccountSetupCode(db(), { sessionId: session.id, requestId: row.id, email: user.email });
+  const sent = await sendAccountSetupCode(db(), {
+    sessionId: session.id, requestId: row.id, email: user.email, requestOrigin: row.requestOrigin, nodeUrl: row.nodeUrl,
+  });
   if (sent !== 'sent') await refundAccountSetupBudget(db(), user.id, 'send');
   if (sent === 'unavailable') return c.json(ACCOUNT_SETUP_UNAVAILABLE, 503);
   return c.json({ sent: sent === 'sent', email: maskEmail(user.email) });

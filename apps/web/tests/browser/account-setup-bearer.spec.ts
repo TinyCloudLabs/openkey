@@ -14,7 +14,7 @@ const json = (route: Route, body: unknown, status = 200) => route.fulfill({ stat
 type Seen = { path: string; authorization: string | undefined; cookie: string | undefined };
 
 /** No cookie session (`get-session` answers null); the keys and `prepare` answer by the token the request carries. */
-async function mockApi(page: Page, options: { accept: boolean }) {
+async function mockApi(page: Page, options: { accept: boolean; rateLimited?: 'send' | 'approve' }) {
   const seen: Seen[] = [];
   await page.context().route('**/api/**', async (route) => {
     const request = route.request();
@@ -26,7 +26,15 @@ async function mockApi(page: Page, options: { accept: boolean }) {
     if (path === '/api/keys' || path === '/api/account-setup/prepare') {
       if (!options.accept || headers['authorization'] !== `Bearer ${TOKEN}`) return json(route, { error: 'Unauthorized' }, 401);
       if (path === '/api/keys') return json(route, { keys: [key] });
+      if (options.rateLimited) {
+        return json(route, { state: 'ready', id: 'setup-1', record: '{}', nodeUrl: 'https://node.tinycloud.xyz', expiresAt: new Date(Date.now() + 300_000).toISOString(), stepUp: 'email' });
+      }
       return json(route, { state: 'present' });
+    }
+    if (options.rateLimited && path === '/api/account-setup/setup-1/passkey') return json(route, { stepUp: 'email', email: 'n•••@mail.com' });
+    if (options.rateLimited === 'approve' && path === '/api/account-setup/setup-1/email-code') return json(route, { sent: true, email: 'n•••@mail.com' });
+    if (options.rateLimited && path.startsWith('/api/account-setup/setup-1/')) {
+      return json(route, { error: 'Too many requests. Please try again later.', code: 'account_setup_rate_limited' }, 429);
     }
     return json(route, {});
   });
@@ -90,5 +98,29 @@ test.describe('account setup window opened by an embed with its session token', 
     await expect(popup.getByRole('link', { name: 'Sign in' })).toBeVisible();
     expect(seen.filter((call) => call.authorization !== undefined)).toEqual([]);
     expect(seen.some((call) => call.path === '/api/account-setup/prepare')).toBe(false);
+  });
+
+  const message = 'Too many attempts in the last hour. Wait an hour, then try once more.';
+
+  test('a spent hourly limit on the code send shows the one message and keeps the Send code button', async ({ page }) => {
+    await mockApi(page, { accept: true, rateLimited: 'send' });
+    const popup = await openFromEmbed(page, TOKEN);
+    await popup.getByTestId('account-setup-set-up').click();
+    await popup.getByTestId('account-setup-send-code').click();
+    await expect(popup.getByRole('alert')).toHaveText(message);
+    await expect(popup.getByTestId('account-setup-send-code')).toBeVisible();
+    await expect(popup.getByText('Too many requests')).toHaveCount(0);
+  });
+
+  test('a spent hourly limit on the approval shows the one message and stays on the confirm screen', async ({ page }) => {
+    await mockApi(page, { accept: true, rateLimited: 'approve' });
+    const popup = await openFromEmbed(page, TOKEN);
+    await popup.getByTestId('account-setup-set-up').click();
+    await popup.getByTestId('account-setup-send-code').click();
+    await popup.getByLabel('Code').fill('123456');
+    await popup.getByRole('button', { name: 'Confirm', exact: true }).click();
+    await expect(popup.getByRole('alert')).toHaveText(message);
+    await expect(popup.getByTestId('account-setup-card')).toHaveAttribute('data-phase', 'confirm');
+    await expect(popup.getByText('Too many requests')).toHaveCount(0);
   });
 });

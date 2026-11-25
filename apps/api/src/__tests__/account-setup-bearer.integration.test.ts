@@ -77,7 +77,17 @@ if (process.env.OPENKEY_ACCOUNT_SETUP_BEARER_CHILD !== '1') {
     });
   }
   release(null);
-  await mockModules({ '../terms-release.json': () => ({ default: releaseFile }) });
+  // The mail of the emailed code goes to this list instead of Resend.
+  const mailed: { to: string; subject: string; text: string }[] = [];
+  process.env.RESEND_API_KEY = 're_test_key';
+  await mockModules({
+    '../terms-release.json': () => ({ default: releaseFile }),
+    resend: () => ({
+      Resend: class {
+        emails = { send: async (mail: { to: string; subject: string; text: string }) => { mailed.push(mail); return { data: { id: 'mail_1' }, error: null }; } };
+      },
+    }),
+  });
 
   const originalFetch = globalThis.fetch;
   const puts: Record<string, unknown>[] = [];
@@ -393,6 +403,28 @@ if (process.env.OPENKEY_ACCOUNT_SETUP_BEARER_CHILD !== '1') {
       await json(await post(`/api/account-setup/${first.id}/approve`, auth, { emailCode: '424242' }), 409);
     });
 
+    test('the mailed code names the app the request came from and the node, as hosts', async () => {
+      const owner = await account();
+      const auth = asBearer(owner);
+      mailed.length = 0;
+      const named = await json(await post('/api/account-setup/prepare', auth, {
+        keyId: owner.keyId, placement: 'tinycloud', requestOrigin: 'https://app.example:8443',
+      }), 200);
+      await json(await post(`/api/account-setup/${named.id}/email-code`, auth), 200);
+      expect(mailed).toHaveLength(1);
+      expect(mailed[0]!.to).toBe(`${owner.userId}@example.test`);
+      expect(mailed[0]!.subject).toBe('Your code to set up TinyCloud for app.example:8443');
+      expect(mailed[0]!.text).toStartWith('app.example:8443 asked OpenKey to set up your TinyCloud account. Your data will be stored on node.tinycloud.xyz.\n\nYour code: ');
+
+      const other = await account();
+      mailed.length = 0;
+      const unnamed = await json(await post('/api/account-setup/prepare', asBearer(other), { keyId: other.keyId, placement: 'tinycloud' }), 200);
+      await json(await post(`/api/account-setup/${unnamed.id}/email-code`, asBearer(other)), 200);
+      expect(mailed).toHaveLength(1);
+      expect(mailed[0]!.subject).toBe('Your code to set up TinyCloud');
+      expect(mailed[0]!.text).toStartWith('An app asked OpenKey to set up your TinyCloud account. Your data will be stored on node.tinycloud.xyz.');
+    });
+
     test('finish answers only for a row this session approved', async () => {
       const owner = await account();
       await createSoftPasskey(prisma, owner.userId, true, web);
@@ -456,7 +488,7 @@ if (process.env.OPENKEY_ACCOUNT_SETUP_BEARER_CHILD !== '1') {
       await json(await post(`/api/account-setup/${row.id}/email-code`, asBearer(fresh)), 200);
       await knownCode(fresh.sessionId, row.id, '424242');
       const limited = await json(await post(`/api/account-setup/${row.id}/approve`, asBearer(fresh), { emailCode: '424242' }), 429);
-      expect(limited.code).toBe('account_setup_rate_limited');
+      expect(limited).toEqual({ error: 'Too many attempts in the last hour. Wait an hour, then try once more.', code: 'account_setup_rate_limited' });
       // The cookie path of the same account shares the budget.
       const cookieRow = await prepare(owner, asCookie(owner));
       const byCookie = await json(await post(`/api/account-setup/${cookieRow.id}/approve`, asCookie(owner), { emailCode: '424242' }), 429);
@@ -509,7 +541,7 @@ if (process.env.OPENKEY_ACCOUNT_SETUP_BEARER_CHILD !== '1') {
       const last = await session(owner.userId);
       const row = await prepare(owner, asBearer(last));
       const limited = await json(await post(`/api/account-setup/${row.id}/email-code`, asBearer(last)), 429);
-      expect(limited.code).toBe('account_setup_rate_limited');
+      expect(limited).toEqual({ error: 'Too many attempts in the last hour. Wait an hour, then try once more.', code: 'account_setup_rate_limited' });
       expect(await budgetUsed(owner.userId, 'send')).toBe(budget.ACCOUNT_SETUP_BUDGET_LIMITS.send);
       // Another account has its own budget.
       const other = await account();

@@ -13,6 +13,8 @@
   import {
     accountSetupFailure,
     accountSetupSuccess,
+    ACCOUNT_SETUP_RATE_LIMITED_CODE,
+    ACCOUNT_SETUP_RATE_LIMITED_MESSAGE,
     readAccountSetupBearer,
     readAccountSetupRequest,
     TINYCLOUD_ONE_SETUP_URL,
@@ -147,6 +149,11 @@
     return error instanceof Error && error.message ? error.message : "Setup didn't finish.";
   }
 
+  /** What a refused step-up shows: the account's hourly limit always reads the same, whatever text came back. */
+  function stepUpNotice(error: unknown): string {
+    return errorCode(error) === ACCOUNT_SETUP_RATE_LIMITED_CODE ? ACCOUNT_SETUP_RATE_LIMITED_MESSAGE : errorMessage(error);
+  }
+
   function errorCode(error: unknown): string | undefined {
     const value = (error as { code?: unknown } | null)?.code;
     return typeof value === 'string' ? value : undefined;
@@ -222,7 +229,7 @@
       if (!sent.sent) notice = 'A code is on its way. Check your email.';
     } catch (error) {
       if (errorCode(error) === 'ACCOUNT_SETUP_UNAVAILABLE') showUnavailable(errorMessage(error));
-      else notice = errorMessage(error);
+      else notice = stepUpNotice(error);
     }
   }
 
@@ -241,8 +248,8 @@
     const codeName = errorCode(error);
     if (codeName === 'account_setup_code_invalid' || codeName === 'account_setup_code_ended' ||
         codeName === 'passkey_approval_invalid' || codeName === 'passkey_approval_not_step_up' ||
-        codeName === 'passkey_approval_required' || codeName === 'account_setup_rate_limited') {
-      notice = errorMessage(error);
+        codeName === 'passkey_approval_required' || codeName === ACCOUNT_SETUP_RATE_LIMITED_CODE) {
+      notice = stepUpNotice(error);
       code = '';
       phase = 'confirm';
       if (prepared?.stepUp === 'passkey') loadStepUp().catch((reload) => { notice = errorMessage(reload); });

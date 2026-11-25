@@ -22,6 +22,10 @@ export const ACCOUNT_SETUP_PROTOCOL_VERSION = 1;
 /** Where an owner finishes a setup OpenKey cannot do here: a wallet key, or a location of their own. First-party. */
 export const TINYCLOUD_ONE_SETUP_URL = 'https://tinycloud.one/?finish-setup=registry';
 
+/** What the owner reads when the account's hourly limit of codes or approval attempts is spent (API code `account_setup_rate_limited`). */
+export const ACCOUNT_SETUP_RATE_LIMITED_CODE = 'account_setup_rate_limited';
+export const ACCOUNT_SETUP_RATE_LIMITED_MESSAGE = 'Too many attempts in the last hour. Wait an hour, then try once more.';
+
 export type AccountSetupErrorCode = 'USER_CANCELLED' | 'ACCOUNT_SETUP_FAILED' | 'ACCOUNT_SETUP_UNAVAILABLE';
 
 export interface AccountSetupRequest {
