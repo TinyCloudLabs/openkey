@@ -824,7 +824,25 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
      approval screens then stop a whole network's decrypt at 7 days, as the API
      does. The API's flag is the one that holds the grant.
 
-4. Deploy
+4. Production Git auto-deploys are disabled for the `openkey` Pages project.
+   From a clean checkout at the release commit, set `CLOUDFLARE_API_TOKEN`
+   and `CLOUDFLARE_ACCOUNT_ID`, then use the direct-upload script:
+
+   ```bash
+   scripts/release/openkey-web-direct-upload.sh <commit-sha> preview
+   # QA-probe the preview deployment, then record its Cloudflare deployment ID.
+   scripts/release/openkey-web-direct-upload.sh <commit-sha> production --preview-verified <preview-deployment-id>
+   ```
+
+   The script requires the project's expected build command, passes only its
+   readable `VITE_*` variables into a clean build environment, runs
+   `bun install --frozen-lockfile` and the fixed web build, checks the API host
+   in the artifact, runs `bun run audit:web:prod`, and only then uploads.
+   Preview checks `/auth/register` and `/auth/login` for HTTP 200. Production prints the
+   previous canonical deployment ID before upload; roll back with
+   `POST /accounts/<account-id>/pages/projects/openkey/deployments/<id>/rollback`.
+   If Pages Git builds are re-enabled, append `&& bun run audit:web:prod`
+   to the project's build command too.
 
 Attach both `openkey.so` and `console.openkey.so` custom domains to this Pages
 deployment. The console hostname only serves the `/console` route tree, while
