@@ -50,7 +50,7 @@ const WALLET_KEY_UNAVAILABLE = {
   reason: 'wallet_key',
 } as const;
 const NO_STEP_UP = {
-  error: 'Add a passkey in OpenKey settings to set up TinyCloud.',
+  error: 'Add a passkey in OpenKey settings to set up your TinyCloud account.',
   code: 'ACCOUNT_SETUP_UNAVAILABLE',
   reason: 'no_step_up',
 } as const;

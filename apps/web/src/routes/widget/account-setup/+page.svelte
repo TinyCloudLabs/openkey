@@ -171,7 +171,7 @@
     try {
       assertion = await confirmWithPasskey(current);
     } catch {
-      notice = 'The passkey prompt closed. Tap Confirm to open it a second time.';
+      notice = 'The passkey prompt closed. Tap Confirm with your passkey to open it.';
       phase = 'confirm';
       return;
     }
@@ -313,15 +313,20 @@
           ({relayed ? 'the site that asked OpenKey to open this window' : 'the site that opened this window'}).
         </p>
       {/if}
+      {#if key}
+        <p class="mt-2 text-sm text-surface-600" data-testid="account-setup-account">
+          Account: <span class="break-all font-mono text-xs text-surface-900">{key.address}</span>
+        </p>
+      {/if}
       <p class="mt-3 text-sm text-surface-700">
         This creates your TinyCloud spaces and records where your data lives. After setup, apps you approve can store
         data in your TinyCloud account.
       </p>
       <p class="mt-3 text-sm text-surface-700">
-        You set up your account once for every app. Each app asks for your approval before it gets access.
+        You set up your account once, for all your apps. Each app asks for your approval before it gets access.
       </p>
       <p class="mt-3 text-xs text-surface-500">
-        Apps with their own spaces may need extra setup in
+        Some apps need extra setup in
         <a class="underline" href={TINYCLOUD_ONE_SETUP_URL} target="_blank" rel="noopener">TinyCloud One</a>.
       </p>
       <div class="mt-5 flex flex-col gap-3">
@@ -331,7 +336,7 @@
         <Button variant="secondary" onclick={cancel} class="w-full rounded-xl">Cancel</Button>
       </div>
       <details class="mt-4 text-xs text-surface-500">
-        <summary class="cursor-pointer">More</summary>
+        <summary class="cursor-pointer">More options</summary>
         <p class="mt-2">
           <a class="underline" href={TINYCLOUD_ONE_SETUP_URL} target="_blank" rel="noopener" onclick={leaveForTinyCloudOne}>
             Choose your own location in TinyCloud One
@@ -388,7 +393,7 @@
         <li>Record where your data lives</li>
       </ol>
     {:else if phase === 'failed' && failure}
-      <h1 class="text-lg font-semibold text-surface-900">Setup didn't finish.</h1>
+      <h1 class="text-lg font-semibold text-surface-900">Setup didn't finish</h1>
       <p class="mt-3 text-sm text-surface-700" role="alert">{failure.message}</p>
       <div class="mt-5 flex flex-col gap-3">
         {#if failure.retry && prepared}
@@ -399,12 +404,12 @@
         <Button variant="secondary" onclick={cancel} class="w-full rounded-xl">Close</Button>
       </div>
     {:else if phase === 'present'}
-      <h1 class="text-lg font-semibold text-surface-900">Your TinyCloud account is set up.</h1>
+      <h1 class="text-lg font-semibold text-surface-900">Your TinyCloud account is set up</h1>
       <div class="mt-5 flex flex-col gap-3">
         <Button onclick={continueSetUp} class="w-full rounded-xl" data-testid="account-setup-continue">Continue</Button>
       </div>
     {:else if phase === 'done'}
-      <h1 class="text-lg font-semibold text-surface-900">Your TinyCloud account is set up.</h1>
+      <h1 class="text-lg font-semibold text-surface-900">Your TinyCloud account is set up</h1>
       <p class="mt-3 text-sm text-surface-700">Return to the app to continue.</p>
       <div class="mt-5 flex flex-col gap-3">
         <Button variant="secondary" onclick={() => window.close()} class="w-full rounded-xl">Close</Button>

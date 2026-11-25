@@ -140,8 +140,12 @@ for (const [name, viewport] of Object.entries(VIEWPORTS)) {
       const { popup, received } = await openSetup(page, viewport);
       await expect(popup.getByRole('heading', { name: 'Set up your TinyCloud account' })).toBeVisible();
       await expect(popup.getByTestId('account-setup-requester')).toContainText(`Requested by ${HOST}`);
-      await expect(popup.getByText('You set up your account once for every app.')).toBeVisible();
-      await expect(popup.getByText('Apps with their own spaces may need extra setup in')).toBeVisible();
+      await expect(popup.getByTestId('account-setup-account')).toHaveText(`Account: ${address}`);
+      await expect(popup.getByText('You set up your account once, for all your apps.')).toBeVisible();
+      const extraSetup = popup.getByText('Some apps need extra setup in');
+      await expect(extraSetup).toHaveText('Some apps need extra setup in TinyCloud One.');
+      await expect(extraSetup.getByRole('link', { name: 'TinyCloud One', exact: true })).toHaveAttribute('href', 'https://tinycloud.one/?finish-setup=registry');
+      await expect(popup.locator('summary')).toHaveText(['More options']);
       await shot(popup, `default-${name}`);
 
       await popup.getByTestId('account-setup-set-up').click();
@@ -152,7 +156,7 @@ for (const [name, viewport] of Object.entries(VIEWPORTS)) {
       await shot(popup, `confirm-passkey-${name}`);
 
       await popup.getByTestId('account-setup-confirm').click();
-      await expect(popup.getByRole('heading', { name: 'Your TinyCloud account is set up.' })).toBeVisible();
+      await expect(popup.getByRole('heading', { name: 'Your TinyCloud account is set up', exact: true })).toBeVisible();
       await expect(popup.getByText('Return to the app to continue.')).toBeVisible();
       expect(calls.approve[0]).toMatchObject({ passkeyAssertion: { challengeToken: 'token-1', response: { id: credentialId.toString('base64url') } } });
       expect(calls.finish).toBe(1);
@@ -182,18 +186,18 @@ for (const [name, viewport] of Object.entries(VIEWPORTS)) {
       await expect(popup.getByText('Create your spaces')).toBeVisible();
       await shot(popup, `working-${name}`);
       release();
-      await expect(popup.getByRole('heading', { name: "Setup didn't finish." })).toBeVisible({ timeout: 10_000 });
+      await expect(popup.getByRole('heading', { name: "Setup didn't finish", exact: true })).toBeVisible({ timeout: 10_000 });
       await expect(popup.getByText("The registry didn't answer. Retry.")).toBeVisible();
       await shot(popup, `failed-${name}`);
       await popup.getByTestId('account-setup-retry').click();
-      await expect(popup.getByRole('heading', { name: 'Your TinyCloud account is set up.' })).toBeVisible();
+      await expect(popup.getByRole('heading', { name: 'Your TinyCloud account is set up', exact: true })).toBeVisible();
     });
 
     test('an account that is set up answers present only after Continue', async ({ page }) => {
       await mockApi(page, { prepare: () => ({ body: { state: 'present' } }) });
       const { popup, received } = await openSetup(page, viewport);
       await popup.getByTestId('account-setup-set-up').click();
-      await expect(popup.getByRole('heading', { name: 'Your TinyCloud account is set up.' })).toBeVisible();
+      await expect(popup.getByRole('heading', { name: 'Your TinyCloud account is set up', exact: true })).toBeVisible();
       await shot(popup, `present-${name}`);
       expect(await received()).toEqual([]);
       const closed = popup.waitForEvent('close');
@@ -216,7 +220,7 @@ for (const [name, viewport] of Object.entries(VIEWPORTS)) {
       await popup.getByLabel('Code').fill('123456');
       await shot(popup, `confirm-email-${name}`);
       await popup.getByRole('button', { name: 'Confirm', exact: true }).click();
-      await expect(popup.getByRole('heading', { name: 'Your TinyCloud account is set up.' })).toBeVisible();
+      await expect(popup.getByRole('heading', { name: 'Your TinyCloud account is set up', exact: true })).toBeVisible();
       expect(calls.approve[0]).toEqual({ emailCode: '123456' });
     });
 
@@ -235,16 +239,31 @@ for (const [name, viewport] of Object.entries(VIEWPORTS)) {
 
     test('an account without a passkey or a verified email is sent to settings', async ({ page }) => {
       await mockApi(page, { prepare: () => ({ status: 403, body: {
-        error: 'Add a passkey in OpenKey settings to set up TinyCloud.', code: 'ACCOUNT_SETUP_UNAVAILABLE', reason: 'no_step_up',
+        error: 'Add a passkey in OpenKey settings to set up your TinyCloud account.', code: 'ACCOUNT_SETUP_UNAVAILABLE', reason: 'no_step_up',
       } }) });
       const { popup } = await openSetup(page, viewport);
       await popup.getByTestId('account-setup-set-up').click();
-      await expect(popup.getByText('Add a passkey in OpenKey settings to set up TinyCloud.')).toBeVisible();
+      await expect(popup.getByText('Add a passkey in OpenKey settings to set up your TinyCloud account.')).toBeVisible();
       await expect(popup.getByRole('link', { name: 'Open OpenKey settings' })).toBeVisible();
       await shot(popup, `unavailable-passkey-${name}`);
     });
   });
 }
+
+test('opened on its own, the page names the account and creates nothing before the owner taps Set up', async ({ page }) => {
+  const calls = await mockApi(page, {});
+  await page.goto('/widget/account-setup');
+  await expect(page.getByRole('heading', { name: 'Set up your TinyCloud account' })).toBeVisible();
+  await expect(page.getByTestId('account-setup-account')).toHaveText(`Account: ${address}`);
+  await expect(page.getByTestId('account-setup-requester')).toHaveCount(0);
+  await expect(page.getByTestId('account-setup-card')).toHaveAttribute('data-phase', 'ready');
+  expect(calls.prepare).toEqual([]);
+  await shot(page, 'standalone-desktop');
+  await page.getByTestId('account-setup-set-up').click();
+  await expect(page.getByRole('heading', { name: 'Confirm setup' })).toBeVisible();
+  expect(calls.prepare).toEqual([{ keyId: 'selected-key', placement: 'tinycloud' }]);
+  expect(calls.approve).toEqual([]);
+});
 
 test('the embedded hand-off opens the setup window and relays its answer', async ({ page }) => {
   await page.setViewportSize(VIEWPORTS.mobile);
