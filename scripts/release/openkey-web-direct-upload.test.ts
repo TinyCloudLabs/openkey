@@ -28,7 +28,12 @@ async function fixture(response: string) {
     await chmod(path, 0o755);
   };
   await command('git', `if [[ "$1" == rev-parse ]]; then echo '${sha}'; else exit 0; fi`);
-  await command('curl', `if [[ "$*" == *pages/projects/openkey/deployments/* ]]; then
+  await command('curl', `if [[ "$*" == *pages/projects/openkey* ]]; then
+  [[ "$*" != *'Bearer token'* && "$*" == *'-H @-'* && -z "${'${CLOUDFLARE_API_TOKEN:-}'}" ]] || exit 91
+  IFS= read -r header
+  [[ "$header" == 'Authorization: Bearer token' ]] || exit 92
+fi
+if [[ "$*" == *pages/projects/openkey/deployments/* ]]; then
   printf '%s\\n' '{"success":true,"result":{"environment":"preview","deployment_trigger":{"metadata":{"commit_hash":"${sha}"}},"latest_stage":{"status":"success"}}}'
 elif [[ "$*" == *pages/projects/openkey* ]]; then
   if [[ -f '${join(root, 'uploaded')}' ]]; then
@@ -41,13 +46,16 @@ else
   printf '200'
 fi`);
   await command('bun', `printf '%s\\n' "$*" >> '${join(root, 'commands.log')}'
+printf '%s\\n' "$HOME" >> '${join(root, 'build-homes.log')}'
+[[ -d "$HOME" && "$HOME" != '${process.env.HOME}' ]] || exit 93
 if [[ "${'${CLOUDFLARE_API_TOKEN+x}'}" ]]; then echo 'build received CF token' >&2; exit 81; fi
 if [[ "$*" == *'audit:web:prod'* && -f '${join(root, 'fail-audit')}' ]]; then exit 1; fi
 if [[ "$*" == *'run build'* ]]; then
   mkdir -p apps/web/.svelte-kit/cloudflare
   printf '%s\\n' "built for ${'${VITE_API_URL}'}" > apps/web/.svelte-kit/cloudflare/index.js
 fi`);
-  await command('wrangler', `printf '%s\\n' "$*" >> '${join(root, 'commands.log')}'
+  await command('wrangler', `[[ "${'${CLOUDFLARE_API_TOKEN:-}'}" == token && "${'${CLOUDFLARE_ACCOUNT_ID:-}'}" == account && "$*" != *token* ]] || exit 94
+printf '%s\\n' "$*" >> '${join(root, 'commands.log')}'
 touch '${join(root, 'uploaded')}'
 printf '%s\\n' 'https://12345678.openkey.pages.dev'`);
   const responsePath = join(root, 'project.json');
@@ -133,5 +141,25 @@ test('build cannot read Cloudflare token, and install uses a frozen lockfile', a
     expect(result.exitCode).toBe(0);
     const log = await readFile(join(f.root, 'commands.log'), 'utf8');
     expect(log).toContain('install --frozen-lockfile');
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test('curl receives the token on stdin, never in argv or environment', async () => {
+  const f = await fixture(project(vars));
+  try {
+    const result = f.run([sha, 'preview']);
+    expect(result.exitCode).toBe(0);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test('install, build and audit use one temporary HOME removed on exit', async () => {
+  const f = await fixture(project(vars));
+  try {
+    const result = f.run([sha, 'preview']);
+    expect(result.exitCode).toBe(0);
+    const homes = (await readFile(join(f.root, 'build-homes.log'), 'utf8')).trim().split('\n');
+    expect(homes).toHaveLength(3);
+    expect(new Set(homes).size).toBe(1);
+    expect(await Bun.file(homes[0]).exists()).toBe(false);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
