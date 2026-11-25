@@ -4,8 +4,9 @@
 // string or a machine-local name. With --gitleaks it then runs a pinned
 // `gitleaks dir` over each directory. Reports name the file and the pattern,
 // never the matched value. Generalised from rocinante-sitrep scripts/audit-public.mjs.
+// Each --require-text=<string> must appear in at least one scanned file.
 //
-//   node scripts/security/audit-artifact.mjs [--gitleaks] [--allow-ext=.js,.css] [--allow-name=_headers] <dir>...
+//   node scripts/security/audit-artifact.mjs [--gitleaks] [--allow-ext=.js,.css] [--allow-name=_headers] [--require-text=<string>] <dir>...
 //
 // `bun run audit:web` runs it on the Cloudflare Pages web build; see docs/security/required-checks.md.
 import { execFileSync } from 'node:child_process';
@@ -37,11 +38,12 @@ const MACHINE_LOCAL = [
 ];
 
 function parseArgs(argv) {
-  const options = { gitleaks: false, ext: DEFAULT_EXT, names: DEFAULT_NAMES, dirs: [] };
+  const options = { gitleaks: false, ext: DEFAULT_EXT, names: DEFAULT_NAMES, requireText: [], dirs: [] };
   for (const arg of argv) {
     if (arg === '--gitleaks') options.gitleaks = true;
     else if (arg.startsWith('--allow-ext=')) options.ext = arg.slice(12).split(',').filter(Boolean);
     else if (arg.startsWith('--allow-name=')) options.names = arg.slice(13).split(',').filter(Boolean);
+    else if (arg.startsWith('--require-text=')) options.requireText.push(arg.slice('--require-text='.length));
     else if (arg.startsWith('--')) throw new Error(`unknown option ${arg}`);
     else options.dirs.push(resolve(arg));
   }
@@ -57,7 +59,18 @@ function walk(dir) {
   });
 }
 
-export function auditDirectory(dir, { ext = DEFAULT_EXT, names = DEFAULT_NAMES } = {}) {
+function missingTextProblems(missingText) {
+  return Array.from(missingText, (text) => `required text not found in any file: ${text}`);
+}
+
+export function auditDirectory(dir, { requireText = [], ...options } = {}) {
+  const missingText = new Set(requireText);
+  const result = scanDirectory(dir, options, missingText);
+  result.problems.push(...missingTextProblems(missingText));
+  return result;
+}
+
+function scanDirectory(dir, { ext = DEFAULT_EXT, names = DEFAULT_NAMES }, missingText) {
   const allowedExt = new Set(ext);
   const allowedNames = new Set(names);
   const problems = [];
@@ -72,8 +85,14 @@ export function auditDirectory(dir, { ext = DEFAULT_EXT, names = DEFAULT_NAMES }
     if (extname(base) === '.map') problems.push(`${name}: sourcemap file`);
     if (base.startsWith('.')) problems.push(`${name}: dotfile`);
     else if (!allowedExt.has(extname(base)) && !allowedNames.has(base)) problems.push(`${name}: file type not on the allow-list`);
+    const contents = readFileSync(file);
+    if (missingText.size > 0) {
+      for (const required of missingText) {
+        if (contents.includes(required)) missingText.delete(required);
+      }
+    }
     // latin1 keeps every byte, so binary files are scanned too.
-    const text = readFileSync(file).toString('latin1');
+    const text = contents.toString('latin1');
     if (/[#@]\s*sourceMappingURL=/.test(text)) problems.push(`${name}: sourceMappingURL`);
     for (const { label, re } of [...SECRETS, ...MACHINE_LOCAL]) {
       const count = text.match(re)?.length ?? 0;
@@ -113,17 +132,20 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     process.exit(2);
   }
   let failed = false;
+  const missingText = new Set(options.requireText);
   for (const dir of options.dirs) {
     if (statSync(dir, { throwIfNoEntry: false })?.isDirectory() !== true) {
       console.error(`audit-artifact: ${dir} does not exist; build it first`);
       process.exit(1);
     }
-    const { files, problems } = auditDirectory(dir, options);
+    const { files, problems } = scanDirectory(dir, options, missingText);
     console.log(`audit-artifact: scanned ${files} files in ${relative(REPO_ROOT, dir) || dir}`);
     if (files === 0) problems.push('no files: an empty artifact proves nothing');
     for (const problem of problems) console.error(`  - ${problem}`);
     failed ||= problems.length > 0;
   }
+  for (const problem of missingTextProblems(missingText)) console.error(`  - ${problem}`);
+  failed ||= missingText.size > 0;
   if (failed) {
     console.error('audit-artifact: FAILED');
     process.exit(1);
