@@ -180,7 +180,7 @@ describe('the label needs both the request and the signed message inside the pol
     expect(name(request, signedOf(put))).toBeNull();
     const other = { ...request, permissions: [{ ...request.permissions[0]!, space: 'default' }, ...request.permissions.slice(1)] };
     expect(name(request, signedOf(other))).toBeNull();
-    expect(name(request, signedOf(request, 3601))).toBeNull();
+    expect(name(request, signedOf(request, 3631))).toBeNull();
     expect(name(request, signedOf(request, 7200))).toBeNull();
     expect(name(request, signedOf(request, 60))).toEqual(NAMED);
   });
@@ -209,7 +209,7 @@ describe('no key is named without its policy', () => {
     expect(one(policy)).toEqual({ displayName: 'TinyCloud One', returnTo: 'TinyCloud One' });
     expect(one(narrow)).toBeNull();
     expect(one(policy, { ...request, grantLifetimeSeconds: 3601 })).toBeNull();
-    expect(one(policy, request, signedOf(request, 3601))).toBeNull();
+    expect(one(policy, request, signedOf(request, 3631))).toBeNull();
     expect(one(policy, request, null)).toBeNull();
     expect(one(policy, request, signedOf({ ...request, permissions: [{ ...request.permissions[0]!, path: 'vault/secrets/?x' }] }))).toBeNull();
   });
@@ -251,10 +251,22 @@ describe('the signed lifetime is the time left until the message expires', () =>
     expect(at(3_599_000)).toEqual(NAMED);
   });
 
-  test('more than an hour left is not named, by a fraction of a second too', () => {
-    expect(at(-500)).toBeNull();
-    expect(at(-1000)).toBeNull();
+  // A page whose clock runs behind the preparing server reads an exact-maximum message as a little longer than the
+  // maximum, so up to 30 seconds over is named and anything longer is not.
+  test('up to 30 seconds over the maximum is named, and 31 seconds over is not', () => {
+    expect(at(-500)).toEqual(NAMED);
+    expect(at(-1000)).toEqual(NAMED);
+    expect(at(-29_500)).toEqual(NAMED);
+    expect(at(-30_000)).toEqual(NAMED);
+    expect(at(-30_001)).toBeNull();
+    expect(at(-31_000)).toBeNull();
     expect(at(-3_600_000)).toBeNull();
+  });
+
+  test('a message prepared for the maximum plus 30 seconds is named, and plus 31 seconds is not', () => {
+    const over = (seconds: number) => name(request, signedScopeOfMessage(preparedMessage(request.permissions, seconds), SIGNER));
+    expect(over(3630)).toEqual(NAMED);
+    expect(over(3631)).toBeNull();
   });
 
   test('a message that has expired is not named', () => {
@@ -265,6 +277,36 @@ describe('the signed lifetime is the time left until the message expires', () =>
   test('an old Issued At does not count: an hour left on a message issued a day ago is named', () => {
     const issuedADayAgo = message.replace(/Issued At: .*\n/, `Issued At: ${new Date(PREPARED_AT - 86_400_000).toISOString()}\n`);
     expect(name(request, signedScopeOfMessage(issuedADayAgo, SIGNER))).toEqual(NAMED);
+  });
+
+  // The derived lifetime is the time left less the 30-second slack, so the boundary sits at 3630 left: 3600 counted
+  // against the maximum, and 3631 left counts 3601. At 30 seconds left or less it counts one second.
+  test('the signed lifetime counted against the policy is the time left less 30 seconds, never below one second', () => {
+    const counted = (seconds: number) => signedScopeOfMessage(preparedMessage(request.permissions, seconds), SIGNER)?.grantLifetimeSeconds;
+    expect(counted(3630)).toBe(3600);
+    expect(counted(3631)).toBe(3601);
+    expect(counted(3600)).toBe(3570);
+    expect(counted(31)).toBe(1);
+    expect(counted(30)).toBe(1);
+    expect(counted(1)).toBe(1);
+  });
+
+  // Issued At is not read and no other skew allowance exists: only Expiration Time against the clock counts, with the
+  // one 30-second slack. A message issued 30 seconds ahead of the page clock is judged by its expiry alone.
+  test('a message issued 30 seconds in the future is judged by its Expiration Time alone, with no second allowance', () => {
+    const future = (lifetimeFromIssue: number) => {
+      const issuedAt = new Date(PREPARED_AT + 30_000);
+      return preparedMessage(request.permissions, 3600)
+        .replace(/Issued At: .*\n/, `Issued At: ${issuedAt.toISOString()}\n`)
+        .replace(/Expiration Time: .*\n/, `Expiration Time: ${new Date(issuedAt.getTime() + lifetimeFromIssue * 1000).toISOString()}\n`);
+    };
+    // Issued at now + 30 s for an hour: 3630 seconds from now, the exact limit.
+    expect(name(request, signedScopeOfMessage(future(3600), SIGNER))).toEqual(NAMED);
+    // One second more than that: 3631 seconds from now.
+    expect(name(request, signedScopeOfMessage(future(3601), SIGNER))).toBeNull();
+    // Issued 30 seconds ahead for a short time stays named, and the future Issued At adds nothing to the slack.
+    expect(name(request, signedScopeOfMessage(future(60), SIGNER))).toEqual(NAMED);
+    expect(signedScopeOfMessage(future(3600), SIGNER)?.grantLifetimeSeconds).toBe(3600);
   });
 
   test('an unknown signer is not named: its resources are not known to be its own', () => {

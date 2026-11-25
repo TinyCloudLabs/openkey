@@ -8,10 +8,12 @@ import { parseCapabilityReview, parseEncryptionResource, type SignerInfo } from 
  * - `path` rules match a resource path made of one of the `pathPrefixes` followed by one segment per entry of
  *   `segmentPatterns`. Each pattern is the source of an anchored regular expression and is the allowed-character
  *   list for its segment (for a secret name, `^[A-Z][A-Z0-9_]*$`, the SDK's secret-name rule). A pattern is only
- *   literal characters and character classes of letters, digits and `_`, each with at most a `*`, `+` or `{n,m}`
- *   quantifier, after `^` and before `$`, with one optional `(?!word$)` lookahead; any other form (`.`, `\W`, `?`,
- *   an alternation, a group) is not a valid pattern. Apart from the patterns, the whole path must be plain segments
- *   of letters, digits, `_` and `-` before a pattern is read, so a path with a query, fragment or escape never reaches one.
+ *   literal characters and character classes, after `^` and before `$`, with one optional `(?!word$)` lookahead.
+ *   A class holds single letters, digits and `_`, and ranges inside one type (`A-Z`, `a-z`, `0-9`; never `0-z` or
+ *   `Z-a`). Each atom has at most a `*`, `+` or `{n,m}` quantifier; a pattern has at most two unbounded atoms (`*`,
+ *   `+`, `{n,}`), at most four quantified atoms and no count above 64. Any other form (`.`, `\W`, `?`, an
+ *   alternation, a group) is not a valid pattern. Apart from the patterns, the whole path must be plain segments of
+ *   letters, digits, `_` and `-` before a pattern is read, so a path with a query, fragment or escape never reaches one.
  * - `encryption-network` rules match an encryption resource on one network: the network itself when `wholeNetwork`
  *   is set, and a key whose path is one of the `keyPrefixes` followed by one name that matches `keyNamePattern`
  *   (validated like a segment pattern). Prefixes and keys elsewhere on the network are outside.
@@ -56,8 +58,8 @@ const NETWORK = /^[a-z0-9][a-z0-9-]*$/;
 const PREFIX = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*\/$/;
 const PATH = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
 const LITERAL = '[A-Za-z0-9_-]';
-/** A character class of letters, digits and `_` (ranges like `A-Z` allowed), with `-` only last: `[A-Z0-9_]`, `[a-z0-9_-]`. */
-const CLASS = '\\[(?:[A-Za-z0-9]-[A-Za-z0-9]|[A-Za-z0-9_])+-?\\]';
+/** A character class of letters, digits and `_`; a range stays inside one type (`A-Z`, `a-z`, `0-9`), `-` only last: `[A-Z0-9_]`, `[a-z0-9_-]`. */
+const CLASS = '\\[(?:[A-Z]-[A-Z]|[a-z]-[a-z]|[0-9]-[0-9]|[A-Za-z0-9_])+-?\\]';
 /** One atom: a class or a literal character, with at most a `*`, `+`, `{n}` or `{n,m}` quantifier. */
 const ATOM = `(?:${CLASS}|${LITERAL})(?:[*+]|\\{\\d{1,3}(?:,\\d{0,3})?\\})?`;
 /** A pattern is `^`, an optional `(?!word$)` lookahead, then one or more atoms, then `$`: nothing else. */
@@ -65,13 +67,39 @@ const SEGMENT_PATTERN = new RegExp(`^\\^(?:\\(\\?!${LITERAL}+\\$\\))?(?:${ATOM})
 /** What no segment pattern may admit, alone or between letters: query, fragment, escape, separator, dot, space, control. */
 const FORBIDDEN_IN_SEGMENT = ['?', '#', '%', '/', '\\', '.', ' ', '\t', '\n', '\r', '\f', '\v', '\u0000', '\u001f', '\u007f', '\u00a0', '\u2028', '\u2029', '\ufeff', ':', ';', '@', '&', '=', '+', '$', ',', '*', '!', "'", '"', '<', '>', '|', '~', '`', '^', '(', ')', '[', ']', '{', '}'];
 
+/** At most this many `*`, `+` or `{n,}` atoms per pattern: each is an unbounded repeat, and a run of them backtracks polynomially. */
+const MAX_UNBOUNDED_ATOMS = 2;
 /**
- * Whether a source is a segment pattern: the bounded literal-and-class form above, which cannot name a query,
- * fragment, escape, separator, dot, whitespace or control character, and which refuses an empty segment. The sample
- * characters are a second check on the compiled pattern.
+ * At most this many quantified atoms per pattern, bounded or not. A run of `[A-Z]{0,64}` atoms backtracks
+ * polynomially too: 8 of them take about 2 s on a 40-character miss.
+ */
+const MAX_QUANTIFIED_ATOMS = 4;
+/** The largest count a `{n}`, `{n,m}` or `{n,}` quantifier may carry. */
+const MAX_REPEAT = 64;
+
+/** Whether the quantifiers of an already-valid source stay inside the three limits above. */
+function repeatsFit(source: string): boolean {
+  // Classes and the lookahead hold only letters, digits, `_` and `-`, so every `*`, `+` and `{` here is a quantifier.
+  let unbounded = (source.match(/[*+]/g) ?? []).length;
+  let quantified = unbounded;
+  for (const [, min, comma, max] of source.matchAll(/\{(\d+)(,)?(\d*)\}/g)) {
+    quantified += 1;
+    if (Number(min) > MAX_REPEAT) return false;
+    if (comma && max === '') unbounded += 1;
+    else if (comma && Number(max) > MAX_REPEAT) return false;
+  }
+  return unbounded <= MAX_UNBOUNDED_ATOMS && quantified <= MAX_QUANTIFIED_ATOMS;
+}
+
+/**
+ * Whether a source is a segment pattern: the bounded literal-and-class form above, in which a class holds only single
+ * characters and ranges inside one of `A-Z`, `a-z` or `0-9` (so no range can reach `? : @ \` or any other symbol).
+ * Such a pattern cannot name a query, fragment, escape, separator, dot, whitespace or control character, and the
+ * check below also refuses an empty segment. It carries at most two unbounded atoms, at most four quantified atoms
+ * and no count above 64. The sample characters are a second check on the compiled pattern.
  */
 function isSegmentPattern(source: unknown): source is string {
-  if (typeof source !== 'string' || source.length > 200 || !SEGMENT_PATTERN.test(source)) return false;
+  if (typeof source !== 'string' || source.length > 200 || !SEGMENT_PATTERN.test(source) || !repeatsFit(source)) return false;
   let pattern: RegExp;
   try {
     pattern = new RegExp(source);
@@ -187,10 +215,17 @@ export function signedScopeRequest(grants: readonly SignedGrant[], lifetimeSecon
 }
 
 /**
+ * The seconds of clock difference between the page and the server that prepared the message. A message prepared for
+ * exactly a policy's maximum lifetime reads a little longer on a page whose clock runs behind; the signed lifetime is
+ * that many seconds shorter than the time left, so such a message stays within the policy. Anything longer is refused.
+ */
+const SIGNED_LIFETIME_SLACK_SECONDS = 30;
+
+/**
  * The policy input for a prepared SIWE message, read the way the review reads it: its recap grants and the time left
- * until Expiration Time, which is how long the grant can still be used (Issued At does not bound it). `nowMs` is the
- * clock, passed in so a test can fix it. Null when the message is not a recap, has no expiry or is expired, or
- * `signedScopeRequest` refuses it.
+ * until Expiration Time, which is how long the grant can still be used (Issued At does not bound it), less
+ * `SIGNED_LIFETIME_SLACK_SECONDS` and never below one second. `nowMs` is the clock, passed in so a test can fix it.
+ * Null when the message is not a recap, has no expiry or is expired, or `signedScopeRequest` refuses it.
  */
 export function signedScopeOfMessage(message: string, signer: SignerInfo, nowMs: number = Date.now()): RequesterScopeRequest | null {
   try {
@@ -207,7 +242,8 @@ export function signedScopeOfMessage(message: string, signer: SignerInfo, nowMs:
     });
     if (model.protocol !== 'tinycloud-siwe-recap' || !model.immutable) return null;
     const left = Date.parse(model.immutable.expirationTime) - nowMs;
-    return signedScopeRequest(model.permissions, Number.isFinite(left) && left > 0 ? Math.ceil(left / 1000) : null);
+    if (!Number.isFinite(left) || left <= 0) return signedScopeRequest(model.permissions, null);
+    return signedScopeRequest(model.permissions, Math.max(1, Math.ceil(left / 1000) - SIGNED_LIFETIME_SLACK_SECONDS));
   } catch {
     return null;
   }
