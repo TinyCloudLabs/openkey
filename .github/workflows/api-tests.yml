@@ -124,3 +124,10 @@ jobs:
         env:
           OPENKEY_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
         run: bun test apps/api/src/__tests__/email-otp-verify-race.integration.test.ts
+
+      # Parallel account setup budget spends must let exactly the limit through, which holds only while the
+      # user row is locked; PGlite serializes the calls and cannot show a missing lock.
+      - name: Account setup budget race (PGlite and Postgres)
+        env:
+          OPENKEY_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+        run: bun test apps/api/src/__tests__/account-setup-budget-race.integration.test.ts
