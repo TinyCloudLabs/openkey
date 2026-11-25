@@ -47,7 +47,7 @@
         "@tinycloud/node-sdk": "2.11.0",
         "@tinycloud/node-sdk-wasm": "1.7.6",
         "@tinycloud/sdk-core": "3.12.0-beta.22",
-        "@tinycloud/share-envelope": "1.6.0-beta.1",
+        "@tinycloud/share-envelope": "1.7.0",
         "better-auth": "^1.6.9",
         "ethers": "^6.16.0",
         "hono": "^4.11.3",
@@ -97,7 +97,7 @@
     },
     "packages/cli": {
       "name": "@openkey/cli",
-      "version": "0.1.6-beta.0",
+      "version": "0.1.6-beta.1",
       "bin": {
         "openkey": "./dist/cli.js",
       },
@@ -113,10 +113,10 @@
     },
     "packages/core": {
       "name": "@openkey/core",
-      "version": "0.13.0-beta.1",
+      "version": "0.13.0-beta.3",
       "dependencies": {
         "@noble/curves": "^1.9.7",
-        "@tinycloud/share-envelope": "1.6.0-beta.1",
+        "@tinycloud/share-envelope": "1.7.0",
       },
       "devDependencies": {
         "jose": "^6.1.3",
@@ -145,7 +145,7 @@
     },
     "packages/sdk": {
       "name": "@openkey/sdk",
-      "version": "0.13.0-beta.1",
+      "version": "0.13.0-beta.4",
       "dependencies": {
         "@openkey/core": "workspace:*",
       },
@@ -156,7 +156,7 @@
     },
     "packages/sdk-capacitor": {
       "name": "@openkey/sdk-capacitor",
-      "version": "0.2.0-beta.0",
+      "version": "0.2.0-beta.1",
       "devDependencies": {
         "@capacitor/core": "^8.0.0",
         "@openkey/core": "workspace:*",
@@ -174,7 +174,7 @@
     },
     "packages/sdk-react-native": {
       "name": "@openkey/sdk-react-native",
-      "version": "0.13.0-beta.1",
+      "version": "0.13.0-beta.3",
       "dependencies": {
         "@openkey/core": "workspace:*",
       },
@@ -782,7 +782,7 @@
 
     "@tinycloud/sdk-services": ["@tinycloud/sdk-services@2.11.0", "", { "dependencies": { "@tinycloud/bootstrap": "2.7.0", "zod": "^3.23.0" } }, "sha512-rfiaoYA/e0Jm5R0z/Z5ifnaiLzGqhxYetroMWKm7sKF88tsXMgRwkXLFuw2pJpIDPR/JN7J4ObFABMqLy0ADkw=="],
 
-    "@tinycloud/share-envelope": ["@tinycloud/share-envelope@1.6.0-beta.1", "", { "dependencies": { "@noble/curves": "^1.9.2", "@noble/hashes": "^1.8.0", "multiformats": "^13.3.6", "zod": "^3.25.67" } }, "sha512-W9SXvzdh+DaQEJbbz9gNNWglD9bsLMag60bRNFr26XQsfXtO19sNURd0ccSSVuCCyYdm63vAj3jXGhbctbJiFQ=="],
+    "@tinycloud/share-envelope": ["@tinycloud/share-envelope@1.7.0", "", { "dependencies": { "@noble/curves": "^1.9.2", "@noble/hashes": "^1.8.0", "multiformats": "^13.3.6", "zod": "^3.25.67" } }, "sha512-YgNIu4OwBFb7qNtb+Z5lDAsPVKyXwpxat34Hxv3S/qOhpX9Yl7cbNsRLn/md+mY9qkT+yQw2KRLy82cwcPnA2w=="],
 
     "@tinycloud/share-sdk": ["@tinycloud/share-sdk@1.5.0-beta.2", "", { "dependencies": { "@noble/curves": "^1.9.2", "@noble/hashes": "^1.8.0", "@tinycloud/share-envelope": "1.6.0-beta.0", "multiformats": "^13.3.6" } }, "sha512-jaybpwXDAoJglNL0NOuYGe4mKJa77zELgdLtwgoENX+f1fGF24iJsaN7/q0iUuB5WVKLiVySHc80aB2wRB6F3w=="],
 
