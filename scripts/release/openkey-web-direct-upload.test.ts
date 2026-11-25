@@ -31,29 +31,30 @@ async function fixture(response: string) {
   await command('curl', `if [[ "$*" == *pages/projects/openkey/deployments/* ]]; then
   printf '%s\\n' '{"success":true,"result":{"environment":"preview","deployment_trigger":{"metadata":{"commit_hash":"${sha}"}},"latest_stage":{"status":"success"}}}'
 elif [[ "$*" == *pages/projects/openkey* ]]; then
-  if [[ -f "$UPLOADED_MARKER" ]]; then
+  if [[ -f '${join(root, 'uploaded')}' ]]; then
     printf '%s\\n' '{"success":true,"result":{"canonical_deployment":{"id":"${deploymentId}","deployment_trigger":{"metadata":{"commit_hash":"${sha}"}},"latest_stage":{"status":"success"}}}}'
   else
-    cat "$PROJECT_RESPONSE"
+    cat '${join(root, 'project.json')}'
   fi
 else
-  printf '%s\\n' "$*" >> "$COMMAND_LOG"
+  printf '%s\\n' "$*" >> '${join(root, 'commands.log')}'
   printf '200'
 fi`);
-  await command('bun', `printf '%s\\n' "$*" >> "$COMMAND_LOG"
-if [[ "$*" == *'audit:web:prod'* && "${'${FAIL_AUDIT:-}'}" == 1 ]]; then exit 1; fi
+  await command('bun', `printf '%s\\n' "$*" >> '${join(root, 'commands.log')}'
+if [[ "${'${CLOUDFLARE_API_TOKEN+x}'}" ]]; then echo 'build received CF token' >&2; exit 81; fi
+if [[ "$*" == *'audit:web:prod'* && -f '${join(root, 'fail-audit')}' ]]; then exit 1; fi
 if [[ "$*" == *'run build'* ]]; then
   mkdir -p apps/web/.svelte-kit/cloudflare
   printf '%s\\n' "built for ${'${VITE_API_URL}'}" > apps/web/.svelte-kit/cloudflare/index.js
 fi`);
-  await command('wrangler', `printf '%s\\n' "$*" >> "$COMMAND_LOG"
-touch "$UPLOADED_MARKER"
+  await command('wrangler', `printf '%s\\n' "$*" >> '${join(root, 'commands.log')}'
+touch '${join(root, 'uploaded')}'
 printf '%s\\n' 'https://12345678.openkey.pages.dev'`);
   const responsePath = join(root, 'project.json');
   await writeFile(responsePath, response);
   const run = (args: string[], extraEnv: Record<string, string> = {}) => Bun.spawnSync(['bash', join(release, 'openkey-web-direct-upload.sh'), ...args], {
     cwd: root,
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, COMMAND_LOG: join(root, 'commands.log'), UPLOADED_MARKER: join(root, 'uploaded'), PROJECT_RESPONSE: responsePath, CLOUDFLARE_API_TOKEN: 'token', CLOUDFLARE_ACCOUNT_ID: 'account', ...extraEnv },
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLOUDFLARE_API_TOKEN: 'token', CLOUDFLARE_ACCOUNT_ID: 'account', ...extraEnv },
     stdout: 'pipe', stderr: 'pipe',
   });
   return { root, run };
@@ -94,7 +95,8 @@ test('production refuses upload without a preview deployment id', async () => {
 test('audit failure prevents the preview upload', async () => {
   const f = await fixture(project(vars));
   try {
-    const result = f.run([sha, 'preview'], { FAIL_AUDIT: '1' });
+    await writeFile(join(f.root, 'fail-audit'), '');
+    const result = f.run([sha, 'preview']);
     expect(result.exitCode).not.toBe(0);
     const log = await readFile(join(f.root, 'commands.log'), 'utf8').catch(() => '');
     expect(log).toContain('audit:web:prod');
@@ -111,5 +113,25 @@ test('production verifies preview SHA and reports the new canonical deployment',
     expect(result.stdout.toString()).toContain(deploymentId);
     const log = await readFile(join(f.root, 'commands.log'), 'utf8');
     expect(log).toContain('--branch main --commit-hash ' + sha);
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test('rejects a project variable that can change script control flow', async () => {
+  const f = await fixture(project({ ...vars, mode: { type: 'plain_text', value: 'preview' } }));
+  try {
+    const result = f.run([sha, 'preview']);
+    expect(result.exitCode).not.toBe(0);
+    const log = await readFile(join(f.root, 'commands.log'), 'utf8').catch(() => '');
+    expect(log).toBe('');
+  } finally { await rm(f.root, { recursive: true, force: true }); }
+});
+
+test('build cannot read Cloudflare token, and install uses a frozen lockfile', async () => {
+  const f = await fixture(project(vars));
+  try {
+    const result = f.run([sha, 'preview']);
+    expect(result.exitCode).toBe(0);
+    const log = await readFile(join(f.root, 'commands.log'), 'utf8');
+    expect(log).toContain('install --frozen-lockfile');
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
