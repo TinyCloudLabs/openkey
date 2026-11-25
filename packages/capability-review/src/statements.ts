@@ -2142,7 +2142,7 @@ function oneNamedSecretRows(name: string): SummaryStatement[] {
 /** The words before the secret's name in a read row. */
 const SECRET_READ_LEAD = "Read the secret ";
 /** The words between the secret's name and its scope in the row of a scoped secret. */
-const SECRET_SCOPE_JOIN = " in scope ";
+const SECRET_SCOPE_JOIN = " from ";
 
 function secretReadText(name: string, scope: string | null = null): string {
   return secretReadParts(name, scope).map((part) => part.text).join("");
