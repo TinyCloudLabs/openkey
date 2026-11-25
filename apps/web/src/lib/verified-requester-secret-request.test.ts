@@ -2,7 +2,7 @@
 import { describe, expect, test } from 'bun:test';
 import { verifiedApprovalRequester, type OneVerifiedRequesterEntry, type VerifiedRequesterEntry } from './delegate-link-policy';
 import { secretOfKvPath } from '@openkey/capability-review';
-import { signedScopeOfMessage, type RequesterScopePolicy, type RequesterScopeRequest } from './requester-scope-policy';
+import { signedScopeOfMessage as scopeOfMessage, type RequesterScopePolicy, type RequesterScopeRequest } from './requester-scope-policy';
 import { makeRecapResource } from '../../../../packages/capability-review/test/fixtures/index';
 
 // The request a secrets gateway signs for one named secret: one KV read, decryption with the owner's default
@@ -54,6 +54,9 @@ const oneEntry: OneVerifiedRequesterEntry = { did: REQUESTER, policy };
 const NAMED = { displayName: 'Example Gateway', returnTo: 'Example Gateway' };
 
 // The message the approval page prepares for the request: the same grants as a recap, issued now for an hour.
+// The clock is fixed at the moment the message was prepared, so an hour-long message has 3600 seconds left.
+const PREPARED_AT = Date.parse('2030-01-01T00:00:00.000Z');
+const signedScopeOfMessage = (message: string, signer: Parameters<typeof scopeOfMessage>[1], now = PREPARED_AT) => scopeOfMessage(message, signer, now);
 const SIGNER = { label: 'Key 0', address: OWNER_ADDRESS, chainId: 1, provenance: 'managed' as const };
 const SPACE = `tinycloud:pkh:eip155:1:${OWNER_ADDRESS}`;
 function preparedMessage(permissions: { service: string; space: string; path: string; actions: string[] }[], seconds = 3600, signerSpace = SPACE) {
@@ -63,7 +66,7 @@ function preparedMessage(permissions: { service: string; space: string; path: st
     const resource = short === 'encryption' ? permission.path : `${signerSpace}:${permission.space}/${short}/${permission.path}`;
     att[resource] = Object.fromEntries(permission.actions.map((action) => [action, [{}]]));
   }
-  const issued = new Date('2030-01-01T00:00:00.000Z');
+  const issued = new Date(PREPARED_AT);
   return [
     'app.example.test wants you to sign in with your Ethereum account:', OWNER_ADDRESS, '', '',
     `URI: ${TARGET}#${TARGET.slice('did:key:'.length)}`, 'Version: 1', 'Chain ID: 1', 'Nonce: abcdef123456',
@@ -234,5 +237,37 @@ describe('the secret-name pattern follows the review package', () => {
     for (const candidate of ['A', 'API_KEY', 'K9', 'A_', 'a', 'Ab', '1A', '_A', 'A-B', 'A.B', 'SCOPED', 'scoped', 'OPENAI_API_KEY', 'ÄB', 'A B']) {
       expect(pattern.test(candidate), candidate).toBe(secretOfKvPath(`vault/secrets/${candidate}`) !== null);
     }
+  });
+});
+
+describe('the signed lifetime is the time left until the message expires', () => {
+  const request = secretRequest('OPENAI_API_KEY');
+  const message = preparedMessage(request.permissions, 3600);
+  const at = (nowOffsetMs: number) => name(request, signedScopeOfMessage(message, SIGNER, PREPARED_AT + nowOffsetMs));
+
+  test('exactly an hour left, or less as time passes, is named', () => {
+    expect(at(0)).toEqual(NAMED);
+    expect(at(10_000)).toEqual(NAMED);
+    expect(at(3_599_000)).toEqual(NAMED);
+  });
+
+  test('more than an hour left is not named, by a fraction of a second too', () => {
+    expect(at(-500)).toBeNull();
+    expect(at(-1000)).toBeNull();
+    expect(at(-3_600_000)).toBeNull();
+  });
+
+  test('a message that has expired is not named', () => {
+    expect(at(3_600_000)).toBeNull();
+    expect(at(3_700_000)).toBeNull();
+  });
+
+  test('an old Issued At does not count: an hour left on a message issued a day ago is named', () => {
+    const issuedADayAgo = message.replace(/Issued At: .*\n/, `Issued At: ${new Date(PREPARED_AT - 86_400_000).toISOString()}\n`);
+    expect(name(request, signedScopeOfMessage(issuedADayAgo, SIGNER))).toEqual(NAMED);
+  });
+
+  test('an unknown signer is not named: its resources are not known to be its own', () => {
+    expect(name(request, signedScopeOfMessage(message, { ...SIGNER, address: '0x1111111111111111111111111111111111111111' }))).toBeNull();
   });
 });

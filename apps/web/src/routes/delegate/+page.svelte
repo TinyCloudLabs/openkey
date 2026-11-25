@@ -48,6 +48,7 @@
     withConfiguredEntries,
   } from '$lib/delegate-link-policy';
   import { signedScopeOfMessage, type RequesterScopeRequest } from '$lib/requester-scope-policy';
+  import { withLiveRequester } from '$lib/live-requester-model';
   import { preparedMatchesSelection, reviewSelectionToActionKeys, selectedServerActionIds } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
   import { activeKeys, autoSelectKey } from '$lib/delegate-key-selection';
@@ -264,7 +265,6 @@
   // disappear from the review UI. `reviewSelection` is the effective
   // subset the user picked; only that changes when the user narrows.
   let reviewModel = $state<CapabilityReviewModel | null>(null);
-  const expiredRequesterName = $derived(reviewModel?.requester.displayName?.trim() || '');
   let baselineSiweForReview = $state<string | null>(null);
   let reviewSelection = $state(new Set<string>());
   let reviewEditing = $state(false);
@@ -624,11 +624,15 @@
         provenance: selectedKey.keyType === 'EXTERNAL' ? 'external' : 'managed',
       })
     : null);
-  // The key-only TinyCloud One list (`TINYCLOUD_ONE_REQUESTER_DIDS`, `VITE_TINYCLOUD_ONE_REQUESTER_DIDS`) does not
-  // name a requester here: a key with no policy would be named for any request it signs.
+  // The key-only TinyCloud One list does not name a requester here: a key with no policy would be named for any
+  // request it signs.
   const requester = $derived(approvalRequestMode
     ? verifiedApprovalRequester(approvalIssuer, TINYCLOUD_ONE_VERIFIED_REQUESTERS, VERIFIED_REQUESTERS, approvalRequestScope, signedScope)
     : delegateRequester(approvedCallback));
+  // The names below read the live requester, not the one the review model was built with: the model is kept while
+  // the owner narrows the request, and a name frozen into it would stay after a later message stops being named.
+  const expiredRequesterName = $derived(reviewModel ? requester?.displayName?.trim() || '' : '');
+  const reviewModelShown = $derived(withLiveRequester(reviewModel, requester));
   // A one-tap request for one named secret names its verified signer in its heading.
   const oneSecretWords = $derived(approvalRequestMode
     ? {
@@ -1401,7 +1405,7 @@
     const refreshed = parseCapabilityReview({
       message: data.prepared.siwe,
       signer: reviewModel.signer,
-      requester: reviewModel.requester,
+      requester: withLiveRequester(reviewModel, requester)!.requester,
       reason: reviewModel.reason,
       metadataTrust: reviewModel.metadataTrust,
       editable: true,
@@ -1861,8 +1865,8 @@
     }
   }
 
-  // The end pages. `requesterName` is the app or command the review named.
-  const requesterName = $derived(expiredRequesterName || requester?.displayName || '');
+  // The end pages. `requesterName` is the app or command named now, by the live requester.
+  const requesterName = $derived(requester?.displayName ?? '');
   // The full code was opened in place of the short one; its countdown no longer ends the page.
   let fullCodeOpen = $state(false);
   const codeExpired = $derived(!!shortCode && !!codeCountdown?.expired && !fullCodeOpen);
@@ -2218,7 +2222,7 @@
           -->
           <div bind:this={actionRow}>
             <CliSigningAdapter
-              model={reviewModel}
+              model={reviewModelShown!}
               initialSelection={reviewSelection}
               context={cliContext}
               onEditingStateChange={(editing) => { reviewEditing = editing; }}
