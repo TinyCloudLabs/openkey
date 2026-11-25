@@ -1077,10 +1077,10 @@ if (!child) {
       sessionJkt: key.jkt, requestedPermissions: [], ttlSeconds: 300, requestUriExpiresAt: new Date(Date.now() + 60_000), expiresAt: new Date(Date.now() + 600_000),
       kind: 'STEPUP', grantId: 'g1', appId: EXPLORER, userId: USER };
     const soon = new Date(Date.now() + 600_000);
-    await prisma.tinyCloudNativeRequest.create({ data: { ...base, id: 'r-denied', status: 'DENIED', delegation: artifact('cid-1', soon) } });
-    await prisma.tinyCloudNativeRequest.create({ data: { ...base, id: 'r-withdrawn', status: 'WITHDRAWN', delegation: artifact('cid-2', soon) } });
-    await prisma.tinyCloudNativeRequest.create({ data: { ...base, id: 'r-expired', status: 'DENIED', delegation: artifact('cid-3', new Date(Date.now() - 1_000)) } });
-    await prisma.tinyCloudNativeRequest.create({ data: { ...base, id: 'r-foreign', status: 'DENIED', delegation: artifact('cid-4', soon, getAddress('0x' + '22'.repeat(20))) } });
+    await prisma.tinyCloudNativeRequest.create({ data: { ...base, id: 'r-denied', status: 'DENIED', delegation: artifact('bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyka', soon) } });
+    await prisma.tinyCloudNativeRequest.create({ data: { ...base, id: 'r-withdrawn', status: 'WITHDRAWN', delegation: artifact('bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvykb', soon) } });
+    await prisma.tinyCloudNativeRequest.create({ data: { ...base, id: 'r-expired', status: 'DENIED', delegation: artifact('bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvykc', new Date(Date.now() - 1_000)) } });
+    await prisma.tinyCloudNativeRequest.create({ data: { ...base, id: 'r-foreign', status: 'DENIED', delegation: artifact('bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvykd', soon, getAddress('0x' + '22'.repeat(20))) } });
     expect(await sweepRevokePendingOnce(prisma, deps)).toEqual({ pending: 1, revoked: 2, expired: 1 });
     expect(calls).toEqual([HOST, HOST]);
     const left = (await prisma.tinyCloudNativeRequest.findMany({ select: { id: true, delegation: true } })).filter((row) => row.delegation !== null);
@@ -1145,7 +1145,7 @@ if (!child) {
   test('revoking the grant marks its step-up delegations too; expired ones are forgotten, and a node that refuses keeps the rest', async () => {
     const key = sessionKey(); await seedDevice('g1', key, 'token-1');
     await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-1', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries } });
-    const row = (id: string, expiresAt: Date) => ({ id, grantId: 'g1', appId: EXPLORER, delegationCid: `cid-${id}`, tinycloudHost: HOST, address, siweDomain: 'openkey.so', expiresAt });
+    const row = (id: string, expiresAt: Date) => ({ id, grantId: 'g1', appId: EXPLORER, delegationCid: `bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyk${id}`, tinycloudHost: HOST, address, siweDomain: 'openkey.so', expiresAt });
     await prisma.tinyCloudNativeStepUpDelegation.create({ data: row('live', new Date(Date.now() + 600_000)) });
     await prisma.tinyCloudNativeStepUpDelegation.create({ data: row('old', new Date(Date.now() - 60_000)) });
     expect((await revokeApp(key, 'token-1')).status).toBe(200);
@@ -1164,7 +1164,7 @@ if (!child) {
   test('the sweep never signs for a node OpenKey does not talk to, nor for an account that took its key back', async () => {
     const key = sessionKey(); await seedDevice('g1', key, 'token-1');
     await prisma.tinyCloudNativeStepUp.create({ data: { id: 'su-1', grantId: 'g1', appId: EXPLORER, approvedPermissions: explorerEntries, status: 'REVOKED', revokedReason: 'app_revoked' } });
-    const marked = (id: string, tinycloudHost: string) => ({ id, grantId: 'g1', appId: EXPLORER, delegationCid: `cid-${id}`, tinycloudHost, address, siweDomain: 'openkey.so',
+    const marked = (id: string, tinycloudHost: string) => ({ id, grantId: 'g1', appId: EXPLORER, delegationCid: `bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyk${id}`, tinycloudHost, address, siweDomain: 'openkey.so',
       expiresAt: new Date(Date.now() + 600_000), revokeRequestedAt: new Date() });
     await prisma.tinyCloudNativeStepUpDelegation.create({ data: marked('good', HOST) });
     await prisma.tinyCloudNativeStepUpDelegation.create({ data: marked('evil', 'https://evil.example') });

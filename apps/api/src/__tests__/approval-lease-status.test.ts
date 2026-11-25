@@ -79,7 +79,7 @@ async function fixture(id: string, state: 'leased' | 'expired' | 'finite' | 'pen
   const bodyCid = `body-${id}`;
   const originalCid = state === 'pending' ? null : `grant-${id}`;
   const body = { bodyCid, originalCid };
-  const leaseCid = `lease-${id}`;
+  const leaseCid = `bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyk${id}`;
   const now = new Date();
   const windowEnd = new Date(now.getTime() + 7 * dayMs);
   const leaseExpiresAt = new Date(now.getTime() + (state === 'expired' ? -dayMs : 90 * dayMs));
