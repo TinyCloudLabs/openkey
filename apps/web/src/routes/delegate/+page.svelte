@@ -37,7 +37,7 @@
     KNOWN_NODE_ORIGINS,
     REGISTERED_CALLBACK_ENDPOINTS,
     checkDelegateCallback,
-    approvalRequester,
+    verifiedApprovalRequester,
     delegateRequester,
     checkDelegateHost,
     isCanonicalHttpsEndpoint,
@@ -45,6 +45,7 @@
     isLoopbackHostname,
     isEd25519DidKey,
     TINYCLOUD_ONE_REQUESTER_DIDS,
+    VERIFIED_REQUESTERS,
     withConfiguredEntries,
   } from '$lib/delegate-link-policy';
   import { preparedMatchesSelection, reviewSelectionToActionKeys, selectedServerActionIds } from '$lib/delegate-review-selection';
@@ -611,9 +612,9 @@
     : hostCheck?.ok === false ? hostCheck.reason : '');
   const approvedCallback = $derived(callbackCheck?.ok ? callbackCheck.callback : null);
   const requester = $derived(approvalRequestMode
-    ? approvalRequester(approvalIssuer, withConfiguredEntries(TINYCLOUD_ONE_REQUESTER_DIDS, import.meta.env.VITE_TINYCLOUD_ONE_REQUESTER_DIDS, isEd25519DidKey))
+    ? verifiedApprovalRequester(approvalIssuer, withConfiguredEntries(TINYCLOUD_ONE_REQUESTER_DIDS, import.meta.env.VITE_TINYCLOUD_ONE_REQUESTER_DIDS, isEd25519DidKey), VERIFIED_REQUESTERS)
     : delegateRequester(approvedCallback));
-  // A one-tap request for one named secret names TinyCloud One in its heading only when One's key signed it.
+  // A one-tap request for one named secret names its verified signer in its heading.
   const oneSecretWords = $derived(approvalRequestMode
     ? {
         headline: requester ? fill(ONE_SECRET.heading, { requester: requester.displayName }) : ONE_SECRET.headingUnnamed,
