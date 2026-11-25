@@ -63,7 +63,7 @@ import {
   type RecapEntry,
   type SessionAbilities,
 } from './delegate-session';
-import { countPrivateSessionJwk, log, logError, logMetric, logSessionJwk, recordAccountOriginRefused } from '../log';
+import { countPrivateSessionJwk, log, logError, logManifestOriginBindFailed, logMetric, logSessionJwk, recordAccountOriginRefused } from '../log';
 
 // Re-export the pure delegation helpers so existing external test files
 // (e.g. delegate-oauth-route.test.ts) that import them from this module
@@ -444,9 +444,13 @@ async function refusesSpaceHost(input: {
   message: string;
   key: { id: string; address: string; keyType: string };
   authority: () => ProvisionAuthority | Promise<ProvisionAuthority>;
+  noBoundContext?: true;
 }): Promise<boolean> {
   if (input.key.keyType !== 'MANAGED' || spaceHostRequest(input.message).kind === 'none') return false;
-  return refusesThirdPartySpaceHost({ prisma, message: input.message, key: input.key, authorities: [await input.authority()] });
+  return refusesThirdPartySpaceHost({
+    prisma, message: input.message, key: input.key, authorities: [await input.authority()],
+    ...(input.noBoundContext ? { noBoundContext: true as const } : {}),
+  });
 }
 
 async function finishManagedSpaceOnboarding(input: {
@@ -1559,8 +1563,8 @@ delegateRouter.post('/sign', async (c) => {
   // This is the cookie-session branch: the signer middleware admits it only from OpenKey's own browser origin
   // (`rejectNonOpenKeySignRequest`), which is not first-party for provisioning, and the Origin header is the caller's
   // word, not evidence. So no one is first-party here, by construction: a space host message is signed only by the
-  // third-party rule of POST /api/keys/:id/sign (non-primary spaces of the key's owner once the owner's primary space
-  // is hosted). Nothing in the web app or the SDK sends one here.
+  // third-party rule of POST /api/keys/:id/sign (the key owner's own spaces once the owner's primary space is
+  // hosted). Nothing in the web app or the SDK sends one here.
   if (await refusesThirdPartySpaceHost({ prisma, message: body.message, key, authorities: [UNATTRIBUTED_PROVISION_AUTHORITY] })) {
     return c.json({ approved: false, code: HOST_SIGNING_FIRST_PARTY_ONLY, reason: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE }, 403);
   }
@@ -2177,9 +2181,9 @@ delegateRouter.post('/', async (c) => {
   const legacyAppKeyRefusal = appKeyRefusalForSiwe(preparedResult.prepared.siwe);
   if (legacyAppKeyRefusal) return c.json(appKeyRefusalBody(legacyAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(legacyAppKeyRefusal));
   // The SIWE was built from the permissions and may host a space. No origin is bound to this token-less request, so it
-  // is another site: the rule of POST /api/keys/:id/sign signs only non-primary spaces of the owner once the owner's
-  // primary space is hosted.
-  if (await refusesSpaceHost({ message: preparedResult.prepared.siwe, key, authority: () => UNATTRIBUTED_PROVISION_AUTHORITY })) {
+  // is another site: the rule of POST /api/keys/:id/sign signs only the owner's non-default spaces, once the owner's
+  // primary space is hosted. A `default` target is refused: this request binds no context to check a row against.
+  if (await refusesSpaceHost({ message: preparedResult.prepared.siwe, key, authority: () => UNATTRIBUTED_PROVISION_AUTHORITY, noBoundContext: true })) {
     return c.json(HOST_SIGNING_REFUSAL_BODY, 403);
   }
   // TC-3442: these bytes are made here, so no passkey challenge could have been bound to them. An approval the
@@ -3382,6 +3386,7 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
             ? envelope.manifestDigest
             : null;
         if (reportedOrigin && declaredDigest) {
+          metadataTrust = { status: 'unsigned', reason: 'OpenKey could not verify the app manifest.' };
           try {
             // `owner` is derived from the signing key and resolves `{owner}`
             // in the published manifest. The envelope's owner is only a hint
@@ -3437,14 +3442,10 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
               boundDeclaredKeysAppId = bindResult.manifest?.declaredKeysAppId;
               boundDeclaredKeys = bindResult.manifest?.declaredKeys;
             } else {
-              metadataTrust = {
-                status: 'unsigned',
-                reason: `origin-bind failed: ${bindResult.reason ?? 'unknown reason'}`,
-              };
+              logManifestOriginBindFailed(bindResult.reason ?? 'unknown reason');
             }
           } catch (bindErr) {
             logError('warn', 'delegate_origin_bind_failed', bindErr);
-            metadataTrust = { status: 'unsigned', reason: 'origin-bind threw' };
           }
         } else {
           metadataTrust = {

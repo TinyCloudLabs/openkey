@@ -60,8 +60,8 @@ describe("same secret name in different scopes", () => {
   it("keeps one row per scope, each marked as a secret, with unique keys", () => {
     const { rows, secrets, sensitive } = counts(decryptAll([scopedKey("alpha", "api_key"), scopedKey("beta", "api_key")]));
     expect(rows.map((row) => row.primaryText)).toEqual([
-      "Read the secret api_key in scope alpha",
-      "Read the secret api_key in scope beta",
+      "Read the secret api_key from alpha",
+      "Read the secret api_key from beta",
     ]);
     expect(rows.map((row) => row.secret)).toEqual([
       { name: "api_key", keyPath: "secrets/scoped/alpha/api_key", scope: "alpha" },
@@ -77,8 +77,8 @@ describe("same secret name in different scopes", () => {
     const { rows, secrets, sensitive } = counts(decryptAll([globalKey("api_key"), scopedKey("alpha", "api_key"), scopedKey("beta", "api_key")]));
     expect(rows.map((row) => row.primaryText)).toEqual([
       "Read the secret api_key",
-      "Read the secret api_key in scope alpha",
-      "Read the secret api_key in scope beta",
+      "Read the secret api_key from alpha",
+      "Read the secret api_key from beta",
     ]);
     expect(rows.map((row) => row.secret?.scope)).toEqual([undefined, "alpha", "beta"]);
     expect(new Set(rows.map((row) => row.key)).size).toBe(3);
@@ -93,8 +93,8 @@ describe("same secret name in different scopes", () => {
       [`${SPACE_PREFIX}:secrets/kv/vault/secrets/scoped/beta/API_KEY`]: ["tinycloud.kv/get"],
     });
     expect(rows.map((row) => row.primaryText)).toEqual([
-      "Read the secret API_KEY in scope alpha",
-      "Read the secret API_KEY in scope beta",
+      "Read the secret API_KEY from alpha",
+      "Read the secret API_KEY from beta",
     ]);
     expect(rows.every((row) => row.secret?.kvPath === undefined)).toBe(true);
   });
@@ -111,12 +111,45 @@ describe("same secret name in different scopes", () => {
     expect(secretReadParts("api_key", "alpha")).toEqual([
       { text: "Read the secret ", named: false },
       { text: "api_key", named: true },
-      { text: " in scope ", named: false },
+      { text: " from ", named: false },
       { text: "alpha", named: true },
     ]);
     expect(secretReadParts("api_key", null).map((part) => part.text).join("")).toBe("Read the secret api_key");
     expect(secretListLabel({ name: "api_key", keyPath: "secrets/scoped/alpha/api_key", scope: "alpha" } as { name: string; scope: string })).toBe("alpha/api_key");
     expect(secretListLabel({ name: "api_key" })).toBe("api_key");
+  });
+});
+
+describe("scope in secret read copy", () => {
+  it("names the scope of a single scoped secret", () => {
+    const { rows } = counts(decryptAll([scopedKey("alpha", "api_key")]));
+    expect(rows.map((row) => row.primaryText)).toEqual(["Read the secret api_key from alpha"]);
+  });
+
+  it("disambiguates a shared name across scopes", () => {
+    const { rows } = counts(decryptAll([scopedKey("alpha", "api_key"), scopedKey("beta", "api_key")]));
+    expect(rows.map((row) => row.primaryText)).toEqual([
+      "Read the secret api_key from alpha",
+      "Read the secret api_key from beta",
+    ]);
+  });
+
+  it("names a global secret without a scope", () => {
+    const { rows } = counts(decryptAll([globalKey("api_key")]));
+    expect(rows.map((row) => row.primaryText)).toEqual(["Read the secret api_key"]);
+  });
+
+  it("names the scope only on the scoped row beside a global secret", () => {
+    const { rows } = counts(decryptAll([globalKey("api_key"), scopedKey("alpha", "api_key")]));
+    expect(rows.map((row) => row.primaryText)).toEqual(["Read the secret api_key", "Read the secret api_key from alpha"]);
+  });
+
+  it("uses one scoped row for a read and decrypt of the same secret", () => {
+    const { rows } = counts({
+      ...decryptAll([scopedKey("alpha", "api_key"), scopedKey("beta", "token")]),
+      [`${SPACE_PREFIX}:secrets/kv/vault/secrets/scoped/alpha/API_KEY`]: ["tinycloud.kv/get"],
+    });
+    expect(rows.map((row) => row.primaryText)).toEqual(["Read the secret API_KEY from alpha", "Read the secret token from beta"]);
   });
 });
 

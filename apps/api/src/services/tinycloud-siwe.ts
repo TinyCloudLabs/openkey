@@ -67,6 +67,8 @@ export function parseTinyCloudSiwe(message: string): ParsedTinyCloudSiwe | null 
 /** The abilities in the `space` namespace: `host` creates a space on the node. */
 const SPACE_ABILITY_PREFIX = 'tinycloud.space/';
 export const SPACE_HOST_ABILITY = 'tinycloud.space/host';
+/** Space abilities that read and create nothing. Matched as exact strings, with no prefix match, case folding or trim. */
+const SPACE_READ_ABILITIES: readonly string[] = ['tinycloud.space/list', 'tinycloud.space/info'];
 
 export interface SpaceHostTarget {
   address: string;
@@ -79,7 +81,7 @@ export interface SpaceHostTarget {
 export type SpaceHostRequest =
   /** No space ability in it. */
   | { kind: 'none' }
-  /** A space ability whose targets cannot be read, or any space ability other than `host` (a wildcard, say). */
+  /** A space ability whose targets cannot be read, or any space ability other than `host`, `list` and `info` (a wildcard, say). */
   | { kind: 'unreadable' }
   /** `host` for exactly these spaces: every one is derived from the ReCap's own resources. */
   | { kind: 'hosts'; targets: SpaceHostTarget[] };
@@ -95,7 +97,9 @@ const RECAP_RESOURCE = /urn:recap:/i;
  * escapes, unicode escapes, duplicate keys and the rest are decoded exactly as the node decodes them; the raw bytes
  * are never searched. The targets come from the parsed entries (owner address and name out of the space id), never
  * from the text around them. A ReCap that cannot be parsed to the end is `unreadable`, as is a space-agnostic,
- * wildcard or other space ability and a target that is not a space id: the answer is then to refuse.
+ * wildcard or other space ability and a target that is not a space id: the answer is then to refuse. The exact
+ * abilities `tinycloud.space/list` and `tinycloud.space/info` read and create nothing: an entry with only those
+ * names no target.
  */
 export function spaceHostRequest(message: string): SpaceHostRequest {
   const decoded = decodeHexUtf8(message);
@@ -118,7 +122,8 @@ export function spaceHostRequest(message: string): SpaceHostRequest {
         ? actions
         : actions.filter((action) => action.toLowerCase().startsWith(SPACE_ABILITY_PREFIX) || action === '*');
       if (spaceActions.length === 0) continue;
-      if (spaceActions.some((action) => action !== SPACE_HOST_ABILITY)) return { kind: 'unreadable' };
+      if (spaceActions.some((action) => action !== SPACE_HOST_ABILITY && !SPACE_READ_ABILITIES.includes(action))) return { kind: 'unreadable' };
+      if (!spaceActions.includes(SPACE_HOST_ABILITY)) continue;
       const id = SPACE_ID.exec(entry.space ?? '');
       if (!id) return { kind: 'unreadable' };
       let address: string;

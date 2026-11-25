@@ -463,8 +463,8 @@ keysRouter.post('/:keyId/sign', async (c) => {
   }
 
   // A signature on a space host message is the ability to create that space on the node, whichever site holds the
-  // signed bytes. TinyCloud's own apps are signed for. Any other site is signed for only to host its own non-primary
-  // spaces for an owner whose primary space is already hosted (`refusesThirdPartySpaceHost`); every other message,
+  // signed bytes. TinyCloud's own apps are signed for. Any other site is signed for only to host the owner's own
+  // spaces, `default` included, for an owner whose primary space is hosted (`refusesThirdPartySpaceHost`); every other message,
   // including a sign-in that names a space, is signed as before. Checked before the passkey gate and before unseal.
   if (await refusesThirdPartySpaceHost({ prisma, message: body.message, key, authorities: [authority] })) {
     return c.json({ error: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE, code: HOST_SIGNING_FIRST_PARTY_ONLY }, 403);

@@ -7,8 +7,8 @@
 #   PR can't allowlist its own leak; baseline changes go in their own PR. A push to
 #   main scans the whole history against main's own baseline and config. Rotate a
 #   leaked value; never baseline it.
-# - Web artifact audit: the exact Cloudflare Pages build (`bun run build --filter
-#   @openkey/web`, which ends in `bun run audit:web`).
+# - Web artifact audit: the Cloudflare Pages build with the production API URL,
+#   followed by an audit that checks for the URL in the artifacts.
 # - API image scan: builds the API image from the Dockerfile and runs trivy against
 #   the baseline .trivyignore.yaml, so only a NEW fixable CRITICAL/HIGH fails.
 name: Pre-release security
@@ -108,7 +108,12 @@ jobs:
 
       # The Cloudflare Pages build command; it fails on an audit finding.
       - name: Build the web as Cloudflare Pages does, then audit it
+        env:
+          VITE_API_URL: https://api.openkey.so
         run: bun run build --filter @openkey/web
+
+      - name: Verify the production API URL in the web artifacts
+        run: bun run audit:web:prod
 
   api-image:
     name: API image scan

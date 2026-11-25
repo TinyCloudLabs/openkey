@@ -351,11 +351,11 @@ describe('a space host message from an app of another site', () => {
     expect(node.hostPosts).toEqual([]);
   }
 
-  test('is refused for the primary space, with or without a hosted primary space', async () => {
+  test('is signed for the primary space when it is hosted and refused when it is not', async () => {
     await expectRefused(hostSiwe('default'));
     hostedPrimary();
-    await expectRefused(hostSiwe('default'));
-    await expectRefused(hostSiwe('DEFAULT'));
+    await expectSigned(hostSiwe('default'));
+    await expectSigned(hostSiwe('DEFAULT'));
   });
 
   test('is refused for a non-primary space while the primary space is not known to be hosted', async () => {
@@ -379,13 +379,22 @@ describe('a space host message from an app of another site', () => {
     await expectSigned(hostSiwe('some-registry-space'));
   });
 
-  test('is refused when the targets mix the primary space with another', async () => {
-    hostedPrimary();
+  test('is signed for a mix of the owner\'s own spaces when the primary space is hosted and refused when it is not', async () => {
     const message = withRecap(hostSiwe('public'), {
       [`${spaceId('public')}/space`]: { [HOST]: [{}] },
       [`${spaceId('default')}/space`]: { [HOST]: [{}] },
     });
     await expectRefused(message);
+    hostedPrimary();
+    await expectSigned(message);
+  });
+
+  test('is refused for a mix of the owner\'s primary space and another owner\'s space', async () => {
+    hostedPrimary();
+    await expectRefused(withRecap(hostSiwe('public'), {
+      [`${spaceId('default')}/space`]: { [HOST]: [{}] },
+      [`${spaceId('public', OTHER_OWNER)}/space`]: { [HOST]: [{}] },
+    }));
   });
 
   test('is refused for a wildcard or space-agnostic host ability, and for a ReCap it cannot read', async () => {
@@ -406,18 +415,17 @@ describe('a space host message from an app of another site', () => {
   });
 
   // The node reads the ReCap with a JSON parser that decodes escapes; so does the decision, and it is the same parser.
-  test('is refused for the primary space however the ability or the space id is spelled', async () => {
+  test('is signed for the primary space however the ability or the space id is spelled when it is hosted and refused when it is not', async () => {
+    // The primary space's name spelled with a unicode escape.
+    const escapedName = `{"att":{"${spaceId('d\\u0065fault')}/space":{"tinycloud.space/host":[{}]}},"prf":[]}`;
     for (const hosted of [false, true]) {
       state = null;
       if (hosted) hostedPrimary();
-      for (const { json } of escapedHostSpellings(`${spaceId('default')}/space`)) {
-        await expectRefused(withRawRecap(hostSiwe('default'), json, `${spaceId('default')}/space`));
+      for (const { json } of [...escapedHostSpellings(`${spaceId('default')}/space`), { json: escapedName }]) {
+        const message = withRawRecap(hostSiwe('default'), json, `${spaceId('default')}/space`);
+        if (hosted) await expectSigned(message); else await expectRefused(message);
       }
     }
-    // The primary space's name spelled with a unicode escape, and in capitals.
-    hostedPrimary();
-    const escapedName = `{"att":{"${spaceId('d\\u0065fault')}/space":{"tinycloud.space/host":[{}]}},"prf":[]}`;
-    await expectRefused(withRawRecap(hostSiwe('default'), escapedName, `${spaceId('default')}/space`));
   });
 
   test('is refused for an ability in another case, a repeated key, or base64 that is not base64url', async () => {

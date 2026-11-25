@@ -137,13 +137,23 @@ function expectRefusedByRule(signed: { status: number; body: SignBody }) {
 }
 
 describe('the cookie session, from OpenKey\'s own browser origin', () => {
-  test('is refused for the primary space, hosted or not, in every spelling and as hex', async () => {
+  test('is signed for the primary space when it is hosted and refused when it is not, in every spelling and as hex', async () => {
     for (const hosted of [null, { status: 'complete' }]) {
       row = hosted;
-      for (const { json } of escapedHostSpellings(`${spaceId('default')}/space`)) {
+      for (const { label, json } of escapedHostSpellings(`${spaceId('default')}/space`)) {
+        signedMessages = [];
         const message = withRawRecap(hostSiwe('default'), json, `${spaceId('default')}/space`);
-        expectRefusedByRule(await signAsSession(message, OPENKEY_ORIGIN));
-        expectNoSignature(await signAsSession(asHex(message), OPENKEY_ORIGIN));
+        if (hosted) {
+          // The hex form is not signed on this route, so it gets no signature whichever way the host rule decides.
+          expectNoSignature(await signAsSession(asHex(message), OPENKEY_ORIGIN));
+          const plain = await signAsSession(message, OPENKEY_ORIGIN);
+          expect([label, plain.status, plain.body.approved]).toEqual([label, 200, true]);
+          expect(plain.body.signature).toMatch(/^0x[0-9a-f]+$/i);
+          expect(signedMessages).toEqual([message]);
+        } else {
+          expectRefusedByRule(await signAsSession(message, OPENKEY_ORIGIN));
+          expectNoSignature(await signAsSession(asHex(message), OPENKEY_ORIGIN));
+        }
       }
     }
   });

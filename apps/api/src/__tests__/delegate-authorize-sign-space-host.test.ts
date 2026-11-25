@@ -120,18 +120,31 @@ function expectRefused(reply: Reply) {
 }
 
 describe('a sign-in that hosts a space, from a site that is not TinyCloud\'s own', () => {
-  test('is refused for the primary space, hosted or not, in every spelling', async () => {
+  test('is signed for the primary space when it is hosted and refused when it is not, in every spelling', async () => {
     for (const hosted of [null, { status: 'complete' }]) {
       row = hosted;
-      expectRefused(await signIn(hostSiwe('default'), THIRD_PARTY));
+      signed = [];
+      const plain = hostSiwe('default');
+      const reply = await signIn(plain, THIRD_PARTY);
+      if (hosted) {
+        expect(reply.status).toBe(200);
+        expect(reply.body.signedMessage).toBe(plain);
+        expect(signed).toEqual([plain]);
+      } else expectRefused(reply);
       for (const { label, json } of escapedHostSpellings(`${spaceId('default')}/space`)) {
-        const reply = await signIn(withRawRecap(hostSiwe('default'), json, `${spaceId('default')}/space`), THIRD_PARTY);
+        signed = [];
+        const spelled = withRawRecap(hostSiwe('default'), json, `${spaceId('default')}/space`);
+        const spelledReply = await signIn(spelled, THIRD_PARTY);
         // A ReCap the strict reader cannot read is refused before the host rule, as a malformed request.
         if (label === 'an unrelated key beside att') {
-          expect(reply.status).toBe(400);
-          expect(reply.body.signature).toBeUndefined();
+          expect(spelledReply.status).toBe(400);
+          expect(spelledReply.body.signature).toBeUndefined();
           expect(signed).toEqual([]);
-        } else expectRefused(reply);
+        } else if (hosted) {
+          expect([label, spelledReply.status]).toEqual([label, 200]);
+          expect(spelledReply.body.signature).toMatch(/^0x[0-9a-f]+$/i);
+          expect(signed).toEqual([spelled]);
+        } else expectRefused(spelledReply);
       }
     }
   });
@@ -151,11 +164,27 @@ describe('a sign-in that hosts a space, from a site that is not TinyCloud\'s own
     }
   });
 
-  test('is refused when the targets mix the primary space with another', async () => {
+  test('is signed for a mix of the owner\'s own spaces when the primary space is hosted and refused when it is not', async () => {
+    row = null;
+    expectRefused(await signIn(hostBoth('public', 'default'), THIRD_PARTY));
     row = { status: 'complete' };
-    const reply = await signIn(hostBoth('public', 'default'), THIRD_PARTY);
-    expect(reply.body.signature).toBeUndefined();
-    expect(signed).toEqual([]);
+    const message = hostBoth('public', 'default');
+    const reply = await signIn(message, THIRD_PARTY);
+
+    expect(reply.status).toBe(200);
+    expect(reply.body.signature).toMatch(/^0x[0-9a-f]+$/i);
+    expect(signed).toEqual([message]);
+  });
+
+  test('is refused for a mix of the owner\'s primary space and another owner\'s space', async () => {
+    row = { status: 'complete' };
+    const otherOwner = privateKeyToAccount('0x1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef').address;
+    const att = { [`${spaceId('default')}/space`]: { 'tinycloud.space/host': [{}] }, [`tinycloud:pkh:eip155:1:${otherOwner}:public/space`]: { 'tinycloud.space/host': [{}] } };
+    const lines = Object.keys(att).sort().map((resource, i) => `(${i + 1}) 'tinycloud.space': 'host' for '${resource}'.`);
+    const message = hostSiwe('default')
+      .replace(/I further authorize[^\n]*/, `I further authorize the stated URI to perform the following actions on my behalf: ${lines.join(' ')}`)
+      .replace(/urn:recap:[A-Za-z0-9_-]+/, `urn:recap:${Buffer.from(JSON.stringify({ att, prf: [] })).toString('base64url')}`);
+    expectRefused(await signIn(message, THIRD_PARTY));
   });
 
   test('is signed for a non-primary space once the primary space is hosted', async () => {

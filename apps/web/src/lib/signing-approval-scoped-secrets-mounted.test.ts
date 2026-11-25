@@ -158,8 +158,8 @@ describe('the same secret name in two scopes', () => {
   test('is two rows, each saying its scope, with the name and the scope set as the name is', () => {
     const { target, cleanup } = mounted(modelOf(decrypts([scoped('alpha', 'api_key'), scoped('beta', 'api_key')])));
     expect(rows(target)).toEqual([
-      'Read the secret api_key in scope alpha Sensitive',
-      'Read the secret api_key in scope beta Sensitive',
+      'Read the secret api_key from alpha Sensitive',
+      'Read the secret api_key from beta Sensitive',
     ]);
     expect([...target.querySelectorAll('.statement-primary')].map((row) => [...row.querySelectorAll('.secret-name')].map(text))).toEqual([
       ['api_key', 'alpha'],
@@ -172,7 +172,7 @@ describe('the same secret name in two scopes', () => {
     const { target, cleanup } = mounted(modelOf(decrypts(['/secrets/api_key', scoped('alpha', 'api_key')])));
     expect(rows(target)).toEqual([
       'Read the secret api_key Sensitive',
-      'Read the secret api_key in scope alpha Sensitive',
+      'Read the secret api_key from alpha Sensitive',
     ]);
     cleanup();
   });
@@ -187,5 +187,43 @@ describe('the same secret name in two scopes', () => {
       'alpha/api_key', 'alpha/token', 'beta/api_key', 'beta/token', 'solo',
     ]);
     cleanup();
+  });
+});
+
+describe('scope in approval copy', () => {
+  test('a single scoped secret displays its scope', () => {
+    const { target, cleanup } = mounted(modelOf(decrypts([scoped('alpha', 'bot-history')])));
+    try {
+      expect(rows(target)).toEqual(['Read the secret bot-history from alpha Sensitive']);
+      expect([...target.querySelectorAll('.statement-primary .secret-name')].map(text)).toEqual(['bot-history', 'alpha']);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('same-name scoped rows display their scopes', () => {
+    const { target, cleanup } = mounted(modelOf(decrypts([scoped('alpha', 'bot-history'), scoped('beta', 'bot-history')])));
+    try {
+      expect(rows(target)).toEqual([
+        'Read the secret bot-history from alpha Sensitive',
+        'Read the secret bot-history from beta Sensitive',
+      ]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('a 140-secret request displays the count and scoped list labels', () => {
+    const keys = Array.from({ length: 139 }, (_, i) => scoped('alpha', `secret_${i}`));
+    const { target, cleanup } = mounted(modelOf(decrypts([...keys, scoped('beta', 'secret_0')])));
+    try {
+      expect(text(target.querySelector('.secret-summary .statement-primary'))).toBe('Read 140 secrets');
+      expect([...target.querySelectorAll('.secret-statements li')].map(text).sort()).toEqual([
+        ...keys.map((key) => key.slice('/secrets/scoped/'.length)),
+        'beta/secret_0',
+      ].sort());
+    } finally {
+      cleanup();
+    }
   });
 });
