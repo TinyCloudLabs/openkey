@@ -266,6 +266,31 @@ describe('a segment pattern is a bounded literal-and-class form', () => {
     }
   });
 
+  // Adjacent repeated atoms backtrack polynomially: 12 `[A-Z]*` atoms took 0.6 s on 22 characters, and 8 `[A-Z]{0,64}`
+  // atoms about 2 s on 40. The validator caps unbounded atoms at two and quantified atoms at four.
+  test('a pattern with many repeated atoms is refused, so no admitted pattern backtracks badly', () => {
+    // A leading `A` keeps each pattern from matching the empty segment, so only the caps can refuse it.
+    const atoms = (atom: string, count: number) => `^A${atom.repeat(count)}$`;
+    for (const bad of [atoms('[A-Z]*', 12), atoms('[A-Z]*', 3), atoms('[A-Z]+', 3), '^A[A-Z]*[A-Z]+[A-Z]{1,}$', atoms('[A-Z]{0,64}', 12), atoms('[A-Z]{0,8}', 5),
+      '^A[A-Z]*[A-Z]{0,8}[A-Z]{0,8}[A-Z]{0,8}[A-Z]{0,8}$', '^A[A-Z]{0,65}$', '^[A-Z]{65}$', '^[A-Z]{65,}$']) {
+      expect(valid(bad), bad).toBe(false);
+      expect(isRequesterScopePolicy({ ...policy, rules: [{ ...enc, keyNamePattern: bad }] }), bad).toBe(false);
+    }
+    for (const good of ['^A[A-Z]*[A-Z]*$', '^[A-Z]*[A-Z]+$', '^A[A-Z]{0,64}[A-Z]{0,64}[A-Z]{0,64}$', '^[A-Z]*[A-Z]{0,64}[A-Z]{1,64}[A-Z]{64}$', '^[A-Z]{64,}$']) {
+      expect(valid(good), good).toBe(true);
+    }
+  });
+
+  test('both patterns One uses pass, and the slowest admitted pattern answers a 40-character miss quickly', () => {
+    expect(valid('^[A-Z][A-Z0-9_]*$')).toBe(true);
+    expect(isRequesterScopePolicy({ ...policy, rules: [{ ...enc, keyNamePattern: '^(?!scoped$)[a-z0-9][a-z0-9_-]*$' }] })).toBe(true);
+    const worst = '^A[A-Z]*[A-Z]*[A-Z]{0,64}[A-Z]{0,64}$';
+    expect(valid(worst)).toBe(true);
+    const started = performance.now();
+    new RegExp(worst).test(`${'A'.repeat(40)}!`);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   test('bounded forms are valid, including both patterns One uses', () => {
     for (const good of ['^[A-Z][A-Z0-9_]*$', '^(?!scoped$)[a-z0-9][a-z0-9_-]*$', '^[A-Z]{2}$', '^[A-Z]{2,8}$', '^[A-Z]{2,}$', '^[a-z0-9_-]+$', '^A[0-9]*$', '^abc$']) {
       expect(valid(good), good).toBe(true);

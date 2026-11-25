@@ -10,9 +10,10 @@ import { parseCapabilityReview, parseEncryptionResource, type SignerInfo } from 
  *   list for its segment (for a secret name, `^[A-Z][A-Z0-9_]*$`, the SDK's secret-name rule). A pattern is only
  *   literal characters and character classes, after `^` and before `$`, with one optional `(?!word$)` lookahead.
  *   A class holds single letters, digits and `_`, and ranges inside one type (`A-Z`, `a-z`, `0-9`; never `0-z` or
- *   `Z-a`). Each atom has at most a `*`, `+` or `{n,m}` quantifier. Any other form (`.`, `\W`, `?`, an alternation,
- *   a group) is not a valid pattern. Apart from the patterns, the whole path must be plain segments of letters,
- *   digits, `_` and `-` before a pattern is read, so a path with a query, fragment or escape never reaches one.
+ *   `Z-a`). Each atom has at most a `*`, `+` or `{n,m}` quantifier; a pattern has at most two unbounded atoms (`*`,
+ *   `+`, `{n,}`), at most four quantified atoms and no count above 64. Any other form (`.`, `\W`, `?`, an
+ *   alternation, a group) is not a valid pattern. Apart from the patterns, the whole path must be plain segments of
+ *   letters, digits, `_` and `-` before a pattern is read, so a path with a query, fragment or escape never reaches one.
  * - `encryption-network` rules match an encryption resource on one network: the network itself when `wholeNetwork`
  *   is set, and a key whose path is one of the `keyPrefixes` followed by one name that matches `keyNamePattern`
  *   (validated like a segment pattern). Prefixes and keys elsewhere on the network are outside.
@@ -66,14 +67,39 @@ const SEGMENT_PATTERN = new RegExp(`^\\^(?:\\(\\?!${LITERAL}+\\$\\))?(?:${ATOM})
 /** What no segment pattern may admit, alone or between letters: query, fragment, escape, separator, dot, space, control. */
 const FORBIDDEN_IN_SEGMENT = ['?', '#', '%', '/', '\\', '.', ' ', '\t', '\n', '\r', '\f', '\v', '\u0000', '\u001f', '\u007f', '\u00a0', '\u2028', '\u2029', '\ufeff', ':', ';', '@', '&', '=', '+', '$', ',', '*', '!', "'", '"', '<', '>', '|', '~', '`', '^', '(', ')', '[', ']', '{', '}'];
 
+/** At most this many `*`, `+` or `{n,}` atoms per pattern: each is an unbounded repeat, and a run of them backtracks polynomially. */
+const MAX_UNBOUNDED_ATOMS = 2;
+/**
+ * At most this many quantified atoms per pattern, bounded or not. A run of `[A-Z]{0,64}` atoms backtracks
+ * polynomially too: 8 of them take about 2 s on a 40-character miss.
+ */
+const MAX_QUANTIFIED_ATOMS = 4;
+/** The largest count a `{n}`, `{n,m}` or `{n,}` quantifier may carry. */
+const MAX_REPEAT = 64;
+
+/** Whether the quantifiers of an already-valid source stay inside the three limits above. */
+function repeatsFit(source: string): boolean {
+  // Classes and the lookahead hold only letters, digits, `_` and `-`, so every `*`, `+` and `{` here is a quantifier.
+  let unbounded = (source.match(/[*+]/g) ?? []).length;
+  let quantified = unbounded;
+  for (const [, min, comma, max] of source.matchAll(/\{(\d+)(,)?(\d*)\}/g)) {
+    quantified += 1;
+    if (Number(min) > MAX_REPEAT) return false;
+    if (comma && max === '') unbounded += 1;
+    else if (comma && Number(max) > MAX_REPEAT) return false;
+  }
+  return unbounded <= MAX_UNBOUNDED_ATOMS && quantified <= MAX_QUANTIFIED_ATOMS;
+}
+
 /**
  * Whether a source is a segment pattern: the bounded literal-and-class form above, in which a class holds only single
  * characters and ranges inside one of `A-Z`, `a-z` or `0-9` (so no range can reach `? : @ \` or any other symbol).
  * Such a pattern cannot name a query, fragment, escape, separator, dot, whitespace or control character, and the
- * check below also refuses an empty segment. The sample characters are a second check on the compiled pattern.
+ * check below also refuses an empty segment. It carries at most two unbounded atoms, at most four quantified atoms
+ * and no count above 64. The sample characters are a second check on the compiled pattern.
  */
 function isSegmentPattern(source: unknown): source is string {
-  if (typeof source !== 'string' || source.length > 200 || !SEGMENT_PATTERN.test(source)) return false;
+  if (typeof source !== 'string' || source.length > 200 || !SEGMENT_PATTERN.test(source) || !repeatsFit(source)) return false;
   let pattern: RegExp;
   try {
     pattern = new RegExp(source);
