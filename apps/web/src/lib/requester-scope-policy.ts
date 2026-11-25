@@ -215,10 +215,17 @@ export function signedScopeRequest(grants: readonly SignedGrant[], lifetimeSecon
 }
 
 /**
+ * The seconds of clock difference between the page and the server that prepared the message. A message prepared for
+ * exactly a policy's maximum lifetime reads a little longer on a page whose clock runs behind; the signed lifetime is
+ * that many seconds shorter than the time left, so such a message stays within the policy. Anything longer is refused.
+ */
+const SIGNED_LIFETIME_SLACK_SECONDS = 30;
+
+/**
  * The policy input for a prepared SIWE message, read the way the review reads it: its recap grants and the time left
- * until Expiration Time, which is how long the grant can still be used (Issued At does not bound it). `nowMs` is the
- * clock, passed in so a test can fix it. Null when the message is not a recap, has no expiry or is expired, or
- * `signedScopeRequest` refuses it.
+ * until Expiration Time, which is how long the grant can still be used (Issued At does not bound it), less
+ * `SIGNED_LIFETIME_SLACK_SECONDS` and never below one second. `nowMs` is the clock, passed in so a test can fix it.
+ * Null when the message is not a recap, has no expiry or is expired, or `signedScopeRequest` refuses it.
  */
 export function signedScopeOfMessage(message: string, signer: SignerInfo, nowMs: number = Date.now()): RequesterScopeRequest | null {
   try {
@@ -235,7 +242,8 @@ export function signedScopeOfMessage(message: string, signer: SignerInfo, nowMs:
     });
     if (model.protocol !== 'tinycloud-siwe-recap' || !model.immutable) return null;
     const left = Date.parse(model.immutable.expirationTime) - nowMs;
-    return signedScopeRequest(model.permissions, Number.isFinite(left) && left > 0 ? Math.ceil(left / 1000) : null);
+    if (!Number.isFinite(left) || left <= 0) return signedScopeRequest(model.permissions, null);
+    return signedScopeRequest(model.permissions, Math.max(1, Math.ceil(left / 1000) - SIGNED_LIFETIME_SLACK_SECONDS));
   } catch {
     return null;
   }

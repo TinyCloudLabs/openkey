@@ -180,7 +180,7 @@ describe('the label needs both the request and the signed message inside the pol
     expect(name(request, signedOf(put))).toBeNull();
     const other = { ...request, permissions: [{ ...request.permissions[0]!, space: 'default' }, ...request.permissions.slice(1)] };
     expect(name(request, signedOf(other))).toBeNull();
-    expect(name(request, signedOf(request, 3601))).toBeNull();
+    expect(name(request, signedOf(request, 3631))).toBeNull();
     expect(name(request, signedOf(request, 7200))).toBeNull();
     expect(name(request, signedOf(request, 60))).toEqual(NAMED);
   });
@@ -209,7 +209,7 @@ describe('no key is named without its policy', () => {
     expect(one(policy)).toEqual({ displayName: 'TinyCloud One', returnTo: 'TinyCloud One' });
     expect(one(narrow)).toBeNull();
     expect(one(policy, { ...request, grantLifetimeSeconds: 3601 })).toBeNull();
-    expect(one(policy, request, signedOf(request, 3601))).toBeNull();
+    expect(one(policy, request, signedOf(request, 3631))).toBeNull();
     expect(one(policy, request, null)).toBeNull();
     expect(one(policy, request, signedOf({ ...request, permissions: [{ ...request.permissions[0]!, path: 'vault/secrets/?x' }] }))).toBeNull();
   });
@@ -251,10 +251,22 @@ describe('the signed lifetime is the time left until the message expires', () =>
     expect(at(3_599_000)).toEqual(NAMED);
   });
 
-  test('more than an hour left is not named, by a fraction of a second too', () => {
-    expect(at(-500)).toBeNull();
-    expect(at(-1000)).toBeNull();
+  // A page whose clock runs behind the preparing server reads an exact-maximum message as a little longer than the
+  // maximum, so up to 30 seconds over is named and anything longer is not.
+  test('up to 30 seconds over the maximum is named, and 31 seconds over is not', () => {
+    expect(at(-500)).toEqual(NAMED);
+    expect(at(-1000)).toEqual(NAMED);
+    expect(at(-29_500)).toEqual(NAMED);
+    expect(at(-30_000)).toEqual(NAMED);
+    expect(at(-30_001)).toBeNull();
+    expect(at(-31_000)).toBeNull();
     expect(at(-3_600_000)).toBeNull();
+  });
+
+  test('a message prepared for the maximum plus 30 seconds is named, and plus 31 seconds is not', () => {
+    const over = (seconds: number) => name(request, signedScopeOfMessage(preparedMessage(request.permissions, seconds), SIGNER));
+    expect(over(3630)).toEqual(NAMED);
+    expect(over(3631)).toBeNull();
   });
 
   test('a message that has expired is not named', () => {
