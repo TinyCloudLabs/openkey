@@ -255,6 +255,17 @@ describe('a segment pattern is a bounded literal-and-class form', () => {
     }
   });
 
+  // A range across types admits symbols: [0-z] covers : ; < = > ? @ [ \ ] ^ ` and [9-A] covers : ; < = > ? @.
+  test('a class range stays inside one type: cross-type ranges that admit ? : @ \\ are refused', () => {
+    for (const bad of ['^[B-Z][0-z]$', '^Q[0-z]$', '^B[Z-a]$', '^Q[9-A]$', '^[A-z]+$', '^[0-Z]$', '^[a-Z]$', '^[Z-A]$', '^[A-9]$']) {
+      expect(valid(bad), bad).toBe(false);
+      expect(isRequesterScopePolicy({ ...policy, rules: [{ ...enc, keyNamePattern: bad }] }), bad).toBe(false);
+    }
+    for (const good of ['^[B-Z][0-9]$', '^[a-f][A-F]$', '^[A-Za-z0-9_]+$', '^[B-Zb-z2-9_-]$']) {
+      expect(valid(good), good).toBe(true);
+    }
+  });
+
   test('bounded forms are valid, including both patterns One uses', () => {
     for (const good of ['^[A-Z][A-Z0-9_]*$', '^(?!scoped$)[a-z0-9][a-z0-9_-]*$', '^[A-Z]{2}$', '^[A-Z]{2,8}$', '^[A-Z]{2,}$', '^[a-z0-9_-]+$', '^A[0-9]*$', '^abc$']) {
       expect(valid(good), good).toBe(true);
