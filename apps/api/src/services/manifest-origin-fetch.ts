@@ -569,19 +569,30 @@ function isPrivateIPv4(address: string): boolean {
 
 function isPrivateIPv6(address: string): boolean {
   // Normalize equivalent IPv6 spellings before applying prefix checks.
-  let lower: string;
+  let normalized: string;
   try {
-    lower = new URL(`https://[${address}]`).hostname.slice(1, -1);
+    normalized = new URL(`https://[${address}]`).hostname.slice(1, -1);
   } catch {
     return true;
   }
-  if (lower === "::" || lower === "::1") return true;
-  // fe80::/10 link-local, fc00::/7 unique-local, ::ffff:/96 IPv4-mapped,
-  // 64:ff9b::/96 well-known translation prefix, ff00::/8 multicast.
-  if (lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) return true;
-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
-  if (lower.startsWith("::ffff:")) return true;
-  if (lower.startsWith("64:ff9b:")) return true;
-  if (lower.startsWith("ff")) return true;
+  // The serializer emits at most one "::" and no dotted quad.
+  const halves = normalized.split("::");
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const missing = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  const groups = [...head, ...Array<string>(Math.max(missing, 0)).fill("0"), ...tail].map((g) => parseInt(g, 16));
+  if (halves.length > 2 || groups.length !== 8 || groups.some((g) => !Number.isInteger(g))) return true;
+  const first = groups[0]!;
+  const second = groups[1]!;
+  // Only global unicast 2000::/3 is public; every other prefix fails closed. That
+  // covers ::/96 and ::1, ::ffff:0:0/96 IPv4-mapped, 64:ff9b::/96 and 64:ff9b:1::/48
+  // translation, 100::/64 discard, fc00::/7 unique-local, fe80::/10 link-local,
+  // fec0::/10 site-local and ff00::/8 multicast.
+  if ((first & 0xe000) !== 0x2000) return true;
+  // 2002::/16 6to4 and 3fff::/20 documentation.
+  if (first === 0x2002 || (first === 0x3fff && second <= 0x0fff)) return true;
+  // 2001::/23 IETF protocol assignments (includes 2001::/32 Teredo) is refused whole
+  // because most of it is not globally reachable; 2001:db8::/32 documentation.
+  if (first === 0x2001 && (second < 0x0200 || second === 0x0db8)) return true;
   return false;
 }

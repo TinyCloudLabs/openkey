@@ -50,7 +50,7 @@ export async function pinnedHttpsGet(url: URL, ip: string, maxBytes: number): Pr
     const response = await client.request({
       path: url.pathname + url.search,
       method: 'GET',
-      headers: { Host: url.hostname, Accept: 'application/json', 'Accept-Encoding': 'identity' },
+      headers: { Host: url.host, Accept: 'application/json', 'Accept-Encoding': 'identity' },
       idempotent: false,
       signal,
     });
