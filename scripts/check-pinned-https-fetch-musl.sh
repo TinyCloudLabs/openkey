@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Run from any directory: bash scripts/check-pinned-https-fetch-musl.sh [image tag or sha256:digest]
-# Runs the pinned HTTPS gate on the Bun inside oven/bun:<tag>-alpine (default 1.2, the Dockerfile base) without a
-# container daemon: the image layers come from the registry API and run in a chroot inside user/net/mount namespaces.
+# Runs the pinned HTTPS gate on the Bun inside the API image base without a container daemon: the image layers come
+# from the registry API and run in a chroot inside user/net/mount namespaces. The default is the oven/bun digest
+# in the Dockerfile base line; an argument overrides it with a tag (1.2, 1.2.23, 1.2-alpine) or a digest.
 # A digest may name the image index or the linux/amd64 manifest. Prints both digests and `bun --revision`.
 # Requires Linux user namespaces, curl, jq, tar, iproute2 and OpenSSL; downloads about 45 MB.
 set -euo pipefail
-ref=${1:-1.2}
-case $ref in sha256:*) ;; *-alpine) ;; *) ref=$ref-alpine ;; esac
 repo=$(cd "$(dirname "$0")/.." && pwd)
+ref=${1:-$(grep -m1 -oE '^FROM oven/bun:[^ @]+@sha256:[0-9a-f]{64}' "$repo/Dockerfile" | sed 's/.*@//')}
+[[ -n $ref ]] || { echo "no oven/bun digest in $repo/Dockerfile and no argument" >&2; exit 1; }
+case $ref in sha256:*) ;; *-alpine) ;; *) ref=$ref-alpine ;; esac
 registry=https://registry-1.docker.io/v2/oven/bun
 work=$(mktemp -d)
 trap 'chmod -R u+w -- "$work" 2>/dev/null; rm -rf -- "$work"' EXIT
