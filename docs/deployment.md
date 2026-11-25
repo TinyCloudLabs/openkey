@@ -797,6 +797,7 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
 
 3. Set environment variables:
    - `VITE_API_URL`: URL of your deployed API (e.g., `https://api.openkey.so`)
+   - For a production upload, build with `VITE_API_URL=https://api.openkey.so` and run `bun run audit:web:prod` before uploading.
    - `VITE_CONSOLE_ORIGIN=https://console.openkey.so`
    - Optional, for deployments outside production (staging MCP, extra
      TinyCloud nodes): `VITE_DELEGATE_CALLBACK_URLS` (comma-separated app
