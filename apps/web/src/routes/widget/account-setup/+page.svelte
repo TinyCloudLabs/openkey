@@ -319,8 +319,8 @@
         </p>
       {/if}
       <p class="mt-3 text-sm text-surface-700">
-        This creates your TinyCloud spaces and records where your data lives. After setup, apps you approve can store
-        data in your TinyCloud account.
+        This creates your TinyCloud spaces and publishes a public record of where your data lives. After setup, apps you
+        approve can store data in your TinyCloud account.
       </p>
       <p class="mt-3 text-sm text-surface-700">
         You set up your account once, for all your apps. Each app asks for your approval before it gets access.
@@ -390,7 +390,7 @@
       <h1 class="text-lg font-semibold text-surface-900">Setting up your account</h1>
       <ol class="mt-4 space-y-2 text-sm text-surface-700">
         <li>Create your spaces</li>
-        <li>Record where your data lives</li>
+        <li>Publish a public record of where your data lives</li>
       </ol>
     {:else if phase === 'failed' && failure}
       <h1 class="text-lg font-semibold text-surface-900">Setup didn't finish</h1>
