@@ -2,7 +2,7 @@
 // The row has no authority before this column: such a row is not first-party and is never retried.
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { privateKeyToAccount } from 'viem/accounts';
 import { createFakeBootstrapStore, type FakeBootstrapStore } from './fake-bootstrap-state';
 import {
@@ -92,7 +92,11 @@ const sweep = () => sweepTinyCloudBootstrapOnce({ prisma: store.prisma, now: NOW
 
 describe('the stored authority set', () => {
   test('the SQL check constraint lists exactly the values the code can write', () => {
-    const sql = readFileSync(new URL('../../../../packages/db/prisma/migrations/20261124_0002_tinycloud_bootstrap_authority/migration.sql', import.meta.url), 'utf8');
+    // The newest migration that sets the CHECK: each widening replaces the constraint in a migration of its own.
+    const migrations = new URL('../../../../packages/db/prisma/migrations/', import.meta.url);
+    const sql = readdirSync(migrations).sort().reverse()
+      .map((name) => { try { return readFileSync(new URL(`${name}/migration.sql`, migrations), 'utf8'); } catch { return ''; } })
+      .find((text) => text.includes('ADD CONSTRAINT "tinycloud_bootstrap_state_authority_check"')) ?? '';
     const list = /"authority" IN \(([^)]*)\)/.exec(sql)?.[1] ?? '';
     const inSql = [...list.matchAll(/'([^']+)'/g)].map((match) => match[1]);
     expect(inSql.sort()).toEqual([...STORED_PROVISION_AUTHORITIES].sort());
@@ -121,7 +125,7 @@ describe('the stored authority set', () => {
   });
 
   test('the retry reads the first-party values only', () => {
-    expect(retryableStoredAuthorities()).toEqual(['first-party-origin', 'first-party-native-client', 'approval-request', 'device-approval', 'delegate-link-local']);
+    expect(retryableStoredAuthorities()).toEqual(['first-party-origin', 'first-party-native-client', 'approval-request', 'device-approval', 'delegate-link-local', 'account-setup']);
   });
 });
 
