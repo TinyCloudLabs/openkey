@@ -2103,6 +2103,8 @@ export interface SummaryStatement {
   detail?: string;
   /** The named secret when the grants behind this row share one exact key path. */
   secret?: StatementEntry["secret"];
+  /** Show the scope in the read sentence when another row shares the name but not the scope. */
+  showSecretScope?: true;
 }
 
 const SUMMARY_SEVERITY_RANK: Record<PermissionSeverity, number> = { standard: 0, attention: 1, sensitive: 2 };
@@ -2141,8 +2143,8 @@ function oneNamedSecretRows(name: string): SummaryStatement[] {
 
 /** The words before the secret's name in a read row. */
 const SECRET_READ_LEAD = "Read the secret ";
-/** The words between the secret's name and its scope in the row of a scoped secret. */
-const SECRET_SCOPE_JOIN = " in scope ";
+/** The words between an ambiguous secret name and its scope. */
+const SECRET_SCOPE_JOIN = " from ";
 
 function secretReadText(name: string, scope: string | null = null): string {
   return secretReadParts(name, scope).map((part) => part.text).join("");
@@ -2150,7 +2152,7 @@ function secretReadText(name: string, scope: string | null = null): string {
 
 /**
  * The row of a read of one secret as runs of text; `named` marks the runs the face sets as the secret's name (the
- * name, and the scope of a scoped secret). The runs join to the row's `primaryText`.
+ * name and, when displayed, its scope). The runs join to the row's `primaryText`.
  */
 export function secretReadParts(name: string, scope: string | null): Array<{ text: string; named: boolean }> {
   return [
@@ -2210,7 +2212,6 @@ function secretKeyRows(
   readsAlone: boolean,
 ): StatementEntry[] | null {
   const keyPath = ownSecretKeyPath(grant);
-  const scope = keyPath === null ? null : secretScopeOfKeyPath(keyPath);
   if (keyPath !== null) {
     const name = names.get(keyPath) ?? secretKeyDisplayName(keyPath);
     const verbs = grant.actions.map((action) => namedKeyVerbOf(action.ability));
@@ -2220,7 +2221,7 @@ function secretKeyRows(
     // sentence that it can't read secrets would be untrue of it.
     const decrypts = verbs.includes("decrypt");
     return verbs.filter((verb) => verb === "decrypt" || !decrypts).map((verb) => verb === "decrypt"
-      ? { primaryText: secretReadText(name, scope), service: grant.service, resource, severity: "sensitive" as const, secret: secretRef(name, keyPath) }
+      ? { primaryText: secretReadText(name), service: grant.service, resource, severity: "sensitive" as const, secret: secretRef(name, keyPath) }
       : {
           primaryText: `Create a key for the new secret ${name}.`,
           detail: SECRET_KEY_CREATE_DETAIL,
@@ -2233,7 +2234,7 @@ function secretKeyRows(
   if (secret === null || !(decryptKeys.has(secret.keyPath) || readsAlone)) return null;
   if (grant.actions.length !== 1 || !KV_GET_ABILITIES.has(grant.actions[0]!.ability)) return null;
   return [{
-    primaryText: secretReadText(secret.name, secretScopeOfKeyPath(secret.keyPath)),
+    primaryText: secretReadText(secret.name),
     service: grant.service,
     resource: resourceOf(grant),
     severity: "sensitive",
@@ -2311,7 +2312,22 @@ export function buildSummaryStatements(grants: readonly CapabilityGrant[]): Summ
       }
     }
   }
-  return [...grouped.values()].sort((left, right) => Number(left.unmapped) - Number(right.unmapped));
+  const summary = [...grouped.values()];
+  // Compare the secret rows after grouping, so two grants for the same key don't require a scope.
+  const firstScopeByName = new Map<string, string | undefined>();
+  const ambiguousNames = new Set<string>();
+  for (const { secret } of summary) {
+    if (!secret) continue;
+    if (!firstScopeByName.has(secret.name)) firstScopeByName.set(secret.name, secret.scope);
+    else if (firstScopeByName.get(secret.name) !== secret.scope) ambiguousNames.add(secret.name);
+  }
+  for (const row of summary) {
+    const { secret } = row;
+    if (secret?.scope === undefined || !ambiguousNames.has(secret.name)) continue;
+    row.showSecretScope = true;
+    row.primaryText = secretReadText(secret.name, secret.scope);
+  }
+  return summary.sort((left, right) => Number(left.unmapped) - Number(right.unmapped));
 }
 
 /** How many summary rows carry the Sensitive mark. */

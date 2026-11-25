@@ -341,7 +341,7 @@
   // and the length toggle under it. The names of several secrets stay under Advanced details.
   const secretBlock = $derived.by(() => {
     if (!onExpiryChange || model.protocol !== "tinycloud-siwe-recap") return null;
-    // A scoped secret's row would show its bare name without the scope, so a request that has one keeps its own rows.
+    // Keep scoped secret rows separate so they can disambiguate shared names.
     if (selectedGrants.some(isScopedSecretGrant)) return null;
     const rows = plainSummaryStatements;
     const oneName = oneNamedSecret(selectedGrants);
@@ -1040,10 +1040,10 @@
     </p>
   {/if}
 
-  {#snippet statementText(text: string, codeSpans: boolean, name: string | null = null, secret: SummaryStatement["secret"] = undefined)}
+  {#snippet statementText(text: string, codeSpans: boolean, name: string | null = null, secret: SummaryStatement["secret"] = undefined, showSecretScope = false)}
     {@const parts = splitAroundName(text, name)}
     {#if secret?.scope !== undefined}
-      {#each secretReadParts(secret.name, secret.scope) as part}{#if part.named}<span class="secret-name">{part.text}</span>{:else}{part.text}{/if}{/each}
+      {#each secretReadParts(secret.name, showSecretScope ? secret.scope : null) as part}{#if part.named}<span class="secret-name">{part.text}</span>{:else}{part.text}{/if}{/each}
     {:else if parts}
       {parts.before}<span class="secret-name">{parts.run}</span>{parts.after}
     {:else if codeSpans}
@@ -1062,7 +1062,7 @@
   {#snippet summaryRow(statement: SummaryStatement, active = true)}
     <li class="summary-statement" data-severity={active ? statement.severity : undefined}>
       <span class="statement-line">
-        <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans, statement.secret?.name ?? (statement.key === NAMED_SECRET_DECRYPT_ROW ? oneNamedSecret(selectedGrants) : null), statement.secret)}</span>
+        <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans, statement.secret?.name ?? (statement.key === NAMED_SECRET_DECRYPT_ROW ? oneNamedSecret(selectedGrants) : null), statement.secret, statement.showSecretScope)}</span>
         {#if active && statement.severity === "sensitive"}
           <span class="summary-sensitive-pill">Sensitive</span>
         {/if}
