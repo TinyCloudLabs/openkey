@@ -9,7 +9,8 @@ import { PGlite } from '@electric-sql/pglite';
 import { PrismaPGlite } from 'pglite-prisma-adapter';
 import { PrismaClient } from '@openkey/db';
 import { signerFromJwk } from '@tinycloud/share-envelope/links';
-import { mockModules } from './mock-module';
+import { createMiddleware } from 'hono/factory';
+import { mockModules, replaceModules } from './mock-module';
 import type { approvalRequestRouter } from '../routes/approval-requests';
 
 const MIGRATIONS = ['20261028_0001_approval_request_results', '20261103_0002_approval_request_denied', '20261109_0001_approval_request_approving', '20261113_0001_approval_request_renewal']
@@ -57,6 +58,12 @@ let database: PGlite;
 let client: PrismaClient;
 let route: typeof approvalRequestRouter;
 
+// No route under test reads the session; the real middleware would start the auth stack.
+replaceModules({
+  '../middleware/session': () => ({
+    requireSession: createMiddleware(async (_c, next) => { await next(); }),
+  }),
+});
 // The links service is the network; it answers with the request registered for the id. parseLink and
 // parseApprovalRequest stay real.
 await mockModules({
