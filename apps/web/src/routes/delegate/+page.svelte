@@ -49,6 +49,7 @@
   } from '$lib/delegate-link-policy';
   import { signedScopeOfMessage, type RequesterScopeRequest } from '$lib/requester-scope-policy';
   import { withLiveRequester } from '$lib/live-requester-model';
+  import { requesterRefusalLine } from '$lib/requester-refusal-line';
   import { preparedMatchesSelection, reviewSelectionToActionKeys, selectedServerActionIds } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
   import { activeKeys, autoSelectKey } from '$lib/delegate-key-selection';
@@ -629,6 +630,11 @@
   const requester = $derived(approvalRequestMode
     ? verifiedApprovalRequester(approvalIssuer, TINYCLOUD_ONE_VERIFIED_REQUESTERS, VERIFIED_REQUESTERS, approvalRequestScope, signedScope)
     : delegateRequester(approvedCallback));
+  // When a listed signer is shown as not verified because its request or prepared message is outside its policy, the
+  // one line saying why; any other unverified link has none.
+  const requesterRefusalText = $derived(approvalRequestMode && !requester
+    ? requesterRefusalLine(approvalIssuer, TINYCLOUD_ONE_VERIFIED_REQUESTERS, VERIFIED_REQUESTERS, approvalRequestScope, signedScope)
+    : null);
   // The names below read the live requester, not the one the review model was built with: the model is kept while
   // the owner narrows the request, and a name frozen into it would stay after a later message stops being named.
   const expiredRequesterName = $derived(reviewModel ? requester?.displayName?.trim() || '' : '');
@@ -2228,7 +2234,8 @@
               onEditingStateChange={(editing) => { reviewEditing = editing; }}
               showSigner={keys.length > 1}
               oneSecret={oneSecretWords}
-              unverifiedRequester={approvalRequestMode && !requester ? UNVERIFIED_REQUESTER : null}
+              unverifiedRequester={approvalRequestMode && !requester ? { name: UNVERIFIED_REQUESTER.name, line: UNVERIFIED_REQUESTER.line, reason: requesterRefusalText } : null}
+              recipientKey={approvalRequestMode && did ? did : null}
               signInApp={requester?.displayName ?? null}
               transport={{
                 approving: delegating || updatingPermissions,
