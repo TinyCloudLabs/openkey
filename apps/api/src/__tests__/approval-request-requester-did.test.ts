@@ -45,10 +45,11 @@ const legacy = { ...common, issuer: requester.did, targetDid: requester.did, tar
 // The requester signs; the grant audience is a different key.
 const named = { ...common, issuer: requester.did, requesterDid: requester.did, targetDid: target.did, targetPublicJwk: target.jwk };
 
-const served = new Map<string, { value: unknown; headerIssuer: string }>();
+const served = new Map<string, { value: unknown; headerIssuer: string; expiresAt: string }>();
 const serve = (n: number, value: unknown, headerIssuer = requester.did) => {
   const id = idFor(n);
-  served.set(id, { value, headerIssuer });
+  // The link's expiry is part of the stored binding, so it stays fixed across loads of one link.
+  served.set(id, { value, headerIssuer, expiresAt: new Date(Date.now() + 3600_000).toISOString() });
   return id;
 };
 
@@ -65,7 +66,7 @@ await mockModules({
       const entry = served.get(new URL(link).pathname.split('/').at(-1)!)!;
       return {
         type: 'openkey-approval-request',
-        header: { bodyCid: BODY_CID, issuer: entry.headerIssuer, expiresAt: new Date(Date.now() + 3600_000).toISOString() },
+        header: { bodyCid: BODY_CID, issuer: entry.headerIssuer, expiresAt: entry.expiresAt },
         value: entry.value,
       };
     },
