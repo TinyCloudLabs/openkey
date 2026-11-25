@@ -15,6 +15,25 @@ const PRIMARY_SPACE = 'default';
 export const HOST_SIGNING_FIRST_PARTY_ONLY = 'host_signing_first_party_only';
 export const HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE = "This app can't create your first TinyCloud space. Sign in once at tinycloud.one to set up your account, then sign in here.";
 
+export const HOST_SIGNING_REFUSAL_BODY = { error: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE, code: HOST_SIGNING_FIRST_PARTY_ONLY } as const;
+
+/**
+ * The refusal body of a host-signing refusal the sign widget shows. `accountSetup: 'required'` when the managed key's
+ * account is not set up on TinyCloud hosting (no complete setup row on the trusted node for chain 1): the widget then
+ * offers OpenKey's own account setup page. The code is `host_signing_first_party_only` either way.
+ */
+export async function hostSigningRefusalBody(prisma: PrismaLike, key: { id: string; keyType: string }) {
+  if (key.keyType !== 'MANAGED') return HOST_SIGNING_REFUSAL_BODY;
+  try {
+    if (await isTinyCloudBootstrapComplete(prisma, { keyId: key.id, chainId: 1, host: trustedTinyCloudBootstrapHost() })) {
+      return HOST_SIGNING_REFUSAL_BODY;
+    }
+    return { ...HOST_SIGNING_REFUSAL_BODY, accountSetup: 'required' as const };
+  } catch {
+    return HOST_SIGNING_REFUSAL_BODY;
+  }
+}
+
 /**
  * Must the key refuse to sign this message? The one decision every signing route and branch uses (`/api/keys/:id/sign`,
  * `/api/delegate/sign` for a cookie session, an OAuth session-scope token and an OAuth manage-key token).
