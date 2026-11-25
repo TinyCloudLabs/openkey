@@ -8,10 +8,10 @@ import type { TinyCloudBootstrapSweepClaim } from './tinycloud-bootstrap';
  */
 
 /**
- * Exact web origins. The origins that may ask for a registry record signature (reused, not copied), TinyChat web and
- * the TinyCloud account app. The registry record list in capability-review is not changed by the last two.
+ * Exact web origins. The origins that may ask for a registry record signature (reused, not copied) and TinyChat web.
+ * The registry record list in capability-review is not changed by the second one.
  */
-export const FIRST_PARTY_PROVISION_ORIGINS: readonly string[] = [...REGISTRY_RECORD_SIGN_ORIGINS, 'https://tinycloud.chat', 'https://account.tinycloud.xyz'];
+export const FIRST_PARTY_PROVISION_ORIGINS: readonly string[] = [...REGISTRY_RECORD_SIGN_ORIGINS, 'https://tinycloud.chat'];
 
 /** OAuth clients of the signer route (`/api/delegate/sign`), by client id. Empty. `skipConsent` is not a marker: an organization can set it on its own client. */
 export const FIRST_PARTY_PROVISION_OAUTH_CLIENT_IDS: readonly string[] = [];
