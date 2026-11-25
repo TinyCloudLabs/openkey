@@ -1,7 +1,7 @@
 // The sign widget's prepare step refuses a site that is not TinyCloud's own a message that hosts the owner's primary
-// space (`host_signing_first_party_only`). When the owner's account is not set up on TinyCloud hosting, the refusal
-// says so (`accountSetup: 'required'`), so the widget can offer OpenKey's own account setup page; the code is the
-// same either way.
+// space (`host_signing_first_party_only`) while the owner's account is not set up on TinyCloud hosting. The refusal
+// says so (`accountSetup: 'required'`), so the widget can offer OpenKey's own account setup page. Once the account is
+// set up (a complete stored row), the message is not refused.
 
 import { afterAll, beforeAll, beforeEach, expect, mock, test } from 'bun:test';
 import { createMiddleware } from 'hono/factory';
@@ -80,7 +80,7 @@ async function prepare(): Promise<{ status: number; body: Record<string, unknown
   return { status: response.status, body: await response.json() as Record<string, unknown> };
 }
 
-test('the host-signing refusal says setup is required only while the account is not set up', async () => {
+test('the host-signing refusal applies only while the account is not set up, and says setup is required', async () => {
   for (const state of [null, { status: 'failed' }, { status: 'in_progress' }]) {
     row = state;
     const reply = await prepare();
@@ -94,7 +94,6 @@ test('the host-signing refusal says setup is required only while the account is 
 
   row = { status: 'complete' };
   const reply = await prepare();
-  expect(reply.status).toBe(403);
-  expect(reply.body.code).toBe('host_signing_first_party_only');
+  expect(reply.status).toBe(200);
   expect(reply.body).not.toHaveProperty('accountSetup');
 });
