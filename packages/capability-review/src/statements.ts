@@ -44,7 +44,7 @@ import { ENCRYPTION_URN_PREFIX, parseEncryptionResource } from "./encryption-res
 import { isAppsKeyResource, parseKeyResource } from "./key-resource.js";
 import { isMetadataOnlyAccess } from "./action-semantics.js";
 import { feedGrantStatement } from "./feed-grant.js";
-import { coversManySecrets, exactSecretKeyPath, secretKeyDisplayName, secretOfKvPath } from "./secret-keys.js";
+import { coversManySecrets, exactSecretKeyPath, secretKeyDisplayName, secretOfKvPath, secretScopeOfKeyPath } from "./secret-keys.js";
 import { KV_VERBS, SECRETS_KNOWN_VERBS, SQL_DATABASE_VERBS } from "./known-verbs.js";
 import {
   CANONICAL_APP_SCOPE_SECRET_ABILITIES,
@@ -92,7 +92,7 @@ export interface StatementEntry {
   /** A second sentence shown in smaller type under the row, where one line cannot hold the whole statement. */
   detail?: string;
   /** The name and exact key path behind a named secret read; `kvPath` is its value's path when its key is not requested. */
-  secret?: { name: string; keyPath: string; kvPath?: string };
+  secret?: { name: string; keyPath: string; kvPath?: string; scope?: string };
 }
 
 /** Family/action-aware structural verb classification. */
@@ -2139,8 +2139,36 @@ function oneNamedSecretRows(name: string): SummaryStatement[] {
   ];
 }
 
-function secretReadText(name: string): string {
-  return `Read the secret ${name}`;
+/** The words before the secret's name in a read row. */
+const SECRET_READ_LEAD = "Read the secret ";
+/** The words between the secret's name and its scope in the row of a scoped secret. */
+const SECRET_SCOPE_JOIN = " in scope ";
+
+function secretReadText(name: string, scope: string | null = null): string {
+  return secretReadParts(name, scope).map((part) => part.text).join("");
+}
+
+/**
+ * The row of a read of one secret as runs of text; `named` marks the runs the face sets as the secret's name (the
+ * name, and the scope of a scoped secret). The runs join to the row's `primaryText`.
+ */
+export function secretReadParts(name: string, scope: string | null): Array<{ text: string; named: boolean }> {
+  return [
+    { text: SECRET_READ_LEAD, named: false },
+    { text: name, named: true },
+    ...(scope === null ? [] : [{ text: SECRET_SCOPE_JOIN, named: false }, { text: scope, named: true }]),
+  ];
+}
+
+/** The secret behind a row: its name, key path and, for a scoped secret, its scope (derived from the key path). */
+function secretRef(name: string, keyPath: string, kvPath?: string): NonNullable<StatementEntry["secret"]> {
+  const scope = secretScopeOfKeyPath(keyPath);
+  return { name, keyPath, ...(scope !== null ? { scope } : {}), ...(kvPath !== undefined ? { kvPath } : {}) };
+}
+
+/** How a secret is listed by name: `SCOPE/NAME` for a scoped secret, `NAME` for a global one. */
+export function secretListLabel(secret: { name: string; scope?: string }): string {
+  return secret.scope === undefined ? secret.name : `${secret.scope}/${secret.name}`;
 }
 
 // The note is two sentences; the second goes under the row so the row stays one line on a phone.
@@ -2182,6 +2210,7 @@ function secretKeyRows(
   readsAlone: boolean,
 ): StatementEntry[] | null {
   const keyPath = ownSecretKeyPath(grant);
+  const scope = keyPath === null ? null : secretScopeOfKeyPath(keyPath);
   if (keyPath !== null) {
     const name = names.get(keyPath) ?? secretKeyDisplayName(keyPath);
     const verbs = grant.actions.map((action) => namedKeyVerbOf(action.ability));
@@ -2191,7 +2220,7 @@ function secretKeyRows(
     // sentence that it can't read secrets would be untrue of it.
     const decrypts = verbs.includes("decrypt");
     return verbs.filter((verb) => verb === "decrypt" || !decrypts).map((verb) => verb === "decrypt"
-      ? { primaryText: secretReadText(name), service: grant.service, resource, severity: "sensitive" as const, secret: { name, keyPath } }
+      ? { primaryText: secretReadText(name, scope), service: grant.service, resource, severity: "sensitive" as const, secret: secretRef(name, keyPath) }
       : {
           primaryText: `Create a key for the new secret ${name}.`,
           detail: SECRET_KEY_CREATE_DETAIL,
@@ -2204,11 +2233,11 @@ function secretKeyRows(
   if (secret === null || !(decryptKeys.has(secret.keyPath) || readsAlone)) return null;
   if (grant.actions.length !== 1 || !KV_GET_ABILITIES.has(grant.actions[0]!.ability)) return null;
   return [{
-    primaryText: secretReadText(secret.name),
+    primaryText: secretReadText(secret.name, secretScopeOfKeyPath(secret.keyPath)),
     service: grant.service,
     resource: resourceOf(grant),
     severity: "sensitive",
-    secret: decryptKeys.has(secret.keyPath) ? secret : { ...secret, kvPath: grant.path },
+    secret: secretRef(secret.name, secret.keyPath, decryptKeys.has(secret.keyPath) ? undefined : grant.path),
   }];
 }
 
@@ -2259,7 +2288,10 @@ export function buildSummaryStatements(grants: readonly CapabilityGrant[]): Summ
   for (const { grant, statements } of rows) {
     for (const statement of statements) {
       const primaryText = statement.primaryText === READ_SECRETS_ROW && namedRead !== null ? secretReadText(namedRead) : statement.primaryText;
-      const existing = grouped.get(primaryText);
+      // A scoped secret's row groups by its full key path, so the same name in two scopes stays two rows; every
+      // other row groups by its sentence.
+      const groupKey = statement.secret?.scope !== undefined ? `${primaryText}\0${statement.secret.keyPath}` : primaryText;
+      const existing = grouped.get(groupKey);
       const rowSeverity = statement.severity ?? grant.severity;
       if (existing) {
         if (existing.secret?.keyPath !== statement.secret?.keyPath) delete existing.secret;
@@ -2267,8 +2299,8 @@ export function buildSummaryStatements(grants: readonly CapabilityGrant[]): Summ
           existing.severity = rowSeverity;
         }
       } else {
-        grouped.set(primaryText, {
-          key: primaryText,
+        grouped.set(groupKey, {
+          key: groupKey,
           primaryText,
           severity: rowSeverity,
           unmapped: statement.literalEscaped === true,
