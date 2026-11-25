@@ -26,7 +26,9 @@ esac
 token=$CLOUDFLARE_API_TOKEN
 account=$CLOUDFLARE_ACCOUNT_ID
 unset CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID
-safe_env=("PATH=$PATH" "HOME=$HOME")
+private_home=$(mktemp -d "${TMPDIR:-/tmp}/openkey-web-upload.XXXXXX")
+trap 'rm -rf -- "$private_home"' EXIT
+safe_env=("PATH=$PATH" "HOME=$private_home")
 
 cd "$(dirname "$0")/../.."
 [[ "$(git rev-parse HEAD)" == "$sha" ]] || die 'HEAD does not match the requested commit'
@@ -34,7 +36,8 @@ cd "$(dirname "$0")/../.."
 
 base="https://api.cloudflare.com/client/v4/accounts/$account/pages/projects/openkey"
 cf_get() {
-  env -i "${safe_env[@]}" curl --fail --silent --show-error -H "Authorization: Bearer $token" "$1"
+  printf 'Authorization: Bearer %s\n' "$token" |
+    env -i "${safe_env[@]}" curl --fail --silent --show-error -H @- "$1"
 }
 
 project=$(cf_get "$base")

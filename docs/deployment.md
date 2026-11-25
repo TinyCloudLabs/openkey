@@ -838,6 +838,8 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
    readable `VITE_*` variables into a clean build environment, runs
    `bun install --frozen-lockfile` and the fixed web build, checks the API host
    in the artifact, runs `bun run audit:web:prod`, and only then uploads.
+   Install, build and audit use a temporary home removed on exit; API requests
+   send the Cloudflare token through curl's stdin header rather than argv.
    Preview checks `/auth/register` and `/auth/login` for HTTP 200. Production prints the
    previous canonical deployment ID before upload; roll back with
    `POST /accounts/<account-id>/pages/projects/openkey/deployments/<id>/rollback`.
