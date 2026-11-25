@@ -25,6 +25,7 @@ const exported = generateKeyPairSync('ed25519').privateKey.export({ format: 'jwk
 const publicMembers = { kty: 'OKP', crv: 'Ed25519', x: exported.x };
 // What a WebCrypto export of the session's private key carries.
 const sentJwk = { ...publicMembers, d: exported.d, ext: true, key_ops: ['sign'] };
+const publicExport = { ...publicMembers, ext: true, key_ops: ['verify'] };
 
 const keyRecord = {
   id: 'key_1',
@@ -124,7 +125,7 @@ function widgetSiwe(): string {
 
 // Accepted keys and the public members kept from each.
 const accepted = [
-  ['private members', sentJwk, publicMembers],
+  ['WebCrypto public export members', publicExport, publicMembers],
   ['private members nested in an unknown member', { ...publicMembers, extra: { d: exported.d, list: [{ d: exported.d }] } }, publicMembers],
   ['extra junk and a string kid', { ...publicMembers, kid: 'session-1', use: 'sig', alg: 7, junk: [null, { k: 'x' }] }, { ...publicMembers, kid: 'session-1' }],
 ] as const;
@@ -173,7 +174,7 @@ describe('a malformed session JWK counts as missing', () => {
     ['an array', [sentJwk]],
     ['an object-valued kid', { ...publicMembers, kid: { d: exported.d } }],
     ['private members nested in a kept member', { ...publicMembers, x: { x: exported.x, d: exported.d } }],
-    ['an unknown kty', { kty: 'oct', k: exported.d }],
+    ['an unknown kty', { kty: 'oct', alg: 'HS256' }],
   ] as const;
   const missing = {
     '/': { error: 'keyId, jwk, and host are required' },
@@ -196,7 +197,7 @@ describe('a malformed session JWK counts as missing', () => {
 
 describe('an empty or false approvalRequestId', () => {
   test.each([null, false, ''])('%p is refused on managed POST / and never returns the key', async (approvalRequestId) => {
-    const res = await post('/', { keyId: keyRecord.id, jwk: sentJwk, host, approvalRequestId });
+    const res = await post('/', { keyId: keyRecord.id, jwk: publicExport, host, approvalRequestId });
     expect(res.status).toBe(400);
     expect(res.body).toEqual({ error: 'Approval requests require the consent preview context' });
     expect(res.text).not.toContain(exported.d);
@@ -205,7 +206,7 @@ describe('an empty or false approvalRequestId', () => {
   // "" is a string id, so /prepare looks it up in the approval store; null and
   // false are refused without one.
   test.each([null, false])('%p is refused on /prepare and never returns the key', async (approvalRequestId) => {
-    const prepared = await post('/prepare', { keyId: keyRecord.id, jwk: sentJwk, host, approvalRequestId });
+    const prepared = await post('/prepare', { keyId: keyRecord.id, jwk: publicExport, host, approvalRequestId });
     expect(prepared.status).toBe(410);
     expect(prepared.body.code).toBe('expired_request');
     expect(prepared.text).not.toContain(exported.d);
@@ -218,7 +219,7 @@ describe('an empty or false approvalRequestId', () => {
       prepared: ordinary.body.prepared,
       signature: await wallet.signMessage({ message: ordinary.body.prepared.siwe }),
       host,
-      jwk: sentJwk,
+      jwk: publicExport,
       approvalRequestId,
     });
     expect(completed.status).toBe(400);
@@ -228,7 +229,7 @@ describe('an empty or false approvalRequestId', () => {
 });
 
 describe('CLI prepared hand-off on /authorize-sign-prepare', () => {
-  test('refuses a different key or host, accepts the same key with d and stores it public-only, and refuses a repeat', async () => {
+  test('refuses a different key or host, accepts the same public key and stores only its public members, and refuses a repeat', async () => {
     const service = new PreparedHandoffService(new MemoryPreparedHandoffStore());
     setHandoffService(service);
     const siwe = widgetSiwe();
@@ -247,13 +248,13 @@ describe('CLI prepared hand-off on /authorize-sign-prepare', () => {
 
     const otherX = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x;
     expect((await prepare({ ...publicMembers, x: otherX })).status).toBe(403);
-    expect((await prepare(sentJwk, 'https://other-node.tinycloud.xyz')).status).toBe(403);
+    expect((await prepare(publicExport, 'https://other-node.tinycloud.xyz')).status).toBe(403);
 
-    const accepted = await prepare(sentJwk);
+    const accepted = await prepare(publicExport);
     expect(accepted.status, accepted.text).toBe(200);
     expect(storedJwk(accepted.body.authorizationContextToken)).toEqual(publicMembers);
 
-    expect((await prepare(sentJwk)).status).toBe(409);
+    expect((await prepare(publicExport)).status).toBe(409);
   });
 });
 

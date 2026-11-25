@@ -247,6 +247,8 @@ export function setPreparedHandoffServiceForTests(service: PreparedHandoffServic
 
 const prisma = createPrismaClient();
 const tee = createTeeClient();
+/** Refusal for a session JWK with private members; it never repeats the key. */
+const PRIVATE_JWK_REFUSED = { error: 'jwk must contain only public key members', code: 'private_jwk_refused' };
 
 type SpaceSetupPlan = 'setup' | 'auto-sign-off' | 'external-wallet';
 type BootstrapSpaceName = (typeof BOOTSTRAP_SPACE_NAMES)[number];
@@ -1681,7 +1683,11 @@ delegateRouter.post('/', async (c) => {
   }>(c);
   const privateMembers = hasPrivateJwkMember(body.jwk);
   logSessionJwk('/api/delegate', privateMembers);
-  if (privateMembers && !body.deviceTransactionId) countPrivateSessionJwk('/api/delegate');
+  if (privateMembers && !body.deviceTransactionId) {
+    countPrivateSessionJwk('/api/delegate');
+    // A device transaction's own check refuses these with its own error.
+    return c.json(PRIVATE_JWK_REFUSED, 400);
+  }
   // Only the session key's public members are used, stored, or returned; a
   // malformed key counts as missing. A request naming a device transaction
   // keeps that flow's exact check of the key as sent, and one naming an
@@ -2294,7 +2300,11 @@ delegateRouter.post('/prepare', async (c) => {
   }>(c);
   const privateMembers = hasPrivateJwkMember(body.jwk);
   logSessionJwk('/api/delegate/prepare', privateMembers);
-  if (privateMembers && !body.deviceTransactionId) countPrivateSessionJwk('/api/delegate/prepare');
+  if (privateMembers && !body.deviceTransactionId) {
+    countPrivateSessionJwk('/api/delegate/prepare');
+    // A device transaction's own check refuses these with its own error.
+    return c.json(PRIVATE_JWK_REFUSED, 400);
+  }
   // Only the session key's public members are used, stored, or returned; a
   // malformed key counts as missing. A request naming a device transaction
   // keeps that flow's exact check of the key as sent, and one naming an
@@ -2606,7 +2616,11 @@ delegateRouter.post('/complete', async (c) => {
   }>(c);
   const privateMembers = hasPrivateJwkMember(body.jwk);
   logSessionJwk('/api/delegate/complete', privateMembers);
-  if (privateMembers && !body.deviceTransactionId) countPrivateSessionJwk('/api/delegate/complete');
+  if (privateMembers && !body.deviceTransactionId) {
+    countPrivateSessionJwk('/api/delegate/complete');
+    // A device transaction's own check refuses these with its own error.
+    return c.json(PRIVATE_JWK_REFUSED, 400);
+  }
   // Only the session key's public members are used, stored, or returned; a
   // malformed key counts as missing. A request naming a device transaction
   // keeps that flow's exact check of the key as sent, and one naming an
@@ -3074,7 +3088,10 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
   }
   const privateMembers = hasPrivateJwkMember(body.jwk);
   logSessionJwk('/api/delegate/authorize-sign-prepare', privateMembers);
-  if (privateMembers) countPrivateSessionJwk('/api/delegate/authorize-sign-prepare');
+  if (privateMembers) {
+    countPrivateSessionJwk('/api/delegate/authorize-sign-prepare');
+    return c.json(PRIVATE_JWK_REFUSED, 400);
+  }
   // Only the session key's public members are used or stored; a malformed
   // key counts as missing.
   body.jwk = publicJwk(body.jwk) as DelegationJwk;
