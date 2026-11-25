@@ -148,6 +148,14 @@ export function log(level: LogLevel, event: EventName, errorCode?: string): void
   emit(level, event, { error_code: safeCode });
 }
 
+export function logManifestOriginBindFailed(reason: string): void {
+  // A placeholder error may carry a manifest-supplied field name.
+  const detail = reason.startsWith('{owner} placeholder is not allowed in ')
+    ? '{owner} placeholder is not allowed in this field'
+    : reason;
+  emit('warn', 'delegate_origin_bind_failed', { reason: detail });
+}
+
 /** TC-3554: the one-time re-seal at boot. Counts only; never ids, addresses, paths or keys. */
 export function logLegacyReseal(counts: { total: number; migrated: number; alreadyCurrent: number; quarantined: number }): void {
   emit('info', 'legacy_reseal_done', counts);
