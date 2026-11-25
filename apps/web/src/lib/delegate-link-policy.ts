@@ -1,4 +1,5 @@
 import { appDisplayName } from '@openkey/capability-review';
+import { checkRequesterScope, isRequesterScopePolicy, type RequesterScopePolicy, type RequesterScopeRequest } from './requester-scope-policy';
 
 /**
  * TC-547: what an ordinary `/delegate` link (one without a device
@@ -177,11 +178,12 @@ export const VERIFIED_REQUESTERS: readonly VerifiedRequesterEntry[] = [];
 export function isEd25519DidKey(entry: string): boolean {
   return /^did:key:z6Mk[1-9A-HJ-NP-Za-km-z]{44}$/.test(entry);
 }
-export type VerifiedRequesterEntry = { did: string; displayName: string; returnTo: string };
+/** `policy` bounds what the key may ask for; a request outside it gets no verified name. */
+export type VerifiedRequesterEntry = { did: string; displayName: string; returnTo: string; policy: RequesterScopePolicy };
 
-/** Only reviewed Ed25519 keys and plain, unambiguous names may be listed. */
+/** Only reviewed Ed25519 keys with a well-formed scope policy and plain, unambiguous names may be listed. */
 export function isVerifiedRequesterEntry(entry: VerifiedRequesterEntry): boolean {
-  if (!isEd25519DidKey(entry.did)) return false;
+  if (!isEd25519DidKey(entry.did) || !isRequesterScopePolicy(entry.policy)) return false;
   const name = appDisplayName(entry.displayName);
   if (name === null || name !== entry.displayName || appDisplayName(entry.returnTo) !== entry.returnTo) return false;
   const displayName = name.toLowerCase();
@@ -201,14 +203,21 @@ export function approvalRequester(issuer: string, oneRequesterDids: readonly str
   return oneRequesterDids.includes(issuer) ? TINYCLOUD_ONE_REQUESTER : null;
 }
 
-/** Names a request only when its signing DID exactly matches a reviewed key. */
+/**
+ * Names a request only when its signing DID exactly matches a reviewed key and the request stays inside that key's
+ * policy. `request` is the parsed request; without it (not loaded yet) no listed key is named. TinyCloud One keys
+ * are named by key alone.
+ */
 export function verifiedApprovalRequester(
   issuer: string,
   oneRequesterDids: readonly string[],
   verifiedRequesters: readonly VerifiedRequesterEntry[],
+  request: RequesterScopeRequest | null,
 ): DelegateRequester | null {
   const one = approvalRequester(issuer, oneRequesterDids);
   if (one) return one;
+  if (request === null) return null;
   const entry = verifiedRequesters.find((requester) => requester.did === issuer && isVerifiedRequesterEntry(requester));
-  return entry ? { displayName: entry.displayName, returnTo: entry.returnTo } : null;
+  if (!entry || !checkRequesterScope(entry.policy, request).ok) return null;
+  return { displayName: entry.displayName, returnTo: entry.returnTo };
 }

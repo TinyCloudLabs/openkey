@@ -48,6 +48,7 @@
     VERIFIED_REQUESTERS,
     withConfiguredEntries,
   } from '$lib/delegate-link-policy';
+  import type { RequesterScopeRequest } from '$lib/requester-scope-policy';
   import { preparedMatchesSelection, reviewSelectionToActionKeys, selectedServerActionIds } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
   import { activeKeys, autoSelectKey } from '$lib/delegate-key-selection';
@@ -578,6 +579,8 @@
   let requestReason = $state(normalizeReason(reasonParam));
   // The signer of a one-tap request, as the API checked it at /load; it alone can name the requester.
   let approvalIssuer = $state('');
+  // What the loaded request asks for, as `/load` returned it; a listed signer is named only for a request inside its policy.
+  let approvalRequestScope = $state<RequesterScopeRequest | null>(null);
   // Set when a `permissions` parameter is present (even empty) but
   // unreadable: the request is refused rather than falling back to the
   // default abilities, which apply only when the parameter is absent.
@@ -612,7 +615,7 @@
     : hostCheck?.ok === false ? hostCheck.reason : '');
   const approvedCallback = $derived(callbackCheck?.ok ? callbackCheck.callback : null);
   const requester = $derived(approvalRequestMode
-    ? verifiedApprovalRequester(approvalIssuer, withConfiguredEntries(TINYCLOUD_ONE_REQUESTER_DIDS, import.meta.env.VITE_TINYCLOUD_ONE_REQUESTER_DIDS, isEd25519DidKey), VERIFIED_REQUESTERS)
+    ? verifiedApprovalRequester(approvalIssuer, withConfiguredEntries(TINYCLOUD_ONE_REQUESTER_DIDS, import.meta.env.VITE_TINYCLOUD_ONE_REQUESTER_DIDS, isEd25519DidKey), VERIFIED_REQUESTERS, approvalRequestScope)
     : delegateRequester(approvedCallback));
   // A one-tap request for one named secret names its verified signer in its heading.
   const oneSecretWords = $derived(approvalRequestMode
@@ -763,6 +766,7 @@
       host = request.nodeOrigin;
       requestedPermissions = request.permissions;
       approvalIssuer = typeof request.issuer === 'string' ? request.issuer : '';
+      approvalRequestScope = { permissions: request.permissions, grantLifetimeSeconds: request.grantLifetimeSeconds, renewal: request.renewal, context: request.context };
       requestReason = normalizeReason(request.reason);
       // A request that decrypts secrets lasts 7 days at most, whatever it signed; the server refuses more.
       const maxSeconds = approvalLifetimeCapSeconds(request.permissions, request.grantLifetimeSeconds);
