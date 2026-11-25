@@ -207,7 +207,7 @@ describe('the "Access goes to" line', () => {
     const { target, cleanup } = render({ recipientKey: KEY, unverifiedRequester: { name: UNVERIFIED_REQUESTER.name, line: UNVERIFIED_REQUESTER.line } });
     const details = target.querySelector('.header details.recipient-key') as HTMLDetailsElement | null;
     expect(details).not.toBeNull();
-    expect(text(details!.querySelector('summary'))).toBe('Access goes to z6Mkm7…5YbU');
+    expect(text(details!.querySelector('summary'))).toBe('Access goes to m7pWmP…5YbU');
     expect(text(details!.querySelector('[data-testid="recipient-key-full"]'))).toBe(KEY);
     expect(details!.open).toBe(false);
     // After the requester lines and before the hint.
