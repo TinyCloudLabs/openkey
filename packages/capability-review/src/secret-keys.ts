@@ -78,6 +78,12 @@ export function secretKeyDisplayName(keyPath: string): string {
   return keyPath.slice(keyPath.lastIndexOf("/") + 1);
 }
 
+/** The scope of a scoped secret's key path (`secrets/scoped/<scope>/<name>`); null for a global secret's key. */
+export function secretScopeOfKeyPath(keyPath: string): string | null {
+  const parts = keyPath.split("/");
+  return parts.length === 4 && parts[0] === "secrets" && parts[1] === "scoped" ? parts[2]! : null;
+}
+
 /** The part of a grant or ReCap entry these checks read. */
 export interface SecretReachEntry {
   service?: string;
