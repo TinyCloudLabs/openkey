@@ -143,7 +143,7 @@ const ANOTHER_SITE = [
 
 describe('a link that asks to host a space, from another site', () => {
   for (const { label, extra } of ANOTHER_SITE) {
-    test(`${label} is refused for the primary space, hosted or not, in every spelling`, async () => {
+    test(`${label} is signed for the primary space when it is hosted and refused when it is not, in every spelling`, async () => {
       for (const hosted of [null, { status: 'complete' }]) {
         row = hosted;
         const spellings = [
@@ -155,9 +155,17 @@ describe('a link that asks to host a space, from another site', () => {
         ];
         for (const permissions of spellings) {
           resetContexts?.();
+          signed = [];
           const { prepared, approved } = await approve(permissions, extra);
-          expectRefused(prepared);
-          expect(approved).toBeUndefined();
+          if (hosted) {
+            expect(prepared.status).toBe(200);
+            expect(approved?.status).toBe(200);
+            expect(approved?.body.delegationHeader?.Authorization).toBeTruthy();
+            expect(signed.length).toBe(1);
+          } else {
+            expectRefused(prepared);
+            expect(approved).toBeUndefined();
+          }
         }
       }
     });
@@ -170,9 +178,26 @@ describe('a link that asks to host a space, from another site', () => {
     }
   });
 
-  test('is refused when the permissions mix the primary space with another', async () => {
-    row = { status: 'complete' };
+  test('is signed for a mix of the owner\'s own spaces when the primary space is hosted and refused when it is not', async () => {
+    row = null;
     expectRefused((await approve([hostPermission('public'), hostPermission('default')])).prepared);
+    row = { status: 'complete' };
+    signed = [];
+    const { prepared, approved } = await approve([hostPermission('public'), hostPermission('default')]);
+
+    expect(prepared.status).toBe(200);
+    expect(approved?.status).toBe(200);
+    expect(approved?.body.delegationHeader?.Authorization).toBeTruthy();
+  });
+
+  test('is refused for a mix of the owner\'s primary space and another owner\'s space', async () => {
+    row = { status: 'complete' };
+    const otherOwner = '0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF';
+    // The route rejects a space of another owner as malformed before the host rule: either way nothing is signed.
+    const { prepared, approved } = await approve([hostPermission('default'), hostPermission(`tinycloud:pkh:eip155:1:${otherOwner}:public`)]);
+    expect(prepared.status).toBeGreaterThanOrEqual(400);
+    expect(approved).toBeUndefined();
+    expect(signed).toEqual([]);
   });
 
   test('is signed for a non-primary space once the primary space is hosted', async () => {
@@ -198,6 +223,22 @@ describe('a link that asks to host a space, from another site', () => {
 
     expect(approved.status).toBe(200);
     expect(signed.length).toBe(1);
+  });
+
+  test('the token-less request never takes the complete-row path: it is refused for any `default` target, in every spelling, when the primary space is hosted', async () => {
+    row = { status: 'complete' };
+    const spellings = [
+      [hostPermission('default')],
+      [hostPermission('default', 'space')],
+      [hostPermission(spaceId('default'))],
+      [hostPermission(spaceId('default'), 'space')],
+      [kvPermission('default'), hostPermission('default')],
+      [hostPermission('public'), hostPermission('default')],
+    ];
+    for (const permissions of spellings) {
+      signed = [];
+      expectRefused(await post('/', { keyId: keyRecord.id, jwk, host: node.url, prefix: 'default', permissions }));
+    }
   });
 
   test('a context prepared for a plain permission cannot be approved with a host permission added', async () => {
