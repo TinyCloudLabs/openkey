@@ -16,4 +16,7 @@ unshare --user --map-root-user --net bash -euc '
   ip addr add 8.8.4.4/32 dev lo
   cd "$1"
   NODE_EXTRA_CA_CERTS="$3/cert.pem" "$2" scripts/check-pinned-https-fetch.ts "$3"
+  # Bun reads this variable at startup, so the second pass starts with verification switched off in the environment.
+  echo "NODE_TLS_REJECT_UNAUTHORIZED=0 at startup"
+  NODE_TLS_REJECT_UNAUTHORIZED=0 NODE_EXTRA_CA_CERTS="$3/cert.pem" "$2" scripts/check-pinned-https-fetch.ts "$3"
 ' check-pinned-https-fetch "$repo" "$bun" "$fixture"
