@@ -498,6 +498,8 @@ model TinyCloudBootstrapState {
   failureCode      String?
   failureReason    String?
   sweepAttempts    Int       @default(0)
+  // Who asked for this setup (apps/api provision-authority.ts). NULL on rows made before this column: not first-party.
+  authority        String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 

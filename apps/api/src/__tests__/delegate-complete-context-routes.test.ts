@@ -390,7 +390,8 @@ const wholeSpace = (space: string) => [
 ];
 
 async function prepare(extra: Record<string, unknown> = {}) {
-  const prepared = await post('/prepare', { keyId: keyRecord.id, jwk, host, ...extra });
+  // The owner approves a link on OpenKey's own page: the only attribution an ordinary prepare can carry.
+  const prepared = await post('/prepare', { keyId: keyRecord.id, jwk, host, linkDelivery: 'paste', ...extra });
   expect(prepared.status).toBe(200);
   return prepared.body;
 }
@@ -495,8 +496,11 @@ describe('TC-943 prod host pair (pre-merge)', () => {
   }
 
   for (const reqHost of requestHosts.slice(0, 2)) {
-    test(`/ legacy finishes onboarding for ${reqHost} keyed by the configured host`, async () => {
-      expectOnboarding(await legacyApproval(reqHost), reqHost);
+    test(`/ legacy sets nothing up for ${reqHost}: a token-less approval names no app to attribute`, async () => {
+      const result = await legacyApproval(reqHost);
+      expect(result.status).toBe(200);
+      expect(result.body.spaceReady).toBe(false);
+      expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
     });
   }
 
@@ -1165,6 +1169,15 @@ describe('TC-945 bootstrap budget', () => {
   for (const requestHost of ['https://tee.node.tinycloud.xyz', 'https://node.tinycloud.xyz']) {
     for (const [name, approve] of [['versioned', managedApproval], ['legacy', legacyApproval]] as const) {
       test(`slow bootstrap returns pending for ${name} approval via ${requestHost}`, async () => {
+        if (name === 'legacy') {
+          // A token-less approval names no app to attribute, so no bootstrap starts and nothing is pending.
+          const legacy = await approve(requestHost);
+          expect(legacy.status).toBe(200);
+          expect(legacy.body.spaceReady).toBe(false);
+          expect(legacy.body).not.toHaveProperty('spacePending');
+          expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
+          return;
+        }
         const work = deferredBootstrap();
         ensureTinyCloudBootstrap.mockImplementationOnce(() => work.promise);
         const start = performance.now();
@@ -1211,6 +1224,14 @@ describe('TC-945 bootstrap budget', () => {
   });
   for (const [name, approve] of [['versioned', managedApproval], ['legacy', legacyApproval]] as const) {
     test(`bootstrap rejection before the budget keeps the plain setup error for ${name} approval`, async () => {
+      if (name === 'legacy') {
+        // A token-less approval names no app to attribute, so no bootstrap starts and there is no setup error.
+        const legacy = await approve(host);
+        expect(legacy.status).toBe(200);
+        expect(legacy.body.spaceReady).toBe(false);
+        expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
+        return;
+      }
       ensureTinyCloudBootstrap.mockImplementationOnce(async () => { throw new Error('database unavailable'); });
       const result = await approve(host);
       expect(result.status).toBe(200);
@@ -1267,6 +1288,14 @@ describe('TC-1608 requested space', () => {
 
   for (const [name, approve] of [['versioned', managedApproval], ['legacy', legacyApproval]] as const) {
     test(`${name} approval answers ready once the node confirms the space, while the setup runs on`, async () => {
+      if (name === 'legacy') {
+        // A token-less approval names no app to attribute, so no bootstrap starts and nothing is set up.
+        const legacy = await approve(host);
+        expect(legacy.status).toBe(200);
+        expect(legacy.body.spaceReady).toBe(false);
+        expect(ensureTinyCloudBootstrap).not.toHaveBeenCalled();
+        return;
+      }
       ensureTinyCloudBootstrap.mockImplementationOnce((async (input: any) => {
         input.requestedSpaces.report({ status: 'hosted' });
         return wholeSetup();

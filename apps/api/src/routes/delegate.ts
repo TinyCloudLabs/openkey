@@ -32,7 +32,8 @@ import {
   permissionKey as computePermissionKey,
 } from './delegate-session';
 import { activateSessionWithinTimeout } from '../services/tinycloud-node-timeouts';
-import { isTinyCloudSiweForSigner, ownBootstrapSpaceName, parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
+import { isTinyCloudSiweForSigner, ownBootstrapSpaceName, parseTinyCloudSiwe, requestedOwnSpaceForSiwe, spaceHostRequest } from '../services/tinycloud-siwe';
+import { HOST_SIGNING_FIRST_PARTY_ONLY, HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE, refusesThirdPartySpaceHost } from '../services/space-host-signing';
 import type { SpaceHostResult } from '@tinycloud/sdk-core';
 import { BOOTSTRAP_SPACE_NAMES, CAPABILITIES } from '@tinycloud/bootstrap';
 import {
@@ -145,6 +146,15 @@ import {
 import { MAX_ISSUED_AT_SKEW_MS, validateTinyCloudManageKeyRequest } from '../services/tinycloud-manage-key-policy';
 import { canonicalTrustedTinyCloudHost, LOCAL_HOSTNAMES } from '../services/tinycloud-hosts';
 import { awaitTinyCloudBootstrapWithinBudget, hostRequestedSpaceWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
+import {
+  mayProvision,
+  oauthClientProvisionAuthority,
+  originProvisionAuthority,
+  ownPageProvisionAuthority,
+  UNATTRIBUTED_PROVISION_AUTHORITY,
+  type ProvisionAuthority,
+} from '../services/provision-authority';
+import { classifyDelegateLinkDelivery, type DelegateLinkDelivery } from '../services/delegate-link-delivery';
 import { checkDeviceDelegationWindow, deviceDelegationWindowError, deviceTransactionUnsupportedError } from './device-delegation-window';
 import { isPrimaryKey, primaryKeyWhere } from '../services/primary-key';
 import { PreparedHandoffError } from '../services/prepared-handoff';
@@ -277,6 +287,8 @@ async function bootstrapApprovedManagedSignIn(input: {
   userId: string;
   key: { id: string; userId: string | null; address: string; keyType: string; sealedBlob: string | null; sealingContext?: string | null };
   message: string;
+  /** Who asked, as the server bound it to the approved request. */
+  authority: ProvisionAuthority;
 }): Promise<void> {
   try {
     if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN === 'off' || !input.key.sealedBlob) return;
@@ -296,6 +308,7 @@ async function bootstrapApprovedManagedSignIn(input: {
         privateKey: () => unsealManagedKey(input.key, sealedBlob),
         message: input.message,
         format: 'personal_sign',
+        authority: input.authority,
       }),
       waitsForOwnSpace ? { budgetMs: OWN_TIMEOUT_BUDGET_MS, ownLogsBackground: true } : {},
     );
@@ -344,6 +357,80 @@ function setupFailureMessage(failure: { errorCode: string; errorMessage: string 
     : `TinyCloud account setup failed (${failure.errorCode}): ${failure.errorMessage}.`;
 }
 
+/**
+ * Who asked, for an approval whose context this session's user spent just before this call. The sealed
+ * `requestOrigin` counts when it is first-party. Otherwise the three approvals the owner makes on OpenKey's own page
+ * count, and only from state the server holds: the context is bound to the same user as the session, and the
+ * approval request, the device request or the sealed link delivery is read again here, not trusted from the body.
+ * Any failure to confirm one is the same as not being first-party.
+ */
+async function boundProvisionAuthority(input: {
+  bound: {
+    userId: string;
+    originalSiwe: string;
+    requestOrigin?: string;
+    approvalRequestId?: string;
+    deviceTransactionId?: string;
+    linkDelivery?: DelegateLinkDelivery;
+  };
+  sessionUserId: string;
+  body: { approvalRequestId?: unknown; deviceTransactionId?: unknown; jwk: unknown; host: unknown; permissions?: unknown };
+  host: string;
+}): Promise<ProvisionAuthority> {
+  const { bound, body } = input;
+  const byOrigin = originProvisionAuthority(bound.requestOrigin);
+  if (mayProvision(byOrigin)) return byOrigin;
+  if (bound.userId !== input.sessionUserId) return UNATTRIBUTED_PROVISION_AUTHORITY;
+  try {
+    if (bound.approvalRequestId !== undefined) {
+      if (body.approvalRequestId !== bound.approvalRequestId) return UNATTRIBUTED_PROVISION_AUTHORITY;
+      // Still pending, unexpired and bound to this session key, node and permissions.
+      await checkApprovalDelegation(body, { signedSiwe: bound.originalSiwe });
+      return ownPageProvisionAuthority('approval-request');
+    }
+    if (bound.deviceTransactionId !== undefined) {
+      if (body.deviceTransactionId !== bound.deviceTransactionId) return UNATTRIBUTED_PROVISION_AUTHORITY;
+      const refusal = await deviceDelegationWindowError(body, { host: input.host, signedSiwe: bound.originalSiwe });
+      return refusal ? UNATTRIBUTED_PROVISION_AUTHORITY : ownPageProvisionAuthority('device-approval');
+    }
+    return bound.linkDelivery ? ownPageProvisionAuthority('delegate-link-local') : UNATTRIBUTED_PROVISION_AUTHORITY;
+  } catch (error) {
+    logError('warn', 'delegate_own_page_authority_unconfirmed', error);
+    return UNATTRIBUTED_PROVISION_AUTHORITY;
+  }
+}
+
+/**
+ * The authority of an approval, asked at /prepare for a request that has just been validated: an expired, denied or
+ * changed approval request or device request was refused before this point, so what is left to decide is which case
+ * this is. Every other link is unattributed. `boundProvisionAuthority` ends in the same decision at approval.
+ */
+function approvalProvisionAuthority(input: { approvalRequest: boolean; device: boolean; linkDelivery: boolean }): ProvisionAuthority {
+  const approval = input.approvalRequest ? 'approval-request' : input.device ? 'device-approval' : input.linkDelivery ? 'delegate-link-local' : null;
+  return approval === null ? UNATTRIBUTED_PROVISION_AUTHORITY : ownPageProvisionAuthority(approval);
+}
+
+/** Will approving this request set the account up? Only for the approvals that are on (`approvalProvisionAuthority`). */
+function approvalSetsUpAccount(input: { approvalRequest: boolean; device: boolean; linkDelivery: boolean }): boolean {
+  return mayProvision(approvalProvisionAuthority(input));
+}
+
+const HOST_SIGNING_REFUSAL_BODY = { error: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE, code: HOST_SIGNING_FIRST_PARTY_ONLY } as const;
+
+/**
+ * The rule of POST /api/keys/:id/sign for a message this route has OpenKey's managed key sign (`refusesThirdPartySpaceHost`).
+ * An external wallet signs its own message, so there is nothing for OpenKey to refuse. The authority is read only for a
+ * message that hosts a space: every other approval reads nothing more than it did before.
+ */
+async function refusesSpaceHost(input: {
+  message: string;
+  key: { id: string; address: string; keyType: string };
+  authority: () => ProvisionAuthority | Promise<ProvisionAuthority>;
+}): Promise<boolean> {
+  if (input.key.keyType !== 'MANAGED' || spaceHostRequest(input.message).kind === 'none') return false;
+  return refusesThirdPartySpaceHost({ prisma, message: input.message, key: input.key, authorities: [await input.authority()] });
+}
+
 async function finishManagedSpaceOnboarding(input: {
   userId: string;
   key: {
@@ -361,11 +448,15 @@ async function finishManagedSpaceOnboarding(input: {
   requestedSpaces: RequestedDelegationSpace[];
   entries: RecapEntry[];
   activation: SpaceActivation;
+  /** Who asked, as the server bound it to the approved request. */
+  authority: ProvisionAuthority;
 }): Promise<DelegationReadiness> {
   const initial = activationReadiness(input.requestedSpaces, input.entries, input.activation);
   const granted = new Set(delegationSpaces(input.entries).map(space => space.spaceId));
   const awaiting = initial.requestedSpaces.filter(space => granted.has(space.spaceId) && space.spaceReady !== true);
   if (awaiting.length === 0) return initial;
+  // Only TinyCloud's own apps make OpenKey set up the account on the node here; the node is not asked for anyone else.
+  if (!mayProvision(input.authority)) return initial;
   const setupSpaces = new Set<string>();
   let readiness: SpaceReadiness;
 
@@ -401,6 +492,7 @@ async function finishManagedSpaceOnboarding(input: {
         chainId: input.chainId,
         // Confirm every unresolved requested space before replying. Seeding and other spaces follow.
         requestedSpaces: { spaces: setups.map(setup => setup.space), alreadyHosted, nodeReportedUnhosted: true, report },
+        authority: input.authority,
       });
     });
     switch (result.status) {
@@ -1130,6 +1222,11 @@ delegateRouter.post('/sign', async (c) => {
         if (appKeyRefusal) throw new Error(`message_rejected:${appKeyRefusalMessage(appKeyRefusal, 'non_browser')}`);
         const lifetimeReach = exceedsSecretLifetime(candidate.message as string, Date.now());
         if (lifetimeReach) throw new Error(`message_rejected:${secretLifetimeMessage(lifetimeReach)}`);
+        // The policy above lets an `applications` host message through. Hosting a space for a client that is not
+        // TinyCloud's own is signed only once the owner's primary space is hosted (a complete stored bootstrap row).
+        if (await refusesThirdPartySpaceHost({
+          prisma: tx, message: candidate.message as string, key, authorities: [oauthClientProvisionAuthority(principal.clientId)],
+        })) throw new Error(HOST_SIGNING_FIRST_PARTY_ONLY);
         const signature = await signManagedKey(key, key.sealedBlob, candidate.message as string);
         return { signature, identity };
       });
@@ -1148,6 +1245,7 @@ delegateRouter.post('/sign', async (c) => {
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
       if (message === 'canonical_key_unavailable') return c.json({ approved: false, code: 'canonical_key_unavailable', reason: 'The canonical TinyCloud key is unavailable.' }, 403);
+      if (message === HOST_SIGNING_FIRST_PARTY_ONLY) return c.json({ approved: false, code: HOST_SIGNING_FIRST_PARTY_ONLY, reason: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE }, 403);
       if (message.startsWith('message_rejected:')) return c.json({ approved: false, code: 'message_rejected', reason: message.slice('message_rejected:'.length) }, 400);
       return c.json({
         approved: false,
@@ -1233,6 +1331,14 @@ delegateRouter.post('/sign', async (c) => {
     if (!key || !key.sealedBlob || !policy.evidence.nonceDigest) {
       return auditDenial('key_unavailable', policy.evidence);
     }
+    // The session policy signs only a kv ReCap on `applications`, so a space host message never gets here. This is the
+    // same rule as every other branch, from the server-known facts about the client, in case that policy widens.
+    if (await refusesThirdPartySpaceHost({
+      prisma, message: candidate.message as string, key,
+      authorities: [oauthClientProvisionAuthority(principal.clientId), originProvisionAuthority(oauthContext?.client?.tinycloudSessionOrigin)],
+    })) {
+      return auditDenial('wrong_capability', policy.evidence);
+    }
 
     let grant;
     try {
@@ -1283,7 +1389,11 @@ delegateRouter.post('/sign', async (c) => {
         privateKey,
         message: coordinationosBootstrapTrigger(key.address),
         format: 'personal_sign',
+        authority: oauthClientProvisionAuthority(principal.clientId),
+        // A client that is not first-party signs for an account that is already set up and sets none up.
+        acceptCompleteRow: true,
       });
+      // A skipped bootstrap (the account is not set up and the client is not first-party) refuses the signature.
       if (bootstrap.status !== 'complete') {
         throw new Error('TinyCloud bootstrap did not complete');
       }
@@ -1428,6 +1538,15 @@ delegateRouter.post('/sign', async (c) => {
     return c.json(openKeyApprovalRequired(autoSignDecision.reason, autoSignDecision.code));
   }
 
+  // This is the cookie-session branch: the signer middleware admits it only from OpenKey's own browser origin
+  // (`rejectNonOpenKeySignRequest`), which is not first-party for provisioning, and the Origin header is the caller's
+  // word, not evidence. So no one is first-party here, by construction: a space host message is signed only by the
+  // third-party rule of POST /api/keys/:id/sign (non-primary spaces of the key's owner once the owner's primary space
+  // is hosted). Nothing in the web app or the SDK sends one here.
+  if (await refusesThirdPartySpaceHost({ prisma, message: body.message, key, authorities: [UNATTRIBUTED_PROVISION_AUTHORITY] })) {
+    return c.json({ approved: false, code: HOST_SIGNING_FIRST_PARTY_ONLY, reason: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE }, 403);
+  }
+
   const signature = await signManagedKey(key, key.sealedBlob, body.message);
   // The route is called from the app's own page, so Origin is the app origin.
   recordAppSignIn(prisma, user.id, c.req.header('origin'));
@@ -1442,7 +1561,7 @@ delegateRouter.post('/sign', async (c) => {
  *
  * Signs a TinyCloud space/host SIWE for a managed key. This is the root-key
  * half of bootstrap space hosting; the caller submits the signed SIWE to the
- * node's /delegate endpoint.
+ * node's /delegate endpoint. Refused for every caller: nothing first-party can be attributed here.
  */
 delegateRouter.post('/host', async (c) => {
   const user = c.get('user');
@@ -1454,6 +1573,12 @@ delegateRouter.post('/host', async (c) => {
   }>();
   const deviceUnsupported = deviceTransactionUnsupportedError(body);
   if (deviceUnsupported) return c.json(deviceUnsupported, 400);
+  // This signature is the ability to create a space on the node, for any peer and prefix the caller names. The route
+  // takes only the OpenKey account origin, which says nothing about which app is asking, so no first-party authority
+  // can be bound to it: it signs nothing until a caller that can be attributed is added.
+  if (!mayProvision(UNATTRIBUTED_PROVISION_AUTHORITY)) {
+    return c.json({ error: 'Only TinyCloud\'s own apps can have OpenKey sign a space host request.', code: 'host_signing_first_party_only' }, 403);
+  }
 
   if (!body.keyId || !body.peerId) {
     return c.json({ error: 'keyId and peerId are required' }, 400);
@@ -1842,6 +1967,15 @@ delegateRouter.post('/', async (c) => {
     if (tokenAppKeyRefusal) return c.json(appKeyRefusalBody(tokenAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(tokenAppKeyRefusal));
     const tokenLifetimeReach = exceedsSecretLifetime(bound.originalSiwe, Date.now());
     if (tokenLifetimeReach) return c.json(secretLifetimeBody(tokenLifetimeReach), 400);
+    // The stored SIWE was built from the permissions and may host a space: the rule of POST /api/keys/:id/sign applies,
+    // from the authority the context was bound with (a checked origin, a still-valid approval or device request, or a
+    // loopback or paste link), before the context is spent. Any other link is another site.
+    if (await refusesSpaceHost({
+      message: bound.originalSiwe, key,
+      authority: () => boundProvisionAuthority({ bound, sessionUserId: user.id, body, host }),
+    })) {
+      return c.json(HOST_SIGNING_REFUSAL_BODY, 403);
+    }
     // TC-3442: the account's passkey setting, before the context is spent or the key unsealed.
     const passkeyRefusal = await checkApprovalPasskey(
       prisma,
@@ -1927,6 +2061,7 @@ delegateRouter.post('/', async (c) => {
           requestedSpaces,
           entries: preparedEntries,
           activation: activationResult,
+          authority: await boundProvisionAuthority({ bound, sessionUserId: user.id, body, host }),
         });
       }
       if (!hostActivated) {
@@ -2023,6 +2158,12 @@ delegateRouter.post('/', async (c) => {
 
   const legacyAppKeyRefusal = appKeyRefusalForSiwe(preparedResult.prepared.siwe);
   if (legacyAppKeyRefusal) return c.json(appKeyRefusalBody(legacyAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(legacyAppKeyRefusal));
+  // The SIWE was built from the permissions and may host a space. No origin is bound to this token-less request, so it
+  // is another site: the rule of POST /api/keys/:id/sign signs only non-primary spaces of the owner once the owner's
+  // primary space is hosted.
+  if (await refusesSpaceHost({ message: preparedResult.prepared.siwe, key, authority: () => UNATTRIBUTED_PROVISION_AUTHORITY })) {
+    return c.json(HOST_SIGNING_REFUSAL_BODY, 403);
+  }
   // TC-3442: these bytes are made here, so no passkey challenge could have been bound to them. An approval the
   // account's setting says needs the passkey is refused on this path; the versioned path above can carry it.
   const legacyPasskeyRefusal = await checkApprovalPasskey(
@@ -2058,6 +2199,8 @@ delegateRouter.post('/', async (c) => {
         requestedSpaces: preparedResult.requestedSpaces,
         entries: signedEntries,
         activation: activationResult,
+        // No origin is bound to this token-less request, so it never provisions.
+        authority: UNATTRIBUTED_PROVISION_AUTHORITY,
       });
     }
     if (!hostActivated) {
@@ -2145,6 +2288,9 @@ delegateRouter.post('/prepare', async (c) => {
     deviceTransactionId?: unknown;
     approvalRequestId?: string;
     renewal?: unknown;
+    /** What a plain legacy link says about how it returns the delegation (`paste` or `callback`) and its callback URL. */
+    linkDelivery?: unknown;
+    linkCallback?: unknown;
   }>(c);
   const privateMembers = hasPrivateJwkMember(body.jwk);
   logSessionJwk('/api/delegate/prepare', privateMembers);
@@ -2264,6 +2410,23 @@ delegateRouter.post('/prepare', async (c) => {
   const prepareAppKeyRefusal = appKeyRefusalForSiwe(preparedResult.prepared.siwe);
   if (prepareAppKeyRefusal) return c.json(appKeyRefusalBody(prepareAppKeyRefusal, 'non_browser'), appKeyRefusalStatus(prepareAppKeyRefusal));
 
+  // A plain legacy link says how it returns its delegation. The server classifies that here, from what the page sent at
+  // prepare time, and seals the result: the approval never supplies it (see `delegate-link-delivery.ts`).
+  const linkDelivery = body.deviceTransactionId === undefined && body.approvalRequestId === undefined && body.requesterOrigin === undefined
+    ? classifyDelegateLinkDelivery(body.linkDelivery, body.linkCallback)
+    : undefined;
+
+  // The server built this SIWE from the permissions, and `tinycloud.space/host` is among the abilities they may name. A
+  // message that hosts a space is the ability to create it: the rule of POST /api/keys/:id/sign applies. The asker is
+  // known only from what this prepare has just validated: an approval request, a device request or a loopback or
+  // paste link (`approvalProvisionAuthority`); any other link is another site. Refused before a context is issued.
+  if (await refusesSpaceHost({
+    message: preparedResult.prepared.siwe, key,
+    authority: () => approvalProvisionAuthority({ approvalRequest: body.approvalRequestId !== undefined, device: device.record !== null, linkDelivery: linkDelivery !== undefined }),
+  })) {
+    return c.json(HOST_SIGNING_REFUSAL_BODY, 403);
+  }
+
   // Issue an opaque single-use authorization context so /complete cannot
   // be replayed with a broader SIWE, a different key, or a different host.
   // The context digests are the sole authority for /complete — the `edited`
@@ -2300,6 +2463,7 @@ delegateRouter.post('/prepare', async (c) => {
       originalSiwe: preparedResult.prepared.siwe,
       approvalRequestId: body.approvalRequestId,
       deviceTransactionId: device.record?.id,
+      linkDelivery,
       renewal,
     });
   } catch (issueErr) {
@@ -2315,7 +2479,14 @@ delegateRouter.post('/prepare', async (c) => {
     );
   }
 
-  let spaceSetup: { space: string; plan: SpaceSetupPlan } | null = null;
+  // Approving sets the account up only for an approval request, a device request or a loopback or paste link, and only
+  // while that case is on. Every other link says it does not, rather than promise a setup.
+  const setsUpAccount = approvalSetsUpAccount({
+    approvalRequest: body.approvalRequestId !== undefined,
+    device: device.record !== null,
+    linkDelivery: linkDelivery !== undefined,
+  });
+  let spaceSetup: { space: string; plan: SpaceSetupPlan | 'no-setup' } | null = null;
   try {
     // A reviewer's spaces are hosted when the account is provisioned, so the notice would only mislead.
     const setup = await reviewerForUser(prisma, user.id) ? null : await managedSpaceSetupPlan({
@@ -2326,7 +2497,8 @@ delegateRouter.post('/prepare', async (c) => {
       chainId,
       spaceId: preparedResult.spaceId,
     });
-    const disclosed = setup && { space: setup.space, plan: setup.plan };
+    // The notice must not promise a setup the approval will skip (`approvalSetsUpAccount`).
+    const disclosed = setup && { space: setup.space, plan: setup.plan === 'setup' && !setsUpAccount ? 'no-setup' as const : setup.plan };
     if (setup?.plan !== 'setup') {
       spaceSetup = disclosed;
     } else if (process.env.TINYCLOUD_BOOTSTRAP_ON_SIGN !== 'off') {
@@ -3048,6 +3220,15 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       400,
     );
   }
+  // A message that hosts a space is the ability to create it: the rule of POST /api/keys/:id/sign applies, from the
+  // origin the SIWE was just checked against (`siweOriginChecked`). No checked origin is another site. Refused here, so
+  // no context and no review screen is issued for it; /authorize-sign applies it again to the bytes it signs.
+  if (await refusesSpaceHost({
+    message: body.siwe, key,
+    authority: () => originProvisionAuthority(siweOriginChecked && typeof body.requestOrigin === 'string' ? body.requestOrigin : undefined),
+  })) {
+    return c.json(HOST_SIGNING_REFUSAL_BODY, 403);
+  }
   const immutable = extractImmutableSiweFields(body.siwe, {
     chainId,
     spaceId,
@@ -3331,6 +3512,8 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
       // The widget-reported sender origin of the requesting app. Used only for
       // the per-sign-in count record; never for trust or authority.
       appOrigin: normalizeAppOrigin(body.reportedOrigin) ?? undefined,
+      // The origin the SIWE was checked against above; decides whether OpenKey may set up the account on the node.
+      requestOrigin: siweOriginChecked && typeof body.requestOrigin === 'string' ? body.requestOrigin : undefined,
       admittedAppKeys,
       expiryChangeable: body.expiryChangeable === true,
       signInRenewal,
@@ -3861,6 +4044,12 @@ delegateRouter.post('/authorize-sign', async (c) => {
   if (!ticket && !elevatedDecided(effectiveEntries, previewCheck.elevatedAllowed)) {
     return c.json(elevatedNotDecidedBody(), 403);
   }
+  // A message that hosts a space is the ability to create it, so the same rule as POST /api/keys/:id/sign applies, from
+  // the origin the context was bound to at /authorize-sign-prepare (the SIWE was checked against it there). A request
+  // with no checked origin, a handoff ticket included, is another site.
+  if (await refusesSpaceHost({ message: signedMessage, key, authority: () => originProvisionAuthority(bound.requestOrigin) })) {
+    return c.json(HOST_SIGNING_REFUSAL_BODY, 403);
+  }
   // TC-3442: the account's passkey setting, checked before any token is spent or key unsealed. An external wallet's
   // own signature is its confirmation. A passkey sign-in this web sign flow was opened with covers the check for
   // five minutes; the cover is spent the moment this approval passes the gate.
@@ -3948,7 +4137,7 @@ delegateRouter.post('/authorize-sign', async (c) => {
   // POST /api/keys/:id/sign does. Only here, once a signature exists and the lease (if any) is recorded: a
   // refused or failed sign hosts nothing. An external wallet's account is the wallet's to host.
   if (!isExternal) {
-    await bootstrapApprovedManagedSignIn({ userId: user.id, key, message: signedMessage });
+    await bootstrapApprovedManagedSignIn({ userId: user.id, key, message: signedMessage, authority: originProvisionAuthority(bound.requestOrigin) });
   }
 
   const handoffDelivery = ticket

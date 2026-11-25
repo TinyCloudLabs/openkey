@@ -91,6 +91,7 @@
     SECRET_GRANT_MAX_SECONDS,
     type ElevatedKind,
   } from "@openkey/capability-review";
+  import { OWN_PAGE_APPROVAL } from "@openkey/sdk/approval-copy";
   import type { PeerRecognitionState } from "$lib/host-peer-recognition";
   import { NETWORK_DECRYPT_CAP } from "$lib/network-decrypt-cap";
   import ApprovalExpiryChooser from "$lib/components/signing/approval-expiry-chooser.svelte";
@@ -1013,7 +1014,7 @@
       <p class="reason-body">{model.reason.text}</p>
       {#if model.reason.source === "caller"}
         <p class="reason-untrusted">
-          This reason comes from the caller and is not verified.
+          {OWN_PAGE_APPROVAL.requesterText}
         </p>
       {/if}
     </section>

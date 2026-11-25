@@ -11,7 +11,7 @@
   import SignInCard from '$lib/components/approval/sign-in-card.svelte';
   import Slip from '$lib/components/approval/slip.svelte';
   import StopPage from '$lib/components/approval/stop-page.svelte';
-  import { APPROVAL_EXPIRY, CODE, DONE, ONE_SECRET, STOPS, STOP_PARTS, UNVERIFIED_REQUESTER, approvalStop, codeDestinationWord, fill, safeCode, stopForReply, supportLine, type StopView } from '@openkey/sdk/approval-copy';
+  import { APPROVAL_EXPIRY, CODE, DONE, ONE_SECRET, OWN_PAGE_APPROVAL, STOPS, STOP_PARTS, UNVERIFIED_REQUESTER, approvalStop, codeDestinationWord, fill, safeCode, stopForReply, supportLine, type StopView } from '@openkey/sdk/approval-copy';
   import { formatLocalAccessEnd } from '$lib/access-end';
   import { classifyDelegateError } from '$lib/delegate-error-classification';
   import {
@@ -980,6 +980,16 @@
     if ((approvalRequestMode || deviceTransactionId) && renewal) body.renewal = renewal;
     // The API refuses a device delegation outside the transaction's lifetime.
     if (deviceTransactionId) body.deviceTransactionId = deviceTransactionId;
+    // A plain link says how it returns the delegation. The API classifies this itself (a loopback callback or a code
+    // to copy); it is a compatibility allowance, not a check of who made the link.
+    if (!approvalRequestMode && !deviceTransactionId) {
+      if (callback) {
+        body.linkDelivery = 'callback';
+        body.linkCallback = callback;
+      } else {
+        body.linkDelivery = 'paste';
+      }
+    }
 
     const res = await fetch(`${API_URL}/api/delegate/prepare`, {
       method: 'POST',
@@ -2166,11 +2176,13 @@
         {#if ownFolderLine}
           <div role="note" class="p-3 border rounded-xl text-sm bg-surface-50 border-surface-200 text-surface-700">{ownFolderLine}</div>
         {/if}
-        {#if spaceSetup}
-          <div
-            role="note"
-            class={`p-3 border rounded-xl text-sm ${spaceSetup.plan === 'setup' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-surface-50 border-surface-200 text-surface-700'}`}
-          >
+        {#if spaceSetup?.plan === 'setup'}
+          <!-- The server says the account has no space and this approval sets it up: said once, in place of the generic setup note. -->
+          <div role="note" class="p-3 border rounded-xl text-sm bg-blue-50 border-blue-200 text-blue-700">
+            {OWN_PAGE_APPROVAL.creates}
+          </div>
+        {:else if spaceSetup}
+          <div role="note" class="p-3 border rounded-xl text-sm bg-surface-50 border-surface-200 text-surface-700">
             {spaceSetupNoticeText(spaceSetup)}
           </div>
         {/if}

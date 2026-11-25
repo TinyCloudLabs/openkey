@@ -69,6 +69,16 @@ export const UNVERIFIED_REQUESTER = {
   declinedLine: 'Whoever sent this link has been told no. If that was a mistake, ask for a new link.',
 } as const;
 
+/**
+ * The owner approves in OpenKey's own page and OpenKey sets up their TinyCloud space as part of it (a signed approval
+ * request or a device request). `creates` is for an approval that sets the space up. `requesterText` labels the
+ * requester's reason as written by the requester.
+ */
+export const OWN_PAGE_APPROVAL = {
+  creates: 'Approving also creates your TinyCloud space, where your data from this request is kept.',
+  requesterText: "Written by whoever sent this request. OpenKey can't confirm it.",
+} as const;
+
 export const CLOSE_TAB = 'Close this tab';
 export const TAB_KEPT_OPEN = 'Your browser kept this tab open. Close it from your browser.';
 
@@ -224,7 +234,7 @@ export const DEVICE = {
   /** The code tiles' label: `{first}` and `{second}` are the code's halves, one character at a time ("W D J B"). */
   codeLabel: 'Code {first}, {second}',
   asksLabel: 'What it asks for',
-  reasonNote: 'This reason comes from the caller and isn’t verified.',
+  reasonNote: OWN_PAGE_APPROVAL.requesterText,
   /** The list of what is asked for. */
   asksList: 'Requested access',
   sensitive: 'Sensitive',
