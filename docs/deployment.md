@@ -813,12 +813,15 @@ The SvelteKit frontend deploys to Cloudflare Pages using the `@sveltejs/adapter-
      these establishes an assistant's acceptance. See
      `docs/share-device-authorization.md` ("Ordinary `/delegate` links").
    - Optional: `VITE_TINYCLOUD_ONE_REQUESTER_DIDS` (comma-separated Ed25519
-     `did:key:z6Mk…` keys). A one-tap approval request (`/a/…`) signed by one
-     of these keys is shown as requested by TinyCloud One, with "return to
-     TinyCloud One" on its last page; any other signer is shown as not
-     verified, with no requester name. Each deployment (production, preview,
-     dev) lists the key its TinyCloud One gateway signs with; the built-in list
-     (`TINYCLOUD_ONE_REQUESTER_DIDS`) is empty until production's key is set.
+     `did:key:z6Mk…` keys). The approval page does not read this list for
+     naming: a key with no scope policy would be named for any request it
+     signs. A one-tap approval request (`/a/…`) is shown as requested by
+     TinyCloud One, with "return to TinyCloud One" on its last page, only when
+     its signing key is in `TINYCLOUD_ONE_VERIFIED_REQUESTERS`
+     (`apps/web/src/lib/delegate-link-policy.ts`) with a scope policy, and both
+     the request and the prepared message stay inside that policy. Any other
+     signer is shown as not verified, with no requester name. A long-lived key
+     belongs in that policy list, not in this variable.
    - Optional: `VITE_OPENKEY_NETWORK_DECRYPT_CAP=enabled`, set together with
      the API's `OPENKEY_NETWORK_DECRYPT_CAP`. The popup, frame and command-line
      approval screens then stop a whole network's decrypt at 7 days, as the API
