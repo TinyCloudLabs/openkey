@@ -67,6 +67,8 @@
     SIWE_WITHOUT_EXPIRY,
     NAMED_SECRET_DECRYPT_ROW,
     oneNamedSecret,
+    secretListLabel,
+    secretReadParts,
     sensitiveRowsCallout,
     abbreviateDid,
     abbreviateSpaceId,
@@ -1038,9 +1040,11 @@
     </p>
   {/if}
 
-  {#snippet statementText(text: string, codeSpans: boolean, name: string | null = null)}
+  {#snippet statementText(text: string, codeSpans: boolean, name: string | null = null, secret: SummaryStatement["secret"] = undefined)}
     {@const parts = splitAroundName(text, name)}
-    {#if parts}
+    {#if secret?.scope !== undefined}
+      {#each secretReadParts(secret.name, secret.scope) as part}{#if part.named}<span class="secret-name">{part.text}</span>{:else}{part.text}{/if}{/each}
+    {:else if parts}
       {parts.before}<span class="secret-name">{parts.run}</span>{parts.after}
     {:else if codeSpans}
       {#each splitStatementCode(text) as part}{#if part.code}<code class="mono">{part.text}</code>{:else}{part.text}{/if}{/each}
@@ -1058,7 +1062,7 @@
   {#snippet summaryRow(statement: SummaryStatement, active = true)}
     <li class="summary-statement" data-severity={active ? statement.severity : undefined}>
       <span class="statement-line">
-        <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans, statement.secret?.name ?? (statement.key === NAMED_SECRET_DECRYPT_ROW ? oneNamedSecret(selectedGrants) : null))}</span>
+        <span class="statement-primary">{@render statementText(statement.primaryText, statement.codeSpans, statement.secret?.name ?? (statement.key === NAMED_SECRET_DECRYPT_ROW ? oneNamedSecret(selectedGrants) : null), statement.secret)}</span>
         {#if active && statement.severity === "sensitive"}
           <span class="summary-sensitive-pill">Sensitive</span>
         {/if}
@@ -1101,7 +1105,7 @@
                   </summary>
                   <ul class="secret-statements">
                     {#each secretStatements as row (row.key)}
-                      <li><code class="mono">{row.secret!.name}</code></li>
+                      <li><code class="mono">{secretListLabel(row.secret!)}</code></li>
                     {/each}
                   </ul>
                 </details>
