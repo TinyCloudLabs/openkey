@@ -203,4 +203,55 @@ if (!backend) {
       expect(await prisma.session.count()).toBe(0);
     });
   });
+
+  // A resend adds a row instead of replacing one, so the account can hold an older code that is still
+  // unexpired. Spending the newest must take the older ones with it, or the next request is graded
+  // against a superseded code with a fresh set of attempts.
+  describe('a superseded code after a resend', () => {
+    test('cannot be revived once the newest code is exhausted', async () => {
+      const first = await issueCode();
+      const second = await issueCode();
+      expect(second).not.toBe(first);
+      expect(await storedCode()).toEqual({ rows: 2, attempts: 0 });
+
+      const wrong = wrongCode(second);
+      for (let attempt = 0; attempt < EMAIL_CODE_ALLOWED_ATTEMPTS; attempt += 1) {
+        expect((await signIn(wrong)).status).toBe(400);
+      }
+      const exhausting = await signIn(wrong);
+      expect(exhausting.status).toBe(403);
+      expect((await exhausting.json() as { code: string }).code).toBe('TOO_MANY_ATTEMPTS');
+
+      const revived = await signIn(first);
+      expect(revived.status).not.toBe(200);
+      expect(await prisma.session.count()).toBe(0);
+      expect(await storedCode()).toEqual({ rows: 0, attempts: 0 });
+    });
+
+    test('cannot be revived once the newest code signs in', async () => {
+      const first = await issueCode();
+      const second = await issueCode();
+
+      expect((await signIn(second)).status).toBe(200);
+      expect(await prisma.session.count()).toBe(1);
+
+      const revived = await signIn(first);
+      expect(revived.status).toBe(400);
+      expect((await revived.json() as { code: string }).code).toBe('INVALID_OTP');
+      expect(await prisma.session.count()).toBe(1);
+      expect(await storedCode()).toEqual({ rows: 0, attempts: 0 });
+    });
+
+    test('does not survive simultaneous sign-ins with the newest code', async () => {
+      const first = await issueCode();
+      const second = await issueCode();
+
+      const responses = await Promise.all(Array.from({ length: 10 }, () => signIn(second)));
+
+      expect(statuses(responses)).toEqual({ 200: 1, 400: 9 });
+      expect((await signIn(first)).status).not.toBe(200);
+      expect(await prisma.session.count()).toBe(1);
+      expect(await storedCode()).toEqual({ rows: 0, attempts: 0 });
+    });
+  });
 }

@@ -56,10 +56,14 @@ type Grade = {
 /**
  * Grades one submitted code and records the outcome in the same statement.
  *
- * `FOR UPDATE` serializes concurrent graders on the one row, so each sees the attempt count every
- * earlier request left behind. The row is then deleted (spent, expired or out of attempts) or its
- * attempt count is raised, by two data-modifying CTEs with disjoint conditions. Returns the decision, or
- * null when no code is stored for the identifier.
+ * A resend adds a row rather than replacing one (`resendStrategy: 'rotate'`), so an identifier can hold
+ * several codes. Only the newest is ever graded. `FOR UPDATE` serializes concurrent graders on it, so
+ * each sees the attempt count every earlier request left behind. Then either the code is spent (right,
+ * expired, or out of attempts) and **every** non-handoff row for the identifier goes with it, the way
+ * Better Auth's own delete-by-identifier would, or the graded row's attempt count rises. Deleting only
+ * the graded row would promote a superseded code and hand the caller a fresh set of attempts.
+ *
+ * Returns the decision, or null when no code is stored for the identifier.
  */
 async function gradeEmailCode(database: PrismaClient, input: {
   identifier: string;
@@ -89,10 +93,12 @@ async function gradeEmailCode(database: PrismaClient, input: {
     ),
     spent AS (
       DELETE FROM "verification"
-       WHERE "id" IN (
-         SELECT "id" FROM graded
-          WHERE expired OR exhausted OR (matched AND ${input.consume}::boolean)
-       )
+       WHERE "identifier" = ${input.identifier}
+         AND "id" NOT LIKE ${`${HANDOFF_ID_PREFIX}%`}
+         AND EXISTS (
+           SELECT 1 FROM graded
+            WHERE expired OR exhausted OR (matched AND ${input.consume}::boolean)
+         )
       RETURNING "id"
     ),
     counted AS (
