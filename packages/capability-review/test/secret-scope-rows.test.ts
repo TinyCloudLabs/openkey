@@ -121,9 +121,9 @@ describe("same secret name in different scopes", () => {
 });
 
 describe("scope in secret read copy", () => {
-  it("names a single scoped secret without its scope", () => {
+  it("names the scope of a single scoped secret", () => {
     const { rows } = counts(decryptAll([scopedKey("alpha", "api_key")]));
-    expect(rows.map((row) => row.primaryText)).toEqual(["Read the secret api_key"]);
+    expect(rows.map((row) => row.primaryText)).toEqual(["Read the secret api_key from alpha"]);
   });
 
   it("disambiguates a shared name across scopes", () => {
@@ -134,25 +134,22 @@ describe("scope in secret read copy", () => {
     ]);
   });
 
-  it("omits scopes for distinct names", () => {
-    const { rows } = counts(decryptAll([scopedKey("alpha", "api_key"), scopedKey("beta", "token")]));
-    expect(rows.map((row) => row.primaryText)).toEqual(["Read the secret api_key", "Read the secret token"]);
+  it("names a global secret without a scope", () => {
+    const { rows } = counts(decryptAll([globalKey("api_key")]));
+    expect(rows.map((row) => row.primaryText)).toEqual(["Read the secret api_key"]);
   });
 
-  it("treats names that differ by case as distinct", () => {
-    const { rows } = counts({
-      ...decryptAll([scopedKey("alpha", "api_key"), scopedKey("beta", "api_key")]),
-      [`${SPACE_PREFIX}:secrets/kv/vault/secrets/scoped/alpha/API_KEY`]: ["tinycloud.kv/get"],
-    });
-    expect(rows.map((row) => row.primaryText)).toEqual(["Read the secret API_KEY", "Read the secret api_key"]);
+  it("names the scope only on the scoped row beside a global secret", () => {
+    const { rows } = counts(decryptAll([globalKey("api_key"), scopedKey("alpha", "api_key")]));
+    expect(rows.map((row) => row.primaryText)).toEqual(["Read the secret api_key", "Read the secret api_key from alpha"]);
   });
 
-  it("omits the scope when a read and its decrypt name the same secret", () => {
+  it("uses one scoped row for a read and decrypt of the same secret", () => {
     const { rows } = counts({
       ...decryptAll([scopedKey("alpha", "api_key"), scopedKey("beta", "token")]),
       [`${SPACE_PREFIX}:secrets/kv/vault/secrets/scoped/alpha/API_KEY`]: ["tinycloud.kv/get"],
     });
-    expect(rows.map((row) => row.primaryText)).toEqual(["Read the secret API_KEY", "Read the secret token"]);
+    expect(rows.map((row) => row.primaryText)).toEqual(["Read the secret API_KEY from alpha", "Read the secret token from beta"]);
   });
 });
 

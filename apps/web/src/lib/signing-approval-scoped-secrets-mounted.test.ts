@@ -191,11 +191,11 @@ describe('the same secret name in two scopes', () => {
 });
 
 describe('scope in approval copy', () => {
-  test('a single scoped secret displays only its name', () => {
+  test('a single scoped secret displays its scope', () => {
     const { target, cleanup } = mounted(modelOf(decrypts([scoped('alpha', 'bot-history')])));
     try {
-      expect(rows(target)).toEqual(['Read the secret bot-history Sensitive']);
-      expect([...target.querySelectorAll('.statement-primary .secret-name')].map(text)).toEqual(['bot-history']);
+      expect(rows(target)).toEqual(['Read the secret bot-history from alpha Sensitive']);
+      expect([...target.querySelectorAll('.statement-primary .secret-name')].map(text)).toEqual(['bot-history', 'alpha']);
     } finally {
       cleanup();
     }
