@@ -4,6 +4,8 @@ import {
   TINYCLOUD_ONE_VERIFIED_REQUESTERS,
   VERIFIED_REQUESTERS,
   type VerifiedRequesterEntry,
+  isEd25519DidKey,
+  isOneVerifiedRequesterEntry,
   isVerifiedRequesterEntry,
   verifiedApprovalRequester,
 } from './delegate-link-policy';
@@ -81,5 +83,36 @@ describe('verifiedApprovalRequester', () => {
     expect(TINYCLOUD_ONE_VERIFIED_REQUESTERS).toEqual([]);
     expect(verifiedApprovalRequester(APP, TINYCLOUD_ONE_VERIFIED_REQUESTERS, VERIFIED_REQUESTERS, inPolicy, inPolicy)).toBeNull();
     expect(verifiedApprovalRequester(ONE, TINYCLOUD_ONE_VERIFIED_REQUESTERS, VERIFIED_REQUESTERS, inPolicy, inPolicy)).toBeNull();
+  });
+});
+
+// What the key-only TinyCloud One list was tested for, now for the policy entries that replace it.
+describe('TinyCloud One keys', () => {
+  const one = [{ did: ONE, policy }];
+
+  test('only the exact listed One key is named TinyCloud One', () => {
+    for (const issuer of [OTHER, '', ONE.toLowerCase(), `${ONE} `, ONE.slice(0, -1)]) {
+      expect(verifiedApprovalRequester(issuer, one, [], inPolicy, inPolicy), JSON.stringify(issuer)).toBeNull();
+    }
+  });
+
+  test('a key that is not an Ed25519 did:key cannot be listed', () => {
+    const entries = [
+      '',
+      'did:key:',
+      'did:web:tinycloud.one',
+      'did:pkh:eip155:1:0xd559ccd9eb87c530a9a349262669386de93cf412',
+      'did:key:zQ3shokFTS3brHcDQrn82RUDfCZESWL1ZdCEJwekUDPQiYBme',
+      `${ONE}0`,
+      ONE.replace('z6Mk', 'z6MK'),
+    ];
+    for (const did of entries) {
+      expect(isEd25519DidKey(did), did).toBe(false);
+      expect(isOneVerifiedRequesterEntry({ did, policy }), did).toBe(false);
+      expect(isVerifiedRequesterEntry({ ...entry, did }), did).toBe(false);
+      expect(verifiedApprovalRequester(did, [{ did, policy }], [], inPolicy, inPolicy), did).toBeNull();
+    }
+    expect(isEd25519DidKey(ONE)).toBe(true);
+    expect(isOneVerifiedRequesterEntry({ did: ONE, policy })).toBe(true);
   });
 });

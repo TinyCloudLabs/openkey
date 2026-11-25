@@ -7,8 +7,11 @@ import { parseCapabilityReview, parseEncryptionResource, type SignerInfo } from 
  * A rule covers one service, and may pin the `spaces` a permission names (any space when absent).
  * - `path` rules match a resource path made of one of the `pathPrefixes` followed by one segment per entry of
  *   `segmentPatterns`. Each pattern is the source of an anchored regular expression and is the allowed-character
- *   list for its segment (for a secret name, `^[A-Z][A-Z0-9_]*$`, the SDK's secret-name rule). A pattern that would
- *   admit an empty segment or any of `? # % / \ .`, whitespace or a control character is not a valid pattern.
+ *   list for its segment (for a secret name, `^[A-Z][A-Z0-9_]*$`, the SDK's secret-name rule). A pattern is only
+ *   literal characters and character classes of letters, digits and `_`, each with at most a `*`, `+` or `{n,m}`
+ *   quantifier, after `^` and before `$`, with one optional `(?!word$)` lookahead; any other form (`.`, `\W`, `?`,
+ *   an alternation, a group) is not a valid pattern. Apart from the patterns, the whole path must be plain segments
+ *   of letters, digits, `_` and `-` before a pattern is read, so a path with a query, fragment or escape never reaches one.
  * - `encryption-network` rules match an encryption resource on one network: the network itself when `wholeNetwork`
  *   is set, and a key whose path is one of the `keyPrefixes` followed by one name that matches `keyNamePattern`
  *   (validated like a segment pattern). Prefixes and keys elsewhere on the network are outside.
@@ -52,12 +55,23 @@ const NETWORK = /^[a-z0-9][a-z0-9-]*$/;
 /** Segments of a prefix, and of any path that is matched: letters, digits, `_` and `-`. */
 const PREFIX = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*\/$/;
 const PATH = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
+const LITERAL = '[A-Za-z0-9_-]';
+/** A character class of letters, digits and `_` (ranges like `A-Z` allowed), with `-` only last: `[A-Z0-9_]`, `[a-z0-9_-]`. */
+const CLASS = '\\[(?:[A-Za-z0-9]-[A-Za-z0-9]|[A-Za-z0-9_])+-?\\]';
+/** One atom: a class or a literal character, with at most a `*`, `+`, `{n}` or `{n,m}` quantifier. */
+const ATOM = `(?:${CLASS}|${LITERAL})(?:[*+]|\\{\\d{1,3}(?:,\\d{0,3})?\\})?`;
+/** A pattern is `^`, an optional `(?!word$)` lookahead, then one or more atoms, then `$`: nothing else. */
+const SEGMENT_PATTERN = new RegExp(`^\\^(?:\\(\\?!${LITERAL}+\\$\\))?(?:${ATOM})+\\$$`);
 /** What no segment pattern may admit, alone or between letters: query, fragment, escape, separator, dot, space, control. */
 const FORBIDDEN_IN_SEGMENT = ['?', '#', '%', '/', '\\', '.', ' ', '\t', '\n', '\r', '\f', '\v', '\u0000', '\u001f', '\u007f', '\u00a0', '\u2028', '\u2029', '\ufeff', ':', ';', '@', '&', '=', '+', '$', ',', '*', '!', "'", '"', '<', '>', '|', '~', '`', '^', '(', ')', '[', ']', '{', '}'];
 
-/** Whether a source is an anchored pattern that refuses an empty segment and every character above. */
+/**
+ * Whether a source is a segment pattern: the bounded literal-and-class form above, which cannot name a query,
+ * fragment, escape, separator, dot, whitespace or control character, and which refuses an empty segment. The sample
+ * characters are a second check on the compiled pattern.
+ */
 function isSegmentPattern(source: unknown): source is string {
-  if (typeof source !== 'string' || !source.startsWith('^') || !source.endsWith('$') || source.endsWith('\\$')) return false;
+  if (typeof source !== 'string' || source.length > 200 || !SEGMENT_PATTERN.test(source)) return false;
   let pattern: RegExp;
   try {
     pattern = new RegExp(source);
@@ -92,7 +106,7 @@ export function isRequesterScopePolicy(policy: RequesterScopePolicy | null | und
   });
 }
 
-function pathFits(rule: RequesterScopeRule, path: string): boolean {
+export function pathFits(rule: RequesterScopeRule, path: string): boolean {
   if (rule.kind === 'path') {
     // The whole path is plain characters first, so nothing below sees a query, fragment, escape or dot segment.
     if (!PATH.test(path)) return false;
@@ -151,16 +165,19 @@ export type SignedGrant = {
   path: string;
   ownedBySelf: boolean | null;
   actions: readonly { ability: string }[];
+  /** True when the ability's service and the resource's service segment disagree. */
+  serviceMismatch?: boolean;
 };
 
 /**
  * The policy input for what is actually signed, from the review model's grants and the signed lifetime. A grant
  * is written the way a request writes it: the space by its last segment (`secrets`), and an encryption resource by
- * its URN in `path` with the space `encryption`. Null when the lifetime is unknown or a grant is not the signer's
- * own resource, so no listed key is named for it.
+ * its URN in `path` with the space `encryption`. Null when the lifetime is unknown, or a grant is not known to be the
+ * signer's own resource (`ownedBySelf` is not true) or has a service that disagrees with its resource, so no listed
+ * key is named for it.
  */
 export function signedScopeRequest(grants: readonly SignedGrant[], lifetimeSeconds: number | null): RequesterScopeRequest | null {
-  if (lifetimeSeconds === null || grants.some((grant) => grant.ownedBySelf === false)) return null;
+  if (lifetimeSeconds === null || grants.some((grant) => grant.ownedBySelf !== true || grant.serviceMismatch === true)) return null;
   const permissions = grants.map((grant) => {
     const actions = grant.actions.map((action) => action.ability);
     if (grant.service === 'tinycloud.encryption') return { service: grant.service, space: 'encryption', path: grant.space, actions };
@@ -170,10 +187,12 @@ export function signedScopeRequest(grants: readonly SignedGrant[], lifetimeSecon
 }
 
 /**
- * The policy input for a prepared SIWE message, read the way the review reads it: its recap grants and the span from
- * Issued At to Expiration Time. Null when the message is not a recap, has no span, or `signedScopeRequest` refuses it.
+ * The policy input for a prepared SIWE message, read the way the review reads it: its recap grants and the time left
+ * until Expiration Time, which is how long the grant can still be used (Issued At does not bound it). `nowMs` is the
+ * clock, passed in so a test can fix it. Null when the message is not a recap, has no expiry or is expired, or
+ * `signedScopeRequest` refuses it.
  */
-export function signedScopeOfMessage(message: string, signer: SignerInfo): RequesterScopeRequest | null {
+export function signedScopeOfMessage(message: string, signer: SignerInfo, nowMs: number = Date.now()): RequesterScopeRequest | null {
   try {
     const model = parseCapabilityReview({
       message,
@@ -187,8 +206,8 @@ export function signedScopeOfMessage(message: string, signer: SignerInfo): Reque
       },
     });
     if (model.protocol !== 'tinycloud-siwe-recap' || !model.immutable) return null;
-    const span = Date.parse(model.immutable.expirationTime) - Date.parse(model.immutable.issuedAt);
-    return signedScopeRequest(model.permissions, Number.isFinite(span) && span > 0 ? Math.round(span / 1000) : null);
+    const left = Date.parse(model.immutable.expirationTime) - nowMs;
+    return signedScopeRequest(model.permissions, Number.isFinite(left) && left > 0 ? Math.ceil(left / 1000) : null);
   } catch {
     return null;
   }

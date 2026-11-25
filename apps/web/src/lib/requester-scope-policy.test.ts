@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test is a runtime-only module; svelte-check doesn't ship types
 import { describe, expect, test } from 'bun:test';
-import { checkRequesterScope, isRequesterScopePolicy, signedScopeRequest, type RequesterScopePolicy } from './requester-scope-policy';
+import { checkRequesterScope, isRequesterScopePolicy, pathFits, signedScopeRequest, type RequesterScopePolicy } from './requester-scope-policy';
 
 const OWNER = 'did:pkh:eip155:1:0x1111111111111111111111111111111111111111';
 const KV = 'tinycloud.kv';
@@ -219,9 +219,13 @@ describe('signedScopeRequest', () => {
     expect(signedScopeRequest(grants, null)).toBeNull();
   });
 
-  test('a grant that is not the signer\'s own is not named; an unknown owner follows the policy', () => {
+  test('a grant is named only when it is known to be the signer\'s own and its service agrees with its resource', () => {
+    expect(signedScopeRequest([{ ...grants[0]!, ownedBySelf: true }], 3600)).not.toBeNull();
     expect(signedScopeRequest([{ ...grants[0]!, ownedBySelf: false }], 3600)).toBeNull();
-    expect(signedScopeRequest([{ ...grants[0]!, ownedBySelf: null }], 3600)).not.toBeNull();
+    expect(signedScopeRequest([{ ...grants[0]!, ownedBySelf: null }], 3600)).toBeNull();
+    expect(signedScopeRequest([grants[0]!, { ...grants[1]!, ownedBySelf: null }], 3600)).toBeNull();
+    expect(signedScopeRequest([{ ...grants[0]!, serviceMismatch: true }], 3600)).toBeNull();
+    expect(signedScopeRequest([{ ...grants[0]!, serviceMismatch: false }], 3600)).not.toBeNull();
   });
 
   test('a signed path that reads back wider than the request is refused', () => {
@@ -235,5 +239,38 @@ describe('signedScopeRequest', () => {
     expect(checkRequesterScope(policy, signedScopeRequest([{ ...grants[0]!, space: space.replace(':secrets', ':default') }], 60)!)).toEqual({ ok: false, reason: 'space' });
     expect(checkRequesterScope(policy, signedScopeRequest([...grants, { service: 'tinycloud.sql', space, path: '', ownedBySelf: true, actions: [{ ability: 'tinycloud.sql/read' }] }], 60)!)).toEqual({ ok: false, reason: 'service' });
     expect(checkRequesterScope(policy, signedScopeRequest([{ ...grants[0]!, actions: [{ ability: GET }, { ability: 'tinycloud.kv/put' }] }], 60)!)).toEqual({ ok: false, reason: 'action' });
+  });
+});
+
+describe('a segment pattern is a bounded literal-and-class form', () => {
+  const rule = policy.rules[0]! as Extract<RequesterScopePolicy['rules'][number], { kind: 'path' }>;
+  const enc = policy.rules[1]! as Extract<RequesterScopePolicy['rules'][number], { kind: 'encryption-network' }>;
+  const valid = (source: string) => isRequesterScopePolicy({ ...policy, rules: [{ ...rule, segmentPatterns: [source] }] });
+
+  test('loose, unanchored or grouped patterns are not valid, whatever strings they happen to pass', () => {
+    for (const bad of ['^.{4,}$', '^\\W{4,}$', '^B.*$', '^[A-Z]{2}.*$', '[A-Z]{2}$', '^[A-Z]{2}', '^(?:A|B)$', '^(A)$', '^[A-Z]{2}(x)$', '^A|B$', '^[^a]+$',
+      '^[A-Z]{2}\\d$', '^[A-Z\\d]+$', '^A?$', '^(?=A)[A-Z]+$', '^(?!a.)[A-Z]+$', '^[A-Z]+$|^x$', '^[A-Z]{2}$\n', '^[A-Z]{9999}$', '^[]$']) {
+      expect(valid(bad), bad).toBe(false);
+      expect(isRequesterScopePolicy({ ...policy, rules: [{ ...enc, keyNamePattern: bad }] }), bad).toBe(false);
+    }
+  });
+
+  test('bounded forms are valid, including both patterns One uses', () => {
+    for (const good of ['^[A-Z][A-Z0-9_]*$', '^(?!scoped$)[a-z0-9][a-z0-9_-]*$', '^[A-Z]{2}$', '^[A-Z]{2,8}$', '^[A-Z]{2,}$', '^[a-z0-9_-]+$', '^A[0-9]*$', '^abc$']) {
+      expect(valid(good), good).toBe(true);
+    }
+  });
+
+  // The whole-path check is the last stop for a rule whose pattern the validator would refuse. These rules are
+  // built by hand, past the validator, to show that the check alone refuses a query, fragment, escape or separator.
+  test('the whole-path check alone refuses a path with a query, fragment, escape or separator', () => {
+    const loose = (source: string) => ({ ...rule, segmentPatterns: [source] });
+    for (const source of ['^.{4,}$', '^[A-Z]{2}.*$', '[A-Z]{2}$', '^\\W{4,}$']) {
+      for (const path of ['vault/secrets/AB?x', 'vault/secrets/AB#x', 'vault/secrets/AB%3Fx', 'vault/secrets/?AB', 'vault/secrets/AB/', 'vault/secrets/A.B', 'vault/secrets/AB\\x', 'vault/secrets/AB x']) {
+        expect(pathFits(loose(source), path), `${source} ${path}`).toBe(false);
+      }
+    }
+    expect(pathFits(loose('^.{4,}$'), 'vault/secrets/ABCD')).toBe(true);
+    expect(pathFits(loose('[A-Z]{2}$'), 'vault/secrets/xAB')).toBe(true);
   });
 });
