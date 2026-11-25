@@ -48,6 +48,7 @@ import {
 } from './social-providers';
 import { appleRelayEmailUndeliverable } from './services/apple-notifications';
 import { signInCodeStorage } from './services/email-code-storage';
+import { EMAIL_CODE_ALLOWED_ATTEMPTS, emailCodeAtomicVerify } from './services/email-code-atomic-verify';
 import { crossSubDomainCookieOptions } from './auth-options';
 import { resolveRequestUri } from './services/native-delegation/par';
 import { EMAIL_OTP_ADDRESS_LIMIT_OFF } from './middleware/email-otp-rate-limit';
@@ -441,6 +442,7 @@ export const auth = betterAuth({
       },
       otpLength: 6,
       expiresIn: 300, // 5 minutes
+      allowedAttempts: EMAIL_CODE_ALLOWED_ATTEMPTS,
       // Codes are stored hashed, so a resend mails a new code and the earlier
       // one stops working; the sign-in page asks for the latest email.
       resendStrategy: 'rotate',
@@ -615,6 +617,9 @@ export const auth = betterAuth({
       },
     }))) as any,
     reviewerAuth(prisma, origin),
+    // Last: reviewer sign-in answers its own paths before a code is graded, and every other hook that
+    // can refuse one of the code endpoints runs first, so no code is spent on a request that is refused.
+    emailCodeAtomicVerify(prisma),
   ],
 
   // Provider entries are present only when every required secret is configured.
