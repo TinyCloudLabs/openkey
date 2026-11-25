@@ -62,7 +62,7 @@ import {
   type RecapEntry,
   type SessionAbilities,
 } from './delegate-session';
-import { countPrivateSessionJwk, log, logError, logManifestOriginBindFailed, logMetric, logSessionJwk, recordAccountOriginRefused } from '../log';
+import { countPrivateSessionJwk, log, logError, logMetric, logSessionJwk, recordAccountOriginRefused } from '../log';
 
 // Re-export the pure delegation helpers so existing external test files
 // (e.g. delegate-oauth-route.test.ts) that import them from this module
@@ -3364,7 +3364,6 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
             ? envelope.manifestDigest
             : null;
         if (reportedOrigin && declaredDigest) {
-          metadataTrust = { status: 'unsigned', reason: 'OpenKey could not verify the app manifest.' };
           try {
             // `owner` is derived from the signing key and resolves `{owner}`
             // in the published manifest. The envelope's owner is only a hint
@@ -3420,10 +3419,14 @@ delegateRouter.post('/authorize-sign-prepare', async (c) => {
               boundDeclaredKeysAppId = bindResult.manifest?.declaredKeysAppId;
               boundDeclaredKeys = bindResult.manifest?.declaredKeys;
             } else {
-              logManifestOriginBindFailed(bindResult.reason ?? 'unknown reason');
+              metadataTrust = {
+                status: 'unsigned',
+                reason: `origin-bind failed: ${bindResult.reason ?? 'unknown reason'}`,
+              };
             }
           } catch (bindErr) {
             logError('warn', 'delegate_origin_bind_failed', bindErr);
+            metadataTrust = { status: 'unsigned', reason: 'origin-bind threw' };
           }
         } else {
           metadataTrust = {

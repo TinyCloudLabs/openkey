@@ -1,5 +1,5 @@
 # OpenKey API Dockerfile
-FROM oven/bun:1.2-alpine@sha256:0841c588f6304300baf1d395ae339ce09a6e18c4b6a7cdd4fddcbdb87a2f096a AS base
+FROM oven/bun:1.2-alpine AS base
 WORKDIR /app
 
 # Install dependencies

@@ -27,11 +27,12 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { promises as dns } from "node:dns";
 import net from "node:net";
+import { Agent, buildConnector, fetch as undiciFetch } from "undici";
 import { parseManifestKeys, type ManifestKeys } from "./app-key-gate";
 import { appIdValid } from "./key-resource";
-import { pinnedHttpsGet } from "./pinned-https-fetch";
 
 const MANIFEST_PATH = "/.well-known/openkey-manifest.json";
+const REQUEST_TIMEOUT_MS = 5_000;
 const MAX_BYTES = 64 * 1024;
 
 /**
@@ -147,8 +148,17 @@ export async function fetchAndBindWellKnownManifest(input: {
     return { ok: false, reason: "reportedOrigin resolves to a private host" };
   }
 
-  // 3. Resolve once and validate every answer before choosing the socket address.
-  let pinnedAddress: string;
+  // 3. DNS resolve + reject private/reserved IPs. Uses `dns.lookup` so it
+  //    matches what the network stack itself would use.
+  //
+  // SECURITY (Sol MAJOR-4 — DNS rebinding): a later fetch that re-resolves
+  //  the hostname would be TOCTOU-vulnerable: an attacker's DNS could
+  //  return a public IP here and a private IP on the fetch. To defeat this
+  //  we pick ONE validated address here and pin the actual HTTPS
+  //  connection to it via a custom undici dispatcher below. TLS SNI /
+  //  hostname validation stays bound to `url.hostname`, so the fetch
+  //  refuses if the presented cert is not for the reported origin.
+  let pinnedAddress: string | null = null;
   try {
     const addresses = await dns.lookup(url.hostname, { all: true });
     if (!addresses.length) {
@@ -175,28 +185,136 @@ export async function fetchAndBindWellKnownManifest(input: {
     return { ok: false, reason: "declaredDigest is not a 64-char hex sha256" };
   }
 
-  // 5. Fetch with timeout, size cap and no redirects.
-  const result = await pinnedHttpsGet(new URL(MANIFEST_PATH, url.origin), pinnedAddress, MAX_BYTES);
-  if (!result.ok) {
-    switch (result.kind) {
-      case "request": return { ok: false, reason: "fetch threw" };
-      case "body": return { ok: false, reason: "response body read threw" };
-      case "limit": return { ok: false, reason: "response exceeded 64KB" };
-      case "no-body": return { ok: false, reason: "response body has no reader" };
-      case "status": {
-        const { status } = result;
-        const redirect = status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
-        return { ok: false, reason: redirect ? "fetch threw" : `fetch returned status ${status}` };
+  // 5. Fetch with timeout, size cap, no redirects.
+  //
+  // Sol MAJOR-4: pin the connection to the DNS address that already
+  // passed the private/reserved check (defeats DNS rebinding). We use
+  // undici with a per-request Agent whose `connect` forces `hostname`
+  // to the pinned IP. `servername` is left unset so TLS SNI + cert
+  // validation continue to run against `url.hostname` — the fetch
+  // refuses when the presented certificate does not name the reported
+  // origin, and cannot silently talk to a different host.
+  //
+  // Sol MAJOR-4: the 5-second abort deadline stays active THROUGH the
+  // complete body read. An attacker holding the TCP connection open by
+  // trickling bytes cannot stall this call past REQUEST_TIMEOUT_MS —
+  // the controller.abort() will surface as a body-read error.
+  const manifestUrl = `${url.origin}${MANIFEST_PATH}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  // A per-call Agent avoids leaking sockets and keeps the pin scoped
+  // to THIS request. We install a custom `connector` that hard-overrides
+  // the `hostname` field on the socket-connect callback with the
+  // already-validated `pinnedAddress` — but leaves `servername` (SNI)
+  // and the HTTP Host header intact so TLS certificate validation
+  // continues to check the reported origin. A DNS response that later
+  // flips to a private IP cannot influence this fetch; the socket
+  // connects to the pre-validated IP even if the OS resolver would
+  // have chosen something different.
+  const baseConnect = buildConnector();
+  const pinnedConnector: buildConnector.connector = (options, callback) => {
+    baseConnect(
+      {
+        ...options,
+        // `hostname` is the field the socket layer resolves and dials.
+        hostname: pinnedAddress!,
+      },
+      callback,
+    );
+  };
+  const dispatcher = new Agent({ connect: pinnedConnector });
+  let res: Awaited<ReturnType<typeof undiciFetch>>;
+  try {
+    res = await undiciFetch(manifestUrl, {
+      method: "GET",
+      redirect: "error",
+      signal: controller.signal,
+      dispatcher,
+      // Some Node fetches allow overriding — set Accept for hygiene only.
+      headers: { Accept: "application/json" },
+    });
+  } catch {
+    clearTimeout(timer);
+    try {
+      await dispatcher.close();
+    } catch {
+      // best-effort
+    }
+    return { ok: false, reason: "fetch threw" };
+  }
+  if (!res.ok) {
+    clearTimeout(timer);
+    try {
+      await dispatcher.close();
+    } catch {
+      // best-effort
+    }
+    return { ok: false, reason: `fetch returned status ${res.status}` };
+  }
+  // Enforce max size — read as bytes and abort if larger than MAX_BYTES.
+  // The abort timer remains armed throughout — a slow trickle attack
+  // trips it inside `reader.read()` and short-circuits with a bounded
+  // failure rather than hanging.
+  const reader = res.body?.getReader();
+  if (!reader) {
+    clearTimeout(timer);
+    try {
+      await dispatcher.close();
+    } catch {
+      // best-effort
+    }
+    return { ok: false, reason: "response body has no reader" };
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let bodyOk = false;
+  try {
+    while (true) {
+      let done = false;
+      let value: Uint8Array | undefined;
+      try {
+        const chunk = await reader.read();
+        done = chunk.done;
+        value = chunk.value;
+      } catch {
+        return { ok: false, reason: "response body read threw" };
       }
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_BYTES) {
+        try {
+          await reader.cancel();
+        } catch {
+          // best-effort
+        }
+        return { ok: false, reason: "response exceeded 64KB" };
+      }
+      chunks.push(value);
+    }
+    bodyOk = true;
+  } finally {
+    // Only clear the abort timer AFTER body consumption completes (or
+    // errors). Closing the dispatcher tears down the pinned socket.
+    clearTimeout(timer);
+    try {
+      await dispatcher.close();
+    } catch {
+      // best-effort
     }
   }
+  if (!bodyOk) {
+    // Defence in depth — the loop above returns on every error path.
+    return { ok: false, reason: "response body did not complete" };
+  }
+  const bytes = concatBytes(chunks, total);
 
   // Parse, canonicalize, digest, compare, and extract as one fail-closed
   // operation. The SDK computes the same canonical JSON digest from its
   // in-memory manifest, so harmless whitespace or object-key ordering in the
   // published file cannot break origin binding.
   return bindWellKnownManifestBytes(
-    result.bytes,
+    bytes,
     normalizedDeclared,
     input.owner,
     input.ownerHint,
@@ -520,6 +638,16 @@ function extractDeclaredPermissions(input: unknown): DeclaredPermission[] | unde
   return out.length > 0 ? out : undefined;
 }
 
+function concatBytes(chunks: Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.byteLength;
+  }
+  return out;
+}
+
 function isLiterallyPrivateHostname(host: string): boolean {
   const lower = host.toLowerCase();
   if (lower === "localhost") return true;
@@ -568,31 +696,14 @@ function isPrivateIPv4(address: string): boolean {
 }
 
 function isPrivateIPv6(address: string): boolean {
-  // Normalize equivalent IPv6 spellings before applying prefix checks.
-  let normalized: string;
-  try {
-    normalized = new URL(`https://[${address}]`).hostname.slice(1, -1);
-  } catch {
-    return true;
-  }
-  // The serializer emits at most one "::" and no dotted quad.
-  const halves = normalized.split("::");
-  const head = halves[0] ? halves[0].split(":") : [];
-  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
-  const missing = halves.length === 2 ? 8 - head.length - tail.length : 0;
-  const groups = [...head, ...Array<string>(Math.max(missing, 0)).fill("0"), ...tail].map((g) => parseInt(g, 16));
-  if (halves.length > 2 || groups.length !== 8 || groups.some((g) => !Number.isInteger(g))) return true;
-  const first = groups[0]!;
-  const second = groups[1]!;
-  // Only global unicast 2000::/3 is public; every other prefix fails closed. That
-  // covers ::/96 and ::1, ::ffff:0:0/96 IPv4-mapped, 64:ff9b::/96 and 64:ff9b:1::/48
-  // translation, 100::/64 discard, fc00::/7 unique-local, fe80::/10 link-local,
-  // fec0::/10 site-local and ff00::/8 multicast.
-  if ((first & 0xe000) !== 0x2000) return true;
-  // 2002::/16 6to4 and 3fff::/20 documentation.
-  if (first === 0x2002 || (first === 0x3fff && second <= 0x0fff)) return true;
-  // 2001::/23 IETF protocol assignments (includes 2001::/32 Teredo) is refused whole
-  // because most of it is not globally reachable; 2001:db8::/32 documentation.
-  if (first === 0x2001 && (second < 0x0200 || second === 0x0db8)) return true;
+  const lower = address.toLowerCase();
+  if (lower === "::" || lower === "::1") return true;
+  // fe80::/10 link-local, fc00::/7 unique-local, ::ffff:/96 IPv4-mapped,
+  // 64:ff9b::/96 well-known translation prefix, ff00::/8 multicast.
+  if (lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) return true;
+  if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
+  if (lower.startsWith("::ffff:")) return true;
+  if (lower.startsWith("64:ff9b:")) return true;
+  if (lower.startsWith("ff")) return true;
   return false;
 }
