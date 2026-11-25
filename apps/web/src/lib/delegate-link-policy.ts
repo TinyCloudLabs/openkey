@@ -1,3 +1,5 @@
+import { appDisplayName } from '@openkey/capability-review';
+
 /**
  * TC-547: what an ordinary `/delegate` link (one without a device
  * transaction) may ask for. Anyone can make such a link, so the page only
@@ -168,10 +170,24 @@ export const TINYCLOUD_ONE_REQUESTER: DelegateRequester = { displayName: 'TinyCl
  * lists its own in `VITE_TINYCLOUD_ONE_REQUESTER_DIDS`.
  */
 export const TINYCLOUD_ONE_REQUESTER_DIDS: readonly string[] = [];
+/** Add verified request signers here, one entry per line. */
+export const VERIFIED_REQUESTERS: readonly VerifiedRequesterEntry[] = [];
 
 /** A configured requester key: an Ed25519 `did:key` (`did:key:z6Mk…`). */
 export function isEd25519DidKey(entry: string): boolean {
   return /^did:key:z6Mk[1-9A-HJ-NP-Za-km-z]{44}$/.test(entry);
+}
+export type VerifiedRequesterEntry = { did: string; displayName: string; returnTo: string };
+
+/** Only reviewed Ed25519 keys and plain, unambiguous names may be listed. */
+export function isVerifiedRequesterEntry(entry: VerifiedRequesterEntry): boolean {
+  if (!isEd25519DidKey(entry.did)) return false;
+  const name = appDisplayName(entry.displayName);
+  if (name === null || name !== entry.displayName || appDisplayName(entry.returnTo) !== entry.returnTo) return false;
+  const displayName = name.toLowerCase();
+  const returnTo = entry.returnTo.toLowerCase();
+  return displayName !== 'tinycloud one' && displayName !== 'tinycloud cli'
+    && returnTo !== 'tinycloud one' && returnTo !== 'tinycloud cli';
 }
 
 /**
@@ -183,4 +199,16 @@ export function isEd25519DidKey(entry: string): boolean {
  */
 export function approvalRequester(issuer: string, oneRequesterDids: readonly string[]): DelegateRequester | null {
   return oneRequesterDids.includes(issuer) ? TINYCLOUD_ONE_REQUESTER : null;
+}
+
+/** Names a request only when its signing DID exactly matches a reviewed key. */
+export function verifiedApprovalRequester(
+  issuer: string,
+  oneRequesterDids: readonly string[],
+  verifiedRequesters: readonly VerifiedRequesterEntry[],
+): DelegateRequester | null {
+  const one = approvalRequester(issuer, oneRequesterDids);
+  if (one) return one;
+  const entry = verifiedRequesters.find((requester) => requester.did === issuer && isVerifiedRequesterEntry(requester));
+  return entry ? { displayName: entry.displayName, returnTo: entry.returnTo } : null;
 }
