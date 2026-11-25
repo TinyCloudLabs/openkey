@@ -279,6 +279,36 @@ describe('the signed lifetime is the time left until the message expires', () =>
     expect(name(request, signedScopeOfMessage(issuedADayAgo, SIGNER))).toEqual(NAMED);
   });
 
+  // The derived lifetime is the time left less the 30-second slack, so the boundary sits at 3630 left: 3600 counted
+  // against the maximum, and 3631 left counts 3601. At 30 seconds left or less it counts one second.
+  test('the signed lifetime counted against the policy is the time left less 30 seconds, never below one second', () => {
+    const counted = (seconds: number) => signedScopeOfMessage(preparedMessage(request.permissions, seconds), SIGNER)?.grantLifetimeSeconds;
+    expect(counted(3630)).toBe(3600);
+    expect(counted(3631)).toBe(3601);
+    expect(counted(3600)).toBe(3570);
+    expect(counted(31)).toBe(1);
+    expect(counted(30)).toBe(1);
+    expect(counted(1)).toBe(1);
+  });
+
+  // Issued At is not read and no other skew allowance exists: only Expiration Time against the clock counts, with the
+  // one 30-second slack. A message issued 30 seconds ahead of the page clock is judged by its expiry alone.
+  test('a message issued 30 seconds in the future is judged by its Expiration Time alone, with no second allowance', () => {
+    const future = (lifetimeFromIssue: number) => {
+      const issuedAt = new Date(PREPARED_AT + 30_000);
+      return preparedMessage(request.permissions, 3600)
+        .replace(/Issued At: .*\n/, `Issued At: ${issuedAt.toISOString()}\n`)
+        .replace(/Expiration Time: .*\n/, `Expiration Time: ${new Date(issuedAt.getTime() + lifetimeFromIssue * 1000).toISOString()}\n`);
+    };
+    // Issued at now + 30 s for an hour: 3630 seconds from now, the exact limit.
+    expect(name(request, signedScopeOfMessage(future(3600), SIGNER))).toEqual(NAMED);
+    // One second more than that: 3631 seconds from now.
+    expect(name(request, signedScopeOfMessage(future(3601), SIGNER))).toBeNull();
+    // Issued 30 seconds ahead for a short time stays named, and the future Issued At adds nothing to the slack.
+    expect(name(request, signedScopeOfMessage(future(60), SIGNER))).toEqual(NAMED);
+    expect(signedScopeOfMessage(future(3600), SIGNER)?.grantLifetimeSeconds).toBe(3600);
+  });
+
   test('an unknown signer is not named: its resources are not known to be its own', () => {
     expect(name(request, signedScopeOfMessage(message, { ...SIGNER, address: '0x1111111111111111111111111111111111111111' }))).toBeNull();
   });
