@@ -13,8 +13,8 @@ case $ref in sha256:*) ;; *-alpine) ;; *) ref=$ref-alpine ;; esac
 registry=https://registry-1.docker.io/v2/oven/bun
 work=$(mktemp -d)
 trap 'chmod -R u+w -- "$work" 2>/dev/null; rm -rf -- "$work"' EXIT
-curl_registry() { curl -fsSL --retry 3 -H "Authorization: Bearer $token" "$@"; }
-token=$(curl -fsSL 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:oven/bun:pull' | jq -er .token)
+curl_registry() { curl --proto =https --proto-redir =https -fsSL --retry 3 -H "Authorization: Bearer $token" "$@"; }
+token=$(curl --proto =https --proto-redir =https -fsSL 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:oven/bun:pull' | jq -er .token)
 
 manifest_accept='application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json'
 curl_registry -H "Accept: $manifest_accept" "$registry/manifests/$ref" -o "$work/first.json"
@@ -35,7 +35,9 @@ mkdir "$work/rootfs"
 for digest in $(jq -er '.layers[].digest' "$work/manifest.json"); do
   curl_registry "$registry/blobs/$digest" -o "$work/layer"
   [[ sha256:$(sha256sum < "$work/layer" | cut -d' ' -f1) == "$digest" ]] || { echo "layer digest mismatch: $digest" >&2; exit 1; }
-  ! tar -tzf "$work/layer" | grep -Eq '(^|/)\.wh\.' || { echo "unsupported whiteout in $digest" >&2; exit 1; }
+  # List to a file first: grep -q on a pipe exits early, tar then dies of SIGPIPE and pipefail hides the match.
+  tar -tzf "$work/layer" > "$work/layer.list"
+  if grep -Eq '(^|/)\.wh\.' "$work/layer.list"; then echo "unsupported whiteout in $digest" >&2; exit 1; fi
   tar -xzf "$work/layer" -C "$work/rootfs" --no-same-owner --exclude='dev/*'
 done
 
@@ -60,6 +62,9 @@ unshare --user --map-root-user --net --mount bash -euc '
   exec chroot "$rootfs" /bin/sh -euc "
     echo \"bun --revision: \$(/usr/local/bin/bun --revision) (\$(. /etc/os-release; echo \$PRETTY_NAME))\"
     cd /app
-    NODE_EXTRA_CA_CERTS=/fixture/cert.pem exec /usr/local/bin/bun scripts/check-pinned-https-fetch.ts /fixture
+    NODE_EXTRA_CA_CERTS=/fixture/cert.pem /usr/local/bin/bun scripts/check-pinned-https-fetch.ts /fixture
+    # Bun reads this variable at startup, so the second pass starts with verification switched off in the environment.
+    echo NODE_TLS_REJECT_UNAUTHORIZED=0 at startup
+    NODE_TLS_REJECT_UNAUTHORIZED=0 NODE_EXTRA_CA_CERTS=/fixture/cert.pem /usr/local/bin/bun scripts/check-pinned-https-fetch.ts /fixture
   "
 ' check-pinned-https-fetch-musl "$work/rootfs" "$repo" "$modules" "$fixture" "$(command -v ip)"
