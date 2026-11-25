@@ -168,7 +168,9 @@ export const TINYCLOUD_ONE_REQUESTER: DelegateRequester = { displayName: 'TinyCl
 /**
  * TinyCloud One's stable request-signing keys (`did:key`), one per
  * deployment. Empty until One's key is set; another deployment (preview, dev)
- * lists its own in `VITE_TINYCLOUD_ONE_REQUESTER_DIDS`.
+ * lists its own in `VITE_TINYCLOUD_ONE_REQUESTER_DIDS`. `approvalRequester` reads this list by key alone. The approval
+ * page does not feed it, or the env list, into naming: a key with no policy would be named for any request it
+ * signs. The page names only keys that carry a scope policy (`TINYCLOUD_ONE_VERIFIED_REQUESTERS`, `VERIFIED_REQUESTERS`).
  */
 export const TINYCLOUD_ONE_REQUESTER_DIDS: readonly string[] = [];
 /** Add verified request signers here, one entry per line. */
@@ -203,21 +205,43 @@ export function approvalRequester(issuer: string, oneRequesterDids: readonly str
   return oneRequesterDids.includes(issuer) ? TINYCLOUD_ONE_REQUESTER : null;
 }
 
+/** A TinyCloud One key that is named only for a request inside its policy. */
+export type OneVerifiedRequesterEntry = { did: string; policy: RequesterScopePolicy };
+
 /**
- * Names a request only when its signing DID exactly matches a reviewed key and the request stays inside that key's
- * policy. `request` is the parsed request; without it (not loaded yet) no listed key is named. TinyCloud One keys
- * are named by key alone.
+ * TinyCloud One's long-lived request-signing keys, each with the policy that bounds what the key may ask for.
+ * Empty until a key and its policy are reviewed. A long-lived key belongs here, not in `TINYCLOUD_ONE_REQUESTER_DIDS`
+ * or `VITE_TINYCLOUD_ONE_REQUESTER_DIDS`: those lists name by key alone and no longer name a requester on the page.
+ */
+export const TINYCLOUD_ONE_VERIFIED_REQUESTERS: readonly OneVerifiedRequesterEntry[] = [];
+
+/** A well-formed One entry: an Ed25519 `did:key` and a valid policy. */
+export function isOneVerifiedRequesterEntry(entry: OneVerifiedRequesterEntry): boolean {
+  return isEd25519DidKey(entry.did) && isRequesterScopePolicy(entry.policy);
+}
+
+/**
+ * Names a request only when its signing DID exactly matches a reviewed key and both what was requested and what is
+ * signed stay inside that key's policy. No key is named without its policy, TinyCloud One's included: a key in
+ * `oneRequesters` is named 'TinyCloud One' under its own policy, and the key-only list `approvalRequester` reads is
+ * not consulted. A key in both lists takes the One entry and its policy. `request` is the parsed request and `signed`
+ * the scope of the prepared message (`signedScopeRequest`); with either missing (not loaded or not prepared yet) no
+ * key is named.
  */
 export function verifiedApprovalRequester(
   issuer: string,
-  oneRequesterDids: readonly string[],
+  oneRequesters: readonly OneVerifiedRequesterEntry[],
   verifiedRequesters: readonly VerifiedRequesterEntry[],
   request: RequesterScopeRequest | null,
+  signed: RequesterScopeRequest | null,
 ): DelegateRequester | null {
-  const one = approvalRequester(issuer, oneRequesterDids);
-  if (one) return one;
-  if (request === null) return null;
+  if (request === null || signed === null) return null;
+  const one = oneRequesters.find((requester) => requester.did === issuer);
+  if (one) {
+    if (!isOneVerifiedRequesterEntry(one) || !checkRequesterScope(one.policy, request).ok || !checkRequesterScope(one.policy, signed).ok) return null;
+    return TINYCLOUD_ONE_REQUESTER;
+  }
   const entry = verifiedRequesters.find((requester) => requester.did === issuer && isVerifiedRequesterEntry(requester));
-  if (!entry || !checkRequesterScope(entry.policy, request).ok) return null;
+  if (!entry || !checkRequesterScope(entry.policy, request).ok || !checkRequesterScope(entry.policy, signed).ok) return null;
   return { displayName: entry.displayName, returnTo: entry.returnTo };
 }

@@ -43,12 +43,11 @@
     isCanonicalHttpsEndpoint,
     isCanonicalHttpsOrigin,
     isLoopbackHostname,
-    isEd25519DidKey,
-    TINYCLOUD_ONE_REQUESTER_DIDS,
+    TINYCLOUD_ONE_VERIFIED_REQUESTERS,
     VERIFIED_REQUESTERS,
     withConfiguredEntries,
   } from '$lib/delegate-link-policy';
-  import type { RequesterScopeRequest } from '$lib/requester-scope-policy';
+  import { signedScopeOfMessage, type RequesterScopeRequest } from '$lib/requester-scope-policy';
   import { preparedMatchesSelection, reviewSelectionToActionKeys, selectedServerActionIds } from '$lib/delegate-review-selection';
   import { expectedSigner } from '$lib/delegate-expected-signer';
   import { activeKeys, autoSelectKey } from '$lib/delegate-key-selection';
@@ -614,8 +613,21 @@
     ? callbackCheck.reason
     : hostCheck?.ok === false ? hostCheck.reason : '');
   const approvedCallback = $derived(callbackCheck?.ok ? callbackCheck.callback : null);
+  // What is signed: the grants and lifetime of the prepared message, read from the bytes the key will sign. A listed
+  // signer is named only when this and the loaded request both stay inside its policy; before a message is prepared,
+  // and for a message that adds or widens anything, no signer is named.
+  const signedScope = $derived(approvalRequestMode && siweMessage && selectedKey
+    ? signedScopeOfMessage(siweMessage, {
+        label: selectedKey.label ?? `Key ${selectedKey.keyIndex}`,
+        address: selectedKey.address,
+        chainId: 1,
+        provenance: selectedKey.keyType === 'EXTERNAL' ? 'external' : 'managed',
+      })
+    : null);
+  // The key-only TinyCloud One list (`TINYCLOUD_ONE_REQUESTER_DIDS`, `VITE_TINYCLOUD_ONE_REQUESTER_DIDS`) does not
+  // name a requester here: a key with no policy would be named for any request it signs.
   const requester = $derived(approvalRequestMode
-    ? verifiedApprovalRequester(approvalIssuer, withConfiguredEntries(TINYCLOUD_ONE_REQUESTER_DIDS, import.meta.env.VITE_TINYCLOUD_ONE_REQUESTER_DIDS, isEd25519DidKey), VERIFIED_REQUESTERS, approvalRequestScope)
+    ? verifiedApprovalRequester(approvalIssuer, TINYCLOUD_ONE_VERIFIED_REQUESTERS, VERIFIED_REQUESTERS, approvalRequestScope, signedScope)
     : delegateRequester(approvedCallback));
   // A one-tap request for one named secret names its verified signer in its heading.
   const oneSecretWords = $derived(approvalRequestMode
