@@ -4,6 +4,7 @@ import { webSignFlowHeaders } from './web-sign-flow';
 import { isDefiniteRefusal, ServerRefusalError } from './server-reply';
 import { isTermsRequired } from './terms';
 import { termsRefused } from './terms-gate';
+import { dropSetupBearer, heldSetupBearer } from './setup-bearer';
 import type { RenewalLease } from './renewal-leases';
 import type {
   ApprovalPasskeyAssertion, ApprovalPasskeyNeed, ApprovalPasskeyOffer, PasskeyApprovalMode, PasskeyApprovalSetting,
@@ -19,15 +20,18 @@ const API_URL = import.meta.env.VITE_API_URL || '';
  *
  * `cookieOnly`: never send the stored token, even in an embedded frame. The API refuses any request carrying an
  * Authorization header when it changes a TinyCloud signing control (they are cookie-session only).
+ *
+ * `bearer`: the setup window's held token (`setup-bearer.ts`), sent in place of the cookie to the setup routes and the
+ * key list. A 401 means the token is rejected: it is dropped so the page asks for a sign-in.
  */
-async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly = false): Promise<T> {
+async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly = false, bearer: string | null = null): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
   };
 
   // In embed context, use bearer token instead of cookies
-  const sessionToken = cookieOnly || !isEmbedContext() ? null : getSessionToken();
+  const sessionToken = bearer ?? (cookieOnly || !isEmbedContext() ? null : getSessionToken());
   if (sessionToken) {
     headers['Authorization'] = `Bearer ${sessionToken}`;
   }
@@ -39,6 +43,7 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly =
   });
 
   if (!res.ok) {
+    if (bearer && res.status === 401) dropSetupBearer();
     const error = await res.json().catch(() => ({ error: 'Unknown error' }));
     const detail = error?.error;
     // TC-3232: the account owes the current Terms (a release went live while the page was open): the page's
@@ -245,31 +250,37 @@ export const api = {
     },
   },
 
-  // OpenKey's own account setup page (/widget/account-setup). Cookie session only: the API refuses a bearer token.
+  // OpenKey's own account setup page (/widget/account-setup). The cookie session, or the bearer token the embed that
+  // opened the page handed over (held in memory, `setup-bearer.ts`): the API accepts a bearer on these routes alone.
   accountSetup: {
+    /** The accounts' keys the page picks from, by the same session as the setup calls. */
+    async keys(): Promise<{ keys: EthereumKey[] }> {
+      return fetchAPI('/api/keys', {}, true, heldSetupBearer());
+    },
+
     async prepare(keyId: string, requestOrigin: string | null): Promise<AccountSetupPrepared> {
       return fetchAPI('/api/account-setup/prepare', {
         method: 'POST',
         body: JSON.stringify({ keyId, placement: 'tinycloud', ...(requestOrigin ? { requestOrigin } : {}) }),
-      }, true);
+      }, true, heldSetupBearer());
     },
 
     async stepUp(id: string): Promise<AccountSetupStepUp> {
-      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/passkey`, { method: 'POST', body: '{}' }, true);
+      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/passkey`, { method: 'POST', body: '{}' }, true, heldSetupBearer());
     },
 
     async sendEmailCode(id: string): Promise<{ sent: boolean; email: string }> {
-      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/email-code`, { method: 'POST', body: '{}' }, true);
+      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/email-code`, { method: 'POST', body: '{}' }, true, heldSetupBearer());
     },
 
     async approve(
       id: string, proof: { passkeyAssertion: ApprovalPasskeyAssertion } | { emailCode: string },
     ): Promise<AccountSetupState> {
-      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/approve`, { method: 'POST', body: JSON.stringify(proof) }, true);
+      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/approve`, { method: 'POST', body: JSON.stringify(proof) }, true, heldSetupBearer());
     },
 
     async finish(id: string): Promise<AccountSetupState> {
-      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/finish`, { method: 'POST', body: '{}' }, true);
+      return fetchAPI(`/api/account-setup/${encodeURIComponent(id)}/finish`, { method: 'POST', body: '{}' }, true, heldSetupBearer());
     },
   },
 
