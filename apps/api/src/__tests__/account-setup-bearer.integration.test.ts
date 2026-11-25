@@ -511,17 +511,31 @@ if (process.env.OPENKEY_ACCOUNT_SETUP_BEARER_CHILD !== '1') {
     test('wrong passkey assertions count against the same budget', async () => {
       const owner = await account();
       const passkey = await createSoftPasskey(prisma, owner.userId, true, web);
-      const auth = asBearer(owner);
-      const first = await prepare(owner, auth);
-      const second = await prepare({ keyId: await key(owner.userId) }, auth);
-      for (let attempt = 0; attempt < budget.ACCOUNT_SETUP_BUDGET_LIMITS.verify; attempt += 1) {
-        const forSecond = await assertion(passkey, second.id, auth);
-        const refused = await json(await post(`/api/account-setup/${first.id}/approve`, auth, { passkeyAssertion: forSecond }), 403);
-        expect(refused.code).toBe('passkey_approval_invalid');
+      // Two sessions take five attempts each, the share one session may take of the user's ten.
+      const other = await session(owner.userId);
+      const rows = new Map<string, { first: Record<string, any>; second: Record<string, any> }>();
+      for (const [who, keyId] of [[owner, owner.keyId], [other, await key(owner.userId)]] as const) {
+        const auth = asBearer(who);
+        rows.set(who.sessionId, { first: await prepare({ keyId }, auth), second: await prepare({ keyId: await key(owner.userId) }, auth) });
       }
-      const right = await assertion(passkey, first.id, auth);
-      const limited = await json(await post(`/api/account-setup/${first.id}/approve`, auth, { passkeyAssertion: right }), 429);
-      expect(limited.code).toBe('account_setup_rate_limited');
+      for (const who of [owner, other]) {
+        const auth = asBearer(who);
+        const { first, second } = rows.get(who.sessionId)!;
+        for (let attempt = 0; attempt < budget.ACCOUNT_SETUP_BUDGET_SESSION_LIMIT; attempt += 1) {
+          const forSecond = await assertion(passkey, second.id, auth);
+          const refused = await json(await post(`/api/account-setup/${first.id}/approve`, auth, { passkeyAssertion: forSecond }), 403);
+          expect(refused.code).toBe('passkey_approval_invalid');
+        }
+      }
+      expect(await budgetUsed(owner.userId, 'verify')).toBe(budget.ACCOUNT_SETUP_BUDGET_LIMITS.verify);
+      // The user's ten are spent: a right assertion from either session is refused.
+      for (const who of [owner, other]) {
+        const auth = asBearer(who);
+        const { first } = rows.get(who.sessionId)!;
+        const right = await assertion(passkey, first.id, auth);
+        const limited = await json(await post(`/api/account-setup/${first.id}/approve`, auth, { passkeyAssertion: right }), 429);
+        expect(limited.code).toBe('account_setup_rate_limited');
+      }
       expect(bootstrapRuns).toBe(0);
     });
 
@@ -547,6 +561,121 @@ if (process.env.OPENKEY_ACCOUNT_SETUP_BEARER_CHILD !== '1') {
       const other = await account();
       const otherRow = await prepare(other, asBearer(other));
       expect(await json(await post(`/api/account-setup/${otherRow.id}/email-code`, asBearer(other)), 200)).toMatchObject({ sent: true });
+    });
+  });
+  describe('one session may take half of the owner\'s limit', () => {
+    const RATE_LIMITED = { error: 'Too many attempts in the last hour. Wait an hour, then try once more.', code: 'account_setup_rate_limited' };
+    const sessionUsed = async (userId: string, kind: 'send' | 'verify', sessionId: string) =>
+      Number((await prisma.verification.findFirst({ where: { identifier: `account-setup-budget:${kind}:${userId}:${sessionId}` } }))?.value ?? 'none');
+    /** One wrong attempt: a code on a row that has none is graded as ended, and costs a unit. */
+    const wrongAttempt = (rowId: string, headers: Record<string, string>) =>
+      post(`/api/account-setup/${rowId}/approve`, headers, { emailCode: '000000' });
+
+    test('verify attempts: one session stops at five, another session of the account has its own five, the account stops at ten', async () => {
+      const owner = await account();
+      const embed = await session(owner.userId);
+      const third = await session(owner.userId);
+      const byBearer = await prepare({ keyId: await key(owner.userId) }, asBearer(embed));
+      const byCookie = await prepare(owner, asCookie(owner));
+      const thirdRow = await prepare({ keyId: await key(owner.userId) }, asBearer(third));
+
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        expect((await wrongAttempt(byBearer.id, asBearer(embed))).status, `bearer ${attempt}`).toBe(403);
+      }
+      expect(await json(await wrongAttempt(byBearer.id, asBearer(embed)), 429)).toEqual(RATE_LIMITED);
+      // Refused over the share, so nothing more is spent.
+      expect(await budgetUsed(owner.userId, 'verify')).toBe(5);
+      expect(await sessionUsed(owner.userId, 'verify', embed.sessionId)).toBe(5);
+
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        expect((await wrongAttempt(byCookie.id, asCookie(owner))).status, `cookie ${attempt}`).toBe(403);
+      }
+      expect(await json(await wrongAttempt(byCookie.id, asCookie(owner)), 429)).toEqual(RATE_LIMITED);
+      expect(await budgetUsed(owner.userId, 'verify')).toBe(10);
+
+      // The account's ten are spent: a session that has used none is refused as well.
+      expect(await prisma.verification.count({ where: { identifier: `account-setup-budget:verify:${owner.userId}:${third.sessionId}` } })).toBe(0);
+      expect(await json(await wrongAttempt(thirdRow.id, asBearer(third)), 429)).toEqual(RATE_LIMITED);
+      expect(await budgetUsed(owner.userId, 'verify')).toBe(10);
+    });
+
+    test('codes mailed: one session stops at five, another session has its own five, the account stops at ten', async () => {
+      const owner = await account();
+      const embed = await session(owner.userId);
+      const third = await session(owner.userId);
+      const keys = [owner.keyId, ...await Promise.all(Array.from({ length: 5 }, () => key(owner.userId)))];
+      const send = async (who: Headers_, keyId: string) => {
+        const row = await prepare({ keyId }, who);
+        return post(`/api/account-setup/${row.id}/email-code`, who);
+      };
+      type Headers_ = Record<string, string>;
+
+      for (const keyId of keys.slice(0, 5)) expect((await send(asBearer(embed), keyId)).status).toBe(200);
+      expect(await json(await send(asBearer(embed), keys[5]!), 429)).toEqual(RATE_LIMITED);
+      for (const keyId of keys.slice(0, 5)) expect((await send(asCookie(owner), keyId)).status).toBe(200);
+      expect(await json(await send(asCookie(owner), keys[5]!), 429)).toEqual(RATE_LIMITED);
+      expect(await budgetUsed(owner.userId, 'send')).toBe(10);
+      expect(await json(await send(asBearer(third), keys[0]!), 429)).toEqual(RATE_LIMITED);
+      expect(await budgetUsed(owner.userId, 'send')).toBe(10);
+    });
+
+    test('a confirmed approval refunds the unit from the account and from the session', async () => {
+      const owner = await account();
+      const auth = asBearer(owner);
+      const first = await prepare(owner, auth);
+      for (let attempt = 0; attempt < 2; attempt += 1) expect((await wrongAttempt(first.id, auth)).status).toBe(403);
+      await json(await post(`/api/account-setup/${first.id}/email-code`, auth), 200);
+      await knownCode(owner.sessionId, first.id, '424242');
+      expect(await json(await post(`/api/account-setup/${first.id}/approve`, auth, { emailCode: '424242' }), 200)).toEqual({ state: 'published' });
+      expect(await budgetUsed(owner.userId, 'verify')).toBe(2);
+      expect(await sessionUsed(owner.userId, 'verify', owner.sessionId)).toBe(2);
+      // The send of that code was spent and stays spent: it mailed.
+      expect(await budgetUsed(owner.userId, 'send')).toBe(1);
+
+      // Two wrong attempts and one confirmed one used two of the session's five: three are left.
+      const second = await prepare(owner, auth);
+      for (let attempt = 0; attempt < 3; attempt += 1) expect((await wrongAttempt(second.id, auth)).status).toBe(403);
+      expect(await json(await wrongAttempt(second.id, auth), 429)).toEqual(RATE_LIMITED);
+    });
+
+    test('a refund never takes a count below zero, and a session that spent nothing refunds nothing', async () => {
+      const owner = await account();
+      await budget.spendAccountSetupBudget(prisma, owner.userId, 'verify', 'spender');
+      await budget.spendAccountSetupBudget(prisma, owner.userId, 'verify', 'bystander');
+      for (let refund = 0; refund < 4; refund += 1) await budget.refundAccountSetupBudget(prisma, owner.userId, 'verify', 'spender');
+      await budget.refundAccountSetupBudget(prisma, owner.userId, 'verify', 'never-spent');
+      expect(await budgetUsed(owner.userId, 'verify')).toBe(1);
+      expect(await sessionUsed(owner.userId, 'verify', 'spender')).toBe(0);
+      expect(await sessionUsed(owner.userId, 'verify', 'bystander')).toBe(1);
+      await budget.refundAccountSetupBudget(prisma, owner.userId, 'verify', 'bystander');
+      await budget.refundAccountSetupBudget(prisma, owner.userId, 'verify', 'bystander');
+      expect(await budgetUsed(owner.userId, 'verify')).toBe(0);
+      expect(await sessionUsed(owner.userId, 'verify', 'bystander')).toBe(0);
+    });
+
+    test('a value that is not a count refuses the spend', async () => {
+      const owner = await account();
+      await budget.spendAccountSetupBudget(prisma, owner.userId, 'send', 'a-session');
+      await prisma.verification.updateMany({ where: { identifier: `account-setup-budget:send:${owner.userId}:a-session` }, data: { value: 'x' } });
+      expect(await budget.spendAccountSetupBudget(prisma, owner.userId, 'send', 'a-session')).toBe(false);
+      await prisma.verification.updateMany({ where: { identifier: `account-setup-budget:send:${owner.userId}` }, data: { value: '-1' } });
+      expect(await budget.spendAccountSetupBudget(prisma, owner.userId, 'send', 'another-session')).toBe(false);
+    });
+
+    test('when the window ends both counts start over', async () => {
+      const owner = await account();
+      const auth = asBearer(owner);
+      const row = await prepare(owner, auth);
+      for (let attempt = 0; attempt < 5; attempt += 1) expect((await wrongAttempt(row.id, auth)).status).toBe(403);
+      expect(await json(await wrongAttempt(row.id, auth), 429)).toEqual(RATE_LIMITED);
+
+      await prisma.verification.updateMany({
+        where: { identifier: { startsWith: `account-setup-budget:verify:${owner.userId}` } }, data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+      for (let attempt = 0; attempt < 5; attempt += 1) expect((await wrongAttempt(row.id, auth)).status, `after ${attempt}`).toBe(403);
+      expect(await json(await wrongAttempt(row.id, auth), 429)).toEqual(RATE_LIMITED);
+      expect(await budgetUsed(owner.userId, 'verify')).toBe(5);
+      expect(await sessionUsed(owner.userId, 'verify', owner.sessionId)).toBe(5);
     });
   });
 }

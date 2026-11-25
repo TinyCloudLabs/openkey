@@ -256,11 +256,11 @@ accountSetupRouter.post('/:id/email-code', async (c) => {
   if (await hasStepUpPasskey(user.id)) return c.json(PASSKEY_APPROVAL_REQUIRED, 403);
   if (!await emailVerified(user.id, user.email)) return c.json(NO_STEP_UP, 403);
   // Codes mailed are limited per user across all requests and sessions; a call that mails nothing costs nothing.
-  if (!await spendAccountSetupBudget(db(), user.id, 'send')) return c.json(TOO_MANY_ATTEMPTS, 429);
+  if (!await spendAccountSetupBudget(db(), user.id, 'send', session.id)) return c.json(TOO_MANY_ATTEMPTS, 429);
   const sent = await sendAccountSetupCode(db(), {
     sessionId: session.id, requestId: row.id, email: user.email, requestOrigin: row.requestOrigin, nodeUrl: row.nodeUrl,
   });
-  if (sent !== 'sent') await refundAccountSetupBudget(db(), user.id, 'send');
+  if (sent !== 'sent') await refundAccountSetupBudget(db(), user.id, 'send', session.id);
   if (sent === 'unavailable') return c.json(ACCOUNT_SETUP_UNAVAILABLE, 503);
   return c.json({ sent: sent === 'sent', email: maskEmail(user.email) });
 });
@@ -269,8 +269,8 @@ type StepUpRefusal = { body: { error: string; code: string }; status: 403 | 429 
 
 /**
  * The owner's step-up for this row. Each attempt with a proof spends one unit of the user's hourly `verify` budget
- * (account-setup-budget.ts) before it is graded; a confirmed attempt refunds the unit, so only attempts that did
- * not confirm count, whatever the row or the session.
+ * (account-setup-budget.ts) before it is graded: the user's total, and the share one session may take of it. A confirmed
+ * attempt refunds the unit, so only attempts that did not confirm count, whatever the row.
  */
 async function stepUpRefusal(
   c: Context<SessionContext>, row: { id: string; payloadDigest: string }, input: Record<string, unknown>,
@@ -279,22 +279,22 @@ async function stepUpRefusal(
   const session = c.get('session');
   const subject = { sessionId: session.id, userId: user.id };
   if (input.passkeyAssertion !== undefined) {
-    if (!await spendAccountSetupBudget(db(), user.id, 'verify')) return { body: TOO_MANY_ATTEMPTS, status: 429 };
+    if (!await spendAccountSetupBudget(db(), user.id, 'verify', session.id)) return { body: TOO_MANY_ATTEMPTS, status: 429 };
     const result = await verifyApprovalPasskey(db(), subject, {
       purpose: 'account_setup', requestDigest: approvalRequestDigest(row.id, row.payloadDigest),
     }, input.passkeyAssertion);
     if (result === 'verified') {
-      await refundAccountSetupBudget(db(), user.id, 'verify');
+      await refundAccountSetupBudget(db(), user.id, 'verify', session.id);
       return null;
     }
     return { body: result === 'not_step_up' ? PASSKEY_APPROVAL_NOT_STEP_UP : PASSKEY_APPROVAL_INVALID, status: 403 };
   }
   if (input.emailCode !== undefined) {
     if (await hasStepUpPasskey(user.id)) return { body: PASSKEY_APPROVAL_REQUIRED, status: 403 };
-    if (!await spendAccountSetupBudget(db(), user.id, 'verify')) return { body: TOO_MANY_ATTEMPTS, status: 429 };
+    if (!await spendAccountSetupBudget(db(), user.id, 'verify', session.id)) return { body: TOO_MANY_ATTEMPTS, status: 429 };
     const grade = await gradeAccountSetupCode(db(), { sessionId: session.id, requestId: row.id, code: input.emailCode });
     if (grade === 'match') {
-      await refundAccountSetupBudget(db(), user.id, 'verify');
+      await refundAccountSetupBudget(db(), user.id, 'verify', session.id);
       return null;
     }
     return { body: grade === 'missing' ? CODE_ENDED : CODE_INVALID, status: 403 };
