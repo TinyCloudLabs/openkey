@@ -53,6 +53,7 @@ async function fetchAPI<T>(path: string, options: RequestInit = {}, cookieOnly =
       status: res.status,
       policyEpoch: typeof error?.policyEpoch === 'number' ? error.policyEpoch : undefined,
       reason: typeof error?.reason === 'string' ? error.reason : undefined,
+      ...(error?.accountSetup === 'required' ? { accountSetup: 'required' as const } : {}),
     });
     throw failure;
   }

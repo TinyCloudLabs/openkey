@@ -1382,7 +1382,8 @@
       });
       sendClose();
     } catch (e: any) {
-      if (e instanceof ServerRefusalError) refuse(e);
+      if (accountSetupRefusal(e)) { /* the card or the refusal is on screen */ }
+      else if (e instanceof ServerRefusalError) refuse(e);
       else if (e instanceof ServerReplyError) unreadableReply(e.status);
       else if (!refuse(e)) error = e.message || 'Signing failed';
       // TC-3442: the API refused over the passkey; its text is shown and the spent challenge is replaced below.

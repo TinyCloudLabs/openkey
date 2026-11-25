@@ -12,7 +12,7 @@ import {
 } from '../services/tinycloud-bootstrap';
 import { awaitTinyCloudBootstrapWithinBudget, OWN_TIMEOUT_BUDGET_MS } from '../services/tinycloud-bootstrap-budget';
 import { parseTinyCloudSiwe, requestedOwnSpaceForSiwe } from '../services/tinycloud-siwe';
-import { HOST_SIGNING_FIRST_PARTY_ONLY, HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE, refusesThirdPartySpaceHost } from '../services/space-host-signing';
+import { hostSigningRefusalBody, refusesThirdPartySpaceHost } from '../services/space-host-signing';
 import { originProvisionAuthority, UNATTRIBUTED_PROVISION_AUTHORITY } from '../services/provision-authority';
 import { createSealingContext, deriveKeyForRecord } from '../services/key-sealing';
 import { deviceTransactionUnsupportedError } from './device-delegation-window';
@@ -467,7 +467,7 @@ keysRouter.post('/:keyId/sign', async (c) => {
   // spaces, `default` included, for an owner whose primary space is hosted (`refusesThirdPartySpaceHost`); every other message,
   // including a sign-in that names a space, is signed as before. Checked before the passkey gate and before unseal.
   if (await refusesThirdPartySpaceHost({ prisma, message: body.message, key, authorities: [authority] })) {
-    return c.json({ error: HOST_SIGNING_FIRST_PARTY_ONLY_MESSAGE, code: HOST_SIGNING_FIRST_PARTY_ONLY }, 403);
+    return c.json(await hostSigningRefusalBody(prisma, key), 403);
   }
 
   // TC-3442: the account's passkey setting, before the key is unsealed. A passkey sign-in the web sign page was opened
